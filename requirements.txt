@@ -6,3 +6,4 @@ curl_cffi==0.13.0
 requests==2.32.5
 starlette==0.48.0
 pydantic==2.12.0
+aiofiles==24.1.0

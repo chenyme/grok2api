@@ -21,8 +21,12 @@ from app.models.grok_models import TokenType
 # 创建路由器
 router = APIRouter(tags=["管理"])
 
-# 静态文件路径
+# 常量定义
 STATIC_DIR = Path(__file__).parents[2] / "template"
+TEMP_DIR = Path(__file__).parents[3] / "data" / "temp"
+SESSION_EXPIRE_HOURS = 24
+BYTES_PER_KB = 1024
+BYTES_PER_MB = 1024 * 1024
 
 # 简单的会话存储
 _sessions: Dict[str, datetime] = {}
@@ -225,8 +229,8 @@ async def admin_login(request: LoginRequest) -> LoginResponse:
         # 生成会话token
         session_token = secrets.token_urlsafe(32)
 
-        # 设置会话过期时间（24小时）
-        expire_time = datetime.now() + timedelta(hours=24)
+        # 设置会话过期时间
+        expire_time = datetime.now() + timedelta(hours=SESSION_EXPIRE_HOURS)
         _sessions[session_token] = expire_time
 
         logger.debug(f"[Admin] 管理员登录成功 - 用户名: {request.username}")
@@ -282,7 +286,7 @@ async def list_tokens(authenticated: bool = Depends(verify_admin_session)) -> To
     try:
         logger.debug("[Admin] 开始获取Token列表")
 
-        all_tokens_data = token_manager.get_all_token()
+        all_tokens_data = token_manager.get_tokens()
         token_list: List[TokenInfo] = []
 
         # 处理普通Token
@@ -344,7 +348,7 @@ async def add_tokens(request: AddTokensRequest,
         token_type = validate_token_type(request.token_type)
 
         # 添加Token
-        token_manager.add_token(request.tokens, token_type)
+        await token_manager.add_token(request.tokens, token_type)
 
         logger.debug(f"[Admin] Token添加成功 - 类型: {request.token_type}, 数量: {len(request.tokens)}")
 
@@ -379,7 +383,7 @@ async def delete_tokens(request: DeleteTokensRequest,
         token_type = validate_token_type(request.token_type)
 
         # 删除Token
-        token_manager.delete_token(request.tokens, token_type)
+        await token_manager.delete_token(request.tokens, token_type)
 
         logger.debug(f"[Admin] Token删除成功 - 类型: {request.token_type}, 数量: {len(request.tokens)}")
 
@@ -427,11 +431,13 @@ async def update_settings(request: UpdateSettingsRequest, authenticated: bool = 
     """更新全局配置"""
     try:
         import toml
+        import aiofiles
         logger.debug("[Admin] 更新全局配置")
 
-        # 读取现有配置
-        with open(setting.config_path, "r", encoding="utf-8") as f:
-            config = toml.load(f)
+        # 异步读取现有配置
+        async with aiofiles.open(setting.config_path, "r", encoding="utf-8") as f:
+            content = await f.read()
+            config = toml.loads(content)
 
         # 更新配置
         if request.global_config:
@@ -439,9 +445,9 @@ async def update_settings(request: UpdateSettingsRequest, authenticated: bool = 
         if request.grok_config:
             config["grok"].update(request.grok_config)
 
-        # 写回配置文件
-        with open(setting.config_path, "w", encoding="utf-8") as f:
-            toml.dump(config, f)
+        # 异步写回配置文件
+        async with aiofiles.open(setting.config_path, "w", encoding="utf-8") as f:
+            await f.write(toml.dumps(config))
 
         # 重新加载配置
         setting.global_config = setting.load("global")
@@ -454,48 +460,43 @@ async def update_settings(request: UpdateSettingsRequest, authenticated: bool = 
         raise HTTPException(status_code=500, detail={"error": f"更新配置失败: {str(e)}", "code": "UPDATE_SETTINGS_ERROR"})
 
 
+def _calculate_dir_size(directory: Path) -> int:
+    """计算目录中所有文件的大小（字节）"""
+    total_size = 0
+    for file_path in directory.iterdir():
+        if file_path.is_file():
+            try:
+                total_size += file_path.stat().st_size
+            except Exception as e:
+                logger.warning(f"[Admin] 无法获取文件大小: {file_path.name}, 错误: {str(e)}")
+    return total_size
+
+
+def _format_size(size_bytes: int) -> str:
+    """格式化字节大小为可读字符串"""
+    size_mb = size_bytes / BYTES_PER_MB
+    if size_mb < 1:
+        size_kb = size_bytes / BYTES_PER_KB
+        return f"{size_kb:.1f} KB"
+    return f"{size_mb:.1f} MB"
+
+
 @router.get("/api/cache/size")
 async def get_cache_size(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
-    """
-    获取缓存大小
-
-    计算/data/temp目录中所有文件的大小。
-    """
+    """获取缓存大小"""
     try:
         logger.debug("[Admin] 开始获取缓存大小")
 
-        # 获取temp目录路径
-        temp_dir = Path(__file__).parents[3] / "data" / "temp"
-
-        if not temp_dir.exists():
-            logger.warning(f"[Admin] 缓存目录不存在: {temp_dir}")
-            return {
-                "success": True,
-                "data": {"size": "0 MB"}
-            }
+        if not TEMP_DIR.exists():
+            logger.warning(f"[Admin] 缓存目录不存在: {TEMP_DIR}")
+            return {"success": True, "data": {"size": "0 MB"}}
 
         # 计算目录大小
-        total_size = 0
-        for file_path in temp_dir.iterdir():
-            if file_path.is_file():
-                try:
-                    total_size += file_path.stat().st_size
-                except Exception as e:
-                    logger.error(f"[Admin] 获取文件大小失败: {file_path.name}, 错误: {str(e)}")
-
-        # 转换为MB并格式化
-        size_mb = total_size / (1024 * 1024)
-        if size_mb < 1:
-            size_kb = total_size / 1024
-            size_str = f"{size_kb:.1f} KB"
-        else:
-            size_str = f"{size_mb:.1f} MB"
+        total_size = _calculate_dir_size(TEMP_DIR)
+        size_str = _format_size(total_size)
 
         logger.debug(f"[Admin] 缓存大小获取完成 - 大小: {size_str}")
-        return {
-            "success": True,
-            "data": {"size": size_str}
-        }
+        return {"success": True, "data": {"size": size_str}}
 
     except Exception as e:
         logger.error(f"[Admin] 获取缓存大小异常 - 错误: {str(e)}")
@@ -507,28 +508,21 @@ async def get_cache_size(authenticated: bool = Depends(verify_admin_session)) ->
 
 @router.post("/api/cache/clear")
 async def clear_cache(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
-    """
-    清理缓存
-
-    删除/data/temp目录中的所有文件。
-    """
+    """清理缓存 - 删除所有临时文件"""
     try:
         logger.debug("[Admin] 开始清理缓存")
 
-        # 获取temp目录路径
-        temp_dir = Path(__file__).parents[3] / "data" / "temp"
-
-        if not temp_dir.exists():
-            logger.warning(f"[Admin] 缓存目录不存在: {temp_dir}")
+        if not TEMP_DIR.exists():
+            logger.warning(f"[Admin] 缓存目录不存在: {TEMP_DIR}")
             return {
                 "success": True,
                 "message": "缓存目录不存在，无需清理",
                 "data": {"deleted_count": 0}
             }
 
-        # 获取所有文件
+        # 删除所有文件
         deleted_count = 0
-        for file_path in temp_dir.iterdir():
+        for file_path in TEMP_DIR.iterdir():
             if file_path.is_file():
                 try:
                     file_path.unlink()
@@ -562,7 +556,7 @@ async def get_stats(authenticated: bool = Depends(verify_admin_session)) -> Dict
     try:
         logger.debug("[Admin] 开始获取统计信息")
 
-        all_tokens_data = token_manager.get_all_token()
+        all_tokens_data = token_manager.get_tokens()
 
         # 统计普通Token
         normal_tokens = all_tokens_data.get(TokenType.NORMAL.value, {})

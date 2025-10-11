@@ -3,8 +3,8 @@
 import json
 import uuid
 import time
-import asyncio
 from typing import Iterator
+
 from app.core.config import setting
 from app.core.exception import GrokApiException
 from app.core.logger import logger
@@ -19,26 +19,11 @@ from app.models.openai_schema import (
 from app.services.grok.image_cache import image_cache_service
 
 
-def _safe_run_async(coro):
-    """安全地运行异步协程，无论是否有事件循环"""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # 如果循环正在运行，使用 ensure_future 调度任务
-            return asyncio.ensure_future(coro)
-        else:
-            # 循环存在但未运行，直接运行
-            return loop.run_until_complete(coro)
-    except RuntimeError:
-        # 没有事件循环，创建新的
-        return asyncio.run(coro)
-
-
 class GrokResponseProcessor:
     """Grok API 响应处理器"""
 
     @staticmethod
-    def process_response(response, auth_token: str) -> OpenAIChatCompletionResponse:
+    async def process_normal(response, auth_token: str) -> OpenAIChatCompletionResponse:
         """处理非流式响应"""
         try:
             for chunk in response.iter_lines():
@@ -74,24 +59,21 @@ class GrokResponseProcessor:
                 # 添加生成的图片
                 if images := model_response.get("generatedImageUrls"):
                     for img in images:
-                        # 下载并缓存图片
                         try:
-                            cache_path = _safe_run_async(image_cache_service.download_image(f"/{img}", auth_token))
+                            cache_path = await image_cache_service.download_image(f"/{img}", auth_token)
                             if cache_path:
-                                # 使用本地缓存路径
                                 img_path = img.replace('/', '-')
                                 base_url = setting.global_config.get("base_url", "")
                                 img_url = f"{base_url}/images/{img_path}" if base_url else f"/images/{img_path}"
                                 content += f"\n![Generated Image]({img_url})"
                             else:
-                                # 缓存失败，使用原始链接
                                 content += f"\n![Generated Image](https://assets.grok.com/{img})"
                         except Exception as e:
                             logger.warning(f"[Processor] 缓存图片失败: {e}")
                             content += f"\n![Generated Image](https://assets.grok.com/{img})"
 
                 # 返回OpenAI格式响应
-                return OpenAIChatCompletionResponse(
+                result = OpenAIChatCompletionResponse(
                     id=f"chatcmpl-{uuid.uuid4()}",
                     object="chat.completion",
                     created=int(time.time()),
@@ -106,14 +88,20 @@ class GrokResponseProcessor:
                     )],
                     usage=None
                 )
+                response.close()
+                return result
 
             raise GrokApiException("无响应数据", "NO_RESPONSE")
 
         except json.JSONDecodeError as e:
             raise GrokApiException(f"JSON解析失败: {e}", "JSON_ERROR") from e
+        finally:
+            # 确保响应对象被关闭
+            if hasattr(response, 'close'):
+                response.close()
 
     @staticmethod
-    def process_stream(response, auth_token: str) -> Iterator[str]:
+    async def process_stream(response, auth_token: str) -> Iterator[str]:
         """处理流式响应"""
         is_image = False
         is_thinking = False
@@ -182,8 +170,8 @@ class GrokResponseProcessor:
                             content = ""
                             for img in model_resp.get("generatedImageUrls", []):
                                 try:
-                                    # 异步下载并缓存图片（不阻塞）
-                                    _safe_run_async(image_cache_service.download_image(f"/{img}", auth_token))
+                                    # 异步下载并缓存图片
+                                    await image_cache_service.download_image(f"/{img}", auth_token)
                                     # 使用本地缓存路径
                                     img_path = img.replace('/', '-')
                                     base_url = setting.global_config.get("base_url", "")
