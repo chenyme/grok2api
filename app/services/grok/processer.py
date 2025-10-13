@@ -156,6 +156,7 @@ class GrokResponseProcessor:
         is_video = False
         video_url = None
         video_progress_started = False
+        last_video_progress = -1
 
         def make_chunk(content: str, finish: str = None):
             """生成OpenAI格式的响应块"""
@@ -208,22 +209,27 @@ class GrokResponseProcessor:
                         is_video = True
                         progress = video_resp.get("progress", 0)
                         
-                        # 首次显示进度时添加 <think>
-                        if not video_progress_started:
-                            content = f"<think>视频已生成{progress}%\n"
-                            video_progress_started = True
-                        elif progress < 100:
-                            content = f"视频已生成{progress}%\n"
-                        else:
-                            # 进度100%时关闭think标签
-                            content = f"视频已生成{progress}%</think>\n"
-                            # 保存视频URL
-                            if v_url := video_resp.get("videoUrl"):
-                                video_url = v_url
-                                logger.debug(f"[Processor] 视频生成完成: {video_url}")
+                        # 检测进度变化
+                        if progress != last_video_progress:
+                            last_video_progress = progress
+                            
+                            # 首次显示进度时添加 <think>
+                            if not video_progress_started:
+                                content = f"<think>视频已生成{progress}%\n"
+                                video_progress_started = True
+                            elif progress < 100:
+                                content = f"视频已生成{progress}%\n"
+                            else:
+                                # 进度100%时关闭think标签
+                                content = f"视频已生成{progress}%</think>\n"
+                                # 保存视频URL
+                                if v_url := video_resp.get("videoUrl"):
+                                    video_url = v_url
+                                    logger.debug(f"[Processor] 视频生成完成: {video_url}")
+                            
+                            yield make_chunk(content)
+                            chunk_index += 1
                         
-                        yield make_chunk(content)
-                        chunk_index += 1
                         continue
 
                     # 检查生成模式
