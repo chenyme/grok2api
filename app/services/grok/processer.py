@@ -209,8 +209,7 @@ class GrokResponseProcessor:
                         is_video = True
                         progress = video_resp.get("progress", 0)
                         
-                        # 检测进度变化
-                        if progress != last_video_progress:
+                        if progress > last_video_progress:
                             last_video_progress = progress
                             
                             # 首次显示进度时添加 <think>
