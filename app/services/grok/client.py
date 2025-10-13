@@ -3,6 +3,7 @@
 import asyncio
 import json
 from typing import Dict, List, Tuple, Any
+
 from curl_cffi import requests as curl_requests
 
 from app.core.config import setting
@@ -39,11 +40,24 @@ class GrokClient:
         auth_token = token_manager.get_token(model)
         model_name, model_mode = Models.to_grok(model)
 
+        # 检查是否为视频模型
+        is_video_model = Models.get_model_info(model).get("is_video_model", False)
+        
+        # 视频模型特殊处理：只允许一张图片
+        if is_video_model and len(image_urls) > 1:
+            logger.warning(f"[Client] 视频模型只允许一张图片，当前有{len(image_urls)}张，只使用第一张")
+            image_urls = image_urls[:1]
+        
         # 上传图片并获取附件ID列表
         image_attachments = await GrokClient._upload_imgs(image_urls, auth_token)
 
+        # 视频模型：文本添加 --mode=custom
+        if is_video_model:
+            content = f"{content} --mode=custom"
+            logger.debug(f"[Client] 视频模型文本处理: {content}")
+
         # 构建Grok请求载荷
-        payload = GrokClient._build_payload(content, model_name, model_mode, image_attachments)
+        payload = GrokClient._build_payload(content, model_name, model_mode, image_attachments, is_video_model)
 
         return await GrokClient._send_request(payload, auth_token, model, stream)
 
@@ -89,9 +103,9 @@ class GrokClient:
         return image_attachments
 
     @staticmethod
-    def _build_payload(content: str, model_name: str, model_mode: str, image_attachments: List[str]) -> Dict[str, Any]:
+    def _build_payload(content: str, model_name: str, model_mode: str, image_attachments: List[str], is_video_model: bool = False) -> Dict[str, Any]:
         """构建Grok API请求载荷"""
-        return {
+        payload = {
             "temporary": setting.grok_config.get("temporary", True),
             "modelName": model_name,
             "message": content,
@@ -116,6 +130,13 @@ class GrokClient:
             "modelMode": model_mode,
             "isAsyncChat": False
         }
+        
+        # 视频模型特殊配置
+        if is_video_model:
+            payload["toolOverrides"] = {"videoGen": True}
+            logger.debug("[Client] 视频模型载荷配置: toolOverrides.videoGen = True")
+        
+        return payload
 
     @staticmethod
     async def _send_request(payload: dict, auth_token: str, model: str, stream: bool):
@@ -203,7 +224,7 @@ class GrokClient:
             result = GrokResponseProcessor.process_stream(response, auth_token)
             asyncio.create_task(GrokClient._update_rate_limits(auth_token, model))
         else:
-            result = await GrokResponseProcessor.process_normal(response, auth_token)
+            result = await GrokResponseProcessor.process_normal(response, auth_token, model)
             asyncio.create_task(GrokClient._update_rate_limits(auth_token, model))
 
         return result

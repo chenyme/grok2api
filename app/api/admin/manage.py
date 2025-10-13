@@ -24,6 +24,8 @@ router = APIRouter(tags=["管理"])
 # 常量定义
 STATIC_DIR = Path(__file__).parents[2] / "template"
 TEMP_DIR = Path(__file__).parents[3] / "data" / "temp"
+IMAGE_CACHE_DIR = TEMP_DIR / "image"
+VIDEO_CACHE_DIR = TEMP_DIR / "video"
 SESSION_EXPIRE_HOURS = 24
 BYTES_PER_KB = 1024
 BYTES_PER_MB = 1024 * 1024
@@ -487,16 +489,32 @@ async def get_cache_size(authenticated: bool = Depends(verify_admin_session)) ->
     try:
         logger.debug("[Admin] 开始获取缓存大小")
 
-        if not TEMP_DIR.exists():
-            logger.warning(f"[Admin] 缓存目录不存在: {TEMP_DIR}")
-            return {"success": True, "data": {"size": "0 MB"}}
+        # 计算图片缓存大小
+        image_size = 0
+        if IMAGE_CACHE_DIR.exists():
+            image_size = _calculate_dir_size(IMAGE_CACHE_DIR)
+        
+        # 计算视频缓存大小
+        video_size = 0
+        if VIDEO_CACHE_DIR.exists():
+            video_size = _calculate_dir_size(VIDEO_CACHE_DIR)
+        
+        # 总大小
+        total_size = image_size + video_size
 
-        # 计算目录大小
-        total_size = _calculate_dir_size(TEMP_DIR)
-        size_str = _format_size(total_size)
-
-        logger.debug(f"[Admin] 缓存大小获取完成 - 大小: {size_str}")
-        return {"success": True, "data": {"size": size_str}}
+        logger.debug(f"[Admin] 缓存大小获取完成 - 图片: {_format_size(image_size)}, 视频: {_format_size(video_size)}, 总计: {_format_size(total_size)}")
+        
+        return {
+            "success": True,
+            "data": {
+                "image_size": _format_size(image_size),
+                "video_size": _format_size(video_size),
+                "total_size": _format_size(total_size),
+                "image_size_bytes": image_size,
+                "video_size_bytes": video_size,
+                "total_size_bytes": total_size
+            }
+        }
 
     except Exception as e:
         logger.error(f"[Admin] 获取缓存大小异常 - 错误: {str(e)}")
@@ -512,30 +530,43 @@ async def clear_cache(authenticated: bool = Depends(verify_admin_session)) -> Di
     try:
         logger.debug("[Admin] 开始清理缓存")
 
-        if not TEMP_DIR.exists():
-            logger.warning(f"[Admin] 缓存目录不存在: {TEMP_DIR}")
-            return {
-                "success": True,
-                "message": "缓存目录不存在，无需清理",
-                "data": {"deleted_count": 0}
-            }
-
-        # 删除所有文件
         deleted_count = 0
-        for file_path in TEMP_DIR.iterdir():
-            if file_path.is_file():
-                try:
-                    file_path.unlink()
-                    deleted_count += 1
-                    logger.debug(f"[Admin] 删除缓存文件: {file_path.name}")
-                except Exception as e:
-                    logger.error(f"[Admin] 删除缓存文件失败: {file_path.name}, 错误: {str(e)}")
+        image_count = 0
+        video_count = 0
 
-        logger.debug(f"[Admin] 缓存清理完成 - 删除文件数量: {deleted_count}")
+        # 清理图片缓存
+        if IMAGE_CACHE_DIR.exists():
+            for file_path in IMAGE_CACHE_DIR.iterdir():
+                if file_path.is_file():
+                    try:
+                        file_path.unlink()
+                        image_count += 1
+                        logger.debug(f"[Admin] 删除图片缓存: {file_path.name}")
+                    except Exception as e:
+                        logger.error(f"[Admin] 删除图片缓存失败: {file_path.name}, 错误: {str(e)}")
+
+        # 清理视频缓存
+        if VIDEO_CACHE_DIR.exists():
+            for file_path in VIDEO_CACHE_DIR.iterdir():
+                if file_path.is_file():
+                    try:
+                        file_path.unlink()
+                        video_count += 1
+                        logger.debug(f"[Admin] 删除视频缓存: {file_path.name}")
+                    except Exception as e:
+                        logger.error(f"[Admin] 删除视频缓存失败: {file_path.name}, 错误: {str(e)}")
+
+        deleted_count = image_count + video_count
+        logger.debug(f"[Admin] 缓存清理完成 - 图片: {image_count}, 视频: {video_count}, 总计: {deleted_count}")
+        
         return {
             "success": True,
-            "message": f"成功清理缓存，删除 {deleted_count} 个文件",
-            "data": {"deleted_count": deleted_count}
+            "message": f"成功清理缓存，删除图片 {image_count} 个，视频 {video_count} 个，共 {deleted_count} 个文件",
+            "data": {
+                "deleted_count": deleted_count,
+                "image_count": image_count,
+                "video_count": video_count
+            }
         }
 
     except Exception as e:
