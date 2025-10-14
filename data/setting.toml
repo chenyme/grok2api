@@ -2,15 +2,18 @@
 admin_username = "admin"
 admin_password = "admin"
 log_level = "INFO"
-# 图片缓存最大大小（MB）
 image_cache_max_size_mb = 500
-# 视频缓存最大大小（MB）
 video_cache_max_size_mb = 1000
 base_url = ""
+
+
 
 [grok]
 api_key = ""
 proxy_url = ""
+stream_chunk_timeout = 120
+stream_first_response_timeout = 30
+stream_total_timeout = 600
 cf_clearance = ""
 temporary = true
 filtered_tags = "xaiartifact,xai:tool_usage_card,grok:render"

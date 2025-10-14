@@ -180,9 +180,14 @@ class GrokClient:
             return await GrokClient._process_response(response, auth_token, model, stream)
 
         except curl_requests.RequestsError as e:
+            logger.error(f"[Client] 网络请求错误: {e}")
             raise GrokApiException(f"网络错误: {e}", "NETWORK_ERROR") from e
         except json.JSONDecodeError as e:
+            logger.error(f"[Client] JSON解析错误: {e}")
             raise GrokApiException(f"JSON解析错误: {e}", "JSON_ERROR") from e
+        except Exception as e:
+            logger.error(f"[Client] 未知请求错误: {type(e).__name__}: {e}")
+            raise GrokApiException(f"请求处理错误: {e}", "REQUEST_ERROR") from e
 
     @staticmethod
     def _build_headers(auth_token: str) -> Dict[str, str]:

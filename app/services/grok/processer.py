@@ -3,6 +3,7 @@
 import json
 import uuid
 import time
+import asyncio
 from typing import AsyncGenerator
 
 from app.core.config import setting
@@ -19,12 +20,67 @@ from app.models.openai_schema import (
 from app.services.grok.cache import image_cache_service, video_cache_service
 
 
+class StreamTimeoutManager:
+    """流式响应超时管理器"""
+    
+    def __init__(self, chunk_timeout: int = 120, first_response_timeout: int = 30, total_timeout: int = 600):
+        """初始化超时管理器
+        
+        Args:
+            chunk_timeout: 数据块间隔超时（秒）
+            first_response_timeout: 首次响应超时（秒）
+            total_timeout: 总超时限制（秒，0表示不限制）
+        """
+        self.chunk_timeout = chunk_timeout
+        self.first_response_timeout = first_response_timeout
+        self.total_timeout = total_timeout
+        
+        self.start_time = asyncio.get_event_loop().time()
+        self.last_chunk_time = self.start_time
+        self.first_chunk_received = False
+    
+    def check_timeout(self) -> tuple[bool, str]:
+        """检查是否超时
+        
+        Returns:
+            (is_timeout, timeout_message): 是否超时及超时信息
+        """
+        current_time = asyncio.get_event_loop().time()
+        
+        # 检查首次响应超时
+        if not self.first_chunk_received:
+            if current_time - self.start_time > self.first_response_timeout:
+                return True, f"首次响应超时 ({self.first_response_timeout}秒未收到首个数据块)"
+        
+        # 检查总超时
+        if self.total_timeout > 0:
+            if current_time - self.start_time > self.total_timeout:
+                return True, f"流式响应总超时 ({self.total_timeout}秒)"
+        
+        # 检查数据块间隔超时
+        if self.first_chunk_received:
+            if current_time - self.last_chunk_time > self.chunk_timeout:
+                return True, f"数据块间隔超时 ({self.chunk_timeout}秒无新数据)"
+        
+        return False, ""
+    
+    def mark_chunk_received(self):
+        """标记收到数据块"""
+        self.last_chunk_time = asyncio.get_event_loop().time()
+        self.first_chunk_received = True
+    
+    def get_total_duration(self) -> float:
+        """获取总耗时（秒）"""
+        return asyncio.get_event_loop().time() - self.start_time
+
+
 class GrokResponseProcessor:
     """Grok API 响应处理器"""
 
     @staticmethod
     async def process_normal(response, auth_token: str, model: str = None) -> OpenAIChatCompletionResponse:
         """处理非流式响应"""
+        response_closed = False
         try:
             for chunk in response.iter_lines():
                 if not chunk:
@@ -79,6 +135,7 @@ class GrokResponseProcessor:
                             )],
                             usage=None
                         )
+                        response_closed = True
                         response.close()
                         return result
 
@@ -130,17 +187,25 @@ class GrokResponseProcessor:
                     )],
                     usage=None
                 )
+                response_closed = True
                 response.close()
                 return result
 
             raise GrokApiException("无响应数据", "NO_RESPONSE")
 
         except json.JSONDecodeError as e:
+            logger.error(f"[Processor] JSON解析失败: {e}")
             raise GrokApiException(f"JSON解析失败: {e}", "JSON_ERROR") from e
+        except Exception as e:
+            logger.error(f"[Processor] 处理响应时发生未知错误: {type(e).__name__}: {e}")
+            raise GrokApiException(f"响应处理错误: {e}", "PROCESS_ERROR") from e
         finally:
-            # 确保响应对象被关闭
-            if hasattr(response, 'close'):
-                response.close()
+            # 确保响应对象被关闭，避免双重释放
+            if not response_closed and hasattr(response, 'close'):
+                try:
+                    response.close()
+                except Exception as e:
+                    logger.warning(f"[Processor] 关闭响应对象时出错: {e}")
 
     @staticmethod
     async def process_stream(response, auth_token: str) -> AsyncGenerator[str, None]:
@@ -151,9 +216,17 @@ class GrokResponseProcessor:
         thinking_finished = False
         chunk_index = 0
         model = None
-        filtered_tags = setting.grok_config.get("filtered_tags", "").split(",")        
+        filtered_tags = setting.grok_config.get("filtered_tags", "").split(",")
         video_progress_started = False
         last_video_progress = -1
+        response_closed = False
+
+        # 初始化超时管理器
+        timeout_manager = StreamTimeoutManager(
+            chunk_timeout=setting.grok_config.get("stream_chunk_timeout", 120),
+            first_response_timeout=setting.grok_config.get("stream_first_response_timeout", 30),
+            total_timeout=setting.grok_config.get("stream_total_timeout", 600)
+        )
 
         def make_chunk(chunk_content: str, finish: str = None):
             """生成OpenAI格式的响应块"""
@@ -175,6 +248,14 @@ class GrokResponseProcessor:
 
         try:
             for chunk in response.iter_lines():
+                # 超时检查
+                is_timeout, timeout_msg = timeout_manager.check_timeout()
+                if is_timeout:
+                    logger.warning(f"[Processor] {timeout_msg}")
+                    yield make_chunk("", "stop")
+                    yield "data: [DONE]\n\n"
+                    return
+
                 logger.debug(f"[Processor] 接收到数据块: {len(chunk)} bytes")
                 if not chunk:
                     continue
@@ -235,8 +316,9 @@ class GrokResponseProcessor:
                                     except Exception as e:
                                         logger.warning(f"[Processor] 缓存视频失败: {e}")
                                         content += f'<video src="{full_video_url}" controls="controls"></video>'
-                            
+
                             yield make_chunk(content)
+                            timeout_manager.mark_chunk_received()
                             chunk_index += 1
                         
                         continue
@@ -266,9 +348,11 @@ class GrokResponseProcessor:
                                     logger.warning(f"[Processor] 缓存图片失败: {e}")
                                     content += f"![Generated Image](https://assets.grok.com/{img})\n"
                             yield make_chunk(content.strip(), "stop")
+                            timeout_manager.mark_chunk_received()
                             return
                         elif token:
                             yield make_chunk(token)
+                            timeout_manager.mark_chunk_received()
                             chunk_index += 1
 
                     # 提取对话数据
@@ -323,6 +407,7 @@ class GrokResponseProcessor:
                                 thinking_finished = True
 
                             yield make_chunk(content)
+                            timeout_manager.mark_chunk_received()
                             chunk_index += 1
                             is_thinking = current_is_thinking
 
@@ -335,12 +420,23 @@ class GrokResponseProcessor:
 
             # 发送结束块
             yield make_chunk("", "stop")
-            
+
             # 发送流结束标记
             yield "data: [DONE]\n\n"
+            
+            # 记录流式响应统计
+            logger.info(f"[Processor] 流式响应完成，总耗时: {timeout_manager.get_total_duration():.2f}秒")
 
         except Exception as e:
             logger.error(f"[Processor] 流式处理严重错误: {e}")
             yield make_chunk(f"处理错误: {e}", "error")
             # 发送流结束标记
             yield "data: [DONE]\n\n"
+        finally:
+            # 确保响应对象被关闭
+            if not response_closed and hasattr(response, 'close'):
+                try:
+                    response.close()
+                    logger.debug("[Processor] 流式响应对象已关闭")
+                except Exception as e:
+                    logger.warning(f"[Processor] 关闭流式响应对象时出错: {e}")

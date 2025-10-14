@@ -325,15 +325,28 @@
                                 <div class="flex gap-2 items-center">
                                     <span class="text-sm text-muted-foreground w-12">图片:</span>
                                     <input id="imageCacheSize" readonly class="flex h-9 flex-1 rounded-md border border-input bg-muted px-3 py-2 text-sm" placeholder="0 MB">
+                                    <button onclick="clearImageCache()" class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 h-9 px-3 transition-colors" title="仅清除图片缓存">
+                                        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                                            <circle cx="9" cy="9" r="2"/>
+                                            <path d="M21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+                                        </svg>
+                                    </button>
                                 </div>
                                 <div class="flex gap-2 items-center">
                                     <span class="text-sm text-muted-foreground w-12">视频:</span>
                                     <input id="videoCacheSize" readonly class="flex h-9 flex-1 rounded-md border border-input bg-muted px-3 py-2 text-sm" placeholder="0 MB">
+                                    <button onclick="clearVideoCache()" class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 h-9 px-3 transition-colors" title="仅清除视频缓存">
+                                        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <polygon points="23 7 16 12 23 17 23 7"/>
+                                            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                                        </svg>
+                                    </button>
                                 </div>
                                 <div class="flex gap-2 items-center">
                                     <span class="text-sm text-muted-foreground w-12">总计:</span>
                                     <input id="totalCacheSize" readonly class="flex h-9 flex-1 rounded-md border border-input bg-muted px-3 py-2 text-sm font-medium" placeholder="0 MB">
-                                    <button onclick="clearCache()" class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-orange-600 text-white hover:bg-orange-700 h-9 px-3 transition-colors">
+                                    <button onclick="clearCache()" class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 h-9 px-3 transition-colors" title="清除所有缓存（图片+视频）">
                                         <svg class="h-4 w-4 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                             <path d="M3 6h18"/>
                                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -406,6 +419,27 @@
                                 <option value="false">关闭</option>
                                 <option value="true">开启</option>
                             </select>
+                        </div>
+                        <div>
+                            <label class="text-sm font-medium flex items-center gap-1 mb-2">
+                                数据块间隔超时 (秒)
+                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="流式响应中，两次数据块之间的最大等待时间。超过此时间将结束会话">?</span>
+                            </label>
+                            <input id="cfgStreamChunkTimeout" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="120">
+                        </div>
+                        <div>
+                            <label class="text-sm font-medium flex items-center gap-1 mb-2">
+                                首次响应超时 (秒)
+                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="从请求开始到收到第一个数据块的最大等待时间。超过此时间将结束会话">?</span>
+                            </label>
+                            <input id="cfgStreamFirstResponseTimeout" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="30">
+                        </div>
+                        <div>
+                            <label class="text-sm font-medium flex items-center gap-1 mb-2">
+                                总超时限制 (秒)
+                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="流式响应的总时长限制。设置为0表示不限制总时长">?</span>
+                            </label>
+                            <input id="cfgStreamTotalTimeout" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="600">
                         </div>
                     </div>
                     <div class="mt-6 flex justify-end">
@@ -500,11 +534,13 @@
         showToast=(m,t='info')=>{const d=document.createElement('div'),bc={success:'bg-green-600',error:'bg-destructive',info:'bg-primary'};d.className=`fixed bottom-4 right-4 ${bc[t]||bc.info} text-white px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium z-50 animate-slide-up`;d.textContent=m;document.body.appendChild(d);setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity 0.3s';setTimeout(()=>d.parentNode&&document.body.removeChild(d),300)},2000)},
         logout=async()=>{if(!confirm('确定要退出登录吗?'))return;try{await apiRequest('/api/logout',{method:'POST'})}catch(e){console.error('登出失败:',e)}finally{localStorage.removeItem('adminToken');location.href='/login'}},
         switchTab=t=>{['tokens','settings'].forEach(n=>{$(`panel${n.charAt(0).toUpperCase()+n.slice(1)}`).classList[n===t?'remove':'add']('hidden');$(`tab${n.charAt(0).toUpperCase()+n.slice(1)}`).classList[n===t?'add':'remove']('border-primary','text-primary');$(`tab${n.charAt(0).toUpperCase()+n.slice(1)}`).classList[n===t?'remove':'add']('border-transparent','text-muted-foreground')});t==='settings'&&loadSettings()},
-        loadSettings=async()=>{try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(d.success){const g=d.data.global,k=d.data.grok;$('cfgAdminUser').value=g.admin_username||'';$('cfgAdminPass').value='';$('cfgLogLevel').value=g.log_level||'DEBUG';$('cfgImageCacheMaxSize').value=g.image_cache_max_size_mb||500;$('cfgVideoCacheMaxSize').value=g.video_cache_max_size_mb||1000;$('cfgBaseUrl').value=g.base_url||'';$('cfgApiKey').value=k.api_key||'';$('cfgProxyUrl').value=k.proxy_url||'';$('cfgCfClearance').value=k.cf_clearance||'';$('cfgStatsigId').value=k.x_statsig_id||'';$('cfgFilteredTags').value=k.filtered_tags||'';$('cfgTemporary').value=k.temporary!==false?'true':'false';await loadCacheSize()}}catch(e){console.error('加载配置失败:',e);showToast('加载配置失败','error')}},
+        loadSettings=async()=>{try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(d.success){const g=d.data.global,k=d.data.grok;$('cfgAdminUser').value=g.admin_username||'';$('cfgAdminPass').value='';$('cfgLogLevel').value=g.log_level||'DEBUG';$('cfgImageCacheMaxSize').value=g.image_cache_max_size_mb||500;$('cfgVideoCacheMaxSize').value=g.video_cache_max_size_mb||1000;$('cfgBaseUrl').value=g.base_url||'';$('cfgApiKey').value=k.api_key||'';$('cfgProxyUrl').value=k.proxy_url||'';$('cfgCfClearance').value=k.cf_clearance||'';$('cfgStatsigId').value=k.x_statsig_id||'';$('cfgFilteredTags').value=k.filtered_tags||'';$('cfgTemporary').value=k.temporary!==false?'true':'false';$('cfgStreamChunkTimeout').value=k.stream_chunk_timeout||120;$('cfgStreamFirstResponseTimeout').value=k.stream_first_response_timeout||30;$('cfgStreamTotalTimeout').value=k.stream_total_timeout||600;await loadCacheSize()}}catch(e){console.error('加载配置失败:',e);showToast('加载配置失败','error')}},
         loadCacheSize=async()=>{try{const r=await apiRequest('/api/cache/size');if(!r)return;const d=await r.json();if(d.success){$('imageCacheSize').value=d.data.image_size||'0 MB';$('videoCacheSize').value=d.data.video_size||'0 MB';$('totalCacheSize').value=d.data.total_size||'0 MB'}}catch(e){console.error('加载缓存大小失败:',e);$('imageCacheSize').value='0 MB';$('videoCacheSize').value='0 MB';$('totalCacheSize').value='0 MB'}},
+        clearImageCache=async()=>{if(!confirm('确定要清理图片缓存吗？此操作将删除所有图片缓存文件！'))return;try{const r=await apiRequest('/api/cache/clear/images',{method:'POST'});if(!r)return;const d=await r.json();if(d.success){showToast(`图片缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success');await loadCacheSize()}else{showToast('清理失败: '+(d.error||'未知错误'),'error')}}catch(e){showToast('清理失败: '+e.message,'error')}},
+        clearVideoCache=async()=>{if(!confirm('确定要清理视频缓存吗？此操作将删除所有视频缓存文件！'))return;try{const r=await apiRequest('/api/cache/clear/videos',{method:'POST'});if(!r)return;const d=await r.json();if(d.success){showToast(`视频缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success');await loadCacheSize()}else{showToast('清理失败: '+(d.error||'未知错误'),'error')}}catch(e){showToast('清理失败: '+e.message,'error')}},
         clearCache=async()=>{if(!confirm('确定要清理缓存吗？此操作将删除 /data/temp 目录中的所有文件！'))return;try{const r=await apiRequest('/api/cache/clear',{method:'POST'});if(!r)return;const d=await r.json();if(d.success){showToast(`缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success');await loadCacheSize()}else{showToast('清理失败: '+(d.error||'未知错误'),'error')}}catch(e){showToast('清理失败: '+e.message,'error')}},
         saveGlobalSettings=async()=>{const gc={admin_username:$('cfgAdminUser').value,log_level:$('cfgLogLevel').value,image_cache_max_size_mb:parseInt($('cfgImageCacheMaxSize').value)||500,video_cache_max_size_mb:parseInt($('cfgVideoCacheMaxSize').value)||1000,base_url:$('cfgBaseUrl').value};if($('cfgAdminPass').value)gc.admin_password=$('cfgAdminPass').value;try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:gc,grok_config:d.data.grok})});if(!s)return;const sd=await s.json();sd.success?(showToast('全局配置保存成功','success'),$('cfgAdminPass').value=''):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}},
-        saveGrokSettings=async()=>{const kc={api_key:$('cfgApiKey').value,proxy_url:$('cfgProxyUrl').value,cf_clearance:$('cfgCfClearance').value,x_statsig_id:$('cfgStatsigId').value,filtered_tags:$('cfgFilteredTags').value,temporary:$('cfgTemporary').value==='true'};try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:d.data.global,grok_config:kc})});if(!s)return;const sd=await s.json();sd.success?showToast('Grok配置保存成功','success'):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}};
+        saveGrokSettings=async()=>{const kc={api_key:$('cfgApiKey').value,proxy_url:$('cfgProxyUrl').value,cf_clearance:$('cfgCfClearance').value,x_statsig_id:$('cfgStatsigId').value,filtered_tags:$('cfgFilteredTags').value,temporary:$('cfgTemporary').value==='true',stream_chunk_timeout:parseInt($('cfgStreamChunkTimeout').value)||120,stream_first_response_timeout:parseInt($('cfgStreamFirstResponseTimeout').value)||30,stream_total_timeout:parseInt($('cfgStreamTotalTimeout').value)||600};try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:d.data.global,grok_config:kc})});if(!s)return;const sd=await s.json();sd.success?showToast('Grok配置保存成功','success'):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}};
         window.addEventListener('DOMContentLoaded',()=>{checkAuth();refreshTokens();setInterval(()=>{loadStats();updateRemaining()},30000)});
     </script>
 </body>
