@@ -62,7 +62,7 @@ async def chat_completions(
         return result
         
     except GrokApiException as e:
-        logger.error(f"[Chat] Grok API错误: {str(e)}", extra={"details": e.details})
+        logger.error(f"[Chat] Grok API错误: {str(e)} - 详情: {e.details}")
         raise HTTPException(
             status_code=500,
             detail={
