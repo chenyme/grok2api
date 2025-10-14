@@ -157,18 +157,30 @@ class GrokResponseProcessor:
 
                 # 提取图片数据
                 if images := model_response.get("generatedImageUrls"):
+                    # 获取图片返回模式
+                    image_mode = setting.global_config.get("image_mode", "url")
+
                     for img in images:
                         try:
-                            cache_path = await image_cache_service.download_image(f"/{img}", auth_token)
-                            if cache_path:
-                                img_path = img.replace('/', '-')
-                                base_url = setting.global_config.get("base_url", "")
-                                img_url = f"{base_url}/images/{img_path}" if base_url else f"/images/{img_path}"
-                                content += f"\n![Generated Image]({img_url})"
+                            if image_mode == "base64":
+                                # base64 模式：下载并转换为 base64
+                                base64_str = await image_cache_service.download_base64(f"/{img}", auth_token)
+                                if base64_str:
+                                    content += f"\n![Generated Image]({base64_str})"
+                                else:
+                                    content += f"\n![Generated Image](https://assets.grok.com/{img})"
                             else:
-                                content += f"\n![Generated Image](https://assets.grok.com/{img})"
+                                # url 模式：缓存并返回链接
+                                cache_path = await image_cache_service.download_image(f"/{img}", auth_token)
+                                if cache_path:
+                                    img_path = img.replace('/', '-')
+                                    base_url = setting.global_config.get("base_url", "")
+                                    img_url = f"{base_url}/images/{img_path}" if base_url else f"/images/{img_path}"
+                                    content += f"\n![Generated Image]({img_url})"
+                                else:
+                                    content += f"\n![Generated Image](https://assets.grok.com/{img})"
                         except Exception as e:
-                            logger.warning(f"[Processor] 缓存图片失败: {e}")
+                            logger.warning(f"[Processor] 处理图片失败: {e}")
                             content += f"\n![Generated Image](https://assets.grok.com/{img})"
 
                 # 返回 OpenAI 响应格式
@@ -333,19 +345,66 @@ class GrokResponseProcessor:
                     # 提取图片数据
                     if is_image:
                         if model_resp := grok_resp.get("modelResponse"):
+                            # 获取图片返回模式
+                            image_mode = setting.global_config.get("image_mode", "url")
+
                             # 生成图片链接并缓存
-                            content = ""
                             for img in model_resp.get("generatedImageUrls", []):
                                 try:
-                                    # 缓存图片
-                                    await image_cache_service.download_image(f"/{img}", auth_token)
-                                    # 本地图片路径
-                                    img_path = img.replace('/', '-')
-                                    base_url = setting.global_config.get("base_url", "")
-                                    img_url = f"{base_url}/images/{img_path}" if base_url else f"/images/{img_path}"
-                                    content += f"![Generated Image]({img_url})\n"
+                                    if image_mode == "base64":
+                                        # base64 模式：下载并转换为 base64
+                                        base64_str = await image_cache_service.download_base64(f"/{img}", auth_token)
+                                        if base64_str:
+                                            # 分块发送 base64 数据，每 8KB 一个 chunk
+                                            markdown_prefix = "![Generated Image](data:"
+                                            markdown_suffix = ")\n"
+
+                                            # 提取 data URL 的 mime 和 base64 部分
+                                            if base64_str.startswith("data:"):
+                                                parts = base64_str.split(",", 1)
+                                                if len(parts) == 2:
+                                                    mime_part = parts[0] + ","
+                                                    b64_data = parts[1]
+
+                                                    # 发送前缀
+                                                    yield make_chunk(markdown_prefix + mime_part)
+                                                    timeout_manager.mark_chunk_received()
+                                                    chunk_index += 1
+
+                                                    # 分块发送 base64 数据
+                                                    chunk_size = 8192
+                                                    for i in range(0, len(b64_data), chunk_size):
+                                                        chunk_data = b64_data[i:i + chunk_size]
+                                                        yield make_chunk(chunk_data)
+                                                        timeout_manager.mark_chunk_received()
+                                                        chunk_index += 1
+
+                                                    # 发送后缀
+                                                    yield make_chunk(markdown_suffix)
+                                                    timeout_manager.mark_chunk_received()
+                                                    chunk_index += 1
+                                                else:
+                                                    yield make_chunk(f"![Generated Image]({base64_str})\n")
+                                                    timeout_manager.mark_chunk_received()
+                                                    chunk_index += 1
+                                            else:
+                                                yield make_chunk(f"![Generated Image]({base64_str})\n")
+                                                timeout_manager.mark_chunk_received()
+                                                chunk_index += 1
+                                        else:
+                                            yield make_chunk(f"![Generated Image](https://assets.grok.com/{img})\n")
+                                            timeout_manager.mark_chunk_received()
+                                            chunk_index += 1
+                                    else:
+                                        # url 模式：缓存并返回链接
+                                        await image_cache_service.download_image(f"/{img}", auth_token)
+                                        # 本地图片路径
+                                        img_path = img.replace('/', '-')
+                                        base_url = setting.global_config.get("base_url", "")
+                                        img_url = f"{base_url}/images/{img_path}" if base_url else f"/images/{img_path}"
+                                        content += f"![Generated Image]({img_url})\n"
                                 except Exception as e:
-                                    logger.warning(f"[Processor] 缓存图片失败: {e}")
+                                    logger.warning(f"[Processor] 处理图片失败: {e}")
                                     content += f"![Generated Image](https://assets.grok.com/{img})\n"
                             yield make_chunk(content.strip(), "stop")
                             timeout_manager.mark_chunk_received()

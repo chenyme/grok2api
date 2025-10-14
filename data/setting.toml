@@ -2,10 +2,10 @@
 admin_username = "admin"
 admin_password = "admin"
 log_level = "INFO"
+image_mode = "url"
 image_cache_max_size_mb = 500
 video_cache_max_size_mb = 1000
 base_url = ""
-
 
 
 [grok]

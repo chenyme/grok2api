@@ -14,19 +14,19 @@ from app.api.admin.manage import router as admin_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    logger.debug("[Web2API] 应用启动成功")
+    logger.debug("[Grok2API] 应用启动成功")
     yield
-    logger.info("[Web2API] 应用关闭成功")
+    logger.info("[Grok2API] 应用关闭成功")
 
 
 # 初始化日志
-logger.info("[Web2API] 应用正在启动...")
+logger.info("[Grok2API] 应用正在启动...")
 
 # 创建FastAPI应用
 app = FastAPI(
-    title="Web2API",
-    description="Web服务API",
-    version="1.0.0",
+    title="Grok2API",
+    description="Grok API 转换服务",
+    version="1.0.3",
     lifespan=lifespan
 )
 
@@ -44,8 +44,19 @@ app.mount("/static", StaticFiles(directory="app/template"), name="template")
 
 @app.get("/")
 async def root():
-    """根路径"""
-    return {"message": "Welcome to Web2API"}
+    """根路径 - 重定向到登录页"""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/login")
+
+
+@app.get("/health")
+async def health_check():
+    """健康检查接口"""
+    return {
+        "status": "healthy",
+        "service": "Grok2API",
+        "version": "1.0.3"
+    }
 
 
 if __name__ == "__main__":
