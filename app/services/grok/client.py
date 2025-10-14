@@ -148,18 +148,23 @@ class GrokClient:
         try:
             # 构建请求头和代理
             headers = GrokClient._build_headers(auth_token)
-            proxies = GrokClient._get_proxy()
+            proxy_config = GrokClient._get_proxy()
+
+            # 构建请求参数
+            request_kwargs = {
+                "headers": headers,
+                "data": json.dumps(payload),
+                "impersonate": IMPERSONATE_BROWSER,
+                "timeout": REQUEST_TIMEOUT,
+                "stream": True,
+                "proxies": proxy_config if proxy_config else None
+            }
 
             # 在线程池中执行同步HTTP请求，避免阻塞事件循环
             response = await asyncio.to_thread(
                 curl_requests.post,
                 GROK_API_ENDPOINT,
-                headers=headers,
-                data=json.dumps(payload),
-                impersonate=IMPERSONATE_BROWSER,
-                timeout=REQUEST_TIMEOUT,
-                stream=True,
-                **proxies
+                **request_kwargs
             )
 
             logger.debug(f"[Client] API响应状态码: {response.status_code}")
@@ -204,9 +209,9 @@ class GrokClient:
         try:
             error_data = response.json()
             error_message = str(error_data)
-        except Exception:
+        except Exception as e:
             error_data = response.text
-            error_message = error_data[:200] if error_data else "未知错误"
+            error_message = error_data[:200] if error_data else e
 
         # 记录Token失败
         asyncio.create_task(token_manager.record_failure(auth_token, response.status_code, error_message))

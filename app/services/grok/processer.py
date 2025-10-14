@@ -3,7 +3,7 @@
 import json
 import uuid
 import time
-from typing import Iterator
+from typing import AsyncGenerator
 
 from app.core.config import setting
 from app.core.exception import GrokApiException
@@ -43,7 +43,7 @@ class GrokResponseProcessor:
                 # 提取响应数据
                 grok_resp = data.get("result", {}).get("response", {})
                 
-                # 检查视频生成响应
+                # 提取视频数据
                 if video_resp := grok_resp.get("streamingVideoGenerationResponse"):
                     if video_url := video_resp.get("videoUrl"):
                         logger.debug(f"[Processor] 检测到视频生成: {video_url}")
@@ -98,7 +98,7 @@ class GrokResponseProcessor:
                 model_name = model_response.get("model")
                 content = model_response.get("message", "")
 
-                # 添加生成的图片
+                # 提取图片数据
                 if images := model_response.get("generatedImageUrls"):
                     for img in images:
                         try:
@@ -114,7 +114,7 @@ class GrokResponseProcessor:
                             logger.warning(f"[Processor] 缓存图片失败: {e}")
                             content += f"\n![Generated Image](https://assets.grok.com/{img})"
 
-                # 返回OpenAI格式响应
+                # 返回 OpenAI 响应格式
                 result = OpenAIChatCompletionResponse(
                     id=f"chatcmpl-{uuid.uuid4()}",
                     object="chat.completion",
@@ -143,22 +143,19 @@ class GrokResponseProcessor:
                 response.close()
 
     @staticmethod
-    async def process_stream(response, auth_token: str) -> Iterator[str]:
+    async def process_stream(response, auth_token: str) -> AsyncGenerator[str, None]:
         """处理流式响应"""
+        # 流式生成状态
         is_image = False
         is_thinking = False
         thinking_finished = False
         chunk_index = 0
         model = None
-        filtered_tags = setting.grok_config.get("filtered_tags", "").split(",")
-        
-        # 视频生成相关状态
-        is_video = False
-        video_url = None
+        filtered_tags = setting.grok_config.get("filtered_tags", "").split(",")        
         video_progress_started = False
         last_video_progress = -1
 
-        def make_chunk(content: str, finish: str = None):
+        def make_chunk(chunk_content: str, finish: str = None):
             """生成OpenAI格式的响应块"""
             chunk_data = OpenAIChatCompletionChunkResponse(
                 id=f"chatcmpl-{uuid.uuid4()}",
@@ -168,8 +165,8 @@ class GrokResponseProcessor:
                     index=chunk_index,
                     delta=OpenAIChatCompletionChunkMessage(
                         role="assistant",
-                        content=content
-                    ) if content else {},
+                        content=chunk_content
+                    ) if chunk_content else {},
                     finish_reason=finish
                 )]
             ).model_dump()
@@ -204,27 +201,40 @@ class GrokResponseProcessor:
                         if m := user_resp.get("model"):
                             model = m
 
-                    # 检查视频生成响应
+                    # 提取视频数据
                     if video_resp := grok_resp.get("streamingVideoGenerationResponse"):
-                        is_video = True
                         progress = video_resp.get("progress", 0)
                         
                         if progress > last_video_progress:
                             last_video_progress = progress
                             
-                            # 首次显示进度时添加 <think>
+                            # 添加 <think> 标签
                             if not video_progress_started:
                                 content = f"<think>视频已生成{progress}%\n"
                                 video_progress_started = True
                             elif progress < 100:
                                 content = f"视频已生成{progress}%\n"
                             else:
-                                # 进度100%时关闭think标签
+                                # 进度100%时关闭 <think> 标签并立即处理视频
                                 content = f"视频已生成{progress}%</think>\n"
-                                # 保存视频URL
+                                
+                                # 立即下载并缓存视频
                                 if v_url := video_resp.get("videoUrl"):
-                                    video_url = v_url
-                                    logger.debug(f"[Processor] 视频生成完成: {video_url}")
+                                    logger.debug(f"[Processor] 视频生成完成: {v_url}")
+                                    full_video_url = f"https://assets.grok.com/{v_url}"
+                                    
+                                    try:
+                                        cache_path = await video_cache_service.download_video(f"/{v_url}", auth_token)
+                                        if cache_path:
+                                            video_path = v_url.replace('/', '-')
+                                            base_url = setting.global_config.get("base_url", "")
+                                            local_video_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
+                                            content += f'<video src="{local_video_url}" controls="controls"></video>'
+                                        else:
+                                            content += f'<video src="{full_video_url}" controls="controls"></video>'
+                                    except Exception as e:
+                                        logger.warning(f"[Processor] 缓存视频失败: {e}")
+                                        content += f'<video src="{full_video_url}" controls="controls"></video>'
                             
                             yield make_chunk(content)
                             chunk_index += 1
@@ -238,16 +248,16 @@ class GrokResponseProcessor:
                     # 获取token
                     token = grok_resp.get("token", "")
 
-                    # 图片模式
+                    # 提取图片数据
                     if is_image:
                         if model_resp := grok_resp.get("modelResponse"):
                             # 生成图片链接并缓存
                             content = ""
                             for img in model_resp.get("generatedImageUrls", []):
                                 try:
-                                    # 异步下载并缓存图片
+                                    # 缓存图片
                                     await image_cache_service.download_image(f"/{img}", auth_token)
-                                    # 使用本地缓存路径
+                                    # 本地图片路径
                                     img_path = img.replace('/', '-')
                                     base_url = setting.global_config.get("base_url", "")
                                     img_url = f"{base_url}/images/{img_path}" if base_url else f"/images/{img_path}"
@@ -261,7 +271,7 @@ class GrokResponseProcessor:
                             yield make_chunk(token)
                             chunk_index += 1
 
-                    # 对话模式
+                    # 提取对话数据
                     else:
                         # 过滤 list 格式的 token
                         if isinstance(token, list):
@@ -275,7 +285,7 @@ class GrokResponseProcessor:
                         current_is_thinking = grok_resp.get("isThinking", False)
                         message_tag = grok_resp.get("messageTag")
 
-                        # 跳过后续的 thinking
+                        # 跳过后续的 <think> 标签
                         if thinking_finished and current_is_thinking:
                             continue
 
@@ -283,7 +293,7 @@ class GrokResponseProcessor:
                         if grok_resp.get("toolUsageCardId"):
                             if web_search := grok_resp.get("webSearchResults"):
                                 if current_is_thinking:
-                                    # 添加搜索结果到 token
+                                    # 封装搜索结果
                                     for result in web_search.get("results", []):
                                         title = result.get("title", "")
                                         url = result.get("url", "")
@@ -323,27 +333,8 @@ class GrokResponseProcessor:
                     logger.warning(f"[Processor] 处理chunk出错: {e}")
                     continue
 
-            # 处理视频生成完成后的输出
-            if is_video and video_url:
-                full_video_url = f"https://assets.grok.com/{video_url}"
-                try:
-                    # 下载并缓存视频
-                    cache_path = await video_cache_service.download_video(f"/{video_url}", auth_token)
-                    if cache_path:
-                        video_path = video_url.replace('/', '-')
-                        base_url = setting.global_config.get("base_url", "")
-                        local_video_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
-                        content = f'<video src="{local_video_url}" controls="controls" width="500" height="300"></video>'
-                    else:
-                        content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>'
-                except Exception as e:
-                    logger.warning(f"[Processor] 缓存视频失败: {e}")
-                    content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>'
-                
-                yield make_chunk(content, "stop")
-            else:
-                # 发送结束块
-                yield make_chunk("", "stop")
+            # 发送结束块
+            yield make_chunk("", "stop")
             
             # 发送流结束标记
             yield "data: [DONE]\n\n"

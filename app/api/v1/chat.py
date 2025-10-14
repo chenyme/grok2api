@@ -22,21 +22,21 @@ router = APIRouter(prefix="/chat", tags=["聊天"])
 @router.post("/completions", response_model=None)
 async def chat_completions(
     request: OpenAIChatRequest,
-    authenticated: Optional[str] = Depends(auth_manager.verify)
+    _: Optional[str] = Depends(auth_manager.verify)
 ):
     """
     创建聊天补全
-    
+
     兼容OpenAI聊天API的端点，支持流式和非流式响应。
-    
+
     Args:
         request: OpenAI格式的聊天请求
-        authenticated: 认证状态（由依赖注入）
-        
+        _: 认证依赖（自动验证）
+
     Returns:
         OpenAIChatCompletionResponse: 非流式响应
         StreamingResponse: 流式响应
-        
+
     Raises:
         HTTPException: 当请求处理失败时
     """
@@ -74,7 +74,7 @@ async def chat_completions(
             }
         )
     except Exception as e:
-        logger.error(f"[Chat] 聊天请求处理失败: {str(e)}", exc_info=True)
+        logger.error(f"[Chat] 聊天请求处理失败: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail={

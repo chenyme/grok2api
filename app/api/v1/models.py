@@ -19,15 +19,15 @@ router = APIRouter(tags=["模型"])
 
 
 @router.get("/models")
-async def list_models(authenticated: Optional[str] = Depends(auth_manager.verify)) -> Dict[str, Any]:
+async def list_models(_: Optional[str] = Depends(auth_manager.verify)) -> Dict[str, Any]:
     """
     获取可用模型列表
-    
+
     返回 OpenAI 兼容的模型列表格式，包含系统支持的所有 Grok 模型的详细信息。
-    
+
     Args:
-        authenticated: 认证状态（由依赖注入）
-    
+        _: 认证依赖（自动验证）
+
     Returns:
         Dict[str, Any]: 包含模型列表的响应数据
     """
@@ -85,14 +85,14 @@ async def list_models(authenticated: Optional[str] = Depends(auth_manager.verify
 
 
 @router.get("/models/{model_id}")
-async def get_model(model_id: str, authenticated: Optional[str] = Depends(auth_manager.verify)) -> Dict[str, Any]:
+async def get_model(model_id: str, _: Optional[str] = Depends(auth_manager.verify)) -> Dict[str, Any]:
     """
     获取特定模型信息
-    
+
     Args:
         model_id (str): 模型ID
-        authenticated: 认证状态（由依赖注入）
-        
+        _: 认证依赖（自动验证）
+
     Returns:
         Dict[str, Any]: 模型详细信息
     """

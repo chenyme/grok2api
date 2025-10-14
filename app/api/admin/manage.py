@@ -252,7 +252,7 @@ async def admin_login(request: LoginRequest) -> LoginResponse:
 
 
 @router.post("/api/logout")
-async def admin_logout(authenticated: bool = Depends(verify_admin_session),
+async def admin_logout(_: bool = Depends(verify_admin_session),
                        authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
     """
     管理员登出
@@ -279,7 +279,7 @@ async def admin_logout(authenticated: bool = Depends(verify_admin_session),
 
 
 @router.get("/api/tokens", response_model=TokenListResponse)
-async def list_tokens(authenticated: bool = Depends(verify_admin_session)) -> TokenListResponse:
+async def list_tokens(_: bool = Depends(verify_admin_session)) -> TokenListResponse:
     """
     获取所有Token列表
     
@@ -337,7 +337,7 @@ async def list_tokens(authenticated: bool = Depends(verify_admin_session)) -> To
 
 @router.post("/api/tokens/add")
 async def add_tokens(request: AddTokensRequest,
-                    authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+                    _: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """
     批量添加Token
     
@@ -372,7 +372,7 @@ async def add_tokens(request: AddTokensRequest,
 
 @router.post("/api/tokens/delete")
 async def delete_tokens(request: DeleteTokensRequest,
-                       authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+                       _: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """
     批量删除Token
     
@@ -406,7 +406,7 @@ async def delete_tokens(request: DeleteTokensRequest,
 
 
 @router.get("/api/settings")
-async def get_settings(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+async def get_settings(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """获取全局配置"""
     try:
         logger.debug("[Admin] 获取全局配置")
@@ -429,7 +429,7 @@ class UpdateSettingsRequest(BaseModel):
 
 
 @router.post("/api/settings")
-async def update_settings(request: UpdateSettingsRequest, authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+async def update_settings(request: UpdateSettingsRequest, _: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """更新全局配置"""
     try:
         import toml
@@ -484,7 +484,7 @@ def _format_size(size_bytes: int) -> str:
 
 
 @router.get("/api/cache/size")
-async def get_cache_size(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+async def get_cache_size(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """获取缓存大小"""
     try:
         logger.debug("[Admin] 开始获取缓存大小")
@@ -525,8 +525,10 @@ async def get_cache_size(authenticated: bool = Depends(verify_admin_session)) ->
 
 
 @router.post("/api/cache/clear")
-async def clear_cache(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
-    """清理缓存 - 删除所有临时文件"""
+async def clear_cache(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+    """清理缓存 
+    
+    删除所有临时文件"""
     try:
         logger.debug("[Admin] 开始清理缓存")
 
@@ -578,7 +580,7 @@ async def clear_cache(authenticated: bool = Depends(verify_admin_session)) -> Di
 
 
 @router.get("/api/stats")
-async def get_stats(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+async def get_stats(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """
     获取统计信息
 

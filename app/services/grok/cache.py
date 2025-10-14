@@ -14,12 +14,7 @@ class CacheService:
     """缓存服务基类"""
 
     def __init__(self, cache_type: str):
-        """
-        初始化缓存服务
-        
-        Args:
-            cache_type: 缓存类型，'image' 或 'video'
-        """
+        """初始化缓存服务"""
         self.cache_type = cache_type
         self.cache_dir = Path(f"data/temp/{cache_type}")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -27,7 +22,6 @@ class CacheService:
     @staticmethod
     def _get_cache_filename(file_path: str) -> str:
         """将文件路径转换为缓存文件名"""
-        # 移除开头的斜杠并替换所有斜杠为短横线
         filename = file_path.lstrip('/').replace('/', '-')
         return filename
 
@@ -75,7 +69,7 @@ class CacheService:
 
             # 代理配置
             proxy_url = setting.grok_config.get("proxy_url")
-            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else {}
 
             async with AsyncSession() as session:
                 logger.debug(f"[{self.cache_type.upper()}Cache] 开始下载: {file_url}")
@@ -115,12 +109,12 @@ class CacheService:
     async def cleanup_cache(self):
         """清理缓存目录，确保不超过配置的大小限制"""
         try:
-            # 获取配置的最大缓存大小（MB）
+            # 获取配置的最大缓存大小
             config_key = f"{self.cache_type}_cache_max_size_mb"
             max_size_mb = setting.global_config.get(config_key, 500)
             max_size_bytes = max_size_mb * 1024 * 1024
 
-            # 获取所有缓存文件及其大小和修改时间
+            # 获取缓存大小和修改时间
             files = []
             total_size = 0
 
@@ -138,10 +132,10 @@ class CacheService:
 
             logger.info(f"[{self.cache_type.upper()}Cache] 缓存大小 {total_size / 1024 / 1024:.2f}MB 超过限制 {max_size_mb}MB，开始清理")
 
-            # 按修改时间排序（最旧的在前）
+            # 按修改时间排序
             files.sort(key=lambda x: x[2])
 
-            # 删除最旧的文件直到总大小低于限制
+            # 删除文件直到总大小低于限制
             for file_path, size, _ in files:
                 if total_size <= max_size_bytes:
                     break
@@ -170,7 +164,7 @@ class ImageCacheService(CacheService):
             auth_token: 认证令牌
 
         Returns:
-            缓存文件路径，下载失败返回 None
+            缓存文件路径，下载失败返回 None`
         """
         return await self.download_file(image_path, auth_token, timeout=30.0)
 
