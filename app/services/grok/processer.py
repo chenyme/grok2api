@@ -16,14 +16,14 @@ from app.models.openai_schema import (
     OpenAIChatCompletionChunkChoice,
     OpenAIChatCompletionChunkMessage
 )
-from app.services.grok.image_cache import image_cache_service
+from app.services.grok.cache import image_cache_service, video_cache_service
 
 
 class GrokResponseProcessor:
     """Grok API 响应处理器"""
 
     @staticmethod
-    async def process_normal(response, auth_token: str) -> OpenAIChatCompletionResponse:
+    async def process_normal(response, auth_token: str, model: str = None) -> OpenAIChatCompletionResponse:
         """处理非流式响应"""
         try:
             for chunk in response.iter_lines():
@@ -40,8 +40,50 @@ class GrokResponseProcessor:
                         {"code": error.get("code")}
                     )
 
+                # 提取响应数据
+                grok_resp = data.get("result", {}).get("response", {})
+                
+                # 检查视频生成响应
+                if video_resp := grok_resp.get("streamingVideoGenerationResponse"):
+                    if video_url := video_resp.get("videoUrl"):
+                        logger.debug(f"[Processor] 检测到视频生成: {video_url}")
+                        full_video_url = f"https://assets.grok.com/{video_url}"
+                        
+                        # 下载并缓存视频
+                        try:
+                            cache_path = await video_cache_service.download_video(f"/{video_url}", auth_token)
+                            if cache_path:
+                                video_path = video_url.replace('/', '-')
+                                base_url = setting.global_config.get("base_url", "")
+                                local_video_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
+                                content = f'<video src="{local_video_url}" controls="controls" width="500" height="300"></video>'
+                            else:
+                                content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>'
+                        except Exception as e:
+                            logger.warning(f"[Processor] 缓存视频失败: {e}")
+                            content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>'
+                        
+                        # 返回视频响应
+                        result = OpenAIChatCompletionResponse(
+                            id=f"chatcmpl-{uuid.uuid4()}",
+                            object="chat.completion",
+                            created=int(time.time()),
+                            model=model or "grok-imagine-0.9",
+                            choices=[OpenAIChatCompletionChoice(
+                                index=0,
+                                message=OpenAIChatCompletionMessage(
+                                    role="assistant",
+                                    content=content
+                                ),
+                                finish_reason="stop"
+                            )],
+                            usage=None
+                        )
+                        response.close()
+                        return result
+
                 # 提取模型响应
-                model_response = data.get("result", {}).get("response", {}).get("modelResponse")
+                model_response = grok_resp.get("modelResponse")
                 if not model_response:
                     continue
 
@@ -53,7 +95,7 @@ class GrokResponseProcessor:
                     )
 
                 # 构建响应内容
-                model = model_response.get("model")
+                model_name = model_response.get("model")
                 content = model_response.get("message", "")
 
                 # 添加生成的图片
@@ -77,7 +119,7 @@ class GrokResponseProcessor:
                     id=f"chatcmpl-{uuid.uuid4()}",
                     object="chat.completion",
                     created=int(time.time()),
-                    model=model,
+                    model=model_name,
                     choices=[OpenAIChatCompletionChoice(
                         index=0,
                         message=OpenAIChatCompletionMessage(
@@ -109,6 +151,12 @@ class GrokResponseProcessor:
         chunk_index = 0
         model = None
         filtered_tags = setting.grok_config.get("filtered_tags", "").split(",")
+        
+        # 视频生成相关状态
+        is_video = False
+        video_url = None
+        video_progress_started = False
+        last_video_progress = -1
 
         def make_chunk(content: str, finish: str = None):
             """生成OpenAI格式的响应块"""
@@ -155,6 +203,33 @@ class GrokResponseProcessor:
                     if user_resp := grok_resp.get("userResponse"):
                         if m := user_resp.get("model"):
                             model = m
+
+                    # 检查视频生成响应
+                    if video_resp := grok_resp.get("streamingVideoGenerationResponse"):
+                        is_video = True
+                        progress = video_resp.get("progress", 0)
+                        
+                        if progress > last_video_progress:
+                            last_video_progress = progress
+                            
+                            # 首次显示进度时添加 <think>
+                            if not video_progress_started:
+                                content = f"<think>视频已生成{progress}%\n"
+                                video_progress_started = True
+                            elif progress < 100:
+                                content = f"视频已生成{progress}%\n"
+                            else:
+                                # 进度100%时关闭think标签
+                                content = f"视频已生成{progress}%</think>\n"
+                                # 保存视频URL
+                                if v_url := video_resp.get("videoUrl"):
+                                    video_url = v_url
+                                    logger.debug(f"[Processor] 视频生成完成: {video_url}")
+                            
+                            yield make_chunk(content)
+                            chunk_index += 1
+                        
+                        continue
 
                     # 检查生成模式
                     if grok_resp.get("imageAttachmentInfo"):
@@ -248,8 +323,28 @@ class GrokResponseProcessor:
                     logger.warning(f"[Processor] 处理chunk出错: {e}")
                     continue
 
-            # 发送结束块
-            yield make_chunk("", "stop")
+            # 处理视频生成完成后的输出
+            if is_video and video_url:
+                full_video_url = f"https://assets.grok.com/{video_url}"
+                try:
+                    # 下载并缓存视频
+                    cache_path = await video_cache_service.download_video(f"/{video_url}", auth_token)
+                    if cache_path:
+                        video_path = video_url.replace('/', '-')
+                        base_url = setting.global_config.get("base_url", "")
+                        local_video_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
+                        content = f'<video src="{local_video_url}" controls="controls" width="500" height="300"></video>'
+                    else:
+                        content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>'
+                except Exception as e:
+                    logger.warning(f"[Processor] 缓存视频失败: {e}")
+                    content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>'
+                
+                yield make_chunk(content, "stop")
+            else:
+                # 发送结束块
+                yield make_chunk("", "stop")
+            
             # 发送流结束标记
             yield "data: [DONE]\n\n"
 

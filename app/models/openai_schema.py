@@ -55,7 +55,7 @@ class OpenAIChatRequest(BaseModel):
         """验证模型名称"""
         allowed_models = [
             'grok-3-fast', 'grok-4-fast', 'grok-4-fast-expert',
-            'grok-4-expert', 'grok-4-heavy'
+            'grok-4-expert', 'grok-4-heavy', 'grok-imagine-0.9'
         ]
         if v not in allowed_models:
             raise HTTPException(

@@ -2,7 +2,10 @@
 admin_username = "admin"
 admin_password = "admin"
 log_level = "INFO"
-temp_max_size_mb = 500
+# 图片缓存最大大小（MB）
+image_cache_max_size_mb = 500
+# 视频缓存最大大小（MB）
+video_cache_max_size_mb = 1000
 base_url = ""
 
 [grok]
