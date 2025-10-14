@@ -252,7 +252,7 @@ async def admin_login(request: LoginRequest) -> LoginResponse:
 
 
 @router.post("/api/logout")
-async def admin_logout(authenticated: bool = Depends(verify_admin_session),
+async def admin_logout(_: bool = Depends(verify_admin_session),
                        authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
     """
     管理员登出
@@ -279,7 +279,7 @@ async def admin_logout(authenticated: bool = Depends(verify_admin_session),
 
 
 @router.get("/api/tokens", response_model=TokenListResponse)
-async def list_tokens(authenticated: bool = Depends(verify_admin_session)) -> TokenListResponse:
+async def list_tokens(_: bool = Depends(verify_admin_session)) -> TokenListResponse:
     """
     获取所有Token列表
     
@@ -337,7 +337,7 @@ async def list_tokens(authenticated: bool = Depends(verify_admin_session)) -> To
 
 @router.post("/api/tokens/add")
 async def add_tokens(request: AddTokensRequest,
-                    authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+                    _: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """
     批量添加Token
     
@@ -372,7 +372,7 @@ async def add_tokens(request: AddTokensRequest,
 
 @router.post("/api/tokens/delete")
 async def delete_tokens(request: DeleteTokensRequest,
-                       authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+                       _: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """
     批量删除Token
     
@@ -406,7 +406,7 @@ async def delete_tokens(request: DeleteTokensRequest,
 
 
 @router.get("/api/settings")
-async def get_settings(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+async def get_settings(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """获取全局配置"""
     try:
         logger.debug("[Admin] 获取全局配置")
@@ -428,8 +428,15 @@ class UpdateSettingsRequest(BaseModel):
     grok_config: Optional[Dict[str, Any]] = None
 
 
+class StreamTimeoutSettings(BaseModel):
+    """流式超时配置"""
+    stream_chunk_timeout: int = 120
+    stream_first_response_timeout: int = 30
+    stream_total_timeout: int = 600
+
+
 @router.post("/api/settings")
-async def update_settings(request: UpdateSettingsRequest, authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+async def update_settings(request: UpdateSettingsRequest, _: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """更新全局配置"""
     try:
         import toml
@@ -484,7 +491,7 @@ def _format_size(size_bytes: int) -> str:
 
 
 @router.get("/api/cache/size")
-async def get_cache_size(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+async def get_cache_size(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """获取缓存大小"""
     try:
         logger.debug("[Admin] 开始获取缓存大小")
@@ -525,8 +532,10 @@ async def get_cache_size(authenticated: bool = Depends(verify_admin_session)) ->
 
 
 @router.post("/api/cache/clear")
-async def clear_cache(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
-    """清理缓存 - 删除所有临时文件"""
+async def clear_cache(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+    """清理缓存
+
+    删除所有临时文件"""
     try:
         logger.debug("[Admin] 开始清理缓存")
 
@@ -558,7 +567,7 @@ async def clear_cache(authenticated: bool = Depends(verify_admin_session)) -> Di
 
         deleted_count = image_count + video_count
         logger.debug(f"[Admin] 缓存清理完成 - 图片: {image_count}, 视频: {video_count}, 总计: {deleted_count}")
-        
+
         return {
             "success": True,
             "message": f"成功清理缓存，删除图片 {image_count} 个，视频 {video_count} 个，共 {deleted_count} 个文件",
@@ -577,8 +586,88 @@ async def clear_cache(authenticated: bool = Depends(verify_admin_session)) -> Di
         )
 
 
+@router.post("/api/cache/clear/images")
+async def clear_image_cache(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+    """清理图片缓存
+
+    仅删除图片缓存文件"""
+    try:
+        logger.debug("[Admin] 开始清理图片缓存")
+
+        deleted_count = 0
+
+        # 清理图片缓存
+        if IMAGE_CACHE_DIR.exists():
+            for file_path in IMAGE_CACHE_DIR.iterdir():
+                if file_path.is_file():
+                    try:
+                        file_path.unlink()
+                        deleted_count += 1
+                        logger.debug(f"[Admin] 删除图片缓存: {file_path.name}")
+                    except Exception as e:
+                        logger.error(f"[Admin] 删除图片缓存失败: {file_path.name}, 错误: {str(e)}")
+
+        logger.debug(f"[Admin] 图片缓存清理完成 - 删除 {deleted_count} 个文件")
+
+        return {
+            "success": True,
+            "message": f"成功清理图片缓存，删除 {deleted_count} 个文件",
+            "data": {
+                "deleted_count": deleted_count,
+                "type": "images"
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"[Admin] 清理图片缓存异常 - 错误: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"清理图片缓存失败: {str(e)}", "code": "IMAGE_CACHE_CLEAR_ERROR"}
+        )
+
+
+@router.post("/api/cache/clear/videos")
+async def clear_video_cache(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+    """清理视频缓存
+
+    仅删除视频缓存文件"""
+    try:
+        logger.debug("[Admin] 开始清理视频缓存")
+
+        deleted_count = 0
+
+        # 清理视频缓存
+        if VIDEO_CACHE_DIR.exists():
+            for file_path in VIDEO_CACHE_DIR.iterdir():
+                if file_path.is_file():
+                    try:
+                        file_path.unlink()
+                        deleted_count += 1
+                        logger.debug(f"[Admin] 删除视频缓存: {file_path.name}")
+                    except Exception as e:
+                        logger.error(f"[Admin] 删除视频缓存失败: {file_path.name}, 错误: {str(e)}")
+
+        logger.debug(f"[Admin] 视频缓存清理完成 - 删除 {deleted_count} 个文件")
+
+        return {
+            "success": True,
+            "message": f"成功清理视频缓存，删除 {deleted_count} 个文件",
+            "data": {
+                "deleted_count": deleted_count,
+                "type": "videos"
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"[Admin] 清理视频缓存异常 - 错误: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"清理视频缓存失败: {str(e)}", "code": "VIDEO_CACHE_CLEAR_ERROR"}
+        )
+
+
 @router.get("/api/stats")
-async def get_stats(authenticated: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+async def get_stats(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """
     获取统计信息
 

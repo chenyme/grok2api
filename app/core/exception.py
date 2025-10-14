@@ -101,7 +101,7 @@ async def grok_api_exception_handler(_: Request, exc: GrokApiException) -> JSONR
     )
 
 
-async def global_exception_handler(_: Request) -> JSONResponse:
+async def global_exception_handler(_: Request, exc: Exception) -> JSONResponse:
     """处理未捕获异常"""
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

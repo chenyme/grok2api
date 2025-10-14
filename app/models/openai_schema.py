@@ -15,8 +15,8 @@ class OpenAIChatRequest(BaseModel):
     max_tokens: Optional[int] = Field(None, ge=1, le=100000, description="最大Token数")
     top_p: Optional[float] = Field(1.0, ge=0, le=1, description="采样参数")
 
-    @field_validator('messages')
     @classmethod
+    @field_validator('messages')
     def validate_messages(cls, v):
         """验证消息格式"""
         if not v:
@@ -49,8 +49,8 @@ class OpenAIChatRequest(BaseModel):
 
         return v
 
-    @field_validator('model')
     @classmethod
+    @field_validator('model')
     def validate_model(cls, v):
         """验证模型名称"""
         allowed_models = [
@@ -68,16 +68,16 @@ class OpenAIChatCompletionMessage(BaseModel):
     """聊天完成消息"""
     role: str = Field(..., description="角色")
     content: str = Field(..., description="消息内容")
-    reference_id: Optional[str] = Field(None, description="参考ID")
-    annotations: Optional[List[str]] = Field(None, description="注释")
+    reference_id: Optional[str] = Field(default=None, description="参考ID")
+    annotations: Optional[List[str]] = Field(default=None, description="注释")
 
 
 class OpenAIChatCompletionChoice(BaseModel):
     """聊天完成选项"""
     index: int = Field(..., description="选项索引")
     message: OpenAIChatCompletionMessage = Field(..., description="响应消息")
-    logprobs: Optional[float] = Field(None, description="对数概率")
-    finish_reason: str = Field("stop", description="完成原因")
+    logprobs: Optional[float] = Field(default=None, description="对数概率")
+    finish_reason: str = Field(default="stop", description="完成原因")
 
 
 class OpenAIChatCompletionResponse(BaseModel):
@@ -108,8 +108,8 @@ class OpenAIChatCompletionChunkChoice(BaseModel):
 class OpenAIChatCompletionChunkResponse(BaseModel):
     """流式聊天完成响应"""
     id: str = Field(..., description="响应ID")
-    object: str = Field("chat.completion.chunk", description="对象类型")
+    object: str = Field(default="chat.completion.chunk", description="对象类型")
     created: int = Field(..., description="创建时间戳")
     model: str = Field(..., description="使用的模型")
-    system_fingerprint: Optional[str] = Field(None, description="系统指纹")
+    system_fingerprint: Optional[str] = Field(default=None, description="系统指纹")
     choices: List[OpenAIChatCompletionChunkChoice] = Field(..., description="响应选项")

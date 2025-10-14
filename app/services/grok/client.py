@@ -148,18 +148,23 @@ class GrokClient:
         try:
             # 构建请求头和代理
             headers = GrokClient._build_headers(auth_token)
-            proxies = GrokClient._get_proxy()
+            proxy_config = GrokClient._get_proxy()
+
+            # 构建请求参数
+            request_kwargs = {
+                "headers": headers,
+                "data": json.dumps(payload),
+                "impersonate": IMPERSONATE_BROWSER,
+                "timeout": REQUEST_TIMEOUT,
+                "stream": True,
+                "proxies": proxy_config if proxy_config else None
+            }
 
             # 在线程池中执行同步HTTP请求，避免阻塞事件循环
             response = await asyncio.to_thread(
                 curl_requests.post,
                 GROK_API_ENDPOINT,
-                headers=headers,
-                data=json.dumps(payload),
-                impersonate=IMPERSONATE_BROWSER,
-                timeout=REQUEST_TIMEOUT,
-                stream=True,
-                **proxies
+                **request_kwargs
             )
 
             logger.debug(f"[Client] API响应状态码: {response.status_code}")
@@ -175,9 +180,14 @@ class GrokClient:
             return await GrokClient._process_response(response, auth_token, model, stream)
 
         except curl_requests.RequestsError as e:
+            logger.error(f"[Client] 网络请求错误: {e}")
             raise GrokApiException(f"网络错误: {e}", "NETWORK_ERROR") from e
         except json.JSONDecodeError as e:
+            logger.error(f"[Client] JSON解析错误: {e}")
             raise GrokApiException(f"JSON解析错误: {e}", "JSON_ERROR") from e
+        except Exception as e:
+            logger.error(f"[Client] 未知请求错误: {type(e).__name__}: {e}")
+            raise GrokApiException(f"请求处理错误: {e}", "REQUEST_ERROR") from e
 
     @staticmethod
     def _build_headers(auth_token: str) -> Dict[str, str]:
@@ -204,9 +214,9 @@ class GrokClient:
         try:
             error_data = response.json()
             error_message = str(error_data)
-        except Exception:
+        except Exception as e:
             error_data = response.text
-            error_message = error_data[:200] if error_data else "未知错误"
+            error_message = error_data[:200] if error_data else e
 
         # 记录Token失败
         asyncio.create_task(token_manager.record_failure(auth_token, response.status_code, error_message))

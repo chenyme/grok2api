@@ -1,63 +1,68 @@
 # Grok2API
 
-基于 FastAPI 重构的 Grok2API，适配最新的Web调用格式，支持流式对话、图像生成、图像编辑、联网搜索、深度思考，支持号池并发调用和自动负载均衡。
+基于 **FastAPI** 重构的 Grok2API，全面适配最新 Web 调用格式，支持流式对话、图像生成、图像编辑、联网搜索、深度思考，号池并发与自动负载均衡一体化。
 
-
-### 接口说明
-> 同 OpenAI 官方接口一致，API 请求使用通过 Authorization header 进行认证
-
-| 方法 | 端点 | 描述 | 认证 |
-|------|------|------|------|
-| POST | `/v1/chat/completions` | 创建聊天对话，支持流式和非流式响应，兼容OpenAI格式 | ✅ |
-| GET | `/v1/models` | 获取支持的所有模型列表 | ✅ |
-| GET | `/v1/models/{model_id}` | 获取特定模型信息 | ✅ |
-| GET | `/images/{img_path}` | 获取生成的图片文件 | ❌ |
-
-
-<details>
-<summary>其余管理接口</summary>
-
-| 方法 | 端点 | 描述 | 认证 |
-|------|------|------|------|
-| GET | /login | 管理员登录页面 | ❌ |
-| GET | /manage | 管理控制台页面 | ❌ |
-| POST | /api/login | 管理员登录认证 | ❌ |
-| POST | /api/logout | 管理员登出 | ✅ |
-| GET | /api/tokens | 获取Token列表 | ✅ |
-| POST | /api/tokens/add | 批量添加Token | ✅ |
-| POST | /api/tokens/delete | 批量删除Token | ✅ |
-| GET | /api/settings | 获取系统配置 | ✅ |
-| POST | /api/settings | 更新系统配置 | ✅ |
-| GET | /api/cache/size | 获取缓存大小 | ✅ |
-| POST | /api/cache/clear | 清理图片缓存 | ✅ |
-| GET | /api/stats | 获取统计信息 | ✅ |
-
-</details>
 
 <br>
 
-### 使用说明
+## 使用说明
 
-#### 调用次数说明
+### 调用次数与配额
 
-- 普通账号（Basic）可免费使用 **80 次/20 小时**，Super 账号配额尚未确定（我没有号就没测）。
-- 系统自动监控并负载均衡各账号调用次数，可在**管理页面**直观查看各账户实时用量和状态。
+- **普通账号（Basic）**：免费使用 **80 次 / 20 小时**
+- **Super 账号**：配额待定（作者未测）
+- 系统自动负载均衡各账号调用次数，可在**管理页面**实时查看用量与状态
 
-#### 图像生成说明
+### 图像生成功能
 
-- 只需在对话内容中输入如“给我画一个月亮”即可自动触发生成图片。
-- 每次生成会以 **Markdown 格式返回两张图片**，计 4 次额度。
-- **由于 Grok 的图片直链受限（403），系统会自动将图片缓存到本地。要确保图片能正常显示，请务必正确设置 Base Url。**
+- 在对话内容中输入如“给我画一个月亮”自动触发图片生成
+- 每次以 **Markdown 格式返回两张图片**，共消耗 4 次额度
+- **注意：Grok 的图片直链受 403 限制，系统自动缓存图片到本地。必须正确设置 `Base Url` 以确保图片能正常显示！**
 
-#### 关于 x_statsig_id
-
-- `x_statsig_id` 是 Grok 用于识别机器人请求的 Token，目前网络上已经有相关的逆向分析资料，有兴趣可自行查阅。
-- 如果您不确定如何获取 x_statsig_id，建议不要修改配置文件中的该参数，保持默认值即可，无需关注。
-- 项目最初借鉴了 [VeroFess/grok2api](https://github.com/VeroFess/grok2api) 的实现，曾通过 Camoufox 尝试绕过原项目的 Playwright 获取 x_statsig_id 时触发的 403。起初尚可使用，但近期 Grok 已对未登录用户的 x_statsig_id 做了限制，因此已弃用改方法，当前直接使用固定值以兼容调用。
-
-#### docker-compose 部署
+### 视频生成功能
+- 选择 `grok-imagine-0.9` 模型，传入图片和提示词即可（方式和 OpenAI 的图片分析调用格式一致）
+- 返回格式为 `<video src="{full_video_url}" controls="controls"></video>`
+- **注意：Grok 的视频直链受 403 限制，系统自动缓存图片到本地。必须正确设置 `Base Url` 以确保视频能正常显示！**
 
 ```
+curl https://你的服务器地址/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -d '{
+    "model": "grok-imagine-0.9",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "让太阳升起来"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://your-image.jpg"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### 关于 `x_statsig_id`
+
+- `x_statsig_id` 是 Grok 用于反机器人的 Token，有逆向资料可参考
+- **建议新手勿修改配置，保留默认值即可**
+- 尝试用 Camoufox 绕过 403 自动获 id，但 grok 现已限制非登陆的`x_statsig_id`，故弃用，采用固定值以兼容所有请求
+
+<br>
+
+## 如何部署
+
+### docker-compose
+
+```yaml
 services:
   grok2api:
     image: ghcr.io/chenyme/grok2api:latest
@@ -73,45 +78,83 @@ volumes:
 
 <br>
 
-### 可用模型
-> 所有模型均可进行图像生成，每次计次为 4 次
+## 接口说明
 
-| 模型名称              | 调用计次 | 可用账户      | 图像生成/编辑 | 深度思考 | 联网搜索 |
-|----------------------|---------|--------------|--------------|----------|----------|
-| `grok-3-fast`        | 1       | Basic/Super  | ✅           | ❌       | ✅       |
-| `grok-4-fast`        | 1       | Basic/Super  | ✅           | ✅       | ✅       |
-| `grok-4-fast-expert` | 4       | Basic/Super  | ✅           | ✅       | ✅       |
-| `grok-4-expert`      | 4       | Basic/Super  | ✅           | ✅       | ✅       |
-| `grok-4-heavy`       | 1       | Super        | ✅           | ✅       | ✅       |
+> 与 OpenAI 官方接口完全兼容，API 请求需通过 **Authorization header** 认证
 
-<br>
-
-### 参数说明
-> 所有参数请在启动服务后，进入 `/login` 路由后登陆管理进行配置
-
-| 参数名 | 位置 | 必填 | 说明 | 默认值 |
-|---------|---------|------|------|--------|
-| admin_username | global | 否 | 管理后台登录用户名 | "admin" |
-| admin_password | global | 否 | 管理后台登录密码 | "admin" |
-| log_level | global | 否 | 日志级别：DEBUG/INFO/WARNING/ERROR | "INFO" |
-| temp_max_size_mb | global | 否 | 图片缓存目录最大容量(MB)，超过后自动清理 | 500 |
-| base_url | global | 否 | 服务基础URL，用于生成图片链接，保护服务器IP | "" |
-| api_key | grok | 否 | API访问密钥，提高安全性，可留空 | "" |
-| proxy_url | grok | 否 | HTTP代理服务器地址，访问Grok服务 | "" |
-| cf_clearance | grok | 否 | Cloudflare安全令牌，绕过人机验证 | "" |
-| x_statsig_id | grok | 是 | Grok反机器人检测唯一标识符 | "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk=" |
-| filtered_tags | grok | 否 | 过滤响应标签，多个用逗号分隔 | "xaiartifact,xai:tool_usage_card,grok:render" |
-| temporary | grok | 否 | 会话模式：true(临时)/false | true |
+| 方法  | 端点                         | 描述                               | 是否需要认证 |
+|-------|------------------------------|------------------------------------|------|
+| POST  | `/v1/chat/completions`       | 创建聊天对话（流式/非流式）         | ✅   |
+| GET   | `/v1/models`                 | 获取全部支持模型                   | ✅   |
+| GET   | `/images/{img_path}`         | 获取生成图片文件                   | ❌   |
 
 <br>
 
-### 注意事项
-⚠️ 本项目仅供学习和研究目的，请遵守相关使用条款。
+<details>
+<summary>管理与统计接口（展开查看更多）</summary>
+
+| 方法  | 端点                    | 描述               | 认证 |
+|-------|-------------------------|--------------------|------|
+| GET   | /login                  | 管理员登录页面     | ❌   |
+| GET   | /manage                 | 管理控制台页面     | ❌   |
+| POST  | /api/login              | 管理员登录认证     | ❌   |
+| POST  | /api/logout             | 管理员登出         | ✅   |
+| GET   | /api/tokens             | 获取 Token 列表    | ✅   |
+| POST  | /api/tokens/add         | 批量添加 Token     | ✅   |
+| POST  | /api/tokens/delete      | 批量删除 Token     | ✅   |
+| GET   | /api/settings           | 获取系统配置       | ✅   |
+| POST  | /api/settings           | 更新系统配置       | ✅   |
+| GET   | /api/cache/size         | 获取缓存大小       | ✅   |
+| POST  | /api/cache/clear        | 清理所有缓存       | ✅   |
+| POST  | /api/cache/clear/images | 清理图片缓存       | ✅   |
+| POST  | /api/cache/clear/videos | 清理视频缓存       | ✅   |
+| GET   | /api/stats              | 获取统计信息       | ✅   |
+
+</details>
 
 <br>
 
----
+## 可用模型一览
+
+| 模型名称               | 计次   | 账户类型      | 图像生成/编辑 | 深度思考 | 联网搜索 | 视频生成 |
+|------------------------|--------|--------------|--------------|----------|----------|----------|
+| `grok-3-fast`          | 1      | Basic/Super  | ✅           | ❌       | ✅       | ❌       |
+| `grok-4-fast`          | 1      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
+| `grok-4-fast-expert`   | 4      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
+| `grok-4-expert`        | 4      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
+| `grok-4-heavy`         | 1      | Super        | ✅           | ✅       | ✅       | ❌       |
+| `grok-imagine-0.9`     | -      | Basic/Super  | ❌           | ❌       | ❌       | ✅       |
 
 <br>
 
-此项目基于其他 Grok2API 项目进行学习重构，感谢 [LINUX DO](https://linux.do)、[VeroFess/grok2api](https://github.com/VeroFess/grok2api)、[xLmiler/grok2api_python](https://github.com/xLmiler/grok2api_python) 的项目大佬
+## 配置参数说明
+
+> 服务启动后，登录 `/login` 管理后台进行参数配置
+
+| 参数名                     | 作用域  | 必填 | 说明                                    | 默认值 |
+|----------------------------|---------|------|-----------------------------------------|--------|
+| admin_username             | global  | 否   | 管理后台登录用户名                      | "admin"|
+| admin_password             | global  | 否   | 管理后台登录密码                        | "admin"|
+| log_level                  | global  | 否   | 日志级别：DEBUG/INFO/...                | "INFO" |
+| image_cache_max_size_mb    | global  | 否   | 图片缓存最大容量(MB)                     | 500    |
+| video_cache_max_size_mb    | global  | 否   | 视频缓存最大容量(MB)                     | 1000   |
+| base_url                   | global  | 否   | 服务基础URL/图片访问基准                 | ""     |
+| api_key                    | grok    | 否   | API 密钥（可选加强安全）                | ""     |
+| proxy_url                  | grok    | 否   | HTTP代理服务器地址                      | ""     |
+| stream_chunk_timeout       | grok    | 否   | 流式分块超时时间(秒)                     | 120    |
+| stream_first_response_timeout | grok | 否   | 流式首次响应超时时间(秒)                 | 30     |
+| stream_total_timeout       | grok    | 否   | 流式总超时时间(秒)                       | 600    |
+| cf_clearance               | grok    | 否   | Cloudflare安全令牌                      | ""     |
+| x_statsig_id               | grok    | 是   | 反机器人唯一标识符                      | "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk=" |
+| filtered_tags              | grok    | 否   | 过滤响应标签（逗号分隔）                | "xaiartifact,xai:tool_usage_card,grok:render" |
+| temporary                  | grok    | 否   | 会话模式 true(临时)/false               | true   |
+
+<br>
+
+## ⚠️ 注意事项
+
+本项目仅供学习与研究，请遵守相关使用条款！
+
+<br>
+
+> 本项目基于以下项目学习重构，特别感谢：[LINUX DO](https://linux.do)、[VeroFess/grok2api](https://github.com/VeroFess/grok2api)、[xLmiler/grok2api_python](https://github.com/xLmiler/grok2api_python)
