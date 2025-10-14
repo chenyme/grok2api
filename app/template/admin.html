@@ -4,103 +4,49 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>管理控制台 - Grok2API</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        @keyframes slide-up {
-            from {
-                transform: translateY(100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
-        }
-        .animate-slide-up {
-            animation: slide-up 0.3s ease-out;
-        }
-        .tab-btn {
-            transition: all 0.2s ease;
-        }
-        [title] {
-            position: relative;
-        }
-        [title]:hover::after {
-            content: attr(title);
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            transform: translateX(-50%) translateY(-4px);
-            background: hsl(0 0% 3.9%);
-            color: hsl(0 0% 98%);
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            white-space: nowrap;
-            z-index: 1000;
-            pointer-events: none;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-        }
-        [title]:hover::before {
-            content: '';
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            transform: translateX(-50%);
-            border: 4px solid transparent;
-            border-top-color: hsl(0 0% 3.9%);
-            z-index: 1000;
-        }
+        @keyframes slide-up{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
+        .animate-slide-up{animation:slide-up .3s ease-out}
+        .tab-btn{transition:all .2s ease}
+        [title]{position:relative}
+        [title]:hover::after{content:attr(title);position:absolute;bottom:100%;left:50%;transform:translateX(-50%) translateY(-4px);background:hsl(0 0% 3.9%);color:hsl(0 0% 98%);padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;z-index:1000;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+        [title]:hover::before{content:'';position:absolute;bottom:100%;left:50%;transform:translateX(-50%);border:4px solid transparent;border-top-color:hsl(0 0% 3.9%);z-index:1000}
     </style>
     <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        border: "hsl(0 0% 89%)",
-                        input: "hsl(0 0% 89%)",
-                        ring: "hsl(0 0% 3.9%)",
-                        background: "hsl(0 0% 100%)",
-                        foreground: "hsl(0 0% 3.9%)",
-                        primary: {
-                            DEFAULT: "hsl(0 0% 9%)",
-                            foreground: "hsl(0 0% 98%)",
-                        },
-                        secondary: {
-                            DEFAULT: "hsl(0 0% 96.1%)",
-                            foreground: "hsl(0 0% 9%)",
-                        },
-                        muted: {
-                            DEFAULT: "hsl(0 0% 96.1%)",
-                            foreground: "hsl(0 0% 45.1%)",
-                        },
-                        accent: {
-                            DEFAULT: "hsl(0 0% 96.1%)",
-                            foreground: "hsl(0 0% 9%)",
-                        },
-                        destructive: {
-                            DEFAULT: "hsl(0 84.2% 60.2%)",
-                            foreground: "hsl(0 0% 98%)",
-                        },
-                    },
-                }
-            }
-        }
+        tailwind.config={theme:{extend:{colors:{border:"hsl(0 0% 89%)",input:"hsl(0 0% 89%)",ring:"hsl(0 0% 3.9%)",background:"hsl(0 0% 100%)",foreground:"hsl(0 0% 3.9%)",primary:{DEFAULT:"hsl(0 0% 9%)",foreground:"hsl(0 0% 98%)"},secondary:{DEFAULT:"hsl(0 0% 96.1%)",foreground:"hsl(0 0% 9%)"},muted:{DEFAULT:"hsl(0 0% 96.1%)",foreground:"hsl(0 0% 45.1%)"},accent:{DEFAULT:"hsl(0 0% 96.1%)",foreground:"hsl(0 0% 9%)"},destructive:{DEFAULT:"hsl(0 84.2% 60.2%)",foreground:"hsl(0 0% 98%)"}}}}}
     </script>
 </head>
 <body class="h-full bg-background text-foreground antialiased">
     <!-- 导航栏 -->
     <header class="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div class="mx-auto flex h-14 max-w-7xl items-center px-6">
-            <div class="mr-4 flex">
-                <span class="font-bold text-lg">Grok2API</span>
+            <div class="mr-4 flex items-baseline gap-3">
+                <span class="font-bold text-xl">Grok2API</span>
+                <span class="text-xs text-gray-400">by @Chenyme</span>
             </div>
             <div class="flex flex-1 items-center justify-between space-x-2 md:justify-end">
-                <nav class="flex items-center space-x-2">
-                    <button 
-                        onclick="logout()"
-                        class="inline-flex items-center justify-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
+                <nav class="flex items-center gap-1">
+                    <a
+                        href="https://github.com/chenyme/grok2api/issues"
+                        target="_blank"
+                        class="inline-flex items-center justify-center text-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7 px-2.5 gap-1"
                     >
+                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                        </svg>
+                        反馈
+                    </a>
+                    <button
+                        onclick="logout()"
+                        class="inline-flex items-center justify-center text-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7 px-2.5 gap-1"
+                    >
+                        <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                            <polyline points="16 17 21 12 16 7"/>
+                            <line x1="21" y1="12" x2="9" y2="12"/>
+                        </svg>
                         退出
                     </button>
                 </nav>
@@ -274,6 +220,18 @@
 
         <!-- 全局设置面板 -->
         <div id="panelSettings" class="hidden">
+            <!-- 配置提示 -->
+            <div class="mb-6 rounded border border-blue-300 bg-blue-50 px-4 py-3">
+                <div class="text-xs text-gray-800 leading-relaxed">
+                    <div class="text-base font-medium text-gray-900 mb-2.5">部分说明</div>
+                    <div class="space-y-1.5">
+                        <div><span class="font-medium">服务网址：</span>图片/视频链接返回时需要拼接您的服务网址（如 https://yourdomain.com），若您不使用视频功能且图片使用Base64模式则可留空</div>
+                        <div><span class="font-medium">日志报错 403：</span>通常是被 CF 拦截了，可配置代理IP、更换服务器IP或者在服务器中访问 grok.com 通过 CF 验证后 F12 获取 cf_clearance</div>
+                        <div><span class="font-medium">X Statsig ID：</span>反机器人验证参数，勿随意修改，一般 403 是被盾了，并不是需要更新 X Statsig ID</div>
+                    </div>
+                </div>
+            </div>
+
             <div class="grid gap-6 lg:grid-cols-2">
                 <!-- 全局配置 -->
                 <div class="rounded-lg border border-border bg-background p-6">
@@ -304,6 +262,23 @@
                         </div>
                         <div>
                             <label class="text-sm font-medium flex items-center gap-1 mb-2">
+                                图片模式
+                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="选择图片返回方式：URL模式返回图片链接（需缓存）；Base64模式返回base64编码（无需缓存，直接嵌入响应）">?</span>
+                            </label>
+                            <select id="cfgImageMode" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring">
+                                <option value="url">URL (图片链接)</option>
+                                <option value="base64">Base64 (base64编码)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-sm font-medium flex items-center gap-1 mb-2">
+                                服务网址
+                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="用于生成图片链接的服务地址。建议使用域名以保护服务器IP，如无图片需求可留空。注意：Base64模式下无需填写此项">?</span>
+                            </label>
+                            <input id="cfgBaseUrl" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="http://localhost:8000">
+                        </div>
+                        <div>
+                            <label class="text-sm font-medium flex items-center gap-1 mb-2">
                                 图片缓存上限 (MB)
                                 <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="图片缓存目录的最大容量，超过后自动删除最旧的缓存文件">?</span>
                             </label>
@@ -318,8 +293,8 @@
                         </div>
                         <div>
                             <label class="text-sm font-medium flex items-center gap-1 mb-2">
-                                缓存大小
-                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="当前缓存目录的大小">?</span>
+                                项目缓存清理
+                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="当前缓存目录的大小和清理操作">?</span>
                             </label>
                             <div class="space-y-2">
                                 <div class="flex gap-2 items-center">
@@ -347,23 +322,15 @@
                                     <span class="text-sm text-muted-foreground w-12">总计:</span>
                                     <input id="totalCacheSize" readonly class="flex h-9 flex-1 rounded-md border border-input bg-muted px-3 py-2 text-sm font-medium" placeholder="0 MB">
                                     <button onclick="clearCache()" class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 h-9 px-3 transition-colors" title="清除所有缓存（图片+视频）">
-                                        <svg class="h-4 w-4 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                             <path d="M3 6h18"/>
                                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                                             <line x1="10" y1="11" x2="10" y2="17"/>
                                             <line x1="14" y1="11" x2="14" y2="17"/>
                                         </svg>
-                                        清除全部
                                     </button>
                                 </div>
                             </div>
-                        </div>
-                        <div>
-                            <label class="text-sm font-medium flex items-center gap-1 mb-2">
-                                服务网址
-                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="用于生成图片链接的服务地址。建议使用域名以保护服务器IP，如无图片需求可留空">?</span>
-                            </label>
-                            <input id="cfgBaseUrl" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="http://localhost:8000">
                         </div>
                     </div>
                     <div class="mt-6 flex justify-end">
@@ -405,27 +372,20 @@
                         </div>
                         <div>
                             <label class="text-sm font-medium flex items-center gap-1 mb-2">
-                                Filtered_tags
+                                Filtered Tags
                                 <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="过滤Grok响应中的指定标签，多个标签用逗号分隔">?</span>
                             </label>
                             <input id="cfgFilteredTags" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="xaiartifact,xai:tool_usage_card">
                         </div>
                         <div>
                             <label class="text-sm font-medium flex items-center gap-1 mb-2">
-                                临时会话
+                                临时会话模式
                                 <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="选择会话模式：标准模式保留上下文，临时模式每次对话独立">?</span>
                             </label>
                             <select id="cfgTemporary" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring">
                                 <option value="false">关闭</option>
                                 <option value="true">开启</option>
                             </select>
-                        </div>
-                        <div>
-                            <label class="text-sm font-medium flex items-center gap-1 mb-2">
-                                数据块间隔超时 (秒)
-                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="流式响应中，两次数据块之间的最大等待时间。超过此时间将结束会话">?</span>
-                            </label>
-                            <input id="cfgStreamChunkTimeout" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="120">
                         </div>
                         <div>
                             <label class="text-sm font-medium flex items-center gap-1 mb-2">
@@ -436,7 +396,14 @@
                         </div>
                         <div>
                             <label class="text-sm font-medium flex items-center gap-1 mb-2">
-                                总超时限制 (秒)
+                                流式间隔超时 (秒)
+                                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="流式响应中，两次数据块之间的最大等待时间。超过此时间将结束会话">?</span>
+                            </label>
+                            <input id="cfgStreamChunkTimeout" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="120">
+                        </div>
+                        <div>
+                            <label class="text-sm font-medium flex items-center gap-1 mb-2">
+                                生成总过程超时 (秒)
                                 <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="流式响应的总时长限制。设置为0表示不限制总时长">?</span>
                             </label>
                             <input id="cfgStreamTotalTimeout" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="600">
@@ -507,17 +474,7 @@
         loadTokens=async()=>{try{const r=await apiRequest('/api/tokens');if(!r)return;const d=await r.json();d.success&&(allTokens=d.data,filteredTokens=allTokens,selectedTokens.clear(),renderTokens(),updateRemaining())}catch(e){console.error('加载列表失败:',e)}},
         updateRemaining=()=>{const r=calcRemaining();['Total','Normal','Heavy'].forEach(k=>$(`stat${k}Remaining`).textContent=r[k.toLowerCase()]===0?'-':r[k.toLowerCase()].toLocaleString())}
 
-        const renderTokens=()=>{const tb=$('tokenTableBody'),es=$('emptyState'),ss={'未使用':'bg-muted text-muted-foreground','限流中':'bg-orange-50 text-orange-700 border-orange-200','失效':'bg-destructive/10 text-destructive border-destructive/20','正常':'bg-green-50 text-green-700 border-green-200'},ts={sso:'bg-blue-50 text-blue-700 border-blue-200',ssoSuper:'bg-purple-50 text-purple-700 border-purple-200'},tl={sso:'SSO',ssoSuper:'SuperSSO'};if(!filteredTokens.length){tb.innerHTML='';es.classList.remove('hidden');$('selectAll').checked=false;return updateBatchActions()}es.classList.add('hidden');tb.innerHTML=filteredTokens.map(t=>`
-                <tr class="transition-colors">
-                    <td class="py-2.5 px-3 align-middle w-12"><input type="checkbox" class="token-checkbox h-3.5 w-3.5 rounded border border-input focus:ring-1 focus:ring-ring" data-token="${t.token}" data-type="${t.token_type}" ${selectedTokens.has(t.token)?'checked':''} onchange="toggleToken('${t.token}')"></td>
-                    <td class="py-2.5 px-3 align-middle w-80"><div class="flex items-center gap-2"><span class="font-mono text-xs">${t.token.substring(0,30)}...</span><button onclick="copyToken('${t.token.replace(/'/g,"\\'")}',event)" class="inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent h-6 w-6" title="复制完整 Token"><svg class="h-3 w-3 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div></td>
-                    <td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ts[t.token_type]}">${tl[t.token_type]}</span></td>
-                    <td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ss[t.status]}">${t.status}</span></td>
-                    <td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.remaining_queries===-1?'-':t.remaining_queries}</td>
-                    <td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.heavy_remaining_queries===-1?'-':t.heavy_remaining_queries}</td>
-                    <td class="py-2.5 px-3 align-middle w-32 text-xs text-muted-foreground">${t.created_time?new Date(t.created_time).toLocaleString('zh-CN',{dateStyle:'short',timeStyle:'short'}):'-'}</td>
-                    <td class="py-2.5 px-3 align-middle text-right w-16"><button onclick="deleteToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-destructive/10 hover:text-destructive h-7 w-7"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></td>
-                </tr>`).join('');updateBatchActions()},
+        const renderTokens=()=>{const tb=$('tokenTableBody'),es=$('emptyState'),ss={'未使用':'bg-muted text-muted-foreground','限流中':'bg-orange-50 text-orange-700 border-orange-200','失效':'bg-destructive/10 text-destructive border-destructive/20','正常':'bg-green-50 text-green-700 border-green-200'},ts={sso:'bg-blue-50 text-blue-700 border-blue-200',ssoSuper:'bg-purple-50 text-purple-700 border-purple-200'},tl={sso:'SSO',ssoSuper:'SuperSSO'};if(!filteredTokens.length){tb.innerHTML='';es.classList.remove('hidden');$('selectAll').checked=false;return updateBatchActions()}es.classList.add('hidden');tb.innerHTML=filteredTokens.map(t=>`<tr class="transition-colors"><td class="py-2.5 px-3 align-middle w-12"><input type="checkbox" class="token-checkbox h-3.5 w-3.5 rounded border border-input focus:ring-1 focus:ring-ring" data-token="${t.token}" data-type="${t.token_type}" ${selectedTokens.has(t.token)?'checked':''} onchange="toggleToken('${t.token}')"></td><td class="py-2.5 px-3 align-middle w-80"><div class="flex items-center gap-2"><span class="font-mono text-xs">${t.token.substring(0,30)}...</span><button onclick="copyToken('${t.token.replace(/'/g,"\\'")}',event)" class="inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent h-6 w-6" title="复制完整 Token"><svg class="h-3 w-3 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ts[t.token_type]}">${tl[t.token_type]}</span></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ss[t.status]}">${t.status}</span></td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.remaining_queries===-1?'-':t.remaining_queries}</td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.heavy_remaining_queries===-1?'-':t.heavy_remaining_queries}</td><td class="py-2.5 px-3 align-middle w-32 text-xs text-muted-foreground">${t.created_time?new Date(t.created_time).toLocaleString('zh-CN',{dateStyle:'short',timeStyle:'short'}):'-'}</td><td class="py-2.5 px-3 align-middle text-right w-16"><button onclick="deleteToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-destructive/10 hover:text-destructive h-7 w-7"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></td></tr>`).join('');updateBatchActions()},
         toggleToken=t=>selectedTokens[selectedTokens.has(t)?'delete':'add'](t)||updateBatchActions(),
         toggleSelectAll=()=>{const sa=$('selectAll');sa.checked?filteredTokens.forEach(t=>selectedTokens.add(t.token)):selectedTokens.clear();renderTokens()},
         updateBatchActions=()=>{const ba=$('batchActions'),sc=$('selectedCount'),c=selectedTokens.size;ba.classList[c>0?'add':'remove']('flex');ba.classList[c>0?'remove':'add']('hidden');c>0&&(sc.textContent=`已选择 ${c} 项`);$('selectAll').checked=filteredTokens.length>0&&c===filteredTokens.length},
@@ -530,16 +487,16 @@
         submitAddTokens=async()=>{const tt=$('addTokenType').value,tks=$('addTokenList').value.split('\n').map(t=>t.trim()).filter(t=>t);if(!tks.length)return alert('请输入至少一个 Token');try{const r=await apiRequest('/api/tokens/add',{method:'POST',body:JSON.stringify({tokens:tks,token_type:tt})});if(!r)return;const d=await r.json();d.success?(closeAddModal(),await refreshTokens()):alert('添加失败: '+(d.error||'未知错误'))}catch(e){alert('添加失败: '+e.message)}},
         copyToken=async(t,e)=>{e.stopPropagation();try{await navigator.clipboard.writeText(t);showToast('Token 已复制到剪贴板','success')}catch(err){console.error('复制失败:',err);showToast('复制失败,请手动复制','error')}}
 
-        const exportSelected=()=>{if(!selectedTokens.size)return showToast('请先选择要导出的 Token','error');const sd=allTokens.filter(t=>selectedTokens.has(t.token)),csv=[['Token','类型','状态','普通调用剩余','高级调用剩余','创建时间'].join(','),...sd.map(t=>[`"${t.token}"`,t.token_type==='sso'?'SSO':'SuperSSO',t.status,t.remaining_queries===-1?'未使用':t.remaining_queries,t.heavy_remaining_queries===-1?'未使用':t.heavy_remaining_queries,`"${t.created_time?new Date(t.created_time).toLocaleString('zh-CN'):'-'}"`].join(','))].join('\n'),l=document.createElement('a');l.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'}));l.download=`grok_tokens_${new Date().toISOString().slice(0,10)}.csv`;l.style.visibility='hidden';document.body.appendChild(l);l.click();document.body.removeChild(l);URL.revokeObjectURL(l.href);showToast(`已导出 ${selectedTokens.size} 个 Token`,'success')},
-        showToast=(m,t='info')=>{const d=document.createElement('div'),bc={success:'bg-green-600',error:'bg-destructive',info:'bg-primary'};d.className=`fixed bottom-4 right-4 ${bc[t]||bc.info} text-white px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium z-50 animate-slide-up`;d.textContent=m;document.body.appendChild(d);setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity 0.3s';setTimeout(()=>d.parentNode&&document.body.removeChild(d),300)},2000)},
+        const exportSelected=()=>{if(!selectedTokens.size)return showToast('请先选择要导出的 Token','error');const sd=allTokens.filter(t=>selectedTokens.has(t.token)),csv=[['Token','类型','状态','普通调用剩余','高级调用剩余','创建时间'].join(','),...sd.map(t=>[`"${t.token}"`,t.token_type==='sso'?'SSO':'SuperSSO',t.status,t.remaining_queries===-1?'未使用':t.remaining_queries,t.heavy_remaining_queries===-1?'未使用':t.heavy_remaining_queries,`"${t.created_time?new Date(t.created_time).toLocaleString('zh-CN'):'-'}"`].join(','))].join('\n'),l=document.createElement('a');l.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'}));l.download=`grok_tokens_${new Date().toISOString().slice(0,10)}.csv`;l.style.display='none';document.body.appendChild(l);l.click();document.body.removeChild(l);URL.revokeObjectURL(l.href);showToast(`已导出 ${selectedTokens.size} 个 Token`,'success')}
+        showToast=(m,t='info')=>{const d=document.createElement('div'),bc={success:'bg-green-600',error:'bg-destructive',info:'bg-primary'};d.className=`fixed bottom-4 right-4 ${bc[t]||bc.info} text-white px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium z-50 animate-slide-up`;d.textContent=m;document.body.appendChild(d);setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity .3s';setTimeout(()=>d.parentNode&&document.body.removeChild(d),300)},2000)}
         logout=async()=>{if(!confirm('确定要退出登录吗?'))return;try{await apiRequest('/api/logout',{method:'POST'})}catch(e){console.error('登出失败:',e)}finally{localStorage.removeItem('adminToken');location.href='/login'}},
         switchTab=t=>{['tokens','settings'].forEach(n=>{$(`panel${n.charAt(0).toUpperCase()+n.slice(1)}`).classList[n===t?'remove':'add']('hidden');$(`tab${n.charAt(0).toUpperCase()+n.slice(1)}`).classList[n===t?'add':'remove']('border-primary','text-primary');$(`tab${n.charAt(0).toUpperCase()+n.slice(1)}`).classList[n===t?'remove':'add']('border-transparent','text-muted-foreground')});t==='settings'&&loadSettings()},
-        loadSettings=async()=>{try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(d.success){const g=d.data.global,k=d.data.grok;$('cfgAdminUser').value=g.admin_username||'';$('cfgAdminPass').value='';$('cfgLogLevel').value=g.log_level||'DEBUG';$('cfgImageCacheMaxSize').value=g.image_cache_max_size_mb||500;$('cfgVideoCacheMaxSize').value=g.video_cache_max_size_mb||1000;$('cfgBaseUrl').value=g.base_url||'';$('cfgApiKey').value=k.api_key||'';$('cfgProxyUrl').value=k.proxy_url||'';$('cfgCfClearance').value=k.cf_clearance||'';$('cfgStatsigId').value=k.x_statsig_id||'';$('cfgFilteredTags').value=k.filtered_tags||'';$('cfgTemporary').value=k.temporary!==false?'true':'false';$('cfgStreamChunkTimeout').value=k.stream_chunk_timeout||120;$('cfgStreamFirstResponseTimeout').value=k.stream_first_response_timeout||30;$('cfgStreamTotalTimeout').value=k.stream_total_timeout||600;await loadCacheSize()}}catch(e){console.error('加载配置失败:',e);showToast('加载配置失败','error')}},
+        loadSettings=async()=>{try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(d.success){const g=d.data.global,k=d.data.grok;$('cfgAdminUser').value=g.admin_username||'';$('cfgAdminPass').value='';$('cfgLogLevel').value=g.log_level||'DEBUG';$('cfgImageCacheMaxSize').value=g.image_cache_max_size_mb||500;$('cfgVideoCacheMaxSize').value=g.video_cache_max_size_mb||1000;$('cfgImageMode').value=g.image_mode||'url';$('cfgBaseUrl').value=g.base_url||'';$('cfgApiKey').value=k.api_key||'';$('cfgProxyUrl').value=k.proxy_url||'';$('cfgCfClearance').value=k.cf_clearance||'';$('cfgStatsigId').value=k.x_statsig_id||'';$('cfgFilteredTags').value=k.filtered_tags||'';$('cfgTemporary').value=k.temporary!==false?'true':'false';$('cfgStreamChunkTimeout').value=k.stream_chunk_timeout||120;$('cfgStreamFirstResponseTimeout').value=k.stream_first_response_timeout||30;$('cfgStreamTotalTimeout').value=k.stream_total_timeout||600;await loadCacheSize()}}catch(e){console.error('加载配置失败:',e);showToast('加载配置失败','error')}},
         loadCacheSize=async()=>{try{const r=await apiRequest('/api/cache/size');if(!r)return;const d=await r.json();if(d.success){$('imageCacheSize').value=d.data.image_size||'0 MB';$('videoCacheSize').value=d.data.video_size||'0 MB';$('totalCacheSize').value=d.data.total_size||'0 MB'}}catch(e){console.error('加载缓存大小失败:',e);$('imageCacheSize').value='0 MB';$('videoCacheSize').value='0 MB';$('totalCacheSize').value='0 MB'}},
-        clearImageCache=async()=>{if(!confirm('确定要清理图片缓存吗？此操作将删除所有图片缓存文件！'))return;try{const r=await apiRequest('/api/cache/clear/images',{method:'POST'});if(!r)return;const d=await r.json();if(d.success){showToast(`图片缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success');await loadCacheSize()}else{showToast('清理失败: '+(d.error||'未知错误'),'error')}}catch(e){showToast('清理失败: '+e.message,'error')}},
-        clearVideoCache=async()=>{if(!confirm('确定要清理视频缓存吗？此操作将删除所有视频缓存文件！'))return;try{const r=await apiRequest('/api/cache/clear/videos',{method:'POST'});if(!r)return;const d=await r.json();if(d.success){showToast(`视频缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success');await loadCacheSize()}else{showToast('清理失败: '+(d.error||'未知错误'),'error')}}catch(e){showToast('清理失败: '+e.message,'error')}},
-        clearCache=async()=>{if(!confirm('确定要清理缓存吗？此操作将删除 /data/temp 目录中的所有文件！'))return;try{const r=await apiRequest('/api/cache/clear',{method:'POST'});if(!r)return;const d=await r.json();if(d.success){showToast(`缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success');await loadCacheSize()}else{showToast('清理失败: '+(d.error||'未知错误'),'error')}}catch(e){showToast('清理失败: '+e.message,'error')}},
-        saveGlobalSettings=async()=>{const gc={admin_username:$('cfgAdminUser').value,log_level:$('cfgLogLevel').value,image_cache_max_size_mb:parseInt($('cfgImageCacheMaxSize').value)||500,video_cache_max_size_mb:parseInt($('cfgVideoCacheMaxSize').value)||1000,base_url:$('cfgBaseUrl').value};if($('cfgAdminPass').value)gc.admin_password=$('cfgAdminPass').value;try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:gc,grok_config:d.data.grok})});if(!s)return;const sd=await s.json();sd.success?(showToast('全局配置保存成功','success'),$('cfgAdminPass').value=''):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}},
+        clearImageCache=async()=>{if(!confirm('确定要清理图片缓存吗？此操作将删除所有图片缓存文件！'))return;try{const r=await apiRequest('/api/cache/clear/images',{method:'POST'});if(!r)return;const d=await r.json();d.success?(showToast(`图片缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success'),await loadCacheSize()):showToast('清理失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('清理失败: '+e.message,'error')}},
+        clearVideoCache=async()=>{if(!confirm('确定要清理视频缓存吗？此操作将删除所有视频缓存文件！'))return;try{const r=await apiRequest('/api/cache/clear/videos',{method:'POST'});if(!r)return;const d=await r.json();d.success?(showToast(`视频缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success'),await loadCacheSize()):showToast('清理失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('清理失败: '+e.message,'error')}},
+        clearCache=async()=>{if(!confirm('确定要清理缓存吗？此操作将删除 /data/temp 目录中的所有文件！'))return;try{const r=await apiRequest('/api/cache/clear',{method:'POST'});if(!r)return;const d=await r.json();d.success?(showToast(`缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success'),await loadCacheSize()):showToast('清理失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('清理失败: '+e.message,'error')}},
+        saveGlobalSettings=async()=>{const gc={admin_username:$('cfgAdminUser').value,log_level:$('cfgLogLevel').value,image_cache_max_size_mb:parseInt($('cfgImageCacheMaxSize').value)||500,video_cache_max_size_mb:parseInt($('cfgVideoCacheMaxSize').value)||1000,image_mode:$('cfgImageMode').value,base_url:$('cfgBaseUrl').value};if($('cfgAdminPass').value)gc.admin_password=$('cfgAdminPass').value;try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:gc,grok_config:d.data.grok})});if(!s)return;const sd=await s.json();sd.success?(showToast('全局配置保存成功','success'),$('cfgAdminPass').value=''):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}},
         saveGrokSettings=async()=>{const kc={api_key:$('cfgApiKey').value,proxy_url:$('cfgProxyUrl').value,cf_clearance:$('cfgCfClearance').value,x_statsig_id:$('cfgStatsigId').value,filtered_tags:$('cfgFilteredTags').value,temporary:$('cfgTemporary').value==='true',stream_chunk_timeout:parseInt($('cfgStreamChunkTimeout').value)||120,stream_first_response_timeout:parseInt($('cfgStreamFirstResponseTimeout').value)||30,stream_total_timeout:parseInt($('cfgStreamTotalTimeout').value)||600};try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:d.data.global,grok_config:kc})});if(!s)return;const sd=await s.json();sd.success?showToast('Grok配置保存成功','success'):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}};
         window.addEventListener('DOMContentLoaded',()=>{checkAuth();refreshTokens();setInterval(()=>{loadStats();updateRemaining()},30000)});
     </script>
