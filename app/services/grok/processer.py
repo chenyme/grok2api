@@ -349,16 +349,52 @@ class GrokResponseProcessor:
                             image_mode = setting.global_config.get("image_mode", "url")
 
                             # 生成图片链接并缓存
-                            content = ""
                             for img in model_resp.get("generatedImageUrls", []):
                                 try:
                                     if image_mode == "base64":
                                         # base64 模式：下载并转换为 base64
                                         base64_str = await image_cache_service.download_base64(f"/{img}", auth_token)
                                         if base64_str:
-                                            content += f"![Generated Image]({base64_str})\n"
+                                            # 分块发送 base64 数据，每 8KB 一个 chunk
+                                            markdown_prefix = "![Generated Image](data:"
+                                            markdown_suffix = ")\n"
+
+                                            # 提取 data URL 的 mime 和 base64 部分
+                                            if base64_str.startswith("data:"):
+                                                parts = base64_str.split(",", 1)
+                                                if len(parts) == 2:
+                                                    mime_part = parts[0] + ","
+                                                    b64_data = parts[1]
+
+                                                    # 发送前缀
+                                                    yield make_chunk(markdown_prefix + mime_part)
+                                                    timeout_manager.mark_chunk_received()
+                                                    chunk_index += 1
+
+                                                    # 分块发送 base64 数据
+                                                    chunk_size = 8192
+                                                    for i in range(0, len(b64_data), chunk_size):
+                                                        chunk_data = b64_data[i:i + chunk_size]
+                                                        yield make_chunk(chunk_data)
+                                                        timeout_manager.mark_chunk_received()
+                                                        chunk_index += 1
+
+                                                    # 发送后缀
+                                                    yield make_chunk(markdown_suffix)
+                                                    timeout_manager.mark_chunk_received()
+                                                    chunk_index += 1
+                                                else:
+                                                    yield make_chunk(f"![Generated Image]({base64_str})\n")
+                                                    timeout_manager.mark_chunk_received()
+                                                    chunk_index += 1
+                                            else:
+                                                yield make_chunk(f"![Generated Image]({base64_str})\n")
+                                                timeout_manager.mark_chunk_received()
+                                                chunk_index += 1
                                         else:
-                                            content += f"![Generated Image](https://assets.grok.com/{img})\n"
+                                            yield make_chunk(f"![Generated Image](https://assets.grok.com/{img})\n")
+                                            timeout_manager.mark_chunk_received()
+                                            chunk_index += 1
                                     else:
                                         # url 模式：缓存并返回链接
                                         await image_cache_service.download_image(f"/{img}", auth_token)
