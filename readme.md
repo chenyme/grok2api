@@ -71,10 +71,30 @@ services:
     volumes:
       - grok_data:/app/data
       - ./logs:/app/logs
+    environment:
+      # =====存储模式: file, mysql 或 redis=====
+      - STORAGE_MODE=file
+      # =====数据库连接 URL (仅在STORAGE_MODE=mysql或redis时需要)=====
+      # - DATABASE_URL=mysql://user:password@host:3306/grok2api
+
+      ## MySQL格式: mysql://user:password@host:port/database
+      ## Redis格式: redis://host:port/db 或 redis://user:password@host:port/db
 
 volumes:
   grok_data:
 ```
+
+### 环境变量说明
+
+| 环境变量      | 必填 | 说明                                    | 示例 |
+|---------------|------|-----------------------------------------|------|
+| STORAGE_MODE  | 否   | 存储模式：file/mysql/redis               | file |
+| DATABASE_URL  | 否   | 数据库连接URL（MySQL/Redis模式时必需）   | mysql://user:pass@host:3306/db |
+
+**存储模式：**
+- `file`: 本地文件存储（默认）
+- `mysql`: MySQL数据库存储，需设置DATABASE_URL
+- `redis`: Redis缓存存储，需设置DATABASE_URL
 
 <br>
 
@@ -123,7 +143,7 @@ volumes:
 | `grok-4-fast-expert`   | 4      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
 | `grok-4-expert`        | 4      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
 | `grok-4-heavy`         | 1      | Super        | ✅           | ✅       | ✅       | ❌       |
-| `grok-imagine-0.9`     | -      | Basic/Super  | ❌           | ❌       | ❌       | ✅       |
+| `grok-imagine-0.9`     | -      | Basic/Super  | ✅           | ❌       | ❌       | ✅       |
 
 <br>
 
@@ -136,8 +156,9 @@ volumes:
 | admin_username             | global  | 否   | 管理后台登录用户名                      | "admin"|
 | admin_password             | global  | 否   | 管理后台登录密码                        | "admin"|
 | log_level                  | global  | 否   | 日志级别：DEBUG/INFO/...                | "INFO" |
-| image_cache_max_size_mb    | global  | 否   | 图片缓存最大容量(MB)                     | 500    |
-| video_cache_max_size_mb    | global  | 否   | 视频缓存最大容量(MB)                     | 1000   |
+| image_mode                 | global  | 否   | 图片返回模式：url/base64                | "url"  |
+| image_cache_max_size_mb    | global  | 否   | 图片缓存最大容量(MB)                     | 512    |
+| video_cache_max_size_mb    | global  | 否   | 视频缓存最大容量(MB)                     | 1024   |
 | base_url                   | global  | 否   | 服务基础URL/图片访问基准                 | ""     |
 | api_key                    | grok    | 否   | API 密钥（可选加强安全）                | ""     |
 | proxy_url                  | grok    | 否   | HTTP代理服务器地址                      | ""     |

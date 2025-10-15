@@ -51,12 +51,17 @@ class GrokTokenManager:
         self.token_file = Path(__file__).parents[3] / "data" / "token.json"
         self._file_lock = asyncio.Lock()
         self.token_file.parent.mkdir(parents=True, exist_ok=True)
+        self._storage = None
 
         # 同步加载初始数据
         self._load_data()
         self._initialized = True
 
         logger.debug(f"[Token] 管理器初始化完成，文件: {self.token_file}")
+
+    def set_storage(self, storage) -> None:
+        """设置存储实例"""
+        self._storage = storage
 
     def _load_data(self) -> None:
         """同步加载Token数据（仅用于初始化）"""
@@ -77,11 +82,16 @@ class GrokTokenManager:
             self.token_data = default_data
 
     async def _save_data(self) -> None:
-        """异步保存Token数据到文件"""
+        """异步保存Token数据到存储"""
         try:
-            async with self._file_lock:
-                async with aiofiles.open(self.token_file, "w", encoding="utf-8") as f:
-                    await f.write(json.dumps(self.token_data, indent=2, ensure_ascii=False))
+            if not self._storage:
+                # 如果没有设置存储，使用传统文件保存方式（向后兼容）
+                async with self._file_lock:
+                    async with aiofiles.open(self.token_file, "w", encoding="utf-8") as f:
+                        await f.write(json.dumps(self.token_data, indent=2, ensure_ascii=False))
+            else:
+                # 使用存储抽象层
+                await self._storage.save_tokens(self.token_data)
         except IOError as e:
             logger.error(f"[Token] 保存Token数据失败: {str(e)}")
             raise GrokApiException(

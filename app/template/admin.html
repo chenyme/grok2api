@@ -10,6 +10,16 @@
         @keyframes slide-up{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
         .animate-slide-up{animation:slide-up .3s ease-out}
         .tab-btn{transition:all .2s ease}
+        .hover-card{position:relative;display:inline-block}
+        .hover-card-trigger{cursor:pointer}
+        .hover-card-content{position:absolute;left:50%;transform:translateX(-50%);background:hsl(0 0% 3.9%);color:hsl(0 0% 98%);padding:8px 12px;border-radius:6px;font-size:12px;font-weight:500;white-space:nowrap;z-index:9999;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .2s ease,transform .2s ease;box-shadow:0 4px 12px rgba(0,0,0,.25);border:1px solid hsl(0 0% 14.9%)}
+        .hover-card:hover .hover-card-content{opacity:1;visibility:visible}
+        .hover-card-content.top{bottom:100%;transform:translateX(-50%) translateY(-8px)}
+        .hover-card-content.bottom{top:100%;transform:translateX(-50%) translateY(8px)}
+        .hover-card-content::after{content:'';position:absolute;left:50%;transform:translateX(-50%);border:6px solid transparent;z-index:1000}
+        .hover-card-content.top::after{top:100%;border-top-color:hsl(0 0% 3.9%)}
+        .hover-card-content.bottom::after{bottom:100%;border-bottom-color:hsl(0 0% 3.9%)}
+        .hover-card-trigger:hover+.hover-card-content{opacity:1;visibility:visible}
         [title]{position:relative}
         [title]:hover::after{content:attr(title);position:absolute;bottom:100%;left:50%;transform:translateX(-50%) translateY(-4px);background:hsl(0 0% 3.9%);color:hsl(0 0% 98%);padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;z-index:1000;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.15)}
         [title]:hover::before{content:'';position:absolute;bottom:100%;left:50%;transform:translateX(-50%);border:4px solid transparent;border-top-color:hsl(0 0% 3.9%);z-index:1000}
@@ -26,8 +36,22 @@
                 <span class="font-bold text-xl">Grok2API</span>
                 <span class="text-xs text-gray-400">by @Chenyme</span>
             </div>
-            <div class="flex flex-1 items-center justify-between space-x-2 md:justify-end">
-                <nav class="flex items-center gap-1">
+            <div class="flex flex-1 items-center justify-end">
+                <div class="flex items-center gap-2">
+                    <div class="hover-card">
+                        <span id="storageMode" class="hover-card-trigger inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-muted text-muted-foreground border">
+                            <svg class="h-3 w-3 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                                <path d="m21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                                <path d="m3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                            </svg>
+                            <span id="storageModeText">FILE</span>
+                        </span>
+                        <div id="storageModeTooltip" class="hover-card-content top">
+                            加载中...
+                        </div>
+                    </div>
+                    <nav class="flex items-center gap-1">
                     <a
                         href="https://github.com/chenyme/grok2api/issues"
                         target="_blank"
@@ -498,7 +522,9 @@
         clearCache=async()=>{if(!confirm('确定要清理缓存吗？此操作将删除 /data/temp 目录中的所有文件！'))return;try{const r=await apiRequest('/api/cache/clear',{method:'POST'});if(!r)return;const d=await r.json();d.success?(showToast(`缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success'),await loadCacheSize()):showToast('清理失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('清理失败: '+e.message,'error')}},
         saveGlobalSettings=async()=>{const gc={admin_username:$('cfgAdminUser').value,log_level:$('cfgLogLevel').value,image_cache_max_size_mb:parseInt($('cfgImageCacheMaxSize').value)||500,video_cache_max_size_mb:parseInt($('cfgVideoCacheMaxSize').value)||1000,image_mode:$('cfgImageMode').value,base_url:$('cfgBaseUrl').value};if($('cfgAdminPass').value)gc.admin_password=$('cfgAdminPass').value;try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:gc,grok_config:d.data.grok})});if(!s)return;const sd=await s.json();sd.success?(showToast('全局配置保存成功','success'),$('cfgAdminPass').value=''):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}},
         saveGrokSettings=async()=>{const kc={api_key:$('cfgApiKey').value,proxy_url:$('cfgProxyUrl').value,cf_clearance:$('cfgCfClearance').value,x_statsig_id:$('cfgStatsigId').value,filtered_tags:$('cfgFilteredTags').value,temporary:$('cfgTemporary').value==='true',stream_chunk_timeout:parseInt($('cfgStreamChunkTimeout').value)||120,stream_first_response_timeout:parseInt($('cfgStreamFirstResponseTimeout').value)||30,stream_total_timeout:parseInt($('cfgStreamTotalTimeout').value)||600};try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:d.data.global,grok_config:kc})});if(!s)return;const sd=await s.json();sd.success?showToast('Grok配置保存成功','success'):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}};
-        window.addEventListener('DOMContentLoaded',()=>{checkAuth();refreshTokens();setInterval(()=>{loadStats();updateRemaining()},30000)});
+        const updateHoverCardPosition=(cardElement)=>{const trigger=cardElement.querySelector('.hover-card-trigger'),content=cardElement.querySelector('.hover-card-content');if(!trigger||!content)return;console.log('更新悬浮卡片位置',cardElement,trigger,content);const rect=trigger.getBoundingClientRect(),windowHeight=window.innerHeight,spaceAbove=rect.top,spaceBelow=windowHeight-rect.bottom;content.classList.remove('top','bottom');const originalVisibility=getComputedStyle(content).visibility,originalOpacity=getComputedStyle(content).opacity;content.style.visibility='hidden';content.style.opacity='1';const contentHeight=content.offsetHeight;content.style.visibility=originalVisibility;content.style.opacity=originalOpacity;const position=spaceAbove>contentHeight+10?'top':spaceBelow>contentHeight+10?'bottom':'top';content.classList.add(position);console.log('悬浮卡片位置:',position,'高度:',contentHeight,'上方空间:',spaceAbove,'下方空间:',spaceBelow)},
+        loadStorageMode=async()=>{try{const r=await apiRequest('/api/storage/mode');if(!r)return;const d=await r.json();if(d.success){const mode=d.data.mode;console.log('存储模式:',mode);$('storageModeText').textContent=mode;if(mode==='MYSQL'){$('storageMode').classList.add('bg-blue-50','text-blue-700','border-blue-200');$('storageModeTooltip').textContent='数据库连接模式 - 数据持久化存储，修改配置时可能稍慢但更安全'}else if(mode==='REDIS'){$('storageMode').classList.add('bg-purple-50','text-purple-700','border-purple-200');$('storageModeTooltip').textContent='Redis缓存模式 - 高速内存存储，数据持久化且读写性能极佳'}else{$('storageMode').classList.add('bg-green-50','text-green-700','border-green-200');$('storageModeTooltip').textContent='文件存储模式 - 本地文件存储，读写速度快'};updateHoverCardPosition($('storageMode').closest('.hover-card'))}}catch(e){console.error('加载存储模式失败:',e);$('storageModeText').textContent='FILE';$('storageMode').classList.add('bg-green-50','text-green-700','border-green-200');$('storageModeTooltip').textContent='文件存储模式 - 本地文件存储，读写速度快';updateHoverCardPosition($('storageMode').closest('.hover-card'))}};
+        window.addEventListener('DOMContentLoaded',()=>{checkAuth();loadStorageMode();refreshTokens();setInterval(()=>{loadStats();updateRemaining()},30000);window.addEventListener('resize',()=>{const hoverCard=$('storageMode').closest('.hover-card');hoverCard&&updateHoverCardPosition(hoverCard)});const hoverCard=$('storageMode').closest('.hover-card'),trigger=hoverCard?.querySelector('.hover-card-trigger'),content=hoverCard?.querySelector('.hover-card-content');if(trigger&&content){trigger.addEventListener('mouseenter',()=>{content.style.opacity='1';content.style.visibility='visible'});trigger.addEventListener('mouseleave',()=>{content.style.opacity='0';content.style.visibility='hidden'})}});
     </script>
 </body>
 </html>

@@ -1,20 +1,19 @@
-[global]
-admin_username = "admin"
-admin_password = "admin"
-log_level = "INFO"
-image_mode = "url"
-image_cache_max_size_mb = 500
-video_cache_max_size_mb = 1000
-base_url = ""
-
-
 [grok]
 api_key = ""
 proxy_url = ""
-stream_chunk_timeout = 120
-stream_first_response_timeout = 30
-stream_total_timeout = 600
-cf_clearance = ""
 temporary = true
-filtered_tags = "xaiartifact,xai:tool_usage_card,grok:render"
+cf_clearance = ""
 x_statsig_id = "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk="
+filtered_tags = "xaiartifact,xai:tool_usage_card,grok:render"
+stream_chunk_timeout = 120
+stream_total_timeout = 600
+stream_first_response_timeout = 30
+
+[global]
+base_url = ""
+log_level = "DEBUG"
+image_mode = "url"
+admin_password = "admin"
+admin_username = "admin"
+image_cache_max_size_mb = 512
+video_cache_max_size_mb = 1024

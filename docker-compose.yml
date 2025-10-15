@@ -6,6 +6,14 @@ services:
     volumes:
       - grok_data:/app/data
       - ./logs:/app/logs
+    environment:
+      # =====存储模式: file, mysql 或 redis=====
+      - STORAGE_MODE=file
+      # =====数据库连接 URL (仅在STORAGE_MODE=mysql或redis时需要)=====
+      # - DATABASE_URL=mysql://user:password@host:3306/grok2api
+
+      ## MySQL格式: mysql://user:password@host:port/database
+      ## Redis格式: redis://host:port/db 或 redis://user:password@host:port/db
 
 volumes:
   grok_data:
