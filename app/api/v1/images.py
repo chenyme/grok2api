@@ -29,11 +29,11 @@ async def get_image(img_path: str):
         
         if is_video:
             # 检查视频缓存
-            cache_path = video_cache_service.get_cached_video(original_path)
+            cache_path = video_cache_service.get_cached(original_path)
             media_type = "video/mp4"
         else:
             # 检查图片缓存
-            cache_path = image_cache_service.get_cached_image(original_path)
+            cache_path = image_cache_service.get_cached(original_path)
             media_type = "image/jpeg"
 
         if cache_path and cache_path.exists():
