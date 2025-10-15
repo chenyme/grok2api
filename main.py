@@ -5,6 +5,9 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from app.core.logger import logger
 from app.core.exception import register_exception_handlers
+from app.core.storage import storage_manager
+from app.core.config import setting
+from app.services.grok.token import token_manager
 from app.api.v1.chat import router as chat_router
 from app.api.v1.models import router as models_router
 from app.api.v1.images import router as images_router
@@ -14,8 +17,23 @@ from app.api.admin.manage import router as admin_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    logger.debug("[Grok2API] 应用启动成功")
+    # 初始化存储管理器
+    await storage_manager.init()
+    
+    # 设置存储到配置和token管理器
+    storage = storage_manager.get_storage()
+    setting.set_storage(storage)
+    token_manager.set_storage(storage)
+    
+    # 重新加载配置和token数据（从存储同步）
+    await setting.reload()
+    token_manager._load_data()
+    
+    logger.info("[Grok2API] 应用启动成功")
     yield
+    
+    # 关闭存储连接
+    await storage_manager.close()
     logger.info("[Grok2API] 应用关闭成功")
 
 

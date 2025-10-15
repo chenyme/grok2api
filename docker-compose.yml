@@ -6,6 +6,11 @@ services:
     volumes:
       - grok_data:/app/data
       - ./logs:/app/logs
+    environment:
+      # 数据存储模式（ file/mysql 二选一 ）
+      - STORAGE_MODE=file 
+      # MySQL数据库 URL (仅在STORAGE_MODE=mysql时需要 示例：mysql://user:password@host:port/database)
+      # - DATABASE_URL=mysql://
 
 volumes:
   grok_data:

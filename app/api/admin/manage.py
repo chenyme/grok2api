@@ -439,28 +439,13 @@ class StreamTimeoutSettings(BaseModel):
 async def update_settings(request: UpdateSettingsRequest, _: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """更新全局配置"""
     try:
-        import toml
-        import aiofiles
         logger.debug("[Admin] 更新全局配置")
 
-        # 异步读取现有配置
-        async with aiofiles.open(setting.config_path, "r", encoding="utf-8") as f:
-            content = await f.read()
-            config = toml.loads(content)
-
-        # 更新配置
-        if request.global_config:
-            config["global"].update(request.global_config)
-        if request.grok_config:
-            config["grok"].update(request.grok_config)
-
-        # 异步写回配置文件
-        async with aiofiles.open(setting.config_path, "w", encoding="utf-8") as f:
-            await f.write(toml.dumps(config))
-
-        # 重新加载配置
-        setting.global_config = setting.load("global")
-        setting.grok_config = setting.load("grok")
+        # 使用ConfigManager的save方法（支持存储抽象层）
+        await setting.save(
+            global_config=request.global_config,
+            grok_config=request.grok_config
+        )
 
         logger.debug("[Admin] 配置更新成功")
         return {"success": True, "message": "配置更新成功"}
@@ -705,4 +690,32 @@ async def get_stats(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
         raise HTTPException(
             status_code=500,
             detail={"error": f"获取统计信息失败: {str(e)}", "code": "STATS_ERROR"}
+        )
+
+
+@router.get("/api/storage/mode")
+async def get_storage_mode(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+    """
+    获取当前存储模式
+
+    返回当前的存储模式（file/mysql）。
+    """
+    try:
+        logger.debug("[Admin] 获取存储模式")
+
+        import os
+        storage_mode = os.getenv("STORAGE_MODE", "file").upper()
+
+        return {
+            "success": True,
+            "data": {
+                "mode": storage_mode
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"[Admin] 获取存储模式异常 - 错误: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"获取存储模式失败: {str(e)}", "code": "STORAGE_MODE_ERROR"}
         )
