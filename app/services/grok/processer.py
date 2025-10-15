@@ -112,12 +112,12 @@ class GrokResponseProcessor:
                                 video_path = video_url.replace('/', '-')
                                 base_url = setting.global_config.get("base_url", "")
                                 local_video_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
-                                content = f'<video src="{local_video_url}" controls="controls" width="500" height="300"></video>'
+                                content = f'<video src="{local_video_url}" controls="controls" width="500" height="300"></video>\n'
                             else:
-                                content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>'
+                                content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>\n'
                         except Exception as e:
                             logger.warning(f"[Processor] 缓存视频失败: {e}")
-                            content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>'
+                            content = f'<video src="{full_video_url}" controls="controls" width="500" height="300"></video>\n'
                         
                         # 返回视频响应
                         result = OpenAIChatCompletionResponse(
@@ -322,12 +322,12 @@ class GrokResponseProcessor:
                                             video_path = v_url.replace('/', '-')
                                             base_url = setting.global_config.get("base_url", "")
                                             local_video_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
-                                            content += f'<video src="{local_video_url}" controls="controls"></video>'
+                                            content += f'<video src="{local_video_url}" controls="controls"></video>\n'
                                         else:
-                                            content += f'<video src="{full_video_url}" controls="controls"></video>'
+                                            content += f'<video src="{full_video_url}" controls="controls"></video>\n'
                                     except Exception as e:
                                         logger.warning(f"[Processor] 缓存视频失败: {e}")
-                                        content += f'<video src="{full_video_url}" controls="controls"></video>'
+                                        content += f'<video src="{full_video_url}" controls="controls"></video>\n'
 
                             yield make_chunk(content)
                             timeout_manager.mark_chunk_received()
