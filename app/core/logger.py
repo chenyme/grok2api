@@ -32,20 +32,30 @@ class LoggerManager:
         if self.logger.handlers:
             return
 
+        # 创建格式器
+        formatter = logging.Formatter(log_format)
+
         # 控制台处理器
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(log_level)
-        console_handler.setFormatter(logging.Formatter(log_format))
+        console_handler.setFormatter(formatter)
 
         # 文件处理器
         file_handler = RotatingFileHandler(
             log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
         )
         file_handler.setLevel(log_level)
-        file_handler.setFormatter(logging.Formatter(log_format))
+        file_handler.setFormatter(formatter)
 
+        # 添加处理器到根日志器
         self.logger.addHandler(console_handler)
         self.logger.addHandler(file_handler)
+
+        # 配置第三方库日志级别，避免过多调试信息
+        logging.getLogger("asyncio").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn").setLevel(logging.INFO)
+        logging.getLogger("fastapi").setLevel(logging.INFO)
+        logging.getLogger("aiomysql").setLevel(logging.WARNING)
 
         LoggerManager._initialized = True
 

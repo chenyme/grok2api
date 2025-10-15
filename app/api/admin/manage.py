@@ -698,7 +698,7 @@ async def get_storage_mode(_: bool = Depends(verify_admin_session)) -> Dict[str,
     """
     获取当前存储模式
 
-    返回当前的存储模式（file/mysql）。
+    返回当前的存储模式（file/mysql/redis）。
     """
     try:
         logger.debug("[Admin] 获取存储模式")
