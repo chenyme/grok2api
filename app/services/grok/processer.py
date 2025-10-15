@@ -348,6 +348,9 @@ class GrokResponseProcessor:
                             # 获取图片返回模式
                             image_mode = setting.global_config.get("image_mode", "url")
 
+                            # 初始化内容变量
+                            content = ""
+
                             # 生成图片链接并缓存
                             for img in model_resp.get("generatedImageUrls", []):
                                 try:
@@ -406,6 +409,8 @@ class GrokResponseProcessor:
                                 except Exception as e:
                                     logger.warning(f"[Processor] 处理图片失败: {e}")
                                     content += f"![Generated Image](https://assets.grok.com/{img})\n"
+
+                            # 发送内容
                             yield make_chunk(content.strip(), "stop")
                             timeout_manager.mark_chunk_received()
                             return
