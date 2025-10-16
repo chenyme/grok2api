@@ -13,13 +13,28 @@ from app.api.v1.models import router as models_router
 from app.api.v1.images import router as images_router
 from app.api.admin.manage import router as admin_router
 
+# 导入MCP服务器
+from app.mcp import mcp
 
+# 创建MCP的FastAPI应用实例
+mcp_app = mcp.http_app(stateless_http=True)
+
+# 2. 定义应用生命周期
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    # 初始化存储管理器
-    await storage_manager.init()
+    """
+    启动顺序:
+    1. 初始化核心服务 (storage, settings, token_manager)
+    2. 启动MCP服务生命周期
     
+    关闭顺序 (LIFO):
+    1. 关闭MCP服务生命周期
+    2. 关闭核心服务
+    """
+    # --- 启动过程 ---
+    # 1. 初始化核心服务
+    await storage_manager.init()
+
     # 设置存储到配置和token管理器
     storage = storage_manager.get_storage()
     setting.set_storage(storage)
@@ -28,13 +43,26 @@ async def lifespan(app: FastAPI):
     # 重新加载配置和token数据（从存储同步）
     await setting.reload()
     token_manager._load_data()
+    logger.info("[Grok2API] 核心服务初始化完成")
+
+    # 2. 管理MCP服务的生命周期
+    mcp_lifespan_context = mcp_app.lifespan(app)
+    await mcp_lifespan_context.__aenter__()
     
     logger.info("[Grok2API] 应用启动成功")
-    yield
+    logger.info("[MCP] MCP服务端点: /mcp")
     
-    # 关闭存储连接
-    await storage_manager.close()
-    logger.info("[Grok2API] 应用关闭成功")
+    try:
+        yield
+    finally:
+        # --- 关闭过程 ---
+        # 1. 退出MCP服务的生命周期
+        await mcp_lifespan_context.__aexit__(None, None, None)
+        logger.info("[MCP] MCP服务已关闭")
+        
+        # 2. 关闭核心服务
+        await storage_manager.close()
+        logger.info("[Grok2API] 应用关闭成功")
 
 
 # 初始化日志
@@ -43,7 +71,7 @@ logger.info("[Grok2API] 应用正在启动...")
 # 创建FastAPI应用
 app = FastAPI(
     title="Grok2API",
-    description="Grok API 转换服务",
+    description="Grok API 转换服务 (包含MCP端点)",
     version="1.0.3",
     lifespan=lifespan
 )
@@ -75,6 +103,9 @@ async def health_check():
         "service": "Grok2API",
         "version": "1.0.3"
     }
+
+# 挂载MCP服务器 (最后挂载，避免覆盖其他路由)
+app.mount("", mcp_app)
 
 
 if __name__ == "__main__":

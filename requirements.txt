@@ -9,3 +9,4 @@ pydantic==2.12.2
 aiofiles==25.1.0
 aiomysql==0.2.0
 redis==6.4.0
+fastmcp>=2.3.0
