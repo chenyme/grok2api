@@ -19,7 +19,6 @@ async def ask_grok(
     system_prompt: str = None
 ) -> str:
     """
-<<<<<<< HEAD
     调用Grok AI进行对话，尤其适用于当用户询问最新信息，需要调用搜索功能，或是想了解社交平台动态（如Twitter(X)、Reddit等）时。
 
     Args:
