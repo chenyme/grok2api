@@ -146,9 +146,15 @@ class GrokClient:
             raise GrokApiException("认证令牌缺失", "NO_AUTH_TOKEN")
 
         try:
-            # 构建请求头和代理
+            # 构建请求头
             headers = GrokClient._build_headers(auth_token)
-            proxy_config = GrokClient._get_proxy()
+            
+            # 获取代理配置
+            proxy_url = setting.grok_config.get("proxy_url", "")
+            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+            
+            if proxy_url:
+                logger.debug(f"[Client] 使用代理: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
 
             # 构建请求参数
             request_kwargs = {
@@ -157,7 +163,7 @@ class GrokClient:
                 "impersonate": IMPERSONATE_BROWSER,
                 "timeout": REQUEST_TIMEOUT,
                 "stream": True,
-                "proxies": proxy_config if proxy_config else None
+                "proxies": proxies
             }
 
             # 在线程池中执行同步HTTP请求，避免阻塞事件循环
@@ -199,14 +205,6 @@ class GrokClient:
         headers["Cookie"] = f"{auth_token};{cf_clearance}" if cf_clearance else auth_token
 
         return headers
-
-    @staticmethod
-    def _get_proxy() -> Dict[str, str]:
-        """获取代理配置"""
-        proxy_url = setting.grok_config.get("proxy_url", "")
-        if proxy_url:
-            return {"http": proxy_url, "https": proxy_url}
-        return {}
 
     @staticmethod
     def _handle_error(response, auth_token: str):

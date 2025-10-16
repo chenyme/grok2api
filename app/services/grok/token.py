@@ -258,6 +258,9 @@ class GrokTokenManager:
             # 获取代理配置
             proxy_url = setting.grok_config.get("proxy_url", "")
             proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+            
+            if proxy_url:
+                logger.debug(f"[Token] 使用代理: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
 
             # 发送异步请求
             async with AsyncSession() as session:

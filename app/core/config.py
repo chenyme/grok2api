@@ -25,7 +25,15 @@ class ConfigManager:
         """配置加载器"""
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
-                return toml.load(f)[section]
+                config = toml.load(f)[section]
+                
+                # 自动将 SOCKS5 转换为 SOCKS5H
+                if section == "grok" and "proxy_url" in config:
+                    proxy_url = config["proxy_url"]
+                    if proxy_url and proxy_url.startswith("socks5://"):
+                        config["proxy_url"] = proxy_url.replace("socks5://", "socks5h://", 1)
+                
+                return config
         except Exception as e:
             raise Exception(f"[Setting] 配置加载失败: {e}")
     
