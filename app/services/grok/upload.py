@@ -61,7 +61,11 @@ class ImageUploadManager:
 
             cf_clearance = setting.grok_config.get("cf_clearance", "")
             cookie = f"{auth_token};{cf_clearance}" if cf_clearance else auth_token
+            
             proxy_url = setting.grok_config.get("proxy_url", "")
+            if proxy_url:
+                logger.debug(f"[Upload] 使用代理: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
+
             proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
             # 发送异步请求

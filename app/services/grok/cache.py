@@ -48,6 +48,9 @@ class CacheService:
 
             proxy_url = setting.grok_config.get("proxy_url")
             proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else {}
+            
+            if proxy_url:
+                logger.debug(f"[{self.cache_type.upper()}Cache] 使用代理: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
 
             async with AsyncSession() as session:
                 logger.debug(f"[{self.cache_type.upper()}Cache] 开始下载: https://assets.grok.com{file_path}")
