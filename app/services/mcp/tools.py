@@ -38,7 +38,7 @@ async def ask_grok_impl(
             "stream": True
         }
 
-        logger.info(f"[MCP] ask_grok调用 - 模型:{model}, 问题长度:{len(query)}")
+        logger.info(f"[MCP] ask_grok 调用, 模型: {model}")
 
         # 调用Grok客户端(流式)
         response_iterator = await GrokClient.openai_to_grok(request_data)
@@ -66,7 +66,7 @@ async def ask_grok_impl(
                     continue
 
         result = "".join(content_parts)
-        logger.info(f"[MCP] ask_grok完成 - 响应长度:{len(result)}")
+        logger.info(f"[MCP] ask_grok 完成, 响应长度: {len(result)}")
         return result
 
     except GrokApiException as e:

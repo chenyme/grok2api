@@ -2,13 +2,39 @@
 """FastMCP服务器实例"""
 
 from fastmcp import FastMCP
-from app.mcp.tools import ask_grok_impl
+from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+from app.services.mcp.tools import ask_grok_impl
+from app.core.config import setting
 
-# 创建FastMCP实例 - 不在这里设置stateless_http
-mcp = FastMCP(
-    name="Grok2API-MCP",
-    instructions="MCP server providing Grok AI chat capabilities. Use ask_grok tool to interact with Grok AI models."
-)
+
+def create_mcp_server() -> FastMCP:
+    """创建MCP服务器实例，如果配置了API密钥则启用认证"""
+    # 检查是否配置了API密钥
+    api_key = setting.grok_config.get("api_key")
+    
+    # 如果配置了API密钥，则启用静态token验证
+    auth = None
+    if api_key:
+        auth = StaticTokenVerifier(
+            tokens={
+                api_key: {
+                    "client_id": "grok2api-client",
+                    "scopes": ["read", "write", "admin"]
+                }
+            },
+            required_scopes=["read"]
+        )
+    
+    # 创建FastMCP实例
+    return FastMCP(
+        name="Grok2API-MCP",
+        instructions="MCP server providing Grok AI chat capabilities. Use ask_grok tool to interact with Grok AI models.",
+        auth=auth
+    )
+
+
+# 创建全局MCP实例
+mcp = create_mcp_server()
 
 
 # 注册ask_grok工具

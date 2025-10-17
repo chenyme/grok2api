@@ -7,6 +7,27 @@ from logging.handlers import RotatingFileHandler
 from app.core.config import setting
 
 
+class MCPLogFilter(logging.Filter):
+    """MCP 日志过滤器 - 过滤掉包含大量数据的 DEBUG 日志"""
+
+    def filter(self, record):
+        # 过滤掉包含原始字节数据的 SSE 日志
+        if record.name == "sse_starlette.sse" and "chunk: b'" in record.getMessage():
+            return False
+
+        # 过滤掉 SSE 的一些冗余日志
+        if record.name == "sse_starlette.sse" and record.levelno == logging.DEBUG:
+            msg = record.getMessage()
+            if any(x in msg for x in ["Got event:", "Closing", "chunk:"]):
+                return False
+
+        # 过滤掉 MCP streamable_http 的一些 DEBUG 日志
+        if "mcp.server.streamable_http" in record.name and record.levelno == logging.DEBUG:
+            return False
+
+        return True
+
+
 class LoggerManager:
     """日志管理器"""
 
@@ -35,10 +56,14 @@ class LoggerManager:
         # 创建格式器
         formatter = logging.Formatter(log_format)
 
+        # 创建日志过滤器
+        mcp_filter = MCPLogFilter()
+
         # 控制台处理器
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(log_level)
         console_handler.setFormatter(formatter)
+        console_handler.addFilter(mcp_filter)
 
         # 文件处理器
         file_handler = RotatingFileHandler(
@@ -46,6 +71,7 @@ class LoggerManager:
         )
         file_handler.setLevel(log_level)
         file_handler.setFormatter(formatter)
+        file_handler.addFilter(mcp_filter)
 
         # 添加处理器到根日志器
         self.logger.addHandler(console_handler)
@@ -56,6 +82,10 @@ class LoggerManager:
         logging.getLogger("uvicorn").setLevel(logging.INFO)
         logging.getLogger("fastapi").setLevel(logging.INFO)
         logging.getLogger("aiomysql").setLevel(logging.WARNING)
+
+        # FastMCP 相关日志 - 关闭
+        logging.getLogger("mcp").setLevel(logging.CRITICAL) 
+        logging.getLogger("fastmcp").setLevel(logging.CRITICAL)
 
         LoggerManager._initialized = True
 

@@ -13,11 +13,12 @@ from app.api.v1.models import router as models_router
 from app.api.v1.images import router as images_router
 from app.api.admin.manage import router as admin_router
 
-# 导入MCP服务器
-from app.mcp import mcp
+# 导入MCP服务器（认证配置在server.py中完成）
+from app.services.mcp import mcp
 
 # 创建MCP的FastAPI应用实例
-mcp_app = mcp.http_app(stateless_http=True)
+# 使用流式HTTP传输，支持高效的双向流式通信
+mcp_app = mcp.http_app(stateless_http=True, transport="streamable-http")
 
 # 2. 定义应用生命周期
 @asynccontextmanager
@@ -40,7 +41,7 @@ async def lifespan(app: FastAPI):
     setting.set_storage(storage)
     token_manager.set_storage(storage)
     
-    # 重新加载配置和token数据（从存储同步）
+    # 重新加载配置和token数据
     await setting.reload()
     token_manager._load_data()
     logger.info("[Grok2API] 核心服务初始化完成")
@@ -48,9 +49,9 @@ async def lifespan(app: FastAPI):
     # 2. 管理MCP服务的生命周期
     mcp_lifespan_context = mcp_app.lifespan(app)
     await mcp_lifespan_context.__aenter__()
-    
+    logger.info("[MCP] MCP服务初始化完成")
+
     logger.info("[Grok2API] 应用启动成功")
-    logger.info("[MCP] MCP服务端点: /mcp")
     
     try:
         yield
@@ -71,8 +72,8 @@ logger.info("[Grok2API] 应用正在启动...")
 # 创建FastAPI应用
 app = FastAPI(
     title="Grok2API",
-    description="Grok API 转换服务 (包含MCP端点)",
-    version="1.0.3",
+    description="Grok API 转换服务",
+    version="1.3.1",
     lifespan=lifespan
 )
 
@@ -85,12 +86,12 @@ app.include_router(models_router, prefix="/v1")
 app.include_router(images_router)
 app.include_router(admin_router)
 
-# 挂载静态文件（注意：这个应该在API路由之后，避免拦截API请求）
+# 挂载静态文件
 app.mount("/static", StaticFiles(directory="app/template"), name="template")
 
 @app.get("/")
 async def root():
-    """根路径 - 重定向到登录页"""
+    """根路径"""
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/login")
 
@@ -104,7 +105,7 @@ async def health_check():
         "version": "1.0.3"
     }
 
-# 挂载MCP服务器 (最后挂载，避免覆盖其他路由)
+# 挂载MCP服务器 
 app.mount("", mcp_app)
 
 
