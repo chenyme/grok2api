@@ -174,12 +174,12 @@ class GrokClient:
             # 构建请求头
             headers = GrokClient._build_headers(auth_token)
             
-            # 获取代理配置
-            proxy_url = setting.grok_config.get("proxy_url", "")
+            # 使用服务代理
+            proxy_url = setting.get_service_proxy()
             proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
             
             if proxy_url:
-                logger.debug(f"[Client] 使用代理: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
+                logger.debug(f"[Client] 使用服务代理: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
 
             # 构建请求参数
             request_kwargs = {
