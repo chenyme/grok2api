@@ -80,6 +80,10 @@ logs/
 *.log
 *.log.*
 
+# 数据临时文件
+data/temp/
+data/token.json
+
 # 数据库文件
 *.db
 *.sqlite
