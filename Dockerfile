@@ -32,6 +32,15 @@ COPY . .
 RUN mkdir -p /app/logs /app/data/temp && \
     echo '{"ssoNormal": {}, "ssoSuper": {}}' > /app/data/token.json
 
+# 复制应用代码
+COPY app/ ./app/
+COPY main.py .
+COPY data/setting.toml ./data/
+
+# 删除 Python 字节码和缓存
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
