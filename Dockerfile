@@ -1,11 +1,9 @@
-FROM python:3.11-slim AS base
+# 构建阶段 - 使用完整镜像编译依赖
+FROM python:3.11-slim AS builder
 
-WORKDIR /app
+WORKDIR /build
 
-# 安装依赖阶段
-FROM base AS dependencies
-
-# 安装编译所需的系统依赖
+# 安装编译工具
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     gcc \
@@ -13,31 +11,39 @@ RUN apt-get update && \
     libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制并安装 Python 依赖
+# 安装依赖到独立目录
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --compile -r requirements.txt && \
-    find /usr/local/lib/python3.11/site-packages -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
-    find /usr/local/lib/python3.11/site-packages -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
-    find /usr/local/lib/python3.11/site-packages -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
-    find /usr/local/lib/python3.11/site-packages -type f -name "*.pyc" -delete && \
-    find /usr/local/lib/python3.11/site-packages -type f -name "*.pyo" -delete
+RUN pip install --no-cache-dir --prefix=/install --compile -r requirements.txt
 
-# 最终运行阶段
-FROM python:3.11-slim AS runtime
+# 清理 Python 包中的冗余文件
+RUN find /install -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
+    find /install -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
+    find /install -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+    find /install -type d -name "*.dist-info" -exec sh -c 'rm -f "$1"/RECORD "$1"/INSTALLER' _ {} \; && \
+    find /install -type f -name "*.pyc" -delete && \
+    find /install -type f -name "*.pyo" -delete && \
+    find /install -type f -name "*.c" -delete && \
+    find /install -type f -name "*.h" -delete && \
+    find /install -type f -name "*.txt" -path "*/pip/*" -delete 2>/dev/null || true
+
+# 运行阶段 - 使用最小镜像
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# 只安装运行时必需的系统依赖
+# 只安装必要的运行时库
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     libffi8 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /tmp/* /var/tmp/*
+    && rm -rf /tmp/* /var/tmp/* \
+    && rm -rf /usr/share/doc/* \
+    && rm -rf /usr/share/man/* \
+    && rm -rf /var/cache/apt/*
 
-# 复制必要的 Python 依赖
-COPY --from=dependencies /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=dependencies /usr/local/bin /usr/local/bin
+# 从构建阶段复制已安装的包
+COPY --from=builder /install /usr/local
 
 # 创建必要的目录和文件
 RUN mkdir -p /app/logs /app/data/temp/image /app/data/temp/video && \
@@ -48,6 +54,10 @@ COPY app/ ./app/
 COPY main.py .
 COPY data/setting.toml ./data/
 
-EXPOSE 8000
+# 删除 Python 字节码和缓存
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 8001
+
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
