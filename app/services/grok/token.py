@@ -320,7 +320,7 @@ class GrokTokenManager:
 
         错误码说明：
         - 401: SSO Token失效，会标记Token为expired
-        - 403: x-statsig-id失效，不影响Token状态
+        - 403: 服务器IP被Block，不影响Token状态
 
         Args:
             auth_token: 完整的认证Token (格式: sso-rw=xxx;sso=xxx)
@@ -328,9 +328,12 @@ class GrokTokenManager:
             error_message: 错误信息
         """
         try:
-            # 403错误是x-statsig-id失效，不是Token问题
+            # 403错误是服务器IP被Block，不是Token问题
             if status_code == STATSIG_INVALID_CODE:
-                logger.warning(f"[Token] x-statsig-id失效 (403)，需要更新配置文件中的x_statsig_id")
+                logger.warning(
+                    f"[Token] 服务器IP被Block (403)，请 1. 更换服务器IP 2. 使用代理IP "
+                    f"3. 服务器登陆Grok.com，过盾后F12找到CF值填入后台设置"
+                )
                 return
 
             sso_value = self._extract_sso(auth_token)

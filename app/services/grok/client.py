@@ -19,6 +19,7 @@ from app.core.exception import GrokApiException
 GROK_API_ENDPOINT = "https://grok.com/rest/app-chat/conversations/new"
 REQUEST_TIMEOUT = 120
 IMPERSONATE_BROWSER = "chrome133a"
+MAX_RETRY = 3  # 最大重试次数
 
 
 class GrokClient:
@@ -35,31 +36,55 @@ class GrokClient:
 
         # 提取消息内容和图片URL
         content, image_urls = GrokClient._extract_content(messages)
-
-        # 获取认证令牌和模型信息
-        auth_token = token_manager.get_token(model)
         model_name, model_mode = Models.to_grok(model)
-
-        # 检查是否为视频模型
         is_video_model = Models.get_model_info(model).get("is_video_model", False)
         
-        # 视频模型特殊处理：只允许一张图片
-        if is_video_model and len(image_urls) > 1:
-            logger.warning(f"[Client] 视频模型只允许一张图片，当前有{len(image_urls)}张，只使用第一张")
-            image_urls = image_urls[:1]
-        
-        # 上传图片并获取附件ID列表
-        image_attachments = await GrokClient._upload_imgs(image_urls, auth_token)
-
-        # 视频模型：文本添加 --mode=custom
+        # 视频模型特殊处理
         if is_video_model:
+            if len(image_urls) > 1:
+                logger.warning(f"[Client] 视频模型只允许一张图片，当前有{len(image_urls)}张，只使用第一张")
+                image_urls = image_urls[:1]
             content = f"{content} --mode=custom"
             logger.debug(f"[Client] 视频模型文本处理: {content}")
 
-        # 构建Grok请求载荷
-        payload = GrokClient._build_payload(content, model_name, model_mode, image_attachments, is_video_model)
+        # 重试逻辑
+        return await GrokClient._try(model, content, image_urls, model_name, model_mode, is_video_model, stream)
 
-        return await GrokClient._send_request(payload, auth_token, model, stream)
+    @staticmethod
+    async def _try(model: str, content: str, image_urls: List[str], model_name: str, model_mode: str, is_video: bool, stream: bool):
+        """带重试的请求执行"""
+        last_err = None
+        
+        for i in range(MAX_RETRY):
+            try:
+                # 获取token
+                auth_token = token_manager.get_token(model)
+                
+                # 上传图片
+                imgs = await GrokClient._upload_imgs(image_urls, auth_token)
+                
+                # 构建并发送请求
+                payload = GrokClient._build_payload(content, model_name, model_mode, imgs, is_video)
+                return await GrokClient._send_request(payload, auth_token, model, stream)
+                
+            except GrokApiException as e:
+                last_err = e
+                # 401/429 可重试，其他错误直接抛出
+                if e.error_code not in ["HTTP_ERROR", "NO_AVAILABLE_TOKEN"]:
+                    raise
+                
+                # 检查是否为可重试的状态码
+                status = e.context.get("status") if e.context else None
+                if status not in [401, 429]:
+                    raise
+                
+                if i < MAX_RETRY - 1:
+                    logger.warning(f"[Client] 请求失败(状态码:{status}), 重试 {i+1}/{MAX_RETRY}")
+                    await asyncio.sleep(0.5)  # 短暂延迟
+                else:
+                    logger.error(f"[Client] 重试{MAX_RETRY}次后仍失败")
+        
+        raise last_err if last_err else GrokApiException("请求失败", "REQUEST_ERROR")
 
     @staticmethod
     def _extract_content(messages: List[Dict]) -> Tuple[str, List[str]]:
