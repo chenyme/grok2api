@@ -53,13 +53,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # 分支推送：生成分支名标签 (main分支推送latest)
+            # 分支推送
             type=ref,event=branch,suffix=-${{ matrix.suffix }}
-            # Tag推送：生成版本标签 (v1.0.0)
-            type=ref,event=tag,suffix=-${{ matrix.suffix }}
-            # 语义化版本：v1.0.0格式
+            # 语义化版本：完整版本号
             type=semver,pattern={{version}},suffix=-${{ matrix.suffix }}
-            # 最新标签：只有main分支push时生成
+            # latest标签
             type=raw,value=latest-${{ matrix.suffix }},enable={{is_default_branch}}
 
       - name: Build and push Docker image
@@ -98,16 +96,14 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
-            type=ref,event=tag
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
       
       - name: Create and push manifest
         run: |
           TAGS="${{ steps.meta.outputs.tags }}"
           for tag in $TAGS; do
+            echo "合并标签: $tag"
             docker buildx imagetools create -t $tag \
               ${tag}-amd64 \
               ${tag}-arm64
