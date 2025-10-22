@@ -70,6 +70,7 @@ class TokenInfo(BaseModel):
     heavy_remaining_queries: int
     status: str  # "未使用"、"限流中"、"失效"、"正常"
     tags: List[str] = []  # 标签列表
+    note: str = ""  # 备注
 
 
 class TokenListResponse(BaseModel):
@@ -302,7 +303,8 @@ async def list_tokens(_: bool = Depends(verify_admin_session)) -> TokenListRespo
                 remaining_queries=data.get("remainingQueries", -1),
                 heavy_remaining_queries=data.get("heavyremainingQueries", -1),
                 status=get_token_status(data, "sso"),
-                tags=data.get("tags", [])  # 向后兼容，如果没有tags字段则返回空列表
+                tags=data.get("tags", []),  # 向后兼容，如果没有tags字段则返回空列表
+                note=data.get("note", "")  # 向后兼容，如果没有note字段则返回空字符串
             ))
 
         # 处理Super Token
@@ -315,7 +317,8 @@ async def list_tokens(_: bool = Depends(verify_admin_session)) -> TokenListRespo
                 remaining_queries=data.get("remainingQueries", -1),
                 heavy_remaining_queries=data.get("heavyremainingQueries", -1),
                 status=get_token_status(data, "ssoSuper"),
-                tags=data.get("tags", [])  # 向后兼容，如果没有tags字段则返回空列表
+                tags=data.get("tags", []),  # 向后兼容，如果没有tags字段则返回空列表
+                note=data.get("note", "")  # 向后兼容，如果没有note字段则返回空字符串
             ))
 
         normal_count = len(normal_tokens)
@@ -801,4 +804,156 @@ async def get_all_tags(_: bool = Depends(verify_admin_session)) -> Dict[str, Any
         raise HTTPException(
             status_code=500,
             detail={"error": f"获取标签失败: {str(e)}", "code": "GET_TAGS_ERROR"}
+        )
+
+
+class UpdateTokenNoteRequest(BaseModel):
+    """更新Token备注请求"""
+    token: str
+    token_type: str
+    note: str
+
+
+@router.post("/api/tokens/note")
+async def update_token_note(
+    request: UpdateTokenNoteRequest,
+    _: bool = Depends(verify_admin_session)
+) -> Dict[str, Any]:
+    """
+    更新Token备注
+    
+    为指定Token添加或修改备注信息。
+    """
+    try:
+        logger.debug(f"[Admin] 更新Token备注 - Token: {request.token[:10]}...")
+
+        # 验证并转换token类型
+        token_type = validate_token_type(request.token_type)
+
+        # 更新备注
+        await token_manager.update_token_note(request.token, token_type, request.note)
+
+        logger.debug(f"[Admin] Token备注更新成功 - Token: {request.token[:10]}...")
+
+        return {
+            "success": True,
+            "message": "备注更新成功",
+            "note": request.note
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Admin] Token备注更新异常 - Token: {request.token[:10]}..., 错误: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"更新备注失败: {str(e)}", "code": "UPDATE_NOTE_ERROR"}
+        )
+
+
+class TestTokenRequest(BaseModel):
+    """测试Token请求"""
+    token: str
+    token_type: str
+
+
+@router.post("/api/tokens/test")
+async def test_token(
+    request: TestTokenRequest,
+    _: bool = Depends(verify_admin_session)
+) -> Dict[str, Any]:
+    """
+    测试Token可用性
+
+    通过发送速率限制检查请求来验证Token是否有效。
+    根据不同的HTTP状态码进行相应的处理：
+    - 401: Token失效
+    - 403: 服务器被block，不改变Token状态
+    - 其他错误: 设置为限流状态
+    """
+    try:
+        logger.debug(f"[Admin] 测试Token - Token: {request.token[:10]}...")
+
+        # 验证并转换token类型
+        token_type = validate_token_type(request.token_type)
+
+        # 构造完整的auth token
+        auth_token = f"sso-rw={request.token};sso={request.token}"
+
+        # 使用check_limits方法测试token
+        result = await token_manager.check_limits(auth_token, "grok-4-fast")
+
+        if result:
+            logger.debug(f"[Admin] Token测试成功 - Token: {request.token[:10]}...")
+            return {
+                "success": True,
+                "message": "Token有效",
+                "data": {
+                    "valid": True,
+                    "remaining_queries": result.get("remainingTokens", -1),
+                    "limit": result.get("limit", -1)
+                }
+            }
+        else:
+            # 测试失败，check_limits方法已经调用了record_failure处理错误
+            # 现在检查token的状态来判断错误类型
+            logger.warning(f"[Admin] Token测试失败 - Token: {request.token[:10]}...")
+
+            # 检查token当前状态
+            all_tokens = token_manager.get_tokens()
+            token_data = all_tokens.get(token_type.value, {}).get(request.token)
+
+            if token_data:
+                if token_data.get("status") == "expired":
+                    # Token被标记为失效（401错误）
+                    return {
+                        "success": False,
+                        "message": "Token已失效",
+                        "data": {
+                            "valid": False,
+                            "error_type": "expired",
+                            "error_code": 401
+                        }
+                    }
+                elif token_data.get("remainingQueries") == 0:
+                    # Token被设置为限流状态（其他错误）
+                    return {
+                        "success": False,
+                        "message": "Token已被限流",
+                        "data": {
+                            "valid": False,
+                            "error_type": "limited",
+                            "error_code": "other"
+                        }
+                    }
+                else:
+                    # 可能是403错误或其他网络问题，token状态未变
+                    return {
+                        "success": False,
+                        "message": "服务器被block或网络错误",
+                        "data": {
+                            "valid": False,
+                            "error_type": "blocked",
+                            "error_code": 403
+                        }
+                    }
+            else:
+                # 找不到token数据
+                return {
+                    "success": False,
+                    "message": "Token数据异常",
+                    "data": {
+                        "valid": False,
+                        "error_type": "unknown",
+                        "error_code": "data_error"
+                    }
+                }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Admin] Token测试异常 - Token: {request.token[:10]}..., 错误: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"测试Token失败: {str(e)}", "code": "TEST_TOKEN_ERROR"}
         )

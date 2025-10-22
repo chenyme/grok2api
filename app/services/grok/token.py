@@ -135,7 +135,8 @@ class GrokTokenManager:
                 "failedCount": 0,
                 "lastFailureTime": None,
                 "lastFailureReason": None,
-                "tags": []
+                "tags": [],
+                "note": ""
             }
             added_count += 1
 
@@ -175,6 +176,21 @@ class GrokTokenManager:
         
         await self._save_data()
         logger.info(f"[Token] 成功更新Token {token[:10]}... 的标签: {cleaned_tags}")
+
+    async def update_token_note(self, token: str, token_type: TokenType, note: str) -> None:
+        """更新Token的备注"""
+        if token not in self.token_data[token_type.value]:
+            logger.warning(f"[Token] Token不存在: {token[:10]}...")
+            raise GrokApiException(
+                "Token不存在",
+                "TOKEN_NOT_FOUND",
+                {"token": token[:10]}
+            )
+        
+        self.token_data[token_type.value][token]["note"] = note.strip()
+        
+        await self._save_data()
+        logger.info(f"[Token] 成功更新Token {token[:10]}... 的备注")
     
     def get_tokens(self) -> Dict[str, Any]:
         """获取所有Token数据"""
@@ -308,6 +324,20 @@ class GrokTokenManager:
                     return rate_limit_data
                 else:
                     logger.warning(f"[Token] 获取速率限制失败，状态码: {response.status_code}")
+
+                    # 根据HTTP状态码处理不同的错误
+                    sso_value = self._extract_sso(auth_token)
+                    if sso_value:
+                        if response.status_code == 401:
+                            # Token失效
+                            await self.record_failure(auth_token, 401, "Token authentication failed")
+                        elif response.status_code == 403:
+                            # 服务器被block，不改变token状态，但记录失败信息
+                            await self.record_failure(auth_token, 403, "Server blocked (Cloudflare)")
+                        else:
+                            # 其他错误，设置为限流状态
+                            await self.record_failure(auth_token, response.status_code, f"Rate limit or other error: {response.status_code}")
+
                     return None
 
         except Exception as e:
