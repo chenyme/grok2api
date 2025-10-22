@@ -150,6 +150,9 @@
                             <option value="失效">失效</option>
                             <option value="正常">正常</option>
                         </select>
+                        <select id="filterTag" onchange="filterTokens()" class="h-8 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring">
+                            <option value="all">全部标签</option>
+                        </select>
                     </div>
                 </div>
 
@@ -222,8 +225,9 @@
                             <th class="h-10 px-3 text-left align-middle text-sm font-medium text-muted-foreground w-20">状态</th>
                             <th class="h-10 px-3 text-left align-middle text-sm font-medium text-muted-foreground w-20">普通剩余</th>
                             <th class="h-10 px-3 text-left align-middle text-sm font-medium text-muted-foreground w-20">高级剩余</th>
-                            <th class="h-10 px-3 text-left align-middle text-sm font-medium text-muted-foreground w-40">创建时间</th>
-                            <th class="h-10 px-3 text-right align-middle text-sm font-medium text-muted-foreground w-20">操作</th>
+                            <th class="h-10 px-3 text-left align-middle text-sm font-medium text-muted-foreground w-32">标签</th>
+                            <th class="h-10 px-3 text-left align-middle text-sm font-medium text-muted-foreground w-32">创建时间</th>
+                            <th class="h-10 px-3 text-right align-middle text-sm font-medium text-muted-foreground w-24">操作</th>
                         </tr>
                     </thead>
                     <tbody id="tokenTableBody" class="divide-y divide-border">
@@ -481,6 +485,50 @@
         </div>
     </main>
 
+    <!-- 编辑标签模态框 -->
+    <div id="editTagsModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div class="bg-background rounded-lg border border-border w-full max-w-md shadow-xl">
+            <div class="flex items-center justify-between p-5 border-b border-border">
+                <h3 class="text-lg font-semibold">编辑标签</h3>
+                <button onclick="closeEditTagsModal()" class="text-muted-foreground hover:text-foreground transition-colors">
+                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-5 space-y-4">
+                <div class="space-y-2">
+                    <label class="text-sm font-medium text-muted-foreground">Token</label>
+                    <input id="editTagsToken" readonly class="flex h-9 w-full rounded-md border border-input bg-muted px-3 py-2 text-xs font-mono" placeholder="">
+                </div>
+                <div class="space-y-2">
+                    <label class="text-sm font-medium text-muted-foreground">标签 <span class="text-muted-foreground">(多个标签用逗号分隔)</span></label>
+                    <input
+                        id="editTagsInput"
+                        placeholder="例如: 生产环境, 测试用"
+                        class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                    <div id="suggestedTags" class="flex flex-wrap gap-2 mt-2"></div>
+                </div>
+            </div>
+            <div class="flex items-center justify-end gap-3 p-5 border-t border-border bg-muted/30">
+                <button
+                    onclick="closeEditTagsModal()"
+                    class="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent h-9 px-5"
+                >
+                    取消
+                </button>
+                <button
+                    onclick="submitEditTags()"
+                    class="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-5"
+                >
+                    保存
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- 添加 Token 模态框 -->
     <div id="addModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
         <div class="bg-background rounded-lg border border-border w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-xl">
@@ -529,20 +577,21 @@
     </div>
 
     <script>
-        let allTokens=[],filteredTokens=[],selectedTokens=new Set();
+        let allTokens=[],filteredTokens=[],selectedTokens=new Set(),allTagsList=[];
         const $=(id)=>document.getElementById(id),
         checkAuth=()=>{const t=localStorage.getItem('adminToken');return t||(location.href='/login',null),t},
         apiRequest=async(url,opts={})=>{const t=checkAuth();if(!t)return null;const r=await fetch(url,{...opts,headers:{...opts.headers,Authorization:`Bearer ${t}`,'Content-Type':'application/json'}});return r.status===401?(localStorage.removeItem('adminToken'),location.href='/login',null):r},
         loadStats=async()=>{try{const r=await apiRequest('/api/stats');if(!r)return;const d=await r.json();if(d.success){const s=d.data;$('statTotal').textContent=s.total||0;['Unused','Limited','Expired','Active'].forEach((k,i)=>$(`stat${k}`).textContent=(s.normal?.[k.toLowerCase()]||0)+(s.super?.[k.toLowerCase()]||0))}}catch(e){console.error('加载统计失败:',e)}},
         calcRemaining=()=>{let n=0,h=0;allTokens.forEach(t=>{if(t.remaining_queries>0)n+=t.remaining_queries;if(t.heavy_remaining_queries>0)h+=t.heavy_remaining_queries});return{normal:n,heavy:h,total:n+h}},
-        loadTokens=async()=>{try{const r=await apiRequest('/api/tokens');if(!r)return;const d=await r.json();d.success&&(allTokens=d.data,filteredTokens=allTokens,selectedTokens.clear(),renderTokens(),updateRemaining())}catch(e){console.error('加载列表失败:',e)}},
+        loadTokens=async()=>{try{const r=await apiRequest('/api/tokens');if(!r)return;const d=await r.json();d.success&&(allTokens=d.data.map(t=>({...t,tags:t.tags||[]})),filteredTokens=allTokens,selectedTokens.clear(),renderTokens(),updateRemaining(),await loadAllTags())}catch(e){console.error('加载列表失败:',e)}},
         updateRemaining=()=>{const r=calcRemaining();['Total','Normal','Heavy'].forEach(k=>$(`stat${k}Remaining`).textContent=r[k.toLowerCase()]===0?'-':r[k.toLowerCase()].toLocaleString())}
 
-        const renderTokens=()=>{const tb=$('tokenTableBody'),es=$('emptyState'),ss={'未使用':'bg-muted text-muted-foreground','限流中':'bg-orange-50 text-orange-700 border-orange-200','失效':'bg-destructive/10 text-destructive border-destructive/20','正常':'bg-green-50 text-green-700 border-green-200'},ts={sso:'bg-blue-50 text-blue-700 border-blue-200',ssoSuper:'bg-purple-50 text-purple-700 border-purple-200'},tl={sso:'SSO',ssoSuper:'SuperSSO'};if(!filteredTokens.length){tb.innerHTML='';es.classList.remove('hidden');$('selectAll').checked=false;return updateBatchActions()}es.classList.add('hidden');tb.innerHTML=filteredTokens.map(t=>`<tr class="transition-colors"><td class="py-2.5 px-3 align-middle w-12"><input type="checkbox" class="token-checkbox h-3.5 w-3.5 rounded border border-input focus:ring-1 focus:ring-ring" data-token="${t.token}" data-type="${t.token_type}" ${selectedTokens.has(t.token)?'checked':''} onchange="toggleToken('${t.token}')"></td><td class="py-2.5 px-3 align-middle w-80"><div class="flex items-center gap-2"><span class="font-mono text-xs">${t.token.substring(0,30)}...</span><button onclick="copyToken('${t.token.replace(/'/g,"\\'")}',event)" class="inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent h-6 w-6" title="复制完整 Token"><svg class="h-3 w-3 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ts[t.token_type]}">${tl[t.token_type]}</span></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ss[t.status]}">${t.status}</span></td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.remaining_queries===-1?'-':t.remaining_queries}</td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.heavy_remaining_queries===-1?'-':t.heavy_remaining_queries}</td><td class="py-2.5 px-3 align-middle w-32 text-xs text-muted-foreground">${t.created_time?new Date(t.created_time).toLocaleString('zh-CN',{dateStyle:'short',timeStyle:'short'}):'-'}</td><td class="py-2.5 px-3 align-middle text-right w-16"><button onclick="deleteToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-destructive/10 hover:text-destructive h-7 w-7"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></td></tr>`).join('');updateBatchActions()},
+        const renderTokens=()=>{const tb=$('tokenTableBody'),es=$('emptyState'),ss={'未使用':'bg-muted text-muted-foreground','限流中':'bg-orange-50 text-orange-700 border-orange-200','失效':'bg-destructive/10 text-destructive border-destructive/20','正常':'bg-green-50 text-green-700 border-green-200'},ts={sso:'bg-blue-50 text-blue-700 border-blue-200',ssoSuper:'bg-purple-50 text-purple-700 border-purple-200'},tl={sso:'SSO',ssoSuper:'SuperSSO'};if(!filteredTokens.length){tb.innerHTML='';es.classList.remove('hidden');$('selectAll').checked=false;return updateBatchActions()}es.classList.add('hidden');tb.innerHTML=filteredTokens.map(t=>{const tagsHtml=t.tags&&t.tags.length?t.tags.map(tag=>`<span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs bg-gray-100 text-gray-700">${tag}</span>`).join(' '):'<span class="text-xs text-muted-foreground">-</span>';return`<tr class="transition-colors"><td class="py-2.5 px-3 align-middle w-12"><input type="checkbox" class="token-checkbox h-3.5 w-3.5 rounded border border-input focus:ring-1 focus:ring-ring" data-token="${t.token}" data-type="${t.token_type}" ${selectedTokens.has(t.token)?'checked':''} onchange="toggleToken('${t.token}')"></td><td class="py-2.5 px-3 align-middle w-80"><div class="flex items-center gap-2"><span class="font-mono text-xs">${t.token.substring(0,30)}...</span><button onclick="copyToken('${t.token.replace(/'/g,"\\'")}',event)" class="inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent h-6 w-6" title="复制完整 Token"><svg class="h-3 w-3 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ts[t.token_type]}">${tl[t.token_type]}</span></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ss[t.status]}">${t.status}</span></td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.remaining_queries===-1?'-':t.remaining_queries}</td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.heavy_remaining_queries===-1?'-':t.heavy_remaining_queries}</td><td class="py-2.5 px-3 align-middle w-32"><div class="flex flex-wrap gap-1">${tagsHtml}</div></td><td class="py-2.5 px-3 align-middle w-32 text-xs text-muted-foreground">${t.created_time?new Date(t.created_time).toLocaleString('zh-CN',{dateStyle:'short',timeStyle:'short'}):'-'}</td><td class="py-2.5 px-3 align-middle text-right w-24"><div class="flex items-center justify-end gap-1"><button onclick="editTokenTags('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent hover:text-accent-foreground h-7 w-7" title="编辑标签"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button><button onclick="deleteToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-destructive/10 hover:text-destructive h-7 w-7" title="删除"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div></td></tr>`}).join('');updateBatchActions()},
         toggleToken=t=>selectedTokens[selectedTokens.has(t)?'delete':'add'](t)||updateBatchActions(),
         toggleSelectAll=()=>{const sa=$('selectAll');sa.checked?filteredTokens.forEach(t=>selectedTokens.add(t.token)):selectedTokens.clear();renderTokens()},
         updateBatchActions=()=>{const ba=$('batchActions'),sc=$('selectedCount'),c=selectedTokens.size;ba.classList[c>0?'add':'remove']('flex');ba.classList[c>0?'remove':'add']('hidden');c>0&&(sc.textContent=`已选择 ${c} 项`);$('selectAll').checked=filteredTokens.length>0&&c===filteredTokens.length},
-        filterTokens=()=>{const tf=$('filterType').value,sf=$('filterStatus').value;filteredTokens=allTokens.filter(t=>(tf==='all'||t.token_type===tf)&&(sf==='all'||t.status===sf));selectedTokens.clear();renderTokens()},
+        filterTokens=()=>{const tf=$('filterType').value,sf=$('filterStatus').value,tagf=$('filterTag').value;filteredTokens=allTokens.filter(t=>(tf==='all'||t.token_type===tf)&&(sf==='all'||t.status===sf)&&(tagf==='all'||t.tags&&t.tags.includes(tagf)));selectedTokens.clear();renderTokens()},
+        loadAllTags=async()=>{try{const r=await apiRequest('/api/tokens/tags/all');if(!r)return;const d=await r.json();if(d.success){allTagsList=d.data;const tagFilter=$('filterTag');const currentValue=tagFilter.value;tagFilter.innerHTML='<option value="all">全部标签</option>'+allTagsList.map(tag=>`<option value="${tag}">${tag}</option>`).join('');tagFilter.value=currentValue}}catch(e){console.error('加载标签列表失败:',e)}},
         refreshTokens=async()=>{await loadTokens();await loadStats()},
         openAddModal=()=>$('addModal').classList.remove('hidden'),
         closeAddModal=()=>{$('addModal').classList.add('hidden');$('addTokenList').value=''},
@@ -550,6 +599,12 @@
         batchDelete=async()=>{if(!selectedTokens.size||!confirm(`确定要删除选中的 ${selectedTokens.size} 个 Token 吗?此操作不可恢复!`))return;const tbt={sso:[],ssoSuper:[]};document.querySelectorAll('.token-checkbox:checked').forEach(cb=>tbt[cb.dataset.type].push(cb.dataset.token));try{const ps=[];['sso','ssoSuper'].forEach(k=>tbt[k].length&&ps.push(apiRequest('/api/tokens/delete',{method:'POST',body:JSON.stringify({tokens:tbt[k],token_type:k})})));await Promise.all(ps);await refreshTokens()}catch(e){alert('批量删除失败: '+e.message)}},
         submitAddTokens=async()=>{const tt=$('addTokenType').value,tks=$('addTokenList').value.split('\n').map(t=>t.trim()).filter(t=>t);if(!tks.length)return alert('请输入至少一个 Token');try{const r=await apiRequest('/api/tokens/add',{method:'POST',body:JSON.stringify({tokens:tks,token_type:tt})});if(!r)return;const d=await r.json();d.success?(closeAddModal(),await refreshTokens()):alert('添加失败: '+(d.error||'未知错误'))}catch(e){alert('添加失败: '+e.message)}},
         copyToken=async(t,e)=>{e.stopPropagation();try{await navigator.clipboard.writeText(t);showToast('Token 已复制到剪贴板','success')}catch(err){console.error('复制失败:',err);showToast('复制失败,请手动复制','error')}}
+        
+        let currentEditToken='',currentEditTokenType='';
+        editTokenTags=(token,tokenType)=>{currentEditToken=token;currentEditTokenType=tokenType;const tokenData=allTokens.find(t=>t.token===token);const currentTags=tokenData?.tags||[];$('editTagsToken').value=token.substring(0,50)+'...';$('editTagsInput').value=currentTags.join(', ');const suggestedContainer=$('suggestedTags');suggestedContainer.innerHTML='';if(allTagsList.length>0){suggestedContainer.innerHTML='<div class="text-xs text-muted-foreground mb-1">常用标签:</div>'+allTagsList.map(tag=>`<button onclick="addTagToInput('${tag}')" class="inline-flex items-center rounded px-2 py-1 text-xs bg-muted hover:bg-accent transition-colors">${tag}</button>`).join('')}$('editTagsModal').classList.remove('hidden')},
+        closeEditTagsModal=()=>{$('editTagsModal').classList.add('hidden');currentEditToken='';currentEditTokenType=''},
+        addTagToInput=(tag)=>{const input=$('editTagsInput');const currentValue=input.value.trim();const tags=currentValue?currentValue.split(',').map(t=>t.trim()):[];if(!tags.includes(tag)){tags.push(tag);input.value=tags.join(', ')}},
+        submitEditTags=async()=>{if(!currentEditToken)return;const tagsInput=$('editTagsInput').value;const tags=tagsInput.split(',').map(t=>t.trim()).filter(t=>t);try{const r=await apiRequest('/api/tokens/tags',{method:'POST',body:JSON.stringify({token:currentEditToken,token_type:currentEditTokenType,tags})});if(!r)return;const d=await r.json();if(d.success){closeEditTagsModal();await refreshTokens();showToast('标签更新成功','success')}else{showToast('更新失败: '+(d.error||'未知错误'),'error')}}catch(e){showToast('更新失败: '+e.message,'error')}}
 
         const exportSelected=()=>{if(!selectedTokens.size)return showToast('请先选择要导出的 Token','error');const sd=allTokens.filter(t=>selectedTokens.has(t.token)),csv=[['Token','类型','状态','普通调用剩余','高级调用剩余','创建时间'].join(','),...sd.map(t=>[`"${t.token}"`,t.token_type==='sso'?'SSO':'SuperSSO',t.status,t.remaining_queries===-1?'未使用':t.remaining_queries,t.heavy_remaining_queries===-1?'未使用':t.heavy_remaining_queries,`"${t.created_time?new Date(t.created_time).toLocaleString('zh-CN'):'-'}"`].join(','))].join('\n'),l=document.createElement('a');l.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'}));l.download=`grok_tokens_${new Date().toISOString().slice(0,10)}.csv`;l.style.display='none';document.body.appendChild(l);l.click();document.body.removeChild(l);URL.revokeObjectURL(l.href);showToast(`已导出 ${selectedTokens.size} 个 Token`,'success')}
         showToast=(m,t='info')=>{const d=document.createElement('div'),bc={success:'bg-green-600',error:'bg-destructive',info:'bg-primary'};d.className=`fixed bottom-4 right-4 ${bc[t]||bc.info} text-white px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium z-50 animate-slide-up`;d.textContent=m;document.body.appendChild(d);setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity .3s';setTimeout(()=>d.parentNode&&document.body.removeChild(d),300)},2000)}

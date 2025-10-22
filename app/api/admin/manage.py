@@ -69,6 +69,7 @@ class TokenInfo(BaseModel):
     remaining_queries: int
     heavy_remaining_queries: int
     status: str  # "未使用"、"限流中"、"失效"、"正常"
+    tags: List[str] = []  # 标签列表
 
 
 class TokenListResponse(BaseModel):
@@ -300,7 +301,8 @@ async def list_tokens(_: bool = Depends(verify_admin_session)) -> TokenListRespo
                 created_time=parse_created_time(data.get("createdTime")),
                 remaining_queries=data.get("remainingQueries", -1),
                 heavy_remaining_queries=data.get("heavyremainingQueries", -1),
-                status=get_token_status(data, "sso")
+                status=get_token_status(data, "sso"),
+                tags=data.get("tags", [])  # 向后兼容，如果没有tags字段则返回空列表
             ))
 
         # 处理Super Token
@@ -312,7 +314,8 @@ async def list_tokens(_: bool = Depends(verify_admin_session)) -> TokenListRespo
                 created_time=parse_created_time(data.get("createdTime")),
                 remaining_queries=data.get("remainingQueries", -1),
                 heavy_remaining_queries=data.get("heavyremainingQueries", -1),
-                status=get_token_status(data, "ssoSuper")
+                status=get_token_status(data, "ssoSuper"),
+                tags=data.get("tags", [])  # 向后兼容，如果没有tags字段则返回空列表
             ))
 
         normal_count = len(normal_tokens)
@@ -718,4 +721,84 @@ async def get_storage_mode(_: bool = Depends(verify_admin_session)) -> Dict[str,
         raise HTTPException(
             status_code=500,
             detail={"error": f"获取存储模式失败: {str(e)}", "code": "STORAGE_MODE_ERROR"}
+        )
+
+
+class UpdateTokenTagsRequest(BaseModel):
+    """更新Token标签请求"""
+    token: str
+    token_type: str
+    tags: List[str]
+
+
+@router.post("/api/tokens/tags")
+async def update_token_tags(
+    request: UpdateTokenTagsRequest,
+    _: bool = Depends(verify_admin_session)
+) -> Dict[str, Any]:
+    """
+    更新Token标签
+    
+    为指定Token添加或修改标签。
+    """
+    try:
+        logger.debug(f"[Admin] 更新Token标签 - Token: {request.token[:10]}..., Tags: {request.tags}")
+
+        # 验证并转换token类型
+        token_type = validate_token_type(request.token_type)
+
+        # 更新标签
+        await token_manager.update_token_tags(request.token, token_type, request.tags)
+
+        logger.debug(f"[Admin] Token标签更新成功 - Token: {request.token[:10]}..., Tags: {request.tags}")
+
+        return {
+            "success": True,
+            "message": "标签更新成功",
+            "tags": request.tags
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Admin] Token标签更新异常 - Token: {request.token[:10]}..., 错误: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"更新标签失败: {str(e)}", "code": "UPDATE_TAGS_ERROR"}
+        )
+
+
+@router.get("/api/tokens/tags/all")
+async def get_all_tags(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
+    """
+    获取所有标签
+    
+    返回系统中所有Token使用的标签列表（去重）。
+    """
+    try:
+        logger.debug("[Admin] 获取所有标签")
+
+        all_tokens_data = token_manager.get_tokens()
+        tags_set = set()
+
+        # 收集所有标签
+        for token_type_data in all_tokens_data.values():
+            for token_data in token_type_data.values():
+                tags = token_data.get("tags", [])
+                if isinstance(tags, list):
+                    tags_set.update(tags)
+
+        tags_list = sorted(list(tags_set))
+        logger.debug(f"[Admin] 标签获取成功 - 共 {len(tags_list)} 个标签")
+
+        return {
+            "success": True,
+            "data": tags_list
+        }
+
+    except Exception as e:
+        logger.error(f"[Admin] 获取标签异常 - 错误: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"获取标签失败: {str(e)}", "code": "GET_TAGS_ERROR"}
         )

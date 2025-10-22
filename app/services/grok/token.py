@@ -134,7 +134,8 @@ class GrokTokenManager:
                 "status": "active",
                 "failedCount": 0,
                 "lastFailureTime": None,
-                "lastFailureReason": None
+                "lastFailureReason": None,
+                "tags": []
             }
             added_count += 1
 
@@ -157,6 +158,23 @@ class GrokTokenManager:
 
         await self._save_data()
         logger.info(f"[Token] 成功删除 {deleted_count} 个 {token_type.value} Token")
+
+    async def update_token_tags(self, token: str, token_type: TokenType, tags: list[str]) -> None:
+        """更新Token的标签"""
+        if token not in self.token_data[token_type.value]:
+            logger.warning(f"[Token] Token不存在: {token[:10]}...")
+            raise GrokApiException(
+                "Token不存在",
+                "TOKEN_NOT_FOUND",
+                {"token": token[:10]}
+            )
+        
+        # 确保tags是列表且不包含空字符串
+        cleaned_tags = [tag.strip() for tag in tags if tag and tag.strip()]
+        self.token_data[token_type.value][token]["tags"] = cleaned_tags
+        
+        await self._save_data()
+        logger.info(f"[Token] 成功更新Token {token[:10]}... 的标签: {cleaned_tags}")
     
     def get_tokens(self) -> Dict[str, Any]:
         """获取所有Token数据"""
