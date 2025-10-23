@@ -232,6 +232,7 @@ class GrokResponseProcessor:
         video_progress_started = False
         last_video_progress = -1
         response_closed = False
+        show_thinking = setting.grok_config.get("show_thinking", True)
 
         # 初始化超时管理器
         timeout_manager = StreamTimeoutManager(
@@ -441,14 +442,18 @@ class GrokResponseProcessor:
                         if grok_resp.get("toolUsageCardId"):
                             if web_search := grok_resp.get("webSearchResults"):
                                 if current_is_thinking:
-                                    # 封装搜索结果
-                                    for result in web_search.get("results", []):
-                                        title = result.get("title", "")
-                                        url = result.get("url", "")
-                                        preview = result.get("preview", "")
-                                        preview_clean = preview.replace("\n", "") if isinstance(preview, str) else ""
-                                        token += f'\n- [{title}]({url} "{preview_clean}")'
-                                    token += "\n"
+                                    if show_thinking:
+                                        # 封装搜索结果
+                                        for result in web_search.get("results", []):
+                                            title = result.get("title", "")
+                                            url = result.get("url", "")
+                                            preview = result.get("preview", "")
+                                            preview_clean = preview.replace("\n", "") if isinstance(preview, str) else ""
+                                            token += f'\n- [{title}]({url} "{preview_clean}")'
+                                        token += "\n"
+                                    else:
+                                        # show_thinking=false 时跳过 thinking 状态下的搜索结果
+                                        continue
                                 else:
                                     # 有 webSearchResults 但 isThinking 为 false
                                     continue
@@ -464,15 +469,29 @@ class GrokResponseProcessor:
                                 content = f"\n\n{token}\n\n"
 
                             # is_thinking 状态切换
+                            should_skip = False
                             if not is_thinking and current_is_thinking:
-                                content = f"<think>\n{content}"
+                                # 进入 thinking 状态
+                                if show_thinking:
+                                    content = f"<think>\n{content}"
+                                else:
+                                    should_skip = True
                             elif is_thinking and not current_is_thinking:
-                                content = f"\n</think>\n{content}"
+                                # 退出 thinking 状态
+                                if show_thinking:
+                                    content = f"\n</think>\n{content}"
                                 thinking_finished = True
+                            elif current_is_thinking:
+                                # 处于 thinking 状态中
+                                if not show_thinking:
+                                    should_skip = True
 
-                            yield make_chunk(content)
-                            timeout_manager.mark_chunk_received()
-                            chunk_index += 1
+                            # 只在不需要跳过时才发送
+                            if not should_skip:
+                                yield make_chunk(content)
+                                timeout_manager.mark_chunk_received()
+                                chunk_index += 1
+                            
                             is_thinking = current_is_thinking
 
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
