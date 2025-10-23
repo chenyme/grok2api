@@ -1,13 +1,15 @@
 [grok]
 api_key = ""
 proxy_url = ""
-temporary = true
+cache_proxy_url = ""
 cf_clearance = ""
 x_statsig_id = "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk="
 filtered_tags = "xaiartifact,xai:tool_usage_card,grok:render"
 stream_chunk_timeout = 120
 stream_total_timeout = 600
 stream_first_response_timeout = 30
+temporary = true
+show_thinking = true
 
 [global]
 base_url = ""
