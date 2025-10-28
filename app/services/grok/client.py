@@ -13,6 +13,7 @@ from app.services.grok.processer import GrokResponseProcessor
 from app.services.grok.statsig import get_dynamic_headers
 from app.services.grok.token import token_manager
 from app.services.grok.upload import ImageUploadManager
+from app.services.grok.create import PostCreateManager
 from app.core.exception import GrokApiException
 
 # 常量定义
@@ -44,7 +45,6 @@ class GrokClient:
             if len(image_urls) > 1:
                 logger.warning(f"[Client] 视频模型只允许一张图片，当前有{len(image_urls)}张，只使用第一张")
                 image_urls = image_urls[:1]
-            content = f"{content} --mode=custom"
             logger.debug(f"[Client] 视频模型文本处理: {content}")
 
         # 重试逻辑
@@ -61,11 +61,26 @@ class GrokClient:
                 auth_token = token_manager.get_token(model)
                 
                 # 上传图片
-                imgs = await GrokClient._upload_imgs(image_urls, auth_token)
+                imgs, uris = await GrokClient._upload_imgs(image_urls, auth_token)
+                
+                # 视频模型需要额外的create操作
+                post_id = None
+                if is_video and imgs and uris:
+                    logger.debug(f"[Client] 检测到视频模型，执行post create操作")
+                    try:
+                        create_result = await PostCreateManager.create(imgs[0], uris[0], auth_token)
+                        if create_result and create_result.get("success"):
+                            post_id = create_result.get("post_id")
+                            logger.debug(f"[Client] Post创建成功: {post_id}")
+                        else:
+                            logger.warning(f"[Client] Post创建失败，继续使用原有流程")
+                    except Exception as e:
+                        logger.warning(f"[Client] Post创建异常: {e}，继续使用原有流程")
                 
                 # 构建并发送请求
-                payload = GrokClient._build_payload(content, model_name, model_mode, imgs, is_video)
-                return await GrokClient._send_request(payload, auth_token, model, stream)
+                payload = GrokClient._build_payload(content, model_name, model_mode, imgs, uris, is_video, post_id)
+                logger.debug(f"[Client] 请求载荷配置: {payload}")
+                return await GrokClient._send_request(payload, auth_token, model, stream, post_id)
                 
             except GrokApiException as e:
                 last_err = e
@@ -112,23 +127,25 @@ class GrokClient:
         return "".join(content_parts), image_urls
 
     @staticmethod
-    async def _upload_imgs(image_urls: List[str], auth_token: str) -> List[str]:
+    async def _upload_imgs(image_urls: List[str], auth_token: str) -> Tuple[List[str], List[str]]:
         """上传图片并返回附件ID列表"""
         image_attachments = []
+        image_uris = []
         # 并发上传所有图片
         tasks = [ImageUploadManager.upload(url, auth_token) for url in image_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for url, result in zip(image_urls, results):
-            if isinstance(result, Exception):
-                logger.warning(f"[Client] 图片上传失败: {url}, 错误: {result}")
-            elif result:
-                image_attachments.append(result)
+        for url, (file_id, file_uri) in zip(image_urls, results):
+            if isinstance(file_id, Exception):
+                logger.warning(f"[Client] 图片上传失败: {url}, 错误: {file_id}")
+            elif file_id:
+                image_attachments.append(file_id)
+                image_uris.append(file_uri)
 
-        return image_attachments
+        return image_attachments, image_uris
 
     @staticmethod
-    def _build_payload(content: str, model_name: str, model_mode: str, image_attachments: List[str], is_video_model: bool = False) -> Dict[str, Any]:
+    def _build_payload(content: str, model_name: str, model_mode: str, image_attachments: List[str], image_uris: List[str], is_video_model: bool = False, post_id: str = None) -> Dict[str, Any]:
         """构建Grok API请求载荷"""
         payload = {
             "temporary": setting.grok_config.get("temporary", True),
@@ -157,14 +174,32 @@ class GrokClient:
         }
         
         # 视频模型特殊配置
-        if is_video_model:
-            payload["toolOverrides"] = {"videoGen": True}
+        if is_video_model and image_uris:
+            image_url = image_uris[0]
+            logger.debug(f"[Client] 视频模型图片URL: {image_url}")
+            
+            # 根据是否有post_id选择不同的URL格式
+            if post_id:
+                logger.debug(f"[Client] 使用PostID构建URL: {post_id}")
+                image_message = f"https://grok.com/imagine/{post_id}  {content} --mode=custom"
+            else:
+                logger.debug(f"[Client] 使用文件URI构建URL: {image_url}")
+                image_message = f"https://assets.grok.com/post/{image_url}  {content} --mode=custom"
+            
+            payload = {
+                "temporary": True,
+                "modelName": "grok-3",
+                "message": image_message,
+                "fileAttachments": image_attachments,
+                "toolOverrides": {"videoGen": True}
+            }
+            logger.debug(f"[Client] 视频模型载荷配置: {payload}")
             logger.debug("[Client] 视频模型载荷配置: toolOverrides.videoGen = True")
         
         return payload
 
     @staticmethod
-    async def _send_request(payload: dict, auth_token: str, model: str, stream: bool):
+    async def _send_request(payload: dict, auth_token: str, model: str, stream: bool, post_id: str = None):
         """发送HTTP请求到Grok API"""
         # 验证认证令牌
         if not auth_token:
@@ -173,6 +208,12 @@ class GrokClient:
         try:
             # 构建请求头
             headers = GrokClient._build_headers(auth_token)
+            if model == "grok-imagine-0.9":
+                # 优先使用传入的post_id，否则使用fileAttachments中的第一个
+                referer_id = post_id if post_id else payload.get("fileAttachments", [""])[0]
+                if referer_id:
+                    headers["Referer"] = f"https://grok.com/imagine/{referer_id}"
+                    logger.debug(f"[Client] 设置Referer: {headers['Referer']}")
             
             # 使用服务代理
             proxy_url = setting.get_service_proxy()
