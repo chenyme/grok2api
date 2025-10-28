@@ -199,7 +199,8 @@ class GrokClient:
             headers = GrokClient._build_headers(auth_token)
             if model == "grok-imagine-0.9":
                 # 传入会话ID
-                referer_id = post_id if post_id else payload.get("fileAttachments", [""])[0]
+                file_attachments = payload.get("fileAttachments", [])
+                referer_id = post_id if post_id else (file_attachments[0] if file_attachments else "")
                 if referer_id:
                     headers["Referer"] = f"https://grok.com/imagine/{referer_id}"
             
@@ -258,12 +259,19 @@ class GrokClient:
     @staticmethod
     def _handle_error(response, auth_token: str):
         """处理错误响应"""
-        try:
-            error_data = response.json()
-            error_message = str(error_data)
-        except Exception as e:
-            error_data = response.text
-            error_message = error_data[:200] if error_data else e
+        # 处理 403 错误
+        if response.status_code == 403:
+            error_message = "服务器IP被Block，请尝试 1. 更换服务器IP 2. 使用代理IP 3. 服务器登陆Grok.com，过盾后F12找到CF值填入后台设置"
+            error_data = {"cf_blocked": True, "status": 403}
+            logger.warning(f"[Client] {error_message}")
+        else:
+            # 其他错误尝试解析 JSON
+            try:
+                error_data = response.json()
+                error_message = str(error_data)
+            except Exception as e:
+                error_data = response.text
+                error_message = error_data[:200] if error_data else str(e)
 
         # 记录Token失败
         asyncio.create_task(token_manager.record_failure(auth_token, response.status_code, error_message))
