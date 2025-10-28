@@ -20,54 +20,17 @@
         .hover-card-content.top::after{top:100%;border-top-color:hsl(0 0% 3.9%)}
         .hover-card-content.bottom::after{bottom:100%;border-bottom-color:hsl(0 0% 3.9%)}
         .hover-card-trigger:hover+.hover-card-content{opacity:1;visibility:visible}
+        .btn-icon{display:inline-flex;align-items:center;justify-content:center;border-radius:0.375rem;transition:color .2s,background-color .2s;height:2rem;width:2rem}
+        .btn-icon:focus-visible{outline:2px solid transparent;outline-offset:2px;box-shadow:0 0 0 1px hsl(0 0% 3.9%)}
+        .btn-icon:hover{background-color:hsl(0 0% 96.1%);color:hsl(0 0% 9%)}
+        .cfg-label{font-size:0.875rem;font-weight:500;color:hsl(0 0% 45.1%);margin-bottom:0.5rem;display:flex;align-items:center;gap:0.25rem}
+        .cfg-input{display:flex;height:2.25rem;width:100%;border-radius:0.375rem;border:1px solid hsl(0 0% 89%);background-color:hsl(0 0% 100%);padding:0.5rem 0.75rem;font-size:0.875rem}
+        .help-icon{display:inline-flex;align-items:center;justify-content:center;width:0.875rem;height:0.875rem;border-radius:9999px;border:1px solid hsl(0 0% 45.1%);color:hsl(0 0% 45.1%);cursor:help;font-size:10px;line-height:1}
         [title]{position:relative}
-        [title]:hover::after{
-            content:attr(title);
-            position:absolute;
-            bottom:100%;
-            left:50%;
-            transform:translateX(-50%) translateY(-8px);
-            background:hsl(0 0% 11%);
-            color:hsl(0 0% 98%);
-            padding:8px 12px;
-            border-radius:6px;
-            font-size:12px;
-            font-weight:500;
-            line-height:1.4;
-            white-space:pre-line;
-            max-width:350px;
-            width:max-content;
-            word-wrap:break-word;
-            z-index:1000;
-            pointer-events:none;
-            box-shadow:0 8px 20px rgba(0,0,0,0.15), 0 2px 8px rgba(0,0,0,0.1);
-            opacity:0;
-            visibility:hidden;
-            transition:all 0.2s ease;
-            animation:tooltipFadeIn 0.2s ease forwards;
-        }
-        [title]:hover::before{
-            content:'';
-            position:absolute;
-            bottom:100%;
-            left:50%;
-            transform:translateX(-50%) translateY(-4px);
-            border:6px solid transparent;
-            border-top-color:hsl(0 0% 11%);
-            z-index:1000;
-            opacity:0;
-            visibility:hidden;
-            transition:opacity 0.2s ease, visibility 0.2s ease;
-        }
-        [title]:hover::after,
-        [title]:hover::before{
-            opacity:1;
-            visibility:visible;
-        }
-        @keyframes tooltipFadeIn{
-            from{opacity:0;transform:translateX(-50%) translateY(-4px)}
-            to{opacity:1;transform:translateX(-50%) translateY(-8px)}
-        }
+        [title]:hover::after{content:attr(title);position:absolute;bottom:100%;left:50%;transform:translateX(-50%) translateY(-8px);background:hsl(0 0% 11%);color:hsl(0 0% 98%);padding:8px 12px;border-radius:6px;font-size:12px;font-weight:500;line-height:1.4;white-space:pre-line;max-width:350px;width:max-content;word-wrap:break-word;z-index:1000;pointer-events:none;box-shadow:0 8px 20px rgba(0,0,0,0.15), 0 2px 8px rgba(0,0,0,0.1);opacity:0;visibility:hidden;transition:all 0.2s ease;animation:tooltipFadeIn 0.2s ease forwards}
+        [title]:hover::before{content:'';position:absolute;bottom:100%;left:50%;transform:translateX(-50%) translateY(-4px);border:6px solid transparent;border-top-color:hsl(0 0% 11%);z-index:1000;opacity:0;visibility:hidden;transition:opacity 0.2s ease, visibility 0.2s ease}
+        [title]:hover::after,[title]:hover::before{opacity:1;visibility:visible}
+        @keyframes tooltipFadeIn{from{opacity:0;transform:translateX(-50%) translateY(-4px)}to{opacity:1;transform:translateX(-50%) translateY(-8px)}}
     </style>
     <script>
         tailwind.config={theme:{extend:{colors:{border:"hsl(0 0% 89%)",input:"hsl(0 0% 89%)",ring:"hsl(0 0% 3.9%)",background:"hsl(0 0% 100%)",foreground:"hsl(0 0% 3.9%)",primary:{DEFAULT:"hsl(0 0% 9%)",foreground:"hsl(0 0% 98%)"},secondary:{DEFAULT:"hsl(0 0% 96.1%)",foreground:"hsl(0 0% 9%)"},muted:{DEFAULT:"hsl(0 0% 96.1%)",foreground:"hsl(0 0% 45.1%)"},accent:{DEFAULT:"hsl(0 0% 96.1%)",foreground:"hsl(0 0% 9%)"},destructive:{DEFAULT:"hsl(0 84.2% 60.2%)",foreground:"hsl(0 0% 98%)"}}}}}
@@ -202,39 +165,20 @@
                 </div>
 
                 <div class="flex items-center gap-2">
-                    <button 
-                        onclick="refreshTokens()"
-                        class="inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent hover:text-accent-foreground h-8 w-8"
-                        title="刷新列表"
-                    >
+                    <button onclick="refreshTokens()" class="btn-icon" title="刷新列表">
                         <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="23 4 23 10 17 10"/>
-                            <polyline points="1 20 1 14 7 14"/>
-                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                            <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
                         </svg>
                     </button>
                     <div id="batchActions" class="hidden items-center gap-2">
-                        <button
-                            onclick="exportSelected()"
-                            class="inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent hover:text-accent-foreground h-8 w-8"
-                            title="导出选中项"
-                        >
+                        <button onclick="exportSelected()" class="btn-icon" title="导出选中项">
                             <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                <polyline points="7 10 12 15 17 10"/>
-                                <line x1="12" y1="15" x2="12" y2="3"/>
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
                             </svg>
                         </button>
-                        <button
-                            onclick="batchDelete()"
-                            class="inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-destructive/10 hover:text-destructive h-8 w-8"
-                            title="批量删除"
-                        >
+                        <button onclick="batchDelete()" class="btn-icon hover:bg-destructive/10 hover:text-destructive" title="批量删除">
                             <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polyline points="3 6 5 6 21 6"/>
-                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                                <line x1="10" y1="11" x2="10" y2="17"/>
-                                <line x1="14" y1="11" x2="14" y2="17"/>
+                                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
                             </svg>
                         </button>
                     </div>
@@ -306,27 +250,16 @@
                         <h3 class="text-sm font-semibold mb-4">系统设置</h3>
                         <div class="space-y-4">
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
-                                    登陆账户
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="登录管理后台的用户名">?</span>
-                                </label>
-                                <input id="cfgAdminUser" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="admin">
+                                <label class="cfg-label">登陆账户<span class="help-icon" title="登录管理后台的用户名">?</span></label>
+                                <input id="cfgAdminUser" class="cfg-input" placeholder="admin">
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
-                                    登陆密码
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="登录管理后台的密码，留空表示不修改当前密码">?</span>
-                                </label>
-                                <input id="cfgAdminPass" type="password" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="留空则不修改">
+                                <label class="cfg-label">登陆密码<span class="help-icon" title="登录管理后台的密码，留空表示不修改当前密码">?</span></label>
+                                <input id="cfgAdminPass" type="password" class="cfg-input" placeholder="留空则不修改">
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
-                                    日志级别
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="日志详细程度。DEBUG：最详细 | INFO：一般信息 | WARNING：警告 | ERROR：仅错误">?</span>
-                                </label>
-                                <select id="cfgLogLevel" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
-                                    <option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option>
-                                </select>
+                                <label class="cfg-label">日志级别<span class="help-icon" title="日志详细程度。DEBUG：最详细 | INFO：一般信息 | WARNING：警告 | ERROR：仅错误">?</span></label>
+                                <select id="cfgLogLevel" class="cfg-input"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select>
                             </div>
                         </div>
                     </div>
@@ -336,36 +269,36 @@
                         <h3 class="text-sm font-semibold mb-4">媒体设置</h3>
                         <div class="space-y-4">
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     图片模式
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="返回图片的方式。URL：图片链接，支持图片缓存 | Base64：base64编码，不支持缓存">?</span>
+                                    <span class="help-icon" title="返回图片的方式。URL：图片链接，支持图片缓存 | Base64：base64编码，不支持缓存">?</span>
                                 </label>
-                                <select id="cfgImageMode" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
-                                    <option value="url">URL (图片链接)</option>
-                                    <option value="base64">Base64 (base64编码)</option>
+                                <select id="cfgImageMode" class="cfg-input">
+                                    <option value="url">URL链接</option>
+                                    <option value="base64">Base64</option>
                                 </select>
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     服务网址
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="服务器的公网访问地址，用于构建图片URL链接（仅在图片模式为URL时需要）">?</span>
+                                    <span class="help-icon" title="服务器的公网访问地址，用于构建图片URL链接（仅在图片模式为URL时需要）">?</span>
                                 </label>
-                                <input id="cfgBaseUrl" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="http://localhost:8000">
+                                <input id="cfgBaseUrl" class="cfg-input" placeholder="http://localhost:8000">
                             </div>
                             <div class="grid grid-cols-2 gap-3">
                                 <div>
-                                    <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                    <label class="cfg-label">
                                         图片缓存 (MB)
-                                        <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="图片缓存的最大容量（MB），超过后会自动清理旧缓存">?</span>
+                                        <span class="help-icon" title="图片缓存的最大容量（MB），超过后会自动清理旧缓存">?</span>
                                     </label>
-                                    <input id="cfgImageCacheMaxSize" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="500">
+                                    <input id="cfgImageCacheMaxSize" type="number" class="cfg-input" placeholder="500">
                                 </div>
                                 <div>
-                                    <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                    <label class="cfg-label">
                                         视频缓存 (MB)
-                                        <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="视频缓存的最大容量（MB），超过后会自动清理旧缓存">?</span>
+                                        <span class="help-icon" title="视频缓存的最大容量（MB），超过后会自动清理旧缓存">?</span>
                                     </label>
-                                    <input id="cfgVideoCacheMaxSize" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="1000">
+                                    <input id="cfgVideoCacheMaxSize" type="number" class="cfg-input" placeholder="1000">
                                 </div>
                             </div>
                         </div>
@@ -425,35 +358,35 @@
                         <h3 class="text-sm font-semibold mb-4">基础设置</h3>
                         <div class="space-y-4">
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     API Key
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="接口调用的身份验证密钥，用于保护API访问安全">?</span>
+                                    <span class="help-icon" title="接口调用的身份验证密钥，用于保护API访问安全">?</span>
                                 </label>
-                                <input id="cfgApiKey" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="">
+                                <input id="cfgApiKey" class="cfg-input" placeholder="">
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     过滤标签
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="需要过滤的响应标签，多个标签用逗号分隔。如：xaiartifact,xai:tool_usage_card">?</span>
+                                    <span class="help-icon" title="需要过滤的响应标签，多个标签用逗号分隔。如：xaiartifact,xai:tool_usage_card">?</span>
                                 </label>
-                                <input id="cfgFilteredTags" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="xaiartifact,xai:tool_usage_card">
+                                <input id="cfgFilteredTags" class="cfg-input" placeholder="xaiartifact,xai:tool_usage_card">
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     显示思考
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="开启后会显示模型的思考过程（&lt;think&gt;标签内容）；关闭后仅返回最终结果">?</span>
+                                    <span class="help-icon" title="开启后会显示模型的思考过程（&lt;think&gt;标签内容）；关闭后仅返回最终结果">?</span>
                                 </label>
-                                <select id="cfgShowThinking" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+                                <select id="cfgShowThinking" class="cfg-input">
                                     <option value="true">开启</option>
                                     <option value="false">关闭</option>
                                 </select>
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     临时会话
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="开启后每次对话都创建新会话，不保留历史；关闭后可以继续之前的对话">?</span>
+                                    <span class="help-icon" title="开启后每次对话都创建新会话，不保留历史；关闭后可以继续之前的对话">?</span>
                                 </label>
-                                <select id="cfgTemporary" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+                                <select id="cfgTemporary" class="cfg-input">
                                     <option value="false">关闭</option>
                                     <option value="true">开启</option>
                                 </select>
@@ -466,32 +399,41 @@
                         <h3 class="text-sm font-semibold mb-4">代理设置</h3>
                         <div class="space-y-4">
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     X Statsig ID
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="Statsig统计ID，用于功能实验和统计分析">?</span>
+                                    <span class="help-icon" title="Statsig统计ID，用于功能实验和统计分析">?</span>
                                 </label>
-                                <input id="cfgStatsigId" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="">
+                                <div class="flex items-center gap-3">
+                                    <input id="cfgStatsigId" class="flex h-9 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="">
+                                    <label class="inline-flex items-center gap-2 cursor-pointer" title="开启后每次请求自动生成新的 x-statsig-id">
+                                        <span class="text-xs text-muted-foreground whitespace-nowrap">动态</span>
+                                        <div class="relative">
+                                            <input type="checkbox" id="cfgDynamicStatsig" class="sr-only peer">
+                                            <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                                        </div>
+                                    </label>
+                                </div>
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     CF Clearance
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="Cloudflare验证cookie的值部分，用于绕过Cloudflare人机验证。只需输入cf_clearance=后面的值。">?</span>
+                                    <span class="help-icon" title="Cloudflare验证cookie的值部分，用于绕过Cloudflare人机验证。只需输入cf_clearance=后面的值。">?</span>
                                 </label>
-                                <input id="cfgCfClearance" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="">
+                                <input id="cfgCfClearance" class="cfg-input" placeholder="">
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     Proxy Url (服务代理)
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="API请求和上传使用的代理。支持 http、https、socks5。格式：socks5://user:pass@host:port">?</span>
+                                    <span class="help-icon" title="API请求和上传使用的代理。支持 http、https、socks5。格式：socks5://user:pass@host:port">?</span>
                                 </label>
-                                <input id="cfgProxyUrl" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="socks5://username:password@127.0.0.1:7890">
+                                <input id="cfgProxyUrl" class="cfg-input" placeholder="socks5://username:password@127.0.0.1:7890">
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     Cache Proxy Url (缓存代理)
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="图片/视频缓存下载专用代理，不设置则使用服务代理。Grok的图片/视频获取接口对IP风控要求不高，可使用便宜的大流量节点">?</span>
+                                    <span class="help-icon" title="图片/视频缓存下载专用代理，不设置则使用服务代理。Grok的图片/视频获取接口对IP风控要求不高，可使用便宜的大流量节点">?</span>
                                 </label>
-                                <input id="cfgCacheProxyUrl" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="socks5://username:password@127.0.0.1:7890">
+                                <input id="cfgCacheProxyUrl" class="cfg-input" placeholder="socks5://username:password@127.0.0.1:7890">
                             </div>
                         </div>
                     </div>
@@ -501,25 +443,25 @@
                         <h3 class="text-sm font-semibold mb-4">超时设置</h3>
                         <div class="space-y-4">
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     首次响应超时 (秒)
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="等待API首次返回数据的最大时间（秒）。超时后会报错，建议30-60秒">?</span>
+                                    <span class="help-icon" title="等待API首次返回数据的最大时间（秒）。超时后会报错，建议30-60秒">?</span>
                                 </label>
-                                <input id="cfgStreamFirstResponseTimeout" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="30">
+                                <input id="cfgStreamFirstResponseTimeout" type="number" class="cfg-input" placeholder="30">
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     流式间隔超时 (秒)
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="两次数据块之间的最大间隔时间（秒）。如果超过此时间没有收到新数据则断开，建议60-180秒">?</span>
+                                    <span class="help-icon" title="两次数据块之间的最大间隔时间（秒）。如果超过此时间没有收到新数据则断开，建议60-180秒">?</span>
                                 </label>
-                                <input id="cfgStreamChunkTimeout" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="120">
+                                <input id="cfgStreamChunkTimeout" type="number" class="cfg-input" placeholder="120">
                             </div>
                             <div>
-                                <label class="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                                <label class="cfg-label">
                                     生成总过程超时 (秒)
-                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-muted-foreground text-muted-foreground cursor-help" style="font-size:10px;line-height:1" title="整个对话生成的最大总时长（秒）。适用于超长对话，建议300-900秒">?</span>
+                                    <span class="help-icon" title="整个对话生成的最大总时长（秒）。适用于超长对话，建议300-900秒">?</span>
                                 </label>
-                                <input id="cfgStreamTotalTimeout" type="number" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="600">
+                                <input id="cfgStreamTotalTimeout" type="number" class="cfg-input" placeholder="600">
                             </div>
                         </div>
                     </div>
@@ -531,7 +473,8 @@
                 <div class="text-xs text-gray-800 leading-relaxed">
                     <div class="text-base font-medium text-gray-900 mb-2.5">部分说明</div>
                     <div class="space-y-1.5">
-                        <div><span class="font-medium">X Statsig ID：</span>反机器人验证参数，非必要请勿修改 X Statsig ID</div>
+                        <div><span class="font-medium">X Statsig ID：</span>反机器人验证参数。开启"动态 Statsig ID"后会自动生成，固定值将被忽略；关闭则使用上方设置的固定值</div>
+                        <div><span class="font-medium">动态 Statsig：</span>开启后每次请求自动生成新的 x-statsig-id，增强请求多样性，推荐开启</div>
                         <div><span class="font-medium">服务网址：</span>图片/视频链接返回时需要拼接您的服务网址（如 https://yourdomain.com），若您不使用视频功能且图片使用Base64模式则可留空</div>
                         <div><span class="font-medium">代理设置：</span>服务代理用于访问Grok API和上传图片；缓存代理专门用于下载图片和视频缓存。若仅设置服务代理，缓存将使用相同的代理；若都设置，则分别使用不同的代理</div>
                         <div><span class="font-medium">请求 403：</span>通常是被 CF 拦截了，可采用以下办法之一：1. 更换服务器IP ｜ 2. 配置代理IP ｜ 3.在服务器中访问 grok.com 通过 CF 验证后 F12 获取 cf_clearance</div>
@@ -660,9 +603,9 @@
         refreshTokens=async()=>{await loadTokens();await loadStats()},
         openAddModal=()=>$('addModal').classList.remove('hidden'),
         closeAddModal=()=>{$('addModal').classList.add('hidden');$('addTokenList').value=''},
-        deleteToken=async(t,tt)=>{if(!confirm('确定要删除这个 Token 吗?'))return;try{const r=await apiRequest('/api/tokens/delete',{method:'POST',body:JSON.stringify({tokens:[t],token_type:tt})});if(!r)return;const d=await r.json();d.success?await refreshTokens():alert('删除失败: '+(d.error||'未知错误'))}catch(e){alert('删除失败: '+e.message)}},
-        batchDelete=async()=>{if(!selectedTokens.size||!confirm(`确定要删除选中的 ${selectedTokens.size} 个 Token 吗?此操作不可恢复!`))return;const tbt={sso:[],ssoSuper:[]};document.querySelectorAll('.token-checkbox:checked').forEach(cb=>tbt[cb.dataset.type].push(cb.dataset.token));try{const ps=[];['sso','ssoSuper'].forEach(k=>tbt[k].length&&ps.push(apiRequest('/api/tokens/delete',{method:'POST',body:JSON.stringify({tokens:tbt[k],token_type:k})})));await Promise.all(ps);await refreshTokens()}catch(e){alert('批量删除失败: '+e.message)}},
-        submitAddTokens=async()=>{const tt=$('addTokenType').value,tks=$('addTokenList').value.split('\n').map(t=>t.trim()).filter(t=>t);if(!tks.length)return alert('请输入至少一个 Token');try{const r=await apiRequest('/api/tokens/add',{method:'POST',body:JSON.stringify({tokens:tks,token_type:tt})});if(!r)return;const d=await r.json();d.success?(closeAddModal(),await refreshTokens()):alert('添加失败: '+(d.error||'未知错误'))}catch(e){alert('添加失败: '+e.message)}},
+        deleteToken=async(t,tt)=>{if(!confirm('确定要删除这个 Token 吗?'))return;try{const r=await apiRequest('/api/tokens/delete',{method:'POST',body:JSON.stringify({tokens:[t],token_type:tt})});if(!r)return;const d=await r.json();d.success?await refreshTokens():showToast('删除失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('删除失败: '+e.message,'error')}},
+        batchDelete=async()=>{if(!selectedTokens.size||!confirm(`确定要删除选中的 ${selectedTokens.size} 个 Token 吗?此操作不可恢复!`))return;const tbt={sso:[],ssoSuper:[]};document.querySelectorAll('.token-checkbox:checked').forEach(cb=>tbt[cb.dataset.type].push(cb.dataset.token));try{const ps=[];['sso','ssoSuper'].forEach(k=>tbt[k].length&&ps.push(apiRequest('/api/tokens/delete',{method:'POST',body:JSON.stringify({tokens:tbt[k],token_type:k})})));await Promise.all(ps);await refreshTokens()}catch(e){showToast('批量删除失败: '+e.message,'error')}},
+        submitAddTokens=async()=>{const tt=$('addTokenType').value,tks=$('addTokenList').value.split('\n').map(t=>t.trim()).filter(t=>t);if(!tks.length)return showToast('请输入至少一个 Token','error');try{const r=await apiRequest('/api/tokens/add',{method:'POST',body:JSON.stringify({tokens:tks,token_type:tt})});if(!r)return;const d=await r.json();d.success?(closeAddModal(),await refreshTokens()):showToast('添加失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('添加失败: '+e.message,'error')}},
         copyToken=async(t,e)=>{e.stopPropagation();try{await navigator.clipboard.writeText(t);showToast('Token 已复制到剪贴板','success')}catch(err){console.error('复制失败:',err);showToast('复制失败,请手动复制','error')}}
         
         let currentEditToken='',currentEditTokenType='';
@@ -671,23 +614,25 @@
         addTagToInput=(tag)=>{const input=$('editTagsInput');const currentValue=input.value.trim();const tags=currentValue?currentValue.split(',').map(t=>t.trim()):[];if(!tags.includes(tag)){tags.push(tag);input.value=tags.join(', ')}},
         submitEditInfo=async()=>{if(!currentEditToken)return;const tagsInput=$('editTagsInput').value;const note=$('editNoteInput').value.trim();const tags=tagsInput.split(',').map(t=>t.trim()).filter(t=>t);const promises=[];promises.push(apiRequest('/api/tokens/tags',{method:'POST',body:JSON.stringify({token:currentEditToken,token_type:currentEditTokenType,tags})}));promises.push(apiRequest('/api/tokens/note',{method:'POST',body:JSON.stringify({token:currentEditToken,token_type:currentEditTokenType,note})}));try{const results=await Promise.all(promises);const allSuccess=results.every(r=>r&&r.ok);if(allSuccess){closeEditModal();await refreshTokens();showToast('信息更新成功','success')}else{showToast('部分更新失败，请重试','error')}}catch(e){showToast('更新失败: '+e.message,'error')}}
         
-        testToken=async(token,tokenType)=>{const btn=event.target.closest('button');const originalHtml=btn.innerHTML;btn.disabled=true;btn.innerHTML='<svg class="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';try{const r=await apiRequest('/api/tokens/test',{method:'POST',body:JSON.stringify({token,token_type:tokenType})});if(!r)return;const d=await r.json();if(d.success&&d.data.valid){showToast(`Token有效！剩余: ${d.data.remaining_queries===-1?'无限制':d.data.remaining_queries}次`,'success');await refreshTokens()}else{const errorData=d.data||{};const errorType=errorData.error_type;if(errorType==='expired'){showToast('Token已失效 (401错误)','error')}else if(errorType==='blocked'){showToast('服务器被block，请稍后再试或更换IP','error')}else if(errorType==='limited'){showToast('Token已被限流','error')}else{showToast('Token无效或已失效','error')}}}catch(e){showToast('测试失败: '+e.message,'error')}finally{btn.disabled=false;btn.innerHTML=originalHtml}}
+        testToken=async(token,tokenType)=>{const btn=event.target.closest('button');const originalHtml=btn.innerHTML;btn.disabled=true;btn.innerHTML='<svg class="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';try{const r=await apiRequest('/api/tokens/test',{method:'POST',body:JSON.stringify({token,token_type:tokenType})});if(!r)return;const d=await r.json();if(d.success&&d.data.valid){showToast(`Token有效！剩余: ${d.data.remaining_queries===-1?'无限制':d.data.remaining_queries}次`,'success');await refreshTokens()}else{const errMsgs={expired:'Token已失效 (401错误)',blocked:'服务器被block，请稍后再试或更换IP',limited:'Token已被限流'};showToast(errMsgs[d.data?.error_type]||'Token无效或已失效','error')}}catch(e){showToast('测试失败: '+e.message,'error')}finally{btn.disabled=false;btn.innerHTML=originalHtml}}
 
         const exportSelected=()=>{if(!selectedTokens.size)return showToast('请先选择要导出的 Token','error');const sd=allTokens.filter(t=>selectedTokens.has(t.token)),csv=[['Token','类型','状态','普通调用剩余','高级调用剩余','创建时间'].join(','),...sd.map(t=>[`"${t.token}"`,t.token_type==='sso'?'SSO':'SuperSSO',t.status,t.remaining_queries===-1?'未使用':t.remaining_queries,t.heavy_remaining_queries===-1?'未使用':t.heavy_remaining_queries,`"${t.created_time?new Date(t.created_time).toLocaleString('zh-CN'):'-'}"`].join(','))].join('\n'),l=document.createElement('a');l.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'}));l.download=`grok_tokens_${new Date().toISOString().slice(0,10)}.csv`;l.style.display='none';document.body.appendChild(l);l.click();document.body.removeChild(l);URL.revokeObjectURL(l.href);showToast(`已导出 ${selectedTokens.size} 个 Token`,'success')}
         showToast=(m,t='info')=>{const d=document.createElement('div'),bc={success:'bg-green-600',error:'bg-destructive',info:'bg-primary'};d.className=`fixed bottom-4 right-4 ${bc[t]||bc.info} text-white px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium z-50 animate-slide-up`;d.textContent=m;document.body.appendChild(d);setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity .3s';setTimeout(()=>d.parentNode&&document.body.removeChild(d),300)},2000)}
         logout=async()=>{if(!confirm('确定要退出登录吗?'))return;try{await apiRequest('/api/logout',{method:'POST'})}catch(e){console.error('登出失败:',e)}finally{localStorage.removeItem('adminToken');location.href='/login'}},
-        switchTab=t=>{['tokens','settings'].forEach(n=>{$(`panel${n.charAt(0).toUpperCase()+n.slice(1)}`).classList[n===t?'remove':'add']('hidden');$(`tab${n.charAt(0).toUpperCase()+n.slice(1)}`).classList[n===t?'add':'remove']('border-primary','text-primary');$(`tab${n.charAt(0).toUpperCase()+n.slice(1)}`).classList[n===t?'remove':'add']('border-transparent','text-muted-foreground')});t==='settings'&&loadSettings()},
-        updateCacheProxyReadonly=()=>{const proxyUrl=$('cfgProxyUrl').value.trim(),cacheProxyInput=$('cfgCacheProxyUrl');if(proxyUrl){cacheProxyInput.readOnly=false;cacheProxyInput.classList.remove('bg-muted');cacheProxyInput.placeholder='socks5://username:password@127.0.0.1:7890'}else{cacheProxyInput.readOnly=true;cacheProxyInput.classList.add('bg-muted');cacheProxyInput.value='';cacheProxyInput.placeholder='设置服务代理后自动启用'}};
-        loadSettings=async()=>{try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(d.success){const g=d.data.global,k=d.data.grok;const cfClearance=k.cf_clearance||'';const cleanCfDisplay=cfClearance.startsWith('cf_clearance=')?cfClearance.split('cf_clearance=')[1]:cfClearance;$('cfgAdminUser').value=g.admin_username||'';$('cfgAdminPass').value='';$('cfgLogLevel').value=g.log_level||'DEBUG';$('cfgImageCacheMaxSize').value=g.image_cache_max_size_mb||500;$('cfgVideoCacheMaxSize').value=g.video_cache_max_size_mb||1000;$('cfgImageMode').value=g.image_mode||'url';$('cfgBaseUrl').value=g.base_url||'';$('cfgApiKey').value=k.api_key||'';$('cfgProxyUrl').value=k.proxy_url||'';$('cfgCacheProxyUrl').value=k.cache_proxy_url||'';$('cfgCfClearance').value=cleanCfDisplay;$('cfgStatsigId').value=k.x_statsig_id||'';$('cfgFilteredTags').value=k.filtered_tags||'';$('cfgShowThinking').value=k.show_thinking!==false?'true':'false';$('cfgTemporary').value=k.temporary!==false?'true':'false';$('cfgStreamChunkTimeout').value=k.stream_chunk_timeout||120;$('cfgStreamFirstResponseTimeout').value=k.stream_first_response_timeout||30;$('cfgStreamTotalTimeout').value=k.stream_total_timeout||600;updateCacheProxyReadonly();await loadCacheSize()}}catch(e){console.error('加载配置失败:',e);showToast('加载配置失败','error')}},
-        loadCacheSize=async()=>{try{const r=await apiRequest('/api/cache/size');if(!r)return;const d=await r.json();if(d.success){$('imageCacheSize').value=d.data.image_size||'0 MB';$('videoCacheSize').value=d.data.video_size||'0 MB';$('totalCacheSize').value=d.data.total_size||'0 MB'}}catch(e){console.error('加载缓存大小失败:',e);$('imageCacheSize').value='0 MB';$('videoCacheSize').value='0 MB';$('totalCacheSize').value='0 MB'}},
-        clearImageCache=async()=>{if(!confirm('确定要清理图片缓存吗？此操作将删除所有图片缓存文件！'))return;try{const r=await apiRequest('/api/cache/clear/images',{method:'POST'});if(!r)return;const d=await r.json();d.success?(showToast(`图片缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success'),await loadCacheSize()):showToast('清理失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('清理失败: '+e.message,'error')}},
-        clearVideoCache=async()=>{if(!confirm('确定要清理视频缓存吗？此操作将删除所有视频缓存文件！'))return;try{const r=await apiRequest('/api/cache/clear/videos',{method:'POST'});if(!r)return;const d=await r.json();d.success?(showToast(`视频缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success'),await loadCacheSize()):showToast('清理失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('清理失败: '+e.message,'error')}},
-        clearCache=async()=>{if(!confirm('确定要清理缓存吗？此操作将删除 /data/temp 目录中的所有文件！'))return;try{const r=await apiRequest('/api/cache/clear',{method:'POST'});if(!r)return;const d=await r.json();d.success?(showToast(`缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success'),await loadCacheSize()):showToast('清理失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('清理失败: '+e.message,'error')}},
+        switchTab=t=>{const cap=n=>n.charAt(0).toUpperCase()+n.slice(1);['tokens','settings'].forEach(n=>{const active=n===t;$(`panel${cap(n)}`).classList.toggle('hidden',!active);$(`tab${cap(n)}`).classList.toggle('border-primary',active);$(`tab${cap(n)}`).classList.toggle('text-primary',active);$(`tab${cap(n)}`).classList.toggle('border-transparent',!active);$(`tab${cap(n)}`).classList.toggle('text-muted-foreground',!active)});t==='settings'&&loadSettings()},
+        updateCacheProxyReadonly=()=>{const proxyUrl=$('cfgProxyUrl').value.trim(),cacheProxyInput=$('cfgCacheProxyUrl');if(proxyUrl){cacheProxyInput.readOnly=false;cacheProxyInput.classList.remove('bg-muted');cacheProxyInput.placeholder='socks5://username:password@127.0.0.1:7890'}else{cacheProxyInput.readOnly=true;cacheProxyInput.classList.add('bg-muted');cacheProxyInput.value='';cacheProxyInput.placeholder='设置服务代理后自动启用'}},
+        updateStatsigIdState=()=>{const dynamicToggle=$('cfgDynamicStatsig'),statsigInput=$('cfgStatsigId');if(dynamicToggle.checked){statsigInput.disabled=true;statsigInput.classList.add('bg-muted','text-muted-foreground');statsigInput.placeholder='已启用动态生成'}else{statsigInput.disabled=false;statsigInput.classList.remove('bg-muted','text-muted-foreground');statsigInput.placeholder=''}};
+        loadSettings=async()=>{try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(d.success){const g=d.data.global,k=d.data.grok;const cfClearance=k.cf_clearance||'';const cleanCfDisplay=cfClearance.startsWith('cf_clearance=')?cfClearance.split('cf_clearance=')[1]:cfClearance;$('cfgAdminUser').value=g.admin_username||'';$('cfgAdminPass').value='';$('cfgLogLevel').value=g.log_level||'DEBUG';$('cfgImageCacheMaxSize').value=g.image_cache_max_size_mb||500;$('cfgVideoCacheMaxSize').value=g.video_cache_max_size_mb||1000;$('cfgImageMode').value=g.image_mode||'url';$('cfgBaseUrl').value=g.base_url||'';$('cfgApiKey').value=k.api_key||'';$('cfgProxyUrl').value=k.proxy_url||'';$('cfgCacheProxyUrl').value=k.cache_proxy_url||'';$('cfgCfClearance').value=cleanCfDisplay;$('cfgStatsigId').value=k.x_statsig_id||'';$('cfgDynamicStatsig').checked=k.dynamic_statsig!==false;updateStatsigIdState();$('cfgFilteredTags').value=k.filtered_tags||'';$('cfgShowThinking').value=k.show_thinking!==false?'true':'false';$('cfgTemporary').value=k.temporary!==false?'true':'false';$('cfgStreamChunkTimeout').value=k.stream_chunk_timeout||120;$('cfgStreamFirstResponseTimeout').value=k.stream_first_response_timeout||30;$('cfgStreamTotalTimeout').value=k.stream_total_timeout||600;updateCacheProxyReadonly();await loadCacheSize()}}catch(e){console.error('加载配置失败:',e);showToast('加载配置失败','error')}},
+        loadCacheSize=async()=>{try{const r=await apiRequest('/api/cache/size');if(!r)return;const d=await r.json();if(d.success){['image','video','total'].forEach(t=>$(`${t}CacheSize`).value=d.data[`${t}_size`]||'0 MB')}}catch(e){console.error('加载缓存大小失败:',e);['image','video','total'].forEach(t=>$(`${t}CacheSize`).value='0 MB')}},
+        clearCacheByType=async(type,url,msg)=>{if(!confirm(msg))return;try{const r=await apiRequest(url,{method:'POST'});if(!r)return;const d=await r.json();d.success?(showToast(`${type}缓存清理完成，已删除 ${d.data.deleted_count||0} 个文件`,'success'),await loadCacheSize()):showToast('清理失败: '+(d.error||'未知错误'),'error')}catch(e){showToast('清理失败: '+e.message,'error')}},
+        clearImageCache=()=>clearCacheByType('图片','/api/cache/clear/images','确定要清理图片缓存吗？此操作将删除所有图片缓存文件！'),
+        clearVideoCache=()=>clearCacheByType('视频','/api/cache/clear/videos','确定要清理视频缓存吗？此操作将删除所有视频缓存文件！'),
+        clearCache=()=>clearCacheByType('','/api/cache/clear','确定要清理缓存吗？此操作将删除 /data/temp 目录中的所有文件！'),
         saveGlobalSettings=async()=>{const gc={admin_username:$('cfgAdminUser').value,log_level:$('cfgLogLevel').value,image_cache_max_size_mb:parseInt($('cfgImageCacheMaxSize').value)||500,video_cache_max_size_mb:parseInt($('cfgVideoCacheMaxSize').value)||1000,image_mode:$('cfgImageMode').value,base_url:$('cfgBaseUrl').value};if($('cfgAdminPass').value)gc.admin_password=$('cfgAdminPass').value;try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:gc,grok_config:d.data.grok})});if(!s)return;const sd=await s.json();sd.success?(showToast('全局配置保存成功','success'),$('cfgAdminPass').value=''):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}},
-        saveGrokSettings=async()=>{const pu=$('cfgProxyUrl').value.trim(),cf=$('cfgCfClearance').value.trim();const cleanCf=cf.startsWith('cf_clearance=')?cf.split('cf_clearance=')[1]:cf;const kc={api_key:$('cfgApiKey').value,proxy_url:pu,cache_proxy_url:pu?$('cfgCacheProxyUrl').value:'',cf_clearance:cleanCf,x_statsig_id:$('cfgStatsigId').value,filtered_tags:$('cfgFilteredTags').value,show_thinking:$('cfgShowThinking').value==='true',temporary:$('cfgTemporary').value==='true',stream_chunk_timeout:parseInt($('cfgStreamChunkTimeout').value)||120,stream_first_response_timeout:parseInt($('cfgStreamFirstResponseTimeout').value)||30,stream_total_timeout:parseInt($('cfgStreamTotalTimeout').value)||600};try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:d.data.global,grok_config:kc})});if(!s)return;const sd=await s.json();sd.success?showToast('Grok配置保存成功','success'):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}};
-        const updateHoverCardPosition=(cardElement)=>{const trigger=cardElement.querySelector('.hover-card-trigger'),content=cardElement.querySelector('.hover-card-content');if(!trigger||!content)return;console.log('更新悬浮卡片位置',cardElement,trigger,content);const rect=trigger.getBoundingClientRect(),windowHeight=window.innerHeight,spaceAbove=rect.top,spaceBelow=windowHeight-rect.bottom;content.classList.remove('top','bottom');const originalVisibility=getComputedStyle(content).visibility,originalOpacity=getComputedStyle(content).opacity;content.style.visibility='hidden';content.style.opacity='1';const contentHeight=content.offsetHeight;content.style.visibility=originalVisibility;content.style.opacity=originalOpacity;const position=spaceAbove>contentHeight+10?'top':spaceBelow>contentHeight+10?'bottom':'top';content.classList.add(position);console.log('悬浮卡片位置:',position,'高度:',contentHeight,'上方空间:',spaceAbove,'下方空间:',spaceBelow)},
-        loadStorageMode=async()=>{try{const r=await apiRequest('/api/storage/mode');if(!r)return;const d=await r.json();if(d.success){const mode=d.data.mode;console.log('存储模式:',mode);$('storageModeText').textContent=mode;if(mode==='MYSQL'){$('storageMode').classList.add('bg-blue-50','text-blue-700','border-blue-200');$('storageModeTooltip').textContent='数据库连接模式 - 数据持久化存储，修改配置时可能稍慢但更安全'}else if(mode==='REDIS'){$('storageMode').classList.add('bg-purple-50','text-purple-700','border-purple-200');$('storageModeTooltip').textContent='Redis缓存模式 - 高速内存存储，数据持久化且读写性能极佳'}else{$('storageMode').classList.add('bg-green-50','text-green-700','border-green-200');$('storageModeTooltip').textContent='文件存储模式 - 本地文件存储，读写速度快'};updateHoverCardPosition($('storageMode').closest('.hover-card'))}}catch(e){console.error('加载存储模式失败:',e);$('storageModeText').textContent='FILE';$('storageMode').classList.add('bg-green-50','text-green-700','border-green-200');$('storageModeTooltip').textContent='文件存储模式 - 本地文件存储，读写速度快';updateHoverCardPosition($('storageMode').closest('.hover-card'))}};
-        window.addEventListener('DOMContentLoaded',()=>{checkAuth();loadStorageMode();refreshTokens();setInterval(()=>{loadStats();updateRemaining()},30000);window.addEventListener('resize',()=>{const hoverCard=$('storageMode').closest('.hover-card');hoverCard&&updateHoverCardPosition(hoverCard)});const hoverCard=$('storageMode').closest('.hover-card'),trigger=hoverCard?.querySelector('.hover-card-trigger'),content=hoverCard?.querySelector('.hover-card-content');if(trigger&&content){trigger.addEventListener('mouseenter',()=>{content.style.opacity='1';content.style.visibility='visible'});trigger.addEventListener('mouseleave',()=>{content.style.opacity='0';content.style.visibility='hidden'})};$('cfgProxyUrl').addEventListener('input',updateCacheProxyReadonly)});
+        saveGrokSettings=async()=>{const pu=$('cfgProxyUrl').value.trim(),cf=$('cfgCfClearance').value.trim();const cleanCf=cf.startsWith('cf_clearance=')?cf.split('cf_clearance=')[1]:cf;const kc={api_key:$('cfgApiKey').value,proxy_url:pu,cache_proxy_url:pu?$('cfgCacheProxyUrl').value:'',cf_clearance:cleanCf,x_statsig_id:$('cfgStatsigId').value,dynamic_statsig:$('cfgDynamicStatsig').checked,filtered_tags:$('cfgFilteredTags').value,show_thinking:$('cfgShowThinking').value==='true',temporary:$('cfgTemporary').value==='true',stream_chunk_timeout:parseInt($('cfgStreamChunkTimeout').value)||120,stream_first_response_timeout:parseInt($('cfgStreamFirstResponseTimeout').value)||30,stream_total_timeout:parseInt($('cfgStreamTotalTimeout').value)||600};try{const r=await apiRequest('/api/settings');if(!r)return;const d=await r.json();if(!d.success)return showToast('加载配置失败','error');const s=await apiRequest('/api/settings',{method:'POST',body:JSON.stringify({global_config:d.data.global,grok_config:kc})});if(!s)return;const sd=await s.json();sd.success?showToast('Grok配置保存成功','success'):showToast('保存失败: '+(sd.error||'未知错误'),'error')}catch(e){showToast('保存失败: '+e.message,'error')}};
+        updateHoverCardPosition=c=>{const t=c.querySelector('.hover-card-trigger'),ct=c.querySelector('.hover-card-content');if(!t||!ct)return;const{top,bottom}=t.getBoundingClientRect(),h=window.innerHeight;ct.classList.remove('top','bottom');const{visibility:v,opacity:o}=getComputedStyle(ct);Object.assign(ct.style,{visibility:'hidden',opacity:'1'});const ch=ct.offsetHeight;Object.assign(ct.style,{visibility:v,opacity:o});ct.classList.add(top>ch+10?'top':h-bottom>ch+10?'bottom':'top')},
+        loadStorageMode=async()=>{const modeConfig={MYSQL:{classes:['bg-blue-50','text-blue-700','border-blue-200'],tooltip:'数据库连接模式 - 数据持久化存储，修改配置时可能稍慢但更安全'},REDIS:{classes:['bg-purple-50','text-purple-700','border-purple-200'],tooltip:'Redis缓存模式 - 高速内存存储，数据持久化且读写性能极佳'},FILE:{classes:['bg-green-50','text-green-700','border-green-200'],tooltip:'文件存储模式 - 本地文件存储，读写速度快'}};const applyMode=(mode)=>{$('storageModeText').textContent=mode;const config=modeConfig[mode]||modeConfig.FILE;$('storageMode').classList.add(...config.classes);$('storageModeTooltip').textContent=config.tooltip;updateHoverCardPosition($('storageMode').closest('.hover-card'))};try{const r=await apiRequest('/api/storage/mode');if(!r)return;const d=await r.json();d.success&&applyMode(d.data.mode)}catch(e){console.error('加载存储模式失败:',e);applyMode('FILE')}};
+        window.addEventListener('DOMContentLoaded',()=>{checkAuth();loadStorageMode();refreshTokens();setInterval(()=>{loadStats();updateRemaining()},30000);window.addEventListener('resize',()=>{const hoverCard=$('storageMode').closest('.hover-card');hoverCard&&updateHoverCardPosition(hoverCard)});const hoverCard=$('storageMode').closest('.hover-card'),trigger=hoverCard?.querySelector('.hover-card-trigger'),content=hoverCard?.querySelector('.hover-card-content');if(trigger&&content){trigger.addEventListener('mouseenter',()=>{content.style.opacity='1';content.style.visibility='visible'});trigger.addEventListener('mouseleave',()=>{content.style.opacity='0';content.style.visibility='hidden'})};$('cfgProxyUrl').addEventListener('input',updateCacheProxyReadonly);$('cfgDynamicStatsig').addEventListener('change',updateStatsigIdState)});
     </script>
 </body>
 </html>
