@@ -41,7 +41,7 @@ async def chat_completions(
         HTTPException: 当请求处理失败时
     """
     try:
-        logger.info(f"[Chat] 聊天请求 - 模型: {request.model}")
+        logger.info(f"[Chat] 收到聊天请求")
 
         # 调用Grok客户端处理请求
         result = await GrokClient.openai_to_grok(request.model_dump())

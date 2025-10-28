@@ -29,7 +29,7 @@ class CacheService:
         """下载并缓存文件"""
         cache_path = self._cache_path(file_path)
         if cache_path.exists():
-            logger.debug(f"[{self.cache_type.upper()}Cache] 文件已缓存: {cache_path}")
+            logger.debug(f"[{self.cache_type.upper()}Cache] 文件缓存成功")
             return cache_path
 
         try:
@@ -54,7 +54,7 @@ class CacheService:
                 logger.debug(f"[{self.cache_type.upper()}Cache] 使用缓存代理: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
 
             async with AsyncSession() as session:
-                logger.debug(f"[{self.cache_type.upper()}Cache] 开始下载: https://assets.grok.com{file_path}")
+                logger.debug(f"[{self.cache_type.upper()}Cache] 缓存生成视频文件: https://assets.grok.com{file_path}")
                 response = await session.get(
                     f"https://assets.grok.com{file_path}",
                     headers=headers,
@@ -65,7 +65,7 @@ class CacheService:
                 )
                 response.raise_for_status()
                 cache_path.write_bytes(response.content)
-                logger.debug(f"[{self.cache_type.upper()}Cache] 文件已缓存: {cache_path} ({len(response.content)} bytes)")
+                logger.debug(f"[{self.cache_type.upper()}Cache] 文件缓存成功")
                 asyncio.create_task(self.cleanup_cache())
                 return cache_path
         except Exception as e:
@@ -88,10 +88,10 @@ class CacheService:
             total_size = sum(size for _, size, _ in files)
 
             if total_size <= max_size_bytes:
-                logger.debug(f"[{self.cache_type.upper()}Cache] 缓存大小 {total_size / 1024 / 1024:.2f}MB，未超限")
+                logger.debug(f"[{self.cache_type.upper()}Cache] 缓存大小统计: {total_size / 1024 / 1024:.2f}MB，未达到限制")
                 return
 
-            logger.info(f"[{self.cache_type.upper()}Cache] 缓存大小 {total_size / 1024 / 1024:.2f}MB 超过限制 {max_size_mb}MB，开始清理")
+            logger.info(f"[{self.cache_type.upper()}Cache] 清理缓存，当前大小 {total_size / 1024 / 1024:.2f}MB 超过限制 {max_size_mb}MB")
             files.sort(key=lambda x: x[2])
 
             for file_path, size, _ in files:
@@ -99,9 +99,9 @@ class CacheService:
                     break
                 file_path.unlink()
                 total_size -= size
-                logger.debug(f"[{self.cache_type.upper()}Cache] 已删除缓存文件: {file_path}")
+                logger.debug(f"[{self.cache_type.upper()}Cache] 清理缓存文件: {file_path}")
 
-            logger.info(f"[{self.cache_type.upper()}Cache] 缓存清理完成，当前大小 {total_size / 1024 / 1024:.2f}MB")
+            logger.info(f"[{self.cache_type.upper()}Cache] 清理缓存完成，当前大小 {total_size / 1024 / 1024:.2f}MB")
         except Exception as e:
             logger.error(f"[{self.cache_type.upper()}Cache] 清理缓存失败: {e}")
 

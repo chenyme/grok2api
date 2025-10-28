@@ -269,7 +269,7 @@ class GrokResponseProcessor:
                     yield "data: [DONE]\n\n"
                     return
 
-                logger.debug(f"[Processor] 接收到数据块: {chunk} \n\n")
+                logger.debug(f"[Processor] 接收到数据块, 长度: {len(chunk)} bytes")
                 if not chunk:
                     continue
 
@@ -286,9 +286,12 @@ class GrokResponseProcessor:
 
                     # 提取响应数据
                     grok_resp = data.get("result", {}).get("response", {})
-                    logger.debug(f"[Processor] 解析响应数据: {grok_resp} \n\n")
+                    logger.debug(f"[Processor] 解析响应数据, 长度: {len(grok_resp)} bytes")
                     if not grok_resp:
                         continue
+                    
+                    # 更新超时计时器
+                    timeout_manager.mark_chunk_received()
 
                     # 更新模型名称
                     if user_resp := grok_resp.get("userResponse"):
@@ -300,27 +303,28 @@ class GrokResponseProcessor:
                         progress = video_resp.get("progress", 0)
                         v_url = video_resp.get("videoUrl")
                         
-                        # 处理进度更新（仅当进度增加时）
+                        # 处理进度更新
                         if progress > last_video_progress:
                             last_video_progress = progress
                             
-                            # 添加 <think> 标签
-                            if not video_progress_started:
-                                content = f"<think>视频已生成{progress}%\n"
-                                video_progress_started = True
-                            elif progress < 100:
-                                content = f"视频已生成{progress}%\n"
-                            else:
-                                # 进度100%时关闭 <think> 标签
-                                content = f"视频已生成{progress}%</think>\n"
+                            # 思考状态
+                            if show_thinking:
+                                # 添加 <think> 标签
+                                if not video_progress_started:
+                                    content = f"<think>视频已生成{progress}%\n"
+                                    video_progress_started = True
+                                elif progress < 100:
+                                    content = f"视频已生成{progress}%\n"
+                                else:
+                                    # 关闭 <think> 标签
+                                    content = f"视频已生成{progress}%</think>\n"
 
-                            yield make_chunk(content)
-                            timeout_manager.mark_chunk_received()
-                            chunk_index += 1
+                                yield make_chunk(content)
+                                chunk_index += 1
                         
-                        # 处理视频URL（单独判断，不依赖进度）
+                        # 处理视频URL
                         if v_url:
-                            logger.debug(f"[Processor] 视频生成完成: {v_url}")
+                            logger.debug(f"[Processor] 视频生成完成")
                             full_video_url = f"https://assets.grok.com/{v_url}"
                             
                             try:
@@ -337,7 +341,6 @@ class GrokResponseProcessor:
                                 video_content = f'<video src="{full_video_url}" controls="controls"></video>\n'
                             
                             yield make_chunk(video_content)
-                            timeout_manager.mark_chunk_received()
                             chunk_index += 1
                         
                         continue
@@ -378,7 +381,6 @@ class GrokResponseProcessor:
 
                                                     # 发送前缀
                                                     yield make_chunk(markdown_prefix + mime_part)
-                                                    timeout_manager.mark_chunk_received()
                                                     chunk_index += 1
 
                                                     # 分块发送 base64 数据
@@ -386,24 +388,19 @@ class GrokResponseProcessor:
                                                     for i in range(0, len(b64_data), chunk_size):
                                                         chunk_data = b64_data[i:i + chunk_size]
                                                         yield make_chunk(chunk_data)
-                                                        timeout_manager.mark_chunk_received()
                                                         chunk_index += 1
 
                                                     # 发送后缀
                                                     yield make_chunk(markdown_suffix)
-                                                    timeout_manager.mark_chunk_received()
                                                     chunk_index += 1
                                                 else:
                                                     yield make_chunk(f"![Generated Image]({base64_str})\n")
-                                                    timeout_manager.mark_chunk_received()
                                                     chunk_index += 1
                                             else:
                                                 yield make_chunk(f"![Generated Image]({base64_str})\n")
-                                                timeout_manager.mark_chunk_received()
                                                 chunk_index += 1
                                         else:
                                             yield make_chunk(f"![Generated Image](https://assets.grok.com/{img})\n")
-                                            timeout_manager.mark_chunk_received()
                                             chunk_index += 1
                                     else:
                                         # url 模式：缓存并返回链接
@@ -419,11 +416,9 @@ class GrokResponseProcessor:
 
                             # 发送内容
                             yield make_chunk(content.strip(), "stop")
-                            timeout_manager.mark_chunk_received()
                             return
                         elif token:
                             yield make_chunk(token)
-                            timeout_manager.mark_chunk_received()
                             chunk_index += 1
 
                     # 提取对话数据
@@ -495,7 +490,6 @@ class GrokResponseProcessor:
                             # 只在不需要跳过时才发送
                             if not should_skip:
                                 yield make_chunk(content)
-                                timeout_manager.mark_chunk_received()
                                 chunk_index += 1
                             
                             is_thinking = current_is_thinking
@@ -517,7 +511,7 @@ class GrokResponseProcessor:
             logger.info(f"[Processor] 流式响应完成，总耗时: {timeout_manager.get_total_duration():.2f}秒")
 
         except Exception as e:
-            logger.error(f"[Processor] 流式处理严重错误: {e}")
+            logger.error(f"[Processor] 流式处理发生严重错误: {e}")
             yield make_chunk(f"处理错误: {e}", "error")
             # 发送流结束标记
             yield "data: [DONE]\n\n"

@@ -46,7 +46,7 @@ class AuthManager:
                 }
             )
 
-        logger.debug("[Auth] 令牌认证成功。")
+        logger.debug("[Auth] 令牌认证成功")
         return credentials.credentials
 
 

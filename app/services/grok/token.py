@@ -272,14 +272,13 @@ class GrokTokenManager:
             )
 
         status_text = "未使用" if max_remaining == -1 else f"剩余{max_remaining}次"
-        logger.debug(f"[Token] 为模型 {model} 选择Token ({status_text})")
+        logger.debug(f"[Token] 正在为模型 {model} 分配Token ({status_text})")
         return max_token_key
     
     async def check_limits(self, auth_token: str, model: str) -> Optional[Dict[str, Any]]:
         """检查并更新模型速率限制"""
         try:
             rate_limit_model_name = Models.to_rate_limit(model)
-            logger.debug(f"[Token] 检查模型 {model} (接口模型: {rate_limit_model_name}) 的速率限制")
 
             # 准备请求
             payload = {"requestKind": "DEFAULT", "modelName": rate_limit_model_name}
@@ -293,9 +292,6 @@ class GrokTokenManager:
             proxy_url = setting.grok_config.get("proxy_url", "")
             proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
             
-            if proxy_url:
-                logger.debug(f"[Token] 使用代理: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
-
             # 发送异步请求
             async with AsyncSession() as session:
                 response = await session.post(
@@ -309,17 +305,16 @@ class GrokTokenManager:
 
                 if response.status_code == 200:
                     rate_limit_data = response.json()
-                    logger.debug(f"[Token] 成功获取速率限制信息")
 
                     # 保存速率限制信息
                     sso_value = self._extract_sso(auth_token)
                     if sso_value:
                         if model == "grok-4-heavy":
                             await self.update_limits(sso_value, normal=None, heavy=rate_limit_data.get("remainingQueries", -1))
-                            logger.info(f"[Token] 已更新限制: sso={sso_value[:10]}..., heavy={rate_limit_data.get('remainingQueries', -1)}")
+                            logger.info(f"[Token] 更新 Token 限制: sso={sso_value[:10]}..., heavy={rate_limit_data.get('remainingQueries', -1)}")
                         else:
                             await self.update_limits(sso_value, normal=rate_limit_data.get("remainingTokens", -1), heavy=None)
-                            logger.info(f"[Token] 已更新限制: sso={sso_value[:10]}..., 通用={rate_limit_data.get('remainingTokens', -1)}")
+                            logger.info(f"[Token] 更新 Token 限制: sso={sso_value[:10]}..., basic={rate_limit_data.get('remainingTokens', -1)}")
 
                     return rate_limit_data
                 else:

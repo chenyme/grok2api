@@ -33,8 +33,6 @@ class GrokClient:
         messages = openai_request["messages"]
         stream = openai_request.get("stream", False)
 
-        logger.debug(f"[Client] 处理请求 - 模型:{model}, 消息数:{len(messages)}, 流式:{stream}")
-
         # 提取消息内容和图片URL
         content, image_urls = GrokClient._extract_content(messages)
         model_name, model_mode = Models.to_grok(model)
@@ -45,7 +43,6 @@ class GrokClient:
             if len(image_urls) > 1:
                 logger.warning(f"[Client] 视频模型只允许一张图片，当前有{len(image_urls)}张，只使用第一张")
                 image_urls = image_urls[:1]
-            logger.debug(f"[Client] 视频模型文本处理: {content}")
 
         # 重试逻辑
         return await GrokClient._try(model, content, image_urls, model_name, model_mode, is_video_model, stream)
@@ -63,23 +60,20 @@ class GrokClient:
                 # 上传图片
                 imgs, uris = await GrokClient._upload_imgs(image_urls, auth_token)
                 
-                # 视频模型需要额外的create操作
+                # 视频模型 - 创建会话
                 post_id = None
                 if is_video and imgs and uris:
-                    logger.debug(f"[Client] 检测到视频模型，执行post create操作")
                     try:
                         create_result = await PostCreateManager.create(imgs[0], uris[0], auth_token)
                         if create_result and create_result.get("success"):
                             post_id = create_result.get("post_id")
-                            logger.debug(f"[Client] Post创建成功: {post_id}")
                         else:
-                            logger.warning(f"[Client] Post创建失败，继续使用原有流程")
+                            logger.warning(f"[Client] 创建会话失败，继续使用原有流程")
                     except Exception as e:
-                        logger.warning(f"[Client] Post创建异常: {e}，继续使用原有流程")
+                        logger.warning(f"[Client] 创建会话异常: {e}，继续使用原有流程")
                 
                 # 构建并发送请求
                 payload = GrokClient._build_payload(content, model_name, model_mode, imgs, uris, is_video, post_id)
-                logger.debug(f"[Client] 请求载荷配置: {payload}")
                 return await GrokClient._send_request(payload, auth_token, model, stream, post_id)
                 
             except GrokApiException as e:
@@ -110,7 +104,7 @@ class GrokClient:
         for msg in messages:
             msg_content = msg.get("content", "")
 
-            # 处理复杂消息格式（包含文本和图片）
+            # 处理复杂消息格式
             if isinstance(msg_content, list):
                 for item in msg_content:
                     item_type = item.get("type")
@@ -173,17 +167,14 @@ class GrokClient:
             "isAsyncChat": False
         }
         
-        # 视频模型特殊配置
+        # 视频模型配置
         if is_video_model and image_uris:
             image_url = image_uris[0]
-            logger.debug(f"[Client] 视频模型图片URL: {image_url}")
             
-            # 根据是否有post_id选择不同的URL格式
+            # 构建 URL 消息
             if post_id:
-                logger.debug(f"[Client] 使用PostID构建URL: {post_id}")
                 image_message = f"https://grok.com/imagine/{post_id}  {content} --mode=custom"
             else:
-                logger.debug(f"[Client] 使用文件URI构建URL: {image_url}")
                 image_message = f"https://assets.grok.com/post/{image_url}  {content} --mode=custom"
             
             payload = {
@@ -193,8 +184,6 @@ class GrokClient:
                 "fileAttachments": image_attachments,
                 "toolOverrides": {"videoGen": True}
             }
-            logger.debug(f"[Client] 视频模型载荷配置: {payload}")
-            logger.debug("[Client] 视频模型载荷配置: toolOverrides.videoGen = True")
         
         return payload
 
@@ -209,19 +198,15 @@ class GrokClient:
             # 构建请求头
             headers = GrokClient._build_headers(auth_token)
             if model == "grok-imagine-0.9":
-                # 优先使用传入的post_id，否则使用fileAttachments中的第一个
+                # 传入会话ID
                 referer_id = post_id if post_id else payload.get("fileAttachments", [""])[0]
                 if referer_id:
                     headers["Referer"] = f"https://grok.com/imagine/{referer_id}"
-                    logger.debug(f"[Client] 设置Referer: {headers['Referer']}")
             
             # 使用服务代理
             proxy_url = setting.get_service_proxy()
             proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
             
-            if proxy_url:
-                logger.debug(f"[Client] 使用服务代理: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
-
             # 构建请求参数
             request_kwargs = {
                 "headers": headers,
@@ -238,8 +223,6 @@ class GrokClient:
                 GROK_API_ENDPOINT,
                 **request_kwargs
             )
-
-            logger.debug(f"[Client] API响应状态码: {response.status_code}")
 
             # 处理非成功响应
             if response.status_code != 200:
