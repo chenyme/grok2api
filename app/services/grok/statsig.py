@@ -36,7 +36,7 @@ def get_dynamic_headers(pathname: str = "/rest/app-chat/conversations/new") -> D
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
-        "Baggage": "sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c",
+        "Baggage": "sentry-environment=production,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c",
         "x-statsig-id": statsig_id,
         "x-xai-request-id": str(uuid.uuid4())
     }

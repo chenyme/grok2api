@@ -1,6 +1,7 @@
 """Grok API 客户端模块"""
 
 import asyncio
+from calendar import c
 import json
 from typing import Dict, List, Tuple, Any
 
@@ -44,7 +45,6 @@ class GrokClient:
             if len(image_urls) > 1:
                 logger.warning(f"[Client] 视频模型只允许一张图片，当前有{len(image_urls)}张，只使用第一张")
                 image_urls = image_urls[:1]
-            content = f"{content} --mode=custom"
             logger.debug(f"[Client] 视频模型文本处理: {content}")
 
         # 重试逻辑
@@ -61,10 +61,11 @@ class GrokClient:
                 auth_token = token_manager.get_token(model)
                 
                 # 上传图片
-                imgs = await GrokClient._upload_imgs(image_urls, auth_token)
+                imgs, uris = await GrokClient._upload_imgs(image_urls, auth_token)
                 
                 # 构建并发送请求
-                payload = GrokClient._build_payload(content, model_name, model_mode, imgs, is_video)
+                payload = GrokClient._build_payload(content, model_name, model_mode, imgs, uris, is_video)
+                logger.debug(f"[Client] 请求载荷配置: {payload}")
                 return await GrokClient._send_request(payload, auth_token, model, stream)
                 
             except GrokApiException as e:
@@ -112,23 +113,25 @@ class GrokClient:
         return "".join(content_parts), image_urls
 
     @staticmethod
-    async def _upload_imgs(image_urls: List[str], auth_token: str) -> List[str]:
+    async def _upload_imgs(image_urls: List[str], auth_token: str) -> Tuple[List[str], List[str]]:
         """上传图片并返回附件ID列表"""
         image_attachments = []
+        image_uris = []
         # 并发上传所有图片
         tasks = [ImageUploadManager.upload(url, auth_token) for url in image_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for url, result in zip(image_urls, results):
-            if isinstance(result, Exception):
-                logger.warning(f"[Client] 图片上传失败: {url}, 错误: {result}")
-            elif result:
-                image_attachments.append(result)
+        for url, (file_id, file_uri) in zip(image_urls, results):
+            if isinstance(file_id, Exception):
+                logger.warning(f"[Client] 图片上传失败: {url}, 错误: {file_id}")
+            elif file_id:
+                image_attachments.append(file_id)
+                image_uris.append(file_uri)
 
-        return image_attachments
+        return image_attachments, image_uris
 
     @staticmethod
-    def _build_payload(content: str, model_name: str, model_mode: str, image_attachments: List[str], is_video_model: bool = False) -> Dict[str, Any]:
+    def _build_payload(content: str, model_name: str, model_mode: str, image_attachments: List[str], image_uris: List[str], is_video_model: bool = False) -> Dict[str, Any]:
         """构建Grok API请求载荷"""
         payload = {
             "temporary": setting.grok_config.get("temporary", True),
@@ -158,7 +161,16 @@ class GrokClient:
         
         # 视频模型特殊配置
         if is_video_model:
-            payload["toolOverrides"] = {"videoGen": True}
+            image_url = image_uris[0]
+            logger.debug(f"[Client] 视频模型图片URL: {image_url}")
+            payload = {
+                "temporary": True,
+                "modelName": "grok-3",
+                "message": f"https://assets.grok.com/post/{image_url}  {content} --mode=custom",
+                "fileAttachments": image_attachments,
+                "toolOverrides":{"videoGen": True}
+            }
+            logger.debug(f"[Client] 视频模型载荷配置: {payload}")
             logger.debug("[Client] 视频模型载荷配置: toolOverrides.videoGen = True")
         
         return payload
@@ -173,6 +185,9 @@ class GrokClient:
         try:
             # 构建请求头
             headers = GrokClient._build_headers(auth_token)
+            if model == "grok-imagine-0.9":
+                post_id = payload.get("fileAttachments", [""])[0]
+                headers["Referer"] = f"https://grok.com/imagine/{post_id}"
             
             # 使用服务代理
             proxy_url = setting.get_service_proxy()

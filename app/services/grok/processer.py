@@ -269,7 +269,7 @@ class GrokResponseProcessor:
                     yield "data: [DONE]\n\n"
                     return
 
-                logger.debug(f"[Processor] 接收到数据块: {len(chunk)} bytes")
+                logger.debug(f"[Processor] 接收到数据块: {chunk} \n\n")
                 if not chunk:
                     continue
 
@@ -286,7 +286,7 @@ class GrokResponseProcessor:
 
                     # 提取响应数据
                     grok_resp = data.get("result", {}).get("response", {})
-                    logger.debug(f"[Processor] 解析响应数据: {len(grok_resp)} 字段")
+                    logger.debug(f"[Processor] 解析响应数据: {grok_resp} \n\n")
                     if not grok_resp:
                         continue
 
@@ -298,7 +298,9 @@ class GrokResponseProcessor:
                     # 提取视频数据
                     if video_resp := grok_resp.get("streamingVideoGenerationResponse"):
                         progress = video_resp.get("progress", 0)
+                        v_url = video_resp.get("videoUrl")
                         
+                        # 处理进度更新（仅当进度增加时）
                         if progress > last_video_progress:
                             last_video_progress = progress
                             
@@ -309,28 +311,32 @@ class GrokResponseProcessor:
                             elif progress < 100:
                                 content = f"视频已生成{progress}%\n"
                             else:
-                                # 进度100%时关闭 <think> 标签并立即处理视频
+                                # 进度100%时关闭 <think> 标签
                                 content = f"视频已生成{progress}%</think>\n"
-                                
-                                # 立即下载并缓存视频
-                                if v_url := video_resp.get("videoUrl"):
-                                    logger.debug(f"[Processor] 视频生成完成: {v_url}")
-                                    full_video_url = f"https://assets.grok.com/{v_url}"
-                                    
-                                    try:
-                                        cache_path = await video_cache_service.download_video(f"/{v_url}", auth_token)
-                                        if cache_path:
-                                            video_path = v_url.replace('/', '-')
-                                            base_url = setting.global_config.get("base_url", "")
-                                            local_video_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
-                                            content += f'<video src="{local_video_url}" controls="controls"></video>\n'
-                                        else:
-                                            content += f'<video src="{full_video_url}" controls="controls"></video>\n'
-                                    except Exception as e:
-                                        logger.warning(f"[Processor] 缓存视频失败: {e}")
-                                        content += f'<video src="{full_video_url}" controls="controls"></video>\n'
 
                             yield make_chunk(content)
+                            timeout_manager.mark_chunk_received()
+                            chunk_index += 1
+                        
+                        # 处理视频URL（单独判断，不依赖进度）
+                        if v_url:
+                            logger.debug(f"[Processor] 视频生成完成: {v_url}")
+                            full_video_url = f"https://assets.grok.com/{v_url}"
+                            
+                            try:
+                                cache_path = await video_cache_service.download_video(f"/{v_url}", auth_token)
+                                if cache_path:
+                                    video_path = v_url.replace('/', '-')
+                                    base_url = setting.global_config.get("base_url", "")
+                                    local_video_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
+                                    video_content = f'<video src="{local_video_url}" controls="controls"></video>\n'
+                                else:
+                                    video_content = f'<video src="{full_video_url}" controls="controls"></video>\n'
+                            except Exception as e:
+                                logger.warning(f"[Processor] 缓存视频失败: {e}")
+                                video_content = f'<video src="{full_video_url}" controls="controls"></video>\n'
+                            
+                            yield make_chunk(video_content)
                             timeout_manager.mark_chunk_received()
                             chunk_index += 1
                         
