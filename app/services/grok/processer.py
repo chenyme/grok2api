@@ -373,7 +373,7 @@ class GrokResponseProcessor:
                                             markdown_suffix = ")\n"
 
                                             # 提取 data URL 的 mime 和 base64 部分
-                                            if base64_str.startswith("data:"):
+                                            if not base64_str.startswith("data:"):
                                                 parts = base64_str.split(",", 1)
                                                 if len(parts) == 2:
                                                     mime_part = parts[0] + ","
