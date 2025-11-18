@@ -67,6 +67,32 @@ _MODEL_CONFIG = {
             "supported_max_output_tokens": 131072,
             "default_top_p": 0.95
         },
+        "grok-4.1": {
+            "grok_model": ("grok-4-1-non-thinking-w-tool", "MODEL_MODE_GROK_4_1"),
+            "rate_limit_model": "grok-4-1-non-thinking-w-tool",
+            "cost": {"type": "low_cost", "multiplier": 1, "description": "计1次调用"},
+            "requires_super": False,
+            "display_name": "Grok 4.1",
+            "description": "Latest Grok 4.1 model with tool capabilities",
+            "raw_model_path": "xai/grok-4-1-non-thinking-w-tool",
+            "default_temperature": 1.0,
+            "default_max_output_tokens": 8192,
+            "supported_max_output_tokens": 131072,
+            "default_top_p": 0.95
+        },
+        "grok-4.1-thinking": {
+            "grok_model": ("grok-4-1-non-thinking-w-tool", "MODEL_MODE_EXPERT"),
+            "rate_limit_model": "grok-4-1-non-thinking-w-tool",
+            "cost": {"type": "high_cost", "multiplier": 4, "description": "计4次调用"},
+            "requires_super": False,
+            "display_name": "Grok 4.1 Thinking",
+            "description": "Grok 4.1 model with advanced thinking and tool capabilities",
+            "raw_model_path": "xai/grok-4-1-non-thinking-w-tool",
+            "default_temperature": 1.0,
+            "default_max_output_tokens": 32768,
+            "supported_max_output_tokens": 131072,
+            "default_top_p": 0.95
+        },
         "grok-imagine-0.9": {
             "grok_model": ("grok-3", "MODEL_MODE_FAST"),
             "rate_limit_model": "grok-3",
@@ -92,6 +118,8 @@ class TokenType(Enum):
 class Models(Enum):
     """支持的模型枚举"""
     GROK_3_FAST = "grok-3-fast"
+    GROK_4_1 = "grok-4.1"
+    GROK_4_1_THINKING = "grok-4.1-thinking"
     GROK_4_FAST = "grok-4-fast"
     GROK_4_FAST_EXPERT = "grok-4-fast-expert"
     GROK_4_EXPERT = "grok-4-expert"
