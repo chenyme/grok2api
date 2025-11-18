@@ -81,13 +81,13 @@ _MODEL_CONFIG = {
             "default_top_p": 0.95
         },
         "grok-4.1-thinking": {
-            "grok_model": ("grok-4-1-non-thinking-w-tool", "MODEL_MODE_EXPERT"),
-            "rate_limit_model": "grok-4-1-non-thinking-w-tool",
-            "cost": {"type": "high_cost", "multiplier": 4, "description": "计4次调用"},
+            "grok_model": ("grok-4-1-thinking-1108b", "MODEL_MODE_AUTO"),
+            "rate_limit_model": "grok-4-1-thinking-1108b",
+            "cost": {"type": "high_cost", "multiplier": 1, "description": "计1次调用"},
             "requires_super": False,
             "display_name": "Grok 4.1 Thinking",
             "description": "Grok 4.1 model with advanced thinking and tool capabilities",
-            "raw_model_path": "xai/grok-4-1-non-thinking-w-tool",
+            "raw_model_path": "xai/grok-4-1-thinking-1108b",
             "default_temperature": 1.0,
             "default_max_output_tokens": 32768,
             "supported_max_output_tokens": 131072,
