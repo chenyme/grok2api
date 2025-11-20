@@ -11,11 +11,56 @@ class ConfigManager:
     def __init__(self) -> None:
         """初始化"""
 
-        # 加载环境变量
+        # 配置文件路径
         self.config_path: Path = Path(__file__).parents[2] / "data" / "setting.toml"
+        
+        # 确保配置文件存在(首次启动时创建默认配置)
+        self._ensure_config_exists()
+        
+        # 加载配置
         self.global_config: Dict[str, Any] = self.load("global")
         self.grok_config: Dict[str, Any] = self.load("grok")
         self._storage = None
+    
+    def _ensure_config_exists(self) -> None:
+        """确保配置文件存在,如果不存在则创建默认配置"""
+        if not self.config_path.exists():
+            # 创建 data 目录
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 创建默认配置文件
+            self._create_default_config()
+    
+    def _create_default_config(self) -> None:
+        """创建默认配置文件"""
+        default_config = {
+            "grok": {
+                "api_key": "",
+                "proxy_url": "",
+                "cache_proxy_url": "",
+                "cf_clearance": "",
+                "x_statsig_id": "",
+                "dynamic_statsig": True,
+                "filtered_tags": "xaiartifact,xai:tool_usage_card,grok:render",
+                "stream_chunk_timeout": 120,
+                "stream_total_timeout": 600,
+                "stream_first_response_timeout": 30,
+                "temporary": True,
+                "show_thinking": False
+            },
+            "global": {
+                "base_url": "http://localhost:8000",
+                "log_level": "INFO",
+                "image_mode": "url",
+                "admin_password": "admin",
+                "admin_username": "admin",
+                "image_cache_max_size_mb": 512,
+                "video_cache_max_size_mb": 1024
+            }
+        }
+        
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            toml.dump(default_config, f)
 
     def set_storage(self, storage) -> None:
         """设置存储实例"""

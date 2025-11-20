@@ -38,7 +38,6 @@ RUN mkdir -p /app/logs /app/data/temp/image /app/data/temp/video && \
 # 复制应用代码
 COPY app/ ./app/
 COPY main.py .
-COPY data/setting.toml ./data/
 
 # 删除 Python 字节码和缓存
 ENV PYTHONDONTWRITEBYTECODE=1 \
