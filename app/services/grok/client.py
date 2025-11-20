@@ -1,9 +1,8 @@
-"""Grok API 客户端模块"""
+"""Grok API 客户端 - 处理OpenAI到Grok的请求转换和响应处理"""
 
 import asyncio
-import json
-from typing import Dict, List, Tuple, Any
-
+import orjson
+from typing import Dict, List, Tuple, Any, Optional
 from curl_cffi import requests as curl_requests
 
 from app.core.config import setting
@@ -16,136 +15,148 @@ from app.services.grok.upload import ImageUploadManager
 from app.services.grok.create import PostCreateManager
 from app.core.exception import GrokApiException
 
-# 常量定义
-GROK_API_ENDPOINT = "https://grok.com/rest/app-chat/conversations/new"
-REQUEST_TIMEOUT = 120
-IMPERSONATE_BROWSER = "chrome133a"
-MAX_RETRY = 3  # 最大重试次数
+
+# 常量
+API_ENDPOINT = "https://grok.com/rest/app-chat/conversations/new"
+TIMEOUT = 120
+BROWSER = "chrome133a"
+MAX_RETRY = 3
+MAX_UPLOADS = 5
 
 
 class GrokClient:
     """Grok API 客户端"""
+    
+    _upload_sem = asyncio.Semaphore(MAX_UPLOADS)
 
     @staticmethod
-    async def openai_to_grok(openai_request: dict):
-        """转换OpenAI请求为Grok请求并处理响应"""
-        model = openai_request["model"]
-        messages = openai_request["messages"]
-        stream = openai_request.get("stream", False)
-
-        # 提取消息内容和图片URL
-        content, image_urls = GrokClient._extract_content(messages)
-        model_name, model_mode = Models.to_grok(model)
-        is_video_model = Models.get_model_info(model).get("is_video_model", False)
+    async def openai_to_grok(request: dict):
+        """转换OpenAI请求为Grok请求"""
+        model = request["model"]
+        content, images = GrokClient._extract_content(request["messages"])
+        stream = request.get("stream", False)
         
-        # 视频模型特殊处理
-        if is_video_model:
-            if len(image_urls) > 1:
-                logger.warning(f"[Client] 视频模型只允许一张图片，当前有{len(image_urls)}张，只使用第一张")
-                image_urls = image_urls[:1]
-
-        # 重试逻辑
-        return await GrokClient._try(model, content, image_urls, model_name, model_mode, is_video_model, stream)
+        # 获取模型信息
+        info = Models.get_model_info(model)
+        grok_model, mode = Models.to_grok(model)
+        is_video = info.get("is_video_model", False)
+        
+        # 视频模型限制
+        if is_video and len(images) > 1:
+            logger.warning(f"[Client] 视频模型仅支持1张图片，已截取前1张")
+            images = images[:1]
+        
+        return await GrokClient._retry(model, content, images, grok_model, mode, is_video, stream)
 
     @staticmethod
-    async def _try(model: str, content: str, image_urls: List[str], model_name: str, model_mode: str, is_video: bool, stream: bool):
-        """带重试的请求执行"""
+    async def _retry(model: str, content: str, images: List[str], grok_model: str, mode: str, is_video: bool, stream: bool):
+        """重试请求"""
         last_err = None
         
         for i in range(MAX_RETRY):
             try:
-                # 获取token
-                auth_token = token_manager.get_token(model)
+                token = token_manager.get_token(model)
+                img_ids, img_uris = await GrokClient._upload(images, token)
                 
-                # 上传图片
-                imgs, uris = await GrokClient._upload_imgs(image_urls, auth_token)
-                
-                # 视频模型 - 创建会话
+                # 视频模型创建会话
                 post_id = None
-                if is_video and imgs and uris:
-                    try:
-                        create_result = await PostCreateManager.create(imgs[0], uris[0], auth_token)
-                        if create_result and create_result.get("success"):
-                            post_id = create_result.get("post_id")
-                        else:
-                            logger.warning(f"[Client] 创建会话失败，继续使用原有流程")
-                    except Exception as e:
-                        logger.warning(f"[Client] 创建会话异常: {e}，继续使用原有流程")
+                if is_video and img_ids and img_uris:
+                    post_id = await GrokClient._create_post(img_ids[0], img_uris[0], token)
                 
-                # 构建并发送请求
-                payload = GrokClient._build_payload(content, model_name, model_mode, imgs, uris, is_video, post_id)
-                return await GrokClient._send_request(payload, auth_token, model, stream, post_id)
+                payload = GrokClient._build_payload(content, grok_model, mode, img_ids, img_uris, is_video, post_id)
+                return await GrokClient._request(payload, token, model, stream, post_id)
                 
             except GrokApiException as e:
                 last_err = e
-                # 401/429 可重试，其他错误直接抛出
+                # 仅401/429可重试
                 if e.error_code not in ["HTTP_ERROR", "NO_AVAILABLE_TOKEN"]:
                     raise
                 
-                # 检查是否为可重试的状态码
                 status = e.context.get("status") if e.context else None
                 if status not in [401, 429]:
                     raise
                 
                 if i < MAX_RETRY - 1:
-                    logger.warning(f"[Client] 请求失败(状态码:{status}), 重试 {i+1}/{MAX_RETRY}")
-                    await asyncio.sleep(0.5)  # 短暂延迟
-                else:
-                    logger.error(f"[Client] 重试{MAX_RETRY}次后仍失败")
+                    logger.warning(f"[Client] 失败(状态:{status}), 重试 {i+1}/{MAX_RETRY}")
+                    await asyncio.sleep(0.5)
         
-        raise last_err if last_err else GrokApiException("请求失败", "REQUEST_ERROR")
+        raise last_err or GrokApiException("请求失败", "REQUEST_ERROR")
 
     @staticmethod
     def _extract_content(messages: List[Dict]) -> Tuple[str, List[str]]:
-        """提取消息内容和图片URL"""
-        content_parts = []
-        image_urls = []
-
+        """提取文本和图片"""
+        texts, images = [], []
+        
         for msg in messages:
-            msg_content = msg.get("content", "")
-
-            # 处理复杂消息格式
-            if isinstance(msg_content, list):
-                for item in msg_content:
-                    item_type = item.get("type")
-                    if item_type == "text":
-                        content_parts.append(item.get("text", ""))
-                    elif item_type == "image_url":
-                        url = item.get("image_url", {}).get("url", "")
-                        if url:
-                            image_urls.append(url)
-            # 处理纯文本消息
+            content = msg.get("content", "")
+            
+            if isinstance(content, list):
+                for item in content:
+                    if item.get("type") == "text":
+                        texts.append(item.get("text", ""))
+                    elif item.get("type") == "image_url":
+                        if url := item.get("image_url", {}).get("url"):
+                            images.append(url)
             else:
-                content_parts.append(msg_content)
-
-        return "".join(content_parts), image_urls
-
-    @staticmethod
-    async def _upload_imgs(image_urls: List[str], auth_token: str) -> Tuple[List[str], List[str]]:
-        """上传图片并返回附件ID列表"""
-        image_attachments = []
-        image_uris = []
-        # 并发上传所有图片
-        tasks = [ImageUploadManager.upload(url, auth_token) for url in image_urls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for url, (file_id, file_uri) in zip(image_urls, results):
-            if isinstance(file_id, Exception):
-                logger.warning(f"[Client] 图片上传失败: {url}, 错误: {file_id}")
-            elif file_id:
-                image_attachments.append(file_id)
-                image_uris.append(file_uri)
-
-        return image_attachments, image_uris
+                texts.append(content)
+        
+        return "".join(texts), images
 
     @staticmethod
-    def _build_payload(content: str, model_name: str, model_mode: str, image_attachments: List[str], image_uris: List[str], is_video_model: bool = False, post_id: str = None) -> Dict[str, Any]:
-        """构建Grok API请求载荷"""
-        payload = {
+    async def _upload(urls: List[str], token: str) -> Tuple[List[str], List[str]]:
+        """并发上传图片"""
+        if not urls:
+            return [], []
+        
+        async def upload_limited(url):
+            async with GrokClient._upload_sem:
+                return await ImageUploadManager.upload(url, token)
+        
+        results = await asyncio.gather(*[upload_limited(u) for u in urls], return_exceptions=True)
+        
+        ids, uris = [], []
+        for url, result in zip(urls, results):
+            if isinstance(result, Exception):
+                logger.warning(f"[Client] 上传失败: {url} - {result}")
+            elif isinstance(result, tuple) and len(result) == 2:
+                fid, furi = result
+                if fid:
+                    ids.append(fid)
+                    uris.append(furi)
+        
+        return ids, uris
+
+    @staticmethod
+    async def _create_post(file_id: str, file_uri: str, token: str) -> Optional[str]:
+        """创建视频会话"""
+        try:
+            result = await PostCreateManager.create(file_id, file_uri, token)
+            if result and result.get("success"):
+                return result.get("post_id")
+        except Exception as e:
+            logger.warning(f"[Client] 创建会话失败: {e}")
+        return None
+
+    @staticmethod
+    def _build_payload(content: str, model: str, mode: str, img_ids: List[str], img_uris: List[str], is_video: bool = False, post_id: str = None) -> Dict:
+        """构建请求载荷"""
+        # 视频模型特殊处理
+        if is_video and img_uris:
+            img_msg = f"https://grok.com/imagine/{post_id}" if post_id else f"https://assets.grok.com/post/{img_uris[0]}"
+            return {
+                "temporary": True,
+                "modelName": "grok-3",
+                "message": f"{img_msg}  {content} --mode=custom",
+                "fileAttachments": img_ids,
+                "toolOverrides": {"videoGen": True}
+            }
+        
+        # 标准载荷
+        return {
             "temporary": setting.grok_config.get("temporary", True),
-            "modelName": model_name,
+            "modelName": model,
             "message": content,
-            "fileAttachments": image_attachments,
+            "fileAttachments": img_ids,
             "imageAttachments": [],
             "disableSearch": False,
             "enableImageGeneration": True,
@@ -160,144 +171,96 @@ class GrokClient:
             "isReasoning": False,
             "webpageUrls": [],
             "disableTextFollowUps": True,
-            "responseMetadata": {"requestModelDetails": {"modelId": model_name}},
+            "responseMetadata": {"requestModelDetails": {"modelId": model}},
             "disableMemory": False,
             "forceSideBySide": False,
-            "modelMode": model_mode,
+            "modelMode": mode,
             "isAsyncChat": False
         }
-        
-        # 视频模型配置
-        if is_video_model and image_uris:
-            image_url = image_uris[0]
-            
-            # 构建 URL 消息
-            if post_id:
-                image_message = f"https://grok.com/imagine/{post_id}  {content} --mode=custom"
-            else:
-                image_message = f"https://assets.grok.com/post/{image_url}  {content} --mode=custom"
-            
-            payload = {
-                "temporary": True,
-                "modelName": "grok-3",
-                "message": image_message,
-                "fileAttachments": image_attachments,
-                "toolOverrides": {"videoGen": True}
-            }
-        
-        return payload
 
     @staticmethod
-    async def _send_request(payload: dict, auth_token: str, model: str, stream: bool, post_id: str = None):
-        """发送HTTP请求到Grok API"""
-        # 验证认证令牌
-        if not auth_token:
+    async def _request(payload: dict, token: str, model: str, stream: bool, post_id: str = None):
+        """发送请求"""
+        if not token:
             raise GrokApiException("认证令牌缺失", "NO_AUTH_TOKEN")
 
         try:
-            # 构建请求头
-            headers = GrokClient._build_headers(auth_token)
+            # 构建请求
+            headers = GrokClient._build_headers(token)
             if model == "grok-imagine-0.9":
-                # 传入会话ID
-                file_attachments = payload.get("fileAttachments", [])
-                referer_id = post_id if post_id else (file_attachments[0] if file_attachments else "")
-                if referer_id:
-                    headers["Referer"] = f"https://grok.com/imagine/{referer_id}"
+                ref_id = post_id or payload.get("fileAttachments", [""])[0]
+                if ref_id:
+                    headers["Referer"] = f"https://grok.com/imagine/{ref_id}"
             
-            # 使用服务代理
-            proxy_url = setting.get_service_proxy()
-            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+            proxy = setting.get_proxy("service")
+            proxies = {"http": proxy, "https": proxy} if proxy else None
             
-            # 构建请求参数
-            request_kwargs = {
-                "headers": headers,
-                "data": json.dumps(payload),
-                "impersonate": IMPERSONATE_BROWSER,
-                "timeout": REQUEST_TIMEOUT,
-                "stream": True,
-                "proxies": proxies
-            }
-
-            # 在线程池中执行同步HTTP请求，避免阻塞事件循环
+            # 执行请求
             response = await asyncio.to_thread(
                 curl_requests.post,
-                GROK_API_ENDPOINT,
-                **request_kwargs
+                API_ENDPOINT,
+                headers=headers,
+                data=orjson.dumps(payload),
+                impersonate=BROWSER,
+                timeout=TIMEOUT,
+                stream=True,
+                proxies=proxies
             )
-
-            # 处理非成功响应
+            
             if response.status_code != 200:
-                GrokClient._handle_error(response, auth_token)
-
-            # 请求成功，重置失败计数
-            asyncio.create_task(token_manager.reset_failure(auth_token))
-
-            # 处理并返回响应
-            return await GrokClient._process_response(response, auth_token, model, stream)
-
+                GrokClient._handle_error(response, token)
+            
+            # 成功 - 重置失败计数
+            asyncio.create_task(token_manager.reset_failure(token))
+            
+            # 处理响应
+            result = (GrokResponseProcessor.process_stream(response, token) if stream 
+                     else await GrokResponseProcessor.process_normal(response, token, model))
+            
+            asyncio.create_task(GrokClient._update_limits(token, model))
+            return result
+            
         except curl_requests.RequestsError as e:
-            logger.error(f"[Client] 网络请求错误: {e}")
+            logger.error(f"[Client] 网络错误: {e}")
             raise GrokApiException(f"网络错误: {e}", "NETWORK_ERROR") from e
-        except json.JSONDecodeError as e:
-            logger.error(f"[Client] JSON解析错误: {e}")
-            raise GrokApiException(f"JSON解析错误: {e}", "JSON_ERROR") from e
         except Exception as e:
-            logger.error(f"[Client] 未知请求错误: {type(e).__name__}: {e}")
-            raise GrokApiException(f"请求处理错误: {e}", "REQUEST_ERROR") from e
+            logger.error(f"[Client] 请求错误: {e}")
+            raise GrokApiException(f"请求错误: {e}", "REQUEST_ERROR") from e
 
     @staticmethod
-    def _build_headers(auth_token: str) -> Dict[str, str]:
+    def _build_headers(token: str) -> Dict[str, str]:
         """构建请求头"""
         headers = get_dynamic_headers("/rest/app-chat/conversations/new")
-
-        # 构建Cookie
-        cf_clearance = setting.grok_config.get("cf_clearance", "")
-        headers["Cookie"] = f"{auth_token};{cf_clearance}" if cf_clearance else auth_token
-
+        cf = setting.grok_config.get("cf_clearance", "")
+        headers["Cookie"] = f"{token};{cf}" if cf else token
         return headers
 
     @staticmethod
-    def _handle_error(response, auth_token: str):
-        """处理错误响应"""
-        # 处理 403 错误
+    def _handle_error(response, token: str):
+        """处理错误"""
         if response.status_code == 403:
-            error_message = "服务器IP被Block，请尝试 1. 更换服务器IP 2. 使用代理IP 3. 服务器登陆Grok.com，过盾后F12找到CF值填入后台设置"
-            error_data = {"cf_blocked": True, "status": 403}
-            logger.warning(f"[Client] {error_message}")
+            msg = "您的IP被拦截，请尝试以下方法之一: 1.更换IP 2.使用代理 3.配置CF值"
+            data = {"cf_blocked": True, "status": 403}
+            logger.warning(f"[Client] {msg}")
         else:
-            # 其他错误尝试解析 JSON
             try:
-                error_data = response.json()
-                error_message = str(error_data)
-            except Exception as e:
-                error_data = response.text
-                error_message = error_data[:200] if error_data else str(e)
-
-        # 记录Token失败
-        asyncio.create_task(token_manager.record_failure(auth_token, response.status_code, error_message))
-
+                data = response.json()
+                msg = str(data)
+            except:
+                data = response.text
+                msg = data[:200] if data else "未知错误"
+        
+        asyncio.create_task(token_manager.record_failure(token, response.status_code, msg))
         raise GrokApiException(
-            f"请求失败: {response.status_code} - {error_message}",
+            f"请求失败: {response.status_code} - {msg}",
             "HTTP_ERROR",
-            {"status": response.status_code, "data": error_data}
+            {"status": response.status_code, "data": data}
         )
 
     @staticmethod
-    async def _process_response(response, auth_token: str, model: str, stream: bool):
-        """处理API响应"""
-        if stream:
-            result = GrokResponseProcessor.process_stream(response, auth_token)
-            asyncio.create_task(GrokClient._update_rate_limits(auth_token, model))
-        else:
-            result = await GrokResponseProcessor.process_normal(response, auth_token, model)
-            asyncio.create_task(GrokClient._update_rate_limits(auth_token, model))
-
-        return result
-
-    @staticmethod
-    async def _update_rate_limits(auth_token: str, model: str):
-        """异步更新速率限制信息"""
+    async def _update_limits(token: str, model: str):
+        """更新速率限制"""
         try:
-            await token_manager.check_limits(auth_token, model)
+            await token_manager.check_limits(token, model)
         except Exception as e:
-            logger.error(f"[Client] 更新速率限制失败: {e}")
+            logger.error(f"[Client] 更新限制失败: {e}")
