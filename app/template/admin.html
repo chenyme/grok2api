@@ -23,6 +23,7 @@
         .btn-icon{display:inline-flex;align-items:center;justify-content:center;border-radius:0.375rem;transition:color .2s,background-color .2s;height:2rem;width:2rem}
         .btn-icon:focus-visible{outline:2px solid transparent;outline-offset:2px;box-shadow:0 0 0 1px hsl(0 0% 3.9%)}
         .btn-icon:hover{background-color:hsl(0 0% 96.1%);color:hsl(0 0% 9%)}
+        .sticky-right{position:sticky;right:0;background-color:hsl(0 0% 100%);z-index:10;border-left:1px solid hsl(0 0% 89%)}
         .cfg-label{font-size:0.875rem;font-weight:500;color:hsl(0 0% 45.1%);margin-bottom:0.5rem;display:flex;align-items:center;gap:0.25rem}
         .cfg-input{display:flex;height:2.25rem;width:100%;border-radius:0.375rem;border:1px solid hsl(0 0% 89%);background-color:hsl(0 0% 100%);padding:0.5rem 0.75rem;font-size:0.875rem}
         .help-icon{display:inline-flex;align-items:center;justify-content:center;width:0.875rem;height:0.875rem;border-radius:9999px;border:1px solid hsl(0 0% 45.1%);color:hsl(0 0% 45.1%);cursor:help;font-size:10px;line-height:1}
@@ -105,38 +106,38 @@
             </div>
 
             <div class="rounded-lg border border-border bg-background p-4">
-                <p class="text-sm font-medium text-muted-foreground mb-2">未使用</p>
-                <h3 class="text-xl font-bold text-gray-500" id="statUnused">-</h3>
-            </div>
-
-            <div class="rounded-lg border border-border bg-background p-4">
-                <p class="text-sm font-medium text-muted-foreground mb-2">限流中</p>
-                <h3 class="text-xl font-bold text-orange-600" id="statLimited">-</h3>
-            </div>
-
-            <div class="rounded-lg border border-border bg-background p-4">
-                <p class="text-sm font-medium text-muted-foreground mb-2">失效</p>
-                <h3 class="text-xl font-bold text-destructive" id="statExpired">-</h3>
-            </div>
-
-            <div class="rounded-lg border border-border bg-background p-4">
-                <p class="text-sm font-medium text-muted-foreground mb-2">正常</p>
+                <p class="text-sm font-medium text-muted-foreground mb-2">Token 正常</p>
                 <h3 class="text-xl font-bold text-green-600" id="statActive">-</h3>
             </div>
 
             <div class="rounded-lg border border-border bg-background p-4">
-                <p class="text-sm font-medium text-muted-foreground mb-2">总剩余</p>
-                <h3 class="text-xl font-bold" id="statTotalRemaining">-</h3>
+                <p class="text-sm font-medium text-muted-foreground mb-2">Token 未使用</p>
+                <h3 class="text-xl font-bold text-gray-500" id="statUnused">-</h3>
             </div>
 
             <div class="rounded-lg border border-border bg-background p-4">
-                <p class="text-sm font-medium text-muted-foreground mb-2">普通剩余</p>
-                <h3 class="text-xl font-bold text-blue-600" id="statNormalRemaining">-</h3>
+                <p class="text-sm font-medium text-muted-foreground mb-2">Token 限流中</p>
+                <h3 class="text-xl font-bold text-orange-600" id="statLimited">-</h3>
             </div>
 
             <div class="rounded-lg border border-border bg-background p-4">
-                <p class="text-sm font-medium text-muted-foreground mb-2">高级剩余</p>
-                <h3 class="text-xl font-bold text-purple-600" id="statHeavyRemaining">-</h3>
+                <p class="text-sm font-medium text-muted-foreground mb-2">Token 失效</p>
+                <h3 class="text-xl font-bold text-destructive" id="statExpired">-</h3>
+            </div>
+
+            <div class="rounded-lg border border-border bg-background p-4">
+                <p class="text-sm font-medium text-muted-foreground mb-2">Chat 总剩余</p>
+                <h3 class="text-xl font-bold" id="statChatRemaining">-</h3>
+            </div>
+
+            <div class="rounded-lg border border-border bg-background p-4">
+                <p class="text-sm font-medium text-muted-foreground mb-2">Image 总剩余</p>
+                <h3 class="text-xl font-bold text-blue-600" id="statImageRemaining">-</h3>
+            </div>
+
+            <div class="rounded-lg border border-border bg-background p-4">
+                <p class="text-sm font-medium text-muted-foreground mb-2">Video 总剩余</p>
+                <h3 class="text-xl font-bold text-purple-600" id="statVideoRemaining">无法统计</h3>
             </div>
         </div>
 
@@ -217,7 +218,7 @@
                             <th class="h-10 px-3 text-left align-middle text-sm font-medium text-muted-foreground w-32">标签</th>
                             <th class="h-10 px-3 text-left align-middle text-sm font-medium text-muted-foreground w-40">备注</th>
                             <th class="h-10 px-3 text-left align-middle text-sm font-medium text-muted-foreground w-32">创建时间</th>
-                            <th class="h-10 px-3 text-right align-middle text-sm font-medium text-muted-foreground w-28">操作</th>
+                            <th class="h-10 px-3 text-center align-middle text-sm font-medium text-muted-foreground w-28 sticky-right">操作</th>
                         </tr>
                     </thead>
                     <tbody id="tokenTableBody" class="divide-y divide-border">
@@ -592,9 +593,9 @@
         loadStats=async()=>{try{const r=await apiRequest('/api/stats');if(!r)return;const d=await r.json();if(d.success){const s=d.data;$('statTotal').textContent=s.total||0;['Unused','Limited','Expired','Active'].forEach((k,i)=>$(`stat${k}`).textContent=(s.normal?.[k.toLowerCase()]||0)+(s.super?.[k.toLowerCase()]||0))}}catch(e){console.error('加载统计失败:',e)}},
         calcRemaining=()=>{let n=0,h=0;allTokens.forEach(t=>{if(t.remaining_queries>0)n+=t.remaining_queries;if(t.heavy_remaining_queries>0)h+=t.heavy_remaining_queries});return{normal:n,heavy:h,total:n+h}},
         loadTokens=async()=>{try{const r=await apiRequest('/api/tokens');if(!r)return;const d=await r.json();d.success&&(allTokens=d.data.map(t=>({...t,tags:t.tags||[],note:t.note||''})),filteredTokens=allTokens,selectedTokens.clear(),renderTokens(),updateRemaining(),await loadAllTags())}catch(e){console.error('加载列表失败:',e)}},
-        updateRemaining=()=>{const r=calcRemaining();['Total','Normal','Heavy'].forEach(k=>$(`stat${k}Remaining`).textContent=r[k.toLowerCase()]===0?'-':r[k.toLowerCase()].toLocaleString())}
+        updateRemaining=()=>{const r=calcRemaining();const chatTotal=r.total;const imageTotal=Math.floor(chatTotal/2);$('statChatRemaining').textContent=chatTotal===0?'-':chatTotal.toLocaleString();$('statImageRemaining').textContent=imageTotal===0?'-':imageTotal.toLocaleString();$('statVideoRemaining').textContent='无法统计'}
 
-        const renderTokens=()=>{const tb=$('tokenTableBody'),es=$('emptyState'),ss={'未使用':'bg-muted text-muted-foreground','限流中':'bg-orange-50 text-orange-700 border-orange-200','失效':'bg-destructive/10 text-destructive border-destructive/20','正常':'bg-green-50 text-green-700 border-green-200'},ts={sso:'bg-blue-50 text-blue-700 border-blue-200',ssoSuper:'bg-purple-50 text-purple-700 border-purple-200'},tl={sso:'SSO',ssoSuper:'SuperSSO'};if(!filteredTokens.length){tb.innerHTML='';es.classList.remove('hidden');$('selectAll').checked=false;return updateBatchActions()}es.classList.add('hidden');tb.innerHTML=filteredTokens.map(t=>{const tagsHtml=t.tags&&t.tags.length?t.tags.map(tag=>`<span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs bg-gray-100 text-gray-700">${tag}</span>`).join(' '):'<span class="text-xs text-muted-foreground">-</span>';const noteHtml=t.note&&t.note.length?`<span class="text-xs text-gray-700" title="${t.note}">${t.note.length>20?t.note.substring(0,20)+'...':t.note}</span>`:'<span class="text-xs text-muted-foreground">-</span>';return`<tr class="transition-colors"><td class="py-2.5 px-3 align-middle w-12"><input type="checkbox" class="token-checkbox h-3.5 w-3.5 rounded border border-input focus:ring-1 focus:ring-ring" data-token="${t.token}" data-type="${t.token_type}" ${selectedTokens.has(t.token)?'checked':''} onchange="toggleToken('${t.token}')"></td><td class="py-2.5 px-3 align-middle w-80"><div class="flex items-center gap-2"><span class="font-mono text-xs">${t.token.substring(0,30)}...</span><button onclick="copyToken('${t.token.replace(/'/g,"\\'")}',event)" class="inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent h-6 w-6" title="复制完整 Token"><svg class="h-3 w-3 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ts[t.token_type]}">${tl[t.token_type]}</span></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ss[t.status]}">${t.status}</span></td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.remaining_queries===-1?'-':t.remaining_queries}</td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.heavy_remaining_queries===-1?'-':t.heavy_remaining_queries}</td><td class="py-2.5 px-3 align-middle w-32"><div class="flex flex-wrap gap-1">${tagsHtml}</div></td><td class="py-2.5 px-3 align-middle w-40">${noteHtml}</td><td class="py-2.5 px-3 align-middle w-32 text-xs text-muted-foreground">${t.created_time?new Date(t.created_time).toLocaleString('zh-CN',{dateStyle:'short',timeStyle:'short'}):'-'}</td><td class="py-2.5 px-3 align-middle text-right w-28"><div class="flex items-center justify-end gap-1"><button onclick="testToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-blue-50 hover:text-blue-700 h-7 w-7" title="测试Token"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></button><button onclick="editToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent hover:text-accent-foreground h-7 w-7" title="编辑信息"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button><button onclick="deleteToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-destructive/10 hover:text-destructive h-7 w-7" title="删除"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div></td></tr>`}).join('');updateBatchActions()},
+        const renderTokens=()=>{const tb=$('tokenTableBody'),es=$('emptyState'),ss={'未使用':'bg-muted text-muted-foreground','限流中':'bg-orange-50 text-orange-700 border-orange-200','失效':'bg-destructive/10 text-destructive border-destructive/20','正常':'bg-green-50 text-green-700 border-green-200'},ts={sso:'bg-blue-50 text-blue-700 border-blue-200',ssoSuper:'bg-purple-50 text-purple-700 border-purple-200'},tl={sso:'SSO',ssoSuper:'SuperSSO'};if(!filteredTokens.length){tb.innerHTML='';es.classList.remove('hidden');$('selectAll').checked=false;return updateBatchActions()}es.classList.add('hidden');tb.innerHTML=filteredTokens.map(t=>{const tagsHtml=t.tags&&t.tags.length?t.tags.map(tag=>`<span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs bg-gray-100 text-gray-700">${tag}</span>`).join(' '):'<span class="text-xs text-muted-foreground">-</span>';const noteHtml=t.note&&t.note.length?`<span class="text-xs text-gray-700" title="${t.note}">${t.note.length>20?t.note.substring(0,20)+'...':t.note}</span>`:'<span class="text-xs text-muted-foreground">-</span>';return`<tr class="transition-colors"><td class="py-2.5 px-3 align-middle w-12"><input type="checkbox" class="token-checkbox h-3.5 w-3.5 rounded border border-input focus:ring-1 focus:ring-ring" data-token="${t.token}" data-type="${t.token_type}" ${selectedTokens.has(t.token)?'checked':''} onchange="toggleToken('${t.token}')"></td><td class="py-2.5 px-3 align-middle w-80"><div class="flex items-center gap-2"><span class="font-mono text-xs">${t.token.substring(0,30)}...</span><button onclick="copyToken('${t.token.replace(/'/g,"\\'")}',event)" class="inline-flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent h-6 w-6" title="复制完整 Token"><svg class="h-3 w-3 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ts[t.token_type]}">${tl[t.token_type]}</span></td><td class="py-2.5 px-3 align-middle w-20"><span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium border ${ss[t.status]}">${t.status}</span></td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.remaining_queries===-1?'-':t.remaining_queries}</td><td class="py-2.5 px-3 align-middle w-20 text-xs tabular-nums">${t.heavy_remaining_queries===-1?'-':t.heavy_remaining_queries}</td><td class="py-2.5 px-3 align-middle w-32"><div class="flex flex-wrap gap-1">${tagsHtml}</div></td><td class="py-2.5 px-3 align-middle w-40">${noteHtml}</td><td class="py-2.5 px-3 align-middle w-32 text-xs text-muted-foreground">${t.created_time?new Date(t.created_time).toLocaleString('zh-CN',{dateStyle:'short',timeStyle:'short'}):'-'}</td><td class="py-2.5 px-3 align-middle text-right w-28 sticky-right"><div class="flex items-center justify-end gap-1"><button onclick="testToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-blue-50 hover:text-blue-700 h-7 w-7" title="测试Token"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></button><button onclick="editToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-accent hover:text-accent-foreground h-7 w-7" title="编辑信息"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button><button onclick="deleteToken('${t.token}','${t.token_type}')" class="inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-destructive/10 hover:text-destructive h-7 w-7" title="删除"><svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div></td></tr>`}).join('');updateBatchActions()},
         toggleToken=t=>selectedTokens[selectedTokens.has(t)?'delete':'add'](t)||updateBatchActions(),
         toggleSelectAll=()=>{const sa=$('selectAll');sa.checked?filteredTokens.forEach(t=>selectedTokens.add(t.token)):selectedTokens.clear();renderTokens()},
         updateBatchActions=()=>{const ba=$('batchActions'),sc=$('selectedCount'),c=selectedTokens.size;ba.classList[c>0?'add':'remove']('flex');ba.classList[c>0?'remove':'add']('hidden');c>0&&(sc.textContent=`已选择 ${c} 项`);$('selectAll').checked=filteredTokens.length>0&&c===filteredTokens.length},

@@ -52,34 +52,34 @@ class GrokClient:
     async def _retry(model: str, content: str, images: List[str], grok_model: str, mode: str, is_video: bool, stream: bool):
         """重试请求"""
         last_err = None
-        
+
         for i in range(MAX_RETRY):
             try:
                 token = token_manager.get_token(model)
                 img_ids, img_uris = await GrokClient._upload(images, token)
-                
+
                 # 视频模型创建会话
                 post_id = None
                 if is_video and img_ids and img_uris:
                     post_id = await GrokClient._create_post(img_ids[0], img_uris[0], token)
-                
+
                 payload = GrokClient._build_payload(content, grok_model, mode, img_ids, img_uris, is_video, post_id)
                 return await GrokClient._request(payload, token, model, stream, post_id)
-                
+
             except GrokApiException as e:
                 last_err = e
                 # 仅401/429可重试
                 if e.error_code not in ["HTTP_ERROR", "NO_AVAILABLE_TOKEN"]:
                     raise
-                
+
                 status = e.context.get("status") if e.context else None
                 if status not in [401, 429]:
                     raise
-                
+
                 if i < MAX_RETRY - 1:
                     logger.warning(f"[Client] 失败(状态:{status}), 重试 {i+1}/{MAX_RETRY}")
                     await asyncio.sleep(0.5)
-        
+
         raise last_err or GrokApiException("请求失败", "REQUEST_ERROR")
 
     @staticmethod
