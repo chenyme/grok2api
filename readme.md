@@ -78,7 +78,7 @@ services:
       # - DATABASE_URL=mysql://user:password@host:3306/grok2api
 
       ## MySQL格式: mysql://user:password@host:port/database
-      ## Redis格式: redis://host:port/db 或 redis://user:password@host:port/db
+      ## Redis格式: redis://host:port/db 或 redis://user:password@host:port/db (SSL: rediss://)
 
 volumes:
   grok_data:
