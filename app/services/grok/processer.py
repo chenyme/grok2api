@@ -154,7 +154,7 @@ class GrokResponseProcessor:
                 created=int(time.time()),
                 model=model or "grok-4-mini-thinking-tahoe",
                 choices=[OpenAIChatCompletionChunkChoice(
-                    index=chunk_index,
+                    index=0,
                     delta=OpenAIChatCompletionChunkMessage(
                         role="assistant",
                         content=content
