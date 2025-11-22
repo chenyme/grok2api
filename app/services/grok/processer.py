@@ -132,7 +132,6 @@ class GrokResponseProcessor:
         is_image = False
         is_thinking = False
         thinking_finished = False
-        chunk_index = 0
         model = None
         filtered_tags = setting.grok_config.get("filtered_tags", "").split(",")
         video_progress_started = False
@@ -218,14 +217,12 @@ class GrokResponseProcessor:
                                 else:
                                     content = f"视频已生成{progress}%</think>\\n"
                                 yield make_chunk(content)
-                                chunk_index += 1
                         
                         # 视频URL
                         if v_url:
                             logger.debug("[Processor] 视频生成完成")
                             video_content = await GrokResponseProcessor._build_video_content(v_url, auth_token)
                             yield make_chunk(video_content)
-                            chunk_index += 1
                         
                         continue
 
@@ -252,22 +249,16 @@ class GrokResponseProcessor:
                                                 parts = base64_str.split(",", 1)
                                                 if len(parts) == 2:
                                                     yield make_chunk(f"![Generated Image](data:{parts[0]},")
-                                                    chunk_index += 1
                                                     # 8KB分块
                                                     for i in range(0, len(parts[1]), 8192):
                                                         yield make_chunk(parts[1][i:i+8192])
-                                                        chunk_index += 1
                                                     yield make_chunk(")\\n")
-                                                    chunk_index += 1
                                                 else:
                                                     yield make_chunk(f"![Generated Image]({base64_str})\\n")
-                                                    chunk_index += 1
                                             else:
                                                 yield make_chunk(f"![Generated Image]({base64_str})\\n")
-                                                chunk_index += 1
                                         else:
                                             yield make_chunk(f"![Generated Image](https://assets.grok.com/{img})\\n")
-                                            chunk_index += 1
                                     else:
                                         # URL模式
                                         await image_cache_service.download_image(f"/{img}", auth_token)
@@ -283,7 +274,6 @@ class GrokResponseProcessor:
                             return
                         elif token:
                             yield make_chunk(token)
-                            chunk_index += 1
 
                     # 对话处理
                     else:
@@ -341,7 +331,6 @@ class GrokResponseProcessor:
 
                             if not should_skip:
                                 yield make_chunk(content)
-                                chunk_index += 1
                             
                             is_thinking = current_is_thinking
 
