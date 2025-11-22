@@ -31,13 +31,16 @@ RUN rm -rf /usr/share/doc/* \
 # 从构建阶段复制已安装的包
 COPY --from=builder /install /usr/local
 
-# 创建必要的目录和文件
-RUN mkdir -p /app/logs /app/data/temp/image /app/data/temp/video && \
-    echo '{"ssoNormal": {}, "ssoSuper": {}}' > /app/data/token.json
+# 创建必要的目录
+RUN mkdir -p /app/logs /app/data/temp/image /app/data/temp/video
 
-# 复制应用代码
+# 复制应用代码和配置文件
 COPY app/ ./app/
+COPY data/setting.toml ./data/setting.toml
 COPY main.py .
+
+# 创建默认的 token.json 文件
+RUN echo '{"ssoNormal": {}, "ssoSuper": {}}' > /app/data/token.json
 
 # 删除 Python 字节码和缓存
 ENV PYTHONDONTWRITEBYTECODE=1 \
