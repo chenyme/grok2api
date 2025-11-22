@@ -319,14 +319,13 @@ class RedisStorage(BaseStorage):
     async def init_db(self) -> None:
         """初始化Redis"""
         try:
-            import redis.asyncio as redis
-            parsed = self._parse_url(self.redis_url)
-            logger.info(f"[Storage] Redis: {parsed['host']}:{parsed['port']}/{parsed['db']}")
+            import redis.asyncio as aioredis
+            parsed = urlparse(self.redis_url)
+            db = int(parsed.path.lstrip('/')) if parsed.path and parsed.path != '/' else 0
+            logger.info(f"[Storage] Redis: {parsed.hostname}:{parsed.port or 6379}/{db}")
 
-            self._redis = redis.Redis(
-                host=parsed['host'], port=parsed['port'], password=parsed.get('password'),
-                username=parsed.get('username'), db=parsed.get('db', 0),
-                encoding="utf-8", decode_responses=True
+            self._redis = aioredis.Redis.from_url(
+                self.redis_url, encoding="utf-8", decode_responses=True
             )
 
             await self._redis.ping()
@@ -340,25 +339,6 @@ class RedisStorage(BaseStorage):
         except Exception as e:
             logger.error(f"[Storage] Redis初始化失败: {e}")
             raise
-
-    def _parse_url(self, url: str) -> Dict[str, Any]:
-        """解析Redis URL"""
-        if url.startswith('redis://'):
-            url = url[8:]
-        p = urlparse(f'//{url}')
-
-        result = {
-            'host': p.hostname or 'localhost',
-            'port': p.port or 6379,
-            'db': int(p.path.lstrip('/')) if p.path and p.path != '/' else 0,
-            'username': unquote(p.username) if p.username else None,
-            'password': unquote(p.password) if p.password else None
-        }
-
-        if result['password'] and not result['username']:
-            result['username'] = 'default'
-
-        return result
 
     async def _sync_data(self) -> None:
         """同步数据"""
