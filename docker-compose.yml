@@ -14,6 +14,9 @@ services:
 
       ## MySQL格式: mysql://user:password@host:port/database
       ## Redis格式: redis://host:port/db 或 redis://user:password@host:port/db
+      
+      # =====Workers数量（建议2-8，根据CPU调整）=====
+      - WORKERS=3
 
 volumes:
   grok_data:
