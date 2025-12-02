@@ -22,6 +22,8 @@ BROWSER = "chrome133a"
 MAX_FAILURES = 3
 TOKEN_INVALID = 401
 STATSIG_INVALID = 403
+RATE_LIMIT = 429
+COOLDOWN_TIME = 300  # 失败后的冷却时间（秒），5分钟
 
 
 class GrokTokenManager:
@@ -167,10 +169,27 @@ class GrokTokenManager:
         def select_best(tokens: Dict[str, Any], field: str) -> Tuple[Optional[str], Optional[int]]:
             """选择最佳Token"""
             unused, used = [], []
+            current_time = int(time.time() * 1000)
 
             for key, data in tokens.items():
+                # 跳过已失效的token
                 if data.get("status") == "expired":
                     continue
+
+                # 跳过连续失败次数过多的token（但未标记为expired）
+                failed_count = data.get("failedCount", 0)
+                if failed_count >= MAX_FAILURES:
+                    logger.debug(f"[Token] 跳过失败次数过多的token: {key[:10]}... (失败{failed_count}次)")
+                    continue
+
+                # 跳过在冷却期内的token（最近失败过）
+                last_failure_time = data.get("lastFailureTime")
+                if last_failure_time and failed_count > 0:
+                    time_since_failure = (current_time - last_failure_time) / 1000  # 转换为秒
+                    if time_since_failure < COOLDOWN_TIME:
+                        cooldown_remaining = int(COOLDOWN_TIME - time_since_failure)
+                        logger.debug(f"[Token] 跳过冷却期token: {key[:10]}... (剩余{cooldown_remaining}秒, 失败{failed_count}次)")
+                        continue
 
                 remaining = int(data.get(field, -1))
                 if remaining == 0:
@@ -312,9 +331,15 @@ class GrokTokenManager:
                 f"次数: {data['failedCount']}/{MAX_FAILURES}, 原因: {msg}"
             )
 
+            # 处理不同的失败状态
             if status == TOKEN_INVALID and data["failedCount"] >= MAX_FAILURES:
                 data["status"] = "expired"
                 logger.error(f"[Token] 标记失效: {sso[:10]}... (连续401错误{data['failedCount']}次)")
+            elif status == RATE_LIMIT:
+                logger.warning(
+                    f"[Token] 限流: {sso[:10]}... "
+                    f"(将进入{COOLDOWN_TIME}秒冷却期, 当前失败{data['failedCount']}次)"
+                )
 
             await self._save_data()
 
