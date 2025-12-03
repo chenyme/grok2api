@@ -293,16 +293,25 @@ class GrokTokenManager:
     async def update_limits(self, sso: str, normal: Optional[int] = None, heavy: Optional[int] = None) -> None:
         """更新限制"""
         try:
-            for token_type in [TokenType.NORMAL.value, TokenType.SUPER.value]:
-                if sso in self.token_data[token_type]:
-                    if normal is not None:
-                        self.token_data[token_type][sso]["remainingQueries"] = normal
-                    if heavy is not None:
-                        self.token_data[token_type][sso]["heavyremainingQueries"] = heavy
-                    await self._save_data()
-                    logger.info(f"[Token] 更新限制: {sso[:10]}...")
+            # 只锁内存数据修改
+            async with self._lock:
+                found = False
+                for token_type in [TokenType.NORMAL.value, TokenType.SUPER.value]:
+                    if sso in self.token_data[token_type]:
+                        if normal is not None:
+                            self.token_data[token_type][sso]["remainingQueries"] = normal
+                        if heavy is not None:
+                            self.token_data[token_type][sso]["heavyremainingQueries"] = heavy
+                        logger.info(f"[Token] 更新限制: {sso[:10]}...")
+                        found = True
+                        break
+                
+                if not found:
+                    logger.warning(f"[Token] 未找到: {sso[:10]}...")
                     return
-            logger.warning(f"[Token] 未找到: {sso[:10]}...")
+            
+            # IO操作在锁外，允许并发
+            await self._save_data()
         except Exception as e:
             logger.error(f"[Token] 更新限制错误: {e}")
     
@@ -317,30 +326,33 @@ class GrokTokenManager:
             if not sso:
                 return
 
-            _, data = self._find_token(sso)
-            if not data:
-                logger.warning(f"[Token] 未找到: {sso[:10]}...")
-                return
+            # 只锁内存数据修改
+            async with self._lock:
+                _, data = self._find_token(sso)
+                if not data:
+                    logger.warning(f"[Token] 未找到: {sso[:10]}...")
+                    return
 
-            data["failedCount"] = data.get("failedCount", 0) + 1
-            data["lastFailureTime"] = int(time.time() * 1000)
-            data["lastFailureReason"] = f"{status}: {msg}"
+                data["failedCount"] = data.get("failedCount", 0) + 1
+                data["lastFailureTime"] = int(time.time() * 1000)
+                data["lastFailureReason"] = f"{status}: {msg}"
 
-            logger.warning(
-                f"[Token] 失败: {sso[:10]}... (状态:{status}), "
-                f"次数: {data['failedCount']}/{MAX_FAILURES}, 原因: {msg}"
-            )
-
-            # 处理不同的失败状态
-            if status == TOKEN_INVALID and data["failedCount"] >= MAX_FAILURES:
-                data["status"] = "expired"
-                logger.error(f"[Token] 标记失效: {sso[:10]}... (连续401错误{data['failedCount']}次)")
-            elif status == RATE_LIMIT:
                 logger.warning(
-                    f"[Token] 限流: {sso[:10]}... "
-                    f"(将进入{COOLDOWN_TIME}秒冷却期, 当前失败{data['failedCount']}次)"
+                    f"[Token] 失败: {sso[:10]}... (状态:{status}), "
+                    f"次数: {data['failedCount']}/{MAX_FAILURES}, 原因: {msg}"
                 )
 
+                # 处理不同的失败状态
+                if status == TOKEN_INVALID and data["failedCount"] >= MAX_FAILURES:
+                    data["status"] = "expired"
+                    logger.error(f"[Token] 标记失效: {sso[:10]}... (连续401错误{data['failedCount']}次)")
+                elif status == RATE_LIMIT:
+                    logger.warning(
+                        f"[Token] 限流: {sso[:10]}... "
+                        f"(将进入{COOLDOWN_TIME}秒冷却期, 当前失败{data['failedCount']}次)"
+                    )
+            
+            # IO操作在锁外，允许并发
             await self._save_data()
 
         except Exception as e:
@@ -353,16 +365,23 @@ class GrokTokenManager:
             if not sso:
                 return
 
-            _, data = self._find_token(sso)
-            if not data:
-                return
+            # 只锁内存数据修改
+            need_save = False
+            async with self._lock:
+                _, data = self._find_token(sso)
+                if not data:
+                    return
 
-            if data.get("failedCount", 0) > 0:
-                data["failedCount"] = 0
-                data["lastFailureTime"] = None
-                data["lastFailureReason"] = None
+                if data.get("failedCount", 0) > 0:
+                    data["failedCount"] = 0
+                    data["lastFailureTime"] = None
+                    data["lastFailureReason"] = None
+                    need_save = True
+                    logger.info(f"[Token] 重置失败计数: {sso[:10]}...")
+            
+            # IO操作在锁外，允许并发
+            if need_save:
                 await self._save_data()
-                logger.info(f"[Token] 重置失败计数: {sso[:10]}...")
 
         except Exception as e:
             logger.error(f"[Token] 重置失败错误: {e}")
