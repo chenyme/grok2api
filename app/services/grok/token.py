@@ -70,13 +70,17 @@ class GrokTokenManager:
 
     async def _save_data(self) -> None:
         """保存Token数据"""
+        start_time = time.time()
         try:
+            logger.debug("[Token] 开始保存数据...")
             if not self._storage:
                 async with self._file_lock:
                     async with aiofiles.open(self.token_file, "w", encoding="utf-8") as f:
                         await f.write(orjson.dumps(self.token_data, option=orjson.OPT_INDENT_2).decode())
             else:
                 await self._storage.save_tokens(self.token_data)
+            elapsed = (time.time() - start_time) * 1000
+            logger.debug(f"[Token] 保存完成，耗时: {elapsed:.0f}ms")
         except IOError as e:
             logger.error(f"[Token] 保存失败: {e}")
             raise GrokApiException(f"保存失败: {e}", "TOKEN_SAVE_ERROR", {"file": str(self.token_file)})
@@ -299,7 +303,9 @@ class GrokTokenManager:
         """更新限制"""
         try:
             # 只锁内存数据修改
+            logger.debug(f"[Token] update_limits等待锁: {sso[:10]}...")
             async with self._lock:
+                logger.debug(f"[Token] update_limits获得锁: {sso[:10]}...")
                 found = False
                 for token_type in [TokenType.NORMAL.value, TokenType.SUPER.value]:
                     if sso in self.token_data[token_type]:
@@ -314,6 +320,7 @@ class GrokTokenManager:
                 if not found:
                     logger.warning(f"[Token] 未找到: {sso[:10]}...")
                     return
+            logger.debug(f"[Token] update_limits释放锁: {sso[:10]}...")
             
             # IO操作在锁外，允许并发
             await self._save_data()
@@ -332,7 +339,9 @@ class GrokTokenManager:
                 return
 
             # 只锁内存数据修改
+            logger.debug(f"[Token] record_failure等待锁: {sso[:10]}...")
             async with self._lock:
+                logger.debug(f"[Token] record_failure获得锁: {sso[:10]}...")
                 _, data = self._find_token(sso)
                 if not data:
                     logger.warning(f"[Token] 未找到: {sso[:10]}...")
@@ -356,6 +365,7 @@ class GrokTokenManager:
                         f"[Token] 限流: {sso[:10]}... "
                         f"(将进入{COOLDOWN_TIME}秒冷却期, 当前失败{data['failedCount']}次)"
                     )
+            logger.debug(f"[Token] record_failure释放锁: {sso[:10]}...")
             
             # IO操作在锁外，允许并发
             await self._save_data()
@@ -372,7 +382,9 @@ class GrokTokenManager:
 
             # 只锁内存数据修改
             need_save = False
+            logger.debug(f"[Token] reset_failure等待锁: {sso[:10]}...")
             async with self._lock:
+                logger.debug(f"[Token] reset_failure获得锁: {sso[:10]}...")
                 _, data = self._find_token(sso)
                 if not data:
                     return
@@ -383,6 +395,7 @@ class GrokTokenManager:
                     data["lastFailureReason"] = None
                     need_save = True
                     logger.info(f"[Token] 重置失败计数: {sso[:10]}...")
+            logger.debug(f"[Token] reset_failure释放锁: {sso[:10]}...")
             
             # IO操作在锁外，允许并发
             if need_save:

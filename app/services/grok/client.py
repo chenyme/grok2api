@@ -211,12 +211,14 @@ class GrokClient:
                 GrokClient._handle_error(response, token)
             
             # 成功 - 重置失败计数
+            logger.debug("[Client] 创建后台任务: reset_failure")
             asyncio.create_task(token_manager.reset_failure(token))
             
             # 处理响应
             result = (GrokResponseProcessor.process_stream(response, token) if stream 
                      else await GrokResponseProcessor.process_normal(response, token, model))
             
+            logger.debug("[Client] 创建后台任务: update_limits")
             asyncio.create_task(GrokClient._update_limits(token, model))
             return result
             
@@ -250,6 +252,7 @@ class GrokClient:
                 data = response.text
                 msg = data[:200] if data else "未知错误"
         
+        logger.debug(f"[Client] 创建后台任务: record_failure (status={response.status_code})")
         asyncio.create_task(token_manager.record_failure(token, response.status_code, msg))
         raise GrokApiException(
             f"请求失败: {response.status_code} - {msg}",
