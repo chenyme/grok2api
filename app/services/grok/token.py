@@ -266,12 +266,17 @@ class GrokTokenManager:
                     sso = self._extract_sso(auth_token)
                     
                     if sso:
-                        if model == "grok-4-heavy":
-                            await self.update_limits(sso, normal=None, heavy=data.get("remainingQueries", -1))
-                            logger.info(f"[Token] 更新限制: {sso[:10]}..., heavy={data.get('remainingQueries', -1)}")
-                        else:
-                            await self.update_limits(sso, normal=data.get("remainingTokens", -1), heavy=None)
-                            logger.info(f"[Token] 更新限制: {sso[:10]}..., basic={data.get('remainingTokens', -1)}")
+                        # 只在内存中快速更新，不触发IO保存
+                        async with self._lock:
+                            for token_type in [TokenType.NORMAL.value, TokenType.SUPER.value]:
+                                if sso in self.token_data[token_type]:
+                                    if model == "grok-4-heavy":
+                                        self.token_data[token_type][sso]["heavyremainingQueries"] = data.get("remainingQueries", -1)
+                                        logger.info(f"[Token] 更新限制: {sso[:10]}..., heavy={data.get('remainingQueries', -1)}")
+                                    else:
+                                        self.token_data[token_type][sso]["remainingQueries"] = data.get("remainingTokens", -1)
+                                        logger.info(f"[Token] 更新限制: {sso[:10]}..., basic={data.get('remainingTokens', -1)}")
+                                    break
                     
                     return data
                 else:
