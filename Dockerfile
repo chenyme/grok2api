@@ -38,18 +38,14 @@ RUN mkdir -p /app/logs /app/data/temp/image /app/data/temp/video
 COPY app/ ./app/
 COPY data/setting.toml ./data/setting.toml
 COPY main.py .
-COPY entrypoint.sh .
 
 # 创建默认的 token.json 文件
 RUN echo '{"ssoNormal": {}, "ssoSuper": {}}' > /app/data/token.json
 
-# 设置启动脚本权限
-RUN chmod +x /app/entrypoint.sh
-
+# 删除 Python 字节码和缓存
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    WORKERS=4
+    PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
