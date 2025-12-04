@@ -11,6 +11,7 @@ DEFAULT_GROK = {
     "proxy_url": "",
     "cache_proxy_url": "",
     "cf_clearance": "",
+    "user_agent": "",
     "x_statsig_id": "",
     "dynamic_statsig": True,
     "filtered_tags": "xaiartifact,xai:tool_usage_card,grok:render",

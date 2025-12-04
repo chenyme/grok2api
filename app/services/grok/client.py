@@ -332,6 +332,13 @@ class GrokClient:
     def _build_headers(token: str) -> Dict[str, str]:
         """构建请求头"""
         headers = get_dynamic_headers("/rest/app-chat/conversations/new")
+        
+        # 自定义 User-Agent（如果配置了）
+        custom_ua = setting.grok_config.get("user_agent", "").strip()
+        if custom_ua:
+            headers["User-Agent"] = custom_ua
+            logger.debug(f"[Client] 使用自定义 User-Agent: {custom_ua[:50]}...")
+        
         cf = setting.grok_config.get("cf_clearance", "")
         headers["Cookie"] = f"{token};{cf}" if cf else token
         return headers
