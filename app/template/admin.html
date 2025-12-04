@@ -446,21 +446,21 @@
                             <div>
                                 <label class="cfg-label">
                                     首次响应超时 (秒)
-                                    <span class="help-icon" title="等待API首次返回数据的最大时间（秒）。超时后会报错，建议30-60秒">?</span>
+                                    <span class="help-icon" title="等待Grok首次返回数据的最大时间（秒）。超时后会报错，建议30-60秒。【对流式和非流式请求都生效】">?</span>
                                 </label>
                                 <input id="cfgStreamFirstResponseTimeout" type="number" class="cfg-input" placeholder="30">
                             </div>
                             <div>
                                 <label class="cfg-label">
-                                    流式间隔超时 (秒)
-                                    <span class="help-icon" title="两次数据块之间的最大间隔时间（秒）。如果超过此时间没有收到新数据则断开，建议60-180秒">?</span>
+                                    数据块间隔超时 (秒)
+                                    <span class="help-icon" title="两次数据块之间的最大间隔时间（秒）。如果超过此时间没有收到新数据则断开，建议60-180秒。【对流式和非流式请求都生效】">?</span>
                                 </label>
                                 <input id="cfgStreamChunkTimeout" type="number" class="cfg-input" placeholder="120">
                             </div>
                             <div>
                                 <label class="cfg-label">
-                                    生成总过程超时 (秒)
-                                    <span class="help-icon" title="整个对话生成的最大总时长（秒）。适用于超长对话，建议300-900秒">?</span>
+                                    总过程超时 (秒)
+                                    <span class="help-icon" title="从开始请求到完成的最大总时长（秒）。适用于超长对话，建议300-900秒。设为0则不限制。【对流式和非流式请求都生效】">?</span>
                                 </label>
                                 <input id="cfgStreamTotalTimeout" type="number" class="cfg-input" placeholder="600">
                             </div>

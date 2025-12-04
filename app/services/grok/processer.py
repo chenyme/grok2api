@@ -4,7 +4,7 @@ import orjson
 import uuid
 import time
 import asyncio
-from typing import AsyncGenerator, Tuple
+from typing import AsyncGenerator
 
 from app.core.config import setting
 from app.core.exception import GrokApiException
@@ -20,42 +20,6 @@ from app.models.openai_schema import (
 from app.services.grok.cache import image_cache_service, video_cache_service
 
 
-class StreamTimeoutManager:
-    """流式响应超时管理"""
-    
-    def __init__(self, chunk_timeout: int = 120, first_timeout: int = 30, total_timeout: int = 600):
-        self.chunk_timeout = chunk_timeout
-        self.first_timeout = first_timeout
-        self.total_timeout = total_timeout
-        self.start_time = asyncio.get_event_loop().time()
-        self.last_chunk_time = self.start_time
-        self.first_received = False
-    
-    def check_timeout(self) -> Tuple[bool, str]:
-        """检查超时"""
-        now = asyncio.get_event_loop().time()
-        
-        if not self.first_received and now - self.start_time > self.first_timeout:
-            return True, f"首次响应超时({self.first_timeout}秒)"
-        
-        if self.total_timeout > 0 and now - self.start_time > self.total_timeout:
-            return True, f"总超时({self.total_timeout}秒)"
-        
-        if self.first_received and now - self.last_chunk_time > self.chunk_timeout:
-            return True, f"数据块超时({self.chunk_timeout}秒)"
-        
-        return False, ""
-    
-    def mark_received(self):
-        """标记收到数据"""
-        self.last_chunk_time = asyncio.get_event_loop().time()
-        self.first_received = True
-    
-    def duration(self) -> float:
-        """获取总耗时"""
-        return asyncio.get_event_loop().time() - self.start_time
-
-
 class GrokResponseProcessor:
     """Grok响应处理器"""
 
@@ -63,6 +27,10 @@ class GrokResponseProcessor:
     async def process_normal(response, auth_token: str, model: str = None) -> OpenAIChatCompletionResponse:
         """处理非流式响应"""
         response_closed = False
+        # 用于总超时时返回已有数据
+        last_valid_content = None
+        last_valid_model = None
+        
         try:
             for chunk in response.iter_lines():
                 if not chunk:
@@ -105,6 +73,11 @@ class GrokResponseProcessor:
                 if images := model_response.get("generatedImageUrls"):
                     content = await GrokResponseProcessor._append_images(content, images, auth_token)
 
+                # 保存最后的有效数据（用于超时时返回）
+                if content:
+                    last_valid_content = content
+                    last_valid_model = model_name
+
                 result = GrokResponseProcessor._build_response(content, model_name)
                 response_closed = True
                 response.close()
@@ -112,6 +85,18 @@ class GrokResponseProcessor:
 
             raise GrokApiException("无响应数据", "NO_RESPONSE")
 
+        except GrokApiException as e:
+            # 总超时且有数据 - 返回已有数据
+            if e.error_code == "TIMEOUT_WITH_DATA" and last_valid_content:
+                logger.warning(f"[Processor] 非流式请求总超时，返回已收集的数据")
+                response_closed = True
+                return GrokResponseProcessor._build_response(last_valid_content, last_valid_model or model or "grok-4-mini-thinking-tahoe")
+            # 总超时但无数据 - 报错
+            elif e.error_code == "TIMEOUT_WITH_DATA":
+                logger.error(f"[Processor] 非流式请求总超时且无数据")
+                raise GrokApiException("请求总超时且未收到任何数据", "TIMEOUT_ERROR") from e
+            else:
+                raise
         except orjson.JSONDecodeError as e:
             logger.error(f"[Processor] JSON解析失败: {e}")
             raise GrokApiException(f"JSON解析失败: {e}", "JSON_ERROR") from e
@@ -138,13 +123,7 @@ class GrokResponseProcessor:
         last_video_progress = -1
         response_closed = False
         show_thinking = setting.grok_config.get("show_thinking", True)
-
-        # 超时管理
-        timeout_mgr = StreamTimeoutManager(
-            chunk_timeout=setting.grok_config.get("stream_chunk_timeout", 120),
-            first_timeout=setting.grok_config.get("stream_first_response_timeout", 30),
-            total_timeout=setting.grok_config.get("stream_total_timeout", 600)
-        )
+        start_time = time.time()
 
         def make_chunk(content: str, finish: str = None):
             """生成响应块"""
@@ -165,14 +144,6 @@ class GrokResponseProcessor:
 
         try:
             for chunk in response.iter_lines():
-                # 超时检查
-                is_timeout, timeout_msg = timeout_mgr.check_timeout()
-                if is_timeout:
-                    logger.warning(f"[Processor] {timeout_msg}")
-                    yield make_chunk("", "stop")
-                    yield "data: [DONE]\n\n"
-                    return
-
                 logger.debug(f"[Processor] 收到数据块: {len(chunk)} bytes")
                 if not chunk:
                     continue
@@ -192,8 +163,6 @@ class GrokResponseProcessor:
                     logger.debug(f"[Processor] 解析响应: {len(grok_resp)} bytes")
                     if not grok_resp:
                         continue
-                    
-                    timeout_mgr.mark_received()
 
                     # 更新模型
                     if user_resp := grok_resp.get("userResponse"):
@@ -343,7 +312,8 @@ class GrokResponseProcessor:
 
             yield make_chunk("", "stop")
             yield "data: [DONE]\n\n"
-            logger.info(f"[Processor] 流式完成，耗时: {timeout_mgr.duration():.2f}秒")
+            duration = time.time() - start_time
+            logger.info(f"[Processor] 流式完成，耗时: {duration:.2f}秒")
 
         except Exception as e:
             logger.error(f"[Processor] 严重错误: {e}")

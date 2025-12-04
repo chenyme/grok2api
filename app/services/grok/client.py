@@ -2,7 +2,8 @@
 
 import asyncio
 import orjson
-from typing import Dict, List, Tuple, Any, Optional
+import time
+from typing import Dict, List, Tuple, Any, Optional, Iterator
 from curl_cffi import requests as curl_requests
 
 from app.core.config import setting
@@ -22,6 +23,95 @@ TIMEOUT = 120
 BROWSER = "chrome133a"
 MAX_RETRY = 3
 MAX_UPLOADS = 5
+
+
+class TimeoutResponseWrapper:
+    """响应包装器 - 统一管理超时（流式和非流式）"""
+    
+    def __init__(self, response, chunk_timeout: int, first_timeout: int, total_timeout: int, is_stream: bool = False):
+        self.response = response
+        self.chunk_timeout = chunk_timeout
+        self.first_timeout = first_timeout
+        self.total_timeout = total_timeout
+        self.is_stream = is_stream
+        self.start_time = time.time()
+        self.last_chunk_time = self.start_time
+        self.first_received = False
+        self._closed = False
+    
+    def _check_timeout(self) -> Tuple[bool, str, str]:
+        """检查超时
+        
+        Returns:
+            (是否超时, 超时消息, 超时类型)
+            超时类型: 'first' | 'chunk' | 'total'
+        """
+        now = time.time()
+        
+        # 首次响应超时
+        if not self.first_received and now - self.start_time > self.first_timeout:
+            return True, f"首次响应超时({self.first_timeout}秒)", "first"
+        
+        # 总超时
+        if self.total_timeout > 0 and now - self.start_time > self.total_timeout:
+            return True, f"总超时({self.total_timeout}秒)", "total"
+        
+        # 数据块超时
+        if self.first_received and now - self.last_chunk_time > self.chunk_timeout:
+            return True, f"数据块超时({self.chunk_timeout}秒)", "chunk"
+        
+        return False, "", ""
+    
+    def _mark_received(self):
+        """标记收到数据"""
+        self.last_chunk_time = time.time()
+        self.first_received = True
+    
+    def iter_lines(self) -> Iterator[bytes]:
+        """迭代行 - 带超时检查"""
+        try:
+            for line in self.response.iter_lines():
+                # 超时检查
+                is_timeout, timeout_msg, timeout_type = self._check_timeout()
+                if is_timeout:
+                    logger.warning(f"[Client] {timeout_msg}")
+                    # 非流式总超时 - 使用特殊异常码，允许返回已有数据
+                    if not self.is_stream and timeout_type == "total":
+                        raise GrokApiException(timeout_msg, "TIMEOUT_WITH_DATA")
+                    else:
+                        raise GrokApiException(timeout_msg, "TIMEOUT_ERROR")
+                
+                if line:
+                    self._mark_received()
+                
+                yield line
+        finally:
+            self.close()
+    
+    def close(self):
+        """关闭响应（会主动关闭与Grok服务器的连接）"""
+        if not self._closed and hasattr(self.response, 'close'):
+            try:
+                self.response.close()
+                self._closed = True
+                logger.debug("[Client] 响应已关闭，连接已断开")
+            except Exception as e:
+                logger.warning(f"[Client] 关闭响应失败: {e}")
+    
+    @property
+    def status_code(self):
+        return self.response.status_code
+    
+    @property
+    def text(self):
+        return self.response.text
+    
+    def json(self):
+        return self.response.json()
+    
+    def duration(self) -> float:
+        """获取总耗时"""
+        return time.time() - self.start_time
 
 
 class GrokClient:
@@ -210,13 +300,22 @@ class GrokClient:
             if response.status_code != 200:
                 GrokClient._handle_error(response, token)
             
+            # 包装响应 - 统一超时管理
+            wrapped_response = TimeoutResponseWrapper(
+                response,
+                chunk_timeout=setting.grok_config.get("stream_chunk_timeout", 120),
+                first_timeout=setting.grok_config.get("stream_first_response_timeout", 30),
+                total_timeout=setting.grok_config.get("stream_total_timeout", 600),
+                is_stream=stream
+            )
+            
             # 成功 - 重置失败计数
             logger.debug("[Client] 创建后台任务: reset_failure")
             asyncio.create_task(token_manager.reset_failure(token))
             
             # 处理响应
-            result = (GrokResponseProcessor.process_stream(response, token) if stream 
-                     else await GrokResponseProcessor.process_normal(response, token, model))
+            result = (GrokResponseProcessor.process_stream(wrapped_response, token) if stream 
+                     else await GrokResponseProcessor.process_normal(wrapped_response, token, model))
             
             logger.debug("[Client] 创建后台任务: update_limits")
             asyncio.create_task(GrokClient._update_limits(token, model))
