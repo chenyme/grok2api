@@ -103,13 +103,13 @@ _MODEL_CONFIG: Dict[str, Dict[str, Any]] = {
         "cost": {"type": "low_cost", "multiplier": 1, "description": "计1次调用"},
         "requires_super": False,
         "display_name": "Grok Imagine 0.9",
-        "description": "Video generation model powered by Grok",
+        "description": "Image generation model powered by Grok",
         "raw_model_path": "xai/grok-imagine-0.9",
         "default_temperature": 1.0,
         "default_max_output_tokens": 8192,
         "supported_max_output_tokens": 131072,
         "default_top_p": 0.95,
-        "is_video_model": True
+        "is_video_model": False
     }
 }
 

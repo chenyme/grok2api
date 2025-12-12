@@ -188,7 +188,8 @@ class GrokClient:
             # 构建请求
             headers = GrokClient._build_headers(token)
             if model == "grok-imagine-0.9":
-                ref_id = post_id or payload.get("fileAttachments", [""])[0]
+                file_attachments = payload.get("fileAttachments", [])
+                ref_id = post_id or (file_attachments[0] if file_attachments else "")
                 if ref_id:
                     headers["Referer"] = f"https://grok.com/imagine/{ref_id}"
             
