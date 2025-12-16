@@ -234,20 +234,19 @@ class GrokClient:
                     proxies=proxies
                 )
                 
-                # 检查是否是403错误
-                if response.status_code == 403:
+                # 内层403重试：仅当有代理池时触发
+                if response.status_code == 403 and proxy_pool._enabled:
                     retry_count += 1
                     
-                    # 如果使用代理池且未达到最大重试次数，继续重试
-                    if proxy_pool._enabled and retry_count <= max_retries:
+                    if retry_count <= max_retries:
                         logger.warning(f"[Client] 遇到403错误，正在重试 ({retry_count}/{max_retries})...")
-                        await asyncio.sleep(0.5)  # 短暂延迟
+                        await asyncio.sleep(0.5)
                         continue
                     
-                    # 达到最大重试次数或未使用代理池，抛出错误
+                    # 内层重试全部失败
                     logger.error(f"[Client] 403错误，已重试{retry_count-1}次，放弃")
-                    GrokClient._handle_error(response, token)
                 
+                # 检查响应状态
                 if response.status_code != 200:
                     GrokClient._handle_error(response, token)
                 

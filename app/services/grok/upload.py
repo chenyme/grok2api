@@ -61,7 +61,7 @@ class ImageUploadManager:
             retry_codes = setting.grok_config.get("retry_status_codes", [401, 429])
             MAX_OUTER_RETRY = 3
             
-            for outer_retry in range(MAX_OUTER_RETRY):
+            for outer_retry in range(MAX_OUTER_RETRY + 1):  # +1 确保实际重试3次
                 try:
                     # 内层重试：403代理池重试
                     max_403_retries = 5
@@ -98,23 +98,24 @@ class ImageUploadManager:
                                 proxies=proxies,
                             )
 
-                            # 检查403错误 - 内层重试
-                            if response.status_code == 403:
+                            # 内层403重试：仅当有代理池时触发
+                            if response.status_code == 403 and proxy_pool._enabled:
                                 retry_403_count += 1
                                 
-                                if proxy_pool._enabled and retry_403_count <= max_403_retries:
+                                if retry_403_count <= max_403_retries:
                                     logger.warning(f"[Upload] 遇到403错误，正在重试 ({retry_403_count}/{max_403_retries})...")
                                     await asyncio.sleep(0.5)
                                     continue
                                 
+                                # 内层重试全部失败
                                 logger.error(f"[Upload] 403错误，已重试{retry_403_count-1}次，放弃")
-                                return "", ""
                             
                             # 检查可配置状态码错误 - 外层重试
                             if response.status_code in retry_codes:
-                                if outer_retry < MAX_OUTER_RETRY - 1:
-                                    logger.warning(f"[Upload] 遇到{response.status_code}错误，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})...")
-                                    await asyncio.sleep(0.5)
+                                if outer_retry < MAX_OUTER_RETRY:
+                                    delay = (outer_retry + 1) * 0.1  # 渐进延迟：0.1s, 0.2s, 0.3s
+                                    logger.warning(f"[Upload] 遇到{response.status_code}错误，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})，等待{delay}s...")
+                                    await asyncio.sleep(delay)
                                     break  # 跳出内层循环，进入外层重试
                                 else:
                                     logger.error(f"[Upload] {response.status_code}错误，已重试{outer_retry}次，放弃")

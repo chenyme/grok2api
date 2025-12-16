@@ -64,7 +64,7 @@ class CacheService:
         retry_codes = setting.grok_config.get("retry_status_codes", [401, 429])
         MAX_OUTER_RETRY = 3
         
-        for outer_retry in range(MAX_OUTER_RETRY):
+        for outer_retry in range(MAX_OUTER_RETRY + 1):  # +1 确保实际重试3次
             try:
                 # 内层重试：403代理池重试（cache使用缓存代理，不支持代理池，所以403只重试一次）
                 max_403_retries = 5
@@ -105,9 +105,10 @@ class CacheService:
                         
                         # 检查可配置状态码错误 - 外层重试
                         if response.status_code in retry_codes:
-                            if outer_retry < MAX_OUTER_RETRY - 1:
-                                self._log("warning", f"遇到{response.status_code}错误，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})...")
-                                await asyncio.sleep(0.5)
+                            if outer_retry < MAX_OUTER_RETRY:
+                                delay = (outer_retry + 1) * 0.1  # 渐进延迟：0.1s, 0.2s, 0.3s
+                                self._log("warning", f"遇到{response.status_code}错误，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})，等待{delay}s...")
+                                await asyncio.sleep(delay)
                                 break  # 跳出内层循环，进入外层重试
                             else:
                                 self._log("error", f"{response.status_code}错误，已重试{outer_retry}次，放弃")
