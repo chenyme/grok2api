@@ -10,10 +10,14 @@ stream_total_timeout = 600
 stream_first_response_timeout = 30
 temporary = true
 show_thinking = true
+dynamic_statsig = true
+proxy_pool_url = ""
+proxy_pool_interval = 300
+retry_status_codes = [ 401, 429,]
 
 [global]
 base_url = ""
-log_level = "DEBUG"
+log_level = "INFO"
 image_mode = "url"
 admin_password = "admin"
 admin_username = "admin"
