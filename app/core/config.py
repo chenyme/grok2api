@@ -28,7 +28,11 @@ DEFAULT_GLOBAL = {
     "admin_password": "admin",
     "admin_username": "admin",
     "image_cache_max_size_mb": 512,
-    "video_cache_max_size_mb": 1024
+    "video_cache_max_size_mb": 1024,
+    "max_upload_concurrency": 20,  # 最大并发上传数
+    "max_request_concurrency": 50,  # 最大并发请求数
+    "batch_save_interval": 1.0,  # 批量保存间隔（秒）
+    "batch_save_threshold": 10  # 触发批量保存的变更数阈值
 }
 
 
