@@ -169,7 +169,12 @@ class GrokTokenManager:
             unused, used = [], []
 
             for key, data in tokens.items():
+                # 跳过已失效的token
                 if data.get("status") == "expired":
+                    continue
+                
+                # 跳过失败次数过多的token（任何错误状态码）
+                if data.get("failedCount", 0) >= MAX_FAILURES:
                     continue
 
                 remaining = int(data.get(field, -1))
@@ -312,9 +317,9 @@ class GrokTokenManager:
                 f"次数: {data['failedCount']}/{MAX_FAILURES}, 原因: {msg}"
             )
 
-            if status == TOKEN_INVALID and data["failedCount"] >= MAX_FAILURES:
+            if 400 <= status < 500 and data["failedCount"] >= MAX_FAILURES:
                 data["status"] = "expired"
-                logger.error(f"[Token] 标记失效: {sso[:10]}... (连续401错误{data['failedCount']}次)")
+                logger.error(f"[Token] 标记失效: {sso[:10]}... (连续{status}错误{data['failedCount']}次)")
 
             await self._save_data()
 
