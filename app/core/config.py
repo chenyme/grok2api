@@ -9,16 +9,21 @@ from typing import Dict, Any, Optional, Literal
 DEFAULT_GROK = {
     "api_key": "",
     "proxy_url": "",
+    "proxy_pool_url": "",
+    "proxy_pool_interval": 300,
     "cache_proxy_url": "",
     "cf_clearance": "",
     "x_statsig_id": "",
     "dynamic_statsig": True,
-    "filtered_tags": "xaiartifact,xai:tool_usage_card,grok:render",
+    "filtered_tags": "xaiartifact,xai:tool_usage_card",
+    "show_thinking": True,
+    "temporary": False,
+    "max_upload_concurrency": 20,
+    "max_request_concurrency": 100,
+    "stream_first_response_timeout": 30,
     "stream_chunk_timeout": 120,
     "stream_total_timeout": 600,
-    "stream_first_response_timeout": 30,
-    "temporary": True,
-    "show_thinking": True
+    "retry_status_codes": [401, 429],  # 可重试的HTTP状态码
 }
 
 DEFAULT_GLOBAL = {
@@ -147,20 +152,41 @@ class ConfigManager:
         
         await self.reload()
     
-    def get_proxy(self, proxy_type: Literal["service", "cache"] = "service") -> str:
-        """获取代理URL
+    async def get_proxy_async(self, proxy_type: Literal["service", "cache"] = "service") -> str:
+        """异步获取代理URL（支持代理池）
         
         Args:
             proxy_type: 代理类型
                 - service: 服务代理（client/upload）
                 - cache: 缓存代理（cache）
         """
+        from app.core.proxy_pool import proxy_pool
+        
         if proxy_type == "cache":
             cache_proxy = self.grok_config.get("cache_proxy_url", "")
             if cache_proxy:
                 return cache_proxy
         
-        return self.grok_config.get("proxy_url", "")
+        # 从代理池获取
+        return await proxy_pool.get_proxy() or ""
+    
+    def get_proxy(self, proxy_type: Literal["service", "cache"] = "service") -> str:
+        """获取代理URL（同步方法，用于向后兼容）
+        
+        Args:
+            proxy_type: 代理类型
+                - service: 服务代理（client/upload）
+                - cache: 缓存代理（cache）
+        """
+        from app.core.proxy_pool import proxy_pool
+        
+        if proxy_type == "cache":
+            cache_proxy = self.grok_config.get("cache_proxy_url", "")
+            if cache_proxy:
+                return cache_proxy
+        
+        # 返回当前代理（如果是代理池，返回最后一次获取的）
+        return proxy_pool.get_current_proxy() or self.grok_config.get("proxy_url", "")
 
 
 # 全局实例
