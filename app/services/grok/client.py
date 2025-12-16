@@ -21,13 +21,23 @@ API_ENDPOINT = "https://grok.com/rest/app-chat/conversations/new"
 TIMEOUT = 120
 BROWSER = "chrome133a"
 MAX_RETRY = 3
-MAX_UPLOADS = 5
+MAX_UPLOADS = 20  # 提高并发上传限制以支持更高并发
 
 
 class GrokClient:
     """Grok API 客户端"""
     
-    _upload_sem = asyncio.Semaphore(MAX_UPLOADS)
+    _upload_sem = None  # 延迟初始化
+
+    @staticmethod
+    def _get_upload_semaphore():
+        """获取上传信号量（动态配置）"""
+        if GrokClient._upload_sem is None:
+            # 从配置读取，如果不可用则使用默认值
+            max_concurrency = setting.global_config.get("max_upload_concurrency", MAX_UPLOADS)
+            GrokClient._upload_sem = asyncio.Semaphore(max_concurrency)
+            logger.debug(f"[Client] 初始化上传并发限制: {max_concurrency}")
+        return GrokClient._upload_sem
 
     @staticmethod
     async def openai_to_grok(request: dict):
@@ -109,7 +119,7 @@ class GrokClient:
             return [], []
         
         async def upload_limited(url):
-            async with GrokClient._upload_sem:
+            async with GrokClient._get_upload_semaphore():
                 return await ImageUploadManager.upload(url, token)
         
         results = await asyncio.gather(*[upload_limited(u) for u in urls], return_exceptions=True)
