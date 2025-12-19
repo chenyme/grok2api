@@ -1,7 +1,12 @@
-"""FastAPI应用主入口"""
+"""Grok2API"""
 
+import os
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.core.logger import logger
 from app.core.exception import register_exception_handlers
@@ -12,11 +17,20 @@ from app.api.v1.chat import router as chat_router
 from app.api.v1.models import router as models_router
 from app.api.v1.images import router as images_router
 from app.api.admin.manage import router as admin_router
-
-# 导入MCP服务器（认证配置在server.py中完成）
 from app.services.mcp import mcp
 
-# 创建MCP的FastAPI应用实例
+# 0. 兼容性检测
+try:
+    if sys.platform != 'win32':
+        import uvloop
+        uvloop.install()
+        logger.info("[Grok2API] 启用uvloop高性能事件循环")
+    else:
+        logger.info("[Grok2API] Windows系统，使用默认asyncio事件循环")
+except ImportError:
+    logger.info("[Grok2API] uvloop未安装，使用默认asyncio事件循环")
+
+# 1. 创建MCP的FastAPI应用实例
 # 使用流式HTTP传输，支持高效的双向流式通信
 mcp_app = mcp.http_app(stateless_http=True, transport="streamable-http")
 
@@ -133,7 +147,7 @@ if __name__ == "__main__":
     import uvicorn
     import os
     
-    # 从环境变量读取 worker 数量，默认为 1
+    # 读取 worker 数量，默认为 1
     workers = int(os.getenv("WORKERS", "1"))
     
     # 提示多进程模式
@@ -143,10 +157,19 @@ if __name__ == "__main__":
             f"建议使用 Redis/MySQL 存储以获得最佳性能。"
         )
     
+    # 确定事件循环类型
+    loop_type = "auto"
+    if workers == 1 and sys.platform != 'win32':
+        try:
+            import uvloop
+            loop_type = "uvloop"
+        except ImportError:
+            pass
+    
     uvicorn.run(
-        "main:app",  # 使用字符串以支持多worker
+        "main:app",
         host="0.0.0.0",
         port=8001,
         workers=workers,
-        loop="uvloop" if workers == 1 else "auto"  # 单进程用uvloop，多进程用auto
+        loop=loop_type
     )

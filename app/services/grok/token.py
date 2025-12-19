@@ -109,7 +109,7 @@ class GrokTokenManager:
         from app.core.config import setting
         
         interval = setting.global_config.get("batch_save_interval", 1.0)
-        logger.info(f"[Token] 批量保存任务已启动，间隔: {interval}s")
+        logger.info(f"[Token] 存储任务已启动，间隔: {interval}s")
         
         while not self._shutdown:
             await asyncio.sleep(interval)
@@ -118,15 +118,15 @@ class GrokTokenManager:
                 try:
                     await self._save_data()
                     self._save_pending = False
-                    logger.debug("[Token] 批量保存完成")
+                    logger.debug("[Token] 存储完成")
                 except Exception as e:
-                    logger.error(f"[Token] 批量保存失败: {e}")
+                    logger.error(f"[Token] 存储失败: {e}")
 
     async def start_batch_save(self) -> None:
         """启动批量保存任务"""
         if self._save_task is None:
             self._save_task = asyncio.create_task(self._batch_save_worker())
-            logger.info("[Token] 批量保存任务已创建")
+            logger.info("[Token] 存储任务已创建")
 
     async def shutdown(self) -> None:
         """关闭并刷新所有待保存数据"""
