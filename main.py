@@ -48,6 +48,13 @@ async def lifespan(app: FastAPI):
     await setting.reload()
     logger.info("[Grok2API] 核心服务初始化完成")
     
+    # 2.5. 初始化代理池
+    from app.core.proxy_pool import proxy_pool
+    proxy_url = setting.grok_config.get("proxy_url", "")
+    proxy_pool_url = setting.grok_config.get("proxy_pool_url", "")
+    proxy_pool_interval = setting.grok_config.get("proxy_pool_interval", 300)
+    proxy_pool.configure(proxy_url, proxy_pool_url, proxy_pool_interval)
+    
     # 3. 异步加载 token 数据
     await token_manager._load_data()
     logger.info("[Grok2API] Token数据加载完成")

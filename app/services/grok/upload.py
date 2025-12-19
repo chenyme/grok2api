@@ -1,5 +1,6 @@
 """图片上传管理器 - 支持Base64和URL图片上传"""
 
+import asyncio
 import base64
 import re
 from typing import Tuple, Optional
@@ -52,37 +53,101 @@ class ImageUploadManager:
                 "content": buffer,
             }
 
+
             if not auth_token:
                 raise GrokApiException("认证令牌缺失", "NO_AUTH_TOKEN")
 
-            # 请求配置
-            cf = setting.grok_config.get("cf_clearance", "")
-            headers = {
-                **get_dynamic_headers("/rest/app-chat/upload-file"),
-                "Cookie": f"{auth_token};{cf}" if cf else auth_token,
-            }
+            # 外层重试：可配置状态码（401/429等）
+            retry_codes = setting.grok_config.get("retry_status_codes", [401, 429])
+            MAX_OUTER_RETRY = 3
             
-            proxy = setting.grok_config.get("proxy_url", "")
-            proxies = {"http": proxy, "https": proxy} if proxy else None
+            for outer_retry in range(MAX_OUTER_RETRY + 1):  # +1 确保实际重试3次
+                try:
+                    # 内层重试：403代理池重试
+                    max_403_retries = 5
+                    retry_403_count = 0
+                    
+                    while retry_403_count <= max_403_retries:
+                        # 请求配置
+                        cf = setting.grok_config.get("cf_clearance", "")
+                        headers = {
+                            **get_dynamic_headers("/rest/app-chat/upload-file"),
+                            "Cookie": f"{auth_token};{cf}" if cf else auth_token,
+                        }
+                        
+                        # 异步获取代理（支持代理池）
+                        from app.core.proxy_pool import proxy_pool
+                        
+                        # 如果是403重试且使用代理池，强制刷新代理
+                        if retry_403_count > 0 and proxy_pool._enabled:
+                            logger.info(f"[Upload] 403重试 {retry_403_count}/{max_403_retries}，刷新代理...")
+                            proxy = await proxy_pool.force_refresh()
+                        else:
+                            proxy = await setting.get_proxy_async("service")
+                        
+                        proxies = {"http": proxy, "https": proxy} if proxy else None
 
-            # 上传
-            async with AsyncSession() as session:
-                response = await session.post(
-                    UPLOAD_API,
-                    headers=headers,
-                    json=data,
-                    impersonate=BROWSER,
-                    timeout=TIMEOUT,
-                    proxies=proxies,
-                )
+                        # 上传
+                        async with AsyncSession() as session:
+                            response = await session.post(
+                                UPLOAD_API,
+                                headers=headers,
+                                json=data,
+                                impersonate=BROWSER,
+                                timeout=TIMEOUT,
+                                proxies=proxies,
+                            )
 
-                if response.status_code == 200:
-                    result = response.json()
-                    file_id = result.get("fileMetadataId", "")
-                    file_uri = result.get("fileUri", "")
-                    logger.debug(f"[Upload] 成功，ID: {file_id}")
-                    return file_id, file_uri
-
+                            # 内层403重试：仅当有代理池时触发
+                            if response.status_code == 403 and proxy_pool._enabled:
+                                retry_403_count += 1
+                                
+                                if retry_403_count <= max_403_retries:
+                                    logger.warning(f"[Upload] 遇到403错误，正在重试 ({retry_403_count}/{max_403_retries})...")
+                                    await asyncio.sleep(0.5)
+                                    continue
+                                
+                                # 内层重试全部失败
+                                logger.error(f"[Upload] 403错误，已重试{retry_403_count-1}次，放弃")
+                            
+                            # 检查可配置状态码错误 - 外层重试
+                            if response.status_code in retry_codes:
+                                if outer_retry < MAX_OUTER_RETRY:
+                                    delay = (outer_retry + 1) * 0.1  # 渐进延迟：0.1s, 0.2s, 0.3s
+                                    logger.warning(f"[Upload] 遇到{response.status_code}错误，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})，等待{delay}s...")
+                                    await asyncio.sleep(delay)
+                                    break  # 跳出内层循环，进入外层重试
+                                else:
+                                    logger.error(f"[Upload] {response.status_code}错误，已重试{outer_retry}次，放弃")
+                                    return "", ""
+                            
+                            if response.status_code == 200:
+                                result = response.json()
+                                file_id = result.get("fileMetadataId", "")
+                                file_uri = result.get("fileUri", "")
+                                
+                                if outer_retry > 0 or retry_403_count > 0:
+                                    logger.info(f"[Upload] 重试成功！")
+                                
+                                logger.debug(f"[Upload] 成功，ID: {file_id}")
+                                return file_id, file_uri
+                            
+                            # 其他错误直接返回
+                            logger.error(f"[Upload] 失败，状态码: {response._status_code}")
+                            return "", ""
+                    
+                    # 内层循环正常结束（非break），说明403重试全部失败
+                    return "", ""
+                
+                except Exception as e:
+                    if outer_retry < MAX_OUTER_RETRY - 1:
+                        logger.warning(f"[Upload] 异常: {e}，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})...")
+                        await asyncio.sleep(0.5)
+                        continue
+                    
+                    logger.warning(f"[Upload] 失败: {e}")
+                    return "", ""
+            
             return "", ""
 
         except Exception as e:
