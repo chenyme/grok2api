@@ -1,8 +1,7 @@
-
 toml==0.10.2
 fastapi==0.119.0
 uvicorn==0.37.0
-uvloop==0.21.0
+uvloop==0.21.0; sys_platform != 'win32'
 python-dotenv==1.1.1
 curl_cffi==0.13.0
 requests==2.32.5

@@ -1,0 +1,25 @@
+[project]
+name = "grok2api"
+version = "1.4.3"
+description = "基于 FastAPI 重构的 Grok2API，适配最新的Web调用格式，支持流式对话、图像生成、图像编辑、联网搜索、视频生成、深度思考，支持号池并发调用和自动负载均衡。"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiofiles==25.1.0",
+    "aiomysql==0.2.0",
+    "curl-cffi==0.13.0",
+    "fastapi==0.119.0",
+    "pydantic==2.12.2",
+    "python-dotenv==1.1.1",
+    "redis==6.4.0",
+    "requests==2.32.5",
+    "starlette==0.48.0",
+    "toml==0.10.2",
+    "uvloop==0.21.0 ; sys_platform != 'win32'",
+    "uvicorn==0.37.0",
+    "portalocker==3.0.0",
+    "fastmcp==2.12.4",
+    "cryptography==46.0.3",
+    "orjson==3.11.4",
+    "aiohttp==3.13.2",
+]
