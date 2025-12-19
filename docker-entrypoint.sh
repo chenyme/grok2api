@@ -37,6 +37,9 @@ stream_total_timeout = 600
 stream_first_response_timeout = 30
 temporary = true
 show_thinking = true
+proxy_pool_url = ""
+proxy_pool_interval = 300
+retry_status_codes = [401, 429]
 EOF
 fi
 

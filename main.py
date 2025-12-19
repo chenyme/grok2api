@@ -31,7 +31,6 @@ except ImportError:
     logger.info("[Grok2API] uvloop未安装，使用默认asyncio事件循环")
 
 # 1. 创建MCP的FastAPI应用实例
-# 使用流式HTTP传输，支持高效的双向流式通信
 mcp_app = mcp.http_app(stateless_http=True, transport="streamable-http")
 
 # 2. 定义应用生命周期
