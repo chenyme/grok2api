@@ -1,9 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-聊天API路由模块
-
-提供OpenAI兼容的聊天API接口，支持与Grok模型的交互。
-"""
+"""聊天API路由 - OpenAI兼容的聊天接口"""
 
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
@@ -15,38 +10,20 @@ from app.core.logger import logger
 from app.services.grok.client import GrokClient
 from app.models.openai_schema import OpenAIChatRequest
 
-# 聊天路由
+
 router = APIRouter(prefix="/chat", tags=["聊天"])
 
 
 @router.post("/completions", response_model=None)
-async def chat_completions(
-    request: OpenAIChatRequest,
-    _: Optional[str] = Depends(auth_manager.verify)
-):
-    """
-    创建聊天补全
-
-    兼容OpenAI聊天API的端点，支持流式和非流式响应。
-
-    Args:
-        request: OpenAI格式的聊天请求
-        _: 认证依赖（自动验证）
-
-    Returns:
-        OpenAIChatCompletionResponse: 非流式响应
-        StreamingResponse: 流式响应
-
-    Raises:
-        HTTPException: 当请求处理失败时
-    """
+async def chat_completions(request: OpenAIChatRequest, _: Optional[str] = Depends(auth_manager.verify)):
+    """创建聊天补全（支持流式和非流式）"""
     try:
-        logger.info(f"[Chat] 聊天请求 - 模型: {request.model}")
+        logger.info("[Chat] 收到聊天请求")
 
-        # 调用Grok客户端处理请求
+        # 调用Grok客户端
         result = await GrokClient.openai_to_grok(request.model_dump())
         
-        # 如果是流式响应，GrokClient已经返回了Iterator，直接包装为StreamingResponse
+        # 流式响应
         if request.stream:
             return StreamingResponse(
                 content=result,
@@ -58,11 +35,11 @@ async def chat_completions(
                 }
             )
         
-        # 非流式响应直接返回
+        # 非流式响应
         return result
         
     except GrokApiException as e:
-        logger.error(f"[Chat] Grok API错误: {str(e)} - 详情: {e.details}")
+        logger.error(f"[Chat] Grok API错误: {e} - 详情: {e.details}")
         raise HTTPException(
             status_code=500,
             detail={
@@ -74,7 +51,7 @@ async def chat_completions(
             }
         )
     except Exception as e:
-        logger.error(f"[Chat] 聊天请求处理失败: {str(e)}")
+        logger.error(f"[Chat] 处理失败: {e}")
         raise HTTPException(
             status_code=500,
             detail={

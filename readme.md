@@ -78,7 +78,7 @@ services:
       # - DATABASE_URL=mysql://user:password@host:3306/grok2api
 
       ## MySQL格式: mysql://user:password@host:port/database
-      ## Redis格式: redis://host:port/db 或 redis://user:password@host:port/db
+      ## Redis格式: redis://host:port/db 或 redis://user:password@host:port/db (SSL: rediss://)
 
 volumes:
   grok_data:
@@ -129,6 +129,11 @@ volumes:
 | POST  | /api/cache/clear/images | 清理图片缓存       | ✅   |
 | POST  | /api/cache/clear/videos | 清理视频缓存       | ✅   |
 | GET   | /api/stats              | 获取统计信息       | ✅   |
+| POST  | /api/tokens/tags        | 更新 Token 标签     | ✅   |
+| POST  | /api/tokens/note        | 更新 Token 备注     | ✅   |
+| POST  | /api/tokens/test        | 测试 Token 可用性   | ✅   |
+| GET   | /api/tokens/tags/all    | 获取所有标签列表    | ✅   |
+| GET   | /api/storage/mode       | 获取存储模式信息    | ✅   |
 
 </details>
 
@@ -138,12 +143,14 @@ volumes:
 
 | 模型名称               | 计次   | 账户类型      | 图像生成/编辑 | 深度思考 | 联网搜索 | 视频生成 |
 |------------------------|--------|--------------|--------------|----------|----------|----------|
-| `grok-3-fast`          | 1      | Basic/Super  | ✅           | ❌       | ✅       | ❌       |
+| `grok-4.1`             | 1      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
+| `grok-4.1-thinking`    | 1      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
+| `grok-imagine-0.9`     | -      | Basic/Super  | ✅           | ❌       | ❌       | ✅       |
 | `grok-4-fast`          | 1      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
 | `grok-4-fast-expert`   | 4      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
 | `grok-4-expert`        | 4      | Basic/Super  | ✅           | ✅       | ✅       | ❌       |
 | `grok-4-heavy`         | 1      | Super        | ✅           | ✅       | ✅       | ❌       |
-| `grok-imagine-0.9`     | -      | Basic/Super  | ✅           | ❌       | ❌       | ✅       |
+| `grok-3-fast`          | 1      | Basic/Super  | ✅           | ❌       | ✅       | ❌       |
 
 <br>
 
@@ -168,6 +175,7 @@ volumes:
 | cf_clearance               | grok    | 否   | Cloudflare安全令牌                      | ""     |
 | x_statsig_id               | grok    | 是   | 反机器人唯一标识符                      | "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk=" |
 | filtered_tags              | grok    | 否   | 过滤响应标签（逗号分隔）                | "xaiartifact,xai:tool_usage_card,grok:render" |
+| show_thinking              | grok    | 否   | 显示思考过程 true(显示)/false(隐藏)     | true   |
 | temporary                  | grok    | 否   | 会话模式 true(临时)/false               | true   |
 
 <br>
