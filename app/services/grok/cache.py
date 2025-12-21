@@ -71,7 +71,7 @@ class CacheService:
                 retry_403_count = 0
                 
                 while retry_403_count <= max_403_retries:
-                    proxy = setting.get_proxy("cache")
+                    proxy = await setting.get_proxy_async("cache")
                     proxies = {"http": proxy, "https": proxy} if proxy else {}
                     
                     if proxy and outer_retry == 0 and retry_403_count == 0:

@@ -65,8 +65,16 @@ class ConfigManager:
             toml.dump(default, f)
     
     def _normalize_proxy(self, proxy: str) -> str:
-        """标准化代理URL（socks5:// → socks5h://）"""
-        if proxy and proxy.startswith("socks5://"):
+        """标准化代理URL（sock5/socks5 → socks5h://）"""
+        if not proxy:
+            return proxy
+
+        proxy = proxy.strip()
+        if proxy.startswith("sock5h://"):
+            proxy = proxy.replace("sock5h://", "socks5h://", 1)
+        if proxy.startswith("sock5://"):
+            proxy = proxy.replace("sock5://", "socks5://", 1)
+        if proxy.startswith("socks5://"):
             return proxy.replace("socks5://", "socks5h://", 1)
         return proxy
     
@@ -90,6 +98,8 @@ class ConfigManager:
             if section == "grok":
                 if "proxy_url" in config:
                     config["proxy_url"] = self._normalize_proxy(config["proxy_url"])
+                if "cache_proxy_url" in config:
+                    config["cache_proxy_url"] = self._normalize_proxy(config["cache_proxy_url"])
                 if "cf_clearance" in config:
                     config["cf_clearance"] = self._normalize_cf(config["cf_clearance"])
 
