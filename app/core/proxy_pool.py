@@ -27,8 +27,17 @@ class ProxyPool:
             proxy_pool_url: 代理池API URL，返回单个代理地址
             proxy_pool_interval: 代理池刷新间隔（秒）
         """
-        self._static_proxy = proxy_url if proxy_url else None
-        self._pool_url = proxy_pool_url if proxy_pool_url else None
+        self._static_proxy = self._normalize_proxy(proxy_url) if proxy_url else None
+        pool_url = proxy_pool_url.strip() if proxy_pool_url else None
+        if pool_url and self._looks_like_proxy_url(pool_url):
+            normalized_proxy = self._normalize_proxy(pool_url)
+            if not self._static_proxy:
+                self._static_proxy = normalized_proxy
+                logger.warning("[ProxyPool] proxy_pool_url看起来是代理地址，已作为静态代理使用，请改用proxy_url")
+            else:
+                logger.warning("[ProxyPool] proxy_pool_url看起来是代理地址，已忽略（使用proxy_url）")
+            pool_url = None
+        self._pool_url = pool_url
         self._fetch_interval = proxy_pool_interval
         self._enabled = bool(self._pool_url)
         
@@ -84,7 +93,7 @@ class ProxyPool:
                 async with session.get(self._pool_url) as response:
                     if response.status == 200:
                         proxy_text = await response.text()
-                        proxy = proxy_text.strip()
+                        proxy = self._normalize_proxy(proxy_text.strip())
                         
                         # 验证代理格式
                         if self._validate_proxy(proxy):
@@ -129,6 +138,24 @@ class ProxyPool:
         valid_protocols = ['http://', 'https://', 'socks5://', 'socks5h://']
         
         return any(proxy.startswith(proto) for proto in valid_protocols)
+
+    def _normalize_proxy(self, proxy: str) -> str:
+        """标准化代理URL（sock5/socks5 → socks5h://）"""
+        if not proxy:
+            return proxy
+
+        proxy = proxy.strip()
+        if proxy.startswith("sock5h://"):
+            proxy = proxy.replace("sock5h://", "socks5h://", 1)
+        if proxy.startswith("sock5://"):
+            proxy = proxy.replace("sock5://", "socks5://", 1)
+        if proxy.startswith("socks5://"):
+            return proxy.replace("socks5://", "socks5h://", 1)
+        return proxy
+
+    def _looks_like_proxy_url(self, url: str) -> bool:
+        """判断URL是否像代理地址（避免误把代理池API当代理）"""
+        return url.startswith(("sock5://", "sock5h://", "socks5://", "socks5h://"))
     
     def get_current_proxy(self) -> Optional[str]:
         """获取当前使用的代理（同步方法）
