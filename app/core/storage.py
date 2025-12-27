@@ -301,6 +301,10 @@ class MysqlStorage(BaseStorage):
 
     async def load_tokens(self) -> Dict[str, Any]:
         """加载token"""
+        data = await self._load_db("grok_tokens")
+        if data:
+            await self._file.save_tokens(data)
+            return data
         return await self._file.load_tokens()
 
     async def save_tokens(self, data: Dict[str, Any]) -> None:
@@ -310,6 +314,10 @@ class MysqlStorage(BaseStorage):
 
     async def load_config(self) -> Dict[str, Any]:
         """加载配置"""
+        data = await self._load_db("grok_settings")
+        if data:
+            await self._file.save_config(data)
+            return data
         return await self._file.load_config()
 
     async def save_config(self, data: Dict[str, Any]) -> None:
@@ -448,6 +456,10 @@ class PostgresStorage(BaseStorage):
 
     async def load_tokens(self) -> Dict[str, Any]:
         """加载token"""
+        data = await self._load_db("grok_tokens")
+        if data:
+            await self._file.save_tokens(data)
+            return data
         return await self._file.load_tokens()
 
     async def save_tokens(self, data: Dict[str, Any]) -> None:
@@ -457,6 +469,10 @@ class PostgresStorage(BaseStorage):
 
     async def load_config(self) -> Dict[str, Any]:
         """加载配置"""
+        data = await self._load_db("grok_settings")
+        if data:
+            await self._file.save_config(data)
+            return data
         return await self._file.load_config()
 
     async def save_config(self, data: Dict[str, Any]) -> None:
@@ -536,6 +552,11 @@ class RedisStorage(BaseStorage):
 
     async def load_tokens(self) -> Dict[str, Any]:
         """加载token"""
+        data = await self._redis.get("grok:tokens") if self._redis else None
+        if data:
+            parsed = orjson.loads(data)
+            await self._file.save_tokens(parsed)
+            return parsed
         return await self._file.load_tokens()
 
     async def save_tokens(self, data: Dict[str, Any]) -> None:
@@ -545,6 +566,11 @@ class RedisStorage(BaseStorage):
 
     async def load_config(self) -> Dict[str, Any]:
         """加载配置"""
+        data = await self._redis.get("grok:settings") if self._redis else None
+        if data:
+            parsed = orjson.loads(data)
+            await self._file.save_config(parsed)
+            return parsed
         return await self._file.load_config()
 
     async def save_config(self, data: Dict[str, Any]) -> None:

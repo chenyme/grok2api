@@ -121,6 +121,28 @@ class ConfigManager:
     
     async def reload(self) -> None:
         """重新加载配置"""
+        if self._storage:
+            config = await self._storage.load_config()
+            global_config = (config or {}).get("global", {}) or {}
+            grok_config = (config or {}).get("grok", {}) or {}
+
+            merged_global = DEFAULT_GLOBAL.copy()
+            merged_global.update(global_config)
+            merged_grok = DEFAULT_GROK.copy()
+            merged_grok.update(grok_config)
+
+            # 标准化Grok配置
+            if "proxy_url" in merged_grok:
+                merged_grok["proxy_url"] = self._normalize_proxy(merged_grok["proxy_url"])
+            if "cache_proxy_url" in merged_grok:
+                merged_grok["cache_proxy_url"] = self._normalize_proxy(merged_grok["cache_proxy_url"])
+            if "cf_clearance" in merged_grok:
+                merged_grok["cf_clearance"] = self._normalize_cf(merged_grok["cf_clearance"])
+
+            self.global_config = merged_global
+            self.grok_config = merged_grok
+            return
+
         self.global_config = self.load("global")
         self.grok_config = self.load("grok")
     
