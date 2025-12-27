@@ -12,6 +12,8 @@ DEFAULT_GROK = {
     "proxy_pool_url": "",
     "proxy_pool_interval": 300,
     "cache_proxy_url": "",
+    "bypass_server": False,
+    "bypass_baseurl": "",
     "cf_clearance": "",
     "x_statsig_id": "",
     "dynamic_statsig": True,

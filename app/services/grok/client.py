@@ -13,6 +13,7 @@ from app.services.grok.statsig import get_dynamic_headers
 from app.services.grok.token import token_manager
 from app.services.grok.upload import ImageUploadManager
 from app.services.grok.create import PostCreateManager
+from app.services.grok.bypass import resolve_bypass
 from app.core.exception import GrokApiException
 
 
@@ -228,9 +229,12 @@ class GrokClient:
                     proxies = {"http": proxy, "https": proxy} if proxy else None
                     
                     # 执行请求
+                    endpoint, x_hostname = resolve_bypass(API_ENDPOINT)
+                    if x_hostname:
+                        headers["x-hostname"] = x_hostname
                     response = await asyncio.to_thread(
                         curl_requests.post,
-                        API_ENDPOINT,
+                        endpoint,
                         headers=headers,
                         data=orjson.dumps(payload),
                         impersonate=BROWSER,

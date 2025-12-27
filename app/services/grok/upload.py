@@ -11,6 +11,7 @@ from app.services.grok.statsig import get_dynamic_headers
 from app.core.exception import GrokApiException
 from app.core.config import setting
 from app.core.logger import logger
+from app.services.grok.bypass import resolve_bypass
 
 
 # 常量
@@ -74,6 +75,9 @@ class ImageUploadManager:
                             **get_dynamic_headers("/rest/app-chat/upload-file"),
                             "Cookie": f"{auth_token};{cf}" if cf else auth_token,
                         }
+                        upload_url, x_hostname = resolve_bypass(UPLOAD_API)
+                        if x_hostname:
+                            headers["x-hostname"] = x_hostname
                         
                         # 异步获取代理（支持代理池）
                         from app.core.proxy_pool import proxy_pool
@@ -90,7 +94,7 @@ class ImageUploadManager:
                         # 上传
                         async with AsyncSession() as session:
                             response = await session.post(
-                                UPLOAD_API,
+                                upload_url,
                                 headers=headers,
                                 json=data,
                                 impersonate=BROWSER,

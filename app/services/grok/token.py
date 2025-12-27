@@ -14,6 +14,7 @@ from app.core.exception import GrokApiException
 from app.core.logger import logger
 from app.core.config import setting
 from app.services.grok.statsig import get_dynamic_headers
+from app.services.grok.bypass import resolve_bypass
 
 
 # 常量
@@ -318,6 +319,9 @@ class GrokTokenManager:
             cf = setting.grok_config.get("cf_clearance", "")
             headers = get_dynamic_headers("/rest/rate-limits")
             headers["Cookie"] = f"{auth_token};{cf}" if cf else auth_token
+            endpoint, x_hostname = resolve_bypass(RATE_LIMIT_API)
+            if x_hostname:
+                headers["x-hostname"] = x_hostname
 
             # 外层重试：可配置状态码（401/429等）
             retry_codes = setting.grok_config.get("retry_status_codes", [401, 429])
@@ -343,7 +347,7 @@ class GrokTokenManager:
                     
                     async with AsyncSession() as session:
                         response = await session.post(
-                            RATE_LIMIT_API,
+                            endpoint,
                             headers=headers,
                             json=payload,
                             impersonate=BROWSER,

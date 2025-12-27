@@ -9,6 +9,7 @@ from app.services.grok.statsig import get_dynamic_headers
 from app.core.exception import GrokApiException
 from app.core.config import setting
 from app.core.logger import logger
+from app.services.grok.bypass import resolve_bypass
 
 
 # 常量
@@ -50,6 +51,9 @@ class PostCreateManager:
                 **get_dynamic_headers("/rest/media/post/create"),
                 "Cookie": f"{auth_token};{cf}" if cf else auth_token
             }
+            endpoint, x_hostname = resolve_bypass(ENDPOINT)
+            if x_hostname:
+                headers["x-hostname"] = x_hostname
             
             # 外层重试：可配置状态码（401/429等）
             retry_codes = setting.grok_config.get("retry_status_codes", [401, 429])
@@ -76,7 +80,7 @@ class PostCreateManager:
                     # 发送请求
                     async with AsyncSession() as session:
                         response = await session.post(
-                            ENDPOINT,
+                            endpoint,
                             headers=headers,
                             json=data,
                             impersonate=BROWSER,
