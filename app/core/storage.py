@@ -70,7 +70,7 @@ class FileStorage(BaseStorage):
         if not self.config_file.exists():
             default = {
                 "global": {"api_keys": [], "admin_username": "admin", "admin_password": "admin"},
-                "grok": {"proxy_url": "", "cf_clearance": "", "x_statsig_id": ""},
+                "grok": {"proxy_url": "", "cf_clearance": "", "x_statsig_id": "", "bypass_server": False, "bypass_baseurl": ""},
             }
             await self._write(self.config_file, toml.dumps(default))
             logger.info("[Storage] 创建配置文件")

@@ -96,6 +96,16 @@ class ConfigManager:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 config = toml.load(f)[section]
 
+            # 合并默认值，保证新配置项在旧配置文件中也可用
+            if section == "grok":
+                merged = DEFAULT_GROK.copy()
+                merged.update(config or {})
+                config = merged
+            else:
+                merged = DEFAULT_GLOBAL.copy()
+                merged.update(config or {})
+                config = merged
+
             # 标准化Grok配置
             if section == "grok":
                 if "proxy_url" in config:
