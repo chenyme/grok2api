@@ -354,7 +354,9 @@ async def get_settings(_: bool = Depends(verify_admin_session)) -> Dict[str, Any
 async def update_settings(request: UpdateSettingsRequest, _: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     """更新配置"""
     try:
-        logger.debug("[Admin] 更新配置")
+        global_keys = sorted((request.global_config or {}).keys()) if request.global_config else []
+        grok_keys = sorted((request.grok_config or {}).keys()) if request.grok_config else []
+        logger.debug(f"[Admin] 更新配置: global_keys={global_keys}, grok_keys={grok_keys}")
         await setting.save(global_config=request.global_config, grok_config=request.grok_config)
         logger.debug("[Admin] 配置更新成功")
         return {"success": True, "message": "配置更新成功"}

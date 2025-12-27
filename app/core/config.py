@@ -1,5 +1,6 @@
 """配置管理器 - 管理应用配置的读写"""
 
+import logging
 import toml
 from pathlib import Path
 from typing import Dict, Any, Optional, Literal
@@ -53,6 +54,7 @@ class ConfigManager:
         self._ensure_exists()
         self.global_config: Dict[str, Any] = self.load("global")
         self.grok_config: Dict[str, Any] = self.load("grok")
+        self._log = logging.getLogger("Config")
     
     def _ensure_exists(self) -> None:
         """确保配置存在"""
@@ -94,7 +96,7 @@ class ConfigManager:
         """加载配置节"""
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
-                config = toml.load(f)[section]
+                config = (toml.load(f) or {}).get(section, {}) or {}
 
             # 合并默认值，保证新配置项在旧配置文件中也可用
             if section == "grok":
@@ -154,19 +156,23 @@ class ConfigManager:
             config = toml.loads(await f.read())
         
         for section, data in updates.items():
-            if section in config:
-                config[section].update(data)
+            if section not in config or config[section] is None:
+                config[section] = {}
+            config[section].update(data)
         
         async with aiofiles.open(self.config_path, "w", encoding="utf-8") as f:
             await f.write(toml.dumps(config))
     
     async def _save_storage(self, updates: Dict[str, Dict[str, Any]]) -> None:
         """保存到存储"""
-        config = await self._storage.load_config()
+        config = await self._storage.load_config() if self._storage else {}
+        if not config:
+            config = {}
         
         for section, data in updates.items():
-            if section in config:
-                config[section].update(data)
+            if section not in config or config[section] is None:
+                config[section] = {}
+            config[section].update(data)
         
         await self._storage.save_config(config)
     
@@ -181,19 +187,62 @@ class ConfigManager:
 
     async def save(self, global_config: Optional[Dict[str, Any]] = None, grok_config: Optional[Dict[str, Any]] = None) -> None:
         """保存配置"""
-        updates = {}
+        updates: Dict[str, Dict[str, Any]] = {}
         
         if global_config:
             updates["global"] = global_config
         if grok_config:
             updates["grok"] = self._prepare_grok(grok_config)
+
+        val = {section: data.copy() for section, data in updates.items()}
+        self._log.info(
+            "[Setting] 保存请求: storage=%s sections=%s keys=%s",
+            type(self._storage).__name__ if self._storage else "file",
+            ",".join(val.keys()) or "(none)",
+            {k: sorted(v.keys()) for k, v in val.items()},
+        )
         
         # 选择存储方式
         if self._storage:
             await self._save_storage(updates)
         else:
             await self._save_file(updates)
-        
+
+        if self._storage and val:
+            persisted = await self._storage.load_config()
+            mismatches = []
+
+            sensitive_keys = {"api_key", "admin_password", "cf_clearance", "x_statsig_id"}
+
+            def _redact(key: str, value: Any) -> Any:
+                if key in sensitive_keys and value not in (None, "", False):
+                    return "<redacted>"
+                return value
+
+            for section, expected_kv in val.items():
+                actual_section = (persisted or {}).get(section, None)
+                if not isinstance(actual_section, dict):
+                    mismatches.append((section, None, "<missing-section>", type(actual_section).__name__))
+                    continue
+
+                for key, expected_value in expected_kv.items():
+                    actual_value = actual_section.get(key, "<missing-key>")
+                    if actual_value != expected_value:
+                        mismatches.append(
+                            (
+                                section,
+                                key,
+                                _redact(key, expected_value),
+                                _redact(key, actual_value),
+                            )
+                        )
+
+            if mismatches:
+                self._log.error("[Setting] 持久化校验失败: mismatches=%s", mismatches)
+                raise Exception(f"[Setting] 持久化校验失败: {len(mismatches)}项不一致")
+
+            self._log.info("[Setting] 持久化校验通过")
+
         await self.reload()
     
     async def get_proxy_async(self, proxy_type: Literal["service", "cache"] = "service") -> str:
