@@ -482,6 +482,26 @@ class GrokTokenManager:
         except Exception as e:
             logger.error(f"[Token] 重置失败错误: {e}")
 
+    async def recover_token_status(self, token: str, token_type: TokenType) -> None:
+        """恢复Token状态从失败到正常"""
+        try:
+            if token not in self.token_data[token_type.value]:
+                logger.warning(f"[Token] 未找到Token: {token[:10]}...")
+                return
+
+            data = self.token_data[token_type.value][token]
+            
+            # 如果状态是expired，恢复为active
+            if data.get("status") == "expired":
+                data["status"] = "active"
+                self._mark_dirty()  # 批量保存
+                logger.info(f"[Token] 恢复Token状态: {token[:10]}... (expired -> active)")
+            else:
+                logger.debug(f"[Token] Token状态正常，无需恢复: {token[:10]}...")
+
+        except Exception as e:
+            logger.error(f"[Token] 恢复Token状态错误: {e}")
+
 
 # 全局实例
 token_manager = GrokTokenManager()

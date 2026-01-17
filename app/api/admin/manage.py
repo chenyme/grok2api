@@ -590,6 +590,11 @@ async def test_token(request: TestTokenRequest, _: bool = Depends(verify_admin_s
 
         if result:
             logger.debug(f"[Admin] Token测试成功: {request.token[:10]}...")
+            
+            # 重置失败计数并恢复状态为正常
+            await token_manager.reset_failure(auth_token)
+            await token_manager.recover_token_status(request.token, token_type)
+            
             return {
                 "success": True,
                 "message": "Token有效",
