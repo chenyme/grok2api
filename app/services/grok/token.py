@@ -249,6 +249,10 @@ class GrokTokenManager:
         """选择最优Token（多进程安全）"""
         # 重新加载最新数据（多进程模式）
         self._reload_if_needed()
+
+        # 标记"从已耗尽列表中重新选择"的特殊状态，避免在代码中直接使用魔法值 -2
+        EXHAUSTED_RECHECK_SENTINEL: int = -2
+
         def select_best(tokens: Dict[str, Any], field: str, include_exhausted: bool = False) -> Tuple[Optional[str], Optional[int]]:
             """选择最佳Token"""
             unused, used, exhausted = [], [], []
@@ -279,9 +283,10 @@ class GrokTokenManager:
             if used:
                 used.sort(key=lambda x: x[1], reverse=True)
                 return used[0][0], used[0][1]
-            # 如果没有可用token但有次数耗尽的token，尝试恢复
+            # 如果没有可用token但有次数耗尽的token，随机选择一个进行恢复验证，避免负载集中
             if exhausted:
-                return exhausted[0], -2  # -2 表示是次数耗尽的token
+                import random
+                return random.choice(exhausted), EXHAUSTED_RECHECK_SENTINEL
             return None, None
 
         # 快照
@@ -319,7 +324,7 @@ class GrokTokenManager:
                 }
             )
 
-        if remaining == -2:
+        if remaining == EXHAUSTED_RECHECK_SENTINEL:
             logger.info(f"[Token] 尝试使用次数耗尽Token进行恢复验证: {model}")
             status = "尝试恢复"
         else:
