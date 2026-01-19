@@ -249,21 +249,24 @@ class GrokTokenManager:
         """选择最优Token（多进程安全）"""
         # 重新加载最新数据（多进程模式）
         self._reload_if_needed()
-        def select_best(tokens: Dict[str, Any], field: str) -> Tuple[Optional[str], Optional[int]]:
+        def select_best(tokens: Dict[str, Any], field: str, include_exhausted: bool = False) -> Tuple[Optional[str], Optional[int]]:
             """选择最佳Token"""
-            unused, used = [], []
+            unused, used, exhausted = [], [], []
 
             for key, data in tokens.items():
-                # 跳过已失效的token
+                # 跳过已失效的token（真正失效，如401错误）
                 if data.get("status") == "expired":
                     continue
-                
+
                 # 跳过失败次数过多的token（任何错误状态码）
                 if data.get("failedCount", 0) >= MAX_FAILURES:
                     continue
 
                 remaining = int(data.get(field, -1))
                 if remaining == 0:
+                    # 次数耗尽的token，可能已恢复
+                    if include_exhausted:
+                        exhausted.append(key)
                     continue
 
                 if remaining == -1:
@@ -276,6 +279,9 @@ class GrokTokenManager:
             if used:
                 used.sort(key=lambda x: x[1], reverse=True)
                 return used[0][0], used[0][1]
+            # 如果没有可用token但有次数耗尽的token，尝试恢复
+            if exhausted:
+                return exhausted[0], -2  # -2 表示是次数耗尽的token
             return None, None
 
         # 快照
@@ -288,11 +294,19 @@ class GrokTokenManager:
         if model == "grok-4-heavy":
             field = "heavyremainingQueries"
             token_key, remaining = select_best(snapshot[TokenType.SUPER.value], field)
+            # 如果没有可用token，尝试选择次数耗尽的token
+            if token_key is None:
+                token_key, remaining = select_best(snapshot[TokenType.SUPER.value], field, include_exhausted=True)
         else:
             field = "remainingQueries"
             token_key, remaining = select_best(snapshot[TokenType.NORMAL.value], field)
             if token_key is None:
                 token_key, remaining = select_best(snapshot[TokenType.SUPER.value], field)
+            # 如果没有可用token，尝试选择次数耗尽的token
+            if token_key is None:
+                token_key, remaining = select_best(snapshot[TokenType.NORMAL.value], field, include_exhausted=True)
+                if token_key is None:
+                    token_key, remaining = select_best(snapshot[TokenType.SUPER.value], field, include_exhausted=True)
 
         if token_key is None:
             raise GrokApiException(
@@ -305,7 +319,11 @@ class GrokTokenManager:
                 }
             )
 
-        status = "未使用" if remaining == -1 else f"剩余{remaining}次"
+        if remaining == -2:
+            logger.info(f"[Token] 尝试使用次数耗尽Token进行恢复验证: {model}")
+            status = "尝试恢复"
+        else:
+            status = "未使用" if remaining == -1 else f"剩余{remaining}次"
         logger.debug(f"[Token] 分配Token: {model} ({status})")
         return token_key
     
@@ -386,10 +404,10 @@ class GrokTokenManager:
                         if response.status_code == 200:
                             data = response.json()
                             sso = self._extract_sso(auth_token)
-                            
+
                             if outer_retry > 0 or retry_403_count > 0:
                                 logger.info(f"[Token] 重试成功！")
-                            
+
                             if sso:
                                 if model == "grok-4-heavy":
                                     await self.update_limits(sso, normal=None, heavy=data.get("remainingQueries", -1))
@@ -397,7 +415,9 @@ class GrokTokenManager:
                                 else:
                                     await self.update_limits(sso, normal=data.get("remainingTokens", -1), heavy=None)
                                     logger.info(f"[Token] 更新限制: {sso[:10]}..., basic={data.get('remainingTokens', -1)}")
-                            
+                                # 验证成功，重置失败计数和状态
+                                await self.reset_failure(auth_token)
+
                             return data
                         else:
                             # 其他错误
@@ -472,12 +492,13 @@ class GrokTokenManager:
             if not data:
                 return
 
-            if data.get("failedCount", 0) > 0:
+            if data.get("failedCount", 0) > 0 or data.get("status") == "expired":
                 data["failedCount"] = 0
                 data["lastFailureTime"] = None
                 data["lastFailureReason"] = None
+                data["status"] = "active"  # 重置状态为有效
                 self._mark_dirty()  # 批量保存
-                logger.info(f"[Token] 重置失败计数: {sso[:10]}...")
+                logger.info(f"[Token] 重置失败计数和状态: {sso[:10]}...")
 
         except Exception as e:
             logger.error(f"[Token] 重置失败错误: {e}")
