@@ -23,6 +23,7 @@ BROWSER = "chrome133a"
 MAX_FAILURES = 3
 TOKEN_INVALID = 401
 STATSIG_INVALID = 403
+EXHAUSTED_COOLDOWN = 24 * 60 * 60 * 1000  # 24小时冷却时间（毫秒）
 
 
 class GrokTokenManager:
@@ -177,6 +178,8 @@ class GrokTokenManager:
                 "failedCount": 0,
                 "lastFailureTime": None,
                 "lastFailureReason": None,
+                "exhaustedAt": None,  # 耗尽时间（毫秒时间戳）
+                "heavyExhaustedAt": None,  # heavy配额耗尽时间
                 "tags": [],
                 "note": ""
             }
@@ -252,10 +255,14 @@ class GrokTokenManager:
 
         # 标记"从已耗尽列表中重新选择"的特殊状态，避免在代码中直接使用魔法值 -2
         EXHAUSTED_RECHECK_SENTINEL: int = -2
+        current_time = int(time.time() * 1000)
 
         def select_best(tokens: Dict[str, Any], field: str, include_exhausted: bool = False) -> Tuple[Optional[str], Optional[int]]:
             """选择最佳Token"""
             unused, used, exhausted = [], [], []
+
+            # 确定耗尽时间字段
+            exhausted_field = "heavyExhaustedAt" if field == "heavyremainingQueries" else "exhaustedAt"
 
             for key, data in tokens.items():
                 # 跳过已失效的token（真正失效，如401错误）
@@ -268,9 +275,16 @@ class GrokTokenManager:
 
                 remaining = int(data.get(field, -1))
                 if remaining == 0:
-                    # 次数耗尽的token，可能已恢复
+                    # 次数耗尽的token，检查是否已过24小时冷却期
                     if include_exhausted:
-                        exhausted.append(key)
+                        exhausted_time = data.get(exhausted_field)
+                        if exhausted_time is None:
+                            # 没有记录耗尽时间，允许重试
+                            exhausted.append(key)
+                        elif current_time - exhausted_time >= EXHAUSTED_COOLDOWN:
+                            # 已过24小时冷却期，允许重试
+                            exhausted.append(key)
+                        # 否则跳过（未过冷却期）
                     continue
 
                 if remaining == -1:
@@ -314,15 +328,42 @@ class GrokTokenManager:
                     token_key, remaining = select_best(snapshot[TokenType.SUPER.value], field, include_exhausted=True)
 
         if token_key is None:
-            raise GrokApiException(
-                f"没有可用Token: {model}",
-                "NO_AVAILABLE_TOKEN",
-                {
-                    "model": model,
-                    "normal": len(snapshot[TokenType.NORMAL.value]),
-                    "super": len(snapshot[TokenType.SUPER.value])
-                }
-            )
+            # 检查是否有在冷却中的耗尽token
+            exhausted_field = "heavyExhaustedAt" if model == "grok-4-heavy" else "exhaustedAt"
+            cooldown_tokens = []
+            for token_type in [TokenType.NORMAL.value, TokenType.SUPER.value]:
+                for key, data in snapshot[token_type].items():
+                    if data.get("status") == "expired" or data.get("failedCount", 0) >= MAX_FAILURES:
+                        continue
+                    field = "heavyremainingQueries" if model == "grok-4-heavy" else "remainingQueries"
+                    if data.get(field, -1) == 0:
+                        exhausted_time = data.get(exhausted_field)
+                        if exhausted_time and current_time - exhausted_time < EXHAUSTED_COOLDOWN:
+                            remaining_hours = (EXHAUSTED_COOLDOWN - (current_time - exhausted_time)) / (1000 * 60 * 60)
+                            cooldown_tokens.append(remaining_hours)
+
+            if cooldown_tokens:
+                min_hours = min(cooldown_tokens)
+                raise GrokApiException(
+                    f"所有Token配额耗尽，最快{min_hours:.1f}小时后可重试: {model}",
+                    "NO_AVAILABLE_TOKEN",
+                    {
+                        "model": model,
+                        "normal": len(snapshot[TokenType.NORMAL.value]),
+                        "super": len(snapshot[TokenType.SUPER.value]),
+                        "cooldown_hours": min_hours
+                    }
+                )
+            else:
+                raise GrokApiException(
+                    f"没有可用Token: {model}",
+                    "NO_AVAILABLE_TOKEN",
+                    {
+                        "model": model,
+                        "normal": len(snapshot[TokenType.NORMAL.value]),
+                        "super": len(snapshot[TokenType.SUPER.value])
+                    }
+                )
 
         if remaining == EXHAUSTED_RECHECK_SENTINEL:
             logger.info(f"[Token] 尝试使用次数耗尽Token进行恢复验证: {model}")
@@ -439,12 +480,32 @@ class GrokTokenManager:
     async def update_limits(self, sso: str, normal: Optional[int] = None, heavy: Optional[int] = None) -> None:
         """更新限制"""
         try:
+            current_time = int(time.time() * 1000)
             for token_type in [TokenType.NORMAL.value, TokenType.SUPER.value]:
                 if sso in self.token_data[token_type]:
+                    data = self.token_data[token_type][sso]
                     if normal is not None:
-                        self.token_data[token_type][sso]["remainingQueries"] = normal
+                        old_value = data.get("remainingQueries", -1)
+                        data["remainingQueries"] = normal
+                        # 如果配额从有变为0，记录耗尽时间
+                        if normal == 0 and old_value != 0:
+                            data["exhaustedAt"] = current_time
+                            logger.info(f"[Token] 记录耗尽时间: {sso[:10]}... (normal)")
+                        # 如果配额恢复（从0变为非0），清除耗尽时间
+                        elif normal > 0 and old_value == 0:
+                            data["exhaustedAt"] = None
+                            logger.info(f"[Token] 配额已恢复: {sso[:10]}... (normal)")
                     if heavy is not None:
-                        self.token_data[token_type][sso]["heavyremainingQueries"] = heavy
+                        old_value = data.get("heavyremainingQueries", -1)
+                        data["heavyremainingQueries"] = heavy
+                        # 如果配额从有变为0，记录耗尽时间
+                        if heavy == 0 and old_value != 0:
+                            data["heavyExhaustedAt"] = current_time
+                            logger.info(f"[Token] 记录耗尽时间: {sso[:10]}... (heavy)")
+                        # 如果配额恢复（从0变为非0），清除耗尽时间
+                        elif heavy > 0 and old_value == 0:
+                            data["heavyExhaustedAt"] = None
+                            logger.info(f"[Token] 配额已恢复: {sso[:10]}... (heavy)")
                     self._mark_dirty()  # 批量保存
                     logger.info(f"[Token] 更新限制: {sso[:10]}...")
                     return
