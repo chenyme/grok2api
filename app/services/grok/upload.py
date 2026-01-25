@@ -133,7 +133,7 @@ class ImageUploadManager:
                                 return file_id, file_uri
                             
                             # 其他错误直接返回
-                            logger.error(f"[Upload] 失败，状态码: {response._status_code}")
+                            logger.error(f"[Upload] 失败，状态码: {response.status_code}")
                             return "", ""
                     
                     # 内层循环正常结束（非break），说明403重试全部失败

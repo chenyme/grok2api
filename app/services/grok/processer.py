@@ -56,6 +56,83 @@ class StreamTimeoutManager:
         return asyncio.get_event_loop().time() - self.start_time
 
 
+class AsyncLineIterator:
+    """异步行迭代器 - 包装同步 iter_lines 并支持心跳"""
+    
+    def __init__(self, response, heartbeat_interval: float = 15.0):
+        self.response = response
+        self.heartbeat_interval = heartbeat_interval
+        self._queue: asyncio.Queue = None
+        self._producer_task = None
+        self._exhausted = False
+        self._loop = None
+    
+    def __aiter__(self):
+        return self
+    
+    async def _start_producer(self):
+        """启动生产者任务"""
+        if self._queue is not None:
+            return
+        
+        self._queue = asyncio.Queue(maxsize=1)
+        self._loop = asyncio.get_running_loop()
+        
+        def producer():
+            """在线程中迭代响应"""
+            try:
+                for line in self.response.iter_lines():
+                    # 使用线程安全的方式放入队列
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._queue.put(("data", line)),
+                        self._loop
+                    )
+                    future.result()  # 等待放入完成
+            except Exception as e:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._queue.put(("error", e)),
+                    self._loop
+                )
+                future.result()
+            finally:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._queue.put(("done", None)),
+                    self._loop
+                )
+                future.result()
+        
+        # 在后台线程中运行生产者
+        self._producer_task = self._loop.run_in_executor(None, producer)
+    
+    async def __anext__(self) -> bytes | None:
+        """异步获取下一行，超时时返回 None 表示需要发送心跳"""
+        if self._exhausted:
+            raise StopAsyncIteration
+        
+        # 确保生产者已启动
+        await self._start_producer()
+        
+        try:
+            # 等待数据，设置超时
+            msg_type, data = await asyncio.wait_for(
+                self._queue.get(),
+                timeout=self.heartbeat_interval
+            )
+            
+            if msg_type == "done":
+                self._exhausted = True
+                raise StopAsyncIteration
+            elif msg_type == "error":
+                self._exhausted = True
+                raise data
+            else:
+                return data
+                
+        except asyncio.TimeoutError:
+            # 超时返回 None，调用方应发送心跳
+            return None
+
+
 class GrokResponseProcessor:
     """Grok响应处理器"""
 
@@ -163,8 +240,12 @@ class GrokResponseProcessor:
             )
             return f"data: {chunk_data.model_dump_json()}\n\n"
 
+        # 心跳间隔（秒）
+        heartbeat_interval = setting.grok_config.get("stream_heartbeat_interval", 15)
+
         try:
-            for chunk in response.iter_lines():
+            async_iter = AsyncLineIterator(response, heartbeat_interval)
+            async for chunk in async_iter:
                 # 超时检查
                 is_timeout, timeout_msg = timeout_mgr.check_timeout()
                 if is_timeout:
@@ -172,6 +253,12 @@ class GrokResponseProcessor:
                     yield make_chunk("", "stop")
                     yield "data: [DONE]\n\n"
                     return
+
+                # chunk 为 None 表示心跳超时，发送 SSE 注释保持连接
+                if chunk is None:
+                    yield ": heartbeat\n\n"
+                    logger.debug("[Processor] 发送心跳")
+                    continue
 
                 logger.debug(f"[Processor] 收到数据块: {len(chunk)} bytes")
                 if not chunk:
