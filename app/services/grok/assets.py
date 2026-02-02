@@ -608,7 +608,11 @@ class DownloadService(BaseService):
                     tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
                     try:
                         async with aiofiles.open(tmp_path, "wb") as f:
-                            if hasattr(response, "aiter_bytes"):
+                            if hasattr(response, "aiter_content"):
+                                async for chunk in response.aiter_content():
+                                    if chunk:
+                                        await f.write(chunk)
+                            elif hasattr(response, "aiter_bytes"):
                                 async for chunk in response.aiter_bytes():
                                     if chunk:
                                         await f.write(chunk)

@@ -18,6 +18,7 @@ import time
 import tomllib
 from typing import Any, Dict, Optional
 from pathlib import Path
+from enum import Enum
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-posix platforms
@@ -436,6 +437,11 @@ class RedisStorage(BaseStorage):
                         t_flat = t.copy()
                         if "tags" in t_flat:
                             t_flat["tags"] = json_dumps(t_flat["tags"])
+                        status = t_flat.get("status")
+                        if isinstance(status, str) and status.startswith("TokenStatus."):
+                            t_flat["status"] = status.split(".", 1)[1].lower()
+                        elif isinstance(status, Enum):
+                            t_flat["status"] = status.value
                         t_flat = {k: str(v) for k, v in t_flat.items() if v is not None}
                         pipe.hset(f"{self.prefix_token_hash}{token_str}", mapping=t_flat)
 
