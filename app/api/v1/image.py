@@ -14,7 +14,6 @@ from app.services.grok.chat import GrokChatService
 from app.services.grok.model import ModelService
 from app.services.grok.processor import ImageStreamProcessor, ImageCollectProcessor
 from app.services.token import get_token_manager
-from app.core.config import get_config
 from app.core.exceptions import ValidationException, AppException, ErrorType
 from app.core.logger import logger
 

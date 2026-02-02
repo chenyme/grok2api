@@ -30,6 +30,7 @@ from app.core.response_middleware import ResponseLoggerMiddleware
 from app.api.v1.chat import router as chat_router
 from app.api.v1.image import router as image_router
 from app.api.v1.files import router as files_router
+from app.api.v1.models import router as models_router
 from app.services.token import get_scheduler
 
 
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     # 注册路由
     app.include_router(chat_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
     app.include_router(image_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
+    app.include_router(models_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
     app.include_router(files_router, prefix="/v1/files")
     
     # 静态文件服务

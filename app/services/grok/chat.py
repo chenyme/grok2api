@@ -4,7 +4,7 @@ Grok Chat 服务
 
 import uuid
 import orjson
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from dataclasses import dataclass
 
 from curl_cffi.requests import AsyncSession
@@ -18,11 +18,11 @@ from app.core.exceptions import (
     ErrorType
 )
 from app.services.grok.statsig import StatsigService
-from app.services.grok.model import ModelService, Cost
+from app.services.grok.model import ModelService
 from app.services.grok.assets import UploadService
 from app.services.grok.processor import StreamProcessor, CollectProcessor
 from app.services.grok.retry import retry_on_status
-from app.services.token import get_token_manager, EffortType
+from app.services.token import get_token_manager
 
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
@@ -64,34 +64,38 @@ class MessageExtractor:
         """
         texts = []
         attachments = []  # 需要上传的附件 (URL 或 base64)
-        
+
+        # 先抽取每条消息的文本，保留角色信息用于合并
+        extracted: List[Dict[str, str]] = []
+
         for msg in messages:
+            role = msg.get("role", "")
             content = msg.get("content", "")
-            
+            parts = []
+
             # 简单字符串内容
             if isinstance(content, str):
                 if content.strip():
-                    texts.append(content)
-                continue
-            
+                    parts.append(content)
+
             # 列表格式内容
-            if isinstance(content, list):
+            elif isinstance(content, list):
                 for item in content:
                     item_type = item.get("type", "")
-                    
+
                     # 文本类型
                     if item_type == "text":
                         text = item.get("text", "")
                         if text.strip():
-                            texts.append(text)
-                    
+                            parts.append(text)
+
                     # 图片类型
                     elif item_type == "image_url":
                         image_data = item.get("image_url", {})
                         url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
                         if url:
                             attachments.append(("image", url))
-                    
+
                     # 音频类型
                     elif item_type == "input_audio":
                         if is_video:
@@ -100,7 +104,7 @@ class MessageExtractor:
                         data = audio_data.get("data", "") if isinstance(audio_data, dict) else str(audio_data)
                         if data:
                             attachments.append(("audio", data))
-                    
+
                     # 文件类型
                     elif item_type == "file":
                         if is_video:
@@ -112,7 +116,25 @@ class MessageExtractor:
                             url = file_data
                         if url:
                             attachments.append(("file", url))
-        
+
+            if parts:
+                extracted.append({"role": role, "text": "\n".join(parts)})
+
+        # 合并文本
+        last_user_index = None
+        for i in range(len(extracted) - 1, -1, -1):
+            if extracted[i]["role"] == "user":
+                last_user_index = i
+                break
+
+        for i, item in enumerate(extracted):
+            role = item["role"] or "user"
+            text = item["text"]
+            if i == last_user_index:
+                texts.append(text)
+            else:
+                texts.append(f"{role}: {text}")
+
         # 换行拼接文本
         message = "\n\n".join(texts)
         return message, attachments
