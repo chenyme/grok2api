@@ -31,6 +31,11 @@ git clone https://github.com/chenyme/grok2api
 docker compose up -d
 ```
 
+### Admin panel
+
+URL: `http://<host>:8000/admin`  
+Default password: `grok2api` (config key `app.app_key`, change it in production).
+
 ### Environment variables
 
 | Variable | Description | Default | Example |
@@ -139,6 +144,10 @@ Note: any other parameters will be discarded and ignored.
 ## Configuration
 
 Config file: `data/config.toml`
+
+> [!NOTE]
+> In production or behind a reverse proxy, make sure `app.app_url` is set to the public URL.
+> Otherwise file links may be incorrect or return 403.
 
 | Module | Field | Key | Description | Default |
 | :--- | :--- | :--- | :--- | :--- |
