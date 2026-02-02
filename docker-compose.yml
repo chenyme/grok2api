@@ -1,25 +1,23 @@
 services:
   grok2api:
+    container_name: grok2api
     image: ghcr.io/chenyme/grok2api:latest
     ports:
       - "8000:8000"
-    volumes:
-      - grok_data:/app/data
-      - ./logs:/app/logs
     environment:
-      # ===== 存储模式 =====
-      # 支持 file, mysql 或 redis
-      - STORAGE_MODE=file
+      TZ: Asia/Shanghai
+      LOG_LEVEL: INFO
+      SERVER_PORT: 8000
+      SERVER_WORKERS: 1
+      SERVER_STORAGE_TYPE: local
+      # SERVER_STORAGE_URL: 
 
-      # ===== 数据库 =====
-      # 仅在STORAGE_MODE=mysql或redis时需要
-      # - DATABASE_URL=mysql://user:password@host:3306/grok2api
-      # MySQL格式: mysql://user:password@host:port/database
-      # Redis格式: redis://host:port/db 或 redis://user:password@host:port/db
-
-      # ===== Worker数量 =====
-      # 默认1，建议：CPU核心数 * 2，多进程模式下建议使用MySQL/Redis存储
-      - WORKERS=1
-
-volumes:
-  grok_data:
+      # SERVER_STORAGE_TYPE: (local, redis, mysql, pgsql) default: local
+      # SERVER_STORAGE_URL: (local mode is empty) default: empty
+      #   Redis: redis://localhost:6379/0 or redis://:password@localhost:6379/0
+      #   MySQL: mysql+aiomysql://user:pass@localhost/db
+      #   PgSQL: postgresql+asyncpg://user:pass@localhost/db
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped

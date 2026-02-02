@@ -1,58 +1,81 @@
-"""认证模块 - API令牌验证"""
-
+"""
+API 认证模块
+"""
 from typing import Optional
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from app.core.config import setting
-from app.core.logger import logger
+from app.core.config import get_config
+
+# 定义 Bearer Scheme
+security = HTTPBearer(
+    auto_error=False,
+    scheme_name="API Key",
+    description="Enter your API Key in the format: Bearer <key>"
+)
 
 
-# Bearer安全方案
-security = HTTPBearer(auto_error=False)
+async def verify_api_key(
+    auth: Optional[HTTPAuthorizationCredentials] = Security(security)
+) -> Optional[str]:
+    """
+    验证 Bearer Token
+    
+    如果 config.toml 中未配置 api_key，则跳过验证。
+    如果配置了 api_key，则必须提供正确的 Authorization: Bearer <key>。
+    """
+    api_key = get_config("app.api_key", "")
+    
+    # 如果未配置 API Key，直接放行
+    if not api_key:
+        return None
+        
+    if not auth:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    if auth.credentials != api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    return auth.credentials
 
 
-def _build_error(message: str, code: str = "invalid_token") -> dict:
-    """构建认证错误"""
-    return {
-        "error": {
-            "message": message,
-            "type": "authentication_error",
-            "code": code
-        }
-    }
+async def verify_app_key(
+    auth: Optional[HTTPAuthorizationCredentials] = Security(security)
+) -> Optional[str]:
+    """
+    验证后台登录密钥（app_key）。
+    
+    如果未配置 app_key，则跳过验证。
+    """
+    app_key = get_config("app.app_key", "")
 
+    if not app_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="App key is not configured",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-class AuthManager:
-    """认证管理器 - 验证API令牌"""
+    if not auth:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    @staticmethod
-    def verify(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[str]:
-        """验证令牌"""
-        api_key = setting.grok_config.get("api_key")
+    if auth.credentials != app_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-        # 未设置时跳过
-        if not api_key:
-            logger.debug("[Auth] 未设置API_KEY，跳过验证")
-            return credentials.credentials if credentials else None
-
-        # 检查令牌
-        if not credentials:
-            raise HTTPException(
-                status_code=401,
-                detail=_build_error("缺少认证令牌", "missing_token")
-            )
-
-        # 验证令牌
-        if credentials.credentials != api_key:
-            raise HTTPException(
-                status_code=401,
-                detail=_build_error(f"令牌无效，长度: {len(credentials.credentials)}", "invalid_token")
-            )
-
-        logger.debug("[Auth] 令牌认证成功")
-        return credentials.credentials
-
-
-# 全局实例
-auth_manager = AuthManager()
+    return auth.credentials

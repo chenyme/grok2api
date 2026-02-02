@@ -1,140 +1,16 @@
-# Python 运行时和缓存文件
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
+__pycache__
+*.pyc
+*.pyo
+*.pyd
 .Python
-*.egg-info/
-dist/
-build/
-*.egg
-.eggs/
-pip-log.txt
-pip-delete-this-directory.txt
-
-# 虚拟环境
-venv/
-env/
-ENV/
-.venv/
-.virtualenv/
-pipenv/
-poetry.lock
-Pipfile.lock
-
-# IDE 和编辑器
-.vscode/
-.idea/
-*.swp
-*.swo
-*.swn
-.DS_Store
-*~
-.project
-.classpath
-.settings/
-*.sublime-project
-*.sublime-workspace
-
-# Git
-.git/
-.gitignore
-.gitattributes
-.gitmodules
-
-# Docker 相关
-Dockerfile*
-docker-compose*.yml
-.dockerignore
-.docker/
-
-# 文档和说明
-*.md
-!data/*.md
-README.md
-docs/
-LICENSE
-CHANGELOG*
-CONTRIBUTING*
-
-# 测试和质量检查
-tests/
-test/
-*.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
-.hypothesis/
-.pytype/
-coverage.xml
-*.cover
-.cache/
-nosetests.xml
-
-# 日志和运行时数据
-logs/
-*.log
-*.log.*
-
-# 数据临时文件
-data/temp/
-data/token.json
-
-# 数据库文件
-*.db
-*.sqlite
-*.sqlite3
-
-# 临时文件
-tmp/
-temp/
-*.tmp
-*.temp
-*.bak
-*.orig
-*.rej
-*.swp
-
-# CI/CD
-.github/
-.gitlab-ci.yml
-.travis.yml
-.circleci/
-azure-pipelines.yml
-.jenkins/
-Jenkinsfile
-
-# 环境变量和密钥
 .env
 .env.*
-*.key
-*.pem
-*.crt
-secrets/
-
-# 媒体和大文件
-*.mp4
-*.avi
-*.mov
-*.zip
-*.tar
-*.tar.gz
-*.rar
-
-# Node.js
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-package-lock.json
-yarn.lock
-
-# 其他
-*.pyc
-.Python
-.sass-cache/
-.ipynb_checkpoints/
+.git
+.gitignore
+.logs
+logs
+/data
+/data/*
+/data/tmp
+/data/tmp/*
+/tests
