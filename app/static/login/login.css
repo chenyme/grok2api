@@ -1,0 +1,99 @@
+/* Login page styles */
+
+.login-body {
+  min-height: 100vh;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.login-bg {
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(600px 280px at 20% 20%, rgba(0, 0, 0, 0.06), transparent 60%),
+    radial-gradient(500px 260px at 80% 80%, rgba(0, 0, 0, 0.04), transparent 55%),
+    linear-gradient(180deg, #fafafa, #f6f6f6);
+  z-index: 0;
+}
+
+.login-shell {
+  position: relative;
+  z-index: 1;
+  width: min(420px, 92vw);
+  padding: 24px;
+}
+
+.login-card {
+  background: #fff;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.08);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.login-card:hover {
+  border-color: #000;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.12);
+}
+
+.login-brand {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accents-4);
+  font-weight: 600;
+}
+
+.login-brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.login-brand-link:hover {
+  color: var(--fg);
+}
+
+.login-github-icon {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.login-title {
+  margin-top: 6px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accents-7);
+}
+
+.login-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--accents-4);
+}
+
+.login-form {
+  margin-top: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.login-input {
+  height: 32px;
+  font-size: 12px;
+}
+
+.login-button {
+  height: 32px;
+  font-size: 12px;
+  justify-content: center;
+}

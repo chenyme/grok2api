@@ -1,0 +1,286 @@
+:root {
+  --bg: #fafafa;
+  --fg: #000;
+  --accents-1: #eaeaea;
+  --accents-2: #999;
+  --accents-3: #888;
+  --accents-4: #666;
+  --accents-5: #444;
+  --accents-6: #333;
+  --accents-7: #111;
+  --border: #eaeaea;
+  --success: #0070f3;
+  --error: #e00;
+  --warning: #f5a623;
+  --radius: 6px;
+}
+
+body {
+  font-family: 'Geist Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app-header {
+  height: 56px;
+}
+
+.font-mono {
+  font-family: 'Geist Mono', monospace;
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-out forwards;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in-centered {
+  animation: fadeInCentered 0.5s ease-out forwards;
+}
+
+@keyframes fadeInCentered {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.geist-input {
+  width: 100%;
+  font-size: 0.8125rem;
+  border-radius: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  outline: none;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+  background: #fff;
+  border: 1px solid #e6e6e6;
+  color: var(--accents-7);
+}
+
+.geist-input:focus {
+  border-color: #bdbdbd;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.03);
+}
+
+.geist-input:disabled {
+  background: #f5f5f5;
+  color: var(--accents-4);
+  cursor: not-allowed;
+}
+
+.geist-input::placeholder {
+  color: var(--accents-3);
+}
+
+.geist-button {
+  height: 32px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  background-color: #000;
+  color: #fff;
+  border-radius: 0.5rem;
+  padding: 0 1rem;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.geist-button:hover {
+  opacity: 0.9;
+}
+
+.geist-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.geist-button-outline {
+  height: 32px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  background-color: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0 1rem;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.geist-button-outline:hover {
+  border-color: #000;
+}
+
+.geist-button-outline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.geist-button-danger {
+  height: 32px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  background-color: #e00;
+  color: #fff;
+  border-radius: 0.5rem;
+  padding: 0 1rem;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.geist-button-danger:hover {
+  opacity: 0.9;
+}
+
+.geist-button-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.nav-link {
+  color: var(--accents-4);
+  transition: color 0.15s;
+}
+
+.nav-link:hover {
+  color: var(--fg);
+}
+
+.nav-link.active {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--accents-5);
+  background: #f7f7f7;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-action-btn {
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accents-5);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.nav-action-btn:hover {
+  border-color: #000;
+  color: #000;
+}
+
+.nav-action-btn.storage-ready {
+  background: #ecfdf3;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+
+.brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.github-icon {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.app-footer {
+  position: fixed;
+  right: 16px;
+  left: auto;
+  bottom: 12px;
+  color: var(--accents-4);
+  font-size: 12px;
+  background: transparent;
+  text-align: right;
+  z-index: 10;
+}
+
+.app-footer a {
+  color: inherit;
+  transition: color 0.15s;
+}
+
+.app-footer a:hover {
+  color: var(--fg);
+}
+
+.stat-card {
+  background: #fff;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 14px 18px;
+  box-shadow: none;
+  transition: all 0.2s;
+}
+
+.stat-card:hover {
+  border-color: #000;
+  box-shadow: none;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--accents-4);
+  margin-top: 2px;
+}
