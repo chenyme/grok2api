@@ -2,10 +2,46 @@
 配置管理
 
 - config.toml: 运行时配置
+- config.defaults.toml: 默认配置基线
 """
 
-from typing import Any
-from app.core.storage import get_storage
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, Dict
+import tomllib
+
+from app.core.logger import logger
+
+DEFAULT_CONFIG_FILE = Path(__file__).parent.parent.parent / "config.defaults.toml"
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """深度合并字典: override 覆盖 base."""
+    if not isinstance(base, dict):
+        return deepcopy(override) if isinstance(override, dict) else deepcopy(base)
+
+    result = deepcopy(base)
+    if not isinstance(override, dict):
+        return result
+
+    for key, val in override.items():
+        if isinstance(val, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
+
+
+def _load_defaults() -> Dict[str, Any]:
+    """加载默认配置文件"""
+    if not DEFAULT_CONFIG_FILE.exists():
+        return {}
+    try:
+        with DEFAULT_CONFIG_FILE.open("rb") as f:
+            return tomllib.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load defaults from {DEFAULT_CONFIG_FILE}: {e}")
+        return {}
 
 
 class Config:
@@ -16,32 +52,53 @@ class Config:
     
     def __init__(self):
         self._config = {}
+        self._defaults = {}
+        self._defaults_loaded = False
+
+    def _ensure_defaults(self):
+        if self._defaults_loaded:
+            return
+        self._defaults = _load_defaults()
+        self._defaults_loaded = True
 
     async def load(self):
         """显式加载配置"""
         try:
             from app.core.storage import get_storage, LocalStorage
-            import asyncio
             
+            self._ensure_defaults()
+
             storage = get_storage()
             config_data = await storage.load_config()
+            from_remote = True
             
             # 从本地 data/config.toml 初始化后端
             if config_data is None:
                 local_storage = LocalStorage()
+                from_remote = False
                 try:
                     # 尝试读取本地配置
                     config_data = await local_storage.load_config()
-                    # 初始化后端
-                    await storage.save_config(config_data)
-                    logger.info(f"Initialized remote storage ({storage.__class__.__name__}) with local config.")
                 except Exception as e:
                     logger.info(f"Failed to auto-init config from local: {e}")
                     config_data = {}
-            
-            self._config = config_data or {}
+
+            config_data = config_data or {}
+            merged = _deep_merge(self._defaults, config_data)
+
+            # 自动回填缺失配置到存储
+            should_persist = (not from_remote) or (merged != config_data)
+            if should_persist:
+                async with storage.acquire_lock("config_save", timeout=10):
+                    await storage.save_config(merged)
+                if not from_remote:
+                    logger.info(
+                        f"Initialized remote storage ({storage.__class__.__name__}) with config baseline."
+                    )
+
+            self._config = merged
         except Exception as e:
-            print(f"Error loading config: {e}")
+            logger.error(f"Error loading config: {e}")
             self._config = {}
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -66,8 +123,11 @@ class Config:
         from app.core.storage import get_storage
         storage = get_storage()
         async with storage.acquire_lock("config_save", timeout=10):
-            await storage.save_config(new_config)
-            await self.load()
+            self._ensure_defaults()
+            base = _deep_merge(self._defaults, self._config or {})
+            merged = _deep_merge(base, new_config or {})
+            await storage.save_config(merged)
+            self._config = merged
 
 
 # 全局配置实例

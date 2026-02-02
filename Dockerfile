@@ -20,6 +20,7 @@ COPY pyproject.toml uv.lock /app/
 
 RUN uv sync --frozen --no-dev --no-install-project --active
 
+COPY config.defaults.toml /app/config.defaults.toml
 COPY app /app/app
 COPY main.py /app/main.py
 COPY scripts /app/scripts

@@ -31,6 +31,17 @@ git clone https://github.com/chenyme/grok2api
 docker compose up -d
 ```
 
+### Environment variables
+
+| Variable | Description | Default | Example |
+| :--- | :--- | :--- | :--- |
+| `LOG_LEVEL` | Log level | `INFO` | `DEBUG` |
+| `SERVER_HOST` | Bind address | `0.0.0.0` | `0.0.0.0` |
+| `SERVER_PORT` | Service port | `8000` | `8000` |
+| `SERVER_WORKERS` | Uvicorn worker count | `1` | `2` |
+| `SERVER_STORAGE_TYPE` | Storage type (`local`/`redis`/`mysql`/`pgsql`) | `local` | `pgsql` |
+| `SERVER_STORAGE_URL` | Storage URL (empty for local) | `""` | `postgresql+asyncpg://user:password@host:5432/db` |
+
 ### Usage limits
 
 - Basic account: 80 requests / 20h

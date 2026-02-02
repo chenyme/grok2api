@@ -1,13 +1,22 @@
 services:
   grok2api:
-    build: .
     container_name: grok2api
+    image: ghcr.io/chenyme/grok2api:latest
     ports:
       - "8000:8000"
     environment:
       TZ: Asia/Shanghai
-      SERVER_HOST: 0.0.0.0
+      LOG_LEVEL: INFO
       SERVER_PORT: 8000
+      SERVER_WORKERS: 1
+      SERVER_STORAGE_TYPE: local
+      # SERVER_STORAGE_URL: 
+
+      # SERVER_STORAGE_TYPE: (local, redis, mysql, pgsql) default: local
+      # SERVER_STORAGE_URL: (local mode is empty) default: empty
+      #   Redis: redis://localhost:6379/0 or redis://:password@localhost:6379/0
+      #   MySQL: mysql+aiomysql://user:pass@localhost/db
+      #   PgSQL: postgresql+asyncpg://user:pass@localhost/db
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

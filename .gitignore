@@ -47,6 +47,7 @@ logs/
 # Data
 data/*.json
 data/tmp/
+data/.locks/
 
 # Testing
 .pytest_cache/
