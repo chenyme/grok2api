@@ -7,6 +7,7 @@ let batchQueue = [];
 let batchTotal = 0;
 let batchProcessed = 0;
 let currentBatchAction = null;
+let currentFilter = 'all';
 const BATCH_SIZE = 50;
 
 async function init() {
@@ -46,14 +47,15 @@ function processTokens(data) {
       tokens.forEach(t => {
         // Normalize
         const tObj = typeof t === 'string'
-          ? { token: t, status: 'active', quota: 0, note: '', use_count: 0 }
+          ? { token: t, status: 'active', quota: 0, note: '', use_count: 0, tags: [] }
           : {
             token: t.token,
             status: t.status || 'active',
             quota: t.quota || 0,
             note: t.note || '',
             fail_count: t.fail_count || 0,
-            use_count: t.use_count || 0
+            use_count: t.use_count || 0,
+            tags: t.tags || []
           };
         flatTokens.push({ ...tObj, pool: pool, _selected: false });
       });
@@ -107,19 +109,27 @@ function renderTable() {
   tbody.innerHTML = '';
   loading.classList.add('hidden');
 
-  if (flatTokens.length === 0) {
+  // 更新 Tab 计数
+  updateTabCounts();
+
+  // 获取筛选后的列表
+  const filteredTokens = getFilteredTokens();
+
+  if (filteredTokens.length === 0) {
     emptyState.classList.remove('hidden');
     return;
   }
   emptyState.classList.add('hidden');
 
-  flatTokens.forEach((item, index) => {
+  filteredTokens.forEach((item) => {
+    // 获取原始索引用于操作
+    const originalIndex = flatTokens.indexOf(item);
     const tr = document.createElement('tr');
 
     // Checkbox (Center)
     const tdCheck = document.createElement('td');
     tdCheck.className = 'text-center';
-    tdCheck.innerHTML = `<input type="checkbox" class="checkbox" ${item._selected ? 'checked' : ''} onchange="toggleSelect(${index})">`;
+    tdCheck.innerHTML = `<input type="checkbox" class="checkbox" ${item._selected ? 'checked' : ''} onchange="toggleSelect(${originalIndex})">`;
 
     // Token (Left)
     const tdToken = document.createElement('td');
@@ -141,14 +151,18 @@ function renderTable() {
     tdType.className = 'text-center';
     tdType.innerHTML = `<span class="badge badge-gray">${escapeHtml(item.pool)}</span>`;
 
-    // Status (Center)
+    // Status (Center) - 显示状态和 nsfw 标签
     const tdStatus = document.createElement('td');
     let statusClass = 'badge-gray';
     if (item.status === 'active') statusClass = 'badge-green';
     else if (item.status === 'cooling') statusClass = 'badge-orange';
     else statusClass = 'badge-red';
     tdStatus.className = 'text-center';
-    tdStatus.innerHTML = `<span class="badge ${statusClass}">${item.status}</span>`;
+    let statusHtml = `<span class="badge ${statusClass}">${item.status}</span>`;
+    if (item.tags && item.tags.includes('nsfw')) {
+      statusHtml += ` <span class="badge badge-purple">nsfw</span>`;
+    }
+    tdStatus.innerHTML = statusHtml;
 
     // Quota (Center)
     const tdQuota = document.createElement('td');
@@ -168,10 +182,10 @@ function renderTable() {
                      <button onclick="refreshStatus('${item.token}')" class="p-1 text-gray-400 hover:text-black rounded" title="刷新状态">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                      </button>
-                     <button onclick="openEditModal(${index})" class="p-1 text-gray-400 hover:text-black rounded" title="编辑">
+                     <button onclick="openEditModal(${originalIndex})" class="p-1 text-gray-400 hover:text-black rounded" title="编辑">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
                      </button>
-                     <button onclick="deleteToken(${index})" class="p-1 text-gray-400 hover:text-red-600 rounded" title="删除">
+                     <button onclick="deleteToken(${originalIndex})" class="p-1 text-gray-400 hover:text-red-600 rounded" title="删除">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                      </button>
                 </div>
@@ -195,7 +209,8 @@ function renderTable() {
 function toggleSelectAll() {
   const checkbox = document.getElementById('select-all');
   const checked = checkbox.checked;
-  flatTokens.forEach(t => t._selected = checked);
+  // 只选择当前筛选后可见的 Token
+  getFilteredTokens().forEach(t => t._selected = checked);
   renderTable();
 }
 
@@ -732,6 +747,112 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+// ========== Tab 筛选功能 ==========
+
+function filterByStatus(status) {
+  currentFilter = status;
+
+  // 更新 Tab 样式和 ARIA
+  document.querySelectorAll('.tab-item').forEach(tab => {
+    const isActive = tab.dataset.filter === status;
+    tab.classList.toggle('active', isActive);
+    tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+
+  renderTable();
+}
+
+function getFilteredTokens() {
+  if (currentFilter === 'all') return flatTokens;
+
+  return flatTokens.filter(t => {
+    if (currentFilter === 'active') return t.status === 'active';
+    if (currentFilter === 'cooling') return t.status === 'cooling';
+    if (currentFilter === 'expired') return t.status !== 'active' && t.status !== 'cooling';
+    if (currentFilter === 'nsfw') return t.tags && t.tags.includes('nsfw');
+    if (currentFilter === 'no-nsfw') return !t.tags || !t.tags.includes('nsfw');
+    return true;
+  });
+}
+
+function updateTabCounts() {
+  const counts = {
+    all: flatTokens.length,
+    active: flatTokens.filter(t => t.status === 'active').length,
+    cooling: flatTokens.filter(t => t.status === 'cooling').length,
+    expired: flatTokens.filter(t => t.status !== 'active' && t.status !== 'cooling').length,
+    nsfw: flatTokens.filter(t => t.tags && t.tags.includes('nsfw')).length,
+    'no-nsfw': flatTokens.filter(t => !t.tags || !t.tags.includes('nsfw')).length
+  };
+
+  Object.entries(counts).forEach(([key, count]) => {
+    const el = document.getElementById(`tab-count-${key}`);
+    if (el) el.textContent = count;
+  });
+}
+
+// ========== NSFW 批量开启 ==========
+
+async function batchEnableNSFW() {
+  if (isBatchProcessing) {
+    showToast('当前有任务进行中', 'info');
+    return;
+  }
+
+  const selected = flatTokens.filter(t => t._selected);
+  const targetCount = selected.length || flatTokens.length;
+  const msg = selected.length === 0
+    ? `是否对全部 ${targetCount} 个 Token 开启 NSFW 模式？`
+    : `是否为选中的 ${selected.length} 个 Token 开启 NSFW 模式？`;
+
+  const ok = await confirmAction(msg, { okText: '开启 NSFW' });
+  if (!ok) return;
+
+  // 禁用按钮
+  const btn = document.getElementById('btn-batch-nsfw');
+  if (btn) btn.disabled = true;
+
+  isBatchProcessing = true;
+  currentBatchAction = 'nsfw';
+  updateBatchProgress();
+
+  try {
+    const tokens = selected.length > 0 ? selected.map(t => t.token) : null;
+
+    const res = await fetch('/api/v1/admin/tokens/nsfw/enable', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildAuthHeaders(apiKey)
+      },
+      body: JSON.stringify({ tokens })
+    });
+
+    const data = await res.json();
+
+    if (res.ok && data.status === 'success') {
+      const { ok: okCount, fail } = data.summary;
+      let msg = `NSFW 开启完成：成功 ${okCount}，失败 ${fail}`;
+      if (data.warning) {
+        msg += `\n⚠️ ${data.warning}`;
+      }
+      showToast(msg, fail > 0 || data.warning ? 'warning' : 'success');
+      // 刷新数据以显示新的 nsfw 标签
+      loadData();
+    } else {
+      showToast('开启失败: ' + (data.detail || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('请求错误: ' + e.message, 'error');
+  } finally {
+    isBatchProcessing = false;
+    currentBatchAction = null;
+    if (btn) btn.disabled = false;
+    updateBatchProgress();
+    setActionButtonsState();
+  }
 }
 
 

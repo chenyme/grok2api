@@ -33,8 +33,16 @@ docker compose up -d
 
 ### 管理面板
 
-访问地址：`http://<host>:8000/admin`  
+访问地址：`http://<host>:8000/admin`
 默认登录密码：`grok2api`（对应配置项 `app.app_key`，建议修改）。
+
+**功能说明**：
+- **Token 管理**：导入/添加/删除 Token，查看状态和配额
+- **状态筛选**：按状态（正常/限流/失效）或 NSFW 状态筛选
+- **批量操作**：批量刷新、导出、删除、开启 NSFW
+- **NSFW 开启**：一键为 Token 开启 Unhinged 模式（需代理或 cf_clearance）
+- **配置管理**：在线修改系统配置
+- **缓存管理**：查看和清理媒体缓存
 
 ### 环境变量
 
@@ -94,15 +102,30 @@ curl http://localhost:8000/v1/chat/completions \
 
 | 字段                 | 类型    | 说明                           | 可用参数                                           |
 | :------------------- | :------ | :----------------------------- | :------------------------------------------------- |
-| `model`            | string  | 模型名称                       | -                                                  |
-| `messages`         | array   | 消息列表                       | `developer`, `system`, `user`, `assistant` |
-| `stream`           | boolean | 是否开启流式输出               | `true`, `false`                                |
-| `thinking`         | string  | 思维链模式                     | `enabled`, `disabled`, `null`                |
-| `video_config`     | object  | **视频模型专用配置对象** | -                                                  |
-| └─`aspect_ratio` | string  | 视频宽高比                     | `16:9`, `9:16`, `1:1`, `2:3`, `3:2`      |
-| └─`video_length` | integer | 视频时长 (秒)                  | `5` - `15`                                     |
-| └─`resolution`   | string  | 分辨率                         | `SD`, `HD`                                     |
-| └─`preset`       | string  | 风格预设                       | `fun`, `normal`, `spicy`                     |
+| `model`              | string  | 模型名称                       | 见上方模型列表                                     |
+| `messages`           | array   | 消息列表                       | 见下方消息格式                                     |
+| `stream`             | boolean | 是否开启流式输出               | `true`, `false`                                    |
+| `thinking`           | string  | 思维链模式                     | `enabled`, `disabled`, `null`                      |
+| `video_config`       | object  | **视频模型专用配置对象**       | -                                                  |
+| └─`aspect_ratio`     | string  | 视频宽高比                     | `16:9`, `9:16`, `1:1`, `2:3`, `3:2`                |
+| └─`video_length`     | integer | 视频时长 (秒)                  | `5` - `15`                                         |
+| └─`resolution`       | string  | 分辨率                         | `SD`, `HD`                                         |
+| └─`preset`           | string  | 风格预设                       | `fun`, `normal`, `spicy`, `custom`                 |
+
+**消息格式 (messages)**：
+
+| 字段      | 类型          | 说明                                                         |
+| :-------- | :------------ | :----------------------------------------------------------- |
+| `role`    | string        | 角色：`developer`, `system`, `user`, `assistant`             |
+| `content` | string/array  | 消息内容，支持纯文本或多模态数组                             |
+
+**多模态内容块类型 (content array)**：
+
+| type        | 说明       | 示例                                                                 |
+| :---------- | :--------- | :------------------------------------------------------------------- |
+| `text`      | 文本内容   | `{"type": "text", "text": "描述这张图片"}`                           |
+| `image_url` | 图片 URL   | `{"type": "image_url", "image_url": {"url": "https://..."}}`         |
+| `file`      | 文件       | `{"type": "file", "file": {"url": "https://..."}}`                   |
 
 注：除上述外的其他参数将自动丢弃并忽略
 
@@ -130,14 +153,18 @@ curl http://localhost:8000/v1/images/generations \
 
 <br>
 
-| 字段       | 类型    | 说明             | 可用参数                                     |
-| :--------- | :------ | :--------------- | :------------------------------------------- |
-| `model`  | string  | 图像模型名       | `grok-imagine-1.0`                         |
-| `prompt` | string  | 图像描述提示词   | -                                            |
-| `n`      | integer | 生成数量         | `1` - `10` (流式模式仅限 `1` 或 `2`) |
-| `stream` | boolean | 是否开启流式输出 | `true`, `false`                          |
+| 字段              | 类型    | 说明             | 可用参数                                     |
+| :---------------- | :------ | :--------------- | :------------------------------------------- |
+| `model`           | string  | 图像模型名       | `grok-imagine-1.0`                           |
+| `prompt`          | string  | 图像描述提示词   | -                                            |
+| `n`               | integer | 生成数量         | `1` - `10` (流式模式仅限 `1` 或 `2`)         |
+| `stream`          | boolean | 是否开启流式输出 | `true`, `false`                              |
+| `size`            | string  | 图片尺寸         | `1024x1024` (暂不支持自定义)                 |
+| `quality`         | string  | 图片质量         | `standard` (暂不支持自定义)                  |
+| `response_format` | string  | 响应格式         | `url`, `b64_json`                            |
+| `style`           | string  | 风格             | - (暂不支持)                                 |
 
-注：除上述外的其他参数将自动丢弃并忽略
+注：`size`、`quality`、`style` 参数为 OpenAI 兼容保留，当前版本暂不支持自定义
 
 <br>
 
@@ -183,6 +210,9 @@ curl http://localhost:8000/v1/images/generations \
 |                       | `usage_max_concurrent`     | 用量并发上限 | 用量查询请求的并发上限。推荐 25。                    | `25`                                                    |
 |                       | `assets_delete_batch_size` | 资产清理批量 | 在线资产删除单批并发数量。推荐 10。                  | `10`                                                    |
 |                       | `admin_assets_batch_size`  | 管理端批量   | 管理端在线资产统计/清理批量并发数量。推荐 10。       | `10`                                                    |
+|                       | `nsfw_max_concurrent`      | NSFW 并发上限 | 批量开启 NSFW 模式的并发请求数。推荐 10。           | `10`                                                    |
+|                       | `admin_nsfw_batch_size`    | NSFW 批量大小 | 管理端批量开启 NSFW 的单批处理数量。推荐 50。       | `50`                                                    |
+|                       | `nsfw_max_tokens`          | NSFW 最大数量 | 单次批量开启 NSFW 的 Token 数量上限。推荐 1000。    | `1000`                                                  |
 
 <br>
 

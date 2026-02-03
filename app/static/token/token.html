@@ -89,6 +89,36 @@
         </div>
       </div>
 
+      <!-- Tab Filter (with ARIA) -->
+      <div class="flex items-center gap-4 mb-4 border-b border-[var(--border)] overflow-x-auto hide-scrollbar"
+           role="tablist" aria-label="Token 状态筛选" id="status-tabs">
+        <button class="tab-item active" role="tab" aria-selected="true"
+                data-filter="all" onclick="filterByStatus('all')">
+          全部 <span class="badge" id="tab-count-all">0</span>
+        </button>
+        <button class="tab-item" role="tab" aria-selected="false"
+                data-filter="active" onclick="filterByStatus('active')">
+          正常 <span class="badge badge-green" id="tab-count-active">0</span>
+        </button>
+        <button class="tab-item" role="tab" aria-selected="false"
+                data-filter="cooling" onclick="filterByStatus('cooling')">
+          限流 <span class="badge badge-orange" id="tab-count-cooling">0</span>
+        </button>
+        <button class="tab-item" role="tab" aria-selected="false"
+                data-filter="expired" onclick="filterByStatus('expired')">
+          失效 <span class="badge badge-red" id="tab-count-expired">0</span>
+        </button>
+        <span class="tab-sep"></span>
+        <button class="tab-item" role="tab" aria-selected="false"
+                data-filter="nsfw" onclick="filterByStatus('nsfw')">
+          已开 NSFW <span class="badge badge-purple" id="tab-count-nsfw">0</span>
+        </button>
+        <button class="tab-item" role="tab" aria-selected="false"
+                data-filter="no-nsfw" onclick="filterByStatus('no-nsfw')">
+          未开 NSFW <span class="badge badge-gray" id="tab-count-no-nsfw">0</span>
+        </button>
+      </div>
+
       <!-- Token Table -->
       <div class="rounded-lg overflow-hidden bg-white mb-4 overflow-x-auto">
         <table class="geist-table min-w-[800px]">
@@ -136,6 +166,10 @@
       <button id="btn-batch-update" onclick="batchUpdate()"
         class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center">
         刷新
+      </button>
+      <button id="btn-batch-nsfw" onclick="batchEnableNSFW()"
+        class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center">
+        NSFW
       </button>
       <button id="btn-batch-delete" onclick="batchDelete()" class="geist-button-danger text-xs px-3">
         删除

@@ -99,6 +99,11 @@
       color: #dc2626;
     }
 
+    .badge-purple {
+      background: #f3e8ff;
+      color: #9333ea;
+    }
+
     .checkbox {
       width: 12px;
       height: 12px;
@@ -277,4 +282,50 @@
 
     .confirm-dialog .modal-content {
       padding: 0;
+    }
+
+    /* Tab Styles (Geist Design System) */
+    .tab-item {
+      position: relative;
+      padding: 12px 0;
+      margin-right: 20px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--accents-5);
+      background: transparent;
+      border: none;
+      box-shadow: inset 0 -2px 0 0 transparent;
+      cursor: pointer;
+      transition: color 0.15s ease, box-shadow 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .tab-item:hover {
+      color: var(--geist-foreground, #000);
+    }
+
+    .tab-item.active {
+      color: var(--geist-foreground, #000);
+      box-shadow: inset 0 -2px 0 0 var(--geist-foreground, #000);
+    }
+
+    .tab-item:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    /* Hide scrollbar for tabs on mobile */
+    .hide-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+    .hide-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+
+    .tab-sep {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+      margin: 0 8px;
     }

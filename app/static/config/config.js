@@ -12,7 +12,10 @@ const NUMERIC_FIELDS = new Set([
   'usage_max_concurrent',
   'assets_delete_batch_size',
   'admin_assets_batch_size',
-  'reload_interval_sec'
+  'reload_interval_sec',
+  'nsfw_max_concurrent',
+  'admin_nsfw_batch_size',
+  'nsfw_max_tokens'
 ]);
 
 const LOCALE_MAP = {
@@ -57,7 +60,10 @@ const LOCALE_MAP = {
     "media_max_concurrent": { title: "媒体并发上限", desc: "视频/媒体生成请求的并发上限。推荐 50。" },
     "usage_max_concurrent": { title: "用量并发上限", desc: "用量查询请求的并发上限。推荐 25。" },
     "assets_delete_batch_size": { title: "资产清理批量", desc: "在线资产删除单批并发数量。推荐 10。" },
-    "admin_assets_batch_size": { title: "管理端批量", desc: "管理端在线资产统计/清理批量并发数量。推荐 10。" }
+    "admin_assets_batch_size": { title: "管理端批量", desc: "管理端在线资产统计/清理批量并发数量。推荐 10。" },
+    "nsfw_max_concurrent": { title: "NSFW 并发上限", desc: "批量开启 NSFW 模式的并发请求数。推荐 10。" },
+    "admin_nsfw_batch_size": { title: "NSFW 批量大小", desc: "管理端批量开启 NSFW 的单批处理数量。推荐 50。" },
+    "nsfw_max_tokens": { title: "NSFW 最大数量", desc: "单次批量开启 NSFW 的 Token 数量上限，防止误操作。推荐 1000。" }
   }
 };
 
