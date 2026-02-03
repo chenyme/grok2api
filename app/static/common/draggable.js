@@ -1,5 +1,5 @@
 
-// Draggable Batch Actions
+// Draggable Batch Actions (Pointer Events for mouse + touch support)
 const batchActions = document.getElementById('batch-actions');
 if (!batchActions) {
   // No toolbar on this page
@@ -7,11 +7,16 @@ if (!batchActions) {
 let isDragging = false;
 let startX, startY, initialLeft, initialTop;
 
-batchActions.addEventListener('mousedown', (e) => {
+// Critical for mobile: prevents browser from interpreting drag as scroll
+batchActions.style.touchAction = 'none';
+
+batchActions.addEventListener('pointerdown', (e) => {
   // Prevent dragging if clicking buttons
   if (e.target.tagName.toLowerCase() === 'button' || e.target.closest('button')) return;
 
+  e.preventDefault(); // Prevent text selection and implicit browser behaviors
   isDragging = true;
+  batchActions.setPointerCapture(e.pointerId); // Track pointer even if it leaves the element
   startX = e.clientX;
   startY = e.clientY;
 
@@ -33,7 +38,7 @@ batchActions.addEventListener('mousedown', (e) => {
   batchActions.classList.add('shadow-xl');
 });
 
-document.addEventListener('mousemove', (e) => {
+document.addEventListener('pointermove', (e) => {
   if (!isDragging) return;
 
   const dx = e.clientX - startX;
@@ -43,9 +48,10 @@ document.addEventListener('mousemove', (e) => {
   batchActions.style.top = `${initialTop + dy}px`;
 });
 
-document.addEventListener('mouseup', () => {
+document.addEventListener('pointerup', (e) => {
   if (isDragging) {
     isDragging = false;
+    batchActions.releasePointerCapture(e.pointerId);
     batchActions.classList.remove('shadow-xl');
   }
 });
