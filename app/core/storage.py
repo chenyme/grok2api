@@ -691,6 +691,24 @@ class SQLStorage(BaseStorage):
 class StorageFactory:
     """存储后端工厂"""
     _instance: Optional[BaseStorage] = None
+
+    @staticmethod
+    def _normalize_sql_url(storage_type: str, url: str) -> str:
+        if not url or "://" not in url:
+            return url
+        if storage_type == "mysql":
+            if url.startswith("mysql://"):
+                return f"mysql+aiomysql://{url[len('mysql://'):]}"
+            if url.startswith("mariadb://"):
+                return f"mariadb+aiomysql://{url[len('mariadb://'):]}"
+        if storage_type == "pgsql":
+            if url.startswith("postgres://"):
+                return f"postgresql+asyncpg://{url[len('postgres://'):]}"
+            if url.startswith("postgresql://"):
+                return f"postgresql+asyncpg://{url[len('postgresql://'):]}"
+            if url.startswith("pgsql://"):
+                return f"postgresql+asyncpg://{url[len('pgsql://'):]}"
+        return url
     
     @classmethod
     def get_storage(cls) -> BaseStorage:
@@ -709,6 +727,7 @@ class StorageFactory:
             
         elif storage_type in ("mysql", "pgsql"):
             if not storage_url: raise ValueError("SQL 存储需要设置 SERVER_STORAGE_URL")
+            storage_url = cls._normalize_sql_url(storage_type, storage_url)
             cls._instance = SQLStorage(storage_url)
             
         else:
