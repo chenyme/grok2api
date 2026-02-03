@@ -181,16 +181,20 @@ async def enable_nsfw_api(data: dict):
         # 去重并保持顺序
         unique_tokens = list(dict.fromkeys(tokens))
 
-        # 限制最大数量（防止误操作）
+        # 限制最大数量（超出时截取前 N 个）
         max_tokens = get_config("performance.nsfw_max_tokens", 1000)
         try:
             max_tokens = int(max_tokens)
         except Exception:
             max_tokens = 1000
+
+        truncated = False
+        original_count = len(unique_tokens)
         if len(unique_tokens) > max_tokens:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Too many tokens: {len(unique_tokens)} > {max_tokens}",
+            unique_tokens = unique_tokens[:max_tokens]
+            truncated = True
+            logger.warning(
+                f"NSFW enable: truncated from {original_count} to {max_tokens} tokens"
             )
 
         # 批量执行配置
@@ -200,6 +204,9 @@ async def enable_nsfw_api(data: dict):
         # 定义 worker
         async def _enable(token: str):
             result = await nsfw_service.enable(token)
+            # 成功后添加 nsfw tag
+            if result.success:
+                await mgr.add_tag(token, "nsfw")
             return {
                 "success": result.success,
                 "http_status": result.http_status,
@@ -227,7 +234,7 @@ async def enable_nsfw_api(data: dict):
                 fail_count += 1
                 results[masked] = res.get("data") or {"error": res.get("error")}
 
-        return {
+        response = {
             "status": "success",
             "summary": {
                 "total": len(unique_tokens),
@@ -236,6 +243,12 @@ async def enable_nsfw_api(data: dict):
             },
             "results": results,
         }
+
+        # 添加截断提示
+        if truncated:
+            response["warning"] = f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
+
+        return response
 
     except HTTPException:
         raise

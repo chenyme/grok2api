@@ -47,14 +47,15 @@ function processTokens(data) {
       tokens.forEach(t => {
         // Normalize
         const tObj = typeof t === 'string'
-          ? { token: t, status: 'active', quota: 0, note: '', use_count: 0 }
+          ? { token: t, status: 'active', quota: 0, note: '', use_count: 0, tags: [] }
           : {
             token: t.token,
             status: t.status || 'active',
             quota: t.quota || 0,
             note: t.note || '',
             fail_count: t.fail_count || 0,
-            use_count: t.use_count || 0
+            use_count: t.use_count || 0,
+            tags: t.tags || []
           };
         flatTokens.push({ ...tObj, pool: pool, _selected: false });
       });
@@ -150,14 +151,18 @@ function renderTable() {
     tdType.className = 'text-center';
     tdType.innerHTML = `<span class="badge badge-gray">${escapeHtml(item.pool)}</span>`;
 
-    // Status (Center)
+    // Status (Center) - 显示状态和 nsfw 标签
     const tdStatus = document.createElement('td');
     let statusClass = 'badge-gray';
     if (item.status === 'active') statusClass = 'badge-green';
     else if (item.status === 'cooling') statusClass = 'badge-orange';
     else statusClass = 'badge-red';
     tdStatus.className = 'text-center';
-    tdStatus.innerHTML = `<span class="badge ${statusClass}">${item.status}</span>`;
+    let statusHtml = `<span class="badge ${statusClass}">${item.status}</span>`;
+    if (item.tags && item.tags.includes('nsfw')) {
+      statusHtml += ` <span class="badge badge-purple">nsfw</span>`;
+    }
+    tdStatus.innerHTML = statusHtml;
 
     // Quota (Center)
     const tdQuota = document.createElement('td');
@@ -766,6 +771,8 @@ function getFilteredTokens() {
     if (currentFilter === 'active') return t.status === 'active';
     if (currentFilter === 'cooling') return t.status === 'cooling';
     if (currentFilter === 'expired') return t.status !== 'active' && t.status !== 'cooling';
+    if (currentFilter === 'nsfw') return t.tags && t.tags.includes('nsfw');
+    if (currentFilter === 'no-nsfw') return !t.tags || !t.tags.includes('nsfw');
     return true;
   });
 }
@@ -775,7 +782,9 @@ function updateTabCounts() {
     all: flatTokens.length,
     active: flatTokens.filter(t => t.status === 'active').length,
     cooling: flatTokens.filter(t => t.status === 'cooling').length,
-    expired: flatTokens.filter(t => t.status !== 'active' && t.status !== 'cooling').length
+    expired: flatTokens.filter(t => t.status !== 'active' && t.status !== 'cooling').length,
+    nsfw: flatTokens.filter(t => t.tags && t.tags.includes('nsfw')).length,
+    'no-nsfw': flatTokens.filter(t => !t.tags || !t.tags.includes('nsfw')).length
   };
 
   Object.entries(counts).forEach(([key, count]) => {
@@ -825,10 +834,13 @@ async function batchEnableNSFW() {
 
     if (res.ok && data.status === 'success') {
       const { ok: okCount, fail } = data.summary;
-      showToast(
-        `NSFW 开启完成：成功 ${okCount}，失败 ${fail}`,
-        fail > 0 ? 'warning' : 'success'
-      );
+      let msg = `NSFW 开启完成：成功 ${okCount}，失败 ${fail}`;
+      if (data.warning) {
+        msg += `\n⚠️ ${data.warning}`;
+      }
+      showToast(msg, fail > 0 || data.warning ? 'warning' : 'success');
+      // 刷新数据以显示新的 nsfw 标签
+      loadData();
     } else {
       showToast('开启失败: ' + (data.detail || '未知错误'), 'error');
     }

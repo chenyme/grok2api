@@ -99,6 +99,11 @@
       color: #dc2626;
     }
 
+    .badge-purple {
+      background: #f3e8ff;
+      color: #9333ea;
+    }
+
     .checkbox {
       width: 12px;
       height: 12px;
@@ -316,4 +321,11 @@
     }
     .hide-scrollbar::-webkit-scrollbar {
       display: none;
+    }
+
+    .tab-sep {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+      margin: 0 8px;
     }

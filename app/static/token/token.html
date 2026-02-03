@@ -108,6 +108,15 @@
                 data-filter="expired" onclick="filterByStatus('expired')">
           失效 <span class="badge badge-red" id="tab-count-expired">0</span>
         </button>
+        <span class="tab-sep"></span>
+        <button class="tab-item" role="tab" aria-selected="false"
+                data-filter="nsfw" onclick="filterByStatus('nsfw')">
+          已开 NSFW <span class="badge badge-purple" id="tab-count-nsfw">0</span>
+        </button>
+        <button class="tab-item" role="tab" aria-selected="false"
+                data-filter="no-nsfw" onclick="filterByStatus('no-nsfw')">
+          未开 NSFW <span class="badge badge-gray" id="tab-count-no-nsfw">0</span>
+        </button>
       </div>
 
       <!-- Token Table -->

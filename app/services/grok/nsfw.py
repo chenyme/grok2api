@@ -97,8 +97,11 @@ class NSFWService:
 
                 grpc_status = get_grpc_status(trailers)
 
+                # HTTP 200 且无 grpc-status（空响应）或 grpc-status=0 都算成功
+                success = grpc_status.code == -1 or grpc_status.ok
+
                 return NSFWResult(
-                    success=grpc_status.ok,
+                    success=success,
                     http_status=response.status_code,
                     grpc_status=grpc_status.code,
                     grpc_message=grpc_status.message or None,
