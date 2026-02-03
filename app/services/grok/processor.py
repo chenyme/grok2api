@@ -371,12 +371,9 @@ class CollectProcessor(BaseProcessor):
 
         result = content
         for tag in self.filter_tags:
-            # 匹配 <tag ...>...</tag> 或 <tag ... />
+            # 匹配 <tag ...>...</tag> 或 <tag ... />，re.DOTALL 使 . 匹配换行符
             pattern = rf"<{re.escape(tag)}[^>]*>.*?</{re.escape(tag)}>|<{re.escape(tag)}[^>]*/>"
             result = re.sub(pattern, "", result, flags=re.DOTALL)
-            # 匹配 <tag ...>...</tag> 跨行
-            pattern2 = rf"<{re.escape(tag)}[^>]*>[\s\S]*?</{re.escape(tag)}>"
-            result = re.sub(pattern2, "", result, flags=re.DOTALL)
 
         return result
 
@@ -510,9 +507,13 @@ class VideoStreamProcessor(BaseProcessor):
 
     def _build_video_html(self, video_url: str, thumbnail_url: str = "") -> str:
         """构建视频 HTML 标签"""
-        poster_attr = f' poster="{thumbnail_url}"' if thumbnail_url else ""
+        import html
+
+        safe_video_url = html.escape(video_url)
+        safe_thumbnail_url = html.escape(thumbnail_url)
+        poster_attr = f' poster="{safe_thumbnail_url}"' if safe_thumbnail_url else ""
         return f'''<video id="video" controls="" preload="none"{poster_attr}>
-  <source id="mp4" src="{video_url}" type="video/mp4">
+  <source id="mp4" src="{safe_video_url}" type="video/mp4">
 </video>'''
 
     async def process(
