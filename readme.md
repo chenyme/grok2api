@@ -205,14 +205,17 @@ curl http://localhost:8000/v1/images/generations \
 |                       | `reload_interval_sec`      | 一致性刷新   | 多 worker 场景下 Token 状态刷新间隔（秒）。          | `30`                                                    |
 | **cache**       | `enable_auto_clean`        | 自动清理     | 是否启用缓存自动清理，开启后按上限自动回收。         | `true`                                                  |
 |                       | `limit_mb`                 | 清理阈值     | 缓存大小阈值（MB），超过阈值会触发清理。             | `1024`                                                  |
-| **performance** | `assets_max_concurrent`    | 资产并发上限 | 资源上传/下载/列表的并发上限。推荐 25。              | `25`                                                    |
-|                       | `media_max_concurrent`     | 媒体并发上限 | 视频/媒体生成请求的并发上限。推荐 50。               | `50`                                                    |
-|                       | `usage_max_concurrent`     | 用量并发上限 | 用量查询请求的并发上限。推荐 25。                    | `25`                                                    |
-|                       | `assets_delete_batch_size` | 资产清理批量 | 在线资产删除单批并发数量。推荐 10。                  | `10`                                                    |
-|                       | `admin_assets_batch_size`  | 管理端批量   | 管理端在线资产统计/清理批量并发数量。推荐 10。       | `10`                                                    |
-|                       | `nsfw_max_concurrent`      | NSFW 并发上限 | 批量开启 NSFW 模式的并发请求数。推荐 10。           | `10`                                                    |
-|                       | `admin_nsfw_batch_size`    | NSFW 批量大小 | 管理端批量开启 NSFW 的单批处理数量。推荐 50。       | `50`                                                    |
-|                       | `nsfw_max_tokens`          | NSFW 最大数量 | 单次批量开启 NSFW 的 Token 数量上限。推荐 1000。    | `1000`                                                  |
+| **performance** | `nsfw_max_concurrent`      | 开启 NSFW 模式并发上限 | 批量开启 NSFW 模式时的并发请求上限。推荐 10。        | `10`                                                   |
+|                       | `nsfw_batch_size`          | 开启 NSFW 模式批次大小 | 批量开启 NSFW 模式的单批处理数量。推荐 50。          | `50`                                                   |
+|                       | `nsfw_max_tokens`          | 开启 NSFW 模式最大数量 | 单次批量开启 NSFW 的 Token 数量上限，防止误操作。推荐 1000。 | `1000`                                            |
+|                       | `usage_max_concurrent`     | Token 用量刷新并发上限 | 批量刷新 Token 用量时的并发请求上限。推荐 25。        | `25`                                                   |
+|                       | `usage_batch_size`         | Token 用量刷新批次大小 | 批量刷新 Token 用量的单批处理数量。推荐 50。          | `50`                                                   |
+|                       | `usage_max_tokens`         | Token 用量刷新最大数量 | 批量刷新 Token 用量的单次处理数量上限。推荐 1000。    | `1000`                                                 |
+|                       | `assets_max_concurrent`    | 在线资产查找/删除并发上限 | 在线资产查找/删除时的并发请求上限。推荐 25。       | `25`                                                   |
+|                       | `assets_batch_size`        | 在线资产查找/删除批次大小 | 在线资产查找/删除的单批处理数量。推荐 10。        | `10`                                                   |
+|                       | `assets_max_tokens`        | 在线资产查找/删除最大数量 | 在线资产查找/删除的单次处理数量上限。推荐 1000。  | `1000`                                                 |
+|                       | `assets_delete_batch_size` | 在线资产删除批量 | 在线资产删除单批并发数量。推荐 10。                  | `10`                                                   |
+|                       | `media_max_concurrent`     | 媒体并发上限 | 视频/媒体生成请求的并发上限。推荐 50。               | `50`                                                   |
 
 <br>
 

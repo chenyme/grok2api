@@ -9,7 +9,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
-  <link href="/static/common/common.css" rel="stylesheet">
+  <link href="/static/common/common.css?v=2" rel="stylesheet">
   <link href="/static/token/token.css?v=11" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
 </head>
@@ -21,7 +21,7 @@
   <div id="app-header"></div>
 
   <!-- Main Content -->
-  <main class="space-y-6 flex-1 container mx-auto max-w-4xl px-6 py-8 fade-in">
+  <main class="space-y-6 flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in">
 
     <div class="space-y-6">
       <div class="flex justify-between items-center">
@@ -138,8 +138,26 @@
           </tbody>
         </table>
         <div id="loading" class="text-center py-12 text-[var(--accents-4)]">加载中...</div>
-        <div id="empty-state" class="hidden text-center py-12 text-[var(--accents-4)]">
+        <div id="empty-state" class="hidden table-empty">
           暂无 Token，请点击右上角导入或添加。
+        </div>
+      </div>
+
+      <!-- Pagination -->
+      <div class="pagination-bar">
+        <div id="pagination-info" class="text-xs text-[var(--accents-5)]">第 0 / 0 页 · 共 0 条</div>
+        <div class="flex items-center gap-2">
+          <button class="geist-button-outline text-xs px-3" onclick="selectVisibleAll()">全选本页</button>
+          <button class="geist-button-outline text-xs px-3" onclick="selectAllFiltered()">全选全部</button>
+          <button class="geist-button-outline text-xs px-3" onclick="clearAllSelection()">取消全选</button>
+          <button id="page-prev" class="geist-button-outline text-xs px-3" onclick="goPrevPage()">上一页</button>
+          <button id="page-next" class="geist-button-outline text-xs px-3" onclick="goNextPage()">下一页</button>
+          <select id="page-size" class="geist-input h-[30px]" onchange="changePageSize()">
+            <option value="20">20 / 页</option>
+            <option value="50" selected>50 / 页</option>
+            <option value="100">100 / 页</option>
+            <option value="200">200 / 页</option>
+          </select>
         </div>
       </div>
 
@@ -168,7 +186,7 @@
         刷新
       </button>
       <button id="btn-batch-nsfw" onclick="batchEnableNSFW()"
-        class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center">
+        class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center" disabled>
         NSFW
       </button>
       <button id="btn-batch-delete" onclick="batchDelete()" class="geist-button-danger text-xs px-3">
@@ -275,10 +293,11 @@
 
   <script src="/static/common/draggable.js"></script>
   <script src="/static/common/admin-auth.js?v=2"></script>
-  <script src="/static/common/header.js?v=1"></script>
+  <script src="/static/common/batch-sse.js?v=1"></script>
+  <script src="/static/common/header.js?v=2"></script>
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
-  <script src="/static/token/token.js?v=11"></script>
+  <script src="/static/token/token.js?v=18"></script>
 </body>
 
 </html>

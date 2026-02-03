@@ -174,11 +174,17 @@ Config file: `data/config.toml`
 | | `reload_interval_sec` | Consistency refresh | Token state refresh interval in multi-worker setups (sec). | `30` |
 | **cache** | `enable_auto_clean` | Auto clean | Enable cache auto clean; cleanup when exceeding limit. | `true` |
 | | `limit_mb` | Cleanup threshold | Cache size threshold (MB) that triggers cleanup. | `1024` |
-| **performance** | `assets_max_concurrent` | Assets concurrency | Concurrency cap for assets upload/download/list. Recommended 25. | `25` |
+| **performance** | `nsfw_max_concurrent` | NSFW enable concurrency | Concurrency cap for enabling NSFW in batch. Recommended 10. | `10` |
+| | `nsfw_batch_size` | NSFW enable batch size | Batch size for enabling NSFW. Recommended 50. | `50` |
+| | `nsfw_max_tokens` | NSFW enable max tokens | Max tokens per NSFW batch to avoid mistakes. Recommended 1000. | `1000` |
+| | `usage_max_concurrent` | Token usage refresh concurrency | Concurrency cap for batch usage refresh. Recommended 25. | `25` |
+| | `usage_batch_size` | Token usage refresh batch size | Batch size for usage refresh. Recommended 50. | `50` |
+| | `usage_max_tokens` | Token usage refresh max tokens | Max tokens per usage refresh batch. Recommended 1000. | `1000` |
+| | `assets_max_concurrent` | Online assets find/delete concurrency | Concurrency cap for online asset find/delete. Recommended 25. | `25` |
+| | `assets_batch_size` | Online assets find/delete batch size | Batch size for online asset find/delete. Recommended 10. | `10` |
+| | `assets_max_tokens` | Online assets find/delete max tokens | Max tokens per online asset find/delete batch. Recommended 1000. | `1000` |
+| | `assets_delete_batch_size` | Online assets delete batch | Batch concurrency for online asset deletion. Recommended 10. | `10` |
 | | `media_max_concurrent` | Media concurrency | Concurrency cap for video/media generation. Recommended 50. | `50` |
-| | `usage_max_concurrent` | Usage concurrency | Concurrency cap for usage queries. Recommended 25. | `25` |
-| | `assets_delete_batch_size` | Asset cleanup batch | Batch concurrency for online asset deletion. Recommended 10. | `10` |
-| | `admin_assets_batch_size` | Admin cleanup batch | Batch concurrency for admin asset stats/cleanup. Recommended 10. | `10` |
 
 <br>
 

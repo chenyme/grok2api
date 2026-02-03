@@ -5,7 +5,7 @@
 """
 
 import asyncio
-from typing import Any, Awaitable, Callable, Dict, List, TypeVar
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from app.core.logger import logger
 
@@ -18,6 +18,8 @@ async def run_in_batches(
     *,
     max_concurrent: int = 10,
     batch_size: int = 50,
+    on_item: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     分批并发执行，单项失败不影响整体
@@ -46,18 +48,34 @@ async def run_in_batches(
     sem = asyncio.Semaphore(max_concurrent)
 
     async def _one(item: str) -> tuple[str, dict]:
+        if should_cancel and should_cancel():
+            return item, {"ok": False, "error": "cancelled", "cancelled": True}
         async with sem:
             try:
                 data = await worker(item)
-                return item, {"ok": True, "data": data}
+                result = {"ok": True, "data": data}
+                if on_item:
+                    try:
+                        await on_item(item, result)
+                    except Exception:
+                        pass
+                return item, result
             except Exception as e:
                 logger.warning(f"Batch item failed: {item[:16]}... - {e}")
-                return item, {"ok": False, "error": str(e)}
+                result = {"ok": False, "error": str(e)}
+                if on_item:
+                    try:
+                        await on_item(item, result)
+                    except Exception:
+                        pass
+                return item, result
 
     results: Dict[str, dict] = {}
 
     # 分批执行，避免一次性创建所有 task
     for i in range(0, len(items), batch_size):
+        if should_cancel and should_cancel():
+            break
         chunk = items[i : i + batch_size]
         pairs = await asyncio.gather(*(_one(x) for x in chunk))
         results.update(dict(pairs))

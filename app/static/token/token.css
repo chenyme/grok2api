@@ -66,6 +66,14 @@
       background: #f0f2f5;
     }
 
+    .pagination-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 4px;
+    }
+
     /* Elegant Badges */
     .badge {
       display: inline-flex;
@@ -284,29 +292,48 @@
       padding: 0;
     }
 
-    /* Tab Styles (Geist Design System) */
+    /* Tab Styles */
+    #status-tabs {
+      border: none;
+      background: #f6f6f6;
+      padding: 6px;
+      gap: 6px;
+      border-radius: 999px;
+    }
+
     .tab-item {
       position: relative;
-      padding: 12px 0;
-      margin-right: 20px;
-      font-size: 14px;
+      padding: 6px 12px;
+      margin-right: 0;
+      font-size: 12.5px;
       font-weight: 500;
       color: var(--accents-5);
       background: transparent;
       border: none;
-      box-shadow: inset 0 -2px 0 0 transparent;
+      border-radius: 999px;
       cursor: pointer;
-      transition: color 0.15s ease, box-shadow 0.15s ease;
+      transition: color 0.15s ease, background 0.15s ease;
       white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
     }
 
     .tab-item:hover {
       color: var(--geist-foreground, #000);
+      background: rgba(0, 0, 0, 0.05);
     }
 
     .tab-item.active {
       color: var(--geist-foreground, #000);
-      box-shadow: inset 0 -2px 0 0 var(--geist-foreground, #000);
+      background: #fff;
+    }
+
+    #status-tabs .badge {
+      height: 20px;
+      line-height: 20px;
+      font-size: 11px;
+      padding: 0 8px;
     }
 
     .tab-item:disabled {
@@ -325,7 +352,7 @@
 
     .tab-sep {
       width: 1px;
-      height: 20px;
-      background: var(--border);
-      margin: 0 8px;
+      height: 16px;
+      background: #e5e5e5;
+      margin: 0 4px;
     }

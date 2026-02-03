@@ -9,6 +9,7 @@ const selectedLocal = {
   video: new Set()
 };
 const ui = {};
+const byId = (id) => document.getElementById(id);
 const loadFailed = new Map();
 const deleteFailed = new Map();
 let currentBatchAction = null;
@@ -18,6 +19,69 @@ const cacheListState = {
   image: { loaded: false, visible: false, items: [] },
   video: { loaded: false, visible: false, items: [] }
 };
+const UI_MAP = {
+  imgCount: 'img-count',
+  imgSize: 'img-size',
+  videoCount: 'video-count',
+  videoSize: 'video-size',
+  onlineCount: 'online-count',
+  onlineStatus: 'online-status',
+  onlineLastClear: 'online-last-clear',
+  accountTableBody: 'account-table-body',
+  accountEmpty: 'account-empty',
+  selectAll: 'select-all',
+  localImageSelectAll: 'local-image-select-all',
+  localVideoSelectAll: 'local-video-select-all',
+  selectedCount: 'selected-count',
+  batchActions: 'batch-actions',
+  loadBtn: 'btn-load-stats',
+  deleteBtn: 'btn-delete-assets',
+  localCacheLists: 'local-cache-lists',
+  localImageList: 'local-image-list',
+  localVideoList: 'local-video-list',
+  localImageBody: 'local-image-body',
+  localVideoBody: 'local-video-body',
+  onlineAssetsTable: 'online-assets-table',
+  batchProgress: 'batch-progress',
+  batchProgressText: 'batch-progress-text',
+  pauseActionBtn: 'btn-pause-action',
+  stopActionBtn: 'btn-stop-action',
+  failureDetailsBtn: 'btn-failure-details',
+  confirmDialog: 'confirm-dialog',
+  confirmMessage: 'confirm-message',
+  confirmOk: 'confirm-ok',
+  confirmCancel: 'confirm-cancel',
+  failureDialog: 'failure-dialog',
+  failureList: 'failure-list',
+  failureClose: 'failure-close',
+  failureRetry: 'failure-retry'
+};
+
+function setText(el, text) {
+  if (el) el.textContent = text;
+}
+
+function resolveOnlineStatus(status) {
+  if (status === 'ok') {
+    return { text: '连接正常', className: 'text-xs text-green-600 mt-1' };
+  }
+  if (status === 'no_token') {
+    return { text: '无可用 Token', className: 'text-xs text-orange-500 mt-1' };
+  }
+  if (status === 'not_loaded') {
+    return { text: '未加载', className: 'text-xs text-[var(--accents-4)] mt-1' };
+  }
+  return { text: '无法连接', className: 'text-xs text-red-500 mt-1' };
+}
+
+function createIconButton(title, svg, onClick) {
+  const btn = document.createElement('button');
+  btn.className = 'cache-icon-button';
+  btn.title = title;
+  btn.innerHTML = svg;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
 
 async function init() {
   apiKey = await ensureApiKey();
@@ -42,42 +106,10 @@ function setupCacheCards() {
 }
 
 function cacheUI() {
-  ui.imgCount = document.getElementById('img-count');
-  ui.imgSize = document.getElementById('img-size');
-  ui.videoCount = document.getElementById('video-count');
-  ui.videoSize = document.getElementById('video-size');
-  ui.onlineCount = document.getElementById('online-count');
-  ui.onlineStatus = document.getElementById('online-status');
-  ui.onlineLastClear = document.getElementById('online-last-clear');
-  ui.accountTableBody = document.getElementById('account-table-body');
-  ui.accountEmpty = document.getElementById('account-empty');
-  ui.selectAll = document.getElementById('select-all');
-  ui.localImageSelectAll = document.getElementById('local-image-select-all');
-  ui.localVideoSelectAll = document.getElementById('local-video-select-all');
-  ui.selectedCount = document.getElementById('selected-count');
-  ui.batchActions = document.getElementById('batch-actions');
-  ui.loadBtn = document.getElementById('btn-load-stats');
-  ui.deleteBtn = document.getElementById('btn-delete-assets');
-  ui.localCacheLists = document.getElementById('local-cache-lists');
-  ui.localImageList = document.getElementById('local-image-list');
-  ui.localVideoList = document.getElementById('local-video-list');
-  ui.localImageBody = document.getElementById('local-image-body');
-  ui.localVideoBody = document.getElementById('local-video-body');
+  Object.entries(UI_MAP).forEach(([key, id]) => {
+    ui[key] = byId(id);
+  });
   ui.cacheCards = document.querySelectorAll('.cache-card');
-  ui.onlineAssetsTable = document.getElementById('online-assets-table');
-  ui.batchProgress = document.getElementById('batch-progress');
-  ui.batchProgressText = document.getElementById('batch-progress-text');
-  ui.pauseActionBtn = document.getElementById('btn-pause-action');
-  ui.stopActionBtn = document.getElementById('btn-stop-action');
-  ui.failureDetailsBtn = document.getElementById('btn-failure-details');
-  ui.confirmDialog = document.getElementById('confirm-dialog');
-  ui.confirmMessage = document.getElementById('confirm-message');
-  ui.confirmOk = document.getElementById('confirm-ok');
-  ui.confirmCancel = document.getElementById('confirm-cancel');
-  ui.failureDialog = document.getElementById('failure-dialog');
-  ui.failureList = document.getElementById('failure-list');
-  ui.failureClose = document.getElementById('failure-close');
-  ui.failureRetry = document.getElementById('failure-retry');
 }
 
 function ensureUI() {
@@ -180,7 +212,8 @@ let isBatchDeleting = false;
 let isDeletePaused = false;
 let deleteTotal = 0;
 let deleteProcessed = 0;
-const BATCH_SIZE = 10;
+let currentBatchTaskId = null;
+let batchEventSource = null;
 
 async function loadStats(options = {}) {
   try {
@@ -210,75 +243,65 @@ async function loadStats(options = {}) {
       return;
     }
     const data = await res.json();
-    if (!merge) {
-      accountStates.clear();
-    }
-
-    if (ui.imgCount) ui.imgCount.textContent = data.local_image.count;
-    if (ui.imgSize) ui.imgSize.textContent = `${data.local_image.size_mb} MB`;
-    if (ui.videoCount) ui.videoCount.textContent = data.local_video.count;
-    if (ui.videoSize) ui.videoSize.textContent = `${data.local_video.size_mb} MB`;
-    if (ui.onlineCount) ui.onlineCount.textContent = data.online.count;
-
-    const statusEl = ui.onlineStatus;
-    const lastClearEl = ui.onlineLastClear;
-    if (data.online.status === 'ok') {
-      statusEl.textContent = '连接正常';
-      statusEl.className = 'text-xs text-green-600 mt-1';
-    } else if (data.online.status === 'no_token') {
-      statusEl.textContent = '无可用 Token';
-      statusEl.className = 'text-xs text-orange-500 mt-1';
-    } else if (data.online.status === 'not_loaded') {
-      statusEl.textContent = '未加载';
-      statusEl.className = 'text-xs text-[var(--accents-4)] mt-1';
-    } else {
-      statusEl.textContent = '无法连接';
-      statusEl.className = 'text-xs text-red-500 mt-1';
-    }
-
-    // Update master accounts list
-    updateAccountSelect(data.online_accounts || []);
-
-    // Update dynamic states
-    const details = Array.isArray(data.online_details) ? data.online_details : [];
-    details.forEach(detail => {
-      accountStates.set(detail.token, {
-        count: detail.count,
-        status: detail.status,
-        last_asset_clear_at: detail.last_asset_clear_at
-      });
-    });
-    if (data.online?.token) {
-      accountStates.set(data.online.token, {
-        count: data.online.count,
-        status: data.online.status,
-        last_asset_clear_at: data.online.last_asset_clear_at
-      });
-    }
-
-    if (data.online_scope === 'all') {
-      currentScope = 'all';
-      currentToken = '';
-    } else if (data.online_scope === 'selected') {
-      currentScope = 'selected';
-    } else if (data.online.token) {
-      currentScope = 'single';
-      currentToken = data.online.token;
-    } else {
-      currentScope = 'none';
-    }
-
-    if (lastClearEl) {
-      const timeText = formatTime(data.online.last_asset_clear_at);
-      lastClearEl.textContent = timeText ? `上次清空：${timeText}` : '';
-    }
-
-    renderAccountTable(data);
+    applyStatsData(data, merge);
     return data;
   } catch (e) {
     if (!silent) showToast('加载统计失败', 'error');
     return null;
   }
+}
+
+function applyStatsData(data, merge = false) {
+  if (!merge) {
+    accountStates.clear();
+  }
+
+  setText(ui.imgCount, data.local_image.count);
+  setText(ui.imgSize, `${data.local_image.size_mb} MB`);
+  setText(ui.videoCount, data.local_video.count);
+  setText(ui.videoSize, `${data.local_video.size_mb} MB`);
+  setText(ui.onlineCount, data.online.count);
+
+  const online = data.online || {};
+  const status = resolveOnlineStatus(online.status);
+  setOnlineStatus(status.text, status.className);
+
+  // Update master accounts list
+  updateAccountSelect(data.online_accounts || []);
+
+  // Update dynamic states
+  const details = Array.isArray(data.online_details) ? data.online_details : [];
+  details.forEach(detail => {
+    accountStates.set(detail.token, {
+      count: detail.count,
+      status: detail.status,
+      last_asset_clear_at: detail.last_asset_clear_at
+    });
+  });
+  if (online?.token) {
+    accountStates.set(online.token, {
+      count: online.count,
+      status: online.status,
+      last_asset_clear_at: online.last_asset_clear_at
+    });
+  }
+
+  if (data.online_scope === 'all') {
+    currentScope = 'all';
+    currentToken = '';
+  } else if (data.online_scope === 'selected') {
+    currentScope = 'selected';
+  } else if (online.token) {
+    currentScope = 'single';
+    currentToken = online.token;
+  } else {
+    currentScope = 'none';
+  }
+
+  const timeText = formatTime(online.last_asset_clear_at);
+  setText(ui.onlineLastClear, timeText ? `上次清空：${timeText}` : '');
+
+  renderAccountTable(data);
 }
 
 function updateAccountSelect(accounts) {
@@ -341,60 +364,78 @@ function renderAccountTable(data) {
   }
 
   if (rows.length === 0) {
-    tbody.innerHTML = '';
+    tbody.replaceChildren();
     empty.classList.remove('hidden');
     return;
   }
 
   empty.classList.add('hidden');
-  tbody.innerHTML = rows.map(row => {
-    let statusClass = 'badge-gray';
-    let statusText = '未加载';
+  const selected = selectedTokens;
+  const fragment = document.createDocumentFragment();
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    const isSelected = selected.has(row.token);
+    if (isSelected) tr.classList.add('row-selected');
 
-    if (row.status === 'ok') {
-      statusClass = 'badge-green';
-      statusText = '正常';
-    } else if (row.status === 'not_loaded') {
-      statusClass = 'badge-gray';
-      statusText = '未加载';
-    } else {
-      statusClass = 'badge-red';
-      statusText = '异常';
-    }
+    const tdCheck = document.createElement('td');
+    tdCheck.className = 'text-center';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'checkbox';
+    checkbox.checked = isSelected;
+    checkbox.setAttribute('data-token', row.token);
+    checkbox.addEventListener('change', () => toggleSelect(row.token, checkbox));
+    tdCheck.appendChild(checkbox);
 
-    const lastClear = formatTime(row.last_asset_clear_at) || '-';
-    // Use token as identifier, but we might want index for simpler toggling if we switch to array-based state like token.js
-    // For now, keep Set-based logic but update UI
-    const checked = selectedTokens.has(row.token) ? 'checked' : '';
+    const tdToken = document.createElement('td');
+    tdToken.className = 'text-left';
+    const tokenWrap = document.createElement('div');
+    tokenWrap.className = 'flex items-center gap-2';
+    const tokenText = document.createElement('span');
+    tokenText.className = 'font-mono text-xs text-gray-500';
+    tokenText.title = row.token;
+    tokenText.textContent = row.token_masked || row.token;
+    tokenWrap.appendChild(tokenText);
+    tdToken.appendChild(tokenWrap);
 
-    // Shorten token for display if not already masked, though backend gives masked
-    // We'll use the masked version from backend
+    const tdPool = document.createElement('td');
+    tdPool.className = 'text-center';
+    const poolBadge = document.createElement('span');
+    poolBadge.className = 'badge badge-gray';
+    poolBadge.textContent = row.pool || '-';
+    tdPool.appendChild(poolBadge);
 
-    const rowClass = selectedTokens.has(row.token) ? 'row-selected' : '';
-    const countText = row.count === '-' ? '未加载' : row.count;
-    return `
-      <tr class="${rowClass}">
-        <td class="text-center">
-          <input type="checkbox" class="checkbox" data-token="${row.token}" ${checked} onchange="toggleSelect('${row.token}', this)">
-        </td>
-        <td class="text-left">
-             <div class="flex items-center gap-2">
-                <span class="font-mono text-xs text-gray-500" title="${row.token}">${row.token_masked}</span>
-             </div>
-        </td>
-        <td class="text-center"><span class="badge badge-gray">${row.pool || '-'}</span></td>
-        <td class="text-center"><span class="badge badge-gray">${countText}</span></td>
-        <td class="text-left text-xs text-gray-500">${lastClear}</td>
-        <td class="text-center">
-          <div class="flex items-center justify-center gap-2">
-              <button class="cache-icon-button" onclick="clearOnlineCache('${row.token}')" title="清空">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-              </button>
-          </div>
-        </td>
-      </tr>
-    `;
-  }).join('');
+    const tdCount = document.createElement('td');
+    tdCount.className = 'text-center';
+    const countBadge = document.createElement('span');
+    countBadge.className = 'badge badge-gray';
+    countBadge.textContent = row.count === '-' ? '未加载' : row.count;
+    tdCount.appendChild(countBadge);
+
+    const tdLast = document.createElement('td');
+    tdLast.className = 'text-left text-xs text-gray-500';
+    tdLast.textContent = formatTime(row.last_asset_clear_at) || '-';
+
+    const tdActions = document.createElement('td');
+    tdActions.className = 'text-center';
+    const actionsWrap = document.createElement('div');
+    actionsWrap.className = 'flex items-center justify-center gap-2';
+    actionsWrap.appendChild(createIconButton(
+      '清空',
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`,
+      () => clearOnlineCache(row.token)
+    ));
+    tdActions.appendChild(actionsWrap);
+
+    tr.appendChild(tdCheck);
+    tr.appendChild(tdToken);
+    tr.appendChild(tdPool);
+    tr.appendChild(tdCount);
+    tr.appendChild(tdLast);
+    tr.appendChild(tdActions);
+    fragment.appendChild(tr);
+  });
+  tbody.replaceChildren(fragment);
   syncSelectAllState();
   updateSelectedCount();
   updateBatchActionsVisibility();
@@ -417,6 +458,18 @@ async function clearCache(type) {
     const data = await res.json();
     if (data.status === 'success') {
       showToast(`清理成功，释放 ${data.result.size_mb} MB`, 'success');
+      const state = cacheListState[type];
+      if (state) {
+        state.items = [];
+        state.loaded = true;
+      }
+      if (selectedLocal[type]) selectedLocal[type].clear();
+      if (state && state.visible) {
+        renderLocalCacheList(type, []);
+      } else {
+        syncLocalSelectAllState(type);
+        updateSelectedCount();
+      }
       loadStats();
     } else {
       showToast('清理失败', 'error');
@@ -611,13 +664,17 @@ function updateBatchProgress() {
   container.classList.remove('hidden');
 
   if (ui.pauseActionBtn) {
-    const paused = isLoading ? isLoadPaused : isDeletePaused;
-    ui.pauseActionBtn.textContent = paused ? '继续' : '暂停';
-    ui.pauseActionBtn.classList.remove('hidden');
+    ui.pauseActionBtn.classList.add('hidden');
   }
   if (ui.stopActionBtn) {
     ui.stopActionBtn.classList.remove('hidden');
   }
+}
+
+function refreshBatchUI() {
+  setActionButtonsState();
+  updateBatchActionsVisibility();
+  updateBatchProgress();
 }
 
 function setOnlineStatus(text, className) {
@@ -640,8 +697,6 @@ function updateToolbarForSection() {
 }
 
 function updateOnlineCountFromTokens(tokens) {
-  const el = ui.onlineCount;
-  if (!el) return;
   let total = 0;
   tokens.forEach(token => {
     const state = accountStates.get(token);
@@ -649,7 +704,7 @@ function updateOnlineCountFromTokens(tokens) {
       total += state.count;
     }
   });
-  el.textContent = String(total);
+  setText(ui.onlineCount, String(total));
 }
 
 function formatSize(bytes) {
@@ -741,48 +796,79 @@ function renderLocalCacheList(type, items) {
   const body = type === 'image' ? ui.localImageBody : ui.localVideoBody;
   if (!body) return;
   if (!items || items.length === 0) {
-    body.innerHTML = `<tr><td colspan="5">暂无文件</td></tr>`;
+    body.innerHTML = `<tr><td colspan="5" class="table-empty">暂无文件</td></tr>`;
     syncLocalSelectAllState(type);
     return;
   }
   const selected = selectedLocal[type];
-  body.innerHTML = items.map(item => {
-    const timeText = formatTime(item.mtime_ms);
-    const preview = item.preview_url ? `<img src="${item.preview_url}" alt="" class="cache-preview">` : '';
-    const checked = selected.has(item.name) ? 'checked' : '';
-    const rowClass = selected.has(item.name) ? 'row-selected' : '';
-    return `
-      <tr class="${rowClass}">
-        <td class="text-center">
-          <input type="checkbox" class="checkbox" data-name="${item.name}" ${checked} onchange="toggleLocalSelect('${type}', '${item.name}', this)">
-        </td>
-        <td class="text-left">
-          <div class="flex items-center gap-2">
-            ${preview}
-            <span class="font-mono text-xs text-gray-500">${item.name}</span>
-          </div>
-        </td>
-        <td class="text-left">${formatSize(item.size_bytes)}</td>
-        <td class="text-left text-xs text-gray-500">${timeText}</td>
-        <td class="text-center">
-          <div class="cache-list-actions">
-            <button class="cache-icon-button" onclick="viewLocalFile('${type}', '${item.name}')" title="查看">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path>
-                <circle cx="12" cy="12" r="3"></circle>
-              </svg>
-            </button>
-            <button class="cache-icon-button" onclick="deleteLocalFile('${type}', '${item.name}')" title="删除">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="3 6 5 6 21 6"></polyline>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-              </svg>
-            </button>
-          </div>
-        </td>
-      </tr>
+  const fragment = document.createDocumentFragment();
+  items.forEach(item => {
+    const tr = document.createElement('tr');
+    const isSelected = selected.has(item.name);
+    if (isSelected) tr.classList.add('row-selected');
+
+    const tdCheck = document.createElement('td');
+    tdCheck.className = 'text-center';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'checkbox';
+    checkbox.checked = isSelected;
+    checkbox.setAttribute('data-name', item.name);
+    checkbox.onchange = () => toggleLocalSelect(type, item.name, checkbox);
+    tdCheck.appendChild(checkbox);
+
+    const tdName = document.createElement('td');
+    tdName.className = 'text-left';
+    const nameWrap = document.createElement('div');
+    nameWrap.className = 'flex items-center gap-2';
+    if (item.preview_url) {
+      const img = document.createElement('img');
+      img.src = item.preview_url;
+      img.alt = '';
+      img.className = 'cache-preview';
+      nameWrap.appendChild(img);
+    }
+    const nameText = document.createElement('span');
+    nameText.className = 'font-mono text-xs text-gray-500';
+    nameText.textContent = item.name;
+    nameWrap.appendChild(nameText);
+    tdName.appendChild(nameWrap);
+
+    const tdSize = document.createElement('td');
+    tdSize.className = 'text-left';
+    tdSize.textContent = formatSize(item.size_bytes);
+
+    const tdTime = document.createElement('td');
+    tdTime.className = 'text-left text-xs text-gray-500';
+    tdTime.textContent = formatTime(item.mtime_ms);
+
+    const tdActions = document.createElement('td');
+    tdActions.className = 'text-center';
+    tdActions.innerHTML = `
+      <div class="cache-list-actions">
+        <button class="cache-icon-button" onclick="viewLocalFile('${type}', '${item.name}')" title="查看">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+        </button>
+        <button class="cache-icon-button" onclick="deleteLocalFile('${type}', '${item.name}')" title="删除">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+        </button>
+      </div>
     `;
-  }).join('');
+
+    tr.appendChild(tdCheck);
+    tr.appendChild(tdName);
+    tr.appendChild(tdSize);
+    tr.appendChild(tdTime);
+    tr.appendChild(tdActions);
+    fragment.appendChild(tr);
+  });
+  body.replaceChildren(fragment);
   syncLocalSelectAllState(type);
   updateSelectedCount();
 }
@@ -894,55 +980,47 @@ function handleDeleteClick() {
   }
 }
 
-function stopBatchLoad() {
+function stopBatchLoad(options = {}) {
   if (!isBatchLoading) return;
   isBatchLoading = false;
   isLoadPaused = false;
   currentBatchAction = null;
   batchQueue = [];
+  BatchSSE.close(batchEventSource);
+  batchEventSource = null;
+  currentBatchTaskId = null;
   setOnlineStatus('已终止', 'text-xs text-[var(--accents-4)] mt-1');
   updateLoadButton();
-  setActionButtonsState();
-  updateBatchActionsVisibility();
-  updateBatchProgress();
-  showToast('已终止剩余加载请求', 'info');
+  refreshBatchUI();
+  if (!options.silent) showToast('已终止剩余加载请求', 'info');
 }
 
-function stopBatchDelete() {
+function stopBatchDelete(options = {}) {
   if (!isBatchDeleting) return;
   isBatchDeleting = false;
   isDeletePaused = false;
   currentBatchAction = null;
   batchQueue = [];
+  BatchSSE.close(batchEventSource);
+  batchEventSource = null;
+  currentBatchTaskId = null;
   updateDeleteButton();
-  setActionButtonsState();
-  updateBatchActionsVisibility();
-  updateBatchProgress();
-  showToast('已终止剩余清理请求', 'info');
+  refreshBatchUI();
+  if (!options.silent) showToast('已终止剩余清理请求', 'info');
 }
 
 function togglePause() {
-  if (isBatchLoading) {
-    isLoadPaused = !isLoadPaused;
-    if (isLoadPaused) {
-      setOnlineStatus('已暂停', 'text-xs text-[var(--accents-4)] mt-1');
-    } else {
-      setOnlineStatus('加载中', 'text-xs text-blue-600 mt-1');
-      processBatchQueue();
-    }
-  } else if (isBatchDeleting) {
-    isDeletePaused = !isDeletePaused;
-    if (!isDeletePaused) {
-      processDeleteQueue();
-    }
+  if (isBatchLoading || isBatchDeleting) {
+    showToast('当前批量任务不支持暂停', 'info');
   }
-  updateBatchProgress();
 }
 
 function stopActiveBatch() {
   if (isBatchLoading) {
+    BatchSSE.cancel(currentBatchTaskId, apiKey);
     stopBatchLoad();
   } else if (isBatchDeleting) {
+    BatchSSE.cancel(currentBatchTaskId, apiKey);
     stopBatchDelete();
   }
 }
@@ -996,7 +1074,7 @@ function retryFailed() {
   }
 }
 
-function startBatchLoad(tokens) {
+async function startBatchLoad(tokens) {
   if (isBatchLoading) {
     showToast('正在加载中，请稍候', 'info');
     return;
@@ -1020,52 +1098,79 @@ function startBatchLoad(tokens) {
   updateOnlineCountFromTokens(batchTokens);
   setOnlineStatus('加载中', 'text-xs text-blue-600 mt-1');
   updateLoadButton();
-  setActionButtonsState();
   if (accountMap.size > 0) {
     renderAccountTable({ online_accounts: Array.from(accountMap.values()), online_details: [], online: {} });
   }
-  updateBatchActionsVisibility();
-  updateBatchProgress();
+  refreshBatchUI();
 
-  processBatchQueue();
-}
+  try {
+    const res = await fetch('/api/v1/admin/cache/online/load/async', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildAuthHeaders(apiKey)
+      },
+      body: JSON.stringify({ tokens })
+    });
+    const data = await res.json();
+    if (!res.ok || data.status !== 'success') {
+      throw new Error(data.detail || '请求失败');
+    }
 
-async function processBatchQueue() {
-  if (!isBatchLoading || isLoadPaused) return;
-  if (batchQueue.length === 0) {
-    finishBatchLoad();
-    return;
-  }
-
-  const chunk = batchQueue.splice(0, BATCH_SIZE);
-  const data = await loadStats({ tokens: chunk, merge: true, silent: true });
-  if (!data) {
-    chunk.forEach(token => loadFailed.set(token, '请求失败'));
-  } else {
-    const details = Array.isArray(data.online_details) ? data.online_details : [];
-    const detailMap = new Map(details.map(item => [item.token, item]));
-    chunk.forEach(token => {
-      const detail = detailMap.get(token);
-      if (!detail) {
-        loadFailed.set(token, '返回为空');
-        return;
-      }
-      if (detail.status !== 'ok') {
-        loadFailed.set(token, detail.status);
-      } else {
-        loadFailed.delete(token);
+    currentBatchTaskId = data.task_id;
+    BatchSSE.close(batchEventSource);
+    batchEventSource = BatchSSE.open(currentBatchTaskId, apiKey, {
+      onMessage: (msg) => {
+        if (msg.type === 'snapshot' || msg.type === 'progress') {
+          if (typeof msg.total === 'number') batchTotal = msg.total;
+          if (typeof msg.processed === 'number') batchProcessed = msg.processed;
+          updateBatchProgress();
+        } else if (msg.type === 'done') {
+          if (typeof msg.total === 'number') batchTotal = msg.total;
+          batchProcessed = batchTotal;
+          updateBatchProgress();
+          const result = msg.result;
+          if (result) {
+            applyStatsData(result, true);
+            const details = Array.isArray(result.online_details) ? result.online_details : [];
+            loadFailed.clear();
+            details.forEach(detail => {
+              if (detail.status !== 'ok') loadFailed.set(detail.token, detail.status);
+            });
+          }
+          finishBatchLoad();
+          if (msg.warning) {
+            showToast(`加载完成\n⚠️ ${msg.warning}`, 'warning');
+          }
+          currentBatchTaskId = null;
+          BatchSSE.close(batchEventSource);
+          batchEventSource = null;
+        } else if (msg.type === 'cancelled') {
+          stopBatchLoad({ silent: true });
+          showToast('已终止加载', 'info');
+          currentBatchTaskId = null;
+          BatchSSE.close(batchEventSource);
+          batchEventSource = null;
+        } else if (msg.type === 'error') {
+          stopBatchLoad({ silent: true });
+          showToast('加载失败: ' + (msg.error || '未知错误'), 'error');
+          currentBatchTaskId = null;
+          BatchSSE.close(batchEventSource);
+          batchEventSource = null;
+        }
+      },
+      onError: () => {
+        stopBatchLoad({ silent: true });
+        showToast('连接中断', 'error');
+        currentBatchTaskId = null;
+        BatchSSE.close(batchEventSource);
+        batchEventSource = null;
       }
     });
+  } catch (e) {
+    stopBatchLoad({ silent: true });
+    showToast(e.message || '请求失败', 'error');
   }
-  batchProcessed += chunk.length;
-  updateOnlineCountFromTokens(batchTokens);
-  updateLoadButton();
-  setOnlineStatus('加载中', 'text-xs text-blue-600 mt-1');
-  updateBatchProgress();
-
-  setTimeout(() => {
-    processBatchQueue();
-  }, 300);
 }
 
 function finishBatchLoad() {
@@ -1085,9 +1190,7 @@ function finishBatchLoad() {
     setOnlineStatus('连接正常', 'text-xs text-green-600 mt-1');
   }
   updateLoadButton();
-  setActionButtonsState();
-  updateBatchActionsVisibility();
-  updateBatchProgress();
+  refreshBatchUI();
 }
 
 async function loadSelectedAccounts() {
@@ -1125,7 +1228,7 @@ async function clearSelectedAccounts() {
   startBatchDelete(Array.from(selectedTokens));
 }
 
-function startBatchDelete(tokens) {
+async function startBatchDelete(tokens) {
   if (!tokens || tokens.length === 0) return;
   isBatchDeleting = true;
   isDeletePaused = false;
@@ -1137,55 +1240,9 @@ function startBatchDelete(tokens) {
   batchQueue = tokens.slice();
   showToast('正在批量清理在线资产，请稍候...', 'info');
   updateDeleteButton();
-  setActionButtonsState();
-  updateBatchActionsVisibility();
-  updateBatchProgress();
-  processDeleteQueue();
-}
-
-async function processDeleteQueue() {
-  if (!isBatchDeleting || isDeletePaused) return;
-  if (batchQueue.length === 0) {
-    finishBatchDelete();
-    return;
-  }
-  const chunk = batchQueue.splice(0, BATCH_SIZE);
-  const results = await clearOnlineCacheBatch(chunk);
-  if (results && results.status === 'success' && results.results) {
-    Object.entries(results.results).forEach(([token, result]) => {
-      if (result.status !== 'success') {
-        deleteFailed.set(token, result.error || '清理失败');
-      } else {
-        deleteFailed.delete(token);
-      }
-    });
-  } else {
-    chunk.forEach(token => deleteFailed.set(token, '请求失败'));
-  }
-  deleteProcessed += chunk.length;
-  updateDeleteButton();
-  updateBatchProgress();
-  setTimeout(() => {
-    processDeleteQueue();
-  }, 300);
-}
-
-function finishBatchDelete() {
-  isBatchDeleting = false;
-  isDeletePaused = false;
-  currentBatchAction = null;
-  updateDeleteButton();
-  setActionButtonsState();
-  updateBatchActionsVisibility();
-  updateBatchProgress();
-  showToast('批量清理完成', 'success');
-  loadStats();
-}
-
-async function clearOnlineCacheBatch(tokens = []) {
-  if (!tokens || tokens.length === 0) return;
+  refreshBatchUI();
   try {
-    const res = await fetch('/api/v1/admin/cache/online/clear', {
+    const res = await fetch('/api/v1/admin/cache/online/clear/async', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1195,13 +1252,73 @@ async function clearOnlineCacheBatch(tokens = []) {
     });
     const data = await res.json();
     if (!res.ok || data.status !== 'success') {
-      showToast('批量清理失败', 'error');
+      throw new Error(data.detail || '请求失败');
     }
-    return data;
+
+    currentBatchTaskId = data.task_id;
+    BatchSSE.close(batchEventSource);
+    batchEventSource = BatchSSE.open(currentBatchTaskId, apiKey, {
+      onMessage: (msg) => {
+        if (msg.type === 'snapshot' || msg.type === 'progress') {
+          if (typeof msg.total === 'number') deleteTotal = msg.total;
+          if (typeof msg.processed === 'number') deleteProcessed = msg.processed;
+          updateBatchProgress();
+        } else if (msg.type === 'done') {
+          if (typeof msg.total === 'number') deleteTotal = msg.total;
+          deleteProcessed = deleteTotal;
+          updateBatchProgress();
+          const result = msg.result;
+          deleteFailed.clear();
+          if (result && result.results) {
+            Object.entries(result.results).forEach(([token, res]) => {
+              if (res.status !== 'success') {
+                deleteFailed.set(token, res.error || '清理失败');
+              }
+            });
+          }
+          finishBatchDelete();
+          if (msg.warning) {
+            showToast(`清理完成\n⚠️ ${msg.warning}`, 'warning');
+          }
+          currentBatchTaskId = null;
+          BatchSSE.close(batchEventSource);
+          batchEventSource = null;
+        } else if (msg.type === 'cancelled') {
+          stopBatchDelete({ silent: true });
+          showToast('已终止清理', 'info');
+          currentBatchTaskId = null;
+          BatchSSE.close(batchEventSource);
+          batchEventSource = null;
+        } else if (msg.type === 'error') {
+          stopBatchDelete({ silent: true });
+          showToast('清理失败: ' + (msg.error || '未知错误'), 'error');
+          currentBatchTaskId = null;
+          BatchSSE.close(batchEventSource);
+          batchEventSource = null;
+        }
+      },
+      onError: () => {
+        stopBatchDelete({ silent: true });
+        showToast('连接中断', 'error');
+        currentBatchTaskId = null;
+        BatchSSE.close(batchEventSource);
+        batchEventSource = null;
+      }
+    });
   } catch (e) {
-    showToast('请求超时或失败', 'error');
-    return null;
+    stopBatchDelete({ silent: true });
+    showToast(e.message || '请求失败', 'error');
   }
+}
+
+function finishBatchDelete() {
+  isBatchDeleting = false;
+  isDeletePaused = false;
+  currentBatchAction = null;
+  updateDeleteButton();
+  refreshBatchUI();
+  showToast('批量清理完成', 'success');
+  loadStats();
 }
 
 async function clearOnlineCache(targetToken = '', skipConfirm = false) {

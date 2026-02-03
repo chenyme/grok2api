@@ -30,6 +30,18 @@ body {
   font-family: 'Geist Mono', monospace;
 }
 
+.table-empty {
+  color: var(--accents-4);
+  font-size: 12px;
+  font-weight: 400;
+  padding: 48px 0;
+  text-align: center;
+}
+
+td.table-empty {
+  height: auto;
+}
+
 .fade-in {
   animation: fadeIn 0.5s ease-out forwards;
 }

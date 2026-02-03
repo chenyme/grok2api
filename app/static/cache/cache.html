@@ -9,15 +9,15 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
-  <link href="/static/common/common.css" rel="stylesheet">
-  <link href="/static/cache/cache.css?v=3" rel="stylesheet">
+  <link href="/static/common/common.css?v=2" rel="stylesheet">
+  <link href="/static/cache/cache.css?v=4" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
 </head>
 
 <body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
   <div id="app-header"></div>
 
-  <main class="space-y-6 flex-1 container mx-auto max-w-4xl px-6 py-8 fade-in">
+  <main class="space-y-6 flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in">
     <div class="space-y-6">
       <div class="flex justify-between items-center">
         <div>
@@ -141,7 +141,7 @@
           </thead>
           <tbody id="account-table-body"></tbody>
         </table>
-        <div id="account-empty" class="hidden text-center py-12 text-[var(--accents-4)]">暂无可用账号</div>
+        <div id="account-empty" class="hidden table-empty">暂无可用账号</div>
       </div>
 
     </div>
@@ -197,10 +197,11 @@
   </dialog>
 
   <script src="/static/common/admin-auth.js?v=2"></script>
-  <script src="/static/common/header.js?v=1"></script>
+  <script src="/static/common/batch-sse.js?v=1"></script>
+  <script src="/static/common/header.js?v=2"></script>
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
-  <script src="/static/cache/cache.js?v=3"></script>
+  <script src="/static/cache/cache.js?v=8"></script>
   <script src="/static/common/draggable.js"></script>
 </body>
 

@@ -2,7 +2,7 @@ async function loadAdminHeader() {
   const container = document.getElementById('app-header');
   if (!container) return;
   try {
-    const res = await fetch('/static/common/header.html?v=1');
+    const res = await fetch('/static/common/header.html?v=2');
     if (!res.ok) return;
     container.innerHTML = await res.text();
     const path = window.location.pathname;
