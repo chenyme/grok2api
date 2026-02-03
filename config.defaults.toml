@@ -35,3 +35,6 @@ media_max_concurrent = 50
 usage_max_concurrent = 25
 assets_delete_batch_size = 10
 admin_assets_batch_size = 10
+nsfw_max_concurrent = 10
+admin_nsfw_batch_size = 50
+nsfw_max_tokens = 1000

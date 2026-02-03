@@ -14,41 +14,48 @@ router = APIRouter()
 
 TEMPLATE_DIR = Path(__file__).parent.parent.parent / "static"
 
+
 async def render_template(filename: str):
     """渲染指定模板"""
     template_path = TEMPLATE_DIR / filename
     if not template_path.exists():
         return HTMLResponse(f"Template {filename} not found.", status_code=404)
-    
+
     async with aiofiles.open(template_path, "r", encoding="utf-8") as f:
         content = await f.read()
     return HTMLResponse(content)
+
 
 @router.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def admin_login_page():
     """管理后台登录页"""
     return await render_template("login/login.html")
 
+
 @router.get("/admin/config", response_class=HTMLResponse, include_in_schema=False)
 async def admin_config_page():
     """配置管理页"""
     return await render_template("config/config.html")
+
 
 @router.get("/admin/token", response_class=HTMLResponse, include_in_schema=False)
 async def admin_token_page():
     """Token 管理页"""
     return await render_template("token/token.html")
 
+
 @router.post("/api/v1/admin/login", dependencies=[Depends(verify_app_key)])
 async def admin_login_api():
     """管理后台登录验证（使用 app_key）"""
     return {"status": "success", "api_key": get_config("app.api_key", "")}
+
 
 @router.get("/api/v1/admin/config", dependencies=[Depends(verify_api_key)])
 async def get_config_api():
     """获取当前配置"""
     # 暴露原始配置字典
     return config._config
+
 
 @router.post("/api/v1/admin/config", dependencies=[Depends(verify_api_key)])
 async def update_config_api(data: dict):
@@ -58,6 +65,7 @@ async def update_config_api(data: dict):
         return {"status": "success", "message": "配置已更新"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/api/v1/admin/storage", dependencies=[Depends(verify_api_key)])
 async def get_storage_info():
@@ -81,6 +89,7 @@ async def get_storage_info():
                 storage_type = storage.dialect
     return {"type": storage_type or "local"}
 
+
 @router.get("/api/v1/admin/tokens", dependencies=[Depends(verify_api_key)])
 async def get_tokens_api():
     """获取所有 Token"""
@@ -88,12 +97,14 @@ async def get_tokens_api():
     tokens = await storage.load_tokens()
     return tokens or {}
 
+
 @router.post("/api/v1/admin/tokens", dependencies=[Depends(verify_api_key)])
 async def update_tokens_api(data: dict):
     """更新 Token 信息"""
     storage = get_storage()
     try:
         from app.services.token.manager import get_token_manager
+
         async with storage.acquire_lock("tokens_save", timeout=10):
             await storage.save_tokens(data)
             mgr = await get_token_manager()
@@ -102,11 +113,12 @@ async def update_tokens_api(data: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/api/v1/admin/tokens/refresh", dependencies=[Depends(verify_api_key)])
 async def refresh_tokens_api(data: dict):
     """刷新 Token 状态"""
     from app.services.token.manager import get_token_manager
-    
+
     try:
         mgr = await get_token_manager()
         tokens = []
@@ -114,55 +126,163 @@ async def refresh_tokens_api(data: dict):
             tokens.append(data["token"])
         if "tokens" in data and isinstance(data["tokens"], list):
             tokens.extend(data["tokens"])
-            
+
         if not tokens:
-             raise HTTPException(status_code=400, detail="No tokens provided")
-             
+            raise HTTPException(status_code=400, detail="No tokens provided")
+
         unique_tokens = list(set(tokens))
-        
+
         sem = asyncio.Semaphore(10)
-        
+
         async def _refresh_one(t):
             async with sem:
-                return t, await mgr.sync_usage(t, "grok-3", consume_on_fail=False, is_usage=False)
-        
+                return t, await mgr.sync_usage(
+                    t, "grok-3", consume_on_fail=False, is_usage=False
+                )
+
         results_list = await asyncio.gather(*[_refresh_one(t) for t in unique_tokens])
         results = dict(results_list)
-            
+
         return {"status": "success", "results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/admin/tokens/nsfw/enable", dependencies=[Depends(verify_api_key)])
+async def enable_nsfw_api(data: dict):
+    """批量开启 NSFW (Unhinged) 模式"""
+    from app.services.grok.nsfw import NSFWService
+    from app.services.grok.batch import run_in_batches
+    from app.services.token.manager import get_token_manager
+
+    try:
+        mgr = await get_token_manager()
+        nsfw_service = NSFWService()
+
+        # 收集 token 列表
+        tokens: list[str] = []
+        if isinstance(data.get("token"), str) and data["token"].strip():
+            tokens.append(data["token"].strip())
+        if isinstance(data.get("tokens"), list):
+            tokens.extend([str(t).strip() for t in data["tokens"] if str(t).strip()])
+
+        # 若未指定，则使用所有 pool 中的 token
+        if not tokens:
+            for pool_name, pool in mgr.pools.items():
+                for info in pool.list():
+                    raw = (
+                        info.token[4:] if info.token.startswith("sso=") else info.token
+                    )
+                    tokens.append(raw)
+
+        if not tokens:
+            raise HTTPException(status_code=400, detail="No tokens available")
+
+        # 去重并保持顺序
+        unique_tokens = list(dict.fromkeys(tokens))
+
+        # 限制最大数量（防止误操作）
+        max_tokens = get_config("performance.nsfw_max_tokens", 1000)
+        try:
+            max_tokens = int(max_tokens)
+        except Exception:
+            max_tokens = 1000
+        if len(unique_tokens) > max_tokens:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many tokens: {len(unique_tokens)} > {max_tokens}",
+            )
+
+        # 批量执行配置
+        max_concurrent = get_config("performance.nsfw_max_concurrent", 10)
+        batch_size = get_config("performance.admin_nsfw_batch_size", 50)
+
+        # 定义 worker
+        async def _enable(token: str):
+            result = await nsfw_service.enable(token)
+            return {
+                "success": result.success,
+                "http_status": result.http_status,
+                "grpc_status": result.grpc_status,
+                "grpc_message": result.grpc_message,
+                "error": result.error,
+            }
+
+        # 执行批量操作
+        raw_results = await run_in_batches(
+            unique_tokens, _enable, max_concurrent=max_concurrent, batch_size=batch_size
+        )
+
+        # 构造返回结果（mask token）
+        results = {}
+        ok_count = 0
+        fail_count = 0
+
+        for token, res in raw_results.items():
+            masked = f"{token[:8]}...{token[-8:]}" if len(token) > 20 else token
+            if res.get("ok") and res.get("data", {}).get("success"):
+                ok_count += 1
+                results[masked] = res.get("data", {})
+            else:
+                fail_count += 1
+                results[masked] = res.get("data") or {"error": res.get("error")}
+
+        return {
+            "status": "success",
+            "summary": {
+                "total": len(unique_tokens),
+                "ok": ok_count,
+                "fail": fail_count,
+            },
+            "results": results,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Enable NSFW failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/admin/cache", response_class=HTMLResponse, include_in_schema=False)
 async def admin_cache_page():
     """缓存管理页"""
     return await render_template("cache/cache.html")
 
+
 @router.get("/api/v1/admin/cache", dependencies=[Depends(verify_api_key)])
 async def get_cache_stats_api(request: Request):
     """获取缓存统计"""
     from app.services.grok.assets import DownloadService, ListService
     from app.services.token.manager import get_token_manager
-    
+
     try:
         dl_service = DownloadService()
         image_stats = dl_service.get_stats("image")
         video_stats = dl_service.get_stats("video")
-        
+
         mgr = await get_token_manager()
         pools = mgr.pools
         accounts = []
         for pool_name, pool in pools.items():
             for info in pool.list():
-                raw_token = info.token[4:] if info.token.startswith("sso=") else info.token
-                masked = f"{raw_token[:8]}...{raw_token[-16:]}" if len(raw_token) > 24 else raw_token
-                accounts.append({
-                    "token": raw_token,
-                    "token_masked": masked,
-                    "pool": pool_name,
-                    "status": info.status,
-                    "last_asset_clear_at": info.last_asset_clear_at
-                })
+                raw_token = (
+                    info.token[4:] if info.token.startswith("sso=") else info.token
+                )
+                masked = (
+                    f"{raw_token[:8]}...{raw_token[-16:]}"
+                    if len(raw_token) > 24
+                    else raw_token
+                )
+                accounts.append(
+                    {
+                        "token": raw_token,
+                        "token_masked": masked,
+                        "pool": pool_name,
+                        "status": info.status,
+                        "last_asset_clear_at": info.last_asset_clear_at,
+                    }
+                )
 
         scope = request.query_params.get("scope")
         selected_token = request.query_params.get("token")
@@ -171,7 +291,12 @@ async def get_cache_stats_api(request: Request):
         if tokens_param:
             selected_tokens = [t.strip() for t in tokens_param.split(",") if t.strip()]
 
-        online_stats = {"count": 0, "status": "unknown", "token": None, "last_asset_clear_at": None}
+        online_stats = {
+            "count": 0,
+            "status": "unknown",
+            "token": None,
+            "last_asset_clear_at": None,
+        }
         online_details = []
         account_map = {a["token"]: a for a in accounts}
         batch_size = get_config("performance.admin_assets_batch_size", 10)
@@ -192,42 +317,66 @@ async def get_cache_stats_api(request: Request):
             account = account_map.get(token)
             try:
                 count = await _fetch_assets(token)
-                return ({
-                    "token": token,
-                    "token_masked": account["token_masked"] if account else token,
-                    "count": count,
-                    "status": "ok",
-                    "last_asset_clear_at": account["last_asset_clear_at"] if account else None
-                }, count)
+                return (
+                    {
+                        "token": token,
+                        "token_masked": account["token_masked"] if account else token,
+                        "count": count,
+                        "status": "ok",
+                        "last_asset_clear_at": account["last_asset_clear_at"]
+                        if account
+                        else None,
+                    },
+                    count,
+                )
             except Exception as e:
-                return ({
-                    "token": token,
-                    "token_masked": account["token_masked"] if account else token,
-                    "count": 0,
-                    "status": f"error: {str(e)}",
-                    "last_asset_clear_at": account["last_asset_clear_at"] if account else None
-                }, 0)
+                return (
+                    {
+                        "token": token,
+                        "token_masked": account["token_masked"] if account else token,
+                        "count": 0,
+                        "status": f"error: {str(e)}",
+                        "last_asset_clear_at": account["last_asset_clear_at"]
+                        if account
+                        else None,
+                    },
+                    0,
+                )
 
         if selected_tokens:
             total = 0
             for i in range(0, len(selected_tokens), batch_size):
-                chunk = selected_tokens[i:i + batch_size]
-                results = await asyncio.gather(*[_fetch_detail(token) for token in chunk])
+                chunk = selected_tokens[i : i + batch_size]
+                results = await asyncio.gather(
+                    *[_fetch_detail(token) for token in chunk]
+                )
                 for detail, count in results:
                     online_details.append(detail)
                     total += count
-            online_stats = {"count": total, "status": "ok" if selected_tokens else "no_token", "token": None, "last_asset_clear_at": None}
+            online_stats = {
+                "count": total,
+                "status": "ok" if selected_tokens else "no_token",
+                "token": None,
+                "last_asset_clear_at": None,
+            }
             scope = "selected"
         elif scope == "all":
             total = 0
             tokens = [account["token"] for account in accounts]
             for i in range(0, len(tokens), batch_size):
-                chunk = tokens[i:i + batch_size]
-                results = await asyncio.gather(*[_fetch_detail(token) for token in chunk])
+                chunk = tokens[i : i + batch_size]
+                results = await asyncio.gather(
+                    *[_fetch_detail(token) for token in chunk]
+                )
                 for detail, count in results:
                     online_details.append(detail)
                     total += count
-            online_stats = {"count": total, "status": "ok" if accounts else "no_token", "token": None, "last_asset_clear_at": None}
+            online_stats = {
+                "count": total,
+                "status": "ok" if accounts else "no_token",
+                "token": None,
+                "last_asset_clear_at": None,
+            }
         else:
             token = selected_token
             if token:
@@ -239,7 +388,9 @@ async def get_cache_stats_api(request: Request):
                         "status": "ok",
                         "token": token,
                         "token_masked": match["token_masked"] if match else token,
-                        "last_asset_clear_at": match["last_asset_clear_at"] if match else None
+                        "last_asset_clear_at": match["last_asset_clear_at"]
+                        if match
+                        else None,
                     }
                 except Exception as e:
                     match = next((a for a in accounts if a["token"] == token), None)
@@ -248,28 +399,37 @@ async def get_cache_stats_api(request: Request):
                         "status": f"error: {str(e)}",
                         "token": token,
                         "token_masked": match["token_masked"] if match else token,
-                        "last_asset_clear_at": match["last_asset_clear_at"] if match else None
+                        "last_asset_clear_at": match["last_asset_clear_at"]
+                        if match
+                        else None,
                     }
             else:
-                online_stats = {"count": 0, "status": "not_loaded", "token": None, "last_asset_clear_at": None}
-            
+                online_stats = {
+                    "count": 0,
+                    "status": "not_loaded",
+                    "token": None,
+                    "last_asset_clear_at": None,
+                }
+
         return {
             "local_image": image_stats,
             "local_video": video_stats,
             "online": online_stats,
             "online_accounts": accounts,
             "online_scope": scope or "none",
-            "online_details": online_details
+            "online_details": online_details,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/api/v1/admin/cache/clear", dependencies=[Depends(verify_api_key)])
 async def clear_local_cache_api(data: dict):
     """清理本地缓存"""
     from app.services.grok.assets import DownloadService
+
     cache_type = data.get("type", "image")
-    
+
     try:
         dl_service = DownloadService()
         result = dl_service.clear(cache_type)
@@ -277,15 +437,17 @@ async def clear_local_cache_api(data: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/api/v1/admin/cache/list", dependencies=[Depends(verify_api_key)])
 async def list_local_cache_api(
     cache_type: str = "image",
     type_: str = Query(default=None, alias="type"),
     page: int = 1,
-    page_size: int = 1000
+    page_size: int = 1000,
 ):
     """列出本地缓存文件"""
     from app.services.grok.assets import DownloadService
+
     try:
         if type_:
             cache_type = type_
@@ -295,10 +457,12 @@ async def list_local_cache_api(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/api/v1/admin/cache/item/delete", dependencies=[Depends(verify_api_key)])
 async def delete_local_cache_item_api(data: dict):
     """删除单个本地缓存文件"""
     from app.services.grok.assets import DownloadService
+
     cache_type = data.get("type", "image")
     name = data.get("name")
     if not name:
@@ -310,12 +474,13 @@ async def delete_local_cache_item_api(data: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/api/v1/admin/cache/online/clear", dependencies=[Depends(verify_api_key)])
 async def clear_online_cache_api(data: dict):
     """清理在线缓存"""
     from app.services.grok.assets import DeleteService
     from app.services.token.manager import get_token_manager
-    
+
     delete_service = None
     try:
         mgr = await get_token_manager()
@@ -344,7 +509,7 @@ async def clear_online_cache_api(data: dict):
                     return t, {"status": "error", "error": str(e)}
 
             for i in range(0, len(token_list), batch_size):
-                chunk = token_list[i:i + batch_size]
+                chunk = token_list[i : i + batch_size]
                 res_list = await asyncio.gather(*[_clear_one(t) for t in chunk])
                 for t, res in res_list:
                     results[t] = res
@@ -353,7 +518,9 @@ async def clear_online_cache_api(data: dict):
 
         token = data.get("token") or mgr.get_token()
         if not token:
-            raise HTTPException(status_code=400, detail="No available token to perform cleanup")
+            raise HTTPException(
+                status_code=400, detail="No available token to perform cleanup"
+            )
 
         result = await delete_service.delete_all(token)
         await mgr.mark_asset_clear(token)
