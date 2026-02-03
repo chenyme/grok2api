@@ -16,8 +16,8 @@ from app.core.exceptions import ValidationException
 router = APIRouter(tags=["Chat"])
 
 
-VALID_ROLES = ["developer", "system", "user", "assistant", "tool", "function"]
-# 角色别名映射 (OpenAI 兼容)
+VALID_ROLES = ["developer", "system", "user", "assistant", "tool"]
+# 角色别名映射 (OpenAI 兼容: function -> tool)
 ROLE_ALIASES = {"function": "tool"}
 USER_CONTENT_TYPES = ["text", "image_url", "input_audio", "file"]
 
@@ -123,8 +123,14 @@ class ChatCompletionRequest(BaseModel):
                 return True
             if v.lower() in ("false", "0", "no"):
                 return False
-        # 其他情况尝试转换
-        return bool(v)
+            # 未识别的字符串值抛出错误
+            raise ValueError(
+                f"Invalid stream value '{v}'. Must be a boolean or one of: true, false, 1, 0, yes, no"
+            )
+        # 非布尔非字符串类型抛出错误
+        raise ValueError(
+            f"Invalid stream value type '{type(v).__name__}'. Must be a boolean or string."
+        )
 
     model_config = {
         "extra": "ignore"

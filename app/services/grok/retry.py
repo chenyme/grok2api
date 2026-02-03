@@ -188,7 +188,10 @@ async def retry_on_status(
     if extract_status is None:
         def extract_status(e: Exception) -> Optional[int]:
             if isinstance(e, UpstreamException):
-                return e.details.get("status") if e.details else None
+                # 优先从 details 获取，回退到 status_code 属性
+                if e.details and "status" in e.details:
+                    return e.details["status"]
+                return getattr(e, "status_code", None)
             return None
 
     while ctx.attempt <= ctx.max_retry:

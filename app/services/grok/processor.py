@@ -179,14 +179,19 @@ class StreamProcessor(BaseProcessor):
                 self._tag_buffer += char
                 # 检查是否到达结束标签
                 if char == '>':
-                    # 检查是否是自闭合标签或结束标签
-                    if '/>' in self._tag_buffer or '</grok:render>' in self._tag_buffer:
+                    # 检查是否是自闭合标签
+                    if '/>' in self._tag_buffer:
                         self._in_filter_tag = False
                         self._tag_buffer = ""
-                    # 检查是否是开始标签结束（非自闭合）
-                    elif self._tag_buffer.startswith('<grok:render') and '>' in self._tag_buffer:
+                    else:
+                        # 检查是否是结束标签 </{tag}>
+                        for tag in self.filter_tags:
+                            if f'</{tag}>' in self._tag_buffer:
+                                self._in_filter_tag = False
+                                self._tag_buffer = ""
+                                break
+                        # 如果不是结束标签，检查是否是开始标签结束（非自闭合）
                         # 继续等待结束标签
-                        pass
                 i += 1
                 continue
 
