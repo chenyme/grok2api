@@ -88,7 +88,9 @@ class RetryContext:
         self.last_error = error
         self.attempt += 1
 
-    def calculate_delay(self, status_code: int, retry_after: Optional[float] = None) -> float:
+    def calculate_delay(
+        self, status_code: int, retry_after: Optional[float] = None
+    ) -> float:
         """
         计算退避延迟时间
 
@@ -114,7 +116,7 @@ class RetryContext:
             return delay
 
         # 其他状态码使用指数退避 + full jitter
-        exp_delay = self.backoff_base * (self.backoff_factor ** self.attempt)
+        exp_delay = self.backoff_base * (self.backoff_factor**self.attempt)
         delay = random.uniform(0, min(exp_delay, self.backoff_max))
         return delay
 
@@ -164,7 +166,7 @@ async def retry_on_status(
     *args,
     extract_status: Callable[[Exception], Optional[int]] = None,
     on_retry: Callable[[int, int, Exception, float], None] = None,
-    **kwargs
+    **kwargs,
 ) -> Any:
     """
     通用重试函数
@@ -186,6 +188,7 @@ async def retry_on_status(
 
     # 状态码提取器
     if extract_status is None:
+
         def extract_status(e: Exception) -> Optional[int]:
             if isinstance(e, UpstreamException):
                 # 优先从 details 获取，回退到 status_code 属性
@@ -256,9 +259,7 @@ async def retry_on_status(
                         f"last status: {status_code}, total delay: {ctx.total_delay:.2f}s"
                     )
                 else:
-                    logger.error(
-                        f"Non-retryable status code: {status_code}"
-                    )
+                    logger.error(f"Non-retryable status code: {status_code}")
 
                 # 抛出最后一次的错误
                 raise
@@ -266,7 +267,7 @@ async def retry_on_status(
 
 def with_retry(
     extract_status: Callable[[Exception], Optional[int]] = None,
-    on_retry: Callable[[int, int, Exception, float], None] = None
+    on_retry: Callable[[int, int, Exception, float], None] = None,
 ):
     """
     重试装饰器
@@ -276,17 +277,16 @@ def with_retry(
         async def my_api_call():
             ...
     """
+
     def decorator(func: Callable):
         @wraps(func)
         async def wrapper(*args, **kwargs):
             return await retry_on_status(
-                func,
-                *args,
-                extract_status=extract_status,
-                on_retry=on_retry,
-                **kwargs
+                func, *args, extract_status=extract_status, on_retry=on_retry, **kwargs
             )
+
         return wrapper
+
     return decorator
 
 

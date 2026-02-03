@@ -54,7 +54,9 @@ class BatchTask:
                 # Drop if queue is full or closed
                 pass
 
-    def record(self, ok: bool, *, item: Any = None, detail: Any = None, error: str = "") -> None:
+    def record(
+        self, ok: bool, *, item: Any = None, detail: Any = None, error: str = ""
+    ) -> None:
         self.processed += 1
         if ok:
             self.ok += 1
@@ -148,4 +150,3 @@ def delete_task(task_id: str) -> None:
 async def expire_task(task_id: str, delay: int = 300) -> None:
     await asyncio.sleep(delay)
     delete_task(task_id)
-

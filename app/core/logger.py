@@ -20,42 +20,46 @@ def _format_json(record) -> str:
     tz = record["time"].strftime("%z")
     if tz:
         time_str += tz[:3] + ":" + tz[3:]
-    
+
     log_entry = {
         "time": time_str,
         "level": record["level"].name.lower(),
         "msg": record["message"],
         "caller": f"{record['file'].name}:{record['line']}",
     }
-    
+
     # trace 上下文
     extra = record["extra"]
     if extra.get("traceID"):
         log_entry["traceID"] = extra["traceID"]
     if extra.get("spanID"):
         log_entry["spanID"] = extra["spanID"]
-    
+
     # 其他 extra 字段
     for key, value in extra.items():
         if key not in ("traceID", "spanID") and not key.startswith("_"):
             log_entry[key] = value
-    
+
     # 错误及以上级别添加堆栈跟踪
     if record["level"].no >= 40 and record["exception"]:
-        log_entry["stacktrace"] = "".join(traceback.format_exception(
-            record["exception"].type,
-            record["exception"].value,
-            record["exception"].traceback
-        ))
-    
+        log_entry["stacktrace"] = "".join(
+            traceback.format_exception(
+                record["exception"].type,
+                record["exception"].value,
+                record["exception"].traceback,
+            )
+        )
+
     return json.dumps(log_entry, ensure_ascii=False)
 
 
 def _make_json_sink(output):
     """创建 JSON sink"""
+
     def sink(message):
         json_str = _format_json(message.record)
         print(json_str, file=output, flush=True)
+
     return sink
 
 
@@ -75,7 +79,7 @@ def setup_logging(
 ):
     """设置日志配置"""
     logger.remove()
-    
+
     # 控制台输出
     if json_console:
         logger.add(
@@ -91,7 +95,7 @@ def setup_logging(
             format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{file.name}:{line}</cyan> - <level>{message}</level>",
             colorize=True,
         )
-    
+
     # 文件输出
     if file_logging:
         logger.add(
@@ -100,7 +104,7 @@ def setup_logging(
             format="{message}",
             enqueue=True,
         )
-    
+
     return logger
 
 

@@ -78,7 +78,9 @@ async def stream_batch(task_id: str, request: Request):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@router.post("/api/v1/admin/batch/{task_id}/cancel", dependencies=[Depends(verify_api_key)])
+@router.post(
+    "/api/v1/admin/batch/{task_id}/cancel", dependencies=[Depends(verify_api_key)]
+)
 async def cancel_batch(task_id: str):
     task = get_task(task_id)
     if not task:
@@ -221,7 +223,10 @@ async def refresh_tokens_api(data: dict):
             )
 
         raw_results = await run_in_batches(
-            unique_tokens, _refresh_one, max_concurrent=max_concurrent, batch_size=batch_size
+            unique_tokens,
+            _refresh_one,
+            max_concurrent=max_concurrent,
+            batch_size=batch_size,
         )
 
         results = {}
@@ -283,6 +288,7 @@ async def refresh_tokens_api_async(data: dict):
 
     async def _run():
         try:
+
             async def _refresh_one(t: str):
                 return await mgr.sync_usage(
                     t, "grok-3", consume_on_fail=False, is_usage=False
@@ -444,7 +450,9 @@ async def enable_nsfw_api(data: dict):
 
         # 添加截断提示
         if truncated:
-            response["warning"] = f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
+            response["warning"] = (
+                f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
+            )
 
         return response
 
@@ -506,6 +514,7 @@ async def enable_nsfw_api_async(data: dict):
 
     async def _run():
         try:
+
             async def _enable(token: str):
                 result = await nsfw_service.enable(token)
                 if result.success:
@@ -1162,6 +1171,7 @@ async def clear_online_cache_api_async(data: dict):
     async def _run():
         delete_service = DeleteService()
         try:
+
             async def _clear_one(t: str):
                 try:
                     result = await delete_service.delete_all(t)
