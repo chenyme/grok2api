@@ -22,14 +22,9 @@ async def verify_api_key(
     """
     验证 Bearer Token
 
-    如果 config.toml 中未配置 api_key，则跳过验证。
-    如果配置了 api_key，则必须提供正确的 Authorization: Bearer <key>。
+    如果 config.toml 中未配置 api_key，则使用默认密钥 "grok2api"。
     """
-    api_key = get_config("app.api_key", "")
-
-    # 如果未配置 API Key，直接放行
-    if not api_key:
-        return None
+    api_key = get_config("app.api_key", "grok2api")
 
     if not auth:
         raise HTTPException(
