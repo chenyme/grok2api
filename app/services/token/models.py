@@ -90,13 +90,13 @@ class TokenInfo(BaseModel):
         self.use_count += actual_cost  # 使用 actual_cost 避免配额不足时过度计数
         self.quota = max(0, self.quota - actual_cost)
 
-        # 成功消耗后清空失败计数
-        self.fail_count = 0
-        self.last_fail_reason = None
+        # 注意：不在这里清零 fail_count，只有 record_success() 才清零
+        # 这样可以避免失败后调用 consume 导致失败计数被重置
 
         if self.quota == 0:
             self.status = TokenStatus.COOLING
-        elif self.status in [TokenStatus.COOLING, TokenStatus.EXPIRED]:
+        elif self.status == TokenStatus.COOLING:
+            # 只从 COOLING 恢复，不从 EXPIRED 恢复
             self.status = TokenStatus.ACTIVE
 
         return actual_cost
@@ -127,8 +127,8 @@ class TokenInfo(BaseModel):
 
     def record_fail(self, status_code: int = 401, reason: str = ""):
         """记录失败，达到阈值后自动标记为 expired"""
-        # 仅 401 错误才计入失败
-        if status_code != 401:
+        # 401/403 错误计入失败（都表示认证/授权失败）
+        if status_code not in (401, 403):
             return
 
         self.fail_count += 1

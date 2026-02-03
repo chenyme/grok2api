@@ -24,11 +24,12 @@ from curl_cffi.requests import AsyncSession
 from app.core.logger import logger
 from app.core.config import get_config
 from app.core.exceptions import (
-    AppException, 
-    UpstreamException, 
+    AppException,
+    UpstreamException,
     ValidationException
 )
 from app.services.grok.statsig import StatsigService
+from app.services.token.service import TokenService
 
 
 # ==================== 常量 ====================
@@ -335,9 +336,33 @@ class UploadService(BaseService):
                     file_uri = result.get("fileUri", "")
                     logger.info(f"Upload success: {filename} -> {file_id}", extra={"file_id": file_id})
                     return file_id, file_uri
-                
+
+                # 401/403 表示 token 失效，记录失败并标记冷却
+                if response.status_code in (401, 403):
+                    logger.warning(
+                        f"Upload token invalid: {response.status_code}, recording failure",
+                        extra={"response": response.text[:200]}
+                    )
+                    try:
+                        await TokenService.record_fail(
+                            token,
+                            status_code=response.status_code,
+                            reason=f"upload_auth_failed"
+                        )
+                    except Exception as mark_err:
+                        logger.error(f"Failed to record token failure: {mark_err}")
+
+                    raise UpstreamException(
+                        message=f"Upload authentication failed: {response.status_code}",
+                        details={
+                            "status": response.status_code,
+                            "response": response.text[:200],
+                            "token_invalidated": True
+                        }
+                    )
+
                 logger.error(
-                    f"Upload failed: {filename} - {response.status_code}", 
+                    f"Upload failed: {filename} - {response.status_code}",
                     extra={"response": response.text[:200]}
                 )
                 raise UpstreamException(

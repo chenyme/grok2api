@@ -1,15 +1,77 @@
 """
 OpenAI 响应格式处理器
 """
+import asyncio
 import time
 import uuid
 import random
 import orjson
-from typing import Any, AsyncGenerator, Optional, AsyncIterable, List
+from typing import Any, AsyncGenerator, Optional, AsyncIterable, List, TypeVar
+
+from curl_cffi.requests.errors import RequestsError
 
 from app.core.config import get_config
 from app.core.logger import logger
+from app.core.exceptions import UpstreamException
 from app.services.grok.assets import DownloadService
+
+
+def _is_http2_stream_error(e: Exception) -> bool:
+    """检查是否为 HTTP/2 流错误"""
+    err_str = str(e).lower()
+    return "http/2" in err_str or "curl: (92)" in err_str or "stream" in err_str
+
+
+T = TypeVar("T")
+
+
+class StreamIdleTimeoutError(Exception):
+    """流空闲超时错误"""
+    def __init__(self, idle_seconds: float):
+        self.idle_seconds = idle_seconds
+        super().__init__(f"Stream idle timeout after {idle_seconds}s")
+
+
+async def _with_idle_timeout(
+    iterable: AsyncIterable[T],
+    idle_timeout: float,
+    model: str = ""
+) -> AsyncGenerator[T, None]:
+    """
+    包装异步迭代器，添加空闲超时检测
+
+    Args:
+        iterable: 原始异步迭代器
+        idle_timeout: 空闲超时时间(秒)，0 表示禁用
+        model: 模型名称(用于日志)
+
+    Yields:
+        原始迭代器的元素
+
+    Raises:
+        StreamIdleTimeoutError: 当空闲超时时
+    """
+    if idle_timeout <= 0:
+        async for item in iterable:
+            yield item
+        return
+
+    iterator = iterable.__aiter__()
+    while True:
+        try:
+            item = await asyncio.wait_for(
+                iterator.__anext__(),
+                timeout=idle_timeout
+            )
+            yield item
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Stream idle timeout after {idle_timeout}s",
+                extra={"model": model, "idle_timeout": idle_timeout}
+            )
+            raise StreamIdleTimeoutError(idle_timeout)
+        except StopAsyncIteration:
+            break
 
 
 ASSET_URL = "https://assets.grok.com/"
@@ -81,7 +143,7 @@ class BaseProcessor:
 
 class StreamProcessor(BaseProcessor):
     """流式响应处理器"""
-    
+
     def __init__(self, model: str, token: str = "", think: bool = None):
         super().__init__(model, token)
         self.response_id: Optional[str] = None
@@ -90,16 +152,78 @@ class StreamProcessor(BaseProcessor):
         self.role_sent: bool = False
         self.filter_tags = get_config("grok.filter_tags", [])
         self.image_format = get_config("app.image_format", "url")
-        
+        # 用于过滤跨 token 的标签
+        self._tag_buffer: str = ""
+        self._in_filter_tag: bool = False
+
         if think is None:
             self.show_think = get_config("grok.thinking", False)
         else:
             self.show_think = think
+
+    def _filter_token(self, token: str) -> str:
+        """
+        过滤 token 中的特殊标签（如 <grok:render>...</grok:render>）
+        支持跨 token 的标签过滤
+        """
+        if not self.filter_tags:
+            return token
+
+        result = []
+        i = 0
+        while i < len(token):
+            char = token[i]
+
+            # 如果在过滤标签内
+            if self._in_filter_tag:
+                self._tag_buffer += char
+                # 检查是否到达结束标签
+                if char == '>':
+                    # 检查是否是自闭合标签或结束标签
+                    if '/>' in self._tag_buffer or '</grok:render>' in self._tag_buffer:
+                        self._in_filter_tag = False
+                        self._tag_buffer = ""
+                    # 检查是否是开始标签结束（非自闭合）
+                    elif self._tag_buffer.startswith('<grok:render') and '>' in self._tag_buffer:
+                        # 继续等待结束标签
+                        pass
+                i += 1
+                continue
+
+            # 检查是否开始一个过滤标签
+            if char == '<':
+                # 查看后续字符
+                remaining = token[i:]
+                tag_started = False
+                for tag in self.filter_tags:
+                    if remaining.startswith(f'<{tag}'):
+                        tag_started = True
+                        break
+                    # 部分匹配（可能跨 token）
+                    if len(remaining) < len(tag) + 1:
+                        for j in range(1, len(remaining) + 1):
+                            if f'<{tag}'.startswith(remaining[:j]):
+                                tag_started = True
+                                break
+
+                if tag_started:
+                    self._in_filter_tag = True
+                    self._tag_buffer = char
+                    i += 1
+                    continue
+
+            result.append(char)
+            i += 1
+
+        return ''.join(result)
     
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理流式响应"""
+        # 获取空闲超时配置
+        idle_timeout = get_config("grok.stream_idle_timeout", 45.0)
+
         try:
-            async for line in response:
+            async for line in _with_idle_timeout(response, idle_timeout, self.model):
                 if not line:
                     continue
                 try:
@@ -162,15 +286,42 @@ class StreamProcessor(BaseProcessor):
                 
                 # 普通 token
                 if (token := resp.get("token")) is not None:
-                    if token and not (self.filter_tags and any(t in token for t in self.filter_tags)):
-                        yield self._sse(token)
+                    if token:
+                        filtered = self._filter_token(token)
+                        if filtered:
+                            yield self._sse(filtered)
                         
             if self.think_opened:
                 yield self._sse("</think>\n")
             yield self._sse(finish="stop")
             yield "data: [DONE]\n\n"
+        except asyncio.CancelledError:
+            # 客户端断开连接，静默处理
+            logger.debug("Stream cancelled by client", extra={"model": self.model})
+        except StreamIdleTimeoutError as e:
+            # 流空闲超时
+            raise UpstreamException(
+                message=f"Stream idle timeout after {e.idle_seconds}s",
+                status_code=504,
+                details={"error": str(e), "type": "stream_idle_timeout", "idle_seconds": e.idle_seconds}
+            )
+        except RequestsError as e:
+            # HTTP/2 流错误转换为 UpstreamException
+            if _is_http2_stream_error(e):
+                logger.warning(f"HTTP/2 stream error: {e}", extra={"model": self.model})
+                raise UpstreamException(
+                    message="Upstream connection closed unexpectedly",
+                    status_code=502,
+                    details={"error": str(e), "type": "http2_stream_error"}
+                )
+            logger.error(f"Stream request error: {e}", extra={"model": self.model})
+            raise UpstreamException(
+                message=f"Upstream request failed: {e}",
+                status_code=502,
+                details={"error": str(e)}
+            )
         except Exception as e:
-            logger.error(f"Stream processing error: {e}", extra={"model": self.model})
+            logger.error(f"Stream processing error: {e}", extra={"model": self.model, "error_type": type(e).__name__})
             raise
         finally:
             await self.close()
@@ -178,19 +329,42 @@ class StreamProcessor(BaseProcessor):
 
 class CollectProcessor(BaseProcessor):
     """非流式响应处理器"""
-    
+
+    # 需要过滤的标签
+    FILTER_TAGS = ["grok:render", "xaiartifact", "xai:tool_usage_card"]
+
     def __init__(self, model: str, token: str = ""):
         super().__init__(model, token)
         self.image_format = get_config("app.image_format", "url")
+        self.filter_tags = get_config("grok.filter_tags", self.FILTER_TAGS)
+
+    def _filter_content(self, content: str) -> str:
+        """过滤内容中的特殊标签"""
+        import re
+        if not content or not self.filter_tags:
+            return content
+
+        result = content
+        for tag in self.filter_tags:
+            # 匹配 <tag ...>...</tag> 或 <tag ... />
+            pattern = rf'<{re.escape(tag)}[^>]*>.*?</{re.escape(tag)}>|<{re.escape(tag)}[^>]*/>'
+            result = re.sub(pattern, '', result, flags=re.DOTALL)
+            # 匹配 <tag ...>...</tag> 跨行
+            pattern2 = rf'<{re.escape(tag)}[^>]*>[\s\S]*?</{re.escape(tag)}>'
+            result = re.sub(pattern2, '', result, flags=re.DOTALL)
+
+        return result
     
     async def process(self, response: AsyncIterable[bytes]) -> dict[str, Any]:
         """处理并收集完整响应"""
         response_id = ""
         fingerprint = ""
         content = ""
-        
+        # 获取空闲超时配置
+        idle_timeout = get_config("grok.stream_idle_timeout", 45.0)
+
         try:
-            async for line in response:
+            async for line in _with_idle_timeout(response, idle_timeout, self.model):
                 if not line:
                     continue
                 try:
@@ -227,12 +401,25 @@ class CollectProcessor(BaseProcessor):
                     
                     if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
                         fingerprint = meta["llm_info"]["modelHash"]
-                            
+
+        except asyncio.CancelledError:
+            logger.debug("Collect cancelled by client", extra={"model": self.model})
+        except StreamIdleTimeoutError as e:
+            logger.warning(f"Collect idle timeout: {e}", extra={"model": self.model})
+            # 非流式模式下，超时后返回已收集的内容
+        except RequestsError as e:
+            if _is_http2_stream_error(e):
+                logger.warning(f"HTTP/2 stream error in collect: {e}", extra={"model": self.model})
+            else:
+                logger.error(f"Collect request error: {e}", extra={"model": self.model})
         except Exception as e:
-            logger.error(f"Collect processing error: {e}", extra={"model": self.model})
+            logger.error(f"Collect processing error: {e}", extra={"model": self.model, "error_type": type(e).__name__})
         finally:
             await self.close()
-        
+
+        # 过滤特殊标签
+        content = self._filter_content(content)
+
         return {
             "id": response_id,
             "object": "chat.completion",
@@ -276,8 +463,11 @@ class VideoStreamProcessor(BaseProcessor):
     
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理视频流式响应"""
+        # 视频生成使用更长的空闲超时
+        idle_timeout = get_config("grok.video_idle_timeout", 90.0)
+
         try:
-            async for line in response:
+            async for line in _with_idle_timeout(response, idle_timeout, self.model):
                 if not line:
                     continue
                 try:
@@ -329,8 +519,30 @@ class VideoStreamProcessor(BaseProcessor):
                 yield self._sse("</think>\n")
             yield self._sse(finish="stop")
             yield "data: [DONE]\n\n"
+        except asyncio.CancelledError:
+            logger.debug("Video stream cancelled by client", extra={"model": self.model})
+        except StreamIdleTimeoutError as e:
+            raise UpstreamException(
+                message=f"Video stream idle timeout after {e.idle_seconds}s",
+                status_code=504,
+                details={"error": str(e), "type": "stream_idle_timeout", "idle_seconds": e.idle_seconds}
+            )
+        except RequestsError as e:
+            if _is_http2_stream_error(e):
+                logger.warning(f"HTTP/2 stream error in video: {e}", extra={"model": self.model})
+                raise UpstreamException(
+                    message="Upstream connection closed unexpectedly",
+                    status_code=502,
+                    details={"error": str(e), "type": "http2_stream_error"}
+                )
+            logger.error(f"Video stream request error: {e}", extra={"model": self.model})
+            raise UpstreamException(
+                message=f"Upstream request failed: {e}",
+                status_code=502,
+                details={"error": str(e)}
+            )
         except Exception as e:
-            logger.error(f"Video stream processing error: {e}", extra={"model": self.model})
+            logger.error(f"Video stream processing error: {e}", extra={"model": self.model, "error_type": type(e).__name__})
         finally:
             await self.close()
 
@@ -352,9 +564,11 @@ class VideoCollectProcessor(BaseProcessor):
         """处理并收集视频响应"""
         response_id = ""
         content = ""
-        
+        # 视频生成使用更长的空闲超时
+        idle_timeout = get_config("grok.video_idle_timeout", 90.0)
+
         try:
-            async for line in response:
+            async for line in _with_idle_timeout(response, idle_timeout, self.model):
                 if not line:
                     continue
                 try:
@@ -379,8 +593,17 @@ class VideoCollectProcessor(BaseProcessor):
                             content = self._build_video_html(final_video_url, final_thumbnail_url)
                             logger.info(f"Video generated: {video_url}")
                             
+        except asyncio.CancelledError:
+            logger.debug("Video collect cancelled by client", extra={"model": self.model})
+        except StreamIdleTimeoutError as e:
+            logger.warning(f"Video collect idle timeout: {e}", extra={"model": self.model})
+        except RequestsError as e:
+            if _is_http2_stream_error(e):
+                logger.warning(f"HTTP/2 stream error in video collect: {e}", extra={"model": self.model})
+            else:
+                logger.error(f"Video collect request error: {e}", extra={"model": self.model})
         except Exception as e:
-            logger.error(f"Video collect processing error: {e}", extra={"model": self.model})
+            logger.error(f"Video collect processing error: {e}", extra={"model": self.model, "error_type": type(e).__name__})
         finally:
             await self.close()
         
@@ -414,9 +637,11 @@ class ImageStreamProcessor(BaseProcessor):
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理流式响应"""
         final_images = []
-        
+        # 图片生成使用标准空闲超时
+        idle_timeout = get_config("grok.stream_idle_timeout", 45.0)
+
         try:
-            async for line in response:
+            async for line in _with_idle_timeout(response, idle_timeout, self.model):
                 if not line:
                     continue
                 try:
@@ -477,8 +702,30 @@ class ImageStreamProcessor(BaseProcessor):
                         "input_tokens_details": {"text_tokens": 5, "image_tokens": 20}
                     }
                 })
+        except asyncio.CancelledError:
+            logger.debug("Image stream cancelled by client")
+        except StreamIdleTimeoutError as e:
+            raise UpstreamException(
+                message=f"Image stream idle timeout after {e.idle_seconds}s",
+                status_code=504,
+                details={"error": str(e), "type": "stream_idle_timeout", "idle_seconds": e.idle_seconds}
+            )
+        except RequestsError as e:
+            if _is_http2_stream_error(e):
+                logger.warning(f"HTTP/2 stream error in image: {e}")
+                raise UpstreamException(
+                    message="Upstream connection closed unexpectedly",
+                    status_code=502,
+                    details={"error": str(e), "type": "http2_stream_error"}
+                )
+            logger.error(f"Image stream request error: {e}")
+            raise UpstreamException(
+                message=f"Upstream request failed: {e}",
+                status_code=502,
+                details={"error": str(e)}
+            )
         except Exception as e:
-            logger.error(f"Image stream processing error: {e}")
+            logger.error(f"Image stream processing error: {e}", extra={"error_type": type(e).__name__})
             raise
         finally:
             await self.close()
@@ -493,9 +740,11 @@ class ImageCollectProcessor(BaseProcessor):
     async def process(self, response: AsyncIterable[bytes]) -> List[str]:
         """处理并收集图片"""
         images = []
-        
+        # 图片生成使用标准空闲超时
+        idle_timeout = get_config("grok.stream_idle_timeout", 45.0)
+
         try:
-            async for line in response:
+            async for line in _with_idle_timeout(response, idle_timeout, self.model):
                 if not line:
                     continue
                 try:
@@ -517,8 +766,17 @@ class ImageCollectProcessor(BaseProcessor):
                                     b64 = base64_data
                                 images.append(b64)
                                 
+        except asyncio.CancelledError:
+            logger.debug("Image collect cancelled by client")
+        except StreamIdleTimeoutError as e:
+            logger.warning(f"Image collect idle timeout: {e}")
+        except RequestsError as e:
+            if _is_http2_stream_error(e):
+                logger.warning(f"HTTP/2 stream error in image collect: {e}")
+            else:
+                logger.error(f"Image collect request error: {e}")
         except Exception as e:
-            logger.error(f"Image collect processing error: {e}")
+            logger.error(f"Image collect processing error: {e}", extra={"error_type": type(e).__name__})
         finally:
             await self.close()
         

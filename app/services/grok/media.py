@@ -388,23 +388,27 @@ class VideoService:
             token: Token 字符串
             model: 模型名称
         """
+        success = False
         try:
             async for chunk in stream:
                 yield chunk
+            success = True
         finally:
-            try:
-                model_info = ModelService.get(model)
-                effort = (
-                    EffortType.HIGH
-                    if (model_info and model_info.cost.value == "high")
-                    else EffortType.LOW
-                )
-                await token_mgr.consume(token, effort)
-                logger.debug(
-                    f"Video stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record video stream usage: {e}")
+            # 只在成功完成时记录使用，失败/异常时不扣费
+            if success:
+                try:
+                    model_info = ModelService.get(model)
+                    effort = (
+                        EffortType.HIGH
+                        if (model_info and model_info.cost.value == "high")
+                        else EffortType.LOW
+                    )
+                    await token_mgr.consume(token, effort)
+                    logger.debug(
+                        f"Video stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record video stream usage: {e}")
 
     @staticmethod
     async def completions(

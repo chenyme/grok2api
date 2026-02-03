@@ -16,7 +16,9 @@ from app.core.exceptions import ValidationException
 router = APIRouter(tags=["Chat"])
 
 
-VALID_ROLES = ["developer", "system", "user", "assistant"]
+VALID_ROLES = ["developer", "system", "user", "assistant", "tool", "function"]
+# 角色别名映射 (OpenAI 兼容)
+ROLE_ALIASES = {"function": "tool"}
 USER_CONTENT_TYPES = ["text", "image_url", "input_audio", "file"]
 
 
@@ -24,13 +26,19 @@ class MessageItem(BaseModel):
     """消息项"""
     role: str
     content: Union[str, List[Dict[str, Any]]]
-    
+    tool_call_id: Optional[str] = None  # tool 角色需要的字段
+    name: Optional[str] = None  # function 角色的函数名
+
     @field_validator("role")
     @classmethod
     def validate_role(cls, v):
-        if v not in VALID_ROLES:
+        # 大小写归一化
+        v_lower = v.lower() if isinstance(v, str) else v
+        # 别名映射
+        v_normalized = ROLE_ALIASES.get(v_lower, v_lower)
+        if v_normalized not in VALID_ROLES:
             raise ValueError(f"role must be one of {VALID_ROLES}")
-        return v
+        return v_normalized
 
 
 class VideoConfig(BaseModel):
@@ -98,10 +106,26 @@ class ChatCompletionRequest(BaseModel):
     messages: List[MessageItem] = Field(..., description="消息数组")
     stream: Optional[bool] = Field(None, description="是否流式输出")
     thinking: Optional[str] = Field(None, description="思考模式: enabled/disabled/None")
-    
+
     # 视频生成配置
     video_config: Optional[VideoConfig] = Field(None, description="视频生成参数")
-    
+
+    @field_validator("stream", mode="before")
+    @classmethod
+    def validate_stream(cls, v):
+        """确保 stream 参数被正确解析为布尔值"""
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            if v.lower() in ("true", "1", "yes"):
+                return True
+            if v.lower() in ("false", "0", "no"):
+                return False
+        # 其他情况尝试转换
+        return bool(v)
+
     model_config = {
         "extra": "ignore"
     }
@@ -174,6 +198,14 @@ def validate_request(request: ChatCompletionRequest):
                             param=f"messages.{idx}.content.{block_idx}.type",
                             code="invalid_type"
                         )
+                elif msg.role in ("tool", "function"):
+                    # tool/function 角色只支持 text 类型，但内容可以是 JSON 字符串
+                    if block_type != "text":
+                        raise ValidationException(
+                            message=f"The `{msg.role}` role only supports 'text' type, got '{block_type}'",
+                            param=f"messages.{idx}.content.{block_idx}.type",
+                            code="invalid_type"
+                        )
                 elif block_type != "text":
                     raise ValidationException(
                         message=f"The `{msg.role}` role only supports 'text' type, got '{block_type}'",
@@ -203,10 +235,13 @@ def validate_request(request: ChatCompletionRequest):
 @router.post("/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """Chat Completions API - 兼容 OpenAI"""
-    
+    from app.core.logger import logger
+
     # 参数验证
     validate_request(request)
-    
+
+    logger.debug(f"Chat request: model={request.model}, stream={request.stream}")
+
     # 检测视频模型
     model_info = ModelService.get(request.model)
     if model_info and model_info.is_video:

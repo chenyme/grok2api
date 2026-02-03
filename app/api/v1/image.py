@@ -73,6 +73,7 @@ async def call_grok(token_mgr, token: str, prompt: str, model_info) -> List[str]
     调用 Grok 获取图片，返回 base64 列表
     """
     chat_service = GrokChatService()
+    success = False
 
     try:
         response = await chat_service.chat(
@@ -87,22 +88,24 @@ async def call_grok(token_mgr, token: str, prompt: str, model_info) -> List[str]
         # 收集图片
         processor = ImageCollectProcessor(model_info.model_id, token)
         images = await processor.process(response)
+        success = True
         return images
 
     except Exception as e:
         logger.error(f"Grok image call failed: {e}")
         return []
     finally:
-        # 记录使用
-        try:
-            effort = (
-                EffortType.HIGH
-                if (model_info and model_info.cost.value == "high")
-                else EffortType.LOW
-            )
-            await token_mgr.consume(token, effort)
-        except Exception as e:
-            logger.warning(f"Failed to consume token: {e}")
+        # 只在成功时记录使用，失败时不扣费（避免清零 fail_count）
+        if success:
+            try:
+                effort = (
+                    EffortType.HIGH
+                    if (model_info and model_info.cost.value == "high")
+                    else EffortType.LOW
+                )
+                await token_mgr.consume(token, effort)
+            except Exception as e:
+                logger.warning(f"Failed to consume token: {e}")
 
 
 @router.post("/images/generations")
@@ -163,21 +166,25 @@ async def create_image(request: ImageGenerationRequest):
 
         processor = ImageStreamProcessor(model_info.model_id, token, n=request.n)
 
-        # 包装流式响应，在完成时记录使用
+        # 包装流式响应，在成功完成时记录使用
         async def _wrap_stream(stream):
+            success = False
             try:
                 async for chunk in stream:
                     yield chunk
+                success = True
             finally:
-                try:
-                    effort = (
-                        EffortType.HIGH
-                        if (model_info and model_info.cost.value == "high")
-                        else EffortType.LOW
-                    )
-                    await token_mgr.consume(token, effort)
-                except Exception as e:
-                    logger.warning(f"Failed to consume token: {e}")
+                # 只在成功完成时扣费
+                if success:
+                    try:
+                        effort = (
+                            EffortType.HIGH
+                            if (model_info and model_info.cost.value == "high")
+                            else EffortType.LOW
+                        )
+                        await token_mgr.consume(token, effort)
+                    except Exception as e:
+                        logger.warning(f"Failed to consume token: {e}")
 
         return StreamingResponse(
             _wrap_stream(processor.process(response)),

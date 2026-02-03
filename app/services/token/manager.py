@@ -307,15 +307,15 @@ class TokenManager:
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
-                if status_code == 401:
+                if status_code in (401, 403):
                     token.record_fail(status_code, reason)
                     logger.warning(
-                        f"Token {raw_token[:10]}...: recorded 401 failure "
+                        f"Token {raw_token[:10]}...: recorded {status_code} failure "
                         f"({token.fail_count}/{FAIL_THRESHOLD}) - {reason}"
                     )
                 else:
                     logger.info(
-                        f"Token {raw_token[:10]}...: non-401 error ({status_code}) - {reason} (not counted)"
+                        f"Token {raw_token[:10]}...: non-auth error ({status_code}) - {reason} (not counted)"
                     )
                 self._schedule_save()
                 return True
