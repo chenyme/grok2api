@@ -1,7 +1,7 @@
 [grok]
 temporary = true
-stream = false
-thinking = false
+stream = true
+thinking = true
 dynamic_statsig = true
 filter_tags = ["xaiartifact","xai:tool_usage_card","grok:render"]
 timeout = 120
