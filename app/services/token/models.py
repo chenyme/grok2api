@@ -2,8 +2,9 @@
 Token 数据模型
 
 额度规则:
-- 新号默认 80 配额
-- 重置后恢复 80
+- Basic 新号默认 80 配额
+- Super 新号默认 140 配额
+- 重置后恢复默认值
 - lowEffort 扣 1，highEffort 扣 4
 """
 
@@ -14,7 +15,8 @@ from datetime import datetime
 
 
 # 默认配额
-DEFAULT_QUOTA = 80
+BASIC__DEFAULT_QUOTA = 80
+SUPER_DEFAULT_QUOTA = 140
 
 # 失败阈值
 FAIL_THRESHOLD = 5
@@ -47,7 +49,7 @@ class TokenInfo(BaseModel):
 
     token: str
     status: TokenStatus = TokenStatus.ACTIVE
-    quota: int = DEFAULT_QUOTA
+    quota: int = BASIC__DEFAULT_QUOTA
 
     # 统计
     created_at: int = Field(
@@ -118,9 +120,10 @@ class TokenInfo(BaseModel):
         ]:
             self.status = TokenStatus.ACTIVE
 
-    def reset(self):
+    def reset(self, default_quota: Optional[int] = None):
         """重置配额到默认值"""
-        self.quota = DEFAULT_QUOTA
+        quota = BASIC__DEFAULT_QUOTA if default_quota is None else default_quota
+        self.quota = max(0, int(quota))
         self.status = TokenStatus.ACTIVE
         self.fail_count = 0
         self.last_fail_reason = None
@@ -188,6 +191,7 @@ __all__ = [
     "TokenPoolStats",
     "EffortType",
     "EFFORT_COST",
-    "DEFAULT_QUOTA",
+    "BASIC__DEFAULT_QUOTA",
+    "SUPER_DEFAULT_QUOTA",
     "FAIL_THRESHOLD",
 ]

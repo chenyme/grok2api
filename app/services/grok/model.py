@@ -3,7 +3,7 @@ Grok 模型管理服务
 """
 
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from pydantic import BaseModel, Field
 
 from app.core.exceptions import ValidationException
@@ -157,6 +157,15 @@ class ModelService:
         if model and model.tier == Tier.SUPER:
             return "ssoSuper"
         return "ssoBasic"
+
+    @classmethod
+    def pool_candidates_for_model(cls, model_id: str) -> List[str]:
+        """按优先级返回可用 Token 池列表"""
+        model = cls.get(model_id)
+        if model and model.tier == Tier.SUPER:
+            return ["ssoSuper"]
+        # 基础模型优先使用 basic 池，缺失时可回退到 super 池
+        return ["ssoBasic", "ssoSuper"]
 
 
 __all__ = ["ModelService"]

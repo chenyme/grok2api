@@ -54,7 +54,9 @@ async def lifespan(app: FastAPI):
     # 3. 启动 Token 刷新调度器
     refresh_enabled = get_config("token.auto_refresh", True)
     if refresh_enabled:
-        interval = get_config("token.refresh_interval_hours", 8)
+        basic_interval = get_config("token.refresh_interval_hours", 8)
+        super_interval = get_config("token.super_refresh_interval_hours", 2)
+        interval = min(basic_interval, super_interval)
         scheduler = get_scheduler(interval)
         scheduler.start()
 

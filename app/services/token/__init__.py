@@ -5,7 +5,8 @@ from app.services.token.models import (
     TokenStatus,
     TokenPoolStats,
     EffortType,
-    DEFAULT_QUOTA,
+    BASIC__DEFAULT_QUOTA,
+    SUPER_DEFAULT_QUOTA,
     EFFORT_COST,
 )
 from app.services.token.pool import TokenPool
@@ -19,7 +20,8 @@ __all__ = [
     "TokenStatus",
     "TokenPoolStats",
     "EffortType",
-    "DEFAULT_QUOTA",
+    "BASIC__DEFAULT_QUOTA",
+    "SUPER_DEFAULT_QUOTA",
     "EFFORT_COST",
     # Core
     "TokenPool",

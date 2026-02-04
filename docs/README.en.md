@@ -52,7 +52,7 @@ Default password: `grok2api` (config key `app.app_key`, change it in production)
 ### Usage limits
 
 - Basic account: 80 requests / 20h
-- Super account: not tested by the author
+- Super account: 140 requests / 2h
 
 ### Models
 
@@ -177,6 +177,7 @@ Config file: `data/config.toml`
 | | `video_idle_timeout` | Video idle timeout | Idle timeout for video generation (seconds). | `90.0` |
 | **token** | `auto_refresh` | Auto refresh | Enable automatic token refresh. | `true` |
 | | `refresh_interval_hours` | Refresh interval | Token refresh interval (hours). | `8` |
+| | `super_refresh_interval_hours` | Super refresh interval | Super token refresh interval (hours). | `2` |
 | | `fail_threshold` | Failure threshold | Consecutive failures before a token is disabled. | `5` |
 | | `save_delay_ms` | Save delay | Debounced save delay for token changes (ms). | `500` |
 | | `reload_interval_sec` | Consistency refresh | Token state refresh interval in multi-worker setups (sec). | `30` |

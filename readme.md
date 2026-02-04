@@ -64,7 +64,7 @@ docker compose up -d
 ### 可用次数
 
 - Basic 账号：80 次 / 20h
-- Super 账号：无账号，作者未测试
+- Super 账号：140 次 / 2h
 
 ### 可用模型
 
@@ -210,6 +210,7 @@ curl http://localhost:8000/v1/images/generations \
 |                       | `video_idle_timeout`       | 视频空闲超时 | 视频生成空闲超时（秒），超过将断开。                 | `90.0`                                                  |
 | **token**       | `auto_refresh`             | 自动刷新     | 是否开启 Token 自动刷新机制。                        | `true`                                                  |
 |                       | `refresh_interval_hours`   | 刷新间隔     | Token 刷新的时间间隔（小时）。                       | `8`                                                     |
+|                       | `super_refresh_interval_hours` | Super 刷新间隔 | Super Token 刷新的时间间隔（小时）。               | `2`                                                     |
 |                       | `fail_threshold`           | 失败阈值     | 单个 Token 连续失败多少次后被标记为不可用。          | `5`                                                     |
 |                       | `save_delay_ms`            | 保存延迟     | Token 变更合并写入的延迟（毫秒）。                   | `500`                                                   |
 |                       | `reload_interval_sec`      | 一致性刷新   | 多 worker 场景下 Token 状态刷新间隔（秒）。          | `30`                                                    |

@@ -15,6 +15,12 @@ let pageSize = 50;
 
 const byId = (id) => document.getElementById(id);
 const qsa = (selector) => document.querySelectorAll(selector);
+const DEFAULT_QUOTA_BASIC = 80;
+const DEFAULT_QUOTA_SUPER = 140;
+
+function getDefaultQuotaForPool(pool) {
+  return pool === 'ssoSuper' ? DEFAULT_QUOTA_SUPER : DEFAULT_QUOTA_BASIC;
+}
 
 function setText(id, text) {
   const el = byId(id);
@@ -93,6 +99,7 @@ function getPaginationData() {
 async function init() {
   apiKey = await ensureApiKey();
   if (apiKey === null) return;
+  setupEditPoolDefaults();
   setupConfirmDialog();
   loadData();
 }
@@ -405,12 +412,22 @@ function openEditModal(index) {
     byId('edit-original-token').value = '';
     byId('edit-original-pool').value = '';
     byId('edit-pool').value = 'ssoBasic';
-    byId('edit-quota').value = 80;
+    byId('edit-quota').value = getDefaultQuotaForPool('ssoBasic');
     byId('edit-note').value = '';
     document.querySelector('#edit-modal h3').innerText = '添加 Token';
   }
 
   openModal('edit-modal');
+}
+
+function setupEditPoolDefaults() {
+  const poolSelect = byId('edit-pool');
+  const quotaInput = byId('edit-quota');
+  if (!poolSelect || !quotaInput) return;
+  poolSelect.addEventListener('change', () => {
+    if (currentEditIndex >= 0) return;
+    quotaInput.value = getDefaultQuotaForPool(poolSelect.value);
+  });
 }
 
 function closeEditModal() {
@@ -525,6 +542,7 @@ async function submitImport() {
   const pool = byId('import-pool').value.trim() || 'ssoBasic';
   const text = byId('import-text').value;
   const lines = text.split('\n');
+  const defaultQuota = getDefaultQuotaForPool(pool);
 
   lines.forEach(line => {
     const t = line.trim();
@@ -533,7 +551,7 @@ async function submitImport() {
         token: t,
         pool: pool,
         status: 'active',
-        quota: 80,
+        quota: defaultQuota,
         note: '',
         use_count: 0,
         _selected: false

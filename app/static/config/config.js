@@ -9,6 +9,7 @@ const NUMERIC_FIELDS = new Set([
   'retry_backoff_max',
   'retry_budget',
   'refresh_interval_hours',
+  'super_refresh_interval_hours',
   'fail_threshold',
   'limit_mb',
   'save_delay_ms',
@@ -61,6 +62,7 @@ const LOCALE_MAP = {
     "label": "Token 池设置",
     "auto_refresh": { title: "自动刷新", desc: "是否开启 Token 自动刷新机制。" },
     "refresh_interval_hours": { title: "刷新间隔", desc: "Token 刷新的时间间隔（小时）。" },
+    "super_refresh_interval_hours": { title: "Super 刷新间隔", desc: "Super Token 刷新的时间间隔（小时）。" },
     "fail_threshold": { title: "失败阈值", desc: "单个 Token 连续失败多少次后被标记为不可用。" },
     "save_delay_ms": { title: "保存延迟", desc: "Token 变更合并写入的延迟（毫秒）。" },
     "reload_interval_sec": { title: "一致性刷新", desc: "多 worker 场景下 Token 状态刷新间隔（秒）。" }

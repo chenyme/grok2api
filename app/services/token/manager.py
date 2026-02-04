@@ -6,15 +6,36 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from app.core.logger import logger
-from app.services.token.models import TokenInfo, EffortType, FAIL_THRESHOLD, TokenStatus
+from app.services.token.models import (
+    TokenInfo,
+    EffortType,
+    FAIL_THRESHOLD,
+    TokenStatus,
+    BASIC__DEFAULT_QUOTA,
+    SUPER_DEFAULT_QUOTA,
+)
 from app.core.storage import get_storage
 from app.core.config import get_config
 from app.services.token.pool import TokenPool
 
 # 批量刷新配置
-REFRESH_INTERVAL_HOURS = 8
 REFRESH_BATCH_SIZE = 10
 REFRESH_CONCURRENCY = 5
+
+SUPER_POOL_NAME = "ssoSuper"
+BASIC_POOL_NAME = "ssoBasic"
+
+
+def _default_quota_for_pool(pool_name: str) -> int:
+    if pool_name == SUPER_POOL_NAME:
+        return SUPER_DEFAULT_QUOTA
+    return BASIC__DEFAULT_QUOTA
+
+
+def _refresh_interval_hours_for_pool(pool_name: str) -> float:
+    if pool_name == SUPER_POOL_NAME:
+        return get_config("token.super_refresh_interval_hours", 2)
+    return get_config("token.refresh_interval_hours", 8)
 
 
 class TokenManager:
@@ -68,6 +89,9 @@ class TokenManager:
                 for pool_name, tokens in data.items():
                     pool = TokenPool(pool_name)
                     for token_data in tokens:
+                        quota_missing = not (
+                            isinstance(token_data, dict) and "quota" in token_data
+                        )
                         try:
                             # 统一存储裸 token
                             if isinstance(token_data, dict):
@@ -77,6 +101,8 @@ class TokenManager:
                                 ):
                                     token_data["token"] = raw_token[4:]
                             token_info = TokenInfo(**token_data)
+                            if quota_missing and pool_name == SUPER_POOL_NAME:
+                                token_info.quota = SUPER_DEFAULT_QUOTA
                             pool.add(token_info)
                         except Exception as e:
                             logger.warning(
@@ -347,7 +373,7 @@ class TokenManager:
             logger.warning(f"Pool '{pool_name}': token already exists")
             return False
 
-        pool.add(TokenInfo(token=token))
+        pool.add(TokenInfo(token=token, quota=_default_quota_for_pool(pool_name)))
         await self._save()
         logger.info(f"Pool '{pool_name}': token added")
         return True
@@ -429,9 +455,10 @@ class TokenManager:
     async def reset_all(self):
         """重置所有 Token 配额"""
         count = 0
-        for pool in self.pools.values():
+        for pool_name, pool in self.pools.items():
+            default_quota = _default_quota_for_pool(pool_name)
             for token in pool:
-                token.reset()
+                token.reset(default_quota)
                 count += 1
 
         await self._save()
@@ -452,7 +479,8 @@ class TokenManager:
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
-                token.reset()
+                default_quota = _default_quota_for_pool(pool.name)
+                token.reset(default_quota)
                 await self._save()
                 logger.info(f"Token {raw_token[:10]}...: reset completed")
                 return True
@@ -495,8 +523,9 @@ class TokenManager:
         # 收集需要刷新的 token
         to_refresh: List[TokenInfo] = []
         for pool in self.pools.values():
+            interval_hours = _refresh_interval_hours_for_pool(pool.name)
             for token in pool:
-                if token.need_refresh(REFRESH_INTERVAL_HOURS):
+                if token.need_refresh(interval_hours):
                     to_refresh.append(token)
 
         if not to_refresh:
