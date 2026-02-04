@@ -99,8 +99,8 @@ curl http://localhost:8000/v1/chat/completions \
 | `thinking` | string | Thinking mode | `enabled`, `disabled`, `null` |
 | `video_config` | object | **Video model only** | - |
 | └─ `aspect_ratio` | string | Video aspect ratio | `16:9`, `9:16`, `1:1`, `2:3`, `3:2` |
-| └─ `video_length` | integer | Video length (seconds) | `5` - `15` |
-| └─ `resolution` | string | Resolution | `SD`, `HD` |
+| └─ `video_length` | integer | Video length (seconds) | `6`, `10` |
+| └─ `resolution_name` | string | Resolution | `480p`, `720p` |
 | └─ `preset` | string | Style preset | `fun`, `normal`, `spicy` |
 
 Note: any other parameters will be discarded and ignored.
@@ -157,7 +157,7 @@ Config file: `data/config.toml`
 | | `app_key` | Admin password | Password for the Grok2API admin panel. | `grok2api` |
 | | `api_key` | API key | Bearer token required to call Grok2API. | `""` |
 | | `image_format` | Image format | Output image format (`url` or `base64`). | `url` |
-| | `video_format` | Video format | Output video format (url only). | `url` |
+| | `video_format` | Video format | Output video format (html tag or processed url). | `html` |
 | **grok** | `temporary` | Temporary chat | Enable temporary conversation mode. | `true` |
 | | `stream` | Streaming | Enable streaming by default. | `true` |
 | | `thinking` | Thinking chain | Enable model thinking output. | `true` |

@@ -177,7 +177,7 @@ class VideoService:
         post_id: str,
         aspect_ratio: str = "3:2",
         video_length: int = 6,
-        resolution: str = "SD",
+        resolution_name: str = "480p",
         preset: str = "normal",
     ) -> dict:
         """构建视频生成载荷"""
@@ -190,7 +190,12 @@ class VideoService:
             mode_flag = "--mode=extremely-spicy-or-crazy"
 
         full_prompt = f"{prompt} {mode_flag}"
-
+        video_gen_config = {
+            "parentPostId": post_id,
+            "aspectRatio": aspect_ratio,
+            "videoLength": video_length,
+            "resolutionName": resolution_name,
+        }
         return {
             "temporary": True,
             "modelName": "grok-3",
@@ -201,12 +206,7 @@ class VideoService:
                 "experiments": [],
                 "modelConfigOverride": {
                     "modelMap": {
-                        "videoGenModelConfig": {
-                            "parentPostId": post_id,
-                            "aspectRatio": aspect_ratio,
-                            "videoLength": video_length,
-                            "videoResolution": resolution,
-                        }
+                        "videoGenModelConfig": video_gen_config
                     }
                 },
             },
@@ -218,7 +218,7 @@ class VideoService:
         prompt: str,
         aspect_ratio: str = "3:2",
         video_length: int = 6,
-        resolution: str = "SD",
+        resolution_name: str = "480p",
         stream: bool = True,
         preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
@@ -230,7 +230,7 @@ class VideoService:
             prompt: 视频描述
             aspect_ratio: 宽高比
             video_length: 视频时长
-            resolution: 分辨率
+            resolution_name: 分辨率
             stream: 是否流式
             preset: 预设
 
@@ -249,7 +249,7 @@ class VideoService:
                 # Step 2: 建立连接
                 headers = self._build_headers(token)
                 payload = self._build_payload(
-                    prompt, post_id, aspect_ratio, video_length, resolution, preset
+                    prompt, post_id, aspect_ratio, video_length, resolution_name, preset
                 )
 
                 session = AsyncSession(impersonate=BROWSER)
@@ -302,7 +302,7 @@ class VideoService:
         image_url: str,
         aspect_ratio: str = "3:2",
         video_length: int = 6,
-        resolution: str = "SD",
+        resolution: str = "480p",
         stream: bool = True,
         preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
@@ -418,7 +418,7 @@ class VideoService:
         thinking: str = None,
         aspect_ratio: str = "3:2",
         video_length: int = 6,
-        resolution: str = "SD",
+        resolution: str = "480p",
         preset: str = "normal",
     ):
         """
