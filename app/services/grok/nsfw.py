@@ -62,14 +62,24 @@ class NSFWService:
     @staticmethod
     def _build_payload() -> bytes:
         """构造请求 payload"""
-        # protobuf: enable_unhinged=true (field1=1, field2=1)
-        protobuf = bytes([0x08, 0x01, 0x10, 0x01])
+        # protobuf (match captured HAR):
+        # 0a 02 10 01                   -> field 1 (len=2) with inner bool=true
+        # 12 1a                         -> field 2, length 26
+        #   0a 18 <name>                -> nested message with name string
+        name = b"always_show_nsfw_content"
+        inner = b"\x0a" + bytes([len(name)]) + name
+        protobuf = b"\x0a\x02\x10\x01\x12" + bytes([len(inner)]) + inner
         return encode_grpc_web_payload(protobuf)
 
     async def enable(self, token: str) -> NSFWResult:
         """为单个 token 开启 NSFW 模式"""
         headers = self._build_headers(token)
         payload = self._build_payload()
+        logger.debug(
+            "NSFW payload: len={} hex={}",
+            len(payload),
+            payload.hex(),
+        )
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
 
         try:
@@ -96,6 +106,13 @@ class NSFWService:
                 )
 
                 grpc_status = get_grpc_status(trailers)
+                logger.debug(
+                    "NSFW response: http={} grpc={} msg={} trailers={}",
+                    response.status_code,
+                    grpc_status.code,
+                    grpc_status.message,
+                    trailers,
+                )
 
                 # HTTP 200 且无 grpc-status（空响应）或 grpc-status=0 都算成功
                 success = grpc_status.code == -1 or grpc_status.ok

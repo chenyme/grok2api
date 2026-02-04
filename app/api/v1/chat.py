@@ -48,8 +48,8 @@ class VideoConfig(BaseModel):
     aspect_ratio: Optional[str] = Field(
         "3:2", description="视频比例: 3:2, 16:9, 1:1 等"
     )
-    video_length: Optional[int] = Field(6, description="视频时长(秒): 5-15")
-    resolution: Optional[str] = Field("SD", description="视频分辨率: SD, HD")
+    video_length: Optional[int] = Field(6, description="视频时长(秒): 6 或 10")
+    resolution_name: Optional[str] = Field("480p", description="视频分辨率: 480p, 720p")
     preset: Optional[str] = Field("custom", description="风格预设: fun, normal, spicy")
 
     @field_validator("aspect_ratio")
@@ -68,22 +68,22 @@ class VideoConfig(BaseModel):
     @classmethod
     def validate_video_length(cls, v):
         if v is not None:
-            if v < 5 or v > 15:
+            if v not in (6, 10):
                 raise ValidationException(
-                    message="video_length must be between 5 and 15 seconds",
+                    message="video_length must be 6 or 10 seconds",
                     param="video_config.video_length",
                     code="invalid_video_length",
                 )
         return v
 
-    @field_validator("resolution")
+    @field_validator("resolution_name")
     @classmethod
     def validate_resolution(cls, v):
-        allowed = ["SD", "HD"]
+        allowed = ["480p", "720p"]
         if v and v not in allowed:
             raise ValidationException(
-                message=f"resolution must be one of {allowed}",
-                param="video_config.resolution",
+                message=f"resolution_name must be one of {allowed}",
+                param="video_config.resolution_name",
                 code="invalid_resolution",
             )
         return v
@@ -272,7 +272,7 @@ async def chat_completions(request: ChatCompletionRequest):
             thinking=request.thinking,
             aspect_ratio=v_conf.aspect_ratio,
             video_length=v_conf.video_length,
-            resolution=v_conf.resolution,
+            resolution=v_conf.resolution_name,
             preset=v_conf.preset,
         )
     else:

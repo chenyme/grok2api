@@ -498,7 +498,7 @@ class VideoStreamProcessor(BaseProcessor):
         self.response_id: Optional[str] = None
         self.think_opened: bool = False
         self.role_sent: bool = False
-        self.video_format = get_config("app.video_format", "url")
+        self.video_format = str(get_config("app.video_format", "html")).lower()
 
         if think is None:
             self.show_think = get_config("grok.thinking", False)
@@ -568,10 +568,13 @@ class VideoStreamProcessor(BaseProcessor):
                                     thumbnail_url, "image"
                                 )
 
-                            video_html = self._build_video_html(
-                                final_video_url, final_thumbnail_url
-                            )
-                            yield self._sse(video_html)
+                            if self.video_format == "url":
+                                yield self._sse(final_video_url)
+                            else:
+                                video_html = self._build_video_html(
+                                    final_video_url, final_thumbnail_url
+                                )
+                                yield self._sse(video_html)
 
                             logger.info(f"Video generated: {video_url}")
                     continue
@@ -626,7 +629,7 @@ class VideoCollectProcessor(BaseProcessor):
 
     def __init__(self, model: str, token: str = ""):
         super().__init__(model, token)
-        self.video_format = get_config("app.video_format", "url")
+        self.video_format = str(get_config("app.video_format", "html")).lower()
 
     def _build_video_html(self, video_url: str, thumbnail_url: str = "") -> str:
         poster_attr = f' poster="{thumbnail_url}"' if thumbnail_url else ""
@@ -666,9 +669,12 @@ class VideoCollectProcessor(BaseProcessor):
                                     thumbnail_url, "image"
                                 )
 
-                            content = self._build_video_html(
-                                final_video_url, final_thumbnail_url
-                            )
+                            if self.video_format == "url":
+                                content = final_video_url
+                            else:
+                                content = self._build_video_html(
+                                    final_video_url, final_thumbnail_url
+                                )
                             logger.info(f"Video generated: {video_url}")
 
         except asyncio.CancelledError:
