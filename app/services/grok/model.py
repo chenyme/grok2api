@@ -11,18 +11,21 @@ from app.core.exceptions import ValidationException
 
 class Tier(str, Enum):
     """模型档位"""
+
     BASIC = "basic"
     SUPER = "super"
 
 
 class Cost(str, Enum):
     """计费类型"""
+
     LOW = "low"
     HIGH = "high"
 
 
 class ModelInfo(BaseModel):
     """模型信息"""
+
     model_id: str
     grok_model: str
     model_mode: str
@@ -36,42 +39,42 @@ class ModelInfo(BaseModel):
 
 class ModelService:
     """模型管理服务"""
-    
+
     MODELS = [
         ModelInfo(
             model_id="grok-3",
             grok_model="grok-3",
             model_mode="MODEL_MODE_AUTO",
             cost=Cost.LOW,
-            display_name="Grok 3"
+            display_name="Grok 3",
         ),
         ModelInfo(
             model_id="grok-3-fast",
             grok_model="grok-3",
             cost=Cost.LOW,
             model_mode="MODEL_MODE_FAST",
-            display_name="Grok 3 Fast"
+            display_name="Grok 3 Fast",
         ),
         ModelInfo(
             model_id="grok-4",
             grok_model="grok-4",
             model_mode="MODEL_MODE_AUTO",
             cost=Cost.LOW,
-            display_name="Grok 4"
+            display_name="Grok 4",
         ),
         ModelInfo(
             model_id="grok-4-mini",
             grok_model="grok-4-mini-thinking-tahoe",
             model_mode="MODEL_MODE_GROK_4_MINI_THINKING",
             cost=Cost.LOW,
-            display_name="Grok 4 Mini"
+            display_name="Grok 4 Mini",
         ),
         ModelInfo(
             model_id="grok-4-fast",
             grok_model="grok-4",
             model_mode="MODEL_MODE_FAST",
             cost=Cost.LOW,
-            display_name="Grok 4 Fast"
+            display_name="Grok 4 Fast",
         ),
         ModelInfo(
             model_id="grok-4-heavy",
@@ -79,21 +82,21 @@ class ModelService:
             model_mode="MODEL_MODE_HEAVY",
             cost=Cost.HIGH,
             tier=Tier.SUPER,
-            display_name="Grok 4 Heavy"
+            display_name="Grok 4 Heavy",
         ),
         ModelInfo(
             model_id="grok-4.1",
             grok_model="grok-4-1-thinking-1129",
             model_mode="MODEL_MODE_AUTO",
             cost=Cost.LOW,
-            display_name="Grok 4.1"
+            display_name="Grok 4.1",
         ),
         ModelInfo(
             model_id="grok-4.1-thinking",
             grok_model="grok-4-1-thinking-1129",
             model_mode="MODEL_MODE_GROK_4_1_THINKING",
-            cost=Cost.HIGH, 
-            display_name="Grok 4.1 Thinking"
+            cost=Cost.HIGH,
+            display_name="Grok 4.1 Thinking",
         ),
         ModelInfo(
             model_id="grok-imagine-1.0",
@@ -102,7 +105,7 @@ class ModelService:
             cost=Cost.HIGH,
             display_name="Grok Image",
             description="Image generation model",
-            is_image=True
+            is_image=True,
         ),
         ModelInfo(
             model_id="grok-imagine-1.0-video",
@@ -111,22 +114,22 @@ class ModelService:
             cost=Cost.HIGH,
             display_name="Grok Video",
             description="Video generation model",
-            is_video=True
+            is_video=True,
         ),
     ]
-    
+
     _map = {m.model_id: m for m in MODELS}
-    
+
     @classmethod
     def get(cls, model_id: str) -> Optional[ModelInfo]:
         """获取模型信息"""
         return cls._map.get(model_id)
-    
+
     @classmethod
     def list(cls) -> list[ModelInfo]:
         """获取所有模型"""
         return list(cls._map.values())
-    
+
     @classmethod
     def valid(cls, model_id: str) -> bool:
         """模型是否有效"""

@@ -329,7 +329,7 @@ class GrokChatService:
                     try:
                         content = await response.text()
                         content = content[:1000]  # 限制长度避免日志过大
-                    except:
+                    except Exception:
                         content = "Unable to read response content"
 
                     logger.error(
@@ -342,7 +342,7 @@ class GrokChatService:
                     # 关闭 session 并抛出异常
                     try:
                         await session.close()
-                    except:
+                    except Exception:
                         pass
                     raise UpstreamException(
                         message=f"Grok API request failed: {response.status_code}",
@@ -360,7 +360,7 @@ class GrokChatService:
                 logger.error(f"Chat request error: {e}")
                 try:
                     await session.close()
-                except:
+                except Exception:
                     pass
                 raise UpstreamException(
                     message=f"Chat connection failed: {str(e)}",
@@ -475,24 +475,27 @@ class ChatService:
             token: Token 字符串
             model: 模型名称
         """
+        success = False
         try:
             async for chunk in stream:
                 yield chunk
+            success = True
         finally:
-            # 无论成功完成还是客户端断开，都记录使用
-            try:
-                model_info = ModelService.get(model)
-                effort = (
-                    EffortType.HIGH
-                    if (model_info and model_info.cost.value == "high")
-                    else EffortType.LOW
-                )
-                await token_mgr.consume(token, effort)
-                logger.debug(
-                    f"Stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record stream usage: {e}")
+            # 只在成功完成时记录使用，失败/异常时不扣费
+            if success:
+                try:
+                    model_info = ModelService.get(model)
+                    effort = (
+                        EffortType.HIGH
+                        if (model_info and model_info.cost.value == "high")
+                        else EffortType.LOW
+                    )
+                    await token_mgr.consume(token, effort)
+                    logger.debug(
+                        f"Stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record stream usage: {e}")
 
     @staticmethod
     async def completions(

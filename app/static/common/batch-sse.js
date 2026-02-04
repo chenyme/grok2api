@@ -1,7 +1,9 @@
 (function (global) {
   function openBatchStream(taskId, apiKey, handlers = {}) {
     if (!taskId) return null;
-    const url = `/api/v1/admin/batch/${taskId}/stream?api_key=${encodeURIComponent(apiKey || '')}`;
+    // Strip "Bearer " prefix if present - query param expects raw key
+    const rawKey = apiKey && apiKey.startsWith('Bearer ') ? apiKey.slice(7) : apiKey;
+    const url = `/api/v1/admin/batch/${taskId}/stream?api_key=${encodeURIComponent(rawKey || '')}`;
     const es = new EventSource(url);
 
     es.onmessage = (e) => {

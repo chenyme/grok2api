@@ -188,7 +188,7 @@ curl http://localhost:8000/v1/images/generations \
 | :-------------------- | :--------------------------- | :----------- | :--------------------------------------------------- | :-------------------------------------------------------- |
 | **app**         | `app_url`                  | 应用地址     | 当前 Grok2API 服务的外部访问 URL，用于文件链接访问。 | `http://127.0.0.1:8000`                                 |
 |                       | `app_key`                  | 后台密码     | 登录 Grok2API 服务管理后台的密码，请妥善保管。       | `grok2api`                                              |
-|                       | `api_key`                  | API 密钥     | 调用 Grok2API 服务所需的 Bearer Token，请妥善保管。  | `""`                                                    |
+|                       | `api_key`                  | API 密钥     | 调用 Grok2API 服务所需的 Bearer Token，请妥善保管。  | `grok2api`                                              |
 |                       | `image_format`             | 图片格式     | 生成的图片格式（url 或 base64）。                    | `url`                                                   |
 |                       | `video_format`             | 视频格式     | 生成的视频格式（仅支持 url）。                       | `url`                                                   |
 | **grok**        | `temporary`                | 临时对话     | 是否启用临时对话模式。                               | `true`                                                  |
@@ -202,6 +202,12 @@ curl http://localhost:8000/v1/images/generations \
 |                       | `cf_clearance`             | CF Clearance | Cloudflare 验证 Cookie，用于验证 Cloudflare 的验证。 | `""`                                                    |
 |                       | `max_retry`                | 最大重试     | 请求 Grok 服务失败时的最大重试次数。                 | `3`                                                     |
 |                       | `retry_status_codes`       | 重试状态码   | 触发重试的 HTTP 状态码列表。                         | `[401, 429, 403]`                                       |
+|                       | `retry_backoff_base`       | 退避基数     | 重试退避的基础延迟（秒）。                           | `0.5`                                                   |
+|                       | `retry_backoff_factor`     | 退避倍率     | 重试退避的指数放大系数。                             | `2.0`                                                   |
+|                       | `retry_backoff_max`        | 退避上限     | 单次重试等待的最大延迟（秒）。                       | `30.0`                                                  |
+|                       | `retry_budget`             | 退避预算     | 单次请求的最大重试总耗时（秒）。                     | `90.0`                                                  |
+|                       | `stream_idle_timeout`      | 流空闲超时   | 流式响应空闲超时（秒），超过将断开。                 | `45.0`                                                  |
+|                       | `video_idle_timeout`       | 视频空闲超时 | 视频生成空闲超时（秒），超过将断开。                 | `90.0`                                                  |
 | **token**       | `auto_refresh`             | 自动刷新     | 是否开启 Token 自动刷新机制。                        | `true`                                                  |
 |                       | `refresh_interval_hours`   | 刷新间隔     | Token 刷新的时间间隔（小时）。                       | `8`                                                     |
 |                       | `fail_threshold`           | 失败阈值     | 单个 Token 连续失败多少次后被标记为不可用。          | `5`                                                     |

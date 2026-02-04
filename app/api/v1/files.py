@@ -24,9 +24,9 @@ async def get_image(filename: str):
     """
     if "/" in filename:
         filename = filename.replace("/", "-")
-        
+
     file_path = IMAGE_DIR / filename
-    
+
     if await aiofiles.os.path.exists(file_path):
         if await aiofiles.os.path.isfile(file_path):
             content_type = "image/jpeg"
@@ -34,14 +34,12 @@ async def get_image(filename: str):
                 content_type = "image/png"
             elif file_path.suffix.lower() == ".webp":
                 content_type = "image/webp"
-            
+
             # 增加缓存头，支持高并发场景下的浏览器/CDN缓存
             return FileResponse(
-                file_path, 
+                file_path,
                 media_type=content_type,
-                headers={
-                    "Cache-Control": "public, max-age=31536000, immutable"
-                }
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
             )
 
     logger.warning(f"Image not found: {filename}")
@@ -55,17 +53,15 @@ async def get_video(filename: str):
     """
     if "/" in filename:
         filename = filename.replace("/", "-")
-        
+
     file_path = VIDEO_DIR / filename
-    
+
     if await aiofiles.os.path.exists(file_path):
         if await aiofiles.os.path.isfile(file_path):
             return FileResponse(
-                file_path, 
+                file_path,
                 media_type="video/mp4",
-                headers={
-                    "Cache-Control": "public, max-age=31536000, immutable"
-                }
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
             )
 
     logger.warning(f"Video not found: {filename}")
