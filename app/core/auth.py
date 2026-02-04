@@ -61,7 +61,7 @@ async def verify_app_key(
     """
     验证后台登录密钥（app_key）。
 
-    如果未配置 app_key，则跳过验证。
+    app_key 必须配置，否则拒绝登录。
     """
     app_key = get_config("app.app_key", "")
 

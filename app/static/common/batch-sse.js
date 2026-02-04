@@ -1,8 +1,14 @@
 (function (global) {
+  function normalizeApiKey(apiKey) {
+    if (!apiKey) return '';
+    const trimmed = String(apiKey).trim();
+    return trimmed.startsWith('Bearer ') ? trimmed.slice(7).trim() : trimmed;
+  }
+
   function openBatchStream(taskId, apiKey, handlers = {}) {
     if (!taskId) return null;
-    // Strip "Bearer " prefix if present - query param expects raw key
-    const rawKey = apiKey && apiKey.startsWith('Bearer ') ? apiKey.slice(7) : apiKey;
+    // Query param expects raw key
+    const rawKey = normalizeApiKey(apiKey);
     const url = `/api/v1/admin/batch/${taskId}/stream?api_key=${encodeURIComponent(rawKey || '')}`;
     const es = new EventSource(url);
 
@@ -31,9 +37,10 @@
   async function cancelBatchTask(taskId, apiKey) {
     if (!taskId) return;
     try {
+      const rawKey = normalizeApiKey(apiKey);
       await fetch(`/api/v1/admin/batch/${taskId}/cancel`, {
         method: 'POST',
-        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined
+        headers: rawKey ? { Authorization: `Bearer ${rawKey}` } : undefined
       });
     } catch {
       // ignore

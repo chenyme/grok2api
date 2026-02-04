@@ -187,8 +187,8 @@ curl http://localhost:8000/v1/images/generations \
 | 模块                  | 字段                         | 配置名       | 说明                                                 | 默认值                                                    |
 | :-------------------- | :--------------------------- | :----------- | :--------------------------------------------------- | :-------------------------------------------------------- |
 | **app**         | `app_url`                  | 应用地址     | 当前 Grok2API 服务的外部访问 URL，用于文件链接访问。 | `http://127.0.0.1:8000`                                 |
-|                       | `app_key`                  | 后台密码     | 登录 Grok2API 服务管理后台的密码，请妥善保管。       | `grok2api`                                              |
-|                       | `api_key`                  | API 密钥     | 调用 Grok2API 服务所需的 Bearer Token，请妥善保管。  | `grok2api`                                              |
+|                       | `app_key`                  | 后台密码     | 登录 Grok2API 管理后台的密码（必填）。               | `grok2api`                                              |
+|                       | `api_key`                  | API 密钥     | 调用 Grok2API 服务的 Token（可选）。 | `""`                                    |
 |                       | `image_format`             | 图片格式     | 生成的图片格式（url 或 base64）。                    | `url`                                                   |
 |                       | `video_format`             | 视频格式     | 生成的视频格式（html 或 url，url 为处理后的链接）。  | `html`                                                  |
 | **grok**        | `temporary`                | 临时对话     | 是否启用临时对话模式。                               | `true`                                                  |

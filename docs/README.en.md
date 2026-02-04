@@ -154,8 +154,8 @@ Config file: `data/config.toml`
 | Module | Field | Key | Description | Default |
 | :--- | :--- | :--- | :--- | :--- |
 | **app** | `app_url` | App URL | External access URL for Grok2API (used for file links). | `http://127.0.0.1:8000` |
-| | `app_key` | Admin password | Password for the Grok2API admin panel. | `grok2api` |
-| | `api_key` | API key | Bearer token required to call Grok2API. | `""` |
+| | `app_key` | Admin password | Password for the Grok2API admin panel (required). | `grok2api` |
+| | `api_key` | API key | Token for calling Grok2API (optional). | `""` |
 | | `image_format` | Image format | Output image format (`url` or `base64`). | `url` |
 | | `video_format` | Video format | Output video format (html tag or processed url). | `html` |
 | **grok** | `temporary` | Temporary chat | Enable temporary conversation mode. | `true` |

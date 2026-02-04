@@ -31,8 +31,8 @@ const NUMERIC_FIELDS = new Set([
 const LOCALE_MAP = {
   "app": {
     "label": "应用设置",
-    "api_key": { title: "API 密钥", desc: "调用 Grok2API 服务所需的 Bearer Token，请妥善保管。" },
-    "app_key": { title: "后台密码", desc: "登录 Grok2API 服务管理后台的密码，请妥善保管。" },
+    "api_key": { title: "API 密钥", desc: "调用 Grok2API 服务的 Token（可留空，留空将不校验；不要包含 Bearer 前缀）。" },
+    "app_key": { title: "后台密码", desc: "登录 Grok2API 管理后台的密码（必填，默认 grok2api）。" },
     "app_url": { title: "应用地址", desc: "当前 Grok2API 服务的外部访问 URL，用于文件链接访问。" },
     "image_format": { title: "图片格式", desc: "生成的图片格式（url 或 base64）。" },
     "video_format": { title: "视频格式", desc: "生成的视频格式（html 或 url，url 为处理后的链接）。" }
@@ -335,7 +335,7 @@ async function saveConfig() {
       } else if (input.dataset.type === 'json') {
         try { val = JSON.parse(val); } catch (e) { throw new Error(`无效的 JSON: ${getText(s, k).title}`); }
       } else if (k === 'app_key' && val.trim() === '') {
-        throw new Error('后台密码不能为空');
+        throw new Error('app_key 不能为空（后台密码）');
       } else if (NUMERIC_FIELDS.has(k)) {
         if (val.trim() !== '' && !Number.isNaN(Number(val))) {
           val = Number(val);
