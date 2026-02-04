@@ -215,19 +215,25 @@ class ChatRequestBuilder:
             mode: 模型模式
             think: 是否开启思考
             file_attachments: 文件附件 ID 列表
-            image_attachments: 图片附件 URL 列表
+            image_attachments: 图片附件 ID 列表（合并到 fileAttachments）
         """
         temporary = get_config("grok.temporary", True)
         if think is None:
             think = get_config("grok.thinking", False)
+
+        merged_attachments: List[str] = []
+        if file_attachments:
+            merged_attachments.extend(file_attachments)
+        if image_attachments:
+            merged_attachments.extend(image_attachments)
 
         return {
             "temporary": temporary,
             "modelName": model,
             "modelMode": mode,
             "message": message,
-            "fileAttachments": file_attachments or [],
-            "imageAttachments": image_attachments or [],
+            "fileAttachments": merged_attachments,
+            "imageAttachments": [],
             "disableSearch": False,
             "enableImageGeneration": True,
             "returnImageBytes": False,
@@ -413,7 +419,6 @@ class GrokChatService:
 
         # 处理附件上传
         file_ids = []
-        image_ids = []
 
         if attachments:
             upload_service = UploadService()
@@ -423,11 +428,9 @@ class GrokChatService:
                     file_id, _ = await upload_service.upload(attach_data, token)
 
                     if attach_type == "image":
-                        # 图片 imageAttachments
-                        image_ids.append(file_id)
+                        file_ids.append(file_id)
                         logger.debug(f"Image uploaded: {file_id}")
                     else:
-                        # 文件 fileAttachments
                         file_ids.append(file_id)
                         logger.debug(f"File uploaded: {file_id}")
             finally:
@@ -452,7 +455,7 @@ class GrokChatService:
             think,
             stream,
             file_attachments=file_ids,
-            image_attachments=image_ids,
+            image_attachments=[],
         )
 
         return response, stream, request.model
