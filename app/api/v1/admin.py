@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
-from app.core.auth import verify_api_key, verify_app_key
+from app.core.auth import verify_api_key, verify_app_key, get_admin_api_key
 from app.core.config import config, get_config
 from app.core.batch_tasks import create_task, get_task, expire_task
 from app.core.storage import get_storage, LocalStorage, RedisStorage, SQLStorage
@@ -33,7 +33,7 @@ def _sse_event(payload: dict) -> str:
 
 
 def _verify_stream_api_key(request: Request) -> None:
-    api_key = get_config("app.api_key", "")
+    api_key = get_admin_api_key()
     if not api_key:
         return
     key = request.query_params.get("api_key")
@@ -110,7 +110,7 @@ async def admin_token_page():
 @router.post("/api/v1/admin/login", dependencies=[Depends(verify_app_key)])
 async def admin_login_api():
     """管理后台登录验证（使用 app_key）"""
-    return {"status": "success", "api_key": get_config("app.api_key", "")}
+    return {"status": "success", "api_key": get_admin_api_key()}
 
 
 @router.get("/api/v1/admin/config", dependencies=[Depends(verify_api_key)])

@@ -16,15 +16,27 @@ security = HTTPBearer(
 )
 
 
+def get_admin_api_key() -> str:
+    """
+    获取后台 API Key。
+
+    为空时表示不启用后台接口认证。
+    """
+    api_key = get_config("app.api_key", "")
+    return api_key or ""
+
+
 async def verify_api_key(
     auth: Optional[HTTPAuthorizationCredentials] = Security(security),
 ) -> Optional[str]:
     """
     验证 Bearer Token
 
-    如果 config.toml 中未配置 api_key，则使用默认密钥 "grok2api"。
+    如果 config.toml 中未配置 api_key，则不启用认证。
     """
-    api_key = get_config("app.api_key", "grok2api")
+    api_key = get_admin_api_key()
+    if not api_key:
+        return None
 
     if not auth:
         raise HTTPException(

@@ -169,6 +169,12 @@ Config file: `data/config.toml`
 | | `cf_clearance` | CF Clearance | Cloudflare clearance cookie for verification. | `""` |
 | | `max_retry` | Max retries | Max retries on Grok request failure. | `3` |
 | | `retry_status_codes` | Retry status codes | HTTP status codes that trigger retry. | `[401, 429, 403]` |
+| | `retry_backoff_base` | Backoff base | Base delay for retry backoff (seconds). | `0.5` |
+| | `retry_backoff_factor` | Backoff factor | Exponential multiplier for retry backoff. | `2.0` |
+| | `retry_backoff_max` | Backoff max | Max wait per retry (seconds). | `30.0` |
+| | `retry_budget` | Backoff budget | Max total retry time per request (seconds). | `90.0` |
+| | `stream_idle_timeout` | Stream idle timeout | Idle timeout for streaming responses (seconds). | `45.0` |
+| | `video_idle_timeout` | Video idle timeout | Idle timeout for video generation (seconds). | `90.0` |
 | **token** | `auto_refresh` | Auto refresh | Enable automatic token refresh. | `true` |
 | | `refresh_interval_hours` | Refresh interval | Token refresh interval (hours). | `8` |
 | | `fail_threshold` | Failure threshold | Consecutive failures before a token is disabled. | `5` |
