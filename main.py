@@ -29,6 +29,7 @@ from app.api.v1.chat import router as chat_router  # noqa: E402
 from app.api.v1.image import router as image_router  # noqa: E402
 from app.api.v1.files import router as files_router  # noqa: E402
 from app.api.v1.models import router as models_router  # noqa: E402
+from app.api.v1.voice import router as voice_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
 
 
@@ -108,6 +109,9 @@ def create_app() -> FastAPI:
     app.include_router(
         models_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
     )
+    app.include_router(
+        voice_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
+    )
     app.include_router(files_router, prefix="/v1/files")
 
     # 静态文件服务
@@ -131,6 +135,10 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
+    # Set proxy
+    os.environ["HTTP_PROXY"] = "http://127.0.0.1:19347"
+    os.environ["HTTPS_PROXY"] = "http://127.0.0.1:19347"
+    
     host = os.getenv("SERVER_HOST", "0.0.0.0")
     port = int(os.getenv("SERVER_PORT", "8000"))
     workers = int(os.getenv("SERVER_WORKERS", "1"))
