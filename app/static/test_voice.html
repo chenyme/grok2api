@@ -15,6 +15,8 @@
             --text-color: #ffffff;
             --success-color: #34c759;
             --error-color: #ff3b30;
+            --input-bg: #1c1c1e;
+            --input-border: #444;
         }
 
         body {
@@ -36,7 +38,7 @@
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
             text-align: center;
             width: 90%;
-            max-width: 400px;
+            max-width: 450px;
         }
 
         h1 {
@@ -67,10 +69,34 @@
         }
 
         .controls {
-            margin-top: 2rem;
+            margin-top: 1.5rem;
             display: flex;
             flex-direction: column;
             gap: 1rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            text-align: left;
+        }
+
+        .form-group label {
+            font-size: 0.85rem;
+            color: #aaa;
+            margin-left: 2px;
+        }
+
+        select,
+        input {
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid var(--input-border);
+            background: var(--input-bg);
+            color: white;
+            font-size: 0.95rem;
+            outline: none;
         }
 
         button {
@@ -81,6 +107,7 @@
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
+            margin-top: 0.5rem;
         }
 
         #startBtn {
@@ -152,8 +179,48 @@
         </div>
 
         <div class="controls">
-            <input id="apiKey" placeholder="输入 API Key (如果需要)"
-                style="padding: 10px; border-radius: 8px; border: 1px solid #444; background: #1c1c1e; color: white;">
+            <div class="form-group">
+                <label for="apiKey">API Key (可选)</label>
+                <input id="apiKey" placeholder="输入 API Key">
+            </div>
+
+            <div class="form-group">
+                <label for="voiceSelect">声音 (Voice)</label>
+                <select id="voiceSelect">
+                    <option value="ara" selected>Ara (Upbeat Female)</option>
+                    <option value="eve">Eve (Soothing Female)</option>
+                    <option value="leo">Leo (British Male)</option>
+                    <option value="rex">Rex (Calm Male)</option>
+                    <option value="sal">Sal (Smooth Male)</option>
+                    <option value="gork">Gork (Lazy Male)</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="personalitySelect">个性 (Personality)</label>
+                <select id="personalitySelect">
+                    <option value="assistant" selected>Assistant (Default)</option>
+                    <option value="custom">Custom</option>
+                    <option value="therapist">Therapist</option>
+                    <option value="storyteller">Storyteller</option>
+                    <option value="kids_story_time">Kids Story Time</option>
+                    <option value="kids_trivia_game">Kids Trivia Game</option>
+                    <option value="meditation">Meditation</option>
+                    <option value="doc">Grok "Doc"</option>
+                    <option value="unhinged">Unhinged 18+</option>
+                    <option value="sexy">Sexy 18+</option>
+                    <option value="motivation">Motivation 18+</option>
+                    <option value="conspiracy">Conspiracy</option>
+                    <option value="romantic">Romantic 18+</option>
+                    <option value="argumentative">Argumentative 18+</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="speedRange">语速: <span id="speedValue">1.0</span>x</label>
+                <input type="range" id="speedRange" min="0.5" max="2.0" step="0.1" value="1.0">
+            </div>
+
             <button id="startBtn">开始语音对话</button>
             <button id="stopBtn" class="hidden">停止对话</button>
         </div>
@@ -188,6 +255,16 @@
         const logContainer = document.getElementById('log');
         const apiKeyInput = document.getElementById('apiKey');
 
+        const voiceSelect = document.getElementById('voiceSelect');
+        const personalitySelect = document.getElementById('personalitySelect');
+        const speedRange = document.getElementById('speedRange');
+        const speedValue = document.getElementById('speedValue');
+
+        // Update speed label
+        speedRange.addEventListener('input', (e) => {
+            speedValue.textContent = e.target.value;
+        });
+
         let room;
 
         function log(msg) {
@@ -210,7 +287,18 @@
                 statusIcon.className = 'status-indicator status-connecting';
 
                 const apiKey = apiKeyInput.value;
-                const response = await fetch('/v1/voice/token', {
+                const voice = voiceSelect.value;
+                const personality = personalitySelect.value;
+                const speed = speedRange.value;
+
+                // Build query params
+                const params = new URLSearchParams({
+                    voice: voice,
+                    personality: personality,
+                    speed: speed
+                });
+
+                const response = await fetch(`/v1/voice/token?${params.toString()}`, {
                     headers: {
                         'Authorization': `Bearer ${apiKey}`
                     }
@@ -221,7 +309,7 @@
                 }
 
                 const { token, url } = await response.json();
-                log('获取 Token 成功');
+                log(`获取 Token 成功 (${voice}, ${personality}, ${speed}x)`);
 
                 room = new Room({
                     adaptiveStream: true,

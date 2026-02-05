@@ -21,7 +21,12 @@ class VoiceTokenResponse(BaseModel):
 
 
 @router.get("/voice/token", response_model=VoiceTokenResponse)
-async def get_voice_token(api_key: str = Depends(verify_api_key)):
+async def get_voice_token(
+    voice: str = "ara",
+    personality: str = "assistant",
+    speed: float = 1.0,
+    api_key: str = Depends(verify_api_key)
+):
     """
     Get Grok Voice Mode (LiveKit) Token
     
@@ -38,7 +43,12 @@ async def get_voice_token(api_key: str = Depends(verify_api_key)):
 
     service = VoiceService()
     try:
-        data = await service.get_token(sso_token)
+        data = await service.get_token(
+            token=sso_token,
+            voice=voice,
+            personality=personality,
+            speed=speed
+        )
         
         # Check for errors in data structure
         token = data.get("token")

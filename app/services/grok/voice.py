@@ -25,7 +25,14 @@ class VoiceService:
     def __init__(self, proxy: str = None):
         self.proxy = proxy or get_config("grok.base_proxy_url", "")
 
-    async def get_token(self, token: str, model: str = "grok-4.1") -> Dict[str, Any]:
+    async def get_token(
+        self,
+        token: str,
+        model: str = "grok-4.1",
+        voice: str = "ara",
+        personality: str = "assistant",
+        speed: float = 1.0,
+    ) -> Dict[str, Any]:
         """
         Get LiveKit token
         
@@ -37,7 +44,7 @@ class VoiceService:
             Dict containing token and livekitUrl
         """
         headers = self._build_headers(token)
-        payload = self._build_payload(model)
+        payload = self._build_payload(model, voice, personality, speed)
         
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         
@@ -86,14 +93,19 @@ class VoiceService:
         
         return headers
 
-    def _build_payload(self, model: str) -> Dict[str, Any]:
-        # Based on reverse engineered payload
-        # voice: "Ara" (default), personality: "assistant"
+    def _build_payload(
+        self,
+        model: str,
+        voice: str = "ara",
+        personality: str = "assistant",
+        speed: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Construct payload with voice settings"""
         return {
             "sessionPayload": orjson.dumps({
-                "voice": "Ara",
-                "personality": "assistant",
-                "playback_speed": 1,
+                "voice": voice,
+                "personality": personality,
+                "playback_speed": speed,
                 "enable_vision": False,
                 "turn_detection": {"type": "server_vad"}
             }).decode(),
