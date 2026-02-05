@@ -46,6 +46,7 @@ logs/
 
 # Data
 data/*.json
+data/token.json
 data/tmp/
 data/.locks/
 

@@ -201,7 +201,7 @@ class ChatRequestBuilder:
     def build_payload(
         message: str,
         model: str,
-        mode: str,
+        mode: str = None,
         think: bool = None,
         file_attachments: List[str] = None,
         image_attachments: List[str] = None,
@@ -227,10 +227,9 @@ class ChatRequestBuilder:
         if image_attachments:
             merged_attachments.extend(image_attachments)
 
-        return {
+        payload = {
             "temporary": temporary,
             "modelName": model,
-            "modelMode": mode,
             "message": message,
             "fileAttachments": merged_attachments,
             "imageAttachments": [],
@@ -264,6 +263,11 @@ class ChatRequestBuilder:
             },
         }
 
+        if mode:
+            payload["modelMode"] = mode
+
+        return payload
+
 
 # ==================== Grok 服务 ====================
 
@@ -279,7 +283,7 @@ class GrokChatService:
         token: str,
         message: str,
         model: str = "grok-3",
-        mode: str = "MODEL_MODE_FAST",
+        mode: str = None,
         think: bool = None,
         stream: bool = None,
         file_attachments: List[str] = None,
@@ -334,16 +338,25 @@ class GrokChatService:
                 if response.status_code != 200:
                     try:
                         content = await response.text()
-                        content = content[:1000]  # 限制长度避免日志过大
                     except Exception:
-                        content = "Unable to read response content"
+                        content = ""
 
                     logger.error(
-                        f"Chat failed: {response.status_code}, {content}",
+                        f"Chat failed: {response.status_code}",
                         extra={
                             "status": response.status_code,
                             "token": token[:10] + "...",
                         },
+                    )
+                    resp_headers = {}
+                    try:
+                        resp_headers = dict(response.headers)
+                    except Exception:
+                        resp_headers = {}
+                    body_for_log = content if content else "<empty>"
+                    logger.debug(
+                        "Grok API error response "
+                        f"(status={response.status_code}, headers={resp_headers}): {body_for_log}"
                     )
                     # 关闭 session 并抛出异常
                     try:
@@ -352,7 +365,11 @@ class GrokChatService:
                         pass
                     raise UpstreamException(
                         message=f"Grok API request failed: {response.status_code}",
-                        details={"status": response.status_code},
+                        details={
+                            "status": response.status_code,
+                            "body": content,
+                            "headers": resp_headers,
+                        },
                     )
 
                 # 返回 session 和 response
@@ -385,7 +402,12 @@ class GrokChatService:
             status_code = extract_status(e)
             if status_code:
                 token_mgr = await get_token_manager()
-                await token_mgr.record_fail(token, status_code, str(e))
+                reason = str(e)
+                if isinstance(e, UpstreamException) and e.details:
+                    body = e.details.get("body")
+                    if body:
+                        reason = f"{reason} | body: {body}"
+                await token_mgr.record_fail(token, status_code, reason)
             raise
 
         # 流式传输
