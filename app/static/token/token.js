@@ -152,7 +152,13 @@ function processTokens(data) {
             note: t.note || '',
             fail_count: t.fail_count || 0,
             use_count: t.use_count || 0,
-            tags: t.tags || []
+            tags: t.tags || [],
+            created_at: t.created_at,
+            last_used_at: t.last_used_at,
+            last_fail_at: t.last_fail_at,
+            last_fail_reason: t.last_fail_reason,
+            last_sync_at: t.last_sync_at,
+            last_asset_clear_at: t.last_asset_clear_at
           };
         flatTokens.push({ ...tObj, pool: pool, _selected: false });
       });
@@ -511,14 +517,22 @@ async function syncToServer() {
   const newTokens = {};
   flatTokens.forEach(t => {
     if (!newTokens[t.pool]) newTokens[t.pool] = [];
-    newTokens[t.pool].push({
+    const payload = {
       token: t.token,
       status: t.status,
       quota: t.quota,
       note: t.note,
       fail_count: t.fail_count,
-      use_count: t.use_count || 0
-    });
+      use_count: t.use_count || 0,
+      tags: Array.isArray(t.tags) ? t.tags : []
+    };
+    if (typeof t.created_at === 'number') payload.created_at = t.created_at;
+    if (typeof t.last_used_at === 'number') payload.last_used_at = t.last_used_at;
+    if (typeof t.last_fail_at === 'number') payload.last_fail_at = t.last_fail_at;
+    if (typeof t.last_sync_at === 'number') payload.last_sync_at = t.last_sync_at;
+    if (typeof t.last_asset_clear_at === 'number') payload.last_asset_clear_at = t.last_asset_clear_at;
+    if (typeof t.last_fail_reason === 'string' && t.last_fail_reason) payload.last_fail_reason = t.last_fail_reason;
+    newTokens[t.pool].push(payload);
   });
 
   try {
@@ -563,6 +577,8 @@ async function submitImport() {
         status: 'active',
         quota: defaultQuota,
         note: '',
+        tags: [],
+        fail_count: 0,
         use_count: 0,
         _selected: false
       });

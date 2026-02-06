@@ -242,9 +242,63 @@ async def update_tokens_api(data: dict):
     storage = get_storage()
     try:
         from app.services.token.manager import get_token_manager
+        from app.services.token.models import TokenInfo
 
         async with storage.acquire_lock("tokens_save", timeout=10):
-            await storage.save_tokens(data)
+            existing = await storage.load_tokens() or {}
+            normalized = {}
+            allowed_fields = set(TokenInfo.model_fields.keys())
+            existing_map = {}
+            for pool_name, tokens in existing.items():
+                if not isinstance(tokens, list):
+                    continue
+                pool_map = {}
+                for item in tokens:
+                    if isinstance(item, str):
+                        token_data = {"token": item}
+                    elif isinstance(item, dict):
+                        token_data = dict(item)
+                    else:
+                        continue
+                    raw_token = token_data.get("token")
+                    if isinstance(raw_token, str) and raw_token.startswith("sso="):
+                        token_data["token"] = raw_token[4:]
+                    token_key = token_data.get("token")
+                    if isinstance(token_key, str):
+                        pool_map[token_key] = token_data
+                existing_map[pool_name] = pool_map
+            for pool_name, tokens in (data or {}).items():
+                if not isinstance(tokens, list):
+                    continue
+                pool_list = []
+                for item in tokens:
+                    if isinstance(item, str):
+                        token_data = {"token": item}
+                    elif isinstance(item, dict):
+                        token_data = dict(item)
+                    else:
+                        continue
+
+                    raw_token = token_data.get("token")
+                    if isinstance(raw_token, str) and raw_token.startswith("sso="):
+                        token_data["token"] = raw_token[4:]
+
+                    base = existing_map.get(pool_name, {}).get(token_data.get("token"), {})
+                    merged = dict(base)
+                    merged.update(token_data)
+                    if merged.get("tags") is None:
+                        merged["tags"] = []
+
+                    filtered = {k: v for k, v in merged.items() if k in allowed_fields}
+                    try:
+                        info = TokenInfo(**filtered)
+                        pool_list.append(info.model_dump())
+                    except Exception as e:
+                        logger.warning(f"Skip invalid token in pool '{pool_name}': {e}")
+                        continue
+                normalized[pool_name] = pool_list
+
+            await storage.save_tokens(normalized)
             mgr = await get_token_manager()
             await mgr.reload()
         return {"status": "success", "message": "Token 已更新"}

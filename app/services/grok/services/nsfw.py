@@ -6,6 +6,8 @@ NSFW (Unhinged) 模式服务
 
 from dataclasses import dataclass
 from typing import Optional
+import datetime
+import random
 
 from curl_cffi.requests import AsyncSession
 
@@ -20,6 +22,7 @@ from app.services.grok.utils.headers import build_sso_cookie
 
 
 NSFW_API = "https://grok.com/auth_mgmt.AuthManagement/UpdateUserFeatureControls"
+BIRTH_DATE_API = "https://grok.com/rest/auth/set-birth-date"
 BROWSER = "chrome136"
 TIMEOUT = 30
 
@@ -41,6 +44,20 @@ class NSFWService:
     def __init__(self, proxy: str = None):
         self.proxy = proxy or get_config("grok.base_proxy_url", "")
 
+    @staticmethod
+    def _random_birth_date() -> str:
+        """生成随机出生日期"""
+        today = datetime.date.today()
+        age = random.randint(20, 40)
+        birth_year = today.year - age
+        birth_month = random.randint(1, 12)
+        birth_day = random.randint(1, 28)
+        hour = random.randint(0, 23)
+        minute = random.randint(0, 59)
+        second = random.randint(0, 59)
+        microsecond = random.randint(0, 999)
+        return f"{birth_year:04d}-{birth_month:02d}-{birth_day:02d}T{hour:02d}:{minute:02d}:{second:02d}.{microsecond:03d}Z"
+
     def _build_headers(self, token: str) -> dict:
         """构造 gRPC-Web 请求头"""
         cookie = build_sso_cookie(token, include_rw=True)
@@ -52,6 +69,18 @@ class NSFWService:
             "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             "x-grpc-web": "1",
             "x-user-agent": "connect-es/2.1.1",
+            "cookie": cookie,
+        }
+
+    def _build_birth_headers(self, token: str) -> dict:
+        """构造设置出生日期请求头"""
+        cookie = build_sso_cookie(token, include_rw=True)
+        return {
+            "accept": "*/*",
+            "content-type": "application/json",
+            "origin": "https://grok.com",
+            "referer": "https://grok.com/?_s=account",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             "cookie": cookie,
         }
 
@@ -67,6 +96,25 @@ class NSFWService:
         protobuf = b"\x0a\x02\x10\x01\x12" + bytes([len(inner)]) + inner
         return encode_grpc_web_payload(protobuf)
 
+    async def _set_birth_date(self, session: AsyncSession, token: str) -> tuple[bool, int, Optional[str]]:
+        """设置出生日期"""
+        headers = self._build_birth_headers(token)
+        payload = {"birthDate": self._random_birth_date()}
+        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        try:
+            response = await session.post(
+                BIRTH_DATE_API,
+                json=payload,
+                headers=headers,
+                timeout=TIMEOUT,
+                proxies=proxies,
+            )
+            if response.status_code in (200, 204):
+                return True, response.status_code, None
+            return False, response.status_code, f"HTTP {response.status_code}"
+        except Exception as e:
+            return False, 0, str(e)[:100]
+
     async def enable(self, token: str) -> NSFWResult:
         """为单个 token 开启 NSFW 模式"""
         headers = self._build_headers(token)
@@ -80,6 +128,15 @@ class NSFWService:
 
         try:
             async with AsyncSession(impersonate=BROWSER) as session:
+                ok, birth_status, birth_err = await self._set_birth_date(
+                    session, token
+                )
+                if not ok:
+                    return NSFWResult(
+                        success=False,
+                        http_status=birth_status,
+                        error=f"Set birth date failed: {birth_err}",
+                    )
                 response = await session.post(
                     NSFW_API,
                     data=payload,
