@@ -23,6 +23,24 @@ def _is_http2_stream_error(e: Exception) -> bool:
     return "http/2" in err_str or "curl: (92)" in err_str or "stream" in err_str
 
 
+def _normalize_stream_line(line: Any) -> Optional[str]:
+    """规范化流式响应行，兼容 SSE data 前缀与空行"""
+    if line is None:
+        return None
+    if isinstance(line, (bytes, bytearray)):
+        text = line.decode("utf-8", errors="ignore")
+    else:
+        text = str(line)
+    text = text.strip()
+    if not text:
+        return None
+    if text.startswith("data:"):
+        text = text[5:].strip()
+    if text == "[DONE]":
+        return None
+    return text
+
+
 T = TypeVar("T")
 
 
@@ -233,6 +251,7 @@ class StreamProcessor(BaseProcessor):
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
+                line = _normalize_stream_line(line)
                 if not line:
                     continue
                 try:
@@ -387,6 +406,7 @@ class CollectProcessor(BaseProcessor):
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
+                line = _normalize_stream_line(line)
                 if not line:
                     continue
                 try:
@@ -525,6 +545,7 @@ class VideoStreamProcessor(BaseProcessor):
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
+                line = _normalize_stream_line(line)
                 if not line:
                     continue
                 try:
@@ -646,6 +667,7 @@ class VideoCollectProcessor(BaseProcessor):
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
+                line = _normalize_stream_line(line)
                 if not line:
                     continue
                 try:
@@ -755,6 +777,7 @@ class ImageStreamProcessor(BaseProcessor):
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
+                line = _normalize_stream_line(line)
                 if not line:
                     continue
                 try:
@@ -884,6 +907,7 @@ class ImageCollectProcessor(BaseProcessor):
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
+                line = _normalize_stream_line(line)
                 if not line:
                     continue
                 try:

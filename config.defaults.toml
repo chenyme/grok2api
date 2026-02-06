@@ -16,7 +16,7 @@ retry_backoff_factor = 2.0
 retry_backoff_max = 30.0
 retry_budget = 90.0
 # 流空闲超时配置 (秒)
-stream_idle_timeout = 45.0
+stream_idle_timeout = 120.0
 video_idle_timeout = 90.0
 
 [app]
