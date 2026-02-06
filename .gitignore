@@ -46,9 +46,11 @@ logs/
 
 # Data
 data/*.json
-data/token.json
-data/tmp/
-data/.locks/
+data/tmp/*
+data/.locks/*
+app/data/*.json
+app/data/tmp/*
+app/data/.locks/*
 
 # Testing
 .pytest_cache/

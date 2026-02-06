@@ -12,7 +12,7 @@ from app.core.logger import logger
 router = APIRouter(tags=["Files"])
 
 # 缓存根目录
-BASE_DIR = Path(__file__).parent.parent.parent.parent / "data" / "tmp"
+BASE_DIR = Path(__file__).parent.parent.parent / "data" / "tmp"
 IMAGE_DIR = BASE_DIR / "image"
 VIDEO_DIR = BASE_DIR / "video"
 
