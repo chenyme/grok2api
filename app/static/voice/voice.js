@@ -109,6 +109,19 @@
     return true;
   }
 
+  function ensureMicSupport() {
+    const hasMediaDevices = typeof navigator !== 'undefined' && navigator.mediaDevices;
+    const hasGetUserMedia = hasMediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function';
+    if (hasGetUserMedia) {
+      return true;
+    }
+    const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+    const secureHint = window.isSecureContext || isLocalhost
+      ? '请使用最新版浏览器并允许麦克风权限'
+      : '请使用 HTTPS 或在本机 localhost 访问';
+    throw new Error(`当前环境不支持麦克风权限，${secureHint}`);
+  }
+
   async function startSession() {
     if (!ensureLiveKit()) {
       return;
@@ -176,6 +189,7 @@
       setButtons(true);
 
       log('正在开启麦克风...');
+      ensureMicSupport();
       const tracks = await createLocalTracks({ audio: true, video: false });
       for (const track of tracks) {
         await room.localParticipant.publishTrack(track);

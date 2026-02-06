@@ -9,6 +9,7 @@ from typing import Optional
 
 from curl_cffi.requests import AsyncSession
 
+from app.core.config import get_config
 from app.core.logger import logger
 from app.services.grok.protocols.grpc_web import (
     encode_grpc_web_payload,

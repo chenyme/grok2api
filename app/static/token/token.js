@@ -59,6 +59,16 @@ function downloadTextFile(content, filename) {
   document.body.removeChild(a);
 }
 
+async function readJsonResponse(res) {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`响应不是有效 JSON (HTTP ${res.status})`);
+  }
+}
+
 function getSelectedTokens() {
   return flatTokens.filter(t => t._selected);
 }
@@ -1022,8 +1032,15 @@ async function batchEnableNSFW() {
       body: JSON.stringify({ tokens })
     });
 
-    const data = await res.json();
-    if (!res.ok || data.status !== 'success') {
+    const data = await readJsonResponse(res);
+    if (!res.ok) {
+      const detail = data && (data.detail || data.message);
+      throw new Error(detail || `HTTP ${res.status}`);
+    }
+    if (!data) {
+      throw new Error(`空响应 (HTTP ${res.status})`);
+    }
+    if (data.status !== 'success') {
       throw new Error(data.detail || '请求失败');
     }
 
