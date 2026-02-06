@@ -238,7 +238,7 @@ class ChatRequestBuilder:
                 "modelConfigOverride": {"modelMap": {}},
                 "requestModelDetails": {"modelId": model},
             },
-            "disableMemory": False,
+            "disableMemory": get_config("grok.disable_memory", True),
             "forceSideBySide": False,
             "isAsyncChat": False,
             "disableSelfHarmShortCircuit": False,
