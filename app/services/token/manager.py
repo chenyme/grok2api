@@ -278,7 +278,7 @@ class TokenManager:
 
         # 尝试 API 同步
         try:
-            from app.services.grok.usage import UsageService
+            from app.services.grok.services.usage import UsageService
 
             usage_service = UsageService()
             result = await usage_service.get(token_str, model_name=model_name)
@@ -518,7 +518,7 @@ class TokenManager:
         Returns:
             {"checked": int, "refreshed": int, "recovered": int, "expired": int}
         """
-        from app.services.grok.usage import UsageService
+        from app.services.grok.services.usage import UsageService
 
         # 收集需要刷新的 token
         to_refresh: List[TokenInfo] = []

@@ -17,10 +17,10 @@ from app.core.exceptions import (
     ValidationException,
     ErrorType,
 )
-from app.services.grok.statsig import StatsigService
-from app.services.grok.model import ModelService
+from app.services.grok.utils.statsig import StatsigService
+from app.services.grok.models.model import ModelService
 from app.services.token import get_token_manager, EffortType
-from app.services.grok.processor import VideoStreamProcessor, VideoCollectProcessor
+from app.services.grok.processors.processor import VideoStreamProcessor, VideoCollectProcessor
 
 # API 端点
 CREATE_POST_API = "https://grok.com/rest/media/post/create"
@@ -472,8 +472,8 @@ class VideoService:
         is_stream = stream if stream is not None else get_config("grok.stream", True)
 
         # 提取内容
-        from app.services.grok.chat import MessageExtractor
-        from app.services.grok.assets import UploadService
+        from app.services.grok.services.chat import MessageExtractor
+        from app.services.grok.services.assets import UploadService
 
         try:
             prompt, attachments = MessageExtractor.extract(messages, is_video=True)

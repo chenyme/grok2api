@@ -181,7 +181,7 @@ async def update_tokens_api(data: dict):
 async def refresh_tokens_api(data: dict):
     """刷新 Token 状态"""
     from app.services.token.manager import get_token_manager
-    from app.services.grok.batch import run_in_batches
+    from app.services.grok.utils.batch import run_in_batches
 
     try:
         mgr = await get_token_manager()
@@ -252,7 +252,7 @@ async def refresh_tokens_api(data: dict):
 async def refresh_tokens_api_async(data: dict):
     """刷新 Token 状态（异步批量 + SSE 进度）"""
     from app.services.token.manager import get_token_manager
-    from app.services.grok.batch import run_in_batches
+    from app.services.grok.utils.batch import run_in_batches
 
     mgr = await get_token_manager()
     tokens: list[str] = []
@@ -355,8 +355,8 @@ async def refresh_tokens_api_async(data: dict):
 @router.post("/api/v1/admin/tokens/nsfw/enable", dependencies=[Depends(verify_api_key)])
 async def enable_nsfw_api(data: dict):
     """批量开启 NSFW (Unhinged) 模式"""
-    from app.services.grok.nsfw import NSFWService
-    from app.services.grok.batch import run_in_batches
+    from app.services.grok.services.nsfw import NSFWService
+    from app.services.grok.utils.batch import run_in_batches
     from app.services.token.manager import get_token_manager
 
     try:
@@ -468,8 +468,8 @@ async def enable_nsfw_api(data: dict):
 )
 async def enable_nsfw_api_async(data: dict):
     """批量开启 NSFW (Unhinged) 模式（异步批量 + SSE 进度）"""
-    from app.services.grok.nsfw import NSFWService
-    from app.services.grok.batch import run_in_batches
+    from app.services.grok.services.nsfw import NSFWService
+    from app.services.grok.utils.batch import run_in_batches
     from app.services.token.manager import get_token_manager
 
     mgr = await get_token_manager()
@@ -596,9 +596,9 @@ async def admin_cache_page():
 @router.get("/api/v1/admin/cache", dependencies=[Depends(verify_api_key)])
 async def get_cache_stats_api(request: Request):
     """获取缓存统计"""
-    from app.services.grok.assets import DownloadService, ListService
+    from app.services.grok.services.assets import DownloadService, ListService
     from app.services.token.manager import get_token_manager
-    from app.services.grok.batch import run_in_batches
+    from app.services.grok.utils.batch import run_in_batches
 
     try:
         dl_service = DownloadService()
@@ -833,9 +833,9 @@ async def get_cache_stats_api(request: Request):
 )
 async def load_online_cache_api_async(data: dict):
     """在线资产统计（异步批量 + SSE 进度）"""
-    from app.services.grok.assets import DownloadService, ListService
+    from app.services.grok.services.assets import DownloadService, ListService
     from app.services.token.manager import get_token_manager
-    from app.services.grok.batch import run_in_batches
+    from app.services.grok.utils.batch import run_in_batches
 
     mgr = await get_token_manager()
 
@@ -993,7 +993,7 @@ async def load_online_cache_api_async(data: dict):
 @router.post("/api/v1/admin/cache/clear", dependencies=[Depends(verify_api_key)])
 async def clear_local_cache_api(data: dict):
     """清理本地缓存"""
-    from app.services.grok.assets import DownloadService
+    from app.services.grok.services.assets import DownloadService
 
     cache_type = data.get("type", "image")
 
@@ -1013,7 +1013,7 @@ async def list_local_cache_api(
     page_size: int = 1000,
 ):
     """列出本地缓存文件"""
-    from app.services.grok.assets import DownloadService
+    from app.services.grok.services.assets import DownloadService
 
     try:
         if type_:
@@ -1028,7 +1028,7 @@ async def list_local_cache_api(
 @router.post("/api/v1/admin/cache/item/delete", dependencies=[Depends(verify_api_key)])
 async def delete_local_cache_item_api(data: dict):
     """删除单个本地缓存文件"""
-    from app.services.grok.assets import DownloadService
+    from app.services.grok.services.assets import DownloadService
 
     cache_type = data.get("type", "image")
     name = data.get("name")
@@ -1045,9 +1045,9 @@ async def delete_local_cache_item_api(data: dict):
 @router.post("/api/v1/admin/cache/online/clear", dependencies=[Depends(verify_api_key)])
 async def clear_online_cache_api(data: dict):
     """清理在线缓存"""
-    from app.services.grok.assets import DeleteService
+    from app.services.grok.services.assets import DeleteService
     from app.services.token.manager import get_token_manager
-    from app.services.grok.batch import run_in_batches
+    from app.services.grok.utils.batch import run_in_batches
 
     delete_service = None
     try:
@@ -1137,9 +1137,9 @@ async def clear_online_cache_api(data: dict):
 )
 async def clear_online_cache_api_async(data: dict):
     """清理在线缓存（异步批量 + SSE 进度）"""
-    from app.services.grok.assets import DeleteService
+    from app.services.grok.services.assets import DeleteService
     from app.services.token.manager import get_token_manager
-    from app.services.grok.batch import run_in_batches
+    from app.services.grok.utils.batch import run_in_batches
 
     mgr = await get_token_manager()
     tokens = data.get("tokens")

@@ -14,7 +14,7 @@ from curl_cffi.requests.errors import RequestsError
 from app.core.config import get_config
 from app.core.logger import logger
 from app.core.exceptions import UpstreamException
-from app.services.grok.assets import DownloadService
+from app.services.grok.services.assets import DownloadService
 
 
 def _is_http2_stream_error(e: Exception) -> bool:

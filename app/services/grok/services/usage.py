@@ -11,8 +11,8 @@ from curl_cffi.requests import AsyncSession
 from app.core.logger import logger
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
-from app.services.grok.statsig import StatsigService
-from app.services.grok.retry import retry_on_status
+from app.services.grok.utils.statsig import StatsigService
+from app.services.grok.utils.retry import retry_on_status
 
 
 LIMITS_API = "https://grok.com/rest/rate-limits"

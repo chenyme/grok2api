@@ -17,9 +17,9 @@ load_dotenv(ROOT / ".env")
 
 from app.core.config import config
 from app.core.logger import setup_logging
-from app.services.grok.chat import GrokChatService
-from app.services.grok.processor import CollectProcessor
-from app.services.grok.usage import UsageService
+from app.services.grok.services.chat import GrokChatService
+from app.services.grok.processors.processor import CollectProcessor
+from app.services.grok.services.usage import UsageService
 
 
 async def _fetch_usage(token: str, timeout: float) -> int | None:

@@ -10,9 +10,9 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from app.services.grok.chat import GrokChatService
-from app.services.grok.model import ModelService
-from app.services.grok.processor import ImageStreamProcessor, ImageCollectProcessor
+from app.services.grok.services.chat import GrokChatService
+from app.services.grok.models.model import ModelService
+from app.services.grok.processors.processor import ImageStreamProcessor, ImageCollectProcessor
 from app.services.token import get_token_manager, EffortType
 from app.core.exceptions import ValidationException, AppException, ErrorType
 from app.core.logger import logger

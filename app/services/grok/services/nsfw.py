@@ -11,7 +11,7 @@ from curl_cffi.requests import AsyncSession
 
 from app.core.config import get_config
 from app.core.logger import logger
-from app.services.grok.grpc_web import (
+from app.services.grok.protocols.grpc_web import (
     encode_grpc_web_payload,
     parse_grpc_web_response,
     get_grpc_status,

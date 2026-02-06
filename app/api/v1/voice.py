@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.core.auth import verify_api_key
-from app.services.grok.voice import VoiceService
+from app.services.grok.services.voice import VoiceService
 from app.services.token import get_token_manager
 from app.core.exceptions import AppException
 

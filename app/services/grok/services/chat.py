@@ -17,11 +17,11 @@ from app.core.exceptions import (
     ValidationException,
     ErrorType,
 )
-from app.services.grok.statsig import StatsigService
-from app.services.grok.model import ModelService
-from app.services.grok.assets import UploadService
-from app.services.grok.processor import StreamProcessor, CollectProcessor
-from app.services.grok.retry import retry_on_status
+from app.services.grok.utils.statsig import StatsigService
+from app.services.grok.models.model import ModelService
+from app.services.grok.services.assets import UploadService
+from app.services.grok.processors.processor import StreamProcessor, CollectProcessor
+from app.services.grok.utils.retry import retry_on_status
 from app.services.token import get_token_manager, EffortType
 
 

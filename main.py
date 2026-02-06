@@ -135,10 +135,6 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    # Set proxy
-    os.environ["HTTP_PROXY"] = "http://127.0.0.1:19347"
-    os.environ["HTTPS_PROXY"] = "http://127.0.0.1:19347"
-    
     host = os.getenv("SERVER_HOST", "0.0.0.0")
     port = int(os.getenv("SERVER_PORT", "8000"))
     workers = int(os.getenv("SERVER_WORKERS", "1"))
