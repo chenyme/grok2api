@@ -2,7 +2,6 @@
 Grok Chat 服务
 """
 
-import uuid
 import orjson
 from typing import Dict, List, Any, AsyncGenerator
 from dataclasses import dataclass
@@ -17,11 +16,11 @@ from app.core.exceptions import (
     ValidationException,
     ErrorType,
 )
-from app.services.grok.utils.statsig import StatsigService
 from app.services.grok.models.model import ModelService
 from app.services.grok.services.assets import UploadService
 from app.services.grok.processors.processor import StreamProcessor, CollectProcessor
 from app.services.grok.utils.retry import retry_on_status
+from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 from app.services.token import get_token_manager, EffortType
 
 
@@ -51,7 +50,7 @@ class MessageExtractor:
     @staticmethod
     def extract(
         messages: List[Dict[str, Any]], is_video: bool = False
-    ) -> tuple[str, List[str]]:
+    ) -> tuple[str, List[tuple[str, str]]]:
         """
         从 OpenAI 消息格式提取内容
 
@@ -186,14 +185,8 @@ class ChatRequestBuilder:
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
         }
 
-        # Statsig ID
-        headers["x-statsig-id"] = StatsigService.gen_id()
-        headers["x-xai-request-id"] = str(uuid.uuid4())
-
-        # Cookie
-        token = token[4:] if token.startswith("sso=") else token
-        cf = get_config("grok.cf_clearance", "")
-        headers["Cookie"] = f"sso={token};cf_clearance={cf}" if cf else f"sso={token}"
+        apply_statsig(headers)
+        headers["Cookie"] = build_sso_cookie(token)
 
         return headers
 
@@ -202,7 +195,6 @@ class ChatRequestBuilder:
         message: str,
         model: str,
         mode: str = None,
-        think: bool = None,
         file_attachments: List[str] = None,
         image_attachments: List[str] = None,
     ) -> Dict[str, Any]:
@@ -213,13 +205,10 @@ class ChatRequestBuilder:
             message: 消息文本
             model: 模型名称
             mode: 模型模式
-            think: 是否开启思考
             file_attachments: 文件附件 ID 列表
             image_attachments: 图片附件 ID 列表（合并到 fileAttachments）
         """
         temporary = get_config("grok.temporary", True)
-        if think is None:
-            think = get_config("grok.thinking", False)
 
         merged_attachments: List[str] = []
         if file_attachments:
@@ -284,7 +273,6 @@ class GrokChatService:
         message: str,
         model: str = "grok-3",
         mode: str = None,
-        think: bool = None,
         stream: bool = None,
         file_attachments: List[str] = None,
         image_attachments: List[str] = None,
@@ -297,7 +285,6 @@ class GrokChatService:
             message: 消息文本
             model: Grok 模型名称
             mode: 模型模式
-            think: 是否开启思考
             stream: 是否流式
             file_attachments: 文件附件 ID 列表
             image_attachments: 图片附件 URL 列表
@@ -310,7 +297,7 @@ class GrokChatService:
 
         headers = ChatRequestBuilder.build_headers(token)
         payload = ChatRequestBuilder.build_payload(
-            message, model, mode, think, file_attachments, image_attachments
+            message, model, mode, file_attachments, image_attachments
         )
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         timeout = get_config("grok.timeout", TIMEOUT)
@@ -463,18 +450,12 @@ class GrokChatService:
             if request.stream is not None
             else get_config("grok.stream", True)
         )
-        think = (
-            request.think
-            if request.think is not None
-            else get_config("grok.thinking", False)
-        )
 
         response = await self.chat(
             token,
             message,
             grok_model,
             mode,
-            think,
             stream,
             file_attachments=file_ids,
             image_attachments=[],

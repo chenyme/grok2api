@@ -3,7 +3,6 @@ Grok 用量服务
 """
 
 import asyncio
-import uuid
 from typing import Dict
 
 from curl_cffi.requests import AsyncSession
@@ -11,7 +10,7 @@ from curl_cffi.requests import AsyncSession
 from app.core.logger import logger
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
-from app.services.grok.utils.statsig import StatsigService
+from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 from app.services.grok.utils.retry import retry_on_status
 
 
@@ -69,14 +68,8 @@ class UsageService:
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
         }
 
-        # Statsig ID
-        headers["x-statsig-id"] = StatsigService.gen_id()
-        headers["x-xai-request-id"] = str(uuid.uuid4())
-
-        # Cookie
-        token = token[4:] if token.startswith("sso=") else token
-        cf = get_config("grok.cf_clearance", "")
-        headers["Cookie"] = f"sso={token};cf_clearance={cf}" if cf else f"sso={token}"
+        apply_statsig(headers)
+        headers["Cookie"] = build_sso_cookie(token)
 
         return headers
 

@@ -1,7 +1,7 @@
 [project]
-name = "new-2api"
-version = "0.1.0"
-description = "Add your description here"
+name = "grok2api"
+version = "1.5.0"
+description = "Grok2API rebuilt with FastAPI, fully aligned with the latest web call format. Supports streaming and non-streaming chat, image generation/editing, deep thinking, token pool concurrency, and automatic load balancing."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

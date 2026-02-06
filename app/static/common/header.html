@@ -14,9 +14,22 @@
           class="text-xs text-[var(--accents-4)] hover:text-black">@chenyme</a>
       </div>
       <div class="h-4 w-px bg-[var(--border)]"></div>
-      <a href="/admin/token" class="nav-link text-sm" data-nav="/admin/token">Token 管理</a>
-      <a href="/admin/config" class="nav-link text-sm" data-nav="/admin/config">配置管理</a>
-      <a href="/admin/cache" class="nav-link text-sm" data-nav="/admin/cache">缓存管理</a>
+      <div class="nav-group">
+        <button type="button" class="nav-link nav-group-trigger text-sm" aria-haspopup="true"
+          aria-expanded="false">服务管理</button>
+        <div class="nav-group-menu">
+          <a href="/admin/token" class="nav-link text-sm" data-nav="/admin/token">Token管理</a>
+          <a href="/admin/config" class="nav-link text-sm" data-nav="/admin/config">配置管理</a>
+          <a href="/admin/cache" class="nav-link text-sm" data-nav="/admin/cache">缓存管理</a>
+        </div>
+      </div>
+      <div class="nav-group">
+        <button type="button" class="nav-link nav-group-trigger text-sm" aria-haspopup="true"
+          aria-expanded="false">更多功能</button>
+        <div class="nav-group-menu">
+          <a href="/admin/voice" class="nav-link text-sm" data-nav="/admin/voice">语音会话</a>
+        </div>
+      </div>
     </div>
     <div class="nav-actions">
       <button id="storage-mode-btn" type="button" class="nav-action-btn" title="存储模式">-</button>

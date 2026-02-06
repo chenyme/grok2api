@@ -9,13 +9,13 @@ from typing import Optional
 
 from curl_cffi.requests import AsyncSession
 
-from app.core.config import get_config
 from app.core.logger import logger
 from app.services.grok.protocols.grpc_web import (
     encode_grpc_web_payload,
     parse_grpc_web_response,
     get_grpc_status,
 )
+from app.services.grok.utils.headers import build_sso_cookie
 
 
 NSFW_API = "https://grok.com/auth_mgmt.AuthManagement/UpdateUserFeatureControls"
@@ -42,12 +42,7 @@ class NSFWService:
 
     def _build_headers(self, token: str) -> dict:
         """构造 gRPC-Web 请求头"""
-        token = token[4:] if token.startswith("sso=") else token
-        cf = get_config("grok.cf_clearance", "")
-        cookie = f"sso={token}; sso-rw={token}"
-        if cf:
-            cookie += f"; cf_clearance={cf}"
-
+        cookie = build_sso_cookie(token, include_rw=True)
         return {
             "accept": "*/*",
             "content-type": "application/grpc-web+proto",

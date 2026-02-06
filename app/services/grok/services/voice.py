@@ -2,16 +2,15 @@
 Grok Voice Mode Service
 """
 
-import uuid
 import orjson
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
-from app.services.grok.utils.statsig import StatsigService
+from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 
 
 LIVEKIT_TOKEN_API = "https://grok.com/rest/livekit/tokens"
@@ -28,7 +27,6 @@ class VoiceService:
     async def get_token(
         self,
         token: str,
-        model: str = "grok-4.1",
         voice: str = "ara",
         personality: str = "assistant",
         speed: float = 1.0,
@@ -38,13 +36,11 @@ class VoiceService:
         
         Args:
             token: Auth token
-            model: Model name (default:grok-4.1, though voice uses specific settings)
-            
         Returns:
             Dict containing token and livekitUrl
         """
         headers = self._build_headers(token)
-        payload = self._build_payload(model, voice, personality, speed)
+        payload = self._build_payload(voice, personality, speed)
         
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         
@@ -83,19 +79,15 @@ class VoiceService:
             "Origin": "https://grok.com",
             "Referer": "https://grok.com/",
             # Statsig ID is crucial
-            "x-statsig-id": StatsigService.gen_id(),
-            "x-xai-request-id": str(uuid.uuid4()),
         }
-        
-        token = token[4:] if token.startswith("sso=") else token
-        cf = get_config("grok.cf_clearance", "")
-        headers["Cookie"] = f"sso={token};cf_clearance={cf}" if cf else f"sso={token}"
-        
+
+        apply_statsig(headers)
+        headers["Cookie"] = build_sso_cookie(token)
+
         return headers
 
     def _build_payload(
         self,
-        model: str,
         voice: str = "ara",
         personality: str = "assistant",
         speed: float = 1.0,

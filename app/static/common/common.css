@@ -189,6 +189,65 @@ td.table-empty {
   font-weight: 500;
 }
 
+.nav-group {
+  position: relative;
+}
+
+.nav-group-trigger {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.nav-group-menu {
+  position: absolute;
+  top: 100%;
+  left: -8px;
+  margin-top: 8px;
+  min-width: 140px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-6px);
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  z-index: 20;
+}
+
+.nav-group:hover .nav-group-menu,
+.nav-group:focus-within .nav-group-menu {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.nav-group-menu .nav-link {
+  padding: 6px 10px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  color: var(--accents-5);
+}
+
+.nav-group-menu .nav-link:hover {
+  background: #f5f5f5;
+  color: var(--fg);
+}
+
+.nav-group-menu .nav-link.active {
+  background: #f0f0f0;
+  color: var(--fg);
+  font-weight: 500;
+}
+
 .nav-badge {
   display: inline-flex;
   align-items: center;

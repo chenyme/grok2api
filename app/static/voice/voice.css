@@ -1,0 +1,251 @@
+.voice-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.voice-primary,
+.voice-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+@media (max-width: 1024px) {
+  .voice-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+:root {
+  --voice-surface: #ffffff;
+  --voice-surface-muted: #f3f4f6;
+  --voice-bg: #f6f7f9;
+}
+
+body {
+  background-color: var(--voice-bg);
+}
+
+.voice-card {
+  background: var(--voice-surface);
+  border: none;
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: none;
+}
+
+.voice-card + .voice-card {
+  margin-top: 16px;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accents-7);
+  margin-bottom: 12px;
+}
+
+.field-label {
+  display: block;
+  font-size: 11px;
+  color: var(--accents-4);
+  margin-bottom: 6px;
+}
+
+.status-text {
+  font-size: 11px;
+  color: var(--accents-4);
+}
+
+.status-text.connected {
+  color: #059669;
+}
+
+.status-text.connecting {
+  color: #d97706;
+}
+
+.status-text.error {
+  color: #dc2626;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.meta-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--voice-surface-muted);
+  border: none;
+  box-shadow: none;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meta-label {
+  font-size: 10px;
+  color: var(--accents-4);
+  margin: 0;
+}
+
+.meta-value {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accents-7);
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.visualizer {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  justify-content: space-between;
+  gap: 3px;
+  height: 44px;
+  margin-top: 14px;
+}
+
+.visualizer .bar {
+  width: 4px;
+  height: 6px;
+  background: var(--accents-2);
+  border-radius: 999px;
+  transition: height 0.12s ease;
+  opacity: 0.8;
+  flex: 0 0 auto;
+}
+
+.voice-log {
+  background: var(--voice-surface-muted);
+  color: var(--accents-6);
+  border: none;
+  border-radius: 8px;
+  margin-top: 8px;
+  padding: 12px;
+  font-size: 11px;
+  box-shadow: none;
+  min-height: 140px;
+  max-height: 240px;
+  overflow-y: auto;
+  font-family: 'Geist Mono', monospace;
+}
+
+.voice-log p {
+  margin: 0 0 6px;
+}
+
+.voice-log .log-error {
+  color: #dc2626;
+}
+
+.voice-log .log-warn {
+  color: #d97706;
+}
+
+.voice-hint {
+  font-size: 11px;
+  color: var(--accents-4);
+}
+
+.range-value {
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  color: var(--accents-6);
+}
+
+.voice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.voice-actions .geist-button,
+.voice-actions .geist-button-outline {
+  height: 32px;
+}
+
+#audioRoot audio {
+  width: 100%;
+  max-width: 100%;
+}
+
+#audioRoot {
+  width: 100%;
+}
+
+.voice-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.voice-status-header {
+  flex-wrap: nowrap;
+}
+
+.voice-status-header .card-title {
+  margin-bottom: 0;
+}
+
+.range-input {
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: transparent;
+  outline: none;
+  margin: 0;
+}
+
+.range-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #111;
+  cursor: pointer;
+  margin-top: -4px;
+}
+
+.range-input::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #111 0%, #111 var(--range-progress, 50%), #e5e7eb var(--range-progress, 50%), #e5e7eb 100%);
+}
+
+.range-input::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #111;
+  border: none;
+  cursor: pointer;
+}
+
+.range-input::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+.range-input::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: #111;
+}

@@ -8,7 +8,6 @@ import os
 import time
 import hashlib
 import re
-import uuid
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -25,7 +24,7 @@ from curl_cffi.requests import AsyncSession
 from app.core.logger import logger
 from app.core.config import get_config
 from app.core.exceptions import AppException, UpstreamException, ValidationException
-from app.services.grok.utils.statsig import StatsigService
+from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 from app.services.token.service import TokenService
 
 
@@ -203,14 +202,8 @@ class BaseService:
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
         }
 
-        # Statsig ID
-        headers["x-statsig-id"] = StatsigService.gen_id()
-        headers["x-xai-request-id"] = str(uuid.uuid4())
-
-        # Cookie
-        token = token[4:] if token.startswith("sso=") else token
-        cf = get_config("grok.cf_clearance", "")
-        headers["Cookie"] = f"sso={token};cf_clearance={cf}" if cf else f"sso={token}"
+        apply_statsig(headers)
+        headers["Cookie"] = build_sso_cookie(token)
 
         return headers
 
@@ -230,10 +223,7 @@ class BaseService:
             "Referer": "https://grok.com/",
         }
 
-        # Cookie
-        token = token[4:] if token.startswith("sso=") else token
-        cf = get_config("grok.cf_clearance", "")
-        headers["Cookie"] = f"sso={token};cf_clearance={cf}" if cf else f"sso={token}"
+        headers["Cookie"] = build_sso_cookie(token)
 
         return headers
 
@@ -298,10 +288,13 @@ class BaseService:
     def parse_b64(data_uri: str) -> Tuple[str, str, str]:
         """解析 Base64 数据"""
         if data_uri.startswith("data:"):
-            match = re.match(r"data:([^;]+);base64,(.+)", data_uri)
-            if match:
-                mime = match.group(1)
-                b64 = match.group(2)
+            try:
+                header, b64 = data_uri.split(",", 1)
+            except ValueError:
+                return "file.bin", data_uri, DEFAULT_MIME
+            if ";base64" in header:
+                mime = header[5:].split(";", 1)[0] or DEFAULT_MIME
+                b64 = re.sub(r"\\s+", "", b64)
                 ext = mime.split("/")[-1] if "/" in mime else "bin"
                 return f"file.{ext}", b64, mime
         return "file.bin", data_uri, DEFAULT_MIME

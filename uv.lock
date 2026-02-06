@@ -233,6 +233,53 @@ wheels = [
 ]
 
 [[package]]
+name = "grok2api"
+version = "1.5.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "aiofiles" },
+    { name = "aiomysql" },
+    { name = "asyncpg" },
+    { name = "curl-cffi" },
+    { name = "fastapi" },
+    { name = "greenlet" },
+    { name = "httpx" },
+    { name = "livekit" },
+    { name = "loguru" },
+    { name = "orjson" },
+    { name = "pydantic-settings" },
+    { name = "python-dotenv" },
+    { name = "python-multipart" },
+    { name = "pyyaml" },
+    { name = "redis" },
+    { name = "sqlalchemy" },
+    { name = "tomli" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiofiles", specifier = ">=25.1.0" },
+    { name = "aiomysql", specifier = ">=0.2.0" },
+    { name = "asyncpg", specifier = ">=0.31.0" },
+    { name = "curl-cffi", specifier = ">=0.13.0" },
+    { name = "fastapi", specifier = ">=0.119.0" },
+    { name = "greenlet", specifier = ">=3.3.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "livekit", specifier = ">=1.0.25" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "orjson", specifier = ">=3.11.4" },
+    { name = "pydantic-settings", specifier = ">=2.12.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "python-multipart", specifier = ">=0.0.21" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "redis", specifier = ">=6.4.0" },
+    { name = "sqlalchemy", specifier = ">=2.0.46" },
+    { name = "tomli", specifier = ">=2.4.0" },
+    { name = "uvicorn", specifier = ">=0.37.0" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -308,53 +355,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3a/05/a1dae3dffd1116099471c643b8924f5aa6524411dc6c63fdae648c4f1aca/loguru-0.7.3.tar.gz", hash = "sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6", size = 63559, upload-time = "2024-12-06T11:20:56.608Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0c/29/0348de65b8cc732daa3e33e67806420b2ae89bdce2b04af740289c5c6c8c/loguru-0.7.3-py3-none-any.whl", hash = "sha256:31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c", size = 61595, upload-time = "2024-12-06T11:20:54.538Z" },
-]
-
-[[package]]
-name = "new-2api"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "aiofiles" },
-    { name = "aiomysql" },
-    { name = "asyncpg" },
-    { name = "curl-cffi" },
-    { name = "fastapi" },
-    { name = "greenlet" },
-    { name = "httpx" },
-    { name = "livekit" },
-    { name = "loguru" },
-    { name = "orjson" },
-    { name = "pydantic-settings" },
-    { name = "python-dotenv" },
-    { name = "python-multipart" },
-    { name = "pyyaml" },
-    { name = "redis" },
-    { name = "sqlalchemy" },
-    { name = "tomli" },
-    { name = "uvicorn" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiofiles", specifier = ">=25.1.0" },
-    { name = "aiomysql", specifier = ">=0.2.0" },
-    { name = "asyncpg", specifier = ">=0.31.0" },
-    { name = "curl-cffi", specifier = ">=0.13.0" },
-    { name = "fastapi", specifier = ">=0.119.0" },
-    { name = "greenlet", specifier = ">=3.3.1" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "livekit", specifier = ">=1.0.25" },
-    { name = "loguru", specifier = ">=0.7.3" },
-    { name = "orjson", specifier = ">=3.11.4" },
-    { name = "pydantic-settings", specifier = ">=2.12.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "python-multipart", specifier = ">=0.0.21" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "redis", specifier = ">=6.4.0" },
-    { name = "sqlalchemy", specifier = ">=2.0.46" },
-    { name = "tomli", specifier = ">=2.4.0" },
-    { name = "uvicorn", specifier = ">=0.37.0" },
 ]
 
 [[package]]

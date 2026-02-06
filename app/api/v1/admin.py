@@ -1,15 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
+from pydantic import BaseModel
 from app.core.auth import verify_api_key, verify_app_key, get_admin_api_key
 from app.core.config import config, get_config
 from app.core.batch_tasks import create_task, get_task, expire_task
 from app.core.storage import get_storage, LocalStorage, RedisStorage, SQLStorage
+from app.core.exceptions import AppException
 import os
 from pathlib import Path
 import aiofiles
 import asyncio
 import orjson
 from app.core.logger import logger
+from app.services.grok.services.voice import VoiceService
+from app.services.token import get_token_manager
 
 
 router = APIRouter()
@@ -105,6 +109,77 @@ async def admin_config_page():
 async def admin_token_page():
     """Token 管理页"""
     return await render_template("token/token.html")
+
+
+@router.get("/admin/voice", response_class=HTMLResponse, include_in_schema=False)
+async def admin_voice_page():
+    """Voice Live 调试页"""
+    return await render_template("voice/voice.html")
+
+
+class VoiceTokenResponse(BaseModel):
+    token: str
+    url: str
+    participant_name: str = ""
+    room_name: str = ""
+
+
+@router.get(
+    "/api/v1/admin/voice/token",
+    dependencies=[Depends(verify_api_key)],
+    response_model=VoiceTokenResponse,
+)
+async def admin_voice_token(
+    voice: str = "ara",
+    personality: str = "assistant",
+    speed: float = 1.0,
+):
+    """获取 Grok Voice Mode (LiveKit) Token"""
+    token_mgr = await get_token_manager()
+    sso_token = None
+    for pool_name in ("ssoBasic", "ssoSuper"):
+        sso_token = token_mgr.get_token(pool_name)
+        if sso_token:
+            break
+
+    if not sso_token:
+        raise AppException(
+            "No available tokens for voice mode",
+            code="no_token",
+            status_code=503,
+        )
+
+    service = VoiceService()
+    try:
+        data = await service.get_token(
+            token=sso_token,
+            voice=voice,
+            personality=personality,
+            speed=speed,
+        )
+        token = data.get("token")
+        if not token:
+            raise AppException(
+                "Upstream returned no voice token",
+                code="upstream_error",
+                status_code=502,
+            )
+
+        return VoiceTokenResponse(
+            token=token,
+            url="wss://livekit.grok.com",
+            participant_name="",
+            room_name="",
+        )
+
+    except Exception as e:
+        if isinstance(e, AppException):
+            raise
+        raise AppException(
+            f"Voice token error: {str(e)}",
+            code="voice_error",
+            status_code=500,
+        )
 
 
 @router.post("/api/v1/admin/login", dependencies=[Depends(verify_app_key)])

@@ -2,7 +2,7 @@ async function loadAdminHeader() {
   const container = document.getElementById('app-header');
   if (!container) return;
   try {
-    const res = await fetch('/static/common/header.html?v=2');
+    const res = await fetch('/static/common/header.html?v=3');
     if (!res.ok) return;
     container.innerHTML = await res.text();
     const path = window.location.pathname;
@@ -11,6 +11,13 @@ async function loadAdminHeader() {
       const target = link.getAttribute('data-nav') || '';
       if (target && path.startsWith(target)) {
         link.classList.add('active');
+        const group = link.closest('.nav-group');
+        if (group) {
+          const trigger = group.querySelector('.nav-group-trigger');
+          if (trigger) {
+            trigger.classList.add('active');
+          }
+        }
       }
     });
     if (typeof updateStorageModeButton === 'function') {

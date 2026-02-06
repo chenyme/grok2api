@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grok2API - Voice Live</title>
+  <link rel="icon" href="/static/favicon/favicon.ico">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+  <link href="/static/common/common.css?v=3" rel="stylesheet">
+  <link href="/static/voice/voice.css?v=15" rel="stylesheet">
+  <link href="/static/common/toast.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.7.3/dist/livekit-client.umd.min.js"></script>
+</head>
+
+<body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
+  <div id="toast-container" class="toast-container"></div>
+  <div id="app-header"></div>
+
+  <main class="space-y-6 flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in">
+    <div class="space-y-6">
+      <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 class="text-2xl font-semibold tracking-tight">Voice Live</h2>
+          <p class="text-[var(--accents-4)] mt-1 text-sm">LiveKit 语音会话，连接 Grok Voice。</p>
+        </div>
+        <div class="voice-actions">
+          <button id="startBtn" class="geist-button gap-2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3" />
+            </svg>
+            开始会话
+          </button>
+          <button id="stopBtn" class="geist-button-outline gap-2 hidden">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5" y="5" width="14" height="14" />
+            </svg>
+            停止会话
+          </button>
+        </div>
+      </div>
+
+      <div class="h-px bg-[var(--border)] my-6"></div>
+
+      <div class="voice-grid">
+        <section class="voice-primary">
+          <div class="voice-card">
+            <div class="card-title">连接设置</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="field-label" for="voiceSelect">声音 (Voice)</label>
+                <select id="voiceSelect" class="geist-input">
+                  <option value="ara" selected>Ara (Upbeat Female)</option>
+                  <option value="eve">Eve (Soothing Female)</option>
+                  <option value="leo">Leo (British Male)</option>
+                  <option value="rex">Rex (Calm Male)</option>
+                  <option value="sal">Sal (Smooth Male)</option>
+                  <option value="gork">Gork (Lazy Male)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="field-label" for="personalitySelect">个性 (Personality)</label>
+                <select id="personalitySelect" class="geist-input">
+                  <option value="assistant" selected>Assistant (Default)</option>
+                  <option value="custom">Custom</option>
+                  <option value="therapist">Therapist</option>
+                  <option value="storyteller">Storyteller</option>
+                  <option value="kids_story_time">Kids Story Time</option>
+                  <option value="kids_trivia_game">Kids Trivia Game</option>
+                  <option value="meditation">Meditation</option>
+                  <option value="doc">Grok "Doc"</option>
+                  <option value="unhinged">Unhinged 18+</option>
+                  <option value="sexy">Sexy 18+</option>
+                  <option value="motivation">Motivation 18+</option>
+                  <option value="conspiracy">Conspiracy</option>
+                  <option value="romantic">Romantic 18+</option>
+                  <option value="argumentative">Argumentative 18+</option>
+                </select>
+              </div>
+
+              <div class="md:col-span-2">
+                <div class="flex items-center justify-between">
+                  <label class="field-label" for="speedRange">语速</label>
+                  <span class="range-value"><span id="speedValue">1.0</span>x</span>
+                </div>
+                <input type="range" id="speedRange" class="range-input" min="0.5" max="2.0" step="0.1" value="1.0">
+              </div>
+            </div>
+            <div class="voice-hint mt-3">提示：Voice / Personality 会在建立连接前发送到服务端。</div>
+          </div>
+
+          <div class="voice-card">
+            <div class="voice-log-header">
+              <div class="card-title">会话日志</div>
+              <div class="flex items-center gap-2">
+                <button id="clearLogBtn" class="geist-button-outline text-xs px-3">清空</button>
+                <button id="copyLogBtn" class="geist-button-outline text-xs px-3">复制</button>
+              </div>
+            </div>
+            <div id="log" class="voice-log"></div>
+          </div>
+        </section>
+
+        <aside class="voice-side">
+          <div class="voice-card">
+            <div class="voice-log-header voice-status-header">
+              <div class="card-title">会话状态</div>
+              <span id="statusText" class="status-text">未连接</span>
+            </div>
+
+            <div class="meta-grid">
+              <div class="meta-item">
+                <div class="meta-label">Voice</div>
+                <div id="statusVoice" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label">Personality</div>
+                <div id="statusPersonality" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label">Speed</div>
+                <div id="statusSpeed" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label">LiveKit</div>
+                <div class="meta-value">wss://livekit.grok.com</div>
+              </div>
+            </div>
+
+            <div class="visualizer" id="visualizer"></div>
+          </div>
+
+          <div class="voice-card">
+            <div class="card-title">音频输出</div>
+            <div class="voice-hint">订阅到的音轨会自动插入此区域。</div>
+            <div id="audioRoot" class="mt-3"></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </main>
+
+  <div id="app-footer"></div>
+
+  <script src="/static/common/admin-auth.js?v=2"></script>
+  <script src="/static/common/header.js?v=3"></script>
+  <script src="/static/common/footer.js?v=1"></script>
+  <script src="/static/common/toast.js"></script>
+  <script src="/static/voice/voice.js?v=7"></script>
+</body>
+
+</html>

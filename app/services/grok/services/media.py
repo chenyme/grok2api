@@ -3,7 +3,6 @@ Grok 视频生成服务
 """
 
 import asyncio
-import uuid
 from typing import AsyncGenerator, Optional
 
 import orjson
@@ -17,10 +16,10 @@ from app.core.exceptions import (
     ValidationException,
     ErrorType,
 )
-from app.services.grok.utils.statsig import StatsigService
 from app.services.grok.models.model import ModelService
 from app.services.token import get_token_manager, EffortType
 from app.services.grok.processors.processor import VideoStreamProcessor, VideoCollectProcessor
+from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 
 # API 端点
 CREATE_POST_API = "https://grok.com/rest/media/post/create"
@@ -82,14 +81,8 @@ class VideoService:
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
         }
 
-        # Statsig ID
-        headers["x-statsig-id"] = StatsigService.gen_id()
-        headers["x-xai-request-id"] = str(uuid.uuid4())
-
-        # Cookie
-        token = token[4:] if token.startswith("sso=") else token
-        cf = get_config("grok.cf_clearance", "")
-        headers["Cookie"] = f"sso={token};cf_clearance={cf}" if cf else f"sso={token}"
+        apply_statsig(headers)
+        headers["Cookie"] = build_sso_cookie(token)
 
         return headers
 
@@ -219,7 +212,6 @@ class VideoService:
         aspect_ratio: str = "3:2",
         video_length: int = 6,
         resolution_name: str = "480p",
-        stream: bool = True,
         preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
         """
@@ -231,7 +223,6 @@ class VideoService:
             aspect_ratio: 宽高比
             video_length: 视频时长
             resolution_name: 分辨率
-            stream: 是否流式
             preset: 预设
 
         Returns:
@@ -303,7 +294,6 @@ class VideoService:
         aspect_ratio: str = "3:2",
         video_length: int = 6,
         resolution: str = "480p",
-        stream: bool = True,
         preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
         """
@@ -316,7 +306,6 @@ class VideoService:
             aspect_ratio: 宽高比
             video_length: 视频时长
             resolution: 分辨率
-            stream: 是否流式
             preset: 预设
 
         Returns:
@@ -507,12 +496,11 @@ class VideoService:
                 aspect_ratio,
                 video_length,
                 resolution,
-                stream,
                 preset,
             )
         else:
             response = await service.generate(
-                token, prompt, aspect_ratio, video_length, resolution, stream, preset
+                token, prompt, aspect_ratio, video_length, resolution, preset
             )
 
         # 处理响应
