@@ -10,12 +10,14 @@ asset_proxy_url = ""
 cf_clearance = ""
 max_retry = 3
 retry_status_codes = [401,429,403]
-# 重试退避配置
+image_ws = true
+image_ws_blocked_seconds = 15
+image_ws_final_min_bytes = 100000
+image_ws_nsfw = true
 retry_backoff_base = 0.5
 retry_backoff_factor = 2.0
 retry_backoff_max = 30.0
 retry_budget = 90.0
-# 流空闲超时配置 (秒)
 stream_idle_timeout = 120.0
 video_idle_timeout = 90.0
 

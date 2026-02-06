@@ -130,6 +130,15 @@ class ModelService:
             is_image=True,
         ),
         ModelInfo(
+            model_id="grok-imagine-1.0-edit",
+            grok_model="imagine-image-edit",
+            model_mode="MODEL_MODE_FAST",
+            cost=Cost.HIGH,
+            display_name="Grok Image Edit",
+            description="Image edit model",
+            is_image=True,
+        ),
+        ModelInfo(
             model_id="grok-imagine-1.0-video",
             grok_model="grok-3",
             model_mode="MODEL_MODE_FAST",

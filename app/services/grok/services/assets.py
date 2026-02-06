@@ -34,7 +34,7 @@ UPLOAD_API = "https://grok.com/rest/app-chat/upload-file"
 LIST_API = "https://grok.com/rest/assets"
 DELETE_API = "https://grok.com/rest/assets-metadata"
 DOWNLOAD_API = "https://assets.grok.com"
-LOCK_DIR = Path(__file__).parent.parent.parent.parent / "data" / ".locks"
+LOCK_DIR = Path(__file__).parent.parent.parent.parent.parent / "data" / ".locks"
 
 TIMEOUT = 120
 BROWSER = "chrome136"
@@ -607,7 +607,7 @@ class DownloadService(BaseService):
     def __init__(self, proxy: str = None):
         super().__init__(proxy)
         # 创建缓存目录
-        self.base_dir = Path(__file__).parent.parent.parent.parent / "data" / "tmp"
+        self.base_dir = Path(__file__).parent.parent.parent.parent.parent / "data" / "tmp"
         self.image_dir = self.base_dir / "image"
         self.video_dir = self.base_dir / "video"
         self.image_dir.mkdir(parents=True, exist_ok=True)
