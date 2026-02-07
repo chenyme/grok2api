@@ -8,6 +8,10 @@ timeout = 120
 base_proxy_url = ""
 asset_proxy_url = ""
 cf_clearance = ""
+# 浏览器指纹配置
+browser = "chrome136"
+user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+disable_memory = true
 max_retry = 3
 retry_status_codes = [401,429,403]
 # 重试退避配置

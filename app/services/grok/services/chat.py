@@ -26,7 +26,8 @@ from app.services.token import get_token_manager, EffortType
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 TIMEOUT = 120
-BROWSER = "chrome136"
+DEFAULT_BROWSER = "chrome136"
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 
 @dataclass
@@ -162,6 +163,7 @@ class ChatRequestBuilder:
     @staticmethod
     def build_headers(token: str) -> Dict[str, str]:
         """构造请求头"""
+        user_agent = get_config("grok.user_agent", DEFAULT_USER_AGENT)
         headers = {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -182,7 +184,7 @@ class ChatRequestBuilder:
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            "User-Agent": user_agent,
         }
 
         apply_statsig(headers)
@@ -311,7 +313,8 @@ class GrokChatService:
         # 建立连接函数
         async def establish_connection():
             """建立连接并返回 response 对象"""
-            session = AsyncSession(impersonate=BROWSER)
+            browser = get_config("grok.browser", DEFAULT_BROWSER)
+            session = AsyncSession(impersonate=browser)
             try:
                 response = await session.post(
                     CHAT_API,
