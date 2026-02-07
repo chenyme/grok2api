@@ -13,32 +13,22 @@ from app.core.exceptions import UpstreamException
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 from app.services.grok.utils.retry import retry_on_status
 
-
 LIMITS_API = "https://grok.com/rest/rate-limits"
 
-DEFAULT_BROWSER = "chrome136"
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/136.0.0.0 Safari/537.36"
-)
-DEFAULT_TIMEOUT = 10
-DEFAULT_MAX_CONCURRENT = 25
-DEFAULT_BASE_PROXY_URL = ""
-_USAGE_SEMAPHORE = asyncio.Semaphore(DEFAULT_MAX_CONCURRENT)
-_USAGE_SEM_VALUE = DEFAULT_MAX_CONCURRENT
+_USAGE_SEMAPHORE = asyncio.Semaphore(25)
+_USAGE_SEM_VALUE = 25
 
 
 class UsageService:
     """用量查询服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url", DEFAULT_BASE_PROXY_URL)
-        self.timeout = get_config("grok.timeout", DEFAULT_TIMEOUT)
+        self.proxy = proxy or get_config("grok.base_proxy_url")
+        self.timeout = get_config("grok.timeout")
 
     def _build_headers(self, token: str) -> dict:
         """构建请求头"""
-        user_agent = get_config("grok.user_agent", DEFAULT_USER_AGENT)
+        user_agent = get_config("grok.user_agent")
         headers = {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -85,11 +75,11 @@ class UsageService:
         Raises:
             UpstreamException: 当获取失败且重试耗尽时
         """
-        value = get_config("performance.usage_max_concurrent", DEFAULT_MAX_CONCURRENT)
+        value = get_config("performance.usage_max_concurrent")
         try:
             value = int(value)
         except Exception:
-            value = DEFAULT_MAX_CONCURRENT
+            value = 25
         value = max(1, value)
         global _USAGE_SEMAPHORE, _USAGE_SEM_VALUE
         if value != _USAGE_SEM_VALUE:
@@ -107,7 +97,7 @@ class UsageService:
                 try:
                     headers = self._build_headers(token)
                     payload = {"requestKind": "DEFAULT", "modelName": model_name}
-                    browser = get_config("grok.browser", DEFAULT_BROWSER)
+                    browser = get_config("grok.browser")
 
                     async with AsyncSession() as session:
                         response = await session.post(
@@ -151,6 +141,5 @@ class UsageService:
             except Exception:
                 # 最后一次失败已经被记录
                 raise
-
 
 __all__ = ["UsageService"]

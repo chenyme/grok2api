@@ -9,9 +9,6 @@ import string
 from app.core.config import get_config
 
 
-DEFAULT_DYNAMIC_STATSIG = True
-
-
 class StatsigService:
     """Statsig ID 生成服务"""
 
@@ -33,8 +30,7 @@ class StatsigService:
         Returns:
             Base64 编码的 ID
         """
-        # 读取配置
-        dynamic = get_config("grok.dynamic_statsig", DEFAULT_DYNAMIC_STATSIG)
+        dynamic = get_config("grok.dynamic_statsig")
 
         if not dynamic:
             return "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk="

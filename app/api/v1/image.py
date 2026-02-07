@@ -19,7 +19,7 @@ from app.services.grok.services.image import image_service
 from app.services.grok.services.assets import UploadService
 from app.services.grok.services.media import VideoService
 from app.services.grok.models.model import ModelService
-from app.services.grok.processors.processor import (
+from app.services.grok.processors import (
     ImageStreamProcessor,
     ImageCollectProcessor,
     ImageWSStreamProcessor,

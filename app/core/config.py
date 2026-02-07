@@ -53,12 +53,19 @@ class Config:
     def __init__(self):
         self._config = {}
         self._defaults = {}
+        self._code_defaults = {}
         self._defaults_loaded = False
+
+    def register_defaults(self, defaults: Dict[str, Any]):
+        """注册代码中定义的默认值"""
+        self._code_defaults = _deep_merge(self._code_defaults, defaults)
 
     def _ensure_defaults(self):
         if self._defaults_loaded:
             return
-        self._defaults = _load_defaults()
+        file_defaults = _load_defaults()
+        # 合并文件默认值和代码默认值（代码默认值优先级更低）
+        self._defaults = _deep_merge(self._code_defaults, file_defaults)
         self._defaults_loaded = True
 
     async def load(self):
@@ -140,4 +147,9 @@ def get_config(key: str, default: Any = None) -> Any:
     return config.get(key, default)
 
 
-__all__ = ["Config", "config", "get_config"]
+def register_defaults(defaults: Dict[str, Any]):
+    """注册默认配置"""
+    config.register_defaults(defaults)
+
+
+__all__ = ["Config", "config", "get_config", "register_defaults"]
