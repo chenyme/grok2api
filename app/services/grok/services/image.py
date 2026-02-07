@@ -93,6 +93,7 @@ class ImageService:
         max_retries: int = None,
     ) -> AsyncGenerator[Dict[str, object], None]:
         retries = max(1, max_retries if max_retries is not None else 1)
+        logger.info(f"Image generation: prompt='{prompt[:50]}...', n={n}, ratio={aspect_ratio}, nsfw={enable_nsfw}")
 
         for attempt in range(retries):
             try:
@@ -199,6 +200,7 @@ class ImageService:
 
                                 if info["is_final"] and not existing.get("is_final"):
                                     completed += 1
+                                    logger.debug(f"Final image received: id={image_id}, size={info['blob_size']}")
 
                                 images[image_id] = {"is_final": info["is_final"] or existing.get("is_final")}
                                 yield info

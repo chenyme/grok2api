@@ -7,6 +7,7 @@ import base64
 import math
 import random
 import re
+import time
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -29,12 +30,6 @@ from app.services.token import get_token_manager, EffortType
 from app.core.exceptions import ValidationException, AppException, ErrorType
 from app.core.config import get_config
 from app.core.logger import logger
-
-
-DEFAULT_IMAGE_WS = False
-DEFAULT_IMAGE_FORMAT = "url"
-DEFAULT_IMAGE_WS_NSFW = True
-DEFAULT_GROK_TEMPORARY = True
 
 
 router = APIRouter(tags=["Images"])
@@ -97,15 +92,13 @@ def _validate_common_request(
     if allow_ws_stream:
         # WS 流式仅支持 b64_json (base64 视为同义)
         if (
-        request.stream
-        and get_config("grok.image_ws", DEFAULT_IMAGE_WS)
+            request.stream
+            and get_config("grok.image_ws")
             and request.response_format
             and request.response_format not in {"b64_json", "base64"}
         ):
             raise ValidationException(
-                message=(
-                    "Streaming with image_ws only supports response_format=b64_json/base64"
-                ),
+                message="Streaming with image_ws only supports response_format=b64_json/base64",
                 param="response_format",
                 code="invalid_response_format",
             )
@@ -145,25 +138,22 @@ def validate_generation_request(request: ImageGenerationRequest):
 
 
 def resolve_response_format(response_format: Optional[str]) -> str:
-    fmt = response_format or get_config("app.image_format", DEFAULT_IMAGE_FORMAT)
+    """解析响应格式"""
+    fmt = response_format or get_config("app.image_format")
     if isinstance(fmt, str):
         fmt = fmt.lower()
     if fmt in ("b64_json", "base64", "url"):
         return fmt
-    allowed_formats = {"b64_json", "base64", "url"}
     raise ValidationException(
-        message=f"response_format must be one of {sorted(allowed_formats)}",
+        message="response_format must be one of b64_json, base64, url",
         param="response_format",
         code="invalid_response_format",
     )
 
 
 def response_field_name(response_format: str) -> str:
-    if response_format == "url":
-        return "url"
-    if response_format == "base64":
-        return "base64"
-    return "b64_json"
+    """获取响应字段名"""
+    return {"url": "url", "base64": "base64"}.get(response_format, "b64_json")
 
 
 def resolve_aspect_ratio(size: str) -> str:
@@ -215,6 +205,48 @@ def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
         )
 
 
+def _get_effort(model_info) -> EffortType:
+    """获取模型消耗级别"""
+    return EffortType.HIGH if (model_info and model_info.cost.value == "high") else EffortType.LOW
+
+
+async def _wrap_stream_with_usage(stream, token_mgr, token, model_info):
+    """包装流式响应，成功完成时记录使用"""
+    success = False
+    try:
+        async for chunk in stream:
+            yield chunk
+        success = True
+    finally:
+        if success:
+            try:
+                await token_mgr.consume(token, _get_effort(model_info))
+            except Exception as e:
+                logger.warning(f"Failed to consume token: {e}")
+
+
+async def _get_token(model: str):
+    """获取可用 token"""
+    token_mgr = await get_token_manager()
+    await token_mgr.reload_if_stale()
+    
+    token = None
+    for pool_name in ModelService.pool_candidates_for_model(model):
+        token = token_mgr.get_token(pool_name)
+        if token:
+            break
+    
+    if not token:
+        raise AppException(
+            message="No available tokens. Please try again later.",
+            error_type=ErrorType.RATE_LIMIT.value,
+            code="rate_limit_exceeded",
+            status_code=429,
+        )
+    
+    return token_mgr, token
+
+
 async def call_grok(
     token_mgr,
     token: str,
@@ -237,7 +269,6 @@ async def call_grok(
             file_attachments=file_attachments,
         )
 
-        # 收集图片
         processor = ImageCollectProcessor(
             model_info.model_id, token, response_format=response_format
         )
@@ -249,15 +280,9 @@ async def call_grok(
         logger.error(f"Grok image call failed: {e}")
         return []
     finally:
-        # 只在成功时记录使用，失败时不扣费（避免清零 fail_count）
         if success:
             try:
-                effort = (
-                    EffortType.HIGH
-                    if (model_info and model_info.cost.value == "high")
-                    else EffortType.LOW
-                )
-                await token_mgr.consume(token, effort)
+                await token_mgr.consume(token, _get_effort(model_info))
             except Exception as e:
                 logger.warning(f"Failed to consume token: {e}")
 
@@ -291,40 +316,16 @@ async def create_image(request: ImageGenerationRequest):
     response_format = resolve_response_format(request.response_format)
     response_field = response_field_name(response_format)
 
-    # 获取 token
-    try:
-        token_mgr = await get_token_manager()
-        await token_mgr.reload_if_stale()
-        token = None
-        for pool_name in ModelService.pool_candidates_for_model(request.model):
-            token = token_mgr.get_token(pool_name)
-            if token:
-                break
-    except Exception as e:
-        logger.error(f"Failed to get token: {e}")
-        raise AppException(
-            message="Internal service error obtaining token",
-            error_type=ErrorType.SERVER.value,
-            code="internal_error",
-        )
-
-    if not token:
-        raise AppException(
-            message="No available tokens. Please try again later.",
-            error_type=ErrorType.RATE_LIMIT.value,
-            code="rate_limit_exceeded",
-            status_code=429,
-        )
-
-    # 获取模型信息
+    # 获取 token 和模型信息
+    token_mgr, token = await _get_token(request.model)
     model_info = ModelService.get(request.model)
-    use_ws = bool(get_config("grok.image_ws", DEFAULT_IMAGE_WS))
+    use_ws = bool(get_config("grok.image_ws"))
 
     # 流式模式
     if request.stream:
         if use_ws:
             aspect_ratio = resolve_aspect_ratio(request.size)
-            enable_nsfw = bool(get_config("grok.image_ws_nsfw", DEFAULT_IMAGE_WS_NSFW))
+            enable_nsfw = bool(get_config("grok.image_ws_nsfw"))
             upstream = image_service.stream(
                 token=token,
                 prompt=request.prompt,
@@ -340,26 +341,8 @@ async def create_image(request: ImageGenerationRequest):
                 size=request.size,
             )
 
-            async def _wrap_stream(stream):
-                success = False
-                try:
-                    async for chunk in stream:
-                        yield chunk
-                    success = True
-                finally:
-                    if success:
-                        try:
-                            effort = (
-                                EffortType.HIGH
-                                if (model_info and model_info.cost.value == "high")
-                                else EffortType.LOW
-                            )
-                            await token_mgr.consume(token, effort)
-                        except Exception as e:
-                            logger.warning(f"Failed to consume token: {e}")
-
             return StreamingResponse(
-                _wrap_stream(processor.process(upstream)),
+                _wrap_stream_with_usage(processor.process(upstream), token_mgr, token, model_info),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
@@ -377,28 +360,8 @@ async def create_image(request: ImageGenerationRequest):
             model_info.model_id, token, n=request.n, response_format=response_format
         )
 
-        # 包装流式响应，在成功完成时记录使用
-        async def _wrap_stream(stream):
-            success = False
-            try:
-                async for chunk in stream:
-                    yield chunk
-                success = True
-            finally:
-                # 只在成功完成时扣费
-                if success:
-                    try:
-                        effort = (
-                            EffortType.HIGH
-                            if (model_info and model_info.cost.value == "high")
-                            else EffortType.LOW
-                        )
-                        await token_mgr.consume(token, effort)
-                    except Exception as e:
-                        logger.warning(f"Failed to consume token: {e}")
-
         return StreamingResponse(
-            _wrap_stream(processor.process(response)),
+            _wrap_stream_with_usage(processor.process(response), token_mgr, token, model_info),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
@@ -409,7 +372,7 @@ async def create_image(request: ImageGenerationRequest):
     usage_override = None
     if use_ws:
         aspect_ratio = resolve_aspect_ratio(request.size)
-        enable_nsfw = bool(get_config("grok.image_ws_nsfw", DEFAULT_IMAGE_WS_NSFW))
+        enable_nsfw = bool(get_config("grok.image_ws_nsfw"))
         all_images = []
         seen = set()
         expected_per_call = 6
@@ -452,12 +415,7 @@ async def create_image(request: ImageGenerationRequest):
             if len(all_images) >= n:
                 break
         try:
-            effort = (
-                EffortType.HIGH
-                if (model_info and model_info.cost.value == "high")
-                else EffortType.LOW
-            )
-            await token_mgr.consume(token, effort)
+            await token_mgr.consume(token, _get_effort(model_info))
         except Exception as e:
             logger.warning(f"Failed to consume token: {e}")
         usage_override = {
@@ -510,16 +468,11 @@ async def create_image(request: ImageGenerationRequest):
             selected_images.append("error")
 
     # 构建响应
-    import time
-
     data = [{response_field: img} for img in selected_images]
-
     usage = usage_override or {
-        "total_tokens": 0
-        * len([img for img in selected_images if img != "error"]),
+        "total_tokens": 0,
         "input_tokens": 0,
-        "output_tokens": 0
-        * len([img for img in selected_images if img != "error"]),
+        "output_tokens": 0,
         "input_tokens_details": {"text_tokens": 0, "image_tokens": 0},
     }
 
@@ -627,32 +580,8 @@ async def edit_image(
         b64 = base64.b64encode(content).decode()
         images.append(f"data:{mime};base64,{b64}")
 
-    # 获取 token
-    try:
-        token_mgr = await get_token_manager()
-        await token_mgr.reload_if_stale()
-        token = None
-        for pool_name in ModelService.pool_candidates_for_model(edit_request.model):
-            token = token_mgr.get_token(pool_name)
-            if token:
-                break
-    except Exception as e:
-        logger.error(f"Failed to get token: {e}")
-        raise AppException(
-            message="Internal service error obtaining token",
-            error_type=ErrorType.SERVER.value,
-            code="internal_error",
-        )
-
-    if not token:
-        raise AppException(
-            message="No available tokens. Please try again later.",
-            error_type=ErrorType.RATE_LIMIT.value,
-            code="rate_limit_exceeded",
-            status_code=429,
-        )
-
-    # 获取模型信息
+    # 获取 token 和模型信息
+    token_mgr, token = await _get_token(edit_request.model)
     model_info = ModelService.get(edit_request.model)
 
     # 上传图片
@@ -714,7 +643,7 @@ async def edit_image(
         ] = parent_post_id
 
     raw_payload = {
-        "temporary": bool(get_config("grok.temporary", DEFAULT_GROK_TEMPORARY)),
+        "temporary": bool(get_config("grok.temporary")),
         "modelName": model_info.grok_model,
         "message": edit_request.prompt,
         "enableImageGeneration": True,
@@ -749,26 +678,8 @@ async def edit_image(
             model_info.model_id, token, n=edit_request.n, response_format=response_format
         )
 
-        async def _wrap_stream(stream):
-            success = False
-            try:
-                async for chunk in stream:
-                    yield chunk
-                success = True
-            finally:
-                if success:
-                    try:
-                        effort = (
-                            EffortType.HIGH
-                            if (model_info and model_info.cost.value == "high")
-                            else EffortType.LOW
-                        )
-                        await token_mgr.consume(token, effort)
-                    except Exception as e:
-                        logger.warning(f"Failed to consume token: {e}")
-
         return StreamingResponse(
-            _wrap_stream(processor.process(response)),
+            _wrap_stream_with_usage(processor.process(response), token_mgr, token, model_info),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
@@ -795,10 +706,7 @@ async def edit_image(
     if calls_needed == 1:
         all_images = await _call_edit()
     else:
-        tasks = [
-            _call_edit()
-            for _ in range(calls_needed)
-        ]
+        tasks = [_call_edit() for _ in range(calls_needed)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_images = []
@@ -808,14 +716,13 @@ async def edit_image(
             elif isinstance(result, list):
                 all_images.extend(result)
 
+    # 选择图片
     if len(all_images) >= n:
         selected_images = random.sample(all_images, n)
     else:
         selected_images = all_images.copy()
         while len(selected_images) < n:
             selected_images.append("error")
-
-    import time
 
     data = [{response_field: img} for img in selected_images]
 
@@ -824,11 +731,9 @@ async def edit_image(
             "created": int(time.time()),
             "data": data,
             "usage": {
-                "total_tokens": 0
-                * len([img for img in selected_images if img != "error"]),
+                "total_tokens": 0,
                 "input_tokens": 0,
-                "output_tokens": 0
-                * len([img for img in selected_images if img != "error"]),
+                "output_tokens": 0,
                 "input_tokens_details": {"text_tokens": 0, "image_tokens": 0},
             },
         }

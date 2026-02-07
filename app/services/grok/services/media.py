@@ -183,11 +183,13 @@ class VideoService:
             )
 
             if response.status_code != 200:
-                logger.error(f"Video generation failed: {response.status_code}")
+                logger.error(f"Video generation failed: status={response.status_code}, post_id={post_id}")
                 raise UpstreamException(
                     message=f"Video generation failed: {response.status_code}",
                     details={"status": response.status_code},
                 )
+
+            logger.info(f"Video generation started: post_id={post_id}")
 
             async def stream_response():
                 try:
@@ -217,6 +219,7 @@ class VideoService:
         preset: str = "normal"
     ) -> AsyncGenerator[bytes, None]:
         """生成视频"""
+        logger.info(f"Video generation: prompt='{prompt[:50]}...', ratio={aspect_ratio}, length={video_length}s, preset={preset}")
         async with _get_semaphore():
             post_id = await self.create_post(token, prompt)
             return await self._generate_internal(token, post_id, prompt, aspect_ratio, video_length, resolution_name, preset)
@@ -229,6 +232,7 @@ class VideoService:
         preset: str = "normal"
     ) -> AsyncGenerator[bytes, None]:
         """从图片生成视频"""
+        logger.info(f"Image to video: prompt='{prompt[:50]}...', image={image_url[:80]}")
         async with _get_semaphore():
             post_id = await self.create_image_post(token, image_url)
             return await self._generate_internal(token, post_id, prompt, aspect_ratio, video_length, resolution, preset)

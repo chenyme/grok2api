@@ -197,7 +197,7 @@ class GrokChatService:
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         timeout = get_config("grok.timeout")
 
-        logger.debug(f"Payload: {payload}")
+        logger.debug(f"Chat request: model={model}, mode={mode}, stream={stream}, attachments={len(file_attachments or [])}")
         
         # 建立连接
         async def establish_connection():
@@ -220,8 +220,7 @@ class GrokChatService:
                     except Exception:
                         pass
 
-                    logger.error(f"Chat failed: {response.status_code}", 
-                               extra={"status": response.status_code, "token": token[:10] + "..."})
+                    logger.error(f"Chat failed: status={response.status_code}, token={token[:10]}...")
                     
                     await session.close()
                     raise UpstreamException(
@@ -229,6 +228,7 @@ class GrokChatService:
                         details={"status": response.status_code, "body": content},
                     )
 
+                logger.info(f"Chat connected: model={model}, stream={stream}")
                 return session, response
 
             except UpstreamException:
@@ -287,6 +287,7 @@ class GrokChatService:
         # 提取消息和附件
         try:
             message, attachments = MessageExtractor.extract(request.messages, is_video=is_video)
+            logger.debug(f"Extracted message length={len(message)}, attachments={len(attachments)}")
         except ValueError as e:
             raise ValidationException(str(e))
 
@@ -295,9 +296,10 @@ class GrokChatService:
         if attachments:
             upload_service = UploadService()
             try:
-                for _, attach_data in attachments:
+                for attach_type, attach_data in attachments:
                     file_id, _ = await upload_service.upload(attach_data, token)
                     file_ids.append(file_id)
+                    logger.debug(f"Attachment uploaded: type={attach_type}, file_id={file_id}")
             finally:
                 await upload_service.close()
 
@@ -349,15 +351,18 @@ class ChatService:
 
         # 处理响应
         if is_stream:
+            logger.debug(f"Processing stream response: model={model}")
             processor = StreamProcessor(model_name, token, think)
             return wrap_stream_with_usage(processor.process(response), token_mgr, token, model)
         
         # 非流式
+        logger.debug(f"Processing non-stream response: model={model}")
         result = await CollectProcessor(model_name, token).process(response)
         try:
             model_info = ModelService.get(model)
             effort = EffortType.HIGH if (model_info and model_info.cost.value == "high") else EffortType.LOW
             await token_mgr.consume(token, effort)
+            logger.info(f"Chat completed: model={model}, effort={effort.value}")
         except Exception as e:
             logger.warning(f"Failed to record usage: {e}")
         return result

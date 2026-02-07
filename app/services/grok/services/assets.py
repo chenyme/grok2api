@@ -246,6 +246,8 @@ class UploadService(BaseService):
             else:
                 filename, b64, mime = self.parse_b64(file_input)
             
+            logger.debug(f"Upload prepare: filename={filename}, type={mime}, size={len(b64)}")
+            
             if not b64:
                 raise ValidationException("Invalid file input: empty content")
 
@@ -353,6 +355,7 @@ class ListService(BaseService):
         total = 0
         async for page_assets in self.iter_assets(token):
             total += len(page_assets)
+        logger.debug(f"Asset count: {total}")
         return total
 
 

@@ -35,6 +35,7 @@ class VoiceService:
         Returns:
             Dict containing token and livekitUrl
         """
+        logger.debug(f"Voice token request: voice={voice}, personality={personality}, speed={speed}")
         headers = self._build_headers(token)
         payload = self._build_payload(voice, personality, speed)
         
@@ -53,16 +54,16 @@ class VoiceService:
                 )
 
                 if response.status_code != 200:
-                    logger.error(
-                        f"Voice token failed: {response.status_code}",
-                        extra={"response": response.text[:200]}
-                    )
+                    body = response.text[:200]
+                    logger.error(f"Voice token failed: status={response.status_code}, body={body}")
                     raise UpstreamException(
                         message=f"Failed to get voice token: {response.status_code}",
                         details={"status": response.status_code, "body": response.text}
                     )
                 
-                return response.json()
+                result = response.json()
+                logger.info(f"Voice token obtained: voice={voice}")
+                return result
 
         except Exception as e:
             logger.error(f"Voice service error: {e}")
