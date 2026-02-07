@@ -93,16 +93,24 @@ class ImageStreamProcessor(BaseProcessor):
                                 if processed:
                                     final_images.append(processed)
                                 continue
-                            dl_service = self._get_dl()
-                            base64_data = await dl_service.to_base64(
-                                url, self.token, "image"
-                            )
-                            if base64_data:
-                                if "," in base64_data:
-                                    b64 = base64_data.split(",", 1)[1]
-                                else:
-                                    b64 = base64_data
-                                final_images.append(b64)
+                            try:
+                                dl_service = self._get_dl()
+                                base64_data = await dl_service.to_base64(
+                                    url, self.token, "image"
+                                )
+                                if base64_data:
+                                    if "," in base64_data:
+                                        b64 = base64_data.split(",", 1)[1]
+                                    else:
+                                        b64 = base64_data
+                                    final_images.append(b64)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to convert image to base64, falling back to URL: {e}"
+                                )
+                                processed = await self.process_url(url, "image")
+                                if processed:
+                                    final_images.append(processed)
                     continue
 
             for index, b64 in enumerate(final_images):
@@ -198,16 +206,24 @@ class ImageCollectProcessor(BaseProcessor):
                                 if processed:
                                     images.append(processed)
                                 continue
-                            dl_service = self._get_dl()
-                            base64_data = await dl_service.to_base64(
-                                url, self.token, "image"
-                            )
-                            if base64_data:
-                                if "," in base64_data:
-                                    b64 = base64_data.split(",", 1)[1]
-                                else:
-                                    b64 = base64_data
-                                images.append(b64)
+                            try:
+                                dl_service = self._get_dl()
+                                base64_data = await dl_service.to_base64(
+                                    url, self.token, "image"
+                                )
+                                if base64_data:
+                                    if "," in base64_data:
+                                        b64 = base64_data.split(",", 1)[1]
+                                    else:
+                                        b64 = base64_data
+                                    images.append(b64)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to convert image to base64, falling back to URL: {e}"
+                                )
+                                processed = await self.process_url(url, "image")
+                                if processed:
+                                    images.append(processed)
 
         except asyncio.CancelledError:
             logger.debug("Image collect cancelled by client")

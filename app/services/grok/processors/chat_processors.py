@@ -166,13 +166,20 @@ class StreamProcessor(BaseProcessor):
                         img_id = parts[-2] if len(parts) >= 2 else "image"
 
                         if self.image_format == "base64":
-                            dl_service = self._get_dl()
-                            base64_data = await dl_service.to_base64(
-                                url, self.token, "image"
-                            )
-                            if base64_data:
-                                yield self._sse(f"![{img_id}]({base64_data})\n")
-                            else:
+                            try:
+                                dl_service = self._get_dl()
+                                base64_data = await dl_service.to_base64(
+                                    url, self.token, "image"
+                                )
+                                if base64_data:
+                                    yield self._sse(f"![{img_id}]({base64_data})\n")
+                                else:
+                                    final_url = await self.process_url(url, "image")
+                                    yield self._sse(f"![{img_id}]({final_url})\n")
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to convert image to base64, falling back to URL: {e}"
+                                )
                                 final_url = await self.process_url(url, "image")
                                 yield self._sse(f"![{img_id}]({final_url})\n")
                         else:
@@ -287,13 +294,20 @@ class CollectProcessor(BaseProcessor):
                             img_id = parts[-2] if len(parts) >= 2 else "image"
 
                             if self.image_format == "base64":
-                                dl_service = self._get_dl()
-                                base64_data = await dl_service.to_base64(
-                                    url, self.token, "image"
-                                )
-                                if base64_data:
-                                    content += f"![{img_id}]({base64_data})\n"
-                                else:
+                                try:
+                                    dl_service = self._get_dl()
+                                    base64_data = await dl_service.to_base64(
+                                        url, self.token, "image"
+                                    )
+                                    if base64_data:
+                                        content += f"![{img_id}]({base64_data})\n"
+                                    else:
+                                        final_url = await self.process_url(url, "image")
+                                        content += f"![{img_id}]({final_url})\n"
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Failed to convert image to base64, falling back to URL: {e}"
+                                    )
                                     final_url = await self.process_url(url, "image")
                                     content += f"![{img_id}]({final_url})\n"
                             else:

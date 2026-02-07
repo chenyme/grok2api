@@ -152,7 +152,7 @@ class VideoService:
         }
         mode_flag = mode_map.get(preset, "--mode=custom")
 
-        return {
+        payload = {
             "temporary": True,
             "modelName": "grok-3",
             "message": f"{prompt} {mode_flag}",
@@ -163,15 +163,19 @@ class VideoService:
                 "modelConfigOverride": {
                     "modelMap": {
                         "videoGenModelConfig": {
-                            "parentPostId": post_id,
                             "aspectRatio": aspect_ratio,
-                            "videoLength": video_length,
+                            "parentPostId": post_id,
                             "resolutionName": resolution_name,
+                            "videoLength": video_length
                         }
                     }
                 },
             },
         }
+
+        logger.debug(f"Video generation payload: {payload}")
+
+        return payload
 
     async def _generate_internal(
         self,

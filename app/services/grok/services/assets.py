@@ -242,8 +242,22 @@ class BaseService:
     def to_b64(file_path: Path, mime_type: str) -> str:
         """文件转 base64 data URI"""
         try:
+            if not file_path.exists():
+                logger.warning(f"File not found for base64 conversion: {file_path}")
+                raise AppException(
+                    f"File not found: {file_path}", code="file_not_found"
+                )
+
+            if not file_path.is_file():
+                logger.warning(f"Path is not a file: {file_path}")
+                raise AppException(
+                    f"Invalid file path: {file_path}", code="invalid_file_path"
+                )
+
             b64_data = base64.b64encode(file_path.read_bytes()).decode()
             return f"data:{mime_type};base64,{b64_data}"
+        except AppException:
+            raise
         except Exception as e:
             logger.error(f"File to base64 failed: {file_path} - {e}")
             raise AppException(
@@ -581,20 +595,27 @@ class DownloadService(BaseService):
         self, file_path: str, token: str, media_type: str = "image"
     ) -> str:
         """下载并转 base64"""
-        cache_path, mime = await self.download(file_path, token, media_type)
-        if not cache_path or not cache_path.exists():
-            raise AppException("Download failed: invalid path")
+        try:
+            cache_path, mime = await self.download(file_path, token, media_type)
+            if not cache_path or not cache_path.exists():
+                logger.warning(f"Download failed for {file_path}: invalid path")
+                raise AppException(
+                    "Download failed: invalid path", code="download_failed"
+                )
 
-        data_uri = self.to_b64(cache_path, mime)
+            data_uri = self.to_b64(cache_path, mime)
 
-        # 删除临时文件
-        if data_uri:
-            try:
-                cache_path.unlink()
-            except Exception:
-                pass
+            # 删除临时文件
+            if data_uri:
+                try:
+                    cache_path.unlink()
+                except Exception as e:
+                    logger.debug(f"Failed to cleanup temp file {cache_path}: {e}")
 
-        return data_uri
+            return data_uri
+        except Exception as e:
+            logger.error(f"Failed to convert {file_path} to base64: {e}")
+            raise
 
     def get_stats(self, media_type: str = "image") -> Dict[str, Any]:
         """获取缓存统计"""
