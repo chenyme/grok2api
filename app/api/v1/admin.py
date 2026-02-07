@@ -1,5 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse, StreamingResponse
+from typing import Optional
 from pydantic import BaseModel
 from app.core.auth import verify_api_key, verify_app_key, get_admin_api_key
 from app.core.config import config, get_config
@@ -9,12 +18,19 @@ from app.core.exceptions import AppException
 from app.services.token.manager import get_token_manager
 from app.services.grok.utils.batch import run_in_batches
 import os
+import time
+import uuid
 from pathlib import Path
 import aiofiles
 import asyncio
 import orjson
 from app.core.logger import logger
+from app.api.v1.image import resolve_aspect_ratio
 from app.services.grok.services.voice import VoiceService
+from app.services.grok.services.image import image_service
+from app.services.grok.models.model import ModelService
+from app.services.grok.processors.image_ws_processors import ImageWSCollectProcessor
+from app.services.token import EffortType
 
 TEMPLATE_DIR = Path(__file__).parent.parent.parent / "static"
 
@@ -151,6 +167,12 @@ async def admin_voice_page():
     return await render_template("voice/voice.html")
 
 
+@router.get("/admin/imagine", response_class=HTMLResponse, include_in_schema=False)
+async def admin_imagine_page():
+    """Imagine 图片瀑布流"""
+    return await render_template("imagine/imagine.html")
+
+
 class VoiceTokenResponse(BaseModel):
     token: str
     url: str
@@ -214,6 +236,228 @@ async def admin_voice_token(
             code="voice_error",
             status_code=500,
         )
+
+
+def _verify_ws_api_key(websocket: WebSocket) -> bool:
+    api_key = get_admin_api_key()
+    if not api_key:
+        return True
+    key = websocket.query_params.get("api_key")
+    return key == api_key
+
+
+@router.websocket("/api/v1/admin/imagine/ws")
+async def admin_imagine_ws(websocket: WebSocket):
+    if not _verify_ws_api_key(websocket):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    stop_event = asyncio.Event()
+    run_task: Optional[asyncio.Task] = None
+
+    async def _send(payload: dict) -> bool:
+        try:
+            await websocket.send_text(orjson.dumps(payload).decode())
+            return True
+        except Exception:
+            return False
+
+    async def _stop_run():
+        nonlocal run_task
+        stop_event.set()
+        if run_task and not run_task.done():
+            run_task.cancel()
+            try:
+                await run_task
+            except Exception:
+                pass
+        run_task = None
+        stop_event.clear()
+
+    async def _run(prompt: str, aspect_ratio: str):
+        model_id = "grok-imagine-1.0"
+        model_info = ModelService.get(model_id)
+        if not model_info or not model_info.is_image:
+            await _send(
+                {
+                    "type": "error",
+                    "message": "Image model is not available.",
+                    "code": "model_not_supported",
+                }
+            )
+            return
+
+        token_mgr = await get_token_manager()
+        enable_nsfw = bool(get_config("image.image_ws_nsfw", True))
+        sequence = 0
+        run_id = uuid.uuid4().hex
+
+        await _send(
+            {
+                "type": "status",
+                "status": "running",
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "run_id": run_id,
+            }
+        )
+
+        while not stop_event.is_set():
+            try:
+                await token_mgr.reload_if_stale()
+                token = None
+                for pool_name in ModelService.pool_candidates_for_model(
+                    model_info.model_id
+                ):
+                    token = token_mgr.get_token(pool_name)
+                    if token:
+                        break
+
+                if not token:
+                    await _send(
+                        {
+                            "type": "error",
+                            "message": "No available tokens. Please try again later.",
+                            "code": "rate_limit_exceeded",
+                        }
+                    )
+                    await asyncio.sleep(2)
+                    continue
+
+                upstream = image_service.stream(
+                    token=token,
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                    n=6,
+                    enable_nsfw=enable_nsfw,
+                )
+
+                processor = ImageWSCollectProcessor(
+                    model_info.model_id,
+                    token,
+                    n=6,
+                    response_format="b64_json",
+                )
+
+                start_at = time.time()
+                images = await processor.process(upstream)
+                elapsed_ms = int((time.time() - start_at) * 1000)
+
+                if images and all(img and img != "error" for img in images):
+                    # 一次发送所有 6 张图片
+                    for img_b64 in images:
+                        sequence += 1
+                        await _send(
+                            {
+                                "type": "image",
+                                "b64_json": img_b64,
+                                "sequence": sequence,
+                                "created_at": int(time.time() * 1000),
+                                "elapsed_ms": elapsed_ms,
+                                "aspect_ratio": aspect_ratio,
+                                "run_id": run_id,
+                            }
+                        )
+
+                    # 消耗 token（6 张图片按高成本计算）
+                    try:
+                        effort = (
+                            EffortType.HIGH
+                            if (model_info and model_info.cost.value == "high")
+                            else EffortType.LOW
+                        )
+                        await token_mgr.consume(token, effort)
+                    except Exception as e:
+                        logger.warning(f"Failed to consume token: {e}")
+                else:
+                    await _send(
+                        {
+                            "type": "error",
+                            "message": "Image generation returned empty data.",
+                            "code": "empty_image",
+                        }
+                    )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Imagine stream error: {e}")
+                await _send(
+                    {
+                        "type": "error",
+                        "message": str(e),
+                        "code": "internal_error",
+                    }
+                )
+                await asyncio.sleep(1.5)
+
+        await _send({"type": "status", "status": "stopped", "run_id": run_id})
+
+    try:
+        while True:
+            try:
+                raw = await websocket.receive_text()
+            except (RuntimeError, WebSocketDisconnect):
+                # WebSocket already closed or disconnected
+                break
+            
+            try:
+                payload = orjson.loads(raw)
+            except Exception:
+                await _send(
+                    {
+                        "type": "error",
+                        "message": "Invalid message format.",
+                        "code": "invalid_payload",
+                    }
+                )
+                continue
+
+            msg_type = payload.get("type")
+            if msg_type == "start":
+                prompt = str(payload.get("prompt") or "").strip()
+                if not prompt:
+                    await _send(
+                        {
+                            "type": "error",
+                            "message": "Prompt cannot be empty.",
+                            "code": "empty_prompt",
+                        }
+                    )
+                    continue
+                ratio = str(payload.get("aspect_ratio") or "2:3").strip()
+                if not ratio:
+                    ratio = "2:3"
+                ratio = resolve_aspect_ratio(ratio)
+                await _stop_run()
+                stop_event.clear()
+                run_task = asyncio.create_task(_run(prompt, ratio))
+            elif msg_type == "stop":
+                await _stop_run()
+            elif msg_type == "ping":
+                await _send({"type": "pong"})
+            else:
+                await _send(
+                    {
+                        "type": "error",
+                        "message": "Unknown command.",
+                        "code": "unknown_command",
+                    }
+                )
+    except WebSocketDisconnect:
+        logger.debug("WebSocket disconnected by client")
+    except Exception as e:
+        logger.warning(f"WebSocket error: {e}")
+    finally:
+        await _stop_run()
+        
+        try:
+            from starlette.websockets import WebSocketState
+            if websocket.client_state == WebSocketState.CONNECTED:
+                await websocket.close(code=1000, reason="Server closing connection")
+        except Exception as e:
+            logger.debug(f"WebSocket close ignored: {e}")
 
 
 @router.post("/api/v1/admin/login", dependencies=[Depends(verify_app_key)])

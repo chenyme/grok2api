@@ -14,6 +14,7 @@ dependencies = [
     "fastapi>=0.119.0",
     "greenlet>=3.3.1",
     "httpx>=0.28.1",
+    "itsdangerous>=2.2.0",
     "livekit>=1.0.25",
     "loguru>=0.7.3",
     "orjson>=3.11.4",
@@ -25,6 +26,7 @@ dependencies = [
     "sqlalchemy>=2.0.46",
     "tomli>=2.4.0",
     "uvicorn>=0.37.0",
+    "websockets>=16.0",
 ]
 
 [dependency-groups]
