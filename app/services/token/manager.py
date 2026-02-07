@@ -210,6 +210,83 @@ class TokenManager:
             return token[4:]
         return token
 
+    def get_token_info(self, pool_name: str = "ssoBasic") -> Optional["TokenInfo"]:
+        """
+        获取可用 Token 的完整信息
+
+        Args:
+            pool_name: Token 池名称
+
+        Returns:
+            TokenInfo 对象或 None
+        """
+        pool = self.pools.get(pool_name)
+        if not pool:
+            logger.warning(f"Pool '{pool_name}' not found")
+            return None
+
+        token_info = pool.select()
+        if not token_info:
+            logger.warning(f"No available token in pool '{pool_name}'")
+            return None
+
+        return token_info
+
+    def get_token_for_video(
+        self, resolution: str = "480p", video_length: int = 6
+    ) -> Optional["TokenInfo"]:
+        """
+        根据视频需求智能选择 Token 池
+
+        路由策略:
+        - 如果 resolution 是 "720p" 或 video_length > 6: 优先使用 "ssoSuper" 池
+        - 如果 "ssoSuper" 池没有可用 token: 记录警告并回退到 "ssoBasic" 池
+        - 如果 resolution 是 "480p" 且 video_length <= 6: 使用 "ssoBasic" 池
+
+        Args:
+            resolution: 视频分辨率 ("480p" 或 "720p")
+            video_length: 视频时长(秒)
+
+        Returns:
+            TokenInfo 对象或 None（无可用 token）
+        """
+        # 确定首选池
+        requires_super = resolution == "720p" or video_length > 6
+        primary_pool = SUPER_POOL_NAME if requires_super else BASIC_POOL_NAME
+        fallback_pool = BASIC_POOL_NAME if requires_super else SUPER_POOL_NAME
+
+        # 优先从主池获取 token
+        primary_token = self.get_token_info(primary_pool)
+        if primary_token:
+            logger.info(
+                f"Video token routing: resolution={resolution}, length={video_length}s -> "
+                f"pool={primary_pool} (token={primary_token.token[:10]}...)"
+            )
+            return primary_token
+
+        # 主池无可用 token，尝试回退池
+        if requires_super:
+            logger.warning(
+                f"Video token routing: ssoSuper pool has no available token for "
+                f"resolution={resolution}, length={video_length}s. "
+                f"Falling back to ssoBasic pool."
+            )
+
+        fallback_token = self.get_token_info(fallback_pool)
+        if fallback_token:
+            logger.info(
+                f"Video token routing: fallback from {primary_pool} -> {fallback_pool} "
+                f"(token={fallback_token.token[:10]}...)"
+            )
+            return fallback_token
+
+        # 两个池都没有可用 token
+        logger.warning(
+            f"Video token routing: no available token in any pool "
+            f"(resolution={resolution}, length={video_length}s)"
+        )
+        return None
+
     async def consume(
         self, token_str: str, effort: EffortType = EffortType.LOW
     ) -> bool:

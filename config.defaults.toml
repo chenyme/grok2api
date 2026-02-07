@@ -137,3 +137,17 @@ nsfw_max_concurrent = 10
 nsfw_batch_size = 50
 # NSFW 单次最大数量
 nsfw_max_tokens = 1000
+
+
+# ==================== 视频 Token 路由 ====================
+[video]
+# 是否启用智能 Token 路由（根据视频需求自动选择 Token 池）
+# true:  720p 或 >6s 视频自动使用 ssoSuper Token
+# false: 所有视频使用默认 Token 池
+smart_token_routing = true
+
+# 当需要 Super Token 但不可用时是否允许回退到 Basic Token
+allow_fallback_to_basic = true
+
+# 回退时的警告日志
+log_fallback_warning = true
