@@ -140,6 +140,14 @@ class ChatCompletionRequest(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class VideoUpscaleRequest(BaseModel):
+    """视频超分请求"""
+    
+    video_id: str = Field(..., description="视频 ID")
+    model: str = Field("grok-imagine-1.0-video", description="模型名称")
+    stream: bool = Field(False, description="是否流式输出 (暂不支持)")
+
+
 def validate_request(request: ChatCompletionRequest):
     """验证请求参数"""
     # 验证模型
@@ -290,6 +298,77 @@ async def chat_completions(request: ChatCompletionRequest):
             result,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+
+@router.post("/video/upscale")
+async def upscale_video(request: VideoUpscaleRequest):
+    """
+    视频超分接口
+
+    直接调用 Grok 的 upscale 接口对指定视频 ID 进行高清放大。
+    """
+    from app.services.grok.services.media import VideoService
+    from app.services.token import get_token_manager, EffortType
+    from app.services.grok.models.model import ModelService
+    from app.core.exceptions import AppException, ErrorType
+    from app.core.logger import logger
+
+    # 1. 获取 Token
+    try:
+        token_mgr = await get_token_manager()
+        await token_mgr.reload_if_stale()
+        token = None
+        # 尝试获取可用 token
+        for pool_name in ModelService.pool_candidates_for_model(request.model):
+            token = token_mgr.get_token(pool_name)
+            if token:
+                break
+    except Exception as e:
+        logger.error(f"Failed to get token: {e}")
+        raise AppException(
+            message="Internal service error obtaining token",
+            error_type=ErrorType.SERVER.value,
+            code="internal_error",
+        )
+
+    if not token:
+        raise AppException(
+            message="No available tokens. Please try again later.",
+            error_type=ErrorType.RATE_LIMIT.value,
+            code="rate_limit_exceeded",
+            status_code=429,
+        )
+
+    # 2. 调用 upscale
+    service = VideoService()
+    try:
+        # 记录开始
+        logger.info(f"Starting upscale for video {request.video_id} with token {token[:10]}...")
+        result = await service.upscale(token, request.video_id)
+
+        # 记录使用量
+        try:
+            model_info = ModelService.get(request.model)
+            effort = (
+                EffortType.HIGH
+                if (model_info and model_info.cost.value == "high")
+                else EffortType.LOW
+            )
+            await token_mgr.consume(token, effort)
+        except Exception as e:
+            logger.warning(f"Failed to record upscale usage: {e}")
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        logger.error(f"Upscale failed: {e}")
+        if isinstance(e, AppException):
+            raise e
+        raise AppException(
+            message=f"Upscale failed: {str(e)}",
+            error_type=ErrorType.SERVER.value,
+            code="upscale_error",
         )
 
 
