@@ -3,7 +3,7 @@ Grok Chat 服务
 """
 
 import orjson
-from typing import Dict, List, Any, AsyncGenerator
+from typing import Dict, List, Any
 from dataclasses import dataclass
 
 from curl_cffi.requests import AsyncSession
@@ -18,16 +18,14 @@ from app.core.exceptions import (
 )
 from app.services.grok.models.model import ModelService
 from app.services.grok.services.assets import UploadService
-from app.services.grok.processors.processor import StreamProcessor, CollectProcessor
+from app.services.grok.processors import StreamProcessor, CollectProcessor
 from app.services.grok.utils.retry import retry_on_status
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
+from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import get_token_manager, EffortType
 
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
-TIMEOUT = 120
-DEFAULT_BROWSER = "chrome136"
-DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 
 @dataclass
@@ -43,56 +41,31 @@ class ChatRequest:
 class MessageExtractor:
     """消息内容提取器"""
 
-    # 需要上传的类型
-    UPLOAD_TYPES = {"image_url", "input_audio", "file"}
-    # 视频模式不支持的类型
-    VIDEO_UNSUPPORTED = {"input_audio", "file"}
-
     @staticmethod
     def extract(
         messages: List[Dict[str, Any]], is_video: bool = False
     ) -> tuple[str, List[tuple[str, str]]]:
-        """
-        从 OpenAI 消息格式提取内容
-
-        Args:
-            messages: OpenAI 格式消息列表
-            is_video: 是否为视频模型
-
-        Returns:
-            (text, attachments): 拼接后的文本和需要上传的附件列表
-
-        Raises:
-            ValueError: 视频模型遇到不支持的内容类型
-        """
+        """从 OpenAI 消息格式提取内容，返回 (text, attachments)"""
         texts = []
-        attachments = []  # 需要上传的附件 (URL 或 base64)
-
-        # 先抽取每条消息的文本，保留角色信息用于合并
-        extracted: List[Dict[str, str]] = []
+        attachments = []
+        extracted = []
 
         for msg in messages:
             role = msg.get("role", "")
             content = msg.get("content", "")
             parts = []
 
-            # 简单字符串内容
             if isinstance(content, str):
                 if content.strip():
                     parts.append(content)
-
-            # 列表格式内容
             elif isinstance(content, list):
                 for item in content:
                     item_type = item.get("type", "")
 
-                    # 文本类型
                     if item_type == "text":
-                        text = item.get("text", "")
-                        if text.strip():
+                        if text := item.get("text", "").strip():
                             parts.append(text)
 
-                    # 图片类型
                     elif item_type == "image_url":
                         image_data = item.get("image_url", {})
                         url = (
@@ -103,7 +76,6 @@ class MessageExtractor:
                         if url:
                             attachments.append(("image", url))
 
-                    # 音频类型
                     elif item_type == "input_audio":
                         if is_video:
                             raise ValueError("视频模型不支持 input_audio 类型")
@@ -116,12 +88,10 @@ class MessageExtractor:
                         if data:
                             attachments.append(("audio", data))
 
-                    # 文件类型
                     elif item_type == "file":
                         if is_video:
                             raise ValueError("视频模型不支持 file 类型")
                         file_data = item.get("file", {})
-                        # file 可能是 URL 或 base64
                         url = file_data.get("url", "") or file_data.get("data", "")
                         if isinstance(file_data, str):
                             url = file_data
@@ -131,30 +101,22 @@ class MessageExtractor:
             if parts:
                 extracted.append({"role": role, "text": "\n".join(parts)})
 
-        # 合并文本
-        last_user_index = None
-        for i in range(len(extracted) - 1, -1, -1):
-            if extracted[i]["role"] == "user":
-                last_user_index = i
-                break
+        # 找到最后一条 user 消息
+        last_user_index = next(
+            (
+                i
+                for i in range(len(extracted) - 1, -1, -1)
+                if extracted[i]["role"] == "user"
+            ),
+            None,
+        )
 
         for i, item in enumerate(extracted):
             role = item["role"] or "user"
             text = item["text"]
-            if i == last_user_index:
-                texts.append(text)
-            else:
-                texts.append(f"{role}: {text}")
+            texts.append(text if i == last_user_index else f"{role}: {text}")
 
-        # 换行拼接文本
-        message = "\n\n".join(texts)
-        return message, attachments
-
-    @staticmethod
-    def extract_text_only(messages: List[Dict[str, Any]]) -> str:
-        """仅提取文本内容"""
-        text, _ = MessageExtractor.extract(messages, is_video=True)
-        return text
+        return "\n\n".join(texts), attachments
 
 
 class ChatRequestBuilder:
@@ -163,7 +125,7 @@ class ChatRequestBuilder:
     @staticmethod
     def build_headers(token: str) -> Dict[str, str]:
         """构造请求头"""
-        user_agent = get_config("grok.user_agent", DEFAULT_USER_AGENT)
+        user_agent = get_config("security.user_agent")
         headers = {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -200,26 +162,15 @@ class ChatRequestBuilder:
         file_attachments: List[str] = None,
         image_attachments: List[str] = None,
     ) -> Dict[str, Any]:
-        """
-        构造请求体
-
-        Args:
-            message: 消息文本
-            model: 模型名称
-            mode: 模型模式
-            file_attachments: 文件附件 ID 列表
-            image_attachments: 图片附件 ID 列表（合并到 fileAttachments）
-        """
-        temporary = get_config("grok.temporary", True)
-
-        merged_attachments: List[str] = []
+        """构造请求体"""
+        merged_attachments = []
         if file_attachments:
             merged_attachments.extend(file_attachments)
         if image_attachments:
             merged_attachments.extend(image_attachments)
 
-        payload: Dict[str, Any] = {
-            "temporary": temporary,
+        payload = {
+            "temporary": get_config("chat.temporary"),
             "modelName": model,
             "message": message,
             "fileAttachments": merged_attachments,
@@ -227,23 +178,17 @@ class ChatRequestBuilder:
             "disableSearch": False,
             "enableImageGeneration": True,
             "returnImageBytes": False,
-            "returnRawGrokInXaiRequest": False,
             "enableImageStreaming": True,
             "imageGenerationCount": 2,
             "forceConcise": False,
             "toolOverrides": {},
             "enableSideBySide": True,
             "sendFinalMetadata": True,
-            "isReasoning": False,
-            "disableTextFollowUps": False,
             "responseMetadata": {
                 "modelConfigOverride": {"modelMap": {}},
                 "requestModelDetails": {"modelId": model},
             },
-            "disableMemory": get_config("grok.disable_memory", True),
-            "forceSideBySide": False,
-            "isAsyncChat": False,
-            "disableSelfHarmShortCircuit": False,
+            "disableMemory": get_config("chat.disable_memory"),
             "deviceEnvInfo": {
                 "darkModeEnabled": False,
                 "devicePixelRatio": 2,
@@ -260,14 +205,11 @@ class ChatRequestBuilder:
         return payload
 
 
-# ==================== Grok 服务 ====================
-
-
 class GrokChatService:
     """Grok API 调用服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url", "")
+        self.proxy = proxy or get_config("network.base_proxy_url")
 
     async def chat(
         self,
@@ -280,50 +222,28 @@ class GrokChatService:
         image_attachments: List[str] = None,
         raw_payload: Dict[str, Any] = None,
     ):
-        """
-        发送聊天请求
-
-        Args:
-            token: 认证 Token
-            message: 消息文本
-            model: Grok 模型名称
-            mode: 模型模式
-            stream: 是否流式
-            file_attachments: 文件附件 ID 列表
-            image_attachments: 图片附件 URL 列表
-
-        Raises:
-            UpstreamException: 当 Grok API 返回错误且重试耗尽时
-        """
+        """发送聊天请求"""
         if stream is None:
-            stream = get_config("grok.stream", True)
+            stream = get_config("chat.stream")
 
         headers = ChatRequestBuilder.build_headers(token)
-        if raw_payload is not None:
-            payload = raw_payload
-        else:
-            payload = ChatRequestBuilder.build_payload(
-                message,
-                model,
-                mode,
-                file_attachments,
-                image_attachments,
+        payload = (
+            raw_payload
+            if raw_payload is not None
+            else ChatRequestBuilder.build_payload(
+                message, model, mode, file_attachments, image_attachments
             )
+        )
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        timeout = get_config("grok.timeout", TIMEOUT)
+        timeout = get_config("network.timeout")
 
-        # 状态码提取器
-        def extract_status(e: Exception) -> int | None:
-            if isinstance(e, UpstreamException) and e.details:
-                return e.details.get("status")
-            return None
+        logger.debug(
+            f"Chat request: model={model}, mode={mode}, stream={stream}, attachments={len(file_attachments or [])}"
+        )
 
-        logger.debug(f"Payload: {payload}")
-        
-        # 建立连接函数
+        # 建立连接
         async def establish_connection():
-            """建立连接并返回 response 对象"""
-            browser = get_config("grok.browser", DEFAULT_BROWSER)
+            browser = get_config("security.browser")
             session = AsyncSession(impersonate=browser)
             try:
                 response = await session.post(
@@ -336,55 +256,41 @@ class GrokChatService:
                 )
 
                 if response.status_code != 200:
+                    content = ""
                     try:
                         content = await response.text()
                     except Exception:
-                        content = ""
+                        pass
 
                     logger.error(
-                        f"Chat failed: {response.status_code}",
-                        extra={
-                            "status": response.status_code,
-                            "token": token[:10] + "...",
-                        },
-                    )
-                    body_for_log = content if content else "<empty>"
-                    logger.debug(
-                        "Grok API error response "
-                        f"(status={response.status_code}): {body_for_log}"
-                    )
-                    # 关闭 session 并抛出异常
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
-                    raise UpstreamException(
-                        message=f"Grok API request failed: {response.status_code}",
-                        details={
-                            "status": response.status_code,
-                            "body": content,
-                        },
+                        f"Chat failed: status={response.status_code}, token={token[:10]}..."
                     )
 
-                # 返回 session 和 response
+                    await session.close()
+                    raise UpstreamException(
+                        message=f"Grok API request failed: {response.status_code}",
+                        details={"status": response.status_code, "body": content},
+                    )
+
+                logger.info(f"Chat connected: model={model}, stream={stream}")
                 return session, response
 
             except UpstreamException:
-                # 已经处理过的异常，直接抛出
                 raise
             except Exception as e:
-                # 其他异常，关闭 session 并包装
                 logger.error(f"Chat request error: {e}")
-                try:
-                    await session.close()
-                except Exception:
-                    pass
+                await session.close()
                 raise UpstreamException(
                     message=f"Chat connection failed: {str(e)}",
                     details={"error": str(e)},
                 )
 
-        # 建立连接
+        # 重试机制
+        def extract_status(e: Exception) -> int | None:
+            if isinstance(e, UpstreamException) and e.details:
+                return e.details.get("status")
+            return None
+
         session = None
         response = None
         try:
@@ -392,7 +298,6 @@ class GrokChatService:
                 establish_connection, extract_status=extract_status
             )
         except Exception as e:
-            # 记录失败
             status_code = extract_status(e)
             if status_code:
                 token_mgr = await get_token_manager()
@@ -430,32 +335,28 @@ class GrokChatService:
             message, attachments = MessageExtractor.extract(
                 request.messages, is_video=is_video
             )
+            logger.debug(
+                f"Extracted message length={len(message)}, attachments={len(attachments)}"
+            )
         except ValueError as e:
             raise ValidationException(str(e))
 
-        # 处理附件上传
+        # 上传附件
         file_ids = []
-
         if attachments:
             upload_service = UploadService()
             try:
                 for attach_type, attach_data in attachments:
-                    # 获取 ID
                     file_id, _ = await upload_service.upload(attach_data, token)
-
-                    if attach_type == "image":
-                        file_ids.append(file_id)
-                        logger.debug(f"Image uploaded: {file_id}")
-                    else:
-                        file_ids.append(file_id)
-                        logger.debug(f"File uploaded: {file_id}")
+                    file_ids.append(file_id)
+                    logger.debug(
+                        f"Attachment uploaded: type={attach_type}, file_id={file_id}"
+                    )
             finally:
                 await upload_service.close()
 
         stream = (
-            request.stream
-            if request.stream is not None
-            else get_config("grok.stream", True)
+            request.stream if request.stream is not None else get_config("chat.stream")
         )
 
         response = await self.chat(
@@ -471,44 +372,8 @@ class GrokChatService:
         return response, stream, request.model
 
 
-# ==================== Chat 业务服务 ====================
-
-
 class ChatService:
     """Chat 业务服务"""
-
-    @staticmethod
-    async def _wrap_stream(stream: AsyncGenerator, token_mgr, token: str, model: str):
-        """
-        包装流式响应，在完成时记录使用
-
-        Args:
-            stream: 原始 AsyncGenerator
-            token_mgr: TokenManager 实例
-            token: Token 字符串
-            model: 模型名称
-        """
-        success = False
-        try:
-            async for chunk in stream:
-                yield chunk
-            success = True
-        finally:
-            # 只在成功完成时记录使用，失败/异常时不扣费
-            if success:
-                try:
-                    model_info = ModelService.get(model)
-                    effort = (
-                        EffortType.HIGH
-                        if (model_info and model_info.cost.value == "high")
-                        else EffortType.LOW
-                    )
-                    await token_mgr.consume(token, effort)
-                    logger.debug(
-                        f"Stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to record stream usage: {e}")
 
     @staticmethod
     async def completions(
@@ -517,34 +382,16 @@ class ChatService:
         stream: bool = None,
         thinking: str = None,
     ):
-        """
-        Chat Completions 入口
-
-        Args:
-            model: 模型名称
-            messages: 消息列表
-            stream: 是否流式
-            thinking: 思考模式
-
-        Returns:
-            AsyncGenerator 或 dict
-        """
+        """Chat Completions 入口"""
         # 获取 token
-        try:
-            token_mgr = await get_token_manager()
-            await token_mgr.reload_if_stale()
-            token = None
-            for pool_name in ModelService.pool_candidates_for_model(model):
-                token = token_mgr.get_token(pool_name)
-                if token:
-                    break
-        except Exception as e:
-            logger.error(f"Failed to get token: {e}")
-            raise AppException(
-                message="Internal service error obtaining token",
-                error_type=ErrorType.SERVER.value,
-                code="internal_error",
-            )
+        token_mgr = await get_token_manager()
+        await token_mgr.reload_if_stale()
+
+        token = None
+        for pool_name in ModelService.pool_candidates_for_model(model):
+            token = token_mgr.get_token(pool_name)
+            if token:
+                break
 
         if not token:
             raise AppException(
@@ -555,13 +402,8 @@ class ChatService:
             )
 
         # 解析参数
-        think = None
-        if thinking == "enabled":
-            think = True
-        elif thinking == "disabled":
-            think = False
-
-        is_stream = stream if stream is not None else get_config("grok.stream", True)
+        think = {"enabled": True, "disabled": False}.get(thinking)
+        is_stream = stream if stream is not None else get_config("chat.stream")
 
         # 构造请求
         chat_request = ChatRequest(
@@ -570,40 +412,31 @@ class ChatService:
 
         # 请求 Grok
         service = GrokChatService()
-        try:
-            response, _, model_name = await service.chat_openai(token, chat_request)
-        except AppException:
-            raise
-        except Exception as e:
-            logger.error(f"Chat service error: {e}")
-            raise UpstreamException(
-                message=f"Service processing failed: {str(e)}",
-                details={"error": str(e)},
-            )
+        response, _, model_name = await service.chat_openai(token, chat_request)
 
         # 处理响应
         if is_stream:
+            logger.debug(f"Processing stream response: model={model}")
             processor = StreamProcessor(model_name, token, think)
-            return ChatService._wrap_stream(
+            return wrap_stream_with_usage(
                 processor.process(response), token_mgr, token, model
             )
-        else:
-            result = await CollectProcessor(model_name, token).process(response)
-            # 非流式：处理完成后立即记录使用
-            try:
-                model_info = ModelService.get(model)
-                effort = (
-                    EffortType.HIGH
-                    if (model_info and model_info.cost.value == "high")
-                    else EffortType.LOW
-                )
-                await token_mgr.consume(token, effort)
-                logger.debug(
-                    f"Collect completed, recorded usage for token {token[:10]}... (effort={effort.value})"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record collect usage: {e}")
-            return result
+
+        # 非流式
+        logger.debug(f"Processing non-stream response: model={model}")
+        result = await CollectProcessor(model_name, token).process(response)
+        try:
+            model_info = ModelService.get(model)
+            effort = (
+                EffortType.HIGH
+                if (model_info and model_info.cost.value == "high")
+                else EffortType.LOW
+            )
+            await token_mgr.consume(token, effort)
+            logger.info(f"Chat completed: model={model}, effort={effort.value}")
+        except Exception as e:
+            logger.warning(f"Failed to record usage: {e}")
+        return result
 
 
 __all__ = [

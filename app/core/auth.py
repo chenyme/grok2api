@@ -8,6 +8,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import get_config
 
+DEFAULT_API_KEY = ""
+DEFAULT_APP_KEY = "grok2api"
+
 # 定义 Bearer Scheme
 security = HTTPBearer(
     auto_error=False,
@@ -22,7 +25,7 @@ def get_admin_api_key() -> str:
 
     为空时表示不启用后台接口认证。
     """
-    api_key = get_config("app.api_key", "")
+    api_key = get_config("app.api_key", DEFAULT_API_KEY)
     return api_key or ""
 
 
@@ -63,7 +66,7 @@ async def verify_app_key(
 
     app_key 必须配置，否则拒绝登录。
     """
-    app_key = get_config("app.app_key", "")
+    app_key = get_config("app.app_key", DEFAULT_APP_KEY)
 
     if not app_key:
         raise HTTPException(

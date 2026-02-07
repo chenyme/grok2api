@@ -41,17 +41,21 @@ setup_logging(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 1. 加载配置
-    from app.core.config import config
+    # 1. 注册服务默认配置
+    from app.core.config import config, register_defaults
+    from app.services.grok.defaults import get_grok_defaults
 
+    register_defaults(get_grok_defaults())
+
+    # 2. 加载配置
     await config.load()
 
-    # 2. 启动服务显示
+    # 3. 启动服务显示
     logger.info("Starting Grok2API...")
     logger.info(f"Platform: {platform.system()} {platform.release()}")
     logger.info(f"Python: {sys.version.split()[0]}")
 
-    # 3. 启动 Token 刷新调度器
+    # 4. 启动 Token 刷新调度器
     refresh_enabled = get_config("token.auto_refresh", True)
     if refresh_enabled:
         basic_interval = get_config("token.refresh_interval_hours", 8)

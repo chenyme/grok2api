@@ -1,6 +1,6 @@
 # Grok2API
 
-**中文** | [English](README.en.md)
+**中文** | [English](docs/README.en.md)
 
 > [!NOTE]
 > 本项目仅供学习与研究，使用者必须在遵循 Grok 的 **使用条款** 以及 **法律法规** 的情况下使用，不得用于非法用途。
@@ -223,6 +223,10 @@ curl http://localhost:8000/v1/images/edits \
 > 生产环境或反向代理部署时，请确保 `app.app_url` 配置为对外可访问的完整 URL，
 > 否则可能出现文件访问链接不正确或 403 等问题。
 
+> [!TIP]
+> **v2.0 配置结构升级**：旧版本用户更新后，配置会**自动迁移**到新结构，无需手动修改。
+> 旧的 `[grok]` 配置节中的自定义值会自动映射到对应的新配置节。
+
 | 模块                  | 字段                         | 配置名       | 说明                                                 | 默认值                                                    |
 | :-------------------- | :--------------------------- | :----------- | :--------------------------------------------------- | :-------------------------------------------------------- |
 | **app**         | `app_url`                  | 应用地址     | 当前 Grok2API 服务的外部访问 URL，用于文件链接访问。 | `http://127.0.0.1:8000`                                 |
@@ -230,46 +234,50 @@ curl http://localhost:8000/v1/images/edits \
 |                       | `api_key`                  | API 密钥     | 调用 Grok2API 服务的 Token（可选）。 | `""`                                    |
 |                       | `image_format`             | 图片格式     | 生成的图片格式（url 或 base64）。                    | `url`                                                   |
 |                       | `video_format`             | 视频格式     | 生成的视频格式（html 或 url，url 为处理后的链接）。  | `html`                                                  |
-| **grok**        | `temporary`                | 临时对话     | 是否启用临时对话模式。                               | `true`                                                  |
+| **network**     | `timeout`                  | 请求超时     | 请求 Grok 服务的超时时间（秒）。                     | `120`                                                   |
+|                       | `base_proxy_url`           | 基础代理 URL | 代理请求到 Grok 官网的基础服务地址。                 | `""`                                                    |
+|                       | `asset_proxy_url`          | 资源代理 URL | 代理请求到 Grok 官网的静态资源（图片/视频）地址。    | `""`                                                    |
+| **security**    | `cf_clearance`             | CF Clearance | Cloudflare 验证 Cookie，用于绕过反爬虫验证。         | `""`                                                    |
+|                       | `browser`                  | 浏览器指纹   | curl_cffi 浏览器指纹标识（如 chrome136）。           | `chrome136`                                             |
+|                       | `user_agent`               | User-Agent   | HTTP 请求的 User-Agent 字符串。                      | `Mozilla/5.0 (Macintosh; ...)` |
+| **chat**        | `temporary`                | 临时对话     | 是否启用临时对话模式。                               | `true`                                                  |
+|                       | `disable_memory`           | 禁用记忆     | 禁用 Grok 记忆功能，防止响应中出现不相关上下文。     | `true`                                                  |
 |                       | `stream`                   | 流式响应     | 是否默认启用流式输出。                               | `true`                                                  |
 |                       | `thinking`                 | 思维链       | 是否启用模型思维链输出。                             | `true`                                                  |
 |                       | `dynamic_statsig`          | 动态指纹     | 是否启用动态生成 Statsig 值。                        | `true`                                                  |
 |                       | `filter_tags`              | 过滤标签     | 自动过滤 Grok 响应中的特殊标签。                     | `["xaiartifact", "xai:tool_usage_card", "grok:render"]` |
-|                       | `timeout`                  | 超时时间     | 请求 Grok 服务的超时时间（秒）。                     | `120`                                                   |
-|                       | `base_proxy_url`           | 基础代理 URL | 代理请求到 Grok 官网的基础服务地址。                 | `""`                                                    |
-|                       | `asset_proxy_url`          | 资源代理 URL | 代理请求到 Grok 官网的静态资源（图片/视频）地址。    | `""`                                                    |
-|                       | `cf_clearance`             | CF Clearance | Cloudflare 验证 Cookie，用于验证 Cloudflare 的验证。 | `""`                                                    |
-|                       | `max_retry`                | 最大重试     | 请求 Grok 服务失败时的最大重试次数。                 | `3`                                                     |
+| **retry**       | `max_retry`                | 最大重试     | 请求 Grok 服务失败时的最大重试次数。                 | `3`                                                     |
 |                       | `retry_status_codes`       | 重试状态码   | 触发重试的 HTTP 状态码列表。                         | `[401, 429, 403]`                                       |
 |                       | `retry_backoff_base`       | 退避基数     | 重试退避的基础延迟（秒）。                           | `0.5`                                                   |
 |                       | `retry_backoff_factor`     | 退避倍率     | 重试退避的指数放大系数。                             | `2.0`                                                   |
 |                       | `retry_backoff_max`        | 退避上限     | 单次重试等待的最大延迟（秒）。                       | `30.0`                                                  |
 |                       | `retry_budget`             | 退避预算     | 单次请求的最大重试总耗时（秒）。                     | `90.0`                                                  |
-|                       | `stream_idle_timeout`      | 流空闲超时   | 流式响应空闲超时（秒），超过将断开。                 | `45.0`                                                  |
+| **timeout**     | `stream_idle_timeout`      | 流空闲超时   | 流式响应空闲超时（秒），超过将断开。                 | `120.0`                                                 |
 |                       | `video_idle_timeout`       | 视频空闲超时 | 视频生成空闲超时（秒），超过将断开。                 | `90.0`                                                  |
-|                       | `image_ws`                 | 图片 WS 生成 | 启用后 `/v1/images/generations` 走 WebSocket 直连。  | `false`                                                 |
-|                       | `image_ws_blocked_seconds` | WS Blocked 阈值 | 收到中等图后超过该秒数仍无最终图则判定 blocked。   | `15`                                                    |
-|                       | `image_ws_final_min_bytes` | WS 最终图最小字节 | 判定最终图的最小字节数（通常 JPG > 100KB）。    | `100000`                                                |
-|                       | `image_ws_nsfw`            | WS NSFW     | WS 请求里是否启用 NSFW。                             | `true`                                                  |
+| **image**       | `image_ws`                 | WebSocket 生成 | 启用后 `/v1/images/generations` 走 WebSocket 直连。| `true`                                                  |
+|                       | `image_ws_nsfw`            | NSFW 模式    | WebSocket 请求是否启用 NSFW。                        | `true`                                                  |
+|                       | `image_ws_blocked_seconds` | Blocked 阈值 | 收到中等图后超过该秒数仍无最终图则判定 blocked。     | `15`                                                    |
+|                       | `image_ws_final_min_bytes` | 最终图最小字节 | 判定最终图的最小字节数（通常 JPG > 100KB）。      | `100000`                                                |
+|                       | `image_ws_medium_min_bytes`| 中等图最小字节 | 判定中等质量图的最小字节数。                       | `30000`                                                 |
 | **token**       | `auto_refresh`             | 自动刷新     | 是否开启 Token 自动刷新机制。                        | `true`                                                  |
-|                       | `refresh_interval_hours`   | 刷新间隔     | Token 刷新的时间间隔（小时）。                       | `8`                                                     |
-|                       | `super_refresh_interval_hours` | Super 刷新间隔 | Super Token 刷新的时间间隔（小时）。               | `2`                                                     |
+|                       | `refresh_interval_hours`   | 刷新间隔     | 普通 Token 刷新的时间间隔（小时）。                  | `8`                                                     |
+|                       | `super_refresh_interval_hours` | Super 刷新间隔 | Super Token 刷新的时间间隔（小时）。              | `2`                                                     |
 |                       | `fail_threshold`           | 失败阈值     | 单个 Token 连续失败多少次后被标记为不可用。          | `5`                                                     |
 |                       | `save_delay_ms`            | 保存延迟     | Token 变更合并写入的延迟（毫秒）。                   | `500`                                                   |
-|                       | `reload_interval_sec`      | 一致性刷新   | 多 worker 场景下 Token 状态刷新间隔（秒）。          | `30`                                                    |
+|                       | `reload_interval_sec`      | 同步间隔     | 多 worker 场景下 Token 状态刷新间隔（秒）。          | `30`                                                    |
 | **cache**       | `enable_auto_clean`        | 自动清理     | 是否启用缓存自动清理，开启后按上限自动回收。         | `true`                                                  |
 |                       | `limit_mb`                 | 清理阈值     | 缓存大小阈值（MB），超过阈值会触发清理。             | `1024`                                                  |
-| **performance** | `nsfw_max_concurrent`      | 开启 NSFW 模式并发上限 | 批量开启 NSFW 模式时的并发请求上限。推荐 10。        | `10`                                                   |
-|                       | `nsfw_batch_size`          | 开启 NSFW 模式批次大小 | 批量开启 NSFW 模式的单批处理数量。推荐 50。          | `50`                                                   |
-|                       | `nsfw_max_tokens`          | 开启 NSFW 模式最大数量 | 单次批量开启 NSFW 的 Token 数量上限，防止误操作。推荐 1000。 | `1000`                                            |
-|                       | `usage_max_concurrent`     | Token 用量刷新并发上限 | 批量刷新 Token 用量时的并发请求上限。推荐 25。        | `25`                                                   |
-|                       | `usage_batch_size`         | Token 用量刷新批次大小 | 批量刷新 Token 用量的单批处理数量。推荐 50。          | `50`                                                   |
-|                       | `usage_max_tokens`         | Token 用量刷新最大数量 | 批量刷新 Token 用量的单次处理数量上限。推荐 1000。    | `1000`                                                 |
-|                       | `assets_max_concurrent`    | 在线资产查找/删除并发上限 | 在线资产查找/删除时的并发请求上限。推荐 25。       | `25`                                                   |
-|                       | `assets_batch_size`        | 在线资产查找/删除批次大小 | 在线资产查找/删除的单批处理数量。推荐 10。        | `10`                                                   |
-|                       | `assets_max_tokens`        | 在线资产查找/删除最大数量 | 在线资产查找/删除的单次处理数量上限。推荐 1000。  | `1000`                                                 |
-|                       | `assets_delete_batch_size` | 在线资产删除批量 | 在线资产删除单批并发数量。推荐 10。                  | `10`                                                   |
-|                       | `media_max_concurrent`     | 媒体并发上限 | 视频/媒体生成请求的并发上限。推荐 50。               | `50`                                                   |
+| **performance** | `media_max_concurrent`     | Media 并发上限 | 视频/媒体生成请求的并发上限。推荐 50。             | `50`                                                    |
+|                       | `assets_max_concurrent`    | Assets 并发上限 | 批量查找/删除资产时的并发请求上限。推荐 25。       | `25`                                                   |
+|                       | `assets_batch_size`        | Assets 批次大小 | 批量查找/删除资产时的单批处理数量。推荐 10。      | `10`                                                   |
+|                       | `assets_max_tokens`        | Assets 最大数量 | 单次批量查找/删除资产时的处理数量上限。推荐 1000。 | `1000`                                                 |
+|                       | `assets_delete_batch_size` | Assets 删除批量 | 单账号批量删除资产时的单批并发数量。推荐 10。     | `10`                                                   |
+|                       | `usage_max_concurrent`     | Token 刷新并发上限 | 批量刷新 Token 用量时的并发请求上限。推荐 25。    | `25`                                                   |
+|                       | `usage_batch_size`         | Token 刷新批次大小 | 批量刷新 Token 用量的单批处理数量。推荐 50。      | `50`                                                   |
+|                       | `usage_max_tokens`         | Token 刷新最大数量 | 单次批量刷新 Token 用量时的处理数量上限。推荐 1000。| `1000`                                                 |
+|                       | `nsfw_max_concurrent`      | NSFW 开启并发上限 | 批量开启 NSFW 模式时的并发请求上限。推荐 10。      | `10`                                                   |
+|                       | `nsfw_batch_size`          | NSFW 开启批次大小 | 批量开启 NSFW 模式的单批处理数量。推荐 50。        | `50`                                                   |
+|                       | `nsfw_max_tokens`          | NSFW 开启最大数量 | 单次批量开启 NSFW 的 Token 数量上限。推荐 1000。   | `1000`                                            |
 
 <br>
 

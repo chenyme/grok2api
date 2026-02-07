@@ -1,6 +1,6 @@
 # Grok2API
 
-[中文](README.md) | **English**
+[中文](../README.md) | **English**
 
 > [!NOTE]
 > This project is for learning and research only. You must comply with Grok's Terms of Use and applicable laws. Do not use it for illegal purposes.
@@ -194,6 +194,10 @@ Config file: `data/config.toml`
 > In production or behind a reverse proxy, make sure `app.app_url` is set to the public URL.
 > Otherwise file links may be incorrect or return 403.
 
+> [!TIP]
+> **v2.0 Config Upgrade**: Existing users will have their config **auto-migrated** to the new structure upon update.
+> Custom values from the old `[grok]` section will be automatically mapped to the corresponding new sections.
+
 | Module | Field | Key | Description | Default |
 | :--- | :--- | :--- | :--- | :--- |
 | **app** | `app_url` | App URL | External access URL for Grok2API (used for file links). | `http://127.0.0.1:8000` |
@@ -201,46 +205,50 @@ Config file: `data/config.toml`
 | | `api_key` | API key | Token for calling Grok2API (optional). | `""` |
 | | `image_format` | Image format | Output image format (`url` or `base64`). | `url` |
 | | `video_format` | Video format | Output video format (html tag or processed url). | `html` |
-| **grok** | `temporary` | Temporary chat | Enable temporary conversation mode. | `true` |
+| **network** | `timeout` | Request timeout | Timeout for Grok requests (seconds). | `120` |
+| | `base_proxy_url` | Base proxy URL | Base service address proxying Grok official site. | `""` |
+| | `asset_proxy_url` | Asset proxy URL | Proxy URL for Grok static assets (images/videos). | `""` |
+| **security** | `cf_clearance` | CF Clearance | Cloudflare clearance cookie for bypassing anti-bot. | `""` |
+| | `browser` | Browser fingerprint | curl_cffi browser fingerprint (e.g. chrome136). | `chrome136` |
+| | `user_agent` | User-Agent | HTTP User-Agent string. | `Mozilla/5.0 (Macintosh; ...)` |
+| **chat** | `temporary` | Temporary chat | Enable temporary conversation mode. | `true` |
+| | `disable_memory` | Disable memory | Disable Grok memory to prevent irrelevant context. | `true` |
 | | `stream` | Streaming | Enable streaming by default. | `true` |
 | | `thinking` | Thinking chain | Enable model thinking output. | `true` |
 | | `dynamic_statsig` | Dynamic fingerprint | Enable dynamic Statsig value generation. | `true` |
 | | `filter_tags` | Filter tags | Auto-filter special tags in Grok responses. | `["xaiartifact", "xai:tool_usage_card", "grok:render"]` |
-| | `timeout` | Timeout | Timeout for Grok requests (seconds). | `120` |
-| | `base_proxy_url` | Base proxy URL | Base service address proxying Grok official site. | `""` |
-| | `asset_proxy_url` | Asset proxy URL | Proxy URL for Grok static assets (images/videos). | `""` |
-| | `cf_clearance` | CF Clearance | Cloudflare clearance cookie for verification. | `""` |
-| | `max_retry` | Max retries | Max retries on Grok request failure. | `3` |
+| **retry** | `max_retry` | Max retries | Max retries on Grok request failure. | `3` |
 | | `retry_status_codes` | Retry status codes | HTTP status codes that trigger retry. | `[401, 429, 403]` |
 | | `retry_backoff_base` | Backoff base | Base delay for retry backoff (seconds). | `0.5` |
 | | `retry_backoff_factor` | Backoff factor | Exponential multiplier for retry backoff. | `2.0` |
 | | `retry_backoff_max` | Backoff max | Max wait per retry (seconds). | `30.0` |
 | | `retry_budget` | Backoff budget | Max total retry time per request (seconds). | `90.0` |
-| | `stream_idle_timeout` | Stream idle timeout | Idle timeout for streaming responses (seconds). | `45.0` |
+| **timeout** | `stream_idle_timeout` | Stream idle timeout | Idle timeout for streaming responses (seconds). | `120.0` |
 | | `video_idle_timeout` | Video idle timeout | Idle timeout for video generation (seconds). | `90.0` |
-| | `image_ws` | Image WS generation | When enabled, `/v1/images/generations` uses WebSocket. | `false` |
-| | `image_ws_blocked_seconds` | WS blocked threshold | Mark blocked if no final image after this many seconds post-medium. | `15` |
-| | `image_ws_final_min_bytes` | WS final min bytes | Minimum bytes to treat an image as final (JPG usually > 100KB). | `100000` |
-| | `image_ws_nsfw` | WS NSFW | Enable NSFW in WS requests. | `true` |
+| **image** | `image_ws` | WebSocket generation | When enabled, `/v1/images/generations` uses WebSocket. | `true` |
+| | `image_ws_nsfw` | NSFW mode | Enable NSFW in WebSocket requests. | `true` |
+| | `image_ws_blocked_seconds` | Blocked threshold | Mark blocked if no final image after this many seconds post-medium. | `15` |
+| | `image_ws_final_min_bytes` | Final min bytes | Minimum bytes to treat an image as final (JPG usually > 100KB). | `100000` |
+| | `image_ws_medium_min_bytes` | Medium min bytes | Minimum bytes for medium quality image. | `30000` |
 | **token** | `auto_refresh` | Auto refresh | Enable automatic token refresh. | `true` |
-| | `refresh_interval_hours` | Refresh interval | Token refresh interval (hours). | `8` |
+| | `refresh_interval_hours` | Refresh interval | Regular token refresh interval (hours). | `8` |
 | | `super_refresh_interval_hours` | Super refresh interval | Super token refresh interval (hours). | `2` |
 | | `fail_threshold` | Failure threshold | Consecutive failures before a token is disabled. | `5` |
 | | `save_delay_ms` | Save delay | Debounced save delay for token changes (ms). | `500` |
-| | `reload_interval_sec` | Consistency refresh | Token state refresh interval in multi-worker setups (sec). | `30` |
+| | `reload_interval_sec` | Sync interval | Token state refresh interval in multi-worker setups (sec). | `30` |
 | **cache** | `enable_auto_clean` | Auto clean | Enable cache auto clean; cleanup when exceeding limit. | `true` |
 | | `limit_mb` | Cleanup threshold | Cache size threshold (MB) that triggers cleanup. | `1024` |
-| **performance** | `nsfw_max_concurrent` | NSFW enable concurrency | Concurrency cap for enabling NSFW in batch. Recommended 10. | `10` |
+| **performance** | `media_max_concurrent` | Media concurrency | Concurrency cap for video/media generation. Recommended 50. | `50` |
+| | `assets_max_concurrent` | Assets concurrency | Concurrency cap for batch asset find/delete. Recommended 25. | `25` |
+| | `assets_batch_size` | Assets batch size | Batch size for asset find/delete. Recommended 10. | `10` |
+| | `assets_max_tokens` | Assets max tokens | Max tokens per asset find/delete batch. Recommended 1000. | `1000` |
+| | `assets_delete_batch_size` | Assets delete batch | Batch concurrency for single-account asset deletion. Recommended 10. | `10` |
+| | `usage_max_concurrent` | Token refresh concurrency | Concurrency cap for batch usage refresh. Recommended 25. | `25` |
+| | `usage_batch_size` | Token refresh batch size | Batch size for usage refresh. Recommended 50. | `50` |
+| | `usage_max_tokens` | Token refresh max tokens | Max tokens per usage refresh batch. Recommended 1000. | `1000` |
+| | `nsfw_max_concurrent` | NSFW enable concurrency | Concurrency cap for enabling NSFW in batch. Recommended 10. | `10` |
 | | `nsfw_batch_size` | NSFW enable batch size | Batch size for enabling NSFW. Recommended 50. | `50` |
 | | `nsfw_max_tokens` | NSFW enable max tokens | Max tokens per NSFW batch to avoid mistakes. Recommended 1000. | `1000` |
-| | `usage_max_concurrent` | Token usage refresh concurrency | Concurrency cap for batch usage refresh. Recommended 25. | `25` |
-| | `usage_batch_size` | Token usage refresh batch size | Batch size for usage refresh. Recommended 50. | `50` |
-| | `usage_max_tokens` | Token usage refresh max tokens | Max tokens per usage refresh batch. Recommended 1000. | `1000` |
-| | `assets_max_concurrent` | Online assets find/delete concurrency | Concurrency cap for online asset find/delete. Recommended 25. | `25` |
-| | `assets_batch_size` | Online assets find/delete batch size | Batch size for online asset find/delete. Recommended 10. | `10` |
-| | `assets_max_tokens` | Online assets find/delete max tokens | Max tokens per online asset find/delete batch. Recommended 1000. | `1000` |
-| | `assets_delete_batch_size` | Online assets delete batch | Batch concurrency for online asset deletion. Recommended 10. | `10` |
-| | `media_max_concurrent` | Media concurrency | Concurrency cap for video/media generation. Recommended 50. | `50` |
 
 <br>
 
