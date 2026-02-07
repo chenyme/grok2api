@@ -136,6 +136,7 @@ class BaseProcessor:
         """处理资产 URL"""
         if path.startswith("http"):
             from urllib.parse import urlparse
+
             path = urlparse(path).path
 
         if not path.startswith("/"):

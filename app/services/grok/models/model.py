@@ -112,7 +112,6 @@ class ModelService:
             cost=Cost.HIGH,
             display_name="GROK-4.1-EXPERT",
         ),
-
         ModelInfo(
             model_id="grok-4.1-thinking",
             grok_model="grok-4-1-thinking-1129",

@@ -31,7 +31,12 @@ class ImageWSBaseProcessor(BaseProcessor):
 
     def _ensure_image_dir(self) -> Path:
         if self._image_dir is None:
-            base_dir = Path(__file__).parent.parent.parent.parent.parent / "data" / "tmp" / "image"
+            base_dir = (
+                Path(__file__).parent.parent.parent.parent.parent
+                / "data"
+                / "tmp"
+                / "image"
+            )
             base_dir.mkdir(parents=True, exist_ok=True)
             self._image_dir = base_dir
         return self._image_dir
@@ -78,7 +83,9 @@ class ImageWSBaseProcessor(BaseProcessor):
     def _to_output(self, image_id: str, item: Dict) -> str:
         try:
             if self.response_format == "url":
-                return self._save_blob(image_id, item.get("blob", ""), item.get("is_final", False))
+                return self._save_blob(
+                    image_id, item.get("blob", ""), item.get("is_final", False)
+                )
             return self._strip_base64(item.get("blob", ""))
         except Exception as e:
             logger.warning(f"Image output failed: {e}")
@@ -88,7 +95,14 @@ class ImageWSBaseProcessor(BaseProcessor):
 class ImageWSStreamProcessor(ImageWSBaseProcessor):
     """WebSocket 图片流式响应处理器"""
 
-    def __init__(self, model: str, token: str = "", n: int = 1, response_format: str = "b64_json", size: str = "1024x1024"):
+    def __init__(
+        self,
+        model: str,
+        token: str = "",
+        n: int = 1,
+        response_format: str = "b64_json",
+        size: str = "1024x1024",
+    ):
         super().__init__(model, token, "b64_json")
         self.n = n
         self.size = size
@@ -114,7 +128,16 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
             if item.get("type") == "error":
                 message = item.get("error") or "Upstream error"
                 code = item.get("error_code") or "upstream_error"
-                yield self._sse("error", {"error": {"message": message, "type": "server_error", "code": code}})
+                yield self._sse(
+                    "error",
+                    {
+                        "error": {
+                            "message": message,
+                            "type": "server_error",
+                            "code": code,
+                        }
+                    },
+                )
                 return
             if item.get("type") != "image":
                 continue
@@ -159,9 +182,25 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
             if self._target_id and self._target_id in images:
                 selected = [(self._target_id, images[self._target_id])]
             else:
-                selected = [max(images.items(), key=lambda x: (x[1].get("is_final", False), x[1].get("blob_size", 0)))] if images else []
+                selected = (
+                    [
+                        max(
+                            images.items(),
+                            key=lambda x: (
+                                x[1].get("is_final", False),
+                                x[1].get("blob_size", 0),
+                            ),
+                        )
+                    ]
+                    if images
+                    else []
+                )
         else:
-            selected = [(image_id, images[image_id]) for image_id in self._index_map if image_id in images]
+            selected = [
+                (image_id, images[image_id])
+                for image_id in self._index_map
+                if image_id in images
+            ]
 
         for image_id, item in selected:
             output = self._strip_base64(item.get("blob", ""))
@@ -193,7 +232,9 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
 class ImageWSCollectProcessor(ImageWSBaseProcessor):
     """WebSocket 图片非流式响应处理器"""
 
-    def __init__(self, model: str, token: str = "", n: int = 1, response_format: str = "b64_json"):
+    def __init__(
+        self, model: str, token: str = "", n: int = 1, response_format: str = "b64_json"
+    ):
         super().__init__(model, token, response_format)
         self.n = n
 

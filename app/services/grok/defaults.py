@@ -13,19 +13,16 @@ GROK_DEFAULTS = {
         "image_format": "url",
         "video_format": "html",
     },
-    
     "network": {
         "timeout": 120,
         "base_proxy_url": "",
         "asset_proxy_url": "",
     },
-    
     "security": {
         "cf_clearance": "",
         "browser": "chrome136",
         "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     },
-    
     "chat": {
         "temporary": True,
         "disable_memory": True,
@@ -34,7 +31,6 @@ GROK_DEFAULTS = {
         "dynamic_statsig": True,
         "filter_tags": ["grok:render", "xaiartifact", "xai:tool_usage_card"],
     },
-    
     "retry": {
         "max_retry": 3,
         "retry_status_codes": [401, 429, 403],
@@ -43,12 +39,10 @@ GROK_DEFAULTS = {
         "retry_backoff_max": 30.0,
         "retry_budget": 90.0,
     },
-    
     "timeout": {
         "stream_idle_timeout": 45.0,
         "video_idle_timeout": 90.0,
     },
-    
     "image": {
         "image_ws": True,
         "image_ws_nsfw": True,
@@ -56,7 +50,6 @@ GROK_DEFAULTS = {
         "image_ws_final_min_bytes": 100000,
         "image_ws_medium_min_bytes": 30000,
     },
-    
     "token": {
         "auto_refresh": True,
         "refresh_interval_hours": 8,
@@ -65,12 +58,10 @@ GROK_DEFAULTS = {
         "save_delay_ms": 500,
         "reload_interval_sec": 30,
     },
-    
     "cache": {
         "enable_auto_clean": True,
         "limit_mb": 1024,
     },
-    
     "performance": {
         "assets_max_concurrent": 25,
         "assets_delete_batch_size": 10,

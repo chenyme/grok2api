@@ -14,6 +14,7 @@ from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 
 LIVEKIT_TOKEN_API = "https://grok.com/rest/livekit/tokens"
 
+
 class VoiceService:
     """Voice Mode Service (LiveKit)"""
 
@@ -29,18 +30,20 @@ class VoiceService:
     ) -> Dict[str, Any]:
         """
         Get LiveKit token
-        
+
         Args:
             token: Auth token
         Returns:
             Dict containing token and livekitUrl
         """
-        logger.debug(f"Voice token request: voice={voice}, personality={personality}, speed={speed}")
+        logger.debug(
+            f"Voice token request: voice={voice}, personality={personality}, speed={speed}"
+        )
         headers = self._build_headers(token)
         payload = self._build_payload(voice, personality, speed)
-        
+
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        
+
         try:
             browser = get_config("security.browser")
             timeout = get_config("network.timeout")
@@ -55,12 +58,14 @@ class VoiceService:
 
                 if response.status_code != 200:
                     body = response.text[:200]
-                    logger.error(f"Voice token failed: status={response.status_code}, body={body}")
+                    logger.error(
+                        f"Voice token failed: status={response.status_code}, body={body}"
+                    )
                     raise UpstreamException(
                         message=f"Failed to get voice token: {response.status_code}",
-                        details={"status": response.status_code, "body": response.text}
+                        details={"status": response.status_code, "body": response.text},
                     )
-                
+
                 result = response.json()
                 logger.info(f"Voice token obtained: voice={voice}")
                 return result
@@ -93,14 +98,16 @@ class VoiceService:
     ) -> Dict[str, Any]:
         """Construct payload with voice settings"""
         return {
-            "sessionPayload": orjson.dumps({
-                "voice": voice,
-                "personality": personality,
-                "playback_speed": speed,
-                "enable_vision": False,
-                "turn_detection": {"type": "server_vad"}
-            }).decode(),
+            "sessionPayload": orjson.dumps(
+                {
+                    "voice": voice,
+                    "personality": personality,
+                    "playback_speed": speed,
+                    "enable_vision": False,
+                    "turn_detection": {"type": "server_vad"},
+                }
+            ).decode(),
             "requestAgentDispatch": False,
             "livekitUrl": "wss://livekit.grok.com",
-            "params": {"enable_markdown_transcript": "true"}
+            "params": {"enable_markdown_transcript": "true"},
         }

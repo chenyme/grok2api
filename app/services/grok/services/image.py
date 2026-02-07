@@ -24,6 +24,7 @@ WS_URL = "wss://grok.com/ws/imagine/listen"
 class _BlockedError(Exception):
     pass
 
+
 class ImageService:
     """Grok Imagine WebSocket image service."""
 
@@ -61,7 +62,9 @@ class ImageService:
         return match.group(1) if match else None
 
     def _is_final_image(self, url: str, blob_size: int) -> bool:
-        return (url or "").lower().endswith((".jpg", ".jpeg")) and blob_size > get_config("image.image_ws_final_min_bytes")
+        return (url or "").lower().endswith(
+            (".jpg", ".jpeg")
+        ) and blob_size > get_config("image.image_ws_final_min_bytes")
 
     def _classify_image(self, url: str, blob: str) -> Optional[Dict[str, object]]:
         if not url or not blob:
@@ -70,8 +73,16 @@ class ImageService:
         image_id = self._extract_image_id(url) or uuid.uuid4().hex
         blob_size = len(blob)
         is_final = self._is_final_image(url, blob_size)
-        
-        stage = "final" if is_final else ("medium" if blob_size > get_config("image.image_ws_medium_min_bytes") else "preview")
+
+        stage = (
+            "final"
+            if is_final
+            else (
+                "medium"
+                if blob_size > get_config("image.image_ws_medium_min_bytes")
+                else "preview"
+            )
+        )
 
         return {
             "type": "image",
@@ -93,19 +104,27 @@ class ImageService:
         max_retries: int = None,
     ) -> AsyncGenerator[Dict[str, object], None]:
         retries = max(1, max_retries if max_retries is not None else 1)
-        logger.info(f"Image generation: prompt='{prompt[:50]}...', n={n}, ratio={aspect_ratio}, nsfw={enable_nsfw}")
+        logger.info(
+            f"Image generation: prompt='{prompt[:50]}...', n={n}, ratio={aspect_ratio}, nsfw={enable_nsfw}"
+        )
 
         for attempt in range(retries):
             try:
                 yielded_any = False
-                async for item in self._stream_once(token, prompt, aspect_ratio, n, enable_nsfw):
+                async for item in self._stream_once(
+                    token, prompt, aspect_ratio, n, enable_nsfw
+                ):
                     yielded_any = True
                     yield item
                 return
             except _BlockedError:
                 if yielded_any or attempt + 1 >= retries:
                     if not yielded_any:
-                        yield {"type": "error", "error_code": "blocked", "error": "blocked_no_final_image"}
+                        yield {
+                            "type": "error",
+                            "error_code": "blocked",
+                            "error": "blocked_no_final_image",
+                        }
                     return
                 logger.warning(f"WebSocket blocked, retry {attempt + 1}/{retries}")
             except Exception as e:
@@ -175,10 +194,17 @@ class ImageService:
                         try:
                             ws_msg = await asyncio.wait_for(ws.receive(), timeout=5.0)
                         except asyncio.TimeoutError:
-                            if medium_received_time and completed == 0 and time.time() - medium_received_time > min(10, blocked_seconds):
+                            if (
+                                medium_received_time
+                                and completed == 0
+                                and time.time() - medium_received_time
+                                > min(10, blocked_seconds)
+                            ):
                                 raise _BlockedError()
                             if completed > 0 and time.time() - last_activity > 10:
-                                logger.info(f"WebSocket idle timeout, collected {completed} images")
+                                logger.info(
+                                    f"WebSocket idle timeout, collected {completed} images"
+                                )
                                 break
                             continue
 
@@ -188,43 +214,73 @@ class ImageService:
                             msg_type = msg.get("type")
 
                             if msg_type == "image":
-                                info = self._classify_image(msg.get("url", ""), msg.get("blob", ""))
+                                info = self._classify_image(
+                                    msg.get("url", ""), msg.get("blob", "")
+                                )
                                 if not info:
                                     continue
 
                                 image_id = info["image_id"]
                                 existing = images.get(image_id, {})
-                                
-                                if info["stage"] == "medium" and medium_received_time is None:
+
+                                if (
+                                    info["stage"] == "medium"
+                                    and medium_received_time is None
+                                ):
                                     medium_received_time = time.time()
 
                                 if info["is_final"] and not existing.get("is_final"):
                                     completed += 1
-                                    logger.debug(f"Final image received: id={image_id}, size={info['blob_size']}")
+                                    logger.debug(
+                                        f"Final image received: id={image_id}, size={info['blob_size']}"
+                                    )
 
-                                images[image_id] = {"is_final": info["is_final"] or existing.get("is_final")}
+                                images[image_id] = {
+                                    "is_final": info["is_final"]
+                                    or existing.get("is_final")
+                                }
                                 yield info
 
                             elif msg_type == "error":
-                                logger.warning(f"WebSocket error: {msg.get('err_code', '')} - {msg.get('err_msg', '')}")
-                                yield {"type": "error", "error_code": msg.get("err_code", ""), "error": msg.get("err_msg", "")}
+                                logger.warning(
+                                    f"WebSocket error: {msg.get('err_code', '')} - {msg.get('err_msg', '')}"
+                                )
+                                yield {
+                                    "type": "error",
+                                    "error_code": msg.get("err_code", ""),
+                                    "error": msg.get("err_msg", ""),
+                                }
                                 return
 
                             if completed >= n:
-                                logger.info(f"WebSocket collected {completed} final images")
+                                logger.info(
+                                    f"WebSocket collected {completed} final images"
+                                )
                                 break
 
-                            if medium_received_time and completed == 0 and time.time() - medium_received_time > blocked_seconds:
+                            if (
+                                medium_received_time
+                                and completed == 0
+                                and time.time() - medium_received_time > blocked_seconds
+                            ):
                                 raise _BlockedError()
 
-                        elif ws_msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                        elif ws_msg.type in (
+                            aiohttp.WSMsgType.CLOSED,
+                            aiohttp.WSMsgType.ERROR,
+                        ):
                             logger.warning(f"WebSocket closed/error: {ws_msg.type}")
-                            yield {"type": "error", "error_code": "ws_closed", "error": f"websocket closed: {ws_msg.type}"}
+                            yield {
+                                "type": "error",
+                                "error_code": "ws_closed",
+                                "error": f"websocket closed: {ws_msg.type}",
+                            }
                             break
 
         except aiohttp.ClientError as e:
             logger.error(f"WebSocket connection error: {e}")
             yield {"type": "error", "error_code": "connection_failed", "error": str(e)}
+
 
 image_service = ImageService()
 

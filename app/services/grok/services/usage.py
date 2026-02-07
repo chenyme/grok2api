@@ -112,10 +112,14 @@ class UsageService:
                     if response.status_code == 200:
                         data = response.json()
                         remaining = data.get("remainingTokens", 0)
-                        logger.info(f"Usage sync success: remaining={remaining}, token={token[:10]}...")
+                        logger.info(
+                            f"Usage sync success: remaining={remaining}, token={token[:10]}..."
+                        )
                         return data
 
-                    logger.error(f"Usage sync failed: status={response.status_code}, token={token[:10]}...")
+                    logger.error(
+                        f"Usage sync failed: status={response.status_code}, token={token[:10]}..."
+                    )
 
                     raise UpstreamException(
                         message=f"Failed to get usage stats: {response.status_code}",
@@ -141,5 +145,6 @@ class UsageService:
             except Exception:
                 # 最后一次失败已经被记录
                 raise
+
 
 __all__ = ["UsageService"]

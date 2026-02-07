@@ -10,14 +10,11 @@ from app.services.token import EffortType
 
 
 async def wrap_stream_with_usage(
-    stream: AsyncGenerator, 
-    token_mgr, 
-    token: str, 
-    model: str
+    stream: AsyncGenerator, token_mgr, token: str, model: str
 ) -> AsyncGenerator:
     """
     包装流式响应，在完成时记录使用
-    
+
     Args:
         stream: 原始 AsyncGenerator
         token_mgr: TokenManager 实例
@@ -33,9 +30,15 @@ async def wrap_stream_with_usage(
         if success:
             try:
                 model_info = ModelService.get(model)
-                effort = EffortType.HIGH if (model_info and model_info.cost.value == "high") else EffortType.LOW
+                effort = (
+                    EffortType.HIGH
+                    if (model_info and model_info.cost.value == "high")
+                    else EffortType.LOW
+                )
                 await token_mgr.consume(token, effort)
-                logger.debug(f"Stream completed, recorded usage for token {token[:10]}... (effort={effort.value})")
+                logger.debug(
+                    f"Stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
+                )
             except Exception as e:
                 logger.warning(f"Failed to record stream usage: {e}")
 

@@ -59,6 +59,7 @@ class VideoStreamProcessor(BaseProcessor):
     def _build_video_html(self, video_url: str, thumbnail_url: str = "") -> str:
         """构建视频 HTML 标签"""
         import html
+
         safe_video_url = html.escape(video_url)
         safe_thumbnail_url = html.escape(thumbnail_url)
         poster_attr = f' poster="{safe_thumbnail_url}"' if safe_thumbnail_url else ""
@@ -66,7 +67,9 @@ class VideoStreamProcessor(BaseProcessor):
   <source id="mp4" src="{safe_video_url}" type="video/mp4">
 </video>'''
 
-    async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
+    async def process(
+        self, response: AsyncIterable[bytes]
+    ) -> AsyncGenerator[str, None]:
         """处理视频流式响应"""
         idle_timeout = get_config("timeout.video_idle_timeout")
 
@@ -111,12 +114,16 @@ class VideoStreamProcessor(BaseProcessor):
                             final_video_url = await self.process_url(video_url, "video")
                             final_thumbnail_url = ""
                             if thumbnail_url:
-                                final_thumbnail_url = await self.process_url(thumbnail_url, "image")
+                                final_thumbnail_url = await self.process_url(
+                                    thumbnail_url, "image"
+                                )
 
                             if self.video_format == "url":
                                 yield self._sse(final_video_url)
                             else:
-                                video_html = self._build_video_html(final_video_url, final_thumbnail_url)
+                                video_html = self._build_video_html(
+                                    final_video_url, final_thumbnail_url
+                                )
                                 yield self._sse(video_html)
 
                             logger.info(f"Video generated: {video_url}")
@@ -127,29 +134,42 @@ class VideoStreamProcessor(BaseProcessor):
             yield self._sse(finish="stop")
             yield "data: [DONE]\n\n"
         except asyncio.CancelledError:
-            logger.debug("Video stream cancelled by client", extra={"model": self.model})
+            logger.debug(
+                "Video stream cancelled by client", extra={"model": self.model}
+            )
         except StreamIdleTimeoutError as e:
             raise UpstreamException(
                 message=f"Video stream idle timeout after {e.idle_seconds}s",
                 status_code=504,
-                details={"error": str(e), "type": "stream_idle_timeout", "idle_seconds": e.idle_seconds},
+                details={
+                    "error": str(e),
+                    "type": "stream_idle_timeout",
+                    "idle_seconds": e.idle_seconds,
+                },
             )
         except RequestsError as e:
             if _is_http2_stream_error(e):
-                logger.warning(f"HTTP/2 stream error in video: {e}", extra={"model": self.model})
+                logger.warning(
+                    f"HTTP/2 stream error in video: {e}", extra={"model": self.model}
+                )
                 raise UpstreamException(
                     message="Upstream connection closed unexpectedly",
                     status_code=502,
                     details={"error": str(e), "type": "http2_stream_error"},
                 )
-            logger.error(f"Video stream request error: {e}", extra={"model": self.model})
+            logger.error(
+                f"Video stream request error: {e}", extra={"model": self.model}
+            )
             raise UpstreamException(
                 message=f"Upstream request failed: {e}",
                 status_code=502,
                 details={"error": str(e)},
             )
         except Exception as e:
-            logger.error(f"Video stream processing error: {e}", extra={"model": self.model, "error_type": type(e).__name__})
+            logger.error(
+                f"Video stream processing error: {e}",
+                extra={"model": self.model, "error_type": type(e).__name__},
+            )
         finally:
             await self.close()
 
@@ -195,25 +215,41 @@ class VideoCollectProcessor(BaseProcessor):
                             final_video_url = await self.process_url(video_url, "video")
                             final_thumbnail_url = ""
                             if thumbnail_url:
-                                final_thumbnail_url = await self.process_url(thumbnail_url, "image")
+                                final_thumbnail_url = await self.process_url(
+                                    thumbnail_url, "image"
+                                )
 
                             if self.video_format == "url":
                                 content = final_video_url
                             else:
-                                content = self._build_video_html(final_video_url, final_thumbnail_url)
+                                content = self._build_video_html(
+                                    final_video_url, final_thumbnail_url
+                                )
                             logger.info(f"Video generated: {video_url}")
 
         except asyncio.CancelledError:
-            logger.debug("Video collect cancelled by client", extra={"model": self.model})
+            logger.debug(
+                "Video collect cancelled by client", extra={"model": self.model}
+            )
         except StreamIdleTimeoutError as e:
-            logger.warning(f"Video collect idle timeout: {e}", extra={"model": self.model})
+            logger.warning(
+                f"Video collect idle timeout: {e}", extra={"model": self.model}
+            )
         except RequestsError as e:
             if _is_http2_stream_error(e):
-                logger.warning(f"HTTP/2 stream error in video collect: {e}", extra={"model": self.model})
+                logger.warning(
+                    f"HTTP/2 stream error in video collect: {e}",
+                    extra={"model": self.model},
+                )
             else:
-                logger.error(f"Video collect request error: {e}", extra={"model": self.model})
+                logger.error(
+                    f"Video collect request error: {e}", extra={"model": self.model}
+                )
         except Exception as e:
-            logger.error(f"Video collect processing error: {e}", extra={"model": self.model, "error_type": type(e).__name__})
+            logger.error(
+                f"Video collect processing error: {e}",
+                extra={"model": self.model, "error_type": type(e).__name__},
+            )
         finally:
             await self.close()
 
@@ -225,7 +261,11 @@ class VideoCollectProcessor(BaseProcessor):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": content, "refusal": None},
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "refusal": None,
+                    },
                     "finish_reason": "stop",
                 }
             ],

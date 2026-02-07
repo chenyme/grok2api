@@ -84,14 +84,16 @@ class VideoService:
         return {"http": self.proxy, "https": self.proxy} if self.proxy else None
 
     async def create_post(
-        self, token: str, prompt: str,
+        self,
+        token: str,
+        prompt: str,
         media_type: str = "MEDIA_POST_TYPE_VIDEO",
-        media_url: str = None
+        media_url: str = None,
     ) -> str:
         """创建媒体帖子，返回 post ID"""
         try:
             headers = self._build_headers(token)
-            
+
             # 根据类型构建不同的载荷
             if media_type == "MEDIA_POST_TYPE_IMAGE" and media_url:
                 payload = {"mediaType": media_type, "mediaUrl": media_url}
@@ -110,7 +112,9 @@ class VideoService:
 
             if response.status_code != 200:
                 logger.error(f"Create post failed: {response.status_code}")
-                raise UpstreamException(f"Failed to create post: {response.status_code}")
+                raise UpstreamException(
+                    f"Failed to create post: {response.status_code}"
+                )
 
             post_id = response.json().get("post", {}).get("id", "")
             if not post_id:
@@ -127,19 +131,27 @@ class VideoService:
 
     async def create_image_post(self, token: str, image_url: str) -> str:
         """创建图片帖子，返回 post ID"""
-        return await self.create_post(token, prompt="", media_type="MEDIA_POST_TYPE_IMAGE", media_url=image_url)
+        return await self.create_post(
+            token, prompt="", media_type="MEDIA_POST_TYPE_IMAGE", media_url=image_url
+        )
 
     def _build_payload(
-        self, prompt: str, post_id: str,
+        self,
+        prompt: str,
+        post_id: str,
         aspect_ratio: str = "3:2",
         video_length: int = 6,
         resolution_name: str = "480p",
-        preset: str = "normal"
+        preset: str = "normal",
     ) -> dict:
         """构建视频生成载荷"""
-        mode_map = {"fun": "--mode=extremely-crazy", "normal": "--mode=normal", "spicy": "--mode=extremely-spicy-or-crazy"}
+        mode_map = {
+            "fun": "--mode=extremely-crazy",
+            "normal": "--mode=normal",
+            "spicy": "--mode=extremely-spicy-or-crazy",
+        }
         mode_flag = mode_map.get(preset, "--mode=custom")
-        
+
         return {
             "temporary": True,
             "modelName": "grok-3",
@@ -162,15 +174,22 @@ class VideoService:
         }
 
     async def _generate_internal(
-        self, token: str, post_id: str, prompt: str,
-        aspect_ratio: str, video_length: int,
-        resolution_name: str, preset: str
+        self,
+        token: str,
+        post_id: str,
+        prompt: str,
+        aspect_ratio: str,
+        video_length: int,
+        resolution_name: str,
+        preset: str,
     ) -> AsyncGenerator[bytes, None]:
         """内部生成逻辑"""
         session = None
         try:
             headers = self._build_headers(token)
-            payload = self._build_payload(prompt, post_id, aspect_ratio, video_length, resolution_name, preset)
+            payload = self._build_payload(
+                prompt, post_id, aspect_ratio, video_length, resolution_name, preset
+            )
 
             session = AsyncSession(impersonate=get_config("security.browser"))
             response = await session.post(
@@ -183,7 +202,9 @@ class VideoService:
             )
 
             if response.status_code != 200:
-                logger.error(f"Video generation failed: status={response.status_code}, post_id={post_id}")
+                logger.error(
+                    f"Video generation failed: status={response.status_code}, post_id={post_id}"
+                )
                 raise UpstreamException(
                     message=f"Video generation failed: {response.status_code}",
                     details={"status": response.status_code},
@@ -212,46 +233,66 @@ class VideoService:
             raise UpstreamException(f"Video generation error: {str(e)}")
 
     async def generate(
-        self, token: str, prompt: str,
+        self,
+        token: str,
+        prompt: str,
         aspect_ratio: str = "3:2",
         video_length: int = 6,
         resolution_name: str = "480p",
-        preset: str = "normal"
+        preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
         """生成视频"""
-        logger.info(f"Video generation: prompt='{prompt[:50]}...', ratio={aspect_ratio}, length={video_length}s, preset={preset}")
+        logger.info(
+            f"Video generation: prompt='{prompt[:50]}...', ratio={aspect_ratio}, length={video_length}s, preset={preset}"
+        )
         async with _get_semaphore():
             post_id = await self.create_post(token, prompt)
-            return await self._generate_internal(token, post_id, prompt, aspect_ratio, video_length, resolution_name, preset)
+            return await self._generate_internal(
+                token,
+                post_id,
+                prompt,
+                aspect_ratio,
+                video_length,
+                resolution_name,
+                preset,
+            )
 
     async def generate_from_image(
-        self, token: str, prompt: str, image_url: str,
+        self,
+        token: str,
+        prompt: str,
+        image_url: str,
         aspect_ratio: str = "3:2",
         video_length: int = 6,
         resolution: str = "480p",
-        preset: str = "normal"
+        preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
         """从图片生成视频"""
-        logger.info(f"Image to video: prompt='{prompt[:50]}...', image={image_url[:80]}")
+        logger.info(
+            f"Image to video: prompt='{prompt[:50]}...', image={image_url[:80]}"
+        )
         async with _get_semaphore():
             post_id = await self.create_image_post(token, image_url)
-            return await self._generate_internal(token, post_id, prompt, aspect_ratio, video_length, resolution, preset)
+            return await self._generate_internal(
+                token, post_id, prompt, aspect_ratio, video_length, resolution, preset
+            )
 
     @staticmethod
     async def completions(
-        model: str, messages: list,
+        model: str,
+        messages: list,
         stream: bool = None,
         thinking: str = None,
         aspect_ratio: str = "3:2",
         video_length: int = 6,
         resolution: str = "480p",
-        preset: str = "normal"
+        preset: str = "normal",
     ):
         """视频生成入口"""
         # 获取 token
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
-        
+
         token = None
         for pool_name in ModelService.pool_candidates_for_model(model):
             token = token_mgr.get_token(pool_name)
@@ -306,16 +347,23 @@ class VideoService:
         # 处理响应
         if is_stream:
             processor = VideoStreamProcessor(model, token, think)
-            return wrap_stream_with_usage(processor.process(response), token_mgr, token, model)
-        
+            return wrap_stream_with_usage(
+                processor.process(response), token_mgr, token, model
+            )
+
         result = await VideoCollectProcessor(model, token).process(response)
         try:
             model_info = ModelService.get(model)
-            effort = EffortType.HIGH if (model_info and model_info.cost.value == "high") else EffortType.LOW
+            effort = (
+                EffortType.HIGH
+                if (model_info and model_info.cost.value == "high")
+                else EffortType.LOW
+            )
             await token_mgr.consume(token, effort)
             logger.debug(f"Video completed, recorded usage (effort={effort.value})")
         except Exception as e:
             logger.warning(f"Failed to record video usage: {e}")
         return result
+
 
 __all__ = ["VideoService"]

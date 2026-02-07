@@ -3,14 +3,19 @@ Grok Chat 服务
 """
 
 import orjson
-from typing import Dict, List, Any, AsyncGenerator
+from typing import Dict, List, Any
 from dataclasses import dataclass
 
 from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
 from app.core.config import get_config
-from app.core.exceptions import AppException, UpstreamException, ValidationException, ErrorType
+from app.core.exceptions import (
+    AppException,
+    UpstreamException,
+    ValidationException,
+    ErrorType,
+)
 from app.services.grok.models.model import ModelService
 from app.services.grok.services.assets import UploadService
 from app.services.grok.processors import StreamProcessor, CollectProcessor
@@ -26,6 +31,7 @@ CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 @dataclass
 class ChatRequest:
     """聊天请求数据"""
+
     model: str
     messages: List[Dict[str, Any]]
     stream: bool = None
@@ -36,7 +42,9 @@ class MessageExtractor:
     """消息内容提取器"""
 
     @staticmethod
-    def extract(messages: List[Dict[str, Any]], is_video: bool = False) -> tuple[str, List[tuple[str, str]]]:
+    def extract(
+        messages: List[Dict[str, Any]], is_video: bool = False
+    ) -> tuple[str, List[tuple[str, str]]]:
         """从 OpenAI 消息格式提取内容，返回 (text, attachments)"""
         texts = []
         attachments = []
@@ -60,7 +68,11 @@ class MessageExtractor:
 
                     elif item_type == "image_url":
                         image_data = item.get("image_url", {})
-                        url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
+                        url = (
+                            image_data.get("url", "")
+                            if isinstance(image_data, dict)
+                            else str(image_data)
+                        )
                         if url:
                             attachments.append(("image", url))
 
@@ -68,7 +80,11 @@ class MessageExtractor:
                         if is_video:
                             raise ValueError("视频模型不支持 input_audio 类型")
                         audio_data = item.get("input_audio", {})
-                        data = audio_data.get("data", "") if isinstance(audio_data, dict) else str(audio_data)
+                        data = (
+                            audio_data.get("data", "")
+                            if isinstance(audio_data, dict)
+                            else str(audio_data)
+                        )
                         if data:
                             attachments.append(("audio", data))
 
@@ -86,7 +102,14 @@ class MessageExtractor:
                 extracted.append({"role": role, "text": "\n".join(parts)})
 
         # 找到最后一条 user 消息
-        last_user_index = next((i for i in range(len(extracted) - 1, -1, -1) if extracted[i]["role"] == "user"), None)
+        last_user_index = next(
+            (
+                i
+                for i in range(len(extracted) - 1, -1, -1)
+                if extracted[i]["role"] == "user"
+            ),
+            None,
+        )
 
         for i, item in enumerate(extracted):
             role = item["role"] or "user"
@@ -132,8 +155,13 @@ class ChatRequestBuilder:
         return headers
 
     @staticmethod
-    def build_payload(message: str, model: str, mode: str = None, 
-                     file_attachments: List[str] = None, image_attachments: List[str] = None) -> Dict[str, Any]:
+    def build_payload(
+        message: str,
+        model: str,
+        mode: str = None,
+        file_attachments: List[str] = None,
+        image_attachments: List[str] = None,
+    ) -> Dict[str, Any]:
         """构造请求体"""
         merged_attachments = []
         if file_attachments:
@@ -183,22 +211,36 @@ class GrokChatService:
     def __init__(self, proxy: str = None):
         self.proxy = proxy or get_config("network.base_proxy_url")
 
-    async def chat(self, token: str, message: str, model: str = "grok-3", mode: str = None,
-                   stream: bool = None, file_attachments: List[str] = None, 
-                   image_attachments: List[str] = None, raw_payload: Dict[str, Any] = None):
+    async def chat(
+        self,
+        token: str,
+        message: str,
+        model: str = "grok-3",
+        mode: str = None,
+        stream: bool = None,
+        file_attachments: List[str] = None,
+        image_attachments: List[str] = None,
+        raw_payload: Dict[str, Any] = None,
+    ):
         """发送聊天请求"""
         if stream is None:
             stream = get_config("chat.stream")
 
         headers = ChatRequestBuilder.build_headers(token)
-        payload = raw_payload if raw_payload is not None else ChatRequestBuilder.build_payload(
-            message, model, mode, file_attachments, image_attachments
+        payload = (
+            raw_payload
+            if raw_payload is not None
+            else ChatRequestBuilder.build_payload(
+                message, model, mode, file_attachments, image_attachments
+            )
         )
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         timeout = get_config("network.timeout")
 
-        logger.debug(f"Chat request: model={model}, mode={mode}, stream={stream}, attachments={len(file_attachments or [])}")
-        
+        logger.debug(
+            f"Chat request: model={model}, mode={mode}, stream={stream}, attachments={len(file_attachments or [])}"
+        )
+
         # 建立连接
         async def establish_connection():
             browser = get_config("security.browser")
@@ -220,8 +262,10 @@ class GrokChatService:
                     except Exception:
                         pass
 
-                    logger.error(f"Chat failed: status={response.status_code}, token={token[:10]}...")
-                    
+                    logger.error(
+                        f"Chat failed: status={response.status_code}, token={token[:10]}..."
+                    )
+
                     await session.close()
                     raise UpstreamException(
                         message=f"Grok API request failed: {response.status_code}",
@@ -250,7 +294,9 @@ class GrokChatService:
         session = None
         response = None
         try:
-            session, response = await retry_on_status(establish_connection, extract_status=extract_status)
+            session, response = await retry_on_status(
+                establish_connection, extract_status=extract_status
+            )
         except Exception as e:
             status_code = extract_status(e)
             if status_code:
@@ -286,8 +332,12 @@ class GrokChatService:
 
         # 提取消息和附件
         try:
-            message, attachments = MessageExtractor.extract(request.messages, is_video=is_video)
-            logger.debug(f"Extracted message length={len(message)}, attachments={len(attachments)}")
+            message, attachments = MessageExtractor.extract(
+                request.messages, is_video=is_video
+            )
+            logger.debug(
+                f"Extracted message length={len(message)}, attachments={len(attachments)}"
+            )
         except ValueError as e:
             raise ValidationException(str(e))
 
@@ -299,15 +349,24 @@ class GrokChatService:
                 for attach_type, attach_data in attachments:
                     file_id, _ = await upload_service.upload(attach_data, token)
                     file_ids.append(file_id)
-                    logger.debug(f"Attachment uploaded: type={attach_type}, file_id={file_id}")
+                    logger.debug(
+                        f"Attachment uploaded: type={attach_type}, file_id={file_id}"
+                    )
             finally:
                 await upload_service.close()
 
-        stream = request.stream if request.stream is not None else get_config("chat.stream")
+        stream = (
+            request.stream if request.stream is not None else get_config("chat.stream")
+        )
 
         response = await self.chat(
-            token, message, grok_model, mode, stream,
-            file_attachments=file_ids, image_attachments=[]
+            token,
+            message,
+            grok_model,
+            mode,
+            stream,
+            file_attachments=file_ids,
+            image_attachments=[],
         )
 
         return response, stream, request.model
@@ -317,13 +376,17 @@ class ChatService:
     """Chat 业务服务"""
 
     @staticmethod
-    async def completions(model: str, messages: List[Dict[str, Any]], 
-                         stream: bool = None, thinking: str = None):
+    async def completions(
+        model: str,
+        messages: List[Dict[str, Any]],
+        stream: bool = None,
+        thinking: str = None,
+    ):
         """Chat Completions 入口"""
         # 获取 token
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
-        
+
         token = None
         for pool_name in ModelService.pool_candidates_for_model(model):
             token = token_mgr.get_token(pool_name)
@@ -343,7 +406,9 @@ class ChatService:
         is_stream = stream if stream is not None else get_config("chat.stream")
 
         # 构造请求
-        chat_request = ChatRequest(model=model, messages=messages, stream=is_stream, think=think)
+        chat_request = ChatRequest(
+            model=model, messages=messages, stream=is_stream, think=think
+        )
 
         # 请求 Grok
         service = GrokChatService()
@@ -353,14 +418,20 @@ class ChatService:
         if is_stream:
             logger.debug(f"Processing stream response: model={model}")
             processor = StreamProcessor(model_name, token, think)
-            return wrap_stream_with_usage(processor.process(response), token_mgr, token, model)
-        
+            return wrap_stream_with_usage(
+                processor.process(response), token_mgr, token, model
+            )
+
         # 非流式
         logger.debug(f"Processing non-stream response: model={model}")
         result = await CollectProcessor(model_name, token).process(response)
         try:
             model_info = ModelService.get(model)
-            effort = EffortType.HIGH if (model_info and model_info.cost.value == "high") else EffortType.LOW
+            effort = (
+                EffortType.HIGH
+                if (model_info and model_info.cost.value == "high")
+                else EffortType.LOW
+            )
             await token_mgr.consume(token, effort)
             logger.info(f"Chat completed: model={model}, effort={effort.value}")
         except Exception as e:
@@ -368,4 +439,10 @@ class ChatService:
         return result
 
 
-__all__ = ["GrokChatService", "ChatRequest", "ChatRequestBuilder", "MessageExtractor", "ChatService"]
+__all__ = [
+    "GrokChatService",
+    "ChatRequest",
+    "ChatRequestBuilder",
+    "MessageExtractor",
+    "ChatService",
+]

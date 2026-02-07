@@ -44,9 +44,9 @@ async def lifespan(app: FastAPI):
     # 1. 注册服务默认配置
     from app.core.config import config, register_defaults
     from app.services.grok.defaults import get_grok_defaults
-    
+
     register_defaults(get_grok_defaults())
-    
+
     # 2. 加载配置
     await config.load()
 

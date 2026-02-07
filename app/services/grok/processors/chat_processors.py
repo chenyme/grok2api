@@ -112,7 +112,9 @@ class StreamProcessor(BaseProcessor):
         }
         return f"data: {orjson.dumps(chunk).decode()}\n\n"
 
-    async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
+    async def process(
+        self, response: AsyncIterable[bytes]
+    ) -> AsyncGenerator[str, None]:
         """处理流式响应"""
         idle_timeout = get_config("timeout.stream_idle_timeout")
 
@@ -145,7 +147,9 @@ class StreamProcessor(BaseProcessor):
                             self.think_opened = True
                         idx = img.get("imageIndex", 0) + 1
                         progress = img.get("progress", 0)
-                        yield self._sse(f"正在生成第{idx}张图片中，当前进度{progress}%\n")
+                        yield self._sse(
+                            f"正在生成第{idx}张图片中，当前进度{progress}%\n"
+                        )
                     continue
 
                 # modelResponse
@@ -163,7 +167,9 @@ class StreamProcessor(BaseProcessor):
 
                         if self.image_format == "base64":
                             dl_service = self._get_dl()
-                            base64_data = await dl_service.to_base64(url, self.token, "image")
+                            base64_data = await dl_service.to_base64(
+                                url, self.token, "image"
+                            )
                             if base64_data:
                                 yield self._sse(f"![{img_id}]({base64_data})\n")
                             else:
@@ -173,7 +179,11 @@ class StreamProcessor(BaseProcessor):
                             final_url = await self.process_url(url, "image")
                             yield self._sse(f"![{img_id}]({final_url})\n")
 
-                    if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
+                    if (
+                        (meta := mr.get("metadata", {}))
+                        .get("llm_info", {})
+                        .get("modelHash")
+                    ):
                         self.fingerprint = meta["llm_info"]["modelHash"]
                     continue
 
@@ -194,7 +204,11 @@ class StreamProcessor(BaseProcessor):
             raise UpstreamException(
                 message=f"Stream idle timeout after {e.idle_seconds}s",
                 status_code=504,
-                details={"error": str(e), "type": "stream_idle_timeout", "idle_seconds": e.idle_seconds},
+                details={
+                    "error": str(e),
+                    "type": "stream_idle_timeout",
+                    "idle_seconds": e.idle_seconds,
+                },
             )
         except RequestsError as e:
             if _is_http2_stream_error(e):
@@ -211,7 +225,10 @@ class StreamProcessor(BaseProcessor):
                 details={"error": str(e)},
             )
         except Exception as e:
-            logger.error(f"Stream processing error: {e}", extra={"model": self.model, "error_type": type(e).__name__})
+            logger.error(
+                f"Stream processing error: {e}",
+                extra={"model": self.model, "error_type": type(e).__name__},
+            )
             raise
         finally:
             await self.close()
@@ -271,7 +288,9 @@ class CollectProcessor(BaseProcessor):
 
                             if self.image_format == "base64":
                                 dl_service = self._get_dl()
-                                base64_data = await dl_service.to_base64(url, self.token, "image")
+                                base64_data = await dl_service.to_base64(
+                                    url, self.token, "image"
+                                )
                                 if base64_data:
                                     content += f"![{img_id}]({base64_data})\n"
                                 else:
@@ -281,7 +300,11 @@ class CollectProcessor(BaseProcessor):
                                 final_url = await self.process_url(url, "image")
                                 content += f"![{img_id}]({final_url})\n"
 
-                    if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
+                    if (
+                        (meta := mr.get("metadata", {}))
+                        .get("llm_info", {})
+                        .get("modelHash")
+                    ):
                         fingerprint = meta["llm_info"]["modelHash"]
 
         except asyncio.CancelledError:
@@ -290,11 +313,16 @@ class CollectProcessor(BaseProcessor):
             logger.warning(f"Collect idle timeout: {e}", extra={"model": self.model})
         except RequestsError as e:
             if _is_http2_stream_error(e):
-                logger.warning(f"HTTP/2 stream error in collect: {e}", extra={"model": self.model})
+                logger.warning(
+                    f"HTTP/2 stream error in collect: {e}", extra={"model": self.model}
+                )
             else:
                 logger.error(f"Collect request error: {e}", extra={"model": self.model})
         except Exception as e:
-            logger.error(f"Collect processing error: {e}", extra={"model": self.model, "error_type": type(e).__name__})
+            logger.error(
+                f"Collect processing error: {e}",
+                extra={"model": self.model, "error_type": type(e).__name__},
+            )
         finally:
             await self.close()
 
@@ -309,7 +337,12 @@ class CollectProcessor(BaseProcessor):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": content, "refusal": None, "annotations": []},
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "refusal": None,
+                        "annotations": [],
+                    },
                     "finish_reason": "stop",
                 }
             ],
@@ -317,8 +350,17 @@ class CollectProcessor(BaseProcessor):
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
                 "total_tokens": 0,
-                "prompt_tokens_details": {"cached_tokens": 0, "text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
-                "completion_tokens_details": {"text_tokens": 0, "audio_tokens": 0, "reasoning_tokens": 0},
+                "prompt_tokens_details": {
+                    "cached_tokens": 0,
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "image_tokens": 0,
+                },
+                "completion_tokens_details": {
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "reasoning_tokens": 0,
+                },
             },
         }
 

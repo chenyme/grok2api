@@ -23,6 +23,7 @@ from app.services.grok.utils.headers import build_sso_cookie
 NSFW_API = "https://grok.com/auth_mgmt.AuthManagement/UpdateUserFeatureControls"
 BIRTH_DATE_API = "https://grok.com/rest/auth/set-birth-date"
 
+
 @dataclass
 class NSFWResult:
     """NSFW 操作结果"""
@@ -32,6 +33,7 @@ class NSFWResult:
     grpc_status: Optional[int] = None
     grpc_message: Optional[str] = None
     error: Optional[str] = None
+
 
 class NSFWService:
     """NSFW 模式服务"""
@@ -97,11 +99,13 @@ class NSFWService:
         protobuf = b"\x0a\x02\x10\x01\x12" + bytes([len(inner)]) + inner
         return encode_grpc_web_payload(protobuf)
 
-    async def _set_birth_date(self, session: AsyncSession, token: str) -> tuple[bool, int, Optional[str]]:
+    async def _set_birth_date(
+        self, session: AsyncSession, token: str
+    ) -> tuple[bool, int, Optional[str]]:
         """设置出生日期"""
         headers = self._build_birth_headers(token)
         payload = {"birthDate": self._random_birth_date()}
-        
+
         try:
             response = await session.post(
                 BIRTH_DATE_API,
@@ -133,7 +137,7 @@ class NSFWService:
                         http_status=birth_status,
                         error=f"Set birth date failed: {birth_err}",
                     )
-                
+
                 # 开启 NSFW
                 response = await session.post(
                     NSFW_API,
@@ -152,8 +156,7 @@ class NSFWService:
 
                 # 解析 gRPC-Web 响应
                 _, trailers = parse_grpc_web_response(
-                    response.content,
-                    content_type=response.headers.get("content-type")
+                    response.content, content_type=response.headers.get("content-type")
                 )
 
                 grpc_status = get_grpc_status(trailers)
@@ -175,5 +178,6 @@ class NSFWService:
         except Exception as e:
             logger.error(f"NSFW enable failed: {e}")
             return NSFWResult(success=False, http_status=0, error=str(e)[:100])
+
 
 __all__ = ["NSFWService", "NSFWResult"]

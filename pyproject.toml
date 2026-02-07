@@ -26,3 +26,8 @@ dependencies = [
     "tomli>=2.4.0",
     "uvicorn>=0.37.0",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+]

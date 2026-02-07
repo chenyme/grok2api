@@ -257,7 +257,6 @@ def with_retry(
 
 
 __all__ = [
-    "RetryConfig",
     "RetryContext",
     "retry_on_status",
     "with_retry",

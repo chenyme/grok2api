@@ -32,10 +32,12 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return result
 
 
-def _migrate_deprecated_config(config: Dict[str, Any], valid_sections: set) -> tuple[Dict[str, Any], set]:
+def _migrate_deprecated_config(
+    config: Dict[str, Any], valid_sections: set
+) -> tuple[Dict[str, Any], set]:
     """
     迁移废弃的配置节到新配置结构
-    
+
     Returns:
         (迁移后的配置, 废弃的配置节集合)
     """
@@ -48,49 +50,44 @@ def _migrate_deprecated_config(config: Dict[str, Any], valid_sections: set) -> t
         "grok.thinking": "chat.thinking",
         "grok.dynamic_statsig": "chat.dynamic_statsig",
         "grok.filter_tags": "chat.filter_tags",
-        
         "grok.timeout": "network.timeout",
         "grok.base_proxy_url": "network.base_proxy_url",
         "grok.asset_proxy_url": "network.asset_proxy_url",
-        
         "grok.cf_clearance": "security.cf_clearance",
         "grok.browser": "security.browser",
         "grok.user_agent": "security.user_agent",
-        
         "grok.max_retry": "retry.max_retry",
         "grok.retry_status_codes": "retry.retry_status_codes",
         "grok.retry_backoff_base": "retry.retry_backoff_base",
         "grok.retry_backoff_factor": "retry.retry_backoff_factor",
         "grok.retry_backoff_max": "retry.retry_backoff_max",
         "grok.retry_budget": "retry.retry_budget",
-        
         "grok.stream_idle_timeout": "timeout.stream_idle_timeout",
         "grok.video_idle_timeout": "timeout.video_idle_timeout",
-        
         "grok.image_ws": "image.image_ws",
         "grok.image_ws_nsfw": "image.image_ws_nsfw",
         "grok.image_ws_blocked_seconds": "image.image_ws_blocked_seconds",
         "grok.image_ws_final_min_bytes": "image.image_ws_final_min_bytes",
         "grok.image_ws_medium_min_bytes": "image.image_ws_medium_min_bytes",
     }
-    
+
     deprecated_sections = set(config.keys()) - valid_sections
     if not deprecated_sections:
         return config, set()
-    
+
     result = {k: deepcopy(v) for k, v in config.items() if k in valid_sections}
     migrated_count = 0
-    
+
     # 处理废弃配置节中的配置项
     for old_section in deprecated_sections:
         if old_section not in config or not isinstance(config[old_section], dict):
             continue
-            
+
         for old_key, old_value in config[old_section].items():
             # 查找映射规则
             old_path = f"{old_section}.{old_key}"
             new_path = MIGRATION_MAP.get(old_path)
-            
+
             if new_path:
                 new_section, new_key = new_path.split(".", 1)
                 # 确保新配置节存在
@@ -100,10 +97,10 @@ def _migrate_deprecated_config(config: Dict[str, Any], valid_sections: set) -> t
                 result[new_section][new_key] = old_value
                 migrated_count += 1
                 logger.debug(f"Migrated config: {old_path} -> {new_path} = {old_value}")
-    
+
     if migrated_count > 0:
         logger.info(f"Migrated {migrated_count} config items from deprecated sections")
-    
+
     return result, deprecated_sections
 
 
@@ -166,18 +163,24 @@ class Config:
                     config_data = {}
 
             config_data = config_data or {}
-            
+
             # 检查是否有废弃的配置节
             valid_sections = set(self._defaults.keys())
-            config_data, deprecated_sections = _migrate_deprecated_config(config_data, valid_sections)
+            config_data, deprecated_sections = _migrate_deprecated_config(
+                config_data, valid_sections
+            )
             if deprecated_sections:
-                logger.info(f"Cleaned deprecated config sections: {deprecated_sections}")
-            
+                logger.info(
+                    f"Cleaned deprecated config sections: {deprecated_sections}"
+                )
+
             merged = _deep_merge(self._defaults, config_data)
 
             # 自动回填缺失配置到存储
             # 或迁移了配置后需要更新
-            should_persist = (not from_remote) or (merged != config_data) or deprecated_sections
+            should_persist = (
+                (not from_remote) or (merged != config_data) or deprecated_sections
+            )
             if should_persist:
                 async with storage.acquire_lock("config_save", timeout=10):
                     await storage.save_config(merged)

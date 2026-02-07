@@ -34,6 +34,7 @@ from app.core.logger import logger
 
 router = APIRouter(tags=["Images"])
 
+
 class ImageGenerationRequest(BaseModel):
     """图片生成请求 - OpenAI 兼容"""
 
@@ -45,7 +46,6 @@ class ImageGenerationRequest(BaseModel):
     response_format: Optional[str] = Field(None, description="响应格式")
     style: Optional[str] = Field(None, description="风格 (暂不支持)")
     stream: Optional[bool] = Field(False, description="是否流式输出")
-
 
 
 class ImageEditRequest(BaseModel):
@@ -60,7 +60,6 @@ class ImageEditRequest(BaseModel):
     response_format: Optional[str] = Field(None, description="响应格式")
     style: Optional[str] = Field(None, description="风格 (暂不支持)")
     stream: Optional[bool] = Field(False, description="是否流式输出")
-
 
 
 def _validate_common_request(
@@ -184,9 +183,7 @@ def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
     """验证图片编辑请求参数"""
     if request.model != "grok-imagine-1.0-edit":
         raise ValidationException(
-            message=(
-                "The model `grok-imagine-1.0-edit` is required for image edits."
-            ),
+            message=("The model `grok-imagine-1.0-edit` is required for image edits."),
             param="model",
             code="model_not_supported",
         )
@@ -207,7 +204,11 @@ def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
 
 def _get_effort(model_info) -> EffortType:
     """获取模型消耗级别"""
-    return EffortType.HIGH if (model_info and model_info.cost.value == "high") else EffortType.LOW
+    return (
+        EffortType.HIGH
+        if (model_info and model_info.cost.value == "high")
+        else EffortType.LOW
+    )
 
 
 async def _wrap_stream_with_usage(stream, token_mgr, token, model_info):
@@ -229,13 +230,13 @@ async def _get_token(model: str):
     """获取可用 token"""
     token_mgr = await get_token_manager()
     await token_mgr.reload_if_stale()
-    
+
     token = None
     for pool_name in ModelService.pool_candidates_for_model(model):
         token = token_mgr.get_token(pool_name)
         if token:
             break
-    
+
     if not token:
         raise AppException(
             message="No available tokens. Please try again later.",
@@ -243,7 +244,7 @@ async def _get_token(model: str):
             code="rate_limit_exceeded",
             status_code=429,
         )
-    
+
     return token_mgr, token
 
 
@@ -342,7 +343,9 @@ async def create_image(request: ImageGenerationRequest):
             )
 
             return StreamingResponse(
-                _wrap_stream_with_usage(processor.process(upstream), token_mgr, token, model_info),
+                _wrap_stream_with_usage(
+                    processor.process(upstream), token_mgr, token, model_info
+                ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
@@ -361,7 +364,9 @@ async def create_image(request: ImageGenerationRequest):
         )
 
         return StreamingResponse(
-            _wrap_stream_with_usage(processor.process(response), token_mgr, token, model_info),
+            _wrap_stream_with_usage(
+                processor.process(response), token_mgr, token, model_info
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
@@ -485,7 +490,6 @@ async def create_image(request: ImageGenerationRequest):
     )
 
 
-
 @router.post("/images/edits")
 async def edit_image(
     prompt: str = Form(...),
@@ -594,9 +598,7 @@ async def edit_image(
                 if file_uri.startswith("http"):
                     image_urls.append(file_uri)
                 else:
-                    image_urls.append(
-                        f"https://assets.grok.com/{file_uri.lstrip('/')}"
-                    )
+                    image_urls.append(f"https://assets.grok.com/{file_uri.lstrip('/')}")
     finally:
         await upload_service.close()
 
@@ -638,9 +640,9 @@ async def edit_image(
     }
 
     if parent_post_id:
-        model_config_override["modelMap"]["imageEditModelConfig"][
-            "parentPostId"
-        ] = parent_post_id
+        model_config_override["modelMap"]["imageEditModelConfig"]["parentPostId"] = (
+            parent_post_id
+        )
 
     raw_payload = {
         "temporary": bool(get_config("chat.temporary")),
@@ -675,11 +677,16 @@ async def edit_image(
         )
 
         processor = ImageStreamProcessor(
-            model_info.model_id, token, n=edit_request.n, response_format=response_format
+            model_info.model_id,
+            token,
+            n=edit_request.n,
+            response_format=response_format,
         )
 
         return StreamingResponse(
-            _wrap_stream_with_usage(processor.process(response), token_mgr, token, model_info),
+            _wrap_stream_with_usage(
+                processor.process(response), token_mgr, token, model_info
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )

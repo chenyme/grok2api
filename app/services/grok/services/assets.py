@@ -42,11 +42,24 @@ _ASSETS_SEM_VALUE = None
 
 # 常用 MIME 类型（业务数据，非配置）
 MIME_TYPES = {
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
-    ".webp": "image/webp", ".bmp": "image/bmp", ".pdf": "application/pdf", ".txt": "text/plain",
-    ".md": "text/markdown", ".csv": "text/csv", ".json": "application/json", ".xml": "application/xml",
-    ".py": "text/x-python-script", ".js": "application/javascript", ".html": "text/html",
-    ".css": "text/css", ".mp4": "video/mp4", ".webm": "video/webm",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".xml": "application/xml",
+    ".py": "text/x-python-script",
+    ".js": "application/javascript",
+    ".html": "text/html",
+    ".css": "text/css",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
 }
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -54,10 +67,11 @@ VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 
 # ==================== 工具函数 ====================
 
+
 def _get_assets_semaphore() -> asyncio.Semaphore:
     """获取全局并发控制信号量"""
     value = max(1, int(get_config("performance.assets_max_concurrent")))
-    
+
     global _ASSETS_SEMAPHORE, _ASSETS_SEM_VALUE
     if _ASSETS_SEMAPHORE is None or value != _ASSETS_SEM_VALUE:
         _ASSETS_SEM_VALUE = value
@@ -71,13 +85,13 @@ async def _file_lock(name: str, timeout: int = 10):
     if fcntl is None:
         yield
         return
-    
+
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = LOCK_DIR / f"{name}.lock"
     fd = None
     locked = False
     start = time.monotonic()
-    
+
     try:
         fd = open(lock_path, "a+")
         while True:
@@ -103,25 +117,29 @@ async def _file_lock(name: str, timeout: int = 10):
 @dataclass
 class ServiceConfig:
     """服务配置"""
+
     proxy: str
     timeout: int
     browser: str
     user_agent: str
-    
+
     @classmethod
     def from_settings(cls, proxy: Optional[str] = None):
         return cls(
-            proxy=proxy or get_config("network.asset_proxy_url") or get_config("network.base_proxy_url"),
+            proxy=proxy
+            or get_config("network.asset_proxy_url")
+            or get_config("network.base_proxy_url"),
             timeout=get_config("network.timeout"),
             browser=get_config("security.browser"),
             user_agent=get_config("security.user_agent"),
         )
-    
+
     def get_proxies(self) -> Optional[dict]:
         return {"http": self.proxy, "https": self.proxy} if self.proxy else None
 
 
 # ==================== 基础服务 ====================
+
 
 class BaseService:
     """基础服务类"""
@@ -130,7 +148,9 @@ class BaseService:
         self.config = ServiceConfig.from_settings(proxy)
         self._session: Optional[AsyncSession] = None
 
-    def _build_headers(self, token: str, referer: str = "https://grok.com/", download: bool = False) -> dict:
+    def _build_headers(
+        self, token: str, referer: str = "https://grok.com/", download: bool = False
+    ) -> dict:
         """构建请求头"""
         if download:
             headers = {
@@ -148,7 +168,7 @@ class BaseService:
                 "User-Agent": self.config.user_agent,
             }
             apply_statsig(headers)
-        
+
         headers["Cookie"] = build_sso_cookie(token)
         return headers
 
@@ -184,11 +204,13 @@ class BaseService:
                         message=f"Failed to fetch: {response.status_code}",
                         details={"url": url, "status": response.status_code},
                     )
-                
+
                 filename = url.split("/")[-1].split("?")[0] or "download"
-                content_type = response.headers.get("content-type", "application/octet-stream").split(";")[0]
+                content_type = response.headers.get(
+                    "content-type", "application/octet-stream"
+                ).split(";")[0]
                 b64 = base64.b64encode(response.content).decode()
-                
+
                 logger.debug(f"Fetched: {url}")
                 return filename, b64, content_type
         except Exception as e:
@@ -202,15 +224,15 @@ class BaseService:
         """解析 Base64 数据"""
         if not data_uri.startswith("data:"):
             return "file.bin", data_uri, "application/octet-stream"
-        
+
         try:
             header, b64 = data_uri.split(",", 1)
         except ValueError:
             return "file.bin", data_uri, "application/octet-stream"
-        
+
         if ";base64" not in header:
             return "file.bin", data_uri, "application/octet-stream"
-        
+
         mime = header[5:].split(";", 1)[0] or "application/octet-stream"
         b64 = re.sub(r"\s+", "", b64)
         ext = mime.split("/")[-1] if "/" in mime else "bin"
@@ -224,10 +246,13 @@ class BaseService:
             return f"data:{mime_type};base64,{b64_data}"
         except Exception as e:
             logger.error(f"File to base64 failed: {file_path} - {e}")
-            raise AppException(f"Failed to read file: {file_path}", code="file_read_error")
+            raise AppException(
+                f"Failed to read file: {file_path}", code="file_read_error"
+            )
 
 
 # ==================== 上传服务 ====================
+
 
 class UploadService(BaseService):
     """文件上传服务"""
@@ -235,7 +260,7 @@ class UploadService(BaseService):
     async def upload(self, file_input: str, token: str) -> Tuple[str, str]:
         """
         上传文件到 Grok
-        
+
         Returns:
             (file_id, file_uri)
         """
@@ -245,9 +270,11 @@ class UploadService(BaseService):
                 filename, b64, mime = await self.fetch(file_input)
             else:
                 filename, b64, mime = self.parse_b64(file_input)
-            
-            logger.debug(f"Upload prepare: filename={filename}, type={mime}, size={len(b64)}")
-            
+
+            logger.debug(
+                f"Upload prepare: filename={filename}, type={mime}, size={len(b64)}"
+            )
+
             if not b64:
                 raise ValidationException("Invalid file input: empty content")
 
@@ -274,10 +301,12 @@ class UploadService(BaseService):
             if response.status_code in (401, 403):
                 logger.warning(f"Upload auth failed: {response.status_code}")
                 try:
-                    await TokenService.record_fail(token, response.status_code, "upload_auth_failed")
+                    await TokenService.record_fail(
+                        token, response.status_code, "upload_auth_failed"
+                    )
                 except Exception as e:
                     logger.error(f"Failed to record token failure: {e}")
-                
+
                 raise UpstreamException(
                     message=f"Upload authentication failed: {response.status_code}",
                     details={"status": response.status_code, "token_invalidated": True},
@@ -292,6 +321,7 @@ class UploadService(BaseService):
 
 
 # ==================== 列表服务 ====================
+
 
 class ListService(BaseService):
     """文件列表查询服务"""
@@ -361,6 +391,7 @@ class ListService(BaseService):
 
 # ==================== 删除服务 ====================
 
+
 class DeleteService(BaseService):
     """文件删除服务"""
 
@@ -390,12 +421,12 @@ class DeleteService(BaseService):
         """删除所有文件"""
         total = success = failed = 0
         list_service = ListService(self.config.proxy)
-        
+
         try:
             async for assets in list_service.iter_assets(token):
                 if not assets:
                     continue
-                
+
                 total += len(assets)
                 batch_result = await self._delete_batch(token, assets)
                 success += batch_result["success"]
@@ -416,10 +447,13 @@ class DeleteService(BaseService):
         success = failed = 0
 
         for i in range(0, len(assets), batch_size):
-            batch = assets[i:i + batch_size]
+            batch = assets[i : i + batch_size]
             results = await asyncio.gather(
-                *[self._delete_one(token, asset, idx) for idx, asset in enumerate(batch)],
-                return_exceptions=True
+                *[
+                    self._delete_one(token, asset, idx)
+                    for idx, asset in enumerate(batch)
+                ],
+                return_exceptions=True,
             )
             success += sum(1 for r in results if r is True)
             failed += sum(1 for r in results if r is not True)
@@ -440,12 +474,15 @@ class DeleteService(BaseService):
 
 # ==================== 下载服务 ====================
 
+
 class DownloadService(BaseService):
     """文件下载服务"""
 
     def __init__(self, proxy: Optional[str] = None):
         super().__init__(proxy)
-        self.base_dir = Path(__file__).parent.parent.parent.parent.parent / "data" / "tmp"
+        self.base_dir = (
+            Path(__file__).parent.parent.parent.parent.parent / "data" / "tmp"
+        )
         self.image_dir = self.base_dir / "image"
         self.video_dir = self.base_dir / "video"
         self.image_dir.mkdir(parents=True, exist_ok=True)
@@ -461,10 +498,14 @@ class DownloadService(BaseService):
     def _get_mime(self, cache_path: Path, response=None) -> str:
         """获取 MIME 类型"""
         if response:
-            return response.headers.get("content-type", "application/octet-stream").split(";")[0]
+            return response.headers.get(
+                "content-type", "application/octet-stream"
+            ).split(";")[0]
         return MIME_TYPES.get(cache_path.suffix.lower(), "application/octet-stream")
 
-    async def download(self, file_path: str, token: str, media_type: str = "image") -> Tuple[Optional[Path], str]:
+    async def download(
+        self, file_path: str, token: str, media_type: str = "image"
+    ) -> Tuple[Optional[Path], str]:
         """下载文件到本地"""
         async with _get_assets_semaphore():
             cache_path = self._cache_path(file_path, media_type)
@@ -536,7 +577,9 @@ class DownloadService(BaseService):
 
         return self._get_mime(cache_path, response)
 
-    async def to_base64(self, file_path: str, token: str, media_type: str = "image") -> str:
+    async def to_base64(
+        self, file_path: str, token: str, media_type: str = "image"
+    ) -> str:
         """下载并转 base64"""
         cache_path, mime = await self.download(file_path, token, media_type)
         if not cache_path or not cache_path.exists():
@@ -558,31 +601,43 @@ class DownloadService(BaseService):
         cache_dir = self.image_dir if media_type == "image" else self.video_dir
         if not cache_dir.exists():
             return {"count": 0, "size_mb": 0.0}
-        
+
         allowed = IMAGE_EXTS if media_type == "image" else VIDEO_EXTS
-        files = [f for f in cache_dir.glob("*") if f.is_file() and f.suffix.lower() in allowed]
+        files = [
+            f
+            for f in cache_dir.glob("*")
+            if f.is_file() and f.suffix.lower() in allowed
+        ]
         total_size = sum(f.stat().st_size for f in files)
         return {"count": len(files), "size_mb": round(total_size / 1024 / 1024, 2)}
 
-    def list_files(self, media_type: str = "image", page: int = 1, page_size: int = 1000) -> Dict[str, Any]:
+    def list_files(
+        self, media_type: str = "image", page: int = 1, page_size: int = 1000
+    ) -> Dict[str, Any]:
         """列出缓存文件"""
         cache_dir = self.image_dir if media_type == "image" else self.video_dir
         if not cache_dir.exists():
             return {"total": 0, "page": page, "page_size": page_size, "items": []}
-        
+
         allowed = IMAGE_EXTS if media_type == "image" else VIDEO_EXTS
-        files = [f for f in cache_dir.glob("*") if f.is_file() and f.suffix.lower() in allowed]
+        files = [
+            f
+            for f in cache_dir.glob("*")
+            if f.is_file() and f.suffix.lower() in allowed
+        ]
 
         # 构建文件列表
         items = []
         for f in files:
             try:
                 stat = f.stat()
-                items.append({
-                    "name": f.name,
-                    "size_bytes": stat.st_size,
-                    "mtime_ms": int(stat.st_mtime * 1000),
-                })
+                items.append(
+                    {
+                        "name": f.name,
+                        "size_bytes": stat.st_size,
+                        "mtime_ms": int(stat.st_mtime * 1000),
+                    }
+                )
             except Exception:
                 continue
 
@@ -591,7 +646,7 @@ class DownloadService(BaseService):
         # 分页
         total = len(items)
         start = max(0, (page - 1) * page_size)
-        paged = items[start:start + page_size]
+        paged = items[start : start + page_size]
 
         # 添加 URL
         for item in paged:
@@ -603,7 +658,7 @@ class DownloadService(BaseService):
         """删除缓存文件"""
         cache_dir = self.image_dir if media_type == "image" else self.video_dir
         file_path = cache_dir / name.replace("/", "-")
-        
+
         if file_path.exists():
             try:
                 file_path.unlink()
@@ -636,7 +691,7 @@ class DownloadService(BaseService):
         """检查并清理缓存"""
         if self._cleanup_running or not get_config("cache.enable_auto_clean"):
             return
-        
+
         self._cleanup_running = True
         try:
             async with _file_lock("cache_cleanup", timeout=5):
@@ -648,9 +703,11 @@ class DownloadService(BaseService):
                     return
 
                 # 清理到 80%
-                logger.info(f"Cache limit exceeded ({current_mb:.2f}MB > {limit_mb}MB), cleaning...")
+                logger.info(
+                    f"Cache limit exceeded ({current_mb:.2f}MB > {limit_mb}MB), cleaning..."
+                )
                 all_files.sort(key=lambda x: x[1])  # 按时间排序
-                
+
                 deleted_count = 0
                 deleted_size = 0
                 target_mb = limit_mb * 0.8
@@ -666,7 +723,9 @@ class DownloadService(BaseService):
                     except Exception:
                         pass
 
-                logger.info(f"Cache cleanup: {deleted_count} files ({deleted_size / 1024 / 1024:.2f}MB)")
+                logger.info(
+                    f"Cache cleanup: {deleted_count} files ({deleted_size / 1024 / 1024:.2f}MB)"
+                )
         finally:
             self._cleanup_running = False
 
@@ -689,4 +748,10 @@ class DownloadService(BaseService):
         return all_files, total_size
 
 
-__all__ = ["BaseService", "UploadService", "ListService", "DeleteService", "DownloadService"]
+__all__ = [
+    "BaseService",
+    "UploadService",
+    "ListService",
+    "DeleteService",
+    "DownloadService",
+]

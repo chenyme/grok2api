@@ -32,23 +32,28 @@ def _collect_tokens(data: dict) -> list[str]:
     return tokens
 
 
-def _truncate_tokens(tokens: list[str], max_tokens: int, operation: str = "operation") -> tuple[list[str], bool, int]:
+def _truncate_tokens(
+    tokens: list[str], max_tokens: int, operation: str = "operation"
+) -> tuple[list[str], bool, int]:
     """去重并截断 token 列表，返回 (unique_tokens, truncated, original_count)"""
     unique_tokens = list(dict.fromkeys(tokens))
     original_count = len(unique_tokens)
     truncated = False
-    
+
     if len(unique_tokens) > max_tokens:
         unique_tokens = unique_tokens[:max_tokens]
         truncated = True
-        logger.warning(f"{operation}: truncated from {original_count} to {max_tokens} tokens")
-    
+        logger.warning(
+            f"{operation}: truncated from {original_count} to {max_tokens} tokens"
+        )
+
     return unique_tokens, truncated, original_count
 
 
 def _mask_token(token: str) -> str:
     """掩码 token 显示"""
     return f"{token[:8]}...{token[-8:]}" if len(token) > 20 else token
+
 
 async def render_template(filename: str):
     """渲染指定模板"""
@@ -248,8 +253,11 @@ async def get_storage_info():
             storage_type = "redis"
         elif isinstance(storage, SQLStorage):
             storage_type = {
-                "mysql": "mysql", "mariadb": "mysql",
-                "postgres": "pgsql", "postgresql": "pgsql", "pgsql": "pgsql"
+                "mysql": "mysql",
+                "mariadb": "mysql",
+                "postgres": "pgsql",
+                "postgresql": "pgsql",
+                "pgsql": "pgsql",
             }.get(storage.dialect, storage.dialect)
     return {"type": storage_type or "local"}
 
@@ -309,7 +317,9 @@ async def update_tokens_api(data: dict):
                     if isinstance(raw_token, str) and raw_token.startswith("sso="):
                         token_data["token"] = raw_token[4:]
 
-                    base = existing_map.get(pool_name, {}).get(token_data.get("token"), {})
+                    base = existing_map.get(pool_name, {}).get(
+                        token_data.get("token"), {}
+                    )
                     merged = dict(base)
                     merged.update(token_data)
                     if merged.get("tags") is None:
@@ -338,13 +348,15 @@ async def refresh_tokens_api(data: dict):
     try:
         mgr = await get_token_manager()
         tokens = _collect_tokens(data)
-        
+
         if not tokens:
             raise HTTPException(status_code=400, detail="No tokens provided")
 
         # 去重并截断
         max_tokens = int(get_config("performance.usage_max_tokens"))
-        unique_tokens, truncated, original_count = _truncate_tokens(tokens, max_tokens, "Usage refresh")
+        unique_tokens, truncated, original_count = _truncate_tokens(
+            tokens, max_tokens, "Usage refresh"
+        )
 
         # 批量执行配置
         max_concurrent = get_config("performance.usage_max_concurrent")
@@ -392,11 +404,11 @@ async def refresh_tokens_api_async(data: dict):
 
     # 去重并截断
     max_tokens = int(get_config("performance.usage_max_tokens"))
-    unique_tokens, truncated, original_count = _truncate_tokens(tokens, max_tokens, "Usage refresh")
-
-    max_concurrent = get_config(
-        "performance.usage_max_concurrent"
+    unique_tokens, truncated, original_count = _truncate_tokens(
+        tokens, max_tokens, "Usage refresh"
     )
+
+    max_concurrent = get_config("performance.usage_max_concurrent")
     batch_size = get_config("performance.usage_batch_size")
 
     task = create_task(len(unique_tokens))
@@ -493,12 +505,12 @@ async def enable_nsfw_api(data: dict):
 
         # 去重并截断
         max_tokens = int(get_config("performance.nsfw_max_tokens"))
-        unique_tokens, truncated, original_count = _truncate_tokens(tokens, max_tokens, "NSFW enable")
+        unique_tokens, truncated, original_count = _truncate_tokens(
+            tokens, max_tokens, "NSFW enable"
+        )
 
         # 批量执行配置
-        max_concurrent = get_config(
-            "performance.nsfw_max_concurrent"
-        )
+        max_concurrent = get_config("performance.nsfw_max_concurrent")
         batch_size = get_config("performance.nsfw_batch_size")
 
         # 定义 worker
@@ -582,7 +594,9 @@ async def enable_nsfw_api_async(data: dict):
 
     # 去重并截断
     max_tokens = int(get_config("performance.nsfw_max_tokens"))
-    unique_tokens, truncated, original_count = _truncate_tokens(tokens, max_tokens, "NSFW enable")
+    unique_tokens, truncated, original_count = _truncate_tokens(
+        tokens, max_tokens, "NSFW enable"
+    )
 
     max_concurrent = get_config("performance.nsfw_max_concurrent")
     batch_size = get_config("performance.nsfw_batch_size")
@@ -765,7 +779,9 @@ async def get_cache_stats_api(request: Request):
                 }
 
         if selected_tokens:
-            selected_tokens, truncated, original_count = _truncate_tokens(selected_tokens, max_tokens, "Assets fetch")
+            selected_tokens, truncated, original_count = _truncate_tokens(
+                selected_tokens, max_tokens, "Assets fetch"
+            )
             total = 0
             raw_results = await run_in_batches(
                 selected_tokens,
@@ -934,7 +950,9 @@ async def load_online_cache_api_async(data: dict):
         raise HTTPException(status_code=400, detail="No tokens provided")
 
     max_tokens = int(get_config("performance.assets_max_tokens"))
-    selected_tokens, truncated, original_count = _truncate_tokens(selected_tokens, max_tokens, "Assets load")
+    selected_tokens, truncated, original_count = _truncate_tokens(
+        selected_tokens, max_tokens, "Assets load"
+    )
 
     max_concurrent = get_config("performance.assets_max_concurrent")
     batch_size = get_config("performance.assets_batch_size")
@@ -1112,10 +1130,14 @@ async def clear_online_cache_api(data: dict):
 
             # 最大数量限制
             max_tokens = int(get_config("performance.assets_max_tokens"))
-            token_list, truncated, original_count = _truncate_tokens(token_list, max_tokens, "Clear online cache")
+            token_list, truncated, original_count = _truncate_tokens(
+                token_list, max_tokens, "Clear online cache"
+            )
 
             results = {}
-            max_concurrent = max(1, int(get_config("performance.assets_max_concurrent")))
+            max_concurrent = max(
+                1, int(get_config("performance.assets_max_concurrent"))
+            )
             batch_size = max(1, int(get_config("performance.assets_batch_size")))
 
             async def _clear_one(t: str):
@@ -1180,7 +1202,9 @@ async def clear_online_cache_api_async(data: dict):
         raise HTTPException(status_code=400, detail="No tokens provided")
 
     max_tokens = int(get_config("performance.assets_max_tokens"))
-    token_list, truncated, original_count = _truncate_tokens(token_list, max_tokens, "Clear online cache async")
+    token_list, truncated, original_count = _truncate_tokens(
+        token_list, max_tokens, "Clear online cache async"
+    )
 
     max_concurrent = get_config("performance.assets_max_concurrent")
     batch_size = get_config("performance.assets_batch_size")
