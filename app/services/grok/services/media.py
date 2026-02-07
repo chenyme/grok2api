@@ -21,39 +21,30 @@ from app.services.token import get_token_manager, EffortType
 from app.services.grok.processors.processor import VideoStreamProcessor, VideoCollectProcessor
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 
-# API 端点
+
 CREATE_POST_API = "https://grok.com/rest/media/post/create"
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 
-# 常量
 DEFAULT_BROWSER = "chrome136"
-DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-TIMEOUT = 300
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36"
+)
+DEFAULT_TIMEOUT = 300
 DEFAULT_MAX_CONCURRENT = 50
+DEFAULT_BASE_PROXY_URL = ""
+DEFAULT_STREAM = True
 _MEDIA_SEMAPHORE = asyncio.Semaphore(DEFAULT_MAX_CONCURRENT)
 _MEDIA_SEM_VALUE = DEFAULT_MAX_CONCURRENT
-
-
-def _get_media_semaphore() -> asyncio.Semaphore:
-    global _MEDIA_SEMAPHORE, _MEDIA_SEM_VALUE
-    value = get_config("performance.media_max_concurrent", DEFAULT_MAX_CONCURRENT)
-    try:
-        value = int(value)
-    except Exception:
-        value = DEFAULT_MAX_CONCURRENT
-    value = max(1, value)
-    if value != _MEDIA_SEM_VALUE:
-        _MEDIA_SEM_VALUE = value
-        _MEDIA_SEMAPHORE = asyncio.Semaphore(value)
-    return _MEDIA_SEMAPHORE
 
 
 class VideoService:
     """视频生成服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url", "")
-        self.timeout = get_config("grok.timeout", TIMEOUT)
+        self.proxy = proxy or get_config("grok.base_proxy_url", DEFAULT_BASE_PROXY_URL)
+        self.timeout = get_config("grok.timeout", DEFAULT_TIMEOUT)
 
     def _build_headers(
         self, token: str, referer: str = "https://grok.com/imagine"
@@ -234,7 +225,17 @@ class VideoService:
         Raises:
             UpstreamException: 连接失败时
         """
-        async with _get_media_semaphore():
+        value = get_config("performance.media_max_concurrent", DEFAULT_MAX_CONCURRENT)
+        try:
+            value = int(value)
+        except Exception:
+            value = DEFAULT_MAX_CONCURRENT
+        value = max(1, value)
+        global _MEDIA_SEMAPHORE, _MEDIA_SEM_VALUE
+        if value != _MEDIA_SEM_VALUE:
+            _MEDIA_SEM_VALUE = value
+            _MEDIA_SEMAPHORE = asyncio.Semaphore(value)
+        async with _MEDIA_SEMAPHORE:
             session = None
             try:
                 # Step 1: 创建帖子
@@ -315,7 +316,17 @@ class VideoService:
         Returns:
             AsyncGenerator，流式传输
         """
-        async with _get_media_semaphore():
+        value = get_config("performance.media_max_concurrent", DEFAULT_MAX_CONCURRENT)
+        try:
+            value = int(value)
+        except Exception:
+            value = DEFAULT_MAX_CONCURRENT
+        value = max(1, value)
+        global _MEDIA_SEMAPHORE, _MEDIA_SEM_VALUE
+        if value != _MEDIA_SEM_VALUE:
+            _MEDIA_SEM_VALUE = value
+            _MEDIA_SEMAPHORE = asyncio.Semaphore(value)
+        async with _MEDIA_SEMAPHORE:
             session = None
             try:
                 # Step 1: 创建帖子
@@ -463,7 +474,7 @@ class VideoService:
         elif thinking == "disabled":
             think = False
 
-        is_stream = stream if stream is not None else get_config("grok.stream", True)
+        is_stream = stream if stream is not None else get_config("grok.stream", DEFAULT_STREAM)
 
         # 提取内容
         from app.services.grok.services.chat import MessageExtractor

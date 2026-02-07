@@ -14,15 +14,16 @@ from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 
 
 LIVEKIT_TOKEN_API = "https://grok.com/rest/livekit/tokens"
-TIMEOUT = 30
+DEFAULT_TIMEOUT = 30
 DEFAULT_BROWSER = "chrome136"
+DEFAULT_BASE_PROXY_URL = ""
 
 
 class VoiceService:
     """Voice Mode Service (LiveKit)"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url", "")
+        self.proxy = proxy or get_config("grok.base_proxy_url", DEFAULT_BASE_PROXY_URL)
 
     async def get_token(
         self,
@@ -46,12 +47,13 @@ class VoiceService:
         
         try:
             browser = get_config("grok.browser", DEFAULT_BROWSER)
+            timeout = get_config("grok.timeout", DEFAULT_TIMEOUT)
             async with AsyncSession(impersonate=browser) as session:
                 response = await session.post(
                     LIVEKIT_TOKEN_API,
                     headers=headers,
                     data=orjson.dumps(payload),
-                    timeout=TIMEOUT,
+                    timeout=timeout,
                     proxies=proxies,
                 )
 

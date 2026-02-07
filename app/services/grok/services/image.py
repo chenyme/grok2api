@@ -19,18 +19,18 @@ from app.core.logger import logger
 from app.services.grok.utils.headers import build_sso_cookie
 
 
-TIMEOUT = 120
-BLOCKED_SECONDS = 15
-FINAL_MIN_BYTES = 100000
-MEDIUM_MIN_BYTES = 30000
-
 WS_URL = "wss://grok.com/ws/imagine/listen"
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+DEFAULT_TIMEOUT = 120
+DEFAULT_BLOCKED_SECONDS = 15
+DEFAULT_FINAL_MIN_BYTES = 100000
+DEFAULT_MEDIUM_MIN_BYTES = 30000
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
+    "Chrome/136.0.0.0 Safari/537.36"
 )
+DEFAULT_BASE_PROXY_URL = ""
 
 
 class _BlockedError(Exception):
@@ -47,14 +47,8 @@ class ImageService:
     def _get_ws_url(self) -> str:
         return WS_URL
 
-    def _get_timeout(self) -> float:
-        return float(get_config("grok.timeout", TIMEOUT))
-
-    def _get_blocked_seconds(self) -> float:
-        return float(get_config("grok.image_ws_blocked_seconds", BLOCKED_SECONDS))
-
     def _resolve_proxy(self) -> tuple[aiohttp.BaseConnector, Optional[str]]:
-        proxy_url = get_config("grok.base_proxy_url", "")
+        proxy_url = get_config("grok.base_proxy_url", DEFAULT_BASE_PROXY_URL)
         if not proxy_url:
             return aiohttp.TCPConnector(ssl=self._ssl_context), None
 
@@ -68,10 +62,11 @@ class ImageService:
 
     def _get_ws_headers(self, token: str) -> Dict[str, str]:
         cookie = build_sso_cookie(token, include_rw=True)
+        user_agent = get_config("grok.user_agent", DEFAULT_USER_AGENT)
         return {
             "Cookie": cookie,
             "Origin": "https://grok.com",
-            "User-Agent": USER_AGENT,
+            "User-Agent": user_agent,
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
@@ -84,7 +79,9 @@ class ImageService:
         return None
 
     def _is_final_image(self, url: str, blob_size: int) -> bool:
-        min_bytes = int(get_config("grok.image_ws_final_min_bytes", FINAL_MIN_BYTES))
+        min_bytes = int(
+            get_config("grok.image_ws_final_min_bytes", DEFAULT_FINAL_MIN_BYTES)
+        )
         return (url or "").lower().endswith((".jpg", ".jpeg")) and blob_size > min_bytes
 
     def _classify_image(self, url: str, blob: str) -> Optional[Dict[str, object]]:
@@ -96,7 +93,7 @@ class ImageService:
         is_final = self._is_final_image(url, blob_size)
         if is_final:
             stage = "final"
-        elif blob_size > MEDIUM_MIN_BYTES:
+        elif blob_size > DEFAULT_MEDIUM_MIN_BYTES:
             stage = "medium"
         else:
             stage = "preview"
@@ -165,8 +162,10 @@ class ImageService:
 
         request_id = str(uuid.uuid4())
         headers = self._get_ws_headers(token)
-        timeout = self._get_timeout()
-        blocked_seconds = self._get_blocked_seconds()
+        timeout = float(get_config("grok.timeout", DEFAULT_TIMEOUT))
+        blocked_seconds = float(
+            get_config("grok.image_ws_blocked_seconds", DEFAULT_BLOCKED_SECONDS)
+        )
 
         try:
             connector, proxy = self._resolve_proxy()

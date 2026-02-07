@@ -15,34 +15,26 @@ from app.services.grok.utils.retry import retry_on_status
 
 
 LIMITS_API = "https://grok.com/rest/rate-limits"
+
 DEFAULT_BROWSER = "chrome136"
-DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-TIMEOUT = 10
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36"
+)
+DEFAULT_TIMEOUT = 10
 DEFAULT_MAX_CONCURRENT = 25
+DEFAULT_BASE_PROXY_URL = ""
 _USAGE_SEMAPHORE = asyncio.Semaphore(DEFAULT_MAX_CONCURRENT)
 _USAGE_SEM_VALUE = DEFAULT_MAX_CONCURRENT
-
-
-def _get_usage_semaphore() -> asyncio.Semaphore:
-    global _USAGE_SEMAPHORE, _USAGE_SEM_VALUE
-    value = get_config("performance.usage_max_concurrent", DEFAULT_MAX_CONCURRENT)
-    try:
-        value = int(value)
-    except Exception:
-        value = DEFAULT_MAX_CONCURRENT
-    value = max(1, value)
-    if value != _USAGE_SEM_VALUE:
-        _USAGE_SEM_VALUE = value
-        _USAGE_SEMAPHORE = asyncio.Semaphore(value)
-    return _USAGE_SEMAPHORE
 
 
 class UsageService:
     """用量查询服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url", "")
-        self.timeout = get_config("grok.timeout", TIMEOUT)
+        self.proxy = proxy or get_config("grok.base_proxy_url", DEFAULT_BASE_PROXY_URL)
+        self.timeout = get_config("grok.timeout", DEFAULT_TIMEOUT)
 
     def _build_headers(self, token: str) -> dict:
         """构建请求头"""
@@ -93,7 +85,17 @@ class UsageService:
         Raises:
             UpstreamException: 当获取失败且重试耗尽时
         """
-        async with _get_usage_semaphore():
+        value = get_config("performance.usage_max_concurrent", DEFAULT_MAX_CONCURRENT)
+        try:
+            value = int(value)
+        except Exception:
+            value = DEFAULT_MAX_CONCURRENT
+        value = max(1, value)
+        global _USAGE_SEMAPHORE, _USAGE_SEM_VALUE
+        if value != _USAGE_SEM_VALUE:
+            _USAGE_SEM_VALUE = value
+            _USAGE_SEMAPHORE = asyncio.Semaphore(value)
+        async with _USAGE_SEMAPHORE:
             # 定义状态码提取器
             def extract_status(e: Exception) -> int | None:
                 if isinstance(e, UpstreamException) and e.details:

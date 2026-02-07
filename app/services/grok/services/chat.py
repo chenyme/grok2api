@@ -25,9 +25,18 @@ from app.services.token import get_token_manager, EffortType
 
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
-TIMEOUT = 120
+
+DEFAULT_TIMEOUT = 120
 DEFAULT_BROWSER = "chrome136"
-DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36"
+)
+DEFAULT_TEMPORARY = True
+DEFAULT_DISABLE_MEMORY = True
+DEFAULT_STREAM = True
+DEFAULT_BASE_PROXY_URL = ""
 
 
 @dataclass
@@ -210,7 +219,7 @@ class ChatRequestBuilder:
             file_attachments: 文件附件 ID 列表
             image_attachments: 图片附件 ID 列表（合并到 fileAttachments）
         """
-        temporary = get_config("grok.temporary", True)
+        temporary = get_config("grok.temporary", DEFAULT_TEMPORARY)
 
         merged_attachments: List[str] = []
         if file_attachments:
@@ -240,7 +249,7 @@ class ChatRequestBuilder:
                 "modelConfigOverride": {"modelMap": {}},
                 "requestModelDetails": {"modelId": model},
             },
-            "disableMemory": get_config("grok.disable_memory", True),
+            "disableMemory": get_config("grok.disable_memory", DEFAULT_DISABLE_MEMORY),
             "forceSideBySide": False,
             "isAsyncChat": False,
             "disableSelfHarmShortCircuit": False,
@@ -267,7 +276,7 @@ class GrokChatService:
     """Grok API 调用服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url", "")
+        self.proxy = proxy or get_config("grok.base_proxy_url", DEFAULT_BASE_PROXY_URL)
 
     async def chat(
         self,
@@ -296,7 +305,7 @@ class GrokChatService:
             UpstreamException: 当 Grok API 返回错误且重试耗尽时
         """
         if stream is None:
-            stream = get_config("grok.stream", True)
+            stream = get_config("grok.stream", DEFAULT_STREAM)
 
         headers = ChatRequestBuilder.build_headers(token)
         if raw_payload is not None:
@@ -310,7 +319,7 @@ class GrokChatService:
                 image_attachments,
             )
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        timeout = get_config("grok.timeout", TIMEOUT)
+        timeout = get_config("grok.timeout", DEFAULT_TIMEOUT)
 
         # 状态码提取器
         def extract_status(e: Exception) -> int | None:
@@ -455,7 +464,7 @@ class GrokChatService:
         stream = (
             request.stream
             if request.stream is not None
-            else get_config("grok.stream", True)
+            else get_config("grok.stream", DEFAULT_STREAM)
         )
 
         response = await self.chat(
@@ -561,7 +570,7 @@ class ChatService:
         elif thinking == "disabled":
             think = False
 
-        is_stream = stream if stream is not None else get_config("grok.stream", True)
+        is_stream = stream if stream is not None else get_config("grok.stream", DEFAULT_STREAM)
 
         # 构造请求
         chat_request = ChatRequest(

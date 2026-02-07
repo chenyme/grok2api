@@ -31,8 +31,13 @@ from app.core.config import get_config
 from app.core.logger import logger
 
 
-router = APIRouter(tags=["Images"])
+DEFAULT_IMAGE_WS = False
+DEFAULT_IMAGE_FORMAT = "url"
+DEFAULT_IMAGE_WS_NSFW = True
+DEFAULT_GROK_TEMPORARY = True
 
+
+router = APIRouter(tags=["Images"])
 
 class ImageGenerationRequest(BaseModel):
     """图片生成请求 - OpenAI 兼容"""
@@ -92,8 +97,8 @@ def _validate_common_request(
     if allow_ws_stream:
         # WS 流式仅支持 b64_json (base64 视为同义)
         if (
-            request.stream
-            and get_config("grok.image_ws", False)
+        request.stream
+        and get_config("grok.image_ws", DEFAULT_IMAGE_WS)
             and request.response_format
             and request.response_format not in {"b64_json", "base64"}
         ):
@@ -140,7 +145,7 @@ def validate_generation_request(request: ImageGenerationRequest):
 
 
 def resolve_response_format(response_format: Optional[str]) -> str:
-    fmt = response_format or get_config("app.image_format", "url")
+    fmt = response_format or get_config("app.image_format", DEFAULT_IMAGE_FORMAT)
     if isinstance(fmt, str):
         fmt = fmt.lower()
     if fmt in ("b64_json", "base64", "url"):
@@ -313,13 +318,13 @@ async def create_image(request: ImageGenerationRequest):
 
     # 获取模型信息
     model_info = ModelService.get(request.model)
-    use_ws = bool(get_config("grok.image_ws", False))
+    use_ws = bool(get_config("grok.image_ws", DEFAULT_IMAGE_WS))
 
     # 流式模式
     if request.stream:
         if use_ws:
             aspect_ratio = resolve_aspect_ratio(request.size)
-            enable_nsfw = bool(get_config("grok.image_ws_nsfw", True))
+            enable_nsfw = bool(get_config("grok.image_ws_nsfw", DEFAULT_IMAGE_WS_NSFW))
             upstream = image_service.stream(
                 token=token,
                 prompt=request.prompt,
@@ -404,7 +409,7 @@ async def create_image(request: ImageGenerationRequest):
     usage_override = None
     if use_ws:
         aspect_ratio = resolve_aspect_ratio(request.size)
-        enable_nsfw = bool(get_config("grok.image_ws_nsfw", True))
+        enable_nsfw = bool(get_config("grok.image_ws_nsfw", DEFAULT_IMAGE_WS_NSFW))
         all_images = []
         seen = set()
         expected_per_call = 6
@@ -709,7 +714,7 @@ async def edit_image(
         ] = parent_post_id
 
     raw_payload = {
-        "temporary": bool(get_config("grok.temporary", True)),
+        "temporary": bool(get_config("grok.temporary", DEFAULT_GROK_TEMPORARY)),
         "modelName": model_info.grok_model,
         "message": edit_request.prompt,
         "enableImageGeneration": True,

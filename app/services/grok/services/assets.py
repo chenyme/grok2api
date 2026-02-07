@@ -28,49 +28,25 @@ from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 from app.services.token.service import TokenService
 
 
-# ==================== 常量 ====================
-
 UPLOAD_API = "https://grok.com/rest/app-chat/upload-file"
 LIST_API = "https://grok.com/rest/assets"
 DELETE_API = "https://grok.com/rest/assets-metadata"
 DOWNLOAD_API = "https://assets.grok.com"
 LOCK_DIR = Path(__file__).parent.parent.parent.parent.parent / "data" / ".locks"
 
-TIMEOUT = 120
+DEFAULT_TIMEOUT = 120
 DEFAULT_BROWSER = "chrome136"
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 DEFAULT_MIME = "application/octet-stream"
-
-# 并发控制
+DEFAULT_BASE_PROXY_URL = ""
+DEFAULT_ASSET_PROXY_URL = ""
+DEFAULT_CACHE_ENABLE_AUTO_CLEAN = True
+DEFAULT_CACHE_LIMIT_MB = 1024
+DEFAULT_APP_URL = ""
 DEFAULT_MAX_CONCURRENT = 25
 DEFAULT_DELETE_BATCH_SIZE = 10
 _ASSETS_SEMAPHORE = asyncio.Semaphore(DEFAULT_MAX_CONCURRENT)
 _ASSETS_SEM_VALUE = DEFAULT_MAX_CONCURRENT
-
-
-def _get_assets_semaphore() -> asyncio.Semaphore:
-    global _ASSETS_SEMAPHORE, _ASSETS_SEM_VALUE
-    value = get_config("performance.assets_max_concurrent", DEFAULT_MAX_CONCURRENT)
-    try:
-        value = int(value)
-    except Exception:
-        value = DEFAULT_MAX_CONCURRENT
-    value = max(1, value)
-    if value != _ASSETS_SEM_VALUE:
-        _ASSETS_SEM_VALUE = value
-        _ASSETS_SEMAPHORE = asyncio.Semaphore(value)
-    return _ASSETS_SEMAPHORE
-
-
-def _get_delete_batch_size() -> int:
-    value = get_config(
-        "performance.assets_delete_batch_size", DEFAULT_DELETE_BATCH_SIZE
-    )
-    try:
-        value = int(value)
-    except Exception:
-        value = DEFAULT_DELETE_BATCH_SIZE
-    return max(1, value)
 
 
 @asynccontextmanager
@@ -172,10 +148,10 @@ class BaseService:
     def __init__(self, proxy: str = None):
         self.proxy = (
             proxy
-            or get_config("grok.asset_proxy_url")
-            or get_config("grok.base_proxy_url", "")
+            or get_config("grok.asset_proxy_url", DEFAULT_ASSET_PROXY_URL)
+            or get_config("grok.base_proxy_url", DEFAULT_BASE_PROXY_URL)
         )
-        self.timeout = get_config("grok.timeout", TIMEOUT)
+        self.timeout = get_config("grok.timeout", DEFAULT_TIMEOUT)
         self._session: Optional[AsyncSession] = None
 
     def _headers(self, token: str, referer: str = "https://grok.com/") -> dict:
@@ -331,7 +307,17 @@ class UploadService(BaseService):
             ValidationException: 输入无效
             UpstreamException: 上传失败
         """
-        async with _get_assets_semaphore():
+        value = get_config("performance.assets_max_concurrent", DEFAULT_MAX_CONCURRENT)
+        try:
+            value = int(value)
+        except Exception:
+            value = DEFAULT_MAX_CONCURRENT
+        value = max(1, value)
+        global _ASSETS_SEMAPHORE, _ASSETS_SEM_VALUE
+        if value != _ASSETS_SEM_VALUE:
+            _ASSETS_SEM_VALUE = value
+            _ASSETS_SEMAPHORE = asyncio.Semaphore(value)
+        async with _ASSETS_SEMAPHORE:
             try:
                 # 处理输入
                 if self.is_url(file_input):
@@ -520,7 +506,17 @@ class DeleteService(BaseService):
         Raises:
             UpstreamException: 删除失败
         """
-        async with _get_assets_semaphore():
+        value = get_config("performance.assets_max_concurrent", DEFAULT_MAX_CONCURRENT)
+        try:
+            value = int(value)
+        except Exception:
+            value = DEFAULT_MAX_CONCURRENT
+        value = max(1, value)
+        global _ASSETS_SEMAPHORE, _ASSETS_SEM_VALUE
+        if value != _ASSETS_SEM_VALUE:
+            _ASSETS_SEM_VALUE = value
+            _ASSETS_SEMAPHORE = asyncio.Semaphore(value)
+        async with _ASSETS_SEMAPHORE:
             try:
                 headers = self._headers(token, referer="https://grok.com/files")
                 url = f"{DELETE_API}/{asset_id}"
@@ -578,7 +574,14 @@ class DeleteService(BaseService):
                             return False
                     return False
 
-                batch_size = _get_delete_batch_size()
+                batch_size = get_config(
+                    "performance.assets_delete_batch_size", DEFAULT_DELETE_BATCH_SIZE
+                )
+                try:
+                    batch_size = int(batch_size)
+                except Exception:
+                    batch_size = DEFAULT_DELETE_BATCH_SIZE
+                batch_size = max(1, batch_size)
                 for i in range(0, len(assets), batch_size):
                     batch = assets[i : i + batch_size]
                     results = await asyncio.gather(
@@ -631,7 +634,17 @@ class DownloadService(BaseService):
         Raises:
             UpstreamException: 下载失败
         """
-        async with _get_assets_semaphore():
+        value = get_config("performance.assets_max_concurrent", DEFAULT_MAX_CONCURRENT)
+        try:
+            value = int(value)
+        except Exception:
+            value = DEFAULT_MAX_CONCURRENT
+        value = max(1, value)
+        global _ASSETS_SEMAPHORE, _ASSETS_SEM_VALUE
+        if value != _ASSETS_SEM_VALUE:
+            _ASSETS_SEM_VALUE = value
+            _ASSETS_SEMAPHORE = asyncio.Semaphore(value)
+        async with _ASSETS_SEMAPHORE:
             try:
                 cache_path = self._cache_path(file_path, media_type)
 
@@ -847,10 +860,12 @@ class DownloadService(BaseService):
         self._cleanup_running = True
         try:
             async with _file_lock("cache_cleanup", timeout=5):
-                if not get_config("cache.enable_auto_clean", True):
+                if not get_config(
+                    "cache.enable_auto_clean", DEFAULT_CACHE_ENABLE_AUTO_CLEAN
+                ):
                     return
 
-                limit_mb = get_config("cache.limit_mb", 1024)
+                limit_mb = get_config("cache.limit_mb", DEFAULT_CACHE_LIMIT_MB)
 
                 # 统计总大小
                 total_size = 0
@@ -906,7 +921,7 @@ class DownloadService(BaseService):
 
         如果配置了 app_url，则返回自托管 URL，否则返回 Grok 原始 URL
         """
-        app_url = get_config("app.app_url", "")
+        app_url = get_config("app.app_url", DEFAULT_APP_URL)
         if not app_url:
             return f"{DOWNLOAD_API}{file_path if file_path.startswith('/') else '/' + file_path}"
 

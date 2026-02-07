@@ -18,9 +18,13 @@ from app.core.storage import get_storage
 from app.core.config import get_config
 from app.services.token.pool import TokenPool
 
-# 批量刷新配置
-REFRESH_BATCH_SIZE = 10
-REFRESH_CONCURRENCY = 5
+
+DEFAULT_REFRESH_BATCH_SIZE = 10
+DEFAULT_REFRESH_CONCURRENCY = 5
+DEFAULT_SUPER_REFRESH_INTERVAL_HOURS = 2
+DEFAULT_REFRESH_INTERVAL_HOURS = 8
+DEFAULT_RELOAD_INTERVAL_SEC = 30
+DEFAULT_SAVE_DELAY_MS = 500
 
 SUPER_POOL_NAME = "ssoSuper"
 BASIC_POOL_NAME = "ssoBasic"
@@ -30,12 +34,6 @@ def _default_quota_for_pool(pool_name: str) -> int:
     if pool_name == SUPER_POOL_NAME:
         return SUPER_DEFAULT_QUOTA
     return BASIC__DEFAULT_QUOTA
-
-
-def _refresh_interval_hours_for_pool(pool_name: str) -> float:
-    if pool_name == SUPER_POOL_NAME:
-        return get_config("token.super_refresh_interval_hours", 2)
-    return get_config("token.refresh_interval_hours", 8)
 
 
 class TokenManager:
@@ -50,7 +48,7 @@ class TokenManager:
         self._save_lock = asyncio.Lock()
         self._dirty = False
         self._save_task: Optional[asyncio.Task] = None
-        self._save_delay = 0.5
+        self._save_delay = DEFAULT_SAVE_DELAY_MS / 1000.0
         self._last_reload_at = 0.0
 
     @classmethod
@@ -131,11 +129,11 @@ class TokenManager:
 
     async def reload_if_stale(self):
         """在多 worker 场景下保持短周期一致性"""
-        interval = get_config("token.reload_interval_sec", 30)
+        interval = get_config("token.reload_interval_sec", DEFAULT_RELOAD_INTERVAL_SEC)
         try:
             interval = float(interval)
         except Exception:
-            interval = 30.0
+            interval = float(DEFAULT_RELOAD_INTERVAL_SEC)
         if interval <= 0:
             return
         if time.monotonic() - self._last_reload_at < interval:
@@ -158,11 +156,11 @@ class TokenManager:
 
     def _schedule_save(self):
         """合并高频保存请求，减少写入开销"""
-        delay_ms = get_config("token.save_delay_ms", 500)
+        delay_ms = get_config("token.save_delay_ms", DEFAULT_SAVE_DELAY_MS)
         try:
             delay_ms = float(delay_ms)
         except Exception:
-            delay_ms = 500
+            delay_ms = float(DEFAULT_SAVE_DELAY_MS)
         self._save_delay = max(0.0, delay_ms / 1000.0)
         self._dirty = True
         if self._save_delay == 0:
@@ -523,7 +521,16 @@ class TokenManager:
         # 收集需要刷新的 token
         to_refresh: List[TokenInfo] = []
         for pool in self.pools.values():
-            interval_hours = _refresh_interval_hours_for_pool(pool.name)
+            if pool.name == SUPER_POOL_NAME:
+                interval_hours = get_config(
+                    "token.super_refresh_interval_hours",
+                    DEFAULT_SUPER_REFRESH_INTERVAL_HOURS,
+                )
+            else:
+                interval_hours = get_config(
+                    "token.refresh_interval_hours",
+                    DEFAULT_REFRESH_INTERVAL_HOURS,
+                )
             for token in pool:
                 if token.need_refresh(interval_hours):
                     to_refresh.append(token)
@@ -535,7 +542,7 @@ class TokenManager:
         logger.info(f"Refresh check: found {len(to_refresh)} cooling tokens to refresh")
 
         # 批量并发刷新
-        semaphore = asyncio.Semaphore(REFRESH_CONCURRENCY)
+        semaphore = asyncio.Semaphore(DEFAULT_REFRESH_CONCURRENCY)
         usage_service = UsageService()
         refreshed = 0
         recovered = 0
@@ -606,15 +613,15 @@ class TokenManager:
                 return {"recovered": False, "expired": False}
 
         # 批量处理
-        for i in range(0, len(to_refresh), REFRESH_BATCH_SIZE):
-            batch = to_refresh[i : i + REFRESH_BATCH_SIZE]
+        for i in range(0, len(to_refresh), DEFAULT_REFRESH_BATCH_SIZE):
+            batch = to_refresh[i : i + DEFAULT_REFRESH_BATCH_SIZE]
             results = await asyncio.gather(*[_refresh_one(t) for t in batch])
             refreshed += len(batch)
             recovered += sum(r["recovered"] for r in results)
             expired += sum(r["expired"] for r in results)
 
             # 批次间延迟
-            if i + REFRESH_BATCH_SIZE < len(to_refresh):
+            if i + DEFAULT_REFRESH_BATCH_SIZE < len(to_refresh):
                 await asyncio.sleep(1)
 
         await self._save()

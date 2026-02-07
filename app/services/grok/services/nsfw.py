@@ -23,9 +23,11 @@ from app.services.grok.utils.headers import build_sso_cookie
 
 NSFW_API = "https://grok.com/auth_mgmt.AuthManagement/UpdateUserFeatureControls"
 BIRTH_DATE_API = "https://grok.com/rest/auth/set-birth-date"
+
 DEFAULT_BROWSER = "chrome136"
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-TIMEOUT = 30
+DEFAULT_TIMEOUT = 30
+DEFAULT_BASE_PROXY_URL = ""
 
 
 @dataclass
@@ -43,7 +45,8 @@ class NSFWService:
     """NSFW 模式服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url", "")
+        self.proxy = proxy or get_config("grok.base_proxy_url", DEFAULT_BASE_PROXY_URL)
+        self.timeout = float(get_config("grok.timeout", DEFAULT_TIMEOUT))
 
     @staticmethod
     def _random_birth_date() -> str:
@@ -109,7 +112,7 @@ class NSFWService:
                 BIRTH_DATE_API,
                 json=payload,
                 headers=headers,
-                timeout=TIMEOUT,
+                timeout=self.timeout,
                 proxies=proxies,
             )
             if response.status_code in (200, 204):
@@ -145,7 +148,7 @@ class NSFWService:
                     NSFW_API,
                     data=payload,
                     headers=headers,
-                    timeout=TIMEOUT,
+                    timeout=self.timeout,
                     proxies=proxies,
                 )
 

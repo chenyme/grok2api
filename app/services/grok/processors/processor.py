@@ -11,13 +11,21 @@ import re
 from pathlib import Path
 import orjson
 from typing import Any, AsyncGenerator, Optional, AsyncIterable, List, TypeVar, Dict
-
 from curl_cffi.requests.errors import RequestsError
 
 from app.core.config import get_config
 from app.core.logger import logger
 from app.core.exceptions import UpstreamException
 from app.services.grok.services.assets import DownloadService
+
+
+DEFAULT_APP_URL = ""
+DEFAULT_FILTER_TAGS = ["grok:render", "xaiartifact", "xai:tool_usage_card"]
+DEFAULT_IMAGE_FORMAT = "url"
+DEFAULT_THINKING = False
+DEFAULT_STREAM_IDLE_TIMEOUT = 45.0
+DEFAULT_VIDEO_FORMAT = "html"
+DEFAULT_VIDEO_IDLE_TIMEOUT = 90.0
 
 
 def _is_http2_stream_error(e: Exception) -> bool:
@@ -133,7 +141,7 @@ class BaseProcessor:
         self.model = model
         self.token = token
         self.created = int(time.time())
-        self.app_url = get_config("app.app_url", "")
+        self.app_url = get_config("app.app_url", DEFAULT_APP_URL)
         self._dl_service: Optional[DownloadService] = None
 
     def _get_dl(self) -> DownloadService:
@@ -204,14 +212,14 @@ class StreamProcessor(BaseProcessor):
         self.fingerprint: str = ""
         self.think_opened: bool = False
         self.role_sent: bool = False
-        self.filter_tags = get_config("grok.filter_tags", [])
-        self.image_format = get_config("app.image_format", "url")
+        self.filter_tags = get_config("grok.filter_tags", DEFAULT_FILTER_TAGS)
+        self.image_format = get_config("app.image_format", DEFAULT_IMAGE_FORMAT)
         # 用于过滤跨 token 的标签
         self._tag_buffer: str = ""
         self._in_filter_tag: bool = False
 
         if think is None:
-            self.show_think = get_config("grok.thinking", False)
+            self.show_think = get_config("grok.thinking", DEFAULT_THINKING)
         else:
             self.show_think = think
 
@@ -281,7 +289,7 @@ class StreamProcessor(BaseProcessor):
     ) -> AsyncGenerator[str, None]:
         """处理流式响应"""
         # 获取空闲超时配置
-        idle_timeout = get_config("grok.stream_idle_timeout", 45.0)
+        idle_timeout = get_config("grok.stream_idle_timeout", DEFAULT_STREAM_IDLE_TIMEOUT)
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
@@ -407,13 +415,10 @@ class StreamProcessor(BaseProcessor):
 class CollectProcessor(BaseProcessor):
     """非流式响应处理器"""
 
-    # 需要过滤的标签
-    FILTER_TAGS = ["grok:render", "xaiartifact", "xai:tool_usage_card"]
-
     def __init__(self, model: str, token: str = ""):
         super().__init__(model, token)
-        self.image_format = get_config("app.image_format", "url")
-        self.filter_tags = get_config("grok.filter_tags", self.FILTER_TAGS)
+        self.image_format = get_config("app.image_format", DEFAULT_IMAGE_FORMAT)
+        self.filter_tags = get_config("grok.filter_tags", DEFAULT_FILTER_TAGS)
 
     def _filter_content(self, content: str) -> str:
         """过滤内容中的特殊标签"""
@@ -436,7 +441,7 @@ class CollectProcessor(BaseProcessor):
         fingerprint = ""
         content = ""
         # 获取空闲超时配置
-        idle_timeout = get_config("grok.stream_idle_timeout", 45.0)
+        idle_timeout = get_config("grok.stream_idle_timeout", DEFAULT_STREAM_IDLE_TIMEOUT)
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
@@ -552,10 +557,10 @@ class VideoStreamProcessor(BaseProcessor):
         self.response_id: Optional[str] = None
         self.think_opened: bool = False
         self.role_sent: bool = False
-        self.video_format = str(get_config("app.video_format", "html")).lower()
+        self.video_format = str(get_config("app.video_format", DEFAULT_VIDEO_FORMAT)).lower()
 
         if think is None:
-            self.show_think = get_config("grok.thinking", False)
+            self.show_think = get_config("grok.thinking", DEFAULT_THINKING)
         else:
             self.show_think = think
 
@@ -575,7 +580,7 @@ class VideoStreamProcessor(BaseProcessor):
     ) -> AsyncGenerator[str, None]:
         """处理视频流式响应"""
         # 视频生成使用更长的空闲超时
-        idle_timeout = get_config("grok.video_idle_timeout", 90.0)
+        idle_timeout = get_config("grok.video_idle_timeout", DEFAULT_VIDEO_IDLE_TIMEOUT)
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
@@ -684,7 +689,7 @@ class VideoCollectProcessor(BaseProcessor):
 
     def __init__(self, model: str, token: str = ""):
         super().__init__(model, token)
-        self.video_format = str(get_config("app.video_format", "html")).lower()
+        self.video_format = str(get_config("app.video_format", DEFAULT_VIDEO_FORMAT)).lower()
 
     def _build_video_html(self, video_url: str, thumbnail_url: str = "") -> str:
         poster_attr = f' poster="{thumbnail_url}"' if thumbnail_url else ""
@@ -697,7 +702,7 @@ class VideoCollectProcessor(BaseProcessor):
         response_id = ""
         content = ""
         # 视频生成使用更长的空闲超时
-        idle_timeout = get_config("grok.video_idle_timeout", 90.0)
+        idle_timeout = get_config("grok.video_idle_timeout", DEFAULT_VIDEO_IDLE_TIMEOUT)
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
@@ -807,7 +812,7 @@ class ImageStreamProcessor(BaseProcessor):
         """处理流式响应"""
         final_images = []
         # 图片生成使用标准空闲超时
-        idle_timeout = get_config("grok.stream_idle_timeout", 45.0)
+        idle_timeout = get_config("grok.stream_idle_timeout", DEFAULT_STREAM_IDLE_TIMEOUT)
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
@@ -937,7 +942,7 @@ class ImageCollectProcessor(BaseProcessor):
         """处理并收集图片"""
         images = []
         # 图片生成使用标准空闲超时
-        idle_timeout = get_config("grok.stream_idle_timeout", 45.0)
+        idle_timeout = get_config("grok.stream_idle_timeout", DEFAULT_STREAM_IDLE_TIMEOUT)
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):

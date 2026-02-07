@@ -15,11 +15,20 @@ from app.core.logger import logger
 from app.services.grok.services.voice import VoiceService
 from app.services.token import get_token_manager
 
-
-router = APIRouter()
-
+DEFAULT_STORAGE_TYPE = ""
+DEFAULT_USAGE_MAX_TOKENS = 1000
+DEFAULT_USAGE_MAX_CONCURRENT = 25
+DEFAULT_USAGE_BATCH_SIZE = 50
+DEFAULT_NSFW_MAX_TOKENS = 1000
+DEFAULT_NSFW_MAX_CONCURRENT = 10
+DEFAULT_NSFW_BATCH_SIZE = 50
+DEFAULT_ASSETS_MAX_CONCURRENT = 25
+DEFAULT_ASSETS_BATCH_SIZE = 10
+DEFAULT_ASSETS_MAX_TOKENS = 1000
 TEMPLATE_DIR = Path(__file__).parent.parent.parent / "static"
 
+
+router = APIRouter()
 
 async def render_template(filename: str):
     """渲染指定模板"""
@@ -211,7 +220,7 @@ async def get_storage_info():
     storage_type = os.getenv("SERVER_STORAGE_TYPE", "local").lower()
     logger.info(f"Storage type: {storage_type}")
     if not storage_type:
-        storage_type = str(get_config("storage.type", "")).lower()
+        storage_type = str(get_config("storage.type", DEFAULT_STORAGE_TYPE)).lower()
     if not storage_type:
         storage = get_storage()
         if isinstance(storage, LocalStorage):
@@ -327,7 +336,7 @@ async def refresh_tokens_api(data: dict):
         unique_tokens = list(dict.fromkeys(tokens))
 
         # 最大数量限制
-        max_tokens = get_config("performance.usage_max_tokens", 1000)
+        max_tokens = get_config("performance.usage_max_tokens", DEFAULT_USAGE_MAX_TOKENS)
         try:
             max_tokens = int(max_tokens)
         except Exception:
@@ -343,8 +352,12 @@ async def refresh_tokens_api(data: dict):
             )
 
         # 批量执行配置
-        max_concurrent = get_config("performance.usage_max_concurrent", 25)
-        batch_size = get_config("performance.usage_batch_size", 50)
+        max_concurrent = get_config(
+            "performance.usage_max_concurrent", DEFAULT_USAGE_MAX_CONCURRENT
+        )
+        batch_size = get_config(
+            "performance.usage_batch_size", DEFAULT_USAGE_BATCH_SIZE
+        )
 
         async def _refresh_one(t):
             return await mgr.sync_usage(
@@ -395,7 +408,7 @@ async def refresh_tokens_api_async(data: dict):
 
     unique_tokens = list(dict.fromkeys(tokens))
 
-    max_tokens = get_config("performance.usage_max_tokens", 1000)
+    max_tokens = get_config("performance.usage_max_tokens", DEFAULT_USAGE_MAX_TOKENS)
     try:
         max_tokens = int(max_tokens)
     except Exception:
@@ -410,8 +423,10 @@ async def refresh_tokens_api_async(data: dict):
             f"Usage refresh: truncated from {original_count} to {max_tokens} tokens"
         )
 
-    max_concurrent = get_config("performance.usage_max_concurrent", 25)
-    batch_size = get_config("performance.usage_batch_size", 50)
+    max_concurrent = get_config(
+        "performance.usage_max_concurrent", DEFAULT_USAGE_MAX_CONCURRENT
+    )
+    batch_size = get_config("performance.usage_batch_size", DEFAULT_USAGE_BATCH_SIZE)
 
     task = create_task(len(unique_tokens))
 
@@ -515,7 +530,7 @@ async def enable_nsfw_api(data: dict):
         unique_tokens = list(dict.fromkeys(tokens))
 
         # 限制最大数量（超出时截取前 N 个）
-        max_tokens = get_config("performance.nsfw_max_tokens", 1000)
+        max_tokens = get_config("performance.nsfw_max_tokens", DEFAULT_NSFW_MAX_TOKENS)
         try:
             max_tokens = int(max_tokens)
         except Exception:
@@ -531,8 +546,10 @@ async def enable_nsfw_api(data: dict):
             )
 
         # 批量执行配置
-        max_concurrent = get_config("performance.nsfw_max_concurrent", 10)
-        batch_size = get_config("performance.nsfw_batch_size", 50)
+        max_concurrent = get_config(
+            "performance.nsfw_max_concurrent", DEFAULT_NSFW_MAX_CONCURRENT
+        )
+        batch_size = get_config("performance.nsfw_batch_size", DEFAULT_NSFW_BATCH_SIZE)
 
         # 定义 worker
         async def _enable(token: str):
@@ -621,7 +638,7 @@ async def enable_nsfw_api_async(data: dict):
 
     unique_tokens = list(dict.fromkeys(tokens))
 
-    max_tokens = get_config("performance.nsfw_max_tokens", 1000)
+    max_tokens = get_config("performance.nsfw_max_tokens", DEFAULT_NSFW_MAX_TOKENS)
     try:
         max_tokens = int(max_tokens)
     except Exception:
@@ -636,8 +653,10 @@ async def enable_nsfw_api_async(data: dict):
             f"NSFW enable: truncated from {original_count} to {max_tokens} tokens"
         )
 
-    max_concurrent = get_config("performance.nsfw_max_concurrent", 10)
-    batch_size = get_config("performance.nsfw_batch_size", 50)
+    max_concurrent = get_config(
+        "performance.nsfw_max_concurrent", DEFAULT_NSFW_MAX_CONCURRENT
+    )
+    batch_size = get_config("performance.nsfw_batch_size", DEFAULT_NSFW_BATCH_SIZE)
 
     task = create_task(len(unique_tokens))
 
@@ -772,8 +791,12 @@ async def get_cache_stats_api(request: Request):
         }
         online_details = []
         account_map = {a["token"]: a for a in accounts}
-        max_concurrent = get_config("performance.assets_max_concurrent", 25)
-        batch_size = get_config("performance.assets_batch_size", 10)
+        max_concurrent = get_config(
+            "performance.assets_max_concurrent", DEFAULT_ASSETS_MAX_CONCURRENT
+        )
+        batch_size = get_config(
+            "performance.assets_batch_size", DEFAULT_ASSETS_BATCH_SIZE
+        )
         try:
             max_concurrent = int(max_concurrent)
         except Exception:
@@ -785,7 +808,7 @@ async def get_cache_stats_api(request: Request):
         max_concurrent = max(1, max_concurrent)
         batch_size = max(1, batch_size)
 
-        max_tokens = get_config("performance.assets_max_tokens", 1000)
+        max_tokens = get_config("performance.assets_max_tokens", DEFAULT_ASSETS_MAX_TOKENS)
         try:
             max_tokens = int(max_tokens)
         except Exception:
@@ -1006,7 +1029,7 @@ async def load_online_cache_api_async(data: dict):
 
     selected_tokens = list(dict.fromkeys(selected_tokens))
 
-    max_tokens = get_config("performance.assets_max_tokens", 1000)
+    max_tokens = get_config("performance.assets_max_tokens", DEFAULT_ASSETS_MAX_TOKENS)
     try:
         max_tokens = int(max_tokens)
     except Exception:
@@ -1018,8 +1041,12 @@ async def load_online_cache_api_async(data: dict):
         selected_tokens = selected_tokens[:max_tokens]
         truncated = True
 
-    max_concurrent = get_config("performance.assets_max_concurrent", 25)
-    batch_size = get_config("performance.assets_batch_size", 10)
+    max_concurrent = get_config(
+        "performance.assets_max_concurrent", DEFAULT_ASSETS_MAX_CONCURRENT
+    )
+    batch_size = get_config(
+        "performance.assets_batch_size", DEFAULT_ASSETS_BATCH_SIZE
+    )
 
     task = create_task(len(selected_tokens))
 
@@ -1193,7 +1220,9 @@ async def clear_online_cache_api(data: dict):
             token_list = list(dict.fromkeys(token_list))
 
             # 最大数量限制
-            max_tokens = get_config("performance.assets_max_tokens", 1000)
+            max_tokens = get_config(
+                "performance.assets_max_tokens", DEFAULT_ASSETS_MAX_TOKENS
+            )
             try:
                 max_tokens = int(max_tokens)
             except Exception:
@@ -1205,8 +1234,12 @@ async def clear_online_cache_api(data: dict):
                 truncated = True
 
             results = {}
-            max_concurrent = get_config("performance.assets_max_concurrent", 25)
-            batch_size = get_config("performance.assets_batch_size", 10)
+            max_concurrent = get_config(
+                "performance.assets_max_concurrent", DEFAULT_ASSETS_MAX_CONCURRENT
+            )
+            batch_size = get_config(
+                "performance.assets_batch_size", DEFAULT_ASSETS_BATCH_SIZE
+            )
             try:
                 max_concurrent = int(max_concurrent)
             except Exception:
@@ -1281,7 +1314,7 @@ async def clear_online_cache_api_async(data: dict):
 
     token_list = list(dict.fromkeys(token_list))
 
-    max_tokens = get_config("performance.assets_max_tokens", 1000)
+    max_tokens = get_config("performance.assets_max_tokens", DEFAULT_ASSETS_MAX_TOKENS)
     try:
         max_tokens = int(max_tokens)
     except Exception:
@@ -1292,8 +1325,12 @@ async def clear_online_cache_api_async(data: dict):
         token_list = token_list[:max_tokens]
         truncated = True
 
-    max_concurrent = get_config("performance.assets_max_concurrent", 25)
-    batch_size = get_config("performance.assets_batch_size", 10)
+    max_concurrent = get_config(
+        "performance.assets_max_concurrent", DEFAULT_ASSETS_MAX_CONCURRENT
+    )
+    batch_size = get_config(
+        "performance.assets_batch_size", DEFAULT_ASSETS_BATCH_SIZE
+    )
 
     task = create_task(len(token_list))
 
