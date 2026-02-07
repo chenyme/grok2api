@@ -43,6 +43,7 @@ const LOCALE_MAP = {
   "grok": {
     "label": "Grok 设置",
     "temporary": { title: "临时对话", desc: "是否启用临时对话模式。" },
+    "disable_memory": { title: "禁用记忆", desc: "禁用 Grok 记忆功能，以防止响应中出现不相关上下文" },
     "stream": { title: "流式响应", desc: "是否默认启用流式输出。" },
     "thinking": { title: "思维链", desc: "是否启用模型思维链输出。" },
     "dynamic_statsig": { title: "动态指纹", desc: "是否启用动态生成 Statsig 值。" },
@@ -50,7 +51,6 @@ const LOCALE_MAP = {
     "timeout": { title: "超时时间", desc: "请求 Grok 服务的超时时间（秒）。" },
     "base_proxy_url": { title: "基础代理 URL", desc: "代理请求到 Grok 官网的基础服务地址。" },
     "asset_proxy_url": { title: "资源代理 URL", desc: "代理请求到 Grok 官网的静态资源（图片/视频）地址。" },
-    "cf_clearance": { title: "CF Clearance", desc: "Cloudflare 验证 Cookie，用于验证 Cloudflare 的验证。" },
     "image_ws": { title: "Imagine WebSocket 生成", desc: "启用后 /v1/images/generations 走 WebSocket 直连。" },
     "image_ws_nsfw": { title: "Imagine NSFW", desc: "WS 请求里是否启用 NSFW。" },
     "image_ws_blocked_seconds": { title: "Imagine WebSocket Blocked 阈值", desc: "收到中等图后超过该秒数仍无最终图则判定 blocked。" },
@@ -62,7 +62,10 @@ const LOCALE_MAP = {
     "retry_backoff_max": { title: "退避上限", desc: "单次重试等待的最大延迟（秒）。" },
     "retry_budget": { title: "退避预算", desc: "单次请求的最大重试总耗时（秒）。" },
     "stream_idle_timeout": { title: "流空闲超时", desc: "流式响应空闲超时（秒），超过将断开。" },
-    "video_idle_timeout": { title: "视频空闲超时", desc: "视频生成空闲超时（秒），超过将断开。" }
+    "video_idle_timeout": { title: "视频空闲超时", desc: "视频生成空闲超时（秒），超过将断开。" },
+    "cf_clearance": { title: "CF Clearance", desc: "" },
+    "browser": { title: "curl_cffi", desc: "" },
+    "user_agent": { title: "User-Agent", desc: "" }
   },
   "token": {
     "label": "Token 池设置",
@@ -92,6 +95,13 @@ const LOCALE_MAP = {
     "assets_max_tokens": { title: "Assets 处理最大数量", desc: "单次批量查找/删除资产时的处理数量上限。推荐 1000。" },
     "assets_delete_batch_size": { title: "Assets 单账号删除批量大小", desc: "单账号批量删除资产时的单批并发数量。推荐 10。" }
   }
+};
+
+// 反爬虫验证字段（从 grok 中单独分组显示）
+const ANTIBOT_FIELDS = ['cf_clearance', 'browser', 'user_agent'];
+const ANTIBOT_GROUP = {
+  label: "反爬虫验证",
+  desc: "以下三个参数用于绕过 Cloudflare 反爬虫验证。配置不正确将导致 403 错误。服务首次请求 Grok 时的 IP 必须与获取 CF Clearance 时的 IP 一致，后续服务器请求 IP 变化不会导致403。"
 };
 
 const SECTION_ORDER = new Map(Object.keys(LOCALE_MAP).map((key, index) => [key, index]));
@@ -240,85 +250,118 @@ function renderConfig(data) {
     const localeSection = LOCALE_MAP[section];
     const keyOrder = localeSection ? new Map(Object.keys(localeSection).map((k, i) => [k, i])) : null;
 
-    const card = document.createElement('div');
-    card.className = 'config-section';
+    // 分离反爬虫字段和普通字段
+    const allKeys = sortByOrder(Object.keys(items), keyOrder);
+    const normalKeys = section === 'grok' ? allKeys.filter(k => !ANTIBOT_FIELDS.includes(k)) : allKeys;
+    const antibotKeys = section === 'grok' ? allKeys.filter(k => ANTIBOT_FIELDS.includes(k)) : [];
 
-    const header = document.createElement('div');
-    header.innerHTML = `<div class="config-section-title">${getSectionLabel(section)}</div>`;
-    card.appendChild(header);
+    // 渲染普通字段
+    if (normalKeys.length > 0) {
+      const card = document.createElement('div');
+      card.className = 'config-section';
 
-    const grid = document.createElement('div');
-    grid.className = 'config-grid';
+      const header = document.createElement('div');
+      header.innerHTML = `<div class="config-section-title">${getSectionLabel(section)}</div>`;
+      card.appendChild(header);
 
-    const keys = sortByOrder(Object.keys(items), keyOrder);
+      const grid = document.createElement('div');
+      grid.className = 'config-grid';
 
-    keys.forEach(key => {
-      const val = items[key];
-      const text = getText(section, key);
+      normalKeys.forEach(key => {
+        const fieldCard = buildFieldCard(section, key, items[key]);
+        grid.appendChild(fieldCard);
+      });
 
-      // Container
-      const fieldCard = document.createElement('div');
-      fieldCard.className = 'config-field';
-
-      // Title
-      const titleEl = document.createElement('div');
-      titleEl.className = 'config-field-title';
-      titleEl.textContent = text.title;
-      fieldCard.appendChild(titleEl);
-
-      // Description (Muted)
-      const descEl = document.createElement('p');
-      descEl.className = 'config-field-desc';
-      descEl.textContent = text.desc;
-      fieldCard.appendChild(descEl);
-
-      // Input Wrapper
-      const inputWrapper = document.createElement('div');
-      inputWrapper.className = 'config-field-input';
-
-      // Input Logic
-      let built;
-      if (typeof val === 'boolean') {
-        built = buildBooleanInput(section, key, val);
+      card.appendChild(grid);
+      if (grid.children.length > 0) {
+        fragment.appendChild(card);
       }
-      else if (key === 'image_format') {
-        built = buildSelectInput(section, key, val, [
-          { val: 'url', text: 'URL' },
-          { val: 'base64', text: 'Base64' }
-        ]);
-      }
-      else if (key === 'video_format') {
-        built = buildSelectInput(section, key, val, [
-          { val: 'html', text: 'HTML' },
-          { val: 'url', text: 'URL' }
-        ]);
-      }
-      else if (Array.isArray(val) || typeof val === 'object') {
-        built = buildJsonInput(section, key, val);
-      }
-      else {
-        if (key === 'api_key' || key === 'app_key') {
-          built = buildSecretInput(section, key, val);
-        } else {
-          built = buildTextInput(section, key, val);
-        }
-      }
+    }
 
-      if (built) {
-        inputWrapper.appendChild(built.node);
-      }
-      fieldCard.appendChild(inputWrapper);
-      grid.appendChild(fieldCard);
-    });
+    // 渲染反爬虫验证分组（仅 grok section）
+    if (antibotKeys.length > 0) {
+      const card = document.createElement('div');
+      card.className = 'config-section';
 
-    card.appendChild(grid);
+      const header = document.createElement('div');
+      header.innerHTML = `<div class="config-section-title">${ANTIBOT_GROUP.label}</div>
+        <p class="text-[var(--accents-4)] text-sm mt-1 mb-4">${ANTIBOT_GROUP.desc}</p>`;
+      card.appendChild(header);
 
-    if (grid.children.length > 0) {
+      const grid = document.createElement('div');
+      grid.className = 'config-grid';
+
+      antibotKeys.forEach(key => {
+        const fieldCard = buildFieldCard(section, key, items[key]);
+        grid.appendChild(fieldCard);
+      });
+
+      card.appendChild(grid);
       fragment.appendChild(card);
     }
   });
 
   container.appendChild(fragment);
+}
+
+function buildFieldCard(section, key, val) {
+  const text = getText(section, key);
+
+  const fieldCard = document.createElement('div');
+  fieldCard.className = 'config-field';
+
+  // Title
+  const titleEl = document.createElement('div');
+  titleEl.className = 'config-field-title';
+  titleEl.textContent = text.title;
+  fieldCard.appendChild(titleEl);
+
+  // Description (Muted) - 只在有描述时显示
+  if (text.desc) {
+    const descEl = document.createElement('p');
+    descEl.className = 'config-field-desc';
+    descEl.textContent = text.desc;
+    fieldCard.appendChild(descEl);
+  }
+
+  // Input Wrapper
+  const inputWrapper = document.createElement('div');
+  inputWrapper.className = 'config-field-input';
+
+  // Input Logic
+  let built;
+  if (typeof val === 'boolean') {
+    built = buildBooleanInput(section, key, val);
+  }
+  else if (key === 'image_format') {
+    built = buildSelectInput(section, key, val, [
+      { val: 'url', text: 'URL' },
+      { val: 'base64', text: 'Base64' }
+    ]);
+  }
+  else if (key === 'video_format') {
+    built = buildSelectInput(section, key, val, [
+      { val: 'html', text: 'HTML' },
+      { val: 'url', text: 'URL' }
+    ]);
+  }
+  else if (Array.isArray(val) || typeof val === 'object') {
+    built = buildJsonInput(section, key, val);
+  }
+  else {
+    if (key === 'api_key' || key === 'app_key') {
+      built = buildSecretInput(section, key, val);
+    } else {
+      built = buildTextInput(section, key, val);
+    }
+  }
+
+  if (built) {
+    inputWrapper.appendChild(built.node);
+  }
+  fieldCard.appendChild(inputWrapper);
+
+  return fieldCard;
 }
 
 async function saveConfig() {
