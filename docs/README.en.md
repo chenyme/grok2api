@@ -67,6 +67,7 @@ Default password: `grok2api` (config key `app.app_key`, change it in production)
 | `grok-4.1` | 1 | Basic/Super | Yes | Yes | - |
 | `grok-4.1-thinking` | 4 | Basic/Super | Yes | Yes | - |
 | `grok-imagine-1.0` | 4 | Basic/Super | - | Yes | - |
+| `grok-imagine-1.0-edit` | 4 | Basic/Super | - | Yes | - |
 | `grok-imagine-1.0-video` | - | Basic/Super | - | - | Yes |
 
 <br>
@@ -99,7 +100,7 @@ curl http://localhost:8000/v1/chat/completions \
 | `thinking` | string | Thinking mode | `enabled`, `disabled`, `null` |
 | `video_config` | object | **Video model only** | - |
 | └─ `aspect_ratio` | string | Video aspect ratio | `16:9`, `9:16`, `1:1`, `2:3`, `3:2` |
-| └─ `video_length` | integer | Video length (seconds) | `6`, `10` |
+| └─ `video_length` | integer | Video length (seconds) | `6`, `10`, `15` |
 | └─ `resolution_name` | string | Resolution | `480p`, `720p` |
 | └─ `preset` | string | Style preset | `fun`, `normal`, `spicy` |
 
@@ -110,7 +111,7 @@ Note: any other parameters will be discarded and ignored.
 </details>
 
 ### `POST /v1/images/generations`
-> Image endpoint: image generation, image editing
+> Image generation endpoint
 
 ```bash
 curl http://localhost:8000/v1/images/generations \
@@ -134,8 +135,50 @@ curl http://localhost:8000/v1/images/generations \
 | `prompt` | string | Prompt | - |
 | `n` | integer | Number of images | `1` - `10` (streaming: `1` or `2` only) |
 | `stream` | boolean | Enable streaming | `true`, `false` |
+| `size` | string | Image size | `1024x1024` (WS mode maps to aspect ratio) |
+| `quality` | string | Image quality | `standard` (not customizable yet) |
+| `response_format` | string | Response format | `url`, `b64_json` |
+| `style` | string | Style | - (not supported yet) |
 
-Note: any other parameters will be discarded and ignored.
+Note: when `grok.image_ws=true`, `size` is mapped to aspect ratio (only 5 supported: `16:9`, `9:16`, `1:1`, `2:3`, `3:2`); you can also pass those ratio strings directly:  
+`1024x576/1280x720/1536x864 -> 16:9`, `576x1024/720x1280/864x1536 -> 9:16`, `1024x1024/512x512 -> 1:1`, `1024x1536/512x768/768x1024 -> 2:3`, `1536x1024/768x512/1024x768 -> 3:2`, otherwise defaults to `2:3`. Other parameters are ignored.
+
+<br>
+
+</details>
+
+<br>
+
+### `POST /v1/images/edits`
+> Image edit endpoint (multipart/form-data)
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -F "model=grok-imagine-1.0-edit" \
+  -F "prompt=Make it sharper" \
+  -F "image=@/path/to/image.png" \
+  -F "n=1"
+```
+
+<details>
+<summary>Supported request parameters</summary>
+
+<br>
+
+| Field | Type | Description | Allowed values |
+| :--- | :--- | :--- | :--- |
+| `model` | string | Image model ID | `grok-imagine-1.0-edit` |
+| `prompt` | string | Edit prompt | - |
+| `image` | file | Image file | `png`, `jpg`, `webp` |
+| `n` | integer | Number of images | `1` - `10` (streaming: `1` or `2` only) |
+| `stream` | boolean | Enable streaming | `true`, `false` |
+| `size` | string | Image size | `1024x1024` (not customizable yet) |
+| `quality` | string | Image quality | `standard` (not customizable yet) |
+| `response_format` | string | Response format | `url`, `b64_json` |
+| `style` | string | Style | - (not supported yet) |
+
+Note: `size`, `quality`, `style` are OpenAI compatibility placeholders and are not customizable yet.
 
 <br>
 
@@ -175,6 +218,10 @@ Config file: `data/config.toml`
 | | `retry_budget` | Backoff budget | Max total retry time per request (seconds). | `90.0` |
 | | `stream_idle_timeout` | Stream idle timeout | Idle timeout for streaming responses (seconds). | `45.0` |
 | | `video_idle_timeout` | Video idle timeout | Idle timeout for video generation (seconds). | `90.0` |
+| | `image_ws` | Image WS generation | When enabled, `/v1/images/generations` uses WebSocket. | `false` |
+| | `image_ws_blocked_seconds` | WS blocked threshold | Mark blocked if no final image after this many seconds post-medium. | `15` |
+| | `image_ws_final_min_bytes` | WS final min bytes | Minimum bytes to treat an image as final (JPG usually > 100KB). | `100000` |
+| | `image_ws_nsfw` | WS NSFW | Enable NSFW in WS requests. | `true` |
 | **token** | `auto_refresh` | Auto refresh | Enable automatic token refresh. | `true` |
 | | `refresh_interval_hours` | Refresh interval | Token refresh interval (hours). | `8` |
 | | `super_refresh_interval_hours` | Super refresh interval | Super token refresh interval (hours). | `2` |

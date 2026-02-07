@@ -218,7 +218,7 @@ class ChatRequestBuilder:
         if image_attachments:
             merged_attachments.extend(image_attachments)
 
-        payload = {
+        payload: Dict[str, Any] = {
             "temporary": temporary,
             "modelName": model,
             "message": message,
@@ -278,6 +278,7 @@ class GrokChatService:
         stream: bool = None,
         file_attachments: List[str] = None,
         image_attachments: List[str] = None,
+        raw_payload: Dict[str, Any] = None,
     ):
         """
         发送聊天请求
@@ -298,9 +299,16 @@ class GrokChatService:
             stream = get_config("grok.stream", True)
 
         headers = ChatRequestBuilder.build_headers(token)
-        payload = ChatRequestBuilder.build_payload(
-            message, model, mode, file_attachments, image_attachments
-        )
+        if raw_payload is not None:
+            payload = raw_payload
+        else:
+            payload = ChatRequestBuilder.build_payload(
+                message,
+                model,
+                mode,
+                file_attachments,
+                image_attachments,
+            )
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         timeout = get_config("grok.timeout", TIMEOUT)
 
@@ -310,6 +318,8 @@ class GrokChatService:
                 return e.details.get("status")
             return None
 
+        logger.debug(f"Payload: {payload}")
+        
         # 建立连接函数
         async def establish_connection():
             """建立连接并返回 response 对象"""
@@ -338,15 +348,10 @@ class GrokChatService:
                             "token": token[:10] + "...",
                         },
                     )
-                    resp_headers = {}
-                    try:
-                        resp_headers = dict(response.headers)
-                    except Exception:
-                        resp_headers = {}
                     body_for_log = content if content else "<empty>"
                     logger.debug(
                         "Grok API error response "
-                        f"(status={response.status_code}, headers={resp_headers}): {body_for_log}"
+                        f"(status={response.status_code}): {body_for_log}"
                     )
                     # 关闭 session 并抛出异常
                     try:
@@ -358,7 +363,6 @@ class GrokChatService:
                         details={
                             "status": response.status_code,
                             "body": content,
-                            "headers": resp_headers,
                         },
                     )
 

@@ -59,8 +59,6 @@ docker compose up -d
 
 > MySQL 示例：`mysql+aiomysql://user:password@host:3306/db`（若填 `mysql://` 会自动转为 `mysql+aiomysql://`）
 
-> MySQL 示例：`mysql+aiomysql://user:password@host:3306/db`（若填 `mysql://` 会自动转为 `mysql+aiomysql://`）
-
 ### 可用次数
 
 - Basic 账号：80 次 / 20h
@@ -79,6 +77,7 @@ docker compose up -d
 | `grok-4.1`               |  1  | Basic/Super |   支持   |   支持   |    -    |
 | `grok-4.1-thinking`      |  4  | Basic/Super |   支持   |   支持   |    -    |
 | `grok-imagine-1.0`       |  4  | Basic/Super |    -    |   支持   |    -    |
+| `grok-imagine-1.0-edit`  |  4  | Basic/Super |    -    |   支持   |    -    |
 | `grok-imagine-1.0-video` |  -  | Basic/Super |    -    |    -    |   支持   |
 
 <br>
@@ -112,7 +111,7 @@ curl http://localhost:8000/v1/chat/completions \
 | `thinking`           | string  | 思维链模式                     | `enabled`, `disabled`, `null`                      |
 | `video_config`       | object  | **视频模型专用配置对象**       | -                                                  |
 | └─`aspect_ratio`     | string  | 视频宽高比                     | `16:9`, `9:16`, `1:1`, `2:3`, `3:2`                |
-| └─`video_length`     | integer | 视频时长 (秒)                  | `6`, `10`                                          |
+| └─`video_length`     | integer | 视频时长 (秒)                  | `6`, `10`, `15`                                    |
 | └─`resolution_name`  | string  | 分辨率                         | `480p`, `720p`                                     |
 | └─`preset`           | string  | 风格预设                       | `fun`, `normal`, `spicy`, `custom`                 |
 
@@ -139,7 +138,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ### `POST /v1/images/generations`
 
-> 图像接口，支持图像生成、图像编辑
+> 图像生成接口
 
 ```bash
 curl http://localhost:8000/v1/images/generations \
@@ -161,6 +160,46 @@ curl http://localhost:8000/v1/images/generations \
 | :---------------- | :------ | :--------------- | :------------------------------------------- |
 | `model`           | string  | 图像模型名       | `grok-imagine-1.0`                           |
 | `prompt`          | string  | 图像描述提示词   | -                                            |
+| `n`               | integer | 生成数量         | `1` - `10` (流式模式仅限 `1` 或 `2`)         |
+| `stream`          | boolean | 是否开启流式输出 | `true`, `false`                              |
+| `size`            | string  | 图片尺寸         | `1024x1024` (WS 模式支持映射到比例)          |
+| `quality`         | string  | 图片质量         | `standard` (暂不支持自定义)                  |
+| `response_format` | string  | 响应格式         | `url`, `b64_json`                            |
+| `style`           | string  | 风格             | - (暂不支持)                                 |
+
+注：`quality`、`style` 参数为 OpenAI 兼容保留，当前版本暂不支持自定义。
+当开启 `grok.image_ws=true` 时，`size` 将映射为宽高比（仅支持 5 种：`16:9`、`9:16`、`1:1`、`2:3`、`3:2`），也可以直接传以上比例字符串：  
+`1024x576/1280x720/1536x864 -> 16:9`，`576x1024/720x1280/864x1536 -> 9:16`，`1024x1024/512x512 -> 1:1`，`1024x1536/512x768/768x1024 -> 2:3`，`1536x1024/768x512/1024x768 -> 3:2`，其他值默认 `2:3`。
+
+<br>
+
+</details>
+
+<br>
+
+### `POST /v1/images/edits`
+
+> 图像编辑接口（multipart/form-data）
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -F "model=grok-imagine-1.0-edit" \
+  -F "prompt=把图片变清晰" \
+  -F "image=@/path/to/image.png" \
+  -F "n=1"
+```
+
+<details>
+<summary>支持的请求参数</summary>
+
+<br>
+
+| 字段              | 类型    | 说明             | 可用参数                                     |
+| :---------------- | :------ | :--------------- | :------------------------------------------- |
+| `model`           | string  | 图像模型名       | `grok-imagine-1.0-edit`                      |
+| `prompt`          | string  | 编辑描述         | -                                            |
+| `image`           | file    | 待编辑图片       | `png`, `jpg`, `webp`                         |
 | `n`               | integer | 生成数量         | `1` - `10` (流式模式仅限 `1` 或 `2`)         |
 | `stream`          | boolean | 是否开启流式输出 | `true`, `false`                              |
 | `size`            | string  | 图片尺寸         | `1024x1024` (暂不支持自定义)                 |
@@ -208,6 +247,10 @@ curl http://localhost:8000/v1/images/generations \
 |                       | `retry_budget`             | 退避预算     | 单次请求的最大重试总耗时（秒）。                     | `90.0`                                                  |
 |                       | `stream_idle_timeout`      | 流空闲超时   | 流式响应空闲超时（秒），超过将断开。                 | `45.0`                                                  |
 |                       | `video_idle_timeout`       | 视频空闲超时 | 视频生成空闲超时（秒），超过将断开。                 | `90.0`                                                  |
+|                       | `image_ws`                 | 图片 WS 生成 | 启用后 `/v1/images/generations` 走 WebSocket 直连。  | `false`                                                 |
+|                       | `image_ws_blocked_seconds` | WS Blocked 阈值 | 收到中等图后超过该秒数仍无最终图则判定 blocked。   | `15`                                                    |
+|                       | `image_ws_final_min_bytes` | WS 最终图最小字节 | 判定最终图的最小字节数（通常 JPG > 100KB）。    | `100000`                                                |
+|                       | `image_ws_nsfw`            | WS NSFW     | WS 请求里是否启用 NSFW。                             | `true`                                                  |
 | **token**       | `auto_refresh`             | 自动刷新     | 是否开启 Token 自动刷新机制。                        | `true`                                                  |
 |                       | `refresh_interval_hours`   | 刷新间隔     | Token 刷新的时间间隔（小时）。                       | `8`                                                     |
 |                       | `super_refresh_interval_hours` | Super 刷新间隔 | Super Token 刷新的时间间隔（小时）。               | `2`                                                     |
