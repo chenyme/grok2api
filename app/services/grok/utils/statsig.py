@@ -30,7 +30,7 @@ class StatsigService:
         Returns:
             Base64 编码的 ID
         """
-        dynamic = get_config("grok.dynamic_statsig")
+        dynamic = get_config("chat.dynamic_statsig")
 
         if not dynamic:
             return "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk="

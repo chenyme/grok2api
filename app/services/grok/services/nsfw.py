@@ -37,8 +37,8 @@ class NSFWService:
     """NSFW 模式服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url")
-        self.timeout = float(get_config("grok.timeout"))
+        self.proxy = proxy or get_config("network.base_proxy_url")
+        self.timeout = float(get_config("network.timeout"))
 
     def _build_proxies(self) -> Optional[dict]:
         """构建代理配置"""
@@ -60,7 +60,7 @@ class NSFWService:
     def _build_headers(self, token: str) -> dict:
         """构造 gRPC-Web 请求头"""
         cookie = build_sso_cookie(token, include_rw=True)
-        user_agent = get_config("grok.user_agent")
+        user_agent = get_config("security.user_agent")
         return {
             "accept": "*/*",
             "content-type": "application/grpc-web+proto",
@@ -75,7 +75,7 @@ class NSFWService:
     def _build_birth_headers(self, token: str) -> dict:
         """构造设置出生日期请求头"""
         cookie = build_sso_cookie(token, include_rw=True)
-        user_agent = get_config("grok.user_agent")
+        user_agent = get_config("security.user_agent")
         return {
             "accept": "*/*",
             "content-type": "application/json",
@@ -97,9 +97,7 @@ class NSFWService:
         protobuf = b"\x0a\x02\x10\x01\x12" + bytes([len(inner)]) + inner
         return encode_grpc_web_payload(protobuf)
 
-    async def _set_birth_date(
-        self, session: AsyncSession, token: str
-    ) -> tuple[bool, int, Optional[str]]:
+    async def _set_birth_date(self, session: AsyncSession, token: str) -> tuple[bool, int, Optional[str]]:
         """设置出生日期"""
         headers = self._build_birth_headers(token)
         payload = {"birthDate": self._random_birth_date()}
@@ -125,7 +123,7 @@ class NSFWService:
         logger.debug(f"NSFW payload: len={len(payload)} hex={payload.hex()}")
 
         try:
-            browser = get_config("grok.browser")
+            browser = get_config("security.browser")
             async with AsyncSession(impersonate=browser) as session:
                 # 先设置出生日期
                 ok, birth_status, birth_err = await self._set_birth_date(session, token)

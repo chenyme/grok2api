@@ -32,13 +32,13 @@ class StreamProcessor(BaseProcessor):
         self.fingerprint: str = ""
         self.think_opened: bool = False
         self.role_sent: bool = False
-        self.filter_tags = get_config("grok.filter_tags")
+        self.filter_tags = get_config("chat.filter_tags")
         self.image_format = get_config("app.image_format")
         self._tag_buffer: str = ""
         self._in_filter_tag: bool = False
 
         if think is None:
-            self.show_think = get_config("grok.thinking")
+            self.show_think = get_config("chat.thinking")
         else:
             self.show_think = think
 
@@ -114,7 +114,7 @@ class StreamProcessor(BaseProcessor):
 
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理流式响应"""
-        idle_timeout = get_config("grok.stream_idle_timeout")
+        idle_timeout = get_config("timeout.stream_idle_timeout")
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
@@ -223,7 +223,7 @@ class CollectProcessor(BaseProcessor):
     def __init__(self, model: str, token: str = ""):
         super().__init__(model, token)
         self.image_format = get_config("app.image_format")
-        self.filter_tags = get_config("grok.filter_tags")
+        self.filter_tags = get_config("chat.filter_tags")
 
     def _filter_content(self, content: str) -> str:
         """过滤内容中的特殊标签"""
@@ -242,7 +242,7 @@ class CollectProcessor(BaseProcessor):
         response_id = ""
         fingerprint = ""
         content = ""
-        idle_timeout = get_config("grok.stream_idle_timeout")
+        idle_timeout = get_config("timeout.stream_idle_timeout")
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):

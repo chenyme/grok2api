@@ -32,7 +32,7 @@ class ImageService:
         self._url_pattern = re.compile(r"/images/([a-f0-9-]+)\.(png|jpg|jpeg)")
 
     def _resolve_proxy(self) -> tuple[aiohttp.BaseConnector, Optional[str]]:
-        proxy_url = get_config("grok.base_proxy_url")
+        proxy_url = get_config("network.base_proxy_url")
         if not proxy_url:
             return aiohttp.TCPConnector(ssl=self._ssl_context), None
 
@@ -46,7 +46,7 @@ class ImageService:
 
     def _get_ws_headers(self, token: str) -> Dict[str, str]:
         cookie = build_sso_cookie(token, include_rw=True)
-        user_agent = get_config("grok.user_agent")
+        user_agent = get_config("security.user_agent")
         return {
             "Cookie": cookie,
             "Origin": "https://grok.com",
@@ -61,7 +61,7 @@ class ImageService:
         return match.group(1) if match else None
 
     def _is_final_image(self, url: str, blob_size: int) -> bool:
-        return (url or "").lower().endswith((".jpg", ".jpeg")) and blob_size > get_config("grok.image_ws_final_min_bytes")
+        return (url or "").lower().endswith((".jpg", ".jpeg")) and blob_size > get_config("image.image_ws_final_min_bytes")
 
     def _classify_image(self, url: str, blob: str) -> Optional[Dict[str, object]]:
         if not url or not blob:
@@ -71,7 +71,7 @@ class ImageService:
         blob_size = len(blob)
         is_final = self._is_final_image(url, blob_size)
         
-        stage = "final" if is_final else ("medium" if blob_size > get_config("grok.image_ws_medium_min_bytes") else "preview")
+        stage = "final" if is_final else ("medium" if blob_size > get_config("image.image_ws_medium_min_bytes") else "preview")
 
         return {
             "type": "image",
@@ -122,8 +122,8 @@ class ImageService:
     ) -> AsyncGenerator[Dict[str, object], None]:
         request_id = str(uuid.uuid4())
         headers = self._get_ws_headers(token)
-        timeout = float(get_config("grok.timeout"))
-        blocked_seconds = float(get_config("grok.image_ws_blocked_seconds"))
+        timeout = float(get_config("network.timeout"))
+        blocked_seconds = float(get_config("image.image_ws_blocked_seconds"))
 
         try:
             connector, proxy = self._resolve_proxy()

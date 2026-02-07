@@ -23,17 +23,17 @@ class RetryContext:
 
     def __init__(self):
         self.attempt = 0
-        self.max_retry = int(get_config("grok.max_retry"))
-        self.retry_codes = get_config("grok.retry_status_codes")
+        self.max_retry = int(get_config("retry.max_retry"))
+        self.retry_codes = get_config("retry.retry_status_codes")
         self.last_error = None
         self.last_status = None
         self.total_delay = 0.0
-        self.retry_budget = float(get_config("grok.retry_budget"))
+        self.retry_budget = float(get_config("retry.retry_budget"))
 
         # 退避参数
-        self.backoff_base = float(get_config("grok.retry_backoff_base"))
-        self.backoff_factor = float(get_config("grok.retry_backoff_factor"))
-        self.backoff_max = float(get_config("grok.retry_backoff_max"))
+        self.backoff_base = float(get_config("retry.retry_backoff_base"))
+        self.backoff_factor = float(get_config("retry.retry_backoff_factor"))
+        self.backoff_max = float(get_config("retry.retry_backoff_max"))
 
         # decorrelated jitter 状态
         self._last_delay = self.backoff_base

@@ -45,7 +45,7 @@ class ImageStreamProcessor(BaseProcessor):
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理流式响应"""
         final_images = []
-        idle_timeout = get_config("grok.stream_idle_timeout")
+        idle_timeout = get_config("timeout.stream_idle_timeout")
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
@@ -160,7 +160,7 @@ class ImageCollectProcessor(BaseProcessor):
     async def process(self, response: AsyncIterable[bytes]) -> List[str]:
         """处理并收集图片"""
         images = []
-        idle_timeout = get_config("grok.stream_idle_timeout")
+        idle_timeout = get_config("timeout.stream_idle_timeout")
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):

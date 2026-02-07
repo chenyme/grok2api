@@ -23,12 +23,12 @@ class UsageService:
     """用量查询服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url")
-        self.timeout = get_config("grok.timeout")
+        self.proxy = proxy or get_config("network.base_proxy_url")
+        self.timeout = get_config("network.timeout")
 
     def _build_headers(self, token: str) -> dict:
         """构建请求头"""
-        user_agent = get_config("grok.user_agent")
+        user_agent = get_config("security.user_agent")
         headers = {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -97,7 +97,7 @@ class UsageService:
                 try:
                     headers = self._build_headers(token)
                     payload = {"requestKind": "DEFAULT", "modelName": model_name}
-                    browser = get_config("grok.browser")
+                    browser = get_config("security.browser")
 
                     async with AsyncSession() as session:
                         response = await session.post(

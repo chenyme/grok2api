@@ -18,7 +18,7 @@ class VoiceService:
     """Voice Mode Service (LiveKit)"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url")
+        self.proxy = proxy or get_config("network.base_proxy_url")
 
     async def get_token(
         self,
@@ -42,8 +42,8 @@ class VoiceService:
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         
         try:
-            browser = get_config("grok.browser")
-            timeout = get_config("grok.timeout")
+            browser = get_config("security.browser")
+            timeout = get_config("network.timeout")
             async with AsyncSession(impersonate=browser) as session:
                 response = await session.post(
                     LIVEKIT_TOKEN_API,

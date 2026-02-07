@@ -102,7 +102,7 @@ class ChatRequestBuilder:
     @staticmethod
     def build_headers(token: str) -> Dict[str, str]:
         """构造请求头"""
-        user_agent = get_config("grok.user_agent")
+        user_agent = get_config("security.user_agent")
         headers = {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -142,7 +142,7 @@ class ChatRequestBuilder:
             merged_attachments.extend(image_attachments)
 
         payload = {
-            "temporary": get_config("grok.temporary"),
+            "temporary": get_config("chat.temporary"),
             "modelName": model,
             "message": message,
             "fileAttachments": merged_attachments,
@@ -160,7 +160,7 @@ class ChatRequestBuilder:
                 "modelConfigOverride": {"modelMap": {}},
                 "requestModelDetails": {"modelId": model},
             },
-            "disableMemory": get_config("grok.disable_memory"),
+            "disableMemory": get_config("chat.disable_memory"),
             "deviceEnvInfo": {
                 "darkModeEnabled": False,
                 "devicePixelRatio": 2,
@@ -181,27 +181,27 @@ class GrokChatService:
     """Grok API 调用服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url")
+        self.proxy = proxy or get_config("network.base_proxy_url")
 
     async def chat(self, token: str, message: str, model: str = "grok-3", mode: str = None,
                    stream: bool = None, file_attachments: List[str] = None, 
                    image_attachments: List[str] = None, raw_payload: Dict[str, Any] = None):
         """发送聊天请求"""
         if stream is None:
-            stream = get_config("grok.stream")
+            stream = get_config("chat.stream")
 
         headers = ChatRequestBuilder.build_headers(token)
         payload = raw_payload if raw_payload is not None else ChatRequestBuilder.build_payload(
             message, model, mode, file_attachments, image_attachments
         )
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        timeout = get_config("grok.timeout")
+        timeout = get_config("network.timeout")
 
         logger.debug(f"Chat request: model={model}, mode={mode}, stream={stream}, attachments={len(file_attachments or [])}")
         
         # 建立连接
         async def establish_connection():
-            browser = get_config("grok.browser")
+            browser = get_config("security.browser")
             session = AsyncSession(impersonate=browser)
             try:
                 response = await session.post(
@@ -303,7 +303,7 @@ class GrokChatService:
             finally:
                 await upload_service.close()
 
-        stream = request.stream if request.stream is not None else get_config("grok.stream")
+        stream = request.stream if request.stream is not None else get_config("chat.stream")
 
         response = await self.chat(
             token, message, grok_model, mode, stream,
@@ -340,7 +340,7 @@ class ChatService:
 
         # 解析参数
         think = {"enabled": True, "disabled": False}.get(thinking)
-        is_stream = stream if stream is not None else get_config("grok.stream")
+        is_stream = stream if stream is not None else get_config("chat.stream")
 
         # 构造请求
         chat_request = ChatRequest(model=model, messages=messages, stream=is_stream, think=think)

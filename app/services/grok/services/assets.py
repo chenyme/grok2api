@@ -111,10 +111,10 @@ class ServiceConfig:
     @classmethod
     def from_settings(cls, proxy: Optional[str] = None):
         return cls(
-            proxy=proxy or get_config("grok.asset_proxy_url") or get_config("grok.base_proxy_url"),
-            timeout=get_config("grok.timeout"),
-            browser=get_config("grok.browser"),
-            user_agent=get_config("grok.user_agent"),
+            proxy=proxy or get_config("network.asset_proxy_url") or get_config("network.base_proxy_url"),
+            timeout=get_config("network.timeout"),
+            browser=get_config("security.browser"),
+            user_agent=get_config("security.user_agent"),
         )
     
     def get_proxies(self) -> Optional[dict]:

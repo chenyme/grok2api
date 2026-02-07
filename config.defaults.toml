@@ -1,58 +1,139 @@
-[grok]
-temporary = true
-stream = true
-thinking = true
-dynamic_statsig = true
-filter_tags = ["xaiartifact","xai:tool_usage_card","grok:render"]
-timeout = 120
-base_proxy_url = ""
-asset_proxy_url = ""
-cf_clearance = ""
-# 浏览器指纹配置
-browser = "chrome136"
-user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-disable_memory = true
-max_retry = 3
-retry_status_codes = [401,429,403]
-image_ws = true
-image_ws_blocked_seconds = 15
-image_ws_final_min_bytes = 100000
-image_ws_nsfw = true
-retry_backoff_base = 0.5
-retry_backoff_factor = 2.0
-retry_backoff_max = 30.0
-retry_budget = 90.0
-stream_idle_timeout = 120.0
-video_idle_timeout = 90.0
-
+# ==================== 应用设置 ====================
 [app]
+# 应用访问地址（用于生成文件链接）
 app_url = "http://127.0.0.1:8000"
+# 后台管理密码
 app_key = "grok2api"
+# API 调用密钥（可选）
 api_key = ""
+# 生成图片的格式（url 或 base64）
 image_format = "url"
+# 生成视频的格式（html 或 url）
 video_format = "html"
 
+
+# ==================== 网络配置 ====================
+[network]
+# 请求超时时间（秒）
+timeout = 120
+# 基础代理地址（代理到 Grok 官网）
+base_proxy_url = ""
+# 资源代理地址（代理静态资源如图片/视频）
+asset_proxy_url = ""
+
+
+# ==================== 反爬虫验证 ====================
+[security]
+# Cloudflare Clearance Cookie
+cf_clearance = ""
+# curl_cffi 浏览器指纹
+browser = "chrome136"
+# User-Agent 字符串
+user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+
+
+# ==================== 对话配置 ====================
+[chat]
+# 是否启用临时对话模式
+temporary = true
+# 是否禁用 Grok 记忆功能
+disable_memory = true
+# 是否默认启用流式响应
+stream = true
+# 是否启用思维链输出
+thinking = true
+# 是否动态生成 Statsig 指纹
+dynamic_statsig = true
+# 过滤的特殊标签列表
+filter_tags = ["xaiartifact","xai:tool_usage_card","grok:render"]
+
+
+# ==================== 重试策略 ====================
+[retry]
+# 最大重试次数
+max_retry = 3
+# 触发重试的 HTTP 状态码
+retry_status_codes = [401,429,403]
+# 退避基础延迟（秒）
+retry_backoff_base = 0.5
+# 退避倍率
+retry_backoff_factor = 2.0
+# 单次重试最大延迟（秒）
+retry_backoff_max = 30.0
+# 总重试预算时间（秒）
+retry_budget = 90.0
+
+
+# ==================== 超时配置 ====================
+[timeout]
+# 流式响应空闲超时（秒）
+stream_idle_timeout = 120.0
+# 视频生成空闲超时（秒）
+video_idle_timeout = 90.0
+
+
+# ==================== 图片生成 ====================
+[image]
+# 是否启用 WebSocket 直连生成图片
+image_ws = true
+# WebSocket 生成时是否启用 NSFW
+image_ws_nsfw = true
+# 收到中等质量图后等待最终图的超时秒数
+image_ws_blocked_seconds = 15
+# 判定为最终图的最小字节数
+image_ws_final_min_bytes = 100000
+# 判定为中等质量图的最小字节数
+image_ws_medium_min_bytes = 30000
+
+
+# ==================== Token 池管理 ====================
 [token]
+# 是否启用 Token 自动刷新
 auto_refresh = true
+# 普通 Token 刷新间隔（小时）
 refresh_interval_hours = 8
+# Super Token 刷新间隔（小时）
 super_refresh_interval_hours = 2
+# Token 连续失败阈值
 fail_threshold = 5
+# Token 变更保存延迟（毫秒）
 save_delay_ms = 500
+# 多 worker 状态同步间隔（秒）
 reload_interval_sec = 30
 
+
+# ==================== 缓存管理 ====================
 [cache]
+# 是否启用自动清理
 enable_auto_clean = true
+# 缓存大小上限（MB）
 limit_mb = 1024
 
+
+# ==================== 并发性能 ====================
 [performance]
+# Assets 批量处理并发上限
 assets_max_concurrent = 25
-media_max_concurrent = 50
-usage_max_concurrent = 25
+# Assets 批量删除大小
 assets_delete_batch_size = 10
+# Assets 单批处理数量
 assets_batch_size = 10
+# Assets 单次最大处理数量
 assets_max_tokens = 1000
+
+# Media 生成并发上限
+media_max_concurrent = 50
+
+# Token 用量刷新并发上限
+usage_max_concurrent = 25
+# Token 用量刷新批次大小
 usage_batch_size = 50
+# Token 用量单次最大数量
 usage_max_tokens = 1000
+
+# NSFW 批量开启并发上限
 nsfw_max_concurrent = 10
+# NSFW 批量开启批次大小
 nsfw_batch_size = 50
+# NSFW 单次最大数量
 nsfw_max_tokens = 1000

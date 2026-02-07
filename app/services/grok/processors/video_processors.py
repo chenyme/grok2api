@@ -32,7 +32,7 @@ class VideoStreamProcessor(BaseProcessor):
         self.video_format = str(get_config("app.video_format")).lower()
 
         if think is None:
-            self.show_think = get_config("grok.thinking")
+            self.show_think = get_config("chat.thinking")
         else:
             self.show_think = think
 
@@ -68,7 +68,7 @@ class VideoStreamProcessor(BaseProcessor):
 
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理视频流式响应"""
-        idle_timeout = get_config("grok.video_idle_timeout")
+        idle_timeout = get_config("timeout.video_idle_timeout")
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
@@ -171,7 +171,7 @@ class VideoCollectProcessor(BaseProcessor):
         """处理并收集视频响应"""
         response_id = ""
         content = ""
-        idle_timeout = get_config("grok.video_idle_timeout")
+        idle_timeout = get_config("timeout.video_idle_timeout")
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):

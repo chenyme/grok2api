@@ -93,7 +93,7 @@ def _validate_common_request(
         # WS 流式仅支持 b64_json (base64 视为同义)
         if (
             request.stream
-            and get_config("grok.image_ws")
+            and get_config("image.image_ws")
             and request.response_format
             and request.response_format not in {"b64_json", "base64"}
         ):
@@ -319,13 +319,13 @@ async def create_image(request: ImageGenerationRequest):
     # 获取 token 和模型信息
     token_mgr, token = await _get_token(request.model)
     model_info = ModelService.get(request.model)
-    use_ws = bool(get_config("grok.image_ws"))
+    use_ws = bool(get_config("image.image_ws"))
 
     # 流式模式
     if request.stream:
         if use_ws:
             aspect_ratio = resolve_aspect_ratio(request.size)
-            enable_nsfw = bool(get_config("grok.image_ws_nsfw"))
+            enable_nsfw = bool(get_config("image.image_ws_nsfw"))
             upstream = image_service.stream(
                 token=token,
                 prompt=request.prompt,
@@ -372,7 +372,7 @@ async def create_image(request: ImageGenerationRequest):
     usage_override = None
     if use_ws:
         aspect_ratio = resolve_aspect_ratio(request.size)
-        enable_nsfw = bool(get_config("grok.image_ws_nsfw"))
+        enable_nsfw = bool(get_config("image.image_ws_nsfw"))
         all_images = []
         seen = set()
         expected_per_call = 6
@@ -643,7 +643,7 @@ async def edit_image(
         ] = parent_post_id
 
     raw_payload = {
-        "temporary": bool(get_config("grok.temporary")),
+        "temporary": bool(get_config("chat.temporary")),
         "modelName": model_info.grok_model,
         "message": edit_request.prompt,
         "enableImageGeneration": True,

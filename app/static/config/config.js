@@ -26,6 +26,7 @@ const NUMERIC_FIELDS = new Set([
   'video_idle_timeout',
   'image_ws_blocked_seconds',
   'image_ws_final_min_bytes',
+  'image_ws_medium_min_bytes',
   'nsfw_max_concurrent',
   'nsfw_batch_size',
   'nsfw_max_tokens'
@@ -40,44 +41,60 @@ const LOCALE_MAP = {
     "image_format": { title: "图片格式", desc: "生成的图片格式（url 或 base64）。" },
     "video_format": { title: "视频格式", desc: "生成的视频格式（html 或 url，url 为处理后的链接）。" }
   },
-  "grok": {
-    "label": "Grok 设置",
+  "network": {
+    "label": "网络配置",
+    "timeout": { title: "请求超时", desc: "请求 Grok 服务的超时时间（秒）。" },
+    "base_proxy_url": { title: "基础代理 URL", desc: "代理请求到 Grok 官网的基础服务地址。" },
+    "asset_proxy_url": { title: "资源代理 URL", desc: "代理请求到 Grok 官网的静态资源（图片/视频）地址。" }
+  },
+  "security": {
+    "label": "反爬虫验证",
+    "cf_clearance": { title: "CF Clearance", desc: "Cloudflare Clearance Cookie，用于绕过反爬虫验证。" },
+    "browser": { title: "浏览器指纹", desc: "curl_cffi 浏览器指纹标识（如 chrome136）。" },
+    "user_agent": { title: "User-Agent", desc: "HTTP 请求的 User-Agent 字符串，需与浏览器指纹匹配。" }
+  },
+  "chat": {
+    "label": "对话配置",
     "temporary": { title: "临时对话", desc: "是否启用临时对话模式。" },
-    "disable_memory": { title: "禁用记忆", desc: "禁用 Grok 记忆功能，以防止响应中出现不相关上下文" },
+    "disable_memory": { title: "禁用记忆", desc: "禁用 Grok 记忆功能，以防止响应中出现不相关上下文。" },
     "stream": { title: "流式响应", desc: "是否默认启用流式输出。" },
     "thinking": { title: "思维链", desc: "是否启用模型思维链输出。" },
     "dynamic_statsig": { title: "动态指纹", desc: "是否启用动态生成 Statsig 值。" },
-    "filter_tags": { title: "过滤标签", desc: "自动过滤 Grok 响应中的特殊标签。" },
-    "timeout": { title: "超时时间", desc: "请求 Grok 服务的超时时间（秒）。" },
-    "base_proxy_url": { title: "基础代理 URL", desc: "代理请求到 Grok 官网的基础服务地址。" },
-    "asset_proxy_url": { title: "资源代理 URL", desc: "代理请求到 Grok 官网的静态资源（图片/视频）地址。" },
-    "image_ws": { title: "Imagine WebSocket 生成", desc: "启用后 /v1/images/generations 走 WebSocket 直连。" },
-    "image_ws_nsfw": { title: "Imagine NSFW", desc: "WS 请求里是否启用 NSFW。" },
-    "image_ws_blocked_seconds": { title: "Imagine WebSocket Blocked 阈值", desc: "收到中等图后超过该秒数仍无最终图则判定 blocked。" },
-    "image_ws_final_min_bytes": { title: "Imagine WebSocket 最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" },
-    "max_retry": { title: "最大重试", desc: "请求 Grok 服务失败时的最大重试次数。" },
+    "filter_tags": { title: "过滤标签", desc: "自动过滤 Grok 响应中的特殊标签。" }
+  },
+  "retry": {
+    "label": "重试策略",
+    "max_retry": { title: "最大重试次数", desc: "请求 Grok 服务失败时的最大重试次数。" },
     "retry_status_codes": { title: "重试状态码", desc: "触发重试的 HTTP 状态码列表。" },
     "retry_backoff_base": { title: "退避基数", desc: "重试退避的基础延迟（秒）。" },
     "retry_backoff_factor": { title: "退避倍率", desc: "重试退避的指数放大系数。" },
     "retry_backoff_max": { title: "退避上限", desc: "单次重试等待的最大延迟（秒）。" },
-    "retry_budget": { title: "退避预算", desc: "单次请求的最大重试总耗时（秒）。" },
+    "retry_budget": { title: "退避预算", desc: "单次请求的最大重试总耗时（秒）。" }
+  },
+  "timeout": {
+    "label": "超时配置",
     "stream_idle_timeout": { title: "流空闲超时", desc: "流式响应空闲超时（秒），超过将断开。" },
-    "video_idle_timeout": { title: "视频空闲超时", desc: "视频生成空闲超时（秒），超过将断开。" },
-    "cf_clearance": { title: "CF Clearance", desc: "" },
-    "browser": { title: "curl_cffi", desc: "" },
-    "user_agent": { title: "User-Agent", desc: "" }
+    "video_idle_timeout": { title: "视频空闲超时", desc: "视频生成空闲超时（秒），超过将断开。" }
+  },
+  "image": {
+    "label": "图片生成",
+    "image_ws": { title: "WebSocket 生成", desc: "启用后 /v1/images/generations 走 WebSocket 直连。" },
+    "image_ws_nsfw": { title: "NSFW 模式", desc: "WebSocket 请求是否启用 NSFW。" },
+    "image_ws_blocked_seconds": { title: "Blocked 阈值", desc: "收到中等图后超过该秒数仍无最终图则判定 blocked。" },
+    "image_ws_final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" },
+    "image_ws_medium_min_bytes": { title: "中等图最小字节", desc: "判定中等质量图的最小字节数。" }
   },
   "token": {
-    "label": "Token 池设置",
+    "label": "Token 池管理",
     "auto_refresh": { title: "自动刷新", desc: "是否开启 Token 自动刷新机制。" },
-    "refresh_interval_hours": { title: "刷新间隔", desc: "Token 刷新的时间间隔（小时）。" },
+    "refresh_interval_hours": { title: "刷新间隔", desc: "普通 Token 刷新的时间间隔（小时）。" },
     "super_refresh_interval_hours": { title: "Super 刷新间隔", desc: "Super Token 刷新的时间间隔（小时）。" },
     "fail_threshold": { title: "失败阈值", desc: "单个 Token 连续失败多少次后被标记为不可用。" },
     "save_delay_ms": { title: "保存延迟", desc: "Token 变更合并写入的延迟（毫秒）。" },
-    "reload_interval_sec": { title: "一致性刷新", desc: "多 worker 场景下 Token 状态刷新间隔（秒）。" }
+    "reload_interval_sec": { title: "同步间隔", desc: "多 worker 场景下 Token 状态刷新间隔（秒）。" }
   },
   "cache": {
-    "label": "缓存设置",
+    "label": "缓存管理",
     "enable_auto_clean": { title: "自动清理", desc: "是否启用缓存自动清理，开启后按上限自动回收。" },
     "limit_mb": { title: "清理阈值", desc: "缓存大小阈值（MB），超过阈值会触发清理。" }
   },
@@ -97,11 +114,9 @@ const LOCALE_MAP = {
   }
 };
 
-// 反爬虫验证字段（从 grok 中单独分组显示）
-const ANTIBOT_FIELDS = ['cf_clearance', 'browser', 'user_agent'];
-const ANTIBOT_GROUP = {
-  label: "反爬虫验证",
-  desc: "以下三个参数用于绕过 Cloudflare 反爬虫验证。配置不正确将导致 403 错误。服务首次请求 Grok 时的 IP 必须与获取 CF Clearance 时的 IP 一致，后续服务器请求 IP 变化不会导致403。"
+// 配置部分说明（可选）
+const SECTION_DESCRIPTIONS = {
+  "security": "配置不正确将导致 403 错误。服务首次请求 Grok 时的 IP 必须与获取 CF Clearance 时的 IP 一致，后续服务器请求 IP 变化不会导致 403。"
 };
 
 const SECTION_ORDER = new Map(Object.keys(LOCALE_MAP).map((key, index) => [key, index]));
@@ -250,24 +265,29 @@ function renderConfig(data) {
     const localeSection = LOCALE_MAP[section];
     const keyOrder = localeSection ? new Map(Object.keys(localeSection).map((k, i) => [k, i])) : null;
 
-    // 分离反爬虫字段和普通字段
     const allKeys = sortByOrder(Object.keys(items), keyOrder);
-    const normalKeys = section === 'grok' ? allKeys.filter(k => !ANTIBOT_FIELDS.includes(k)) : allKeys;
-    const antibotKeys = section === 'grok' ? allKeys.filter(k => ANTIBOT_FIELDS.includes(k)) : [];
 
-    // 渲染普通字段
-    if (normalKeys.length > 0) {
+    if (allKeys.length > 0) {
       const card = document.createElement('div');
       card.className = 'config-section';
 
       const header = document.createElement('div');
       header.innerHTML = `<div class="config-section-title">${getSectionLabel(section)}</div>`;
+      
+      // 添加部分说明（如果有）
+      if (SECTION_DESCRIPTIONS[section]) {
+        const descP = document.createElement('p');
+        descP.className = 'text-[var(--accents-4)] text-sm mt-1 mb-4';
+        descP.textContent = SECTION_DESCRIPTIONS[section];
+        header.appendChild(descP);
+      }
+      
       card.appendChild(header);
 
       const grid = document.createElement('div');
       grid.className = 'config-grid';
 
-      normalKeys.forEach(key => {
+      allKeys.forEach(key => {
         const fieldCard = buildFieldCard(section, key, items[key]);
         grid.appendChild(fieldCard);
       });
@@ -276,28 +296,6 @@ function renderConfig(data) {
       if (grid.children.length > 0) {
         fragment.appendChild(card);
       }
-    }
-
-    // 渲染反爬虫验证分组（仅 grok section）
-    if (antibotKeys.length > 0) {
-      const card = document.createElement('div');
-      card.className = 'config-section';
-
-      const header = document.createElement('div');
-      header.innerHTML = `<div class="config-section-title">${ANTIBOT_GROUP.label}</div>
-        <p class="text-[var(--accents-4)] text-sm mt-1 mb-4">${ANTIBOT_GROUP.desc}</p>`;
-      card.appendChild(header);
-
-      const grid = document.createElement('div');
-      grid.className = 'config-grid';
-
-      antibotKeys.forEach(key => {
-        const fieldCard = buildFieldCard(section, key, items[key]);
-        grid.appendChild(fieldCard);
-      });
-
-      card.appendChild(grid);
-      fragment.appendChild(card);
     }
   });
 

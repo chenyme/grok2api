@@ -17,7 +17,7 @@ def _normalize_token(token: str) -> str:
 
 def build_sso_cookie(token: str, include_rw: bool = False) -> str:
     token = _normalize_token(token)
-    cf = get_config("grok.cf_clearance")
+    cf = get_config("security.cf_clearance")
     cookie = f"sso={token}"
     if include_rw:
         cookie = f"{cookie}; sso-rw={token}"

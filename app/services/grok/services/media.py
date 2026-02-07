@@ -43,14 +43,14 @@ class VideoService:
     """视频生成服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url")
-        self.timeout = get_config("grok.timeout")
+        self.proxy = proxy or get_config("network.base_proxy_url")
+        self.timeout = get_config("network.timeout")
 
     def _build_headers(
         self, token: str, referer: str = "https://grok.com/imagine"
     ) -> dict:
         """构建请求头"""
-        user_agent = get_config("grok.user_agent")
+        user_agent = get_config("security.user_agent")
         headers = {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -103,7 +103,7 @@ class VideoService:
                     CREATE_POST_API,
                     headers=headers,
                     json=payload,
-                    impersonate=get_config("grok.browser"),
+                    impersonate=get_config("security.browser"),
                     timeout=30,
                     proxies=self._build_proxies(),
                 )
@@ -172,7 +172,7 @@ class VideoService:
             headers = self._build_headers(token)
             payload = self._build_payload(prompt, post_id, aspect_ratio, video_length, resolution_name, preset)
 
-            session = AsyncSession(impersonate=get_config("grok.browser"))
+            session = AsyncSession(impersonate=get_config("security.browser"))
             response = await session.post(
                 CHAT_API,
                 headers=headers,
@@ -267,7 +267,7 @@ class VideoService:
             )
 
         think = {"enabled": True, "disabled": False}.get(thinking)
-        is_stream = stream if stream is not None else get_config("grok.stream")
+        is_stream = stream if stream is not None else get_config("chat.stream")
 
         # 提取内容
         from app.services.grok.services.chat import MessageExtractor
