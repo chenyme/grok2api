@@ -24,6 +24,7 @@ from app.services.grok.utils.stream import wrap_stream_with_usage
 
 CREATE_POST_API = "https://grok.com/rest/media/post/create"
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
+UPSCALE_VIDEO_API = "https://grok.com/rest/media/video/upscale"
 
 _MEDIA_SEMAPHORE = None
 _MEDIA_SEM_VALUE = 0
@@ -134,6 +135,46 @@ class VideoService:
         return await self.create_post(
             token, prompt="", media_type="MEDIA_POST_TYPE_IMAGE", media_url=image_url
         )
+
+    async def upscale(self, token: str, video_id: str) -> dict:
+        """
+        视频超分
+
+        Args:
+            token: 认证 Token
+            video_id: 视频 ID
+
+        Returns:
+            dict: 响应数据
+        """
+        try:
+            headers = self._build_headers(token)
+            payload = {"videoId": video_id}
+
+            async with AsyncSession() as session:
+                response = await session.post(
+                    UPSCALE_VIDEO_API,
+                    headers=headers,
+                    json=payload,
+                    impersonate=BROWSER,
+                    timeout=30,
+                    proxies=self._build_proxies(),
+                )
+
+            if response.status_code != 200:
+                logger.error(f"Upscale video failed: {response.status_code}")
+                raise UpstreamException(
+                    message=f"Failed to upscale video: {response.status_code}",
+                    details={"status": response.status_code},
+                )
+
+            return response.json()
+
+        except Exception as e:
+            logger.error(f"Upscale video error: {e}")
+            if isinstance(e, AppException):
+                raise e
+            raise UpstreamException(f"Upscale video error: {str(e)}")
 
     def _build_payload(
         self,
