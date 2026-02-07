@@ -23,7 +23,8 @@ from app.services.grok.utils.headers import build_sso_cookie
 
 NSFW_API = "https://grok.com/auth_mgmt.AuthManagement/UpdateUserFeatureControls"
 BIRTH_DATE_API = "https://grok.com/rest/auth/set-birth-date"
-BROWSER = "chrome136"
+DEFAULT_BROWSER = "chrome136"
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 TIMEOUT = 30
 
 
@@ -61,12 +62,13 @@ class NSFWService:
     def _build_headers(self, token: str) -> dict:
         """构造 gRPC-Web 请求头"""
         cookie = build_sso_cookie(token, include_rw=True)
+        user_agent = get_config("grok.user_agent", DEFAULT_USER_AGENT)
         return {
             "accept": "*/*",
             "content-type": "application/grpc-web+proto",
             "origin": "https://grok.com",
             "referer": "https://grok.com/",
-            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "user-agent": user_agent,
             "x-grpc-web": "1",
             "x-user-agent": "connect-es/2.1.1",
             "cookie": cookie,
@@ -75,12 +77,13 @@ class NSFWService:
     def _build_birth_headers(self, token: str) -> dict:
         """构造设置出生日期请求头"""
         cookie = build_sso_cookie(token, include_rw=True)
+        user_agent = get_config("grok.user_agent", DEFAULT_USER_AGENT)
         return {
             "accept": "*/*",
             "content-type": "application/json",
             "origin": "https://grok.com",
             "referer": "https://grok.com/?_s=account",
-            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "user-agent": user_agent,
             "cookie": cookie,
         }
 
@@ -127,7 +130,8 @@ class NSFWService:
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
 
         try:
-            async with AsyncSession(impersonate=BROWSER) as session:
+            browser = get_config("grok.browser", DEFAULT_BROWSER)
+            async with AsyncSession(impersonate=browser) as session:
                 ok, birth_status, birth_err = await self._set_birth_date(
                     session, token
                 )

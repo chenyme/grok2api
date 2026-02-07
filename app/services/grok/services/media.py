@@ -26,7 +26,8 @@ CREATE_POST_API = "https://grok.com/rest/media/post/create"
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 
 # 常量
-BROWSER = "chrome136"
+DEFAULT_BROWSER = "chrome136"
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 TIMEOUT = 300
 DEFAULT_MAX_CONCURRENT = 50
 _MEDIA_SEMAPHORE = asyncio.Semaphore(DEFAULT_MAX_CONCURRENT)
@@ -58,6 +59,7 @@ class VideoService:
         self, token: str, referer: str = "https://grok.com/imagine"
     ) -> dict:
         """构建请求头"""
+        user_agent = get_config("grok.user_agent", DEFAULT_USER_AGENT)
         headers = {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -78,7 +80,7 @@ class VideoService:
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            "User-Agent": user_agent,
         }
 
         apply_statsig(headers)
@@ -119,11 +121,12 @@ class VideoService:
                 payload = {"mediaType": media_type, "prompt": prompt}
 
             async with AsyncSession() as session:
+                browser = get_config("grok.browser", DEFAULT_BROWSER)
                 response = await session.post(
                     CREATE_POST_API,
                     headers=headers,
                     json=payload,
-                    impersonate=BROWSER,
+                    impersonate=browser,
                     timeout=30,
                     proxies=self._build_proxies(),
                 )
@@ -243,7 +246,8 @@ class VideoService:
                     prompt, post_id, aspect_ratio, video_length, resolution_name, preset
                 )
 
-                session = AsyncSession(impersonate=BROWSER)
+                browser = get_config("grok.browser", DEFAULT_BROWSER)
+                session = AsyncSession(impersonate=browser)
                 response = await session.post(
                     CHAT_API,
                     headers=headers,
@@ -323,7 +327,8 @@ class VideoService:
                     prompt, post_id, aspect_ratio, video_length, resolution, preset
                 )
 
-                session = AsyncSession(impersonate=BROWSER)
+                browser = get_config("grok.browser", DEFAULT_BROWSER)
+                session = AsyncSession(impersonate=browser)
                 response = await session.post(
                     CHAT_API,
                     headers=headers,

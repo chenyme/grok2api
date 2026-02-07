@@ -15,7 +15,8 @@ from app.services.grok.utils.retry import retry_on_status
 
 
 LIMITS_API = "https://grok.com/rest/rate-limits"
-BROWSER = "chrome136"
+DEFAULT_BROWSER = "chrome136"
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 TIMEOUT = 10
 DEFAULT_MAX_CONCURRENT = 25
 _USAGE_SEMAPHORE = asyncio.Semaphore(DEFAULT_MAX_CONCURRENT)
@@ -45,6 +46,7 @@ class UsageService:
 
     def _build_headers(self, token: str) -> dict:
         """构建请求头"""
+        user_agent = get_config("grok.user_agent", DEFAULT_USER_AGENT)
         headers = {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -65,7 +67,7 @@ class UsageService:
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            "User-Agent": user_agent,
         }
 
         apply_statsig(headers)
@@ -103,13 +105,14 @@ class UsageService:
                 try:
                     headers = self._build_headers(token)
                     payload = {"requestKind": "DEFAULT", "modelName": model_name}
+                    browser = get_config("grok.browser", DEFAULT_BROWSER)
 
                     async with AsyncSession() as session:
                         response = await session.post(
                             LIMITS_API,
                             headers=headers,
                             json=payload,
-                            impersonate=BROWSER,
+                            impersonate=browser,
                             timeout=self.timeout,
                             proxies=self._build_proxies(),
                         )

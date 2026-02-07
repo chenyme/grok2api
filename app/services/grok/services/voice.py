@@ -15,7 +15,7 @@ from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 
 LIVEKIT_TOKEN_API = "https://grok.com/rest/livekit/tokens"
 TIMEOUT = 30
-BROWSER = "chrome136"
+DEFAULT_BROWSER = "chrome136"
 
 
 class VoiceService:
@@ -45,7 +45,8 @@ class VoiceService:
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         
         try:
-            async with AsyncSession(impersonate=BROWSER) as session:
+            browser = get_config("grok.browser", DEFAULT_BROWSER)
+            async with AsyncSession(impersonate=browser) as session:
                 response = await session.post(
                     LIVEKIT_TOKEN_API,
                     headers=headers,
