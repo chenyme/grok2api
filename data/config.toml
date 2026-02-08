@@ -66,3 +66,6 @@ usage_max_tokens = 1000
 nsfw_max_concurrent = 10
 nsfw_batch_size = 50
 nsfw_max_tokens = 1000
+
+[mcp]
+enabled = true

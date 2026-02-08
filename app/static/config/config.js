@@ -41,6 +41,10 @@ const LOCALE_MAP = {
     "image_format": { title: "图片格式", desc: "生成的图片格式（url 或 base64）。" },
     "video_format": { title: "视频格式", desc: "生成的视频格式（html 或 url，url 为处理后的链接）。" }
   },
+  "mcp": {
+    "label": "MCP 服务",
+    "enabled": { title: "启用 MCP", desc: "是否启用 Model Context Protocol (MCP) 服务，支持 AI 工具调用。" }
+  },
   "network": {
     "label": "网络配置",
     "timeout": { title: "请求超时", desc: "请求 Grok 服务的超时时间（秒）。" },

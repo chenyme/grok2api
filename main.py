@@ -22,7 +22,28 @@ from app.api.v1.chat import router as chat_router
 from app.api.v1.models import router as models_router
 from app.api.v1.images import router as images_router
 from app.api.admin.manage import router as admin_router
-from app.services.mcp import mcp
+
+# MCP 服务
+_mcp_app = None
+
+
+def _get_mcp_app():
+    global _mcp_app
+    if _mcp_app is None:
+        from app.services.mcp import mcp
+
+        _mcp_app = mcp.http_app(stateless_http=True, transport="streamable-http")
+    return _mcp_app
+
+
+# 检查MCP配置
+def is_mcp_enabled():
+    """检查MCP是否启用"""
+    try:
+        return setting.grok_config.get("mcp.enabled", True)
+    except:
+        return True
+
 
 # 兼容性检测
 try:
@@ -35,9 +56,6 @@ try:
         logger.info("[Grok2API] Windows系统，使用默认asyncio事件循环")
 except ImportError:
     logger.info("[Grok2API] uvloop未安装，使用默认asyncio事件循环")
-
-# 创建MCP应用实例
-mcp_app = mcp.http_app(stateless_http=True, transport="streamable-http")
 
 
 # 简化的应用生命周期
@@ -81,10 +99,15 @@ async def lifespan(app: FastAPI):
             token_manager._refresh_status_worker()
         )
 
-        # 6. 初始化MCP服务
-        mcp_lifespan_context = mcp_app.lifespan(app)
-        await mcp_lifespan_context.__aenter__()
-        app.state.mcp_lifespan = mcp_lifespan_context
+        # 6. 初始化MCP服务（如果启用）
+        mcp_enabled = is_mcp_enabled()
+        if mcp_enabled:
+            mcp_lifespan_context = _get_mcp_app().lifespan(app)
+            await mcp_lifespan_context.__aenter__()
+            app.state.mcp_lifespan = mcp_lifespan_context
+            logger.info("[MCP] MCP服务已启用")
+        else:
+            logger.info("[MCP] MCP服务已禁用（配置）")
 
         logger.info("[Grok2API] 应用启动成功")
 
@@ -97,8 +120,8 @@ async def lifespan(app: FastAPI):
         # 关闭顺序 (LIFO)
         logger.info("[Grok2API] 应用正在关闭...")
 
-        # 1. 关闭MCP服务
-        if hasattr(app.state, "mcp_lifespan"):
+        # 1. 关闭MCP服务（如果已初始化）
+        if is_mcp_enabled() and hasattr(app.state, "mcp_lifespan"):
             try:
                 await app.state.mcp_lifespan.__aexit__(None, None, None)
                 logger.info("[MCP] MCP服务已关闭")
@@ -167,10 +190,13 @@ try:
 except Exception as e:
     logger.warning(f"[Grok2API] 静态文件服务初始化失败: {e}")
 
-# 挂载MCP服务到/mcp路径 (添加末尾斜杠重定向处理)
-app.mount("/mcp/", mcp_app)
-app.mount("/mcp", mcp_app)
-logger.info("[MCP] MCP服务已挂载到 /mcp 和 /mcp/")
+# 挂载MCP服务到/mcp路径 (根据配置决定是否挂载)
+if is_mcp_enabled():
+    app.mount("/mcp/", _get_mcp_app())
+    app.mount("/mcp", _get_mcp_app())
+    logger.info("[MCP] MCP服务已挂载到 /mcp")
+else:
+    logger.info("[MCP] MCP服务未挂载（配置为禁用）")
 
 
 if __name__ == "__main__":
