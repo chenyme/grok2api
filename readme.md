@@ -80,6 +80,40 @@ docker compose up -d
 
 > MySQL 示例：`mysql+aiomysql://user:password@host:3306/db`（若填 `mysql://` 会自动转为 `mysql+aiomysql://`）
 
+### MCP 服务配置
+
+Grok2API 内置完整的 **Model Context Protocol (MCP)** 服务支持，可通过 `/mcp` 端点连接 AI 客户端（如 Claude Desktop）。
+
+#### 启用/禁用 MCP
+
+在 `data/config.toml` 中配置：
+
+```toml
+[mcp]
+enabled = true  # true 启用，false 禁用
+```
+
+或在管理面板的「配置管理」中修改。
+
+#### 可用 MCP 工具
+
+| 工具名 | 功能 | 模型 |
+| :----- | :--- | :--- |
+| `ask_grok` | 文本对话 | `grok-3-fast`, `grok-4`, `grok-4-fast` |
+| `generate_image` | 图像生成 | `grok-imagine-1.0` |
+| `edit_image` | 图像编辑 | `grok-imagine-1.0-edit` |
+| `generate_video` | 视频生成 | `grok-imagine-1.0-video` |
+| `list_models` | 模型列表 | - |
+
+#### 连接方式
+
+```bash
+# 通过 HTTP 方式连接（适用于 Claude Desktop）
+curl -s http://localhost:8000/mcp
+```
+
+认证：通过 `api_key` 配置项进行 Bearer Token 认证。
+
 ### 可用次数
 
 - Basic 账号：80 次 / 20h
