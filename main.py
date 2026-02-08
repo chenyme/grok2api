@@ -1,159 +1,180 @@
-"""
-Grok2API 应用入口
+"""简化的主应用 - 移除 MCP 依赖和复杂启动逻辑"""
 
-FastAPI 应用初始化和路由注册
-"""
-
-from contextlib import asynccontextmanager
 import os
-import platform
 import sys
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-env_file = Path(__file__).parent / ".env"
-if env_file.exists():
-    load_dotenv(env_file)
+# 使用配置管理器
+from app.core.config import setting
 
-from fastapi import FastAPI  # noqa: E402
-from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi import Depends  # noqa: E402
+from app.core.logger import logger
+from app.core.exception import register_exception_handlers
+from app.core.storage import storage_manager
+from app.services.grok.token import token_manager
+from app.services.call_log import call_log_service
+from app.api.v1.chat import router as chat_router
+from app.api.v1.models import router as models_router
+from app.api.v1.images import router as images_router
+from app.api.admin.manage import router as admin_router
+from app.services.mcp import mcp
 
-from app.core.auth import verify_api_key  # noqa: E402
-from app.core.config import get_config  # noqa: E402
-from app.core.logger import logger, setup_logging  # noqa: E402
-from app.core.exceptions import register_exception_handlers  # noqa: E402
-from app.core.response_middleware import ResponseLoggerMiddleware  # noqa: E402
-from app.api.v1.chat import router as chat_router  # noqa: E402
-from app.api.v1.image import router as image_router  # noqa: E402
-from app.api.v1.files import router as files_router  # noqa: E402
-from app.api.v1.models import router as models_router  # noqa: E402
-from app.services.token import get_scheduler  # noqa: E402
+# 兼容性检测
+try:
+    if sys.platform != "win32":
+        import uvloop
+
+        uvloop.install()
+        logger.info("[Grok2API] 启用uvloop高性能事件循环")
+    else:
+        logger.info("[Grok2API] Windows系统，使用默认asyncio事件循环")
+except ImportError:
+    logger.info("[Grok2API] uvloop未安装，使用默认asyncio事件循环")
+
+# 创建MCP应用实例
+mcp_app = mcp.http_app(stateless_http=True, transport="streamable-http")
 
 
-# 初始化日志
-setup_logging(
-    level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=True
-)
-
-
+# 简化的应用生命周期
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    # 1. 注册服务默认配置
-    from app.core.config import config, register_defaults
-    from app.services.grok.defaults import get_grok_defaults
+    """
+    简化的启动顺序:
+    1. 初始化核心服务 (storage, settings, token_manager)
+    2. 异步加载 token 数据
+    3. 启动批量保存任务
 
-    register_defaults(get_grok_defaults())
+    关闭顺序 (LIFO):
+    1. 关闭批量保存任务并刷新数据
+    2. 关闭核心服务
+    """
+    logger.info("[Grok2API] 应用正在启动...")
 
-    # 2. 加载配置
-    await config.load()
+    try:
+        # 1. 初始化核心服务
+        await storage_manager.init()
+        storage = storage_manager.get_storage()
+        setting.set_storage(storage)
+        logger.info("[Grok2API] 核心服务初始化完成")
 
-    # 3. 启动服务显示
-    logger.info("Starting Grok2API...")
-    logger.info(f"Platform: {platform.system()} {platform.release()}")
-    logger.info(f"Python: {sys.version.split()[0]}")
+        # 2. 设置存储管理器
+        token_manager.set_storage(storage)
 
-    # 4. 启动 Token 刷新调度器
-    refresh_enabled = get_config("token.auto_refresh", True)
-    if refresh_enabled:
-        basic_interval = get_config("token.refresh_interval_hours", 8)
-        super_interval = get_config("token.super_refresh_interval_hours", 2)
-        interval = min(basic_interval, super_interval)
-        scheduler = get_scheduler(interval)
-        scheduler.start()
+        # 3. 异步加载数据
+        await token_manager._load_data()
+        logger.info("[Grok2API] Token数据加载完成")
 
-    logger.info("Application startup complete.")
-    yield
+        # 4. 启动调用日志服务
+        await call_log_service.start()
+        logger.info("[Grok2API] 调用日志服务启动完成")
 
-    # 关闭
-    logger.info("Shutting down Grok2API...")
+        # 5. 启动后台任务
+        token_manager._save_task = asyncio.create_task(
+            token_manager._batch_save_worker()
+        )
+        token_manager._refresh_task = asyncio.create_task(
+            token_manager._refresh_status_worker()
+        )
 
-    from app.core.storage import StorageFactory
+        # 6. 初始化MCP服务
+        mcp_lifespan_context = mcp_app.lifespan(app)
+        await mcp_lifespan_context.__aenter__()
+        app.state.mcp_lifespan = mcp_lifespan_context
 
-    if StorageFactory._instance:
-        await StorageFactory._instance.close()
+        logger.info("[Grok2API] 应用启动成功")
 
-    if refresh_enabled:
-        scheduler = get_scheduler()
-        scheduler.stop()
+        yield
 
+    except Exception as e:
+        logger.error(f"[Grok2API] 启动失败: {e}")
+        raise
+    finally:
+        # 关闭顺序 (LIFO)
+        logger.info("[Grok2API] 应用正在关闭...")
 
-def create_app() -> FastAPI:
-    """创建 FastAPI 应用"""
-    app = FastAPI(
-        title="Grok2API",
-        lifespan=lifespan,
-    )
+        # 1. 关闭MCP服务
+        if hasattr(app.state, "mcp_lifespan"):
+            try:
+                await app.state.mcp_lifespan.__aexit__(None, None, None)
+                logger.info("[MCP] MCP服务已关闭")
+            except:
+                pass
 
-    # CORS 配置
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+        # 2. 停止调用日志服务
+        await call_log_service.shutdown()
+        logger.info("[CallLog] 调用日志服务已关闭")
 
-    # 请求日志和 ID 中间件
-    app.add_middleware(ResponseLoggerMiddleware)
+        # 2. 停止token管理器后台任务
+        if hasattr(token_manager, "_save_task") and token_manager._save_task:
+            token_manager._shutdown = True
+            token_manager._save_task.cancel()
+            token_manager._refresh_task.cancel()
+            try:
+                await token_manager._save_task
+                await token_manager._refresh_task
+            except asyncio.CancelledError:
+                pass
+            await token_manager._save_data()  # 最后保存
+            logger.info("[Token] Token管理器已关闭")
 
-    # 注册异常处理器
-    register_exception_handlers(app)
-
-    # 注册路由
-    app.include_router(
-        chat_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
-    )
-    app.include_router(
-        image_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
-    )
-    app.include_router(
-        models_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
-    )
-    app.include_router(files_router, prefix="/v1/files")
-
-    # 静态文件服务
-    from fastapi.staticfiles import StaticFiles
-
-    static_dir = Path(__file__).parent / "app" / "static"
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-    # 注册管理路由
-    from app.api.v1.admin import router as admin_router
-
-    app.include_router(admin_router)
-
-    return app
+        logger.info("[Grok2API] 应用关闭成功")
 
 
-app = create_app()
+# 创建应用实例
+app = FastAPI(
+    title="Grok2API",
+    description="Grok API 转换服务",
+    version="1.0.3",
+    lifespan=lifespan,
+    redirect_slashes=False,
+)
+
+# 注册异常处理器
+register_exception_handlers(app)
+
+# 添加 CORS 中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 注册路由
+app.include_router(chat_router, prefix="/v1", tags=["Chat"])
+app.include_router(models_router, prefix="/v1", tags=["Models"])
+app.include_router(images_router, prefix="/v1", tags=["Images"])
+app.include_router(admin_router, prefix="", tags=["Admin"])
+
+
+# 健康检查
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "service": "Grok2API", "version": "1.0.3"}
+
+
+# 静态文件服务
+try:
+    static_path = Path(__file__).parent / "static"
+    if static_path.exists():
+        app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+except Exception as e:
+    logger.warning(f"[Grok2API] 静态文件服务初始化失败: {e}")
+
+# 挂载MCP服务到/mcp路径 (添加末尾斜杠重定向处理)
+app.mount("/mcp/", mcp_app)
+app.mount("/mcp", mcp_app)
+logger.info("[MCP] MCP服务已挂载到 /mcp 和 /mcp/")
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("SERVER_HOST", "0.0.0.0")
-    port = int(os.getenv("SERVER_PORT", "8000"))
-    workers = int(os.getenv("SERVER_WORKERS", "1"))
-
-    # 平台检查
-    is_windows = platform.system() == "Windows"
-
-    # 自动降级
-    if is_windows and workers > 1:
-        logger.warning(
-            f"Windows platform detected. Multiple workers ({workers}) is not supported. "
-            "Using single worker instead."
-        )
-        workers = 1
-
-    uvicorn.run(
-        "main:app",
-        host=host,
-        port=port,
-        workers=workers,
-        log_level=os.getenv("LOG_LEVEL", "INFO").lower(),
-    )
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
