@@ -7,7 +7,10 @@ import re
 import time
 from typing import Any, AsyncGenerator, Optional, AsyncIterable, List, TypeVar
 
+from curl_cffi.requests.errors import RequestsError
+
 from app.core.config import get_config
+from app.core.exceptions import UpstreamException
 from app.core.logger import logger
 from app.services.grok.services.assets import DownloadService
 
@@ -20,6 +23,49 @@ def _is_http2_stream_error(e: Exception) -> bool:
     """检查是否为 HTTP/2 流错误"""
     err_str = str(e).lower()
     return "http/2" in err_str or "curl: (92)" in err_str or "stream" in err_str
+
+
+def _handle_upstream_error(e: BaseException, model: str, operation: str = "Stream"):
+    """处理上游错误，统一异常链
+
+    处理 CancelledError（静默）、StreamIdleTimeoutError（504）、
+    RequestsError（502）和其他异常（重新抛出）。
+    """
+    if isinstance(e, asyncio.CancelledError):
+        logger.debug(f"{operation} cancelled by client", extra={"model": model})
+        return
+    if isinstance(e, StreamIdleTimeoutError):
+        raise UpstreamException(
+            message=f"{operation} idle timeout after {e.idle_seconds}s",
+            status_code=504,
+            details={
+                "error": str(e),
+                "type": "stream_idle_timeout",
+                "idle_seconds": e.idle_seconds,
+            },
+        ) from e
+    if isinstance(e, RequestsError):
+        if _is_http2_stream_error(e):
+            logger.warning(
+                f"HTTP/2 stream error in {operation.lower()}: {e}",
+                extra={"model": model},
+            )
+            raise UpstreamException(
+                message="Upstream connection closed unexpectedly",
+                status_code=502,
+                details={"error": str(e), "type": "http2_stream_error"},
+            ) from e
+        logger.error(f"{operation} request error: {e}", extra={"model": model})
+        raise UpstreamException(
+            message=f"Upstream request failed: {e}",
+            status_code=502,
+            details={"error": str(e)},
+        ) from e
+    logger.error(
+        f"{operation} processing error: {e}",
+        extra={"model": model, "error_type": type(e).__name__},
+    )
+    raise
 
 
 def _normalize_stream_line(line: Any) -> Optional[str]:
@@ -113,7 +159,9 @@ def _collect_image_urls(obj: Any) -> List[str]:
                             if isinstance(candidate, str):
                                 add(candidate)
 
-                if key_lower in {"message", "content", "text"} and isinstance(item, str):
+                if key_lower in {"message", "content", "text"} and isinstance(
+                    item, str
+                ):
                     add_from_text(item)
 
                 walk(item)
@@ -121,7 +169,9 @@ def _collect_image_urls(obj: Any) -> List[str]:
             for item in value:
                 walk(item)
         elif isinstance(value, str) and (
-            "assets.grok.com" in value.lower() or "http://" in value or "https://" in value
+            "assets.grok.com" in value.lower()
+            or "http://" in value
+            or "https://" in value
         ):
             add_from_text(value)
 
@@ -219,7 +269,9 @@ class BaseProcessor:
         if self.app_url:
             dl_service = self._get_dl()
             try:
-                cache_path, mime = await dl_service.download(path, self.token, media_type)
+                cache_path, mime = await dl_service.download(
+                    path, self.token, media_type
+                )
             except Exception as dl_err:
                 logger.warning(
                     "Asset download failed, skipping",
@@ -247,17 +299,34 @@ class BaseProcessor:
                     }
                     if media_type == "video" and "/content" in path:
                         logger.info(
-                            "Video asset not ready yet, waiting for next poll", **log_kwargs
+                            "Video asset not ready yet, waiting for next poll",
+                            **log_kwargs,
                         )
                     else:
                         logger.warning(
-                            "Media type mismatch while processing asset URL", **log_kwargs
+                            "Media type mismatch while processing asset URL",
+                            **log_kwargs,
                         )
                     return ""
 
             return f"{self.app_url.rstrip('/')}/v1/files/{media_type}{path}"
         else:
             return f"{ASSET_URL.rstrip('/')}{path}"
+
+    async def resolve_image(self, url: str, image_format: str = None) -> str:
+        """解析图片 URL，支持 base64 转换并自动降级到 URL"""
+        fmt = image_format or getattr(self, "image_format", "url")
+        if fmt == "base64":
+            try:
+                dl_service = self._get_dl()
+                base64_data = await dl_service.to_base64(url, self.token, "image")
+                if base64_data:
+                    return base64_data
+            except Exception as e:
+                logger.warning(
+                    f"Failed to convert image to base64, falling back to URL: {e}"
+                )
+        return await self.process_url(url, "image")
 
 
 __all__ = [
@@ -267,4 +336,5 @@ __all__ = [
     "_normalize_stream_line",
     "_collect_image_urls",
     "_is_http2_stream_error",
+    "_handle_upstream_error",
 ]
