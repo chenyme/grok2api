@@ -1,47 +1,325 @@
-/* Config page specific styles (shared styles moved to common.css). */
+/* T佬风格配置页面 - 三列卡片布局 */
 
-.config-section {
-  background: #fff;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  padding: 16px;
+.config-section-group {
+  margin-bottom: 2rem;
+}
+
+.section-header {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.section-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #111;
+  letter-spacing: -0.02em;
+}
+
+.save-btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #fff;
+  background: #000;
+  border: 1px solid #000;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.save-btn:hover {
+  background: #333;
+  border-color: #333;
+}
+
+.save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 三列卡片容器 */
+.config-cards-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.25rem;
+}
+
+@media (max-width: 1024px) {
+  .config-cards-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .config-cards-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 单个配置卡片 */
+.config-card {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 12px;
+  padding: 1.25rem;
   transition: border-color 0.2s ease;
 }
 
-.config-section:hover {
+.config-card:hover {
+  border-color: #ccc;
+}
+
+.config-card-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #111;
+  margin-bottom: 1rem;
+}
+
+/* 卡片内字段 */
+.config-field {
+  margin-bottom: 0.875rem;
+}
+
+.config-field:last-child {
+  margin-bottom: 0;
+}
+
+.config-field-label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  color: #666;
+  margin-bottom: 0.375rem;
+}
+
+.config-field-label .help-icon {
+  color: #aaa;
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.config-field-label .help-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 输入框样式 - T佬风格 */
+.config-input {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  color: #111;
+  background: #fafafa;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.config-input:focus {
+  background: #fff;
   border-color: #000;
 }
 
-.config-section-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--accents-7);
+.config-input::placeholder {
+  color: #aaa;
 }
 
-.config-grid {
+.config-input:disabled {
+  background: #f5f5f5;
+  color: #888;
+  cursor: not-allowed;
+}
+
+/* 高亮输入框（如密码、敏感字段） */
+.config-input.highlight {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
+.config-input.highlight:focus {
+  border-color: #f59e0b;
+}
+
+/* 下拉选择框 */
+.config-select {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  color: #111;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  padding-right: 2.5rem;
+  transition: border-color 0.15s ease;
+}
+
+.config-select:hover {
+  border-color: #ccc;
+}
+
+.config-select:focus {
+  border-color: #000;
+}
+
+/* 数字输入 - 带增减按钮风格 */
+.config-number-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.config-number-wrap .config-input {
+  flex: 1;
+}
+
+/* Toggle 开关 - T佬风格 */
+.toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: #e5e5e5;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.toggle-switch.active {
+  background: #000;
+}
+
+.toggle-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.toggle-switch.active::after {
+  transform: translateX(20px);
+}
+
+/* 带副标签的开关行 */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toggle-label {
+  font-size: 0.8125rem;
+  color: #888;
+}
+
+/* 带复制按钮的输入 */
+.input-with-action {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.input-with-action .config-input {
+  flex: 1;
+}
+
+.input-action-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.input-action-btn:hover {
+  border-color: #000;
+  color: #000;
+}
+
+.input-action-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 双列布局（在卡片内） */
+.config-row-2 {
   display: grid;
-  gap: 14px;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
 }
 
-.config-field {
-  padding-top: 2px;
+/* 加载状态 */
+.config-loading {
+  text-align: center;
+  padding: 3rem 0;
+  color: #888;
+  font-size: 0.875rem;
 }
 
-.config-field-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--accents-7);
+/* Tooltip */
+.tooltip {
+  position: relative;
 }
 
-.config-field-desc {
-  font-size: 12px;
-  color: var(--accents-4);
-  line-height: 1.5;
+.tooltip::before {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.5rem 0.75rem;
+  background: #111;
+  color: #fff;
+  font-size: 0.75rem;
+  border-radius: 6px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.15s ease;
+  z-index: 100;
 }
 
-.config-field-input {
-  margin-top: 6px;
+.tooltip:hover::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* 横版布局卡片 - 横跨整行，字段一排 */
+.config-card.horizontal {
+  grid-column: 1 / -1;
+}
+
+.config-card.horizontal .config-fields-grid {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.config-card.horizontal .config-fields-grid .config-field {
+  flex: 1;
+  margin-bottom: 0;
 }

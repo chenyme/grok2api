@@ -25,6 +25,7 @@ from curl_cffi.requests import AsyncSession
 from app.core.config import get_config
 from app.core.exceptions import AppException, UpstreamException, ValidationException
 from app.core.logger import logger
+from app.core.storage import DATA_DIR
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 from app.services.token.service import TokenService
 
@@ -34,11 +35,12 @@ UPLOAD_API = "https://grok.com/rest/app-chat/upload-file"
 LIST_API = "https://grok.com/rest/assets"
 DELETE_API = "https://grok.com/rest/assets-metadata"
 DOWNLOAD_API = "https://assets.grok.com"
-LOCK_DIR = Path(__file__).parent.parent.parent.parent.parent / "data" / ".locks"
+LOCK_DIR = DATA_DIR / ".locks"
 
 # 全局信号量（运行时动态初始化）
 _ASSETS_SEMAPHORE = None
 _ASSETS_SEM_VALUE = None
+_ASYNC_LOCKS: dict[str, asyncio.Lock] = {}
 
 # 常用 MIME 类型（业务数据，非配置）
 MIME_TYPES = {
@@ -65,7 +67,60 @@ MIME_TYPES = {
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 
+
+def _detect_mime_from_signature(file_path: Path) -> str:
+    """基于文件头识别 MIME，兼容无扩展名缓存文件。"""
+    try:
+        with file_path.open("rb") as f:
+            head = f.read(32)
+    except Exception:
+        return "application/octet-stream"
+
+    if not head:
+        return "application/octet-stream"
+
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if head.startswith(b"RIFF") and b"WEBP" in head[:16]:
+        return "image/webp"
+
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        return "video/mp4"
+    if head.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm"
+    if head.startswith(b"RIFF") and b"AVI" in head[:16]:
+        return "video/x-msvideo"
+
+    return "application/octet-stream"
+
+
 # ==================== 工具函数 ====================
+
+
+def _fire_and_forget(coro, label: str = "background task"):
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            coro.close()
+        except Exception:
+            pass
+        return None
+
+    task = loop.create_task(coro)
+
+    def _done(t: asyncio.Task):
+        try:
+            t.result()
+        except Exception as e:
+            logger.warning(f"{label} failed: {e}")
+
+    task.add_done_callback(_done)
+    return task
 
 
 def _get_assets_semaphore() -> asyncio.Semaphore:
@@ -83,7 +138,14 @@ def _get_assets_semaphore() -> asyncio.Semaphore:
 async def _file_lock(name: str, timeout: int = 10):
     """文件锁"""
     if fcntl is None:
-        yield
+        lock = _ASYNC_LOCKS.setdefault(name, asyncio.Lock())
+        try:
+            async with asyncio.timeout(timeout):
+                async with lock:
+                    yield
+        except asyncio.TimeoutError:
+            logger.warning(f"File lock timeout (async fallback): {name}")
+            yield
         return
 
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
@@ -154,10 +216,13 @@ class BaseService:
         """构建请求头"""
         if download:
             headers = {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                 "Sec-Fetch-Dest": "document",
                 "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-site",
+                "Sec-Fetch-User": "?1",
                 "Referer": referer,
+                "User-Agent": self.config.user_agent,
             }
         else:
             headers = {
@@ -244,15 +309,11 @@ class BaseService:
         try:
             if not file_path.exists():
                 logger.warning(f"File not found for base64 conversion: {file_path}")
-                raise AppException(
-                    f"File not found: {file_path}", code="file_not_found"
-                )
+                raise AppException(f"File not found: {file_path}", code="file_not_found")
 
             if not file_path.is_file():
                 logger.warning(f"Path is not a file: {file_path}")
-                raise AppException(
-                    f"Invalid file path: {file_path}", code="invalid_file_path"
-                )
+                raise AppException(f"Invalid file path: {file_path}", code="invalid_file_path")
 
             b64_data = base64.b64encode(file_path.read_bytes()).decode()
             return f"data:{mime_type};base64,{b64_data}"
@@ -260,9 +321,7 @@ class BaseService:
             raise
         except Exception as e:
             logger.error(f"File to base64 failed: {file_path} - {e}")
-            raise AppException(
-                f"Failed to read file: {file_path}", code="file_read_error"
-            )
+            raise AppException(f"Failed to read file: {file_path}", code="file_read_error")
 
 
 # ==================== 上传服务 ====================
@@ -285,53 +344,86 @@ class UploadService(BaseService):
             else:
                 filename, b64, mime = self.parse_b64(file_input)
 
-            logger.debug(
-                f"Upload prepare: filename={filename}, type={mime}, size={len(b64)}"
-            )
+            logger.debug(f"Upload prepare: filename={filename}, type={mime}, size={len(b64)}")
 
             if not b64:
                 raise ValidationException("Invalid file input: empty content")
 
-            # 执行上传
-            session = await self._get_session()
-            response = await session.post(
-                UPLOAD_API,
-                headers=self._build_headers(token),
-                json={"fileName": filename, "fileMimeType": mime, "content": b64},
-                impersonate=self.config.browser,
-                timeout=self.config.timeout,
-                proxies=self.config.get_proxies(),
-            )
+            # 执行上传（增强稳健性：对 429/5xx 和网络抖动做短重试）
+            max_retry = max(0, int(get_config("retry.max_retry", 2)))
+            backoff_base = float(get_config("retry.retry_backoff_base", 0.5))
+            backoff_factor = float(get_config("retry.retry_backoff_factor", 2.0))
+            backoff_max = float(get_config("retry.retry_backoff_max", 5.0))
+            retryable_status = {429, 500, 502, 503, 504}
 
-            # 处理响应
-            if response.status_code == 200:
-                result = response.json()
-                file_id = result.get("fileMetadataId", "")
-                file_uri = result.get("fileUri", "")
-                logger.info(f"Upload success: {filename} -> {file_id}")
-                return file_id, file_uri
-
-            # 认证失败
-            if response.status_code in (401, 403):
-                logger.warning(f"Upload auth failed: {response.status_code}")
+            attempt = 0
+            while True:
                 try:
-                    await TokenService.record_fail(
-                        token, response.status_code, "upload_auth_failed"
+                    session = await self._get_session()
+                    response = await session.post(
+                        UPLOAD_API,
+                        headers=self._build_headers(token),
+                        json={"fileName": filename, "fileMimeType": mime, "content": b64},
+                        impersonate=self.config.browser,
+                        timeout=self.config.timeout,
+                        proxies=self.config.get_proxies(),
                     )
                 except Exception as e:
-                    logger.error(f"Failed to record token failure: {e}")
+                    if attempt >= max_retry:
+                        logger.error(f"Upload request error after retries: {filename} - {e}")
+                        raise UpstreamException(
+                            message=f"Upload request failed: {str(e)}",
+                            details={"status": 0, "error": str(e)},
+                        )
 
+                    delay = min(backoff_max, backoff_base * (backoff_factor**attempt))
+                    attempt += 1
+                    logger.warning(
+                        f"Upload request error, retry {attempt}/{max_retry}: {filename} - {e}"
+                    )
+                    await asyncio.sleep(max(0.1, delay))
+                    continue
+
+                # 处理响应
+                if response.status_code == 200:
+                    result = response.json()
+                    file_id = result.get("fileMetadataId", "")
+                    file_uri = result.get("fileUri", "")
+                    logger.info(f"Upload success: {filename} -> {file_id}")
+                    return file_id, file_uri
+
+                # 认证失败
+                if response.status_code in (401, 403):
+                    logger.warning(f"Upload auth failed: {response.status_code}")
+                    try:
+                        await TokenService.record_fail(
+                            token, response.status_code, "upload_auth_failed"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to record token failure: {e}")
+
+                    raise UpstreamException(
+                        message=f"Upload authentication failed: {response.status_code}",
+                        details={"status": response.status_code, "token_invalidated": True},
+                    )
+
+                # 可重试错误
+                if response.status_code in retryable_status and attempt < max_retry:
+                    delay = min(backoff_max, backoff_base * (backoff_factor**attempt))
+                    attempt += 1
+                    logger.warning(
+                        "Upload failed with retryable status, "
+                        f"retry {attempt}/{max_retry}: {filename} - {response.status_code}"
+                    )
+                    await asyncio.sleep(max(0.1, delay))
+                    continue
+
+                # 其他错误
+                logger.error(f"Upload failed: {filename} - {response.status_code}")
                 raise UpstreamException(
-                    message=f"Upload authentication failed: {response.status_code}",
-                    details={"status": response.status_code, "token_invalidated": True},
+                    message=f"Upload failed: {response.status_code}",
+                    details={"status": response.status_code},
                 )
-
-            # 其他错误
-            logger.error(f"Upload failed: {filename} - {response.status_code}")
-            raise UpstreamException(
-                message=f"Upload failed: {response.status_code}",
-                details={"status": response.status_code},
-            )
 
 
 # ==================== 列表服务 ====================
@@ -463,10 +555,7 @@ class DeleteService(BaseService):
         for i in range(0, len(assets), batch_size):
             batch = assets[i : i + batch_size]
             results = await asyncio.gather(
-                *[
-                    self._delete_one(token, asset, idx)
-                    for idx, asset in enumerate(batch)
-                ],
+                *[self._delete_one(token, asset, idx) for idx, asset in enumerate(batch)],
                 return_exceptions=True,
             )
             success += sum(1 for r in results if r is True)
@@ -494,9 +583,7 @@ class DownloadService(BaseService):
 
     def __init__(self, proxy: Optional[str] = None):
         super().__init__(proxy)
-        self.base_dir = (
-            Path(__file__).parent.parent.parent.parent.parent / "data" / "tmp"
-        )
+        self.base_dir = DATA_DIR / "tmp"
         self.image_dir = self.base_dir / "image"
         self.video_dir = self.base_dir / "video"
         self.image_dir.mkdir(parents=True, exist_ok=True)
@@ -511,10 +598,21 @@ class DownloadService(BaseService):
 
     def _get_mime(self, cache_path: Path, response=None) -> str:
         """获取 MIME 类型"""
+        header_mime = ""
         if response:
-            return response.headers.get(
-                "content-type", "application/octet-stream"
-            ).split(";")[0]
+            header_mime = response.headers.get("content-type", "application/octet-stream").split(
+                ";"
+            )[0]
+            if header_mime and header_mime != "application/octet-stream":
+                return header_mime
+
+        sniffed = _detect_mime_from_signature(cache_path)
+        if sniffed != "application/octet-stream":
+            return sniffed
+
+        if header_mime:
+            return header_mime
+
         return MIME_TYPES.get(cache_path.suffix.lower(), "application/octet-stream")
 
     async def download(
@@ -530,7 +628,9 @@ class DownloadService(BaseService):
                 return cache_path, self._get_mime(cache_path)
 
             # 文件锁防止并发下载
-            lock_name = f"dl_{media_type}_{hashlib.sha1(str(cache_path).encode()).hexdigest()[:16]}"
+            lock_name = (
+                f"dl_{media_type}_{hashlib.sha256(str(cache_path).encode()).hexdigest()[:16]}"
+            )
             async with _file_lock(lock_name, timeout=10):
                 # 双重检查
                 if cache_path.exists():
@@ -541,7 +641,7 @@ class DownloadService(BaseService):
                 logger.info(f"Downloaded: {file_path}")
 
                 # 异步检查缓存限制
-                asyncio.create_task(self.check_limit())
+                _fire_and_forget(self.check_limit(), "cache limit cleanup")
 
                 return cache_path, mime
 
@@ -591,17 +691,13 @@ class DownloadService(BaseService):
 
         return self._get_mime(cache_path, response)
 
-    async def to_base64(
-        self, file_path: str, token: str, media_type: str = "image"
-    ) -> str:
+    async def to_base64(self, file_path: str, token: str, media_type: str = "image") -> str:
         """下载并转 base64"""
         try:
             cache_path, mime = await self.download(file_path, token, media_type)
             if not cache_path or not cache_path.exists():
                 logger.warning(f"Download failed for {file_path}: invalid path")
-                raise AppException(
-                    "Download failed: invalid path", code="download_failed"
-                )
+                raise AppException("Download failed: invalid path", code="download_failed")
 
             data_uri = self.to_b64(cache_path, mime)
 
@@ -623,14 +719,29 @@ class DownloadService(BaseService):
         if not cache_dir.exists():
             return {"count": 0, "size_mb": 0.0}
 
-        allowed = IMAGE_EXTS if media_type == "image" else VIDEO_EXTS
         files = [
             f
             for f in cache_dir.glob("*")
-            if f.is_file() and f.suffix.lower() in allowed
+            if f.is_file() and self._match_cached_media_type(f, media_type)
         ]
         total_size = sum(f.stat().st_size for f in files)
         return {"count": len(files), "size_mb": round(total_size / 1024 / 1024, 2)}
+
+    def _match_cached_media_type(self, file_path: Path, media_type: str) -> bool:
+        """判断缓存文件是否属于目标媒体类型（兼容无后缀文件）。"""
+        allowed = IMAGE_EXTS if media_type == "image" else VIDEO_EXTS
+        suffix = file_path.suffix.lower()
+        if suffix in allowed:
+            return True
+
+        # 无后缀或异常后缀时，回退到 MIME 检测，确保 Imagine 缓存可见
+        try:
+            mime = self._get_mime(file_path).lower()
+        except Exception:
+            return False
+
+        expected_prefix = "image/" if media_type == "image" else "video/"
+        return mime.startswith(expected_prefix)
 
     def list_files(
         self, media_type: str = "image", page: int = 1, page_size: int = 1000
@@ -640,11 +751,10 @@ class DownloadService(BaseService):
         if not cache_dir.exists():
             return {"total": 0, "page": page, "page_size": page_size, "items": []}
 
-        allowed = IMAGE_EXTS if media_type == "image" else VIDEO_EXTS
         files = [
             f
             for f in cache_dir.glob("*")
-            if f.is_file() and f.suffix.lower() in allowed
+            if f.is_file() and self._match_cached_media_type(f, media_type)
         ]
 
         # 构建文件列表
@@ -716,46 +826,73 @@ class DownloadService(BaseService):
         self._cleanup_running = True
         try:
             async with _file_lock("cache_cleanup", timeout=5):
-                limit_mb = get_config("cache.limit_mb")
-                all_files, total_size = self._collect_files()
-                current_mb = total_size / 1024 / 1024
-
-                if current_mb <= limit_mb:
-                    return
-
-                # 清理到 80%
-                logger.info(
-                    f"Cache limit exceeded ({current_mb:.2f}MB > {limit_mb}MB), cleaning..."
+                # 按新配置分别限制 image/video
+                image_limit_mb = self._parse_limit_mb(
+                    get_config("cache.image_limit_mb", 2048), default=2048.0
                 )
-                all_files.sort(key=lambda x: x[1])  # 按时间排序
-
-                deleted_count = 0
-                deleted_size = 0
-                target_mb = limit_mb * 0.8
-
-                for f, _, size in all_files:
-                    try:
-                        f.unlink()
-                        deleted_count += 1
-                        deleted_size += size
-                        total_size -= size
-                        if (total_size / 1024 / 1024) <= target_mb:
-                            break
-                    except Exception:
-                        pass
-
-                logger.info(
-                    f"Cache cleanup: {deleted_count} files ({deleted_size / 1024 / 1024:.2f}MB)"
+                video_limit_mb = self._parse_limit_mb(
+                    get_config("cache.video_limit_mb", 4096), default=4096.0
                 )
+
+                await self._cleanup_path_limit("image", self.image_dir, image_limit_mb)
+                await self._cleanup_path_limit("video", self.video_dir, video_limit_mb)
         finally:
             self._cleanup_running = False
 
-    def _collect_files(self) -> Tuple[List[Tuple[Path, float, int]], int]:
+    def _parse_limit_mb(self, raw: Any, default: float = 0.0) -> float:
+        """解析缓存上限配置（MB），非法值回退到默认值。"""
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = float(default)
+        return value if value > 0 else 0.0
+
+    async def _cleanup_path_limit(
+        self, scope: str, cache_dir: Optional[Path], limit_mb: float
+    ) -> None:
+        """按目录（或全局）执行缓存清理。"""
+        if limit_mb <= 0:
+            return
+
+        all_files, total_size = self._collect_files(cache_dir)
+        current_mb = total_size / 1024 / 1024
+        if current_mb <= limit_mb:
+            return
+
+        logger.info(
+            f"Cache limit exceeded ({scope}): {current_mb:.2f}MB > {limit_mb:.2f}MB, cleaning..."
+        )
+
+        # 按最旧文件优先删除，清理到 80%
+        all_files.sort(key=lambda x: x[1])
+        deleted_count = 0
+        deleted_size = 0
+        target_mb = limit_mb * 0.8
+
+        for f, _, size in all_files:
+            try:
+                f.unlink()
+                deleted_count += 1
+                deleted_size += size
+                total_size -= size
+                if (total_size / 1024 / 1024) <= target_mb:
+                    break
+            except Exception:
+                continue
+
+        logger.info(
+            f"Cache cleanup ({scope}): {deleted_count} files ({deleted_size / 1024 / 1024:.2f}MB)"
+        )
+
+    def _collect_files(
+        self, cache_dir: Optional[Path] = None
+    ) -> Tuple[List[Tuple[Path, float, int]], int]:
         """收集所有缓存文件"""
         total_size = 0
         all_files = []
 
-        for d in [self.image_dir, self.video_dir]:
+        dirs = [cache_dir] if cache_dir is not None else [self.image_dir, self.video_dir]
+        for d in dirs:
             if d.exists():
                 for f in d.glob("*"):
                     if f.is_file():

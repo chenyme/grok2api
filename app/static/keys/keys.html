@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grok2API - Key 管理</title>
+    <link rel="icon" href="/static/favicon/favicon.svg?v=3" type="image/svg+xml">
+    <link rel="icon" href="/static/favicon/favicon.ico?v=3" sizes="any" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css"
+      rel="stylesheet"
+    />
+    <link href="/static/common/common.css?v=4" rel="stylesheet" />
+    <link href="/static/keys/keys.css?v=1" rel="stylesheet" />
+    <link href="/static/common/toast.css" rel="stylesheet" />
+  </head>
+
+  <body class="min-h-screen flex flex-col" style="background-color: var(--bg)">
+    <div id="toast-container" class="toast-container"></div>
+    <div id="app-header"></div>
+
+    <main
+      class="space-y-6 flex-1 container mx-auto max-w-7xl px-8 py-8 fade-in"
+    >
+      <div class="space-y-6">
+        <div class="flex justify-between items-center">
+          <div>
+            <h2 class="text-2xl font-semibold tracking-tight">Key 管理</h2>
+            <p class="text-[var(--accents-4)] mt-1 text-sm">
+              管理 API Key 访问凭证。
+            </p>
+          </div>
+          <div class="flex items-center gap-3">
+            <button onclick="GrokAdminPages.keys.actions.loadKeys()" class="geist-button-outline gap-2">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"
+                ></path>
+                <path d="M3 3v5h5"></path>
+                <path
+                  d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"
+                ></path>
+                <path d="M16 21h5v-5"></path>
+              </svg>
+              刷新
+            </button>
+            <button
+              onclick="GrokAdminPages.keys.actions.openBatchModal()"
+              class="geist-button-outline gap-2"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                <line x1="12" y1="8" x2="12" y2="16"></line>
+                <line x1="8" y1="12" x2="16" y2="12"></line>
+              </svg>
+              批量创建
+            </button>
+            <button onclick="GrokAdminPages.keys.actions.openAddModal()" class="geist-button gap-2">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              新增 Key
+            </button>
+          </div>
+        </div>
+
+        <div class="h-px bg-[var(--border)] my-6"></div>
+
+        <!-- Key 列表 -->
+        <div class="key-table-wrapper">
+          <table class="key-table">
+            <thead>
+              <tr>
+                <th style="width: 40px">
+                  <input
+                    type="checkbox"
+                    id="select-all"
+                    onchange="GrokAdminPages.keys.actions.toggleSelectAll()"
+                    class="checkbox"
+                  />
+                </th>
+                <th>备注</th>
+                <th>Key</th>
+                <th>创建时间</th>
+                <th>状态</th>
+                <th style="width: 120px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="key-table-body">
+              <tr>
+                <td colspan="6" class="table-empty">加载中...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 批量操作栏 -->
+        <div id="batch-actions" class="batch-actions hidden">
+          <span class="text-sm"
+            >已选择 <span id="selected-count">0</span> 项</span
+          >
+          <div class="flex gap-2">
+            <button
+              onclick="GrokAdminPages.keys.actions.batchToggle(true)"
+              class="geist-button-outline text-green-600"
+            >
+              批量启用
+            </button>
+            <button
+              onclick="GrokAdminPages.keys.actions.batchToggle(false)"
+              class="geist-button-outline text-orange-600"
+            >
+              批量禁用
+            </button>
+            <button
+              onclick="GrokAdminPages.keys.actions.batchDelete()"
+              class="geist-button-outline text-red-600"
+            >
+              批量删除
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div id="app-footer"></div>
+
+    <!-- 新增 Key 弹窗 -->
+    <div id="add-modal" class="modal hidden">
+      <div class="modal-backdrop" onclick="GrokAdminPages.keys.actions.closeAddModal()"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 class="modal-title">新增 API Key</h3>
+          <button onclick="GrokAdminPages.keys.actions.closeAddModal()" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">备注名称</label>
+            <input
+              type="text"
+              id="add-name"
+              class="geist-input"
+              placeholder="例如：测试环境"
+            />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button onclick="GrokAdminPages.keys.actions.closeAddModal()" class="geist-button-outline">
+            取消
+          </button>
+          <button onclick="GrokAdminPages.keys.actions.createKey()" class="geist-button">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 批量创建弹窗 -->
+    <div id="batch-modal" class="modal hidden">
+      <div class="modal-backdrop" onclick="GrokAdminPages.keys.actions.closeBatchModal()"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 class="modal-title">批量创建 API Key</h3>
+          <button onclick="GrokAdminPages.keys.actions.closeBatchModal()" class="modal-close">
+            &times;
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">创建数量</label>
+            <input
+              type="number"
+              id="batch-count"
+              class="geist-input"
+              value="5"
+              min="1"
+              max="100"
+            />
+          </div>
+          <div class="form-group">
+            <label class="form-label">备注前缀</label>
+            <input
+              type="text"
+              id="batch-prefix"
+              class="geist-input"
+              placeholder="例如：batch"
+            />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button onclick="GrokAdminPages.keys.actions.closeBatchModal()" class="geist-button-outline">
+            取消
+          </button>
+          <button onclick="GrokAdminPages.keys.actions.batchCreate()" class="geist-button">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 编辑备注弹窗 -->
+    <div id="edit-modal" class="modal hidden">
+      <div class="modal-backdrop" onclick="GrokAdminPages.keys.actions.closeEditModal()"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 class="modal-title">编辑备注</h3>
+          <button onclick="GrokAdminPages.keys.actions.closeEditModal()" class="modal-close">
+            &times;
+          </button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="edit-key-id" />
+          <div class="form-group">
+            <label class="form-label">备注名称</label>
+            <input type="text" id="edit-name" class="geist-input" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button onclick="GrokAdminPages.keys.actions.closeEditModal()" class="geist-button-outline">
+            取消
+          </button>
+          <button onclick="GrokAdminPages.keys.actions.updateKeyName()" class="geist-button">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/common/admin-auth.js?v=2"></script>
+    <script src="/static/common/toast.js"></script>
+    <script src="/static/common/header.js?v=4"></script>
+    <script src="/static/common/footer.js?v=1"></script>
+    <script src="/static/keys/keys.js?v=2"></script>
+  </body>
+</html>
+
+

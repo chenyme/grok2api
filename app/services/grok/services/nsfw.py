@@ -40,7 +40,8 @@ class NSFWService:
 
     def __init__(self, proxy: str = None):
         self.proxy = proxy or get_config("network.base_proxy_url")
-        self.timeout = float(get_config("network.timeout"))
+        timeout = get_config("network.timeout", 60)
+        self.timeout = float(timeout or 60)
 
     def _build_proxies(self) -> Optional[dict]:
         """构建代理配置"""

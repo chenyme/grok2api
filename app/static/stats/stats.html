@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grok2API - 统计监控</title>
+    <link rel="icon" href="/static/favicon/favicon.svg?v=3" type="image/svg+xml">
+    <link rel="icon" href="/static/favicon/favicon.ico?v=3" sizes="any" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link
+      href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css"
+      rel="stylesheet"
+    />
+    <link href="/static/common/common.css?v=4" rel="stylesheet" />
+    <link href="/static/stats/stats.css?v=6" rel="stylesheet" />
+    <link href="/static/common/toast.css" rel="stylesheet" />
+  </head>
+
+  <body class="min-h-screen flex flex-col" style="background-color: var(--bg)">
+    <div id="toast-container" class="toast-container"></div>
+    <div id="app-header"></div>
+
+    <main
+      class="space-y-6 flex-1 container mx-auto max-w-7xl px-8 py-8 fade-in"
+    >
+      <div class="space-y-4">
+        <!-- 标题 + Tab + 刷新 同一行均匀分布 -->
+        <div class="flex items-start">
+          <div class="flex-shrink-0">
+            <h2 class="text-2xl font-semibold tracking-tight">统计监控</h2>
+            <p class="text-[var(--accents-4)] text-sm">
+              查看请求统计和审计日志。
+            </p>
+          </div>
+          <div class="flex-1 flex justify-evenly items-center" role="tablist">
+            <button
+              class="tab-item active"
+              role="tab"
+              data-tab="statistics"
+              onclick="GrokAdminPages.stats.actions.switchTab('statistics')"
+            >
+              请求统计
+            </button>
+            <button
+              class="tab-item"
+              role="tab"
+              data-tab="logs"
+              onclick="GrokAdminPages.stats.actions.switchTab('logs')"
+            >
+              日志审计
+            </button>
+          </div>
+          <button
+            onclick="GrokAdminPages.stats.actions.refreshCurrentTab()"
+            class="geist-button-outline gap-2 flex-shrink-0"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"
+              ></path>
+              <path d="M3 3v5h5"></path>
+              <path
+                d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"
+              ></path>
+              <path d="M16 21h5v-5"></path>
+            </svg>
+            刷新
+          </button>
+        </div>
+        <div class="h-px bg-[var(--border)]"></div>
+
+        <!-- 请求统计面板 -->
+        <div id="panel-statistics" class="panel">
+          <!-- 汇总卡片 -->
+          <div class="grid grid-cols-4 gap-4 mb-6">
+            <div class="stat-card">
+              <div class="stat-value" id="stat-total">-</div>
+              <div class="stat-label">总请求数</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value text-green-600" id="stat-success">-</div>
+              <div class="stat-label">成功</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value text-red-600" id="stat-failed">-</div>
+              <div class="stat-label">失败</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value text-blue-600" id="stat-rate">-</div>
+              <div class="stat-label">成功率</div>
+            </div>
+          </div>
+
+          <!-- 图表区域 -->
+          <div class="grid grid-cols-2 gap-6 mb-6">
+            <div class="chart-card">
+              <div class="chart-title">24小时请求趋势</div>
+              <div class="chart-container">
+                <canvas id="hourlyChart"></canvas>
+              </div>
+            </div>
+            <div class="chart-card">
+              <div class="chart-title">7天请求趋势</div>
+              <div class="chart-container">
+                <canvas id="dailyChart"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- 模型分布 -->
+          <div class="chart-card">
+            <div class="chart-title">模型调用分布 (Top 10)</div>
+            <div class="chart-container-wide">
+              <canvas id="modelChart"></canvas>
+            </div>
+          </div>
+
+          <!-- 重置按钮 -->
+          <div class="mt-6 flex justify-end">
+            <button
+              onclick="GrokAdminPages.stats.actions.resetStats()"
+              class="geist-button-outline text-red-600 border-red-200 hover:border-red-400"
+            >
+              重置统计
+            </button>
+          </div>
+        </div>
+
+        <!-- 日志审计面板 -->
+        <div id="panel-logs" class="panel hidden">
+          <div class="flex justify-between items-center mb-4">
+            <div class="text-sm text-[var(--accents-4)]">
+              显示最近 <span id="log-count">0</span> 条请求记录
+            </div>
+            <button
+              onclick="GrokAdminPages.stats.actions.clearLogs()"
+              class="geist-button-outline text-red-600 border-red-200 hover:border-red-400"
+            >
+              清空日志
+            </button>
+          </div>
+
+          <div class="log-table-wrapper">
+            <table class="log-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>IP</th>
+                  <th>模型</th>
+                  <th>耗时</th>
+                  <th>状态</th>
+                  <th>Key</th>
+                  <th>错误</th>
+                </tr>
+              </thead>
+              <tbody id="log-table-body">
+                <tr>
+                  <td colspan="7" class="table-empty">加载中...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div id="app-footer"></div>
+
+    <script src="/static/common/admin-auth.js?v=2"></script>
+    <script src="/static/common/toast.js"></script>
+    <script src="/static/common/header.js?v=4"></script>
+    <script src="/static/common/footer.js?v=1"></script>
+    <script src="/static/stats/stats.js?v=10"></script>
+  </body>
+</html>

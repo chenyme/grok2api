@@ -5,6 +5,7 @@ Batch task manager for admin batch operations (SSE progress).
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -13,6 +14,7 @@ from typing import Any, Dict, List, Optional
 class BatchTask:
     def __init__(self, total: int):
         self.id = uuid.uuid4().hex
+        self.stream_token = secrets.token_urlsafe(24)
         self.total = int(total)
         self.processed = 0
         self.ok = 0
@@ -54,9 +56,7 @@ class BatchTask:
                 # Drop if queue is full or closed
                 pass
 
-    def record(
-        self, ok: bool, *, item: Any = None, detail: Any = None, error: str = ""
-    ) -> None:
+    def record(self, ok: bool, *, item: Any = None, detail: Any = None, error: str = "") -> None:
         self.processed += 1
         if ok:
             self.ok += 1
@@ -128,6 +128,15 @@ class BatchTask:
 
     def final_event(self) -> Optional[Dict[str, Any]]:
         return self._final_event
+
+    def validate_stream_token(self, token: str) -> bool:
+        """校验短时流订阅令牌"""
+        if not token:
+            return False
+        try:
+            return secrets.compare_digest(str(token), self.stream_token)
+        except Exception:
+            return False
 
 
 _TASKS: Dict[str, BatchTask] = {}

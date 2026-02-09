@@ -36,72 +36,61 @@ def _migrate_deprecated_config(
     config: Dict[str, Any], valid_sections: set
 ) -> tuple[Dict[str, Any], set]:
     """
-    迁移废弃的配置节到新配置结构
+    过滤废弃配置节，仅保留当前有效配置结构。
 
     Returns:
-        (迁移后的配置, 废弃的配置节集合)
+        (过滤后的配置, 被移除的废弃配置节集合)
     """
-    # 配置映射规则：旧配置 -> 新配置
-    MIGRATION_MAP = {
-        # grok.* -> 对应的新配置节
-        "grok.temporary": "chat.temporary",
-        "grok.disable_memory": "chat.disable_memory",
-        "grok.stream": "chat.stream",
-        "grok.thinking": "chat.thinking",
-        "grok.dynamic_statsig": "chat.dynamic_statsig",
-        "grok.filter_tags": "chat.filter_tags",
-        "grok.timeout": "network.timeout",
-        "grok.base_proxy_url": "network.base_proxy_url",
-        "grok.asset_proxy_url": "network.asset_proxy_url",
-        "grok.cf_clearance": "security.cf_clearance",
-        "grok.browser": "security.browser",
-        "grok.user_agent": "security.user_agent",
-        "grok.max_retry": "retry.max_retry",
-        "grok.retry_status_codes": "retry.retry_status_codes",
-        "grok.retry_backoff_base": "retry.retry_backoff_base",
-        "grok.retry_backoff_factor": "retry.retry_backoff_factor",
-        "grok.retry_backoff_max": "retry.retry_backoff_max",
-        "grok.retry_budget": "retry.retry_budget",
-        "grok.stream_idle_timeout": "timeout.stream_idle_timeout",
-        "grok.video_idle_timeout": "timeout.video_idle_timeout",
-        "grok.image_ws": "image.image_ws",
-        "grok.image_ws_nsfw": "image.image_ws_nsfw",
-        "grok.image_ws_blocked_seconds": "image.image_ws_blocked_seconds",
-        "grok.image_ws_final_min_bytes": "image.image_ws_final_min_bytes",
-        "grok.image_ws_medium_min_bytes": "image.image_ws_medium_min_bytes",
-    }
-
     deprecated_sections = set(config.keys()) - valid_sections
     if not deprecated_sections:
         return config, set()
 
     result = {k: deepcopy(v) for k, v in config.items() if k in valid_sections}
-    migrated_count = 0
-
-    # 处理废弃配置节中的配置项
-    for old_section in deprecated_sections:
-        if old_section not in config or not isinstance(config[old_section], dict):
-            continue
-
-        for old_key, old_value in config[old_section].items():
-            # 查找映射规则
-            old_path = f"{old_section}.{old_key}"
-            new_path = MIGRATION_MAP.get(old_path)
-
-            if new_path:
-                new_section, new_key = new_path.split(".", 1)
-                # 确保新配置节存在
-                if new_section not in result:
-                    result[new_section] = {}
-                # 迁移配置项（保留用户的自定义值）
-                result[new_section][new_key] = old_value
-                migrated_count += 1
-                logger.debug(f"Migrated config: {old_path} -> {new_path} = {old_value}")
-
-    if migrated_count > 0:
-        logger.info(f"Migrated {migrated_count} config items from deprecated sections")
-
     return result, deprecated_sections
+
+
+# 字段重命名映射: (section, old_key) -> new_key
+_FIELD_RENAMES = {
+    ("app", "app_key"): "app_password",
+}
+
+
+def _migrate_renamed_fields(config: Dict[str, Any]) -> bool:
+    """迁移已重命名的配置字段。返回 True 表示有迁移发生。"""
+    migrated = False
+    for (section, old_key), new_key in _FIELD_RENAMES.items():
+        sec = config.get(section)
+        if not isinstance(sec, dict):
+            continue
+        if old_key in sec and new_key not in sec:
+            sec[new_key] = sec.pop(old_key)
+            migrated = True
+            logger.info(f"Migrated config: [{section}].{old_key} → {new_key}")
+        elif old_key in sec and new_key in sec:
+            # 新旧都存在，删除旧的
+            del sec[old_key]
+            migrated = True
+    return migrated
+
+
+def _strip_empty_numeric_overrides(
+    data: Dict[str, Any], defaults: Dict[str, Any]
+) -> Dict[str, Any]:
+    """清理数值类字段的空字符串覆盖，避免 '' 覆盖默认数值"""
+    if not isinstance(data, dict) or not isinstance(defaults, dict):
+        return data
+
+    result = deepcopy(data)
+    for section, items in result.items():
+        if not isinstance(items, dict):
+            continue
+        default_section = defaults.get(section, {})
+        if not isinstance(default_section, dict):
+            continue
+        for key in list(items.keys()):
+            if items[key] == "" and isinstance(default_section.get(key), (int, float)):
+                del items[key]
+    return result
 
 
 def _load_defaults() -> Dict[str, Any]:
@@ -164,22 +153,29 @@ class Config:
 
             config_data = config_data or {}
 
+            # 迁移已重命名的字段（如 app_key → app_password）
+            fields_migrated = _migrate_renamed_fields(config_data)
+
             # 检查是否有废弃的配置节
             valid_sections = set(self._defaults.keys())
             config_data, deprecated_sections = _migrate_deprecated_config(
                 config_data, valid_sections
             )
             if deprecated_sections:
-                logger.info(
-                    f"Cleaned deprecated config sections: {deprecated_sections}"
-                )
+                logger.info(f"Cleaned deprecated config sections: {deprecated_sections}")
+
+            # 清理空字符串对数值默认值的覆盖
+            config_data = _strip_empty_numeric_overrides(config_data, self._defaults)
 
             merged = _deep_merge(self._defaults, config_data)
 
             # 自动回填缺失配置到存储
             # 或迁移了配置后需要更新
             should_persist = (
-                (not from_remote) or (merged != config_data) or deprecated_sections
+                (not from_remote)
+                or (merged != config_data)
+                or deprecated_sections
+                or fields_migrated
             )
             if should_persist:
                 async with storage.acquire_lock("config_save", timeout=10):
@@ -220,8 +216,9 @@ class Config:
         storage = get_storage()
         async with storage.acquire_lock("config_save", timeout=10):
             self._ensure_defaults()
+            cleaned = _strip_empty_numeric_overrides(new_config or {}, self._defaults)
             base = _deep_merge(self._defaults, self._config or {})
-            merged = _deep_merge(base, new_config or {})
+            merged = _deep_merge(base, cleaned)
             await storage.save_config(merged)
             self._config = merged
 

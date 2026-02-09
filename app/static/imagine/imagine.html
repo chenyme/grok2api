@@ -5,12 +5,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok2API - Imagine 瀑布流</title>
-  <link rel="icon" href="/static/favicon/favicon.ico">
+  <link rel="icon" href="/static/favicon/favicon.svg?v=3" type="image/svg+xml">
+    <link rel="icon" href="/static/favicon/favicon.ico?v=3" sizes="any">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <link href="/static/common/common.css?v=3" rel="stylesheet">
-  <link href="/static/imagine/imagine.css?v=2" rel="stylesheet">
+  <link href="/static/imagine/imagine.css?v=5" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
 </head>
 
@@ -18,11 +19,11 @@
   <div id="toast-container" class="toast-container"></div>
   <div id="app-header"></div>
 
-  <main class="flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in">
+  <main class="space-y-6 flex-1 container mx-auto max-w-7xl px-8 py-8 fade-in">
     <div class="space-y-6">
         <div>
           <h2 class="text-2xl font-semibold tracking-tight">Imagine 瀑布流</h2>
-          <p class="text-[var(--accents-4)] mt-1 text-sm">通过 WebSocket 持续生成图片，实时展示 base64 瀑布流。</p>
+          <p class="text-[var(--accents-4)] mt-1 text-sm">通过 WebSocket 持续生成图片，实时展示图像瀑布流（Base64 / URL）。单次请求最多 6 张，9/16 张会自动分批补齐。</p>
         </div>
 
         <div class="h-px bg-[var(--border)]"></div>
@@ -54,6 +55,22 @@
                       <option value="1" selected>1 个任务</option>
                       <option value="2">2 个任务</option>
                       <option value="3">3 个任务</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="field-label" for="imageCountSelect">出图数量</label>
+                    <select id="imageCountSelect" class="geist-input">
+                      <option value="1">1 张</option>
+                      <option value="4" selected>4 张</option>
+                      <option value="9">9 张</option>
+                      <option value="16">16 张</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="field-label" for="outputModeSelect">输出模式</label>
+                    <select id="outputModeSelect" class="geist-input">
+                      <option value="base64" selected>Base64（预览快）</option>
+                      <option value="url">URL（节省内存）</option>
                     </select>
                   </div>
                 </div>
@@ -102,6 +119,14 @@
           </div>
           <div class="card-content" id="statusContent">
             <div class="meta-grid">
+            <div class="meta-item mode-item">
+              <div class="meta-label">连接模式</div>
+              <div class="mode-switch" role="group" aria-label="Connection mode">
+                <button class="mode-btn" data-mode="auto" type="button">Auto</button>
+                <button class="mode-btn" data-mode="ws" type="button">WS</button>
+                <button class="mode-btn" data-mode="sse" type="button">SSE</button>
+              </div>
+            </div>
             <div class="meta-item">
               <div class="meta-label">图片数量</div>
               <div id="countValue" class="meta-value">0</div>
@@ -114,10 +139,6 @@
               <div class="meta-label">平均耗时</div>
               <div id="latencyValue" class="meta-value">-</div>
             </div>
-            <div class="meta-item">
-              <div class="meta-label">最后错误</div>
-              <div id="errorValue" class="meta-value">-</div>
-            </div>
             </div>
           </div>
         </div>
@@ -127,17 +148,6 @@
         <div class="waterfall-header">
           <div class="card-title">瀑布流</div>
           <div class="waterfall-actions">
-            <div id="selectionToolbar" class="selection-toolbar hidden">
-              <button id="toggleSelectAllBtn" class="selection-btn">全选</button>
-              <button id="downloadSelectedBtn" class="selection-btn selection-btn-primary">下载选中 (<span id="selectedCount">0</span>)</button>
-            </div>
-            <button id="batchDownloadBtn" class="batch-download-btn" title="批量下载">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-            </button>
           </div>
         </div>
         <div id="emptyState" class="imagine-empty">等待连接中...</div>
@@ -186,6 +196,19 @@
       </svg>
       清空
     </button>
+    <span class="toolbar-sep"></span>
+    <button id="batchDownloadBtn" class="batch-download-btn geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100" title="批量下载">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+      <span>批量</span>
+    </button>
+    <div id="selectionToolbar" class="selection-toolbar hidden">
+      <button id="toggleSelectAllBtn" class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100">全选</button>
+      <button id="downloadSelectedBtn" class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100">下载 <span id="selectedCount" class="selected-count">0</span></button>
+    </div>
   </div>
 
   <div id="app-footer"></div>
@@ -195,7 +218,7 @@
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/static/imagine/imagine.js?v=3"></script>
+  <script src="/static/imagine/imagine.js?v=9"></script>
 </body>
 
 </html>

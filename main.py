@@ -19,43 +19,74 @@ if env_file.exists():
 from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi import Depends  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
 
 from app.core.auth import verify_api_key  # noqa: E402
 from app.core.config import get_config  # noqa: E402
 from app.core.logger import logger, setup_logging  # noqa: E402
 from app.core.exceptions import register_exception_handlers  # noqa: E402
 from app.core.response_middleware import ResponseLoggerMiddleware  # noqa: E402
+from app.core.security_middleware import (  # noqa: E402
+    BodySizeLimitMiddleware,
+    RateLimitMiddleware,
+)
 from app.api.v1.chat import router as chat_router  # noqa: E402
 from app.api.v1.image import router as image_router  # noqa: E402
+from app.api.v1.video import router as video_router  # noqa: E402
 from app.api.v1.files import router as files_router  # noqa: E402
 from app.api.v1.models import router as models_router  # noqa: E402
+from app.api.v1.health import router as health_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
 
-
 # 初始化日志
-setup_logging(
-    level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=True
-)
+setup_logging(level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=True)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 1. 注册服务默认配置
-    from app.core.config import config, register_defaults
-    from app.services.grok.defaults import get_grok_defaults
+    # 1. 加载配置
+    from app.core.config import config
 
-    register_defaults(get_grok_defaults())
-
-    # 2. 加载配置
     await config.load()
 
-    # 3. 启动服务显示
+    # 安全提示：使用默认密码时给出警告
+    app_password = get_config("app.app_password", "")
+    if app_password == "grok2api":
+        logger.warning(
+            "Default app_password detected (grok2api). Please change it in config.toml for security."
+        )
+    if not get_config("app.api_key", ""):
+        logger.warning(
+            "Admin api_key is not configured. Admin access will rely on app_password only."
+        )
+
+    # 2. 初始化代理池
+    proxy_url = get_config("proxy.proxy_url", "") or get_config("network.base_proxy_url", "")
+    proxy_pool_url = get_config("proxy.proxy_pool_url", "")
+    if proxy_url or proxy_pool_url:
+        from app.core.proxy_pool import proxy_pool
+
+        proxy_pool.configure(
+            proxy_url=proxy_url,
+            proxy_pool_url=proxy_pool_url,
+            proxy_pool_interval=get_config("proxy.proxy_pool_interval", 300),
+        )
+
+    # 3. 初始化统计/日志服务
+    if get_config("stats.enabled", True):
+        from app.services.stats import request_stats, request_logger
+
+        await request_stats.init()
+        await request_logger.init()
+        logger.info("Stats and logging services initialized")
+
+    # 4. 启动服务显示
     logger.info("Starting Grok2API...")
     logger.info(f"Platform: {platform.system()} {platform.release()}")
     logger.info(f"Python: {sys.version.split()[0]}")
 
-    # 4. 启动 Token 刷新调度器
+    # 5. 启动 Token 刷新调度器
     refresh_enabled = get_config("token.auto_refresh", True)
     if refresh_enabled:
         basic_interval = get_config("token.refresh_interval_hours", 8)
@@ -88,13 +119,34 @@ def create_app() -> FastAPI:
     )
 
     # CORS 配置
+    cors_origins = get_config(
+        "security.cors_allow_origins",
+        ["http://127.0.0.1:8000", "http://localhost:8000"],
+    )
+    if isinstance(cors_origins, str):
+        cors_origins = [item.strip() for item in cors_origins.split(",") if item.strip()]
+    if not isinstance(cors_origins, list) or not cors_origins:
+        cors_origins = ["http://127.0.0.1:8000", "http://localhost:8000"]
+
+    allow_credentials = bool(get_config("security.cors_allow_credentials", True))
+    if "*" in cors_origins and allow_credentials:
+        logger.warning(
+            "CORS misconfiguration detected: wildcard origin with credentials. "
+            "Forcing allow_credentials=False."
+        )
+        allow_credentials = False
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # 安全中间件
+    app.add_middleware(BodySizeLimitMiddleware)
+    app.add_middleware(RateLimitMiddleware)
 
     # 请求日志和 ID 中间件
     app.add_middleware(ResponseLoggerMiddleware)
@@ -103,16 +155,12 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
 
     # 注册路由
-    app.include_router(
-        chat_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
-    )
-    app.include_router(
-        image_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
-    )
-    app.include_router(
-        models_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
-    )
+    app.include_router(chat_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
+    app.include_router(image_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
+    app.include_router(models_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
+    app.include_router(video_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
     app.include_router(files_router, prefix="/v1/files")
+    app.include_router(health_router)
 
     # 静态文件服务
     from fastapi.staticfiles import StaticFiles
@@ -120,6 +168,13 @@ def create_app() -> FastAPI:
     static_dir = Path(__file__).parent / "app" / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+        favicon_path = static_dir / "favicon" / "favicon.ico"
+        if favicon_path.exists():
+
+            @app.get("/favicon.ico", include_in_schema=False)
+            async def favicon():
+                return FileResponse(favicon_path)
 
     # 注册管理路由
     from app.api.v1.admin import router as admin_router

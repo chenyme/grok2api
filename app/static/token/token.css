@@ -1,358 +1,401 @@
-    /* Shared styles moved to common.css */
+/* Shared styles moved to common.css */
 
-    /* Table Styles */
-    .geist-table {
-      width: 100%;
-      border-collapse: separate;
-      border-spacing: 0;
-      font-size: 13px;
-      /* Unified font size */
-    }
+/* Token 页面加大 - 覆盖 common.css 的 stat-card */
+.stat-card {
+  padding: 20px 24px;
+  border-radius: 12px;
+  border: 1px solid #e8e8e8;
+}
 
-    .geist-table th {
-      text-align: center;
-      /* Default center */
-      padding: 0 16px;
-      border-bottom: 1px solid var(--accents-1);
-      color: var(--accents-5);
-      font-weight: 500;
-      height: 40px;
-      /* Reduced height */
-      background: #fff;
-    }
+.stat-card:hover {
+  border-color: #ccc;
+}
 
-    .geist-table th.text-left {
-      text-align: left;
-    }
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
 
-    .geist-table th.text-right {
-      text-align: right;
-    }
+.stat-label {
+  font-size: 13px;
+  margin-top: 6px;
+}
 
-    .geist-table td {
-      padding: 8px 14px;
-      border-bottom: 1px solid #fafafa;
-      background: #fff;
-      vertical-align: middle;
-      height: 44px;
-      color: var(--accents-6);
-      text-align: center;
-      /* Default center */
-      transition: background 0.15s;
-      font-size: 12px;
-    }
+/* 表格字体加大 */
+.geist-table td {
+  font-size: 13px;
+  height: 50px;
+  padding: 10px 16px;
+}
 
-    .geist-table td.text-left {
-      text-align: left;
-    }
+.geist-table th {
+  height: 44px;
+  font-size: 13px;
+  padding: 0 16px;
+}
 
-    .geist-table td.text-right {
-      text-align: right;
-    }
+/* Tab 字体加大 */
+.tab-item {
+  font-size: 13.5px;
+  padding: 8px 14px;
+}
 
-    .geist-table tr:last-child td {
-      border-bottom: none;
-    }
+/* Table Styles */
+.geist-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  /* Unified font size */
+}
 
-    .geist-table tr:hover td {
-      background: #fafafa;
-    }
+.geist-table th {
+  text-align: center;
+  /* Default center */
+  padding: 0 16px;
+  border-bottom: 1px solid var(--accents-1);
+  color: var(--accents-5);
+  font-weight: 500;
+  height: 40px;
+  /* Reduced height */
+  background: #fff;
+}
 
-    .geist-table tr.row-selected td {
-      background: #f6f7f9;
-    }
+.geist-table th.text-left {
+  text-align: left;
+}
 
-    .geist-table tr.row-selected:hover td {
-      background: #f0f2f5;
-    }
+.geist-table th.text-right {
+  text-align: right;
+}
 
-    .pagination-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 8px 4px;
-    }
+.geist-table td {
+  padding: 8px 14px;
+  border-bottom: 1px solid #fafafa;
+  background: #fff;
+  vertical-align: middle;
+  height: 44px;
+  color: var(--accents-6);
+  text-align: center;
+  /* Default center */
+  transition: background 0.15s;
+  font-size: 12px;
+}
 
-    /* Elegant Badges */
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 0 8px;
-      height: 20px;
-      border-radius: 9999px;
-      font-size: 12px;
-      font-weight: 500;
-      line-height: 20px;
-      white-space: nowrap;
-    }
+.geist-table td.text-left {
+  text-align: left;
+}
 
-    .badge-gray {
-      background: #f3f4f6;
-      color: #4b5563;
-    }
+.geist-table td.text-right {
+  text-align: right;
+}
 
-    .badge-green {
-      background: #ecfdf5;
-      color: #059669;
-    }
+.geist-table tr:last-child td {
+  border-bottom: none;
+}
 
-    .badge-orange {
-      background: #fff7ed;
-      color: #d97706;
-    }
+.geist-table tr:hover td {
+  background: #fafafa;
+}
 
-    .badge-red {
-      background: #fef2f2;
-      color: #dc2626;
-    }
+.geist-table tr.row-selected td {
+  background: #f6f7f9;
+}
 
-    .badge-purple {
-      background: #f3e8ff;
-      color: #9333ea;
-    }
+.geist-table tr.row-selected:hover td {
+  background: #f0f2f5;
+}
 
-    .checkbox {
-      width: 12px;
-      height: 12px;
-      border-radius: 4px;
-      border: 1px solid var(--accents-3);
-      appearance: none;
-      cursor: pointer;
-      position: relative;
-      background: #fff;
-      transition: all 0.2s;
-      margin: 0 auto;
-      /* Center in cell */
-      display: block;
-    }
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 4px;
+}
 
-    .checkbox:checked {
-      background-color: #000;
-      border-color: #000;
-    }
+/* Elegant Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  height: 20px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+}
 
-    .checkbox:checked::after {
-      content: '';
-      position: absolute;
-      top: 45%;
-      left: 50%;
-      width: 3px;
-      height: 6px;
-      border: solid white;
-      border-width: 0 2px 2px 0;
-      transform: translate(-50%, -60%) rotate(45deg);
-    }
+.badge-gray {
+  background: #f3f4f6;
+  color: #4b5563;
+}
 
-    .checkbox:focus-visible {
-      outline: none;
-      box-shadow: 0 0 0 2px #000;
-      border-color: #000;
-    }
+.badge-green {
+  background: #ecfdf5;
+  color: #059669;
+}
 
-    /* Custom Scrollbar for Table Wrapper if needed */
-    .table-wrapper {
-      border-radius: 8px;
-      overflow: hidden;
-    }
+.badge-orange {
+  background: #fff7ed;
+  color: #d97706;
+}
 
-    .batch-link {
-      font-size: 12px;
-      color: var(--accents-5);
-      text-decoration: underline;
-      background: transparent;
-      border: none;
-    }
+.badge-red {
+  background: #fef2f2;
+  color: #dc2626;
+}
 
-    .batch-link:hover {
-      color: #000;
-    }
+.badge-purple {
+  background: #f3e8ff;
+  color: #9333ea;
+}
 
-    .toolbar-sep {
-      width: 1px;
-      height: 14px;
-      background: var(--border);
-      display: inline-block;
-    }
+.checkbox {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--accents-3);
+  appearance: none;
+  cursor: pointer;
+  position: relative;
+  background: #fff;
+  transition: all 0.2s;
+  margin: 0 auto;
+  /* Center in cell */
+  display: block;
+}
 
-    #batch-actions {
-      background: rgba(255, 255, 255, 0.92);
-      border: 1px solid var(--border);
-      backdrop-filter: blur(10px);
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-    }
+.checkbox:checked {
+  background-color: #000;
+  border-color: #000;
+}
 
-    #batch-actions .geist-button-outline:hover {
-      background: #f3f4f6;
-    }
+.checkbox:checked::after {
+  content: "";
+  position: absolute;
+  top: 45%;
+  left: 50%;
+  width: 3px;
+  height: 6px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: translate(-50%, -60%) rotate(45deg);
+}
 
-    .modal-overlay {
-      position: fixed;
-      inset: 0;
-      z-index: 50;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: rgba(0, 0, 0, 0.35);
-      backdrop-filter: blur(4px);
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s ease;
-    }
+.checkbox:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #000;
+  border-color: #000;
+}
 
-    .modal-overlay.hidden {
-      display: none;
-    }
+/* Custom Scrollbar for Table Wrapper if needed */
+.table-wrapper {
+  border-radius: 8px;
+  overflow: hidden;
+}
 
-    .modal-overlay.is-open {
-      opacity: 1;
-      pointer-events: auto;
-    }
+.batch-link {
+  font-size: 12px;
+  color: var(--accents-5);
+  text-decoration: underline;
+  background: transparent;
+  border: none;
+}
 
-    .modal-content {
-      background: #fff;
-      border-radius: 12px;
-      padding: 16px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
-      width: 100%;
-      transform: scale(0.96);
-      transition: transform 0.2s ease;
-      font-size: 13px;
-      color: var(--accents-6);
-    }
+.batch-link:hover {
+  color: #000;
+}
 
-    .modal-overlay.is-open .modal-content {
-      transform: scale(1);
-    }
+.toolbar-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  display: inline-block;
+}
 
-    .modal-lg {
-      max-width: 520px;
-    }
+#batch-actions {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+}
 
-    .modal-md {
-      max-width: 420px;
-    }
+#batch-actions .geist-button-outline:hover {
+  background: #f3f4f6;
+}
 
-    .modal-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 10px;
-    }
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
 
-    .modal-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--accents-7);
-    }
+.modal-overlay.hidden {
+  display: none;
+}
 
-    .modal-label {
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--accents-7);
-    }
+.modal-overlay.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
 
-    .modal-close {
-      color: var(--accents-4);
-      transition: color 0.15s;
-    }
+.modal-content {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  width: 100%;
+  transform: scale(0.96);
+  transition: transform 0.2s ease;
+  font-size: 13px;
+  color: var(--accents-6);
+}
 
-    .modal-close:hover {
-      color: #000;
-    }
+.modal-overlay.is-open .modal-content {
+  transform: scale(1);
+}
 
-    .confirm-dialog-body {
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
+.modal-lg {
+  max-width: 520px;
+}
 
-    .confirm-dialog-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--accents-7);
-    }
+.modal-md {
+  max-width: 420px;
+}
 
-    .confirm-dialog-message {
-      font-size: 13px;
-      color: var(--accents-5);
-      line-height: 1.5;
-    }
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
 
-    .confirm-dialog-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 8px;
-      padding-top: 8px;
-      border-top: 1px solid var(--border);
-    }
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accents-7);
+}
 
-    .confirm-dialog .modal-content {
-      padding: 0;
-    }
+.modal-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accents-7);
+}
 
-    /* Tab Styles */
-    #status-tabs {
-      border: none;
-      background: #f6f6f6;
-      padding: 6px;
-      gap: 6px;
-      border-radius: 999px;
-    }
+.modal-close {
+  color: var(--accents-4);
+  transition: color 0.15s;
+}
 
-    .tab-item {
-      position: relative;
-      padding: 6px 12px;
-      margin-right: 0;
-      font-size: 12.5px;
-      font-weight: 500;
-      color: var(--accents-5);
-      background: transparent;
-      border: none;
-      border-radius: 999px;
-      cursor: pointer;
-      transition: color 0.15s ease, background 0.15s ease;
-      white-space: nowrap;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-    }
+.modal-close:hover {
+  color: #000;
+}
 
-    .tab-item:hover {
-      color: var(--geist-foreground, #000);
-      background: rgba(0, 0, 0, 0.05);
-    }
+.confirm-dialog-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 
-    .tab-item.active {
-      color: var(--geist-foreground, #000);
-      background: #fff;
-    }
+.confirm-dialog-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accents-7);
+}
 
-    #status-tabs .badge {
-      height: 20px;
-      line-height: 20px;
-      font-size: 11px;
-      padding: 0 8px;
-    }
+.confirm-dialog-message {
+  font-size: 13px;
+  color: var(--accents-5);
+  line-height: 1.5;
+}
 
-    .tab-item:disabled {
-      cursor: not-allowed;
-      opacity: 0.5;
-    }
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
 
-    /* Hide scrollbar for tabs on mobile */
-    .hide-scrollbar {
-      -ms-overflow-style: none;
-      scrollbar-width: none;
-    }
-    .hide-scrollbar::-webkit-scrollbar {
-      display: none;
-    }
+.confirm-dialog .modal-content {
+  padding: 0;
+}
 
-    .tab-sep {
-      width: 1px;
-      height: 16px;
-      background: #e5e5e5;
-      margin: 0 4px;
-    }
+/* Tab Styles */
+#status-tabs {
+  border: none;
+  background: #f6f6f6;
+  padding: 6px;
+  gap: 6px;
+  border-radius: 999px;
+}
+
+.tab-item {
+  position: relative;
+  padding: 6px 12px;
+  margin-right: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--accents-5);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tab-item:hover {
+  color: var(--geist-foreground, #000);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.tab-item.active {
+  color: var(--geist-foreground, #000);
+  background: #fff;
+}
+
+#status-tabs .badge {
+  height: 20px;
+  line-height: 20px;
+  font-size: 11px;
+  padding: 0 8px;
+}
+
+.tab-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Hide scrollbar for tabs on mobile */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-sep {
+  width: 1px;
+  height: 16px;
+  background: #e5e5e5;
+  margin: 0 4px;
+}

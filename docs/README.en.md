@@ -5,76 +5,171 @@
 > [!NOTE]
 > This project is for learning and research only. You must comply with Grok's Terms of Use and applicable laws. Do not use it for illegal purposes.
 
-Grok2API rebuilt with **FastAPI**, fully aligned with the latest web call format. Supports streaming and non-streaming chat, image generation/editing, deep thinking, token pool concurrency, and automatic load balancing.
+Grok2API rebuilt with **FastAPI**, fully aligned with the latest web call format. Supports streaming and non-streaming chat, image generation/editing, video generation, deep thinking, token pool concurrency, and automatic load balancing.
 
-<img width="2562" height="1280" alt="image" src="https://github.com/user-attachments/assets/356d772a-65e1-47bd-abc8-c00bb0e2c9cc" />
+## Acknowledgments
+
+This project is based on the following excellent projects:
+
+- [@Chenyme/grok2api](https://github.com/chenyme/grok2api) - Original project author
+- [@Tomiya233/grok2api](https://github.com/Tomiya233/grok2api) - Enhanced version
 
 <br>
 
-## Usage
+## Highlights
 
-### How to start
+- **OpenAI-Compatible API** — Chat, image, video all via `/v1/chat/completions`, compatible with all OpenAI SDK clients
+- **Multi-Backend Storage** — Local / Redis / MySQL / PostgreSQL, Redis recommended for production
+- **Redis Atomic Operations** — Lua scripts for quota consumption, stats update, and cooling transition in a single RTT, zero race conditions
+- **Dual Token Pool** — ssoBasic (80 req/20h) + ssoSuper (140 req/2h) auto-switching with multi-strategy load balancing
+- **Security Middleware** — IP rate limiting, request body size limits, CORS whitelist, configurable auth policies
+- **Imagine Waterfall** — WebSocket + SSE dual-mode real-time image generation with auto-fallback
+- **Stats Dashboard** — Request statistics, log audit, proxy status monitoring
+- **Proxy Pool** — Configurable proxy URL or proxy pool API with auto-rotation
+- **Cache Management** — Local image/video cache with threshold-based auto-cleanup
 
-- Local development
+<br>
 
-```
-uv sync
+## Quick Start
 
-uv run main.py
-```
+### Docker Compose (Recommended)
 
-- Deployment
+> [!TIP]
+> Docker Compose + Redis is the recommended deployment. Out-of-the-box multi-worker concurrency with atomic operation optimization.
 
-```
-git clone https://github.com/chenyme/grok2api
+```bash
+git clone https://github.com/CPU-JIA/grok2api
+cd grok2api
 
+# Modify environment variables in docker-compose.yml as needed
 docker compose up -d
 ```
 
-### Admin panel
+Default: 8 workers + Redis storage. In production, change `app.app_password` in `data/config.toml`.
 
-URL: `http://<host>:8000/admin`  
-Default password: `grok2api` (config key `app.app_key`, change it in production).
+### Local Development
 
-### Environment variables
+```bash
+uv sync
+uv run main.py
+```
 
-| Variable | Description | Default | Example |
-| :--- | :--- | :--- | :--- |
-| `LOG_LEVEL` | Log level | `INFO` | `DEBUG` |
-| `SERVER_HOST` | Bind address | `0.0.0.0` | `0.0.0.0` |
-| `SERVER_PORT` | Service port | `8000` | `8000` |
-| `SERVER_WORKERS` | Uvicorn worker count | `1` | `2` |
-| `SERVER_STORAGE_TYPE` | Storage type (`local`/`redis`/`mysql`/`pgsql`) | `local` | `pgsql` |
-| `SERVER_STORAGE_URL` | Storage URL (empty for local) | `""` | `postgresql+asyncpg://user:password@host:5432/db` |
+### Admin Panel
 
-> MySQL example: `mysql+aiomysql://user:password@host:3306/db` (if you set `mysql://`, it will be normalized to `mysql+aiomysql://`)
+URL: `http://<host>:8000/admin`
+Default credentials: `admin` / `CHANGE_ME_NOW` (config keys `app.app_username` and `app.app_password`, change immediately in production).
 
-### Usage limits
+**Modules**:
+
+- **Token Management**: Import/add/delete tokens, view status and quota, filter by status or NSFW
+- **Key Management**: Manage API keys, multi-key distribution
+- **Stats Dashboard**: Request statistics, log audit, proxy status monitoring
+- **Cache Preview**: View and clean local media cache (images/videos)
+- **Configuration**: Online config editing, instant effect
+- **Imagine Waterfall**: WebSocket/SSE real-time image generation with batch download
+- **Voice Live**: LiveKit voice session, connect to Grok Voice
+
+**Batch Operations**: Batch refresh, export, delete tokens; one-click NSFW (Unhinged mode)
+
+<details>
+<summary>Screenshots</summary>
+
+<br>
+
+**Login**
+
+![Login](../Images/登录.png)
+
+**Token Management**
+
+![Token Management](../Images/Token管理.png)
+
+**Imagine Waterfall**
+
+![Imagine](../Images/Imagine.png)
+
+**Voice Live**
+
+![Voice](../Images/Voice.png)
+
+**Key Management**
+
+![Key Management](../Images/Key管理.png)
+
+**Stats Dashboard — Request Statistics**
+
+![Stats - Requests](../Images/统计监控-请求统计.png)
+
+**Stats Dashboard — Log Audit**
+
+![Stats - Logs](../Images/请求监控-日志统计.png)
+
+**Cache Preview**
+
+![Cache Preview](../Images/缓存预览.png)
+
+**Configuration — Global & Grok Settings**
+
+![Config 1](../Images/配置管理1.png)
+
+**Configuration — Token Pool & Performance**
+
+![Config 2](../Images/配置管理2.png)
+
+</details>
+
+### Environment Variables
+
+> Configure via `.env` file or `docker-compose.yml` `environment` section
+
+| Variable              | Description                                    | Default   | Example                |
+| :-------------------- | :--------------------------------------------- | :-------- | :--------------------- |
+| `LOG_LEVEL`           | Log level                                      | `INFO`    | `DEBUG`                |
+| `SERVER_HOST`         | Bind address                                   | `0.0.0.0` | `0.0.0.0`              |
+| `SERVER_PORT`         | Service port                                   | `8000`    | `8000`                 |
+| `SERVER_WORKERS`      | Uvicorn worker count                           | `1`       | `4`                    |
+| `SERVER_STORAGE_TYPE` | Storage type (`local`/`redis`/`mysql`/`pgsql`) | `local`   | `redis`                |
+| `SERVER_STORAGE_URL`  | Storage URL (empty for local)                  | `""`      | `redis://redis:6379/0` |
+| `DATA_DIR`            | Data directory path                            | `./data`  | `/app/data`            |
+
+> **Storage URL examples**:
+>
+> - Redis: `redis://redis:6379/0`
+> - MySQL: `mysql+aiomysql://user:password@host:3306/db` (if you set `mysql://`, it will be normalized to `mysql+aiomysql://`)
+> - PostgreSQL: `postgresql+asyncpg://user:password@host:5432/db`
+
+### Usage Limits
 
 - Basic account: 80 requests / 20h
 - Super account: 140 requests / 2h
 
 ### Models
 
-| Model | Cost | Account | Chat | Image | Video |
-| :--- | :---: | :--- | :---: | :---: | :---: |
-| `grok-3` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-3-fast` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4-mini` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4-fast` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4-heavy` | 4 | Super | Yes | Yes | - |
-| `grok-4.1` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4.1-thinking` | 4 | Basic/Super | Yes | Yes | - |
-| `grok-imagine-1.0` | 4 | Basic/Super | - | Yes | - |
-| `grok-imagine-1.0-edit` | 4 | Basic/Super | - | Yes | - |
-| `grok-imagine-1.0-video` | - | Basic/Super | - | - | Yes |
+| Model                    | Cost | Account     | Chat | Image | Video |
+| :----------------------- | :--: | :---------- | :--: | :---: | :---: |
+| `grok-3`                 |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-3-mini`            |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-3-thinking`        |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4`                 |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4-fast`            |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4-mini`            |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4-thinking`        |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4-expert`          |  4   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4-heavy`           |  4   | Super       | Yes  |  Yes  |   -   |
+| `grok-4.1`               |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4.1-mini`          |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4.1-fast`          |  1   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4.1-thinking`      |  4   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-4.1-expert`        |  4   | Basic/Super | Yes  |  Yes  |   -   |
+| `grok-imagine-1.0`       |  4   | Basic/Super |  -   |  Yes  |   -   |
+| `grok-imagine-1.0-video` |  -   | Basic/Super |  -   |   -   |  Yes  |
 
 <br>
 
 ## API
 
 ### `POST /v1/chat/completions`
+
 > Generic endpoint: chat, image generation, image editing, video generation, video upscaling
 
 ```bash
@@ -92,17 +187,32 @@ curl http://localhost:8000/v1/chat/completions \
 
 <br>
 
-| Field | Type | Description | Allowed values |
-| :--- | :--- | :--- | :--- |
-| `model` | string | Model ID | - |
-| `messages` | array | Message list | `developer`, `system`, `user`, `assistant` |
-| `stream` | boolean | Enable streaming | `true`, `false` |
-| `thinking` | string | Thinking mode | `enabled`, `disabled`, `null` |
-| `video_config` | object | **Video model only** | - |
-| └─ `aspect_ratio` | string | Video aspect ratio | `16:9`, `9:16`, `1:1`, `2:3`, `3:2` |
-| └─ `video_length` | integer | Video length (seconds) | `6`, `10`, `15` |
-| └─ `resolution_name` | string | Resolution | `480p`, `720p` |
-| └─ `preset` | string | Style preset | `fun`, `normal`, `spicy` |
+| Field                | Type    | Description            | Allowed values                      |
+| :------------------- | :------ | :--------------------- | :---------------------------------- |
+| `model`              | string  | Model ID               | See model table above               |
+| `messages`           | array   | Message list           | See message format below            |
+| `stream`             | boolean | Enable streaming       | `true`, `false`                     |
+| `thinking`           | string  | Thinking mode          | `enabled`, `disabled`, `null`       |
+| `video_config`       | object  | **Video model only**   | -                                   |
+| └─ `aspect_ratio`    | string  | Video aspect ratio     | `16:9`, `9:16`, `1:1`, `2:3`, `3:2` |
+| └─ `video_length`    | integer | Video length (seconds) | `6`, `10`                           |
+| └─ `resolution_name` | string  | Resolution             | `480p`, `720p`                      |
+| └─ `preset`          | string  | Style preset           | `fun`, `normal`, `spicy`, `custom`  |
+
+**Message format (messages)**:
+
+| Field     | Type         | Description                                      |
+| :-------- | :----------- | :----------------------------------------------- |
+| `role`    | string       | Role: `developer`, `system`, `user`, `assistant` |
+| `content` | string/array | Message content, plain text or multimodal array  |
+
+**Multimodal content types (content array)**:
+
+| type        | Description | Example                                                      |
+| :---------- | :---------- | :----------------------------------------------------------- |
+| `text`      | Text        | `{"type": "text", "text": "Describe this image"}`            |
+| `image_url` | Image URL   | `{"type": "image_url", "image_url": {"url": "https://..."}}` |
+| `file`      | File        | `{"type": "file", "file": {"url": "https://..."}}`           |
 
 Note: any other parameters will be discarded and ignored.
 
@@ -111,7 +221,8 @@ Note: any other parameters will be discarded and ignored.
 </details>
 
 ### `POST /v1/images/generations`
-> Image generation endpoint
+
+> Image endpoint: image generation, image editing
 
 ```bash
 curl http://localhost:8000/v1/images/generations \
@@ -129,56 +240,18 @@ curl http://localhost:8000/v1/images/generations \
 
 <br>
 
-| Field | Type | Description | Allowed values |
-| :--- | :--- | :--- | :--- |
-| `model` | string | Image model ID | `grok-imagine-1.0` |
-| `prompt` | string | Prompt | - |
-| `n` | integer | Number of images | `1` - `10` (streaming: `1` or `2` only) |
-| `stream` | boolean | Enable streaming | `true`, `false` |
-| `size` | string | Image size | `1024x1024` (WS mode maps to aspect ratio) |
-| `quality` | string | Image quality | `standard` (not customizable yet) |
-| `response_format` | string | Response format | `url`, `b64_json` |
-| `style` | string | Style | - (not supported yet) |
+| Field             | Type    | Description      | Allowed values                          |
+| :---------------- | :------ | :--------------- | :-------------------------------------- |
+| `model`           | string  | Image model ID   | `grok-imagine-1.0`                      |
+| `prompt`          | string  | Prompt           | -                                       |
+| `n`               | integer | Number of images | `1` - `10` (streaming: `1` or `2` only) |
+| `stream`          | boolean | Enable streaming | `true`, `false`                         |
+| `size`            | string  | Image size       | `1024x1024` (not customizable yet)      |
+| `quality`         | string  | Image quality    | `standard` (not customizable yet)       |
+| `response_format` | string  | Response format  | `url`, `b64_json`                       |
+| `style`           | string  | Style            | - (not supported yet)                   |
 
-Note: when `grok.image_ws=true`, `size` is mapped to aspect ratio (only 5 supported: `16:9`, `9:16`, `1:1`, `2:3`, `3:2`); you can also pass those ratio strings directly:  
-`1024x576/1280x720/1536x864 -> 16:9`, `576x1024/720x1280/864x1536 -> 9:16`, `1024x1024/512x512 -> 1:1`, `1024x1536/512x768/768x1024 -> 2:3`, `1536x1024/768x512/1024x768 -> 3:2`, otherwise defaults to `2:3`. Other parameters are ignored.
-
-<br>
-
-</details>
-
-<br>
-
-### `POST /v1/images/edits`
-> Image edit endpoint (multipart/form-data)
-
-```bash
-curl http://localhost:8000/v1/images/edits \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
-  -F "model=grok-imagine-1.0-edit" \
-  -F "prompt=Make it sharper" \
-  -F "image=@/path/to/image.png" \
-  -F "n=1"
-```
-
-<details>
-<summary>Supported request parameters</summary>
-
-<br>
-
-| Field | Type | Description | Allowed values |
-| :--- | :--- | :--- | :--- |
-| `model` | string | Image model ID | `grok-imagine-1.0-edit` |
-| `prompt` | string | Edit prompt | - |
-| `image` | file | Image file | `png`, `jpg`, `webp` |
-| `n` | integer | Number of images | `1` - `10` (streaming: `1` or `2` only) |
-| `stream` | boolean | Enable streaming | `true`, `false` |
-| `size` | string | Image size | `1024x1024` (not customizable yet) |
-| `quality` | string | Image quality | `standard` (not customizable yet) |
-| `response_format` | string | Response format | `url`, `b64_json` |
-| `style` | string | Style | - (not supported yet) |
-
-Note: `size`, `quality`, `style` are OpenAI compatibility placeholders and are not customizable yet.
+Note: `size`, `quality`, `style` are OpenAI-compatible placeholders, not customizable yet.
 
 <br>
 
@@ -188,70 +261,171 @@ Note: `size`, `quality`, `style` are OpenAI compatibility placeholders and are n
 
 ## Configuration
 
-Config file: `data/config.toml`
+Config file: `data/config.toml` (auto-generated from `config.defaults.toml` on first start)
 
 > [!NOTE]
 > In production or behind a reverse proxy, make sure `app.app_url` is set to the public URL.
 > Otherwise file links may be incorrect or return 403.
 
-> [!TIP]
-> **v2.0 Config Upgrade**: Existing users will have their config **auto-migrated** to the new structure upon update.
-> Custom values from the old `[grok]` section will be automatically mapped to the corresponding new sections.
+### `[app]` Application
 
-| Module | Field | Key | Description | Default |
-| :--- | :--- | :--- | :--- | :--- |
-| **app** | `app_url` | App URL | External access URL for Grok2API (used for file links). | `http://127.0.0.1:8000` |
-| | `app_key` | Admin password | Password for the Grok2API admin panel (required). | `grok2api` |
-| | `api_key` | API key | Token for calling Grok2API (optional). | `""` |
-| | `image_format` | Image format | Output image format (`url` or `base64`). | `url` |
-| | `video_format` | Video format | Output video format (html tag or processed url). | `html` |
-| **network** | `timeout` | Request timeout | Timeout for Grok requests (seconds). | `120` |
-| | `base_proxy_url` | Base proxy URL | Base service address proxying Grok official site. | `""` |
-| | `asset_proxy_url` | Asset proxy URL | Proxy URL for Grok static assets (images/videos). | `""` |
-| **security** | `cf_clearance` | CF Clearance | Cloudflare clearance cookie for bypassing anti-bot. | `""` |
-| | `browser` | Browser fingerprint | curl_cffi browser fingerprint (e.g. chrome136). | `chrome136` |
-| | `user_agent` | User-Agent | HTTP User-Agent string. | `Mozilla/5.0 (Macintosh; ...)` |
-| **chat** | `temporary` | Temporary chat | Enable temporary conversation mode. | `true` |
-| | `disable_memory` | Disable memory | Disable Grok memory to prevent irrelevant context. | `true` |
-| | `stream` | Streaming | Enable streaming by default. | `true` |
-| | `thinking` | Thinking chain | Enable model thinking output. | `true` |
-| | `dynamic_statsig` | Dynamic fingerprint | Enable dynamic Statsig value generation. | `true` |
-| | `filter_tags` | Filter tags | Auto-filter special tags in Grok responses. | `["xaiartifact", "xai:tool_usage_card", "grok:render"]` |
-| **retry** | `max_retry` | Max retries | Max retries on Grok request failure. | `3` |
-| | `retry_status_codes` | Retry status codes | HTTP status codes that trigger retry. | `[401, 429, 403]` |
-| | `retry_backoff_base` | Backoff base | Base delay for retry backoff (seconds). | `0.5` |
-| | `retry_backoff_factor` | Backoff factor | Exponential multiplier for retry backoff. | `2.0` |
-| | `retry_backoff_max` | Backoff max | Max wait per retry (seconds). | `30.0` |
-| | `retry_budget` | Backoff budget | Max total retry time per request (seconds). | `90.0` |
-| **timeout** | `stream_idle_timeout` | Stream idle timeout | Idle timeout for streaming responses (seconds). | `120.0` |
-| | `video_idle_timeout` | Video idle timeout | Idle timeout for video generation (seconds). | `90.0` |
-| **image** | `image_ws` | WebSocket generation | When enabled, `/v1/images/generations` uses WebSocket. | `true` |
-| | `image_ws_nsfw` | NSFW mode | Enable NSFW in WebSocket requests. | `true` |
-| | `image_ws_blocked_seconds` | Blocked threshold | Mark blocked if no final image after this many seconds post-medium. | `15` |
-| | `image_ws_final_min_bytes` | Final min bytes | Minimum bytes to treat an image as final (JPG usually > 100KB). | `100000` |
-| | `image_ws_medium_min_bytes` | Medium min bytes | Minimum bytes for medium quality image. | `30000` |
-| **token** | `auto_refresh` | Auto refresh | Enable automatic token refresh. | `true` |
-| | `refresh_interval_hours` | Refresh interval | Regular token refresh interval (hours). | `8` |
-| | `super_refresh_interval_hours` | Super refresh interval | Super token refresh interval (hours). | `2` |
-| | `fail_threshold` | Failure threshold | Consecutive failures before a token is disabled. | `5` |
-| | `save_delay_ms` | Save delay | Debounced save delay for token changes (ms). | `500` |
-| | `reload_interval_sec` | Sync interval | Token state refresh interval in multi-worker setups (sec). | `30` |
-| **cache** | `enable_auto_clean` | Auto clean | Enable cache auto clean; cleanup when exceeding limit. | `true` |
-| | `limit_mb` | Cleanup threshold | Cache size threshold (MB) that triggers cleanup. | `1024` |
-| **performance** | `media_max_concurrent` | Media concurrency | Concurrency cap for video/media generation. Recommended 50. | `50` |
-| | `assets_max_concurrent` | Assets concurrency | Concurrency cap for batch asset find/delete. Recommended 25. | `25` |
-| | `assets_batch_size` | Assets batch size | Batch size for asset find/delete. Recommended 10. | `10` |
-| | `assets_max_tokens` | Assets max tokens | Max tokens per asset find/delete batch. Recommended 1000. | `1000` |
-| | `assets_delete_batch_size` | Assets delete batch | Batch concurrency for single-account asset deletion. Recommended 10. | `10` |
-| | `usage_max_concurrent` | Token refresh concurrency | Concurrency cap for batch usage refresh. Recommended 25. | `25` |
-| | `usage_batch_size` | Token refresh batch size | Batch size for usage refresh. Recommended 50. | `50` |
-| | `usage_max_tokens` | Token refresh max tokens | Max tokens per usage refresh batch. Recommended 1000. | `1000` |
-| | `nsfw_max_concurrent` | NSFW enable concurrency | Concurrency cap for enabling NSFW in batch. Recommended 10. | `10` |
-| | `nsfw_batch_size` | NSFW enable batch size | Batch size for enabling NSFW. Recommended 50. | `50` |
-| | `nsfw_max_tokens` | NSFW enable max tokens | Max tokens per NSFW batch to avoid mistakes. Recommended 1000. | `1000` |
+| Field          | Description                                                   | Default                 |
+| :------------- | :------------------------------------------------------------ | :---------------------- |
+| `app_url`      | External access URL for file link generation                  | `http://127.0.0.1:8000` |
+| `app_username` | Admin panel username                                          | `admin`                 |
+| `app_password` | Admin panel password (required, change on first run)          | `CHANGE_ME_NOW`         |
+| `api_key`      | API key (optional, empty = no auth)                           | `""`                    |
+| `image_format` | Image output format                                           | `url`                   |
+| `video_format` | Video output format (`html` = Markdown link, `url` = raw URL) | `html`                  |
+
+### `[network]` Network
+
+| Field             | Description                       | Default |
+| :---------------- | :-------------------------------- | :------ |
+| `timeout`         | Grok request timeout (seconds)    | `120`   |
+| `base_proxy_url`  | Base proxy for Grok official site | `""`    |
+| `asset_proxy_url` | Proxy for Grok static assets      | `""`    |
+
+### `[security]` Security
+
+| Field                   | Description                    | Default                          |
+| :---------------------- | :----------------------------- | :------------------------------- |
+| `cf_clearance`          | Cloudflare clearance cookie    | `""`                             |
+| `browser`               | Browser fingerprint identifier | `chrome136`                      |
+| `allow_anonymous_api`   | Allow anonymous API calls      | `false`                          |
+| `allow_anonymous_admin` | Allow anonymous admin access   | `false`                          |
+| `cors_allow_origins`    | CORS whitelist                 | `["http://127.0.0.1:8000", ...]` |
+| `max_body_size_mb`      | Max request body size (MB)     | `50`                             |
+| `rate_limit_enabled`    | Enable IP rate limiting        | `true`                           |
+| `rate_limit_per_minute` | Requests per minute limit      | `120`                            |
+| `rate_limit_burst`      | Burst request limit            | `60`                             |
+
+### `[chat]` Chat
+
+| Field             | Description                   | Default                                                 |
+| :---------------- | :---------------------------- | :------------------------------------------------------ |
+| `temporary`       | Enable temporary chat mode    | `true`                                                  |
+| `disable_memory`  | Disable conversation memory   | `true`                                                  |
+| `stream`          | Enable streaming by default   | `true`                                                  |
+| `thinking`        | Enable thinking chain output  | `true`                                                  |
+| `dynamic_statsig` | Enable dynamic Statsig values | `true`                                                  |
+| `filter_tags`     | Auto-filter special Grok tags | `["xaiartifact", "xai:tool_usage_card", "grok:render"]` |
+
+### `[retry]` Retry Strategy
+
+| Field                  | Description                  | Default           |
+| :--------------------- | :--------------------------- | :---------------- |
+| `max_retry`            | Max retry count              | `3`               |
+| `retry_status_codes`   | HTTP codes triggering retry  | `[401, 429, 403]` |
+| `retry_backoff_base`   | Base retry delay (seconds)   | `0.5`             |
+| `retry_backoff_factor` | Exponential backoff factor   | `2.0`             |
+| `retry_backoff_max`    | Max wait per retry (seconds) | `30.0`            |
+| `retry_budget`         | Total retry budget (seconds) | `90.0`            |
+
+### `[timeout]` Timeouts
+
+| Field                             | Description                          | Default |
+| :-------------------------------- | :----------------------------------- | :------ |
+| `stream_idle_timeout`             | Stream idle timeout (seconds)        | `120.0` |
+| `video_idle_timeout`              | Video generation timeout (seconds)   | `90.0`  |
+| `video_result_wait_timeout`       | Video result wait timeout (seconds)  | `90.0`  |
+| `video_result_poll_interval`      | Video result poll interval (seconds) | `1.0`   |
+| `video_result_scan_pages`         | Video result scan pages              | `12`    |
+| `video_result_scan_assets`        | Video result scan assets             | `800`   |
+| `video_result_candidate_attempts` | Video candidate attempts             | `4`     |
+
+### `[image]` Image Generation
+
+| Field                       | Description                       | Default  |
+| :-------------------------- | :-------------------------------- | :------- |
+| `image_ws`                  | Enable WebSocket image generation | `true`   |
+| `image_ws_nsfw`             | Enable NSFW for WS generation     | `true`   |
+| `image_ws_blocked_seconds`  | Wait time after block (seconds)   | `15`     |
+| `image_ws_final_min_bytes`  | Min bytes for final image         | `100000` |
+| `image_ws_medium_min_bytes` | Min bytes for medium image        | `30000`  |
+| `image_ws_max_per_request`  | Max images per request            | `6`      |
+
+### `[token]` Token Pool
+
+| Field                          | Description                          | Default     |
+| :----------------------------- | :----------------------------------- | :---------- |
+| `auto_refresh`                 | Enable auto refresh                  | `true`      |
+| `refresh_interval_hours`       | Basic token refresh interval (hours) | `8`         |
+| `super_refresh_interval_hours` | Super token refresh interval (hours) | `2`         |
+| `fail_threshold`               | Failures before token disabled       | `5`         |
+| `save_delay_ms`                | Debounced save delay (ms)            | `2000`      |
+| `reload_interval_sec`          | Multi-worker state refresh (seconds) | `120`       |
+| `selection_strategy`           | Selection strategy                   | `max_quota` |
+
+> Strategies: `max_quota` (highest quota first), `random`, `weighted`, `lru` (least recently used)
+
+### `[cache]` Cache
+
+| Field                  | Description                  | Default |
+| :--------------------- | :--------------------------- | :------ |
+| `enable_auto_clean`    | Enable auto cleanup          | `true`  |
+| `image_limit_mb`       | Image cache threshold (MB)   | `2048`  |
+| `video_limit_mb`       | Video cache threshold (MB)   | `4096`  |
+| `cleanup_target_ratio` | Cleanup target ratio (0~1)   | `0.8`   |
+| `cleanup_interval_sec` | Cleanup check interval (sec) | `30`    |
+| `cleanup_max_delete`   | Max deletes per cleanup      | `1000`  |
+
+### `[proxy]` Proxy Pool
+
+| Field                 | Description                  | Default |
+| :-------------------- | :--------------------------- | :------ |
+| `proxy_url`           | Fixed proxy URL              | `""`    |
+| `proxy_pool_url`      | Proxy pool API URL           | `""`    |
+| `proxy_pool_interval` | Proxy pool refresh (seconds) | `300`   |
+
+### `[stats]` Statistics
+
+| Field                | Description                   | Default |
+| :------------------- | :---------------------------- | :------ |
+| `enabled`            | Enable statistics             | `true`  |
+| `hourly_retention`   | Hourly data retention (hours) | `48`    |
+| `daily_retention`    | Daily data retention (days)   | `30`    |
+| `log_max_entries`    | Max log entries               | `1000`  |
+| `flush_interval_sec` | Flush interval (seconds)      | `2`     |
+
+### `[performance]` Concurrency
+
+| Field                      | Description               | Default |
+| :------------------------- | :------------------------ | :------ |
+| `nsfw_max_concurrent`      | NSFW batch concurrency    | `50`    |
+| `nsfw_batch_size`          | NSFW batch size           | `100`   |
+| `nsfw_max_tokens`          | NSFW batch max tokens     | `5000`  |
+| `usage_max_concurrent`     | Usage refresh concurrency | `100`   |
+| `usage_batch_size`         | Usage refresh batch size  | `100`   |
+| `usage_max_tokens`         | Usage refresh max tokens  | `5000`  |
+| `assets_max_concurrent`    | Asset ops concurrency     | `100`   |
+| `assets_batch_size`        | Asset ops batch size      | `50`    |
+| `assets_max_tokens`        | Asset ops max tokens      | `5000`  |
+| `assets_delete_batch_size` | Asset delete batch        | `50`    |
+| `media_max_concurrent`     | Media generation cap      | `200`   |
+| `sse_keepalive_sec`        | SSE keepalive (seconds)   | `15`    |
+
+<br>
+
+## Redis Storage Optimization
+
+Redis is the recommended storage backend for production, offering these advantages over Local storage:
+
+- **Atomic Quota Consumption** — Lua scripts perform "check quota -> deduct -> update stats -> cooling transition" in a single RTT, zero race conditions under high concurrency
+- **Atomic Batch Updates** — Multi-token field updates via Lua scripts with transactional guarantees, preventing partial updates
+- **Connection Pooling** — Built-in async connection pool with automatic connection reuse
+- **Multi-Worker Sharing** — All workers share the same state in multi-process deployments, real-time quota consistency
+- **Persistence** — Docker Compose enables AOF persistence by default, data survives container restarts
+
+```yaml
+# docker-compose.yml ships with Redis pre-configured
+environment:
+  SERVER_STORAGE_TYPE: redis
+  SERVER_STORAGE_URL: redis://redis:6379/0
+```
 
 <br>
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Chenyme/grok2api&type=Timeline)](https://star-history.com/#Chenyme/grok2api&Timeline)
+[![Star History Chart](https://api.star-history.com/svg?repos=CPU-JIA/grok2api&type=Timeline)](https://star-history.com/#CPU-JIA/grok2api&Timeline)

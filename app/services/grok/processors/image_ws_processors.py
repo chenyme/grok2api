@@ -11,6 +11,7 @@ import orjson
 
 from app.core.config import get_config
 from app.core.logger import logger
+from app.core.storage import DATA_DIR
 from app.core.exceptions import UpstreamException
 from .base import BaseProcessor
 
@@ -31,12 +32,7 @@ class ImageWSBaseProcessor(BaseProcessor):
 
     def _ensure_image_dir(self) -> Path:
         if self._image_dir is None:
-            base_dir = (
-                Path(__file__).parent.parent.parent.parent.parent
-                / "data"
-                / "tmp"
-                / "image"
-            )
+            base_dir = DATA_DIR / "tmp" / "image"
             base_dir.mkdir(parents=True, exist_ok=True)
             self._image_dir = base_dir
         return self._image_dir
@@ -62,11 +58,14 @@ class ImageWSBaseProcessor(BaseProcessor):
         data = self._strip_base64(blob)
         if not data:
             return ""
+        raw = base64.b64decode(data)
+        if len(raw) < 100:
+            return ""
         image_dir = self._ensure_image_dir()
         filename = self._filename(image_id, is_final)
         filepath = image_dir / filename
         with open(filepath, "wb") as f:
-            f.write(base64.b64decode(data))
+            f.write(raw)
         return self._build_file_url(filename)
 
     def _pick_best(self, existing: Optional[Dict], incoming: Dict) -> Dict:
@@ -83,9 +82,7 @@ class ImageWSBaseProcessor(BaseProcessor):
     def _to_output(self, image_id: str, item: Dict) -> str:
         try:
             if self.response_format == "url":
-                return self._save_blob(
-                    image_id, item.get("blob", ""), item.get("is_final", False)
-                )
+                return self._save_blob(image_id, item.get("blob", ""), item.get("is_final", False))
             return self._strip_base64(item.get("blob", ""))
         except Exception as e:
             logger.warning(f"Image output failed: {e}")
@@ -197,9 +194,7 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
                 )
         else:
             selected = [
-                (image_id, images[image_id])
-                for image_id in self._index_map
-                if image_id in images
+                (image_id, images[image_id]) for image_id in self._index_map if image_id in images
             ]
 
         for image_id, item in selected:
@@ -232,9 +227,7 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
 class ImageWSCollectProcessor(ImageWSBaseProcessor):
     """WebSocket 图片非流式响应处理器"""
 
-    def __init__(
-        self, model: str, token: str = "", n: int = 1, response_format: str = "b64_json"
-    ):
+    def __init__(self, model: str, token: str = "", n: int = 1, response_format: str = "b64_json"):
         super().__init__(model, token, response_format)
         self.n = n
 

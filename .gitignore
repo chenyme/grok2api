@@ -46,6 +46,7 @@ logs/
 
 # Data
 data/*.json
+data/*.toml
 data/tmp/*
 data/.locks/*
 app/data/*.json
@@ -59,3 +60,8 @@ htmlcov/
 
 # Project specific
 config.local.toml
+.ace-tool/
+.codex/
+.tmp*
+*.har
+app/static/brand/

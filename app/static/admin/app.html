@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grok2API - Admin</title>
+    <link rel="icon" href="/static/favicon/favicon.svg?v=3" type="image/svg+xml">
+    <link rel="icon" href="/static/favicon/favicon.ico?v=3" sizes="any" />
+    <script>
+      window.__GROK_ADMIN_SPA__ = true;
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link
+      href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css"
+      rel="stylesheet"
+    />
+    <link href="/static/common/common.css?v=4" rel="stylesheet" />
+    <link href="/static/common/toast.css" rel="stylesheet" />
+    <link id="page-style" rel="stylesheet" href="" />
+  </head>
+
+  <body class="min-h-screen flex flex-col" style="background-color: var(--bg)">
+    <div id="toast-container" class="toast-container"></div>
+    <div id="app-header"></div>
+    <main
+      id="app-main"
+      class="space-y-6 flex-1 container mx-auto max-w-7xl px-8 py-8"
+    ></main>
+    <div id="app-footer"></div>
+    <div id="app-overlays"></div>
+
+    <script src="/static/common/admin-auth.js?v=3"></script>
+    <script src="/static/common/toast.js"></script>
+    <script src="/static/common/draggable.js?v=2"></script>
+    <script src="/static/common/batch-sse.js?v=2"></script>
+    <script src="/static/common/header.js?v=4"></script>
+    <script src="/static/common/footer.js?v=1"></script>
+    <script src="/static/token/token.js?v=20"></script>
+    <script src="/static/keys/keys.js?v=3"></script>
+    <script src="/static/stats/stats.js?v=8"></script>
+    <script src="/static/cache/cache.js?v=14"></script>
+    <script src="/static/config/config.js?v=18"></script>
+    <script src="/static/imagine/imagine.js?v=7"></script>
+    <script src="/static/voice/voice.js?v=12"></script>
+    <script src="/static/admin/app.js?v=3"></script>
+  </body>
+</html>
+

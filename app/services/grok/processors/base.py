@@ -3,13 +3,13 @@
 """
 
 import asyncio
+import re
 import time
 from typing import Any, AsyncGenerator, Optional, AsyncIterable, List, TypeVar
 
 from app.core.config import get_config
 from app.core.logger import logger
 from app.services.grok.services.assets import DownloadService
-
 
 ASSET_URL = "https://assets.grok.com/"
 
@@ -45,16 +45,59 @@ def _collect_image_urls(obj: Any) -> List[str]:
     urls: List[str] = []
     seen = set()
 
-    def add(url: str):
-        if not url or url in seen:
+    url_pattern = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+    def normalize(raw: str) -> str:
+        value = (raw or "").strip().strip("\"'")
+        if not value:
+            return ""
+        if value.startswith("//"):
+            return f"https:{value}"
+        if value.startswith(("/users/", "/images/", "/image/", "/assets/")):
+            return f"https://assets.grok.com{value}"
+        if value.startswith(("users/", "images/", "image/", "assets/")):
+            return f"https://assets.grok.com/{value}"
+        return value
+
+    def is_probable_image_url(url: str) -> bool:
+        value = (url or "").lower()
+        if not (value.startswith("http://") or value.startswith("https://")):
+            return False
+        if ".mp4" in value or "/video" in value:
+            return False
+        if value.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif")):
+            return True
+        if "/image" in value or "/images/" in value:
+            return True
+        if "assets.grok.com" in value:
+            return True
+        return False
+
+    def add(raw: str):
+        url = normalize(raw)
+        if not url or url in seen or not is_probable_image_url(url):
             return
         seen.add(url)
         urls.append(url)
 
+    def add_from_text(text: str):
+        for matched in url_pattern.findall(text or ""):
+            cleaned = matched.rstrip(".,;)\"]'")
+            if cleaned:
+                add(cleaned)
+
     def walk(value: Any):
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in {"generatedImageUrls", "imageUrls", "imageURLs"}:
+                key_lower = str(key).lower()
+                if key_lower in {
+                    "generatedimageurls",
+                    "generatedimageurl",
+                    "imageurls",
+                    "imageurl",
+                    "imageurls",
+                    "image_urls",
+                }:
                     if isinstance(item, list):
                         for url in item:
                             if isinstance(url, str):
@@ -62,10 +105,26 @@ def _collect_image_urls(obj: Any) -> List[str]:
                     elif isinstance(item, str):
                         add(item)
                     continue
+
+                if any(hint in key_lower for hint in ("image", "thumbnail", "poster")):
+                    if isinstance(item, str):
+                        add(item)
+                    elif isinstance(item, list):
+                        for candidate in item:
+                            if isinstance(candidate, str):
+                                add(candidate)
+
+                if key_lower in {"message", "content", "text"} and isinstance(item, str):
+                    add_from_text(item)
+
                 walk(item)
         elif isinstance(value, list):
             for item in value:
                 walk(item)
+        elif isinstance(value, str) and (
+            "assets.grok.com" in value.lower() or "http://" in value or "https://" in value
+        ):
+            add_from_text(value)
 
     walk(obj)
     return urls
@@ -132,19 +191,71 @@ class BaseProcessor:
             await self._dl_service.close()
             self._dl_service = None
 
-    async def process_url(self, path: str, media_type: str = "image") -> str:
+    async def process_url(
+        self,
+        path: str,
+        media_type: str = "image",
+        strict_media: bool = False,
+    ) -> str:
         """处理资产 URL"""
         if path.startswith("http"):
             from urllib.parse import urlparse
 
-            path = urlparse(path).path
+            parsed = urlparse(path)
+            host = (parsed.netloc or "").lower()
+
+            # 非 Grok 资产域名：直接返回原始 URL，避免错误改写为本地 /v1/files/*/
+            if host and "assets.grok.com" not in host:
+                return path
+
+            path = parsed.path
+
+            # 防止根路径被拼成本地无效文件链接（如 /v1/files/video/）
+            if not path or path == "/":
+                return path or ""
 
         if not path.startswith("/"):
             path = f"/{path}"
 
         if self.app_url:
             dl_service = self._get_dl()
-            await dl_service.download(path, self.token, media_type)
+            try:
+                cache_path, mime = await dl_service.download(path, self.token, media_type)
+            except Exception as dl_err:
+                logger.warning(
+                    "Asset download failed, skipping",
+                    extra={"model": self.model, "path": path, "error": str(dl_err)},
+                )
+                return ""
+
+            if strict_media:
+                mime_lower = (mime or "").lower()
+                expected_prefix = "video/" if media_type == "video" else "image/"
+                if not mime_lower.startswith(expected_prefix):
+                    try:
+                        if cache_path and cache_path.exists():
+                            cache_path.unlink()
+                    except Exception:
+                        pass
+
+                    log_kwargs = {
+                        "extra": {
+                            "model": self.model,
+                            "requested": media_type,
+                            "mime": mime,
+                            "path": path,
+                        }
+                    }
+                    if media_type == "video" and "/content" in path:
+                        logger.info(
+                            "Video asset not ready yet, waiting for next poll", **log_kwargs
+                        )
+                    else:
+                        logger.warning(
+                            "Media type mismatch while processing asset URL", **log_kwargs
+                        )
+                    return ""
+
             return f"{self.app_url.rstrip('/')}/v1/files/{media_type}{path}"
         else:
             return f"{ASSET_URL.rstrip('/')}{path}"

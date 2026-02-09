@@ -53,6 +53,7 @@ class ResponseLoggerMiddleware(BaseHTTPMiddleware):
                     "duration_ms": round(duration, 2),
                 },
             )
+            response.headers["X-Request-ID"] = trace_id
 
             return response
 
@@ -68,4 +69,4 @@ class ResponseLoggerMiddleware(BaseHTTPMiddleware):
                     "error": str(e),
                 },
             )
-            raise e
+            raise

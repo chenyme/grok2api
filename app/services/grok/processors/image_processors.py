@@ -25,9 +25,7 @@ from .base import (
 class ImageStreamProcessor(BaseProcessor):
     """图片生成流式响应处理器"""
 
-    def __init__(
-        self, model: str, token: str = "", n: int = 1, response_format: str = "b64_json"
-    ):
+    def __init__(self, model: str, token: str = "", n: int = 1, response_format: str = "b64_json"):
         super().__init__(model, token)
         self.partial_index = 0
         self.n = n
@@ -44,9 +42,7 @@ class ImageStreamProcessor(BaseProcessor):
         """构建 SSE 响应"""
         return f"event: {event}\ndata: {orjson.dumps(data).decode()}\n\n"
 
-    async def process(
-        self, response: AsyncIterable[bytes]
-    ) -> AsyncGenerator[str, None]:
+    async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理流式响应"""
         final_images = []
         idle_timeout = get_config("timeout.stream_idle_timeout")
@@ -95,9 +91,7 @@ class ImageStreamProcessor(BaseProcessor):
                                 continue
                             try:
                                 dl_service = self._get_dl()
-                                base64_data = await dl_service.to_base64(
-                                    url, self.token, "image"
-                                )
+                                base64_data = await dl_service.to_base64(url, self.token, "image")
                                 if base64_data:
                                     if "," in base64_data:
                                         b64 = base64_data.split(",", 1)[1]
@@ -208,9 +202,7 @@ class ImageCollectProcessor(BaseProcessor):
                                 continue
                             try:
                                 dl_service = self._get_dl()
-                                base64_data = await dl_service.to_base64(
-                                    url, self.token, "image"
-                                )
+                                base64_data = await dl_service.to_base64(url, self.token, "image")
                                 if base64_data:
                                     if "," in base64_data:
                                         b64 = base64_data.split(",", 1)[1]

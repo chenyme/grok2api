@@ -73,13 +73,16 @@
 }
 
 .card-content {
-  overflow: hidden;
-  transition: max-height 0.3s ease, opacity 0.2s ease;
+  overflow: visible;
+  transition:
+    max-height 0.3s ease,
+    opacity 0.2s ease;
   max-height: 2000px;
   opacity: 1;
 }
 
 .imagine-card-collapsible.collapsed .card-content {
+  overflow: hidden;
   max-height: 0;
   opacity: 0;
   margin: 0;
@@ -154,6 +157,7 @@
   grid-template-columns: 2fr 1fr;
   gap: 16px;
   align-items: start;
+  padding-bottom: 8px;
 }
 
 .settings-prompt {
@@ -219,16 +223,15 @@
   .settings-top {
     grid-template-columns: 1fr;
   }
-  
+
   .settings-bottom-row {
     grid-template-columns: 1fr;
   }
-  
+
   .settings-toggles {
     grid-template-columns: 1fr;
   }
 }
-
 
 .waterfall-header {
   display: flex;
@@ -252,11 +255,8 @@
 }
 
 .batch-download-btn {
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  width: 28px;
   height: 28px;
+  padding: 0 10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -269,11 +269,6 @@
 .batch-download-btn svg {
   width: 14px;
   height: 14px;
-}
-
-.batch-download-btn:hover {
-  background: var(--hover-bg);
-  border-color: #000;
 }
 
 .selection-toolbar {
@@ -290,40 +285,25 @@
   display: flex;
 }
 
-.selection-btn {
+.selection-toolbar .geist-button-outline {
   height: 28px;
   padding: 0 10px;
   font-size: 12px;
-  font-weight: 500;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--fg);
-  cursor: pointer;
-  transition: all 0.2s;
-  white-space: nowrap;
 }
 
-.selection-btn:hover {
-  background: var(--hover-bg);
-  border-color: #000;
-}
-
-.selection-btn-primary {
-  background: #000;
-  color: #fff;
-  border-color: #000;
-}
-
-.selection-btn-primary:hover {
-  background: #000;
-  opacity: 0.85;
-}
-
-.selection-btn-primary:disabled {
-  background: #000;
-  opacity: 0.5;
-  cursor: not-allowed;
+.selected-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accents-2);
+  color: var(--accents-6);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .field-label {
@@ -350,22 +330,59 @@
   color: #dc2626;
 }
 
-
 .meta-grid {
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
 }
 
+.mode-item {
+  align-items: center;
+}
+
+.mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  flex-wrap: wrap;
+}
+
+.mode-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--accents-6);
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.mode-btn:hover {
+  background: var(--hover-bg);
+  border-color: var(--border);
+}
+
+.mode-btn.active {
+  background: #000;
+  color: #fff;
+  border-color: #000;
+}
+
 .meta-item {
-  padding: 10px 12px;
+  padding: 9px 12px;
   border-radius: 10px;
   background: #f7f7f8;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 40px;
+  min-height: 38px;
 }
 
 .meta-label {
@@ -500,11 +517,11 @@
   position: absolute;
   top: 8px;
   left: 8px;
-  width: 24px;
-  height: 24px;
+  width: 16px;
+  height: 16px;
   background: rgba(255, 255, 255, 0.9);
-  border: 2px solid #ddd;
-  border-radius: 4px;
+  border: 1px solid #ddd;
+  border-radius: 2px;
   cursor: pointer;
   display: none;
   align-items: center;
@@ -529,11 +546,11 @@
 }
 
 .waterfall-item.selected .image-checkbox::after {
-  content: '';
-  width: 8px;
-  height: 12px;
+  content: "";
+  width: 5px;
+  height: 8px;
   border: solid #fff;
-  border-width: 0 2px 2px 0;
+  border-width: 0 1px 1px 0;
   transform: rotate(45deg);
   margin-top: -2px;
 }
@@ -551,10 +568,9 @@
 }
 
 .waterfall-meta span {
-  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-family: "Geist Mono", ui-monospace, monospace;
   color: var(--accents-5);
 }
-
 
 @keyframes riseIn {
   from {
@@ -668,11 +684,11 @@
     width: 40px;
     height: 40px;
   }
-  
+
   .lightbox-prev {
     left: 15px;
   }
-  
+
   .lightbox-next {
     right: 15px;
   }

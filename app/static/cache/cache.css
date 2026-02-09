@@ -1,3 +1,28 @@
+/* Tab 按钮 */
+.cache-tab-btn {
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accents-5);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cache-tab-btn:hover {
+  color: var(--fg);
+  border-color: var(--accents-3);
+}
+
+.cache-tab-btn.active {
+  color: #fff;
+  background: #000;
+  border-color: #000;
+}
+
+/* 统计卡片 */
 .cache-stat-label {
   font-size: 12px;
   color: var(--accents-4);
@@ -19,6 +44,7 @@
   border: none;
   color: #e00;
   background: #fff;
+  cursor: pointer;
   transition: all 0.2s;
 }
 
@@ -26,53 +52,210 @@
   background: #fef2f2;
 }
 
-.cache-info-box {
-  border: 1px solid var(--border);
+/* 预览网格 */
+.cache-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+@media (min-width: 640px) {
+  .cache-preview-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .cache-preview-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* 预览卡片 */
+.cache-preview-item {
   background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cache-preview-item:hover {
+  border-color: var(--accents-3);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  transform: translateY(-2px);
+}
+
+/* 缩略图区域 */
+.cache-thumb-wrap {
+  width: 100%;
+  height: 140px;
+  background: #f9fafb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.cache-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cache-thumb-video-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+
+.cache-thumb-video {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.cache-thumb-placeholder {
+  font-size: 12px;
+  color: var(--accents-4);
+}
+
+/* 信息区域 */
+.cache-item-info {
+  padding: 12px;
+}
+
+.cache-item-name {
+  font-size: 12px;
+  font-family: "Geist Mono", monospace;
+  color: var(--accents-6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.cache-item-meta {
+  font-size: 11px;
+  color: var(--accents-4);
+  margin-bottom: 6px;
+}
+
+.cache-item-preview-link {
+  font-size: 12px;
+  color: #6366f1;
+  cursor: pointer;
+}
+
+.cache-item-preview-link:hover {
+  text-decoration: underline;
+}
+
+/* 空状态 */
+.cache-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--accents-4);
+  font-size: 14px;
+}
+
+/* 预览模态框 */
+.preview-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(4px);
+}
+
+.preview-modal-overlay.hidden {
+  display: none;
+}
+
+.preview-modal-content {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.preview-modal-close {
+  position: absolute;
+  top: -40px;
+  right: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: rgba(255, 255, 255, 0.8);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.preview-modal-close:hover {
+  color: #fff;
+}
+
+.preview-media-container {
+  max-width: 100%;
+  max-height: calc(90vh - 80px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-modal-image {
+  max-width: 100%;
+  max-height: calc(90vh - 80px);
+  object-fit: contain;
   border-radius: 8px;
 }
 
-.cache-card {
-  cursor: pointer;
+.preview-modal-video {
+  max-width: 100%;
+  max-height: calc(90vh - 80px);
+  border-radius: 8px;
+  background: #000;
 }
 
-.cache-card.selected {
-  border: 1px solid #000;
+.preview-modal-info {
+  margin-top: 16px;
+  text-align: center;
 }
 
-.cache-list-actions {
-  display: inline-flex;
-  gap: 8px;
-  justify-content: center;
-  align-items: center;
+.preview-filename {
+  font-size: 13px;
+  font-family: "Geist Mono", monospace;
+  color: rgba(255, 255, 255, 0.9);
+  max-width: 400px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.cache-icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: #9ca3af;
-  cursor: pointer;
+.preview-meta {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-top: 4px;
 }
 
-.cache-icon-button:hover {
-  color: #000;
-  border-color: #000;
-}
-
-.cache-preview {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  object-fit: cover;
-  border: 1px solid var(--border);
-}
-
+/* 确认对话框 */
 #confirm-dialog.confirm-dialog {
   border: none;
   border-radius: 12px;
@@ -110,195 +293,4 @@
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--border);
-}
-
-.batch-link {
-  font-size: 12px;
-  color: var(--accents-5);
-  text-decoration: underline;
-  background: transparent;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-}
-
-.batch-link:hover {
-  color: var(--accents-7);
-}
-
-.toolbar-sep {
-  display: inline-block;
-  width: 1px;
-  height: 14px;
-  background: var(--border);
-  margin: 0 6px;
-}
-
-.failure-list {
-  max-height: 260px;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-right: 4px;
-}
-
-.failure-item {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--accents-6);
-  background: #fafafa;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
-}
-
-.failure-token {
-  font-family: 'Geist Mono', monospace;
-  color: var(--accents-7);
-}
-
-#batch-actions {
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid var(--border);
-  backdrop-filter: blur(10px);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-}
-
-#batch-actions .geist-button-outline:hover {
-  background: #f3f4f6;
-}
-
-/* Table Styles */
-.geist-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 13px;
-}
-
-.geist-table th {
-  text-align: center;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--accents-1);
-  color: var(--accents-5);
-  font-weight: 500;
-  height: 40px;
-  background: #fff;
-}
-
-.geist-table th.text-left {
-  text-align: left;
-}
-
-.geist-table th.text-right {
-  text-align: right;
-}
-
-.geist-table td {
-  padding: 8px 14px;
-  border-bottom: 1px solid #fafafa;
-  background: #fff;
-  vertical-align: middle;
-  height: 44px;
-  color: var(--accents-6);
-  text-align: center;
-  transition: background 0.15s;
-  font-size: 12px;
-}
-
-.geist-table td.text-left {
-  text-align: left;
-}
-
-.geist-table td.text-right {
-  text-align: right;
-}
-
-.geist-table tr:last-child td {
-  border-bottom: none;
-}
-
-.geist-table tr:hover td {
-  background: #fafafa;
-}
-
-.geist-table tr.row-selected td {
-  background: #f6f7f9;
-}
-
-.geist-table tr.row-selected:hover td {
-  background: #f0f2f5;
-}
-
-/* Elegant Badges */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 8px;
-  height: 20px;
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 20px;
-  white-space: nowrap;
-}
-
-.badge-gray {
-  background: #f3f4f6;
-  color: #4b5563;
-}
-
-.badge-green {
-  background: #ecfdf5;
-  color: #059669;
-}
-
-.badge-orange {
-  background: #fff7ed;
-  color: #d97706;
-}
-
-.badge-red {
-  background: #fef2f2;
-  color: #dc2626;
-}
-
-.checkbox {
-  width: 12px;
-  height: 12px;
-  border-radius: 4px;
-  border: 1px solid var(--accents-3);
-  appearance: none;
-  cursor: pointer;
-  position: relative;
-  background: #fff;
-  transition: all 0.2s;
-  margin: 0 auto;
-  display: block;
-}
-
-.checkbox:checked {
-  background-color: #000;
-  border-color: #000;
-}
-
-.checkbox:checked::after {
-  content: '';
-  position: absolute;
-  top: 45%;
-  left: 50%;
-  width: 3px;
-  height: 6px;
-  border: solid white;
-  border-width: 0 2px 2px 0;
-  transform: translate(-50%, -60%) rotate(45deg);
-}
-
-.checkbox:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px #000;
-  border-color: #000;
 }

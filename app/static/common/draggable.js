@@ -1,58 +1,89 @@
 
-// Draggable Batch Actions (Pointer Events for mouse + touch support)
-const batchActions = document.getElementById('batch-actions');
-if (!batchActions) {
-  // No toolbar on this page
-} else {
-let isDragging = false;
-let startX, startY, initialLeft, initialTop;
+(() => {
+  const IS_SPA = window.__GROK_ADMIN_SPA__ === true;
 
-// Critical for mobile: prevents browser from interpreting drag as scroll
-batchActions.style.touchAction = 'none';
+  let batchActions = null;
+  let isDragging = false;
+  let startX = 0;
+  let startY = 0;
+  let initialLeft = 0;
+  let initialTop = 0;
+  let pointerDownHandler = null;
 
-batchActions.addEventListener('pointerdown', (e) => {
-  // Prevent dragging if clicking buttons
-  if (e.target.tagName.toLowerCase() === 'button' || e.target.closest('button')) return;
+  function bindDraggable(target) {
+    if (!target) return;
+    if (batchActions && pointerDownHandler) {
+      batchActions.removeEventListener("pointerdown", pointerDownHandler);
+    }
 
-  e.preventDefault(); // Prevent text selection and implicit browser behaviors
-  isDragging = true;
-  batchActions.setPointerCapture(e.pointerId); // Track pointer even if it leaves the element
-  startX = e.clientX;
-  startY = e.clientY;
+    batchActions = target;
+    batchActions.style.touchAction = "none";
 
-  const rect = batchActions.getBoundingClientRect();
+    pointerDownHandler = (e) => {
+      if (
+        e.target.tagName.toLowerCase() === "button" ||
+        e.target.closest("button")
+      ) {
+        return;
+      }
 
-  // Initialize top/left if not set (first time drag)
-  if (!batchActions.style.left || batchActions.style.left === '') {
-    batchActions.style.left = rect.left + 'px';
-    batchActions.style.top = rect.top + 'px';
-    // Remove transform to allow absolute positioning control
-    batchActions.style.transform = 'none';
-    batchActions.style.bottom = 'auto';
+      e.preventDefault();
+      isDragging = true;
+      batchActions.setPointerCapture(e.pointerId);
+      startX = e.clientX;
+      startY = e.clientY;
+
+      const rect = batchActions.getBoundingClientRect();
+
+      if (!batchActions.style.left || batchActions.style.left === "") {
+        batchActions.style.left = rect.left + "px";
+        batchActions.style.top = rect.top + "px";
+        batchActions.style.transform = "none";
+        batchActions.style.bottom = "auto";
+      }
+
+      initialLeft = parseFloat(batchActions.style.left);
+      initialTop = parseFloat(batchActions.style.top);
+      batchActions.classList.add("shadow-xl");
+    };
+
+    batchActions.addEventListener("pointerdown", pointerDownHandler);
   }
 
-  initialLeft = parseFloat(batchActions.style.left);
-  initialTop = parseFloat(batchActions.style.top);
+  function initBatchActionsDraggable() {
+    const target = document.getElementById("batch-actions");
+    if (!target) return;
+    bindDraggable(target);
+  }
 
-  // visual feedback
-  batchActions.classList.add('shadow-xl');
-});
+  function resetBatchActionsDraggable() {
+    if (batchActions && pointerDownHandler) {
+      batchActions.removeEventListener("pointerdown", pointerDownHandler);
+    }
+    batchActions = null;
+    pointerDownHandler = null;
+    isDragging = false;
+  }
 
-document.addEventListener('pointermove', (e) => {
-  if (!isDragging) return;
+  document.addEventListener("pointermove", (e) => {
+    if (!isDragging || !batchActions) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    batchActions.style.left = `${initialLeft + dx}px`;
+    batchActions.style.top = `${initialTop + dy}px`;
+  });
 
-  const dx = e.clientX - startX;
-  const dy = e.clientY - startY;
-
-  batchActions.style.left = `${initialLeft + dx}px`;
-  batchActions.style.top = `${initialTop + dy}px`;
-});
-
-document.addEventListener('pointerup', (e) => {
-  if (isDragging) {
+  document.addEventListener("pointerup", (e) => {
+    if (!isDragging || !batchActions) return;
     isDragging = false;
     batchActions.releasePointerCapture(e.pointerId);
-    batchActions.classList.remove('shadow-xl');
+    batchActions.classList.remove("shadow-xl");
+  });
+
+  window.initBatchActionsDraggable = initBatchActionsDraggable;
+  window.resetBatchActionsDraggable = resetBatchActionsDraggable;
+
+  if (!IS_SPA) {
+    initBatchActionsDraggable();
   }
-});
-}
+})();

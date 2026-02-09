@@ -18,7 +18,6 @@ from app.core.storage import get_storage
 from app.core.config import get_config
 from app.services.token.pool import TokenPool
 
-
 DEFAULT_REFRESH_BATCH_SIZE = 10
 DEFAULT_REFRESH_CONCURRENCY = 5
 DEFAULT_SUPER_REFRESH_INTERVAL_HOURS = 2
@@ -50,6 +49,8 @@ class TokenManager:
         self._save_task: Optional[asyncio.Task] = None
         self._save_delay = DEFAULT_SAVE_DELAY_MS / 1000.0
         self._last_reload_at = 0.0
+        # 反向索引: token_raw -> pool_name (O(1) 查找)
+        self._token_pool_map: Dict[str, str] = {}
 
     @classmethod
     async def get_instance(cls) -> "TokenManager":
@@ -87,28 +88,25 @@ class TokenManager:
                 for pool_name, tokens in data.items():
                     pool = TokenPool(pool_name)
                     for token_data in tokens:
-                        quota_missing = not (
-                            isinstance(token_data, dict) and "quota" in token_data
-                        )
+                        quota_missing = not (isinstance(token_data, dict) and "quota" in token_data)
                         try:
                             # 统一存储裸 token
                             if isinstance(token_data, dict):
                                 raw_token = token_data.get("token")
-                                if isinstance(raw_token, str) and raw_token.startswith(
-                                    "sso="
-                                ):
+                                if isinstance(raw_token, str) and raw_token.startswith("sso="):
                                     token_data["token"] = raw_token[4:]
                             token_info = TokenInfo(**token_data)
                             if quota_missing and pool_name == SUPER_POOL_NAME:
                                 token_info.quota = SUPER_DEFAULT_QUOTA
                             pool.add(token_info)
                         except Exception as e:
-                            logger.warning(
-                                f"Failed to load token in pool '{pool_name}': {e}"
-                            )
+                            logger.warning(f"Failed to load token in pool '{pool_name}': {e}")
                             continue
                     pool._rebuild_index()
                     self.pools[pool_name] = pool
+                    # 构建反向索引
+                    for token_info in pool:
+                        self._token_pool_map[token_info.token] = pool_name
 
                 self.initialized = True
                 self._last_reload_at = time.monotonic()
@@ -139,6 +137,29 @@ class TokenManager:
         if time.monotonic() - self._last_reload_at < interval:
             return
         await self.reload()
+
+    def _find_token(self, raw_token: str) -> Optional[tuple[TokenInfo, str]]:
+        """
+        O(1) 查找 Token（使用反向索引）
+
+        Returns:
+            (TokenInfo, pool_name) 或 None
+        """
+        pool_name = self._token_pool_map.get(raw_token)
+        if pool_name:
+            pool = self.pools.get(pool_name)
+            if pool:
+                token = pool.get(raw_token)
+                if token:
+                    return (token, pool_name)
+        # 索引未命中，回退遍历（兼容）
+        for pn, pool in self.pools.items():
+            token = pool.get(raw_token)
+            if token:
+                # 修复索引
+                self._token_pool_map[raw_token] = pn
+                return (token, pn)
+        return None
 
     async def _save(self):
         """保存变更"""
@@ -210,11 +231,9 @@ class TokenManager:
             return token[4:]
         return token
 
-    async def consume(
-        self, token_str: str, effort: EffortType = EffortType.LOW
-    ) -> bool:
+    async def consume(self, token_str: str, effort: EffortType = EffortType.LOW) -> bool:
         """
-        消耗配额（本地预估）
+        消耗配额（Lua 脚本原子操作）
 
         Args:
             token_str: Token 字符串
@@ -225,18 +244,58 @@ class TokenManager:
         """
         raw_token = token_str.replace("sso=", "")
 
-        for pool in self.pools.values():
-            token = pool.get(raw_token)
-            if token:
-                consumed = token.consume(effort)
-                logger.debug(
-                    f"Token {raw_token[:10]}...: consumed {consumed} quota, use_count={token.use_count}"
-                )
-                self._schedule_save()
-                return True
+        result = self._find_token(raw_token)
+        if not result:
+            logger.warning(f"Token {raw_token[:10]}...: not found for consumption")
+            return False
 
-        logger.warning(f"Token {raw_token[:10]}...: not found for consumption")
-        return False
+        token, _ = result
+
+        # 计算消耗量
+        from app.services.token.models import EFFORT_COST
+
+        cost = EFFORT_COST.get(effort, 1)
+
+        # 优先使用 Lua 脚本原子操作（Redis）
+        storage = get_storage()
+        if hasattr(storage, "atomic_consume_quota_safe"):
+            try:
+                success, new_quota, status = await storage.atomic_consume_quota_safe(
+                    raw_token, cost
+                )
+
+                if success:
+                    # 同步本地缓存
+                    token.quota = new_quota
+                    token.use_count += cost
+                    token.last_used_at = int(datetime.now().timestamp() * 1000)
+                    if status == "cooling":
+                        token.status = TokenStatus.COOLING
+
+                    logger.debug(
+                        f"Token {raw_token[:10]}...: atomic consumed {cost} quota, "
+                        f"remaining={new_quota}, status={status}"
+                    )
+                    return True
+                else:
+                    # 配额不足
+                    logger.warning(
+                        f"Token {raw_token[:10]}...: insufficient quota "
+                        f"(need={cost}, have={new_quota})"
+                    )
+                    return False
+
+            except Exception as e:
+                logger.warning(f"Lua script consume failed, fallback: {e}")
+
+        # 降级：本地消耗 + 传统保存
+        consumed = token.consume(effort)
+        logger.debug(
+            f"Token {raw_token[:10]}...: local consumed {consumed} quota, "
+            f"use_count={token.use_count}"
+        )
+        self._schedule_save()
+        return True
 
     async def sync_usage(
         self,
@@ -294,27 +353,44 @@ class TokenManager:
                     f"{old_quota} -> {new_quota} (consumed: {consumed}, use_count: {target_token.use_count})"
                 )
 
+                # Redis 原子操作优化
+                storage = get_storage()
+                if hasattr(storage, "atomic_batch_update"):
+                    try:
+                        await storage.atomic_batch_update(
+                            [
+                                (
+                                    raw_token,
+                                    {
+                                        "quota": new_quota,
+                                        "use_count": target_token.use_count,
+                                        "last_used_at": target_token.last_used_at,
+                                        "last_sync_at": target_token.last_sync_at,
+                                        "fail_count": target_token.fail_count,
+                                        "status": target_token.status.value,
+                                    },
+                                )
+                            ]
+                        )
+                        return True
+                    except Exception as e:
+                        logger.warning(f"Atomic sync update failed: {e}")
+
                 self._schedule_save()
                 return True
 
         except Exception as e:
-            logger.warning(
-                f"Token {raw_token[:10]}...: API sync failed, fallback to local ({e})"
-            )
+            logger.warning(f"Token {raw_token[:10]}...: API sync failed, fallback to local ({e})")
 
         # 降级：本地预估扣费
         if consume_on_fail:
             logger.debug(f"Token {raw_token[:10]}...: using local consumption")
             return await self.consume(token_str, fallback_effort)
         else:
-            logger.debug(
-                f"Token {raw_token[:10]}...: sync failed, skipping local consumption"
-            )
+            logger.debug(f"Token {raw_token[:10]}...: sync failed, skipping local consumption")
             return False
 
-    async def record_fail(
-        self, token_str: str, status_code: int = 401, reason: str = ""
-    ) -> bool:
+    async def record_fail(self, token_str: str, status_code: int = 401, reason: str = "") -> bool:
         """
         记录 Token 失败
 
@@ -337,6 +413,26 @@ class TokenManager:
                         f"Token {raw_token[:10]}...: recorded {status_code} failure "
                         f"({token.fail_count}/{FAIL_THRESHOLD}) - {reason}"
                     )
+
+                    # Redis 原子操作
+                    storage = get_storage()
+                    if hasattr(storage, "atomic_batch_update"):
+                        try:
+                            await storage.atomic_batch_update(
+                                [
+                                    (
+                                        raw_token,
+                                        {
+                                            "fail_count": token.fail_count,
+                                            "last_fail_at": token.last_fail_at,
+                                            "status": token.status.value,
+                                        },
+                                    )
+                                ]
+                            )
+                            return True
+                        except Exception as e:
+                            logger.warning(f"Atomic update failed: {e}")
                 else:
                     logger.info(
                         f"Token {raw_token[:10]}...: non-auth error ({status_code}) - {reason} (not counted)"
@@ -372,6 +468,8 @@ class TokenManager:
             return False
 
         pool.add(TokenInfo(token=token, quota=_default_quota_for_pool(pool_name)))
+        # 维护反向索引
+        self._token_pool_map[token] = pool_name
         await self._save()
         logger.info(f"Pool '{pool_name}': token added")
         return True
@@ -441,8 +539,11 @@ class TokenManager:
         Returns:
             是否成功
         """
+        raw_token = token[4:] if token.startswith("sso=") else token
         for pool_name, pool in self.pools.items():
-            if pool.remove(token):
+            if pool.remove(raw_token):
+                # 维护反向索引
+                self._token_pool_map.pop(raw_token, None)
                 await self._save()
                 logger.info(f"Pool '{pool_name}': token removed")
                 return True
@@ -493,6 +594,20 @@ class TokenManager:
             pool_stats = pool.get_stats()
             stats[name] = pool_stats.model_dump()
         return stats
+
+    def export_pools(self) -> Dict[str, List[dict]]:
+        """
+        导出所有池数据（用于 Admin API）
+
+        性能优化：直接从内存缓存返回，避免每次查询存储
+
+        Returns:
+            {pool_name: [token_dict, ...], ...}
+        """
+        data = {}
+        for pool_name, pool in self.pools.items():
+            data[pool_name] = [info.model_dump() for info in pool.list()]
+        return data
 
     def get_pool_tokens(self, pool_name: str = "ssoBasic") -> List[TokenInfo]:
         """

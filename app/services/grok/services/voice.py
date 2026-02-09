@@ -58,9 +58,7 @@ class VoiceService:
 
                 if response.status_code != 200:
                     body = response.text[:200]
-                    logger.error(
-                        f"Voice token failed: status={response.status_code}, body={body}"
-                    )
+                    logger.error(f"Voice token failed: status={response.status_code}, body={body}")
                     raise UpstreamException(
                         message=f"Failed to get voice token: {response.status_code}",
                         details={"status": response.status_code, "body": response.text},

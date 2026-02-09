@@ -4,14 +4,13 @@ Chat Completions API 路由
 
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from app.services.grok.services.chat import ChatService
-from app.services.grok.models.model import ModelService
+from app.services.grok.chat import ChatService
+from app.services.grok.model import ModelService
 from app.core.exceptions import ValidationException
-
 
 router = APIRouter(tags=["Chat"])
 
@@ -45,12 +44,13 @@ class MessageItem(BaseModel):
 class VideoConfig(BaseModel):
     """视频生成配置"""
 
-    aspect_ratio: Optional[str] = Field(
-        "3:2", description="视频比例: 3:2, 16:9, 1:1 等"
+    aspect_ratio: Optional[str] = Field("3:2", description="视频比例: 3:2, 16:9, 1:1 等")
+    video_length: Optional[int] = Field(
+        None,
+        description="视频时长(秒): 6 或 10；留空时自动按池选择（basic=6, super=10）",
     )
-    video_length: Optional[int] = Field(6, description="视频时长(秒): 6 / 10 / 15")
     resolution_name: Optional[str] = Field("480p", description="视频分辨率: 480p, 720p")
-    preset: Optional[str] = Field("custom", description="风格预设: fun, normal, spicy")
+    preset: Optional[str] = Field("normal", description="风格预设: fun, normal, spicy")
 
     @field_validator("aspect_ratio")
     @classmethod
@@ -68,9 +68,9 @@ class VideoConfig(BaseModel):
     @classmethod
     def validate_video_length(cls, v):
         if v is not None:
-            if v not in (6, 10, 15):
+            if v not in (6, 10):
                 raise ValidationException(
-                    message="video_length must be 6, 10, or 15 seconds",
+                    message="video_length must be 6 or 10 seconds",
                     param="video_config.video_length",
                     code="invalid_video_length",
                 )
@@ -192,11 +192,7 @@ def validate_request(request: ChatCompletionRequest):
                 block_type = block.get("type")
 
                 # 检查 type 空值
-                if (
-                    not block_type
-                    or not isinstance(block_type, str)
-                    or not block_type.strip()
-                ):
+                if not block_type or not isinstance(block_type, str) or not block_type.strip():
                     raise ValidationException(
                         message="Content block 'type' cannot be empty",
                         param=f"messages.{idx}.content.{block_idx}.type",
@@ -237,9 +233,7 @@ def validate_request(request: ChatCompletionRequest):
                         )
                 elif block_type == "image_url":
                     image_url = block.get("image_url")
-                    if not image_url or not (
-                        isinstance(image_url, dict) and image_url.get("url")
-                    ):
+                    if not image_url or not (isinstance(image_url, dict) and image_url.get("url")):
                         raise ValidationException(
                             message="image_url must have a 'url' field",
                             param=f"messages.{idx}.content.{block_idx}.image_url",
@@ -248,39 +242,48 @@ def validate_request(request: ChatCompletionRequest):
 
 
 @router.post("/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(body: ChatCompletionRequest, request: Request):
     """Chat Completions API - 兼容 OpenAI"""
     from app.core.logger import logger
+    from app.core.auth import get_client_ip, get_request_key_name
 
     # 参数验证
-    validate_request(request)
+    validate_request(body)
 
-    logger.debug(f"Chat request: model={request.model}, stream={request.stream}")
+    # 获取客户端 IP 和 Key 名称
+    client_ip = get_client_ip(request)
+    key_name = await get_request_key_name(request)
+
+    logger.debug(f"Chat request: model={body.model}, stream={body.stream}")
 
     # 检测视频模型
-    model_info = ModelService.get(request.model)
+    model_info = ModelService.get(body.model)
     if model_info and model_info.is_video:
-        from app.services.grok.services.media import VideoService
+        from app.services.grok.media import VideoService
 
         # 提取视频配置 (默认值在 Pydantic 模型中处理)
-        v_conf = request.video_config or VideoConfig()
+        v_conf = body.video_config or VideoConfig()
 
         result = await VideoService.completions(
-            model=request.model,
-            messages=[msg.model_dump() for msg in request.messages],
-            stream=request.stream,
-            thinking=request.thinking,
+            model=body.model,
+            messages=[msg.model_dump() for msg in body.messages],
+            stream=body.stream,
+            thinking=body.thinking,
             aspect_ratio=v_conf.aspect_ratio,
             video_length=v_conf.video_length,
             resolution=v_conf.resolution_name,
             preset=v_conf.preset,
+            client_ip=client_ip,
+            key_name=key_name,
         )
     else:
         result = await ChatService.completions(
-            model=request.model,
-            messages=[msg.model_dump() for msg in request.messages],
-            stream=request.stream,
-            thinking=request.thinking,
+            model=body.model,
+            messages=[msg.model_dump() for msg in body.messages],
+            stream=body.stream,
+            thinking=body.thinking,
+            client_ip=client_ip,
+            key_name=key_name,
         )
 
     if isinstance(result, dict):
@@ -289,7 +292,11 @@ async def chat_completions(request: ChatCompletionRequest):
         return StreamingResponse(
             result,
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
 
 

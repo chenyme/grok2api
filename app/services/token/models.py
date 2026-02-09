@@ -13,7 +13,6 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 from datetime import datetime
 
-
 # 默认配额
 BASIC__DEFAULT_QUOTA = 80
 SUPER_DEFAULT_QUOTA = 140
@@ -52,9 +51,7 @@ class TokenInfo(BaseModel):
     quota: int = BASIC__DEFAULT_QUOTA
 
     # 统计
-    created_at: int = Field(
-        default_factory=lambda: int(datetime.now().timestamp() * 1000)
-    )
+    created_at: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
     last_used_at: Optional[int] = None
     use_count: int = 0
 

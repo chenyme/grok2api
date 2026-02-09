@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 import argparse
 import asyncio
 import json
@@ -17,9 +19,9 @@ load_dotenv(ROOT / ".env")
 
 from app.core.config import config
 from app.core.logger import setup_logging
-from app.services.grok.services.chat import GrokChatService
-from app.services.grok.processors import CollectProcessor
-from app.services.grok.services.usage import UsageService
+from app.services.grok.chat import GrokChatService
+from app.services.grok.processor import CollectProcessor
+from app.services.grok.usage import UsageService
 
 
 async def _fetch_usage(token: str, timeout: float) -> int | None:
@@ -75,12 +77,7 @@ async def _run_once(
             after = await _fetch_usage(token, timeout)
             return False, before, after
 
-        content = (
-            result.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-            .strip()
-        )
+        content = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         after = await _fetch_usage(token, timeout)
         ok = http_ok and bool(content)
         return ok, before, after
@@ -396,15 +393,11 @@ def main() -> int:
 
     tokens_file_data = _load_tokens_file(args.tokens_file)
     basic_token = _prompt_if_missing(
-        args.basic_token
-        or tokens_file_data.get("basic_token", "")
-        or os.getenv("BASIC_TOKEN", ""),
+        args.basic_token or tokens_file_data.get("basic_token", "") or os.getenv("BASIC_TOKEN", ""),
         "basic_token",
     )
     super_token = _prompt_if_missing(
-        args.super_token
-        or tokens_file_data.get("super_token", "")
-        or os.getenv("SUPER_TOKEN", ""),
+        args.super_token or tokens_file_data.get("super_token", "") or os.getenv("SUPER_TOKEN", ""),
         "super_token",
     )
     if not basic_token or not super_token:
@@ -429,9 +422,7 @@ def main() -> int:
         if args.emit_model_list or args.emit_model_list_out:
             snippet = _format_model_list(results)
             if args.emit_model_list_out:
-                Path(args.emit_model_list_out).write_text(
-                    snippet + "\n", encoding="utf-8"
-                )
+                Path(args.emit_model_list_out).write_text(snippet + "\n", encoding="utf-8")
                 print(f"Model list written to {args.emit_model_list_out}")
             else:
                 print(snippet)

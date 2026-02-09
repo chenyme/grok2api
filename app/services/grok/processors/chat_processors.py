@@ -106,15 +106,11 @@ class StreamProcessor(BaseProcessor):
             "created": self.created,
             "model": self.model,
             "system_fingerprint": self.fingerprint,
-            "choices": [
-                {"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish}
-            ],
+            "choices": [{"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish}],
         }
         return f"data: {orjson.dumps(chunk).decode()}\n\n"
 
-    async def process(
-        self, response: AsyncIterable[bytes]
-    ) -> AsyncGenerator[str, None]:
+    async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理流式响应"""
         idle_timeout = get_config("timeout.stream_idle_timeout")
 
@@ -147,9 +143,7 @@ class StreamProcessor(BaseProcessor):
                             self.think_opened = True
                         idx = img.get("imageIndex", 0) + 1
                         progress = img.get("progress", 0)
-                        yield self._sse(
-                            f"正在生成第{idx}张图片中，当前进度{progress}%\n"
-                        )
+                        yield self._sse(f"正在生成第{idx}张图片中，当前进度{progress}%\n")
                     continue
 
                 # modelResponse
@@ -168,29 +162,26 @@ class StreamProcessor(BaseProcessor):
                         if self.image_format == "base64":
                             try:
                                 dl_service = self._get_dl()
-                                base64_data = await dl_service.to_base64(
-                                    url, self.token, "image"
-                                )
+                                base64_data = await dl_service.to_base64(url, self.token, "image")
                                 if base64_data:
                                     yield self._sse(f"![{img_id}]({base64_data})\n")
                                 else:
                                     final_url = await self.process_url(url, "image")
-                                    yield self._sse(f"![{img_id}]({final_url})\n")
+                                    if final_url:
+                                        yield self._sse(f"![{img_id}]({final_url})\n")
                             except Exception as e:
                                 logger.warning(
                                     f"Failed to convert image to base64, falling back to URL: {e}"
                                 )
                                 final_url = await self.process_url(url, "image")
-                                yield self._sse(f"![{img_id}]({final_url})\n")
+                                if final_url:
+                                    yield self._sse(f"![{img_id}]({final_url})\n")
                         else:
                             final_url = await self.process_url(url, "image")
-                            yield self._sse(f"![{img_id}]({final_url})\n")
+                            if final_url:
+                                yield self._sse(f"![{img_id}]({final_url})\n")
 
-                    if (
-                        (meta := mr.get("metadata", {}))
-                        .get("llm_info", {})
-                        .get("modelHash")
-                    ):
+                    if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
                         self.fingerprint = meta["llm_info"]["modelHash"]
                     continue
 
@@ -303,22 +294,21 @@ class CollectProcessor(BaseProcessor):
                                         content += f"![{img_id}]({base64_data})\n"
                                     else:
                                         final_url = await self.process_url(url, "image")
-                                        content += f"![{img_id}]({final_url})\n"
+                                        if final_url:
+                                            content += f"![{img_id}]({final_url})\n"
                                 except Exception as e:
                                     logger.warning(
                                         f"Failed to convert image to base64, falling back to URL: {e}"
                                     )
                                     final_url = await self.process_url(url, "image")
-                                    content += f"![{img_id}]({final_url})\n"
+                                    if final_url:
+                                        content += f"![{img_id}]({final_url})\n"
                             else:
                                 final_url = await self.process_url(url, "image")
-                                content += f"![{img_id}]({final_url})\n"
+                                if final_url:
+                                    content += f"![{img_id}]({final_url})\n"
 
-                    if (
-                        (meta := mr.get("metadata", {}))
-                        .get("llm_info", {})
-                        .get("modelHash")
-                    ):
+                    if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
                         fingerprint = meta["llm_info"]["modelHash"]
 
         except asyncio.CancelledError:
@@ -327,9 +317,7 @@ class CollectProcessor(BaseProcessor):
             logger.warning(f"Collect idle timeout: {e}", extra={"model": self.model})
         except RequestsError as e:
             if _is_http2_stream_error(e):
-                logger.warning(
-                    f"HTTP/2 stream error in collect: {e}", extra={"model": self.model}
-                )
+                logger.warning(f"HTTP/2 stream error in collect: {e}", extra={"model": self.model})
             else:
                 logger.error(f"Collect request error: {e}", extra={"model": self.model})
         except Exception as e:

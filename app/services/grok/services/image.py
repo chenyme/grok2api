@@ -3,6 +3,7 @@ Grok Imagine WebSocket image service.
 """
 
 import asyncio
+import certifi
 import json
 import re
 import ssl
@@ -12,7 +13,11 @@ from typing import AsyncGenerator, Dict, Optional
 from urllib.parse import urlparse
 
 import aiohttp
-from aiohttp_socks import ProxyConnector
+
+try:
+    from aiohttp_socks import ProxyConnector
+except Exception:  # pragma: no cover - optional dependency fallback
+    ProxyConnector = None
 
 from app.core.config import get_config
 from app.core.logger import logger
@@ -30,6 +35,7 @@ class ImageService:
 
     def __init__(self):
         self._ssl_context = ssl.create_default_context()
+        self._ssl_context.load_verify_locations(certifi.where())
         self._url_pattern = re.compile(r"/images/([a-f0-9-]+)\.(png|jpg|jpeg)")
 
     def _resolve_proxy(self) -> tuple[aiohttp.BaseConnector, Optional[str]]:
@@ -39,6 +45,11 @@ class ImageService:
 
         scheme = urlparse(proxy_url).scheme.lower()
         if scheme.startswith("socks"):
+            if ProxyConnector is None:
+                logger.warning(
+                    "aiohttp_socks is not installed, falling back to direct TCP connector"
+                )
+                return aiohttp.TCPConnector(ssl=self._ssl_context), None
             logger.info(f"Using SOCKS proxy: {proxy_url}")
             return ProxyConnector.from_url(proxy_url, ssl=self._ssl_context), None
 
@@ -62,9 +73,9 @@ class ImageService:
         return match.group(1) if match else None
 
     def _is_final_image(self, url: str, blob_size: int) -> bool:
-        return (url or "").lower().endswith(
-            (".jpg", ".jpeg")
-        ) and blob_size > get_config("image.image_ws_final_min_bytes")
+        return (url or "").lower().endswith((".jpg", ".jpeg")) and blob_size > get_config(
+            "image.image_ws_final_min_bytes"
+        )
 
     def _classify_image(self, url: str, blob: str) -> Optional[Dict[str, object]]:
         if not url or not blob:
@@ -78,9 +89,7 @@ class ImageService:
             "final"
             if is_final
             else (
-                "medium"
-                if blob_size > get_config("image.image_ws_medium_min_bytes")
-                else "preview"
+                "medium" if blob_size > get_config("image.image_ws_medium_min_bytes") else "preview"
             )
         )
 
@@ -111,9 +120,7 @@ class ImageService:
         for attempt in range(retries):
             try:
                 yielded_any = False
-                async for item in self._stream_once(
-                    token, prompt, aspect_ratio, n, enable_nsfw
-                ):
+                async for item in self._stream_once(token, prompt, aspect_ratio, n, enable_nsfw):
                     yielded_any = True
                     yield item
                 return
@@ -197,14 +204,11 @@ class ImageService:
                             if (
                                 medium_received_time
                                 and completed == 0
-                                and time.time() - medium_received_time
-                                > min(10, blocked_seconds)
+                                and time.time() - medium_received_time > min(10, blocked_seconds)
                             ):
                                 raise _BlockedError()
                             if completed > 0 and time.time() - last_activity > 10:
-                                logger.info(
-                                    f"WebSocket idle timeout, collected {completed} images"
-                                )
+                                logger.info(f"WebSocket idle timeout, collected {completed} images")
                                 break
                             continue
 
@@ -214,19 +218,14 @@ class ImageService:
                             msg_type = msg.get("type")
 
                             if msg_type == "image":
-                                info = self._classify_image(
-                                    msg.get("url", ""), msg.get("blob", "")
-                                )
+                                info = self._classify_image(msg.get("url", ""), msg.get("blob", ""))
                                 if not info:
                                     continue
 
                                 image_id = info["image_id"]
                                 existing = images.get(image_id, {})
 
-                                if (
-                                    info["stage"] == "medium"
-                                    and medium_received_time is None
-                                ):
+                                if info["stage"] == "medium" and medium_received_time is None:
                                     medium_received_time = time.time()
 
                                 if info["is_final"] and not existing.get("is_final"):
@@ -236,8 +235,7 @@ class ImageService:
                                     )
 
                                 images[image_id] = {
-                                    "is_final": info["is_final"]
-                                    or existing.get("is_final")
+                                    "is_final": info["is_final"] or existing.get("is_final")
                                 }
                                 yield info
 
@@ -253,9 +251,7 @@ class ImageService:
                                 return
 
                             if completed >= n:
-                                logger.info(
-                                    f"WebSocket collected {completed} final images"
-                                )
+                                logger.info(f"WebSocket collected {completed} final images")
                                 break
 
                             if (

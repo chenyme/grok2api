@@ -40,48 +40,65 @@ class ModelInfo(BaseModel):
 class ModelService:
     """模型管理服务"""
 
-    MODELS = [
+    BASE_MODELS = [
+        # Grok 3 系列
         ModelInfo(
             model_id="grok-3",
             grok_model="grok-3",
             model_mode="MODEL_MODE_GROK_3",
             cost=Cost.LOW,
-            display_name="GROK-3",
+            display_name="Grok 3",
         ),
         ModelInfo(
             model_id="grok-3-mini",
             grok_model="grok-3",
             model_mode="MODEL_MODE_GROK_3_MINI_THINKING",
             cost=Cost.LOW,
-            display_name="GROK-3-MINI",
+            display_name="Grok 3 Mini",
         ),
         ModelInfo(
             model_id="grok-3-thinking",
             grok_model="grok-3",
             model_mode="MODEL_MODE_GROK_3_THINKING",
             cost=Cost.LOW,
-            display_name="GROK-3-THINKING",
+            display_name="Grok 3 Thinking",
         ),
+        # Grok 4 系列
         ModelInfo(
             model_id="grok-4",
             grok_model="grok-4",
             model_mode="MODEL_MODE_GROK_4",
             cost=Cost.LOW,
-            display_name="GROK-4",
+            display_name="Grok 4",
+        ),
+        ModelInfo(
+            model_id="grok-4-fast",
+            grok_model="grok-4",
+            model_mode="MODEL_MODE_FAST",
+            cost=Cost.LOW,
+            display_name="Grok 4 Fast",
         ),
         ModelInfo(
             model_id="grok-4-mini",
             grok_model="grok-4-mini",
             model_mode="MODEL_MODE_GROK_4_MINI_THINKING",
             cost=Cost.LOW,
-            display_name="GROK-4-MINI",
+            display_name="Grok 4 Mini",
         ),
         ModelInfo(
             model_id="grok-4-thinking",
             grok_model="grok-4",
             model_mode="MODEL_MODE_GROK_4_THINKING",
             cost=Cost.LOW,
-            display_name="GROK-4-THINKING",
+            display_name="Grok 4 Thinking",
+        ),
+        ModelInfo(
+            model_id="grok-4-expert",
+            grok_model="grok-4",
+            model_mode="MODEL_MODE_EXPERT",
+            cost=Cost.HIGH,
+            display_name="Grok 4 Expert",
+            description="Deep reasoning mode",
         ),
         ModelInfo(
             model_id="grok-4-heavy",
@@ -89,43 +106,53 @@ class ModelService:
             model_mode="MODEL_MODE_HEAVY",
             cost=Cost.HIGH,
             tier=Tier.SUPER,
-            display_name="GROK-4-HEAVY",
+            display_name="Grok 4 Heavy",
+            description="Extended thinking, SuperGrok Heavy only",
+        ),
+        # Grok 4.1 系列
+        ModelInfo(
+            model_id="grok-4.1",
+            grok_model="grok-4-1-thinking-1129",
+            model_mode="MODEL_MODE_AUTO",
+            cost=Cost.LOW,
+            display_name="Grok 4.1",
         ),
         ModelInfo(
             model_id="grok-4.1-mini",
             grok_model="grok-4-1-thinking-1129",
             model_mode="MODEL_MODE_GROK_4_1_MINI_THINKING",
             cost=Cost.LOW,
-            display_name="GROK-4.1-MINI",
+            display_name="Grok 4.1 Mini",
         ),
         ModelInfo(
             model_id="grok-4.1-fast",
             grok_model="grok-4-1-thinking-1129",
             model_mode="MODEL_MODE_FAST",
             cost=Cost.LOW,
-            display_name="GROK-4.1-FAST",
-        ),
-        ModelInfo(
-            model_id="grok-4.1-expert",
-            grok_model="grok-4-1-thinking-1129",
-            model_mode="MODEL_MODE_EXPERT",
-            cost=Cost.HIGH,
-            display_name="GROK-4.1-EXPERT",
+            display_name="Grok 4.1 Fast",
         ),
         ModelInfo(
             model_id="grok-4.1-thinking",
             grok_model="grok-4-1-thinking-1129",
             model_mode="MODEL_MODE_GROK_4_1_THINKING",
             cost=Cost.HIGH,
-            display_name="GROK-4.1-THINKING",
+            display_name="Grok 4.1 Thinking",
         ),
+        ModelInfo(
+            model_id="grok-4.1-expert",
+            grok_model="grok-4-1-thinking-1129",
+            model_mode="MODEL_MODE_EXPERT",
+            cost=Cost.HIGH,
+            display_name="Grok 4.1 Expert",
+        ),
+        # 专用模型
         ModelInfo(
             model_id="grok-imagine-1.0",
             grok_model="grok-3",
             model_mode="MODEL_MODE_FAST",
             cost=Cost.HIGH,
-            display_name="Grok Image",
-            description="Image generation model",
+            display_name="Grok Imagine",
+            description="Image generation",
             is_image=True,
         ),
         ModelInfo(
@@ -133,10 +160,13 @@ class ModelService:
             grok_model="imagine-image-edit",
             model_mode="MODEL_MODE_FAST",
             cost=Cost.HIGH,
-            display_name="Grok Image Edit",
-            description="Image edit model",
+            display_name="Grok Imagine Edit",
+            description="Image editing",
             is_image=True,
         ),
+    ]
+
+    VIDEO_MODELS = [
         ModelInfo(
             model_id="grok-imagine-1.0-video",
             grok_model="grok-3",
@@ -147,6 +177,8 @@ class ModelService:
             is_video=True,
         ),
     ]
+
+    MODELS = [*BASE_MODELS, *VIDEO_MODELS]
 
     _map = {m.model_id: m for m in MODELS}
 

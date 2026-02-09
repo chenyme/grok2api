@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Mapping, Tuple
 from urllib.parse import unquote
 
-
 _B64_RE = re.compile(rb"^[A-Za-z0-9+/=\r\n]+$")
 
 

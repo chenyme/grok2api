@@ -1,56 +1,92 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grok2API - 配置管理</title>
+    <link rel="icon" href="/static/favicon/favicon.svg?v=3" type="image/svg+xml">
+    <link rel="icon" href="/static/favicon/favicon.ico?v=3" sizes="any" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css"
+      rel="stylesheet"
+    />
+    <link href="/static/common/common.css?v=4" rel="stylesheet" />
+    <link href="/static/config/config.css?v=10" rel="stylesheet" />
+    <link href="/static/common/toast.css" rel="stylesheet" />
+  </head>
 
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Grok2API - 配置管理</title>
-  <link rel="icon" href="/static/favicon/favicon.ico">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
-  <link href="/static/common/common.css?v=3" rel="stylesheet">
-  <link href="/static/config/config.css?v=3" rel="stylesheet">
-  <link href="/static/common/toast.css" rel="stylesheet">
-</head>
+  <body class="min-h-screen flex flex-col" style="background-color: var(--bg)">
+    <div id="app-header"></div>
 
-<body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
-
-  <div id="app-header"></div>
-
-  <main class="space-y-6 flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in">
-    <div class="space-y-6">
-      <div class="flex justify-between items-center">
-        <div>
-          <h2 class="text-2xl font-semibold tracking-tight">配置管理</h2>
-          <p class="text-[var(--accents-4)] mt-1 text-sm">管理 API 密钥及系统参数设置。</p>
+    <main
+      class="space-y-8 flex-1 container mx-auto max-w-7xl px-8 py-8 fade-in"
+    >
+      <!-- Section: 全局配置 -->
+      <section class="config-section-group">
+        <div class="section-header">
+          <h2 class="section-title">全局配置</h2>
+          <button onclick="GrokAdminPages.config.actions.saveConfig('global', event)" class="save-btn">
+            保存配置
+          </button>
         </div>
-        <button onclick="saveConfig()" id="save-btn" class="geist-button gap-2">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-            <polyline points="17 21 17 13 7 13 7 21" />
-            <polyline points="7 3 7 8 15 8" />
-          </svg>
-          保存
-        </button>
-      </div>
+        <div class="config-cards-row" id="global-config">
+          <!-- JS 动态渲染 -->
+        </div>
+      </section>
 
-      <div class="h-px bg-[var(--border)] my-6"></div>
+      <!-- Section: Grok 配置 -->
+      <section class="config-section-group">
+        <div class="section-header">
+          <h2 class="section-title">Grok 配置</h2>
+          <button onclick="GrokAdminPages.config.actions.saveConfig('grok', event)" class="save-btn">
+            保存配置
+          </button>
+        </div>
+        <div class="config-cards-row" id="grok-config">
+          <!-- JS 动态渲染 -->
+        </div>
+      </section>
 
-      <div id="config-container" class="space-y-8">
-        <div class="text-center py-12 text-[var(--accents-4)]">加载中...</div>
-      </div>
+      <!-- Section: Token 池配置 -->
+      <section class="config-section-group">
+        <div class="section-header">
+          <h2 class="section-title">Token 池配置</h2>
+          <button onclick="GrokAdminPages.config.actions.saveConfig('token', event)" class="save-btn">
+            保存配置
+          </button>
+        </div>
+        <div class="config-cards-row" id="token-config">
+          <!-- JS 动态渲染 -->
+        </div>
+      </section>
 
-    </div>
-  </main>
-  <div id="app-footer"></div>
+      <!-- Section: 性能配置 -->
+      <section class="config-section-group">
+        <div class="section-header">
+          <h2 class="section-title">性能配置</h2>
+          <button onclick="GrokAdminPages.config.actions.saveConfig('performance', event)" class="save-btn">
+            保存配置
+          </button>
+        </div>
+        <div class="config-cards-row" id="performance-config">
+          <!-- JS 动态渲染 -->
+        </div>
+      </section>
+    </main>
+    <div id="app-footer"></div>
 
-  <script src="/static/common/admin-auth.js?v=2"></script>
-  <script src="/static/common/header.js?v=4"></script>
-  <script src="/static/common/footer.js?v=1"></script>
-  <script src="/static/common/toast.js"></script>
-  <script src="/static/config/config.js?v=14"></script>
-</body>
-
+    <script src="/static/common/admin-auth.js?v=2"></script>
+    <script src="/static/common/header.js?v=4"></script>
+    <script src="/static/common/footer.js?v=1"></script>
+    <script src="/static/common/toast.js"></script>
+    <script src="/static/config/config.js?v=19"></script>
+  </body>
 </html>
+
+
+

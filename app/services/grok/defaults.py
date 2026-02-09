@@ -8,7 +8,8 @@ Grok 服务默认配置
 GROK_DEFAULTS = {
     "app": {
         "app_url": "",
-        "app_key": "grok2api",
+        "app_username": "admin",
+        "app_password": "grok2api",
         "api_key": "",
         "image_format": "url",
         "video_format": "html",
@@ -60,7 +61,11 @@ GROK_DEFAULTS = {
     },
     "cache": {
         "enable_auto_clean": True,
-        "limit_mb": 1024,
+        "image_limit_mb": 2048,
+        "video_limit_mb": 4096,
+        "cleanup_target_ratio": 0.8,
+        "cleanup_interval_sec": 30,
+        "cleanup_max_delete": 1000,
     },
     "performance": {
         "assets_max_concurrent": 25,

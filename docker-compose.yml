@@ -1,23 +1,46 @@
 services:
+  redis:
+    container_name: grok2api-redis
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   grok2api:
     container_name: grok2api
-    image: ghcr.io/chenyme/grok2api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:
       TZ: Asia/Shanghai
       LOG_LEVEL: INFO
       SERVER_PORT: 8000
-      SERVER_WORKERS: 1
-      SERVER_STORAGE_TYPE: local
-      # SERVER_STORAGE_URL: 
-
-      # SERVER_STORAGE_TYPE: (local, redis, mysql, pgsql) default: local
-      # SERVER_STORAGE_URL: (local mode is empty) default: empty
-      #   Redis: redis://localhost:6379/0 or redis://:password@localhost:6379/0
-      #   MySQL: mysql+aiomysql://user:pass@localhost/db
-      #   PgSQL: postgresql+asyncpg://user:pass@localhost/db
+      SERVER_WORKERS: 4
+      SERVER_STORAGE_TYPE: redis
+      SERVER_STORAGE_URL: redis://redis:6379/0
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+volumes:
+  redis_data:

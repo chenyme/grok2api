@@ -29,10 +29,14 @@ import orjson
 import aiofiles
 from app.core.logger import logger
 
+# 数据目录（支持通过环境变量覆盖）
+DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent / "data"
+DATA_DIR = Path(os.getenv("DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
+
 # 配置文件路径
-CONFIG_FILE = Path(__file__).parent.parent.parent / "data" / "config.toml"
-TOKEN_FILE = Path(__file__).parent.parent.parent / "data" / "token.json"
-LOCK_DIR = Path(__file__).parent.parent.parent / "data" / ".locks"
+CONFIG_FILE = DATA_DIR / "config.toml"
+TOKEN_FILE = DATA_DIR / "token.json"
+LOCK_DIR = DATA_DIR / ".locks"
 
 
 # JSON 序列化优化助手函数
@@ -242,9 +246,7 @@ class RedisStorage(BaseStorage):
 
         # 显式配置连接池
         # 使用 decode_responses=True 简化字符串处理，但在处理复杂对象时使用 orjson
-        self.redis = aioredis.from_url(
-            url, decode_responses=True, health_check_interval=30
-        )
+        self.redis = aioredis.from_url(url, decode_responses=True, health_check_interval=30)
         self.config_key = "grok2api:config"  # Hash: section.key -> value_json
         self.key_pools = "grok2api:pools"  # Set: pool_names
         self.prefix_pool_set = "grok2api:pool:"  # Set: pool -> token_ids
@@ -303,7 +305,7 @@ class RedisStorage(BaseStorage):
             return None
 
     async def save_config(self, data: Dict[str, Any]):
-        """保存配置到 Redis Hash"""
+        """保存配置到 Redis Hash（全量替换，清理废弃字段）"""
         if not data:
             return
         try:
@@ -316,7 +318,14 @@ class RedisStorage(BaseStorage):
                     mapping[composite_key] = json_dumps(val)
 
             if mapping:
-                await self.redis.hset(self.config_key, mapping=mapping)
+                # 对比现有 key，删除不再存在的字段
+                existing_keys = await self.redis.hkeys(self.config_key)
+                stale_keys = [k for k in existing_keys if k not in mapping]
+                async with self.redis.pipeline() as pipe:
+                    if stale_keys:
+                        pipe.hdel(self.config_key, *stale_keys)
+                    pipe.hset(self.config_key, mapping=mapping)
+                    await pipe.execute()
         except Exception as e:
             logger.error(f"RedisStorage: 保存配置失败: {e}")
             raise
@@ -459,22 +468,183 @@ class RedisStorage(BaseStorage):
                         if "tags" in t_flat:
                             t_flat["tags"] = json_dumps(t_flat["tags"])
                         status = t_flat.get("status")
-                        if isinstance(status, str) and status.startswith(
-                            "TokenStatus."
-                        ):
+                        if isinstance(status, str) and status.startswith("TokenStatus."):
                             t_flat["status"] = status.split(".", 1)[1].lower()
                         elif isinstance(status, Enum):
                             t_flat["status"] = status.value
                         t_flat = {k: str(v) for k, v in t_flat.items() if v is not None}
-                        pipe.hset(
-                            f"{self.prefix_token_hash}{token_str}", mapping=t_flat
-                        )
+                        pipe.hset(f"{self.prefix_token_hash}{token_str}", mapping=t_flat)
 
                 await pipe.execute()
 
         except Exception as e:
             logger.error(f"RedisStorage: 保存 Token 失败: {e}")
             raise
+
+    # ==================== 原子操作优化 (Lua 脚本) ====================
+
+    # Lua 脚本：安全消耗配额（检查 + 扣减 + 更新统计，原子执行）
+    CONSUME_QUOTA_SCRIPT = """
+    local key = KEYS[1]
+    local amount = tonumber(ARGV[1])
+    local now = ARGV[2]
+
+    -- 获取当前配额
+    local quota = tonumber(redis.call('HGET', key, 'quota') or 0)
+
+    -- 检查配额是否足够
+    if quota < amount then
+        return {0, quota, 'insufficient'}
+    end
+
+    -- 原子扣减配额
+    local new_quota = redis.call('HINCRBY', key, 'quota', -amount)
+
+    -- 原子更新统计字段
+    redis.call('HINCRBY', key, 'use_count', amount)
+    redis.call('HSET', key, 'last_used_at', now)
+
+    -- 如果配额耗尽，设置冷却状态
+    if new_quota <= 0 then
+        redis.call('HSET', key, 'status', 'cooling')
+        return {1, new_quota, 'cooling'}
+    end
+
+    return {1, new_quota, 'ok'}
+    """
+
+    # Lua 脚本：批量原子更新（事务性保证）
+    BATCH_UPDATE_SCRIPT = """
+    local prefix = ARGV[1]
+    local count = tonumber(ARGV[2])
+
+    for i = 1, count do
+        local base = 2 + (i - 1) * 2
+        local token_id = ARGV[base + 1]
+        local fields_json = ARGV[base + 2]
+
+        local key = prefix .. token_id
+        local fields = cjson.decode(fields_json)
+
+        for field, value in pairs(fields) do
+            redis.call('HSET', key, field, tostring(value))
+        end
+    end
+
+    return count
+    """
+
+    async def atomic_consume_quota_safe(
+        self, token_id: str, amount: int = 1
+    ) -> tuple[bool, int, str]:
+        """
+        安全的原子配额消耗（Lua 脚本实现）
+
+        Args:
+            token_id: Token ID
+            amount: 消耗数量
+
+        Returns:
+            (成功, 新配额, 状态信息)
+            - 成功时: (True, new_quota, 'ok' | 'cooling')
+            - 失败时: (False, current_quota, 'insufficient' | 'error')
+        """
+        key = f"{self.prefix_token_hash}{token_id}"
+        now = str(int(time.time() * 1000))
+
+        try:
+            result = await self.redis.eval(self.CONSUME_QUOTA_SCRIPT, 1, key, str(amount), now)
+            success = result[0] == 1
+            new_quota = int(result[1])
+            status = result[2]
+            return (success, new_quota, status)
+        except Exception as e:
+            logger.error(f"RedisStorage: atomic_consume_quota_safe 失败: {e}")
+            return (False, -1, "error")
+
+    async def atomic_consume_quota(self, token_id: str, amount: int = 1) -> int:
+        """原子递减 quota，返回新值（兼容旧接口，不推荐使用）"""
+        key = f"{self.prefix_token_hash}{token_id}"
+        try:
+            new_quota = await self.redis.hincrby(key, "quota", -amount)
+            return new_quota
+        except Exception as e:
+            logger.error(f"RedisStorage: atomic_consume_quota 失败: {e}")
+            return -1
+
+    async def atomic_update_field(self, token_id: str, field: str, value: Any):
+        """原子更新单个字段"""
+        key = f"{self.prefix_token_hash}{token_id}"
+        try:
+            if isinstance(value, (list, dict)):
+                value = json_dumps(value)
+            await self.redis.hset(key, field, str(value))
+        except Exception as e:
+            logger.error(f"RedisStorage: atomic_update_field 失败: {e}")
+
+    async def atomic_incr_field(self, token_id: str, field: str, amount: int = 1) -> int:
+        """原子递增字段"""
+        key = f"{self.prefix_token_hash}{token_id}"
+        try:
+            return await self.redis.hincrby(key, field, amount)
+        except Exception as e:
+            logger.error(f"RedisStorage: atomic_incr_field 失败: {e}")
+            return -1
+
+    async def atomic_batch_update_safe(self, updates: list[tuple[str, dict]]) -> int:
+        """
+        批量原子更新（Lua 脚本实现，事务性保证）
+
+        Args:
+            updates: [(token_id, {field: value, ...}), ...]
+
+        Returns:
+            成功更新的数量
+        """
+        if not updates:
+            return 0
+        try:
+            # 构建参数
+            args = [self.prefix_token_hash, str(len(updates))]
+            for token_id, fields in updates:
+                # 序列化字段
+                serialized = {}
+                for field, value in fields.items():
+                    if isinstance(value, (list, dict)):
+                        serialized[field] = json_dumps(value)
+                    else:
+                        serialized[field] = value
+                args.append(token_id)
+                args.append(json_dumps(serialized))
+
+            result = await self.redis.eval(self.BATCH_UPDATE_SCRIPT, 0, *args)
+            return int(result)
+        except Exception as e:
+            logger.error(f"RedisStorage: atomic_batch_update_safe 失败: {e}")
+            return 0
+
+    async def atomic_batch_update(self, updates: list[tuple[str, dict]]):
+        """批量原子更新多个 token 的字段（Pipeline 实现，兼容旧接口）
+
+        Args:
+            updates: [(token_id, {field: value, ...}), ...]
+        """
+        if not updates:
+            return
+        try:
+            async with self.redis.pipeline() as pipe:
+                for token_id, fields in updates:
+                    key = f"{self.prefix_token_hash}{token_id}"
+                    mapping = {}
+                    for field, value in fields.items():
+                        if isinstance(value, (list, dict)):
+                            value = json_dumps(value)
+                        mapping[field] = str(value)
+                    if mapping:
+                        pipe.hset(key, mapping=mapping)
+                await pipe.execute()
+        except Exception as e:
+            logger.error(f"RedisStorage: atomic_batch_update 失败: {e}")
 
     async def close(self):
         try:
@@ -496,9 +666,7 @@ class SQLStorage(BaseStorage):
         try:
             from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
         except ImportError:
-            raise ImportError(
-                "需要安装 sqlalchemy 和 async 驱动: pip install sqlalchemy[asyncio]"
-            )
+            raise ImportError("需要安装 sqlalchemy 和 async 驱动: pip install sqlalchemy[asyncio]")
 
         self.dialect = url.split(":", 1)[0].split("+", 1)[0].lower()
 
@@ -523,53 +691,41 @@ class SQLStorage(BaseStorage):
                 from sqlalchemy import text
 
                 # Tokens 表 (通用 SQL)
-                await conn.execute(
-                    text("""
+                await conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS tokens (
                         token VARCHAR(512) PRIMARY KEY,
                         pool_name VARCHAR(64) NOT NULL,
                         data TEXT,
                         updated_at BIGINT
                     )
-                """)
-                )
+                """))
 
                 # 配置表
-                await conn.execute(
-                    text("""
+                await conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS app_config (
                         section VARCHAR(64) NOT NULL,
                         key_name VARCHAR(64) NOT NULL,
                         value TEXT,
                         PRIMARY KEY (section, key_name)
                     )
-                """)
-                )
+                """))
 
                 # 索引
                 try:
-                    await conn.execute(
-                        text("CREATE INDEX idx_tokens_pool ON tokens (pool_name)")
-                    )
+                    await conn.execute(text("CREATE INDEX idx_tokens_pool ON tokens (pool_name)"))
                 except Exception:
                     pass
 
                 # 尝试兼容旧表结构
                 try:
                     if self.dialect in ("mysql", "mariadb"):
-                        await conn.execute(
-                            text("ALTER TABLE tokens MODIFY token VARCHAR(512)")
-                        )
+                        await conn.execute(text("ALTER TABLE tokens MODIFY token VARCHAR(512)"))
                         await conn.execute(text("ALTER TABLE tokens MODIFY data TEXT"))
                     elif self.dialect in ("postgres", "postgresql", "pgsql"):
                         await conn.execute(
-                            text(
-                                "ALTER TABLE tokens ALTER COLUMN token TYPE VARCHAR(512)"
-                            )
+                            text("ALTER TABLE tokens ALTER COLUMN token TYPE VARCHAR(512)")
                         )
-                        await conn.execute(
-                            text("ALTER TABLE tokens ALTER COLUMN data TYPE TEXT")
-                        )
+                        await conn.execute(text("ALTER TABLE tokens ALTER COLUMN data TYPE TEXT"))
                 except Exception:
                     pass
 
@@ -637,9 +793,7 @@ class SQLStorage(BaseStorage):
 
         try:
             async with self.async_session() as session:
-                res = await session.execute(
-                    text("SELECT section, key_name, value FROM app_config")
-                )
+                res = await session.execute(text("SELECT section, key_name, value FROM app_config"))
                 rows = res.fetchall()
                 if not rows:
                     return None
@@ -672,9 +826,7 @@ class SQLStorage(BaseStorage):
 
                         # Upsert 逻辑 (简单实现: Delete + Insert)
                         await session.execute(
-                            text(
-                                "DELETE FROM app_config WHERE section=:s AND key_name=:k"
-                            ),
+                            text("DELETE FROM app_config WHERE section=:s AND key_name=:k"),
                             {"s": section, "k": key},
                         )
                         await session.execute(
@@ -723,28 +875,64 @@ class SQLStorage(BaseStorage):
 
         try:
             async with self.async_session() as session:
-                await session.execute(text("DELETE FROM tokens"))
-
-                params = []
-                for pool_name, tokens in data.items():
+                desired = {}
+                for pool_name, tokens in (data or {}).items():
                     for t in tokens:
-                        params.append(
-                            {
-                                "token": t.get("token"),
-                                "pool_name": pool_name,
-                                "data": json_dumps(t),
-                                "updated_at": 0,
-                            }
-                        )
+                        token_str = t.get("token") if isinstance(t, dict) else None
+                        if not token_str:
+                            continue
+                        desired[token_str] = {
+                            "token": token_str,
+                            "pool_name": pool_name,
+                            "data": json_dumps(t),
+                            "updated_at": 0,
+                        }
 
-                if params:
-                    # 批量插入
+                res = await session.execute(text("SELECT token, pool_name, data FROM tokens"))
+                rows = res.fetchall()
+                existing = {}
+                for token_str, pool_name, data_json in rows:
+                    if isinstance(data_json, str):
+                        stored_json = data_json
+                    else:
+                        try:
+                            stored_json = json_dumps(data_json)
+                        except Exception:
+                            stored_json = str(data_json)
+                    existing[token_str] = {
+                        "pool_name": pool_name,
+                        "data": stored_json,
+                    }
+
+                to_delete = [token for token in existing.keys() if token not in desired]
+                to_upsert = []
+                for token_str, payload in desired.items():
+                    old = existing.get(token_str)
+                    if not old:
+                        to_upsert.append(payload)
+                        continue
+                    if (
+                        old.get("pool_name") != payload["pool_name"]
+                        or old.get("data") != payload["data"]
+                    ):
+                        to_upsert.append(payload)
+
+                replace_tokens = set(to_delete)
+                replace_tokens.update(item["token"] for item in to_upsert)
+                if replace_tokens:
+                    await session.execute(
+                        text("DELETE FROM tokens WHERE token=:token"),
+                        [{"token": token} for token in replace_tokens],
+                    )
+
+                if to_upsert:
                     await session.execute(
                         text(
                             "INSERT INTO tokens (token, pool_name, data, updated_at) VALUES (:token, :pool_name, :data, :updated_at)"
                         ),
-                        params,
+                        to_upsert,
                     )
+
                 await session.commit()
         except Exception as e:
             logger.error(f"SQLStorage: 保存 Token 失败: {e}")
