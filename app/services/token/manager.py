@@ -11,7 +11,7 @@ from app.services.token.models import (
     EffortType,
     FAIL_THRESHOLD,
     TokenStatus,
-    BASIC__DEFAULT_QUOTA,
+    BASIC_DEFAULT_QUOTA,
     SUPER_DEFAULT_QUOTA,
 )
 from app.core.storage import get_storage
@@ -32,7 +32,7 @@ BASIC_POOL_NAME = "ssoBasic"
 def _default_quota_for_pool(pool_name: str) -> int:
     if pool_name == SUPER_POOL_NAME:
         return SUPER_DEFAULT_QUOTA
-    return BASIC__DEFAULT_QUOTA
+    return BASIC_DEFAULT_QUOTA
 
 
 class TokenManager:
@@ -295,7 +295,7 @@ class TokenManager:
             f"use_count={token.use_count}"
         )
         self._schedule_save()
-        return True
+        return consumed > 0
 
     async def sync_usage(
         self,
