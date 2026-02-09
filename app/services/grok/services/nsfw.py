@@ -9,7 +9,7 @@ from typing import Optional
 import datetime
 import random
 
-from curl_cffi.requests import AsyncSession
+from app.services.grok.services.session_pool import get_shared_session
 
 from app.core.config import get_config
 from app.core.logger import logger
@@ -101,7 +101,7 @@ class NSFWService:
         return encode_grpc_web_payload(protobuf)
 
     async def _set_birth_date(
-        self, session: AsyncSession, token: str
+        self, session, token: str
     ) -> tuple[bool, int, Optional[str]]:
         """设置出生日期"""
         headers = self._build_birth_headers(token)
@@ -129,52 +129,52 @@ class NSFWService:
 
         try:
             browser = get_config("security.browser")
-            async with AsyncSession(impersonate=browser) as session:
-                # 先设置出生日期
-                ok, birth_status, birth_err = await self._set_birth_date(session, token)
-                if not ok:
-                    return NSFWResult(
-                        success=False,
-                        http_status=birth_status,
-                        error=f"Set birth date failed: {birth_err}",
-                    )
-
-                # 开启 NSFW
-                response = await session.post(
-                    NSFW_API,
-                    data=payload,
-                    headers=headers,
-                    timeout=self.timeout,
-                    proxies=self._build_proxies(),
-                )
-
-                if response.status_code != 200:
-                    return NSFWResult(
-                        success=False,
-                        http_status=response.status_code,
-                        error=f"HTTP {response.status_code}",
-                    )
-
-                # 解析 gRPC-Web 响应
-                _, trailers = parse_grpc_web_response(
-                    response.content, content_type=response.headers.get("content-type")
-                )
-
-                grpc_status = get_grpc_status(trailers)
-                logger.debug(
-                    f"NSFW response: http={response.status_code} grpc={grpc_status.code} "
-                    f"msg={grpc_status.message} trailers={trailers}"
-                )
-
-                # HTTP 200 且无 grpc-status（空响应）或 grpc-status=0 都算成功
-                success = grpc_status.code == -1 or grpc_status.ok
-
+            session = get_shared_session(browser)
+            # 先设置出生日期
+            ok, birth_status, birth_err = await self._set_birth_date(session, token)
+            if not ok:
                 return NSFWResult(
-                    success=success,
-                    http_status=response.status_code,
-                    grpc_status=grpc_status.code,
-                    grpc_message=grpc_status.message or None,
+                    success=False,
+                    http_status=birth_status,
+                    error=f"Set birth date failed: {birth_err}",
                 )
+
+            # 开启 NSFW
+            response = await session.post(
+                NSFW_API,
+                data=payload,
+                headers=headers,
+                timeout=self.timeout,
+                proxies=self._build_proxies(),
+            )
+
+            if response.status_code != 200:
+                return NSFWResult(
+                    success=False,
+                    http_status=response.status_code,
+                    error=f"HTTP {response.status_code}",
+                )
+
+            # 解析 gRPC-Web 响应
+            _, trailers = parse_grpc_web_response(
+                response.content, content_type=response.headers.get("content-type")
+            )
+
+            grpc_status = get_grpc_status(trailers)
+            logger.debug(
+                f"NSFW response: http={response.status_code} grpc={grpc_status.code} "
+                f"msg={grpc_status.message} trailers={trailers}"
+            )
+
+            # HTTP 200 且无 grpc-status（空响应）或 grpc-status=0 都算成功
+            success = grpc_status.code == -1 or grpc_status.ok
+
+            return NSFWResult(
+                success=success,
+                http_status=response.status_code,
+                grpc_status=grpc_status.code,
+                grpc_message=grpc_status.message or None,
+            )
 
         except Exception as e:
             logger.error(f"NSFW enable failed: {e}")

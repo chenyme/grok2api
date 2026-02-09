@@ -5,7 +5,7 @@ Grok Voice Mode Service
 import orjson
 from typing import Dict, Any
 
-from curl_cffi.requests import AsyncSession
+from app.services.grok.services.session_pool import get_shared_session
 
 from app.core.logger import logger
 from app.core.config import get_config
@@ -47,26 +47,28 @@ class VoiceService:
         try:
             browser = get_config("security.browser")
             timeout = get_config("network.timeout")
-            async with AsyncSession(impersonate=browser) as session:
-                response = await session.post(
-                    LIVEKIT_TOKEN_API,
-                    headers=headers,
-                    data=orjson.dumps(payload),
-                    timeout=timeout,
-                    proxies=proxies,
+            session = get_shared_session(browser)
+            response = await session.post(
+                LIVEKIT_TOKEN_API,
+                headers=headers,
+                data=orjson.dumps(payload),
+                timeout=timeout,
+                proxies=proxies,
+            )
+
+            if response.status_code != 200:
+                body = response.text[:200]
+                logger.error(
+                    f"Voice token failed: status={response.status_code}, body={body}"
+                )
+                raise UpstreamException(
+                    message=f"Failed to get voice token: {response.status_code}",
+                    details={"status": response.status_code, "body": response.text},
                 )
 
-                if response.status_code != 200:
-                    body = response.text[:200]
-                    logger.error(f"Voice token failed: status={response.status_code}, body={body}")
-                    raise UpstreamException(
-                        message=f"Failed to get voice token: {response.status_code}",
-                        details={"status": response.status_code, "body": response.text},
-                    )
-
-                result = response.json()
-                logger.info(f"Voice token obtained: voice={voice}")
-                return result
+            result = response.json()
+            logger.info(f"Voice token obtained: voice={voice}")
+            return result
 
         except Exception as e:
             logger.error(f"Voice service error: {e}")

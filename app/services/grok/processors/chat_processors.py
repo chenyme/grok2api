@@ -8,18 +8,14 @@ import re
 from typing import Any, AsyncGenerator, AsyncIterable
 
 import orjson
-from curl_cffi.requests.errors import RequestsError
 
 from app.core.config import get_config
-from app.core.logger import logger
-from app.core.exceptions import UpstreamException
 from .base import (
     BaseProcessor,
-    StreamIdleTimeoutError,
     _with_idle_timeout,
     _normalize_stream_line,
     _collect_image_urls,
-    _is_http2_stream_error,
+    _handle_upstream_error,
 )
 
 
@@ -106,11 +102,15 @@ class StreamProcessor(BaseProcessor):
             "created": self.created,
             "model": self.model,
             "system_fingerprint": self.fingerprint,
-            "choices": [{"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish}],
+            "choices": [
+                {"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish}
+            ],
         }
         return f"data: {orjson.dumps(chunk).decode()}\n\n"
 
-    async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
+    async def process(
+        self, response: AsyncIterable[bytes]
+    ) -> AsyncGenerator[str, None]:
         """处理流式响应"""
         idle_timeout = get_config("timeout.stream_idle_timeout")
 
@@ -143,7 +143,9 @@ class StreamProcessor(BaseProcessor):
                             self.think_opened = True
                         idx = img.get("imageIndex", 0) + 1
                         progress = img.get("progress", 0)
-                        yield self._sse(f"正在生成第{idx}张图片中，当前进度{progress}%\n")
+                        yield self._sse(
+                            f"正在生成第{idx}张图片中，当前进度{progress}%\n"
+                        )
                     continue
 
                 # modelResponse
@@ -158,30 +160,15 @@ class StreamProcessor(BaseProcessor):
                     for url in _collect_image_urls(mr):
                         parts = url.split("/")
                         img_id = parts[-2] if len(parts) >= 2 else "image"
+                        resolved = await self.resolve_image(url)
+                        if resolved:
+                            yield self._sse(f"![{img_id}]({resolved})\n")
 
-                        if self.image_format == "base64":
-                            try:
-                                dl_service = self._get_dl()
-                                base64_data = await dl_service.to_base64(url, self.token, "image")
-                                if base64_data:
-                                    yield self._sse(f"![{img_id}]({base64_data})\n")
-                                else:
-                                    final_url = await self.process_url(url, "image")
-                                    if final_url:
-                                        yield self._sse(f"![{img_id}]({final_url})\n")
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to convert image to base64, falling back to URL: {e}"
-                                )
-                                final_url = await self.process_url(url, "image")
-                                if final_url:
-                                    yield self._sse(f"![{img_id}]({final_url})\n")
-                        else:
-                            final_url = await self.process_url(url, "image")
-                            if final_url:
-                                yield self._sse(f"![{img_id}]({final_url})\n")
-
-                    if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
+                    if (
+                        (meta := mr.get("metadata", {}))
+                        .get("llm_info", {})
+                        .get("modelHash")
+                    ):
                         self.fingerprint = meta["llm_info"]["modelHash"]
                     continue
 
@@ -196,38 +183,8 @@ class StreamProcessor(BaseProcessor):
                 yield self._sse("</think>\n")
             yield self._sse(finish="stop")
             yield "data: [DONE]\n\n"
-        except asyncio.CancelledError:
-            logger.debug("Stream cancelled by client", extra={"model": self.model})
-        except StreamIdleTimeoutError as e:
-            raise UpstreamException(
-                message=f"Stream idle timeout after {e.idle_seconds}s",
-                status_code=504,
-                details={
-                    "error": str(e),
-                    "type": "stream_idle_timeout",
-                    "idle_seconds": e.idle_seconds,
-                },
-            )
-        except RequestsError as e:
-            if _is_http2_stream_error(e):
-                logger.warning(f"HTTP/2 stream error: {e}", extra={"model": self.model})
-                raise UpstreamException(
-                    message="Upstream connection closed unexpectedly",
-                    status_code=502,
-                    details={"error": str(e), "type": "http2_stream_error"},
-                )
-            logger.error(f"Stream request error: {e}", extra={"model": self.model})
-            raise UpstreamException(
-                message=f"Upstream request failed: {e}",
-                status_code=502,
-                details={"error": str(e)},
-            )
-        except Exception as e:
-            logger.error(
-                f"Stream processing error: {e}",
-                extra={"model": self.model, "error_type": type(e).__name__},
-            )
-            raise
+        except (asyncio.CancelledError, Exception) as e:
+            _handle_upstream_error(e, self.model, "Stream")
         finally:
             await self.close()
 
@@ -283,68 +240,21 @@ class CollectProcessor(BaseProcessor):
                         for url in urls:
                             segments = url.split("/")
                             img_id = segments[-2] if len(segments) >= 2 else "image"
-
-                            if self.image_format == "base64":
-                                try:
-                                    dl_service = self._get_dl()
-                                    base64_data = await dl_service.to_base64(
-                                        url, self.token, "image"
-                                    )
-                                    if base64_data:
-                                        parts.append(f"![{img_id}]({base64_data})\n")
-                                    else:
-                                        final_url = await self.process_url(url, "image")
-                                        if final_url:
-                                            parts.append(f"![{img_id}]({final_url})\n")
-                                except Exception as e:
-                                    logger.warning(
-                                        f"Failed to convert image to base64, falling back to URL: {e}"
-                                    )
-                                    final_url = await self.process_url(url, "image")
-                                    if final_url:
-                                        parts.append(f"![{img_id}]({final_url})\n")
-                            else:
-                                final_url = await self.process_url(url, "image")
-                                if final_url:
-                                    parts.append(f"![{img_id}]({final_url})\n")
+                            resolved = await self.resolve_image(url)
+                            if resolved:
+                                parts.append(f"![{img_id}]({resolved})\n")
 
                     content = "".join(parts)
 
-                    if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
+                    if (
+                        (meta := mr.get("metadata", {}))
+                        .get("llm_info", {})
+                        .get("modelHash")
+                    ):
                         fingerprint = meta["llm_info"]["modelHash"]
 
-        except asyncio.CancelledError:
-            logger.debug("Collect cancelled by client", extra={"model": self.model})
-        except StreamIdleTimeoutError as e:
-            raise UpstreamException(
-                message=f"Collect idle timeout after {e.idle_seconds}s",
-                status_code=504,
-                details={
-                    "error": str(e),
-                    "type": "stream_idle_timeout",
-                    "idle_seconds": e.idle_seconds,
-                },
-            )
-        except RequestsError as e:
-            if _is_http2_stream_error(e):
-                logger.warning(f"HTTP/2 stream error in collect: {e}", extra={"model": self.model})
-                raise UpstreamException(
-                    message="Upstream connection closed unexpectedly",
-                    status_code=502,
-                    details={"error": str(e), "type": "http2_stream_error"},
-                )
-            logger.error(f"Collect request error: {e}", extra={"model": self.model})
-            raise UpstreamException(
-                message=f"Upstream request failed: {e}",
-                status_code=502,
-                details={"error": str(e)},
-            )
-        except Exception as e:
-            logger.error(
-                f"Collect processing error: {e}",
-                extra={"model": self.model, "error_type": type(e).__name__},
-            )
-            raise
+        except (asyncio.CancelledError, Exception) as e:
+            _handle_upstream_error(e, self.model, "Collect")
         finally:
             await self.close()
 

@@ -5,7 +5,7 @@ Grok 用量服务
 import asyncio
 from typing import Dict
 
-from curl_cffi.requests import AsyncSession
+from app.services.grok.services.session_pool import get_shared_session
 
 from app.core.logger import logger
 from app.core.config import get_config
@@ -98,16 +98,15 @@ class UsageService:
                     headers = self._build_headers(token)
                     payload = {"requestKind": "DEFAULT", "modelName": model_name}
                     browser = get_config("security.browser")
-
-                    async with AsyncSession() as session:
-                        response = await session.post(
-                            LIMITS_API,
-                            headers=headers,
-                            json=payload,
-                            impersonate=browser,
-                            timeout=self.timeout,
-                            proxies=self._build_proxies(),
-                        )
+                    session = get_shared_session(browser)
+                    response = await session.post(
+                        LIMITS_API,
+                        headers=headers,
+                        json=payload,
+                        impersonate=browser,
+                        timeout=self.timeout,
+                        proxies=self._build_proxies(),
+                    )
 
                     if response.status_code == 200:
                         data = response.json()
@@ -137,7 +136,9 @@ class UsageService:
 
             # 带重试的执行
             try:
-                result = await retry_on_status(do_request, extract_status=extract_status)
+                result = await retry_on_status(
+                    do_request, extract_status=extract_status
+                )
                 return result
 
             except Exception:

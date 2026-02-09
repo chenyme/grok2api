@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.core.auth import verify_admin_access
 from app.core.config import config
-from app.services.api_keys import api_key_manager
+from app.services.api_keys import api_key_manager, _hash_key
 
 
 def _make_app() -> FastAPI:
@@ -91,7 +91,14 @@ def test_admin_access_with_api_key_and_custom_key():
         assert res.status_code == 200
 
         # 普通 custom key（非 admin）不能访问 admin 端点（RBAC 修复）
-        api_key_manager._keys = [{"key": "sk-123", "name": "k", "enabled": True}]
+        api_key_manager._keys = [
+            {
+                "key_hash": _hash_key("sk-123"),
+                "key_prefix": "sk-123456",
+                "name": "k",
+                "enabled": True,
+            }
+        ]
         config._config = {"app": {"app_password": "", "api_key": ""}}
         res = client.get("/secure", headers={"Authorization": "Bearer sk-123"})
         assert res.status_code == 401

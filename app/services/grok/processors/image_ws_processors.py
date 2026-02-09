@@ -167,7 +167,7 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
                     "image_generation.partial_image",
                     {
                         "type": "image_generation.partial_image",
-                        "b64_json": partial_b64,
+                        self.response_field: partial_b64,
                         "created_at": int(time.time()),
                         "size": self.size,
                         "index": index,
@@ -210,7 +210,7 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
                 "image_generation.completed",
                 {
                     "type": "image_generation.completed",
-                    "b64_json": output,
+                    self.response_field: output,
                     "created_at": int(time.time()),
                     "size": self.size,
                     "index": index,

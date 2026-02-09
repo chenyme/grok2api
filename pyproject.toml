@@ -23,16 +23,12 @@ dependencies = [
     "curl-cffi>=0.13.0",
     "fastapi>=0.119.0",
     "greenlet>=3.3.1",
-    "httpx>=0.28.1",
     "loguru>=0.7.3",
     "orjson>=3.11.4",
-    "pydantic-settings>=2.12.0",
     "python-dotenv>=1.0.0",
     "python-multipart>=0.0.21",
-    "pyyaml>=6.0.3",
     "redis>=6.4.0",
     "sqlalchemy>=2.0.46",
-    "tomli>=2.4.0",
     "uvicorn>=0.37.0",
 ]
 
@@ -40,7 +36,6 @@ dependencies = [
 dev = [
     "pytest>=8.2",
     "ruff>=0.6.0",
-    "black>=24.4.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -49,7 +44,3 @@ include = ["app*"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-
-[tool.black]
-line-length = 100
-target-version = ["py313"]

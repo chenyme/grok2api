@@ -1,6 +1,7 @@
 """API Key 管理器 - 多用户密钥管理"""
 
 import asyncio
+import hashlib
 import secrets
 import time
 from pathlib import Path
@@ -14,6 +15,11 @@ from app.core.logger import logger
 def _safe_str_eq(a: str, b: str) -> bool:
     """时序安全的字符串比较"""
     return secrets.compare_digest(a, b)
+
+
+def _hash_key(key: str) -> str:
+    """计算 key 的 SHA-256 hash"""
+    return hashlib.sha256(key.encode()).hexdigest()
 
 
 class ApiKeyManager:
@@ -30,7 +36,7 @@ class ApiKeyManager:
         if hasattr(self, "_initialized"):
             return
 
-        self.file_path = Path(__file__).parents[2] / "data" / "api_keys.json"
+        self.file_path = Path(__file__).parents[1] / "data" / "api_keys.json"
         self._keys: List[Dict] = []
         self._lock = asyncio.Lock()
         self._loaded = False
@@ -61,10 +67,28 @@ class ApiKeyManager:
                         self._keys = orjson.loads(content)
                         self._loaded = True
                         logger.debug(f"[ApiKey] 加载了 {len(self._keys)} 个 API Key")
+
+                # 迁移明文 key → hash 存储
+                migrated = 0
+                for k in self._keys:
+                    if "key_hash" not in k and "key" in k:
+                        k["key_hash"] = _hash_key(k["key"])
+                        k["key_prefix"] = k["key"][:12]
+                        del k["key"]
+                        migrated += 1
+                if migrated:
+                    logger.info(f"[ApiKey] 迁移 {migrated} 个明文 key 到 hash 存储")
+                    await self._save_data_inner()
         except Exception as e:
             logger.error(f"[ApiKey] 加载失败: {e}")
             self._keys = []
             self._loaded = True
+
+    async def _save_data_inner(self):
+        """保存 API Keys（调用方必须持有锁）"""
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        content = orjson.dumps(self._keys, option=orjson.OPT_INDENT_2)
+        await asyncio.to_thread(self.file_path.write_bytes, content)
 
     async def _save_data(self):
         """保存 API Keys"""
@@ -73,11 +97,8 @@ class ApiKeyManager:
             return
 
         try:
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-
             async with self._lock:
-                content = orjson.dumps(self._keys, option=orjson.OPT_INDENT_2)
-                await asyncio.to_thread(self.file_path.write_bytes, content)
+                await self._save_data_inner()
         except Exception as e:
             logger.error(f"[ApiKey] 保存失败: {e}")
 
@@ -86,11 +107,13 @@ class ApiKeyManager:
         return f"sk-{secrets.token_urlsafe(24)}"
 
     async def add_key(self, name: str = "") -> Dict:
-        """添加 API Key"""
+        """添加 API Key，返回含明文 key 的字典（仅创建时可见）"""
         key_id = secrets.token_hex(8)
+        plaintext_key = self.generate_key()
         new_key = {
             "id": key_id,
-            "key": self.generate_key(),
+            "key_hash": _hash_key(plaintext_key),
+            "key_prefix": plaintext_key[:12],
             "name": name or f"Key-{key_id[:6]}",
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "enabled": True,
@@ -98,28 +121,33 @@ class ApiKeyManager:
         self._keys.append(new_key)
         await self._save_data()
         logger.info(f"[ApiKey] 添加新 Key: {new_key['name']}")
-        return new_key
+        # 返回时附带明文 key 供用户保存（不持久化）
+        return {**new_key, "key": plaintext_key}
 
     async def batch_add_keys(self, prefix: str, count: int) -> List[Dict]:
         """批量添加 API Key"""
         new_keys = []
+        results = []
         for i in range(1, count + 1):
             key_id = secrets.token_hex(8)
+            plaintext_key = self.generate_key()
             name = f"{prefix}-{i}" if prefix else f"Key-{key_id[:6]}"
-            new_keys.append(
-                {
-                    "id": key_id,
-                    "key": self.generate_key(),
-                    "name": name,
-                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "enabled": True,
-                }
-            )
+            stored = {
+                "id": key_id,
+                "key_hash": _hash_key(plaintext_key),
+                "key_prefix": plaintext_key[:12],
+                "name": name,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "enabled": True,
+            }
+            new_keys.append(stored)
+            # 返回时附带明文 key
+            results.append({**stored, "key": plaintext_key})
 
         self._keys.extend(new_keys)
         await self._save_data()
         logger.info(f"[ApiKey] 批量添加 {count} 个 Key")
-        return new_keys
+        return results
 
     async def delete_key(self, key_id: str) -> bool:
         """删除 API Key"""
@@ -132,7 +160,9 @@ class ApiKeyManager:
             return True
         return False
 
-    async def update_key(self, key_id: str, name: str = None, enabled: bool = None) -> bool:
+    async def update_key(
+        self, key_id: str, name: str = None, enabled: bool = None
+    ) -> bool:
         """更新 Key"""
         for k in self._keys:
             if k["id"] == key_id:
@@ -145,7 +175,7 @@ class ApiKeyManager:
         return False
 
     def validate_key(self, key: str) -> Optional[Dict]:
-        """验证 Key"""
+        """验证 Key（hash 比对）"""
         from app.core.config import get_config
 
         # 检查全局配置的 Key
@@ -158,15 +188,21 @@ class ApiKeyManager:
                 "is_admin": True,
             }
 
-        # 检查多 Key 列表
+        # 检查多 Key 列表（hash 比对）
+        key_hash = _hash_key(key)
         for k in self._keys:
-            if _safe_str_eq(k["key"], key) and k.get("enabled", True):
+            stored_hash = k.get("key_hash", "")
+            if (
+                stored_hash
+                and _safe_str_eq(key_hash, stored_hash)
+                and k.get("enabled", True)
+            ):
                 return {**k, "is_admin": False}
 
         return None
 
     def get_all_keys(self) -> List[Dict]:
-        """获取所有 Keys"""
+        """获取所有 Keys（不含明文 key，仅 key_prefix 供展示）"""
         return self._keys
 
 

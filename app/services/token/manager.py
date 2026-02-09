@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from app.core.logger import logger
+from app.core.utils import mask_token
 from app.services.token.models import (
     TokenInfo,
     EffortType,
@@ -88,19 +89,25 @@ class TokenManager:
                 for pool_name, tokens in data.items():
                     pool = TokenPool(pool_name)
                     for token_data in tokens:
-                        quota_missing = not (isinstance(token_data, dict) and "quota" in token_data)
+                        quota_missing = not (
+                            isinstance(token_data, dict) and "quota" in token_data
+                        )
                         try:
                             # 统一存储裸 token
                             if isinstance(token_data, dict):
                                 raw_token = token_data.get("token")
-                                if isinstance(raw_token, str) and raw_token.startswith("sso="):
+                                if isinstance(raw_token, str) and raw_token.startswith(
+                                    "sso="
+                                ):
                                     token_data["token"] = raw_token[4:]
                             token_info = TokenInfo(**token_data)
                             if quota_missing and pool_name == SUPER_POOL_NAME:
                                 token_info.quota = SUPER_DEFAULT_QUOTA
                             pool.add(token_info)
                         except Exception as e:
-                            logger.warning(f"Failed to load token in pool '{pool_name}': {e}")
+                            logger.warning(
+                                f"Failed to load token in pool '{pool_name}': {e}"
+                            )
                             continue
                     pool._rebuild_index()
                     self.pools[pool_name] = pool
@@ -231,7 +238,9 @@ class TokenManager:
             return token[4:]
         return token
 
-    async def consume(self, token_str: str, effort: EffortType = EffortType.LOW) -> bool:
+    async def consume(
+        self, token_str: str, effort: EffortType = EffortType.LOW
+    ) -> bool:
         """
         消耗配额（Lua 脚本原子操作）
 
@@ -246,7 +255,7 @@ class TokenManager:
 
         result = self._find_token(raw_token)
         if not result:
-            logger.warning(f"Token {raw_token[:10]}...: not found for consumption")
+            logger.warning(f"Token {mask_token(raw_token)}: not found for consumption")
             return False
 
         token, _ = result
@@ -273,14 +282,14 @@ class TokenManager:
                         token.status = TokenStatus.COOLING
 
                     logger.debug(
-                        f"Token {raw_token[:10]}...: atomic consumed {cost} quota, "
+                        f"Token {mask_token(raw_token)}: atomic consumed {cost} quota, "
                         f"remaining={new_quota}, status={status}"
                     )
                     return True
                 else:
                     # 配额不足
                     logger.warning(
-                        f"Token {raw_token[:10]}...: insufficient quota "
+                        f"Token {mask_token(raw_token)}: insufficient quota "
                         f"(need={cost}, have={new_quota})"
                     )
                     return False
@@ -291,7 +300,7 @@ class TokenManager:
         # 降级：本地消耗 + 传统保存
         consumed = token.consume(effort)
         logger.debug(
-            f"Token {raw_token[:10]}...: local consumed {consumed} quota, "
+            f"Token {mask_token(raw_token)}: local consumed {consumed} quota, "
             f"use_count={token.use_count}"
         )
         self._schedule_save()
@@ -330,7 +339,7 @@ class TokenManager:
                 break
 
         if not target_token:
-            logger.warning(f"Token {raw_token[:10]}...: not found for sync")
+            logger.warning(f"Token {mask_token(raw_token)}: not found for sync")
             return False
 
         # 尝试 API 同步
@@ -349,7 +358,7 @@ class TokenManager:
 
                 consumed = max(0, old_quota - new_quota)
                 logger.info(
-                    f"Token {raw_token[:10]}...: synced quota "
+                    f"Token {mask_token(raw_token)}: synced quota "
                     f"{old_quota} -> {new_quota} (consumed: {consumed}, use_count: {target_token.use_count})"
                 )
 
@@ -380,17 +389,23 @@ class TokenManager:
                 return True
 
         except Exception as e:
-            logger.warning(f"Token {raw_token[:10]}...: API sync failed, fallback to local ({e})")
+            logger.warning(
+                f"Token {mask_token(raw_token)}: API sync failed, fallback to local ({e})"
+            )
 
         # 降级：本地预估扣费
         if consume_on_fail:
-            logger.debug(f"Token {raw_token[:10]}...: using local consumption")
+            logger.debug(f"Token {mask_token(raw_token)}: using local consumption")
             return await self.consume(token_str, fallback_effort)
         else:
-            logger.debug(f"Token {raw_token[:10]}...: sync failed, skipping local consumption")
+            logger.debug(
+                f"Token {mask_token(raw_token)}: sync failed, skipping local consumption"
+            )
             return False
 
-    async def record_fail(self, token_str: str, status_code: int = 401, reason: str = "") -> bool:
+    async def record_fail(
+        self, token_str: str, status_code: int = 401, reason: str = ""
+    ) -> bool:
         """
         记录 Token 失败
 
@@ -410,7 +425,7 @@ class TokenManager:
                 if status_code in (401, 403):
                     token.record_fail(status_code, reason)
                     logger.warning(
-                        f"Token {raw_token[:10]}...: recorded {status_code} failure "
+                        f"Token {mask_token(raw_token)}: recorded {status_code} failure "
                         f"({token.fail_count}/{FAIL_THRESHOLD}) - {reason}"
                     )
 
@@ -435,12 +450,12 @@ class TokenManager:
                             logger.warning(f"Atomic update failed: {e}")
                 else:
                     logger.info(
-                        f"Token {raw_token[:10]}...: non-auth error ({status_code}) - {reason} (not counted)"
+                        f"Token {mask_token(raw_token)}: non-auth error ({status_code}) - {reason} (not counted)"
                     )
                 self._schedule_save()
                 return True
 
-        logger.warning(f"Token {raw_token[:10]}...: not found for failure record")
+        logger.warning(f"Token {mask_token(raw_token)}: not found for failure record")
         return False
 
     # ========== 管理功能 ==========
@@ -503,7 +518,7 @@ class TokenManager:
                 if tag not in info.tags:
                     info.tags.append(tag)
                     self._schedule_save()
-                    logger.debug(f"Token {raw_token[:10]}...: added tag '{tag}'")
+                    logger.debug(f"Token {mask_token(raw_token)}: added tag '{tag}'")
                 return True
         return False
 
@@ -525,7 +540,7 @@ class TokenManager:
                 if tag in info.tags:
                     info.tags.remove(tag)
                     self._schedule_save()
-                    logger.debug(f"Token {raw_token[:10]}...: removed tag '{tag}'")
+                    logger.debug(f"Token {mask_token(raw_token)}: removed tag '{tag}'")
                 return True
         return False
 
@@ -581,10 +596,10 @@ class TokenManager:
                 default_quota = _default_quota_for_pool(pool.name)
                 token.reset(default_quota)
                 await self._save()
-                logger.info(f"Token {raw_token[:10]}...: reset completed")
+                logger.info(f"Token {mask_token(raw_token)}: reset completed")
                 return True
 
-        logger.warning(f"Token {raw_token[:10]}...: not found for reset")
+        logger.warning(f"Token {mask_token(raw_token)}: not found for reset")
         return False
 
     def get_stats(self) -> Dict[str, dict]:
@@ -684,7 +699,7 @@ class TokenManager:
                             token_info.mark_synced()
 
                             logger.info(
-                                f"Token {token_info.token[:10]}...: refreshed "
+                                f"Token {mask_token(token_info.token)}: refreshed "
                                 f"{old_quota} -> {new_quota}, status: {old_status} -> {token_info.status}"
                             )
 
@@ -703,7 +718,7 @@ class TokenManager:
                         if "401" in error_str or "Unauthorized" in error_str:
                             if retry < 2:
                                 logger.warning(
-                                    f"Token {token_info.token[:10]}...: 401 error, "
+                                    f"Token {mask_token(token_info.token)}: 401 error, "
                                     f"retry {retry + 1}/2..."
                                 )
                                 await asyncio.sleep(0.5)
@@ -711,7 +726,7 @@ class TokenManager:
                             else:
                                 # 重试 2 次后仍然 401，标记为 expired
                                 logger.error(
-                                    f"Token {token_info.token[:10]}...: 401 after 2 retries, "
+                                    f"Token {mask_token(token_info.token)}: 401 after 2 retries, "
                                     f"marking as expired"
                                 )
                                 token_info.status = TokenStatus.EXPIRED
@@ -719,7 +734,7 @@ class TokenManager:
                                 return {"recovered": False, "expired": True}
                         else:
                             logger.warning(
-                                f"Token {token_info.token[:10]}...: refresh failed ({e})"
+                                f"Token {mask_token(token_info.token)}: refresh failed ({e})"
                             )
                             token_info.mark_synced()
                             return {"recovered": False, "expired": False}

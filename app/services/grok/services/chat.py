@@ -8,7 +8,7 @@ import orjson
 from typing import Dict, List, Any, AsyncGenerator
 from dataclasses import dataclass
 
-from curl_cffi.requests import AsyncSession
+from app.services.grok.services.session_pool import get_shared_session
 
 from app.core.logger import logger
 from app.core.config import get_config
@@ -167,7 +167,9 @@ class MessageExtractor:
                     break
             prompt = last_user_text or message.strip()
             prefix = (
-                "Image Edit" if any(t == "image" for t, _ in attachments) else "Image Generation"
+                "Image Edit"
+                if any(t == "image" for t, _ in attachments)
+                else "Image Generation"
             )
             message = f"{prefix}:{prompt}"
 
@@ -382,7 +384,7 @@ class GrokChatService:
         # 建立连接函数
         async def establish_connection():
             """建立连接并返回 response 对象"""
-            session = AsyncSession(impersonate=BROWSER)
+            session = get_shared_session(BROWSER)
             try:
                 response = await session.post(
                     CHAT_API,
@@ -416,11 +418,6 @@ class GrokChatService:
                         "Grok API error response "
                         f"(status={response.status_code}, headers={resp_headers}): {body_for_log}"
                     )
-                    # 关闭 session 并抛出异常
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
                     raise UpstreamException(
                         message=f"Grok API request failed: {response.status_code}",
                         details={
@@ -439,10 +436,6 @@ class GrokChatService:
             except Exception as e:
                 # 其他异常，关闭 session 并包装
                 logger.error(f"Chat request error: {e}")
-                try:
-                    await session.close()
-                except Exception:
-                    pass
                 raise UpstreamException(
                     message=f"Chat connection failed: {str(e)}",
                     details={"error": str(e)},
@@ -470,12 +463,8 @@ class GrokChatService:
 
         # 流式传输
         async def stream_response():
-            try:
-                async for line in response.aiter_lines():
-                    yield line
-            finally:
-                if session:
-                    await session.close()
+            async for line in response.aiter_lines():
+                yield line
 
         return stream_response()
 
@@ -519,8 +508,16 @@ class GrokChatService:
             finally:
                 await upload_service.close()
 
-        stream = request.stream if request.stream is not None else get_config("chat.stream", True)
-        think = request.think if request.think is not None else get_config("chat.thinking", False)
+        stream = (
+            request.stream
+            if request.stream is not None
+            else get_config("chat.stream", True)
+        )
+        think = (
+            request.think
+            if request.think is not None
+            else get_config("chat.thinking", False)
+        )
 
         response = await self.chat(
             token,
@@ -708,7 +705,9 @@ class ChatService:
         is_stream = stream if stream is not None else get_config("chat.stream", True)
 
         # 构造请求
-        chat_request = ChatRequest(model=model, messages=messages, stream=is_stream, think=think)
+        chat_request = ChatRequest(
+            model=model, messages=messages, stream=is_stream, think=think
+        )
 
         # 请求 Grok
         service = GrokChatService()
