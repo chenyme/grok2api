@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from app.core.auth import verify_admin_access, validate_admin_token
+from app.core.auth import verify_admin_access, validate_admin_token, get_client_ip
 from app.core.batch_tasks import create_task, get_task, expire_task
 from app.core.config import config, get_config
 from app.core.logger import logger
@@ -110,8 +110,6 @@ _NON_SENSITIVE_CONFIG_KEYS = {
     "assets_max_tokens",
     "usage_max_tokens",
     "nsfw_max_tokens",
-    "app_password",
-    "api_key",
 }
 
 
@@ -325,12 +323,57 @@ async def admin_voice_page():
     return await render_template("admin/app.html")
 
 
+# ---- 登录暴力破解防护 ----
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW_SEC = 300  # 5 分钟窗口
+_LOGIN_LOCKOUT_SEC = 900  # 锁定 15 分钟
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_LOGIN_ATTEMPTS_LOCK = asyncio.Lock()
+
+
+async def _check_login_rate_limit(client_ip: str) -> None:
+    """检查登录频率限制，超限则抛出 429"""
+    now = time.time()
+    async with _LOGIN_ATTEMPTS_LOCK:
+        attempts = _LOGIN_ATTEMPTS.get(client_ip, [])
+        # 清除过期记录（超出锁定窗口的）
+        attempts = [t for t in attempts if now - t < _LOGIN_LOCKOUT_SEC]
+        _LOGIN_ATTEMPTS[client_ip] = attempts
+
+        # 计算窗口内的失败次数
+        recent = [t for t in attempts if now - t < _LOGIN_WINDOW_SEC]
+        if len(recent) >= _LOGIN_MAX_ATTEMPTS:
+            # 从最后一次失败开始计算剩余锁定时间
+            last_attempt = max(recent)
+            remaining = int(_LOGIN_LOCKOUT_SEC - (now - last_attempt))
+            logger.warning(
+                f"登录暴力破解防护触发: ip={client_ip}, "
+                f"attempts={len(recent)}, lockout_remaining={remaining}s"
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many login attempts. Try again in {remaining} seconds.",
+            )
+
+
+async def _record_login_failure(client_ip: str) -> None:
+    """记录一次登录失败"""
+    now = time.time()
+    async with _LOGIN_ATTEMPTS_LOCK:
+        if client_ip not in _LOGIN_ATTEMPTS:
+            _LOGIN_ATTEMPTS[client_ip] = []
+        _LOGIN_ATTEMPTS[client_ip].append(now)
+
+
 @router.post("/api/v1/admin/login")
 async def admin_login_api(request: Request):
     """管理后台登录验证（支持两种方式）
     1. JSON body: {"username": "xxx", "password": "xxx"} - 登录页使用
     2. Bearer header: Authorization: Bearer <app_password> - 已登录用户验证
     """
+    client_ip = get_client_ip(request)
+    await _check_login_rate_limit(client_ip)
+
     app_username = get_config("app.app_username", "admin")
     app_password = get_config("app.app_password", "")
 
@@ -349,7 +392,10 @@ async def admin_login_api(request: Request):
 
     # 方式1: JSON body 登录
     if body_username and body_password:
-        if body_username != app_username or body_password != app_password:
+        if not secrets.compare_digest(body_username, app_username) or not secrets.compare_digest(
+            body_password, app_password
+        ):
+            await _record_login_failure(client_ip)
             raise HTTPException(status_code=401, detail="Invalid username or password")
         return {"status": "success"}
 
@@ -360,6 +406,7 @@ async def admin_login_api(request: Request):
         if await validate_admin_token(token):
             return {"status": "success"}
 
+    await _record_login_failure(client_ip)
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
@@ -1097,7 +1144,8 @@ async def update_config_api(data: dict):
         await config.update(restored)
         return {"status": "success", "message": "配置已更新"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Update config failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/api/v1/admin/storage", dependencies=[Depends(verify_admin_access)])
@@ -1146,7 +1194,8 @@ async def update_tokens_api(data: dict):
             await mgr.reload()
         return {"status": "success", "message": "Token 已更新"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Update tokens failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/api/v1/admin/tokens/refresh", dependencies=[Depends(verify_admin_access)])
@@ -1211,7 +1260,8 @@ async def refresh_tokens_api(data: dict):
             )
         return response
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Refresh tokens failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/api/v1/admin/tokens/refresh/async", dependencies=[Depends(verify_admin_access)])
@@ -1417,7 +1467,7 @@ async def enable_nsfw_api(data: dict):
         raise
     except Exception as e:
         logger.error(f"Enable NSFW failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/api/v1/admin/tokens/nsfw/enable/async", dependencies=[Depends(verify_admin_access)])
@@ -1781,7 +1831,8 @@ async def get_cache_stats_api(request: Request):
             )
         return response
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Get cache stats failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/api/v1/admin/cache/online/load/async", dependencies=[Depends(verify_admin_access)])
@@ -1951,7 +2002,8 @@ async def clear_local_cache_api(data: dict):
         result = dl_service.clear(cache_type)
         return {"status": "success", "result": result}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Clear local cache failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/api/v1/admin/cache/list", dependencies=[Depends(verify_admin_access)])
@@ -1971,7 +2023,8 @@ async def list_local_cache_api(
         result = dl_service.list_files(cache_type, page, page_size)
         return {"status": "success", **result}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"List local cache failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/api/v1/admin/cache/item/delete", dependencies=[Depends(verify_admin_access)])
@@ -1988,7 +2041,8 @@ async def delete_local_cache_item_api(data: dict):
         result = dl_service.delete_file(cache_type, name)
         return {"status": "success", "result": result}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Delete cache item failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/api/v1/admin/cache/online/clear", dependencies=[Depends(verify_admin_access)])
@@ -2073,7 +2127,8 @@ async def clear_online_cache_api(data: dict):
         await mgr.mark_asset_clear(token)
         return {"status": "success", "result": result}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Clear online cache failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if delete_service:
             await delete_service.close()

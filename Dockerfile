@@ -10,13 +10,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 ENV PATH="$UV_PROJECT_ENVIRONMENT/bin:$PATH"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata ca-certificates \
+    && apt-get install -y --no-install-recommends tzdata ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# 创建非 root 用户
+RUN groupadd -r appuser && useradd -r -g appuser -s /sbin/nologin appuser
+
 # 安装 uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.6 /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock ./
 
@@ -28,7 +31,10 @@ COPY main.py ./
 COPY scripts ./scripts
 
 RUN mkdir -p /app/data /app/data/tmp /app/logs \
-    && chmod +x /app/scripts/entrypoint.sh
+    && chmod +x /app/scripts/entrypoint.sh \
+    && chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 8000
 

@@ -1,9 +1,12 @@
 """代理池管理器 - 从URL动态获取代理IP"""
 
 import asyncio
+import ipaddress
+import socket
 import aiohttp
 import time
 from typing import Optional
+from urllib.parse import urlparse
 from app.core.logger import logger
 
 
@@ -91,6 +94,12 @@ class ProxyPool:
 
     async def _fetch_proxy(self):
         """从代理池URL获取新的代理"""
+        if not await self._is_safe_url(self._pool_url):
+            logger.warning(f"[ProxyPool] SSRF 防护: 拒绝访问私网地址 {self._pool_url}")
+            if not self._current_proxy:
+                self._current_proxy = self._static_proxy
+            return
+
         try:
             logger.debug(f"[ProxyPool] 正在从代理池获取新代理: {self._pool_url}")
 
@@ -127,6 +136,42 @@ class ProxyPool:
             # 降级到静态代理
             if not self._current_proxy:
                 self._current_proxy = self._static_proxy
+
+    async def _is_safe_url(self, url: str) -> bool:
+        """SSRF 防护: 检查 URL 的解析 IP 是否为私网地址
+
+        Args:
+            url: 待检查的 URL
+
+        Returns:
+            True 表示安全（公网），False 表示私网或解析失败
+        """
+        if not url:
+            return False
+
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            if not hostname:
+                return False
+
+            # 异步 DNS 解析，避免阻塞事件循环
+            import asyncio
+
+            loop = asyncio.get_running_loop()
+            addr_infos = await loop.getaddrinfo(
+                hostname, parsed.port or 80, proto=socket.IPPROTO_TCP
+            )
+            for family, _type, _proto, _canonname, sockaddr in addr_infos:
+                ip_str = sockaddr[0]
+                ip = ipaddress.ip_address(ip_str)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    logger.warning(f"[ProxyPool] SSRF 检测: {hostname} 解析到私网地址 {ip_str}")
+                    return False
+            return True
+        except (socket.gaierror, ValueError, OSError) as e:
+            logger.warning(f"[ProxyPool] SSRF 检测: 无法解析 {url}: {e}")
+            return False
 
     def _validate_proxy(self, proxy: str) -> bool:
         """验证代理格式
