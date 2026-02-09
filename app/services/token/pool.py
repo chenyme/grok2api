@@ -36,6 +36,7 @@ class TokenPool:
         - max_quota: 优先选择剩余额度最多的；同额度随机
         - random: 在可用 token 中随机
         - weighted_random: 按 quota 权重随机
+        - lru / least_recent: 最久未使用优先
         """
         max_quota = -1
         active: List[TokenInfo] = []
@@ -50,23 +51,26 @@ class TokenPool:
         if not active:
             return None
 
+        # 高并发下多个协程可能同时进入 select，先 shuffle 降低选中同一 token 的概率
+        random.shuffle(active)
+
         strategy = str(get_config("token.selection_strategy", "max_quota")).lower()
 
         if strategy == "random":
-            return random.choice(active)
+            return active[0]
 
         if strategy in ("lru", "least_recent"):
             oldest = min((t.last_used_at or 0) for t in active)
             candidates = [t for t in active if (t.last_used_at or 0) == oldest]
-            return random.choice(candidates or active)
+            return candidates[0]
 
         if strategy == "weighted_random":
             weights = [max(1, int(t.quota)) for t in active]
             return random.choices(active, weights=weights, k=1)[0]
 
-        # 默认 max_quota
+        # 默认 max_quota：已 shuffle，直接取第一个最大额度的即可
         candidates = [t for t in active if t.quota == max_quota]
-        return random.choice(candidates or active)
+        return candidates[0]
 
     def count(self) -> int:
         """Token 数量"""

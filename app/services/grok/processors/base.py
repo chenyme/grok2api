@@ -95,7 +95,6 @@ def _collect_image_urls(obj: Any) -> List[str]:
                     "generatedimageurl",
                     "imageurls",
                     "imageurl",
-                    "imageurls",
                     "image_urls",
                 }:
                     if isinstance(item, list):

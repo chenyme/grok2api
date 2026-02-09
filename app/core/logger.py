@@ -87,12 +87,18 @@ def _make_json_sink(output):
 
 
 def _file_json_sink(message):
-    """写入日志文件"""
+    """写入日志文件（仅作 fallback，正常流程使用 loguru 原生文件轮转）"""
     record = message.record
     json_str = _format_json(record)
     log_file = LOG_DIR / f"app_{record['time'].strftime('%Y-%m-%d')}.log"
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json_str + "\n")
+
+
+def _json_formatter(record) -> str:
+    """loguru 原生文件 sink 的 JSON 格式化器"""
+    record["extra"]["_json_line"] = _format_json(record)
+    return "{extra[_json_line]}\n"
 
 
 def setup_logging(
@@ -120,14 +126,18 @@ def setup_logging(
             colorize=True,
         )
 
-    # 文件输出
+    # 文件输出（loguru 原生轮转：每日 00:00 切割，保留 14 天，gzip 压缩）
     if file_logging:
         if _prepare_log_dir():
             logger.add(
-                _file_json_sink,
+                str(LOG_DIR / "app_{time:YYYY-MM-DD}.log"),
                 level=level,
-                format="{message}",
+                format=_json_formatter,
+                rotation="00:00",
+                retention="14 days",
+                compression="gz",
                 enqueue=True,
+                encoding="utf-8",
             )
         else:
             logger.warning("File logging disabled: no writable log directory.")
