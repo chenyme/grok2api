@@ -5,7 +5,7 @@ from app.services.token.models import (
     TokenStatus,
     EffortType,
     EFFORT_COST,
-    BASIC__DEFAULT_QUOTA,
+    BASIC_DEFAULT_QUOTA,
     SUPER_DEFAULT_QUOTA,
     FAIL_THRESHOLD,
 )
@@ -16,7 +16,7 @@ from app.services.token.models import (
 def test_token_defaults():
     t = TokenInfo(token="sso_abc")
     assert t.status == TokenStatus.ACTIVE
-    assert t.quota == BASIC__DEFAULT_QUOTA
+    assert t.quota == BASIC_DEFAULT_QUOTA
     assert t.fail_count == 0
     assert t.is_available()
 
@@ -161,7 +161,7 @@ def test_update_quota_negative_clamps_to_zero():
 def test_reset_restores_defaults():
     t = TokenInfo(token="t", quota=0, status=TokenStatus.EXPIRED, fail_count=5)
     t.reset()
-    assert t.quota == BASIC__DEFAULT_QUOTA
+    assert t.quota == BASIC_DEFAULT_QUOTA
     assert t.status == TokenStatus.ACTIVE
     assert t.fail_count == 0
 

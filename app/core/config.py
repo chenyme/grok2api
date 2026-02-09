@@ -232,9 +232,34 @@ def get_config(key: str, default: Any = None) -> Any:
     return config.get(key, default)
 
 
+def get_config_int(key: str, default: int = 0) -> int:
+    """获取整数配置值，类型转换失败时返回默认值"""
+    value = get_config(key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_config_float(key: str, default: float = 0.0) -> float:
+    """获取浮点数配置值，类型转换失败时返回默认值"""
+    value = get_config(key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def register_defaults(defaults: Dict[str, Any]):
     """注册默认配置"""
     config.register_defaults(defaults)
 
 
-__all__ = ["Config", "config", "get_config", "register_defaults"]
+__all__ = [
+    "Config",
+    "config",
+    "get_config",
+    "get_config_int",
+    "get_config_float",
+    "register_defaults",
+]
