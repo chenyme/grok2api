@@ -52,9 +52,9 @@ async def lifespan(app: FastAPI):
 
     # 安全提示：使用默认密码时给出警告
     app_password = get_config("app.app_password", "")
-    if app_password == "grok2api":
+    if app_password in ("grok2api", "CHANGE_ME_NOW"):
         logger.warning(
-            "Default app_password detected (grok2api). Please change it in config.toml for security."
+            f"Default app_password detected ({app_password}). Please change it in config.toml for security."
         )
     if not get_config("app.api_key", ""):
         logger.warning(
@@ -100,6 +100,17 @@ async def lifespan(app: FastAPI):
 
     # 关闭
     logger.info("Shutting down Grok2API...")
+
+    # flush 统计数据
+    if get_config("stats.enabled", True):
+        try:
+            from app.services.stats import request_stats, request_logger
+
+            await request_stats._save_data()
+            await request_logger._save_data()
+            logger.info("Stats flushed on shutdown")
+        except Exception as e:
+            logger.warning(f"Failed to flush stats on shutdown: {e}")
 
     from app.core.storage import StorageFactory
 
@@ -159,7 +170,7 @@ def create_app() -> FastAPI:
     app.include_router(image_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
     app.include_router(models_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
     app.include_router(video_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
-    app.include_router(files_router, prefix="/v1/files")
+    app.include_router(files_router, prefix="/v1/files", dependencies=[Depends(verify_api_key)])
     app.include_router(health_router)
 
     # 静态文件服务

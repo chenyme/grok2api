@@ -11,6 +11,11 @@ import orjson
 from app.core.logger import logger
 
 
+def _safe_str_eq(a: str, b: str) -> bool:
+    """时序安全的字符串比较"""
+    return secrets.compare_digest(a, b)
+
+
 class ApiKeyManager:
     """API Key 管理服务"""
 
@@ -145,7 +150,7 @@ class ApiKeyManager:
 
         # 检查全局配置的 Key
         global_key = get_config("app.api_key", "")
-        if global_key and key == global_key:
+        if global_key and _safe_str_eq(key, global_key):
             return {
                 "key": global_key,
                 "name": "Admin",
@@ -155,7 +160,7 @@ class ApiKeyManager:
 
         # 检查多 Key 列表
         for k in self._keys:
-            if k["key"] == key and k.get("enabled", True):
+            if _safe_str_eq(k["key"], key) and k.get("enabled", True):
                 return {**k, "is_admin": False}
 
         return None
