@@ -18,8 +18,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev
       - name: Lint (ruff)
-        run: ruff check app tests main.py
+        run: uv run ruff check app tests main.py
       - name: Format check (ruff)
-        run: ruff format --check app tests main.py
+        run: uv run ruff format --check app tests main.py
       - name: Run tests
-        run: pytest -q
+        run: uv run pytest -q
