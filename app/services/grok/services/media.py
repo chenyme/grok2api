@@ -7,7 +7,7 @@ import time
 from typing import AsyncGenerator, Optional
 
 import orjson
-from curl_cffi.requests import AsyncSession
+from app.services.grok.services.session_pool import get_shared_session
 
 from app.core.logger import logger
 from app.core.config import get_config
@@ -48,7 +48,9 @@ class VideoService:
         self.timeout = get_config("network.timeout")
         self.last_post_id: str = ""
 
-    def _build_headers(self, token: str, referer: str = "https://grok.com/imagine") -> dict:
+    def _build_headers(
+        self, token: str, referer: str = "https://grok.com/imagine"
+    ) -> dict:
         """构建请求头"""
         user_agent = get_config("security.user_agent")
         headers = {
@@ -100,19 +102,21 @@ class VideoService:
             else:
                 payload = {"mediaType": media_type, "prompt": prompt}
 
-            async with AsyncSession() as session:
-                response = await session.post(
-                    CREATE_POST_API,
-                    headers=headers,
-                    json=payload,
-                    impersonate=get_config("security.browser"),
-                    timeout=30,
-                    proxies=self._build_proxies(),
-                )
+            session = get_shared_session()
+            response = await session.post(
+                CREATE_POST_API,
+                headers=headers,
+                json=payload,
+                impersonate=get_config("security.browser"),
+                timeout=30,
+                proxies=self._build_proxies(),
+            )
 
             if response.status_code != 200:
                 logger.error(f"Create post failed: {response.status_code}")
-                raise UpstreamException(f"Failed to create post: {response.status_code}")
+                raise UpstreamException(
+                    f"Failed to create post: {response.status_code}"
+                )
 
             post_id = response.json().get("post", {}).get("id", "")
             if not post_id:
@@ -240,11 +244,12 @@ class VideoService:
         image_url: str = "",
     ) -> AsyncGenerator[bytes, None]:
         """内部生成逻辑"""
-        session = None
         try:
             # 有 post_id 时 Referer 带上具体 ID，与浏览器行为一致
             referer = (
-                f"https://grok.com/imagine/{post_id}" if post_id else "https://grok.com/imagine"
+                f"https://grok.com/imagine/{post_id}"
+                if post_id
+                else "https://grok.com/imagine"
             )
             headers = self._build_headers(token, referer=referer)
             payload = self._build_payload(
@@ -257,7 +262,7 @@ class VideoService:
                 image_url=image_url,
             )
 
-            session = AsyncSession(impersonate=get_config("security.browser"))
+            session = get_shared_session()
             response = await session.post(
                 CHAT_API,
                 headers=headers,
@@ -279,20 +284,12 @@ class VideoService:
             logger.info(f"Video generation started: post_id={post_id}")
 
             async def stream_response():
-                try:
-                    async for line in response.aiter_lines():
-                        yield line
-                finally:
-                    await session.close()
+                async for line in response.aiter_lines():
+                    yield line
 
             return stream_response()
 
         except Exception as e:
-            if session:
-                try:
-                    await session.close()
-                except Exception:
-                    pass
             logger.error(f"Video generation error: {e}")
             if isinstance(e, AppException):
                 raise
@@ -334,7 +331,9 @@ class VideoService:
         preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
         """图生视频：创建 MEDIA_POST_TYPE_IMAGE 帖子，message 携带图片 URL"""
-        logger.info(f"Image to video: prompt='{prompt[:50]}...', image={image_url[:80]}")
+        logger.info(
+            f"Image to video: prompt='{prompt[:50]}...', image={image_url[:80]}"
+        )
         async with _get_semaphore():
             post_id = await self.create_image_post(token, image_url)
             self.last_post_id = post_id
@@ -399,7 +398,9 @@ class VideoService:
 
             pool_candidates = ModelService.pool_candidates_for_model(model)
             if requested_video_length == 10 and "ssoSuper" in pool_candidates:
-                pool_candidates = ["ssoSuper"] + [p for p in pool_candidates if p != "ssoSuper"]
+                pool_candidates = ["ssoSuper"] + [
+                    p for p in pool_candidates if p != "ssoSuper"
+                ]
 
             for pool_name in pool_candidates:
                 token = token_mgr.get_token(pool_name)
@@ -456,7 +457,9 @@ class VideoService:
                 try:
                     for attach_type, attach_data in attachments:
                         if attach_type == "image":
-                            _, file_uri = await upload_service.upload(attach_data, token)
+                            _, file_uri = await upload_service.upload(
+                                attach_data, token
+                            )
                             image_url = f"https://assets.grok.com/{file_uri}"
                             logger.info(f"Image uploaded for video: {image_url}")
                             break
@@ -539,11 +542,15 @@ class VideoService:
                                     f"Video stream completed, recorded usage (effort={effort.value})"
                                 )
                             except Exception as e:
-                                logger.warning(f"Failed to record video stream usage: {e}")
+                                logger.warning(
+                                    f"Failed to record video stream usage: {e}"
+                                )
 
                 return _wrap_stream(processor.process(response))
 
-            result = await VideoCollectProcessor(model, token, post_id=post_id).process(response)
+            result = await VideoCollectProcessor(model, token, post_id=post_id).process(
+                response
+            )
             try:
                 model_info = ModelService.get(model)
                 effort = (
@@ -558,7 +565,9 @@ class VideoService:
 
             duration = max(0.0, time.time() - start_time)
             asyncio.create_task(
-                VideoService._record_stats(model, True, duration, token, "", client_ip, key_name)
+                VideoService._record_stats(
+                    model, True, duration, token, "", client_ip, key_name
+                )
             )
             return result
         except Exception as e:

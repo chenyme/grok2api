@@ -39,7 +39,9 @@ from app.api.v1.health import router as health_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
 
 # 初始化日志
-setup_logging(level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=True)
+setup_logging(
+    level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=True
+)
 
 
 @asynccontextmanager
@@ -62,7 +64,9 @@ async def lifespan(app: FastAPI):
         )
 
     # 2. 初始化代理池
-    proxy_url = get_config("proxy.proxy_url", "") or get_config("network.base_proxy_url", "")
+    proxy_url = get_config("proxy.proxy_url", "") or get_config(
+        "network.base_proxy_url", ""
+    )
     proxy_pool_url = get_config("proxy.proxy_pool_url", "")
     if proxy_url or proxy_pool_url:
         from app.core.proxy_pool import proxy_pool
@@ -101,6 +105,11 @@ async def lifespan(app: FastAPI):
     # 关闭
     logger.info("Shutting down Grok2API...")
 
+    # 关闭共享 HTTP 会话池
+    from app.services.grok.services.session_pool import close_all_sessions
+
+    await close_all_sessions()
+
     # flush 统计数据
     if get_config("stats.enabled", True):
         try:
@@ -135,7 +144,9 @@ def create_app() -> FastAPI:
         ["http://127.0.0.1:8000", "http://localhost:8000"],
     )
     if isinstance(cors_origins, str):
-        cors_origins = [item.strip() for item in cors_origins.split(",") if item.strip()]
+        cors_origins = [
+            item.strip() for item in cors_origins.split(",") if item.strip()
+        ]
     if not isinstance(cors_origins, list) or not cors_origins:
         cors_origins = ["http://127.0.0.1:8000", "http://localhost:8000"]
 
@@ -166,11 +177,21 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
 
     # 注册路由
-    app.include_router(chat_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
-    app.include_router(image_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
-    app.include_router(models_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
-    app.include_router(video_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
-    app.include_router(files_router, prefix="/v1/files", dependencies=[Depends(verify_api_key)])
+    app.include_router(
+        chat_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
+    )
+    app.include_router(
+        image_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
+    )
+    app.include_router(
+        models_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
+    )
+    app.include_router(
+        video_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
+    )
+    app.include_router(
+        files_router, prefix="/v1/files", dependencies=[Depends(verify_api_key)]
+    )
     app.include_router(health_router)
 
     # 静态文件服务
