@@ -89,25 +89,19 @@ class TokenManager:
                 for pool_name, tokens in data.items():
                     pool = TokenPool(pool_name)
                     for token_data in tokens:
-                        quota_missing = not (
-                            isinstance(token_data, dict) and "quota" in token_data
-                        )
+                        quota_missing = not (isinstance(token_data, dict) and "quota" in token_data)
                         try:
                             # 统一存储裸 token
                             if isinstance(token_data, dict):
                                 raw_token = token_data.get("token")
-                                if isinstance(raw_token, str) and raw_token.startswith(
-                                    "sso="
-                                ):
+                                if isinstance(raw_token, str) and raw_token.startswith("sso="):
                                     token_data["token"] = raw_token[4:]
                             token_info = TokenInfo(**token_data)
                             if quota_missing and pool_name == SUPER_POOL_NAME:
                                 token_info.quota = SUPER_DEFAULT_QUOTA
                             pool.add(token_info)
                         except Exception as e:
-                            logger.warning(
-                                f"Failed to load token in pool '{pool_name}': {e}"
-                            )
+                            logger.warning(f"Failed to load token in pool '{pool_name}': {e}")
                             continue
                     pool._rebuild_index()
                     self.pools[pool_name] = pool
@@ -238,9 +232,7 @@ class TokenManager:
             return token[4:]
         return token
 
-    async def consume(
-        self, token_str: str, effort: EffortType = EffortType.LOW
-    ) -> bool:
+    async def consume(self, token_str: str, effort: EffortType = EffortType.LOW) -> bool:
         """
         消耗配额（Lua 脚本原子操作）
 
@@ -398,14 +390,10 @@ class TokenManager:
             logger.debug(f"Token {mask_token(raw_token)}: using local consumption")
             return await self.consume(token_str, fallback_effort)
         else:
-            logger.debug(
-                f"Token {mask_token(raw_token)}: sync failed, skipping local consumption"
-            )
+            logger.debug(f"Token {mask_token(raw_token)}: sync failed, skipping local consumption")
             return False
 
-    async def record_fail(
-        self, token_str: str, status_code: int = 401, reason: str = ""
-    ) -> bool:
+    async def record_fail(self, token_str: str, status_code: int = 401, reason: str = "") -> bool:
         """
         记录 Token 失败
 

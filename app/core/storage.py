@@ -691,24 +691,28 @@ class SQLStorage(BaseStorage):
                 from sqlalchemy import text
 
                 # Tokens 表 (通用 SQL)
-                await conn.execute(text("""
+                await conn.execute(
+                    text("""
                     CREATE TABLE IF NOT EXISTS tokens (
                         token VARCHAR(512) PRIMARY KEY,
                         pool_name VARCHAR(64) NOT NULL,
                         data TEXT,
                         updated_at BIGINT
                     )
-                """))
+                """)
+                )
 
                 # 配置表
-                await conn.execute(text("""
+                await conn.execute(
+                    text("""
                     CREATE TABLE IF NOT EXISTS app_config (
                         section VARCHAR(64) NOT NULL,
                         key_name VARCHAR(64) NOT NULL,
                         value TEXT,
                         PRIMARY KEY (section, key_name)
                     )
-                """))
+                """)
+                )
 
                 # 索引
                 try:

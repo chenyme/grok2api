@@ -102,15 +102,11 @@ class StreamProcessor(BaseProcessor):
             "created": self.created,
             "model": self.model,
             "system_fingerprint": self.fingerprint,
-            "choices": [
-                {"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish}
-            ],
+            "choices": [{"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish}],
         }
         return f"data: {orjson.dumps(chunk).decode()}\n\n"
 
-    async def process(
-        self, response: AsyncIterable[bytes]
-    ) -> AsyncGenerator[str, None]:
+    async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理流式响应"""
         idle_timeout = get_config("timeout.stream_idle_timeout")
 
@@ -143,9 +139,7 @@ class StreamProcessor(BaseProcessor):
                             self.think_opened = True
                         idx = img.get("imageIndex", 0) + 1
                         progress = img.get("progress", 0)
-                        yield self._sse(
-                            f"正在生成第{idx}张图片中，当前进度{progress}%\n"
-                        )
+                        yield self._sse(f"正在生成第{idx}张图片中，当前进度{progress}%\n")
                     continue
 
                 # modelResponse
@@ -164,11 +158,7 @@ class StreamProcessor(BaseProcessor):
                         if resolved:
                             yield self._sse(f"![{img_id}]({resolved})\n")
 
-                    if (
-                        (meta := mr.get("metadata", {}))
-                        .get("llm_info", {})
-                        .get("modelHash")
-                    ):
+                    if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
                         self.fingerprint = meta["llm_info"]["modelHash"]
                     continue
 
@@ -246,11 +236,7 @@ class CollectProcessor(BaseProcessor):
 
                     content = "".join(parts)
 
-                    if (
-                        (meta := mr.get("metadata", {}))
-                        .get("llm_info", {})
-                        .get("modelHash")
-                    ):
+                    if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
                         fingerprint = meta["llm_info"]["modelHash"]
 
         except (asyncio.CancelledError, Exception) as e:

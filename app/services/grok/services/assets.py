@@ -270,9 +270,9 @@ class BaseService:
                 )
 
             filename = url.split("/")[-1].split("?")[0] or "download"
-            content_type = response.headers.get(
-                "content-type", "application/octet-stream"
-            ).split(";")[0]
+            content_type = response.headers.get("content-type", "application/octet-stream").split(
+                ";"
+            )[0]
             b64 = base64.b64encode(response.content).decode()
 
             logger.debug(f"Fetched: {url}")
@@ -308,15 +308,11 @@ class BaseService:
         try:
             if not file_path.exists():
                 logger.warning(f"File not found for base64 conversion: {file_path}")
-                raise AppException(
-                    f"File not found: {file_path}", code="file_not_found"
-                )
+                raise AppException(f"File not found: {file_path}", code="file_not_found")
 
             if not file_path.is_file():
                 logger.warning(f"Path is not a file: {file_path}")
-                raise AppException(
-                    f"Invalid file path: {file_path}", code="invalid_file_path"
-                )
+                raise AppException(f"Invalid file path: {file_path}", code="invalid_file_path")
 
             b64_data = base64.b64encode(file_path.read_bytes()).decode()
             return f"data:{mime_type};base64,{b64_data}"
@@ -324,9 +320,7 @@ class BaseService:
             raise
         except Exception as e:
             logger.error(f"File to base64 failed: {file_path} - {e}")
-            raise AppException(
-                f"Failed to read file: {file_path}", code="file_read_error"
-            )
+            raise AppException(f"Failed to read file: {file_path}", code="file_read_error")
 
 
 # ==================== 上传服务 ====================
@@ -349,9 +343,7 @@ class UploadService(BaseService):
             else:
                 filename, b64, mime = self.parse_b64(file_input)
 
-            logger.debug(
-                f"Upload prepare: filename={filename}, type={mime}, size={len(b64)}"
-            )
+            logger.debug(f"Upload prepare: filename={filename}, type={mime}, size={len(b64)}")
 
             if not b64:
                 raise ValidationException("Invalid file input: empty content")
@@ -381,9 +373,7 @@ class UploadService(BaseService):
                     )
                 except Exception as e:
                     if attempt >= max_retry:
-                        logger.error(
-                            f"Upload request error after retries: {filename} - {e}"
-                        )
+                        logger.error(f"Upload request error after retries: {filename} - {e}")
                         raise UpstreamException(
                             message=f"Upload request failed: {str(e)}",
                             details={"status": 0, "error": str(e)},
@@ -571,10 +561,7 @@ class DeleteService(BaseService):
         for i in range(0, len(assets), batch_size):
             batch = assets[i : i + batch_size]
             results = await asyncio.gather(
-                *[
-                    self._delete_one(token, asset, idx)
-                    for idx, asset in enumerate(batch)
-                ],
+                *[self._delete_one(token, asset, idx) for idx, asset in enumerate(batch)],
                 return_exceptions=True,
             )
             success += sum(1 for r in results if r is True)
@@ -619,9 +606,9 @@ class DownloadService(BaseService):
         """获取 MIME 类型"""
         header_mime = ""
         if response:
-            header_mime = response.headers.get(
-                "content-type", "application/octet-stream"
-            ).split(";")[0]
+            header_mime = response.headers.get("content-type", "application/octet-stream").split(
+                ";"
+            )[0]
             if header_mime and header_mime != "application/octet-stream":
                 return header_mime
 
@@ -647,7 +634,9 @@ class DownloadService(BaseService):
                 return cache_path, self._get_mime(cache_path)
 
             # 文件锁防止并发下载
-            lock_name = f"dl_{media_type}_{hashlib.sha256(str(cache_path).encode()).hexdigest()[:16]}"
+            lock_name = (
+                f"dl_{media_type}_{hashlib.sha256(str(cache_path).encode()).hexdigest()[:16]}"
+            )
             async with _file_lock(lock_name, timeout=10):
                 # 双重检查
                 if cache_path.exists():
@@ -708,17 +697,13 @@ class DownloadService(BaseService):
 
         return self._get_mime(cache_path, response)
 
-    async def to_base64(
-        self, file_path: str, token: str, media_type: str = "image"
-    ) -> str:
+    async def to_base64(self, file_path: str, token: str, media_type: str = "image") -> str:
         """下载并转 base64"""
         try:
             cache_path, mime = await self.download(file_path, token, media_type)
             if not cache_path or not cache_path.exists():
                 logger.warning(f"Download failed for {file_path}: invalid path")
-                raise AppException(
-                    "Download failed: invalid path", code="download_failed"
-                )
+                raise AppException("Download failed: invalid path", code="download_failed")
 
             data_uri = self.to_b64(cache_path, mime)
 
@@ -912,9 +897,7 @@ class DownloadService(BaseService):
         total_size = 0
         all_files = []
 
-        dirs = (
-            [cache_dir] if cache_dir is not None else [self.image_dir, self.video_dir]
-        )
+        dirs = [cache_dir] if cache_dir is not None else [self.image_dir, self.video_dir]
         for d in dirs:
             if d.exists():
                 for f in d.glob("*"):

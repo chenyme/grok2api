@@ -136,9 +136,7 @@ class UsageService:
 
             # 带重试的执行
             try:
-                result = await retry_on_status(
-                    do_request, extract_status=extract_status
-                )
+                result = await retry_on_status(do_request, extract_status=extract_status)
                 return result
 
             except Exception:

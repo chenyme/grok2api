@@ -159,9 +159,7 @@ def _collect_image_urls(obj: Any) -> List[str]:
                             if isinstance(candidate, str):
                                 add(candidate)
 
-                if key_lower in {"message", "content", "text"} and isinstance(
-                    item, str
-                ):
+                if key_lower in {"message", "content", "text"} and isinstance(item, str):
                     add_from_text(item)
 
                 walk(item)
@@ -169,9 +167,7 @@ def _collect_image_urls(obj: Any) -> List[str]:
             for item in value:
                 walk(item)
         elif isinstance(value, str) and (
-            "assets.grok.com" in value.lower()
-            or "http://" in value
-            or "https://" in value
+            "assets.grok.com" in value.lower() or "http://" in value or "https://" in value
         ):
             add_from_text(value)
 
@@ -269,9 +265,7 @@ class BaseProcessor:
         if self.app_url:
             dl_service = self._get_dl()
             try:
-                cache_path, mime = await dl_service.download(
-                    path, self.token, media_type
-                )
+                cache_path, mime = await dl_service.download(path, self.token, media_type)
             except Exception as dl_err:
                 logger.warning(
                     "Asset download failed, skipping",
@@ -323,9 +317,7 @@ class BaseProcessor:
                 if base64_data:
                     return base64_data
             except Exception as e:
-                logger.warning(
-                    f"Failed to convert image to base64, falling back to URL: {e}"
-                )
+                logger.warning(f"Failed to convert image to base64, falling back to URL: {e}")
         return await self.process_url(url, "image")
 
 

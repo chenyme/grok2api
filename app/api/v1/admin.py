@@ -129,11 +129,7 @@ def _is_sensitive_config_key(section: str, key: str, value) -> bool:
         return True
     if any(word in key_l for word in _SENSITIVE_KEYWORDS):
         return True
-    if (
-        section_l in {"security", "network", "proxy"}
-        and isinstance(value, str)
-        and value
-    ):
+    if section_l in {"security", "network", "proxy"} and isinstance(value, str) and value:
         return True
     return False
 
@@ -292,9 +288,7 @@ async def stream_batch(task_id: str, request: Request):
     )
 
 
-@router.post(
-    "/api/v1/admin/batch/{task_id}/cancel", dependencies=[Depends(verify_admin_access)]
-)
+@router.post("/api/v1/admin/batch/{task_id}/cancel", dependencies=[Depends(verify_admin_access)])
 async def cancel_batch(task_id: str):
     task = get_task(task_id)
     if not task:
@@ -408,9 +402,9 @@ async def admin_login_api(request: Request):
 
     # 方式1: JSON body 登录
     if body_username and body_password:
-        if not secrets.compare_digest(
-            body_username, app_username
-        ) or not secrets.compare_digest(body_password, app_password):
+        if not secrets.compare_digest(body_username, app_username) or not secrets.compare_digest(
+            body_password, app_password
+        ):
             await _record_login_failure(client_ip)
             raise HTTPException(status_code=401, detail="Invalid username or password")
         return {"status": "success"}
@@ -453,9 +447,7 @@ async def get_voice_token_api(
         raise HTTPException(status_code=429, detail="No available tokens")
 
     service = VoiceService()
-    result = await service.get_token(
-        token=token, voice=voice, personality=personality, speed=speed
-    )
+    result = await service.get_token(token=token, voice=voice, personality=personality, speed=speed)
 
     livekit_token = result.get("token")
     livekit_url = (
@@ -494,9 +486,7 @@ def _guess_image_ext_by_signature(raw: bytes) -> str:
     return ".jpg"
 
 
-async def _cache_imagine_base64_image(
-    blob: str, run_id: str, seq: int, app_url: str
-) -> str:
+async def _cache_imagine_base64_image(blob: str, run_id: str, seq: int, app_url: str) -> str:
     b64 = _normalize_base64_blob(blob)
     if not b64:
         return ""
@@ -553,9 +543,7 @@ async def _record_admin_request_log(
             ip=ip,
             model=model,
             duration=duration_sec,
-            status=(
-                status_code if status_code is not None else (200 if success else 500)
-            ),
+            status=(status_code if status_code is not None else (200 if success else 500)),
             key_name=key_name,
             token_suffix=token_suffix,
             error=error,
@@ -586,9 +574,7 @@ async def imagine_ws(websocket: WebSocket):
     if not auth_ok:
         raw_key = _normalize_auth_token(websocket.query_params.get("api_key", ""))
         allow_query_api_key = bool(get_config("security.allow_query_api_key", False))
-        auth_ok = bool(
-            allow_query_api_key and raw_key and await validate_admin_token(raw_key)
-        )
+        auth_ok = bool(allow_query_api_key and raw_key and await validate_admin_token(raw_key))
 
     if not auth_ok:
         await websocket.close(code=1008)
@@ -682,9 +668,7 @@ async def imagine_ws(websocket: WebSocket):
 
                 if not token:
                     err_msg = "No available tokens"
-                    await _send_json(
-                        {"type": "error", "message": "No available tokens"}
-                    )
+                    await _send_json({"type": "error", "message": "No available tokens"})
                     break
 
                 last_token = token
@@ -739,9 +723,7 @@ async def imagine_ws(websocket: WebSocket):
                                 if not file_path.startswith("/"):
                                     file_path = f"/{file_path}"
 
-                                await download_service.download(
-                                    file_path, token, "image"
-                                )
+                                await download_service.download(file_path, token, "image")
 
                                 local_source = f"/v1/files/image{file_path}"
                                 if app_url:
@@ -762,9 +744,7 @@ async def imagine_ws(websocket: WebSocket):
                                         app_url,
                                     )
                                 except Exception as e:
-                                    logger.debug(
-                                        f"Failed to cache imagine base64 image: {e}"
-                                    )
+                                    logger.debug(f"Failed to cache imagine base64 image: {e}")
 
                             if not source_url:
                                 source_url = upstream_source_url
@@ -780,18 +760,14 @@ async def imagine_ws(websocket: WebSocket):
                                 app_url,
                             )
                         except Exception as e:
-                            logger.debug(
-                                f"Failed to cache imagine base64-only image: {e}"
-                            )
+                            logger.debug(f"Failed to cache imagine base64-only image: {e}")
 
                     seq += 1
                     batch_final_count += 1
                     has_final = True
                     remaining = max(0, image_count - seq)
 
-                    elapsed_ms = int(
-                        (asyncio.get_running_loop().time() - start_ts) * 1000
-                    )
+                    elapsed_ms = int((asyncio.get_running_loop().time() - start_ts) * 1000)
                     image_payload = {
                         "type": "image",
                         "image_id": item.get("image_id") or f"img-{seq}",
@@ -821,9 +797,7 @@ async def imagine_ws(websocket: WebSocket):
                         try:
                             await TokenService.consume(token, EffortType.HIGH)
                         except Exception as e:
-                            logger.warning(
-                                f"Failed to consume token for imagine ws: {e}"
-                            )
+                            logger.warning(f"Failed to consume token for imagine ws: {e}")
                     break
 
                 if err_msg:
@@ -888,9 +862,7 @@ async def imagine_ws(websocket: WebSocket):
             ):
                 status_code = 499
                 if not err_msg:
-                    err_msg = (
-                        "Client disconnected before final image generation completed"
-                    )
+                    err_msg = "Client disconnected before final image generation completed"
 
             if status_code >= 500 and not err_msg:
                 err_msg = "Generation failed without detailed error"
@@ -902,9 +874,7 @@ async def imagine_ws(websocket: WebSocket):
                 ip=client_ip,
                 key_name="admin-imagine",
                 token_suffix=(
-                    last_token[-8:]
-                    if last_token and len(last_token) >= 8
-                    else last_token
+                    last_token[-8:] if last_token and len(last_token) >= 8 else last_token
                 ),
                 error=err_msg,
                 status_code=status_code,
@@ -936,9 +906,7 @@ async def imagine_ws(websocket: WebSocket):
             if action == "stop":
                 await _stop_stream("client_stop")
                 if run_id:
-                    await _send_json(
-                        {"type": "status", "status": "stopped", "run_id": run_id}
-                    )
+                    await _send_json({"type": "status", "status": "stopped", "run_id": run_id})
                 continue
 
             if action != "start":
@@ -959,9 +927,7 @@ async def imagine_ws(websocket: WebSocket):
             if aspect_ratio not in {"2:3", "3:2", "1:1", "9:16", "16:9"}:
                 aspect_ratio = "2:3"
 
-            image_count = _normalize_image_count(
-                payload.get("image_count", payload.get("n", 4))
-            )
+            image_count = _normalize_image_count(payload.get("image_count", payload.get("n", 4)))
             output_mode = str(payload.get("output_mode") or "base64").strip().lower()
             if output_mode not in {"base64", "url"}:
                 output_mode = "base64"
@@ -1095,9 +1061,7 @@ async def admin_imagine_sse(
                 try:
                     await token_mgr.reload_if_stale()
                     token = None
-                    for pool_name in ModelService.pool_candidates_for_model(
-                        model_info.model_id
-                    ):
+                    for pool_name in ModelService.pool_candidates_for_model(model_info.model_id):
                         token = token_mgr.get_token(pool_name)
                         if token:
                             break
@@ -1168,9 +1132,7 @@ async def admin_imagine_sse(
                     break
                 except Exception as e:
                     logger.warning(f"Imagine SSE error: {e}")
-                    yield _sse_event(
-                        {"type": "error", "message": str(e), "code": "internal_error"}
-                    )
+                    yield _sse_event({"type": "error", "message": str(e), "code": "internal_error"})
                     await asyncio.sleep(1.5)
 
             yield _sse_event({"type": "status", "status": "stopped", "run_id": run_id})
@@ -1253,9 +1215,7 @@ async def update_tokens_api(data: dict):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post(
-    "/api/v1/admin/tokens/refresh", dependencies=[Depends(verify_admin_access)]
-)
+@router.post("/api/v1/admin/tokens/refresh", dependencies=[Depends(verify_admin_access)])
 async def refresh_tokens_api(data: dict):
     """刷新 Token 状态"""
     from app.services.token.manager import get_token_manager
@@ -1287,18 +1247,14 @@ async def refresh_tokens_api(data: dict):
         if len(unique_tokens) > max_tokens:
             unique_tokens = unique_tokens[:max_tokens]
             truncated = True
-            logger.warning(
-                f"Usage refresh: truncated from {original_count} to {max_tokens} tokens"
-            )
+            logger.warning(f"Usage refresh: truncated from {original_count} to {max_tokens} tokens")
 
         # 批量执行配置
         max_concurrent = get_config("performance.usage_max_concurrent", 25)
         batch_size = get_config("performance.usage_batch_size", 50)
 
         async def _refresh_one(t):
-            return await mgr.sync_usage(
-                t, "grok-3", consume_on_fail=False, is_usage=False
-            )
+            return await mgr.sync_usage(t, "grok-3", consume_on_fail=False, is_usage=False)
 
         raw_results = await run_in_batches(
             unique_tokens,
@@ -1325,9 +1281,7 @@ async def refresh_tokens_api(data: dict):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post(
-    "/api/v1/admin/tokens/refresh/async", dependencies=[Depends(verify_admin_access)]
-)
+@router.post("/api/v1/admin/tokens/refresh/async", dependencies=[Depends(verify_admin_access)])
 async def refresh_tokens_api_async(data: dict):
     """刷新 Token 状态（异步批量 + SSE 进度）"""
     from app.services.token.manager import get_token_manager
@@ -1356,9 +1310,7 @@ async def refresh_tokens_api_async(data: dict):
     if len(unique_tokens) > max_tokens:
         unique_tokens = unique_tokens[:max_tokens]
         truncated = True
-        logger.warning(
-            f"Usage refresh: truncated from {original_count} to {max_tokens} tokens"
-        )
+        logger.warning(f"Usage refresh: truncated from {original_count} to {max_tokens} tokens")
 
     max_concurrent = get_config("performance.usage_max_concurrent", 25)
     batch_size = get_config("performance.usage_batch_size", 50)
@@ -1369,9 +1321,7 @@ async def refresh_tokens_api_async(data: dict):
         try:
 
             async def _refresh_one(t: str):
-                return await mgr.sync_usage(
-                    t, "grok-3", consume_on_fail=False, is_usage=False
-                )
+                return await mgr.sync_usage(t, "grok-3", consume_on_fail=False, is_usage=False)
 
             async def _on_item(item: str, res: dict):
                 task.record(bool(res.get("ok")))
@@ -1413,9 +1363,7 @@ async def refresh_tokens_api_async(data: dict):
             }
             warning = None
             if truncated:
-                warning = (
-                    f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
-                )
+                warning = f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
             task.finish(result, warning=warning)
         except Exception as e:
             task.fail_task(str(e))
@@ -1432,9 +1380,7 @@ async def refresh_tokens_api_async(data: dict):
     }
 
 
-@router.post(
-    "/api/v1/admin/tokens/nsfw/enable", dependencies=[Depends(verify_admin_access)]
-)
+@router.post("/api/v1/admin/tokens/nsfw/enable", dependencies=[Depends(verify_admin_access)])
 async def enable_nsfw_api(data: dict):
     """批量开启 NSFW (Unhinged) 模式"""
     from app.services.grok.nsfw import NSFWService
@@ -1456,9 +1402,7 @@ async def enable_nsfw_api(data: dict):
         if not tokens:
             for pool_name, pool in mgr.pools.items():
                 for info in pool.list():
-                    raw = (
-                        info.token[4:] if info.token.startswith("sso=") else info.token
-                    )
+                    raw = info.token[4:] if info.token.startswith("sso=") else info.token
                     tokens.append(raw)
 
         if not tokens:
@@ -1479,9 +1423,7 @@ async def enable_nsfw_api(data: dict):
         if len(unique_tokens) > max_tokens:
             unique_tokens = unique_tokens[:max_tokens]
             truncated = True
-            logger.warning(
-                f"NSFW enable: truncated from {original_count} to {max_tokens} tokens"
-            )
+            logger.warning(f"NSFW enable: truncated from {original_count} to {max_tokens} tokens")
 
         # 批量执行配置
         max_concurrent = get_config("performance.nsfw_max_concurrent", 10)
@@ -1586,9 +1528,7 @@ async def enable_nsfw_api_async(data: dict):
     if len(unique_tokens) > max_tokens:
         unique_tokens = unique_tokens[:max_tokens]
         truncated = True
-        logger.warning(
-            f"NSFW enable: truncated from {original_count} to {max_tokens} tokens"
-        )
+        logger.warning(f"NSFW enable: truncated from {original_count} to {max_tokens} tokens")
 
     max_concurrent = get_config("performance.nsfw_max_concurrent", 10)
     batch_size = get_config("performance.nsfw_batch_size", 50)
@@ -1652,9 +1592,7 @@ async def enable_nsfw_api_async(data: dict):
             }
             warning = None
             if truncated:
-                warning = (
-                    f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
-                )
+                warning = f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
             task.finish(result, warning=warning)
         except Exception as e:
             task.fail_task(str(e))
@@ -1706,9 +1644,7 @@ async def get_cache_stats_api(request: Request):
         accounts = []
         for pool_name, pool in pools.items():
             for info in pool.list():
-                raw_token = (
-                    info.token[4:] if info.token.startswith("sso=") else info.token
-                )
+                raw_token = info.token[4:] if info.token.startswith("sso=") else info.token
                 masked = mask_token(raw_token, suffix=16)
                 accounts.append(
                     {
@@ -1880,9 +1816,7 @@ async def get_cache_stats_api(request: Request):
                         "status": "ok",
                         "token": token,
                         "token_masked": match["token_masked"] if match else token,
-                        "last_asset_clear_at": (
-                            match["last_asset_clear_at"] if match else None
-                        ),
+                        "last_asset_clear_at": (match["last_asset_clear_at"] if match else None),
                     }
                 except Exception as e:
                     match = next((a for a in accounts if a["token"] == token), None)
@@ -1891,9 +1825,7 @@ async def get_cache_stats_api(request: Request):
                         "status": f"error: {str(e)}",
                         "token": token,
                         "token_masked": match["token_masked"] if match else token,
-                        "last_asset_clear_at": (
-                            match["last_asset_clear_at"] if match else None
-                        ),
+                        "last_asset_clear_at": (match["last_asset_clear_at"] if match else None),
                     }
             else:
                 online_stats = {
@@ -1921,9 +1853,7 @@ async def get_cache_stats_api(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post(
-    "/api/v1/admin/cache/online/load/async", dependencies=[Depends(verify_admin_access)]
-)
+@router.post("/api/v1/admin/cache/online/load/async", dependencies=[Depends(verify_admin_access)])
 async def load_online_cache_api_async(data: dict):
     """在线资产统计（异步批量 + SSE 进度）"""
     from app.services.grok.assets import DownloadService, ListService
@@ -2061,9 +1991,7 @@ async def load_online_cache_api_async(data: dict):
             }
             warning = None
             if truncated:
-                warning = (
-                    f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
-                )
+                warning = f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
             task.finish(result, warning=warning)
         except Exception as e:
             task.fail_task(str(e))
@@ -2117,9 +2045,7 @@ async def list_local_cache_api(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post(
-    "/api/v1/admin/cache/item/delete", dependencies=[Depends(verify_admin_access)]
-)
+@router.post("/api/v1/admin/cache/item/delete", dependencies=[Depends(verify_admin_access)])
 async def delete_local_cache_item_api(data: dict):
     """删除单个本地缓存文件"""
     from app.services.grok.assets import DownloadService
@@ -2137,9 +2063,7 @@ async def delete_local_cache_item_api(data: dict):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post(
-    "/api/v1/admin/cache/online/clear", dependencies=[Depends(verify_admin_access)]
-)
+@router.post("/api/v1/admin/cache/online/clear", dependencies=[Depends(verify_admin_access)])
 async def clear_online_cache_api(data: dict):
     """清理在线缓存"""
     from app.services.grok.assets import DeleteService
@@ -2215,9 +2139,7 @@ async def clear_online_cache_api(data: dict):
 
         token = data.get("token") or mgr.get_token()
         if not token:
-            raise HTTPException(
-                status_code=400, detail="No available token to perform cleanup"
-            )
+            raise HTTPException(status_code=400, detail="No available token to perform cleanup")
 
         result = await delete_service.delete_all(token)
         await mgr.mark_asset_clear(token)
@@ -2319,9 +2241,7 @@ async def clear_online_cache_api_async(data: dict):
             }
             warning = None
             if truncated:
-                warning = (
-                    f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
-                )
+                warning = f"数量超出限制，仅处理前 {max_tokens} 个（共 {original_count} 个）"
             task.finish(result, warning=warning)
         except Exception as e:
             task.fail_task(str(e))
@@ -2458,9 +2378,7 @@ async def batch_create_keys_api(request: Request):
     return {"status": "success", "data": new_keys}
 
 
-@router.patch(
-    "/api/v1/admin/keys/{key_id}", dependencies=[Depends(verify_admin_access)]
-)
+@router.patch("/api/v1/admin/keys/{key_id}", dependencies=[Depends(verify_admin_access)])
 async def update_key_api(key_id: str, request: Request):
     """更新 API Key"""
     from app.services.api_keys import api_key_manager
@@ -2475,9 +2393,7 @@ async def update_key_api(key_id: str, request: Request):
     raise HTTPException(status_code=404, detail="Key not found")
 
 
-@router.delete(
-    "/api/v1/admin/keys/{key_id}", dependencies=[Depends(verify_admin_access)]
-)
+@router.delete("/api/v1/admin/keys/{key_id}", dependencies=[Depends(verify_admin_access)])
 async def delete_key_api(key_id: str):
     """删除 API Key"""
     from app.services.api_keys import api_key_manager

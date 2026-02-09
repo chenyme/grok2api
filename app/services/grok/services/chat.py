@@ -167,9 +167,7 @@ class MessageExtractor:
                     break
             prompt = last_user_text or message.strip()
             prefix = (
-                "Image Edit"
-                if any(t == "image" for t, _ in attachments)
-                else "Image Generation"
+                "Image Edit" if any(t == "image" for t, _ in attachments) else "Image Generation"
             )
             message = f"{prefix}:{prompt}"
 
@@ -508,16 +506,8 @@ class GrokChatService:
             finally:
                 await upload_service.close()
 
-        stream = (
-            request.stream
-            if request.stream is not None
-            else get_config("chat.stream", True)
-        )
-        think = (
-            request.think
-            if request.think is not None
-            else get_config("chat.thinking", False)
-        )
+        stream = request.stream if request.stream is not None else get_config("chat.stream", True)
+        think = request.think if request.think is not None else get_config("chat.thinking", False)
 
         response = await self.chat(
             token,
@@ -705,9 +695,7 @@ class ChatService:
         is_stream = stream if stream is not None else get_config("chat.stream", True)
 
         # 构造请求
-        chat_request = ChatRequest(
-            model=model, messages=messages, stream=is_stream, think=think
-        )
+        chat_request = ChatRequest(model=model, messages=messages, stream=is_stream, think=think)
 
         # 请求 Grok
         service = GrokChatService()

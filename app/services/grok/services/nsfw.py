@@ -100,9 +100,7 @@ class NSFWService:
         protobuf = b"\x0a\x02\x10\x01\x12" + bytes([len(inner)]) + inner
         return encode_grpc_web_payload(protobuf)
 
-    async def _set_birth_date(
-        self, session, token: str
-    ) -> tuple[bool, int, Optional[str]]:
+    async def _set_birth_date(self, session, token: str) -> tuple[bool, int, Optional[str]]:
         """设置出生日期"""
         headers = self._build_birth_headers(token)
         payload = {"birthDate": self._random_birth_date()}

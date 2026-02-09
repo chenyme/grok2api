@@ -75,7 +75,7 @@ def _is_from_trusted_proxy(request: Request) -> bool:
     trusted = trusted_proxy_ips()
     if "*" in trusted:
         logger.warning(
-            "Wildcard trusted_proxy_ips detected - all proxies trusted. " "Restrict in production."
+            "Wildcard trusted_proxy_ips detected - all proxies trusted. Restrict in production."
         )
         return True
     return str(request.client.host) in trusted

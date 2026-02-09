@@ -129,9 +129,7 @@ class RequestStats(AsyncJsonStore):
             dt = now - timedelta(hours=i)
             key = dt.strftime("%Y-%m-%dT%H")
             data = self._hourly.get(key, {"total": 0, "success": 0, "failed": 0})
-            hourly_data.append(
-                {"hour": dt.strftime("%H:00"), "date": dt.strftime("%m-%d"), **data}
-            )
+            hourly_data.append({"hour": dt.strftime("%H:00"), "date": dt.strftime("%m-%d"), **data})
 
         daily_data = []
         for i in range(days - 1, -1, -1):
@@ -155,9 +153,7 @@ class RequestStats(AsyncJsonStore):
                 "success": total_success,
                 "failed": total_failed,
                 "success_rate": (
-                    round(total_success / total_requests * 100, 1)
-                    if total_requests > 0
-                    else 0
+                    round(total_success / total_requests * 100, 1) if total_requests > 0 else 0
                 ),
             },
         }

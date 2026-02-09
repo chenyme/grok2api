@@ -160,9 +160,7 @@ class ApiKeyManager:
             return True
         return False
 
-    async def update_key(
-        self, key_id: str, name: str = None, enabled: bool = None
-    ) -> bool:
+    async def update_key(self, key_id: str, name: str = None, enabled: bool = None) -> bool:
         """更新 Key"""
         for k in self._keys:
             if k["id"] == key_id:
@@ -192,11 +190,7 @@ class ApiKeyManager:
         key_hash = _hash_key(key)
         for k in self._keys:
             stored_hash = k.get("key_hash", "")
-            if (
-                stored_hash
-                and _safe_str_eq(key_hash, stored_hash)
-                and k.get("enabled", True)
-            ):
+            if stored_hash and _safe_str_eq(key_hash, stored_hash) and k.get("enabled", True):
                 return {**k, "is_admin": False}
 
         return None
