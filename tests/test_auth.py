@@ -90,10 +90,11 @@ def test_admin_access_with_api_key_and_custom_key():
         res = client.get("/secure", headers={"Authorization": "Bearer adminkey"})
         assert res.status_code == 200
 
+        # 普通 custom key（非 admin）不能访问 admin 端点（RBAC 修复）
         api_key_manager._keys = [{"key": "sk-123", "name": "k", "enabled": True}]
         config._config = {"app": {"app_password": "", "api_key": ""}}
         res = client.get("/secure", headers={"Authorization": "Bearer sk-123"})
-        assert res.status_code == 200
+        assert res.status_code == 401
     finally:
         config._config = cfg_backup
         _restore_api_keys(api_backup)

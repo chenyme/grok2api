@@ -241,6 +241,6 @@ def test_sanitize_config_redacts_sensitive_keys():
 
     sanitized = _sanitize_config_payload(raw)
 
-    # api_key 已加入非敏感白名单，不再脱敏
-    assert sanitized["app"]["api_key"] == "sk-abc"
+    # api_key 是敏感字段，必须脱敏（Phase 1 安全修复）
+    assert sanitized["app"]["api_key"] == _REDACTED_VALUE
     assert sanitized["security"]["cf_clearance"] == _REDACTED_VALUE
