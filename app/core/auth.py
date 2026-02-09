@@ -2,11 +2,14 @@
 API 认证模块
 """
 
+import secrets
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, status, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import get_config
+from app.core.logger import logger
+from app.core.network import trusted_proxy_ips
 
 DEFAULT_API_KEY = ""
 DEFAULT_APP_PASSWORD = ""
@@ -57,29 +60,25 @@ async def validate_admin_token(token: str) -> bool:
     if not (app_password or api_key or has_custom_keys):
         return _allow_anonymous_admin()
 
-    if app_password and token == app_password:
+    if app_password and secrets.compare_digest(token, app_password):
         return True
 
     key_info = api_key_manager.validate_key(token)
-    return bool(key_info)
-
-
-def _trusted_proxy_ips() -> set[str]:
-    raw = get_config("security.trusted_proxy_ips", ["127.0.0.1", "::1"])
-    if isinstance(raw, str):
-        values = [item.strip() for item in raw.split(",") if item.strip()]
-    elif isinstance(raw, list):
-        values = [str(item).strip() for item in raw if str(item).strip()]
-    else:
-        values = ["127.0.0.1", "::1"]
-    return set(values)
+    if not key_info:
+        return False
+    return bool(key_info.get("is_admin", False))
 
 
 def _is_from_trusted_proxy(request: Request) -> bool:
     if not request.client:
         return False
-    trusted = _trusted_proxy_ips()
-    return "*" in trusted or str(request.client.host) in trusted
+    trusted = trusted_proxy_ips()
+    if "*" in trusted:
+        logger.warning(
+            "Wildcard trusted_proxy_ips detected - all proxies trusted. " "Restrict in production."
+        )
+        return True
+    return str(request.client.host) in trusted
 
 
 def get_client_ip(request: Request) -> str:
@@ -245,7 +244,7 @@ async def verify_app_password(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if auth.credentials != app_password:
+    if not secrets.compare_digest(auth.credentials, app_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",

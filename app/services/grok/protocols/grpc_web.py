@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Mapping, Tuple
 from urllib.parse import unquote
 
+from loguru import logger
+
 _B64_RE = re.compile(rb"^[A-Za-z0-9+/=\r\n]+$")
 
 
@@ -84,6 +86,10 @@ def parse_grpc_web_response(
     n = len(decoded)
     while i < n:
         if n - i < 5:
+            logger.warning(
+                "gRPC-Web 帧头截断: 剩余 {} 字节不足 5 字节帧头, 丢弃尾部数据",
+                n - i,
+            )
             break
 
         flag = decoded[i]
@@ -91,6 +97,12 @@ def parse_grpc_web_response(
         i += 5
 
         if n - i < length:
+            logger.warning(
+                "gRPC-Web 帧体截断: 声明长度={}, 实际剩余={}, flag=0x{:02x}",
+                length,
+                n - i,
+                flag,
+            )
             break
 
         payload = decoded[i : i + length]

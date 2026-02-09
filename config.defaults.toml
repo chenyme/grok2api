@@ -132,3 +132,11 @@ hourly_retention = 48
 daily_retention = 30
 log_max_entries = 1000
 flush_interval_sec = 2
+
+# ==================== 语音 ====================
+[voice]
+livekit_url = ""
+
+# ==================== 存储 ====================
+[storage]
+type = "local"

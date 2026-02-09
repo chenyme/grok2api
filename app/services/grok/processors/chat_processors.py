@@ -276,13 +276,13 @@ class CollectProcessor(BaseProcessor):
 
                 if mr := resp.get("modelResponse"):
                     response_id = mr.get("responseId", "")
-                    content = mr.get("message", "")
+                    parts = [mr.get("message", "")]
 
                     if urls := _collect_image_urls(mr):
-                        content += "\n"
+                        parts.append("\n")
                         for url in urls:
-                            parts = url.split("/")
-                            img_id = parts[-2] if len(parts) >= 2 else "image"
+                            segments = url.split("/")
+                            img_id = segments[-2] if len(segments) >= 2 else "image"
 
                             if self.image_format == "base64":
                                 try:
@@ -291,22 +291,24 @@ class CollectProcessor(BaseProcessor):
                                         url, self.token, "image"
                                     )
                                     if base64_data:
-                                        content += f"![{img_id}]({base64_data})\n"
+                                        parts.append(f"![{img_id}]({base64_data})\n")
                                     else:
                                         final_url = await self.process_url(url, "image")
                                         if final_url:
-                                            content += f"![{img_id}]({final_url})\n"
+                                            parts.append(f"![{img_id}]({final_url})\n")
                                 except Exception as e:
                                     logger.warning(
                                         f"Failed to convert image to base64, falling back to URL: {e}"
                                     )
                                     final_url = await self.process_url(url, "image")
                                     if final_url:
-                                        content += f"![{img_id}]({final_url})\n"
+                                        parts.append(f"![{img_id}]({final_url})\n")
                             else:
                                 final_url = await self.process_url(url, "image")
                                 if final_url:
-                                    content += f"![{img_id}]({final_url})\n"
+                                    parts.append(f"![{img_id}]({final_url})\n")
+
+                    content = "".join(parts)
 
                     if (meta := mr.get("metadata", {})).get("llm_info", {}).get("modelHash"):
                         fingerprint = meta["llm_info"]["modelHash"]
@@ -314,17 +316,35 @@ class CollectProcessor(BaseProcessor):
         except asyncio.CancelledError:
             logger.debug("Collect cancelled by client", extra={"model": self.model})
         except StreamIdleTimeoutError as e:
-            logger.warning(f"Collect idle timeout: {e}", extra={"model": self.model})
+            raise UpstreamException(
+                message=f"Collect idle timeout after {e.idle_seconds}s",
+                status_code=504,
+                details={
+                    "error": str(e),
+                    "type": "stream_idle_timeout",
+                    "idle_seconds": e.idle_seconds,
+                },
+            )
         except RequestsError as e:
             if _is_http2_stream_error(e):
                 logger.warning(f"HTTP/2 stream error in collect: {e}", extra={"model": self.model})
-            else:
-                logger.error(f"Collect request error: {e}", extra={"model": self.model})
+                raise UpstreamException(
+                    message="Upstream connection closed unexpectedly",
+                    status_code=502,
+                    details={"error": str(e), "type": "http2_stream_error"},
+                )
+            logger.error(f"Collect request error: {e}", extra={"model": self.model})
+            raise UpstreamException(
+                message=f"Upstream request failed: {e}",
+                status_code=502,
+                details={"error": str(e)},
+            )
         except Exception as e:
             logger.error(
                 f"Collect processing error: {e}",
                 extra={"model": self.model, "error_type": type(e).__name__},
             )
+            raise
         finally:
             await self.close()
 

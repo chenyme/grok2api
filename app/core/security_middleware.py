@@ -13,6 +13,7 @@ from urllib.parse import parse_qs
 from app.core.config import get_config
 from app.core.exceptions import ErrorType, error_response
 from app.core.logger import logger
+from app.core.network import trusted_proxy_ips
 
 
 class _BodyTooLarge(Exception):
@@ -79,23 +80,12 @@ def _get_header(scope, name: str) -> str:
     return ""
 
 
-def _trusted_proxy_ips() -> set[str]:
-    raw = get_config("security.trusted_proxy_ips", ["127.0.0.1", "::1"])
-    if isinstance(raw, str):
-        values = [item.strip() for item in raw.split(",") if item.strip()]
-    elif isinstance(raw, list):
-        values = [str(item).strip() for item in raw if str(item).strip()]
-    else:
-        values = ["127.0.0.1", "::1"]
-    return set(values)
-
-
 def _is_trusted_proxy(scope) -> bool:
     client = scope.get("client")
     if not (client and isinstance(client, (tuple, list)) and client):
         return False
     remote_ip = str(client[0])
-    trusted = _trusted_proxy_ips()
+    trusted = trusted_proxy_ips()
     return "*" in trusted or remote_ip in trusted
 
 

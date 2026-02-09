@@ -100,7 +100,7 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
         response_format: str = "b64_json",
         size: str = "1024x1024",
     ):
-        super().__init__(model, token, "b64_json")
+        super().__init__(model, token, response_format)
         self.n = n
         self.size = size
         self._target_id: Optional[str] = None

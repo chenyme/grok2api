@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 
 # 默认配额
-BASIC__DEFAULT_QUOTA = 80
+BASIC_DEFAULT_QUOTA = 80
 SUPER_DEFAULT_QUOTA = 140
 
 # 失败阈值
@@ -48,7 +48,7 @@ class TokenInfo(BaseModel):
 
     token: str
     status: TokenStatus = TokenStatus.ACTIVE
-    quota: int = BASIC__DEFAULT_QUOTA
+    quota: int = BASIC_DEFAULT_QUOTA
 
     # 统计
     created_at: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
@@ -119,7 +119,7 @@ class TokenInfo(BaseModel):
 
     def reset(self, default_quota: Optional[int] = None):
         """重置配额到默认值"""
-        quota = BASIC__DEFAULT_QUOTA if default_quota is None else default_quota
+        quota = BASIC_DEFAULT_QUOTA if default_quota is None else default_quota
         self.quota = max(0, int(quota))
         self.status = TokenStatus.ACTIVE
         self.fail_count = 0
@@ -188,7 +188,7 @@ __all__ = [
     "TokenPoolStats",
     "EffortType",
     "EFFORT_COST",
-    "BASIC__DEFAULT_QUOTA",
+    "BASIC_DEFAULT_QUOTA",
     "SUPER_DEFAULT_QUOTA",
     "FAIL_THRESHOLD",
 ]
