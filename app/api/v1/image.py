@@ -89,21 +89,24 @@ def _validate_common_request(
         )
 
     if allow_ws_stream:
-        # WS 流式仅支持 b64_json (base64 视为同义)
+        # WS 流式仅支持 b64_json
         if (
             request.stream
-            and get_config("image.image_ws")
+            and (
+                get_config("image.image_ws")
+                or getattr(request, "model", None) == "grok-superimage-1.0"
+            )
             and request.response_format
-            and request.response_format not in {"b64_json", "base64"}
+            and request.response_format not in {"b64_json"}
         ):
             raise ValidationException(
-                message="Streaming with image_ws only supports response_format=b64_json/base64",
+                message="Streaming with image_ws only supports response_format=b64_json",
                 param="response_format",
                 code="invalid_response_format",
             )
 
     if request.response_format:
-        allowed_formats = {"b64_json", "base64", "url"}
+        allowed_formats = {"b64_json", "url"}
         if request.response_format not in allowed_formats:
             raise ValidationException(
                 message=f"response_format must be one of {sorted(allowed_formats)}",
@@ -114,9 +117,13 @@ def _validate_common_request(
 
 def validate_generation_request(request: ImageGenerationRequest):
     """验证图片生成请求参数"""
-    if request.model != "grok-imagine-1.0":
+    supported_models = {"grok-imagine-1.0", "grok-superimage-1.0"}
+    if request.model not in supported_models:
         raise ValidationException(
-            message="The model `grok-imagine-1.0` is required for image generation.",
+            message=(
+                "The model must be one of "
+                f"{sorted(supported_models)} for image generation."
+            ),
             param="model",
             code="model_not_supported",
         )
@@ -141,10 +148,10 @@ def resolve_response_format(response_format: Optional[str]) -> str:
     fmt = response_format or get_config("app.image_format")
     if isinstance(fmt, str):
         fmt = fmt.lower()
-    if fmt in ("b64_json", "base64", "url"):
+    if fmt in ("b64_json", "url"):
         return fmt
     raise ValidationException(
-        message="response_format must be one of b64_json, base64, url",
+        message="response_format must be one of b64_json, url",
         param="response_format",
         code="invalid_response_format",
     )
@@ -152,7 +159,7 @@ def resolve_response_format(response_format: Optional[str]) -> str:
 
 def response_field_name(response_format: str) -> str:
     """获取响应字段名"""
-    return {"url": "url", "base64": "base64"}.get(response_format, "b64_json")
+    return {"url": "url"}.get(response_format, "b64_json")
 
 
 def resolve_aspect_ratio(size: str) -> str:
@@ -177,6 +184,13 @@ def resolve_aspect_ratio(size: str) -> str:
         "1024x768": "3:2",
     }
     return mapping.get(size) or "2:3"
+
+
+def should_use_ws_for_generation(model: str) -> bool:
+    """是否使用 WebSocket 图像生成通道"""
+    if model == "grok-superimage-1.0":
+        return True
+    return bool(get_config("image.image_ws"))
 
 
 def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
@@ -304,23 +318,19 @@ async def create_image(request: ImageGenerationRequest):
     if request.stream is None:
         request.stream = False
 
-    if request.response_format is None:
-        request.response_format = resolve_response_format(None)
+    configured_response_format = resolve_response_format(None)
+    request.response_format = configured_response_format
 
     # 参数验证
     validate_generation_request(request)
 
-    # 兼容 base64/b64_json
-    if request.response_format == "base64":
-        request.response_format = "b64_json"
-
-    response_format = resolve_response_format(request.response_format)
+    response_format = configured_response_format
     response_field = response_field_name(response_format)
 
     # 获取 token 和模型信息
     token_mgr, token = await _get_token(request.model)
     model_info = ModelService.get(request.model)
-    use_ws = bool(get_config("image.image_ws"))
+    use_ws = should_use_ws_for_generation(request.model)
 
     # 流式模式
     if request.stream:
@@ -507,8 +517,7 @@ async def edit_image(
 
     同官方 API 格式，仅支持 multipart/form-data 文件上传
     """
-    if response_format is None:
-        response_format = resolve_response_format(None)
+    response_format = resolve_response_format(None)
 
     try:
         edit_request = ImageEditRequest(
