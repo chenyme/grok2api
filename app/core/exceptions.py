@@ -35,7 +35,17 @@ def error_response(
     code: str = None,
 ) -> dict:
     """构建 OpenAI 错误响应"""
-    return {"error": {"message": message, "type": error_type, "param": param, "code": code}}
+    return {
+        "error": {"message": message, "type": error_type, "param": param, "code": code}
+    }
+
+
+def _attach_trace_id(request: Request, response: JSONResponse) -> JSONResponse:
+    """将 request.state.trace_id 附加到响应头 X-Request-ID（如有）。"""
+    trace_id = getattr(getattr(request, "state", None), "trace_id", "")
+    if trace_id:
+        response.headers["X-Request-ID"] = trace_id
+    return response
 
 
 # ============= 异常类 =============
@@ -105,13 +115,16 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
     """处理应用异常"""
     logger.warning(f"AppException: {exc.error_type} - {exc.message}")
 
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=error_response(
-            message=exc.message,
-            error_type=exc.error_type,
-            param=exc.param,
-            code=exc.code,
+    return _attach_trace_id(
+        request,
+        JSONResponse(
+            status_code=exc.status_code,
+            content=error_response(
+                message=exc.message,
+                error_type=exc.error_type,
+                param=exc.param,
+                code=exc.code,
+            ),
         ),
     )
 
@@ -138,9 +151,14 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
     logger.warning(f"HTTPException: {exc.status_code} - {exc.detail}")
 
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=error_response(message=str(exc.detail), error_type=error_type, code=code),
+    return _attach_trace_id(
+        request,
+        JSONResponse(
+            status_code=exc.status_code,
+            content=error_response(
+                message=str(exc.detail), error_type=error_type, code=code
+            ),
+        ),
     )
 
 
@@ -158,12 +176,12 @@ async def validation_exception_handler(
 
         # JSON 解析错误
         if code == "json_invalid" or "JSON" in msg:
-            message = (
-                "Invalid JSON in request body. Please check for trailing commas or syntax errors."
-            )
+            message = "Invalid JSON in request body. Please check for trailing commas or syntax errors."
             param = "body"
         else:
-            param_parts = [str(x) for x in loc if not (isinstance(x, int) or str(x).isdigit())]
+            param_parts = [
+                str(x) for x in loc if not (isinstance(x, int) or str(x).isdigit())
+            ]
             param = ".".join(param_parts) if param_parts else None
             message = msg
     else:
@@ -171,13 +189,16 @@ async def validation_exception_handler(
 
     logger.warning(f"ValidationError: {param} - {message}")
 
-    return JSONResponse(
-        status_code=400,
-        content=error_response(
-            message=message,
-            error_type=ErrorType.INVALID_REQUEST.value,
-            param=param,
-            code=code,
+    return _attach_trace_id(
+        request,
+        JSONResponse(
+            status_code=400,
+            content=error_response(
+                message=message,
+                error_type=ErrorType.INVALID_REQUEST.value,
+                param=param,
+                code=code,
+            ),
         ),
     )
 
@@ -186,12 +207,15 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     """处理未捕获异常"""
     logger.exception(f"Unhandled: {type(exc).__name__}: {str(exc)}")
 
-    return JSONResponse(
-        status_code=500,
-        content=error_response(
-            message="Internal server error",
-            error_type=ErrorType.SERVER.value,
-            code="internal_error",
+    return _attach_trace_id(
+        request,
+        JSONResponse(
+            status_code=500,
+            content=error_response(
+                message="Internal server error",
+                error_type=ErrorType.SERVER.value,
+                code="internal_error",
+            ),
         ),
     )
 

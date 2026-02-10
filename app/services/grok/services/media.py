@@ -260,8 +260,15 @@ class VideoService:
             logger.info(f"Video generation started: post_id={post_id}")
 
             async def stream_response():
-                async for line in response.aiter_lines():
-                    yield line
+                try:
+                    async for line in response.aiter_lines():
+                        yield line
+                finally:
+                    if hasattr(response, "aclose"):
+                        try:
+                            await response.aclose()
+                        except Exception:
+                            pass
 
             return stream_response()
 
