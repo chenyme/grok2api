@@ -249,9 +249,7 @@ class RedisStorage(BaseStorage):
 
         # 显式配置连接池
         # 使用 decode_responses=True 简化字符串处理，但在处理复杂对象时使用 orjson
-        self.redis = aioredis.from_url(
-            url, decode_responses=True, health_check_interval=30
-        )
+        self.redis = aioredis.from_url(url, decode_responses=True, health_check_interval=30)
         self.config_key = "grok2api:config"  # Hash: section.key -> value_json
         self.key_pools = "grok2api:pools"  # Set: pool_names
         self.prefix_pool_set = "grok2api:pool:"  # Set: pool -> token_ids
@@ -473,16 +471,12 @@ class RedisStorage(BaseStorage):
                         if "tags" in t_flat:
                             t_flat["tags"] = json_dumps(t_flat["tags"])
                         status = t_flat.get("status")
-                        if isinstance(status, str) and status.startswith(
-                            "TokenStatus."
-                        ):
+                        if isinstance(status, str) and status.startswith("TokenStatus."):
                             t_flat["status"] = status.split(".", 1)[1].lower()
                         elif isinstance(status, Enum):
                             t_flat["status"] = status.value
                         t_flat = {k: str(v) for k, v in t_flat.items() if v is not None}
-                        pipe.hset(
-                            f"{self.prefix_token_hash}{token_str}", mapping=t_flat
-                        )
+                        pipe.hset(f"{self.prefix_token_hash}{token_str}", mapping=t_flat)
 
                 await pipe.execute()
 
@@ -562,9 +556,7 @@ class RedisStorage(BaseStorage):
         now = str(int(time.time() * 1000))
 
         try:
-            result = await self.redis.eval(
-                self.CONSUME_QUOTA_SCRIPT, 1, key, str(amount), now
-            )
+            result = await self.redis.eval(self.CONSUME_QUOTA_SCRIPT, 1, key, str(amount), now)
             success = result[0] == 1
             new_quota = int(result[1])
             status = result[2]
@@ -593,9 +585,7 @@ class RedisStorage(BaseStorage):
         except Exception as e:
             logger.error(f"RedisStorage: atomic_update_field 失败: {e}")
 
-    async def atomic_incr_field(
-        self, token_id: str, field: str, amount: int = 1
-    ) -> int:
+    async def atomic_incr_field(self, token_id: str, field: str, amount: int = 1) -> int:
         """原子递增字段"""
         key = f"{self.prefix_token_hash}{token_id}"
         try:
@@ -679,9 +669,7 @@ class SQLStorage(BaseStorage):
         try:
             from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
         except ImportError:
-            raise ImportError(
-                "需要安装 sqlalchemy 和 async 驱动: pip install sqlalchemy[asyncio]"
-            )
+            raise ImportError("需要安装 sqlalchemy 和 async 驱动: pip install sqlalchemy[asyncio]")
 
         self.dialect = url.split(":", 1)[0].split("+", 1)[0].lower()
 
@@ -706,49 +694,45 @@ class SQLStorage(BaseStorage):
                 from sqlalchemy import text
 
                 # Tokens 表 (通用 SQL)
-                await conn.execute(text("""
+                await conn.execute(
+                    text("""
                     CREATE TABLE IF NOT EXISTS tokens (
                         token VARCHAR(512) PRIMARY KEY,
                         pool_name VARCHAR(64) NOT NULL,
                         data TEXT,
                         updated_at BIGINT
                     )
-                """))
+                """)
+                )
 
                 # 配置表
-                await conn.execute(text("""
+                await conn.execute(
+                    text("""
                     CREATE TABLE IF NOT EXISTS app_config (
                         section VARCHAR(64) NOT NULL,
                         key_name VARCHAR(64) NOT NULL,
                         value TEXT,
                         PRIMARY KEY (section, key_name)
                     )
-                """))
+                """)
+                )
 
                 # 索引
                 try:
-                    await conn.execute(
-                        text("CREATE INDEX idx_tokens_pool ON tokens (pool_name)")
-                    )
+                    await conn.execute(text("CREATE INDEX idx_tokens_pool ON tokens (pool_name)"))
                 except Exception:
                     pass
 
                 # 尝试兼容旧表结构
                 try:
                     if self.dialect in ("mysql", "mariadb"):
-                        await conn.execute(
-                            text("ALTER TABLE tokens MODIFY token VARCHAR(512)")
-                        )
+                        await conn.execute(text("ALTER TABLE tokens MODIFY token VARCHAR(512)"))
                         await conn.execute(text("ALTER TABLE tokens MODIFY data TEXT"))
                     elif self.dialect in ("postgres", "postgresql", "pgsql"):
                         await conn.execute(
-                            text(
-                                "ALTER TABLE tokens ALTER COLUMN token TYPE VARCHAR(512)"
-                            )
+                            text("ALTER TABLE tokens ALTER COLUMN token TYPE VARCHAR(512)")
                         )
-                        await conn.execute(
-                            text("ALTER TABLE tokens ALTER COLUMN data TYPE TEXT")
-                        )
+                        await conn.execute(text("ALTER TABLE tokens ALTER COLUMN data TYPE TEXT"))
                 except Exception:
                     pass
 
@@ -816,9 +800,7 @@ class SQLStorage(BaseStorage):
 
         try:
             async with self.async_session() as session:
-                res = await session.execute(
-                    text("SELECT section, key_name, value FROM app_config")
-                )
+                res = await session.execute(text("SELECT section, key_name, value FROM app_config"))
                 rows = res.fetchall()
                 if not rows:
                     return None
@@ -851,9 +833,7 @@ class SQLStorage(BaseStorage):
 
                         # Upsert 逻辑 (简单实现: Delete + Insert)
                         await session.execute(
-                            text(
-                                "DELETE FROM app_config WHERE section=:s AND key_name=:k"
-                            ),
+                            text("DELETE FROM app_config WHERE section=:s AND key_name=:k"),
                             {"s": section, "k": key},
                         )
                         await session.execute(
@@ -915,9 +895,7 @@ class SQLStorage(BaseStorage):
                             "updated_at": 0,
                         }
 
-                res = await session.execute(
-                    text("SELECT token, pool_name, data FROM tokens")
-                )
+                res = await session.execute(text("SELECT token, pool_name, data FROM tokens"))
                 rows = res.fetchall()
                 existing = {}
                 for token_str, pool_name, data_json in rows:

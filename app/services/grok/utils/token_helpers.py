@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from app.core.config import get_config
 from app.core.exceptions import AppException, ErrorType
 from app.core.logger import logger
 from app.services.grok.models.model import ModelService
@@ -42,9 +41,7 @@ async def acquire_token_for_model(
             code="internal_error",
         )
 
-    pool_candidates = pool_priority_override or ModelService.pool_candidates_for_model(
-        model
-    )
+    pool_candidates = pool_priority_override or ModelService.pool_candidates_for_model(model)
     token = None
     for pool_name in pool_candidates:
         token = token_mgr.get_token(pool_name)

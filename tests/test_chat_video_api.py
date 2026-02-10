@@ -646,8 +646,10 @@ def test_video_service_auto_length_uses_super_10s(monkeypatch):
             async def consume(self, token, effort):
                 return None
 
-        async def fake_get_token_manager():
-            return _TokenManager()
+        _mgr = _TokenManager()
+
+        async def fake_acquire(model, pool_priority_override=None):
+            return _mgr, "tok-super", pool_priority_override or ["ssoSuper", "ssoBasic"]
 
         async def fake_generate(
             self,
@@ -680,11 +682,15 @@ def test_video_service_auto_length_uses_super_10s(monkeypatch):
                         "finish_reason": "stop",
                     }
                 ],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             }
 
         monkeypatch.setattr(
-            "app.services.grok.services.media.get_token_manager", fake_get_token_manager
+            "app.services.grok.services.media.acquire_token_for_model", fake_acquire
         )
         monkeypatch.setattr(
             "app.services.grok.services.chat.MessageExtractor.extract",
@@ -692,7 +698,8 @@ def test_video_service_auto_length_uses_super_10s(monkeypatch):
         )
         monkeypatch.setattr("app.services.grok.services.media.VideoService.generate", fake_generate)
         monkeypatch.setattr(
-            "app.services.grok.services.media.VideoCollectProcessor.process", fake_collect
+            "app.services.grok.services.media.VideoCollectProcessor.process",
+            fake_collect,
         )
 
         result = asyncio.run(
@@ -734,8 +741,10 @@ def test_video_service_downgrades_10s_when_only_basic_available(monkeypatch):
             async def consume(self, token, effort):
                 return None
 
-        async def fake_get_token_manager():
-            return _TokenManager()
+        _mgr = _TokenManager()
+
+        async def fake_acquire(model, pool_priority_override=None):
+            return _mgr, "tok-basic", pool_priority_override or ["ssoSuper", "ssoBasic"]
 
         async def fake_generate(
             self,
@@ -768,11 +777,15 @@ def test_video_service_downgrades_10s_when_only_basic_available(monkeypatch):
                         "finish_reason": "stop",
                     }
                 ],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             }
 
         monkeypatch.setattr(
-            "app.services.grok.services.media.get_token_manager", fake_get_token_manager
+            "app.services.grok.services.media.acquire_token_for_model", fake_acquire
         )
         monkeypatch.setattr(
             "app.services.grok.services.chat.MessageExtractor.extract",
@@ -780,7 +793,8 @@ def test_video_service_downgrades_10s_when_only_basic_available(monkeypatch):
         )
         monkeypatch.setattr("app.services.grok.services.media.VideoService.generate", fake_generate)
         monkeypatch.setattr(
-            "app.services.grok.services.media.VideoCollectProcessor.process", fake_collect
+            "app.services.grok.services.media.VideoCollectProcessor.process",
+            fake_collect,
         )
 
         result = asyncio.run(

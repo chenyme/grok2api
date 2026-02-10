@@ -31,9 +31,7 @@ def _make_app() -> FastAPI:
 def test_body_size_limit_rejects_large():
     original = copy.deepcopy(config._config)
     try:
-        config._config = {
-            "security": {"max_body_size_mb": 0.0001, "rate_limit_enabled": False}
-        }
+        config._config = {"security": {"max_body_size_mb": 0.0001, "rate_limit_enabled": False}}
         app = _make_app()
         client = TestClient(app)
         res = client.post("/echo", content=b"a" * 1024)

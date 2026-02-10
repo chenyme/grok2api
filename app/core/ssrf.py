@@ -32,16 +32,12 @@ async def is_safe_url(url: str) -> bool:
             return False
 
         loop = asyncio.get_running_loop()
-        addr_infos = await loop.getaddrinfo(
-            hostname, parsed.port or 80, proto=socket.IPPROTO_TCP
-        )
+        addr_infos = await loop.getaddrinfo(hostname, parsed.port or 80, proto=socket.IPPROTO_TCP)
         for _family, _type, _proto, _canonname, sockaddr in addr_infos:
             ip_str = sockaddr[0]
             ip = ipaddress.ip_address(ip_str)
             if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                logger.warning(
-                    f"[SSRF] {hostname} resolves to private address {ip_str}"
-                )
+                logger.warning(f"[SSRF] {hostname} resolves to private address {ip_str}")
                 return False
         return True
     except (socket.gaierror, ValueError, OSError) as e:

@@ -35,9 +35,7 @@ def error_response(
     code: str = None,
 ) -> dict:
     """构建 OpenAI 错误响应"""
-    return {
-        "error": {"message": message, "type": error_type, "param": param, "code": code}
-    }
+    return {"error": {"message": message, "type": error_type, "param": param, "code": code}}
 
 
 def _attach_trace_id(request: Request, response: JSONResponse) -> JSONResponse:
@@ -155,9 +153,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         request,
         JSONResponse(
             status_code=exc.status_code,
-            content=error_response(
-                message=str(exc.detail), error_type=error_type, code=code
-            ),
+            content=error_response(message=str(exc.detail), error_type=error_type, code=code),
         ),
     )
 
@@ -176,12 +172,12 @@ async def validation_exception_handler(
 
         # JSON 解析错误
         if code == "json_invalid" or "JSON" in msg:
-            message = "Invalid JSON in request body. Please check for trailing commas or syntax errors."
+            message = (
+                "Invalid JSON in request body. Please check for trailing commas or syntax errors."
+            )
             param = "body"
         else:
-            param_parts = [
-                str(x) for x in loc if not (isinstance(x, int) or str(x).isdigit())
-            ]
+            param_parts = [str(x) for x in loc if not (isinstance(x, int) or str(x).isdigit())]
             param = ".".join(param_parts) if param_parts else None
             message = msg
     else:

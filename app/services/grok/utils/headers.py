@@ -60,9 +60,7 @@ def apply_statsig(headers: Dict[str, str]) -> None:
     headers["x-xai-request-id"] = str(uuid.uuid4())
 
 
-def build_grok_headers(
-    token: str, referer: str = "https://grok.com/"
-) -> Dict[str, str]:
+def build_grok_headers(token: str, referer: str = "https://grok.com/") -> Dict[str, str]:
     """构建完整 Grok 请求头（静态 + 动态字段）。"""
     headers = GROK_STATIC_HEADERS.copy()
     headers["User-Agent"] = get_config(

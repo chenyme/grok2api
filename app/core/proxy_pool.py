@@ -21,9 +21,7 @@ class ProxyPool:
         self._enabled: bool = False
         self._lock = asyncio.Lock()
 
-    def configure(
-        self, proxy_url: str, proxy_pool_url: str = "", proxy_pool_interval: int = 300
-    ):
+    def configure(self, proxy_url: str, proxy_pool_url: str = "", proxy_pool_interval: int = 300):
         """配置代理池
 
         Args:
@@ -71,16 +69,10 @@ class ProxyPool:
 
         # 检查是否需要刷新
         now = time.time()
-        if (
-            not self._current_proxy
-            or (now - self._last_fetch_time) >= self._fetch_interval
-        ):
+        if not self._current_proxy or (now - self._last_fetch_time) >= self._fetch_interval:
             async with self._lock:
                 # 双重检查
-                if (
-                    not self._current_proxy
-                    or (now - self._last_fetch_time) >= self._fetch_interval
-                ):
+                if not self._current_proxy or (now - self._last_fetch_time) >= self._fetch_interval:
                     await self._fetch_proxy()
 
         return self._current_proxy
@@ -128,9 +120,7 @@ class ProxyPool:
                             if not self._current_proxy:
                                 self._current_proxy = self._static_proxy
                     else:
-                        logger.error(
-                            f"[ProxyPool] 获取代理失败: HTTP {response.status}"
-                        )
+                        logger.error(f"[ProxyPool] 获取代理失败: HTTP {response.status}")
                         # 降级到静态代理
                         if not self._current_proxy:
                             self._current_proxy = self._static_proxy

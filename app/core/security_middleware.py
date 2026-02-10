@@ -64,9 +64,7 @@ class BodySizeLimitMiddleware:
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
             ]
-            await send(
-                {"type": "http.response.start", "status": 413, "headers": headers}
-            )
+            await send({"type": "http.response.start", "status": 413, "headers": headers})
             await send({"type": "http.response.body", "body": body})
             return
 
@@ -286,9 +284,7 @@ class RateLimitMiddleware:
             except Exception:
                 window_sec = 60
             global_limit = max(1, int(per_minute + burst))
-            allowed = await _redis_rate_limiter.allow(
-                key, global_limit, max(1, window_sec)
-            )
+            allowed = await _redis_rate_limiter.allow(key, global_limit, max(1, window_sec))
 
         if allowed is None:
             now = time.monotonic()
@@ -297,9 +293,7 @@ class RateLimitMiddleware:
         if allowed:
             return await self.app(scope, receive, send)
 
-        logger.warning(
-            "Rate limit exceeded", extra={"path": path, "key": _mask_identifier(key)}
-        )
+        logger.warning("Rate limit exceeded", extra={"path": path, "key": _mask_identifier(key)})
         payload = error_response(
             message="Rate limit exceeded",
             error_type=ErrorType.RATE_LIMIT.value,
