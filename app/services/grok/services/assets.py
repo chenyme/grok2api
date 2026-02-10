@@ -264,6 +264,13 @@ class BaseService:
         if not await is_safe_url(url):
             raise ValidationException(f"URL blocked by SSRF protection: {url}")
 
+        max_size_mb = get_config("security.fetch_max_size_mb", 50)
+        try:
+            max_size_mb = float(max_size_mb)
+        except (TypeError, ValueError):
+            max_size_mb = 50.0
+        max_bytes = int(max_size_mb * 1024 * 1024)
+
         try:
             session = get_shared_session()
             response = await session.get(url, timeout=10)
@@ -273,11 +280,29 @@ class BaseService:
                     details={"url": url, "status": response.status_code},
                 )
 
+            # 检查 Content-Length（如有）
+            content_length = response.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > max_bytes:
+                        raise ValidationException(
+                            f"Remote resource too large: {content_length} bytes (limit {max_bytes})"
+                        )
+                except ValueError:
+                    pass
+
+            # 检查实际 body 大小
+            body = response.content
+            if len(body) > max_bytes:
+                raise ValidationException(
+                    f"Remote resource too large: {len(body)} bytes (limit {max_bytes})"
+                )
+
             filename = url.split("/")[-1].split("?")[0] or "download"
             content_type = response.headers.get(
                 "content-type", "application/octet-stream"
             ).split(";")[0]
-            b64 = base64.b64encode(response.content).decode()
+            b64 = base64.b64encode(body).decode()
 
             logger.debug(f"Fetched: {url}")
             return filename, b64, content_type

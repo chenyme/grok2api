@@ -26,6 +26,7 @@ from app.core.config import get_config  # noqa: E402
 from app.core.logger import logger, setup_logging  # noqa: E402
 from app.core.exceptions import register_exception_handlers  # noqa: E402
 from app.core.response_middleware import ResponseLoggerMiddleware  # noqa: E402
+from app.core.security_headers import SecurityHeadersMiddleware  # noqa: E402
 from app.core.security_middleware import (  # noqa: E402
     BodySizeLimitMiddleware,
     RateLimitMiddleware,
@@ -175,6 +176,7 @@ def create_app() -> FastAPI:
     # 安全中间件
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # 请求日志和 ID 中间件
     app.add_middleware(ResponseLoggerMiddleware)

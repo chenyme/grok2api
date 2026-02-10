@@ -31,6 +31,7 @@ cors_allow_credentials = true
 
 # 请求安全
 max_body_size_mb = 50
+fetch_max_size_mb = 50
 rate_limit_enabled = true
 rate_limit_per_minute = 120
 rate_limit_burst = 60
