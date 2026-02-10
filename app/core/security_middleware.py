@@ -64,7 +64,9 @@ class BodySizeLimitMiddleware:
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
             ]
-            await send({"type": "http.response.start", "status": 413, "headers": headers})
+            await send(
+                {"type": "http.response.start", "status": 413, "headers": headers}
+            )
             await send({"type": "http.response.body", "body": body})
             return
 
@@ -118,6 +120,9 @@ def _get_api_key(scope) -> str:
     auth = _get_header(scope, "authorization")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
+    # 仅在显式允许时读取 query string，防止绕过限速
+    if not get_config("security.allow_query_api_key", False):
+        return ""
     query_string = scope.get("query_string", b"")
     try:
         qs = parse_qs(query_string.decode("latin-1"))
@@ -281,7 +286,9 @@ class RateLimitMiddleware:
             except Exception:
                 window_sec = 60
             global_limit = max(1, int(per_minute + burst))
-            allowed = await _redis_rate_limiter.allow(key, global_limit, max(1, window_sec))
+            allowed = await _redis_rate_limiter.allow(
+                key, global_limit, max(1, window_sec)
+            )
 
         if allowed is None:
             now = time.monotonic()
@@ -290,7 +297,9 @@ class RateLimitMiddleware:
         if allowed:
             return await self.app(scope, receive, send)
 
-        logger.warning("Rate limit exceeded", extra={"path": path, "key": _mask_identifier(key)})
+        logger.warning(
+            "Rate limit exceeded", extra={"path": path, "key": _mask_identifier(key)}
+        )
         payload = error_response(
             message="Rate limit exceeded",
             error_type=ErrorType.RATE_LIMIT.value,
