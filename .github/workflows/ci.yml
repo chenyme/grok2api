@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
   test:
@@ -23,3 +25,6 @@ jobs:
         run: uv run ruff format --check app tests main.py
       - name: Run tests
         run: uv run pytest -q
+      - name: Security audit (pip-audit)
+        continue-on-error: true
+        run: uv run pip-audit --strict
