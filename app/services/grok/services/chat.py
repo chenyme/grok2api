@@ -3,7 +3,6 @@ Grok Chat 服务
 """
 
 import asyncio
-import uuid
 import orjson
 from typing import Dict, List, Any, AsyncGenerator
 from dataclasses import dataclass
@@ -18,15 +17,18 @@ from app.core.exceptions import (
     ValidationException,
     ErrorType,
 )
-from app.services.grok.utils.statsig import StatsigService
 from app.services.grok.models.model import ModelService
 from app.services.grok.services.assets import UploadService
 from app.services.grok.processors import StreamProcessor, CollectProcessor
 from app.services.grok.utils.retry import retry_on_status
-from app.services.token import get_token_manager, EffortType
+from app.services.grok.utils.headers import GROK_CHAT_API, build_grok_headers
+from app.services.grok.utils.token_helpers import (
+    acquire_token_for_model,
+    compute_effort,
+)
+from app.services.token import EffortType
 from app.core.streaming import with_keepalive
 
-CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 TIMEOUT = 120
 BROWSER = "chrome136"
 
@@ -167,7 +169,9 @@ class MessageExtractor:
                     break
             prompt = last_user_text or message.strip()
             prefix = (
-                "Image Edit" if any(t == "image" for t, _ in attachments) else "Image Generation"
+                "Image Edit"
+                if any(t == "image" for t, _ in attachments)
+                else "Image Generation"
             )
             message = f"{prefix}:{prompt}"
 
@@ -183,46 +187,10 @@ class MessageExtractor:
 class ChatRequestBuilder:
     """请求构造器"""
 
-    # 性能优化：缓存静态 headers（不含动态字段）
-    _STATIC_HEADERS = {
-        "Accept": "*/*",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "Baggage": "sentry-environment=production,sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c",
-        "Cache-Control": "no-cache",
-        "Content-Type": "application/json",
-        "Origin": "https://grok.com",
-        "Pragma": "no-cache",
-        "Priority": "u=1, i",
-        "Referer": "https://grok.com/",
-        "Sec-Ch-Ua": '"Google Chrome";v="136", "Chromium";v="136", "Not(A:Brand";v="24"',
-        "Sec-Ch-Ua-Arch": "arm",
-        "Sec-Ch-Ua-Bitness": "64",
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Model": "",
-        "Sec-Ch-Ua-Platform": '"macOS"',
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    }
-
     @staticmethod
     def build_headers(token: str) -> Dict[str, str]:
-        """构造请求头（使用缓存的静态 headers）"""
-        # 复制静态 headers
-        headers = ChatRequestBuilder._STATIC_HEADERS.copy()
-
-        # 添加动态字段
-        headers["x-statsig-id"] = StatsigService.gen_id()
-        headers["x-xai-request-id"] = str(uuid.uuid4())
-
-        # Cookie
-        token = token[4:] if token.startswith("sso=") else token
-        cf = get_config("security.cf_clearance", "")
-        headers["Cookie"] = f"sso={token};cf_clearance={cf}" if cf else f"sso={token}"
-
-        return headers
+        """构造请求头（委托给共享函数）"""
+        return build_grok_headers(token)
 
     # 性能优化：缓存静态 payload 字段
     _STATIC_PAYLOAD = {
@@ -385,7 +353,7 @@ class GrokChatService:
             session = get_shared_session(BROWSER)
             try:
                 response = await session.post(
-                    CHAT_API,
+                    GROK_CHAT_API,
                     headers=headers,
                     data=orjson.dumps(payload),
                     timeout=timeout,
@@ -506,8 +474,16 @@ class GrokChatService:
             finally:
                 await upload_service.close()
 
-        stream = request.stream if request.stream is not None else get_config("chat.stream", True)
-        think = request.think if request.think is not None else get_config("chat.thinking", False)
+        stream = (
+            request.stream
+            if request.stream is not None
+            else get_config("chat.stream", True)
+        )
+        think = (
+            request.think
+            if request.think is not None
+            else get_config("chat.thinking", False)
+        )
 
         response = await self.chat(
             token,
@@ -616,12 +592,7 @@ class ChatService:
             # 只在成功完成时记录使用，失败/异常时不扣费
             if success:
                 try:
-                    model_info = ModelService.get(model)
-                    effort = (
-                        EffortType.HIGH
-                        if (model_info and model_info.cost.value == "high")
-                        else EffortType.LOW
-                    )
+                    effort = compute_effort(model)
                     await token_mgr.consume(token, effort)
                     logger.debug(
                         f"Stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
@@ -655,35 +626,7 @@ class ChatService:
         start_time = time.time()
 
         # 获取 token
-        try:
-            token_mgr = await get_token_manager()
-            await token_mgr.reload_if_stale()
-            token = None
-            pool_candidates = ModelService.pool_candidates_for_model(model)
-            for pool_name in pool_candidates:
-                token = token_mgr.get_token(pool_name)
-                if token:
-                    break
-        except Exception as e:
-            logger.error(f"Failed to get token: {e}")
-            raise AppException(
-                message="Internal service error obtaining token",
-                error_type=ErrorType.SERVER.value,
-                code="internal_error",
-            )
-
-        if not token:
-            pool_hint = (
-                f" Model `{model}` requires Super tier tokens (ssoSuper pool)."
-                if pool_candidates == ["ssoSuper"]
-                else ""
-            )
-            raise AppException(
-                message=f"No available tokens.{pool_hint} Please try again later.",
-                error_type=ErrorType.RATE_LIMIT.value,
-                code="rate_limit_exceeded",
-                status_code=429,
-            )
+        token_mgr, token, _pool_candidates = await acquire_token_for_model(model)
 
         # 解析参数
         think = None
@@ -695,7 +638,9 @@ class ChatService:
         is_stream = stream if stream is not None else get_config("chat.stream", True)
 
         # 构造请求
-        chat_request = ChatRequest(model=model, messages=messages, stream=is_stream, think=think)
+        chat_request = ChatRequest(
+            model=model, messages=messages, stream=is_stream, think=think
+        )
 
         # 请求 Grok
         service = GrokChatService()
@@ -727,12 +672,7 @@ class ChatService:
             duration = time.time() - start_time
             # 非流式：处理完成后立即记录使用和统计
             try:
-                model_info = ModelService.get(model)
-                effort = (
-                    EffortType.HIGH
-                    if (model_info and model_info.cost.value == "high")
-                    else EffortType.LOW
-                )
+                effort = compute_effort(model)
                 await token_mgr.consume(token, effort)
                 logger.debug(
                     f"Collect completed, recorded usage for token {token[:10]}... (effort={effort.value})"
