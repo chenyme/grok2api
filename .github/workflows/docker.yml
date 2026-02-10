@@ -2,13 +2,16 @@ name: Build Docker Image
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches:
-      - main
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
 
 env:
   REGISTRY: ghcr.io
