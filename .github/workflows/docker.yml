@@ -2,16 +2,18 @@ name: Build Docker Image
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
+    branches:
+      - main
+    tags:
+      - 'v*'
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
   packages: write
   id-token: write
-
 
 env:
   REGISTRY: ghcr.io
@@ -24,15 +26,13 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    
+
     strategy:
       fail-fast: false
       matrix:
         include:
-          # AMD64 平台
           - platform: linux/amd64
             suffix: amd64
-          # ARM64 平台
           - platform: linux/arm64
             suffix: arm64
 
@@ -43,12 +43,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Container Registry
+      - name: Log in to Container Registry (PAT)
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.GHCR_USER }}
+          password: ${{ secrets.GHCR_PAT }}
 
       - name: Extract metadata
         id: meta
@@ -56,11 +56,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # 分支推送
             type=ref,event=branch,suffix=-${{ matrix.suffix }}
-            # 语义化版本：完整版本号
             type=semver,pattern={{version}},suffix=-${{ matrix.suffix }}
-            # latest标签
             type=raw,value=latest-${{ matrix.suffix }},enable={{is_default_branch}}
 
       - name: Build and push Docker image
@@ -74,7 +71,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
           pull: true
-  
+
   merge-manifests:
     runs-on: ubuntu-latest
     needs: build-and-push
@@ -82,15 +79,15 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
-      - name: Log in to Container Registry
+      - name: Log in to Container Registry (PAT)
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      
+          username: ${{ secrets.GHCR_USER }}
+          password: ${{ secrets.GHCR_PAT }}
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -100,7 +97,7 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=raw,value=latest,enable={{is_default_branch}}
-      
+
       - name: Create and push manifest
         run: |
           TAGS="${{ steps.meta.outputs.tags }}"
