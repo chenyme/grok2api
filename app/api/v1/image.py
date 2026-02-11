@@ -189,6 +189,34 @@ def should_use_ws_for_generation(model: str) -> bool:
     return bool(get_config("image.image_ws"))
 
 
+def _apply_superimage_server_overrides(request: ImageGenerationRequest) -> None:
+    """服务端覆盖 superimage 关键参数，不允许客户端控制。"""
+    if request.model != "grok-superimage-1.0":
+        return
+
+    raw_n = get_config("image.superimage_n", 1)
+    try:
+        forced_n = int(raw_n)
+    except Exception:
+        forced_n = 1
+    request.n = min(10, max(1, forced_n))
+
+    forced_ratio = str(get_config("image.superimage_ratio", "1:1") or "1:1").strip().lower()
+    if forced_ratio not in {"16:9", "9:16", "1:1", "2:3", "3:2"}:
+        logger.warning(f"Invalid image.superimage_ratio={forced_ratio}, fallback to 1:1")
+        forced_ratio = "1:1"
+    request.size = forced_ratio
+
+    request.stream = False
+    request.response_format = "url"
+
+
+def _resolve_ws_nsfw(model: str) -> bool:
+    if model == "grok-superimage-1.0":
+        return bool(get_config("image.superimage_nsfw", True))
+    return bool(get_config("image.image_ws_nsfw"))
+
+
 def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
     """验证图片编辑请求参数"""
     if request.model != "grok-imagine-1.0-edit":
@@ -314,10 +342,8 @@ async def create_image(request: ImageGenerationRequest):
     if request.stream is None:
         request.stream = False
 
-    # superimage 统一返回 URL（与瀑布流一致），并关闭流式以保证响应稳定
-    if request.model == "grok-superimage-1.0":
-        request.stream = False
-        request.response_format = "url"
+    # superimage 关键参数由服务端控制（控制台可改），客户端参数不生效
+    _apply_superimage_server_overrides(request)
 
     configured_response_format = resolve_response_format(None)
     # 配置优先；但当上方未显式指定 response_format 时，才使用配置值
@@ -343,7 +369,7 @@ async def create_image(request: ImageGenerationRequest):
     if request.stream:
         if use_ws:
             aspect_ratio = resolve_aspect_ratio(request.size)
-            enable_nsfw = bool(get_config("image.image_ws_nsfw"))
+            enable_nsfw = _resolve_ws_nsfw(request.model)
             upstream = image_service.stream(
                 token=token,
                 prompt=request.prompt,
@@ -394,7 +420,7 @@ async def create_image(request: ImageGenerationRequest):
     usage_override = None
     if use_ws:
         aspect_ratio = resolve_aspect_ratio(request.size)
-        enable_nsfw = bool(get_config("image.image_ws_nsfw"))
+        enable_nsfw = _resolve_ws_nsfw(request.model)
         all_images = []
         seen = set()
         expected_per_call = 6
