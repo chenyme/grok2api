@@ -12,6 +12,7 @@ from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 from app.services.grok.utils.retry import retry_on_status
+from app.services.grok.utils.proxy import build_request_proxies, normalize_proxy_url
 
 LIMITS_API = "https://grok.com/rest/rate-limits"
 
@@ -23,7 +24,7 @@ class UsageService:
     """用量查询服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("network.base_proxy_url")
+        self.proxy = normalize_proxy_url(proxy or get_config("network.base_proxy_url"))
         self.timeout = get_config("network.timeout")
 
     def _build_headers(self, token: str) -> dict:
@@ -59,7 +60,7 @@ class UsageService:
 
     def _build_proxies(self) -> dict:
         """构建代理配置"""
-        return {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        return build_request_proxies(self.proxy)
 
     async def get(self, token: str, model_name: str = "grok-4-1-thinking-1129") -> Dict:
         """
