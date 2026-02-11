@@ -315,6 +315,20 @@ def _extract_image_prompt(messages: List[MessageItem]) -> str:
     )
 
 
+def _format_image_markdown_lines(data: List[Dict[str, Any]]) -> str:
+    """将图片 URL 列表格式化为 Markdown 图片语法，便于客户端直接预览。"""
+    lines = []
+    for idx, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            continue
+        u = item.get("url")
+        if not u:
+            continue
+        alt = str(item.get("id") or item.get("image_id") or f"image-{idx}")
+        lines.append(f"![{alt}]({u})")
+    return "\n".join(lines)
+
+
 def _to_chat_completion_from_image_response(image_resp: Response, model: str) -> JSONResponse:
     """将 /images/generations 响应转为 chat.completions 非流式格式，便于外部客户端兼容。"""
     payload = {}
@@ -328,14 +342,15 @@ def _to_chat_completion_from_image_response(image_resp: Response, model: str) ->
         payload = {}
 
     data = payload.get("data") or []
-    urls = []
-    for item in data:
-        if isinstance(item, dict):
-            u = item.get("url") or item.get("b64_json") or item.get("base64")
-            if u:
-                urls.append(str(u))
-
-    content = "\n".join(urls)
+    content = _format_image_markdown_lines(data)
+    if not content:
+        urls = []
+        for item in data:
+            if isinstance(item, dict):
+                u = item.get("url") or item.get("b64_json") or item.get("base64")
+                if u:
+                    urls.append(str(u))
+        content = "\n".join(urls)
     return JSONResponse(
         content={
             "id": f"chatcmpl-{int(time.time() * 1000)}",
@@ -384,14 +399,15 @@ def _to_chat_stream_from_image_response(image_resp: Response, model: str) -> Str
         payload = {}
 
     data = payload.get("data") or []
-    urls = []
-    for item in data:
-        if isinstance(item, dict):
-            u = item.get("url")
-            if u:
-                urls.append(str(u))
-
-    content = "\n".join(urls)
+    content = _format_image_markdown_lines(data)
+    if not content:
+        urls = []
+        for item in data:
+            if isinstance(item, dict):
+                u = item.get("url")
+                if u:
+                    urls.append(str(u))
+        content = "\n".join(urls)
     chunk_id = f"chatcmpl-{int(time.time() * 1000)}"
     created = int(time.time())
 
