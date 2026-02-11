@@ -20,6 +20,7 @@ from app.services.grok.models.model import ModelService
 from app.services.grok.services.assets import UploadService
 from app.services.grok.processors import StreamProcessor, CollectProcessor
 from app.services.grok.utils.retry import retry_on_status
+from app.services.grok.utils.proxy import build_request_proxies, normalize_proxy_url
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import get_token_manager, EffortType
@@ -209,7 +210,7 @@ class GrokChatService:
     """Grok API 调用服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("network.base_proxy_url")
+        self.proxy = normalize_proxy_url(proxy or get_config("network.base_proxy_url"))
 
     async def chat(
         self,
@@ -234,11 +235,11 @@ class GrokChatService:
                 message, model, mode, file_attachments, image_attachments
             )
         )
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        proxies = build_request_proxies(self.proxy)
         timeout = get_config("network.timeout")
 
         logger.debug(
-            f"Chat request: model={model}, mode={mode}, stream={stream}, attachments={len(file_attachments or [])}"
+            f"Chat request: model={model}, mode={mode}, stream={stream}, attachments={len(file_attachments or [])}, proxy={self.proxy or 'DIRECT'}"
         )
 
         # 建立连接
