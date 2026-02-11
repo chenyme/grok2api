@@ -67,20 +67,6 @@ class GeminiGenerateRequest(BaseModel):
     model_config = {"extra": "ignore"}
 
 
-# Gemini 模型别名映射：将常见 Gemini 模型名映射到内部模型
-GEMINI_MODEL_ALIASES = {
-    "gemini-2.5-pro": "grok-4.1-thinking",
-    "gemini-2.5-flash": "grok-4.1-fast",
-    "gemini-2.0-flash": "grok-4-mini",
-    "gemini-1.5-pro": "grok-4",
-    "gemini-1.5-flash": "grok-4-mini",
-    "gemini-2.0-flash-exp-image-generation": "grok-imagine-1.0",
-    "gemini-2.0-flash-preview-image-generation": "grok-imagine-1.0",
-    "imagen-3.0-generate-002": "grok-imagine-1.0",
-    "imagen-3.0-fast-generate-001": "grok-imagine-1.0",
-}
-
-
 def _normalize_model_name(model_name: str) -> str:
     """标准化 Gemini path 中的模型名称。"""
     name = (model_name or "").strip()
@@ -90,23 +76,17 @@ def _normalize_model_name(model_name: str) -> str:
 
 
 def _resolve_internal_model(model_name: str) -> str:
-    """将 Gemini 模型名解析为内部模型名。"""
-    normalized = _normalize_model_name(model_name).lower()
-
-    if normalized in GEMINI_MODEL_ALIASES:
-        return GEMINI_MODEL_ALIASES[normalized]
-
-    # 如果调用方直接传了内部模型名，则原样使用
-    raw = _normalize_model_name(model_name)
-    if ModelService.valid(raw):
-        return raw
-
-    # 对包含 image/imagen/imagine 的未知 Gemini 模型做生图兜底
-    if any(keyword in normalized for keyword in ("image", "imagen", "imagine")):
-        return "grok-imagine-1.0"
-
-    # 文本兜底模型
-    return "grok-4-mini"
+    """将 Gemini 路径中的模型名解析为内部模型名（不做别名映射）。"""
+    internal_model = _normalize_model_name(model_name)
+    if not ModelService.valid(internal_model):
+        raise ValidationException(
+            message=(
+                f"The model `{internal_model}` does not exist or you do not have access to it."
+            ),
+            param="model",
+            code="model_not_found",
+        )
+    return internal_model
 
 
 def _is_image_generation_request(
