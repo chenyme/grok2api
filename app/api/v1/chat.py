@@ -5,12 +5,13 @@ Chat Completions API 路由
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.services.grok.services.chat import ChatService
 from app.services.grok.models.model import ModelService
 from app.core.exceptions import ValidationException
+from app.core.json_response import StrictJSONResponse
 
 
 router = APIRouter(tags=["Chat"])
@@ -268,7 +269,8 @@ async def chat_completions(request: ChatCompletionRequest):
         result = await VideoService.completions(
             model=request.model,
             messages=[msg.model_dump() for msg in request.messages],
-            stream=request.stream,
+            # OpenAI 兼容：未显式传入 stream 时默认按非流式处理，避免返回 SSE 导致 JSON 解析失败
+            stream=request.stream if request.stream is not None else False,
             thinking=request.thinking,
             aspect_ratio=v_conf.aspect_ratio,
             video_length=v_conf.video_length,
@@ -279,12 +281,14 @@ async def chat_completions(request: ChatCompletionRequest):
         result = await ChatService.completions(
             model=request.model,
             messages=[msg.model_dump() for msg in request.messages],
-            stream=request.stream,
+            # OpenAI 兼容：未显式传入 stream 时默认按非流式处理，避免返回 SSE 导致 JSON 解析失败
+            stream=request.stream if request.stream is not None else False,
             thinking=request.thinking,
         )
 
+    # 对非流式结果使用严格 JSON 响应，避免 NaN/Infinity 等非标准值导致 JSON 格式不规范
     if isinstance(result, dict):
-        return JSONResponse(content=result)
+        return StrictJSONResponse(content=result)
     else:
         return StreamingResponse(
             result,
