@@ -24,8 +24,6 @@ class ImageWSBaseProcessor(BaseProcessor):
         self.response_format = response_format
         if response_format == "url":
             self.response_field = "url"
-        elif response_format == "base64":
-            self.response_field = "base64"
         else:
             self.response_field = "b64_json"
         self._image_dir: Optional[Path] = None
