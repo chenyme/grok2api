@@ -2,7 +2,6 @@
 Chat Completions API 路由
 """
 
-import re
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -278,21 +277,8 @@ def _is_rephrase_template_text(text: str) -> bool:
     return (len(text) > 500) and ("guidelines:" in lower or "1." in lower and "2." in lower)
 
 
-def _extract_follow_up_question(text: str) -> str:
-    """从模板文本中提取 Follow up question 的原始问题。"""
-    pattern = re.compile(r"follow\s*up\s*question\s*:\s*(.+)", re.IGNORECASE)
-    for line in text.splitlines():
-        m = pattern.search(line.strip())
-        if m:
-            q = m.group(1).strip().strip("\"'“”")
-            if q:
-                return q
-    return ""
-
-
 def _extract_image_prompt(messages: List[MessageItem]) -> str:
-    """从 chat messages 提取图片 prompt（保证尽量接近用户原始输入）。"""
-    first_non_empty = None
+    """从 chat messages 提取图片 prompt（仅保留客户端原始用户输入）。"""
 
     for msg in reversed(messages):
         if msg.role != "user":
@@ -314,25 +300,16 @@ def _extract_image_prompt(messages: List[MessageItem]) -> str:
         if not text:
             continue
 
-        if first_non_empty is None:
-            first_non_empty = text
-
-        # 明确模板：优先从其中提取 follow-up question
+        # 严格跳过注入模板：不再尝试从模板中提取 follow-up question，
+        # 以保证上游仅收到用户原始请求文本。
         if _is_rephrase_template_text(text):
-            extracted = _extract_follow_up_question(text)
-            if extracted and not _is_rephrase_template_text(extracted):
-                return extracted
             continue
 
         # 非模板文本，直接作为原始 prompt
         return text
 
-    # 不允许把模板整段当作绘图 prompt 传给上游
-    if first_non_empty and not _is_rephrase_template_text(first_non_empty):
-        return first_non_empty
-
     raise ValidationException(
-        message="Image prompt cannot be extracted from messages",
+        message="Image prompt cannot be extracted from messages (only template text found)",
         param="messages",
         code="empty_prompt",
     )
@@ -393,6 +370,66 @@ def _to_chat_completion_from_image_response(image_resp: Response, model: str) ->
         }
     )
 
+
+def _to_chat_stream_from_image_response(image_resp: Response, model: str) -> StreamingResponse:
+    """将 /images/generations 响应转为 chat.completions 流式格式。"""
+    payload = {}
+    try:
+        import json
+
+        body = getattr(image_resp, "body", b"") or b""
+        if isinstance(body, (bytes, bytearray)):
+            payload = json.loads(body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+
+    data = payload.get("data") or []
+    urls = []
+    for item in data:
+        if isinstance(item, dict):
+            u = item.get("url")
+            if u:
+                urls.append(str(u))
+
+    content = "\n".join(urls)
+    chunk_id = f"chatcmpl-{int(time.time() * 1000)}"
+    created = int(time.time())
+
+    async def gen():
+        import json
+
+        first_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": content},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        done_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": payload.get("usage"),
+        }
+
+        yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps(done_chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
 @router.post("/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """Chat Completions API - 兼容 OpenAI"""
@@ -420,6 +457,8 @@ async def chat_completions(request: ChatCompletionRequest):
             stream=False,
         )
         image_resp = await create_image(image_request)
+        if request.stream:
+            return _to_chat_stream_from_image_response(image_resp, request.model)
         return _to_chat_completion_from_image_response(image_resp, request.model)
 
     # 检测视频模型
