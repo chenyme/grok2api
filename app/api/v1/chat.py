@@ -2,15 +2,17 @@
 Chat Completions API 路由
 """
 
+import time
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from app.services.grok.services.chat import ChatService
 from app.services.grok.models.model import ModelService
 from app.core.exceptions import ValidationException
+from app.api.v1.image import ImageGenerationRequest, create_image
 
 
 router = APIRouter(tags=["Chat"])
@@ -111,6 +113,13 @@ class ChatCompletionRequest(BaseModel):
     messages: List[MessageItem] = Field(..., description="消息数组")
     stream: Optional[bool] = Field(None, description="是否流式输出")
     thinking: Optional[str] = Field(None, description="思考模式: enabled/disabled/None")
+
+    # 图片生成兼容参数（用于将误发到 /chat/completions 的图片请求自动转发到 /images/generations）
+    n: Optional[int] = Field(1, ge=1, le=10, description="图片数量")
+    size: Optional[str] = Field("1024x1024", description="图片尺寸")
+    quality: Optional[str] = Field("standard", description="图片质量")
+    response_format: Optional[str] = Field(None, description="图片响应格式")
+    style: Optional[str] = Field(None, description="图片风格")
 
     # 视频生成配置
     video_config: Optional[VideoConfig] = Field(None, description="视频生成参数")
@@ -247,6 +256,180 @@ def validate_request(request: ChatCompletionRequest):
                         )
 
 
+
+
+def _is_rephrase_template_text(text: str) -> bool:
+    """识别外部客户端注入的 websearch/rephrase 模板提示词。"""
+    if not text:
+        return False
+    lower = text.lower()
+    markers = [
+        "use user's language to rephrase the question",
+        "your role is to rephrase follow-up queries",
+        "<websearch>",
+        "follow up question:",
+        "there are several examples attached",
+        "use websearch to rephrase",
+    ]
+    hit = sum(1 for m in markers if m in lower)
+    if hit >= 2 or ("<examples>" in lower and "follow up question" in lower):
+        return True
+    return (len(text) > 500) and ("guidelines:" in lower or "1." in lower and "2." in lower)
+
+
+def _extract_image_prompt(messages: List[MessageItem]) -> str:
+    """从 chat messages 提取图片 prompt（仅保留客户端原始用户输入）。"""
+
+    for msg in reversed(messages):
+        if msg.role != "user":
+            continue
+
+        content = msg.content
+        text = ""
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            parts = []
+            for item in content:
+                if item.get("type") == "text":
+                    txt = str(item.get("text", "")).strip()
+                    if txt:
+                        parts.append(txt)
+            text = "\n".join(parts).strip()
+
+        if not text:
+            continue
+
+        # 严格跳过注入模板：不再尝试从模板中提取 follow-up question，
+        # 以保证上游仅收到用户原始请求文本。
+        if _is_rephrase_template_text(text):
+            continue
+
+        # 非模板文本，直接作为原始 prompt
+        return text
+
+    raise ValidationException(
+        message="Image prompt cannot be extracted from messages (only template text found)",
+        param="messages",
+        code="empty_prompt",
+    )
+
+
+def _to_chat_completion_from_image_response(image_resp: Response, model: str) -> JSONResponse:
+    """将 /images/generations 响应转为 chat.completions 非流式格式，便于外部客户端兼容。"""
+    payload = {}
+    try:
+        import json
+
+        body = getattr(image_resp, "body", b"") or b""
+        if isinstance(body, (bytes, bytearray)):
+            payload = json.loads(body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+
+    data = payload.get("data") or []
+    urls = []
+    for item in data:
+        if isinstance(item, dict):
+            u = item.get("url") or item.get("b64_json") or item.get("base64")
+            if u:
+                urls.append(str(u))
+
+    content = "\n".join(urls)
+    return JSONResponse(
+        content={
+            "id": f"chatcmpl-{int(time.time() * 1000)}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": payload.get("usage")
+            or {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "prompt_tokens_details": {
+                    "cached_tokens": 0,
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "image_tokens": 0,
+                },
+                "completion_tokens_details": {
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "reasoning_tokens": 0,
+                },
+            },
+            "images": data,
+        }
+    )
+
+
+def _to_chat_stream_from_image_response(image_resp: Response, model: str) -> StreamingResponse:
+    """将 /images/generations 响应转为 chat.completions 流式格式。"""
+    payload = {}
+    try:
+        import json
+
+        body = getattr(image_resp, "body", b"") or b""
+        if isinstance(body, (bytes, bytearray)):
+            payload = json.loads(body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+
+    data = payload.get("data") or []
+    urls = []
+    for item in data:
+        if isinstance(item, dict):
+            u = item.get("url")
+            if u:
+                urls.append(str(u))
+
+    content = "\n".join(urls)
+    chunk_id = f"chatcmpl-{int(time.time() * 1000)}"
+    created = int(time.time())
+
+    async def gen():
+        import json
+
+        first_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": content},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        done_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": payload.get("usage"),
+        }
+
+        yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps(done_chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
 @router.post("/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """Chat Completions API - 兼容 OpenAI"""
@@ -257,8 +440,28 @@ async def chat_completions(request: ChatCompletionRequest):
 
     logger.debug(f"Chat request: model={request.model}, stream={request.stream}")
 
-    # 检测视频模型
+    # 模型路由：图片模型自动兼容转发到 /v1/images/generations
     model_info = ModelService.get(request.model)
+    if model_info and request.model == "grok-superimage-1.0":
+        prompt = _extract_image_prompt(request.messages)
+        logger.info(f"Compat route superimage -> images/generations, prompt={prompt[:120]}...")
+
+        image_request = ImageGenerationRequest(
+            prompt=prompt,
+            model=request.model,
+            n=request.n or 1,
+            size=request.size or "1024x1024",
+            quality=request.quality or "standard",
+            response_format="url",
+            style=request.style,
+            stream=False,
+        )
+        image_resp = await create_image(image_request)
+        if request.stream:
+            return _to_chat_stream_from_image_response(image_resp, request.model)
+        return _to_chat_completion_from_image_response(image_resp, request.model)
+
+    # 检测视频模型
     if model_info and model_info.is_video:
         from app.services.grok.services.media import VideoService
 

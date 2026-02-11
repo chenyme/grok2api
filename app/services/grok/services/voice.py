@@ -11,6 +11,7 @@ from app.core.logger import logger
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
+from app.services.grok.utils.proxy import build_request_proxies, normalize_proxy_url
 
 LIVEKIT_TOKEN_API = "https://grok.com/rest/livekit/tokens"
 
@@ -19,7 +20,7 @@ class VoiceService:
     """Voice Mode Service (LiveKit)"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("network.base_proxy_url")
+        self.proxy = normalize_proxy_url(proxy or get_config("network.base_proxy_url"))
 
     async def get_token(
         self,
@@ -42,7 +43,7 @@ class VoiceService:
         headers = self._build_headers(token)
         payload = self._build_payload(voice, personality, speed)
 
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        proxies = build_request_proxies(self.proxy)
 
         try:
             browser = get_config("security.browser")
