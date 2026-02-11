@@ -1,0 +1,260 @@
+/* Logs page styles */
+
+/* Table */
+.geist-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.geist-table th {
+  text-align: center;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--accents-1);
+  color: var(--accents-5);
+  font-weight: 500;
+  height: 40px;
+  background: #fff;
+}
+
+.geist-table th.text-left {
+  text-align: left;
+}
+
+.geist-table td {
+  padding: 8px 14px;
+  border-bottom: 1px solid #fafafa;
+  background: #fff;
+  vertical-align: middle;
+  height: 44px;
+  color: var(--accents-6);
+  text-align: center;
+  transition: background 0.15s;
+  font-size: 12px;
+}
+
+.geist-table td.text-left {
+  text-align: left;
+}
+
+.geist-table tr:last-child td {
+  border-bottom: none;
+}
+
+.geist-table tr:hover td {
+  background: #fafafa;
+}
+
+/* Filter bar */
+.filter-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accents-4);
+}
+
+.filter-select {
+  width: 150px;
+  height: 32px;
+}
+
+/* Pagination */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 4px;
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  height: 20px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.badge-green {
+  background: #ecfdf5;
+  color: #059669;
+}
+
+.badge-red {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.badge-blue {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.badge-gray {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.badge-purple {
+  background: #f3e8ff;
+  color: #9333ea;
+}
+
+.badge-orange {
+  background: #fff7ed;
+  color: #d97706;
+}
+
+/* Type badge */
+.type-chat { background: #eff6ff; color: #2563eb; }
+.type-image { background: #f3e8ff; color: #9333ea; }
+.type-video { background: #fff7ed; color: #d97706; }
+
+/* Modal (reuse from common patterns) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.modal-overlay.hidden {
+  display: none;
+}
+
+.modal-overlay.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.modal-content {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  width: 100%;
+  transform: scale(0.96);
+  transition: transform 0.2s ease;
+  font-size: 13px;
+  color: var(--accents-6);
+}
+
+.modal-overlay.is-open .modal-content {
+  transform: scale(1);
+}
+
+.modal-md {
+  max-width: 420px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accents-7);
+}
+
+.modal-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accents-7);
+}
+
+.modal-close {
+  color: var(--accents-4);
+  transition: color 0.15s;
+}
+
+.modal-close:hover {
+  color: #000;
+}
+
+.confirm-dialog-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.confirm-dialog-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accents-7);
+}
+
+.confirm-dialog-message {
+  font-size: 13px;
+  color: var(--accents-5);
+  line-height: 1.5;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.confirm-dialog .modal-content {
+  padding: 0;
+}
+
+/* Error message tooltip */
+.error-cell {
+  position: relative;
+  cursor: help;
+}
+
+.error-cell .error-tip {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #333;
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 10;
+}
+
+.error-cell:hover .error-tip {
+  display: block;
+}

@@ -3,6 +3,7 @@ Grok 视频生成服务
 """
 
 import asyncio
+import time
 from typing import AsyncGenerator, Optional
 
 import orjson
@@ -299,8 +300,11 @@ class VideoService:
         video_length: int = 6,
         resolution: str = "480p",
         preset: str = "normal",
+        client_ip: str = "",
     ):
         """视频生成入口"""
+        start_time = time.time()
+
         # 获取 token（使用智能路由）
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
@@ -367,10 +371,13 @@ class VideoService:
         if is_stream:
             processor = VideoStreamProcessor(model, token, think)
             return wrap_stream_with_usage(
-                processor.process(response), token_mgr, token, model
+                processor.process(response), token_mgr, token, model,
+                start_time=start_time, client_ip=client_ip,
+                pool_name="", log_type="video",
             )
 
         result = await VideoCollectProcessor(model, token).process(response)
+        effort_str = "low"
         try:
             model_info = ModelService.get(model)
             effort = (
@@ -378,10 +385,24 @@ class VideoService:
                 if (model_info and model_info.cost.value == "high")
                 else EffortType.LOW
             )
+            effort_str = effort.value
             await token_mgr.consume(token, effort)
             logger.debug(f"Video completed, recorded usage (effort={effort.value})")
         except Exception as e:
             logger.warning(f"Failed to record video usage: {e}")
+
+        # 记录使用日志
+        try:
+            from app.services.usage_log import UsageLogService
+            use_time = int((time.time() - start_time) * 1000)
+            await UsageLogService.record(
+                type="video", model=model, is_stream=False,
+                use_time=use_time, status="success", token=token,
+                pool_name="", effort=effort_str, ip=client_ip,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record usage log: {e}")
+
         return result
 
 

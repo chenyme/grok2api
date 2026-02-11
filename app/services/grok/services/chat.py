@@ -2,6 +2,7 @@
 Grok Chat 服务
 """
 
+import time
 import orjson
 from typing import Dict, List, Any
 from dataclasses import dataclass
@@ -385,8 +386,11 @@ class ChatService:
         messages: List[Dict[str, Any]],
         stream: bool = None,
         thinking: str = None,
+        client_ip: str = "",
     ):
         """Chat Completions 入口"""
+        start_time = time.time()
+
         # 获取 token
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
@@ -408,9 +412,11 @@ class ChatService:
         for attempt in range(max_token_retries):
             # 选择 token（排除已失败的）
             token = None
-            for pool_name in ModelService.pool_candidates_for_model(model):
-                token = token_mgr.get_token(pool_name, exclude=tried_tokens)
+            pool_name = ""
+            for pn in ModelService.pool_candidates_for_model(model):
+                token = token_mgr.get_token(pn, exclude=tried_tokens)
                 if token:
+                    pool_name = pn
                     break
 
             if not token and not tried_tokens:
@@ -418,9 +424,10 @@ class ChatService:
                 logger.info("No available tokens, attempting to refresh cooling tokens...")
                 result = await token_mgr.refresh_cooling_tokens()
                 if result.get("recovered", 0) > 0:
-                    for pool_name in ModelService.pool_candidates_for_model(model):
-                        token = token_mgr.get_token(pool_name)
+                    for pn in ModelService.pool_candidates_for_model(model):
+                        token = token_mgr.get_token(pn)
                         if token:
+                            pool_name = pn
                             break
 
             if not token:
@@ -445,12 +452,15 @@ class ChatService:
                     logger.debug(f"Processing stream response: model={model}")
                     processor = StreamProcessor(model_name, token, think)
                     return wrap_stream_with_usage(
-                        processor.process(response), token_mgr, token, model
+                        processor.process(response), token_mgr, token, model,
+                        start_time=start_time, client_ip=client_ip,
+                        pool_name=pool_name, log_type="chat",
                     )
 
                 # 非流式
                 logger.debug(f"Processing non-stream response: model={model}")
                 result = await CollectProcessor(model_name, token).process(response)
+                effort_str = "low"
                 try:
                     model_info = ModelService.get(model)
                     effort = (
@@ -458,15 +468,42 @@ class ChatService:
                         if (model_info and model_info.cost.value == "high")
                         else EffortType.LOW
                     )
+                    effort_str = effort.value
                     await token_mgr.consume(token, effort)
                     logger.info(f"Chat completed: model={model}, effort={effort.value}")
                 except Exception as e:
                     logger.warning(f"Failed to record usage: {e}")
+
+                # 记录使用日志
+                try:
+                    from app.services.usage_log import UsageLogService
+                    use_time = int((time.time() - start_time) * 1000)
+                    await UsageLogService.record(
+                        type="chat", model=model, is_stream=False,
+                        use_time=use_time, status="success", token=token,
+                        pool_name=pool_name, effort=effort_str, ip=client_ip,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record usage log: {e}")
+
                 return result
 
             except UpstreamException as e:
                 status_code = e.details.get("status") if e.details else None
                 last_error = e
+
+                # 记录错误日志
+                try:
+                    from app.services.usage_log import UsageLogService
+                    use_time = int((time.time() - start_time) * 1000)
+                    await UsageLogService.record(
+                        type="chat", model=model, is_stream=is_stream,
+                        use_time=use_time, status="error",
+                        error_message=str(e), token=token,
+                        pool_name=pool_name, ip=client_ip,
+                    )
+                except Exception:
+                    pass
 
                 if status_code == 429:
                     # 配额不足，标记 token 为 cooling 并换 token 重试

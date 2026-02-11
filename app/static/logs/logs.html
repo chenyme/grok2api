@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grok2API - 使用记录</title>
+  <link rel="icon" href="/static/favicon/favicon.ico">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+  <link href="/static/common/common.css?v=3" rel="stylesheet">
+  <link href="/static/logs/logs.css?v=1" rel="stylesheet">
+  <link href="/static/common/toast.css" rel="stylesheet">
+</head>
+
+<body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+  <div id="app-header"></div>
+
+  <!-- Main Content -->
+  <main class="space-y-6 flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in">
+    <div class="space-y-6">
+      <div class="flex justify-between items-center">
+        <div>
+          <h2 class="text-2xl font-semibold tracking-tight">使用记录</h2>
+          <p class="text-[var(--accents-4)] mt-1 text-sm">查看 API 调用记录与统计。</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <button onclick="openCleanupModal()" class="geist-button-outline gap-2 text-xs">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            清理记录
+          </button>
+          <button onclick="refreshData()" class="geist-button gap-2 text-xs" id="btn-refresh">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 4v6h-6M1 20v-6h6" />
+              <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
+            </svg>
+            刷新
+          </button>
+        </div>
+      </div>
+
+      <div class="h-px bg-[var(--border)] my-6"></div>
+
+      <!-- Statistics -->
+      <div class="grid grid-cols-4 gap-4 mb-6" id="stats-container">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-total">-</div>
+          <div class="stat-label">总请求数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value text-green-600" id="stat-success">-</div>
+          <div class="stat-label">成功请求</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value text-red-600" id="stat-error">-</div>
+          <div class="stat-label">失败请求</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value text-blue-600" id="stat-today">-</div>
+          <div class="stat-label">今日请求</div>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="filter-bar">
+        <div class="filter-group">
+          <label class="filter-label">时间范围</label>
+          <select id="filter-time" class="geist-input filter-select" onchange="applyFilters()">
+            <option value="">全部</option>
+            <option value="1h">最近 1 小时</option>
+            <option value="24h" selected>最近 24 小时</option>
+            <option value="7d">最近 7 天</option>
+            <option value="30d">最近 30 天</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">类型</label>
+          <select id="filter-type" class="geist-input filter-select" onchange="applyFilters()">
+            <option value="">全部</option>
+            <option value="chat">Chat</option>
+            <option value="image">Image</option>
+            <option value="video">Video</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">模型</label>
+          <input id="filter-model" class="geist-input filter-select" placeholder="模型名称"
+            onchange="applyFilters()">
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">状态</label>
+          <select id="filter-status" class="geist-input filter-select" onchange="applyFilters()">
+            <option value="">全部</option>
+            <option value="success">成功</option>
+            <option value="error">失败</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Logs Table -->
+      <div class="rounded-lg overflow-hidden bg-white mb-4 overflow-x-auto">
+        <table class="geist-table min-w-[800px]">
+          <thead>
+            <tr>
+              <th class="w-40 text-left">时间</th>
+              <th class="w-16">类型</th>
+              <th class="w-32 text-left">模型</th>
+              <th class="w-16">状态</th>
+              <th class="w-16">流式</th>
+              <th class="w-20">耗时</th>
+              <th class="w-28 text-left">Token</th>
+              <th class="text-left">IP</th>
+            </tr>
+          </thead>
+          <tbody id="logs-table-body">
+          </tbody>
+        </table>
+        <div id="loading" class="text-center py-12 text-[var(--accents-4)]">加载中...</div>
+        <div id="empty-state" class="hidden table-empty">
+          暂无使用记录。
+        </div>
+      </div>
+
+      <!-- Pagination -->
+      <div class="pagination-bar">
+        <div id="pagination-info" class="text-xs text-[var(--accents-5)]">第 0 / 0 页 · 共 0 条</div>
+        <div class="flex items-center gap-2">
+          <button id="page-prev" class="geist-button-outline text-xs px-3" onclick="goPrevPage()">上一页</button>
+          <button id="page-next" class="geist-button-outline text-xs px-3" onclick="goNextPage()">下一页</button>
+          <select id="page-size" class="geist-input h-[30px]" onchange="changePageSize()">
+            <option value="20" selected>20 / 页</option>
+            <option value="50">50 / 页</option>
+            <option value="100">100 / 页</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </main>
+  <div id="app-footer"></div>
+
+  <!-- Cleanup Modal -->
+  <div id="cleanup-modal" class="modal-overlay hidden">
+    <div class="modal-content modal-md" id="cleanup-modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">清理使用记录</h3>
+        <button onclick="closeCleanupModal()" class="modal-close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="modal-label mb-1 block">清理范围</label>
+          <select id="cleanup-range" class="geist-input">
+            <option value="7d">7 天前的记录</option>
+            <option value="30d" selected>30 天前的记录</option>
+            <option value="90d">90 天前的记录</option>
+            <option value="all">全部记录</option>
+          </select>
+        </div>
+        <p class="text-xs text-[var(--accents-4)]">此操作不可撤销，请谨慎操作。</p>
+        <div class="flex justify-end gap-2 pt-2">
+          <button onclick="closeCleanupModal()" class="geist-button-outline text-xs px-3">取消</button>
+          <button onclick="submitCleanup()" class="geist-button-danger text-xs px-3">确认清理</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirm-dialog" class="modal-overlay confirm-dialog hidden">
+    <div class="modal-content modal-md">
+      <div class="confirm-dialog-body">
+        <div class="confirm-dialog-title">请确认</div>
+        <div id="confirm-message" class="confirm-dialog-message"></div>
+        <div class="confirm-dialog-actions">
+          <button id="confirm-cancel" type="button" class="geist-button-outline text-xs px-3">取消</button>
+          <button id="confirm-ok" type="button" class="geist-button-danger text-xs px-3">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/common/draggable.js"></script>
+  <script src="/static/common/admin-auth.js?v=2"></script>
+  <script src="/static/common/header.js?v=3"></script>
+  <script src="/static/common/footer.js?v=1"></script>
+  <script src="/static/common/toast.js"></script>
+  <script src="/static/logs/logs.js?v=1"></script>
+</body>
+
+</html>
