@@ -3,6 +3,7 @@
 """
 
 import base64
+import re
 import time
 from pathlib import Path
 from typing import AsyncGenerator, AsyncIterable, List, Dict, Optional
@@ -44,7 +45,10 @@ class ImageWSBaseProcessor(BaseProcessor):
 
     def _filename(self, image_id: str, is_final: bool) -> str:
         ext = "jpg" if is_final else "png"
-        return f"{image_id}.{ext}"
+        # image_id may contain `/` and other path-unsafe chars (e.g. users/.../image)
+        safe_id = re.sub(r"[^A-Za-z0-9._-]", "-", image_id or "image")
+        safe_id = safe_id.strip("-._") or "image"
+        return f"{safe_id}.{ext}"
 
     def _build_file_url(self, filename: str) -> str:
         app_url = get_config("app.app_url")
