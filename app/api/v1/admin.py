@@ -1,24 +1,136 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from typing import Optional
 from pydantic import BaseModel
 from app.core.auth import verify_api_key, verify_app_key, get_admin_api_key
 from app.core.config import config, get_config
 from app.core.batch_tasks import create_task, get_task, expire_task
 from app.core.storage import get_storage, LocalStorage, RedisStorage, SQLStorage
 from app.core.exceptions import AppException
+from app.services.token.manager import get_token_manager
+from app.services.grok.utils.batch import run_in_batches
 import os
+import time
+import uuid
 from pathlib import Path
 import aiofiles
 import asyncio
 import orjson
 from app.core.logger import logger
+from app.api.v1.image import resolve_aspect_ratio
 from app.services.grok.services.voice import VoiceService
-from app.services.token import get_token_manager
+from app.services.grok.services.image import image_service
+from app.services.grok.models.model import ModelService
+from app.services.grok.processors.image_ws_processors import ImageWSCollectProcessor
+from app.services.token import EffortType
+
+TEMPLATE_DIR = Path(__file__).parent.parent.parent / "static"
 
 
 router = APIRouter()
 
-TEMPLATE_DIR = Path(__file__).parent.parent.parent / "static"
+IMAGINE_SESSION_TTL = 600
+_IMAGINE_SESSIONS: dict[str, dict] = {}
+_IMAGINE_SESSIONS_LOCK = asyncio.Lock()
+
+
+async def _cleanup_imagine_sessions(now: float) -> None:
+    expired = [
+        key
+        for key, info in _IMAGINE_SESSIONS.items()
+        if now - float(info.get("created_at") or 0) > IMAGINE_SESSION_TTL
+    ]
+    for key in expired:
+        _IMAGINE_SESSIONS.pop(key, None)
+
+
+async def _create_imagine_session(prompt: str, aspect_ratio: str) -> str:
+    task_id = uuid.uuid4().hex
+    now = time.time()
+    async with _IMAGINE_SESSIONS_LOCK:
+        await _cleanup_imagine_sessions(now)
+        _IMAGINE_SESSIONS[task_id] = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "created_at": now,
+        }
+    return task_id
+
+
+async def _get_imagine_session(task_id: str) -> Optional[dict]:
+    if not task_id:
+        return None
+    now = time.time()
+    async with _IMAGINE_SESSIONS_LOCK:
+        await _cleanup_imagine_sessions(now)
+        info = _IMAGINE_SESSIONS.get(task_id)
+        if not info:
+            return None
+        created_at = float(info.get("created_at") or 0)
+        if now - created_at > IMAGINE_SESSION_TTL:
+            _IMAGINE_SESSIONS.pop(task_id, None)
+            return None
+        return dict(info)
+
+
+async def _delete_imagine_session(task_id: str) -> None:
+    if not task_id:
+        return
+    async with _IMAGINE_SESSIONS_LOCK:
+        _IMAGINE_SESSIONS.pop(task_id, None)
+
+
+async def _delete_imagine_sessions(task_ids: list[str]) -> int:
+    if not task_ids:
+        return 0
+    removed = 0
+    async with _IMAGINE_SESSIONS_LOCK:
+        for task_id in task_ids:
+            if task_id and task_id in _IMAGINE_SESSIONS:
+                _IMAGINE_SESSIONS.pop(task_id, None)
+                removed += 1
+    return removed
+
+
+def _collect_tokens(data: dict) -> list[str]:
+    """从请求数据中收集 token 列表"""
+    tokens = []
+    if isinstance(data.get("token"), str) and data["token"].strip():
+        tokens.append(data["token"].strip())
+    if isinstance(data.get("tokens"), list):
+        tokens.extend([str(t).strip() for t in data["tokens"] if str(t).strip()])
+    return tokens
+
+
+def _truncate_tokens(
+    tokens: list[str], max_tokens: int, operation: str = "operation"
+) -> tuple[list[str], bool, int]:
+    """去重并截断 token 列表，返回 (unique_tokens, truncated, original_count)"""
+    unique_tokens = list(dict.fromkeys(tokens))
+    original_count = len(unique_tokens)
+    truncated = False
+
+    if len(unique_tokens) > max_tokens:
+        unique_tokens = unique_tokens[:max_tokens]
+        truncated = True
+        logger.warning(
+            f"{operation}: truncated from {original_count} to {max_tokens} tokens"
+        )
+
+    return unique_tokens, truncated, original_count
+
+
+def _mask_token(token: str) -> str:
+    """掩码 token 显示"""
+    return f"{token[:8]}...{token[-8:]}" if len(token) > 20 else token
 
 
 async def render_template(filename: str):
@@ -99,6 +211,11 @@ async def admin_login_page():
     return await render_template("login/login.html")
 
 
+@router.get("/", include_in_schema=False)
+async def root_redirect():
+    return RedirectResponse(url="/admin")
+
+
 @router.get("/admin/config", response_class=HTMLResponse, include_in_schema=False)
 async def admin_config_page():
     """配置管理页"""
@@ -115,6 +232,12 @@ async def admin_token_page():
 async def admin_voice_page():
     """Voice Live 调试页"""
     return await render_template("voice/voice.html")
+
+
+@router.get("/admin/imagine", response_class=HTMLResponse, include_in_schema=False)
+async def admin_imagine_page():
+    """Imagine 图片瀑布流"""
+    return await render_template("imagine/imagine.html")
 
 
 class VoiceTokenResponse(BaseModel):
@@ -182,6 +305,418 @@ async def admin_voice_token(
         )
 
 
+async def _verify_imagine_ws_auth(websocket: WebSocket) -> tuple[bool, Optional[str]]:
+    task_id = websocket.query_params.get("task_id")
+    if task_id:
+        info = await _get_imagine_session(task_id)
+        if info:
+            return True, task_id
+
+    api_key = get_admin_api_key()
+    if not api_key:
+        return True, None
+    key = websocket.query_params.get("api_key")
+    return key == api_key, None
+
+
+@router.websocket("/api/v1/admin/imagine/ws")
+async def admin_imagine_ws(websocket: WebSocket):
+    ok, session_id = await _verify_imagine_ws_auth(websocket)
+    if not ok:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    stop_event = asyncio.Event()
+    run_task: Optional[asyncio.Task] = None
+
+    async def _send(payload: dict) -> bool:
+        try:
+            await websocket.send_text(orjson.dumps(payload).decode())
+            return True
+        except Exception:
+            return False
+
+    async def _stop_run():
+        nonlocal run_task
+        stop_event.set()
+        if run_task and not run_task.done():
+            run_task.cancel()
+            try:
+                await run_task
+            except Exception:
+                pass
+        run_task = None
+        stop_event.clear()
+
+    async def _run(prompt: str, aspect_ratio: str):
+        model_id = "grok-imagine-1.0"
+        model_info = ModelService.get(model_id)
+        if not model_info or not model_info.is_image:
+            await _send(
+                {
+                    "type": "error",
+                    "message": "Image model is not available.",
+                    "code": "model_not_supported",
+                }
+            )
+            return
+
+        token_mgr = await get_token_manager()
+        enable_nsfw = bool(get_config("image.image_ws_nsfw", True))
+        sequence = 0
+        run_id = uuid.uuid4().hex
+
+        await _send(
+            {
+                "type": "status",
+                "status": "running",
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "run_id": run_id,
+            }
+        )
+
+        while not stop_event.is_set():
+            try:
+                await token_mgr.reload_if_stale()
+                token = None
+                for pool_name in ModelService.pool_candidates_for_model(
+                    model_info.model_id
+                ):
+                    token = token_mgr.get_token(pool_name)
+                    if token:
+                        break
+
+                if not token:
+                    await _send(
+                        {
+                            "type": "error",
+                            "message": "No available tokens. Please try again later.",
+                            "code": "rate_limit_exceeded",
+                        }
+                    )
+                    await asyncio.sleep(2)
+                    continue
+
+                upstream = image_service.stream(
+                    token=token,
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                    n=6,
+                    enable_nsfw=enable_nsfw,
+                )
+
+                processor = ImageWSCollectProcessor(
+                    model_info.model_id,
+                    token,
+                    n=6,
+                    response_format="b64_json",
+                )
+
+                start_at = time.time()
+                images = await processor.process(upstream)
+                elapsed_ms = int((time.time() - start_at) * 1000)
+
+                if images and all(img and img != "error" for img in images):
+                    # 一次发送所有 6 张图片
+                    for img_b64 in images:
+                        sequence += 1
+                        await _send(
+                            {
+                                "type": "image",
+                                "b64_json": img_b64,
+                                "sequence": sequence,
+                                "created_at": int(time.time() * 1000),
+                                "elapsed_ms": elapsed_ms,
+                                "aspect_ratio": aspect_ratio,
+                                "run_id": run_id,
+                            }
+                        )
+
+                    # 消耗 token（6 张图片按高成本计算）
+                    try:
+                        effort = (
+                            EffortType.HIGH
+                            if (model_info and model_info.cost.value == "high")
+                            else EffortType.LOW
+                        )
+                        await token_mgr.consume(token, effort)
+                    except Exception as e:
+                        logger.warning(f"Failed to consume token: {e}")
+                else:
+                    await _send(
+                        {
+                            "type": "error",
+                            "message": "Image generation returned empty data.",
+                            "code": "empty_image",
+                        }
+                    )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Imagine stream error: {e}")
+                await _send(
+                    {
+                        "type": "error",
+                        "message": str(e),
+                        "code": "internal_error",
+                    }
+                )
+                await asyncio.sleep(1.5)
+
+        await _send({"type": "status", "status": "stopped", "run_id": run_id})
+
+    try:
+        while True:
+            try:
+                raw = await websocket.receive_text()
+            except (RuntimeError, WebSocketDisconnect):
+                # WebSocket already closed or disconnected
+                break
+            
+            try:
+                payload = orjson.loads(raw)
+            except Exception:
+                await _send(
+                    {
+                        "type": "error",
+                        "message": "Invalid message format.",
+                        "code": "invalid_payload",
+                    }
+                )
+                continue
+
+            msg_type = payload.get("type")
+            if msg_type == "start":
+                prompt = str(payload.get("prompt") or "").strip()
+                if not prompt:
+                    await _send(
+                        {
+                            "type": "error",
+                            "message": "Prompt cannot be empty.",
+                            "code": "empty_prompt",
+                        }
+                    )
+                    continue
+                ratio = str(payload.get("aspect_ratio") or "2:3").strip()
+                if not ratio:
+                    ratio = "2:3"
+                ratio = resolve_aspect_ratio(ratio)
+                await _stop_run()
+                stop_event.clear()
+                run_task = asyncio.create_task(_run(prompt, ratio))
+            elif msg_type == "stop":
+                await _stop_run()
+            elif msg_type == "ping":
+                await _send({"type": "pong"})
+            else:
+                await _send(
+                    {
+                        "type": "error",
+                        "message": "Unknown command.",
+                        "code": "unknown_command",
+                    }
+                )
+    except WebSocketDisconnect:
+        logger.debug("WebSocket disconnected by client")
+    except Exception as e:
+        logger.warning(f"WebSocket error: {e}")
+    finally:
+        await _stop_run()
+
+        try:
+            from starlette.websockets import WebSocketState
+            if websocket.client_state == WebSocketState.CONNECTED:
+                await websocket.close(code=1000, reason="Server closing connection")
+        except Exception as e:
+            logger.debug(f"WebSocket close ignored: {e}")
+        if session_id:
+            await _delete_imagine_session(session_id)
+
+
+class ImagineStartRequest(BaseModel):
+    prompt: str
+    aspect_ratio: Optional[str] = "2:3"
+
+
+@router.post("/api/v1/admin/imagine/start", dependencies=[Depends(verify_api_key)])
+async def admin_imagine_start(data: ImagineStartRequest):
+    prompt = (data.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+    ratio = resolve_aspect_ratio(str(data.aspect_ratio or "2:3").strip() or "2:3")
+    task_id = await _create_imagine_session(prompt, ratio)
+    return {"task_id": task_id, "aspect_ratio": ratio}
+
+
+class ImagineStopRequest(BaseModel):
+    task_ids: list[str]
+
+
+@router.post("/api/v1/admin/imagine/stop", dependencies=[Depends(verify_api_key)])
+async def admin_imagine_stop(data: ImagineStopRequest):
+    removed = await _delete_imagine_sessions(data.task_ids or [])
+    return {"status": "success", "removed": removed}
+
+
+@router.get("/api/v1/admin/imagine/sse")
+async def admin_imagine_sse(
+    request: Request,
+    task_id: str = Query(""),
+    prompt: str = Query(""),
+    aspect_ratio: str = Query("2:3"),
+):
+    """Imagine 图片瀑布流（SSE 兜底）"""
+    session = None
+    if task_id:
+        session = await _get_imagine_session(task_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Task not found")
+    else:
+        _verify_stream_api_key(request)
+
+    if session:
+        prompt = str(session.get("prompt") or "").strip()
+        ratio = str(session.get("aspect_ratio") or "2:3").strip() or "2:3"
+    else:
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+        ratio = str(aspect_ratio or "2:3").strip() or "2:3"
+        ratio = resolve_aspect_ratio(ratio)
+
+    async def event_stream():
+        try:
+            model_id = "grok-imagine-1.0"
+            model_info = ModelService.get(model_id)
+            if not model_info or not model_info.is_image:
+                yield _sse_event(
+                    {
+                        "type": "error",
+                        "message": "Image model is not available.",
+                        "code": "model_not_supported",
+                    }
+                )
+                return
+
+            token_mgr = await get_token_manager()
+            enable_nsfw = bool(get_config("image.image_ws_nsfw", True))
+            sequence = 0
+            run_id = uuid.uuid4().hex
+
+            yield _sse_event(
+                {
+                    "type": "status",
+                    "status": "running",
+                    "prompt": prompt,
+                    "aspect_ratio": ratio,
+                    "run_id": run_id,
+                }
+            )
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                if task_id:
+                    session_alive = await _get_imagine_session(task_id)
+                    if not session_alive:
+                        break
+
+                try:
+                    await token_mgr.reload_if_stale()
+                    token = None
+                    for pool_name in ModelService.pool_candidates_for_model(
+                        model_info.model_id
+                    ):
+                        token = token_mgr.get_token(pool_name)
+                        if token:
+                            break
+
+                    if not token:
+                        yield _sse_event(
+                            {
+                                "type": "error",
+                                "message": "No available tokens. Please try again later.",
+                                "code": "rate_limit_exceeded",
+                            }
+                        )
+                        await asyncio.sleep(2)
+                        continue
+
+                    upstream = image_service.stream(
+                        token=token,
+                        prompt=prompt,
+                        aspect_ratio=ratio,
+                        n=6,
+                        enable_nsfw=enable_nsfw,
+                    )
+
+                    processor = ImageWSCollectProcessor(
+                        model_info.model_id,
+                        token,
+                        n=6,
+                        response_format="b64_json",
+                    )
+
+                    start_at = time.time()
+                    images = await processor.process(upstream)
+                    elapsed_ms = int((time.time() - start_at) * 1000)
+
+                    if images and all(img and img != "error" for img in images):
+                        for img_b64 in images:
+                            sequence += 1
+                            yield _sse_event(
+                                {
+                                    "type": "image",
+                                    "b64_json": img_b64,
+                                    "sequence": sequence,
+                                    "created_at": int(time.time() * 1000),
+                                    "elapsed_ms": elapsed_ms,
+                                    "aspect_ratio": ratio,
+                                    "run_id": run_id,
+                                }
+                            )
+
+                        try:
+                            effort = (
+                                EffortType.HIGH
+                                if (model_info and model_info.cost.value == "high")
+                                else EffortType.LOW
+                            )
+                            await token_mgr.consume(token, effort)
+                        except Exception as e:
+                            logger.warning(f"Failed to consume token: {e}")
+                    else:
+                        yield _sse_event(
+                            {
+                                "type": "error",
+                                "message": "Image generation returned empty data.",
+                                "code": "empty_image",
+                            }
+                        )
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.warning(f"Imagine SSE error: {e}")
+                    yield _sse_event(
+                        {"type": "error", "message": str(e), "code": "internal_error"}
+                    )
+                    await asyncio.sleep(1.5)
+
+            yield _sse_event({"type": "status", "status": "stopped", "run_id": run_id})
+        finally:
+            if task_id:
+                await _delete_imagine_session(task_id)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
 @router.post("/api/v1/admin/login", dependencies=[Depends(verify_app_key)])
 async def admin_login_api():
     """管理后台登录验证（使用 app_key）"""
@@ -208,10 +743,9 @@ async def update_config_api(data: dict):
 @router.get("/api/v1/admin/storage", dependencies=[Depends(verify_api_key)])
 async def get_storage_info():
     """获取当前存储模式"""
-    storage_type = os.getenv("SERVER_STORAGE_TYPE", "local").lower()
-    logger.info(f"Storage type: {storage_type}")
+    storage_type = os.getenv("SERVER_STORAGE_TYPE", "").lower()
     if not storage_type:
-        storage_type = str(get_config("storage.type", "")).lower()
+        storage_type = str(get_config("storage.type")).lower()
     if not storage_type:
         storage = get_storage()
         if isinstance(storage, LocalStorage):
@@ -219,12 +753,13 @@ async def get_storage_info():
         elif isinstance(storage, RedisStorage):
             storage_type = "redis"
         elif isinstance(storage, SQLStorage):
-            if storage.dialect in ("mysql", "mariadb"):
-                storage_type = "mysql"
-            elif storage.dialect in ("postgres", "postgresql", "pgsql"):
-                storage_type = "pgsql"
-            else:
-                storage_type = storage.dialect
+            storage_type = {
+                "mysql": "mysql",
+                "mariadb": "mysql",
+                "postgres": "pgsql",
+                "postgresql": "pgsql",
+                "pgsql": "pgsql",
+            }.get(storage.dialect, storage.dialect)
     return {"type": storage_type or "local"}
 
 
@@ -283,7 +818,9 @@ async def update_tokens_api(data: dict):
                     if isinstance(raw_token, str) and raw_token.startswith("sso="):
                         token_data["token"] = raw_token[4:]
 
-                    base = existing_map.get(pool_name, {}).get(token_data.get("token"), {})
+                    base = existing_map.get(pool_name, {}).get(
+                        token_data.get("token"), {}
+                    )
                     merged = dict(base)
                     merged.update(token_data)
                     if merged.get("tags") is None:
@@ -309,42 +846,22 @@ async def update_tokens_api(data: dict):
 @router.post("/api/v1/admin/tokens/refresh", dependencies=[Depends(verify_api_key)])
 async def refresh_tokens_api(data: dict):
     """刷新 Token 状态"""
-    from app.services.token.manager import get_token_manager
-    from app.services.grok.utils.batch import run_in_batches
-
     try:
         mgr = await get_token_manager()
-        tokens = []
-        if "token" in data:
-            tokens.append(data["token"])
-        if "tokens" in data and isinstance(data["tokens"], list):
-            tokens.extend(data["tokens"])
+        tokens = _collect_tokens(data)
 
         if not tokens:
             raise HTTPException(status_code=400, detail="No tokens provided")
 
-        # 去重并保持顺序
-        unique_tokens = list(dict.fromkeys(tokens))
-
-        # 最大数量限制
-        max_tokens = get_config("performance.usage_max_tokens", 1000)
-        try:
-            max_tokens = int(max_tokens)
-        except Exception:
-            max_tokens = 1000
-
-        truncated = False
-        original_count = len(unique_tokens)
-        if len(unique_tokens) > max_tokens:
-            unique_tokens = unique_tokens[:max_tokens]
-            truncated = True
-            logger.warning(
-                f"Usage refresh: truncated from {original_count} to {max_tokens} tokens"
-            )
+        # 去重并截断
+        max_tokens = int(get_config("performance.usage_max_tokens"))
+        unique_tokens, truncated, original_count = _truncate_tokens(
+            tokens, max_tokens, "Usage refresh"
+        )
 
         # 批量执行配置
-        max_concurrent = get_config("performance.usage_max_concurrent", 25)
-        batch_size = get_config("performance.usage_batch_size", 50)
+        max_concurrent = get_config("performance.usage_max_concurrent")
+        batch_size = get_config("performance.usage_batch_size")
 
         async def _refresh_one(t):
             return await mgr.sync_usage(
@@ -380,38 +897,20 @@ async def refresh_tokens_api(data: dict):
 )
 async def refresh_tokens_api_async(data: dict):
     """刷新 Token 状态（异步批量 + SSE 进度）"""
-    from app.services.token.manager import get_token_manager
-    from app.services.grok.utils.batch import run_in_batches
-
     mgr = await get_token_manager()
-    tokens: list[str] = []
-    if isinstance(data.get("token"), str) and data["token"].strip():
-        tokens.append(data["token"].strip())
-    if isinstance(data.get("tokens"), list):
-        tokens.extend([str(t).strip() for t in data["tokens"] if str(t).strip()])
+    tokens = _collect_tokens(data)
 
     if not tokens:
         raise HTTPException(status_code=400, detail="No tokens provided")
 
-    unique_tokens = list(dict.fromkeys(tokens))
+    # 去重并截断
+    max_tokens = int(get_config("performance.usage_max_tokens"))
+    unique_tokens, truncated, original_count = _truncate_tokens(
+        tokens, max_tokens, "Usage refresh"
+    )
 
-    max_tokens = get_config("performance.usage_max_tokens", 1000)
-    try:
-        max_tokens = int(max_tokens)
-    except Exception:
-        max_tokens = 1000
-
-    truncated = False
-    original_count = len(unique_tokens)
-    if len(unique_tokens) > max_tokens:
-        unique_tokens = unique_tokens[:max_tokens]
-        truncated = True
-        logger.warning(
-            f"Usage refresh: truncated from {original_count} to {max_tokens} tokens"
-        )
-
-    max_concurrent = get_config("performance.usage_max_concurrent", 25)
-    batch_size = get_config("performance.usage_batch_size", 50)
+    max_concurrent = get_config("performance.usage_max_concurrent")
+    batch_size = get_config("performance.usage_batch_size")
 
     task = create_task(len(unique_tokens))
 
@@ -485,19 +984,13 @@ async def refresh_tokens_api_async(data: dict):
 async def enable_nsfw_api(data: dict):
     """批量开启 NSFW (Unhinged) 模式"""
     from app.services.grok.services.nsfw import NSFWService
-    from app.services.grok.utils.batch import run_in_batches
-    from app.services.token.manager import get_token_manager
 
     try:
         mgr = await get_token_manager()
         nsfw_service = NSFWService()
 
         # 收集 token 列表
-        tokens: list[str] = []
-        if isinstance(data.get("token"), str) and data["token"].strip():
-            tokens.append(data["token"].strip())
-        if isinstance(data.get("tokens"), list):
-            tokens.extend([str(t).strip() for t in data["tokens"] if str(t).strip()])
+        tokens = _collect_tokens(data)
 
         # 若未指定，则使用所有 pool 中的 token
         if not tokens:
@@ -511,28 +1004,15 @@ async def enable_nsfw_api(data: dict):
         if not tokens:
             raise HTTPException(status_code=400, detail="No tokens available")
 
-        # 去重并保持顺序
-        unique_tokens = list(dict.fromkeys(tokens))
-
-        # 限制最大数量（超出时截取前 N 个）
-        max_tokens = get_config("performance.nsfw_max_tokens", 1000)
-        try:
-            max_tokens = int(max_tokens)
-        except Exception:
-            max_tokens = 1000
-
-        truncated = False
-        original_count = len(unique_tokens)
-        if len(unique_tokens) > max_tokens:
-            unique_tokens = unique_tokens[:max_tokens]
-            truncated = True
-            logger.warning(
-                f"NSFW enable: truncated from {original_count} to {max_tokens} tokens"
-            )
+        # 去重并截断
+        max_tokens = int(get_config("performance.nsfw_max_tokens"))
+        unique_tokens, truncated, original_count = _truncate_tokens(
+            tokens, max_tokens, "NSFW enable"
+        )
 
         # 批量执行配置
-        max_concurrent = get_config("performance.nsfw_max_concurrent", 10)
-        batch_size = get_config("performance.nsfw_batch_size", 50)
+        max_concurrent = get_config("performance.nsfw_max_concurrent")
+        batch_size = get_config("performance.nsfw_batch_size")
 
         # 定义 worker
         async def _enable(token: str):
@@ -559,7 +1039,7 @@ async def enable_nsfw_api(data: dict):
         fail_count = 0
 
         for token, res in raw_results.items():
-            masked = f"{token[:8]}...{token[-8:]}" if len(token) > 20 else token
+            masked = _mask_token(token)
             if res.get("ok") and res.get("data", {}).get("success"):
                 ok_count += 1
                 results[masked] = res.get("data", {})
@@ -598,17 +1078,11 @@ async def enable_nsfw_api(data: dict):
 async def enable_nsfw_api_async(data: dict):
     """批量开启 NSFW (Unhinged) 模式（异步批量 + SSE 进度）"""
     from app.services.grok.services.nsfw import NSFWService
-    from app.services.grok.utils.batch import run_in_batches
-    from app.services.token.manager import get_token_manager
 
     mgr = await get_token_manager()
     nsfw_service = NSFWService()
 
-    tokens: list[str] = []
-    if isinstance(data.get("token"), str) and data["token"].strip():
-        tokens.append(data["token"].strip())
-    if isinstance(data.get("tokens"), list):
-        tokens.extend([str(t).strip() for t in data["tokens"] if str(t).strip()])
+    tokens = _collect_tokens(data)
 
     if not tokens:
         for pool_name, pool in mgr.pools.items():
@@ -619,25 +1093,14 @@ async def enable_nsfw_api_async(data: dict):
     if not tokens:
         raise HTTPException(status_code=400, detail="No tokens available")
 
-    unique_tokens = list(dict.fromkeys(tokens))
+    # 去重并截断
+    max_tokens = int(get_config("performance.nsfw_max_tokens"))
+    unique_tokens, truncated, original_count = _truncate_tokens(
+        tokens, max_tokens, "NSFW enable"
+    )
 
-    max_tokens = get_config("performance.nsfw_max_tokens", 1000)
-    try:
-        max_tokens = int(max_tokens)
-    except Exception:
-        max_tokens = 1000
-
-    truncated = False
-    original_count = len(unique_tokens)
-    if len(unique_tokens) > max_tokens:
-        unique_tokens = unique_tokens[:max_tokens]
-        truncated = True
-        logger.warning(
-            f"NSFW enable: truncated from {original_count} to {max_tokens} tokens"
-        )
-
-    max_concurrent = get_config("performance.nsfw_max_concurrent", 10)
-    batch_size = get_config("performance.nsfw_batch_size", 50)
+    max_concurrent = get_config("performance.nsfw_max_concurrent")
+    batch_size = get_config("performance.nsfw_batch_size")
 
     task = create_task(len(unique_tokens))
 
@@ -772,24 +1235,9 @@ async def get_cache_stats_api(request: Request):
         }
         online_details = []
         account_map = {a["token"]: a for a in accounts}
-        max_concurrent = get_config("performance.assets_max_concurrent", 25)
-        batch_size = get_config("performance.assets_batch_size", 10)
-        try:
-            max_concurrent = int(max_concurrent)
-        except Exception:
-            max_concurrent = 25
-        try:
-            batch_size = int(batch_size)
-        except Exception:
-            batch_size = 10
-        max_concurrent = max(1, max_concurrent)
-        batch_size = max(1, batch_size)
-
-        max_tokens = get_config("performance.assets_max_tokens", 1000)
-        try:
-            max_tokens = int(max_tokens)
-        except Exception:
-            max_tokens = 1000
+        max_concurrent = max(1, int(get_config("performance.assets_max_concurrent")))
+        batch_size = max(1, int(get_config("performance.assets_batch_size")))
+        max_tokens = int(get_config("performance.assets_max_tokens"))
 
         truncated = False
         original_count = 0
@@ -832,11 +1280,9 @@ async def get_cache_stats_api(request: Request):
                 }
 
         if selected_tokens:
-            selected_tokens = list(dict.fromkeys(selected_tokens))
-            original_count = len(selected_tokens)
-            if len(selected_tokens) > max_tokens:
-                selected_tokens = selected_tokens[:max_tokens]
-                truncated = True
+            selected_tokens, truncated, original_count = _truncate_tokens(
+                selected_tokens, max_tokens, "Assets fetch"
+            )
             total = 0
             raw_results = await run_in_batches(
                 selected_tokens,
@@ -1004,22 +1450,13 @@ async def load_online_cache_api_async(data: dict):
     else:
         raise HTTPException(status_code=400, detail="No tokens provided")
 
-    selected_tokens = list(dict.fromkeys(selected_tokens))
+    max_tokens = int(get_config("performance.assets_max_tokens"))
+    selected_tokens, truncated, original_count = _truncate_tokens(
+        selected_tokens, max_tokens, "Assets load"
+    )
 
-    max_tokens = get_config("performance.assets_max_tokens", 1000)
-    try:
-        max_tokens = int(max_tokens)
-    except Exception:
-        max_tokens = 1000
-
-    truncated = False
-    original_count = len(selected_tokens)
-    if len(selected_tokens) > max_tokens:
-        selected_tokens = selected_tokens[:max_tokens]
-        truncated = True
-
-    max_concurrent = get_config("performance.assets_max_concurrent", 25)
-    batch_size = get_config("performance.assets_batch_size", 10)
+    max_concurrent = get_config("performance.assets_max_concurrent")
+    batch_size = get_config("performance.assets_batch_size")
 
     task = create_task(len(selected_tokens))
 
@@ -1193,30 +1630,16 @@ async def clear_online_cache_api(data: dict):
             token_list = list(dict.fromkeys(token_list))
 
             # 最大数量限制
-            max_tokens = get_config("performance.assets_max_tokens", 1000)
-            try:
-                max_tokens = int(max_tokens)
-            except Exception:
-                max_tokens = 1000
-            truncated = False
-            original_count = len(token_list)
-            if len(token_list) > max_tokens:
-                token_list = token_list[:max_tokens]
-                truncated = True
+            max_tokens = int(get_config("performance.assets_max_tokens"))
+            token_list, truncated, original_count = _truncate_tokens(
+                token_list, max_tokens, "Clear online cache"
+            )
 
             results = {}
-            max_concurrent = get_config("performance.assets_max_concurrent", 25)
-            batch_size = get_config("performance.assets_batch_size", 10)
-            try:
-                max_concurrent = int(max_concurrent)
-            except Exception:
-                max_concurrent = 25
-            try:
-                batch_size = int(batch_size)
-            except Exception:
-                batch_size = 10
-            max_concurrent = max(1, max_concurrent)
-            batch_size = max(1, batch_size)
+            max_concurrent = max(
+                1, int(get_config("performance.assets_max_concurrent"))
+            )
+            batch_size = max(1, int(get_config("performance.assets_batch_size")))
 
             async def _clear_one(t: str):
                 try:
@@ -1279,21 +1702,13 @@ async def clear_online_cache_api_async(data: dict):
     if not token_list:
         raise HTTPException(status_code=400, detail="No tokens provided")
 
-    token_list = list(dict.fromkeys(token_list))
+    max_tokens = int(get_config("performance.assets_max_tokens"))
+    token_list, truncated, original_count = _truncate_tokens(
+        token_list, max_tokens, "Clear online cache async"
+    )
 
-    max_tokens = get_config("performance.assets_max_tokens", 1000)
-    try:
-        max_tokens = int(max_tokens)
-    except Exception:
-        max_tokens = 1000
-    truncated = False
-    original_count = len(token_list)
-    if len(token_list) > max_tokens:
-        token_list = token_list[:max_tokens]
-        truncated = True
-
-    max_concurrent = get_config("performance.assets_max_concurrent", 25)
-    batch_size = get_config("performance.assets_batch_size", 10)
+    max_concurrent = get_config("performance.assets_max_concurrent")
+    batch_size = get_config("performance.assets_batch_size")
 
     task = create_task(len(token_list))
 

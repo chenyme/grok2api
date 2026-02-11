@@ -3,14 +3,30 @@
 """
 
 import sys
+import os
 import json
 import traceback
 from pathlib import Path
 from loguru import logger
 
 # 日志目录
-LOG_DIR = Path(__file__).parent.parent.parent / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_LOG_DIR = Path(__file__).parent.parent.parent / "logs"
+LOG_DIR = Path(os.getenv("LOG_DIR", str(DEFAULT_LOG_DIR)))
+_LOG_DIR_READY = False
+
+
+def _prepare_log_dir() -> bool:
+    """确保日志目录可用"""
+    global LOG_DIR, _LOG_DIR_READY
+    if _LOG_DIR_READY:
+        return True
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _LOG_DIR_READY = True
+        return True
+    except Exception:
+        _LOG_DIR_READY = False
+        return False
 
 
 def _format_json(record) -> str:
@@ -52,6 +68,12 @@ def _format_json(record) -> str:
 
     return json.dumps(log_entry, ensure_ascii=False)
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on", "y")
+
 
 def _make_json_sink(output):
     """创建 JSON sink"""
@@ -79,6 +101,7 @@ def setup_logging(
 ):
     """设置日志配置"""
     logger.remove()
+    file_logging = _env_flag("LOG_FILE_ENABLED", file_logging)
 
     # 控制台输出
     if json_console:
@@ -98,12 +121,15 @@ def setup_logging(
 
     # 文件输出
     if file_logging:
-        logger.add(
-            _file_json_sink,
-            level=level,
-            format="{message}",
-            enqueue=True,
-        )
+        if _prepare_log_dir():
+            logger.add(
+                _file_json_sink,
+                level=level,
+                format="{message}",
+                enqueue=True,
+            )
+        else:
+            logger.warning("File logging disabled: no writable log directory.")
 
     return logger
 

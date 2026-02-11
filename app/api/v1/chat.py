@@ -48,7 +48,7 @@ class VideoConfig(BaseModel):
     aspect_ratio: Optional[str] = Field(
         "3:2", description="视频比例: 3:2, 16:9, 1:1 等"
     )
-    video_length: Optional[int] = Field(6, description="视频时长(秒): 6 或 10")
+    video_length: Optional[int] = Field(6, description="视频时长(秒): 6 / 10 / 15")
     resolution_name: Optional[str] = Field("480p", description="视频分辨率: 480p, 720p")
     preset: Optional[str] = Field("custom", description="风格预设: fun, normal, spicy")
 
@@ -68,9 +68,9 @@ class VideoConfig(BaseModel):
     @classmethod
     def validate_video_length(cls, v):
         if v is not None:
-            if v not in (6, 10):
+            if v not in (6, 10, 15):
                 raise ValidationException(
-                    message="video_length must be 6 or 10 seconds",
+                    message="video_length must be 6, 10, or 15 seconds",
                     param="video_config.video_length",
                     code="invalid_video_length",
                 )

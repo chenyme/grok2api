@@ -10,7 +10,7 @@ Grok API 重试工具
 
 import asyncio
 import random
-from typing import Callable, Any, Optional, List
+from typing import Callable, Any, Optional
 from functools import wraps
 
 from app.core.logger import logger
@@ -18,56 +18,22 @@ from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 
 
-class RetryConfig:
-    """重试配置"""
-
-    @staticmethod
-    def get_max_retry() -> int:
-        """获取最大重试次数"""
-        return get_config("grok.max_retry", 3)
-
-    @staticmethod
-    def get_retry_codes() -> List[int]:
-        """获取可重试的状态码"""
-        return get_config("grok.retry_status_codes", [401, 429, 403])
-
-    @staticmethod
-    def get_backoff_base() -> float:
-        """获取退避基础时间(秒)"""
-        return get_config("grok.retry_backoff_base", 0.5)
-
-    @staticmethod
-    def get_backoff_factor() -> float:
-        """获取退避因子"""
-        return get_config("grok.retry_backoff_factor", 2.0)
-
-    @staticmethod
-    def get_backoff_max() -> float:
-        """获取最大退避时间(秒)"""
-        return get_config("grok.retry_backoff_max", 30.0)
-
-    @staticmethod
-    def get_retry_budget() -> float:
-        """获取重试总预算时间(秒)"""
-        return get_config("grok.retry_budget", 90.0)
-
-
 class RetryContext:
     """重试上下文"""
 
     def __init__(self):
         self.attempt = 0
-        self.max_retry = RetryConfig.get_max_retry()
-        self.retry_codes = RetryConfig.get_retry_codes()
+        self.max_retry = int(get_config("retry.max_retry"))
+        self.retry_codes = get_config("retry.retry_status_codes")
         self.last_error = None
         self.last_status = None
         self.total_delay = 0.0
-        self.retry_budget = RetryConfig.get_retry_budget()
+        self.retry_budget = float(get_config("retry.retry_budget"))
 
         # 退避参数
-        self.backoff_base = RetryConfig.get_backoff_base()
-        self.backoff_factor = RetryConfig.get_backoff_factor()
-        self.backoff_max = RetryConfig.get_backoff_max()
+        self.backoff_base = float(get_config("retry.retry_backoff_base"))
+        self.backoff_factor = float(get_config("retry.retry_backoff_factor"))
+        self.backoff_max = float(get_config("retry.retry_backoff_max"))
 
         # decorrelated jitter 状态
         self._last_delay = self.backoff_base
@@ -291,7 +257,6 @@ def with_retry(
 
 
 __all__ = [
-    "RetryConfig",
     "RetryContext",
     "retry_on_status",
     "with_retry",

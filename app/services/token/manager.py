@@ -18,9 +18,13 @@ from app.core.storage import get_storage
 from app.core.config import get_config
 from app.services.token.pool import TokenPool
 
-# 批量刷新配置
-REFRESH_BATCH_SIZE = 10
-REFRESH_CONCURRENCY = 5
+
+DEFAULT_REFRESH_BATCH_SIZE = 10
+DEFAULT_REFRESH_CONCURRENCY = 5
+DEFAULT_SUPER_REFRESH_INTERVAL_HOURS = 2
+DEFAULT_REFRESH_INTERVAL_HOURS = 8
+DEFAULT_RELOAD_INTERVAL_SEC = 30
+DEFAULT_SAVE_DELAY_MS = 500
 
 SUPER_POOL_NAME = "ssoSuper"
 BASIC_POOL_NAME = "ssoBasic"
@@ -30,12 +34,6 @@ def _default_quota_for_pool(pool_name: str) -> int:
     if pool_name == SUPER_POOL_NAME:
         return SUPER_DEFAULT_QUOTA
     return BASIC__DEFAULT_QUOTA
-
-
-def _refresh_interval_hours_for_pool(pool_name: str) -> float:
-    if pool_name == SUPER_POOL_NAME:
-        return get_config("token.super_refresh_interval_hours", 2)
-    return get_config("token.refresh_interval_hours", 8)
 
 
 class TokenManager:
@@ -50,7 +48,7 @@ class TokenManager:
         self._save_lock = asyncio.Lock()
         self._dirty = False
         self._save_task: Optional[asyncio.Task] = None
-        self._save_delay = 0.5
+        self._save_delay = DEFAULT_SAVE_DELAY_MS / 1000.0
         self._last_reload_at = 0.0
 
     @classmethod
@@ -131,11 +129,11 @@ class TokenManager:
 
     async def reload_if_stale(self):
         """在多 worker 场景下保持短周期一致性"""
-        interval = get_config("token.reload_interval_sec", 30)
+        interval = get_config("token.reload_interval_sec", DEFAULT_RELOAD_INTERVAL_SEC)
         try:
             interval = float(interval)
         except Exception:
-            interval = 30.0
+            interval = float(DEFAULT_RELOAD_INTERVAL_SEC)
         if interval <= 0:
             return
         if time.monotonic() - self._last_reload_at < interval:
@@ -158,11 +156,11 @@ class TokenManager:
 
     def _schedule_save(self):
         """合并高频保存请求，减少写入开销"""
-        delay_ms = get_config("token.save_delay_ms", 500)
+        delay_ms = get_config("token.save_delay_ms", DEFAULT_SAVE_DELAY_MS)
         try:
             delay_ms = float(delay_ms)
         except Exception:
-            delay_ms = 500
+            delay_ms = float(DEFAULT_SAVE_DELAY_MS)
         self._save_delay = max(0.0, delay_ms / 1000.0)
         self._dirty = True
         if self._save_delay == 0:
@@ -187,15 +185,41 @@ class TokenManager:
             if self._dirty:
                 self._schedule_save()
 
-    def get_token(self, pool_name: str = "ssoBasic") -> Optional[str]:
+    def get_token(self, pool_name: str = "ssoBasic", exclude: set = None) -> Optional[str]:
         """
         获取可用 Token
 
         Args:
             pool_name: Token 池名称
+            exclude: 需要排除的 token 字符串集合
 
         Returns:
             Token 字符串或 None
+        """
+        pool = self.pools.get(pool_name)
+        if not pool:
+            logger.warning(f"Pool '{pool_name}' not found")
+            return None
+
+        token_info = pool.select(exclude=exclude)
+        if not token_info:
+            logger.warning(f"No available token in pool '{pool_name}'")
+            return None
+
+        token = token_info.token
+        if token.startswith("sso="):
+            return token[4:]
+        return token
+
+    def get_token_info(self, pool_name: str = "ssoBasic") -> Optional["TokenInfo"]:
+        """
+        获取可用 Token 的完整信息
+
+        Args:
+            pool_name: Token 池名称
+
+        Returns:
+            TokenInfo 对象或 None
         """
         pool = self.pools.get(pool_name)
         if not pool:
@@ -207,10 +231,73 @@ class TokenManager:
             logger.warning(f"No available token in pool '{pool_name}'")
             return None
 
-        token = token_info.token
-        if token.startswith("sso="):
-            return token[4:]
-        return token
+        return token_info
+
+    def get_token_for_video(
+        self,
+        resolution: str = "480p",
+        video_length: int = 6,
+        pool_candidates: Optional[List[str]] = None,
+    ) -> Optional["TokenInfo"]:
+        """
+        根据视频需求智能选择 Token 池
+
+        路由策略:
+        - 如果 resolution 是 "720p" 或 video_length > 6: 优先使用 "ssoSuper" 池
+        - 否则优先使用 "ssoBasic" 池
+        - 当提供 pool_candidates 时，按候选池顺序回退
+
+        Args:
+            resolution: 视频分辨率 ("480p" 或 "720p")
+            video_length: 视频时长(秒)
+            pool_candidates: 候选 Token 池（按优先级）
+
+        Returns:
+            TokenInfo 对象或 None（无可用 token）
+        """
+        # 确定首选池
+        requires_super = resolution == "720p" or video_length > 6
+        primary_pool = SUPER_POOL_NAME if requires_super else BASIC_POOL_NAME
+
+        if pool_candidates:
+            ordered_pools = list(pool_candidates)
+            if primary_pool in ordered_pools:
+                ordered_pools.remove(primary_pool)
+                ordered_pools.insert(0, primary_pool)
+        else:
+            fallback_pool = BASIC_POOL_NAME if requires_super else SUPER_POOL_NAME
+            ordered_pools = [primary_pool, fallback_pool]
+
+        for idx, pool_name in enumerate(ordered_pools):
+            token_info = self.get_token_info(pool_name)
+            if token_info:
+                if idx == 0:
+                    logger.info(
+                        f"Video token routing: resolution={resolution}, length={video_length}s -> "
+                        f"pool={pool_name} (token={token_info.token[:10]}...)"
+                    )
+                else:
+                    logger.info(
+                        f"Video token routing: fallback from {ordered_pools[0]} -> {pool_name} "
+                        f"(token={token_info.token[:10]}...)"
+                    )
+                return token_info
+
+            if idx == 0 and requires_super and pool_name == primary_pool:
+                next_pool = ordered_pools[1] if len(ordered_pools) > 1 else None
+                if next_pool:
+                    logger.warning(
+                        f"Video token routing: {primary_pool} pool has no available token for "
+                        f"resolution={resolution}, length={video_length}s. "
+                        f"Falling back to {next_pool} pool."
+                    )
+
+        # 两个池都没有可用 token
+        logger.warning(
+            f"Video token routing: no available token in any pool "
+            f"(resolution={resolution}, length={video_length}s)"
+        )
+        return None
 
     async def consume(
         self, token_str: str, effort: EffortType = EffortType.LOW
@@ -347,6 +434,37 @@ class TokenManager:
                 return True
 
         logger.warning(f"Token {raw_token[:10]}...: not found for failure record")
+        return False
+
+    async def mark_rate_limited(self, token_str: str) -> bool:
+        """
+        将 Token 标记为配额耗尽（COOLING）
+
+        当 Grok API 返回 429 时调用，将 quota 设为 0 并标记 COOLING，
+        使该 Token 不再被选中，等待下次 Scheduler 刷新恢复。
+
+        Args:
+            token_str: Token 字符串
+
+        Returns:
+            是否成功
+        """
+        raw_token = token_str.removeprefix("sso=")
+
+        for pool in self.pools.values():
+            token = pool.get(raw_token)
+            if token:
+                old_quota = token.quota
+                token.quota = 0
+                token.status = TokenStatus.COOLING
+                logger.warning(
+                    f"Token {raw_token[:10]}...: marked as rate limited "
+                    f"(quota {old_quota} -> 0, status -> cooling)"
+                )
+                self._schedule_save()
+                return True
+
+        logger.warning(f"Token {raw_token[:10]}...: not found for rate limit marking")
         return False
 
     # ========== 管理功能 ==========
@@ -523,7 +641,16 @@ class TokenManager:
         # 收集需要刷新的 token
         to_refresh: List[TokenInfo] = []
         for pool in self.pools.values():
-            interval_hours = _refresh_interval_hours_for_pool(pool.name)
+            if pool.name == SUPER_POOL_NAME:
+                interval_hours = get_config(
+                    "token.super_refresh_interval_hours",
+                    DEFAULT_SUPER_REFRESH_INTERVAL_HOURS,
+                )
+            else:
+                interval_hours = get_config(
+                    "token.refresh_interval_hours",
+                    DEFAULT_REFRESH_INTERVAL_HOURS,
+                )
             for token in pool:
                 if token.need_refresh(interval_hours):
                     to_refresh.append(token)
@@ -535,7 +662,7 @@ class TokenManager:
         logger.info(f"Refresh check: found {len(to_refresh)} cooling tokens to refresh")
 
         # 批量并发刷新
-        semaphore = asyncio.Semaphore(REFRESH_CONCURRENCY)
+        semaphore = asyncio.Semaphore(DEFAULT_REFRESH_CONCURRENCY)
         usage_service = UsageService()
         refreshed = 0
         recovered = 0
@@ -551,7 +678,7 @@ class TokenManager:
                 # 重试逻辑：最多 2 次重试
                 for retry in range(3):  # 0, 1, 2
                     try:
-                        result = await usage_service.get(token_str)
+                        result = await usage_service.get(token_str, model_name="grok-3")
 
                         if result and "remainingTokens" in result:
                             new_quota = result["remainingTokens"]
@@ -571,7 +698,6 @@ class TokenManager:
                                 "expired": False,
                             }
 
-                        token_info.mark_synced()
                         return {"recovered": False, "expired": False}
 
                     except Exception as e:
@@ -593,28 +719,25 @@ class TokenManager:
                                     f"marking as expired"
                                 )
                                 token_info.status = TokenStatus.EXPIRED
-                                token_info.mark_synced()
                                 return {"recovered": False, "expired": True}
                         else:
                             logger.warning(
                                 f"Token {token_info.token[:10]}...: refresh failed ({e})"
                             )
-                            token_info.mark_synced()
                             return {"recovered": False, "expired": False}
 
-                token_info.mark_synced()
                 return {"recovered": False, "expired": False}
 
         # 批量处理
-        for i in range(0, len(to_refresh), REFRESH_BATCH_SIZE):
-            batch = to_refresh[i : i + REFRESH_BATCH_SIZE]
+        for i in range(0, len(to_refresh), DEFAULT_REFRESH_BATCH_SIZE):
+            batch = to_refresh[i : i + DEFAULT_REFRESH_BATCH_SIZE]
             results = await asyncio.gather(*[_refresh_one(t) for t in batch])
             refreshed += len(batch)
             recovered += sum(r["recovered"] for r in results)
             expired += sum(r["expired"] for r in results)
 
             # 批次间延迟
-            if i + REFRESH_BATCH_SIZE < len(to_refresh):
+            if i + DEFAULT_REFRESH_BATCH_SIZE < len(to_refresh):
                 await asyncio.sleep(1)
 
         await self._save()

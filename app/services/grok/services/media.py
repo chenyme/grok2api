@@ -19,30 +19,21 @@ from app.core.exceptions import (
 )
 from app.services.grok.models.model import ModelService
 from app.services.token import get_token_manager, EffortType
-from app.services.grok.processors.processor import VideoStreamProcessor, VideoCollectProcessor
+from app.services.grok.processors import VideoStreamProcessor, VideoCollectProcessor
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
+from app.services.grok.utils.stream import wrap_stream_with_usage
 
-# API 端点
 CREATE_POST_API = "https://grok.com/rest/media/post/create"
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 
-# 常量
-DEFAULT_BROWSER = "chrome136"
-DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-TIMEOUT = 300
-DEFAULT_MAX_CONCURRENT = 50
-_MEDIA_SEMAPHORE = asyncio.Semaphore(DEFAULT_MAX_CONCURRENT)
-_MEDIA_SEM_VALUE = DEFAULT_MAX_CONCURRENT
+_MEDIA_SEMAPHORE = None
+_MEDIA_SEM_VALUE = 0
 
 
-def _get_media_semaphore() -> asyncio.Semaphore:
+def _get_semaphore() -> asyncio.Semaphore:
+    """获取或更新信号量"""
     global _MEDIA_SEMAPHORE, _MEDIA_SEM_VALUE
-    value = get_config("performance.media_max_concurrent", DEFAULT_MAX_CONCURRENT)
-    try:
-        value = int(value)
-    except Exception:
-        value = DEFAULT_MAX_CONCURRENT
-    value = max(1, value)
+    value = max(1, int(get_config("performance.media_max_concurrent")))
     if value != _MEDIA_SEM_VALUE:
         _MEDIA_SEM_VALUE = value
         _MEDIA_SEMAPHORE = asyncio.Semaphore(value)
@@ -53,14 +44,14 @@ class VideoService:
     """视频生成服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("grok.base_proxy_url", "")
-        self.timeout = get_config("grok.timeout", TIMEOUT)
+        self.proxy = proxy or get_config("network.base_proxy_url")
+        self.timeout = get_config("network.timeout")
 
     def _build_headers(
         self, token: str, referer: str = "https://grok.com/imagine"
     ) -> dict:
         """构建请求头"""
-        user_agent = get_config("grok.user_agent", DEFAULT_USER_AGENT)
+        user_agent = get_config("security.user_agent")
         headers = {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -100,18 +91,7 @@ class VideoService:
         media_type: str = "MEDIA_POST_TYPE_VIDEO",
         media_url: str = None,
     ) -> str:
-        """
-        创建媒体帖子
-
-        Args:
-            token: 认证 Token
-            prompt: 提示词（视频生成用）
-            media_type: 媒体类型 (MEDIA_POST_TYPE_VIDEO 或 MEDIA_POST_TYPE_IMAGE)
-            media_url: 媒体 URL（图片模式用）
-
-        Returns:
-            post ID
-        """
+        """创建媒体帖子，返回 post ID"""
         try:
             headers = self._build_headers(token)
 
@@ -122,12 +102,11 @@ class VideoService:
                 payload = {"mediaType": media_type, "prompt": prompt}
 
             async with AsyncSession() as session:
-                browser = get_config("grok.browser", DEFAULT_BROWSER)
                 response = await session.post(
                     CREATE_POST_API,
                     headers=headers,
                     json=payload,
-                    impersonate=browser,
+                    impersonate=get_config("security.browser"),
                     timeout=30,
                     proxies=self._build_proxies(),
                 )
@@ -138,32 +117,21 @@ class VideoService:
                     f"Failed to create post: {response.status_code}"
                 )
 
-            data = response.json()
-            post_id = data.get("post", {}).get("id", "")
-
+            post_id = response.json().get("post", {}).get("id", "")
             if not post_id:
                 raise UpstreamException("No post ID in response")
 
             logger.info(f"Media post created: {post_id} (type={media_type})")
             return post_id
 
+        except AppException:
+            raise
         except Exception as e:
             logger.error(f"Create post error: {e}")
-            if isinstance(e, AppException):
-                raise e
             raise UpstreamException(f"Create post error: {str(e)}")
 
     async def create_image_post(self, token: str, image_url: str) -> str:
-        """
-        创建图片帖子
-
-        Args:
-            token: 认证 Token
-            image_url: 完整的图片 URL (https://assets.grok.com/...)
-
-        Returns:
-            post ID
-        """
+        """创建图片帖子，返回 post ID"""
         return await self.create_post(
             token, prompt="", media_type="MEDIA_POST_TYPE_IMAGE", media_url=image_url
         )
@@ -178,36 +146,104 @@ class VideoService:
         preset: str = "normal",
     ) -> dict:
         """构建视频生成载荷"""
-        mode_flag = "--mode=custom"
-        if preset == "fun":
-            mode_flag = "--mode=extremely-crazy"
-        elif preset == "normal":
-            mode_flag = "--mode=normal"
-        elif preset == "spicy":
-            mode_flag = "--mode=extremely-spicy-or-crazy"
-
-        full_prompt = f"{prompt} {mode_flag}"
-        video_gen_config = {
-            "parentPostId": post_id,
-            "aspectRatio": aspect_ratio,
-            "videoLength": video_length,
-            "resolutionName": resolution_name,
+        mode_map = {
+            "fun": "--mode=extremely-crazy",
+            "normal": "--mode=normal",
+            "spicy": "--mode=extremely-spicy-or-crazy",
         }
-        return {
+        mode_flag = mode_map.get(preset, "--mode=custom")
+
+        payload = {
             "temporary": True,
             "modelName": "grok-3",
-            "message": full_prompt,
+            "message": f"{prompt} {mode_flag}",
             "toolOverrides": {"videoGen": True},
             "enableSideBySide": True,
+            "deviceEnvInfo": {
+                "darkModeEnabled": False,
+                "devicePixelRatio": 2,
+                "screenWidth": 1920,
+                "screenHeight": 1080,
+                "viewportWidth": 1920,
+                "viewportHeight": 1080,
+            },
             "responseMetadata": {
                 "experiments": [],
                 "modelConfigOverride": {
                     "modelMap": {
-                        "videoGenModelConfig": video_gen_config
+                        "videoGenModelConfig": {
+                            "aspectRatio": aspect_ratio,
+                            "parentPostId": post_id,
+                            "resolutionName": resolution_name,
+                            "videoLength": video_length,
+                        }
                     }
                 },
             },
         }
+
+        logger.debug(f"Video generation payload: {payload}")
+
+        return payload
+
+    async def _generate_internal(
+        self,
+        token: str,
+        post_id: str,
+        prompt: str,
+        aspect_ratio: str,
+        video_length: int,
+        resolution_name: str,
+        preset: str,
+    ) -> AsyncGenerator[bytes, None]:
+        """内部生成逻辑"""
+        session = None
+        try:
+            headers = self._build_headers(token)
+            payload = self._build_payload(
+                prompt, post_id, aspect_ratio, video_length, resolution_name, preset
+            )
+
+            session = AsyncSession(impersonate=get_config("security.browser"))
+            response = await session.post(
+                CHAT_API,
+                headers=headers,
+                data=orjson.dumps(payload),
+                timeout=self.timeout,
+                stream=True,
+                proxies=self._build_proxies(),
+            )
+
+            if response.status_code != 200:
+                logger.error(
+                    f"Video generation failed: status={response.status_code}, post_id={post_id}"
+                )
+                raise UpstreamException(
+                    message=f"Video generation failed: {response.status_code}",
+                    details={"status": response.status_code},
+                )
+
+            logger.info(f"Video generation started: post_id={post_id}")
+
+            async def stream_response():
+                try:
+                    async for line in response.aiter_lines():
+                        yield line
+                finally:
+                    await session.close()
+
+            return stream_response()
+
+        except Exception as e:
+            if session:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+            logger.error(f"Video generation error: {e}")
+            if isinstance(e, AppException):
+                raise
+            raise UpstreamException(f"Video generation error: {str(e)}")
 
     async def generate(
         self,
@@ -218,78 +254,21 @@ class VideoService:
         resolution_name: str = "480p",
         preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
-        """
-        生成视频
-
-        Args:
-            token: 认证 Token
-            prompt: 视频描述
-            aspect_ratio: 宽高比
-            video_length: 视频时长
-            resolution_name: 分辨率
-            preset: 预设
-
-        Returns:
-            AsyncGenerator，流式传输
-
-        Raises:
-            UpstreamException: 连接失败时
-        """
-        async with _get_media_semaphore():
-            session = None
-            try:
-                # Step 1: 创建帖子
-                post_id = await self.create_post(token, prompt)
-
-                # Step 2: 建立连接
-                headers = self._build_headers(token)
-                payload = self._build_payload(
-                    prompt, post_id, aspect_ratio, video_length, resolution_name, preset
-                )
-
-                browser = get_config("grok.browser", DEFAULT_BROWSER)
-                session = AsyncSession(impersonate=browser)
-                response = await session.post(
-                    CHAT_API,
-                    headers=headers,
-                    data=orjson.dumps(payload),
-                    timeout=self.timeout,
-                    stream=True,
-                    proxies=self._build_proxies(),
-                )
-
-                if response.status_code != 200:
-                    logger.error(f"Video generation failed: {response.status_code}")
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
-                    raise UpstreamException(
-                        message=f"Video generation failed: {response.status_code}",
-                        details={"status": response.status_code},
-                    )
-
-                # Step 3: 流式传输
-                async def stream_response():
-                    try:
-                        async for line in response.aiter_lines():
-                            yield line
-                    finally:
-                        if session:
-                            await session.close()
-
-                return stream_response()
-
-            except Exception as e:
-                if session:
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
-                logger.error(f"Video generation error: {e}")
-                if isinstance(e, AppException):
-                    raise e
-                raise UpstreamException(f"Video generation error: {str(e)}")
+        """生成视频"""
+        logger.info(
+            f"Video generation: prompt='{prompt[:50]}...', ratio={aspect_ratio}, length={video_length}s, preset={preset}"
+        )
+        async with _get_semaphore():
+            post_id = await self.create_post(token, prompt)
+            return await self._generate_internal(
+                token,
+                post_id,
+                prompt,
+                aspect_ratio,
+                video_length,
+                resolution_name,
+                preset,
+            )
 
     async def generate_from_image(
         self,
@@ -301,121 +280,15 @@ class VideoService:
         resolution: str = "480p",
         preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
-        """
-        从图片生成视频
-
-        Args:
-            token: 认证 Token
-            prompt: 视频描述
-            image_url: 图片 URL
-            aspect_ratio: 宽高比
-            video_length: 视频时长
-            resolution: 分辨率
-            preset: 预设
-
-        Returns:
-            AsyncGenerator，流式传输
-        """
-        async with _get_media_semaphore():
-            session = None
-            try:
-                # Step 1: 创建帖子
-                post_id = await self.create_image_post(token, image_url)
-
-                # Step 2: 建立连接
-                headers = self._build_headers(token)
-                payload = self._build_payload(
-                    prompt, post_id, aspect_ratio, video_length, resolution, preset
-                )
-
-                browser = get_config("grok.browser", DEFAULT_BROWSER)
-                session = AsyncSession(impersonate=browser)
-                response = await session.post(
-                    CHAT_API,
-                    headers=headers,
-                    data=orjson.dumps(payload),
-                    timeout=self.timeout,
-                    stream=True,
-                    proxies=self._build_proxies(),
-                )
-
-                if response.status_code != 200:
-                    logger.error(f"Video from image failed: {response.status_code}")
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
-                    raise UpstreamException(
-                        message=f"Video from image failed: {response.status_code}",
-                        details={"status": response.status_code},
-                    )
-
-                # Step 3: 流式传输
-                async def stream_response():
-                    try:
-                        async for line in response.aiter_lines():
-                            yield line
-                    finally:
-                        if session:
-                            await session.close()
-
-                return stream_response()
-
-            except Exception as e:
-                if session:
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
-                logger.error(f"Video from image error: {e}")
-                if isinstance(e, AppException):
-                    raise e
-                raise UpstreamException(f"Video from image error: {str(e)}")
-
-    @staticmethod
-    async def _wrap_stream(
-        stream: AsyncGenerator, token_mgr, token: str, model: str,
-        *, start_time: float = 0, client_ip: str = "", pool_name: str = "",
-    ):
-        """
-        包装流式响应，在完成时记录使用
-        """
-        success = False
-        try:
-            async for chunk in stream:
-                yield chunk
-            success = True
-        finally:
-            effort_str = "low"
-            try:
-                model_info = ModelService.get(model)
-                effort = (
-                    EffortType.HIGH
-                    if (model_info and model_info.cost.value == "high")
-                    else EffortType.LOW
-                )
-                effort_str = effort.value
-                if success:
-                    await token_mgr.consume(token, effort)
-                    logger.debug(
-                        f"Video stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to record video stream usage: {e}")
-
-            try:
-                from app.services.usage_log import UsageLogService
-                use_time = int((time.time() - start_time) * 1000) if start_time else 0
-                await UsageLogService.record(
-                    type="video", model=model, is_stream=True,
-                    use_time=use_time,
-                    status="success" if success else "error",
-                    error_message="" if success else "stream interrupted",
-                    token=token, pool_name=pool_name,
-                    effort=effort_str, ip=client_ip,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record usage log: {e}")
+        """从图片生成视频"""
+        logger.info(
+            f"Image to video: prompt='{prompt[:50]}...', image={image_url[:80]}"
+        )
+        async with _get_semaphore():
+            post_id = await self.create_image_post(token, image_url)
+            return await self._generate_internal(
+                token, post_id, prompt, aspect_ratio, video_length, resolution, preset
+            )
 
     @staticmethod
     async def completions(
@@ -429,31 +302,22 @@ class VideoService:
         preset: str = "normal",
         client_ip: str = "",
     ):
-        """
-        视频生成入口
-        """
+        """视频生成入口"""
         start_time = time.time()
 
-        # 获取 token
-        pool_name = ""
-        try:
-            token_mgr = await get_token_manager()
-            await token_mgr.reload_if_stale()
-            token = None
-            for pn in ModelService.pool_candidates_for_model(model):
-                token = token_mgr.get_token(pn)
-                if token:
-                    pool_name = pn
-                    break
-        except Exception as e:
-            logger.error(f"Failed to get token: {e}")
-            raise AppException(
-                message="Internal service error obtaining token",
-                error_type=ErrorType.SERVER.value,
-                code="internal_error",
-            )
+        # 获取 token（使用智能路由）
+        token_mgr = await get_token_manager()
+        await token_mgr.reload_if_stale()
 
-        if not token:
+        # 使用智能路由选择 token（根据视频需求与候选池）
+        pool_candidates = ModelService.pool_candidates_for_model(model)
+        token_info = token_mgr.get_token_for_video(
+            resolution=resolution,
+            video_length=video_length,
+            pool_candidates=pool_candidates,
+        )
+
+        if not token_info:
             raise AppException(
                 message="No available tokens. Please try again later.",
                 error_type=ErrorType.RATE_LIMIT.value,
@@ -461,14 +325,13 @@ class VideoService:
                 status_code=429,
             )
 
-        # 解析参数
-        think = None
-        if thinking == "enabled":
-            think = True
-        elif thinking == "disabled":
-            think = False
+        # 从 TokenInfo 对象中提取 token 字符串
+        token = token_info.token
+        if token.startswith("sso="):
+            token = token[4:]
 
-        is_stream = stream if stream is not None else get_config("grok.stream", True)
+        think = {"enabled": True, "disabled": False}.get(thinking)
+        is_stream = stream if stream is not None else get_config("chat.stream")
 
         # 提取内容
         from app.services.grok.services.chat import MessageExtractor
@@ -486,27 +349,18 @@ class VideoService:
             try:
                 for attach_type, attach_data in attachments:
                     if attach_type == "image":
-                        # 上传图片
                         _, file_uri = await upload_service.upload(attach_data, token)
                         image_url = f"https://assets.grok.com/{file_uri}"
                         logger.info(f"Image uploaded for video: {image_url}")
-                        break  # 视频模型只使用第一张图片
+                        break
             finally:
                 await upload_service.close()
 
         # 生成视频
         service = VideoService()
-
-        # 图片转视频
         if image_url:
             response = await service.generate_from_image(
-                token,
-                prompt,
-                image_url,
-                aspect_ratio,
-                video_length,
-                resolution,
-                preset,
+                token, prompt, image_url, aspect_ratio, video_length, resolution, preset
             )
         else:
             response = await service.generate(
@@ -516,42 +370,40 @@ class VideoService:
         # 处理响应
         if is_stream:
             processor = VideoStreamProcessor(model, token, think)
-            return VideoService._wrap_stream(
+            return wrap_stream_with_usage(
                 processor.process(response), token_mgr, token, model,
-                start_time=start_time, client_ip=client_ip, pool_name=pool_name,
+                start_time=start_time, client_ip=client_ip,
+                pool_name="", log_type="video",
             )
-        else:
-            result = await VideoCollectProcessor(model, token).process(response)
-            # 非流式：处理完成后立即记录使用
-            effort_str = "low"
-            try:
-                model_info = ModelService.get(model)
-                effort = (
-                    EffortType.HIGH
-                    if (model_info and model_info.cost.value == "high")
-                    else EffortType.LOW
-                )
-                effort_str = effort.value
-                await token_mgr.consume(token, effort)
-                logger.debug(
-                    f"Video completed, recorded usage for token {token[:10]}... (effort={effort.value})"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record video usage: {e}")
 
-            # 记录使用日志
-            try:
-                from app.services.usage_log import UsageLogService
-                use_time = int((time.time() - start_time) * 1000)
-                await UsageLogService.record(
-                    type="video", model=model, is_stream=False,
-                    use_time=use_time, status="success", token=token,
-                    pool_name=pool_name, effort=effort_str, ip=client_ip,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record usage log: {e}")
+        result = await VideoCollectProcessor(model, token).process(response)
+        effort_str = "low"
+        try:
+            model_info = ModelService.get(model)
+            effort = (
+                EffortType.HIGH
+                if (model_info and model_info.cost.value == "high")
+                else EffortType.LOW
+            )
+            effort_str = effort.value
+            await token_mgr.consume(token, effort)
+            logger.debug(f"Video completed, recorded usage (effort={effort.value})")
+        except Exception as e:
+            logger.warning(f"Failed to record video usage: {e}")
 
-            return result
+        # 记录使用日志
+        try:
+            from app.services.usage_log import UsageLogService
+            use_time = int((time.time() - start_time) * 1000)
+            await UsageLogService.record(
+                type="video", model=model, is_stream=False,
+                use_time=use_time, status="success", token=token,
+                pool_name="", effort=effort_str, ip=client_ip,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record usage log: {e}")
+
+        return result
 
 
 __all__ = ["VideoService"]

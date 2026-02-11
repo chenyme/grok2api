@@ -18,7 +18,7 @@ load_dotenv(ROOT / ".env")
 from app.core.config import config
 from app.core.logger import setup_logging
 from app.services.grok.services.chat import GrokChatService
-from app.services.grok.processors.processor import CollectProcessor
+from app.services.grok.processors import CollectProcessor
 from app.services.grok.services.usage import UsageService
 
 

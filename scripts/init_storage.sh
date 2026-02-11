@@ -2,9 +2,9 @@
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-DATA_DIR="$ROOT_DIR/data"
-LOG_DIR="$ROOT_DIR/logs"
-TMP_DIR="$DATA_DIR/tmp"
+DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
+LOG_DIR="${LOG_DIR:-$ROOT_DIR/logs}"
+TMP_DIR="${TMP_DIR:-$DATA_DIR/tmp}"
 DEFAULT_CONFIG="$ROOT_DIR/config.defaults.toml"
 
 mkdir -p "$DATA_DIR" "$LOG_DIR" "$TMP_DIR"

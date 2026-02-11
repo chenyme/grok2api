@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: grok2api
+    env: docker
+    plan: free
+    autoDeploy: false
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: TZ
+        value: Asia/Shanghai
+      - key: LOG_LEVEL
+        value: INFO
+      - key: SERVER_STORAGE_TYPE
+        value: local
+      - key: SERVER_STORAGE_URL
+        value: ""
+      - key: SERVER_HOST
+        value: 0.0.0.0
+      - key: SERVER_PORT
+        value: "8000"

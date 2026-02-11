@@ -112,7 +112,6 @@ class ModelService:
             cost=Cost.HIGH,
             display_name="GROK-4.1-EXPERT",
         ),
-
         ModelInfo(
             model_id="grok-4.1-thinking",
             grok_model="grok-4-1-thinking-1129",
@@ -127,6 +126,15 @@ class ModelService:
             cost=Cost.HIGH,
             display_name="Grok Image",
             description="Image generation model",
+            is_image=True,
+        ),
+        ModelInfo(
+            model_id="grok-imagine-1.0-edit",
+            grok_model="imagine-image-edit",
+            model_mode="MODEL_MODE_FAST",
+            cost=Cost.HIGH,
+            display_name="Grok Image Edit",
+            description="Image edit model",
             is_image=True,
         ),
         ModelInfo(

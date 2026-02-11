@@ -8,11 +8,12 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from app.core.logger import logger
+from app.core.storage import DATA_DIR
 
 router = APIRouter(tags=["Files"])
 
 # 缓存根目录
-BASE_DIR = Path(__file__).parent.parent.parent / "data" / "tmp"
+BASE_DIR = DATA_DIR / "tmp"
 IMAGE_DIR = BASE_DIR / "image"
 VIDEO_DIR = BASE_DIR / "video"
 
