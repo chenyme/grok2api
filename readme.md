@@ -30,14 +30,14 @@ uv run main.py
 
 #### docker compose 部署
 ```
-git clone https://github.com/chenyme/grok2api
+git clone https://github.com/lxn0212/grok2api
 
 docker compose up -d
 ```
 
 #### Vercel 部署
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/chenyme/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL&envDefaults=%7B%22DATA_DIR%22%3A%22/tmp/data%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%7D)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/lxn0212/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL&envDefaults=%7B%22DATA_DIR%22%3A%22/tmp/data%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%7D)
 
 > 请务必设置 DATA_DIR=/tmp/data，并关闭文件日志 LOG_FILE_ENABLED=false。
 >
@@ -45,7 +45,7 @@ docker compose up -d
 
 #### Render 部署
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/chenyme/grok2api)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/lxn0212/grok2api)
 
 > Render 免费实例 15 分钟无访问会休眠，恢复/重启/重新部署会丢失。
 >
@@ -308,4 +308,4 @@ curl http://localhost:8000/v1/images/edits \
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Chenyme/grok2api&type=Timeline)](https://star-history.com/#Chenyme/grok2api&Timeline)
+[![Star History Chart](https://api.star-history.com/svg?repos=lxn0212/grok2api&type=Timeline)](https://star-history.com/#lxn0212/grok2api&Timeline)
