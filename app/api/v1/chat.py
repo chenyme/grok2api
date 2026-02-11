@@ -257,23 +257,58 @@ def validate_request(request: ChatCompletionRequest):
 
 
 
+def _is_rephrase_template_text(text: str) -> bool:
+    """识别外部客户端注入的 websearch/rephrase 模板提示词。"""
+    if not text:
+        return False
+    lower = text.lower()
+    markers = [
+        "use user's language to rephrase the question",
+        "your role is to rephrase follow-up queries",
+        "<websearch>",
+        "follow up question:",
+    ]
+    hit = sum(1 for m in markers if m in lower)
+    return hit >= 2 or ("<examples>" in lower and "follow up question" in lower)
+
+
 def _extract_image_prompt(messages: List[MessageItem]) -> str:
-    """从 chat messages 提取图片 prompt（取最后一条 user 文本）。"""
+    """从 chat messages 提取图片 prompt（优先最后一条真实 user 文本）。"""
+    fallback_text = None
+
     for msg in reversed(messages):
         if msg.role != "user":
             continue
         content = msg.content
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-        if isinstance(content, list):
+
+        text = ""
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
             parts = []
             for item in content:
                 if item.get("type") == "text":
                     txt = str(item.get("text", "")).strip()
                     if txt:
                         parts.append(txt)
-            if parts:
-                return "\n".join(parts)
+            text = "\n".join(parts).strip()
+
+        if not text:
+            continue
+
+        # 记录可兜底文本
+        if fallback_text is None:
+            fallback_text = text
+
+        # 跳过 rephrase/websearch 模板指令，继续向前找真实绘图提示词
+        if _is_rephrase_template_text(text):
+            continue
+
+        return text
+
+    if fallback_text:
+        return fallback_text
+
     raise ValidationException(
         message="Image prompt cannot be empty",
         param="messages",
@@ -294,6 +329,7 @@ async def chat_completions(request: ChatCompletionRequest):
     model_info = ModelService.get(request.model)
     if model_info and request.model == "grok-superimage-1.0":
         prompt = _extract_image_prompt(request.messages)
+        logger.info(f"Compat route superimage -> images/generations, prompt={prompt[:120]}...")
 
         image_request = ImageGenerationRequest(
             prompt=prompt,
