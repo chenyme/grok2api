@@ -170,6 +170,7 @@ curl http://localhost:8000/v1/images/generations \
 | `style` | string | Style | - (not supported yet) |
 
 Note: `grok-superimage-1.0` always uses the waterfall (WebSocket) image channel and is not affected by the `grok.image_ws` switch.
+Note: `grok-superimage-1.0` always returns URL output (server stores generated images then returns file URLs).
 
 Note: when `grok.image_ws=true`, `size` is mapped to aspect ratio (only 5 supported: `16:9`, `9:16`, `1:1`, `2:3`, `3:2`); you can also pass those ratio strings directly:  
 `1024x576/1280x720/1536x864 -> 16:9`, `576x1024/720x1280/864x1536 -> 9:16`, `1024x1024/512x512 -> 1:1`, `1024x1536/512x768/768x1024 -> 2:3`, `1536x1024/768x512/1024x768 -> 3:2`, otherwise defaults to `2:3`. Other parameters are ignored.

@@ -89,7 +89,7 @@ def _validate_common_request(
         )
 
     if allow_ws_stream:
-        # WS 流式仅支持 b64_json
+        # WS 流式仅支持 b64_json：自动纠正，避免客户端因格式参数导致 400
         if (
             request.stream
             and (
@@ -99,11 +99,7 @@ def _validate_common_request(
             and request.response_format
             and request.response_format not in {"b64_json"}
         ):
-            raise ValidationException(
-                message="Streaming with image_ws only supports response_format=b64_json",
-                param="response_format",
-                code="invalid_response_format",
-            )
+            request.response_format = "b64_json"
 
     if request.response_format:
         allowed_formats = {"b64_json", "url"}
@@ -318,13 +314,24 @@ async def create_image(request: ImageGenerationRequest):
     if request.stream is None:
         request.stream = False
 
+    # superimage 统一返回 URL（与瀑布流一致），并关闭流式以保证响应稳定
+    if request.model == "grok-superimage-1.0":
+        request.stream = False
+        request.response_format = "url"
+
     configured_response_format = resolve_response_format(None)
-    request.response_format = configured_response_format
+    # 配置优先；但当上方未显式指定 response_format 时，才使用配置值
+    use_ws_for_model = should_use_ws_for_generation(request.model)
+    if request.response_format is None:
+        if request.stream and use_ws_for_model:
+            request.response_format = "b64_json"
+        else:
+            request.response_format = configured_response_format
 
     # 参数验证
     validate_generation_request(request)
 
-    response_format = configured_response_format
+    response_format = request.response_format
     response_field = response_field_name(response_format)
 
     # 获取 token 和模型信息

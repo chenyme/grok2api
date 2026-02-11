@@ -292,17 +292,18 @@ async def chat_completions(request: ChatCompletionRequest):
 
     # 模型路由：图片模型自动兼容转发到 /v1/images/generations
     model_info = ModelService.get(request.model)
-    if model_info and model_info.is_image:
+    if model_info and request.model == "grok-superimage-1.0":
         prompt = _extract_image_prompt(request.messages)
+
         image_request = ImageGenerationRequest(
             prompt=prompt,
             model=request.model,
             n=request.n or 1,
             size=request.size or "1024x1024",
             quality=request.quality or "standard",
-            response_format=request.response_format,
+            response_format="url",
             style=request.style,
-            stream=request.stream,
+            stream=False,
         )
         return await create_image(image_request)
 
