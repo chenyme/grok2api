@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.services.grok.services.chat import ChatService
 from app.services.grok.models.model import ModelService
 from app.core.exceptions import ValidationException
+from app.api.v1.image import ImageGenerationRequest, create_image
 
 
 router = APIRouter(tags=["Chat"])
@@ -111,6 +112,13 @@ class ChatCompletionRequest(BaseModel):
     messages: List[MessageItem] = Field(..., description="消息数组")
     stream: Optional[bool] = Field(None, description="是否流式输出")
     thinking: Optional[str] = Field(None, description="思考模式: enabled/disabled/None")
+
+    # 图片生成兼容参数（用于将误发到 /chat/completions 的图片请求自动转发到 /images/generations）
+    n: Optional[int] = Field(1, ge=1, le=10, description="图片数量")
+    size: Optional[str] = Field("1024x1024", description="图片尺寸")
+    quality: Optional[str] = Field("standard", description="图片质量")
+    response_format: Optional[str] = Field(None, description="图片响应格式")
+    style: Optional[str] = Field(None, description="图片风格")
 
     # 视频生成配置
     video_config: Optional[VideoConfig] = Field(None, description="视频生成参数")
@@ -247,6 +255,31 @@ def validate_request(request: ChatCompletionRequest):
                         )
 
 
+
+
+def _extract_image_prompt(messages: List[MessageItem]) -> str:
+    """从 chat messages 提取图片 prompt（取最后一条 user 文本）。"""
+    for msg in reversed(messages):
+        if msg.role != "user":
+            continue
+        content = msg.content
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if item.get("type") == "text":
+                    txt = str(item.get("text", "")).strip()
+                    if txt:
+                        parts.append(txt)
+            if parts:
+                return "\n".join(parts)
+    raise ValidationException(
+        message="Image prompt cannot be empty",
+        param="messages",
+        code="empty_prompt",
+    )
+
 @router.post("/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """Chat Completions API - 兼容 OpenAI"""
@@ -257,8 +290,24 @@ async def chat_completions(request: ChatCompletionRequest):
 
     logger.debug(f"Chat request: model={request.model}, stream={request.stream}")
 
-    # 检测视频模型
+    # 模型路由：图片模型自动兼容转发到 /v1/images/generations
     model_info = ModelService.get(request.model)
+    if model_info and request.model == "grok-superimage-1.0":
+        prompt = _extract_image_prompt(request.messages)
+
+        image_request = ImageGenerationRequest(
+            prompt=prompt,
+            model=request.model,
+            n=request.n or 1,
+            size=request.size or "1024x1024",
+            quality=request.quality or "standard",
+            response_format="url",
+            style=request.style,
+            stream=False,
+        )
+        return await create_image(image_request)
+
+    # 检测视频模型
     if model_info and model_info.is_video:
         from app.services.grok.services.media import VideoService
 
