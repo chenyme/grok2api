@@ -2,6 +2,7 @@
 Grok Chat 服务
 """
 
+import time
 import orjson
 from typing import Dict, List, Any, AsyncGenerator
 from dataclasses import dataclass
@@ -474,7 +475,10 @@ class ChatService:
     """Chat 业务服务"""
 
     @staticmethod
-    async def _wrap_stream(stream: AsyncGenerator, token_mgr, token: str, model: str):
+    async def _wrap_stream(
+        stream: AsyncGenerator, token_mgr, token: str, model: str,
+        *, start_time: float = 0, client_ip: str = "", pool_name: str = "",
+    ):
         """
         包装流式响应，在完成时记录使用
 
@@ -483,6 +487,9 @@ class ChatService:
             token_mgr: TokenManager 实例
             token: Token 字符串
             model: 模型名称
+            start_time: 请求开始时间
+            client_ip: 客户端 IP
+            pool_name: Token 池名
         """
         success = False
         try:
@@ -490,21 +497,41 @@ class ChatService:
                 yield chunk
             success = True
         finally:
-            # 只在成功完成时记录使用，失败/异常时不扣费
-            if success:
-                try:
-                    model_info = ModelService.get(model)
-                    effort = (
-                        EffortType.HIGH
-                        if (model_info and model_info.cost.value == "high")
-                        else EffortType.LOW
-                    )
+            effort_str = "low"
+            try:
+                model_info = ModelService.get(model)
+                effort = (
+                    EffortType.HIGH
+                    if (model_info and model_info.cost.value == "high")
+                    else EffortType.LOW
+                )
+                effort_str = effort.value
+                if success:
                     await token_mgr.consume(token, effort)
                     logger.debug(
                         f"Stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
                     )
-                except Exception as e:
-                    logger.warning(f"Failed to record stream usage: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to record stream usage: {e}")
+
+            # 记录使用日志
+            try:
+                from app.services.usage_log import UsageLogService
+                use_time = int((time.time() - start_time) * 1000) if start_time else 0
+                await UsageLogService.record(
+                    type="chat",
+                    model=model,
+                    is_stream=True,
+                    use_time=use_time,
+                    status="success" if success else "error",
+                    error_message="" if success else "stream interrupted",
+                    token=token,
+                    pool_name=pool_name,
+                    effort=effort_str,
+                    ip=client_ip,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record usage log: {e}")
 
     @staticmethod
     async def completions(
@@ -512,6 +539,7 @@ class ChatService:
         messages: List[Dict[str, Any]],
         stream: bool = None,
         thinking: str = None,
+        client_ip: str = "",
     ):
         """
         Chat Completions 入口
@@ -521,18 +549,20 @@ class ChatService:
             messages: 消息列表
             stream: 是否流式
             thinking: 思考模式
-
-        Returns:
-            AsyncGenerator 或 dict
+            client_ip: 客户端 IP
         """
+        start_time = time.time()
+
         # 获取 token
+        pool_name = ""
         try:
             token_mgr = await get_token_manager()
             await token_mgr.reload_if_stale()
             token = None
-            for pool_name in ModelService.pool_candidates_for_model(model):
-                token = token_mgr.get_token(pool_name)
+            for pn in ModelService.pool_candidates_for_model(model):
+                token = token_mgr.get_token(pn)
                 if token:
+                    pool_name = pn
                     break
         except Exception as e:
             logger.error(f"Failed to get token: {e}")
@@ -568,10 +598,34 @@ class ChatService:
         service = GrokChatService()
         try:
             response, _, model_name = await service.chat_openai(token, chat_request)
-        except AppException:
+        except AppException as e:
+            # 记录错误日志
+            try:
+                from app.services.usage_log import UsageLogService
+                use_time = int((time.time() - start_time) * 1000)
+                await UsageLogService.record(
+                    type="chat", model=model, is_stream=is_stream,
+                    use_time=use_time, status="error",
+                    error_message=str(e), token=token,
+                    pool_name=pool_name, ip=client_ip,
+                )
+            except Exception:
+                pass
             raise
         except Exception as e:
             logger.error(f"Chat service error: {e}")
+            # 记录错误日志
+            try:
+                from app.services.usage_log import UsageLogService
+                use_time = int((time.time() - start_time) * 1000)
+                await UsageLogService.record(
+                    type="chat", model=model, is_stream=is_stream,
+                    use_time=use_time, status="error",
+                    error_message=str(e), token=token,
+                    pool_name=pool_name, ip=client_ip,
+                )
+            except Exception:
+                pass
             raise UpstreamException(
                 message=f"Service processing failed: {str(e)}",
                 details={"error": str(e)},
@@ -581,11 +635,13 @@ class ChatService:
         if is_stream:
             processor = StreamProcessor(model_name, token, think)
             return ChatService._wrap_stream(
-                processor.process(response), token_mgr, token, model
+                processor.process(response), token_mgr, token, model,
+                start_time=start_time, client_ip=client_ip, pool_name=pool_name,
             )
         else:
             result = await CollectProcessor(model_name, token).process(response)
             # 非流式：处理完成后立即记录使用
+            effort_str = "low"
             try:
                 model_info = ModelService.get(model)
                 effort = (
@@ -593,12 +649,26 @@ class ChatService:
                     if (model_info and model_info.cost.value == "high")
                     else EffortType.LOW
                 )
+                effort_str = effort.value
                 await token_mgr.consume(token, effort)
                 logger.debug(
                     f"Collect completed, recorded usage for token {token[:10]}... (effort={effort.value})"
                 )
             except Exception as e:
                 logger.warning(f"Failed to record collect usage: {e}")
+
+            # 记录使用日志
+            try:
+                from app.services.usage_log import UsageLogService
+                use_time = int((time.time() - start_time) * 1000)
+                await UsageLogService.record(
+                    type="chat", model=model, is_stream=False,
+                    use_time=use_time, status="success", token=token,
+                    pool_name=pool_name, effort=effort_str, ip=client_ip,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record usage log: {e}")
+
             return result
 
 

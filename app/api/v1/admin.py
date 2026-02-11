@@ -1366,3 +1366,69 @@ async def clear_online_cache_api_async(data: dict):
         "task_id": task.id,
         "total": len(token_list),
     }
+
+
+# ==================== Usage Logs ====================
+
+
+@router.get("/admin/logs", response_class=HTMLResponse, include_in_schema=False)
+async def admin_logs_page():
+    """使用记录页"""
+    return await render_template("logs/logs.html")
+
+
+@router.get("/api/v1/admin/logs", dependencies=[Depends(verify_api_key)])
+async def get_logs_api(
+    type: str = Query(default=None),
+    model: str = Query(default=None),
+    status: str = Query(default=None),
+    token_hash: str = Query(default=None),
+    start_time: int = Query(default=None),
+    end_time: int = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    """查询使用记录"""
+    from app.services.usage_log import UsageLogService
+
+    try:
+        logs, total = await UsageLogService.query(
+            type=type,
+            model=model,
+            status=status,
+            token_hash=token_hash,
+            start_time=start_time,
+            end_time=end_time,
+            page=page,
+            page_size=page_size,
+        )
+        return {"data": logs, "total": total, "page": page, "page_size": page_size}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/api/v1/admin/logs", dependencies=[Depends(verify_api_key)])
+async def delete_logs_api(data: dict):
+    """清理使用记录"""
+    from app.services.usage_log import UsageLogService
+
+    before = data.get("before_timestamp")
+    if not before:
+        raise HTTPException(status_code=400, detail="Missing before_timestamp")
+    try:
+        deleted = await UsageLogService.delete(int(before))
+        return {"status": "success", "deleted": deleted}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/admin/logs/stats", dependencies=[Depends(verify_api_key)])
+async def get_logs_stats_api():
+    """使用记录统计"""
+    from app.services.usage_log import UsageLogService
+
+    try:
+        stats = await UsageLogService.stats()
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

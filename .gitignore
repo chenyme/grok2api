@@ -42,6 +42,7 @@ env/
 
 # Logs
 logs/
+!app/static/logs/
 *.log
 
 # Data

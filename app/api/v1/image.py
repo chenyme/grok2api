@@ -5,10 +5,11 @@ Image Generation API 路由
 import asyncio
 import base64
 import random
+import time as _time
 from pathlib import Path
 from typing import List, Optional, Union
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -184,17 +185,10 @@ async def call_grok(
 
 
 @router.post("/images/generations")
-async def create_image(request: ImageGenerationRequest):
-    """
-    Image Generation API
+async def create_image(request: ImageGenerationRequest, raw_request: Request):
+    """Image Generation API"""
+    start_time = _time.time()
 
-    流式响应格式:
-    - event: image_generation.partial_image
-    - event: image_generation.completed
-
-    非流式响应格式:
-    - {"created": ..., "data": [{"b64_json": "..."}], "usage": {...}}
-    """
     # stream 默认为 false
     if request.stream is None:
         request.stream = False
@@ -323,13 +317,25 @@ async def create_image(request: ImageGenerationRequest):
             selected_images.append("error")
 
     # 构建响应
-    import time
-
     data = [{response_field: img} for img in selected_images]
+
+    # 记录使用日志
+    client_ip = raw_request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if not client_ip:
+        client_ip = raw_request.client.host if raw_request.client else ""
+    try:
+        from app.services.usage_log import UsageLogService
+        use_time = int((_time.time() - start_time) * 1000)
+        await UsageLogService.record(
+            type="image", model=request.model, is_stream=False,
+            use_time=use_time, status="success", ip=client_ip,
+        )
+    except Exception:
+        pass
 
     return JSONResponse(
         content={
-            "created": int(time.time()),
+            "created": int(_time.time()),
             "data": data,
             "usage": {
                 "total_tokens": 0
@@ -346,6 +352,7 @@ async def create_image(request: ImageGenerationRequest):
 
 @router.post("/images/edits")
 async def edit_image(
+    raw_request: Request,
     prompt: str = Form(...),
     image: List[UploadFile] = File(...),
     model: Optional[str] = Form("grok-imagine-1.0"),
@@ -356,11 +363,9 @@ async def edit_image(
     style: Optional[str] = Form(None),
     stream: Optional[bool] = Form(False),
 ):
-    """
-    Image Edits API
+    """Image Edits API"""
+    start_time = _time.time()
 
-    同官方 API 格式，仅支持 multipart/form-data 文件上传
-    """
     if response_format is None:
         response_format = resolve_response_format(None)
 
@@ -557,13 +562,25 @@ async def edit_image(
         while len(selected_images) < n:
             selected_images.append("error")
 
-    import time
-
     data = [{response_field: img} for img in selected_images]
+
+    # 记录使用日志
+    client_ip = raw_request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if not client_ip:
+        client_ip = raw_request.client.host if raw_request.client else ""
+    try:
+        from app.services.usage_log import UsageLogService
+        use_time = int((_time.time() - start_time) * 1000)
+        await UsageLogService.record(
+            type="image", model=edit_request.model, is_stream=False,
+            use_time=use_time, status="success", ip=client_ip,
+        )
+    except Exception:
+        pass
 
     return JSONResponse(
         content={
-            "created": int(time.time()),
+            "created": int(_time.time()),
             "data": data,
             "usage": {
                 "total_tokens": 0

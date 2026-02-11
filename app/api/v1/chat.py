@@ -4,7 +4,7 @@ Chat Completions API 路由
 
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -248,12 +248,17 @@ def validate_request(request: ChatCompletionRequest):
 
 
 @router.post("/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(request: ChatCompletionRequest, raw_request: Request):
     """Chat Completions API - 兼容 OpenAI"""
     from app.core.logger import logger
 
     # 参数验证
     validate_request(request)
+
+    # 获取客户端 IP
+    client_ip = raw_request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if not client_ip:
+        client_ip = raw_request.client.host if raw_request.client else ""
 
     logger.debug(f"Chat request: model={request.model}, stream={request.stream}")
 
@@ -274,6 +279,7 @@ async def chat_completions(request: ChatCompletionRequest):
             video_length=v_conf.video_length,
             resolution=v_conf.resolution_name,
             preset=v_conf.preset,
+            client_ip=client_ip,
         )
     else:
         result = await ChatService.completions(
@@ -281,6 +287,7 @@ async def chat_completions(request: ChatCompletionRequest):
             messages=[msg.model_dump() for msg in request.messages],
             stream=request.stream,
             thinking=request.thinking,
+            client_ip=client_ip,
         )
 
     if isinstance(result, dict):

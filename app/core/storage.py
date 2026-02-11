@@ -15,7 +15,7 @@ import asyncio
 import hashlib
 import time
 import tomllib
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from enum import Enum
 
@@ -33,6 +33,8 @@ from app.core.logger import logger
 CONFIG_FILE = Path(__file__).parent.parent.parent / "data" / "config.toml"
 TOKEN_FILE = Path(__file__).parent.parent.parent / "data" / "token.json"
 LOCK_DIR = Path(__file__).parent.parent.parent / "data" / ".locks"
+LOG_FILE = Path(__file__).parent.parent.parent / "data" / "usage_logs.json"
+LOG_MAX_ITEMS = 10000  # LocalStorage 日志上限
 
 
 # JSON 序列化优化助手函数
@@ -90,6 +92,26 @@ class BaseStorage(abc.ABC):
         """
         # 默认空实现，用于 fallback
         yield
+
+    # ---- Usage Logs ----
+
+    async def save_log(self, log: Dict[str, Any]):
+        """写入单条使用日志（默认空实现）"""
+        pass
+
+    async def query_logs(
+        self, filters: Dict[str, Any], page: int = 1, page_size: int = 20
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """分页查询使用日志（默认空实现）"""
+        return [], 0
+
+    async def delete_logs(self, before_timestamp: int) -> int:
+        """删除指定时间之前的日志（默认空实现）"""
+        return 0
+
+    async def stats_logs(self) -> Dict[str, Any]:
+        """日志统计摘要（默认空实现）"""
+        return {"total": 0, "success": 0, "error": 0, "today": 0, "models": {}}
 
     async def verify_connection(self) -> bool:
         """健康检查"""
@@ -224,6 +246,94 @@ class LocalStorage(BaseStorage):
 
     async def close(self):
         pass
+
+    # ---- Usage Logs (Local) ----
+
+    async def _load_logs(self) -> List[Dict[str, Any]]:
+        if not LOG_FILE.exists():
+            return []
+        try:
+            async with aiofiles.open(LOG_FILE, "rb") as f:
+                content = await f.read()
+                return json_loads(content) if content.strip() else []
+        except Exception as e:
+            logger.error(f"LocalStorage: 加载日志失败: {e}")
+            return []
+
+    async def _save_logs(self, logs: List[Dict[str, Any]]):
+        try:
+            LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = LOG_FILE.with_suffix(".tmp")
+            async with aiofiles.open(temp_path, "wb") as f:
+                await f.write(orjson.dumps(logs))
+            os.replace(temp_path, LOG_FILE)
+        except Exception as e:
+            logger.error(f"LocalStorage: 保存日志失败: {e}")
+
+    async def save_log(self, log: Dict[str, Any]):
+        async with self._lock:
+            logs = await self._load_logs()
+            logs.insert(0, log)
+            if len(logs) > LOG_MAX_ITEMS:
+                logs = logs[:LOG_MAX_ITEMS]
+            await self._save_logs(logs)
+
+    async def query_logs(
+        self, filters: Dict[str, Any], page: int = 1, page_size: int = 20
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        logs = await self._load_logs()
+        filtered = self._filter_logs(logs, filters)
+        total = len(filtered)
+        start = (page - 1) * page_size
+        return filtered[start : start + page_size], total
+
+    @staticmethod
+    def _filter_logs(
+        logs: List[Dict[str, Any]], filters: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        result = logs
+        for key in ("type", "model", "status", "token_hash"):
+            if key in filters:
+                result = [r for r in result if r.get(key) == filters[key]]
+        if "start_time" in filters:
+            result = [r for r in result if r.get("created_at", 0) >= filters["start_time"]]
+        if "end_time" in filters:
+            result = [r for r in result if r.get("created_at", 0) <= filters["end_time"]]
+        return result
+
+    async def delete_logs(self, before_timestamp: int) -> int:
+        async with self._lock:
+            logs = await self._load_logs()
+            original = len(logs)
+            logs = [l for l in logs if l.get("created_at", 0) >= before_timestamp]
+            deleted = original - len(logs)
+            if deleted > 0:
+                await self._save_logs(logs)
+            return deleted
+
+    async def stats_logs(self) -> Dict[str, Any]:
+        logs = await self._load_logs()
+        import calendar, datetime
+        today_start = int(
+            datetime.datetime.now()
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .timestamp()
+        )
+        total = len(logs)
+        success = sum(1 for l in logs if l.get("status") == "success")
+        error = total - success
+        today = sum(1 for l in logs if l.get("created_at", 0) >= today_start)
+        models: Dict[str, int] = {}
+        for l in logs:
+            m = l.get("model", "unknown")
+            models[m] = models.get(m, 0) + 1
+        return {
+            "total": total,
+            "success": success,
+            "error": error,
+            "today": today,
+            "models": models,
+        }
 
 
 class RedisStorage(BaseStorage):
@@ -476,6 +586,148 @@ class RedisStorage(BaseStorage):
             logger.error(f"RedisStorage: 保存 Token 失败: {e}")
             raise
 
+    # ---- Usage Logs (Redis) ----
+
+    async def save_log(self, log: Dict[str, Any]):
+        try:
+            log_id = log.get("id", "")
+            created_at = log.get("created_at", 0)
+            await self.redis.zadd(
+                "grok2api:logs:timeline", {log_id: created_at}
+            )
+            await self.redis.hset(
+                f"grok2api:log:{log_id}", mapping={
+                    k: json_dumps(v) if isinstance(v, (dict, list, bool)) else str(v)
+                    for k, v in log.items()
+                }
+            )
+            # 超限清理：保留最新 LOG_MAX_ITEMS 条
+            count = await self.redis.zcard("grok2api:logs:timeline")
+            if count > LOG_MAX_ITEMS:
+                to_remove = await self.redis.zrange(
+                    "grok2api:logs:timeline", 0, count - LOG_MAX_ITEMS - 1
+                )
+                if to_remove:
+                    pipe = self.redis.pipeline()
+                    for rid in to_remove:
+                        pipe.delete(f"grok2api:log:{rid}")
+                    pipe.zremrangebyrank("grok2api:logs:timeline", 0, count - LOG_MAX_ITEMS - 1)
+                    await pipe.execute()
+        except Exception as e:
+            logger.warning(f"RedisStorage: 保存日志失败: {e}")
+
+    async def _get_log_by_id(self, log_id: str) -> Optional[Dict[str, Any]]:
+        raw = await self.redis.hgetall(f"grok2api:log:{log_id}")
+        if not raw:
+            return None
+        result = {}
+        for k, v in raw.items():
+            try:
+                result[k] = json_loads(v)
+            except Exception:
+                result[k] = v
+        return result
+
+    async def query_logs(
+        self, filters: Dict[str, Any], page: int = 1, page_size: int = 20
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        try:
+            min_score = filters.get("start_time", "-inf")
+            max_score = filters.get("end_time", "+inf")
+            # 按时间倒序获取所有 ID
+            all_ids = await self.redis.zrevrangebyscore(
+                "grok2api:logs:timeline", max_score, min_score
+            )
+            if not all_ids:
+                return [], 0
+
+            # 批量获取日志详情
+            logs = []
+            pipe = self.redis.pipeline()
+            for lid in all_ids:
+                pipe.hgetall(f"grok2api:log:{lid}")
+            results = await pipe.execute()
+
+            for raw in results:
+                if not raw:
+                    continue
+                log = {}
+                for k, v in raw.items():
+                    try:
+                        log[k] = json_loads(v)
+                    except Exception:
+                        log[k] = v
+                logs.append(log)
+
+            # 内存过滤（除时间外的字段）
+            for key in ("type", "model", "status", "token_hash"):
+                if key in filters:
+                    logs = [l for l in logs if l.get(key) == filters[key]]
+
+            total = len(logs)
+            start = (page - 1) * page_size
+            return logs[start : start + page_size], total
+        except Exception as e:
+            logger.error(f"RedisStorage: 查询日志失败: {e}")
+            return [], 0
+
+    async def delete_logs(self, before_timestamp: int) -> int:
+        try:
+            ids = await self.redis.zrangebyscore(
+                "grok2api:logs:timeline", "-inf", before_timestamp
+            )
+            if not ids:
+                return 0
+            pipe = self.redis.pipeline()
+            for lid in ids:
+                pipe.delete(f"grok2api:log:{lid}")
+            pipe.zremrangebyscore("grok2api:logs:timeline", "-inf", before_timestamp)
+            await pipe.execute()
+            return len(ids)
+        except Exception as e:
+            logger.error(f"RedisStorage: 删除日志失败: {e}")
+            return 0
+
+    async def stats_logs(self) -> Dict[str, Any]:
+        try:
+            import datetime
+            today_start = int(
+                datetime.datetime.now()
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .timestamp()
+            )
+            total = await self.redis.zcard("grok2api:logs:timeline") or 0
+            today = await self.redis.zcount(
+                "grok2api:logs:timeline", today_start, "+inf"
+            ) or 0
+
+            # 获取所有日志统计 success/error/models
+            all_ids = await self.redis.zrevrange("grok2api:logs:timeline", 0, -1)
+            success = 0
+            models: Dict[str, int] = {}
+            if all_ids:
+                pipe = self.redis.pipeline()
+                for lid in all_ids:
+                    pipe.hmget(f"grok2api:log:{lid}", "status", "model")
+                results = await pipe.execute()
+                for r in results:
+                    if r and r[0] == "success":
+                        success += 1
+                    if r and r[1]:
+                        m = r[1]
+                        models[m] = models.get(m, 0) + 1
+
+            return {
+                "total": total,
+                "success": success,
+                "error": total - success,
+                "today": today,
+                "models": models,
+            }
+        except Exception as e:
+            logger.error(f"RedisStorage: 统计日志失败: {e}")
+            return {"total": 0, "success": 0, "error": 0, "today": 0, "models": {}}
+
     async def close(self):
         try:
             await self.redis.close()
@@ -570,6 +822,40 @@ class SQLStorage(BaseStorage):
                         await conn.execute(
                             text("ALTER TABLE tokens ALTER COLUMN data TYPE TEXT")
                         )
+                except Exception:
+                    pass
+
+                # 使用记录表
+                await conn.execute(
+                    text("""
+                    CREATE TABLE IF NOT EXISTS usage_logs (
+                        id VARCHAR(32) PRIMARY KEY,
+                        created_at BIGINT NOT NULL,
+                        type VARCHAR(16),
+                        model VARCHAR(64),
+                        is_stream BOOLEAN DEFAULT FALSE,
+                        use_time INT DEFAULT 0,
+                        status VARCHAR(16),
+                        error_message TEXT,
+                        token_hash VARCHAR(64),
+                        pool_name VARCHAR(64),
+                        effort VARCHAR(8),
+                        ip VARCHAR(64),
+                        request_id VARCHAR(64)
+                    )
+                """)
+                )
+
+                try:
+                    await conn.execute(
+                        text("CREATE INDEX idx_logs_created ON usage_logs (created_at)")
+                    )
+                except Exception:
+                    pass
+                try:
+                    await conn.execute(
+                        text("CREATE INDEX idx_logs_model ON usage_logs (model)")
+                    )
                 except Exception:
                     pass
 
@@ -749,6 +1035,148 @@ class SQLStorage(BaseStorage):
         except Exception as e:
             logger.error(f"SQLStorage: 保存 Token 失败: {e}")
             raise
+
+    # ---- Usage Logs (SQL) ----
+
+    async def save_log(self, log: Dict[str, Any]):
+        await self._ensure_schema()
+        from sqlalchemy import text
+        try:
+            async with self.async_session() as session:
+                await session.execute(
+                    text("""
+                        INSERT INTO usage_logs
+                            (id, created_at, type, model, is_stream, use_time,
+                             status, error_message, token_hash, pool_name, effort, ip, request_id)
+                        VALUES
+                            (:id, :created_at, :type, :model, :is_stream, :use_time,
+                             :status, :error_message, :token_hash, :pool_name, :effort, :ip, :request_id)
+                    """),
+                    {
+                        "id": log.get("id", ""),
+                        "created_at": log.get("created_at", 0),
+                        "type": log.get("type", "chat"),
+                        "model": log.get("model", ""),
+                        "is_stream": log.get("is_stream", False),
+                        "use_time": log.get("use_time", 0),
+                        "status": log.get("status", "success"),
+                        "error_message": log.get("error_message", ""),
+                        "token_hash": log.get("token_hash", ""),
+                        "pool_name": log.get("pool_name", ""),
+                        "effort": log.get("effort", "low"),
+                        "ip": log.get("ip", ""),
+                        "request_id": log.get("request_id", ""),
+                    },
+                )
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"SQLStorage: 保存日志失败: {e}")
+
+    async def query_logs(
+        self, filters: Dict[str, Any], page: int = 1, page_size: int = 20
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        await self._ensure_schema()
+        from sqlalchemy import text
+        try:
+            conditions = []
+            params: Dict[str, Any] = {}
+            for key in ("type", "model", "status", "token_hash"):
+                if key in filters:
+                    conditions.append(f"{key} = :{key}")
+                    params[key] = filters[key]
+            if "start_time" in filters:
+                conditions.append("created_at >= :start_time")
+                params["start_time"] = filters["start_time"]
+            if "end_time" in filters:
+                conditions.append("created_at <= :end_time")
+                params["end_time"] = filters["end_time"]
+
+            where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+            async with self.async_session() as session:
+                count_res = await session.execute(
+                    text(f"SELECT COUNT(*) FROM usage_logs{where}"), params
+                )
+                total = count_res.scalar() or 0
+
+                offset = (page - 1) * page_size
+                params["limit"] = page_size
+                params["offset"] = offset
+                res = await session.execute(
+                    text(
+                        f"SELECT * FROM usage_logs{where} ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+                    ),
+                    params,
+                )
+                rows = res.fetchall()
+                columns = res.keys()
+                logs = [dict(zip(columns, row)) for row in rows]
+                return logs, total
+        except Exception as e:
+            logger.error(f"SQLStorage: 查询日志失败: {e}")
+            return [], 0
+
+    async def delete_logs(self, before_timestamp: int) -> int:
+        await self._ensure_schema()
+        from sqlalchemy import text
+        try:
+            async with self.async_session() as session:
+                count_res = await session.execute(
+                    text("SELECT COUNT(*) FROM usage_logs WHERE created_at < :ts"),
+                    {"ts": before_timestamp},
+                )
+                count = count_res.scalar() or 0
+                if count > 0:
+                    await session.execute(
+                        text("DELETE FROM usage_logs WHERE created_at < :ts"),
+                        {"ts": before_timestamp},
+                    )
+                    await session.commit()
+                return count
+        except Exception as e:
+            logger.error(f"SQLStorage: 删除日志失败: {e}")
+            return 0
+
+    async def stats_logs(self) -> Dict[str, Any]:
+        await self._ensure_schema()
+        from sqlalchemy import text
+        import datetime
+        try:
+            today_start = int(
+                datetime.datetime.now()
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .timestamp()
+            )
+            async with self.async_session() as session:
+                total_r = await session.execute(text("SELECT COUNT(*) FROM usage_logs"))
+                total = total_r.scalar() or 0
+
+                success_r = await session.execute(
+                    text("SELECT COUNT(*) FROM usage_logs WHERE status = 'success'")
+                )
+                success = success_r.scalar() or 0
+
+                today_r = await session.execute(
+                    text("SELECT COUNT(*) FROM usage_logs WHERE created_at >= :ts"),
+                    {"ts": today_start},
+                )
+                today = today_r.scalar() or 0
+
+                model_r = await session.execute(
+                    text("SELECT model, COUNT(*) as cnt FROM usage_logs GROUP BY model")
+                )
+                models = {row[0]: row[1] for row in model_r.fetchall()}
+
+                return {
+                    "total": total,
+                    "success": success,
+                    "error": total - success,
+                    "today": today,
+                    "models": models,
+                }
+        except Exception as e:
+            logger.error(f"SQLStorage: 统计日志失败: {e}")
+            return {"total": 0, "success": 0, "error": 0, "today": 0, "models": {}}
 
     async def close(self):
         await self.engine.dispose()

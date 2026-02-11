@@ -3,6 +3,7 @@ Grok 视频生成服务
 """
 
 import asyncio
+import time
 from typing import AsyncGenerator, Optional
 
 import orjson
@@ -372,15 +373,12 @@ class VideoService:
                 raise UpstreamException(f"Video from image error: {str(e)}")
 
     @staticmethod
-    async def _wrap_stream(stream: AsyncGenerator, token_mgr, token: str, model: str):
+    async def _wrap_stream(
+        stream: AsyncGenerator, token_mgr, token: str, model: str,
+        *, start_time: float = 0, client_ip: str = "", pool_name: str = "",
+    ):
         """
         包装流式响应，在完成时记录使用
-
-        Args:
-            stream: 原始 AsyncGenerator
-            token_mgr: TokenManager 实例
-            token: Token 字符串
-            model: 模型名称
         """
         success = False
         try:
@@ -388,21 +386,36 @@ class VideoService:
                 yield chunk
             success = True
         finally:
-            # 只在成功完成时记录使用，失败/异常时不扣费
-            if success:
-                try:
-                    model_info = ModelService.get(model)
-                    effort = (
-                        EffortType.HIGH
-                        if (model_info and model_info.cost.value == "high")
-                        else EffortType.LOW
-                    )
+            effort_str = "low"
+            try:
+                model_info = ModelService.get(model)
+                effort = (
+                    EffortType.HIGH
+                    if (model_info and model_info.cost.value == "high")
+                    else EffortType.LOW
+                )
+                effort_str = effort.value
+                if success:
                     await token_mgr.consume(token, effort)
                     logger.debug(
                         f"Video stream completed, recorded usage for token {token[:10]}... (effort={effort.value})"
                     )
-                except Exception as e:
-                    logger.warning(f"Failed to record video stream usage: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to record video stream usage: {e}")
+
+            try:
+                from app.services.usage_log import UsageLogService
+                use_time = int((time.time() - start_time) * 1000) if start_time else 0
+                await UsageLogService.record(
+                    type="video", model=model, is_stream=True,
+                    use_time=use_time,
+                    status="success" if success else "error",
+                    error_message="" if success else "stream interrupted",
+                    token=token, pool_name=pool_name,
+                    effort=effort_str, ip=client_ip,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record usage log: {e}")
 
     @staticmethod
     async def completions(
@@ -414,31 +427,23 @@ class VideoService:
         video_length: int = 6,
         resolution: str = "480p",
         preset: str = "normal",
+        client_ip: str = "",
     ):
         """
         视频生成入口
-
-        Args:
-            model: 模型名称
-            messages: 消息列表
-            stream: 是否流式
-            thinking: 思考模式
-            aspect_ratio: 宽高比
-            video_length: 视频时长
-            resolution: 分辨率
-            preset: 预设模式
-
-        Returns:
-            AsyncGenerator (流式) 或 dict (非流式)
         """
+        start_time = time.time()
+
         # 获取 token
+        pool_name = ""
         try:
             token_mgr = await get_token_manager()
             await token_mgr.reload_if_stale()
             token = None
-            for pool_name in ModelService.pool_candidates_for_model(model):
-                token = token_mgr.get_token(pool_name)
+            for pn in ModelService.pool_candidates_for_model(model):
+                token = token_mgr.get_token(pn)
                 if token:
+                    pool_name = pn
                     break
         except Exception as e:
             logger.error(f"Failed to get token: {e}")
@@ -512,11 +517,13 @@ class VideoService:
         if is_stream:
             processor = VideoStreamProcessor(model, token, think)
             return VideoService._wrap_stream(
-                processor.process(response), token_mgr, token, model
+                processor.process(response), token_mgr, token, model,
+                start_time=start_time, client_ip=client_ip, pool_name=pool_name,
             )
         else:
             result = await VideoCollectProcessor(model, token).process(response)
             # 非流式：处理完成后立即记录使用
+            effort_str = "low"
             try:
                 model_info = ModelService.get(model)
                 effort = (
@@ -524,12 +531,26 @@ class VideoService:
                     if (model_info and model_info.cost.value == "high")
                     else EffortType.LOW
                 )
+                effort_str = effort.value
                 await token_mgr.consume(token, effort)
                 logger.debug(
                     f"Video completed, recorded usage for token {token[:10]}... (effort={effort.value})"
                 )
             except Exception as e:
                 logger.warning(f"Failed to record video usage: {e}")
+
+            # 记录使用日志
+            try:
+                from app.services.usage_log import UsageLogService
+                use_time = int((time.time() - start_time) * 1000)
+                await UsageLogService.record(
+                    type="video", model=model, is_stream=False,
+                    use_time=use_time, status="success", token=token,
+                    pool_name=pool_name, effort=effort_str, ip=client_ip,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record usage log: {e}")
+
             return result
 
 
