@@ -3,7 +3,7 @@ API 认证模块
 """
 
 from typing import Optional
-from fastapi import HTTPException, status, Security
+from fastapi import HTTPException, status, Security, Header, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import get_config
@@ -56,6 +56,51 @@ async def verify_api_key(
         )
 
     return auth.credentials
+
+
+async def verify_gemini_api_key(
+    auth: Optional[HTTPAuthorizationCredentials] = Security(security),
+    x_goog_api_key: Optional[str] = Header(default=None, alias="x-goog-api-key"),
+    key: Optional[str] = Query(default=None),
+) -> Optional[str]:
+    """
+    验证 Gemini 兼容 API Key。
+
+    兼容以下传参方式：
+    - Authorization: Bearer <key>
+    - x-goog-api-key: <key>
+    - ?key=<key>
+
+    当 app.api_key 未配置时，不启用鉴权。
+    """
+    api_key = get_admin_api_key()
+    if not api_key:
+        return None
+
+    # 优先级：Bearer > x-goog-api-key > query key
+    provided_key = None
+    if auth and auth.credentials:
+        provided_key = auth.credentials
+    elif x_goog_api_key:
+        provided_key = x_goog_api_key
+    elif key:
+        provided_key = key
+
+    if not provided_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if provided_key != api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return provided_key
 
 
 async def verify_app_key(

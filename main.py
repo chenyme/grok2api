@@ -20,7 +20,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi import Depends  # noqa: E402
 
-from app.core.auth import verify_api_key  # noqa: E402
+from app.core.auth import verify_api_key, verify_gemini_api_key  # noqa: E402
 from app.core.config import get_config  # noqa: E402
 from app.core.logger import logger, setup_logging  # noqa: E402
 from app.core.exceptions import register_exception_handlers  # noqa: E402
@@ -30,6 +30,7 @@ from app.api.v1.image import router as image_router  # noqa: E402
 from app.api.v1.files import router as files_router  # noqa: E402
 from app.api.v1.models import router as models_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
+from app.api.v1.gemini import router as gemini_router  # noqa: E402
 
 
 # 初始化日志
@@ -113,6 +114,8 @@ def create_app() -> FastAPI:
         models_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
     )
     app.include_router(files_router, prefix="/v1/files")
+    # 注册 Gemini 原生兼容路由（/v1beta/models/* 与 /v1/models/*）
+    app.include_router(gemini_router, dependencies=[Depends(verify_gemini_api_key)])
 
     # 静态文件服务
     from fastapi.staticfiles import StaticFiles
