@@ -1,0 +1,81 @@
+.webui-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  gap: 24px;
+}
+
+@media (max-width: 1024px) {
+  .webui-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.webui-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 20px;
+}
+
+.field-block {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 14px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.webui-textarea {
+  min-height: 130px;
+  resize: vertical;
+}
+
+.action-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.result-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  min-height: 420px;
+  max-height: 68vh;
+  overflow: auto;
+  padding: 12px;
+  line-height: 1.5;
+  font-size: 14px;
+}
+
+.result-item {
+  border-bottom: 1px dashed var(--border);
+  padding: 10px 0;
+}
+
+.result-item:last-child {
+  border-bottom: none;
+}
+
+.result-role {
+  font-size: 12px;
+  color: var(--accents-5);
+  margin-bottom: 6px;
+}
+
+.result-content pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.result-content img {
+  max-width: 100%;
+  border-radius: 10px;
+  margin: 8px 0;
+  border: 1px solid var(--border);
+}

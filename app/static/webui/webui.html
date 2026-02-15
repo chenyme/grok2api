@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grok2API - 在线 WebUI</title>
+  <link rel="icon" href="/static/favicon/favicon.ico">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+  <link href="/static/common/common.css?v=3" rel="stylesheet">
+  <link href="/static/common/toast.css" rel="stylesheet">
+  <link href="/static/webui/webui.css?v=1" rel="stylesheet">
+</head>
+
+<body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
+  <div id="toast-container" class="toast-container"></div>
+  <div id="app-header"></div>
+
+  <main class="flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in space-y-6">
+    <div>
+      <h2 class="text-2xl font-semibold tracking-tight">在线 WebUI</h2>
+      <p class="text-[var(--accents-4)] mt-1 text-sm">保持原有后台风格，统一调用 Chat / Image / Video 模型。</p>
+    </div>
+
+    <div class="h-px bg-[var(--border)]"></div>
+
+    <div class="webui-grid">
+      <section class="webui-card">
+        <div class="card-title">请求配置</div>
+
+        <div class="field-block">
+          <label class="field-label" for="modelSelect">模型</label>
+          <select id="modelSelect" class="geist-input"></select>
+        </div>
+
+        <div class="field-row">
+          <div class="field-block">
+            <label class="field-label" for="modeSelect">调用模式</label>
+            <select id="modeSelect" class="geist-input">
+              <option value="auto" selected>Auto（自动识别）</option>
+              <option value="chat">Chat</option>
+              <option value="image">Image</option>
+              <option value="video">Video</option>
+            </select>
+          </div>
+          <div class="field-block">
+            <label class="field-label" for="streamToggle">流式</label>
+            <label class="toggle">
+              <input id="streamToggle" type="checkbox" checked>
+              <span class="toggle-track"></span>
+              <span class="toggle-label">SSE</span>
+            </label>
+          </div>
+        </div>
+
+        <div id="imageOptions" class="field-row">
+          <div class="field-block">
+            <label class="field-label" for="imageN">图片数量</label>
+            <input id="imageN" class="geist-input" type="number" min="1" max="10" value="1">
+          </div>
+          <div class="field-block">
+            <label class="field-label" for="imageSize">比例 / 尺寸</label>
+            <input id="imageSize" class="geist-input" type="text" value="1:1" placeholder="1:1 / 1024x1024">
+          </div>
+        </div>
+
+        <div id="videoOptions" class="field-row hidden">
+          <div class="field-block">
+            <label class="field-label" for="videoRatio">视频比例</label>
+            <select id="videoRatio" class="geist-input">
+              <option>3:2</option>
+              <option>16:9</option>
+              <option>9:16</option>
+              <option>1:1</option>
+              <option>2:3</option>
+            </select>
+          </div>
+          <div class="field-block">
+            <label class="field-label" for="videoLength">视频时长</label>
+            <select id="videoLength" class="geist-input">
+              <option value="6">6s</option>
+              <option value="10">10s</option>
+              <option value="15">15s</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field-block">
+          <label class="field-label" for="promptInput">提示词</label>
+          <textarea id="promptInput" class="geist-input webui-textarea" placeholder="输入你的请求，例如：画一朵花"></textarea>
+        </div>
+
+        <div class="action-row">
+          <button id="sendBtn" class="geist-button">发送</button>
+          <button id="clearBtn" class="geist-button-outline">清空输出</button>
+        </div>
+      </section>
+
+      <section class="webui-card">
+        <div class="card-title">响应结果</div>
+        <div class="result-panel" id="resultPanel"></div>
+      </section>
+    </div>
+  </main>
+
+  <div id="app-footer"></div>
+
+  <script src="/static/common/admin-auth.js?v=2"></script>
+  <script src="/static/common/header.js?v=4"></script>
+  <script src="/static/common/footer.js?v=1"></script>
+  <script src="/static/common/toast.js"></script>
+  <script src="/static/webui/webui.js?v=1"></script>
+</body>
+
+</html>
