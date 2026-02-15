@@ -19,6 +19,7 @@ from app.services.grok.protocols.grpc_web import (
     get_grpc_status,
 )
 from app.services.grok.utils.headers import build_sso_cookie
+from app.services.grok.utils.proxy import build_request_proxies, normalize_proxy_url
 
 NSFW_API = "https://grok.com/auth_mgmt.AuthManagement/UpdateUserFeatureControls"
 BIRTH_DATE_API = "https://grok.com/rest/auth/set-birth-date"
@@ -39,12 +40,12 @@ class NSFWService:
     """NSFW 模式服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("network.base_proxy_url")
+        self.proxy = normalize_proxy_url(proxy or get_config("network.base_proxy_url"))
         self.timeout = float(get_config("network.timeout"))
 
     def _build_proxies(self) -> Optional[dict]:
         """构建代理配置"""
-        return {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        return build_request_proxies(self.proxy)
 
     @staticmethod
     def _random_birth_date() -> str:
