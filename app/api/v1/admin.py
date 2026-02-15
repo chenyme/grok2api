@@ -240,6 +240,12 @@ async def admin_imagine_page():
     return await render_template("imagine/imagine.html")
 
 
+@router.get("/admin/webui", response_class=HTMLResponse, include_in_schema=False)
+async def admin_webui_page():
+    """在线 WebUI"""
+    return await render_template("webui/webui.html")
+
+
 class VoiceTokenResponse(BaseModel):
     token: str
     url: str
