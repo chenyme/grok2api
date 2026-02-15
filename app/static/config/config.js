@@ -1,7 +1,6 @@
 let apiKey = '';
 let currentConfig = {};
 let configGuardKey = '';
-const CONFIG_GUARD_STORAGE = 'grok2api_config_guard_key';
 const byId = (id) => document.getElementById(id);
 const NUMERIC_FIELDS = new Set([
   'timeout',
