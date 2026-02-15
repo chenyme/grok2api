@@ -11,51 +11,48 @@
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <link href="/static/common/common.css?v=3" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
-  <link href="/static/webui/webui.css?v=1" rel="stylesheet">
+  <link href="/static/webui/webui.css?v=2" rel="stylesheet">
 </head>
 
 <body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
   <div id="toast-container" class="toast-container"></div>
   <div id="app-header"></div>
 
-  <main class="flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in space-y-6">
-    <div>
-      <h2 class="text-2xl font-semibold tracking-tight">在线 WebUI</h2>
-      <p class="text-[var(--accents-4)] mt-1 text-sm">保持原有后台风格，统一调用 Chat / Image / Video 模型。</p>
-    </div>
+  <main class="flex-1 container mx-auto max-w-6xl px-6 py-8 fade-in">
+    <div class="webui-layout">
+      <aside class="webui-sidebar">
+        <div class="sidebar-title-row">
+          <h2 class="text-lg font-semibold tracking-tight">在线 WebUI</h2>
+          <span class="sidebar-subtitle">Chat / Image / Video</span>
+        </div>
 
-    <div class="h-px bg-[var(--border)]"></div>
-
-    <div class="webui-grid">
-      <section class="webui-card">
-        <div class="card-title">请求配置</div>
+        <div class="h-px bg-[var(--border)] my-4"></div>
 
         <div class="field-block">
           <label class="field-label" for="modelSelect">模型</label>
           <select id="modelSelect" class="geist-input"></select>
         </div>
 
-        <div class="field-row">
-          <div class="field-block">
-            <label class="field-label" for="modeSelect">调用模式</label>
-            <select id="modeSelect" class="geist-input">
-              <option value="auto" selected>Auto（自动识别）</option>
-              <option value="chat">Chat</option>
-              <option value="image">Image</option>
-              <option value="video">Video</option>
-            </select>
-          </div>
-          <div class="field-block">
-            <label class="field-label" for="streamToggle">流式</label>
-            <label class="toggle">
-              <input id="streamToggle" type="checkbox" checked>
-              <span class="toggle-track"></span>
-              <span class="toggle-label">SSE</span>
-            </label>
-          </div>
+        <div class="field-block">
+          <label class="field-label" for="modeSelect">调用模式</label>
+          <select id="modeSelect" class="geist-input">
+            <option value="auto" selected>Auto（自动识别）</option>
+            <option value="chat">Chat</option>
+            <option value="image">Image</option>
+            <option value="video">Video</option>
+          </select>
         </div>
 
-        <div id="imageOptions" class="field-row">
+        <div class="field-block">
+          <label class="field-label" for="streamToggle">流式</label>
+          <label class="toggle">
+            <input id="streamToggle" type="checkbox" checked>
+            <span class="toggle-track"></span>
+            <span class="toggle-label">SSE 实时输出</span>
+          </label>
+        </div>
+
+        <div id="imageOptions" class="field-stack">
           <div class="field-block">
             <label class="field-label" for="imageN">图片数量</label>
             <input id="imageN" class="geist-input" type="number" min="1" max="10" value="1">
@@ -66,7 +63,7 @@
           </div>
         </div>
 
-        <div id="videoOptions" class="field-row hidden">
+        <div id="videoOptions" class="field-stack hidden">
           <div class="field-block">
             <label class="field-label" for="videoRatio">视频比例</label>
             <select id="videoRatio" class="geist-input">
@@ -87,20 +84,24 @@
           </div>
         </div>
 
-        <div class="field-block">
-          <label class="field-label" for="promptInput">提示词</label>
-          <textarea id="promptInput" class="geist-input webui-textarea" placeholder="输入你的请求，例如：画一朵花"></textarea>
+        <div class="sidebar-actions">
+          <button id="newChatBtn" class="geist-button-outline w-full">新对话</button>
+          <button id="clearBtn" class="geist-button-outline w-full">清空显示</button>
+        </div>
+      </aside>
+
+      <section class="chat-shell">
+        <div id="chatViewport" class="chat-viewport">
+          <div class="welcome-card" id="welcomeCard">
+            <div class="welcome-title">你好，欢迎使用 Grok2API WebUI</div>
+            <div class="welcome-desc">支持多轮上下文、流式输出、Markdown 渲染和图片预览。</div>
+          </div>
         </div>
 
-        <div class="action-row">
-          <button id="sendBtn" class="geist-button">发送</button>
-          <button id="clearBtn" class="geist-button-outline">清空输出</button>
+        <div class="composer-shell">
+          <textarea id="promptInput" class="geist-input composer-input" placeholder="输入消息，按 Ctrl+Enter 发送"></textarea>
+          <button id="sendBtn" class="geist-button composer-send">发送</button>
         </div>
-      </section>
-
-      <section class="webui-card">
-        <div class="card-title">响应结果</div>
-        <div class="result-panel" id="resultPanel"></div>
       </section>
     </div>
   </main>
@@ -111,7 +112,8 @@
   <script src="/static/common/header.js?v=4"></script>
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
-  <script src="/static/webui/webui.js?v=1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/static/webui/webui.js?v=2"></script>
 </body>
 
 </html>
