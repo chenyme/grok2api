@@ -1,6 +1,8 @@
 let apiKey = '';
 let currentConfig = {};
 let configGuardKey = '';
+let configGuardKeyMem = '';
+const CONFIG_GUARD_STORAGE = 'grok2api_config_guard_key';
 const byId = (id) => document.getElementById(id);
 const NUMERIC_FIELDS = new Set([
   'timeout',
@@ -235,10 +237,33 @@ function buildSecretInput(section, key, val) {
   return { input, node: wrapper };
 }
 
+
+
+function getConfigGuardFromStorage() {
+  try {
+    return sessionStorage.getItem(CONFIG_GUARD_STORAGE) || configGuardKeyMem || '';
+  } catch (_) {
+    return configGuardKeyMem || '';
+  }
+}
+
+function setConfigGuardToStorage(value) {
+  configGuardKeyMem = value || '';
+  try {
+    if (value) {
+      sessionStorage.setItem(CONFIG_GUARD_STORAGE, value);
+    } else {
+      sessionStorage.removeItem(CONFIG_GUARD_STORAGE);
+    }
+  } catch (_) {
+    // Tracking Prevention / storage blocked
+  }
+}
+
 async function init() {
   apiKey = await ensureApiKey();
   if (apiKey === null) return;
-  configGuardKey = sessionStorage.getItem(CONFIG_GUARD_STORAGE) || '';
+  configGuardKey = getConfigGuardFromStorage();
   loadData();
 }
 
@@ -273,7 +298,7 @@ async function withConfigGuardRetry(requestFn) {
   const input = window.prompt('请输入配置管理密码（CONFIG_ADMIN_PASSWORD）');
   if (!input) return res;
   configGuardKey = input.trim();
-  sessionStorage.setItem(CONFIG_GUARD_STORAGE, configGuardKey);
+  setConfigGuardToStorage(configGuardKey);
   return requestFn();
 }
 
