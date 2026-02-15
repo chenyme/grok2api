@@ -10,7 +10,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from typing import Optional
 from pydantic import BaseModel
-from app.core.auth import verify_api_key, verify_app_key, get_admin_api_key
+from app.core.auth import verify_api_key, verify_app_key, verify_config_guard, get_admin_api_key
 from app.core.config import config, get_config
 from app.core.batch_tasks import create_task, get_task, expire_task
 from app.core.storage import get_storage, LocalStorage, RedisStorage, SQLStorage
@@ -238,6 +238,12 @@ async def admin_voice_page():
 async def admin_imagine_page():
     """Imagine 图片瀑布流"""
     return await render_template("imagine/imagine.html")
+
+
+@router.get("/admin/webui", response_class=HTMLResponse, include_in_schema=False)
+async def admin_webui_page():
+    """在线 WebUI"""
+    return await render_template("webui/webui.html")
 
 
 class VoiceTokenResponse(BaseModel):
@@ -723,14 +729,14 @@ async def admin_login_api():
     return {"status": "success", "api_key": get_admin_api_key()}
 
 
-@router.get("/api/v1/admin/config", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/config", dependencies=[Depends(verify_api_key), Depends(verify_config_guard)])
 async def get_config_api():
     """获取当前配置"""
     # 暴露原始配置字典
     return config._config
 
 
-@router.post("/api/v1/admin/config", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/config", dependencies=[Depends(verify_api_key), Depends(verify_config_guard)])
 async def update_config_api(data: dict):
     """更新配置"""
     try:

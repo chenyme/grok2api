@@ -1,5 +1,6 @@
 let apiKey = '';
 let currentConfig = {};
+let configGuardKey = '';
 const byId = (id) => document.getElementById(id);
 const NUMERIC_FIELDS = new Set([
   'timeout',
@@ -27,6 +28,7 @@ const NUMERIC_FIELDS = new Set([
   'image_ws_blocked_seconds',
   'image_ws_final_min_bytes',
   'image_ws_medium_min_bytes',
+  'superimage_n',
   'nsfw_max_concurrent',
   'nsfw_batch_size',
   'nsfw_max_tokens'
@@ -82,7 +84,10 @@ const LOCALE_MAP = {
     "image_ws_nsfw": { title: "NSFW 模式", desc: "WebSocket 请求是否启用 NSFW。" },
     "image_ws_blocked_seconds": { title: "Blocked 阈值", desc: "收到中等图后超过该秒数仍无最终图则判定 blocked。" },
     "image_ws_final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" },
-    "image_ws_medium_min_bytes": { title: "中等图最小字节", desc: "判定中等质量图的最小字节数。" }
+    "image_ws_medium_min_bytes": { title: "中等图最小字节", desc: "判定中等质量图的最小字节数。" },
+    "superimage_n": { title: "Superimage 张数", desc: "强制 superimage 生成数量（服务端覆盖客户端 n）。" },
+    "superimage_ratio": { title: "Superimage 比例", desc: "强制 superimage 比例（如 1:1 / 16:9 / 9:16 / 2:3 / 3:2）。" },
+    "superimage_nsfw": { title: "Superimage NSFW", desc: "强制 superimage 的 NSFW 开关（服务端覆盖客户端）。" }
   },
   "token": {
     "label": "Token 池管理",
@@ -236,16 +241,41 @@ async function init() {
   loadData();
 }
 
+
+
+function buildConfigHeaders() {
+  return {
+    ...buildAuthHeaders(apiKey),
+    ...(configGuardKey ? { 'X-Config-Password': configGuardKey } : {})
+  };
+}
+
+async function withConfigGuardRetry(requestFn) {
+  let res = await requestFn();
+  if (res.status !== 401) return res;
+
+  const detail = await res.clone().json().catch(() => ({}));
+  const msg = String(detail?.detail || '');
+  if (!msg.toLowerCase().includes('config password')) {
+    return res;
+  }
+
+  const input = window.prompt('请输入配置管理密码（CONFIG_ADMIN_PASSWORD）');
+  if (!input) return res;
+  configGuardKey = input.trim();
+  return requestFn();
+}
+
 async function loadData() {
   try {
-    const res = await fetch('/api/v1/admin/config', {
-      headers: buildAuthHeaders(apiKey)
-    });
+    const res = await withConfigGuardRetry(() => fetch('/api/v1/admin/config', {
+      headers: buildConfigHeaders()
+    }));
     if (res.ok) {
       currentConfig = await res.json();
       renderConfig(currentConfig);
     } else if (res.status === 401) {
-      logout();
+      showToast('配置密码无效或未提供', 'error');
     }
   } catch (e) {
     showToast('连接失败', 'error');
@@ -395,14 +425,14 @@ async function saveConfig() {
       newConfig[s][k] = val;
     });
 
-    const res = await fetch('/api/v1/admin/config', {
+    const res = await withConfigGuardRetry(() => fetch('/api/v1/admin/config', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...buildAuthHeaders(apiKey)
+        ...buildConfigHeaders()
       },
       body: JSON.stringify(newConfig)
-    });
+    }));
 
     if (res.ok) {
       btn.innerText = '成功';
