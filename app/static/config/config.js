@@ -1,5 +1,6 @@
 let apiKey = '';
 let currentConfig = {};
+let configGuardKey = '';
 const byId = (id) => document.getElementById(id);
 const NUMERIC_FIELDS = new Set([
   'timeout',
@@ -240,16 +241,41 @@ async function init() {
   loadData();
 }
 
+
+
+function buildConfigHeaders() {
+  return {
+    ...buildAuthHeaders(apiKey),
+    ...(configGuardKey ? { 'X-Config-Password': configGuardKey } : {})
+  };
+}
+
+async function withConfigGuardRetry(requestFn) {
+  let res = await requestFn();
+  if (res.status !== 401) return res;
+
+  const detail = await res.clone().json().catch(() => ({}));
+  const msg = String(detail?.detail || '');
+  if (!msg.toLowerCase().includes('config password')) {
+    return res;
+  }
+
+  const input = window.prompt('请输入配置管理密码（CONFIG_ADMIN_PASSWORD）');
+  if (!input) return res;
+  configGuardKey = input.trim();
+  return requestFn();
+}
+
 async function loadData() {
   try {
-    const res = await fetch('/api/v1/admin/config', {
-      headers: buildAuthHeaders(apiKey)
-    });
+    const res = await withConfigGuardRetry(() => fetch('/api/v1/admin/config', {
+      headers: buildConfigHeaders()
+    }));
     if (res.ok) {
       currentConfig = await res.json();
       renderConfig(currentConfig);
     } else if (res.status === 401) {
-      logout();
+      showToast('配置密码无效或未提供', 'error');
     }
   } catch (e) {
     showToast('连接失败', 'error');
@@ -399,14 +425,14 @@ async function saveConfig() {
       newConfig[s][k] = val;
     });
 
-    const res = await fetch('/api/v1/admin/config', {
+    const res = await withConfigGuardRetry(() => fetch('/api/v1/admin/config', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...buildAuthHeaders(apiKey)
+        ...buildConfigHeaders()
       },
       body: JSON.stringify(newConfig)
-    });
+    }));
 
     if (res.ok) {
       btn.innerText = '成功';

@@ -3,6 +3,7 @@ let models = [];
 let chatHistory = [];
 let sending = false;
 
+const WEBUI_STATE_KEY = 'grok2api_webui_state_v1';
 const byId = (id) => document.getElementById(id);
 
 const TOKEN_RETRY_MAX = 12;
@@ -31,7 +32,7 @@ function isNoTokenError(error) {
     const msg = String(parsed?.error?.message || '').toLowerCase();
     if (code === 'rate_limit_exceeded' || type === 'rate_limit_error') {
       if (msg.includes('no available tokens') || msg.includes('please try again later')) {
-        return true
+        return true;
       }
     }
   } catch (_) {
@@ -49,13 +50,9 @@ async function requestWithTokenRetry(taskFn) {
       return await taskFn();
     } catch (err) {
       lastError = err;
-      if (!isNoTokenError(err)) {
-        throw err;
-      }
+      if (!isNoTokenError(err)) throw err;
 
-      if (i >= TOKEN_RETRY_MAX) {
-        break;
-      }
+      if (i >= TOKEN_RETRY_MAX) break;
 
       if (typeof showToast === 'function') {
         showToast(`暂无可用 Token，正在重试 (${i}/${TOKEN_RETRY_MAX})`, 'warning');
@@ -90,6 +87,43 @@ function detectMode(modelId) {
   if (lower.includes('imagine') || lower.includes('superimage')) return 'image';
   if (lower.includes('video')) return 'video';
   return 'chat';
+}
+
+function updateMessageCount() {
+  const el = byId('messageCount');
+  if (!el) return;
+  el.textContent = `${chatHistory.length} 条消息`;
+}
+
+function getUiState() {
+  return {
+    model: byId('modelSelect')?.value || '',
+    mode: byId('modeSelect')?.value || 'auto',
+    stream: Boolean(byId('streamToggle')?.checked),
+    imageN: byId('imageN')?.value || '1',
+    imageSize: byId('imageSize')?.value || '1:1',
+    videoRatio: byId('videoRatio')?.value || '3:2',
+    videoLength: byId('videoLength')?.value || '6'
+  };
+}
+
+function saveWebuiState() {
+  try {
+    const payload = { savedAt: Date.now(), chatHistory, ui: getUiState() };
+    localStorage.setItem(WEBUI_STATE_KEY, JSON.stringify(payload));
+  } catch (_) {
+    // ignore
+  }
+}
+
+function loadWebuiState() {
+  try {
+    const raw = localStorage.getItem(WEBUI_STATE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
 }
 
 function refreshOptionPanels() {
@@ -144,11 +178,36 @@ function clearViewportOnly() {
     viewport.appendChild(welcome);
     welcome.style.display = '';
   }
+  updateMessageCount();
+}
+
+function renderHistory() {
+  clearViewportOnly();
+  for (const item of chatHistory) {
+    appendMessage(item?.role || 'assistant', item?.content || '');
+  }
+  updateMessageCount();
+}
+
+function applyUiState(ui) {
+  if (!ui) return;
+  if (ui.mode && byId('modeSelect')) byId('modeSelect').value = ui.mode;
+  if (typeof ui.stream === 'boolean' && byId('streamToggle')) byId('streamToggle').checked = ui.stream;
+  if (ui.imageN && byId('imageN')) byId('imageN').value = ui.imageN;
+  if (ui.imageSize && byId('imageSize')) byId('imageSize').value = ui.imageSize;
+  if (ui.videoRatio && byId('videoRatio')) byId('videoRatio').value = ui.videoRatio;
+  if (ui.videoLength && byId('videoLength')) byId('videoLength').value = ui.videoLength;
+  if (ui.model && byId('modelSelect')) {
+    const exists = Array.from(byId('modelSelect').options).some((o) => o.value === ui.model);
+    if (exists) byId('modelSelect').value = ui.model;
+  }
+  refreshOptionPanels();
 }
 
 function resetConversation() {
   chatHistory = [];
   clearViewportOnly();
+  saveWebuiState();
   if (typeof showToast === 'function') showToast('已创建新对话', 'success');
 }
 
@@ -178,7 +237,6 @@ function buildChatPayload(model, stream, prompt) {
   const resolved = mode === 'auto' ? detectMode(model) : mode;
 
   const messages = [...chatHistory, { role: 'user', content: prompt }];
-
   const payload = { model, stream, messages };
 
   if (resolved === 'video') {
@@ -212,7 +270,6 @@ async function callChatNonStream(payload) {
   });
   const text = await res.text();
   if (!res.ok) throw new Error(text || `请求失败(${res.status})`);
-
   const data = JSON.parse(text);
   return data?.choices?.[0]?.message?.content || text;
 }
@@ -230,10 +287,8 @@ async function callChatStream(payload) {
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
-
   let buffer = '';
   let assembled = '';
-
   const node = appendMessage('assistant(stream)', '', { returnNode: true });
 
   while (true) {
@@ -266,10 +321,7 @@ async function callChatStream(payload) {
     }
   }
 
-  if (!assembled) {
-    setStreamingNode(node, '[empty stream]');
-  }
-
+  if (!assembled) setStreamingNode(node, '[empty stream]');
   return assembled;
 }
 
@@ -319,6 +371,8 @@ async function sendRequest() {
 
     chatHistory.push({ role: 'user', content: prompt });
     if (answer) chatHistory.push({ role: 'assistant', content: answer });
+    updateMessageCount();
+    saveWebuiState();
   } catch (e) {
     appendMessage('error', e.message || String(e));
     if (typeof showToast === 'function') showToast(e.message || '请求失败', 'error');
@@ -332,31 +386,63 @@ async function sendRequest() {
 async function bootstrap() {
   apiKey = await ensureApiKey();
   if (apiKey === null) return;
+  updateMessageCount();
 
-  byId('modelSelect').addEventListener('change', refreshOptionPanels);
-  byId('modeSelect').addEventListener('change', refreshOptionPanels);
+  byId('modelSelect').addEventListener('change', () => {
+    refreshOptionPanels();
+    saveWebuiState();
+  });
+  byId('modeSelect').addEventListener('change', () => {
+    refreshOptionPanels();
+    saveWebuiState();
+  });
 
   byId('sendBtn').addEventListener('click', sendRequest);
   byId('clearBtn').addEventListener('click', clearViewportOnly);
   byId('newChatBtn').addEventListener('click', resetConversation);
+  byId('restoreBtn').addEventListener('click', () => {
+    const state = loadWebuiState();
+    if (!state) {
+      if (typeof showToast === 'function') showToast('没有可恢复的暂存', 'warning');
+      return;
+    }
+    chatHistory = Array.isArray(state.chatHistory) ? state.chatHistory : [];
+    applyUiState(state.ui || {});
+    renderHistory();
+    if (typeof showToast === 'function') showToast('已恢复暂存对话', 'success');
+  });
+  byId('clearCacheBtn').addEventListener('click', () => {
+    localStorage.removeItem(WEBUI_STATE_KEY);
+    if (typeof showToast === 'function') showToast('已清空浏览器暂存', 'success');
+  });
+
+  byId('streamToggle').addEventListener('change', saveWebuiState);
+  byId('imageN').addEventListener('change', saveWebuiState);
+  byId('imageSize').addEventListener('change', saveWebuiState);
+  byId('videoRatio').addEventListener('change', saveWebuiState);
+  byId('videoLength').addEventListener('change', saveWebuiState);
 
   byId('promptInput').addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
 
-    // Ctrl + Shift + Enter: 强制换行
-    if (e.ctrlKey && e.shiftKey) {
+    // Ctrl + Enter: 换行
+    if (e.ctrlKey) {
       return;
     }
 
-    // Shift + Enter: 发送
-    if (e.shiftKey) {
-      e.preventDefault();
-      sendRequest();
-    }
+    // Enter: 发送
+    e.preventDefault();
+    sendRequest();
   });
 
   try {
     await loadModels();
+    const state = loadWebuiState();
+    if (state) {
+      chatHistory = Array.isArray(state.chatHistory) ? state.chatHistory : [];
+      applyUiState(state.ui || {});
+      renderHistory();
+    }
   } catch (e) {
     appendMessage('error', e.message || String(e));
     if (typeof showToast === 'function') showToast('模型加载失败', 'error');

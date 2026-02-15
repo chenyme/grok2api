@@ -11,7 +11,7 @@
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <link href="/static/common/common.css?v=3" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
-  <link href="/static/webui/webui.css?v=2" rel="stylesheet">
+  <link href="/static/webui/webui.css?v=3" rel="stylesheet">
 </head>
 
 <body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
@@ -87,10 +87,20 @@
         <div class="sidebar-actions">
           <button id="newChatBtn" class="geist-button-outline w-full">新对话</button>
           <button id="clearBtn" class="geist-button-outline w-full">清空显示</button>
+          <button id="restoreBtn" class="geist-button-outline w-full">恢复暂存</button>
+          <button id="clearCacheBtn" class="geist-button-outline w-full">清空暂存</button>
+        </div>
+
+        <div class="cache-hint">
+          对话会自动暂存到浏览器本地缓存。
         </div>
       </aside>
 
       <section class="chat-shell">
+        <div class="chat-topbar">
+          <span class="chat-topbar-title">会话</span>
+          <span id="messageCount" class="chat-topbar-badge">0 条消息</span>
+        </div>
         <div id="chatViewport" class="chat-viewport">
           <div class="welcome-card" id="welcomeCard">
             <div class="welcome-title">你好，欢迎使用 Grok2API WebUI</div>
@@ -99,7 +109,7 @@
         </div>
 
         <div class="composer-shell">
-          <textarea id="promptInput" class="geist-input composer-input" placeholder="输入消息，按 Ctrl+Enter 发送"></textarea>
+          <textarea id="promptInput" class="geist-input composer-input" placeholder="输入消息，按 Enter 发送；Ctrl+Enter 换行"></textarea>
           <button id="sendBtn" class="geist-button composer-send">发送</button>
         </div>
       </section>
@@ -113,7 +123,7 @@
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="/static/webui/webui.js?v=2"></script>
+  <script src="/static/webui/webui.js?v=3"></script>
 </body>
 
 </html>
