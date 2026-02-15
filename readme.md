@@ -56,6 +56,8 @@ docker compose up -d
 访问地址：`http://<host>:8000/admin`
 默认登录密码：`grok2api`（对应配置项 `app.app_key`，建议修改）。
 
+可通过环境变量 `ADMIN_APP_KEY` 强制覆盖后台登录密码（优先级高于 `app.app_key`）。
+
 **功能说明**：
 
 - **Token 管理**：导入/添加/删除 Token，查看状态和配额
@@ -66,6 +68,10 @@ docker compose up -d
 - **缓存管理**：查看和清理媒体缓存
 
 ### 环境变量
+
+- `ADMIN_APP_KEY`：后台登录密码（可选，设置后覆盖 `app.app_key`）
+- `CONFIG_ADMIN_PASSWORD`：配置管理二级密码（可选，未设置则不启用）
+
 
 > 配置 `.env` 文件
 

@@ -60,6 +60,8 @@ docker compose up -d
 URL: `http://<host>:8000/admin`  
 Default password: `grok2api` (config key `app.app_key`, change it in production).
 
+You can override admin login password using env var `ADMIN_APP_KEY` (takes precedence over `app.app_key`).
+
 ### Environment variables
 
 | Variable | Description | Default | Example |

@@ -238,6 +238,7 @@ function buildSecretInput(section, key, val) {
 async function init() {
   apiKey = await ensureApiKey();
   if (apiKey === null) return;
+  configGuardKey = sessionStorage.getItem(CONFIG_GUARD_STORAGE) || '';
   loadData();
 }
 
@@ -256,13 +257,23 @@ async function withConfigGuardRetry(requestFn) {
 
   const detail = await res.clone().json().catch(() => ({}));
   const msg = String(detail?.detail || '');
-  if (!msg.toLowerCase().includes('config password')) {
+  const lower = msg.toLowerCase();
+
+  // 登录态失效交给全局登录流程处理
+  if (lower.includes('authentication token')) {
+    logout();
+    return res;
+  }
+
+  // 只要是 401 且不是 token 问题，都尝试弹出配置密码输入
+  if (configGuardKey && !lower.includes('config password')) {
     return res;
   }
 
   const input = window.prompt('请输入配置管理密码（CONFIG_ADMIN_PASSWORD）');
   if (!input) return res;
   configGuardKey = input.trim();
+  sessionStorage.setItem(CONFIG_GUARD_STORAGE, configGuardKey);
   return requestFn();
 }
 
@@ -275,7 +286,7 @@ async function loadData() {
       currentConfig = await res.json();
       renderConfig(currentConfig);
     } else if (res.status === 401) {
-      showToast('配置密码无效或未提供', 'error');
+      showToast('配置密码无效或未提供（请重试输入）', 'error');
     }
   } catch (e) {
     showToast('连接失败', 'error');

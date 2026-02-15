@@ -30,6 +30,18 @@ def get_admin_api_key() -> str:
     return api_key or ""
 
 
+def get_admin_login_key() -> str:
+    """获取后台登录密钥。
+
+    优先读取环境变量 ADMIN_APP_KEY；未设置时回退到配置 app.app_key。
+    """
+    env_key = os.getenv("ADMIN_APP_KEY", "")
+    if env_key:
+        return env_key
+    app_key = get_config("app.app_key", DEFAULT_APP_KEY)
+    return app_key or ""
+
+
 async def verify_api_key(
     auth: Optional[HTTPAuthorizationCredentials] = Security(security),
 ) -> Optional[str]:
@@ -67,7 +79,7 @@ async def verify_app_key(
 
     app_key 必须配置，否则拒绝登录。
     """
-    app_key = get_config("app.app_key", DEFAULT_APP_KEY)
+    app_key = get_admin_login_key()
 
     if not app_key:
         raise HTTPException(
