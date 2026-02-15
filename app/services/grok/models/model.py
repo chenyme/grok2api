@@ -129,6 +129,15 @@ class ModelService:
             is_image=True,
         ),
         ModelInfo(
+            model_id="grok-superimage-1.0",
+            grok_model="grok-3",
+            model_mode="MODEL_MODE_FAST",
+            cost=Cost.HIGH,
+            display_name="Grok Super Image",
+            description="Waterfall image generation model",
+            is_image=True,
+        ),
+        ModelInfo(
             model_id="grok-imagine-1.0-edit",
             grok_model="imagine-image-edit",
             model_mode="MODEL_MODE_FAST",
