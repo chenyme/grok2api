@@ -5,6 +5,69 @@ let sending = false;
 
 const byId = (id) => document.getElementById(id);
 
+const TOKEN_RETRY_MAX = 12;
+const TOKEN_RETRY_INTERVAL_MS = 1500;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseErrorMessage(message) {
+  try {
+    const parsed = JSON.parse(message || '{}');
+    if (parsed?.error?.message) return String(parsed.error.message);
+  } catch (_) {
+    // ignore
+  }
+  return String(message || '请求失败');
+}
+
+function isNoTokenError(error) {
+  const message = String(error?.message || '');
+  try {
+    const parsed = JSON.parse(message || '{}');
+    const code = parsed?.error?.code;
+    const type = parsed?.error?.type;
+    const msg = String(parsed?.error?.message || '').toLowerCase();
+    if (code === 'rate_limit_exceeded' || type === 'rate_limit_error') {
+      if (msg.includes('no available tokens') || msg.includes('please try again later')) {
+        return true
+      }
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  const lower = message.toLowerCase();
+  return lower.includes('no available tokens') || lower.includes('rate_limit_exceeded');
+}
+
+async function requestWithTokenRetry(taskFn) {
+  let lastError = null;
+  for (let i = 1; i <= TOKEN_RETRY_MAX; i++) {
+    try {
+      return await taskFn();
+    } catch (err) {
+      lastError = err;
+      if (!isNoTokenError(err)) {
+        throw err;
+      }
+
+      if (i >= TOKEN_RETRY_MAX) {
+        break;
+      }
+
+      if (typeof showToast === 'function') {
+        showToast(`暂无可用 Token，正在重试 (${i}/${TOKEN_RETRY_MAX})`, 'warning');
+      }
+      await sleep(TOKEN_RETRY_INTERVAL_MS);
+    }
+  }
+
+  const msg = parseErrorMessage(lastError?.message || 'No available tokens.');
+  throw new Error(`暂无可用 Token：${msg}`);
+}
+
 function esc(text) {
   return String(text)
     .replaceAll('&', '&amp;')
@@ -246,11 +309,11 @@ async function sendRequest() {
   try {
     let answer = '';
     if (resolved === 'image') {
-      answer = await callImage(buildImagePayload(model, prompt));
+      answer = await requestWithTokenRetry(() => callImage(buildImagePayload(model, prompt)));
       appendMessage('assistant(image)', answer);
     } else {
       const payload = buildChatPayload(model, stream, prompt);
-      answer = stream ? await callChatStream(payload) : await callChatNonStream(payload);
+      answer = await requestWithTokenRetry(() => (stream ? callChatStream(payload) : callChatNonStream(payload)));
       if (!stream) appendMessage('assistant', answer);
     }
 
@@ -278,7 +341,15 @@ async function bootstrap() {
   byId('newChatBtn').addEventListener('click', resetConversation);
 
   byId('promptInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.ctrlKey) {
+    if (e.key !== 'Enter') return;
+
+    // Ctrl + Shift + Enter: 强制换行
+    if (e.ctrlKey && e.shiftKey) {
+      return;
+    }
+
+    // Shift + Enter: 发送
+    if (e.shiftKey) {
       e.preventDefault();
       sendRequest();
     }
