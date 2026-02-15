@@ -49,6 +49,9 @@ GROK_DEFAULTS = {
         "image_ws_blocked_seconds": 15,
         "image_ws_final_min_bytes": 100000,
         "image_ws_medium_min_bytes": 30000,
+        "superimage_n": 1,
+        "superimage_ratio": "1:1",
+        "superimage_nsfw": True,
     },
     "token": {
         "auto_refresh": True,

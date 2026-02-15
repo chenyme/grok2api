@@ -100,6 +100,7 @@ docker compose up -d
 | `grok-4.1`               |  1  | Basic/Super |   支持   |   支持   |    -    |
 | `grok-4.1-thinking`      |  4  | Basic/Super |   支持   |   支持   |    -    |
 | `grok-imagine-1.0`       |  4  | Basic/Super |    -    |   支持   |    -    |
+| `grok-superimage-1.0`    |  4  | Basic/Super |    -    |   支持   |    -    |
 | `grok-imagine-1.0-edit`  |  4  | Basic/Super |    -    |   支持   |    -    |
 | `grok-imagine-1.0-video` |  -  | Basic/Super |    -    |    -    |   支持   |
 
@@ -170,7 +171,7 @@ curl http://localhost:8000/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-imagine-1.0",
+    "model": "grok-superimage-1.0",
     "prompt": "一只在太空漂浮的猫",
     "n": 1
   }'
@@ -183,7 +184,7 @@ curl http://localhost:8000/v1/images/generations \
 
 | 字段                | 类型    | 说明             | 可用参数                                     |
 | :------------------ | :------ | :--------------- | :------------------------------------------- |
-| `model`           | string  | 图像模型名       | `grok-imagine-1.0`                         |
+| `model`           | string  | 图像模型名       | `grok-imagine-1.0` / `grok-superimage-1.0`     |
 | `prompt`          | string  | 图像描述提示词   | -                                            |
 | `n`               | integer | 生成数量         | `1` - `10` (流式模式仅限 `1` 或 `2`) |
 | `stream`          | boolean | 是否开启流式输出 | `true`, `false`                          |
@@ -193,6 +194,8 @@ curl http://localhost:8000/v1/images/generations \
 | `style`           | string  | 风格             | - (暂不支持)                                 |
 
 注：`quality`、`style` 参数为 OpenAI 兼容保留，当前版本暂不支持自定义。
+注：`grok-superimage-1.0` 固定走瀑布流（WebSocket）绘画通道，不受 `grok.image_ws` 开关影响。
+注：`grok-superimage-1.0` 统一返回 URL（服务端会将生成图片落盘后返回文件 URL）。
 当开启 `grok.image_ws=true` 时，`size` 将映射为宽高比（仅支持 5 种：`16:9`、`9:16`、`1:1`、`2:3`、`3:2`），也可以直接传以上比例字符串：
 `1024x576/1280x720/1536x864 -> 16:9`，`576x1024/720x1280/864x1536 -> 9:16`，`1024x1024/512x512 -> 1:1`，`1024x1536/512x768/768x1024 -> 2:3`，`1536x1024/768x512/1024x768 -> 3:2`，其他值默认 `2:3`。
 
@@ -257,7 +260,7 @@ curl http://localhost:8000/v1/images/edits \
 | **app**         | `app_url`                      | 应用地址           | 当前 Grok2API 服务的外部访问 URL，用于文件链接访问。  | `http://127.0.0.1:8000`                                 |
 |                       | `app_key`                      | 后台密码           | 登录 Grok2API 管理后台的密码（必填）。                | `grok2api`                                              |
 |                       | `api_key`                      | API 密钥           | 调用 Grok2API 服务的 Token（可选）。                  | `""`                                                    |
-|                       | `image_format`                 | 图片格式           | 生成的图片格式（url 或 base64）。                     | `url`                                                   |
+|                       | `image_format`                 | 图片格式           | 生成的图片格式（url 或 b64_json）。                     | `url`                                                   |
 |                       | `video_format`                 | 视频格式           | 生成的视频格式（html 或 url，url 为处理后的链接）。   | `html`                                                  |
 | **network**     | `timeout`                      | 请求超时           | 请求 Grok 服务的超时时间（秒）。                      | `120`                                                   |
 |                       | `base_proxy_url`               | 基础代理 URL       | 代理请求到 Grok 官网的基础服务地址。                  | `""`                                                    |
