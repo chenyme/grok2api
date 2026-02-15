@@ -27,6 +27,7 @@ from app.core.exceptions import AppException, UpstreamException, ValidationExcep
 from app.core.logger import logger
 from app.core.storage import DATA_DIR
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
+from app.services.grok.utils.proxy import build_request_proxies, normalize_proxy_url
 from app.services.token.service import TokenService
 
 # ==================== 常量 ====================
@@ -127,16 +128,18 @@ class ServiceConfig:
     @classmethod
     def from_settings(cls, proxy: Optional[str] = None):
         return cls(
-            proxy=proxy
-            or get_config("network.asset_proxy_url")
-            or get_config("network.base_proxy_url"),
+            proxy=normalize_proxy_url(
+                proxy
+                or get_config("network.asset_proxy_url")
+                or get_config("network.base_proxy_url")
+            ),
             timeout=get_config("network.timeout"),
             browser=get_config("security.browser"),
             user_agent=get_config("security.user_agent"),
         )
 
     def get_proxies(self) -> Optional[dict]:
-        return {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        return build_request_proxies(self.proxy)
 
 
 # ==================== 基础服务 ====================

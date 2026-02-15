@@ -20,6 +20,7 @@ from app.services.grok.models.model import ModelService
 from app.services.token import get_token_manager, EffortType
 from app.services.grok.processors import VideoStreamProcessor, VideoCollectProcessor
 from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
+from app.services.grok.utils.proxy import build_request_proxies, normalize_proxy_url
 from app.services.grok.utils.stream import wrap_stream_with_usage
 
 CREATE_POST_API = "https://grok.com/rest/media/post/create"
@@ -43,7 +44,7 @@ class VideoService:
     """视频生成服务"""
 
     def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("network.base_proxy_url")
+        self.proxy = normalize_proxy_url(proxy or get_config("network.base_proxy_url"))
         self.timeout = get_config("network.timeout")
 
     def _build_headers(
@@ -81,7 +82,7 @@ class VideoService:
 
     def _build_proxies(self) -> Optional[dict]:
         """构建代理"""
-        return {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        return build_request_proxies(self.proxy)
 
     async def create_post(
         self,

@@ -3,7 +3,8 @@ API 认证模块
 """
 
 from typing import Optional
-from fastapi import HTTPException, status, Security
+import os
+from fastapi import HTTPException, status, Security, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import get_config
@@ -27,6 +28,18 @@ def get_admin_api_key() -> str:
     """
     api_key = get_config("app.api_key", DEFAULT_API_KEY)
     return api_key or ""
+
+
+def get_admin_login_key() -> str:
+    """获取后台登录密钥。
+
+    优先读取环境变量 ADMIN_APP_KEY；未设置时回退到配置 app.app_key。
+    """
+    env_key = os.getenv("ADMIN_APP_KEY", "")
+    if env_key:
+        return env_key
+    app_key = get_config("app.app_key", DEFAULT_APP_KEY)
+    return app_key or ""
 
 
 async def verify_api_key(
@@ -66,7 +79,7 @@ async def verify_app_key(
 
     app_key 必须配置，否则拒绝登录。
     """
-    app_key = get_config("app.app_key", DEFAULT_APP_KEY)
+    app_key = get_admin_login_key()
 
     if not app_key:
         raise HTTPException(
@@ -90,3 +103,32 @@ async def verify_app_key(
         )
 
     return auth.credentials
+
+
+
+def get_config_guard_password() -> str:
+    """获取配置管理独立密码（仅环境变量）。"""
+    return os.getenv("CONFIG_ADMIN_PASSWORD", "") or ""
+
+
+async def verify_config_guard(
+    x_config_password: Optional[str] = Header(default=None, alias="X-Config-Password"),
+) -> Optional[str]:
+    """验证配置管理独立密码；未设置环境变量时不启用。"""
+    guard_password = get_config_guard_password()
+    if not guard_password:
+        return None
+
+    if not x_config_password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing config password",
+        )
+
+    if x_config_password != guard_password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid config password",
+        )
+
+    return x_config_password
