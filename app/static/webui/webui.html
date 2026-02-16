@@ -6,105 +6,107 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok2API - 在线 WebUI</title>
   <link rel="icon" href="/static/favicon/favicon.ico">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <link href="/static/common/common.css?v=3" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
-  <link href="/static/webui/webui.css?v=3" rel="stylesheet">
+  <link href="/static/webui/webui.css?v=5" rel="stylesheet">
 </head>
 
-<body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
+<body class="webui-page">
   <div id="toast-container" class="toast-container"></div>
   <div id="app-header"></div>
 
-  <main class="flex-1 container mx-auto max-w-6xl px-6 py-8 fade-in">
+  <main class="webui-main fade-in">
     <div class="webui-layout">
-      <aside class="webui-sidebar">
-        <div class="sidebar-title-row">
-          <h2 class="text-lg font-semibold tracking-tight">在线 WebUI</h2>
-          <span class="sidebar-subtitle">Chat / Image / Video</span>
-        </div>
-
-        <div class="h-px bg-[var(--border)] my-4"></div>
-
-        <div class="field-block">
-          <label class="field-label" for="modelSelect">模型</label>
-          <select id="modelSelect" class="geist-input"></select>
-        </div>
-
-        <div class="field-block">
-          <label class="field-label" for="modeSelect">调用模式</label>
-          <select id="modeSelect" class="geist-input">
-            <option value="auto" selected>Auto（自动识别）</option>
-            <option value="chat">Chat</option>
-            <option value="image">Image</option>
-            <option value="video">Video</option>
-          </select>
-        </div>
-
-        <div class="field-block">
-          <label class="field-label" for="streamToggle">流式</label>
-          <label class="toggle">
-            <input id="streamToggle" type="checkbox" checked>
-            <span class="toggle-track"></span>
-            <span class="toggle-label">SSE 实时输出</span>
-          </label>
-        </div>
-
-        <div id="imageOptions" class="field-stack">
-          <div class="field-block">
-            <label class="field-label" for="imageN">图片数量</label>
-            <input id="imageN" class="geist-input" type="number" min="1" max="10" value="1">
+      <aside class="thread-sidebar">
+        <div class="sidebar-header">
+          <div>
+            <h2 class="sidebar-title">在线 WebUI</h2>
+            <div class="sidebar-subtitle">多会话 · 自动命名 · Markdown</div>
           </div>
-          <div class="field-block">
-            <label class="field-label" for="imageSize">比例 / 尺寸</label>
-            <input id="imageSize" class="geist-input" type="text" value="1:1" placeholder="1:1 / 1024x1024">
-          </div>
+          <button id="newChatBtn" class="geist-button-outline text-xs px-3">新对话</button>
         </div>
 
-        <div id="videoOptions" class="field-stack hidden">
-          <div class="field-block">
-            <label class="field-label" for="videoRatio">视频比例</label>
-            <select id="videoRatio" class="geist-input">
-              <option>3:2</option>
-              <option>16:9</option>
-              <option>9:16</option>
-              <option>1:1</option>
-              <option>2:3</option>
-            </select>
-          </div>
-          <div class="field-block">
-            <label class="field-label" for="videoLength">视频时长</label>
-            <select id="videoLength" class="geist-input">
-              <option value="6">6s</option>
-              <option value="10">10s</option>
-              <option value="15">15s</option>
-            </select>
-          </div>
-        </div>
+        <div id="threadList" class="thread-list"></div>
 
-        <div class="sidebar-actions">
-          <button id="newChatBtn" class="geist-button-outline w-full">新对话</button>
-          <button id="clearBtn" class="geist-button-outline w-full">清空显示</button>
-          <button id="restoreBtn" class="geist-button-outline w-full">恢复暂存</button>
-          <button id="clearCacheBtn" class="geist-button-outline w-full">清空暂存</button>
-        </div>
-
-        <div class="cache-hint">
-          对话会自动暂存到浏览器本地缓存。
+        <div class="sidebar-footer">
+          <button id="clearCacheBtn" class="geist-button-outline w-full text-xs">清空全部暂存</button>
+          <div class="cache-hint">会话自动保存在浏览器本地缓存。</div>
         </div>
       </aside>
 
       <section class="chat-shell">
-        <div class="chat-topbar">
-          <span class="chat-topbar-title">会话</span>
-          <span id="messageCount" class="chat-topbar-badge">0 条消息</span>
+        <header class="chat-topbar">
+          <div>
+            <div id="activeTitle" class="chat-title">新对话</div>
+            <div id="messageCount" class="chat-subtitle">0 条消息</div>
+          </div>
+          <div class="topbar-actions">
+            <button id="toggleSettingsBtn" class="geist-button-outline text-xs px-3">模型与参数</button>
+          </div>
+        </header>
+
+        <div id="settingsPanel" class="settings-panel hidden">
+          <div class="settings-grid">
+            <div class="field-block">
+              <label class="field-label" for="modelSelect">模型</label>
+              <select id="modelSelect" class="geist-input"></select>
+            </div>
+            <div class="field-block">
+              <label class="field-label" for="modeSelect">调用模式</label>
+              <select id="modeSelect" class="geist-input">
+                <option value="auto" selected>Auto（自动识别）</option>
+                <option value="chat">Chat</option>
+                <option value="image">Image</option>
+                <option value="video">Video</option>
+              </select>
+            </div>
+            <div class="field-block">
+              <label class="field-label" for="streamToggle">流式</label>
+              <label class="toggle">
+                <input id="streamToggle" type="checkbox" checked>
+                <span class="toggle-track"></span>
+                <span class="toggle-label">SSE</span>
+              </label>
+            </div>
+
+            <div id="imageOptions" class="settings-inline">
+              <div class="field-block">
+                <label class="field-label" for="imageN">图片数量</label>
+                <input id="imageN" class="geist-input" type="number" min="1" max="10" value="1">
+              </div>
+              <div class="field-block">
+                <label class="field-label" for="imageSize">比例/尺寸</label>
+                <input id="imageSize" class="geist-input" type="text" value="1:1" placeholder="1:1 / 1024x1024">
+              </div>
+            </div>
+
+            <div id="videoOptions" class="settings-inline hidden">
+              <div class="field-block">
+                <label class="field-label" for="videoRatio">视频比例</label>
+                <select id="videoRatio" class="geist-input">
+                  <option>3:2</option>
+                  <option>16:9</option>
+                  <option>9:16</option>
+                  <option>1:1</option>
+                  <option>2:3</option>
+                </select>
+              </div>
+              <div class="field-block">
+                <label class="field-label" for="videoLength">视频时长</label>
+                <select id="videoLength" class="geist-input">
+                  <option value="6">6s</option>
+                  <option value="10">10s</option>
+                  <option value="15">15s</option>
+                </select>
+              </div>
+            </div>
+          </div>
         </div>
+
         <div id="chatViewport" class="chat-viewport">
-          <div class="welcome-card" id="welcomeCard">
+          <div id="welcomeCard" class="welcome-card">
             <div class="welcome-title">你好，欢迎使用 Grok2API WebUI</div>
-            <div class="welcome-desc">支持多轮上下文、流式输出、Markdown 渲染和图片预览。</div>
+            <div class="welcome-desc">支持多会话暂存、自动命名、流式输出、Markdown 渲染与图片预览。</div>
           </div>
         </div>
 
@@ -123,7 +125,7 @@
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="/static/webui/webui.js?v=3"></script>
+  <script src="/static/webui/webui.js?v=5"></script>
 </body>
 
 </html>
