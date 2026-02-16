@@ -4,6 +4,10 @@ const APP_KEY_XOR_PREFIX = 'enc:xor:';
 const APP_KEY_SECRET = 'grok2api-admin-key';
 let cachedApiKey = null;
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -144,13 +148,22 @@ async function ensureApiKey() {
     window.location.href = '/admin';
     return null;
   }
-  try {
-    return await requestApiKey(appKey);
-  } catch (e) {
-    clearStoredAppKey();
-    window.location.href = '/admin';
-    return null;
+
+  // 容忍短暂失败（多实例切换/网络抖动），避免刚登录立即被重定向
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await requestApiKey(appKey);
+    } catch (e) {
+      if (attempt < 2) {
+        await sleep(250);
+        continue;
+      }
+      clearStoredAppKey();
+      window.location.href = '/admin';
+      return null;
+    }
   }
+  return null;
 }
 
 function buildAuthHeaders(apiKey) {
