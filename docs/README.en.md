@@ -60,6 +60,8 @@ docker compose up -d
 URL: `http://<host>:8000/admin`  
 Default password: `grok2api` (config key `app.app_key`, change it in production).
 
+You can override admin login password using env var `ADMIN_APP_KEY` (takes precedence over `app.app_key`).
+
 ### Environment variables
 
 | Variable | Description | Default | Example |
@@ -93,6 +95,7 @@ Default password: `grok2api` (config key `app.app_key`, change it in production)
 | `grok-4.1` | 1 | Basic/Super | Yes | Yes | - |
 | `grok-4.1-thinking` | 4 | Basic/Super | Yes | Yes | - |
 | `grok-imagine-1.0` | 4 | Basic/Super | - | Yes | - |
+| `grok-superimage-1.0` | 4 | Basic/Super | - | Yes | - |
 | `grok-imagine-1.0-edit` | 4 | Basic/Super | - | Yes | - |
 | `grok-imagine-1.0-video` | - | Basic/Super | - | - | Yes |
 
@@ -146,7 +149,7 @@ curl http://localhost:8000/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-imagine-1.0",
+    "model": "grok-superimage-1.0",
     "prompt": "A cat floating in space",
     "n": 1
   }'
@@ -159,7 +162,7 @@ curl http://localhost:8000/v1/images/generations \
 
 | Field | Type | Description | Allowed values |
 | :--- | :--- | :--- | :--- |
-| `model` | string | Image model ID | `grok-imagine-1.0` |
+| `model` | string | Image model ID | `grok-imagine-1.0` / `grok-superimage-1.0` |
 | `prompt` | string | Prompt | - |
 | `n` | integer | Number of images | `1` - `10` (streaming: `1` or `2` only) |
 | `stream` | boolean | Enable streaming | `true`, `false` |
@@ -167,6 +170,9 @@ curl http://localhost:8000/v1/images/generations \
 | `quality` | string | Image quality | `standard` (not customizable yet) |
 | `response_format` | string | Response format | `url`, `b64_json` |
 | `style` | string | Style | - (not supported yet) |
+
+Note: `grok-superimage-1.0` always uses the waterfall (WebSocket) image channel and is not affected by the `grok.image_ws` switch.
+Note: `grok-superimage-1.0` always returns URL output (server stores generated images then returns file URLs).
 
 Note: when `grok.image_ws=true`, `size` is mapped to aspect ratio (only 5 supported: `16:9`, `9:16`, `1:1`, `2:3`, `3:2`); you can also pass those ratio strings directly:  
 `1024x576/1280x720/1536x864 -> 16:9`, `576x1024/720x1280/864x1536 -> 9:16`, `1024x1024/512x512 -> 1:1`, `1024x1536/512x768/768x1024 -> 2:3`, `1536x1024/768x512/1024x768 -> 3:2`, otherwise defaults to `2:3`. Other parameters are ignored.
@@ -231,7 +237,7 @@ Config file: `data/config.toml`
 | **app** | `app_url` | App URL | External access URL for Grok2API (used for file links). | `http://127.0.0.1:8000` |
 | | `app_key` | Admin password | Password for the Grok2API admin panel (required). | `grok2api` |
 | | `api_key` | API key | Token for calling Grok2API (optional). | `""` |
-| | `image_format` | Image format | Output image format (`url` or `base64`). | `url` |
+| | `image_format` | Image format | Output image format (`url` or `b64_json`). | `url` |
 | | `video_format` | Video format | Output video format (html tag or processed url). | `html` |
 | **network** | `timeout` | Request timeout | Timeout for Grok requests (seconds). | `120` |
 | | `base_proxy_url` | Base proxy URL | Base service address proxying Grok official site. | `""` |
