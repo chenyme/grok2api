@@ -6,12 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok2API - 在线 WebUI</title>
   <link rel="icon" href="/static/favicon/favicon.ico">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <link href="/static/common/common.css?v=3" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
-  <link href="/static/webui/webui.css?v=5" rel="stylesheet">
+  <link href="/static/webui/webui.css?v=6" rel="stylesheet">
 </head>
 
-<body class="webui-page">
+<body class="webui-page min-h-screen flex flex-col" style="background-color: var(--bg);">
   <div id="toast-container" class="toast-container"></div>
   <div id="app-header"></div>
 
@@ -125,7 +128,7 @@
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="/static/webui/webui.js?v=5"></script>
+  <script src="/static/webui/webui.js?v=6"></script>
 </body>
 
 </html>

@@ -8,16 +8,22 @@
 
 .webui-page {
   min-height: 100vh;
+  height: 100vh;
   background: var(--bg);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+#app-header {
+  flex-shrink: 0;
 }
 
 .webui-main {
   flex: 1;
+  min-height: 0;
   width: min(1400px, calc(100% - 28px));
-  margin: 14px auto 18px;
-  height: calc(100vh - 128px);
+  margin: 10px auto 12px;
   overflow: hidden;
 }
 
@@ -26,6 +32,7 @@
   grid-template-columns: 290px minmax(0, 1fr);
   gap: 16px;
   height: 100%;
+  min-height: 0;
 }
 
 .thread-sidebar {
@@ -126,6 +133,7 @@
   border-radius: 16px;
   background: #fff;
   min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
@@ -345,6 +353,7 @@
 }
 
 @media (max-width: 1080px) {
+  .webui-page { height: auto; overflow: visible; }
   .webui-main { width: calc(100% - 16px); height: auto; overflow: visible; }
   .webui-layout { grid-template-columns: 1fr; height: auto; }
   .thread-sidebar { min-height: 250px; }
