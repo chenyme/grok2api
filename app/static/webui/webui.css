@@ -1,9 +1,9 @@
 :root {
-  --webui-sidebar-bg: #111318;
-  --webui-sidebar-border: #23262f;
-  --webui-sidebar-text: #c7ccd6;
-  --webui-sidebar-muted: #8a91a0;
-  --webui-active: #1f2430;
+  --webui-sidebar-bg: #ffffff;
+  --webui-sidebar-border: #e5e7eb;
+  --webui-sidebar-text: #111827;
+  --webui-sidebar-muted: #6b7280;
+  --webui-active: #f3f4f6;
 }
 
 .webui-page {
@@ -17,13 +17,15 @@
   flex: 1;
   width: min(1400px, calc(100% - 28px));
   margin: 14px auto 18px;
+  height: calc(100vh - 128px);
+  overflow: hidden;
 }
 
 .webui-layout {
   display: grid;
   grid-template-columns: 290px minmax(0, 1fr);
   gap: 16px;
-  min-height: calc(100vh - 155px);
+  height: 100%;
 }
 
 .thread-sidebar {
@@ -49,7 +51,7 @@
   margin: 0;
   font-size: 16px;
   line-height: 1.2;
-  color: #fff;
+  color: #111827;
 }
 
 .sidebar-subtitle {
@@ -80,18 +82,18 @@
 }
 
 .thread-item:hover {
-  background: #1a1f28;
+  background: #f8fafc;
 }
 
 .thread-item.active {
-  border-color: #2d3443;
+  border-color: #d1d5db;
   background: var(--webui-active);
 }
 
 .thread-title {
   font-size: 13px;
   font-weight: 600;
-  color: #edf2ff;
+  color: #111827;
   line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -105,13 +107,13 @@
 }
 
 .sidebar-footer {
-  border-top: 1px solid #1f232b;
+  border-top: 1px solid #e5e7eb;
   padding-top: 10px;
 }
 
 .cache-hint {
   margin-top: 8px;
-  border: 1px dashed #29303e;
+  border: 1px dashed #d1d5db;
   border-radius: 9px;
   padding: 8px;
   font-size: 11px;
@@ -343,8 +345,8 @@
 }
 
 @media (max-width: 1080px) {
-  .webui-main { width: calc(100% - 16px); }
-  .webui-layout { grid-template-columns: 1fr; min-height: auto; }
+  .webui-main { width: calc(100% - 16px); height: auto; overflow: visible; }
+  .webui-layout { grid-template-columns: 1fr; height: auto; }
   .thread-sidebar { min-height: 250px; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-inline { grid-column: auto; grid-template-columns: 1fr; }
