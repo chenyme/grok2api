@@ -3,7 +3,7 @@ services:
     container_name: grok2api
     image: ghcr.io/chenyme/grok2api:latest
     ports:
-      - "8000:8000"
+      - "8008:8000"
     environment:
       TZ: Asia/Shanghai
       LOG_LEVEL: INFO
@@ -20,4 +20,4 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-    restart: unless-stopped
+    restart: always
