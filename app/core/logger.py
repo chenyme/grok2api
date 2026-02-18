@@ -9,6 +9,10 @@ import traceback
 from pathlib import Path
 from loguru import logger
 
+# Provide logging.Logger compatibility for legacy calls
+if not hasattr(logger, "isEnabledFor"):
+    logger.isEnabledFor = lambda _level: True
+
 # 日志目录
 DEFAULT_LOG_DIR = Path(__file__).parent.parent.parent / "logs"
 LOG_DIR = Path(os.getenv("LOG_DIR", str(DEFAULT_LOG_DIR)))

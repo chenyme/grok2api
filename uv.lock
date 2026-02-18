@@ -418,7 +418,7 @@ wheels = [
 
 [[package]]
 name = "grok2api"
-version = "1.5.0"
+version = "0.3.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiofiles" },

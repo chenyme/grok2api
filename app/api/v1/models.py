@@ -4,7 +4,7 @@ Models API 路由
 
 from fastapi import APIRouter
 
-from app.services.grok.models.model import ModelService
+from app.services.grok.services.model import ModelService
 
 
 router = APIRouter(tags=["Models"])
@@ -18,7 +18,7 @@ async def list_models():
             "id": m.model_id,
             "object": "model",
             "created": 0,
-            "owned_by": "grok2api",
+            "owned_by": "grok2api@chenyme",
         }
         for m in ModelService.list()
     ]

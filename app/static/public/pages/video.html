@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grok2API - Video 视频生成</title>
+  <link rel="icon" href="/static/common/img/favicon/favicon.ico">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+  <link href="/static/common/css/common.css?v=0.3.1" rel="stylesheet">
+  <link href="/static/public/css/video.css?v=0.3.1" rel="stylesheet">
+  <link href="/static/common/css/toast.css" rel="stylesheet">
+</head>
+
+<body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
+  <div id="toast-container" class="toast-container"></div>
+  <div id="app-header"></div>
+
+  <main class="flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in">
+    <div class="space-y-6">
+      <div class="video-header-row">
+        <div>
+          <h2 class="text-2xl font-semibold tracking-tight">Video 视频生成</h2>
+          <p class="text-[var(--accents-4)] mt-1 text-sm">生成短视频，支持参考图与多种预设风格。</p>
+        </div>
+        <div class="video-actions">
+          <button id="startBtn" class="geist-button gap-2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3" />
+            </svg>
+            开始生成
+          </button>
+          <button id="stopBtn" class="geist-button-outline gap-2 hidden">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5" y="5" width="14" height="14" />
+            </svg>
+            停止
+          </button>
+        </div>
+      </div>
+
+      <div class="h-px bg-[var(--border)]"></div>
+
+      <div class="video-top-grid">
+        <div class="video-card">
+          <div class="card-title">生成设置</div>
+          <div class="settings-grid">
+            <div class="settings-block prompt-block">
+              <label class="field-label" for="promptInput">提示词</label>
+              <textarea id="promptInput" class="geist-input video-textarea" placeholder="例如：街头霓虹雨夜，慢镜头，胶片质感"></textarea>
+            </div>
+            <div class="settings-block ref-block">
+              <label class="field-label" for="imageUrlInput">参考图</label>
+              <div class="ref-controls">
+                <input id="imageUrlInput" class="geist-input" placeholder="https://... 或 data:image/...">
+              </div>
+              <div class="ref-meta">
+                <span id="imageFileName" class="ref-name">未选择文件</span>
+              </div>
+            </div>
+            <div class="settings-block ratio-block">
+              <label class="field-label" for="ratioSelect">画面比例</label>
+              <select id="ratioSelect" class="geist-input">
+                <option value="3:2" selected>3:2 横构图</option>
+                <option value="2:3">2:3 竖构图</option>
+                <option value="16:9">16:9 宽屏</option>
+                <option value="9:16">9:16 竖屏</option>
+                <option value="1:1">1:1 方形</option>
+              </select>
+            </div>
+            <div class="settings-block length-block">
+              <label class="field-label" for="lengthSelect">视频时长</label>
+              <select id="lengthSelect" class="geist-input">
+                <option value="6" selected>6 秒</option>
+                <option value="10">10 秒</option>
+                <option value="15">15 秒</option>
+              </select>
+            </div>
+            <div class="settings-block resolution-block">
+              <label class="field-label" for="resolutionSelect">分辨率</label>
+              <select id="resolutionSelect" class="geist-input">
+                <option value="480p" selected>480p</option>
+                <option value="720p">720p</option>
+              </select>
+            </div>
+            <div class="settings-block preset-block">
+              <label class="field-label" for="presetSelect">风格预设</label>
+              <select id="presetSelect" class="geist-input">
+                <option value="normal" selected>Normal</option>
+                <option value="fun">Fun</option>
+                <option value="spicy">Spicy</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            <div class="settings-block upload-block">
+              <label class="field-label">&nbsp;</label>
+              <button id="selectImageFileBtn" class="geist-button-outline text-xs px-3" type="button">上传</button>
+              <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*">
+            </div>
+            <div class="settings-block clear-block">
+              <label class="field-label">&nbsp;</label>
+              <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button">清除</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="video-card">
+          <div class="status-header">
+            <div class="card-title">运行状态</div>
+            <span id="statusText" class="status-text">未连接</span>
+          </div>
+            <div class="progress-wrap">
+              <div id="progressBar" class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+              </div>
+              <div class="progress-meta">
+                <span id="progressText">0%</span>
+                <span id="durationValue">耗时 -</span>
+            </div>
+          </div>
+          <div class="meta-grid">
+            <div class="meta-item">
+              <div class="meta-label">比例</div>
+              <div id="aspectValue" class="meta-value">-</div>
+            </div>
+            <div class="meta-item">
+              <div class="meta-label">时长</div>
+              <div id="lengthValue" class="meta-value">-</div>
+            </div>
+            <div class="meta-item">
+              <div class="meta-label">分辨率</div>
+              <div id="resolutionValue" class="meta-value">-</div>
+            </div>
+            <div class="meta-item">
+              <div class="meta-label">预设</div>
+              <div id="presetValue" class="meta-value">-</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="video-card video-preview-card">
+        <div class="video-preview-header">
+          <div class="card-title">视频预览</div>
+          <div class="preview-actions">
+            <button id="clearBtn" class="geist-button-outline text-xs px-3">清空</button>
+          </div>
+        </div>
+        <div id="videoEmpty" class="video-empty">等待生成视频</div>
+        <div id="videoStage" class="video-stage hidden"></div>
+      </div>
+    </div>
+  </main>
+
+  <div id="app-footer"></div>
+
+  <script src="/static/common/js/admin-auth.js?v=0.3.1"></script>
+  <script src="/static/common/js/public-header.js?v=0.3.1"></script>
+  <script src="/static/common/js/footer.js?v=0.3.1"></script>
+  <script src="/static/common/js/toast.js"></script>
+  <script src="/static/public/js/video.js?v=0.3.1"></script>
+</body>
+
+</html>

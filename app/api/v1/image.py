@@ -2,11 +2,7 @@
 Image Generation API 路由
 """
 
-import asyncio
 import base64
-import math
-import random
-import re
 import time
 from pathlib import Path
 from typing import List, Optional, Union
@@ -15,24 +11,31 @@ from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from app.services.grok.services.chat import GrokChatService
-from app.services.grok.services.image import image_service
-from app.services.grok.services.assets import UploadService
-from app.services.grok.services.media import VideoService
-from app.services.grok.models.model import ModelService
-from app.services.grok.processors import (
-    ImageStreamProcessor,
-    ImageCollectProcessor,
-    ImageWSStreamProcessor,
-    ImageWSCollectProcessor,
-)
-from app.services.token import get_token_manager, EffortType
+from app.services.grok.services.image import ImageGenerationService
+from app.services.grok.services.image_edit import ImageEditService
+from app.services.grok.services.model import ModelService
+from app.services.token import get_token_manager
 from app.core.exceptions import ValidationException, AppException, ErrorType
 from app.core.config import get_config
-from app.core.logger import logger
 
 
 router = APIRouter(tags=["Images"])
+
+ALLOWED_IMAGE_SIZES = {
+    "1280x720",
+    "720x1280",
+    "1792x1024",
+    "1024x1792",
+    "1024x1024",
+}
+
+SIZE_TO_ASPECT = {
+    "1280x720": "16:9",
+    "720x1280": "9:16",
+    "1792x1024": "3:2",
+    "1024x1792": "2:3",
+    "1024x1024": "1:1",
+}
 
 
 class ImageGenerationRequest(BaseModel):
@@ -41,7 +44,10 @@ class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., description="图片描述")
     model: Optional[str] = Field("grok-imagine-1.0", description="模型名称")
     n: Optional[int] = Field(1, ge=1, le=10, description="生成数量 (1-10)")
-    size: Optional[str] = Field("1024x1024", description="图片尺寸 (暂不支持)")
+    size: Optional[str] = Field(
+        "1024x1024",
+        description="图片尺寸: 1280x720, 720x1280, 1792x1024, 1024x1792, 1024x1024",
+    )
     quality: Optional[str] = Field("standard", description="图片质量 (暂不支持)")
     response_format: Optional[str] = Field(None, description="响应格式")
     style: Optional[str] = Field(None, description="风格 (暂不支持)")
@@ -55,7 +61,10 @@ class ImageEditRequest(BaseModel):
     model: Optional[str] = Field("grok-imagine-1.0-edit", description="模型名称")
     image: Optional[Union[str, List[str]]] = Field(None, description="待编辑图片文件")
     n: Optional[int] = Field(1, ge=1, le=10, description="生成数量 (1-10)")
-    size: Optional[str] = Field("1024x1024", description="图片尺寸 (暂不支持)")
+    size: Optional[str] = Field(
+        "1024x1024",
+        description="图片尺寸: 1280x720, 720x1280, 1792x1024, 1024x1792, 1024x1024",
+    )
     quality: Optional[str] = Field("standard", description="图片质量 (暂不支持)")
     response_format: Optional[str] = Field(None, description="响应格式")
     style: Optional[str] = Field(None, description="风格 (暂不支持)")
@@ -89,18 +98,14 @@ def _validate_common_request(
         )
 
     if allow_ws_stream:
-        # WS 流式仅支持 b64_json (base64 视为同义)
-        if (
-            request.stream
-            and get_config("image.image_ws")
-            and request.response_format
-            and request.response_format not in {"b64_json", "base64"}
-        ):
-            raise ValidationException(
-                message="Streaming with image_ws only supports response_format=b64_json/base64",
-                param="response_format",
-                code="invalid_response_format",
-            )
+        if request.stream and request.response_format:
+            allowed_stream_formats = {"b64_json", "base64", "url"}
+            if request.response_format not in allowed_stream_formats:
+                raise ValidationException(
+                    message="Streaming only supports response_format=b64_json/base64/url",
+                    param="response_format",
+                    code="invalid_response_format",
+                )
 
     if request.response_format:
         allowed_formats = {"b64_json", "base64", "url"}
@@ -110,6 +115,13 @@ def _validate_common_request(
                 param="response_format",
                 code="invalid_response_format",
             )
+
+    if request.size and request.size not in ALLOWED_IMAGE_SIZES:
+        raise ValidationException(
+            message=f"size must be one of {sorted(ALLOWED_IMAGE_SIZES)}",
+            param="size",
+            code="invalid_size",
+        )
 
 
 def validate_generation_request(request: ImageGenerationRequest):
@@ -157,26 +169,8 @@ def response_field_name(response_format: str) -> str:
 
 def resolve_aspect_ratio(size: str) -> str:
     """Map OpenAI size to Grok Imagine aspect ratio."""
-    size = (size or "").lower()
-    if size in {"16:9", "9:16", "1:1", "2:3", "3:2"}:
-        return size
-    mapping = {
-        "1024x1024": "1:1",
-        "512x512": "1:1",
-        "1024x576": "16:9",
-        "1280x720": "16:9",
-        "1536x864": "16:9",
-        "576x1024": "9:16",
-        "720x1280": "9:16",
-        "864x1536": "9:16",
-        "1024x1536": "2:3",
-        "512x768": "2:3",
-        "768x1024": "2:3",
-        "1536x1024": "3:2",
-        "768x512": "3:2",
-        "1024x768": "3:2",
-    }
-    return mapping.get(size) or "2:3"
+    size = (size or "").strip()
+    return SIZE_TO_ASPECT.get(size) or "2:3"
 
 
 def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
@@ -184,6 +178,17 @@ def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
     if request.model != "grok-imagine-1.0-edit":
         raise ValidationException(
             message=("The model `grok-imagine-1.0-edit` is required for image edits."),
+            param="model",
+            code="model_not_supported",
+        )
+    model_info = ModelService.get(request.model)
+    if not model_info or not model_info.is_image_edit:
+        edit_models = [m.model_id for m in ModelService.MODELS if m.is_image_edit]
+        raise ValidationException(
+            message=(
+                f"The model `{request.model}` is not supported for image edits. "
+                f"Supported: {edit_models}"
+            ),
             param="model",
             code="model_not_supported",
         )
@@ -200,30 +205,6 @@ def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
             param="image",
             code="invalid_image_count",
         )
-
-
-def _get_effort(model_info) -> EffortType:
-    """获取模型消耗级别"""
-    return (
-        EffortType.HIGH
-        if (model_info and model_info.cost.value == "high")
-        else EffortType.LOW
-    )
-
-
-async def _wrap_stream_with_usage(stream, token_mgr, token, model_info):
-    """包装流式响应，成功完成时记录使用"""
-    success = False
-    try:
-        async for chunk in stream:
-            yield chunk
-        success = True
-    finally:
-        if success:
-            try:
-                await token_mgr.consume(token, _get_effort(model_info))
-            except Exception as e:
-                logger.warning(f"Failed to consume token: {e}")
 
 
 async def _get_token(model: str):
@@ -246,46 +227,6 @@ async def _get_token(model: str):
         )
 
     return token_mgr, token
-
-
-async def call_grok(
-    token_mgr,
-    token: str,
-    prompt: str,
-    model_info,
-    file_attachments: Optional[List[str]] = None,
-    response_format: str = "b64_json",
-) -> List[str]:
-    """调用 Grok 获取图片，返回 base64 列表"""
-    chat_service = GrokChatService()
-    success = False
-
-    try:
-        response = await chat_service.chat(
-            token=token,
-            message=prompt,
-            model=model_info.grok_model,
-            mode=model_info.model_mode,
-            stream=True,
-            file_attachments=file_attachments,
-        )
-
-        processor = ImageCollectProcessor(
-            model_info.model_id, token, response_format=response_format
-        )
-        images = await processor.process(response)
-        success = True
-        return images
-
-    except Exception as e:
-        logger.error(f"Grok image call failed: {e}")
-        return []
-    finally:
-        if success:
-            try:
-                await token_mgr.consume(token, _get_effort(model_info))
-            except Exception as e:
-                logger.warning(f"Failed to consume token: {e}")
 
 
 @router.post("/images/generations")
@@ -320,161 +261,29 @@ async def create_image(request: ImageGenerationRequest):
     # 获取 token 和模型信息
     token_mgr, token = await _get_token(request.model)
     model_info = ModelService.get(request.model)
-    use_ws = bool(get_config("image.image_ws"))
+    aspect_ratio = resolve_aspect_ratio(request.size)
 
-    # 流式模式
-    if request.stream:
-        if use_ws:
-            aspect_ratio = resolve_aspect_ratio(request.size)
-            enable_nsfw = bool(get_config("image.image_ws_nsfw"))
-            upstream = image_service.stream(
-                token=token,
-                prompt=request.prompt,
-                aspect_ratio=aspect_ratio,
-                n=request.n,
-                enable_nsfw=enable_nsfw,
-            )
-            processor = ImageWSStreamProcessor(
-                model_info.model_id,
-                token,
-                n=request.n,
-                response_format=response_format,
-                size=request.size,
-            )
+    result = await ImageGenerationService().generate(
+        token_mgr=token_mgr,
+        token=token,
+        model_info=model_info,
+        prompt=request.prompt,
+        n=request.n,
+        response_format=response_format,
+        size=request.size,
+        aspect_ratio=aspect_ratio,
+        stream=bool(request.stream),
+    )
 
-            return StreamingResponse(
-                _wrap_stream_with_usage(
-                    processor.process(upstream), token_mgr, token, model_info
-                ),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-            )
-
-        chat_service = GrokChatService()
-        response = await chat_service.chat(
-            token=token,
-            message=f"Image Generation: {request.prompt}",
-            model=model_info.grok_model,
-            mode=model_info.model_mode,
-            stream=True,
-        )
-
-        processor = ImageStreamProcessor(
-            model_info.model_id, token, n=request.n, response_format=response_format
-        )
-
+    if result.stream:
         return StreamingResponse(
-            _wrap_stream_with_usage(
-                processor.process(response), token_mgr, token, model_info
-            ),
+            result.data,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
-    # 非流式模式
-    n = request.n
-
-    usage_override = None
-    if use_ws:
-        aspect_ratio = resolve_aspect_ratio(request.size)
-        enable_nsfw = bool(get_config("image.image_ws_nsfw"))
-        all_images = []
-        seen = set()
-        expected_per_call = 6
-        calls_needed = max(1, math.ceil(n / expected_per_call))
-        calls_needed = min(calls_needed, n)
-
-        async def _fetch_batch(call_target: int):
-            upstream = image_service.stream(
-                token=token,
-                prompt=request.prompt,
-                aspect_ratio=aspect_ratio,
-                n=call_target,
-                enable_nsfw=enable_nsfw,
-            )
-            processor = ImageWSCollectProcessor(
-                model_info.model_id,
-                token,
-                n=call_target,
-                response_format=response_format,
-            )
-            return await processor.process(upstream)
-
-        tasks = []
-        for i in range(calls_needed):
-            remaining = n - (i * expected_per_call)
-            call_target = min(expected_per_call, remaining)
-            tasks.append(_fetch_batch(call_target))
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for batch in results:
-            if isinstance(batch, Exception):
-                logger.warning(f"WS batch failed: {batch}")
-                continue
-            for img in batch:
-                if img not in seen:
-                    seen.add(img)
-                    all_images.append(img)
-                if len(all_images) >= n:
-                    break
-            if len(all_images) >= n:
-                break
-        try:
-            await token_mgr.consume(token, _get_effort(model_info))
-        except Exception as e:
-            logger.warning(f"Failed to consume token: {e}")
-        usage_override = {
-            "total_tokens": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "input_tokens_details": {"text_tokens": 0, "image_tokens": 0},
-        }
-    else:
-        calls_needed = (n + 1) // 2
-
-        if calls_needed == 1:
-            # 单次调用
-            all_images = await call_grok(
-                token_mgr,
-                token,
-                f"Image Generation: {request.prompt}",
-                model_info,
-                response_format=response_format,
-            )
-        else:
-            # 并发调用
-            tasks = [
-                call_grok(
-                    token_mgr,
-                    token,
-                    f"Image Generation: {request.prompt}",
-                    model_info,
-                    response_format=response_format,
-                )
-                for _ in range(calls_needed)
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # 收集成功的图片
-            all_images = []
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.error(f"Concurrent call failed: {result}")
-                elif isinstance(result, list):
-                    all_images.extend(result)
-
-    # 随机选取 n 张图片
-    if len(all_images) >= n:
-        selected_images = random.sample(all_images, n)
-    else:
-        # 全部返回，error 填充缺失
-        selected_images = all_images.copy()
-        while len(selected_images) < n:
-            selected_images.append("error")
-
-    # 构建响应
-    data = [{response_field: img} for img in selected_images]
-    usage = usage_override or {
+    data = [{response_field: img} for img in result.data]
+    usage = result.usage_override or {
         "total_tokens": 0,
         "input_tokens": 0,
         "output_tokens": 0,
@@ -539,6 +348,8 @@ async def edit_image(
         edit_request.stream = False
 
     response_format = resolve_response_format(edit_request.response_format)
+    if response_format == "base64":
+        response_format = "b64_json"
     edit_request.response_format = response_format
     response_field = response_field_name(response_format)
 
@@ -588,150 +399,25 @@ async def edit_image(
     token_mgr, token = await _get_token(edit_request.model)
     model_info = ModelService.get(edit_request.model)
 
-    # 上传图片
-    image_urls: List[str] = []
-    upload_service = UploadService()
-    try:
-        for image in images:
-            file_id, file_uri = await upload_service.upload(image, token)
-            if file_uri:
-                if file_uri.startswith("http"):
-                    image_urls.append(file_uri)
-                else:
-                    image_urls.append(f"https://assets.grok.com/{file_uri.lstrip('/')}")
-    finally:
-        await upload_service.close()
+    result = await ImageEditService().edit(
+        token_mgr=token_mgr,
+        token=token,
+        model_info=model_info,
+        prompt=edit_request.prompt,
+        images=images,
+        n=edit_request.n,
+        response_format=response_format,
+        stream=bool(edit_request.stream),
+    )
 
-    if not image_urls:
-        raise AppException(
-            message="Image upload failed",
-            error_type=ErrorType.SERVER.value,
-            code="upload_failed",
-        )
-
-    parent_post_id = None
-    try:
-        media_service = VideoService()
-        parent_post_id = await media_service.create_image_post(token, image_urls[0])
-        logger.debug(f"Parent post ID: {parent_post_id}")
-    except Exception as e:
-        logger.warning(f"Create image post failed: {e}")
-
-    if not parent_post_id:
-        for url in image_urls:
-            match = re.search(r"/generated/([a-f0-9-]+)/", url)
-            if match:
-                parent_post_id = match.group(1)
-                logger.debug(f"Parent post ID: {parent_post_id}")
-                break
-            match = re.search(r"/users/[^/]+/([a-f0-9-]+)/content", url)
-            if match:
-                parent_post_id = match.group(1)
-                logger.debug(f"Parent post ID: {parent_post_id}")
-                break
-
-    model_config_override = {
-        "modelMap": {
-            "imageEditModel": "imagine",
-            "imageEditModelConfig": {
-                "imageReferences": image_urls,
-            },
-        }
-    }
-
-    if parent_post_id:
-        model_config_override["modelMap"]["imageEditModelConfig"]["parentPostId"] = (
-            parent_post_id
-        )
-
-    raw_payload = {
-        "temporary": bool(get_config("chat.temporary")),
-        "modelName": model_info.grok_model,
-        "message": edit_request.prompt,
-        "enableImageGeneration": True,
-        "returnImageBytes": False,
-        "returnRawGrokInXaiRequest": False,
-        "enableImageStreaming": True,
-        "imageGenerationCount": 2,
-        "forceConcise": False,
-        "toolOverrides": {"imageGen": True},
-        "enableSideBySide": True,
-        "sendFinalMetadata": True,
-        "isReasoning": False,
-        "disableTextFollowUps": True,
-        "responseMetadata": {"modelConfigOverride": model_config_override},
-        "disableMemory": False,
-        "forceSideBySide": False,
-    }
-
-    # 流式模式
-    if edit_request.stream:
-        chat_service = GrokChatService()
-        response = await chat_service.chat(
-            token=token,
-            message=edit_request.prompt,
-            model=model_info.grok_model,
-            mode=None,
-            stream=True,
-            raw_payload=raw_payload,
-        )
-
-        processor = ImageStreamProcessor(
-            model_info.model_id,
-            token,
-            n=edit_request.n,
-            response_format=response_format,
-        )
-
+    if result.stream:
         return StreamingResponse(
-            _wrap_stream_with_usage(
-                processor.process(response), token_mgr, token, model_info
-            ),
+            result.data,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
-    # 非流式模式
-    n = edit_request.n
-    calls_needed = (n + 1) // 2
-
-    async def _call_edit():
-        chat_service = GrokChatService()
-        response = await chat_service.chat(
-            token=token,
-            message=edit_request.prompt,
-            model=model_info.grok_model,
-            mode=None,
-            stream=True,
-            raw_payload=raw_payload,
-        )
-        processor = ImageCollectProcessor(
-            model_info.model_id, token, response_format=response_format
-        )
-        return await processor.process(response)
-
-    if calls_needed == 1:
-        all_images = await _call_edit()
-    else:
-        tasks = [_call_edit() for _ in range(calls_needed)]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        all_images = []
-        for result in results:
-            if isinstance(result, Exception):
-                logger.error(f"Concurrent call failed: {result}")
-            elif isinstance(result, list):
-                all_images.extend(result)
-
-    # 选择图片
-    if len(all_images) >= n:
-        selected_images = random.sample(all_images, n)
-    else:
-        selected_images = all_images.copy()
-        while len(selected_images) < n:
-            selected_images.append("error")
-
-    data = [{response_field: img} for img in selected_images]
+    data = [{response_field: img} for img in result.data]
 
     return JSONResponse(
         content={

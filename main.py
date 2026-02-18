@@ -12,7 +12,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-env_file = Path(__file__).parent / ".env"
+BASE_DIR = Path(__file__).resolve().parent
+APP_DIR = BASE_DIR / "app"
+
+# Ensure the project root is on sys.path (helps when Vercel sets a different CWD)
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+env_file = BASE_DIR / ".env"
 if env_file.exists():
     load_dotenv(env_file)
 
@@ -30,7 +37,10 @@ from app.api.v1.image import router as image_router  # noqa: E402
 from app.api.v1.files import router as files_router  # noqa: E402
 from app.api.v1.models import router as models_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
-
+from app.api.v1.admin_api import router as admin_router
+from app.api.v1.public_api import router as public_router
+from app.api.pages import router as pages_router
+from fastapi.staticfiles import StaticFiles
 
 # 初始化日志
 setup_logging(
@@ -115,16 +125,14 @@ def create_app() -> FastAPI:
     app.include_router(files_router, prefix="/v1/files")
 
     # 静态文件服务
-    from fastapi.staticfiles import StaticFiles
-
-    static_dir = Path(__file__).parent / "app" / "static"
+    static_dir = APP_DIR / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-    # 注册管理路由
-    from app.api.v1.admin import router as admin_router
-
-    app.include_router(admin_router)
+    # 注册管理与公共路由
+    app.include_router(admin_router, prefix="/v1/admin")
+    app.include_router(public_router, prefix="/v1/public")
+    app.include_router(pages_router)
 
     return app
 

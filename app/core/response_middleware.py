@@ -25,6 +25,20 @@ class ResponseLoggerMiddleware(BaseHTTPMiddleware):
         request.state.trace_id = trace_id
 
         start_time = time.time()
+        path = request.url.path
+
+        if path.startswith("/static/") or path in (
+            "/",
+            "/login",
+            "/imagine",
+            "/voice",
+            "/admin",
+            "/admin/login",
+            "/admin/config",
+            "/admin/cache",
+            "/admin/token",
+        ):
+            return await call_next(request)
 
         # 记录请求信息
         logger.info(

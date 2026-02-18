@@ -5,7 +5,7 @@
 from typing import AsyncGenerator
 
 from app.core.logger import logger
-from app.services.grok.models.model import ModelService
+from app.services.grok.services.model import ModelService
 from app.services.token import EffortType
 
 

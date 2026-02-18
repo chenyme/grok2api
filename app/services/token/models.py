@@ -128,17 +128,23 @@ class TokenInfo(BaseModel):
         self.fail_count = 0
         self.last_fail_reason = None
 
-    def record_fail(self, status_code: int = 401, reason: str = ""):
+    def record_fail(
+        self,
+        status_code: int = 401,
+        reason: str = "",
+        threshold: Optional[int] = None,
+    ):
         """记录失败，达到阈值后自动标记为 expired"""
-        # 401/403 错误计入失败（都表示认证/授权失败）
-        if status_code not in (401, 403):
+        # 仅 401 计入失败
+        if status_code != 401:
             return
 
         self.fail_count += 1
         self.last_fail_at = int(datetime.now().timestamp() * 1000)
         self.last_fail_reason = reason
 
-        if self.fail_count >= FAIL_THRESHOLD:
+        limit = FAIL_THRESHOLD if threshold is None else threshold
+        if self.fail_count >= limit:
             self.status = TokenStatus.EXPIRED
 
     def record_success(self, is_usage: bool = True):

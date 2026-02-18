@@ -36,7 +36,7 @@ class TokenRefreshScheduler:
                     lock_acquired = await lock.acquire(blocking=False)
                 else:
                     try:
-                        async with storage.acquire_lock("token_refresh", timeout=0):
+                        async with storage.acquire_lock("token_refresh", timeout=1):
                             lock_acquired = True
                     except StorageError:
                         lock_acquired = False
