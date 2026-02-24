@@ -58,3 +58,7 @@ config.local.toml
 
 # Local docs (not for sync)
 docs/function-calling-implementation.md
+
+# Local test files
+test_*.json
+test_*.py

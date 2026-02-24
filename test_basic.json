@@ -1,5 +1,0 @@
-{
-  "model": "grok-3",
-  "stream": false,
-  "messages": [{"role": "user", "content": "你好，说一句话"}]
-}
