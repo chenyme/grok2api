@@ -1,0 +1,21 @@
+{
+  "model": "grok-4",
+  "stream": false,
+  "messages": [
+    {"role": "user", "content": "What is the weather in Tokyo?"},
+    {"role": "assistant", "content": null, "tool_calls": [{"id": "call_d4f7347db3624c8aba5cea14", "type": "function", "function": {"name": "get_weather", "arguments": "{\"location\": \"Tokyo\"}"}}]},
+    {"role": "tool", "tool_call_id": "call_d4f7347db3624c8aba5cea14", "name": "get_weather", "content": "{\"temperature\": 12, \"condition\": \"Cloudy\", \"humidity\": 65}"}
+  ],
+  "tools": [{
+    "type": "function",
+    "function": {
+      "name": "get_weather",
+      "description": "Get real-time weather for a city",
+      "parameters": {
+        "type": "object",
+        "properties": {"location": {"type": "string"}},
+        "required": ["location"]
+      }
+    }
+  }]
+}

@@ -151,7 +151,7 @@ class AppChatReverse:
                         pass
 
                     logger.error(
-                        f"AppChatReverse: Chat failed, {response.status_code}",
+                        f"AppChatReverse: Chat failed, {response.status_code}, body={content[:500]}",
                         extra={"error_type": "UpstreamException"},
                     )
                     raise UpstreamException(
