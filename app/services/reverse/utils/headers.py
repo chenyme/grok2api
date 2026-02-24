@@ -24,8 +24,8 @@ def build_sso_cookie(sso_token: str) -> str:
     # Format
     sso_token = sso_token[4:] if sso_token.startswith("sso=") else sso_token
 
-    # SSO Cookie
-    cookie = f"sso={sso_token}; sso-rw={sso_token}"
+    # SSO Cookie (only sso, not sso-rw for compatibility with free accounts)
+    cookie = f"sso={sso_token}"
 
     # CF Clearance
     cf_clearance = get_config("proxy.cf_clearance")

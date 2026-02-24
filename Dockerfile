@@ -64,7 +64,8 @@ COPY main.py ./
 COPY scripts ./scripts
 
 RUN mkdir -p /app/data /app/logs \
-    && chmod +x /app/scripts/entrypoint.sh
+    && sed -i 's/\r//' /app/scripts/entrypoint.sh /app/scripts/init_storage.sh \
+    && chmod +x /app/scripts/entrypoint.sh /app/scripts/init_storage.sh
 
 EXPOSE 8000
 

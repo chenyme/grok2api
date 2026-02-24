@@ -26,6 +26,12 @@ from app.services.grok.utils.retry import pick_token, rate_limited
 from app.services.reverse.app_chat import AppChatReverse
 from app.services.reverse.utils.session import ResettableSession
 from app.services.grok.utils.stream import wrap_stream_with_usage
+from app.services.grok.utils.tool_call import (
+    build_tool_prompt,
+    parse_tool_calls,
+    build_tool_overrides,
+    format_tool_history,
+)
 from app.services.token import get_token_manager, EffortType
 
 
@@ -103,8 +109,17 @@ class MessageExtractor:
     """消息内容提取器"""
 
     @staticmethod
-    def extract(messages: List[Dict[str, Any]]) -> tuple[str, List[str], List[str]]:
+    def extract(
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool = True,
+    ) -> tuple[str, List[str], List[str]]:
         """从 OpenAI 消息格式提取内容，返回 (text, file_attachments, image_attachments)"""
+        # Pre-process: convert tool-related messages to text format
+        if tools:
+            messages = format_tool_history(messages)
+
         texts = []
         file_attachments: List[str] = []
         image_attachments: List[str] = []
@@ -162,7 +177,15 @@ class MessageExtractor:
             text = item["text"]
             texts.append(text if i == last_user_index else f"{role}: {text}")
 
-        return "\n\n".join(texts), file_attachments, image_attachments
+        combined = "\n\n".join(texts)
+
+        # Prepend tool system prompt if tools are provided
+        if tools:
+            tool_prompt = build_tool_prompt(tools, tool_choice, parallel_tool_calls)
+            if tool_prompt:
+                combined = f"{tool_prompt}\n\n{combined}"
+
+        return combined, file_attachments, image_attachments
 
 
 class GrokChatService:
@@ -224,6 +247,9 @@ class GrokChatService:
         reasoning_effort: str | None = None,
         temperature: float = 0.8,
         top_p: float = 0.95,
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool = True,
     ):
         """OpenAI 兼容接口"""
         model_info = ModelService.get(model)
@@ -233,7 +259,9 @@ class GrokChatService:
         grok_model = model_info.grok_model
         mode = model_info.model_mode
         # 提取消息和附件
-        message, file_attachments, image_attachments = MessageExtractor.extract(messages)
+        message, file_attachments, image_attachments = MessageExtractor.extract(
+            messages, tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls
+        )
         logger.debug(
             "Extracted message length=%s, files=%s, images=%s",
             len(message),
@@ -268,6 +296,11 @@ class GrokChatService:
         if reasoning_effort is not None:
             model_config_override["reasoningEffort"] = reasoning_effort
 
+        # Passthrough mode: build tool_overrides for Grok API
+        tool_overrides_payload = None
+        if tools and get_config("app.tool_call_mode") == "passthrough":
+            tool_overrides_payload = build_tool_overrides(tools)
+
         response = await self.chat(
             token,
             message,
@@ -275,6 +308,7 @@ class GrokChatService:
             mode,
             stream,
             file_attachments=all_attachments,
+            tool_overrides=tool_overrides_payload,
             model_config_override=model_config_override,
         )
 
@@ -292,6 +326,9 @@ class ChatService:
         reasoning_effort: str | None = None,
         temperature: float = 0.8,
         top_p: float = 0.95,
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool = True,
     ):
         """Chat Completions 入口"""
         # 获取 token
@@ -336,19 +373,22 @@ class ChatService:
                     reasoning_effort=reasoning_effort,
                     temperature=temperature,
                     top_p=top_p,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
                 )
 
                 # 处理响应
                 if is_stream:
                     logger.debug(f"Processing stream response: model={model}")
-                    processor = StreamProcessor(model_name, token, show_think)
+                    processor = StreamProcessor(model_name, token, show_think, tools=tools, tool_choice=tool_choice)
                     return wrap_stream_with_usage(
                         processor.process(response), token_mgr, token, model
                     )
 
                 # 非流式
                 logger.debug(f"Processing non-stream response: model={model}")
-                result = await CollectProcessor(model_name, token).process(response)
+                result = await CollectProcessor(model_name, token, tools=tools, tool_choice=tool_choice).process(response)
                 try:
                     model_info = ModelService.get(model)
                     effort = (
@@ -391,7 +431,7 @@ class ChatService:
 class StreamProcessor(proc_base.BaseProcessor):
     """Stream response processor."""
 
-    def __init__(self, model: str, token: str = "", show_think: bool = None):
+    def __init__(self, model: str, token: str = "", show_think: bool = None, tools: List[Dict[str, Any]] = None, tool_choice: Any = None):
         super().__init__(model, token)
         self.response_id: str = None
         self.fingerprint: str = ""
@@ -407,6 +447,11 @@ class StreamProcessor(proc_base.BaseProcessor):
         self._tool_usage_buffer = ""
 
         self.show_think = bool(show_think)
+        self.tools = tools
+        self.tool_choice = tool_choice
+        # When tools are provided and tool_choice != "none", buffer for tool call detection
+        self._should_buffer = bool(tools) and tool_choice != "none"
+        self._buffer_parts: list[str] = []
 
     def _filter_tool_card(self, token: str) -> str:
         if not token or not self.tool_usage_enabled:
@@ -481,12 +526,14 @@ class StreamProcessor(proc_base.BaseProcessor):
 
         return token
 
-    def _sse(self, content: str = "", role: str = None, finish: str = None) -> str:
+    def _sse(self, content: str = "", role: str = None, finish: str = None, tool_calls: list = None) -> str:
         """Build SSE response."""
         delta = {}
         if role:
             delta["role"] = role
             delta["content"] = ""
+        elif tool_calls is not None:
+            delta["tool_calls"] = tool_calls
         elif content:
             delta["content"] = content
 
@@ -504,7 +551,7 @@ class StreamProcessor(proc_base.BaseProcessor):
 
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """Process stream response.
-        
+
         Args:
             response: AsyncIterable[bytes], async iterable of bytes
 
@@ -613,11 +660,34 @@ class StreamProcessor(proc_base.BaseProcessor):
                         if self.think_opened:
                             yield self._sse("\n</think>\n")
                             self.think_opened = False
-                    yield self._sse(filtered)
+
+                    # Buffer for tool call detection or yield directly
+                    if self._should_buffer and not in_think:
+                        self._buffer_parts.append(filtered)
+                    else:
+                        yield self._sse(filtered)
 
             if self.think_opened:
                 yield self._sse("</think>\n")
-            yield self._sse(finish="stop")
+
+            # If buffering for tool calls, parse and emit now
+            if self._should_buffer and self._buffer_parts:
+                full_content = "".join(self._buffer_parts)
+                text_content, tool_calls_list = parse_tool_calls(full_content, self.tools)
+
+                if tool_calls_list:
+                    # Emit any text content first
+                    if text_content:
+                        yield self._sse(text_content)
+                    # Emit tool calls in a single chunk
+                    yield self._sse(tool_calls=tool_calls_list, finish="tool_calls")
+                else:
+                    # No tool calls found, emit buffered text normally
+                    yield self._sse(full_content)
+                    yield self._sse(finish="stop")
+            else:
+                yield self._sse(finish="stop")
+
             yield "data: [DONE]\n\n"
         except asyncio.CancelledError:
             logger.debug("Stream cancelled by client", extra={"model": self.model})
@@ -658,9 +728,11 @@ class StreamProcessor(proc_base.BaseProcessor):
 class CollectProcessor(proc_base.BaseProcessor):
     """Non-stream response processor."""
 
-    def __init__(self, model: str, token: str = ""):
+    def __init__(self, model: str, token: str = "", tools: List[Dict[str, Any]] = None, tool_choice: Any = None):
         super().__init__(model, token)
         self.filter_tags = get_config("app.filter_tags")
+        self.tools = tools
+        self.tool_choice = tool_choice
 
     def _filter_content(self, content: str) -> str:
         """Filter special tags in content."""
@@ -802,6 +874,25 @@ class CollectProcessor(proc_base.BaseProcessor):
 
         content = self._filter_content(content)
 
+        # Parse for tool calls if tools were provided
+        finish_reason = "stop"
+        tool_calls_result = None
+        if self.tools and self.tool_choice != "none":
+            text_content, tool_calls_list = parse_tool_calls(content, self.tools)
+            if tool_calls_list:
+                tool_calls_result = tool_calls_list
+                content = text_content  # May be None
+                finish_reason = "tool_calls"
+
+        message_obj = {
+            "role": "assistant",
+            "content": content,
+            "refusal": None,
+            "annotations": [],
+        }
+        if tool_calls_result:
+            message_obj["tool_calls"] = tool_calls_result
+
         return {
             "id": response_id,
             "object": "chat.completion",
@@ -811,13 +902,8 @@ class CollectProcessor(proc_base.BaseProcessor):
             "choices": [
                 {
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": content,
-                        "refusal": None,
-                        "annotations": [],
-                    },
-                    "finish_reason": "stop",
+                    "message": message_obj,
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": {

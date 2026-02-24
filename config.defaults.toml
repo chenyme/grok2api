@@ -26,6 +26,8 @@ thinking = true
 dynamic_statsig = true
 # 过滤的特殊标签列表
 filter_tags = ["xaiartifact","xai:tool_usage_card","grok:render"]
+# Tool call 模式: "prompt" (默认, 提示词模拟) 或 "passthrough" (实验性, 使用 toolOverrides)
+tool_call_mode = "prompt"
 
 
 # ==================== 代理配置 ====================
