@@ -455,7 +455,7 @@ class ChatService:
 
                 # 非流式
                 logger.debug(f"Processing non-stream response: model={model}")
-                result = await CollectProcessor(model_name, token, tools=tools, tool_choice=tool_choice).process(response)
+                result = await CollectProcessor(model_name, token, show_think=show_think, tools=tools, tool_choice=tool_choice).process(response)
                 try:
                     model_info = ModelService.get(model)
                     effort = (
@@ -512,6 +512,7 @@ class StreamProcessor(proc_base.BaseProcessor):
         )
         self._tool_usage_opened = False
         self._tool_usage_buffer = ""
+        self._agent_think_pending = False
 
         self.show_think = bool(show_think)
         self.tools = tools
@@ -543,6 +544,8 @@ class StreamProcessor(proc_base.BaseProcessor):
                 self._tool_usage_buffer += rest[:end_pos]
                 line = extract_tool_text(self._tool_usage_buffer, self.rollout_id)
                 if line:
+                    if "[AgentThink]" in line:
+                        self._agent_think_pending = True
                     if output_parts and not output_parts[-1].endswith("\n"):
                         output_parts[-1] += "\n"
                     output_parts.append(f"{line}\n")
@@ -569,6 +572,8 @@ class StreamProcessor(proc_base.BaseProcessor):
             raw_card = rest[start_idx:end_pos]
             line = extract_tool_text(raw_card, self.rollout_id)
             if line:
+                if "[AgentThink]" in line:
+                    self._agent_think_pending = True
                 if output_parts and not output_parts[-1].endswith("\n"):
                     output_parts[-1] += "\n"
                 output_parts.append(f"{line}\n")
@@ -720,7 +725,9 @@ class StreamProcessor(proc_base.BaseProcessor):
                     filtered = self._filter_token(token)
                     if not filtered:
                         continue
-                    in_think = is_thinking or self.image_think_active
+                    agent_thinking = self._agent_think_pending
+                    self._agent_think_pending = False
+                    in_think = is_thinking or self.image_think_active or agent_thinking
                     if in_think:
                         if not self.show_think:
                             continue
@@ -798,9 +805,10 @@ class StreamProcessor(proc_base.BaseProcessor):
 class CollectProcessor(proc_base.BaseProcessor):
     """Non-stream response processor."""
 
-    def __init__(self, model: str, token: str = "", tools: List[Dict[str, Any]] = None, tool_choice: Any = None):
+    def __init__(self, model: str, token: str = "", show_think: bool = True, tools: List[Dict[str, Any]] = None, tool_choice: Any = None):
         super().__init__(model, token)
         self.filter_tags = get_config("app.filter_tags")
+        self.show_think = bool(show_think)
         self.tools = tools
         self.tool_choice = tool_choice
 
@@ -828,6 +836,17 @@ class CollectProcessor(proc_base.BaseProcessor):
                 result,
                 flags=re.DOTALL,
             )
+
+            # 把所有 [AgentThink] 行聚合进 <think> 块，或在 show_think=False 时过滤掉
+            agent_pattern = r"(?:(?:\[[^\]]*\])?\[AgentThink\][^\n]*\n)+"
+            if self.show_think:
+                result = re.sub(
+                    agent_pattern,
+                    lambda m: f"<think>\n{m.group(0)}</think>\n",
+                    result,
+                )
+            else:
+                result = re.sub(agent_pattern, "", result)
 
         for tag in self.filter_tags:
             if tag == "xai:tool_usage_card":
