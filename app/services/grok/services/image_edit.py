@@ -59,6 +59,13 @@ class ImageEditService:
         stream: bool,
         chat_format: bool = False,
     ) -> ImageEditResult:
+        if len(images) > 3:
+            logger.info(
+                "Image edit received %d references; using the most recent 3",
+                len(images),
+            )
+            images = images[-3:]
+
         max_token_retries = int(get_config("retry.max_retry"))
         tried_tokens: set[str] = set()
         last_error: Exception | None = None

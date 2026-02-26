@@ -244,6 +244,7 @@ class StreamingToolParser:
         }
 
 
+
 def build_tool_prompt(
     tools: List[Dict[str, Any]],
     tool_choice: Optional[Any] = None,

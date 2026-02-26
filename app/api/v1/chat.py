@@ -27,7 +27,7 @@ class MessageItem(BaseModel):
     """消息项"""
 
     role: str
-    content: Optional[Union[str, List[Dict[str, Any]]]] = None
+    content: Optional[Union[str, Dict[str, Any], List[Dict[str, Any]]]] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
@@ -41,6 +41,7 @@ class VideoConfig(BaseModel):
     resolution_name: Optional[str] = Field("480p", description="视频分辨率: 480p, 720p")
     preset: Optional[str] = Field("custom", description="风格预设: fun, normal, spicy")
 
+      
 class ImageConfig(BaseModel):
     """图片生成配置"""
 
@@ -123,6 +124,8 @@ def _extract_prompt_images(messages: List[MessageItem]) -> tuple[str, List[str]]
             if text:
                 last_text = text
             continue
+        if isinstance(content, dict):
+            content = [content]
         if not isinstance(content, list):
             continue
         for block in content:
@@ -225,6 +228,16 @@ def validate_request(request: ChatCompletionRequest):
 
         content = msg.content
 
+        # 兼容部分客户端会发送 assistant/tool 空内容（例如工具调用中间态）
+        if content is None:
+            if msg.role in {"assistant", "tool"}:
+                continue
+            raise ValidationException(
+                message="Message content cannot be null",
+                param=f"messages.{idx}.content",
+                code="empty_content",
+            )
+
         # 字符串内容
         if isinstance(content, str):
             if not content.strip():
@@ -235,6 +248,31 @@ def validate_request(request: ChatCompletionRequest):
                 )
 
         # 列表内容
+        elif isinstance(content, dict):
+            content = [content]
+            for c_idx, item in enumerate(content):
+                if not isinstance(item, dict):
+                    raise ValidationException(
+                        message="Message content items must be objects",
+                        param=f"messages.{idx}.content.{c_idx}",
+                        code="invalid_content_item",
+                    )
+                item_type = item.get("type")
+                if item_type != "text":
+                    raise ValidationException(
+                        message="When content is an object, type must be 'text'",
+                        param=f"messages.{idx}.content.{c_idx}.type",
+                        code="invalid_content_type",
+                    )
+                text = item.get("text", "")
+                if not isinstance(text, str) or not text.strip():
+                    raise ValidationException(
+                        message="messages.%d.content.%d.text must be a non-empty string"
+                        % (idx, c_idx),
+                        param=f"messages.{idx}.content.{c_idx}.text",
+                        code="empty_content",
+                    )
+
         elif isinstance(content, list):
             if not content:
                 raise ValidationException(
@@ -590,7 +628,6 @@ async def chat_completions(request: ChatCompletionRequest):
                 param="image",
                 code="missing_image",
             )
-        image_url = image_urls[-1]
 
         is_stream = (
             request.stream if request.stream is not None else get_config("app.stream")
@@ -623,7 +660,7 @@ async def chat_completions(request: ChatCompletionRequest):
             token=token,
             model_info=model_info,
             prompt=prompt,
-            images=[image_url],
+            images=image_urls,
             n=n,
             response_format=response_format,
             stream=bool(is_stream),

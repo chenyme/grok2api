@@ -287,13 +287,16 @@ class VideoService:
                 if image_attachments:
                     upload_service = UploadService()
                     try:
-                        for attach_data in image_attachments:
-                            _, file_uri = await upload_service.upload_file(
-                                attach_data, token
+                        if len(image_attachments) > 1:
+                            logger.info(
+                                "Video generation supports a single reference image; using the first one."
                             )
-                            image_url = f"https://assets.grok.com/{file_uri}"
-                            logger.info(f"Image uploaded for video: {image_url}")
-                            break
+                        attach_data = image_attachments[0]
+                        _, file_uri = await upload_service.upload_file(
+                            attach_data, token
+                        )
+                        image_url = f"https://assets.grok.com/{file_uri}"
+                        logger.info(f"Image uploaded for video: {image_url}")
                     finally:
                         await upload_service.close()
 
