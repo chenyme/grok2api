@@ -1,8 +1,7 @@
 services:
   grok2api:
     container_name: grok2api
-    build: .
-    image: grok2api:local
+    image: ghcr.io/chenyme/grok2api:latest
     ports:
       - "8000:8000"
     environment:
