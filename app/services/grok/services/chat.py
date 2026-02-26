@@ -31,6 +31,7 @@ from app.services.grok.utils.tool_call import (
     parse_tool_calls,
     build_tool_overrides,
     format_tool_history,
+    StreamingToolParser,
 )
 from app.services.token import get_token_manager, EffortType
 
@@ -449,9 +450,13 @@ class StreamProcessor(proc_base.BaseProcessor):
         self.show_think = bool(show_think)
         self.tools = tools
         self.tool_choice = tool_choice
-        # When tools are provided and tool_choice != "none", buffer for tool call detection
-        self._should_buffer = bool(tools) and tool_choice != "none"
-        self._buffer_parts: list[str] = []
+        # True streaming: only buffer inside <tool_call> blocks
+        self._tool_parser = (
+            StreamingToolParser(tools)
+            if (bool(tools) and tool_choice != "none")
+            else None
+        )
+        self._pending_tool_calls: list[dict] = []
 
     def _filter_tool_card(self, token: str) -> str:
         if not token or not self.tool_usage_enabled:
@@ -661,30 +666,29 @@ class StreamProcessor(proc_base.BaseProcessor):
                             yield self._sse("\n</think>\n")
                             self.think_opened = False
 
-                    # Buffer for tool call detection or yield directly
-                    if self._should_buffer and not in_think:
-                        self._buffer_parts.append(filtered)
+                    # Stream text immediately; only buffer within <tool_call> blocks
+                    if self._tool_parser and not in_think:
+                        for event in self._tool_parser.feed(filtered):
+                            if event["type"] == "text":
+                                yield self._sse(event["content"])
+                            elif event["type"] == "tool_call":
+                                self._pending_tool_calls.append(event["data"])
                     else:
                         yield self._sse(filtered)
 
             if self.think_opened:
                 yield self._sse("</think>\n")
 
-            # If buffering for tool calls, parse and emit now
-            if self._should_buffer and self._buffer_parts:
-                full_content = "".join(self._buffer_parts)
-                text_content, tool_calls_list = parse_tool_calls(full_content, self.tools)
+            # Flush streaming parser and collect any remaining events
+            if self._tool_parser:
+                for event in self._tool_parser.flush():
+                    if event["type"] == "text":
+                        yield self._sse(event["content"])
+                    elif event["type"] == "tool_call":
+                        self._pending_tool_calls.append(event["data"])
 
-                if tool_calls_list:
-                    # Emit any text content first
-                    if text_content:
-                        yield self._sse(text_content)
-                    # Emit tool calls in a single chunk
-                    yield self._sse(tool_calls=tool_calls_list, finish="tool_calls")
-                else:
-                    # No tool calls found, emit buffered text normally
-                    yield self._sse(full_content)
-                    yield self._sse(finish="stop")
+            if self._pending_tool_calls:
+                yield self._sse(tool_calls=self._pending_tool_calls, finish="tool_calls")
             else:
                 yield self._sse(finish="stop")
 

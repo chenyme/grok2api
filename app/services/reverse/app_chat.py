@@ -54,7 +54,7 @@ class AppChatReverse:
             "imageAttachments": [],
             "imageGenerationCount": 2,
             "isAsyncChat": False,
-            "isReasoning": False,
+            "isReasoning": "THINKING" in (mode or "") or "GROK_420" in (mode or ""),
             "message": message,
             "modelMode": mode,
             "modelName": model,

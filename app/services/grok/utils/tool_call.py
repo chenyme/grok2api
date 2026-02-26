@@ -11,6 +11,239 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 
+# ---------------------------------------------------------------------------
+# JSON repair helpers
+# ---------------------------------------------------------------------------
+
+def _escape_string_whitespace(s: str) -> str:
+    """Escape literal control characters within JSON string values."""
+    result = []
+    in_string = False
+    escape_next = False
+    for char in s:
+        if escape_next:
+            result.append(char)
+            escape_next = False
+        elif char == "\\":
+            result.append(char)
+            escape_next = True
+        elif char == '"':
+            result.append(char)
+            in_string = not in_string
+        elif in_string and char == "\n":
+            result.append("\\n")
+        elif in_string and char == "\r":
+            result.append("\\r")
+        elif in_string and char == "\t":
+            result.append("\\t")
+        else:
+            result.append(char)
+    return "".join(result)
+
+
+def _complete_brackets(s: str) -> str:
+    """Auto-complete mismatched opening brackets."""
+    stack: List[str] = []
+    in_string = False
+    escape_next = False
+    for char in s:
+        if escape_next:
+            escape_next = False
+            continue
+        if char == "\\" and in_string:
+            escape_next = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if char in ("{", "["):
+                stack.append(char)
+            elif char == "}" and stack and stack[-1] == "{":
+                stack.pop()
+            elif char == "]" and stack and stack[-1] == "[":
+                stack.pop()
+    while stack:
+        opener = stack.pop()
+        s += "}" if opener == "{" else "]"
+    return s
+
+
+def repair_json(s: str) -> str:
+    """Attempt to repair malformed JSON from model output.
+
+    Applies six sequential strategies modelled after cc-proxy's repairJson:
+    1. Extract content between first ``{`` and last ``}``
+    2. Remove trailing commas before ``}`` / ``]``
+    3. Escape literal newlines / carriage-returns / tabs inside string values
+    4. Quote unquoted object keys
+    5. Un-quote over-quoted boolean / null values
+    6. Auto-complete mismatched brackets
+    """
+    fixed = s.strip()
+    if not fixed:
+        return fixed
+
+    # Strategy 1: extract valid JSON range
+    first_brace = fixed.find("{")
+    last_brace = fixed.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        fixed = fixed[first_brace : last_brace + 1]
+
+    # Strategy 2: trailing commas
+    fixed = re.sub(r",\s*([\}\]])", r"\1", fixed)
+
+    # Strategy 3: escape literal whitespace in strings
+    fixed = _escape_string_whitespace(fixed)
+
+    # Strategy 4: quote unquoted keys
+    fixed = re.sub(r"([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:", r'\1"\2":', fixed)
+
+    # Strategy 5: un-quote boolean / null values
+    fixed = re.sub(
+        r':\s*"(true|false|null)"',
+        lambda m: f": {m.group(1).lower()}",
+        fixed,
+        flags=re.IGNORECASE,
+    )
+
+    # Strategy 6: complete mismatched brackets
+    fixed = _complete_brackets(fixed)
+
+    return fixed
+
+
+# ---------------------------------------------------------------------------
+# Streaming tool-call parser
+# ---------------------------------------------------------------------------
+
+class StreamingToolParser:
+    """True streaming parser for ``<tool_call>`` blocks.
+
+    Implements a two-state machine (TEXT → TOOL_BUFFERING) so that:
+
+    * Text *outside* tool-call blocks is yielded to the client immediately.
+    * Only the content *inside* ``<tool_call>…</tool_call>`` is buffered.
+
+    Feed chunks via :meth:`feed` and call :meth:`flush` at end-of-stream.
+    Each returns a list of events::
+
+        {"type": "text",      "content": "..."}
+        {"type": "tool_call", "data":    {...}}   # OpenAI tool-call dict
+    """
+
+    TOOL_START = "<tool_call>"
+    TOOL_END = "</tool_call>"
+
+    def __init__(self, tools: Optional[List[Dict[str, Any]]] = None) -> None:
+        self._state = "TEXT"   # TEXT | TOOL_BUFFERING
+        self._pending = ""     # Unprocessed input
+        self._tool_buf = ""    # Accumulates current tool call body
+        self._valid_names: Optional[set] = None
+        if tools:
+            self._valid_names = {
+                t["function"]["name"]
+                for t in tools
+                if t.get("type") == "function" and t.get("function", {}).get("name")
+            }
+
+    def feed(self, chunk: str) -> List[Dict[str, Any]]:
+        """Feed a text chunk; returns a list of events."""
+        events: List[Dict[str, Any]] = []
+        self._pending += chunk
+        self._process(events)
+        return events
+
+    def flush(self) -> List[Dict[str, Any]]:
+        """Flush remaining buffer at end of stream; returns remaining events."""
+        events: List[Dict[str, Any]] = []
+        if self._state == "TOOL_BUFFERING":
+            # Incomplete tool call — surface as raw text
+            raw = f"{self.TOOL_START}{self._tool_buf}{self._pending}"
+            if raw:
+                events.append({"type": "text", "content": raw})
+        elif self._pending:
+            events.append({"type": "text", "content": self._pending})
+        self._pending = ""
+        self._tool_buf = ""
+        self._state = "TEXT"
+        return events
+
+    def _process(self, events: List[Dict[str, Any]]) -> None:
+        while True:
+            if self._state == "TEXT":
+                idx = self._pending.find(self.TOOL_START)
+                if idx == -1:
+                    # No marker; emit everything except the last (marker-1) chars
+                    safe = len(self._pending) - (len(self.TOOL_START) - 1)
+                    if safe > 0:
+                        events.append({"type": "text", "content": self._pending[:safe]})
+                        self._pending = self._pending[safe:]
+                    break
+                # Marker found
+                if idx > 0:
+                    events.append({"type": "text", "content": self._pending[:idx]})
+                self._pending = self._pending[idx + len(self.TOOL_START):]
+                self._state = "TOOL_BUFFERING"
+                self._tool_buf = ""
+
+            else:  # TOOL_BUFFERING
+                idx = self._pending.find(self.TOOL_END)
+                if idx == -1:
+                    safe = len(self._pending) - (len(self.TOOL_END) - 1)
+                    if safe > 0:
+                        self._tool_buf += self._pending[:safe]
+                        self._pending = self._pending[safe:]
+                    break
+                # End marker found
+                self._tool_buf += self._pending[:idx]
+                self._pending = self._pending[idx + len(self.TOOL_END):]
+                self._state = "TEXT"
+
+                tool_call = self._parse(self._tool_buf.strip())
+                if tool_call:
+                    events.append({"type": "tool_call", "data": tool_call})
+                else:
+                    raw = f"{self.TOOL_START}{self._tool_buf}{self.TOOL_END}"
+                    events.append({"type": "text", "content": raw})
+                self._tool_buf = ""
+
+    def _parse(self, raw_json: str) -> Optional[Dict[str, Any]]:
+        """Parse a tool call JSON blob, falling back to repair_json on failure."""
+        parsed = None
+        try:
+            parsed = json.loads(raw_json)
+        except (json.JSONDecodeError, ValueError):
+            repaired = repair_json(raw_json)
+            try:
+                parsed = json.loads(repaired)
+            except (json.JSONDecodeError, ValueError):
+                return None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        name = parsed.get("name")
+        if not name:
+            return None
+        if self._valid_names and name not in self._valid_names:
+            return None
+
+        arguments = parsed.get("arguments", {})
+        if isinstance(arguments, dict):
+            arguments_str = json.dumps(arguments, ensure_ascii=False)
+        elif isinstance(arguments, str):
+            arguments_str = arguments
+        else:
+            arguments_str = json.dumps(arguments, ensure_ascii=False)
+
+        return {
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {"name": name, "arguments": arguments_str},
+        }
+
+
 def build_tool_prompt(
     tools: List[Dict[str, Any]],
     tool_choice: Optional[Any] = None,
@@ -130,8 +363,12 @@ def parse_tool_calls(
         raw_json = match.group(1).strip()
         try:
             parsed = json.loads(raw_json)
-        except json.JSONDecodeError:
-            continue
+        except (json.JSONDecodeError, ValueError):
+            repaired = repair_json(raw_json)
+            try:
+                parsed = json.loads(repaired)
+            except (json.JSONDecodeError, ValueError):
+                continue
 
         if not isinstance(parsed, dict):
             continue
@@ -267,6 +504,8 @@ def format_tool_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 __all__ = [
+    "repair_json",
+    "StreamingToolParser",
     "build_tool_prompt",
     "parse_tool_calls",
     "build_tool_overrides",
