@@ -27,7 +27,10 @@ class MessageItem(BaseModel):
     """消息项"""
 
     role: str
-    content: Union[str, List[Dict[str, Any]]]
+    content: Optional[Union[str, Dict[str, Any], List[Dict[str, Any]]]]
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
 
 
 class VideoConfig(BaseModel):
@@ -38,6 +41,7 @@ class VideoConfig(BaseModel):
     resolution_name: Optional[str] = Field("480p", description="视频分辨率: 480p, 720p")
     preset: Optional[str] = Field("custom", description="风格预设: fun, normal, spicy")
 
+      
 class ImageConfig(BaseModel):
     """图片生成配置"""
 
@@ -59,9 +63,13 @@ class ChatCompletionRequest(BaseModel):
     video_config: Optional[VideoConfig] = Field(None, description="视频生成参数")
     # 图片生成配置
     image_config: Optional[ImageConfig] = Field(None, description="图片生成参数")
+    # Tool calling
+    tools: Optional[List[Dict[str, Any]]] = Field(None, description="Tool definitions")
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = Field(None, description="Tool choice: auto/required/none/specific")
+    parallel_tool_calls: Optional[bool] = Field(True, description="Allow parallel tool calls")
 
 
-VALID_ROLES = {"developer", "system", "user", "assistant"}
+VALID_ROLES = {"developer", "system", "user", "assistant", "tool"}
 USER_CONTENT_TYPES = {"text", "image_url", "input_audio", "file"}
 ALLOWED_IMAGE_SIZES = {
     "1280x720",
@@ -116,6 +124,8 @@ def _extract_prompt_images(messages: List[MessageItem]) -> tuple[str, List[str]]
             if text:
                 last_text = text
             continue
+        if isinstance(content, dict):
+            content = [content]
         if not isinstance(content, list):
             continue
         for block in content:
@@ -201,7 +211,32 @@ def validate_request(request: ChatCompletionRequest):
                 param=f"messages.{idx}.role",
                 code="invalid_role",
             )
+
+        # tool role: requires tool_call_id, content can be None/empty
+        if msg.role == "tool":
+            if not msg.tool_call_id:
+                raise ValidationException(
+                    message="tool messages must have a 'tool_call_id' field",
+                    param=f"messages.{idx}.tool_call_id",
+                    code="missing_tool_call_id",
+                )
+            continue
+
+        # assistant with tool_calls: content can be None
+        if msg.role == "assistant" and msg.tool_calls:
+            continue
+
         content = msg.content
+
+        # 兼容部分客户端会发送 assistant/tool 空内容（例如工具调用中间态）
+        if content is None:
+            if msg.role in {"assistant", "tool"}:
+                continue
+            raise ValidationException(
+                message="Message content cannot be null",
+                param=f"messages.{idx}.content",
+                code="empty_content",
+            )
 
         # 字符串内容
         if isinstance(content, str):
@@ -213,6 +248,31 @@ def validate_request(request: ChatCompletionRequest):
                 )
 
         # 列表内容
+        elif isinstance(content, dict):
+            content = [content]
+            for c_idx, item in enumerate(content):
+                if not isinstance(item, dict):
+                    raise ValidationException(
+                        message="Message content items must be objects",
+                        param=f"messages.{idx}.content.{c_idx}",
+                        code="invalid_content_item",
+                    )
+                item_type = item.get("type")
+                if item_type != "text":
+                    raise ValidationException(
+                        message="When content is an object, type must be 'text'",
+                        param=f"messages.{idx}.content.{c_idx}.type",
+                        code="invalid_content_type",
+                    )
+                text = item.get("text", "")
+                if not isinstance(text, str) or not text.strip():
+                    raise ValidationException(
+                        message="messages.%d.content.%d.text must be a non-empty string"
+                        % (idx, c_idx),
+                        param=f"messages.{idx}.content.{c_idx}.text",
+                        code="empty_content",
+                    )
+
         elif isinstance(content, list):
             if not content:
                 raise ValidationException(
@@ -322,6 +382,12 @@ def validate_request(request: ChatCompletionRequest):
                         "file.file_data",
                         f"messages.{idx}.content.{block_idx}.file.file_data",
                     )
+        elif content is None:
+            raise ValidationException(
+                message="Message content cannot be empty",
+                param=f"messages.{idx}.content",
+                code="empty_content",
+            )
         else:
             raise ValidationException(
                 message="Message content must be a string or array",
@@ -397,6 +463,46 @@ def validate_request(request: ChatCompletionRequest):
                 param="top_p",
                 code="invalid_top_p",
             )
+
+    # 验证 tools
+    if request.tools is not None:
+        if not isinstance(request.tools, list):
+            raise ValidationException(
+                message="tools must be an array",
+                param="tools",
+                code="invalid_tools",
+            )
+        for t_idx, tool in enumerate(request.tools):
+            if not isinstance(tool, dict) or tool.get("type") != "function":
+                raise ValidationException(
+                    message="Each tool must have type='function'",
+                    param=f"tools.{t_idx}.type",
+                    code="invalid_tool_type",
+                )
+            func = tool.get("function")
+            if not isinstance(func, dict) or not func.get("name"):
+                raise ValidationException(
+                    message="Each tool function must have a 'name'",
+                    param=f"tools.{t_idx}.function.name",
+                    code="missing_function_name",
+                )
+
+    # 验证 tool_choice
+    if request.tool_choice is not None:
+        if isinstance(request.tool_choice, str):
+            if request.tool_choice not in ("auto", "required", "none"):
+                raise ValidationException(
+                    message="tool_choice must be 'auto', 'required', 'none', or a specific function object",
+                    param="tool_choice",
+                    code="invalid_tool_choice",
+                )
+        elif isinstance(request.tool_choice, dict):
+            if request.tool_choice.get("type") != "function" or not request.tool_choice.get("function", {}).get("name"):
+                raise ValidationException(
+                    message="tool_choice object must have type='function' and function.name",
+                    param="tool_choice",
+                    code="invalid_tool_choice",
+                )
 
     model_info = ModelService.get(request.model)
     # image 验证
@@ -522,7 +628,6 @@ async def chat_completions(request: ChatCompletionRequest):
                 param="image",
                 code="missing_image",
             )
-        image_url = image_urls[-1]
 
         is_stream = (
             request.stream if request.stream is not None else get_config("app.stream")
@@ -555,7 +660,7 @@ async def chat_completions(request: ChatCompletionRequest):
             token=token,
             model_info=model_info,
             prompt=prompt,
-            images=[image_url],
+            images=image_urls,
             n=n,
             response_format=response_format,
             stream=bool(is_stream),
@@ -660,6 +765,9 @@ async def chat_completions(request: ChatCompletionRequest):
             reasoning_effort=request.reasoning_effort,
             temperature=request.temperature,
             top_p=request.top_p,
+            tools=request.tools,
+            tool_choice=request.tool_choice,
+            parallel_tool_calls=request.parallel_tool_calls,
         )
 
     if isinstance(result, dict):

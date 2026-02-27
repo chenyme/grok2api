@@ -8,7 +8,7 @@
 > [!NOTE]
 > Open source projects welcome everyone's support for secondary development and pull requests, but please retain the original author's and frontend's logos to respect the work of others!
 
-Grok2API rebuilt with **FastAPI**, fully aligned with the latest web call format. Supports streaming/non-streaming chat, image generation/editing, video generation/upscale (text-to-video and image-to-video), deep reasoning, token pool concurrency, and automatic load balancing.
+Grok2API rebuilt with **FastAPI**, fully aligned with the latest web call format. Supports streaming/non-streaming chat, tools call, image generation/editing, video generation/upscale (text-to-video and image-to-video), deep reasoning, token pool concurrency, and automatic load balancing.
 
 <img width="4800" height="4200" alt="image" src="https://github.com/user-attachments/assets/a6669674-8afe-4ae5-bf81-a2ec1f864233" />
 
@@ -143,6 +143,9 @@ curl http://localhost:8000/v1/chat/completions \
 | `reasoning_effort` | string | Reasoning effort | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `temperature` | number | Sampling temperature | `0` ~ `2` |
 | `top_p` | number | Nucleus sampling | `0` ~ `1` |
+| `tools` | array | Tool definitions | OpenAI function tools |
+| `tool_choice` | string/object | Tool choice | `auto`, `required`, `none`, or a specific tool |
+| `parallel_tool_calls` | boolean | Allow parallel tool calls | `true`, `false` |
 | `video_config` | object | **Video model only** | Supported: `grok-imagine-1.0-video` |
 | └─ `aspect_ratio` | string | Video aspect ratio | `16:9`, `9:16`, `1:1`, `2:3`, `3:2`, `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
 | └─ `video_length` | integer | Video length (seconds) | `6`, `10`, `15` |
@@ -173,9 +176,55 @@ curl http://localhost:8000/v1/chat/completions \
 
 - `image_url/input_audio/file` only supports URL or Data URI (`data:<mime>;base64,...`); raw base64 will be rejected.
 - `reasoning_effort`: `none` disables thinking output; any other value enables it.
-- `grok-imagine-1.0-edit` requires an image; if multiple are provided, the last image and last text are used.
-- `grok-imagine-1.0-video` supports text-to-video and image-to-video via `image_url`.
+- Tool calling is **prompt-based + client-executed**: the model emits `<tool_call>{...}</tool_call>` and the server parses it into `tool_calls`; tools are not executed server-side.
+- `grok-imagine-1.0-edit` requires an image; if multiple are provided, the **last 3** images and last text are used.
+- `grok-imagine-1.0-video` supports text-to-video and image-to-video via `image_url` (**only the first image is used**).
 - Any other parameters will be discarded and ignored.
+
+<br>
+
+</details>
+
+<br>
+
+### `POST /v1/responses`
+
+> OpenAI Responses API compatible endpoint (subset)
+
+```bash
+curl http://localhost:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -d '{
+    "model": "grok-4",
+    "input": "Explain quantum tunneling",
+    "stream": true
+  }'
+```
+
+<details>
+<summary>Supported request parameters</summary>
+
+<br>
+
+| Field | Type | Description |
+| :-- | :-- | :-- |
+| `model` | string | Model ID |
+| `input` | string/array | Input content (string, message array, or multimodal blocks) |
+| `instructions` | string | System instructions |
+| `stream` | boolean | Enable streaming |
+| `temperature` | number | Sampling temperature |
+| `top_p` | number | Nucleus sampling |
+| `tools` | array | Tool definitions (function tools; built-in tool types listed below) |
+| `tool_choice` | string/object | Tool choice (auto/required/none or a specific tool) |
+| `parallel_tool_calls` | boolean | Allow parallel tool calls |
+| `reasoning` | object | Reasoning options (supports `effort`) |
+| └─ `effort` | string | Reasoning effort | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+
+**Notes**:
+
+- Built-in tools `web_search` / `file_search` / `code_interpreter` are mapped to function tools for **tool call emission only**; hosted tool execution is not performed.
+- Streaming includes `response.output_text.*` and `response.function_call_arguments.*` events.
 
 <br>
 
@@ -217,6 +266,7 @@ curl http://localhost:8000/v1/images/generations \
 **Notes**:
 
 - `quality` and `style` are OpenAI compatibility placeholders and are not customizable yet.
+- If more than 3 images are provided, only the **last 3** are used.
 
 <br>
 

@@ -36,6 +36,7 @@ from app.api.v1.chat import router as chat_router  # noqa: E402
 from app.api.v1.image import router as image_router  # noqa: E402
 from app.api.v1.files import router as files_router  # noqa: E402
 from app.api.v1.models import router as models_router  # noqa: E402
+from app.api.v1.response import router as responses_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
 from app.api.v1.admin_api import router as admin_router
 from app.api.v1.public_api import router as public_router
@@ -121,6 +122,9 @@ def create_app() -> FastAPI:
     )
     app.include_router(
         models_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
+    )
+    app.include_router(
+        responses_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
     )
     app.include_router(files_router, prefix="/v1/files")
 
