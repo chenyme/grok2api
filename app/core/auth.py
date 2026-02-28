@@ -63,10 +63,13 @@ def _match_public_key(credentials: str, public_key: str) -> bool:
     """检查凭证是否匹配 public_key（支持原始值和 public-<sha256> 哈希格式）。"""
     if not public_key:
         return False
-    if credentials == public_key:
+    normalized = public_key.strip()
+    if not normalized:
+        return False
+    if credentials == normalized:
         return True
     if credentials.startswith("public-"):
-        expected_hash = _hash_public_key(public_key)
+        expected_hash = _hash_public_key(normalized)
         if credentials == f"public-{expected_hash}":
             return True
     return False
@@ -79,20 +82,13 @@ async def verify_api_key(
     验证 Bearer Token
 
     如果 config.toml 中未配置 api_key，则不启用认证。
-    同时支持面板通过 public_key 认证（原始值或 public-<sha256> 哈希格式）。
-    若 public_enabled 且未配置 public_key，允许无认证访问。
+    同时支持通过 public_key 认证（原始值或 public-<sha256> 哈希格式）。
     """
     api_key = get_admin_api_key()
-    public_key = get_public_api_key()
-    public_enabled = is_public_enabled()
-
     if not api_key:
         return None
 
-    # 无认证头：仅在 public_enabled 且无 public_key 时放行
     if not auth:
-        if public_enabled and not public_key:
-            return None
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing authentication token",
@@ -104,6 +100,7 @@ async def verify_api_key(
         return auth.credentials
 
     # public_key 验证（原始值或哈希）
+    public_key = get_public_api_key()
     if _match_public_key(auth.credentials, public_key):
         return auth.credentials
 

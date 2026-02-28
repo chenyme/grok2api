@@ -190,16 +190,8 @@ async function ensurePublicKey() {
 
   const key = await getStoredPublicKey();
   if (!key) {
-    try {
-      const ok = await verifyKey('/v1/public/verify', '');
-      if (ok) {
-        cachedPublicKey = '';
-        return cachedPublicKey;
-      }
-    } catch (e) {
-      // ignore
-    }
-    return null;
+    cachedPublicKey = '';
+    return cachedPublicKey;
   }
 
   try {

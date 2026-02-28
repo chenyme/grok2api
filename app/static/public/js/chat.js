@@ -336,6 +336,12 @@
     if (emptyState) emptyState.classList.remove('hidden');
   }
 
+  function setRenderedHTML(el, html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    el.textContent = '';
+    Array.from(doc.body.childNodes).forEach(n => el.appendChild(document.adoptNode(n)));
+  }
+
   function escapeHtml(value) {
     return value
       .replace(/&/g, '&amp;')
@@ -664,6 +670,7 @@
 
   function deleteMessageByRow(row) {
     if (!row || !chatLog) return;
+    if (activeStreamInfo && activeStreamInfo.entry.row === row) return;
     const rows = chatLog.querySelectorAll('.message-row');
     const idx = Array.from(rows).indexOf(row);
     if (idx === -1 || idx >= messageHistory.length) return;
@@ -703,7 +710,7 @@
     btnWrap.appendChild(saveBtn);
     btnWrap.appendChild(cancelBtn);
 
-    const originalHTML = contentNode.innerHTML;
+    const savedChildren = Array.from(contentNode.childNodes).map(n => n.cloneNode(true));
     const originalClass = contentNode.className;
     contentNode.className = 'message-content';
     contentNode.innerHTML = '';
@@ -728,9 +735,10 @@
       }
       msg.content = newText;
       contentNode.className = originalClass;
+      contentNode.textContent = '';
       if (msg.role === 'assistant') {
         contentNode.classList.add('rendered');
-        contentNode.innerHTML = renderMarkdown(newText);
+        setRenderedHTML(contentNode, renderMarkdown(newText));
       } else {
         contentNode.textContent = newText;
       }
@@ -745,7 +753,8 @@
 
     function cancel() {
       contentNode.className = originalClass;
-      contentNode.innerHTML = originalHTML;
+      contentNode.textContent = '';
+      savedChildren.forEach(n => contentNode.appendChild(n));
       finish();
     }
   }
@@ -984,10 +993,10 @@
     }
     if (finalize) {
       entry.contentNode.classList.add('rendered');
-      entry.contentNode.innerHTML = renderMarkdown(entry.raw);
+      setRenderedHTML(entry.contentNode, renderMarkdown(entry.raw));
     } else {
       if (entry.role === 'assistant') {
-        entry.contentNode.innerHTML = renderMarkdown(entry.raw);
+        setRenderedHTML(entry.contentNode, renderMarkdown(entry.raw));
       } else {
         entry.contentNode.textContent = entry.raw;
       }
@@ -1633,21 +1642,21 @@
       });
     }
     document.addEventListener('click', (event) => {
-      if (!settingsPanel || settingsPanel.classList.contains('hidden')) return;
-      if (settingsPanel.contains(event.target) || (settingsToggle && settingsToggle.contains(event.target))) {
-        return;
+      if (settingsPanel && !settingsPanel.classList.contains('hidden')) {
+        if (!settingsPanel.contains(event.target) && !(settingsToggle && settingsToggle.contains(event.target))) {
+          toggleSettings(false);
+        }
       }
-      toggleSettings(false);
-    });
-    document.addEventListener('click', (event) => {
-      if (!modelDropdown || modelDropdown.classList.contains('hidden')) return;
-      if (modelChip && modelChip.contains(event.target)) return;
-      toggleModelDropdown(false);
-    });
-    document.addEventListener('click', (event) => {
-      if (!reasoningDropdown || reasoningDropdown.classList.contains('hidden')) return;
-      if (reasoningChip && reasoningChip.contains(event.target)) return;
-      toggleReasoningDropdown(false);
+      if (modelDropdown && !modelDropdown.classList.contains('hidden')) {
+        if (!(modelChip && modelChip.contains(event.target))) {
+          toggleModelDropdown(false);
+        }
+      }
+      if (reasoningDropdown && !reasoningDropdown.classList.contains('hidden')) {
+        if (!(reasoningChip && reasoningChip.contains(event.target))) {
+          toggleReasoningDropdown(false);
+        }
+      }
     });
     if (promptInput) {
       let composing = false;
