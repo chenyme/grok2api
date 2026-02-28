@@ -10,7 +10,7 @@
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <link href="/static/common/css/common.css?v=1.5.0" rel="stylesheet">
-  <link href="/static/public/css/chat.css?v=1.5.0" rel="stylesheet">
+  <link href="/static/public/css/chat.css?v=1.6.0" rel="stylesheet">
   <link href="/static/common/css/toast.css" rel="stylesheet">
 </head>
 
@@ -18,15 +18,38 @@
   <div id="toast-container" class="toast-container"></div>
   <div id="app-header"></div>
 
-  <main class="flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in chat-main">
-    <div class="chat-shell">
-      <div class="chat-title">
-        <div>
-          <h2 class="chat-title-text">Chat 聊天</h2>
-          <p class="chat-subtitle">通过 chat 接口与 Grok 进行会话聊天</p>
+  <main class="flex-1 container mx-auto max-w-6xl px-6 py-8 fade-in chat-main">
+    <div class="chat-layout">
+      <aside class="chat-sidebar" id="chatSidebar">
+        <div class="sidebar-header">
+          <span class="sidebar-title">会话</span>
+          <button id="newChatBtn" class="sidebar-new-btn" type="button" title="新建会话">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
         </div>
-        <span id="statusText" class="status-text">就绪</span>
-      </div>
+        <div class="sidebar-list" id="sessionList"></div>
+      </aside>
+      <div class="sidebar-overlay" id="sidebarOverlay"></div>
+      <div class="chat-shell">
+        <div class="chat-title">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button id="sidebarToggle" class="sidebar-toggle" type="button" title="会话列表">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <line x1="3" y1="12" x2="21" y2="12"></line>
+                <line x1="3" y1="18" x2="21" y2="18"></line>
+              </svg>
+            </button>
+            <div>
+              <h2 class="chat-title-text">Chat 聊天</h2>
+              <p class="chat-subtitle">通过 chat 接口与 Grok 进行会话聊天</p>
+            </div>
+          </div>
+          <span id="statusText" class="status-text">就绪</span>
+        </div>
 
       <div id="chatLog" class="chat-thread">
         <div id="emptyState" class="chat-empty">输入一条消息开始对话。</div>
@@ -47,12 +70,37 @@
           </div>
           <textarea id="promptInput" class="composer-textarea" placeholder="询问任何内容"></textarea>
           <div class="composer-actions">
-            <div class="model-chip">
-              <select id="modelSelect" class="model-select"></select>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            <div class="model-chip" id="modelChip">
+              <svg class="model-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                <line x1="8" y1="21" x2="16" y2="21"></line>
+                <line x1="12" y1="17" x2="12" y2="21"></line>
+              </svg>
+              <span class="model-label" id="modelLabel">grok-4.20-beta</span>
+              <svg class="model-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
+              <div class="model-dropdown hidden" id="modelDropdown"></div>
+            </div>
+            <div class="reasoning-chip" id="reasoningChip">
+              <svg class="reasoning-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z"></path>
+                <path d="M9 21h6"></path>
+                <path d="M10 24h4"></path>
+              </svg>
+              <span class="reasoning-label" id="reasoningLabel">跟随配置</span>
+              <svg class="reasoning-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+              <div class="reasoning-dropdown hidden" id="reasoningDropdown">
+                <div class="reasoning-option selected" data-value="">跟随配置</div>
+                <div class="reasoning-option" data-value="none">关闭</div>
+                <div class="reasoning-option" data-value="low">Low</div>
+                <div class="reasoning-option" data-value="medium">Medium</div>
+                <div class="reasoning-option" data-value="high">High</div>
+              </div>
             </div>
             <div class="popover hidden">
               <button id="settingsToggle" class="icon-btn" type="button" title="设置">
@@ -66,18 +114,6 @@
               </button>
               <div id="settingsPanel" class="settings-panel hidden">
                 <div class="settings-grid">
-                  <div class="settings-block">
-                    <label class="field-label" for="reasoningSelect">推理强度</label>
-                    <select id="reasoningSelect" class="geist-input">
-                      <option value="">跟随配置</option>
-                      <option value="none">关闭</option>
-                      <option value="minimal">Minimal</option>
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                      <option value="xhigh">XHigh</option>
-                    </select>
-                  </div>
                   <div class="settings-block">
                     <label class="field-label" for="tempRange">温度</label>
                     <div class="range-row">
@@ -99,15 +135,32 @@
                 </div>
               </div>
             </div>
-            <button id="sendBtn" class="send-btn" type="button" aria-label="Send">
+            <button id="sendBtn" class="send-btn" type="button" aria-label="Send" title="发送">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round">
                 <path d="M22 2L11 13"></path>
                 <path d="M22 2L15 22L11 13L2 9L22 2Z"></path>
               </svg>
             </button>
+            <button id="clearChatBtn" class="action-icon-btn" type="button" title="清理会话">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+            </button>
+            <button id="compressCtxBtn" class="action-icon-btn" type="button" title="压缩上下文">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="4 14 10 14 10 20"></polyline>
+                <polyline points="20 10 14 10 14 4"></polyline>
+                <line x1="14" y1="10" x2="21" y2="3"></line>
+                <line x1="3" y1="21" x2="10" y2="14"></line>
+              </svg>
+            </button>
           </div>
         </div>
+      </div>
       </div>
     </div>
   </main>
@@ -118,7 +171,7 @@
   <script src="/static/common/js/public-header.js?v=1.5.0"></script>
   <script src="/static/common/js/footer.js?v=1.5.0"></script>
   <script src="/static/common/js/toast.js"></script>
-  <script src="/static/public/js/chat.js?v=1.5.0"></script>
+  <script src="/static/public/js/chat.js?v=1.6.0"></script>
 </body>
 
 </html>

@@ -178,6 +178,13 @@ async function ensureAdminKey() {
   }
 }
 
+async function hashPublicKey(key) {
+  if (!crypto?.subtle) return null;
+  const data = new TextEncoder().encode('grok2api-public:' + key);
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 async function ensurePublicKey() {
   if (cachedPublicKey !== null) return cachedPublicKey;
 
@@ -195,14 +202,11 @@ async function ensurePublicKey() {
     return null;
   }
 
-  if (!key) {
-    return null;
-  }
-
   try {
     const ok = await verifyKey('/v1/public/verify', key);
     if (!ok) throw new Error('Unauthorized');
-    cachedPublicKey = `Bearer ${key}`;
+    const hash = await hashPublicKey(key);
+    cachedPublicKey = hash ? `Bearer public-${hash}` : `Bearer ${key}`;
     return cachedPublicKey;
   } catch (e) {
     clearStoredPublicKey();
