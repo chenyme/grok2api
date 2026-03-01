@@ -1,6 +1,9 @@
 (() => {
-  const modelSelect = document.getElementById('modelSelect');
-  const reasoningSelect = document.getElementById('reasoningSelect');
+  const modelChip = document.getElementById('modelChip');
+  const modelLabel = document.getElementById('modelLabel');
+  const modelDropdown = document.getElementById('modelDropdown');
+  let modelValue = 'grok-4.20-beta';
+  let modelList = [];
   const tempRange = document.getElementById('tempRange');
   const tempValue = document.getElementById('tempValue');
   const topPRange = document.getElementById('topPRange');
@@ -18,12 +21,378 @@
   const fileBadge = document.getElementById('fileBadge');
   const fileName = document.getElementById('fileName');
   const fileRemoveBtn = document.getElementById('fileRemoveBtn');
+  const chatSidebar = document.getElementById('chatSidebar');
+  const sidebarOverlay = document.getElementById('sidebarOverlay');
+  const sidebarToggle = document.getElementById('sidebarToggle');
+  const newChatBtn = document.getElementById('newChatBtn');
+  const collapseSidebarBtn = document.getElementById('collapseSidebarBtn');
+  const sidebarExpandBtn = document.getElementById('sidebarExpandBtn');
+  const sessionListEl = document.getElementById('sessionList');
+
+  const STORAGE_KEY = 'grok2api_chat_sessions';
+  const SIDEBAR_STATE_KEY = 'grok2api_chat_sidebar_collapsed';
+  const MAX_CONTEXT_MESSAGES = 5;
 
   let messageHistory = [];
   let isSending = false;
   let abortController = null;
   let attachment = null;
+  let activeStreamInfo = null;
   const feedbackUrl = 'https://github.com/chenyme/grok2api/issues/new';
+  const CHAT_COMPLETIONS_ENDPOINT = '/v1/public/chat/completions';
+
+  let sessionsData = null;
+
+  function generateId() {
+    return crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+  }
+
+  function loadSessions() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        sessionsData = JSON.parse(raw);
+        if (!sessionsData || !Array.isArray(sessionsData.sessions)) {
+          sessionsData = null;
+        }
+      }
+    } catch (e) {
+      sessionsData = null;
+    }
+    if (!sessionsData || !sessionsData.sessions.length) {
+      const id = generateId();
+      sessionsData = {
+        activeId: id,
+        sessions: [{
+          id,
+          title: '新会话',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: []
+        }]
+      };
+      saveSessions();
+    }
+    if (!sessionsData.activeId || !sessionsData.sessions.find(s => s.id === sessionsData.activeId)) {
+      sessionsData.activeId = sessionsData.sessions[0].id;
+    }
+    restoreActiveSession();
+    renderSessionList();
+  }
+
+  function getMessageDisplay(msg) {
+    if (!msg) return '';
+    if (typeof msg.content === 'string') return msg.content;
+    if (typeof msg.display === 'string' && msg.display.trim()) return msg.display;
+    if (Array.isArray(msg.content)) {
+      const textParts = [];
+      let hasFile = false;
+      for (const block of msg.content) {
+        if (!block) continue;
+        if (block.type === 'text' && block.text) {
+          textParts.push(block.text);
+        }
+        if (block.type === 'file') {
+          hasFile = true;
+        }
+      }
+      const name = msg.attachmentName || '';
+      const fileLabel = hasFile ? (name ? `[文件] ${name}` : '[文件]') : '';
+      if (textParts.length && fileLabel) return `${textParts.join('\n')}\n${fileLabel}`;
+      if (textParts.length) return textParts.join('\n');
+      return fileLabel || '[复合内容]';
+    }
+    return '[复合内容]';
+  }
+
+  function serializeMessage(msg) {
+    if (!msg || typeof msg !== 'object') return msg;
+    if (Array.isArray(msg.content)) {
+      return {
+        ...msg,
+        content: getMessageDisplay(msg)
+      };
+    }
+    return msg;
+  }
+
+  function serializeSessions() {
+    if (!sessionsData) return null;
+    return {
+      activeId: sessionsData.activeId,
+      sessions: sessionsData.sessions.map((session) => ({
+        ...session,
+        messages: Array.isArray(session.messages)
+          ? session.messages.map(serializeMessage)
+          : []
+      }))
+    };
+  }
+
+  function saveSessions() {
+    if (!sessionsData) return;
+    const snapshot = serializeSessions();
+    if (!snapshot) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    } catch (e) {
+      toast('本地存储空间不足，部分会话未保存', 'error');
+    }
+  }
+
+  function trimMessageHistory(maxCount = MAX_CONTEXT_MESSAGES) {
+    if (!maxCount || maxCount <= 0) return;
+    if (messageHistory.length <= maxCount) return;
+    messageHistory = messageHistory.slice(-maxCount);
+    const session = getActiveSession();
+    if (session) {
+      session.messages = messageHistory.slice();
+      session.updatedAt = Date.now();
+      saveSessions();
+      renderSessionList();
+    }
+    if (chatLog) {
+      const rows = Array.from(chatLog.querySelectorAll('.message-row'));
+      const removeCount = rows.length - messageHistory.length;
+      if (removeCount > 0) {
+        rows.slice(0, removeCount).forEach((row) => row.remove());
+      }
+    }
+    if (!messageHistory.length) {
+      showEmptyState();
+    }
+  }
+
+  function getActiveSession() {
+    if (!sessionsData) return null;
+    return sessionsData.sessions.find(s => s.id === sessionsData.activeId) || null;
+  }
+
+  function restoreActiveSession() {
+    const session = getActiveSession();
+    if (!session) return;
+    messageHistory = session.messages.slice();
+    trimMessageHistory();
+    if (chatLog) chatLog.innerHTML = '';
+    if (!messageHistory.length) {
+      showEmptyState();
+      return;
+    }
+    hideEmptyState();
+    for (const msg of messageHistory) {
+      const displayContent = getMessageDisplay(msg);
+      const editable = !msg.hasAttachment && typeof msg.content === 'string';
+      const entry = createMessage(msg.role, displayContent, true, { editable });
+      if (entry && msg.role === 'assistant') {
+        updateMessage(entry, displayContent, true);
+      }
+    }
+    if (activeStreamInfo && activeStreamInfo.sessionId === session.id && activeStreamInfo.entry.row) {
+      chatLog.appendChild(activeStreamInfo.entry.row);
+    }
+    scrollToBottom();
+  }
+
+  function createSession() {
+    const id = generateId();
+    const session = {
+      id,
+      title: '新会话',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: []
+    };
+    sessionsData.sessions.unshift(session);
+    sessionsData.activeId = id;
+    messageHistory = [];
+    if (chatLog) chatLog.innerHTML = '';
+    showEmptyState();
+    saveSessions();
+    renderSessionList();
+    if (isMobileSidebar()) closeSidebar();
+  }
+
+  function deleteSession(id) {
+    const idx = sessionsData.sessions.findIndex(s => s.id === id);
+    if (idx === -1) return;
+    sessionsData.sessions.splice(idx, 1);
+    if (!sessionsData.sessions.length) {
+      createSession();
+      return;
+    }
+    if (sessionsData.activeId === id) {
+      const newIdx = Math.min(idx, sessionsData.sessions.length - 1);
+      sessionsData.activeId = sessionsData.sessions[newIdx].id;
+      restoreActiveSession();
+    }
+    saveSessions();
+    renderSessionList();
+  }
+
+  function switchSession(id) {
+    if (sessionsData.activeId === id) return;
+    syncCurrentSession();
+    syncSessionModel();
+    sessionsData.activeId = id;
+    const target = getActiveSession();
+    if (target) target.unread = false;
+    restoreActiveSession();
+    restoreSessionModel();
+    saveSessions();
+    renderSessionList();
+    if (isMobileSidebar()) closeSidebar();
+  }
+
+  function syncCurrentSession() {
+    const session = getActiveSession();
+    if (!session) return;
+    session.messages = messageHistory.slice();
+    session.updatedAt = Date.now();
+  }
+
+  function updateSessionTitle(session) {
+    if (!session) return;
+    if (session.title && session.title !== '新会话') return;
+    const firstUser = session.messages.find(m => m.role === 'user');
+    if (!firstUser) return;
+    const text = getMessageDisplay(firstUser);
+    if (!text) return;
+    const title = text.replace(/\n/g, ' ').trim().slice(0, 20);
+    if (title) {
+      session.title = title;
+    }
+  }
+
+  function renameSession(id, newTitle) {
+    const session = sessionsData.sessions.find(s => s.id === id);
+    if (!session) return;
+    const trimmed = (newTitle || '').trim();
+    session.title = trimmed || '新会话';
+    session.updatedAt = Date.now();
+    saveSessions();
+    renderSessionList();
+  }
+
+  function startRenameSession(sessionId, titleSpan) {
+    const session = sessionsData.sessions.find(s => s.id === sessionId);
+    if (!session) return;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'session-rename-input';
+    input.value = session.title || '';
+    input.maxLength = 40;
+    titleSpan.replaceWith(input);
+    input.focus();
+    input.select();
+    const commit = () => {
+      renameSession(sessionId, input.value);
+    };
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { input.value = session.title || '新会话'; input.blur(); }
+    });
+  }
+
+  function syncSessionModel() {
+    const session = getActiveSession();
+    if (!session) return;
+    session.model = modelValue || '';
+  }
+
+  function restoreSessionModel() {
+    const session = getActiveSession();
+    if (!session || !session.model) return;
+    if (modelList.includes(session.model)) {
+      selectModel(session.model);
+    }
+  }
+
+  function renderSessionList() {
+    if (!sessionListEl || !sessionsData) return;
+    sessionListEl.innerHTML = '';
+    for (const session of sessionsData.sessions) {
+      const item = document.createElement('div');
+      item.className = 'session-item' + (session.id === sessionsData.activeId ? ' active' : '');
+      item.dataset.id = session.id;
+
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'session-title';
+      titleSpan.textContent = session.title || '新会话';
+      titleSpan.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        startRenameSession(session.id, titleSpan);
+      });
+      item.appendChild(titleSpan);
+
+      if (session.unread && session.id !== sessionsData.activeId) {
+        const dot = document.createElement('span');
+        dot.className = 'session-unread';
+        item.appendChild(dot);
+      }
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'session-delete';
+      delBtn.type = 'button';
+      delBtn.title = '删除';
+      delBtn.textContent = '×';
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteSession(session.id);
+      });
+      item.appendChild(delBtn);
+
+      item.addEventListener('click', () => switchSession(session.id));
+      sessionListEl.appendChild(item);
+    }
+  }
+
+  function isMobileSidebar() {
+    return window.matchMedia('(max-width: 1024px)').matches;
+  }
+
+  function setSidebarCollapsed(collapsed) {
+    const layout = chatSidebar ? chatSidebar.closest('.chat-layout') : null;
+    if (!layout) return;
+    layout.classList.toggle('collapsed', collapsed);
+    try {
+      localStorage.setItem(SIDEBAR_STATE_KEY, collapsed ? '1' : '0');
+    } catch (e) {
+      // ignore storage failures
+    }
+  }
+
+  function openSidebar() {
+    if (isMobileSidebar()) {
+      if (chatSidebar) chatSidebar.classList.add('open');
+      if (sidebarOverlay) sidebarOverlay.classList.add('open');
+      return;
+    }
+    setSidebarCollapsed(false);
+  }
+
+  function closeSidebar() {
+    if (isMobileSidebar()) {
+      if (chatSidebar) chatSidebar.classList.remove('open');
+      if (sidebarOverlay) sidebarOverlay.classList.remove('open');
+      return;
+    }
+    setSidebarCollapsed(true);
+  }
+
+  function toggleSidebar() {
+    if (isMobileSidebar()) {
+      if (chatSidebar && chatSidebar.classList.contains('open')) {
+        closeSidebar();
+      } else {
+        openSidebar();
+      }
+      return;
+    }
+    const layout = chatSidebar ? chatSidebar.closest('.chat-layout') : null;
+    if (!layout) return;
+    setSidebarCollapsed(!layout.classList.contains('collapsed'));
+  }
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -71,6 +440,12 @@
     if (emptyState) emptyState.classList.remove('hidden');
   }
 
+  function setRenderedHTML(el, html) {
+    // html is pre-sanitized through renderMarkdown → escapeHtml pipeline;
+    // all user text is entity-escaped before any HTML construction.
+    el.innerHTML = html;
+  }
+
   function escapeHtml(value) {
     return value
       .replace(/&/g, '&amp;')
@@ -78,6 +453,18 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function isSafeLinkUrl(url) {
+    const val = String(url || '').trim().toLowerCase();
+    if (!val) return false;
+    return /^(https?:|mailto:|tel:|\/(?!\/)|\.\.?\/|#)/.test(val);
+  }
+
+  function isSafeImageUrl(url) {
+    const val = String(url || '').trim().toLowerCase();
+    if (!val) return false;
+    return /^(https?:|data:image\/(?:png|jpe?g|gif|webp|bmp|ico);base64,|\/(?!\/)|\.\.?\/)/.test(val);
   }
 
   function renderBasicMarkdown(rawText) {
@@ -93,26 +480,40 @@
     });
 
     const renderInline = (value) => {
-      let output = value
-        .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+      const inlineCodes = [];
+      let output = value.replace(/`([^`]+)`/g, (match, code) => {
+        const token = `@@INLINE_${inlineCodes.length}@@`;
+        inlineCodes.push(`<code class="inline-code">${code}</code>`);
+        return token;
+      });
+
+      output = output
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/~~([^~]+)~~/g, '<del>$1</del>');
 
       output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
         const safeAlt = escapeHtml(alt || 'image');
+        if (!isSafeImageUrl(url)) return safeAlt;
         const safeUrl = escapeHtml(url || '');
         return `<img src="${safeUrl}" alt="${safeAlt}" loading="lazy">`;
       });
 
       output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
         const safeLabel = escapeHtml(label || '');
+        if (!isSafeLinkUrl(url)) return safeLabel;
         const safeUrl = escapeHtml(url || '');
         return `<a href="${safeUrl}" target="_blank" rel="noopener">${safeLabel}</a>`;
       });
 
       output = output.replace(/(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+)/g, (match, uri) => {
+        if (!isSafeImageUrl(uri)) return '';
         const safeUrl = escapeHtml(uri || '');
         return `<img src="${safeUrl}" alt="image" loading="lazy">`;
+      });
+
+      inlineCodes.forEach((html, i) => {
+        output = output.replace(new RegExp(`@@INLINE_${i}@@`, 'g'), html);
       });
 
       return output;
@@ -121,6 +522,7 @@
     const lines = fenced.split(/\r?\n/);
     const htmlParts = [];
     let inUl = false;
+    let inUlTask = false;
     let inOl = false;
     let inTable = false;
     let paragraphLines = [];
@@ -129,6 +531,7 @@
       if (inUl) {
         htmlParts.push('</ul>');
         inUl = false;
+        inUlTask = false;
       }
       if (inOl) {
         htmlParts.push('</ol>');
@@ -186,6 +589,31 @@
         continue;
       }
 
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+        flushParagraph();
+        closeLists();
+        closeTable();
+        htmlParts.push('<hr>');
+        continue;
+      }
+
+      if (/^\s*>/.test(line)) {
+        flushParagraph();
+        closeLists();
+        closeTable();
+        const quoteLines = [];
+        let j = i;
+        for (; j < lines.length; j += 1) {
+          const currentLine = lines[j];
+          if (!/^\s*>/.test(currentLine)) break;
+          quoteLines.push(currentLine.replace(/^\s*>\s?/, ''));
+        }
+        i = j - 1;
+        const quoteText = quoteLines.join('\n');
+        htmlParts.push(`<blockquote>${renderBasicMarkdown(quoteText)}</blockquote>`);
+        continue;
+      }
+
       if (trimmed.includes('|')) {
         const nextLine = lines[i + 1] || '';
         if (!inTable && isTableSeparator(nextLine.trim())) {
@@ -208,6 +636,24 @@
         }
       }
 
+      const taskMatch = trimmed.match(/^[-*+•·]\s+\[([ xX])\]\s+(.*)$/);
+      if (taskMatch) {
+        flushParagraph();
+        if (inUl && !inUlTask) {
+          closeLists();
+        }
+        if (!inUl) {
+          closeLists();
+          closeTable();
+          htmlParts.push('<ul class="task-list">');
+          inUl = true;
+          inUlTask = true;
+        }
+        const checked = taskMatch[1].toLowerCase() === 'x';
+        htmlParts.push(`<li class="task-item"><input type="checkbox" disabled${checked ? ' checked' : ''}>${renderInline(taskMatch[2])}</li>`);
+        continue;
+      }
+
       const ulMatch = trimmed.match(/^[-*+•·]\s+(.*)$/);
       if (ulMatch) {
         flushParagraph();
@@ -216,6 +662,7 @@
           closeTable();
           htmlParts.push('<ul>');
           inUl = true;
+          inUlTask = false;
         }
         htmlParts.push(`<li>${renderInline(ulMatch[1])}</li>`);
         continue;
@@ -304,7 +751,7 @@
         current.lines.push(line);
         continue;
       }
-      const agentMatch = trimmed.match(/^(Grok\\s+Leader|Agent\\s*\\d+|Grok\\s+Agent\\s*\\d+)$/i);
+      const agentMatch = trimmed.match(/^(Grok\s+Leader|(?:Grok\s+)?Agent\s*\d+)$/i);
       if (agentMatch) {
         hasAgentHeading = true;
         if (current.lines.length) {
@@ -322,6 +769,18 @@
       return [{ title: null, lines }];
     }
     return sections;
+  }
+
+  const toolTypeMap = {
+    websearch: { icon: '', label: '\u7F51\u9875\u641C\u7D22' },
+    searchimage: { icon: '', label: '\u56FE\u7247\u641C\u7D22' },
+    agentthink: { icon: '', label: '\u601D\u8003\u63A8\u7406' }
+  };
+  const defaultToolType = { icon: '', label: '\u5DE5\u5177' };
+
+  function getToolMeta(typeStr) {
+    const key = String(typeStr || '').trim().toLowerCase().replace(/\s+/g, '');
+    return toolTypeMap[key] || defaultToolType;
   }
 
   function renderThinkContent(text, openAll) {
@@ -345,10 +804,12 @@
       return groups.map((group) => {
         const items = group.items.map((item) => {
           const body = renderBasicMarkdown(item.lines.join('\n').trim());
-          const typeText = escapeHtml(item.type);
           const typeKey = String(item.type || '').trim().toLowerCase().replace(/\s+/g, '');
           const typeAttr = escapeHtml(typeKey);
-          return `<div class="think-item-row"><div class="think-item-type" data-type="${typeAttr}">${typeText}</div><div class="think-item-body">${body || '<em>（空）</em>'}</div></div>`;
+          const meta = getToolMeta(item.type);
+          const iconHtml = meta.icon ? `<span class="think-tool-icon">${meta.icon}</span>` : '';
+          const typeLabel = `${iconHtml}${escapeHtml(meta.label)}`;
+          return `<div class="think-item-row think-tool-card" data-tool-type="${typeAttr}"><div class="think-item-type" data-type="${typeAttr}">${typeLabel}</div><div class="think-item-body">${body || '<em>\uFF08\u7A7A\uFF09</em>'}</div></div>`;
         }).join('');
         const title = escapeHtml(group.id);
         const openAttr = openAllGroups ? ' open' : '';
@@ -360,7 +821,7 @@
       const blocks = parseRolloutBlocks(section.lines.join('\n'));
       const inner = blocks.length
         ? renderGroups(blocks, openAll)
-        : `<div class="think-rollout-body">${renderBasicMarkdown(section.lines.join('\\n').trim())}</div>`;
+        : `<div class="think-rollout-body">${renderBasicMarkdown(section.lines.join('\n').trim())}</div>`;
       if (!section.title) {
         return `<div class="think-agent-items">${inner}</div>`;
       }
@@ -384,7 +845,170 @@
     }).join('');
   }
 
-  function createMessage(role, content) {
+  function deleteMessageByRow(row) {
+    if (!row || !chatLog) return;
+    if (activeStreamInfo && activeStreamInfo.entry.row === row) return;
+    const rows = chatLog.querySelectorAll('.message-row');
+    const idx = Array.from(rows).indexOf(row);
+    if (idx === -1 || idx >= messageHistory.length) return;
+    messageHistory.splice(idx, 1);
+    row.remove();
+    const session = getActiveSession();
+    if (session) {
+      session.messages = messageHistory.slice();
+      session.updatedAt = Date.now();
+      saveSessions();
+    }
+    if (!messageHistory.length) {
+      showEmptyState();
+    }
+  }
+
+  function editMessageByRow(row) {
+    if (isSending || !row || !chatLog) return;
+    const rows = chatLog.querySelectorAll('.message-row');
+    const idx = Array.from(rows).indexOf(row);
+    if (idx === -1 || idx >= messageHistory.length) return;
+    const msg = messageHistory[idx];
+    if (msg && (msg.hasAttachment || typeof msg.content !== 'string')) {
+      toast('附件消息暂不支持编辑', 'error');
+      return;
+    }
+    const currentText = typeof msg.content === 'string' ? msg.content : '';
+
+    const contentNode = row.querySelector('.message-content');
+    if (!contentNode) return;
+
+    const textarea = document.createElement('textarea');
+    textarea.className = 'edit-msg-input';
+    textarea.value = currentText;
+    textarea.rows = Math.max(3, currentText.split('\n').length);
+
+    const btnWrap = document.createElement('div');
+    btnWrap.className = 'edit-msg-actions';
+    const saveBtn = createActionButton('保存', '保存编辑', () => commit());
+    const cancelBtn = createActionButton('取消', '取消编辑', () => cancel());
+    btnWrap.appendChild(saveBtn);
+    btnWrap.appendChild(cancelBtn);
+
+    const savedChildren = Array.from(contentNode.childNodes).map(n => n.cloneNode(true));
+    const originalClass = contentNode.className;
+    contentNode.className = 'message-content';
+    contentNode.innerHTML = '';
+    contentNode.appendChild(textarea);
+    contentNode.appendChild(btnWrap);
+    row.classList.add('editing');
+    textarea.focus();
+
+    const actionsEl = row.querySelector('.message-actions');
+    if (actionsEl) actionsEl.classList.add('hidden');
+
+    function finish() {
+      row.classList.remove('editing');
+      if (actionsEl) actionsEl.classList.remove('hidden');
+    }
+
+    function commit() {
+      const newText = textarea.value.trim();
+      if (!newText) {
+        toast('内容不能为空', 'error');
+        return;
+      }
+      msg.content = newText;
+      contentNode.className = originalClass;
+      contentNode.textContent = '';
+      if (msg.role === 'assistant') {
+        contentNode.classList.add('rendered');
+        setRenderedHTML(contentNode, renderMarkdown(newText));
+      } else {
+        contentNode.textContent = newText;
+      }
+      finish();
+      const session = getActiveSession();
+      if (session) {
+        session.messages = messageHistory.slice();
+        session.updatedAt = Date.now();
+        saveSessions();
+      }
+    }
+
+    function cancel() {
+      contentNode.className = originalClass;
+      contentNode.textContent = '';
+      savedChildren.forEach(n => contentNode.appendChild(n));
+      finish();
+    }
+  }
+
+  function regenerateFromRow(row) {
+    if (isSending || !row || !chatLog) return;
+    const rows = chatLog.querySelectorAll('.message-row');
+    const idx = Array.from(rows).indexOf(row);
+    if (idx === -1 || idx >= messageHistory.length) return;
+    if (messageHistory[idx].role !== 'user') return;
+
+    // 丢弃该用户消息之后的所有消息和 DOM
+    const allRows = Array.from(rows);
+    for (let i = allRows.length - 1; i > idx; i--) {
+      allRows[i].remove();
+    }
+    messageHistory.splice(idx + 1);
+
+    const session = getActiveSession();
+    if (session) {
+      session.messages = messageHistory.slice();
+      session.updatedAt = Date.now();
+      saveSessions();
+    }
+
+    // 从该位置重新发送
+    const sendSessionId = sessionsData.activeId;
+    const assistantEntry = createMessage('assistant', '');
+    setSendingState(true);
+    setStatus('connecting', '发送中');
+
+    abortController = new AbortController();
+    const payload = buildPayload();
+
+    (async () => {
+      let headers = { 'Content-Type': 'application/json' };
+      try {
+        const authHeader = await ensurePublicKey();
+        headers = { ...headers, ...buildAuthHeaders(authHeader) };
+      } catch (e) {}
+
+      try {
+        const res = await fetch(CHAT_COMPLETIONS_ENDPOINT, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          signal: abortController.signal
+        });
+        if (!res.ok) throw new Error(`请求失败: ${res.status}`);
+        await handleStream(res, assistantEntry, sendSessionId);
+        setStatus('connected', '完成');
+      } catch (e) {
+        if (e && e.name === 'AbortError') {
+          updateMessage(assistantEntry, assistantEntry.raw || '已停止', true);
+          setStatus('error', '已停止');
+          if (!assistantEntry.committed) {
+            assistantEntry.committed = true;
+            commitToSession(sendSessionId, assistantEntry.raw || '');
+          }
+        } else {
+          updateMessage(assistantEntry, `请求失败: ${e.message || e}`, true);
+          setStatus('error', '失败');
+          toast('请求失败，请检查服务状态', 'error');
+        }
+      } finally {
+        setSendingState(false);
+        abortController = null;
+        scrollToBottom();
+      }
+    })();
+  }
+
+  function createMessage(role, content, skipScroll, options) {
     if (!chatLog) return null;
     hideEmptyState();
     const row = document.createElement('div');
@@ -399,7 +1023,7 @@
     row.appendChild(bubble);
 
     chatLog.appendChild(row);
-    scrollToBottom();
+    if (!skipScroll) scrollToBottom();
     const entry = {
       row,
       contentNode,
@@ -409,8 +1033,19 @@
       startedAt: Date.now(),
       firstTokenAt: null,
       hasThink: false,
-      thinkElapsed: null
+      thinkElapsed: null,
+      thinkAutoCollapsed: false
     };
+    if (role === 'user') {
+      const editable = options && options.editable === false ? false : true;
+      const actions = document.createElement('div');
+      actions.className = 'message-actions';
+      if (editable) {
+        actions.appendChild(createActionButton('编辑', '编辑消息内容', () => editMessageByRow(row)));
+      }
+      actions.appendChild(createActionButton('重新生成', '从此处重新生成回复', () => regenerateFromRow(row)));
+      row.appendChild(actions);
+    }
     return entry;
   }
 
@@ -532,18 +1167,40 @@
     if (!entry.hasThink && entry.raw.includes('<think>')) {
       entry.hasThink = true;
     }
+    let savedThinkStates = null;
+    if (entry.hasThink && entry.thinkAutoCollapsed) {
+      const blocks = entry.contentNode.querySelectorAll('.think-block[data-think="true"]');
+      if (blocks.length) {
+        savedThinkStates = Array.from(blocks).map(b => b.hasAttribute('open'));
+      }
+    }
     if (finalize) {
       entry.contentNode.classList.add('rendered');
-      entry.contentNode.innerHTML = renderMarkdown(entry.raw);
+      setRenderedHTML(entry.contentNode, renderMarkdown(entry.raw));
     } else {
       if (entry.role === 'assistant') {
-        entry.contentNode.innerHTML = renderMarkdown(entry.raw);
+        setRenderedHTML(entry.contentNode, renderMarkdown(entry.raw));
       } else {
         entry.contentNode.textContent = entry.raw;
       }
     }
     if (entry.hasThink) {
-      updateThinkSummary(entry, entry.thinkElapsed);
+      updateThinkSummary(entry, finalize ? (entry.thinkElapsed ?? 0) : entry.thinkElapsed);
+      const thinkBlocks = entry.contentNode.querySelectorAll('.think-block[data-think="true"]');
+      thinkBlocks.forEach((block, i) => {
+        if (savedThinkStates && i < savedThinkStates.length) {
+          if (savedThinkStates[i]) {
+            block.setAttribute('open', '');
+          } else {
+            block.removeAttribute('open');
+          }
+        } else if (entry.thinkElapsed === null || entry.thinkElapsed === undefined) {
+          block.setAttribute('open', '');
+        } else if (!entry.thinkAutoCollapsed) {
+          block.removeAttribute('open');
+          entry.thinkAutoCollapsed = true;
+        }
+      });
     }
     if (entry.role === 'assistant') {
       applyImageGrid(entry.contentNode);
@@ -593,7 +1250,7 @@
     if (!entry || !entry.contentNode) return;
     const summaries = entry.contentNode.querySelectorAll('.think-summary');
     if (!summaries.length) return;
-    const text = typeof elapsedSec === 'number' ? `思考 ${elapsedSec} 秒` : '思考中';
+    const text = typeof elapsedSec === 'number' ? (elapsedSec > 0 ? `思考 ${elapsedSec} 秒` : '已思考') : '思考中';
     summaries.forEach((node) => {
       node.textContent = text;
       const block = node.closest('.think-block');
@@ -604,14 +1261,6 @@
         block.setAttribute('data-thinking', 'true');
       }
     });
-  }
-
-  function clearChat() {
-    messageHistory = [];
-    if (chatLog) {
-      chatLog.innerHTML = '';
-    }
-    showEmptyState();
   }
 
   function buildMessages() {
@@ -632,38 +1281,59 @@
 
   function buildPayload() {
     const payload = {
-      model: (modelSelect && modelSelect.value) || 'grok-3',
+      model: modelValue || 'grok-3',
       messages: buildMessages(),
       stream: true,
       temperature: Number(tempRange ? tempRange.value : 0.8),
       top_p: Number(topPRange ? topPRange.value : 0.95)
     };
-    const reasoning = reasoningSelect ? reasoningSelect.value : '';
-    if (reasoning) {
-      payload.reasoning_effort = reasoning;
-    }
     return payload;
   }
 
   function buildPayloadFrom(history) {
     const payload = {
-      model: (modelSelect && modelSelect.value) || 'grok-3',
+      model: modelValue || 'grok-3',
       messages: buildMessagesFrom(history),
       stream: true,
       temperature: Number(tempRange ? tempRange.value : 0.8),
       top_p: Number(topPRange ? topPRange.value : 0.95)
     };
-    const reasoning = reasoningSelect ? reasoningSelect.value : '';
-    if (reasoning) {
-      payload.reasoning_effort = reasoning;
-    }
     return payload;
   }
 
+  function selectModel(value) {
+    modelValue = value;
+    if (modelLabel) modelLabel.textContent = value;
+    renderModelDropdown();
+  }
+
+  function renderModelDropdown() {
+    if (!modelDropdown) return;
+    modelDropdown.innerHTML = '';
+    for (const id of modelList) {
+      const opt = document.createElement('div');
+      opt.className = 'model-option' + (id === modelValue ? ' selected' : '');
+      opt.dataset.value = id;
+      opt.textContent = id;
+      modelDropdown.appendChild(opt);
+    }
+  }
+
+  function toggleModelDropdown(show) {
+    if (!modelDropdown || !modelChip) return;
+    if (typeof show === 'boolean') {
+      modelDropdown.classList.toggle('hidden', !show);
+      modelChip.classList.toggle('open', show);
+      return;
+    }
+    const visible = !modelDropdown.classList.contains('hidden');
+    modelDropdown.classList.toggle('hidden', visible);
+    modelChip.classList.toggle('open', !visible);
+  }
+
   async function loadModels() {
-    if (!modelSelect) return;
-    modelSelect.innerHTML = '';
-    const fallback = ['grok-4.1-fast', 'grok-4', 'grok-3', 'grok-3-mini', 'grok-3-thinking', 'grok-4.20-beta'];
+    if (!modelDropdown) return;
+    const fallback = ['grok-4.1-fast', 'grok-4', 'grok-3', 'grok-3-mini', 'grok-3-thinking', 'grok-4.20-beta', 'grok-imagine-1.0-fast'];
     const preferred = 'grok-4.20-beta';
     try {
       const res = await fetch('/v1/models', { cache: 'no-store' });
@@ -673,29 +1343,25 @@
       const ids = items
         .map(item => item && item.id)
         .filter(Boolean)
-        .filter(id => !String(id).startsWith('grok-imagine'))
-        .filter(id => !String(id).includes('video'));
-      const list = ids.length ? ids : fallback;
-      list.forEach((id) => {
-        const option = document.createElement('option');
-        option.value = id;
-        option.textContent = id;
-        modelSelect.appendChild(option);
-      });
-      if (list.includes(preferred)) {
-        modelSelect.value = preferred;
-      } else {
-        modelSelect.value = list[list.length - 1] || preferred;
-      }
+        .filter((id) => {
+          const name = String(id);
+          if (name.startsWith('grok-imagine')) {
+            return name === 'grok-imagine-1.0-fast';
+          }
+          return !name.includes('video');
+        });
+      modelList = ids.length ? ids : fallback;
     } catch (e) {
-      fallback.forEach((id) => {
-        const option = document.createElement('option');
-        option.value = id;
-        option.textContent = id;
-        modelSelect.appendChild(option);
-      });
-      modelSelect.value = preferred;
+      modelList = fallback;
     }
+    if (modelList.includes(preferred)) {
+      modelValue = preferred;
+    } else {
+      modelValue = modelList[modelList.length - 1] || preferred;
+    }
+    if (modelLabel) modelLabel.textContent = modelValue;
+    renderModelDropdown();
+    restoreSessionModel();
   }
 
   function showAttachmentBadge() {
@@ -754,12 +1420,14 @@
     actions.className = 'message-actions';
 
     const retryBtn = createActionButton('重试', '重试上一条回答', () => retryLast());
+    const editBtn = createActionButton('编辑', '编辑回答内容', () => editMessageByRow(entry.row));
     const copyBtn = createActionButton('复制', '复制回答内容', () => copyToClipboard(entry.raw || ''));
     const feedbackBtn = createActionButton('反馈', '反馈到 Grok2API', () => {
       window.open(feedbackUrl, '_blank', 'noopener');
     });
 
     actions.appendChild(retryBtn);
+    actions.appendChild(editBtn);
     actions.appendChild(copyBtn);
     actions.appendChild(feedbackBtn);
     entry.row.appendChild(actions);
@@ -804,6 +1472,7 @@
       return;
     }
     const historySlice = messageHistory.slice(0, lastUserIndex + 1);
+    const retrySessionId = sessionsData.activeId;
     const assistantEntry = createMessage('assistant', '');
     setSendingState(true);
     setStatus('connecting', '发送中');
@@ -820,7 +1489,7 @@
     }
 
     try {
-      const res = await fetch('/v1/chat/completions', {
+      const res = await fetch(CHAT_COMPLETIONS_ENDPOINT, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -831,7 +1500,7 @@
         throw new Error(`请求失败: ${res.status}`);
       }
 
-      await handleStream(res, assistantEntry);
+      await handleStream(res, assistantEntry, retrySessionId);
       setStatus('connected', '完成');
     } catch (e) {
       updateMessage(assistantEntry, `请求失败: ${e.message || e}`, true);
@@ -858,7 +1527,7 @@
       displayText = displayText ? `${displayText}\n${label}` : label;
     }
 
-    createMessage('user', displayText);
+    createMessage('user', displayText, false, { editable: !attachment });
 
     let content = prompt;
     if (attachment) {
@@ -870,10 +1539,23 @@
       content = blocks;
     }
 
-    messageHistory.push({ role: 'user', content });
+    messageHistory.push({
+      role: 'user',
+      content,
+      display: displayText,
+      hasAttachment: !!attachment,
+      attachmentName: attachment ? attachment.name : ''
+    });
+    trimMessageHistory();
     if (promptInput) promptInput.value = '';
     clearAttachment();
+    syncCurrentSession();
+    syncSessionModel();
+    updateSessionTitle(getActiveSession());
+    saveSessions();
+    renderSessionList();
 
+    const sendSessionId = sessionsData.activeId;
     const assistantEntry = createMessage('assistant', '');
     setSendingState(true);
     setStatus('connecting', '发送中');
@@ -890,7 +1572,7 @@
     }
 
     try {
-      const res = await fetch('/v1/chat/completions', {
+      const res = await fetch(CHAT_COMPLETIONS_ENDPOINT, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -901,7 +1583,7 @@
         throw new Error(`请求失败: ${res.status}`);
       }
 
-      await handleStream(res, assistantEntry);
+      await handleStream(res, assistantEntry, sendSessionId);
       setStatus('connected', '完成');
     } catch (e) {
       if (e && e.name === 'AbortError') {
@@ -912,8 +1594,8 @@
         }
         setStatus('error', '已停止');
         if (!assistantEntry.committed) {
-          messageHistory.push({ role: 'assistant', content: assistantEntry.raw || '' });
           assistantEntry.committed = true;
+          commitToSession(sendSessionId, assistantEntry.raw || '');
         }
       } else {
         updateMessage(assistantEntry, `请求失败: ${e.message || e}`, true);
@@ -927,12 +1609,33 @@
     }
   }
 
-  async function handleStream(res, assistantEntry) {
+  function commitToSession(sessionId, assistantText) {
+    const session = sessionsData.sessions.find(s => s.id === sessionId);
+    if (!session) return;
+    session.messages.push({ role: 'assistant', content: assistantText });
+    if (session.messages.length > MAX_CONTEXT_MESSAGES) {
+      session.messages = session.messages.slice(-MAX_CONTEXT_MESSAGES);
+    }
+    session.updatedAt = Date.now();
+    updateSessionTitle(session);
+    if (sessionsData.activeId === sessionId) {
+      messageHistory = session.messages.slice();
+      trimMessageHistory();
+    } else {
+      session.unread = true;
+    }
+    saveSessions();
+    renderSessionList();
+  }
+
+  async function handleStream(res, assistantEntry, targetSessionId) {
+    activeStreamInfo = { sessionId: targetSessionId, entry: assistantEntry };
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     let assistantText = '';
 
+    try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -952,8 +1655,8 @@
               const elapsed = assistantEntry.thinkElapsed || Math.max(1, Math.round((Date.now() - assistantEntry.startedAt) / 1000));
               updateThinkSummary(assistantEntry, elapsed);
             }
-            messageHistory.push({ role: 'assistant', content: assistantText });
             assistantEntry.committed = true;
+            commitToSession(targetSessionId, assistantText);
             return;
           }
           try {
@@ -968,10 +1671,19 @@
               }
               if (!assistantEntry.hasThink && assistantText.includes('<think>')) {
                 assistantEntry.hasThink = true;
+                assistantEntry.thinkStartAt = Date.now();
                 assistantEntry.thinkElapsed = null;
                 updateThinkSummary(assistantEntry, null);
               }
-              updateMessage(assistantEntry, assistantText, false);
+              if (assistantEntry.hasThink && assistantEntry.thinkStartAt && assistantEntry.thinkElapsed === null) {
+                if (assistantText.includes('</think>')) {
+                  assistantEntry.thinkElapsed = Math.max(1, Math.round((Date.now() - assistantEntry.thinkStartAt) / 1000));
+                  updateThinkSummary(assistantEntry, assistantEntry.thinkElapsed);
+                }
+              }
+              if (sessionsData.activeId === targetSessionId) {
+                updateMessage(assistantEntry, assistantText, false);
+              }
             }
           } catch (e) {
             // ignore parse errors
@@ -984,8 +1696,11 @@
       const elapsed = assistantEntry.thinkElapsed || Math.max(1, Math.round((Date.now() - assistantEntry.startedAt) / 1000));
       updateThinkSummary(assistantEntry, elapsed);
     }
-    messageHistory.push({ role: 'assistant', content: assistantText });
     assistantEntry.committed = true;
+    commitToSession(targetSessionId, assistantText);
+    } finally {
+      activeStreamInfo = null;
+    }
   }
 
   function toggleSettings(show) {
@@ -997,9 +1712,32 @@
     settingsPanel.classList.toggle('hidden');
   }
 
+  function restoreSidebarState() {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_STATE_KEY);
+      setSidebarCollapsed(raw === '1');
+    } catch (e) {}
+  }
+
   function bindEvents() {
     if (tempRange) tempRange.addEventListener('input', updateRangeValues);
     if (topPRange) topPRange.addEventListener('input', updateRangeValues);
+    if (modelChip) {
+      modelChip.addEventListener('click', (event) => {
+        if (event.target.closest('.model-dropdown')) return;
+        event.stopPropagation();
+        toggleModelDropdown();
+      });
+    }
+    if (modelDropdown) {
+      modelDropdown.addEventListener('click', (event) => {
+        const opt = event.target.closest('.model-option');
+        if (!opt) return;
+        event.stopPropagation();
+        selectModel(opt.dataset.value);
+        toggleModelDropdown(false);
+      });
+    }
     if (sendBtn) sendBtn.addEventListener('click', sendMessage);
     if (settingsToggle) {
       settingsToggle.addEventListener('click', (event) => {
@@ -1008,11 +1746,16 @@
       });
     }
     document.addEventListener('click', (event) => {
-      if (!settingsPanel || settingsPanel.classList.contains('hidden')) return;
-      if (settingsPanel.contains(event.target) || (settingsToggle && settingsToggle.contains(event.target))) {
-        return;
+      if (settingsPanel && !settingsPanel.classList.contains('hidden')) {
+        if (!settingsPanel.contains(event.target) && !(settingsToggle && settingsToggle.contains(event.target))) {
+          toggleSettings(false);
+        }
       }
-      toggleSettings(false);
+      if (modelDropdown && !modelDropdown.classList.contains('hidden')) {
+        if (!(modelChip && modelChip.contains(event.target))) {
+          toggleModelDropdown(false);
+        }
+      }
     });
     if (promptInput) {
       let composing = false;
@@ -1041,9 +1784,39 @@
     if (fileRemoveBtn) {
       fileRemoveBtn.addEventListener('click', clearAttachment);
     }
+    if (newChatBtn) {
+      newChatBtn.addEventListener('click', createSession);
+    }
+    if (collapseSidebarBtn) {
+      collapseSidebarBtn.addEventListener('click', toggleSidebar);
+    }
+    if (sidebarExpandBtn) {
+      sidebarExpandBtn.addEventListener('click', openSidebar);
+    }
+    if (sidebarToggle) {
+      sidebarToggle.addEventListener('click', toggleSidebar);
+    }
+    if (sidebarOverlay) {
+      sidebarOverlay.addEventListener('click', closeSidebar);
+    }
   }
 
   updateRangeValues();
   loadModels();
   bindEvents();
+  restoreSidebarState();
+
+  (async () => {
+    try {
+      const authResult = await ensurePublicKey();
+      if (authResult === null) {
+        window.location.href = '/login';
+        return;
+      }
+    } catch (e) {
+      window.location.href = '/login';
+      return;
+    }
+    loadSessions();
+  })();
 })();
