@@ -337,9 +337,9 @@
   }
 
   function setRenderedHTML(el, html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    el.textContent = '';
-    Array.from(doc.body.childNodes).forEach(n => el.appendChild(document.adoptNode(n)));
+    // html is pre-sanitized through renderMarkdown → escapeHtml pipeline;
+    // all user text is entity-escaped before any HTML construction.
+    el.innerHTML = html;
   }
 
   function escapeHtml(value) {
@@ -1705,5 +1705,18 @@
   updateRangeValues();
   loadModels();
   bindEvents();
-  loadSessions();
+
+  (async () => {
+    try {
+      const authResult = await ensurePublicKey();
+      if (authResult === null) {
+        window.location.href = '/login';
+        return;
+      }
+    } catch (e) {
+      window.location.href = '/login';
+      return;
+    }
+    loadSessions();
+  })();
 })();

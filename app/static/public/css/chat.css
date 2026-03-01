@@ -242,6 +242,44 @@ body {
   padding-bottom: 12px;
   flex: 1;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.3s;
+}
+
+.chat-thread:hover {
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+}
+
+.chat-thread:active {
+  scrollbar-color: rgba(0, 0, 0, 0.3) transparent;
+}
+
+.chat-thread::-webkit-scrollbar {
+  width: 4px;
+}
+
+.chat-thread::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-thread::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+  transition: background 0.3s;
+}
+
+.chat-thread:hover::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.chat-thread:hover::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+  width: 6px;
+}
+
+.chat-thread:hover::-webkit-scrollbar-thumb:active {
+  background: rgba(0, 0, 0, 0.35);
 }
 
 .chat-empty {
@@ -1228,27 +1266,94 @@ body {
   }
 
   .composer-input {
-    align-items: flex-start;
+    flex-wrap: wrap;
+    align-items: center;
+    border-radius: 16px;
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .composer-textarea {
+    order: 0;
+    flex: 1;
+    min-width: 0;
+    min-height: 36px;
+    height: 36px;
+    padding: 8px 0;
+  }
+
+  .composer-input > .icon-btn {
+    order: -1;
+    width: 32px;
+    height: 32px;
+  }
+
+  .composer-actions {
+    order: 10;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    overflow: visible;
+    border-top: 1px solid var(--chat-border);
+    padding-top: 6px;
+    margin-top: 2px;
+  }
+
+  .model-dropdown {
+    bottom: calc(100% + 8px);
+    left: 0;
+    transform: none;
+    max-height: 50vh;
+  }
+
+  .reasoning-dropdown {
+    bottom: calc(100% + 8px);
+    left: 0;
+    transform: none;
   }
 
   .model-chip,
   .reasoning-chip {
     font-size: 11px;
     padding: 4px 8px;
-    height: 32px;
+    height: 28px;
+    flex-shrink: 0;
   }
 
   .model-label {
     font-size: 11px;
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .reasoning-label {
     font-size: 11px;
   }
 
+  .send-btn {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+  }
+
+  .action-icon-btn {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+  }
+
   .settings-panel {
     right: auto;
     left: 0;
     width: 92vw;
+  }
+
+  .chat-main {
+    padding-left: 12px;
+    padding-right: 12px;
   }
 }
