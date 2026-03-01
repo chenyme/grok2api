@@ -355,3 +355,54 @@ td.table-empty {
   color: var(--accents-4);
   margin-top: 2px;
 }
+
+@media (max-width: 720px) {
+  #app-header nav > div {
+    padding-left: 12px;
+    padding-right: 12px;
+    gap: 8px;
+  }
+
+  #app-header nav > div > div:first-child {
+    gap: 6px;
+    min-width: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  #app-header nav > div > div:first-child::-webkit-scrollbar {
+    display: none;
+  }
+
+  #app-header .nav-link {
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  #app-header .brand-link span {
+    display: none;
+  }
+
+  #app-header nav > div > div:first-child > .h-4 {
+    display: none;
+  }
+
+  .nav-actions {
+    flex-shrink: 0;
+    gap: 6px;
+  }
+
+  .nav-action-btn {
+    font-size: 10px;
+    padding: 0 6px;
+    height: 22px;
+  }
+
+  .app-footer {
+    right: 12px;
+    left: 12px;
+    text-align: center;
+    font-size: 11px;
+  }
+}

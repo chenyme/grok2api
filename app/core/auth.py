@@ -2,6 +2,7 @@
 API 认证模块
 """
 
+import hashlib
 from typing import Optional
 from fastapi import HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -53,6 +54,27 @@ def is_public_enabled() -> bool:
     return bool(get_config("app.public_enabled", DEFAULT_PUBLIC_ENABLED))
 
 
+def _hash_public_key(key: str) -> str:
+    """计算 public_key 的 SHA-256 哈希，与前端 hashPublicKey 保持一致。"""
+    return hashlib.sha256(f"grok2api-public:{key}".encode()).hexdigest()
+
+
+def _match_public_key(credentials: str, public_key: str) -> bool:
+    """检查凭证是否匹配 public_key（支持原始值和 public-<sha256> 哈希格式）。"""
+    if not public_key:
+        return False
+    normalized = public_key.strip()
+    if not normalized:
+        return False
+    if credentials == normalized:
+        return True
+    if credentials.startswith("public-"):
+        expected_hash = _hash_public_key(normalized)
+        if credentials == f"public-{expected_hash}":
+            return True
+    return False
+
+
 async def verify_api_key(
     auth: Optional[HTTPAuthorizationCredentials] = Security(security),
 ) -> Optional[str]:
@@ -72,14 +94,15 @@ async def verify_api_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if auth.credentials != api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # 标准 api_key 验证
+    if auth.credentials == api_key:
+        return auth.credentials
 
-    return auth.credentials
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid authentication token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 async def verify_app_key(
@@ -143,11 +166,11 @@ async def verify_public_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if auth.credentials != public_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    if _match_public_key(auth.credentials, public_key):
+        return auth.credentials
 
-    return auth.credentials
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid authentication token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
