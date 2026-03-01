@@ -10,9 +10,7 @@ services:
       SERVER_PORT: 8000
       SERVER_WORKERS: 1
       SERVER_STORAGE_TYPE: local
-      # CF 自动刷新（需配合 flaresolverr 服务使用）
-      # 启用方式: docker compose --profile cf-refresh up -d
-      # 取消以下注释并启用 profile 后生效
+      # 启用 CF 自动刷新: 取消以下三行注释，并取消底部 flaresolverr 服务的注释
       # FLARESOLVERR_URL: http://flaresolverr:8191
       # CF_REFRESH_INTERVAL: "600"
       # CF_TIMEOUT: "60"
@@ -38,14 +36,13 @@ services:
     cap_add:
       - NET_ADMIN
 
-  flaresolverr:
-    container_name: flaresolverr
-    image: ghcr.io/flaresolverr/flaresolverr:latest
-    profiles:
-      - cf-refresh
-    ports:
-      - "127.0.0.1:8191:8191"
-    environment:
-      TZ: Asia/Shanghai
-      LOG_LEVEL: info
-    restart: unless-stopped
+  # 启用 CF 自动刷新时取消以下注释
+  # flaresolverr:
+  #   container_name: flaresolverr
+  #   image: ghcr.io/flaresolverr/flaresolverr:latest
+  #   ports:
+  #     - "127.0.0.1:8191:8191"
+  #   environment:
+  #     TZ: Asia/Shanghai
+  #     LOG_LEVEL: info
+  #   restart: unless-stopped
