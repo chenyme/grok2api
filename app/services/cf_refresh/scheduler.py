@@ -10,12 +10,19 @@ from .solver import solve_cf_challenge
 _task: asyncio.Task | None = None
 
 
-async def _update_app_config(cf_cookies: str, user_agent: str = "", browser: str = "") -> bool:
+async def _update_app_config(
+    cf_cookies: str,
+    user_agent: str = "",
+    browser: str = "",
+    cf_clearance: str = "",
+) -> bool:
     """直接更新 grok2api 的运行时配置"""
     try:
         from app.core.config import config
 
         proxy_update = {"cf_cookies": cf_cookies}
+        if cf_clearance:
+            proxy_update["cf_clearance"] = cf_clearance
         if user_agent:
             proxy_update["user_agent"] = user_agent
         if browser:
@@ -44,6 +51,7 @@ async def refresh_once() -> bool:
 
     success = await _update_app_config(
         cf_cookies=result["cookies"],
+        cf_clearance=result.get("cf_clearance", ""),
         user_agent=result.get("user_agent", ""),
         browser=result.get("browser", ""),
     )
@@ -58,19 +66,18 @@ async def refresh_once() -> bool:
 
 async def _scheduler_loop():
     """后台调度循环"""
-    logger.info(f"cf_refresh 调度器启动 (FlareSolverr: {get_flaresolverr_url()}, 间隔: {get_refresh_interval()}s)")
-
-    # 首次立即刷新
-    await refresh_once()
+    logger.info(
+        f"cf_refresh scheduler started (FlareSolverr: {get_flaresolverr_url()}, interval: {get_refresh_interval()}s)"
+    )
 
     # 周期性刷新（每次循环重新读取配置，支持面板修改实时生效）
     while True:
-        interval = get_refresh_interval()
-        await asyncio.sleep(interval)
         if is_enabled():
             await refresh_once()
         else:
-            logger.debug("cf_refresh 已禁用，跳过本次刷新")
+            logger.debug("cf_refresh disabled, skip refresh")
+        interval = get_refresh_interval()
+        await asyncio.sleep(interval)
 
 
 def start():
@@ -79,7 +86,7 @@ def start():
     if _task is not None:
         return
     _task = asyncio.get_event_loop().create_task(_scheduler_loop())
-    logger.info("cf_refresh 后台任务已启动")
+    logger.info("cf_refresh background task started")
 
 
 def stop():
@@ -88,4 +95,4 @@ def stop():
     if _task is not None:
         _task.cancel()
         _task = None
-        logger.info("cf_refresh 后台任务已停止")
+        logger.info("cf_refresh background task stopped")

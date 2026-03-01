@@ -56,6 +56,59 @@
   font-weight: 500;
 }
 
+.notice-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 24px;
+}
+
+.notice-dialog {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(520px, 92vw);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+  padding: 20px 22px 16px;
+}
+
+.notice-dialog-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111;
+  margin-bottom: 8px;
+}
+
+.notice-dialog-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #333;
+}
+
+.notice-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.notice-dialog-confirm {
+  border: 1px solid var(--border);
+  background: #111;
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.notice-dialog-confirm:hover {
+  opacity: 0.9;
+}
+
 @keyframes toastIn {
   from {
     opacity: 0;

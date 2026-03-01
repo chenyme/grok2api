@@ -5,6 +5,7 @@ FlareSolverr 是一个 Docker 服务，内部运行 Chrome 浏览器，
 自动处理 Cloudflare 挑战（包括 Turnstile），无需 GUI。
 """
 
+import asyncio
 import json
 from typing import Optional, Dict
 from urllib import request as urllib_request
@@ -18,6 +19,13 @@ from .config import GROK_URL, get_timeout, get_proxy, get_flaresolverr_url
 def _extract_all_cookies(cookies: list[dict]) -> str:
     """将 FlareSolverr 返回 of cookie 列表转换为字符串格式"""
     return "; ".join([f"{c.get('name')}={c.get('value')}" for c in cookies])
+
+
+def _extract_cookie_value(cookies: list[dict], name: str) -> str:
+    for cookie in cookies:
+        if cookie.get("name") == name:
+            return cookie.get("value") or ""
+    return ""
 
 
 def _extract_user_agent(solution: dict) -> str:
@@ -45,6 +53,10 @@ async def solve_cf_challenge() -> Optional[Dict[str, str]]:
     cf_timeout = get_timeout()
     proxy = get_proxy()
 
+    if not flaresolverr_url:
+        logger.error("FlareSolverr 地址未配置，无法刷新 cf_clearance")
+        return None
+
     url = f"{flaresolverr_url.rstrip('/')}/v1"
 
     payload = {
@@ -65,8 +77,11 @@ async def solve_cf_challenge() -> Optional[Dict[str, str]]:
     req = urllib_request.Request(url, data=body, method="POST", headers=headers)
 
     try:
-        with urllib_request.urlopen(req, timeout=cf_timeout + 30) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
+        def _post():
+            with urllib_request.urlopen(req, timeout=cf_timeout + 30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+
+        result = await asyncio.to_thread(_post)
 
         status = result.get("status", "")
         if status != "ok":
@@ -82,12 +97,14 @@ async def solve_cf_challenge() -> Optional[Dict[str, str]]:
             return None
 
         cookie_str = _extract_all_cookies(cookies)
+        clearance = _extract_cookie_value(cookies, "cf_clearance")
         ua = _extract_user_agent(solution)
         browser = _extract_browser_profile(ua)
         logger.info(f"成功获取 cookies (数量: {len(cookies)}), 指纹: {browser}")
 
         return {
             "cookies": cookie_str,
+            "cf_clearance": clearance,
             "user_agent": ua,
             "browser": browser,
         }

@@ -259,37 +259,6 @@ def parse_tool_calls(
     return text_content, tool_calls
 
 
-def build_tool_overrides(tools: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Convert OpenAI tool format to Grok's toolOverrides format (experimental).
-
-    Best-effort mapping for passthrough mode.
-
-    Args:
-        tools: List of OpenAI-format tool definitions.
-
-    Returns:
-        Dict suitable for the toolOverrides field in Grok API payload.
-    """
-    if not tools:
-        return {}
-
-    tool_overrides = {}
-    for tool in tools:
-        if tool.get("type") != "function":
-            continue
-        func = tool.get("function", {})
-        name = func.get("name", "")
-        if not name:
-            continue
-        tool_overrides[name] = {
-            "enabled": True,
-            "description": func.get("description", ""),
-            "parameters": func.get("parameters", {}),
-        }
-
-    return tool_overrides
-
-
 def format_tool_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert assistant messages with tool_calls and tool role messages into text format.
 
@@ -345,7 +314,6 @@ def format_tool_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 __all__ = [
     "build_tool_prompt",
     "parse_tool_calls",
-    "build_tool_overrides",
     "format_tool_history",
     "parse_tool_call_block",
 ]

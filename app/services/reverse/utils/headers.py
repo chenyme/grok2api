@@ -28,7 +28,11 @@ def build_sso_cookie(sso_token: str) -> str:
     cookie = f"sso={sso_token}; sso-rw={sso_token}"
 
     # CF Cookies
-    cf_cookies = get_config("proxy.cf_cookies")
+    cf_cookies = get_config("proxy.cf_cookies") or ""
+    if not cf_cookies:
+        cf_clearance = get_config("proxy.cf_clearance")
+        if cf_clearance:
+            cf_cookies = f"cf_clearance={cf_clearance}"
     if cf_cookies:
         if cookie and not cookie.endswith(";"):
             cookie += "; "

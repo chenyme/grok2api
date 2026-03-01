@@ -88,10 +88,8 @@ async def lifespan(app: FastAPI):
             }
         })
 
-    cf_refresh_enabled = get_config("proxy.enabled", False)
-    if cf_refresh_enabled:
-        from app.services.cf_refresh import start as cf_refresh_start
-        cf_refresh_start()
+    from app.services.cf_refresh import start as cf_refresh_start
+    cf_refresh_start()
 
     logger.info("Application startup complete.")
     yield
@@ -99,9 +97,8 @@ async def lifespan(app: FastAPI):
     # 关闭
     logger.info("Shutting down Grok2API...")
 
-    if cf_refresh_enabled:
-        from app.services.cf_refresh import stop as cf_refresh_stop
-        cf_refresh_stop()
+    from app.services.cf_refresh import stop as cf_refresh_stop
+    cf_refresh_stop()
 
     from app.core.storage import StorageFactory
 

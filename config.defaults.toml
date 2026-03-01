@@ -26,8 +26,6 @@ thinking = true
 dynamic_statsig = true
 # 过滤的特殊标签列表
 filter_tags = ["xaiartifact","xai:tool_usage_card","grok:render"]
-# Tool call 模式: "prompt" (默认, 提示词模拟) 或 "passthrough" (实验性, 使用 toolOverrides)
-tool_call_mode = "prompt"
 
 
 # ==================== 代理配置 ====================
@@ -41,7 +39,7 @@ enabled = false
 # FlareSolverr 服务地址（通过环境变量 FLARESOLVERR_URL 自动设置）
 flaresolverr_url = ""
 # 刷新间隔（秒）
-refresh_interval = 600
+refresh_interval = 3600
 # CF 挑战等待超时（秒）
 timeout = 60
 # Cloudflare Clearance Cookie
@@ -59,7 +57,6 @@ max_retry = 3
 # 触发重试的 HTTP 状态码
 retry_status_codes = [401,429,403]
 # 触发重建 session 的 HTTP 状态码（用于轮换代理）
-reset_session_status_codes = [403]
 # 退避基础延迟（秒）
 retry_backoff_base = 0.5
 # 退避倍率

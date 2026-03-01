@@ -356,8 +356,9 @@ function renderConfig(data) {
     const keyOrder = localeSection ? new Map(Object.keys(localeSection).map((k, i) => [k, i])) : null;
 
     const allKeys = sortByOrder(Object.keys(items), keyOrder);
+    const visibleKeys = allKeys.filter(key => !(section === 'proxy' && key === 'cf_cookies'));
 
-    if (allKeys.length > 0) {
+    if (visibleKeys.length > 0) {
       const card = document.createElement('div');
       card.className = 'config-section';
 
@@ -377,7 +378,7 @@ function renderConfig(data) {
       const grid = document.createElement('div');
       grid.className = 'config-grid';
 
-      allKeys.forEach(key => {
+      visibleKeys.forEach(key => {
         const fieldCard = buildFieldCard(section, key, items[key]);
         grid.appendChild(fieldCard);
       });
@@ -554,6 +555,16 @@ async function saveConfig() {
       if (!newConfig[s]) newConfig[s] = {};
       newConfig[s][k] = val;
     });
+
+    if (newConfig.proxy && newConfig.proxy.enabled) {
+      const url = String(newConfig.proxy.flaresolverr_url || '').trim();
+      if (!url) {
+        showToast('启用自动刷新时必须填写 FlareSolverr 地址', 'error');
+        btn.disabled = false;
+        btn.innerText = originalText;
+        return;
+      }
+    }
 
     const res = await fetch('/v1/admin/config', {
       method: 'POST',

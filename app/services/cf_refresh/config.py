@@ -13,12 +13,23 @@ def get_flaresolverr_url() -> str:
     return _get("flaresolverr_url", "") or ""
 
 
+def _get_int(key: str, default: int, min_value: int) -> int:
+    raw = _get(key, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return max(default, min_value)
+    if value < min_value:
+        return min_value
+    return value
+
+
 def get_refresh_interval() -> int:
-    return int(_get("refresh_interval", 600))
+    return _get_int("refresh_interval", 600, 60)
 
 
 def get_timeout() -> int:
-    return int(_get("timeout", 60))
+    return _get_int("timeout", 60, 60)
 
 
 def get_proxy() -> str:
