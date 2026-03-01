@@ -71,20 +71,20 @@ async def solve_cf_challenge() -> Optional[Dict[str, str]]:
         status = result.get("status", "")
         if status != "ok":
             message = result.get("message", "unknown error")
-            logger.error(f"❌ FlareSolverr 返回错误: {status} - {message}")
+            logger.error(f"FlareSolverr 返回错误: {status} - {message}")
             return None
 
         solution = result.get("solution", {})
         cookies = solution.get("cookies", [])
 
         if not cookies:
-            logger.error("❌ FlareSolverr 成功访问但没有返回 cookies")
+            logger.error("FlareSolverr 成功访问但没有返回 cookies")
             return None
 
         cookie_str = _extract_all_cookies(cookies)
         ua = _extract_user_agent(solution)
         browser = _extract_browser_profile(ua)
-        logger.info(f"✅ 成功获取 cookies (数量: {len(cookies)}), 指纹: {browser}")
+        logger.info(f"成功获取 cookies (数量: {len(cookies)}), 指纹: {browser}")
 
         return {
             "cookies": cookie_str,
@@ -94,12 +94,12 @@ async def solve_cf_challenge() -> Optional[Dict[str, str]]:
 
     except HTTPError as e:
         body_text = e.read().decode("utf-8", "replace")[:300]
-        logger.error(f"❌ FlareSolverr 请求失败: {e.code} - {body_text}")
+        logger.error(f"FlareSolverr 请求失败: {e.code} - {body_text}")
         return None
     except URLError as e:
-        logger.error(f"❌ 无法连接 FlareSolverr ({flaresolverr_url}): {e.reason}")
+        logger.error(f"无法连接 FlareSolverr ({flaresolverr_url}): {e.reason}")
         logger.info("请确认 FlareSolverr 服务已启动: docker run -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest")
         return None
     except Exception as e:
-        logger.error(f"❌ 请求异常: {e}")
+        logger.error(f"请求异常: {e}")
         return None

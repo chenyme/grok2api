@@ -23,12 +23,12 @@ async def _update_app_config(cf_cookies: str, user_agent: str = "", browser: str
 
         await config.update({"proxy": proxy_update})
 
-        logger.info(f"✅ 配置已更新: cf_cookies (长度 {len(cf_cookies)}), 指纹: {browser}")
+        logger.info(f"配置已更新: cf_cookies (长度 {len(cf_cookies)}), 指纹: {browser}")
         if user_agent:
-            logger.info(f"✅ 配置已更新: user_agent = {user_agent}")
+            logger.info(f"配置已更新: user_agent = {user_agent}")
         return True
     except Exception as e:
-        logger.error(f"❌ 更新配置失败: {e}")
+        logger.error(f"更新配置失败: {e}")
         return False
 
 
@@ -49,9 +49,9 @@ async def refresh_once() -> bool:
     )
 
     if success:
-        logger.info("刷新完成 ✅")
+        logger.info("刷新完成")
     else:
-        logger.error("刷新失败：更新配置失败 ❌")
+        logger.error("刷新失败: 更新配置失败")
 
     return success
 
