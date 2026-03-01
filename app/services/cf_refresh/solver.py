@@ -6,14 +6,13 @@ FlareSolverr 是一个 Docker 服务，内部运行 Chrome 浏览器，
 """
 
 import json
-import logging
 from typing import Optional, Dict
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
-from .config import GROK_URL, get_timeout, get_proxy, get_flaresolverr_url
+from loguru import logger
 
-logger = logging.getLogger(__name__)
+from .config import GROK_URL, get_timeout, get_proxy, get_flaresolverr_url
 
 
 def _extract_all_cookies(cookies: list[dict]) -> str:

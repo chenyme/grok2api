@@ -1,12 +1,11 @@
 """定时调度：周期性刷新 cf_clearance（集成到 grok2api 进程内）"""
 
 import asyncio
-import logging
+
+from loguru import logger
 
 from .config import get_refresh_interval, get_flaresolverr_url, is_enabled
 from .solver import solve_cf_challenge
-
-logger = logging.getLogger(__name__)
 
 _task: asyncio.Task | None = None
 

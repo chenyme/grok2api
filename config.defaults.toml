@@ -38,8 +38,8 @@ base_proxy_url = ""
 asset_proxy_url = ""
 # 是否启用 CF 自动刷新
 enabled = false
-# FlareSolverr 服务地址
-flaresolverr_url = "http://flaresolverr:8191"
+# FlareSolverr 服务地址（通过环境变量 FLARESOLVERR_URL 自动设置）
+flaresolverr_url = ""
 # 刷新间隔（秒）
 refresh_interval = 600
 # CF 挑战等待超时（秒）

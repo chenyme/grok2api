@@ -17,6 +17,8 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config.defaults.toml:/app/config.defaults.toml:ro
+      - ./main.py:/app/main.py:ro
+      - ./app:/app/app:ro
     restart: unless-stopped
 
   warp:
@@ -24,7 +26,7 @@ services:
     image: caomingjun/warp:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:1080:1080"
+      - "127.0.0.1:1180:1080"
     environment:
       - WARP_SLEEP=2
     cap_add:
