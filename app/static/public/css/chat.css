@@ -13,6 +13,17 @@ body {
     radial-gradient(circle at 85% 0%, rgba(17, 17, 17, 0.03), transparent 50%);
 }
 
+/* Hide scrollbars while keeping scroll behavior */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 .chat-main {
   padding-bottom: 16px;
 }
@@ -85,7 +96,7 @@ body {
 .message-row {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .message-row.user {
@@ -100,7 +111,7 @@ body {
 .message-actions {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   color: var(--accents-4);
   font-size: 12px;
   margin-left: 2px;
@@ -141,7 +152,8 @@ body {
 
 .message-row.user .message-bubble {
   background: #efeeea;
-  padding: 12px 16px;
+  padding: 6px 10px;
+  line-height: 1.45;
   border-radius: 16px;
   border: 1px solid var(--chat-border);
 }
@@ -821,16 +833,16 @@ body {
 /* --- Extensions for multi-session UI --- */
 .chat-layout {
   display: flex;
-  gap: 20px;
+  gap: 6px;
   align-items: flex-start;
 }
 
 .chat-sidebar {
   width: 180px;
   flex-shrink: 0;
-  border: 1px solid var(--chat-border);
+  border: none;
   border-radius: 16px;
-  background: var(--chat-surface);
+  background: transparent;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -844,7 +856,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 4px 12px;
-  border-bottom: 1px solid var(--chat-border);
+  border-bottom: none;
   min-height: 26px;
 }
 
@@ -917,7 +929,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.1;
+  line-height: 1;
 }
 
 .session-delete {
@@ -1032,6 +1044,8 @@ body {
 .chat-shell {
   flex: 1;
   min-width: 0;
+  border-left: 1px solid var(--chat-border);
+  padding-left: 16px;
 }
 
 .model-chip {

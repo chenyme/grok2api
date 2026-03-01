@@ -335,7 +335,7 @@ curl http://localhost:8000/v1/images/edits \
 | :-- | :-- | :-- | :-- | :-- |
 | **app** | `app_url` | 应用地址 | 当前 Grok2API 服务的外部访问 URL，用于文件链接访问。 | `""` |
 |  | `app_key` | 后台密码 | 登录 Grok2API 管理后台的密码（必填）。 | `grok2api` |
-|  | `api_key` | API 密钥 | 调用 Grok2API 服务的 Token（可选）。 | `""` |
+|  | `api_key` | API 密钥 | 调用 Grok2API 服务的 Token（可选，支持逗号分隔或数组）。 | `""` |
 |  | `public_enabled` | Public 开关 | 是否启用 public 功能玩法。 | `false` |
 |  | `public_key` | Public 密钥 | Public 调用密钥（可选）。 | `""` |
 |  | `image_format` | 图片格式 | 生成的图片格式（url 或 base64）。 | `url` |

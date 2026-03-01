@@ -3,7 +3,7 @@ API 认证模块
 """
 
 import hashlib
-from typing import Optional
+from typing import Optional, Iterable
 from fastapi import HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -30,6 +30,27 @@ def get_admin_api_key() -> str:
     """
     api_key = get_config("app.api_key", DEFAULT_API_KEY)
     return api_key or ""
+
+
+def _normalize_api_keys(value: Optional[object]) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(value, Iterable):
+        keys: list[str] = []
+        for item in value:
+            if not item:
+                continue
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped:
+                    keys.append(stripped)
+        return keys
+    return []
 
 def get_app_key() -> str:
     """
@@ -84,7 +105,8 @@ async def verify_api_key(
     如果 config.toml 中未配置 api_key，则不启用认证。
     """
     api_key = get_admin_api_key()
-    if not api_key:
+    api_keys = _normalize_api_keys(api_key)
+    if not api_keys:
         return None
 
     if not auth:
@@ -95,7 +117,7 @@ async def verify_api_key(
         )
 
     # 标准 api_key 验证
-    if auth.credentials == api_key:
+    if auth.credentials in api_keys:
         return auth.credentials
 
     raise HTTPException(
