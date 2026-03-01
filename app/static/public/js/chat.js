@@ -4,10 +4,6 @@
   const modelDropdown = document.getElementById('modelDropdown');
   let modelValue = 'grok-4.20-beta';
   let modelList = [];
-  const reasoningChip = document.getElementById('reasoningChip');
-  const reasoningLabel = document.getElementById('reasoningLabel');
-  const reasoningDropdown = document.getElementById('reasoningDropdown');
-  let reasoningValue = '';
   const tempRange = document.getElementById('tempRange');
   const tempValue = document.getElementById('tempValue');
   const topPRange = document.getElementById('topPRange');
@@ -29,11 +25,13 @@
   const sidebarOverlay = document.getElementById('sidebarOverlay');
   const sidebarToggle = document.getElementById('sidebarToggle');
   const newChatBtn = document.getElementById('newChatBtn');
+  const collapseSidebarBtn = document.getElementById('collapseSidebarBtn');
+  const sidebarExpandBtn = document.getElementById('sidebarExpandBtn');
   const sessionListEl = document.getElementById('sessionList');
-  const clearChatBtn = document.getElementById('clearChatBtn');
-  const compressCtxBtn = document.getElementById('compressCtxBtn');
 
   const STORAGE_KEY = 'grok2api_chat_sessions';
+  const SIDEBAR_STATE_KEY = 'grok2api_chat_sidebar_collapsed';
+  const MAX_CONTEXT_MESSAGES = 5;
 
   let messageHistory = [];
   let isSending = false;
@@ -41,6 +39,7 @@
   let attachment = null;
   let activeStreamInfo = null;
   const feedbackUrl = 'https://github.com/chenyme/grok2api/issues/new';
+  const CHAT_COMPLETIONS_ENDPOINT = '/v1/public/chat/completions';
 
   let sessionsData = null;
 
@@ -81,12 +80,86 @@
     renderSessionList();
   }
 
+  function getMessageDisplay(msg) {
+    if (!msg) return '';
+    if (typeof msg.content === 'string') return msg.content;
+    if (typeof msg.display === 'string' && msg.display.trim()) return msg.display;
+    if (Array.isArray(msg.content)) {
+      const textParts = [];
+      let hasFile = false;
+      for (const block of msg.content) {
+        if (!block) continue;
+        if (block.type === 'text' && block.text) {
+          textParts.push(block.text);
+        }
+        if (block.type === 'file') {
+          hasFile = true;
+        }
+      }
+      const name = msg.attachmentName || '';
+      const fileLabel = hasFile ? (name ? `[文件] ${name}` : '[文件]') : '';
+      if (textParts.length && fileLabel) return `${textParts.join('\n')}\n${fileLabel}`;
+      if (textParts.length) return textParts.join('\n');
+      return fileLabel || '[复合内容]';
+    }
+    return '[复合内容]';
+  }
+
+  function serializeMessage(msg) {
+    if (!msg || typeof msg !== 'object') return msg;
+    if (Array.isArray(msg.content)) {
+      return {
+        ...msg,
+        content: getMessageDisplay(msg)
+      };
+    }
+    return msg;
+  }
+
+  function serializeSessions() {
+    if (!sessionsData) return null;
+    return {
+      activeId: sessionsData.activeId,
+      sessions: sessionsData.sessions.map((session) => ({
+        ...session,
+        messages: Array.isArray(session.messages)
+          ? session.messages.map(serializeMessage)
+          : []
+      }))
+    };
+  }
+
   function saveSessions() {
     if (!sessionsData) return;
+    const snapshot = serializeSessions();
+    if (!snapshot) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionsData));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
     } catch (e) {
-      // localStorage full or unavailable
+      toast('本地存储空间不足，部分会话未保存', 'error');
+    }
+  }
+
+  function trimMessageHistory(maxCount = MAX_CONTEXT_MESSAGES) {
+    if (!maxCount || maxCount <= 0) return;
+    if (messageHistory.length <= maxCount) return;
+    messageHistory = messageHistory.slice(-maxCount);
+    const session = getActiveSession();
+    if (session) {
+      session.messages = messageHistory.slice();
+      session.updatedAt = Date.now();
+      saveSessions();
+      renderSessionList();
+    }
+    if (chatLog) {
+      const rows = Array.from(chatLog.querySelectorAll('.message-row'));
+      const removeCount = rows.length - messageHistory.length;
+      if (removeCount > 0) {
+        rows.slice(0, removeCount).forEach((row) => row.remove());
+      }
+    }
+    if (!messageHistory.length) {
+      showEmptyState();
     }
   }
 
@@ -99,6 +172,7 @@
     const session = getActiveSession();
     if (!session) return;
     messageHistory = session.messages.slice();
+    trimMessageHistory();
     if (chatLog) chatLog.innerHTML = '';
     if (!messageHistory.length) {
       showEmptyState();
@@ -106,8 +180,9 @@
     }
     hideEmptyState();
     for (const msg of messageHistory) {
-      const displayContent = typeof msg.content === 'string' ? msg.content : '[复合内容]';
-      const entry = createMessage(msg.role, displayContent, true);
+      const displayContent = getMessageDisplay(msg);
+      const editable = !msg.hasAttachment && typeof msg.content === 'string';
+      const entry = createMessage(msg.role, displayContent, true, { editable });
       if (entry && msg.role === 'assistant') {
         updateMessage(entry, displayContent, true);
       }
@@ -134,7 +209,7 @@
     showEmptyState();
     saveSessions();
     renderSessionList();
-    closeSidebar();
+    if (isMobileSidebar()) closeSidebar();
   }
 
   function deleteSession(id) {
@@ -165,7 +240,7 @@
     restoreSessionModel();
     saveSessions();
     renderSessionList();
-    closeSidebar();
+    if (isMobileSidebar()) closeSidebar();
   }
 
   function syncCurrentSession() {
@@ -180,7 +255,7 @@
     if (session.title && session.title !== '新会话') return;
     const firstUser = session.messages.find(m => m.role === 'user');
     if (!firstUser) return;
-    const text = typeof firstUser.content === 'string' ? firstUser.content : '';
+    const text = getMessageDisplay(firstUser);
     if (!text) return;
     const title = text.replace(/\n/g, ' ').trim().slice(0, 20);
     if (title) {
@@ -272,22 +347,51 @@
     }
   }
 
+  function isMobileSidebar() {
+    return window.matchMedia('(max-width: 1024px)').matches;
+  }
+
+  function setSidebarCollapsed(collapsed) {
+    const layout = chatSidebar ? chatSidebar.closest('.chat-layout') : null;
+    if (!layout) return;
+    layout.classList.toggle('collapsed', collapsed);
+    try {
+      localStorage.setItem(SIDEBAR_STATE_KEY, collapsed ? '1' : '0');
+    } catch (e) {
+      // ignore storage failures
+    }
+  }
+
   function openSidebar() {
-    if (chatSidebar) chatSidebar.classList.add('open');
-    if (sidebarOverlay) sidebarOverlay.classList.add('open');
+    if (isMobileSidebar()) {
+      if (chatSidebar) chatSidebar.classList.add('open');
+      if (sidebarOverlay) sidebarOverlay.classList.add('open');
+      return;
+    }
+    setSidebarCollapsed(false);
   }
 
   function closeSidebar() {
-    if (chatSidebar) chatSidebar.classList.remove('open');
-    if (sidebarOverlay) sidebarOverlay.classList.remove('open');
+    if (isMobileSidebar()) {
+      if (chatSidebar) chatSidebar.classList.remove('open');
+      if (sidebarOverlay) sidebarOverlay.classList.remove('open');
+      return;
+    }
+    setSidebarCollapsed(true);
   }
 
   function toggleSidebar() {
-    if (chatSidebar && chatSidebar.classList.contains('open')) {
-      closeSidebar();
-    } else {
-      openSidebar();
+    if (isMobileSidebar()) {
+      if (chatSidebar && chatSidebar.classList.contains('open')) {
+        closeSidebar();
+      } else {
+        openSidebar();
+      }
+      return;
     }
+    const layout = chatSidebar ? chatSidebar.closest('.chat-layout') : null;
+    if (!layout) return;
+    setSidebarCollapsed(!layout.classList.contains('collapsed'));
   }
 
   function toast(message, type) {
@@ -351,6 +455,18 @@
       .replace(/'/g, '&#39;');
   }
 
+  function isSafeLinkUrl(url) {
+    const val = String(url || '').trim().toLowerCase();
+    if (!val) return false;
+    return /^(https?:|mailto:|tel:|\/(?!\/)|\.\.?\/|#)/.test(val);
+  }
+
+  function isSafeImageUrl(url) {
+    const val = String(url || '').trim().toLowerCase();
+    if (!val) return false;
+    return /^(https?:|data:image\/(?:png|jpe?g|gif|webp|bmp|ico);base64,|\/(?!\/)|\.\.?\/)/.test(val);
+  }
+
   function renderBasicMarkdown(rawText) {
     const text = (rawText || '').replace(/\\n/g, '\n');
     const escaped = escapeHtml(text);
@@ -364,26 +480,40 @@
     });
 
     const renderInline = (value) => {
-      let output = value
-        .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+      const inlineCodes = [];
+      let output = value.replace(/`([^`]+)`/g, (match, code) => {
+        const token = `@@INLINE_${inlineCodes.length}@@`;
+        inlineCodes.push(`<code class="inline-code">${code}</code>`);
+        return token;
+      });
+
+      output = output
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/~~([^~]+)~~/g, '<del>$1</del>');
 
       output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
         const safeAlt = escapeHtml(alt || 'image');
+        if (!isSafeImageUrl(url)) return safeAlt;
         const safeUrl = escapeHtml(url || '');
         return `<img src="${safeUrl}" alt="${safeAlt}" loading="lazy">`;
       });
 
       output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
         const safeLabel = escapeHtml(label || '');
+        if (!isSafeLinkUrl(url)) return safeLabel;
         const safeUrl = escapeHtml(url || '');
         return `<a href="${safeUrl}" target="_blank" rel="noopener">${safeLabel}</a>`;
       });
 
       output = output.replace(/(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+)/g, (match, uri) => {
+        if (!isSafeImageUrl(uri)) return '';
         const safeUrl = escapeHtml(uri || '');
         return `<img src="${safeUrl}" alt="image" loading="lazy">`;
+      });
+
+      inlineCodes.forEach((html, i) => {
+        output = output.replace(new RegExp(`@@INLINE_${i}@@`, 'g'), html);
       });
 
       return output;
@@ -392,6 +522,7 @@
     const lines = fenced.split(/\r?\n/);
     const htmlParts = [];
     let inUl = false;
+    let inUlTask = false;
     let inOl = false;
     let inTable = false;
     let paragraphLines = [];
@@ -400,6 +531,7 @@
       if (inUl) {
         htmlParts.push('</ul>');
         inUl = false;
+        inUlTask = false;
       }
       if (inOl) {
         htmlParts.push('</ol>');
@@ -457,6 +589,31 @@
         continue;
       }
 
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+        flushParagraph();
+        closeLists();
+        closeTable();
+        htmlParts.push('<hr>');
+        continue;
+      }
+
+      if (/^\s*>/.test(line)) {
+        flushParagraph();
+        closeLists();
+        closeTable();
+        const quoteLines = [];
+        let j = i;
+        for (; j < lines.length; j += 1) {
+          const currentLine = lines[j];
+          if (!/^\s*>/.test(currentLine)) break;
+          quoteLines.push(currentLine.replace(/^\s*>\s?/, ''));
+        }
+        i = j - 1;
+        const quoteText = quoteLines.join('\n');
+        htmlParts.push(`<blockquote>${renderBasicMarkdown(quoteText)}</blockquote>`);
+        continue;
+      }
+
       if (trimmed.includes('|')) {
         const nextLine = lines[i + 1] || '';
         if (!inTable && isTableSeparator(nextLine.trim())) {
@@ -479,6 +636,24 @@
         }
       }
 
+      const taskMatch = trimmed.match(/^[-*+•·]\s+\[([ xX])\]\s+(.*)$/);
+      if (taskMatch) {
+        flushParagraph();
+        if (inUl && !inUlTask) {
+          closeLists();
+        }
+        if (!inUl) {
+          closeLists();
+          closeTable();
+          htmlParts.push('<ul class="task-list">');
+          inUl = true;
+          inUlTask = true;
+        }
+        const checked = taskMatch[1].toLowerCase() === 'x';
+        htmlParts.push(`<li class="task-item"><input type="checkbox" disabled${checked ? ' checked' : ''}>${renderInline(taskMatch[2])}</li>`);
+        continue;
+      }
+
       const ulMatch = trimmed.match(/^[-*+•·]\s+(.*)$/);
       if (ulMatch) {
         flushParagraph();
@@ -487,6 +662,7 @@
           closeTable();
           htmlParts.push('<ul>');
           inUl = true;
+          inUlTask = false;
         }
         htmlParts.push(`<li>${renderInline(ulMatch[1])}</li>`);
         continue;
@@ -596,11 +772,11 @@
   }
 
   const toolTypeMap = {
-    websearch: { icon: '\uD83D\uDD0D', label: '\u641C\u7D22' },
-    searchimage: { icon: '\uD83D\uDDBC', label: '\u56FE\u641C' },
-    agentthink: { icon: '\uD83D\uDCAD', label: '\u63A8\u7406' }
+    websearch: { icon: '', label: '\u7F51\u9875\u641C\u7D22' },
+    searchimage: { icon: '', label: '\u56FE\u7247\u641C\u7D22' },
+    agentthink: { icon: '', label: '\u601D\u8003\u63A8\u7406' }
   };
-  const defaultToolType = { icon: '\uD83D\uDD27', label: '\u5DE5\u5177' };
+  const defaultToolType = { icon: '', label: '\u5DE5\u5177' };
 
   function getToolMeta(typeStr) {
     const key = String(typeStr || '').trim().toLowerCase().replace(/\s+/g, '');
@@ -631,7 +807,8 @@
           const typeKey = String(item.type || '').trim().toLowerCase().replace(/\s+/g, '');
           const typeAttr = escapeHtml(typeKey);
           const meta = getToolMeta(item.type);
-          const typeLabel = `<span class="think-tool-icon">${meta.icon}</span>${escapeHtml(meta.label)}`;
+          const iconHtml = meta.icon ? `<span class="think-tool-icon">${meta.icon}</span>` : '';
+          const typeLabel = `${iconHtml}${escapeHtml(meta.label)}`;
           return `<div class="think-item-row think-tool-card" data-tool-type="${typeAttr}"><div class="think-item-type" data-type="${typeAttr}">${typeLabel}</div><div class="think-item-body">${body || '<em>\uFF08\u7A7A\uFF09</em>'}</div></div>`;
         }).join('');
         const title = escapeHtml(group.id);
@@ -693,6 +870,10 @@
     const idx = Array.from(rows).indexOf(row);
     if (idx === -1 || idx >= messageHistory.length) return;
     const msg = messageHistory[idx];
+    if (msg && (msg.hasAttachment || typeof msg.content !== 'string')) {
+      toast('附件消息暂不支持编辑', 'error');
+      return;
+    }
     const currentText = typeof msg.content === 'string' ? msg.content : '';
 
     const contentNode = row.querySelector('.message-content');
@@ -797,7 +978,7 @@
       } catch (e) {}
 
       try {
-        const res = await fetch('/v1/chat/completions', {
+        const res = await fetch(CHAT_COMPLETIONS_ENDPOINT, {
           method: 'POST',
           headers,
           body: JSON.stringify(payload),
@@ -827,7 +1008,7 @@
     })();
   }
 
-  function createMessage(role, content, skipScroll) {
+  function createMessage(role, content, skipScroll, options) {
     if (!chatLog) return null;
     hideEmptyState();
     const row = document.createElement('div');
@@ -856,11 +1037,13 @@
       thinkAutoCollapsed: false
     };
     if (role === 'user') {
+      const editable = options && options.editable === false ? false : true;
       const actions = document.createElement('div');
       actions.className = 'message-actions';
-      actions.appendChild(createActionButton('编辑', '编辑消息内容', () => editMessageByRow(row)));
+      if (editable) {
+        actions.appendChild(createActionButton('编辑', '编辑消息内容', () => editMessageByRow(row)));
+      }
       actions.appendChild(createActionButton('重新生成', '从此处重新生成回复', () => regenerateFromRow(row)));
-      actions.appendChild(createActionButton('删除', '从上下文中删除', () => deleteMessageByRow(row)));
       row.appendChild(actions);
     }
     return entry;
@@ -1080,55 +1263,6 @@
     });
   }
 
-  function clearChat() {
-    if (isSending) return;
-    messageHistory = [];
-    if (chatLog) {
-      chatLog.innerHTML = '';
-    }
-    showEmptyState();
-    const session = getActiveSession();
-    if (session) {
-      session.messages = [];
-      session.title = '新会话';
-      session.updatedAt = Date.now();
-      saveSessions();
-      renderSessionList();
-    }
-  }
-
-  function compressContext() {
-    if (isSending) return;
-    if (messageHistory.length <= 2) {
-      toast('消息太少，无需压缩', 'error');
-      return;
-    }
-    const kept = messageHistory.slice(-4);
-    const droppedCount = messageHistory.length - kept.length;
-    messageHistory = kept;
-    const session = getActiveSession();
-    if (session) {
-      session.messages = messageHistory.slice();
-      session.updatedAt = Date.now();
-      saveSessions();
-    }
-    if (chatLog) chatLog.innerHTML = '';
-    if (!messageHistory.length) {
-      showEmptyState();
-    } else {
-      hideEmptyState();
-      for (const msg of messageHistory) {
-        const displayContent = typeof msg.content === 'string' ? msg.content : '[复合内容]';
-        const entry = createMessage(msg.role, displayContent, true);
-        if (entry && msg.role === 'assistant') {
-          updateMessage(entry, displayContent, true);
-        }
-      }
-      scrollToBottom();
-    }
-    toast(`已压缩，移除了 ${droppedCount} 条旧消息`, 'success');
-  }
-
   function buildMessages() {
     return buildMessagesFrom(messageHistory);
   }
@@ -1153,10 +1287,6 @@
       temperature: Number(tempRange ? tempRange.value : 0.8),
       top_p: Number(topPRange ? topPRange.value : 0.95)
     };
-    const reasoning = reasoningValue || '';
-    if (reasoning) {
-      payload.reasoning_effort = reasoning;
-    }
     return payload;
   }
 
@@ -1168,10 +1298,6 @@
       temperature: Number(tempRange ? tempRange.value : 0.8),
       top_p: Number(topPRange ? topPRange.value : 0.95)
     };
-    const reasoning = reasoningValue || '';
-    if (reasoning) {
-      payload.reasoning_effort = reasoning;
-    }
     return payload;
   }
 
@@ -1207,7 +1333,7 @@
 
   async function loadModels() {
     if (!modelDropdown) return;
-    const fallback = ['grok-4.1-fast', 'grok-4', 'grok-3', 'grok-3-mini', 'grok-3-thinking', 'grok-4.20-beta'];
+    const fallback = ['grok-4.1-fast', 'grok-4', 'grok-3', 'grok-3-mini', 'grok-3-thinking', 'grok-4.20-beta', 'grok-imagine-1.0-fast'];
     const preferred = 'grok-4.20-beta';
     try {
       const res = await fetch('/v1/models', { cache: 'no-store' });
@@ -1217,8 +1343,13 @@
       const ids = items
         .map(item => item && item.id)
         .filter(Boolean)
-        .filter(id => !String(id).startsWith('grok-imagine'))
-        .filter(id => !String(id).includes('video'));
+        .filter((id) => {
+          const name = String(id);
+          if (name.startsWith('grok-imagine')) {
+            return name === 'grok-imagine-1.0-fast';
+          }
+          return !name.includes('video');
+        });
       modelList = ids.length ? ids : fallback;
     } catch (e) {
       modelList = fallback;
@@ -1291,7 +1422,6 @@
     const retryBtn = createActionButton('重试', '重试上一条回答', () => retryLast());
     const editBtn = createActionButton('编辑', '编辑回答内容', () => editMessageByRow(entry.row));
     const copyBtn = createActionButton('复制', '复制回答内容', () => copyToClipboard(entry.raw || ''));
-    const deleteBtn = createActionButton('删除', '从上下文中删除', () => deleteMessageByRow(entry.row));
     const feedbackBtn = createActionButton('反馈', '反馈到 Grok2API', () => {
       window.open(feedbackUrl, '_blank', 'noopener');
     });
@@ -1299,7 +1429,6 @@
     actions.appendChild(retryBtn);
     actions.appendChild(editBtn);
     actions.appendChild(copyBtn);
-    actions.appendChild(deleteBtn);
     actions.appendChild(feedbackBtn);
     entry.row.appendChild(actions);
   }
@@ -1360,7 +1489,7 @@
     }
 
     try {
-      const res = await fetch('/v1/chat/completions', {
+      const res = await fetch(CHAT_COMPLETIONS_ENDPOINT, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -1398,7 +1527,7 @@
       displayText = displayText ? `${displayText}\n${label}` : label;
     }
 
-    createMessage('user', displayText);
+    createMessage('user', displayText, false, { editable: !attachment });
 
     let content = prompt;
     if (attachment) {
@@ -1410,7 +1539,14 @@
       content = blocks;
     }
 
-    messageHistory.push({ role: 'user', content });
+    messageHistory.push({
+      role: 'user',
+      content,
+      display: displayText,
+      hasAttachment: !!attachment,
+      attachmentName: attachment ? attachment.name : ''
+    });
+    trimMessageHistory();
     if (promptInput) promptInput.value = '';
     clearAttachment();
     syncCurrentSession();
@@ -1436,7 +1572,7 @@
     }
 
     try {
-      const res = await fetch('/v1/chat/completions', {
+      const res = await fetch(CHAT_COMPLETIONS_ENDPOINT, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -1477,10 +1613,14 @@
     const session = sessionsData.sessions.find(s => s.id === sessionId);
     if (!session) return;
     session.messages.push({ role: 'assistant', content: assistantText });
+    if (session.messages.length > MAX_CONTEXT_MESSAGES) {
+      session.messages = session.messages.slice(-MAX_CONTEXT_MESSAGES);
+    }
     session.updatedAt = Date.now();
     updateSessionTitle(session);
     if (sessionsData.activeId === sessionId) {
       messageHistory = session.messages.slice();
+      trimMessageHistory();
     } else {
       session.unread = true;
     }
@@ -1572,29 +1712,11 @@
     settingsPanel.classList.toggle('hidden');
   }
 
-  function selectReasoning(value, label) {
-    reasoningValue = value;
-    if (reasoningLabel) reasoningLabel.textContent = label;
-    if (reasoningChip) {
-      reasoningChip.classList.toggle('active', !!value);
-    }
-    if (reasoningDropdown) {
-      reasoningDropdown.querySelectorAll('.reasoning-option').forEach((opt) => {
-        opt.classList.toggle('selected', opt.dataset.value === value);
-      });
-    }
-  }
-
-  function toggleReasoningDropdown(show) {
-    if (!reasoningDropdown || !reasoningChip) return;
-    if (typeof show === 'boolean') {
-      reasoningDropdown.classList.toggle('hidden', !show);
-      reasoningChip.classList.toggle('open', show);
-      return;
-    }
-    const visible = !reasoningDropdown.classList.contains('hidden');
-    reasoningDropdown.classList.toggle('hidden', visible);
-    reasoningChip.classList.toggle('open', !visible);
+  function restoreSidebarState() {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_STATE_KEY);
+      setSidebarCollapsed(raw === '1');
+    } catch (e) {}
   }
 
   function bindEvents() {
@@ -1604,7 +1726,6 @@
       modelChip.addEventListener('click', (event) => {
         if (event.target.closest('.model-dropdown')) return;
         event.stopPropagation();
-        toggleReasoningDropdown(false);
         toggleModelDropdown();
       });
     }
@@ -1615,23 +1736,6 @@
         event.stopPropagation();
         selectModel(opt.dataset.value);
         toggleModelDropdown(false);
-      });
-    }
-    if (reasoningChip) {
-      reasoningChip.addEventListener('click', (event) => {
-        if (event.target.closest('.reasoning-dropdown')) return;
-        event.stopPropagation();
-        toggleModelDropdown(false);
-        toggleReasoningDropdown();
-      });
-    }
-    if (reasoningDropdown) {
-      reasoningDropdown.addEventListener('click', (event) => {
-        const opt = event.target.closest('.reasoning-option');
-        if (!opt) return;
-        event.stopPropagation();
-        selectReasoning(opt.dataset.value, opt.textContent);
-        toggleReasoningDropdown(false);
       });
     }
     if (sendBtn) sendBtn.addEventListener('click', sendMessage);
@@ -1650,11 +1754,6 @@
       if (modelDropdown && !modelDropdown.classList.contains('hidden')) {
         if (!(modelChip && modelChip.contains(event.target))) {
           toggleModelDropdown(false);
-        }
-      }
-      if (reasoningDropdown && !reasoningDropdown.classList.contains('hidden')) {
-        if (!(reasoningChip && reasoningChip.contains(event.target))) {
-          toggleReasoningDropdown(false);
         }
       }
     });
@@ -1688,23 +1787,24 @@
     if (newChatBtn) {
       newChatBtn.addEventListener('click', createSession);
     }
+    if (collapseSidebarBtn) {
+      collapseSidebarBtn.addEventListener('click', toggleSidebar);
+    }
+    if (sidebarExpandBtn) {
+      sidebarExpandBtn.addEventListener('click', openSidebar);
+    }
     if (sidebarToggle) {
       sidebarToggle.addEventListener('click', toggleSidebar);
     }
     if (sidebarOverlay) {
       sidebarOverlay.addEventListener('click', closeSidebar);
     }
-    if (clearChatBtn) {
-      clearChatBtn.addEventListener('click', clearChat);
-    }
-    if (compressCtxBtn) {
-      compressCtxBtn.addEventListener('click', compressContext);
-    }
   }
 
   updateRangeValues();
   loadModels();
   bindEvents();
+  restoreSidebarState();
 
   (async () => {
     try {

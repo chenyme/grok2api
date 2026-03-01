@@ -82,7 +82,6 @@ async def verify_api_key(
     验证 Bearer Token
 
     如果 config.toml 中未配置 api_key，则不启用认证。
-    同时支持通过 public_key 认证（原始值或 public-<sha256> 哈希格式）。
     """
     api_key = get_admin_api_key()
     if not api_key:
@@ -97,11 +96,6 @@ async def verify_api_key(
 
     # 标准 api_key 验证
     if auth.credentials == api_key:
-        return auth.credentials
-
-    # public_key 验证（原始值或哈希）
-    public_key = get_public_api_key()
-    if _match_public_key(auth.credentials, public_key):
         return auth.credentials
 
     raise HTTPException(
