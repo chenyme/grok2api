@@ -30,7 +30,6 @@ from app.services.grok.utils.tool_call import (
     build_tool_prompt,
     parse_tool_calls,
     parse_tool_call_block,
-    build_tool_overrides,
     format_tool_history,
 )
 from app.services.token import get_token_manager, EffortType
@@ -363,11 +362,6 @@ class GrokChatService:
         if reasoning_effort is not None:
             model_config_override["reasoningEffort"] = reasoning_effort
 
-        # Passthrough mode: build tool_overrides for Grok API
-        tool_overrides_payload = None
-        if tools and get_config("app.tool_call_mode") == "passthrough":
-            tool_overrides_payload = build_tool_overrides(tools)
-
         response = await self.chat(
             token,
             message,
@@ -375,7 +369,7 @@ class GrokChatService:
             mode,
             stream,
             file_attachments=all_attachments,
-            tool_overrides=tool_overrides_payload,
+            tool_overrides=None,
             model_config_override=model_config_override,
         )
 

@@ -58,9 +58,13 @@ const LOCALE_MAP = {
     "label": "代理配置",
     "base_proxy_url": { title: "基础代理 URL", desc: "代理请求到 Grok 官网的基础服务地址。" },
     "asset_proxy_url": { title: "资源代理 URL", desc: "代理请求到 Grok 官网的静态资源（图片/视频）地址。" },
-    "cf_clearance": { title: "CF Clearance", desc: "Cloudflare Clearance Cookie，用于绕过反爬虫验证。" },
-    "browser": { title: "浏览器指纹", desc: "curl_cffi 浏览器指纹标识（如 chrome136）。" },
-    "user_agent": { title: "User-Agent", desc: "HTTP 请求的 User-Agent 字符串，需与浏览器指纹匹配。" }
+    "enabled": { title: "启用 CF 自动刷新", desc: "启用后将通过 FlareSolverr 自动获取 cf_clearance。" },
+    "flaresolverr_url": { title: "FlareSolverr 地址", desc: "FlareSolverr 服务的 HTTP 地址（如 http://flaresolverr:8191）。" },
+    "refresh_interval": { title: "刷新间隔（秒）", desc: "自动刷新 cf_clearance 的时间间隔，建议不低于 300 秒。" },
+    "timeout": { title: "挑战超时（秒）", desc: "等待 FlareSolverr 解决 CF 挑战的最大时间。" },
+    "cf_clearance": { title: "CF Clearance", desc: "Cloudflare Clearance Cookie，用于绕过反爬虫验证。启用自动刷新时由系统自动管理。" },
+    "browser": { title: "浏览器指纹", desc: "curl_cffi 浏览器指纹标识（如 chrome136）。启用自动刷新时由系统自动管理。" },
+    "user_agent": { title: "User-Agent", desc: "HTTP 请求的 User-Agent 字符串。启用自动刷新时由系统自动管理。" }
   },
 
 
@@ -173,6 +177,10 @@ const LOCALE_MAP = {
 const SECTION_DESCRIPTIONS = {
   "proxy": "配置不正确将导致 403 错误。服务首次请求 Grok 时的 IP 必须与获取 CF Clearance 时的 IP 一致，后续服务器请求 IP 变化不会导致 403。"
 };
+
+// CF 自动刷新联动禁用字段（全部在 proxy section 内）
+const CF_MANAGED_PROXY_KEYS = ['cf_clearance', 'browser', 'user_agent'];
+const CF_REFRESH_SUB_KEYS = ['flaresolverr_url', 'refresh_interval', 'timeout'];
 
 const SECTION_ORDER = new Map(Object.keys(LOCALE_MAP).map((key, index) => [key, index]));
 
@@ -348,8 +356,9 @@ function renderConfig(data) {
     const keyOrder = localeSection ? new Map(Object.keys(localeSection).map((k, i) => [k, i])) : null;
 
     const allKeys = sortByOrder(Object.keys(items), keyOrder);
+    const visibleKeys = allKeys.filter(key => !(section === 'proxy' && key === 'cf_cookies'));
 
-    if (allKeys.length > 0) {
+    if (visibleKeys.length > 0) {
       const card = document.createElement('div');
       card.className = 'config-section';
 
@@ -369,7 +378,7 @@ function renderConfig(data) {
       const grid = document.createElement('div');
       grid.className = 'config-grid';
 
-      allKeys.forEach(key => {
+      visibleKeys.forEach(key => {
         const fieldCard = buildFieldCard(section, key, items[key]);
         grid.appendChild(fieldCard);
       });
@@ -382,6 +391,34 @@ function renderConfig(data) {
   });
 
   container.appendChild(fragment);
+
+  // 初始化 CF 自动刷新联动状态
+  const cfEnabled = data.proxy && data.proxy.enabled;
+  applyCfRefreshState(cfEnabled);
+}
+
+function applyCfRefreshState(enabled) {
+  // 设置字段禁用状态的辅助函数
+  function setFieldDisabled(section, key, disabled) {
+    const input = document.querySelector(
+      `input[data-section="${section}"][data-key="${key}"],` +
+      `textarea[data-section="${section}"][data-key="${key}"],` +
+      `select[data-section="${section}"][data-key="${key}"]`
+    );
+    if (!input) return;
+    input.disabled = disabled;
+    // 找到最近的 .config-field 父元素设置样式
+    const field = input.closest('.config-field');
+    if (field) {
+      field.style.opacity = disabled ? '0.45' : '';
+      field.style.pointerEvents = disabled ? 'none' : '';
+    }
+  }
+
+  // enabled=true → 灰掉 cf_clearance/browser/user_agent
+  CF_MANAGED_PROXY_KEYS.forEach(k => setFieldDisabled('proxy', k, !!enabled));
+  // enabled=false → 灰掉 flaresolverr_url/refresh_interval/timeout
+  CF_REFRESH_SUB_KEYS.forEach(k => setFieldDisabled('proxy', k, !enabled));
 }
 
 function buildFieldCard(section, key, val) {
@@ -457,6 +494,15 @@ function buildFieldCard(section, key, val) {
   }
   fieldCard.appendChild(inputWrapper);
 
+  // proxy.enabled (CF 自动刷新) 联动（toggle 本身始终可交互）
+  if (section === 'proxy' && key === 'enabled' && built && built.input) {
+    fieldCard.style.pointerEvents = 'auto';
+    fieldCard.style.opacity = '';
+    built.input.addEventListener('change', () => {
+      applyCfRefreshState(built.input.checked);
+    });
+  }
+
   if (section === 'app' && key === 'public_enabled') {
     fieldCard.classList.add('has-action');
     const link = document.createElement('a');
@@ -509,6 +555,16 @@ async function saveConfig() {
       if (!newConfig[s]) newConfig[s] = {};
       newConfig[s][k] = val;
     });
+
+    if (newConfig.proxy && newConfig.proxy.enabled) {
+      const url = String(newConfig.proxy.flaresolverr_url || '').trim();
+      if (!url) {
+        showToast('启用自动刷新时必须填写 FlareSolverr 地址', 'error');
+        btn.disabled = false;
+        btn.innerText = originalText;
+        return;
+      }
+    }
 
     const res = await fetch('/v1/admin/config', {
       method: 'POST',

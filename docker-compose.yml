@@ -10,7 +10,10 @@ services:
       SERVER_PORT: 8000
       SERVER_WORKERS: 1
       SERVER_STORAGE_TYPE: local
-      # SERVER_STORAGE_URL: 
+      # 启用 CF 自动刷新: 取消以下三行注释，并取消底部 flaresolverr 服务的注释
+      # FLARESOLVERR_URL: http://flaresolverr:8191
+      # CF_REFRESH_INTERVAL: "600"
+      # CF_TIMEOUT: "60"
 
       # SERVER_STORAGE_TYPE: (local, redis, mysql, pgsql) default: local
       # SERVER_STORAGE_URL: (local mode is empty) default: empty
@@ -21,3 +24,27 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     restart: unless-stopped
+
+  # 如果出口 IP 不干净，可取消以下注释使用 Warp 作为落地代理
+  # 启用后将 proxy.base_proxy_url 设为 socks5://warp:1080
+  # warp:
+  #   container_name: warp
+  #   image: caomingjun/warp:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:1080:1080"
+  #   environment:
+  #     - WARP_SLEEP=2
+  #   cap_add:
+  #     - NET_ADMIN
+
+  # 启用 CF 自动刷新时取消以下注释
+  # flaresolverr:
+  #   container_name: flaresolverr
+  #   image: ghcr.io/flaresolverr/flaresolverr:latest
+  #   ports:
+  #     - "127.0.0.1:8191:8191"
+  #   environment:
+  #     TZ: Asia/Shanghai
+  #     LOG_LEVEL: info
+  #   restart: unless-stopped
