@@ -2,8 +2,8 @@ services:
   grok2api:
     container_name: grok2api
     image: ghcr.io/chenyme/grok2api:latest
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
     environment:
       TZ: Asia/Shanghai
       LOG_LEVEL: INFO
@@ -14,12 +14,15 @@ services:
       # FLARESOLVERR_URL: http://flaresolverr:8191
       # CF_REFRESH_INTERVAL: "600"
       # CF_TIMEOUT: "60"
+
+      # SERVER_STORAGE_TYPE: (local, redis, mysql, pgsql) default: local
+      # SERVER_STORAGE_URL: (local mode is empty) default: empty
+      #   Redis: redis://localhost:6379/0 or redis://:password@localhost:6379/0
+      #   MySQL: mysql+aiomysql://user:pass@localhost/db
+      #   PgSQL: postgresql+asyncpg://user:pass@localhost/db
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./config.defaults.toml:/app/config.defaults.toml:ro
-      - ./main.py:/app/main.py:ro
-      - ./app:/app/app:ro
     restart: unless-stopped
 
   warp:
@@ -27,25 +30,11 @@ services:
     image: caomingjun/warp:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:1180:1080"
+      - "127.0.0.1:1080:1080"
     environment:
       - WARP_SLEEP=2
     cap_add:
       - NET_ADMIN
-
-  nginx:
-    container_name: nginx-proxy
-    image: nginx:alpine
-    ports:
-      - "80:80"
-      - "443:443"
-      - "8000:8000"
-    volumes:
-      - ./nginx/conf/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
-    depends_on:
-      - grok2api
-    restart: unless-stopped
 
   flaresolverr:
     container_name: flaresolverr

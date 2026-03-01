@@ -461,6 +461,22 @@ function buildFieldCard(section, key, val) {
       { val: 'url', text: 'URL' }
     ]);
   }
+  else if (section === 'imagine_fast' && key === 'size') {
+    built = buildSelectInput(section, key, val, [
+      { val: '1024x1024', text: '1024x1024 (1:1)' },
+      { val: '1280x720', text: '1280x720 (16:9)' },
+      { val: '720x1280', text: '720x1280 (9:16)' },
+      { val: '1792x1024', text: '1792x1024 (3:2)' },
+      { val: '1024x1792', text: '1024x1792 (2:3)' }
+    ]);
+  }
+  else if (section === 'imagine_fast' && key === 'response_format') {
+    built = buildSelectInput(section, key, val, [
+      { val: 'url', text: 'URL' },
+      { val: 'b64_json', text: 'B64 JSON' },
+      { val: 'base64', text: 'Base64' }
+    ]);
+  }
   else if (Array.isArray(val) || typeof val === 'object') {
     built = buildJsonInput(section, key, val);
   }
