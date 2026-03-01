@@ -529,6 +529,16 @@ class StreamProcessor(proc_base.BaseProcessor):
         self._tool_buffer = ""
         self._tool_partial = ""
         self._tool_calls_seen = False
+        self._tool_call_index = 0
+
+    def _with_tool_index(self, tool_call: Any) -> Any:
+        if not isinstance(tool_call, dict):
+            return tool_call
+        if tool_call.get("index") is None:
+            tool_call = dict(tool_call)
+            tool_call["index"] = self._tool_call_index
+            self._tool_call_index += 1
+        return tool_call
 
     def _filter_tool_card(self, token: str) -> str:
         if not token or not self.tool_usage_enabled:
@@ -653,7 +663,7 @@ class StreamProcessor(proc_base.BaseProcessor):
             data = data[end_idx + len(end_tag) :]
             tool_call = parse_tool_call_block(self._tool_buffer, self.tools)
             if tool_call:
-                events.append(("tool", tool_call))
+                events.append(("tool", self._with_tool_index(tool_call)))
                 self._tool_calls_seen = True
             self._tool_buffer = ""
             self._tool_state = "text"
@@ -671,7 +681,7 @@ class StreamProcessor(proc_base.BaseProcessor):
         raw = f"{self._tool_buffer}{self._tool_partial}"
         tool_call = parse_tool_call_block(raw, self.tools)
         if tool_call:
-            events.append(("tool", tool_call))
+            events.append(("tool", self._with_tool_index(tool_call)))
             self._tool_calls_seen = True
         elif raw:
             events.append(("text", f"<tool_call>{raw}"))

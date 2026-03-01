@@ -4,7 +4,7 @@
 app_url = ""
 # 后台管理密码
 app_key = "grok2api"
-# API 调用密钥（可选）
+# API 调用密钥（可选，支持列表）
 api_key = ""
 # 是否启用 public 功能玩法
 public_enabled = false

@@ -38,7 +38,7 @@ const NUMERIC_FIELDS = new Set([
 const LOCALE_MAP = {
   "app": {
     "label": "应用设置",
-    "api_key": { title: "API 密钥", desc: "调用 Grok2API 服务的 Token（可选）。" },
+    "api_key": { title: "API 密钥", desc: "调用 Grok2API 服务的 Token（可选，支持多个，逗号分隔或数组）。" },
     "app_key": { title: "后台密码", desc: "登录 Grok2API 管理后台的密码（必填）。" },
     "public_enabled": { title: "启用功能玩法", desc: "是否启用功能玩法入口（关闭则功能玩法页面不可访问）。" },
     "public_key": { title: "Public 密码", desc: "功能玩法页面的访问密码（可选）。" },

@@ -334,7 +334,7 @@ Config file: `data/config.toml`
 | :-- | :-- | :-- | :-- | :-- |
 | **app** | `app_url` | App URL | External base URL used for file links. | `""` |
 |  | `app_key` | Admin password | Login password for admin panel. | `grok2api` |
-|  | `api_key` | API key | Optional API key for access. | `""` |
+|  | `api_key` | API key | Optional API key for access (comma-separated string or array). | `""` |
 |  | `public_enabled` | Public mode | Enable public features. | `false` |
 |  | `public_key` | Public key | Public access key (optional). | `""` |
 |  | `image_format` | Image format | `url` or `base64`. | `url` |
