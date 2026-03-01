@@ -75,11 +75,33 @@ async def lifespan(app: FastAPI):
         scheduler = get_scheduler(interval)
         scheduler.start()
 
+    # 5. 启动 cf_clearance 自动刷新
+    #    环境变量 FLARESOLVERR_URL 会作为初始值写入配置（兼容旧部署方式）
+    _flaresolverr_env = os.getenv("FLARESOLVERR_URL", "")
+    if _flaresolverr_env and not get_config("proxy.flaresolverr_url"):
+        await config.update({
+            "proxy": {
+                "enabled": True,
+                "flaresolverr_url": _flaresolverr_env,
+                "refresh_interval": int(os.getenv("CF_REFRESH_INTERVAL", "600")),
+                "timeout": int(os.getenv("CF_TIMEOUT", "60")),
+            }
+        })
+
+    cf_refresh_enabled = get_config("proxy.enabled", False)
+    if cf_refresh_enabled:
+        from app.services.cf_refresh import start as cf_refresh_start
+        cf_refresh_start()
+
     logger.info("Application startup complete.")
     yield
 
     # 关闭
     logger.info("Shutting down Grok2API...")
+
+    if cf_refresh_enabled:
+        from app.services.cf_refresh import stop as cf_refresh_stop
+        cf_refresh_stop()
 
     from app.core.storage import StorageFactory
 

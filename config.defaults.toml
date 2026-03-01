@@ -36,6 +36,14 @@ tool_call_mode = "prompt"
 base_proxy_url = ""
 # 资源代理地址（代理静态资源如图片/视频）
 asset_proxy_url = ""
+# 是否启用 CF 自动刷新
+enabled = false
+# FlareSolverr 服务地址
+flaresolverr_url = "http://flaresolverr:8191"
+# 刷新间隔（秒）
+refresh_interval = 600
+# CF 挑战等待超时（秒）
+timeout = 60
 # Cloudflare Clearance Cookie
 cf_clearance = ""
 # curl_cffi 浏览器指纹
