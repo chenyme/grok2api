@@ -25,16 +25,18 @@ services:
       - ./logs:/app/logs
     restart: unless-stopped
 
-  warp:
-    container_name: warp
-    image: caomingjun/warp:latest
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:1080:1080"
-    environment:
-      - WARP_SLEEP=2
-    cap_add:
-      - NET_ADMIN
+  # 如果出口 IP 不干净，可取消以下注释使用 Warp 作为落地代理
+  # 启用后将 proxy.base_proxy_url 设为 socks5://warp:1080
+  # warp:
+  #   container_name: warp
+  #   image: caomingjun/warp:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:1080:1080"
+  #   environment:
+  #     - WARP_SLEEP=2
+  #   cap_add:
+  #     - NET_ADMIN
 
   # 启用 CF 自动刷新时取消以下注释
   # flaresolverr:
