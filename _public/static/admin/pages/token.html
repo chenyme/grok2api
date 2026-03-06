@@ -120,7 +120,8 @@
       </div>
 
       <!-- Token Table -->
-      <div class="rounded-lg overflow-hidden bg-white mb-4 overflow-x-auto">
+      <div class="rounded-lg overflow-hidden bg-white mb-4 overflow-x-auto token-table-card">
+        <div class="token-table-scroll">
         <table class="geist-table min-w-[800px]">
           <thead>
             <tr>
@@ -137,6 +138,7 @@
             <!-- Dynamic Rows -->
           </tbody>
         </table>
+        </div>
         <div id="loading" class="text-center py-12 text-[var(--accents-4)]" data-i18n="common.loading">加载中...</div>
         <div id="empty-state" class="hidden table-empty" data-i18n="token.emptyState">
           暂无 Token，请点击右上角导入或添加。

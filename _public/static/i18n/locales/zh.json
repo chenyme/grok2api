@@ -66,12 +66,14 @@
     "noTokenSelected": "未选择 Token",
     "clearCache": "清空缓存",
     "failureDetails": "失败详情",
-    "retryFailed": "重试失败项"
+    "retryFailed": "重试失败项",
+    "raw": "原始"
   },
   "nav": {
     "tokenManage": "Token管理",
     "configManage": "配置管理",
     "cacheManage": "缓存管理",
+    "logsView": "日志查看",
     "chat": "Chat 聊天",
     "imagine": "Imagine 瀑布流",
     "video": "Video 视频生成",
@@ -128,107 +130,384 @@
     },
     "fields": {
       "app": {
-        "api_key": {"title": "API 密钥", "desc": "调用 Grok2API 服务的 Token（可选，支持多个，逗号分隔或数组）。"},
-        "app_key": {"title": "后台密码", "desc": "登录 Grok2API 管理后台的密码（必填）。"},
-        "function_enabled": {"title": "启用功能玩法", "desc": "是否启用功能玩法入口（关闭则功能玩法页面不可访问）。"},
-        "function_key": {"title": "Function 密码", "desc": "功能玩法页面的访问密码（可选）。"},
-        "app_url": {"title": "应用地址", "desc": "当前 Grok2API 服务的外部访问 URL，用于文件链接访问。"},
-        "image_format": {"title": "图片格式", "desc": "默认生成的图片格式（url 或 base64）。"},
-        "video_format": {"title": "视频格式", "desc": "默认生成的视频格式（html 或 url，url 为处理后的链接）。"},
-        "temporary": {"title": "临时对话", "desc": "是否默认启用临时对话模式。"},
-        "disable_memory": {"title": "禁用记忆", "desc": "是否默认禁用 Grok 记忆功能。"},
-        "stream": {"title": "流式响应", "desc": "是否默认启用流式输出。"},
-        "thinking": {"title": "思维链", "desc": "是否默认启用思维链输出。"},
-        "dynamic_statsig": {"title": "动态指纹", "desc": "是否默认启用动态生成 Statsig 指纹。"},
-        "custom_instruction": {"title": "自定义指令", "desc": "多行文本，会透传为 Grok 请求参数 customPersonality。"},
-        "filter_tags": {"title": "过滤标签", "desc": "设置自动过滤 Grok 响应中的特殊标签。"}
+        "api_key": {
+          "title": "API 密钥",
+          "desc": "调用 Grok2API 服务的 Token（可选，支持多个，逗号分隔或数组）。"
+        },
+        "app_key": {
+          "title": "后台密码",
+          "desc": "登录 Grok2API 管理后台的密码（必填）。"
+        },
+        "function_enabled": {
+          "title": "启用功能玩法",
+          "desc": "是否启用功能玩法入口（关闭则功能玩法页面不可访问）。"
+        },
+        "function_key": {
+          "title": "Function 密码",
+          "desc": "功能玩法页面的访问密码（可选）。"
+        },
+        "app_url": {
+          "title": "应用地址",
+          "desc": "当前 Grok2API 服务的外部访问 URL，用于文件链接访问。"
+        },
+        "image_format": {
+          "title": "图片格式",
+          "desc": "默认生成的图片格式（url 或 base64）。"
+        },
+        "video_format": {
+          "title": "视频格式",
+          "desc": "默认生成的视频格式（html 或 url，url 为处理后的链接）。"
+        },
+        "temporary": {
+          "title": "临时对话",
+          "desc": "是否默认启用临时对话模式。"
+        },
+        "disable_memory": {
+          "title": "禁用记忆",
+          "desc": "是否默认禁用 Grok 记忆功能。"
+        },
+        "stream": {
+          "title": "流式响应",
+          "desc": "是否默认启用流式输出。"
+        },
+        "thinking": {
+          "title": "思维链",
+          "desc": "是否默认启用思维链输出。"
+        },
+        "dynamic_statsig": {
+          "title": "动态指纹",
+          "desc": "是否默认启用动态生成 Statsig 指纹。"
+        },
+        "custom_instruction": {
+          "title": "自定义指令",
+          "desc": "多行文本，会透传为 Grok 请求参数 customPersonality。"
+        },
+        "filter_tags": {
+          "title": "过滤标签",
+          "desc": "设置自动过滤 Grok 响应中的特殊标签。"
+        }
       },
       "proxy": {
-        "base_proxy_url": {"title": "基础代理 URL", "desc": "代理请求到 Grok 官网的基础服务地址。"},
-        "asset_proxy_url": {"title": "资源代理 URL", "desc": "代理请求到 Grok 官网的静态资源（图片/视频）地址。"},
-        "skip_proxy_ssl_verify": {"title": "跳过代理 SSL 校验", "desc": "代理使用自签名证书时启用（仅放行代理证书校验）。"},
-        "enabled": {"title": "启用 CF 自动刷新", "desc": "启用后将通过 FlareSolverr 自动获取 cf_clearance。"},
-        "flaresolverr_url": {"title": "FlareSolverr 地址", "desc": "FlareSolverr 服务的 HTTP 地址（如 http://flaresolverr:8191）。"},
-        "refresh_interval": {"title": "刷新间隔（秒）", "desc": "自动刷新 cf_clearance 的时间间隔，建议不低于 300 秒。"},
-        "timeout": {"title": "挑战超时（秒）", "desc": "等待 FlareSolverr 解决 CF 挑战的最大时间。"},
-        "cf_clearance": {"title": "CF Clearance", "desc": "Cloudflare Clearance Cookie，用于绕过反爬虫验证。启用自动刷新时由系统自动管理。"},
-        "browser": {"title": "浏览器指纹", "desc": "curl_cffi 浏览器指纹标识（如 chrome136）。启用自动刷新时由系统自动管理。"},
-        "user_agent": {"title": "User-Agent", "desc": "HTTP 请求的 User-Agent 字符串。启用自动刷新时由系统自动管理。"}
+        "base_proxy_url": {
+          "title": "基础代理 URL",
+          "desc": "代理请求到 Grok 官网的基础服务地址。"
+        },
+        "asset_proxy_url": {
+          "title": "资源代理 URL",
+          "desc": "代理请求到 Grok 官网的静态资源（图片/视频）地址。"
+        },
+        "skip_proxy_ssl_verify": {
+          "title": "跳过代理 SSL 校验",
+          "desc": "代理使用自签名证书时启用（仅放行代理证书校验）。"
+        },
+        "enabled": {
+          "title": "启用 CF 自动刷新",
+          "desc": "启用后将通过 FlareSolverr 自动获取 cf_clearance。"
+        },
+        "flaresolverr_url": {
+          "title": "FlareSolverr 地址",
+          "desc": "FlareSolverr 服务的 HTTP 地址（如 http://flaresolverr:8191）。"
+        },
+        "refresh_interval": {
+          "title": "刷新间隔（秒）",
+          "desc": "自动刷新 cf_clearance 的时间间隔，建议不低于 300 秒。"
+        },
+        "timeout": {
+          "title": "挑战超时（秒）",
+          "desc": "等待 FlareSolverr 解决 CF 挑战的最大时间。"
+        },
+        "cf_clearance": {
+          "title": "CF Clearance",
+          "desc": "Cloudflare Clearance Cookie，用于绕过反爬虫验证。启用自动刷新时由系统自动管理。"
+        },
+        "browser": {
+          "title": "浏览器指纹",
+          "desc": "curl_cffi 浏览器指纹标识（如 chrome136）。启用自动刷新时由系统自动管理。"
+        },
+        "user_agent": {
+          "title": "User-Agent",
+          "desc": "HTTP 请求的 User-Agent 字符串。启用自动刷新时由系统自动管理。"
+        }
       },
       "retry": {
-        "max_retry": {"title": "最大重试次数", "desc": "请求 Grok 服务失败时的最大重试次数。"},
-        "retry_status_codes": {"title": "重试状态码", "desc": "触发重试的 HTTP 状态码列表。"},
-        "reset_session_status_codes": {"title": "重建状态码", "desc": "触发重建 session 的 HTTP 状态码列表（用于轮换代理）。"},
-        "retry_backoff_base": {"title": "退避基数", "desc": "重试退避的基础延迟（秒）。"},
-        "retry_backoff_factor": {"title": "退避倍率", "desc": "重试退避的指数放大系数。"},
-        "retry_backoff_max": {"title": "退避上限", "desc": "单次重试等待的最大延迟（秒）。"},
-        "retry_budget": {"title": "退避预算", "desc": "单次请求的最大重试总耗时（秒）。"}
+        "max_retry": {
+          "title": "最大重试次数",
+          "desc": "请求 Grok 服务失败时的最大重试次数。"
+        },
+        "retry_status_codes": {
+          "title": "重试状态码",
+          "desc": "触发重试的 HTTP 状态码列表。"
+        },
+        "reset_session_status_codes": {
+          "title": "重建状态码",
+          "desc": "触发重建 session 的 HTTP 状态码列表（用于轮换代理）。"
+        },
+        "retry_backoff_base": {
+          "title": "退避基数",
+          "desc": "重试退避的基础延迟（秒）。"
+        },
+        "retry_backoff_factor": {
+          "title": "退避倍率",
+          "desc": "重试退避的指数放大系数。"
+        },
+        "retry_backoff_max": {
+          "title": "退避上限",
+          "desc": "单次重试等待的最大延迟（秒）。"
+        },
+        "retry_budget": {
+          "title": "退避预算",
+          "desc": "单次请求的最大重试总耗时（秒）。"
+        }
       },
       "chat": {
-        "concurrent": {"title": "并发上限", "desc": "Reverse 接口并发上限。"},
-        "timeout": {"title": "请求超时", "desc": "Reverse 接口超时时间（秒）。"},
-        "stream_timeout": {"title": "流空闲超时", "desc": "流式空闲超时时间（秒）。"}
+        "concurrent": {
+          "title": "并发上限",
+          "desc": "Reverse 接口并发上限。"
+        },
+        "timeout": {
+          "title": "请求超时",
+          "desc": "Reverse 接口超时时间（秒）。"
+        },
+        "stream_timeout": {
+          "title": "流空闲超时",
+          "desc": "流式空闲超时时间（秒）。"
+        }
       },
       "video": {
-        "concurrent": {"title": "并发上限", "desc": "Reverse 接口并发上限。"},
-        "timeout": {"title": "请求超时", "desc": "Reverse 接口超时时间（秒）。"},
-        "stream_timeout": {"title": "流空闲超时", "desc": "流式空闲超时时间（秒）。"}
+        "concurrent": {
+          "title": "并发上限",
+          "desc": "Reverse 接口并发上限。"
+        },
+        "timeout": {
+          "title": "请求超时",
+          "desc": "Reverse 接口超时时间（秒）。"
+        },
+        "stream_timeout": {
+          "title": "流空闲超时",
+          "desc": "流式空闲超时时间（秒）。"
+        }
       },
       "image": {
-        "timeout": {"title": "请求超时", "desc": "WebSocket 请求超时时间（秒）。"},
-        "stream_timeout": {"title": "流空闲超时", "desc": "WebSocket 流式空闲超时时间（秒）。"},
-        "final_timeout": {"title": "最终图超时", "desc": "收到中等图后等待最终图的超时秒数。"},
-        "blocked_grace_seconds": {"title": "审查宽限秒数", "desc": "收到中等图后，判定疑似被审查的宽限秒数（默认 10 秒，可自定义）。"},
-        "nsfw": {"title": "NSFW 模式", "desc": "WebSocket 请求是否启用 NSFW。"},
-        "medium_min_bytes": {"title": "中等图最小字节", "desc": "判定中等质量图的最小字节数。"},
-        "final_min_bytes": {"title": "最终图最小字节", "desc": "判定最终图的最小字节数（通常 JPG > 100KB）。"},
-        "blocked_parallel_enabled": {"title": "启用并行补偿", "desc": "疑似审查/拦截时，是否启用并行补偿生成。"},
-        "blocked_parallel_attempts": {"title": "拦截补偿并发次数", "desc": "疑似审查/拦截导致无最终图时，自动并行补偿生成次数。"}
+        "timeout": {
+          "title": "请求超时",
+          "desc": "WebSocket 请求超时时间（秒）。"
+        },
+        "stream_timeout": {
+          "title": "流空闲超时",
+          "desc": "WebSocket 流式空闲超时时间（秒）。"
+        },
+        "final_timeout": {
+          "title": "最终图超时",
+          "desc": "收到中等图后等待最终图的超时秒数。"
+        },
+        "blocked_grace_seconds": {
+          "title": "审查宽限秒数",
+          "desc": "收到中等图后，判定疑似被审查的宽限秒数（默认 10 秒，可自定义）。"
+        },
+        "nsfw": {
+          "title": "NSFW 模式",
+          "desc": "WebSocket 请求是否启用 NSFW。"
+        },
+        "medium_min_bytes": {
+          "title": "中等图最小字节",
+          "desc": "判定中等质量图的最小字节数。"
+        },
+        "final_min_bytes": {
+          "title": "最终图最小字节",
+          "desc": "判定最终图的最小字节数（通常 JPG > 100KB）。"
+        },
+        "blocked_parallel_enabled": {
+          "title": "启用并行补偿",
+          "desc": "疑似审查/拦截时，是否启用并行补偿生成。"
+        },
+        "blocked_parallel_attempts": {
+          "title": "拦截补偿并发次数",
+          "desc": "疑似审查/拦截导致无最终图时，自动并行补偿生成次数。"
+        }
       },
       "imagine_fast": {
-        "n": {"title": "生成数量", "desc": "仅用于 grok-imagine-1.0-fast 的服务端统一生成数量（1-10）。"},
-        "size": {"title": "图片尺寸", "desc": "仅用于 grok-imagine-1.0-fast 的服务端统一尺寸。"},
-        "response_format": {"title": "响应格式", "desc": "仅用于 grok-imagine-1.0-fast 的服务端统一返回格式。"}
+        "n": {
+          "title": "生成数量",
+          "desc": "仅用于 grok-imagine-1.0-fast 的服务端统一生成数量（1-10）。"
+        },
+        "size": {
+          "title": "图片尺寸",
+          "desc": "仅用于 grok-imagine-1.0-fast 的服务端统一尺寸。"
+        },
+        "response_format": {
+          "title": "响应格式",
+          "desc": "仅用于 grok-imagine-1.0-fast 的服务端统一返回格式。"
+        }
       },
       "asset": {
-        "upload_concurrent": {"title": "上传并发", "desc": "上传接口的最大并发数。推荐 30。"},
-        "upload_timeout": {"title": "上传超时", "desc": "上传接口超时时间（秒）。推荐 60。"},
-        "download_concurrent": {"title": "下载并发", "desc": "下载接口的最大并发数。推荐 30。"},
-        "download_timeout": {"title": "下载超时", "desc": "下载接口超时时间（秒）。推荐 60。"},
-        "list_concurrent": {"title": "查询并发", "desc": "资产查询接口的最大并发数。推荐 10。"},
-        "list_timeout": {"title": "查询超时", "desc": "资产查询接口超时时间（秒）。推荐 60。"},
-        "list_batch_size": {"title": "查询批次大小", "desc": "单次查询可处理的 Token 数量。推荐 10。"},
-        "delete_concurrent": {"title": "删除并发", "desc": "资产删除接口的最大并发数。推荐 10。"},
-        "delete_timeout": {"title": "删除超时", "desc": "资产删除接口超时时间（秒）。推荐 60。"},
-        "delete_batch_size": {"title": "删除批次大小", "desc": "单次删除可处理的 Token 数量。推荐 10。"}
+        "upload_concurrent": {
+          "title": "上传并发",
+          "desc": "上传接口的最大并发数。推荐 30。"
+        },
+        "upload_timeout": {
+          "title": "上传超时",
+          "desc": "上传接口超时时间（秒）。推荐 60。"
+        },
+        "download_concurrent": {
+          "title": "下载并发",
+          "desc": "下载接口的最大并发数。推荐 30。"
+        },
+        "download_timeout": {
+          "title": "下载超时",
+          "desc": "下载接口超时时间（秒）。推荐 60。"
+        },
+        "list_concurrent": {
+          "title": "查询并发",
+          "desc": "资产查询接口的最大并发数。推荐 10。"
+        },
+        "list_timeout": {
+          "title": "查询超时",
+          "desc": "资产查询接口超时时间（秒）。推荐 60。"
+        },
+        "list_batch_size": {
+          "title": "查询批次大小",
+          "desc": "单次查询可处理的 Token 数量。推荐 10。"
+        },
+        "delete_concurrent": {
+          "title": "删除并发",
+          "desc": "资产删除接口的最大并发数。推荐 10。"
+        },
+        "delete_timeout": {
+          "title": "删除超时",
+          "desc": "资产删除接口超时时间（秒）。推荐 60。"
+        },
+        "delete_batch_size": {
+          "title": "删除批次大小",
+          "desc": "单次删除可处理的 Token 数量。推荐 10。"
+        }
       },
       "voice": {
-        "timeout": {"title": "请求超时", "desc": "Voice 请求超时时间（秒）。"}
+        "timeout": {
+          "title": "请求超时",
+          "desc": "Voice 请求超时时间（秒）。"
+        }
       },
       "token": {
-        "auto_refresh": {"title": "自动刷新", "desc": "是否开启 Token 自动刷新机制。"},
-        "refresh_interval_hours": {"title": "刷新间隔", "desc": "普通 Token 刷新的时间间隔（小时）。"},
-        "super_refresh_interval_hours": {"title": "Super 刷新间隔", "desc": "Super Token 刷新的时间间隔（小时）。"},
-        "fail_threshold": {"title": "失败阈值", "desc": "单个 Token 连续失败多少次后被标记为不可用。"},
-        "save_delay_ms": {"title": "保存延迟", "desc": "Token 变更合并写入的延迟（毫秒）。"},
-        "usage_flush_interval_sec": {"title": "用量落库间隔", "desc": "用量类字段写入数据库的最小间隔（秒）。"},
-        "reload_interval_sec": {"title": "同步间隔", "desc": "多 worker 场景下 Token 状态刷新间隔（秒）。"}
+        "auto_refresh": {
+          "title": "自动刷新",
+          "desc": "是否开启 Token 自动刷新机制。"
+        },
+        "refresh_interval_hours": {
+          "title": "刷新间隔",
+          "desc": "普通 Token 刷新的时间间隔（小时）。"
+        },
+        "super_refresh_interval_hours": {
+          "title": "Super 刷新间隔",
+          "desc": "Super Token 刷新的时间间隔（小时）。"
+        },
+        "fail_threshold": {
+          "title": "失败阈值",
+          "desc": "单个 Token 连续失败多少次后被标记为不可用。"
+        },
+        "save_delay_ms": {
+          "title": "保存延迟",
+          "desc": "Token 变更合并写入的延迟（毫秒）。"
+        },
+        "usage_flush_interval_sec": {
+          "title": "用量落库间隔",
+          "desc": "用量类字段写入数据库的最小间隔（秒）。"
+        },
+        "reload_interval_sec": {
+          "title": "同步间隔",
+          "desc": "多 worker 场景下 Token 状态刷新间隔（秒）。"
+        }
       },
       "cache": {
-        "enable_auto_clean": {"title": "自动清理", "desc": "是否启用缓存自动清理，开启后按上限自动回收。"},
-        "limit_mb": {"title": "清理阈值", "desc": "缓存大小阈值（MB），超过阈值会触发清理。"}
+        "enable_auto_clean": {
+          "title": "自动清理",
+          "desc": "是否启用缓存自动清理，开启后按上限自动回收。"
+        },
+        "limit_mb": {
+          "title": "清理阈值",
+          "desc": "缓存大小阈值（MB），超过阈值会触发清理。"
+        }
       },
       "nsfw": {
-        "concurrent": {"title": "并发上限", "desc": "批量开启 NSFW 模式时的并发请求上限。推荐 10。"},
-        "batch_size": {"title": "批次大小", "desc": "批量开启 NSFW 模式的单批处理数量。推荐 50。"},
-        "timeout": {"title": "请求超时", "desc": "NSFW 开启相关请求的超时时间（秒）。推荐 60。"}
+        "concurrent": {
+          "title": "并发上限",
+          "desc": "批量开启 NSFW 模式时的并发请求上限。推荐 10。"
+        },
+        "batch_size": {
+          "title": "批次大小",
+          "desc": "批量开启 NSFW 模式的单批处理数量。推荐 50。"
+        },
+        "timeout": {
+          "title": "请求超时",
+          "desc": "NSFW 开启相关请求的超时时间（秒）。推荐 60。"
+        }
       },
       "usage": {
-        "concurrent": {"title": "并发上限", "desc": "批量刷新用量时的并发请求上限。推荐 10。"},
-        "batch_size": {"title": "批次大小", "desc": "批量刷新用量的单批处理数量。推荐 50。"},
-        "timeout": {"title": "请求超时", "desc": "用量查询接口的超时时间（秒）。推荐 60。"}
+        "concurrent": {
+          "title": "并发上限",
+          "desc": "批量刷新用量时的并发请求上限。推荐 10。"
+        },
+        "batch_size": {
+          "title": "批次大小",
+          "desc": "批量刷新用量的单批处理数量。推荐 50。"
+        },
+        "timeout": {
+          "title": "请求超时",
+          "desc": "用量查询接口的超时时间（秒）。推荐 60。"
+        }
       }
     }
+  },
+  "logs": {
+    "pageTitle": "Grok2API - 日志查看",
+    "title": "日志查看",
+    "subtitle": "按文件、级别和关键词快速筛选，并以更易读的方式查看结构化日志。",
+    "filesTitle": "日志文件",
+    "rawTitle": "原始日志",
+    "empty": "没有匹配的日志记录",
+    "filters": {
+      "file": "日志文件",
+      "level": "级别",
+      "limit": "条数",
+      "keyword": "关键词",
+      "keywordPlaceholder": "traceID / path / 错误关键词",
+      "apply": "应用筛选",
+      "reset": "重置",
+      "excludeAdminRoutes": "仅在此页过滤 `/v1/admin/*`"
+    },
+    "levels": {
+      "all": "全部级别"
+    },
+    "stats": {
+      "file": "当前文件",
+      "entries": "已加载条目",
+      "entriesHint": "按当前筛选展示",
+      "errorWarn": "告警 / 错误",
+      "errorWarnHint": "warning + error",
+      "size": "总大小",
+      "sizeHint": "日志目录占用"
+    },
+    "loadFilesFailed": "加载日志文件失败",
+    "loadFailed": "加载日志失败",
+    "noFiles": "暂无日志文件",
+    "fileCount": "{count} 个日志文件",
+    "deleteNone": "请先选择要清理的日志文件",
+    "deleteConfirm": "确认清理 {count} 个日志文件？",
+    "deleteFailed": "清理日志失败",
+    "deleteResult": "已清理 {deleted} 个日志文件，失败 {failed} 个",
+    "toggle": {
+      "expand": "展开",
+      "collapse": "收起"
+    },
+    "autoRefresh": {
+      "buttonAria": "自动刷新",
+      "off": "自动刷新：关",
+      "offShort": "关闭",
+      "interval": "自动刷新：{seconds}s",
+      "intervalLabel": "{seconds}s",
+      "changed": "自动刷新：{label}",
+      "disabled": "自动刷新已关闭"
+    },
+    "deleteSelected": "清理所选"
   },
   "token": {
     "pageTitle": "Grok2API - Token 管理",

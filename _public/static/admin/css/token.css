@@ -74,6 +74,28 @@
       padding: 8px 4px;
     }
 
+
+    .token-table-scroll {
+      max-height: 68vh;
+      overflow: auto;
+    }
+
+    .token-note-cell {
+      max-width: 220px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      max-height: 80px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .token-table-card .font-mono {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
     /* Elegant Badges */
     .badge {
       display: inline-flex;
@@ -355,4 +377,15 @@
       height: 16px;
       background: #e5e5e5;
       margin: 0 4px;
+    }
+
+    @media (max-width: 768px) {
+      .token-table-scroll {
+        max-height: 62vh;
+      }
+
+      .token-note-cell {
+        max-width: 160px;
+        max-height: 72px;
+      }
     }
