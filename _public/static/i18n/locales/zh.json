@@ -72,6 +72,7 @@
     "tokenManage": "Token管理",
     "configManage": "配置管理",
     "cacheManage": "缓存管理",
+    "logsView": "日志查看",
     "chat": "Chat 聊天",
     "imagine": "Imagine 瀑布流",
     "video": "Video 视频生成",
@@ -228,6 +229,35 @@
         "batch_size": {"title": "批次大小", "desc": "批量刷新用量的单批处理数量。推荐 50。"},
         "timeout": {"title": "请求超时", "desc": "用量查询接口的超时时间（秒）。推荐 60。"}
       }
+    }
+  },
+  "logs": {
+    "pageTitle": "Grok2API - 日志查看",
+    "title": "日志查看",
+    "subtitle": "按文件、级别和关键词快速筛选，并以更易读的方式查看结构化日志。",
+    "filesTitle": "日志文件",
+    "rawTitle": "原始日志",
+    "empty": "没有匹配的日志记录",
+    "filters": {
+      "file": "日志文件",
+      "level": "级别",
+      "limit": "条数",
+      "keyword": "关键词",
+      "keywordPlaceholder": "traceID / path / 错误关键词",
+      "apply": "应用筛选",
+      "reset": "重置"
+    },
+    "levels": {
+      "all": "全部级别"
+    },
+    "stats": {
+      "file": "当前文件",
+      "entries": "已加载条目",
+      "entriesHint": "按当前筛选展示",
+      "errorWarn": "告警 / 错误",
+      "errorWarnHint": "warning + error",
+      "size": "文件大小",
+      "sizeHint": "磁盘占用"
     }
   },
   "token": {

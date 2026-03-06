@@ -302,3 +302,41 @@
   box-shadow: 0 0 0 2px #000;
   border-color: #000;
 }
+
+.cache-table-scroll {
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.cache-pagination-bar {
+  margin-top: 12px;
+}
+
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  .cache-table-scroll {
+    max-height: 52vh;
+  }
+}
+
+.online-table-scroll {
+  max-height: 60vh;
+}
+
+@media (max-width: 768px) {
+  .online-table-scroll {
+    max-height: 52vh;
+  }
+}
+
+.cache-page-size-select {
+  width: 96px;
+  min-width: 96px;
+}

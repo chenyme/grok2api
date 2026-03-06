@@ -16,9 +16,10 @@ let currentBatchAction = null;
 let lastBatchAction = null;
 let isLocalDeleting = false;
 const cacheListState = {
-  image: { loaded: false, visible: false, items: [] },
-  video: { loaded: false, visible: false, items: [] }
+  image: { loaded: false, visible: false, items: [], total: 0, page: 1, pageSize: 50 },
+  video: { loaded: false, visible: false, items: [], total: 0, page: 1, pageSize: 50 }
 };
+const onlineTableState = { rows: [], page: 1, pageSize: 50 };
 const UI_MAP = {
   imgCount: 'img-count',
   imgSize: 'img-size',
@@ -29,6 +30,10 @@ const UI_MAP = {
   onlineLastClear: 'online-last-clear',
   accountTableBody: 'account-table-body',
   accountEmpty: 'account-empty',
+  onlinePaginationInfo: 'online-pagination-info',
+  onlinePagePrev: 'online-page-prev',
+  onlinePageNext: 'online-page-next',
+  onlinePageSize: 'online-page-size',
   selectAll: 'select-all',
   localImageSelectAll: 'local-image-select-all',
   localVideoSelectAll: 'local-video-select-all',
@@ -41,6 +46,14 @@ const UI_MAP = {
   localVideoList: 'local-video-list',
   localImageBody: 'local-image-body',
   localVideoBody: 'local-video-body',
+  localImagePaginationInfo: 'local-image-pagination-info',
+  localVideoPaginationInfo: 'local-video-pagination-info',
+  localImagePagePrev: 'local-image-page-prev',
+  localVideoPagePrev: 'local-video-page-prev',
+  localImagePageNext: 'local-image-page-next',
+  localVideoPageNext: 'local-video-page-next',
+  localImagePageSize: 'local-image-page-size',
+  localVideoPageSize: 'local-video-page-size',
   onlineAssetsTable: 'online-assets-table',
   batchProgress: 'batch-progress',
   batchProgressText: 'batch-progress-text',
@@ -363,16 +376,24 @@ function renderAccountTable(data) {
     }));
   }
 
+  onlineTableState.rows = rows;
+  const totalPages = Math.max(1, Math.ceil(rows.length / onlineTableState.pageSize));
+  onlineTableState.page = Math.min(Math.max(1, onlineTableState.page), totalPages);
+
   if (rows.length === 0) {
     tbody.replaceChildren();
     empty.classList.remove('hidden');
+    renderOnlinePagination();
+    syncSelectAllState();
+    updateSelectedCount();
     return;
   }
 
   empty.classList.add('hidden');
+  const visibleRows = getVisibleOnlineRows();
   const selected = selectedTokens;
   const fragment = document.createDocumentFragment();
-  rows.forEach(row => {
+  visibleRows.forEach(row => {
     const tr = document.createElement('tr');
     const isSelected = selected.has(row.token);
     if (isSelected) tr.classList.add('row-selected');
@@ -436,9 +457,15 @@ function renderAccountTable(data) {
     fragment.appendChild(tr);
   });
   tbody.replaceChildren(fragment);
+  renderOnlinePagination();
   syncSelectAllState();
   updateSelectedCount();
   updateBatchActionsVisibility();
+}
+
+function getVisibleOnlineRows() {
+  const start = Math.max(0, (onlineTableState.page - 1) * onlineTableState.pageSize);
+  return onlineTableState.rows.slice(start, start + onlineTableState.pageSize);
 }
 
 async function clearCache(type) {
@@ -495,10 +522,11 @@ function toggleSelect(token, checkbox) {
 
 function toggleSelectAll(checkbox) {
   const shouldSelect = checkbox.checked;
-  selectedTokens.clear();
-  if (shouldSelect) {
-    accountMap.forEach((_, token) => selectedTokens.add(token));
-  }
+  const visibleRows = getVisibleOnlineRows();
+  visibleRows.forEach(row => {
+    if (shouldSelect) selectedTokens.add(row.token);
+    else selectedTokens.delete(row.token);
+  });
   syncRowCheckboxes();
   updateSelectedCount();
 }
@@ -533,6 +561,34 @@ function toggleLocalSelectAll(type, checkbox) {
   syncLocalRowCheckboxes(type);
   updateSelectedCount();
 }
+
+
+function selectVisibleLocal(type) {
+  const set = selectedLocal[type];
+  const items = cacheListState[type]?.items || [];
+  if (!set || items.length === 0) return;
+  items.forEach(item => {
+    if (item && item.name) set.add(item.name);
+  });
+  syncLocalRowCheckboxes(type);
+  updateSelectedCount();
+}
+
+function selectAllLocal(type) {
+  selectVisibleLocal(type);
+}
+
+function clearAllLocalSelection(type) {
+  const set = selectedLocal[type];
+  if (!set || set.size === 0) return;
+  set.clear();
+  syncLocalRowCheckboxes(type);
+  updateSelectedCount();
+}
+
+window.selectVisibleLocal = selectVisibleLocal;
+window.selectAllLocal = selectAllLocal;
+window.clearAllLocalSelection = clearAllLocalSelection;
 
 function syncLocalRowCheckboxes(type) {
   const body = type === 'image' ? ui.localImageBody : ui.localVideoBody;
@@ -574,11 +630,80 @@ function syncRowCheckboxes() {
 function syncSelectAllState() {
   const selectAll = ui.selectAll;
   if (!selectAll) return;
-  const total = accountMap.size;
-  const selected = selectedTokens.size;
+  const visibleRows = getVisibleOnlineRows();
+  const total = visibleRows.length;
+  const selected = visibleRows.filter(row => selectedTokens.has(row.token)).length;
+  selectAll.disabled = total === 0;
   selectAll.checked = total > 0 && selected === total;
   selectAll.indeterminate = selected > 0 && selected < total;
 }
+
+function renderOnlinePagination() {
+  const info = ui.onlinePaginationInfo;
+  const prevBtn = ui.onlinePagePrev;
+  const nextBtn = ui.onlinePageNext;
+  const sizeSelect = ui.onlinePageSize;
+  if (!info || !prevBtn || !nextBtn || !sizeSelect) return;
+
+  const totalCount = onlineTableState.rows.length;
+  const pageSize = Number(onlineTableState.pageSize || 50);
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const currentPage = Math.min(Math.max(1, Number(onlineTableState.page || 1)), totalPages);
+  info.textContent = `第 ${totalCount === 0 ? 0 : currentPage} / ${totalPages} 页 · 共 ${totalCount} 条`;
+  prevBtn.disabled = currentPage <= 1 || totalCount === 0;
+  nextBtn.disabled = currentPage >= totalPages || totalCount === 0;
+  sizeSelect.value = String(pageSize);
+}
+
+function selectVisibleAccounts() {
+  const visibleRows = getVisibleOnlineRows();
+  if (visibleRows.length === 0) return;
+  visibleRows.forEach(row => selectedTokens.add(row.token));
+  syncRowCheckboxes();
+  updateSelectedCount();
+}
+
+function selectAllAccounts() {
+  if (onlineTableState.rows.length === 0) return;
+  onlineTableState.rows.forEach(row => selectedTokens.add(row.token));
+  syncRowCheckboxes();
+  updateSelectedCount();
+}
+
+function clearAllAccountSelection() {
+  if (selectedTokens.size === 0) return;
+  selectedTokens.clear();
+  syncRowCheckboxes();
+  updateSelectedCount();
+}
+
+function onlineGoPrevPage() {
+  if (onlineTableState.page <= 1) return;
+  onlineTableState.page -= 1;
+  renderAccountTable({ online_accounts: Array.from(accountMap.values()), online_details: [], online: {} });
+}
+
+function onlineGoNextPage() {
+  const totalPages = Math.max(1, Math.ceil(onlineTableState.rows.length / onlineTableState.pageSize));
+  if (onlineTableState.page >= totalPages) return;
+  onlineTableState.page += 1;
+  renderAccountTable({ online_accounts: Array.from(accountMap.values()), online_details: [], online: {} });
+}
+
+function changeOnlinePageSize() {
+  const sizeSelect = ui.onlinePageSize;
+  if (!sizeSelect) return;
+  onlineTableState.pageSize = Number(sizeSelect.value || 50);
+  onlineTableState.page = 1;
+  renderAccountTable({ online_accounts: Array.from(accountMap.values()), online_details: [], online: {} });
+}
+
+window.selectVisibleAccounts = selectVisibleAccounts;
+window.selectAllAccounts = selectAllAccounts;
+window.clearAllAccountSelection = clearAllAccountSelection;
+window.onlineGoPrevPage = onlineGoPrevPage;
+window.onlineGoNextPage = onlineGoNextPage;
+window.changeOnlinePageSize = changeOnlinePageSize;
 
 function updateSelectedCount() {
   const el = ui.selectedCount;
@@ -728,7 +853,7 @@ async function showCacheSection(type) {
   if (type === 'image') {
     cacheListState.image.visible = true;
     cacheListState.video.visible = false;
-    if (cacheListState.image.loaded) renderLocalCacheList('image', cacheListState.image.items);
+    if (cacheListState.image.loaded) { renderLocalCacheList('image', cacheListState.image.items); renderLocalPagination('image'); }
     else await loadLocalCacheList('image');
     if (ui.localCacheLists) ui.localCacheLists.classList.remove('hidden');
     if (ui.localImageList) ui.localImageList.classList.remove('hidden');
@@ -740,7 +865,7 @@ async function showCacheSection(type) {
   if (type === 'video') {
     cacheListState.video.visible = true;
     cacheListState.image.visible = false;
-    if (cacheListState.video.loaded) renderLocalCacheList('video', cacheListState.video.items);
+    if (cacheListState.video.loaded) { renderLocalCacheList('video', cacheListState.video.items); renderLocalPagination('video'); }
     else await loadLocalCacheList('video');
     if (ui.localCacheLists) ui.localCacheLists.classList.remove('hidden');
     if (ui.localVideoList) ui.localVideoList.classList.remove('hidden');
@@ -766,10 +891,15 @@ async function toggleCacheList(type) {
 
 async function loadLocalCacheList(type) {
   const body = type === 'image' ? ui.localImageBody : ui.localVideoBody;
-  if (!body) return;
+  const state = cacheListState[type];
+  if (!body || !state) return;
   body.innerHTML = `<tr><td colspan="5">${t('common.loading')}</td></tr>`;
   try {
-    const params = new URLSearchParams({ type, page: '1', page_size: '1000' });
+    const params = new URLSearchParams({
+      type,
+      page: String(state.page || 1),
+      page_size: String(state.pageSize || 50)
+    });
     const res = await fetch(`/v1/admin/cache/list?${params.toString()}`, {
       headers: buildAuthHeaders(apiKey)
     });
@@ -779,16 +909,21 @@ async function loadLocalCacheList(type) {
     }
     const data = await res.json();
     const items = Array.isArray(data.items) ? data.items : [];
-    cacheListState[type].items = items;
-    cacheListState[type].loaded = true;
+    state.items = items;
+    state.total = Number(data.total || 0);
+    state.page = Number(data.page || state.page || 1);
+    state.pageSize = Number(data.page_size || state.pageSize || 50);
+    state.loaded = true;
     const keep = new Set(items.map(item => item.name));
     const selected = selectedLocal[type];
     Array.from(selected).forEach(name => {
       if (!keep.has(name)) selected.delete(name);
     });
     renderLocalCacheList(type, items);
+    renderLocalPagination(type);
   } catch (e) {
     body.innerHTML = `<tr><td colspan="5">${t('common.loadFailed')}</td></tr>`;
+    renderLocalPagination(type);
   }
 }
 
@@ -798,6 +933,7 @@ function renderLocalCacheList(type, items) {
   if (!items || items.length === 0) {
     body.innerHTML = `<tr><td colspan="5" class="table-empty">${t('cache.noFiles')}</td></tr>`;
     syncLocalSelectAllState(type);
+    renderLocalPagination(type);
     return;
   }
   const selected = selectedLocal[type];
@@ -873,6 +1009,53 @@ function renderLocalCacheList(type, items) {
   updateSelectedCount();
 }
 
+function renderLocalPagination(type) {
+  const state = cacheListState[type];
+  const info = type === 'image' ? ui.localImagePaginationInfo : ui.localVideoPaginationInfo;
+  const prevBtn = type === 'image' ? ui.localImagePagePrev : ui.localVideoPagePrev;
+  const nextBtn = type === 'image' ? ui.localImagePageNext : ui.localVideoPageNext;
+  const sizeSelect = type === 'image' ? ui.localImagePageSize : ui.localVideoPageSize;
+  if (!state || !info || !prevBtn || !nextBtn || !sizeSelect) return;
+
+  const totalCount = Number(state.total || 0);
+  const pageSize = Number(state.pageSize || 50);
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const currentPage = Math.min(Math.max(1, Number(state.page || 1)), totalPages);
+  info.textContent = `第 ${totalCount === 0 ? 0 : currentPage} / ${totalPages} 页 · 共 ${totalCount} 条`;
+  prevBtn.disabled = currentPage <= 1 || totalCount === 0;
+  nextBtn.disabled = currentPage >= totalPages || totalCount === 0;
+  sizeSelect.value = String(pageSize);
+}
+
+async function localGoPrevPage(type) {
+  const state = cacheListState[type];
+  if (!state || state.page <= 1) return;
+  state.page -= 1;
+  await loadLocalCacheList(type);
+}
+
+async function localGoNextPage(type) {
+  const state = cacheListState[type];
+  if (!state) return;
+  const totalPages = Math.max(1, Math.ceil((state.total || 0) / (state.pageSize || 50)));
+  if (state.page >= totalPages) return;
+  state.page += 1;
+  await loadLocalCacheList(type);
+}
+
+async function changeLocalPageSize(type) {
+  const state = cacheListState[type];
+  const sizeSelect = type === 'image' ? ui.localImagePageSize : ui.localVideoPageSize;
+  if (!state || !sizeSelect) return;
+  state.pageSize = Number(sizeSelect.value || 50);
+  state.page = 1;
+  await loadLocalCacheList(type);
+}
+
+window.localGoPrevPage = localGoPrevPage;
+window.localGoNextPage = localGoNextPage;
+window.changeLocalPageSize = changeLocalPageSize;
+
 function viewLocalFile(type, name) {
   const safeName = encodeURIComponent(name);
   const url = type === 'image' ? `/v1/files/image/${safeName}` : `/v1/files/video/${safeName}`;
@@ -887,10 +1070,9 @@ async function deleteLocalFile(type, name) {
   showToast(t('common.deleteSuccess'), 'success');
   const state = cacheListState[type];
   if (state && Array.isArray(state.items)) {
-    state.items = state.items.filter(item => item.name !== name);
-    state.loaded = true;
     selectedLocal[type]?.delete(name);
-    if (state.visible) renderLocalCacheList(type, state.items);
+    state.loaded = false;
+    if (state.visible) await loadLocalCacheList(type);
   }
   await loadStats();
 }

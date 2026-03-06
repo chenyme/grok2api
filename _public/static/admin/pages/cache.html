@@ -88,60 +88,123 @@
 
       <div id="local-cache-lists" class="space-y-4 hidden">
         <div id="local-image-list" class="cache-list hidden">
-          <div class="rounded-lg overflow-hidden bg-white overflow-x-auto">
-            <table class="geist-table min-w-[600px]">
-              <thead>
-                <tr>
-                  <th class="w-10 text-center">
-                    <input id="local-image-select-all" type="checkbox" class="checkbox" onchange="toggleLocalSelectAll('image', this)">
-                  </th>
-                  <th class="w-108 text-left" data-i18n="cache.tableFile">文件</th>
-                  <th class="w-32 text-left" data-i18n="cache.tableSize">大小</th>
-                  <th class="w-48 text-left" data-i18n="cache.tableTime">时间</th>
-                  <th class="w-24 text-center" data-i18n="cache.tableActions">操作</th>
-                </tr>
-              </thead>
-              <tbody id="local-image-body"></tbody>
-            </table>
+          <div class="rounded-lg overflow-hidden bg-white overflow-x-auto cache-table-card">
+            <div class="cache-table-scroll">
+              <table class="geist-table min-w-[600px]">
+                <thead>
+                  <tr>
+                    <th class="w-10 text-center">
+                      <input id="local-image-select-all" type="checkbox" class="checkbox" onchange="toggleLocalSelectAll('image', this)">
+                    </th>
+                    <th class="w-108 text-left" data-i18n="cache.tableFile">文件</th>
+                    <th class="w-32 text-left" data-i18n="cache.tableSize">大小</th>
+                    <th class="w-48 text-left" data-i18n="cache.tableTime">时间</th>
+                    <th class="w-24 text-center" data-i18n="cache.tableActions">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="local-image-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="pagination-bar cache-pagination-bar">
+            <div id="local-image-pagination-info" class="text-xs text-[var(--accents-5)]">第 0 / 0 页 · 共 0 条</div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <button class="geist-button-outline text-xs px-3" onclick="selectVisibleLocal('image')">全选本页</button>
+              <button class="geist-button-outline text-xs px-3" onclick="selectAllLocal('image')">全选全部</button>
+              <button class="geist-button-outline text-xs px-3" onclick="clearAllLocalSelection('image')">取消全选</button>
+              <button id="local-image-page-prev" class="geist-button-outline text-xs px-3" onclick="localGoPrevPage('image')">上一页</button>
+              <button id="local-image-page-next" class="geist-button-outline text-xs px-3" onclick="localGoNextPage('image')">下一页</button>
+              <select id="local-image-page-size" class="geist-input h-[30px]" onchange="changeLocalPageSize('image')">
+                <option value="20">20 / 页</option>
+                <option value="50" selected>50 / 页</option>
+                <option value="100">100 / 页</option>
+                <option value="200">200 / 页</option>
+                <option value="500">500 / 页</option>
+                <option value="1000">1000 / 页</option>
+              </select>
+            </div>
           </div>
         </div>
         <div id="local-video-list" class="cache-list hidden">
-          <div class="rounded-lg overflow-hidden bg-white overflow-x-auto">
-            <table class="geist-table min-w-[600px]">
-              <thead>
-                <tr>
-                  <th class="w-10 text-center">
-                    <input id="local-video-select-all" type="checkbox" class="checkbox" onchange="toggleLocalSelectAll('video', this)">
-                  </th>
-                  <th class="w-108 text-left" data-i18n="cache.tableFile">文件</th>
-                  <th class="w-32 text-left" data-i18n="cache.tableSize">大小</th>
-                  <th class="w-48 text-left" data-i18n="cache.tableTime">时间</th>
-                  <th class="w-24 text-center" data-i18n="cache.tableActions">操作</th>
-                </tr>
-              </thead>
-              <tbody id="local-video-body"></tbody>
-            </table>
+          <div class="rounded-lg overflow-hidden bg-white overflow-x-auto cache-table-card">
+            <div class="cache-table-scroll">
+              <table class="geist-table min-w-[600px]">
+                <thead>
+                  <tr>
+                    <th class="w-10 text-center">
+                      <input id="local-video-select-all" type="checkbox" class="checkbox" onchange="toggleLocalSelectAll('video', this)">
+                    </th>
+                    <th class="w-108 text-left" data-i18n="cache.tableFile">文件</th>
+                    <th class="w-32 text-left" data-i18n="cache.tableSize">大小</th>
+                    <th class="w-48 text-left" data-i18n="cache.tableTime">时间</th>
+                    <th class="w-24 text-center" data-i18n="cache.tableActions">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="local-video-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="pagination-bar cache-pagination-bar">
+            <div id="local-video-pagination-info" class="text-xs text-[var(--accents-5)]">第 0 / 0 页 · 共 0 条</div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <button class="geist-button-outline text-xs px-3" onclick="selectVisibleLocal('video')">全选本页</button>
+              <button class="geist-button-outline text-xs px-3" onclick="selectAllLocal('video')">全选全部</button>
+              <button class="geist-button-outline text-xs px-3" onclick="clearAllLocalSelection('video')">取消全选</button>
+              <button id="local-video-page-prev" class="geist-button-outline text-xs px-3" onclick="localGoPrevPage('video')">上一页</button>
+              <button id="local-video-page-next" class="geist-button-outline text-xs px-3" onclick="localGoNextPage('video')">下一页</button>
+              <select id="local-video-page-size" class="geist-input h-[30px]" onchange="changeLocalPageSize('video')">
+                <option value="20">20 / 页</option>
+                <option value="50" selected>50 / 页</option>
+                <option value="100">100 / 页</option>
+                <option value="200">200 / 页</option>
+                <option value="500">500 / 页</option>
+                <option value="1000">1000 / 页</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
 
-      <div id="online-assets-table" class="rounded-lg overflow-hidden bg-white mb-4 overflow-x-auto">
-        <table class="geist-table min-w-[800px]">
-          <thead>
-            <tr>
-              <th class="w-10 text-center">
-                <input id="select-all" type="checkbox" class="checkbox" onchange="toggleSelectAll(this)">
-              </th>
-              <th class="w-48 text-left" data-i18n="cache.tableToken">Token</th>
-              <th class="w-32 text-center" data-i18n="cache.tableType">类型</th>
-              <th class="w-32 text-center" data-i18n="cache.tableAssetCount">资产数</th>
-              <th class="w-42 text-left" data-i18n="cache.tableLastClear">上次清空时间</th>
-              <th class="w-24 text-center" data-i18n="cache.tableActions">操作</th>
-            </tr>
-          </thead>
-          <tbody id="account-table-body"></tbody>
-        </table>
-        <div id="account-empty" class="hidden table-empty" data-i18n="cache.noAccounts">暂无可用账号</div>
+      <div id="online-assets-table" class="mb-4">
+        <div class="rounded-lg overflow-hidden bg-white overflow-x-auto cache-table-card">
+          <div class="cache-table-scroll online-table-scroll">
+            <table class="geist-table min-w-[800px]">
+              <thead>
+                <tr>
+                  <th class="w-10 text-center">
+                    <input id="select-all" type="checkbox" class="checkbox" onchange="toggleSelectAll(this)">
+                  </th>
+                  <th class="w-48 text-left" data-i18n="cache.tableToken">Token</th>
+                  <th class="w-32 text-center" data-i18n="cache.tableType">类型</th>
+                  <th class="w-32 text-center" data-i18n="cache.tableAssetCount">资产数</th>
+                  <th class="w-42 text-left" data-i18n="cache.tableLastClear">上次清空时间</th>
+                  <th class="w-24 text-center" data-i18n="cache.tableActions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="account-table-body"></tbody>
+            </table>
+          </div>
+          <div id="account-empty" class="hidden table-empty" data-i18n="cache.noAccounts">暂无可用账号</div>
+        </div>
+
+        <div class="pagination-bar cache-pagination-bar" id="online-pagination-bar">
+          <div id="online-pagination-info" class="text-xs text-[var(--accents-5)]">第 0 / 0 页 · 共 0 条</div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <button class="geist-button-outline text-xs px-3" onclick="selectVisibleAccounts()">全选本页</button>
+            <button class="geist-button-outline text-xs px-3" onclick="selectAllAccounts()">全选全部</button>
+            <button class="geist-button-outline text-xs px-3" onclick="clearAllAccountSelection()">取消全选</button>
+            <button id="online-page-prev" class="geist-button-outline text-xs px-3" onclick="onlineGoPrevPage()">上一页</button>
+            <button id="online-page-next" class="geist-button-outline text-xs px-3" onclick="onlineGoNextPage()">下一页</button>
+            <select id="online-page-size" class="geist-input h-[30px] cache-page-size-select" onchange="changeOnlinePageSize()">
+              <option value="20">20 / 页</option>
+              <option value="50" selected>50 / 页</option>
+              <option value="100">100 / 页</option>
+              <option value="200">200 / 页</option>
+              <option value="500">500 / 页</option>
+              <option value="1000">1000 / 页</option>
+            </select>
+          </div>
+        </div>
       </div>
 
     </div>

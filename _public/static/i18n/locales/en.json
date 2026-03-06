@@ -72,6 +72,7 @@
     "tokenManage": "Token Mgmt",
     "configManage": "Config Mgmt",
     "cacheManage": "Cache Mgmt",
+    "logsView": "Logs",
     "chat": "Chat",
     "imagine": "Imagine Gallery",
     "video": "Video Generation",
@@ -228,6 +229,35 @@
         "batch_size": {"title": "Batch Size", "desc": "Batch processing count for usage refresh. Recommended: 50."},
         "timeout": {"title": "Request Timeout", "desc": "Usage query timeout (seconds). Recommended: 60."}
       }
+    }
+  },
+  "logs": {
+    "pageTitle": "Grok2API - Logs",
+    "title": "Log Viewer",
+    "subtitle": "Filter structured logs by file, level, and keyword with a cleaner reading experience.",
+    "filesTitle": "Log Files",
+    "rawTitle": "Raw Log",
+    "empty": "No matching log records",
+    "filters": {
+      "file": "Log File",
+      "level": "Level",
+      "limit": "Rows",
+      "keyword": "Keyword",
+      "keywordPlaceholder": "traceID / path / error keyword",
+      "apply": "Apply",
+      "reset": "Reset"
+    },
+    "levels": {
+      "all": "All Levels"
+    },
+    "stats": {
+      "file": "Current File",
+      "entries": "Loaded Rows",
+      "entriesHint": "Shown with current filters",
+      "errorWarn": "Warnings / Errors",
+      "errorWarnHint": "warning + error",
+      "size": "File Size",
+      "sizeHint": "Disk usage"
     }
   },
   "token": {
