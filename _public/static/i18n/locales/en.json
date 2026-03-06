@@ -1,850 +1,851 @@
 {
-    "common": {
-        "save": "Save",
-        "cancel": "Cancel",
-        "confirm": "Confirm",
-        "delete": "Delete",
-        "loading": "Loading...",
-        "invalidKey": "Invalid key",
-        "connectionFailed": "Connection failed",
-        "requestFailed": "Request failed",
-        "operationSuccess": "Operation successful",
-        "gotIt": "Got it",
-        "notice": "Notice",
-        "rateLimitNotice": "The official GROK website update did not expose the rate-limits API, making it impossible to accurately calculate remaining Token usage. Please wait for the official API. Currently the count resets to 8 after auto-refresh.",
-        "pleaseConfirm": "Please confirm",
-        "ok": "OK",
-        "close": "Close",
-        "error": "Error",
-        "unknownError": "Unknown error",
-        "connectionInterrupted": "Connection interrupted",
-        "taskInProgress": "A task is already in progress",
-        "taskNoPause": "Current task does not support pausing",
-        "batchNoPause": "Current batch task does not support pausing",
-        "waitTaskFinish": "Please wait for the current task to finish",
-        "pause": "Pause",
-        "stop": "Stop",
-        "selected": "Selected",
-        "items": "items",
-        "export": "Export",
-        "refresh": "Refresh",
-        "load": "Load",
-        "files": "files",
-        "view": "View",
-        "retry": "Retry",
-        "copy": "Copy",
-        "edit": "Edit",
-        "loadFailed": "Load failed",
-        "loadError": "Load failed: {msg}",
-        "saveFailed": "Save failed",
-        "saveError": "Save error: {msg}",
-        "deleteFailed": "Delete failed",
-        "deleteSuccess": "Deleted successfully",
-        "notConnected": "Not connected",
-        "connecting": "Connecting",
-        "connected": "Connected",
-        "connectionError": "Connection error",
-        "generating": "Generating",
-        "done": "Done",
-        "failed": "Failed",
-        "stopped": "Stopped",
-        "terminated": "Terminated",
-        "sending": "Sending",
-        "fileReadFailed": "File read failed",
-        "noFileSelected": "No file selected",
-        "configurePublicKey": "Please configure Public Key first",
-        "enterPrompt": "Please enter a prompt",
-        "enterContent": "Please enter content",
-        "alreadyRunning": "Already running",
-        "createTaskFailed": "Failed to create task",
-        "copyFailed": "Copy failed",
-        "copied": "Copied",
-        "generationFailed": "Generation failed",
-        "partialError": "Partial error",
-        "loadingInProgress": "Loading in progress, please wait",
-        "cleaningInProgress": "Cleaning in progress, please wait",
-        "noTokenSelected": "No Token selected",
-        "clearCache": "Clear cache",
-        "failureDetails": "Failure Details",
-        "retryFailed": "Retry failed items"
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "loading": "Loading...",
+    "invalidKey": "Invalid key",
+    "connectionFailed": "Connection failed",
+    "requestFailed": "Request failed",
+    "operationSuccess": "Operation successful",
+    "gotIt": "Got it",
+    "notice": "Notice",
+    "rateLimitNotice": "The official GROK website update did not expose the rate-limits API, making it impossible to accurately calculate remaining Token usage. Please wait for the official API. Currently the count resets to 8 after auto-refresh.",
+    "pleaseConfirm": "Please confirm",
+    "ok": "OK",
+    "close": "Close",
+    "error": "Error",
+    "unknownError": "Unknown error",
+    "connectionInterrupted": "Connection interrupted",
+    "taskInProgress": "A task is already in progress",
+    "taskNoPause": "Current task does not support pausing",
+    "batchNoPause": "Current batch task does not support pausing",
+    "waitTaskFinish": "Please wait for the current task to finish",
+    "pause": "Pause",
+    "stop": "Stop",
+    "selected": "Selected",
+    "items": "items",
+    "export": "Export",
+    "refresh": "Refresh",
+    "load": "Load",
+    "files": "files",
+    "view": "View",
+    "retry": "Retry",
+    "copy": "Copy",
+    "edit": "Edit",
+    "loadFailed": "Load failed",
+    "loadError": "Load failed: {msg}",
+    "saveFailed": "Save failed",
+    "saveError": "Save error: {msg}",
+    "deleteFailed": "Delete failed",
+    "deleteSuccess": "Deleted successfully",
+    "notConnected": "Not connected",
+    "connecting": "Connecting",
+    "connected": "Connected",
+    "connectionError": "Connection error",
+    "generating": "Generating",
+    "done": "Done",
+    "failed": "Failed",
+    "stopped": "Stopped",
+    "terminated": "Terminated",
+    "sending": "Sending",
+    "fileReadFailed": "File read failed",
+    "noFileSelected": "No file selected",
+    "configurePublicKey": "Please configure Public Key first",
+    "enterPrompt": "Please enter a prompt",
+    "enterContent": "Please enter content",
+    "alreadyRunning": "Already running",
+    "createTaskFailed": "Failed to create task",
+    "copyFailed": "Copy failed",
+    "copied": "Copied",
+    "generationFailed": "Generation failed",
+    "partialError": "Partial error",
+    "loadingInProgress": "Loading in progress, please wait",
+    "cleaningInProgress": "Cleaning in progress, please wait",
+    "noTokenSelected": "No Token selected",
+    "clearCache": "Clear cache",
+    "failureDetails": "Failure Details",
+    "retryFailed": "Retry failed items",
+    "raw": "Raw"
+  },
+  "nav": {
+    "tokenManage": "Token Mgmt",
+    "configManage": "Config Mgmt",
+    "cacheManage": "Cache Mgmt",
+    "logsView": "Logs",
+    "chat": "Chat",
+    "imagine": "Imagine Gallery",
+    "video": "Video Generation",
+    "voice": "LiveKit Voice",
+    "feedback": "Feedback",
+    "logout": "Logout",
+    "adminPanel": "Admin Panel",
+    "storageMode": "Storage Mode"
+  },
+  "login": {
+    "adminPageTitle": "Grok2API - Login",
+    "adminTitle": "Admin Panel",
+    "adminSubtitle": "Enter admin password to continue",
+    "adminPlaceholder": "Admin Password (app_key)",
+    "continue": "Continue",
+    "publicPageTitle": "Grok2API - Public",
+    "publicTitle": "Public Access",
+    "publicSubtitle": "Enter Public Key (leave empty if not configured)",
+    "publicPlaceholder": "Public Key",
+    "enter": "Enter",
+    "goToAdmin": "Go to Admin Panel"
+  },
+  "config": {
+    "pageTitle": "Grok2API - Config",
+    "title": "Configuration",
+    "subtitle": "Manage API keys and system parameters.",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "configSaved": "Configuration saved",
+    "invalidJson": "Invalid JSON: {field}",
+    "appKeyRequired": "app_key cannot be empty (admin password)",
+    "flaresolverrRequired": "FlareSolverr URL is required when auto-refresh is enabled",
+    "generate": "Generate",
+    "publicAccess": "Public Access",
+    "noDesc": "No description available. Please refer to the documentation.",
+    "sectionFallback": "{section} Settings",
+    "sections": {
+      "app": "App Settings",
+      "proxy": "Proxy Config",
+      "retry": "Retry Strategy",
+      "chat": "Chat Config",
+      "video": "Video Config",
+      "image": "Image Config",
+      "imagine_fast": "Imagine Fast Config",
+      "asset": "Asset Config",
+      "voice": "Voice Config",
+      "token": "Token Pool Mgmt",
+      "cache": "Cache Mgmt",
+      "nsfw": "NSFW Config",
+      "usage": "Usage Config"
     },
-    "nav": {
-        "tokenManage": "Token Mgmt",
-        "configManage": "Config Mgmt",
-        "cacheManage": "Cache Mgmt",
-        "logsView": "Logs",
-        "chat": "Chat",
-        "imagine": "Imagine Gallery",
-        "video": "Video Generation",
-        "voice": "LiveKit Voice",
-        "feedback": "Feedback",
-        "logout": "Logout",
-        "adminPanel": "Admin Panel",
-        "storageMode": "Storage Mode"
+    "sectionDescs": {
+      "proxy": "Incorrect configuration will cause 403 errors. The IP of the first request to Grok must match the IP used to obtain the CF Clearance. Subsequent IP changes will not cause 403."
     },
-    "login": {
-        "adminPageTitle": "Grok2API - Login",
-        "adminTitle": "Admin Panel",
-        "adminSubtitle": "Enter admin password to continue",
-        "adminPlaceholder": "Admin Password (app_key)",
-        "continue": "Continue",
-        "publicPageTitle": "Grok2API - Public",
-        "publicTitle": "Public Access",
-        "publicSubtitle": "Enter Public Key (leave empty if not configured)",
-        "publicPlaceholder": "Public Key",
-        "enter": "Enter",
-        "goToAdmin": "Go to Admin Panel"
-    },
-    "config": {
-        "pageTitle": "Grok2API - Config",
-        "title": "Configuration",
-        "subtitle": "Manage API keys and system parameters.",
-        "saving": "Saving...",
-        "saved": "Saved",
-        "configSaved": "Configuration saved",
-        "invalidJson": "Invalid JSON: {field}",
-        "appKeyRequired": "app_key cannot be empty (admin password)",
-        "flaresolverrRequired": "FlareSolverr URL is required when auto-refresh is enabled",
-        "generate": "Generate",
-        "publicAccess": "Public Access",
-        "noDesc": "No description available. Please refer to the documentation.",
-        "sectionFallback": "{section} Settings",
-        "sections": {
-            "app": "App Settings",
-            "proxy": "Proxy Config",
-            "retry": "Retry Strategy",
-            "chat": "Chat Config",
-            "video": "Video Config",
-            "image": "Image Config",
-            "imagine_fast": "Imagine Fast Config",
-            "asset": "Asset Config",
-            "voice": "Voice Config",
-            "token": "Token Pool Mgmt",
-            "cache": "Cache Mgmt",
-            "nsfw": "NSFW Config",
-            "usage": "Usage Config"
+    "fields": {
+      "app": {
+        "api_key": {
+          "title": "API Key",
+          "desc": "Token for calling Grok2API services (optional, supports multiple, comma-separated or array)."
         },
-        "sectionDescs": {
-            "proxy": "Incorrect configuration will cause 403 errors. The IP of the first request to Grok must match the IP used to obtain the CF Clearance. Subsequent IP changes will not cause 403."
+        "app_key": {
+          "title": "Admin Password",
+          "desc": "Password for logging into the Grok2API admin panel (required)."
         },
-        "fields": {
-            "app": {
-                "api_key": {
-                    "title": "API Key",
-                    "desc": "Token for calling Grok2API services (optional, supports multiple, comma-separated or array)."
-                },
-                "app_key": {
-                    "title": "Admin Password",
-                    "desc": "Password for logging into the Grok2API admin panel (required)."
-                },
-                "function_enabled": {
-                    "title": "Enable Function Access",
-                    "desc": "Whether to enable the function access entry (disabled means function pages are inaccessible)."
-                },
-                "function_key": {
-                    "title": "Function Password",
-                    "desc": "Access password for function pages (optional)."
-                },
-                "app_url": {
-                    "title": "App URL",
-                    "desc": "External access URL for the Grok2API service, used for file link access."
-                },
-                "image_format": {
-                    "title": "Image Format",
-                    "desc": "Default image format (url or base64)."
-                },
-                "video_format": {
-                    "title": "Video Format",
-                    "desc": "Default video format (html or url, url is the processed link)."
-                },
-                "temporary": {
-                    "title": "Temporary Chat",
-                    "desc": "Whether to enable temporary chat mode by default."
-                },
-                "disable_memory": {
-                    "title": "Disable Memory",
-                    "desc": "Whether to disable Grok memory feature by default."
-                },
-                "stream": {
-                    "title": "Streaming",
-                    "desc": "Whether to enable streaming output by default."
-                },
-                "thinking": {
-                    "title": "Chain of Thought",
-                    "desc": "Whether to enable chain of thought output by default."
-                },
-                "dynamic_statsig": {
-                    "title": "Dynamic Fingerprint",
-                    "desc": "Whether to enable dynamic Statsig fingerprint generation by default."
-                },
-                "custom_instruction": {
-                    "title": "Custom Instruction",
-                    "desc": "Multi-line text passed through as Grok request parameter customPersonality."
-                },
-                "filter_tags": {
-                    "title": "Filter Tags",
-                    "desc": "Configure automatic filtering of special tags in Grok responses."
-                }
-            },
-            "proxy": {
-                "base_proxy_url": {
-                    "title": "Base Proxy URL",
-                    "desc": "Base service address for proxying requests to Grok website."
-                },
-                "asset_proxy_url": {
-                    "title": "Asset Proxy URL",
-                    "desc": "Address for proxying static resource (image/video) requests to Grok website."
-                },
-                "skip_proxy_ssl_verify": {
-                    "title": "Skip Proxy SSL Verify",
-                    "desc": "Enable when your proxy uses a self-signed certificate (only bypasses proxy certificate validation)."
-                },
-                "enabled": {
-                    "title": "Enable CF Auto-Refresh",
-                    "desc": "When enabled, automatically obtains cf_clearance through FlareSolverr."
-                },
-                "flaresolverr_url": {
-                    "title": "FlareSolverr URL",
-                    "desc": "HTTP address of FlareSolverr service (e.g. http://flaresolverr:8191)."
-                },
-                "refresh_interval": {
-                    "title": "Refresh Interval (sec)",
-                    "desc": "Time interval for auto-refreshing cf_clearance, recommended minimum 300 seconds."
-                },
-                "timeout": {
-                    "title": "Challenge Timeout (sec)",
-                    "desc": "Maximum time to wait for FlareSolverr to solve CF challenge."
-                },
-                "cf_clearance": {
-                    "title": "CF Clearance",
-                    "desc": "Cloudflare Clearance Cookie for bypassing anti-bot verification. Automatically managed when auto-refresh is enabled."
-                },
-                "browser": {
-                    "title": "Browser Fingerprint",
-                    "desc": "curl_cffi browser fingerprint identifier (e.g. chrome136). Automatically managed when auto-refresh is enabled."
-                },
-                "user_agent": {
-                    "title": "User-Agent",
-                    "desc": "HTTP request User-Agent string. Automatically managed when auto-refresh is enabled."
-                }
-            },
-            "retry": {
-                "max_retry": {
-                    "title": "Max Retries",
-                    "desc": "Maximum number of retries when Grok service request fails."
-                },
-                "retry_status_codes": {
-                    "title": "Retry Status Codes",
-                    "desc": "HTTP status codes that trigger a retry."
-                },
-                "reset_session_status_codes": {
-                    "title": "Session Reset Status Codes",
-                    "desc": "HTTP status codes that trigger session rebuild (used for proxy rotation)."
-                },
-                "retry_backoff_base": {
-                    "title": "Backoff Base",
-                    "desc": "Base delay (seconds) for retry backoff."
-                },
-                "retry_backoff_factor": {
-                    "title": "Backoff Factor",
-                    "desc": "Exponential multiplier for retry backoff."
-                },
-                "retry_backoff_max": {
-                    "title": "Backoff Max",
-                    "desc": "Maximum delay (seconds) for a single retry wait."
-                },
-                "retry_budget": {
-                    "title": "Backoff Budget",
-                    "desc": "Maximum total retry time (seconds) for a single request."
-                }
-            },
-            "chat": {
-                "concurrent": {
-                    "title": "Concurrency Limit",
-                    "desc": "Reverse API concurrency limit."
-                },
-                "timeout": {
-                    "title": "Request Timeout",
-                    "desc": "Reverse API timeout (seconds)."
-                },
-                "stream_timeout": {
-                    "title": "Stream Idle Timeout",
-                    "desc": "Streaming idle timeout (seconds)."
-                }
-            },
-            "video": {
-                "concurrent": {
-                    "title": "Concurrency Limit",
-                    "desc": "Reverse API concurrency limit."
-                },
-                "timeout": {
-                    "title": "Request Timeout",
-                    "desc": "Reverse API timeout (seconds)."
-                },
-                "stream_timeout": {
-                    "title": "Stream Idle Timeout",
-                    "desc": "Streaming idle timeout (seconds)."
-                }
-            },
-            "image": {
-                "timeout": {
-                    "title": "Request Timeout",
-                    "desc": "WebSocket request timeout (seconds)."
-                },
-                "stream_timeout": {
-                    "title": "Stream Idle Timeout",
-                    "desc": "WebSocket streaming idle timeout (seconds)."
-                },
-                "final_timeout": {
-                    "title": "Final Image Timeout",
-                    "desc": "Timeout (seconds) to wait for final image after receiving medium image."
-                },
-                "blocked_grace_seconds": {
-                    "title": "Review Grace Seconds",
-                    "desc": "Grace seconds for suspected review/censorship after receiving medium image (default 10, configurable)."
-                },
-                "nsfw": {
-                    "title": "NSFW Mode",
-                    "desc": "Whether to enable NSFW for WebSocket requests."
-                },
-                "medium_min_bytes": {
-                    "title": "Medium Min Bytes",
-                    "desc": "Minimum byte size for medium quality image detection."
-                },
-                "final_min_bytes": {
-                    "title": "Final Min Bytes",
-                    "desc": "Minimum byte size for final image detection (typically JPG > 100KB)."
-                },
-                "blocked_parallel_enabled": {
-                    "title": "Enable Parallel Compensation",
-                    "desc": "Whether to enable parallel compensation when suspected review/blocking occurs."
-                },
-                "blocked_parallel_attempts": {
-                    "title": "Block Compensation Concurrency",
-                    "desc": "Number of parallel compensation attempts when suspected review/blocking prevents final image."
-                }
-            },
-            "imagine_fast": {
-                "n": {
-                    "title": "Generation Count",
-                    "desc": "Server-side unified generation count for grok-imagine-1.0-fast only (1-10)."
-                },
-                "size": {
-                    "title": "Image Size",
-                    "desc": "Server-side unified size for grok-imagine-1.0-fast only."
-                },
-                "response_format": {
-                    "title": "Response Format",
-                    "desc": "Server-side unified response format for grok-imagine-1.0-fast only."
-                }
-            },
-            "asset": {
-                "upload_concurrent": {
-                    "title": "Upload Concurrency",
-                    "desc": "Maximum concurrent uploads. Recommended: 30."
-                },
-                "upload_timeout": {
-                    "title": "Upload Timeout",
-                    "desc": "Upload timeout (seconds). Recommended: 60."
-                },
-                "download_concurrent": {
-                    "title": "Download Concurrency",
-                    "desc": "Maximum concurrent downloads. Recommended: 30."
-                },
-                "download_timeout": {
-                    "title": "Download Timeout",
-                    "desc": "Download timeout (seconds). Recommended: 60."
-                },
-                "list_concurrent": {
-                    "title": "Query Concurrency",
-                    "desc": "Maximum concurrent asset queries. Recommended: 10."
-                },
-                "list_timeout": {
-                    "title": "Query Timeout",
-                    "desc": "Asset query timeout (seconds). Recommended: 60."
-                },
-                "list_batch_size": {
-                    "title": "Query Batch Size",
-                    "desc": "Number of tokens per query batch. Recommended: 10."
-                },
-                "delete_concurrent": {
-                    "title": "Delete Concurrency",
-                    "desc": "Maximum concurrent asset deletions. Recommended: 10."
-                },
-                "delete_timeout": {
-                    "title": "Delete Timeout",
-                    "desc": "Asset deletion timeout (seconds). Recommended: 60."
-                },
-                "delete_batch_size": {
-                    "title": "Delete Batch Size",
-                    "desc": "Number of tokens per delete batch. Recommended: 10."
-                }
-            },
-            "voice": {
-                "timeout": {
-                    "title": "Request Timeout",
-                    "desc": "Voice request timeout (seconds)."
-                }
-            },
-            "token": {
-                "auto_refresh": {
-                    "title": "Auto Refresh",
-                    "desc": "Whether to enable automatic Token refresh."
-                },
-                "refresh_interval_hours": {
-                    "title": "Refresh Interval",
-                    "desc": "Time interval (hours) for regular Token refresh."
-                },
-                "super_refresh_interval_hours": {
-                    "title": "Super Refresh Interval",
-                    "desc": "Time interval (hours) for Super Token refresh."
-                },
-                "fail_threshold": {
-                    "title": "Failure Threshold",
-                    "desc": "Number of consecutive failures before a Token is marked unavailable."
-                },
-                "save_delay_ms": {
-                    "title": "Save Delay",
-                    "desc": "Delay (ms) for batching Token change writes."
-                },
-                "usage_flush_interval_sec": {
-                    "title": "Usage Flush Interval",
-                    "desc": "Minimum interval (seconds) for writing usage data to database."
-                },
-                "reload_interval_sec": {
-                    "title": "Sync Interval",
-                    "desc": "Token state refresh interval (seconds) in multi-worker scenarios."
-                }
-            },
-            "cache": {
-                "enable_auto_clean": {
-                    "title": "Auto Clean",
-                    "desc": "Whether to enable automatic cache cleanup based on size limit."
-                },
-                "limit_mb": {
-                    "title": "Clean Threshold",
-                    "desc": "Cache size threshold (MB) that triggers cleanup."
-                }
-            },
-            "nsfw": {
-                "concurrent": {
-                    "title": "Concurrency Limit",
-                    "desc": "Maximum concurrent requests for batch NSFW enable. Recommended: 10."
-                },
-                "batch_size": {
-                    "title": "Batch Size",
-                    "desc": "Batch processing count for NSFW enable. Recommended: 50."
-                },
-                "timeout": {
-                    "title": "Request Timeout",
-                    "desc": "Timeout for NSFW-related requests (seconds). Recommended: 60."
-                }
-            },
-            "usage": {
-                "concurrent": {
-                    "title": "Concurrency Limit",
-                    "desc": "Maximum concurrent requests for batch usage refresh. Recommended: 10."
-                },
-                "batch_size": {
-                    "title": "Batch Size",
-                    "desc": "Batch processing count for usage refresh. Recommended: 50."
-                },
-                "timeout": {
-                    "title": "Request Timeout",
-                    "desc": "Usage query timeout (seconds). Recommended: 60."
-                }
-            }
+        "function_enabled": {
+          "title": "Enable Function Access",
+          "desc": "Whether to enable the function access entry (disabled means function pages are inaccessible)."
+        },
+        "function_key": {
+          "title": "Function Password",
+          "desc": "Access password for function pages (optional)."
+        },
+        "app_url": {
+          "title": "App URL",
+          "desc": "External access URL for the Grok2API service, used for file link access."
+        },
+        "image_format": {
+          "title": "Image Format",
+          "desc": "Default image format (url or base64)."
+        },
+        "video_format": {
+          "title": "Video Format",
+          "desc": "Default video format (html or url, url is the processed link)."
+        },
+        "temporary": {
+          "title": "Temporary Chat",
+          "desc": "Whether to enable temporary chat mode by default."
+        },
+        "disable_memory": {
+          "title": "Disable Memory",
+          "desc": "Whether to disable Grok memory feature by default."
+        },
+        "stream": {
+          "title": "Streaming",
+          "desc": "Whether to enable streaming output by default."
+        },
+        "thinking": {
+          "title": "Chain of Thought",
+          "desc": "Whether to enable chain of thought output by default."
+        },
+        "dynamic_statsig": {
+          "title": "Dynamic Fingerprint",
+          "desc": "Whether to enable dynamic Statsig fingerprint generation by default."
+        },
+        "custom_instruction": {
+          "title": "Custom Instruction",
+          "desc": "Multi-line text passed through as Grok request parameter customPersonality."
+        },
+        "filter_tags": {
+          "title": "Filter Tags",
+          "desc": "Configure automatic filtering of special tags in Grok responses."
         }
-    },
-    "logs": {
-        "pageTitle": "Grok2API - Logs",
-        "title": "Log Viewer",
-        "subtitle": "Filter structured logs by file, level, and keyword with a cleaner reading experience.",
-        "filesTitle": "Log Files",
-        "rawTitle": "Raw Log",
-        "empty": "No matching log records",
-        "filters": {
-            "file": "Log File",
-            "level": "Level",
-            "limit": "Rows",
-            "keyword": "Keyword",
-            "keywordPlaceholder": "traceID / path / error keyword",
-            "apply": "Apply",
-            "reset": "Reset",
-            "excludeAdminRoutes": "Hide `/v1/admin/*` only on this page"
+      },
+      "proxy": {
+        "base_proxy_url": {
+          "title": "Base Proxy URL",
+          "desc": "Base service address for proxying requests to Grok website."
         },
-        "levels": {
-            "all": "All Levels"
+        "asset_proxy_url": {
+          "title": "Asset Proxy URL",
+          "desc": "Address for proxying static resource (image/video) requests to Grok website."
         },
-        "stats": {
-            "file": "Current File",
-            "entries": "Loaded Rows",
-            "entriesHint": "Shown with current filters",
-            "errorWarn": "Warnings / Errors",
-            "errorWarnHint": "warning + error",
-            "size": "Total Size",
-            "sizeHint": "Log directory usage"
+        "skip_proxy_ssl_verify": {
+          "title": "Skip Proxy SSL Verify",
+          "desc": "Enable when your proxy uses a self-signed certificate (only bypasses proxy certificate validation)."
         },
-        "loadFilesFailed": "Failed to load log files",
-        "loadFailed": "Failed to load logs",
-        "noFiles": "No log files",
-        "fileCount": "{count} log files",
-        "deleteNone": "Select log files to delete first",
-        "deleteConfirm": "Delete {count} log files?",
-        "deleteFailed": "Failed to delete logs",
-        "deleteResult": "Deleted {deleted} log files, {failed} failed",
-        "toggle": {
-            "expand": "Expand",
-            "collapse": "Collapse"
+        "enabled": {
+          "title": "Enable CF Auto-Refresh",
+          "desc": "When enabled, automatically obtains cf_clearance through FlareSolverr."
         },
-        "autoRefresh": {
-            "buttonAria": "Auto refresh",
-            "off": "Auto refresh: Off",
-            "offShort": "Off",
-            "interval": "Auto refresh: {seconds}s",
-            "intervalLabel": "{seconds}s",
-            "changed": "Auto refresh: {label}",
-            "disabled": "Auto refresh disabled"
+        "flaresolverr_url": {
+          "title": "FlareSolverr URL",
+          "desc": "HTTP address of FlareSolverr service (e.g. http://flaresolverr:8191)."
         },
-        "deleteSelected": "Delete Selected"
-    },
-    "token": {
-        "pageTitle": "Grok2API - Token Mgmt",
-        "title": "Token List",
-        "subtitle": "Manage the Grok2API Token service pool.",
-        "import": "Import",
-        "add": "Add",
-        "statTotal": "Total Tokens",
-        "statActive": "Active",
-        "statCooling": "Rate Limited",
-        "statInvalid": "Invalid",
-        "statChatQuota": "Chat Remaining",
-        "statImageQuota": "Image Remaining",
-        "statVideoQuota": "Video Remaining",
-        "statVideoUnavailable": "N/A",
-        "statTotalCalls": "Total Calls",
-        "tabAll": "All",
-        "tabActive": "Active",
-        "tabCooling": "Rate Limited",
-        "tabExpired": "Expired",
-        "tabNsfw": "NSFW On",
-        "tabNoNsfw": "NSFW Off",
-        "statusFilterAria": "Token status filter",
-        "tableToken": "Token",
-        "tableType": "Type",
-        "tableStatus": "Status",
-        "tableQuota": "Quota",
-        "tableNote": "Note",
-        "tableActions": "Actions",
-        "refreshStatus": "Refresh status",
-        "emptyState": "No Tokens yet. Click Import or Add above.",
-        "emptyFilterState": "No results for current filter. Try a different filter.",
-        "selectPage": "Select page",
-        "selectAllFiltered": "Select all",
-        "clearSelection": "Clear selection",
-        "prevPage": "Prev",
-        "nextPage": "Next",
-        "perPage": "{size} / page",
-        "pagination": "Page {current} / {total} \u00b7 {count} items",
-        "batchExport": "Export",
-        "batchRefresh": "Refresh",
-        "batchDisable": "Disable",
-        "batchEnable": "Enable",
-        "batchDelete": "Delete",
-        "importTitle": "Batch Import Tokens",
-        "importTargetPool": "Target Pool",
-        "importTokenList": "Token List (one per line)",
-        "importPlaceholder": "Paste Tokens, one per line...",
-        "startImport": "Start Import",
-        "editTitle": "Edit Token",
-        "addTitle": "Add Token",
-        "editType": "Type",
-        "editQuota": "Quota",
-        "editNote": "Note",
-        "editNotePlaceholder": "Optional note",
-        "tokenEmpty": "Token cannot be empty",
-        "tokenExists": "Token already exists",
-        "confirmDelete": "Are you sure you want to delete this Token?",
-        "confirmDisable": "Are you sure you want to disable this Token?\n{token}",
-        "confirmEnable": "Are you sure you want to enable this Token?\n{token}",
-        "confirmBatchDelete": "Are you sure you want to delete {count} selected Tokens?",
-        "confirmBatchDisable": "Are you sure you want to disable {count} selected Tokens?",
-        "confirmBatchEnable": "Are you sure you want to enable {count} selected Tokens?",
-        "disableToken": "Disable",
-        "enableToken": "Enable",
-        "disableDone": "Token disabled",
-        "enableDone": "Token enabled",
-        "batchDisableDone": "Batch disable complete",
-        "batchEnableDone": "Batch enable complete",
-        "noTokenToDisable": "All selected Tokens are already disabled",
-        "noTokenToEnable": "All selected Tokens are already enabled",
-        "deleteDone": "Delete complete",
-        "refreshDone": "Refresh complete",
-        "refreshSuccess": "Refresh successful",
-        "refreshFailed": "Refresh failed",
-        "refreshError": "Refresh failed: {msg}",
-        "requestError": "Request error",
-        "notValidJson": "Response is not valid JSON (HTTP {status})",
-        "listEmpty": "List is empty",
-        "stopRefresh": "Refresh stopped",
-        "stopDelete": "Delete stopped",
-        "stopNsfw": "NSFW stopped",
-        "nsfwConfirm": "Enable NSFW mode for {count} selected Tokens?",
-        "nsfwEnable": "Enable NSFW",
-        "nsfwDone": "NSFW enable complete",
-        "nsfwResult": "NSFW enable complete: {ok} succeeded, {fail} failed",
-        "nsfwFailed": "Enable failed: {msg}",
-        "emptyResponse": "Empty response (HTTP {status})"
-    },
-    "cache": {
-        "pageTitle": "Grok2API - Cache Mgmt",
-        "title": "Cache Management",
-        "subtitle": "Manage local resources and online asset cache.",
-        "localImages": "Local Images",
-        "localVideos": "Local Videos",
-        "onlineAssets": "Online Assets",
-        "tableFile": "File",
-        "tableSize": "Size",
-        "tableTime": "Time",
-        "tableActions": "Actions",
-        "tableToken": "Token",
-        "tableType": "Type",
-        "tableAssetCount": "Asset Count",
-        "tableLastClear": "Last Cleared",
-        "notLoaded": "Not loaded",
-        "noAccounts": "No accounts available",
-        "noFiles": "No files",
-        "noTokenAvailable": "No Token available",
-        "cannotConnect": "Cannot connect",
-        "lastClear": "Last cleared: {time}",
-        "clear": "Clear",
-        "clean": "Clean",
-        "confirmClearImage": "Clear all local image cache?",
-        "confirmClearVideo": "Clear all local video cache?",
-        "clearSuccess": "Cleanup successful, freed {size} MB",
-        "clearFailed": "Cleanup failed",
-        "confirmDeleteFile": "Are you sure you want to delete this file?",
-        "confirmBatchDeleteFiles": "Are you sure you want to delete {count} selected files?",
-        "noFilesSelected": "No files selected",
-        "deletedFiles": "Deleted {count} files",
-        "deleteResult": "Delete complete: {success} succeeded, {failed} failed",
-        "loadStatsFailed": "Failed to load statistics",
-        "selectAccountsToLoad": "Please select accounts to load",
-        "selectAccountsToClear": "Please select accounts to clear",
-        "confirmClearAccounts": "Clear online assets for {count} selected accounts?",
-        "confirmClearAccount": "Clear online assets for account {label}?",
-        "batchCleanInProgress": "Batch cleaning online assets, please wait...",
-        "cleanInProgress": "Cleaning online assets, please wait...",
-        "batchCleanDone": "Batch cleanup complete",
-        "cleanResult": "Cleanup complete (succeeded: {success}, failed: {failed})",
-        "cleanFailedEntry": "Cleanup failed",
-        "requestTimeout": "Request timed out or failed",
-        "loadDone": "Load complete",
-        "loadingStatus": "Loading",
-        "loadStopped": "Load stopped",
-        "loadFailedMsg": "Load failed: {msg}",
-        "stoppedLoadRequests": "Remaining load requests stopped",
-        "cleanStopped": "Clean stopped",
-        "cleanFailedMsg": "Clean failed: {msg}",
-        "stoppedCleanRequests": "Remaining clean requests stopped"
-    },
-    "chat": {
-        "pageTitle": "Grok2API - Chat",
-        "title": "Chat",
-        "subtitle": "Chat with Grok via the chat API",
-        "sessions": "Sessions",
-        "newChat": "New",
-        "collapseSidebar": "Collapse",
-        "expandSidebar": "Expand",
-        "sessionList": "Session list",
-        "newSession": "New Session",
-        "ready": "Ready",
-        "emptyState": "Type a message to start a conversation.",
-        "uploadFile": "Upload file",
-        "placeholder": "Ask anything",
-        "settings": "Settings",
-        "send": "Send",
-        "temperature": "Temperature",
-        "topP": "Top P",
-        "systemPrompt": "System Prompt",
-        "systemPromptPlaceholder": "Optional, set system prompt",
-        "fileLabel": "[File]",
-        "compositeContent": "[Composite]",
-        "storageFull": "Local storage is full, some sessions were not saved",
-        "attachmentNoEdit": "Attachment messages cannot be edited yet",
-        "saveEdit": "Save",
-        "saveEditTitle": "Save edit",
-        "cancelEdit": "Cancel",
-        "cancelEditTitle": "Cancel edit",
-        "contentEmpty": "Content cannot be empty",
-        "editMessage": "Edit",
-        "editMessageTitle": "Edit message content",
-        "regenerate": "Regenerate",
-        "regenerateTitle": "Regenerate response from here",
-        "retryTitle": "Retry last response",
-        "editAnswer": "Edit",
-        "editAnswerTitle": "Edit response content",
-        "copyAnswer": "Copy",
-        "copyAnswerTitle": "Copy response content",
-        "feedback": "Feedback",
-        "feedbackTitle": "Feedback to Grok2API",
-        "noContentToCopy": "No content to copy",
-        "noChatToRetry": "No conversation to retry",
-        "requestFailedCheck": "Request failed, please check service status",
-        "requestFailedStatus": "Request failed: {status}",
-        "clickRetry": "Click to retry",
-        "thinking": "Thinking",
-        "thinkingSec": "Thinking {sec}s",
-        "thought": "Thought",
-        "thinkLabel": "Thinking",
-        "empty": "(empty)",
-        "toolWebSearch": "Web search",
-        "toolImageSearch": "Image search",
-        "toolAgentThink": "Reasoning",
-        "toolDefault": "Tool"
-    },
-    "imagine": {
-        "pageTitle": "Grok2API - Imagine Gallery",
-        "title": "Imagine Gallery",
-        "subtitle": "Continuously generate images via WebSocket, real-time base64 gallery.",
-        "genSettings": "Generation Settings",
-        "prompt": "Prompt",
-        "promptPlaceholder": "Describe the image you want, e.g.: futuristic city neon rain at night, wide angle photography",
-        "autoFollow": "Auto Follow",
-        "autoFollowDesc": "Scroll to latest",
-        "autoSave": "Auto Save",
-        "autoSaveDesc": "Auto-save images",
-        "aspectRatio": "Aspect Ratio",
-        "ratio2_3": "2:3 Portrait",
-        "ratio1_1": "1:1 Square",
-        "ratio3_2": "3:2 Landscape",
-        "ratio16_9": "16:9 Wide",
-        "ratio9_16": "9:16 Tall",
-        "concurrent": "Concurrency",
-        "tasks": "{n} tasks",
-        "concurrentTask1": "1 task",
-        "concurrentTask2": "2 tasks",
-        "concurrentTask3": "3 tasks",
-        "autoFilter": "Auto Filter",
-        "autoFilterDesc": "Filter substandard images",
-        "nsfwLabel": "NSFW",
-        "nsfwOn": "On",
-        "nsfwOff": "Off",
-        "saveLocation": "Save Location",
-        "browserDefault": "Browser default location",
-        "reverseOrder": "Reverse Order",
-        "reverseOrderDesc": "Show newest on top",
-        "connectionStatus": "Connection Status",
-        "connectionMode": "Connection Mode",
-        "connectionModeAria": "Connection mode",
-        "imageCount": "Image Count",
-        "activeTasks": "Active Tasks",
-        "avgTime": "Avg Time",
-        "gallery": "Gallery",
-        "waitingTitle": "Waiting for connection",
-        "waitingSubtitle": "Generated images will appear here after starting a task",
-        "start": "Start",
-        "batch": "Batch",
-        "batchDownloadTitle": "Batch download",
-        "selectAll": "Select all",
-        "deselectAll": "Deselect all",
-        "download": "Download",
-        "startedTasks": "Started {count} concurrent tasks",
-        "startedTasksSSE": "Started {count} concurrent tasks (SSE)",
-        "generatingSSE": "Generating (SSE)",
-        "selectFolder": "Selected folder: {name}",
-        "selectFolderFailed": "Failed to select folder",
-        "noImagesSelected": "Please select images to download first",
-        "jszipFailed": "JSZip library failed to load, please refresh and try again",
-        "packing": "Packing {count} images...",
-        "packingBtn": "Packing...",
-        "packingProgress": "Packing... ({done}/{total})",
-        "noImagesDownloaded": "No images were downloaded successfully",
-        "generatingZip": "Generating ZIP...",
-        "packSuccess": "Successfully packed {count} images",
-        "packFailed": "Packing failed, please try again"
-    },
-    "video": {
-        "pageTitle": "Grok2API - Video Generation",
-        "title": "Video Generation",
-        "subtitle": "Generate short videos with reference images and preset styles.",
-        "startGenerate": "Generate",
-        "genSettings": "Generation Settings",
-        "prompt": "Prompt",
-        "promptPlaceholder": "e.g.: neon rain at night on the street, slow motion, film grain",
-        "referenceImage": "Reference Image",
-        "referenceImagePlaceholder": "https://... or data:image/...",
-        "aspectRatio": "Aspect Ratio",
-        "ratio3_2": "3:2 Landscape",
-        "ratio2_3": "2:3 Portrait",
-        "ratio16_9": "16:9 Wide",
-        "ratio9_16": "9:16 Tall",
-        "ratio1_1": "1:1 Square",
-        "duration": "Duration",
-        "seconds": "{n}s",
-        "resolution": "Resolution",
-        "stylePreset": "Style Preset",
-        "upload": "Upload",
-        "clearImage": "Clear",
-        "runStatus": "Run Status",
-        "elapsedTime": "Elapsed {sec}s",
-        "elapsedTimeNone": "Elapsed -",
-        "metaRatio": "Ratio",
-        "metaDuration": "Duration",
-        "metaResolution": "Resolution",
-        "metaPreset": "Preset",
-        "videoPreview": "Video Preview",
-        "clearPreview": "Clear",
-        "waitingGenerate": "Waiting for video generation",
-        "videoTitle": "Video {n}",
-        "open": "Open",
-        "generatingPlaceholder": "Generating...",
-        "superResolution": "Super Resolution",
-        "superResolutionInProgress": "Super resolution in progress",
-        "alreadyGenerating": "Already generating",
-        "referenceConflict": "Reference image: choose either URL/Base64 or file upload",
-        "downloadFailed": "Download failed, please check if the video link is accessible",
-        "sec6": "6s",
-        "sec10": "10s",
-        "sec15": "15s"
-    },
-    "voice": {
-        "pageTitle": "Grok2API - LiveKit Voice",
-        "title": "LiveKit Voice",
-        "subtitle": "LiveKit voice session, connect to Grok Voice.",
-        "startSession": "Start Session",
-        "stopSession": "Stop Session",
-        "connectionSettings": "Connection Settings",
-        "voiceLabel": "Voice",
-        "personalityLabel": "Personality",
-        "speedLabel": "Speed",
-        "settingsHint": "Tip: Voice / Personality settings are sent to the server before connecting.",
-        "sessionLog": "Session Log",
-        "clearLog": "Clear",
-        "copyLog": "Copy",
-        "sessionStatus": "Session Status",
-        "audioOutput": "Audio Output",
-        "audioHint": "Subscribed audio tracks will be automatically inserted here.",
-        "livekitSDKError": "Error: LiveKit SDK failed to load properly, please refresh the page",
-        "livekitLoadFailed": "LiveKit SDK failed to load",
-        "secureContextBrowser": "Please use a modern browser and allow microphone access",
-        "secureContextHTTPS": "Please use HTTPS or access from localhost",
-        "secureContextError": "Current environment does not support microphone access, {hint}",
-        "connectingStatus": "Connecting",
-        "fetchingToken": "Fetching Token...",
-        "fetchTokenFailed": "Failed to get Token: {status}",
-        "fetchTokenSuccess": "Token obtained successfully",
-        "participantConnected": "Participant connected: {identity}",
-        "participantDisconnected": "Participant disconnected: {identity}",
-        "trackSubscribed": "Track subscribed: {kind}",
-        "disconnected": "Disconnected",
-        "connectedToServer": "Connected to LiveKit server",
-        "inCall": "In call",
-        "openingMic": "Opening microphone...",
-        "voiceEnabled": "Voice enabled",
-        "voiceConnected": "Voice connected successfully",
-        "errorPrefix": "Error: {msg}",
-        "logCopied": "Log copied",
-        "copyLogFailed": "Copy failed, please select manually"
+        "refresh_interval": {
+          "title": "Refresh Interval (sec)",
+          "desc": "Time interval for auto-refreshing cf_clearance, recommended minimum 300 seconds."
+        },
+        "timeout": {
+          "title": "Challenge Timeout (sec)",
+          "desc": "Maximum time to wait for FlareSolverr to solve CF challenge."
+        },
+        "cf_clearance": {
+          "title": "CF Clearance",
+          "desc": "Cloudflare Clearance Cookie for bypassing anti-bot verification. Automatically managed when auto-refresh is enabled."
+        },
+        "browser": {
+          "title": "Browser Fingerprint",
+          "desc": "curl_cffi browser fingerprint identifier (e.g. chrome136). Automatically managed when auto-refresh is enabled."
+        },
+        "user_agent": {
+          "title": "User-Agent",
+          "desc": "HTTP request User-Agent string. Automatically managed when auto-refresh is enabled."
+        }
+      },
+      "retry": {
+        "max_retry": {
+          "title": "Max Retries",
+          "desc": "Maximum number of retries when Grok service request fails."
+        },
+        "retry_status_codes": {
+          "title": "Retry Status Codes",
+          "desc": "HTTP status codes that trigger a retry."
+        },
+        "reset_session_status_codes": {
+          "title": "Session Reset Status Codes",
+          "desc": "HTTP status codes that trigger session rebuild (used for proxy rotation)."
+        },
+        "retry_backoff_base": {
+          "title": "Backoff Base",
+          "desc": "Base delay (seconds) for retry backoff."
+        },
+        "retry_backoff_factor": {
+          "title": "Backoff Factor",
+          "desc": "Exponential multiplier for retry backoff."
+        },
+        "retry_backoff_max": {
+          "title": "Backoff Max",
+          "desc": "Maximum delay (seconds) for a single retry wait."
+        },
+        "retry_budget": {
+          "title": "Backoff Budget",
+          "desc": "Maximum total retry time (seconds) for a single request."
+        }
+      },
+      "chat": {
+        "concurrent": {
+          "title": "Concurrency Limit",
+          "desc": "Reverse API concurrency limit."
+        },
+        "timeout": {
+          "title": "Request Timeout",
+          "desc": "Reverse API timeout (seconds)."
+        },
+        "stream_timeout": {
+          "title": "Stream Idle Timeout",
+          "desc": "Streaming idle timeout (seconds)."
+        }
+      },
+      "video": {
+        "concurrent": {
+          "title": "Concurrency Limit",
+          "desc": "Reverse API concurrency limit."
+        },
+        "timeout": {
+          "title": "Request Timeout",
+          "desc": "Reverse API timeout (seconds)."
+        },
+        "stream_timeout": {
+          "title": "Stream Idle Timeout",
+          "desc": "Streaming idle timeout (seconds)."
+        }
+      },
+      "image": {
+        "timeout": {
+          "title": "Request Timeout",
+          "desc": "WebSocket request timeout (seconds)."
+        },
+        "stream_timeout": {
+          "title": "Stream Idle Timeout",
+          "desc": "WebSocket streaming idle timeout (seconds)."
+        },
+        "final_timeout": {
+          "title": "Final Image Timeout",
+          "desc": "Timeout (seconds) to wait for final image after receiving medium image."
+        },
+        "blocked_grace_seconds": {
+          "title": "Review Grace Seconds",
+          "desc": "Grace seconds for suspected review/censorship after receiving medium image (default 10, configurable)."
+        },
+        "nsfw": {
+          "title": "NSFW Mode",
+          "desc": "Whether to enable NSFW for WebSocket requests."
+        },
+        "medium_min_bytes": {
+          "title": "Medium Min Bytes",
+          "desc": "Minimum byte size for medium quality image detection."
+        },
+        "final_min_bytes": {
+          "title": "Final Min Bytes",
+          "desc": "Minimum byte size for final image detection (typically JPG > 100KB)."
+        },
+        "blocked_parallel_enabled": {
+          "title": "Enable Parallel Compensation",
+          "desc": "Whether to enable parallel compensation when suspected review/blocking occurs."
+        },
+        "blocked_parallel_attempts": {
+          "title": "Block Compensation Concurrency",
+          "desc": "Number of parallel compensation attempts when suspected review/blocking prevents final image."
+        }
+      },
+      "imagine_fast": {
+        "n": {
+          "title": "Generation Count",
+          "desc": "Server-side unified generation count for grok-imagine-1.0-fast only (1-10)."
+        },
+        "size": {
+          "title": "Image Size",
+          "desc": "Server-side unified size for grok-imagine-1.0-fast only."
+        },
+        "response_format": {
+          "title": "Response Format",
+          "desc": "Server-side unified response format for grok-imagine-1.0-fast only."
+        }
+      },
+      "asset": {
+        "upload_concurrent": {
+          "title": "Upload Concurrency",
+          "desc": "Maximum concurrent uploads. Recommended: 30."
+        },
+        "upload_timeout": {
+          "title": "Upload Timeout",
+          "desc": "Upload timeout (seconds). Recommended: 60."
+        },
+        "download_concurrent": {
+          "title": "Download Concurrency",
+          "desc": "Maximum concurrent downloads. Recommended: 30."
+        },
+        "download_timeout": {
+          "title": "Download Timeout",
+          "desc": "Download timeout (seconds). Recommended: 60."
+        },
+        "list_concurrent": {
+          "title": "Query Concurrency",
+          "desc": "Maximum concurrent asset queries. Recommended: 10."
+        },
+        "list_timeout": {
+          "title": "Query Timeout",
+          "desc": "Asset query timeout (seconds). Recommended: 60."
+        },
+        "list_batch_size": {
+          "title": "Query Batch Size",
+          "desc": "Number of tokens per query batch. Recommended: 10."
+        },
+        "delete_concurrent": {
+          "title": "Delete Concurrency",
+          "desc": "Maximum concurrent asset deletions. Recommended: 10."
+        },
+        "delete_timeout": {
+          "title": "Delete Timeout",
+          "desc": "Asset deletion timeout (seconds). Recommended: 60."
+        },
+        "delete_batch_size": {
+          "title": "Delete Batch Size",
+          "desc": "Number of tokens per delete batch. Recommended: 10."
+        }
+      },
+      "voice": {
+        "timeout": {
+          "title": "Request Timeout",
+          "desc": "Voice request timeout (seconds)."
+        }
+      },
+      "token": {
+        "auto_refresh": {
+          "title": "Auto Refresh",
+          "desc": "Whether to enable automatic Token refresh."
+        },
+        "refresh_interval_hours": {
+          "title": "Refresh Interval",
+          "desc": "Time interval (hours) for regular Token refresh."
+        },
+        "super_refresh_interval_hours": {
+          "title": "Super Refresh Interval",
+          "desc": "Time interval (hours) for Super Token refresh."
+        },
+        "fail_threshold": {
+          "title": "Failure Threshold",
+          "desc": "Number of consecutive failures before a Token is marked unavailable."
+        },
+        "save_delay_ms": {
+          "title": "Save Delay",
+          "desc": "Delay (ms) for batching Token change writes."
+        },
+        "usage_flush_interval_sec": {
+          "title": "Usage Flush Interval",
+          "desc": "Minimum interval (seconds) for writing usage data to database."
+        },
+        "reload_interval_sec": {
+          "title": "Sync Interval",
+          "desc": "Token state refresh interval (seconds) in multi-worker scenarios."
+        }
+      },
+      "cache": {
+        "enable_auto_clean": {
+          "title": "Auto Clean",
+          "desc": "Whether to enable automatic cache cleanup based on size limit."
+        },
+        "limit_mb": {
+          "title": "Clean Threshold",
+          "desc": "Cache size threshold (MB) that triggers cleanup."
+        }
+      },
+      "nsfw": {
+        "concurrent": {
+          "title": "Concurrency Limit",
+          "desc": "Maximum concurrent requests for batch NSFW enable. Recommended: 10."
+        },
+        "batch_size": {
+          "title": "Batch Size",
+          "desc": "Batch processing count for NSFW enable. Recommended: 50."
+        },
+        "timeout": {
+          "title": "Request Timeout",
+          "desc": "Timeout for NSFW-related requests (seconds). Recommended: 60."
+        }
+      },
+      "usage": {
+        "concurrent": {
+          "title": "Concurrency Limit",
+          "desc": "Maximum concurrent requests for batch usage refresh. Recommended: 10."
+        },
+        "batch_size": {
+          "title": "Batch Size",
+          "desc": "Batch processing count for usage refresh. Recommended: 50."
+        },
+        "timeout": {
+          "title": "Request Timeout",
+          "desc": "Usage query timeout (seconds). Recommended: 60."
+        }
+      }
     }
+  },
+  "logs": {
+    "pageTitle": "Grok2API - Logs",
+    "title": "Log Viewer",
+    "subtitle": "Filter structured logs by file, level, and keyword with a cleaner reading experience.",
+    "filesTitle": "Log Files",
+    "rawTitle": "Raw Log",
+    "empty": "No matching log records",
+    "filters": {
+      "file": "Log File",
+      "level": "Level",
+      "limit": "Rows",
+      "keyword": "Keyword",
+      "keywordPlaceholder": "traceID / path / error keyword",
+      "apply": "Apply",
+      "reset": "Reset",
+      "excludeAdminRoutes": "Hide `/v1/admin/*` only on this page"
+    },
+    "levels": {
+      "all": "All Levels"
+    },
+    "stats": {
+      "file": "Current File",
+      "entries": "Loaded Rows",
+      "entriesHint": "Shown with current filters",
+      "errorWarn": "Warnings / Errors",
+      "errorWarnHint": "warning + error",
+      "size": "Total Size",
+      "sizeHint": "Log directory usage"
+    },
+    "loadFilesFailed": "Failed to load log files",
+    "loadFailed": "Failed to load logs",
+    "noFiles": "No log files",
+    "fileCount": "{count} log files",
+    "deleteNone": "Select log files to delete first",
+    "deleteConfirm": "Delete {count} log files?",
+    "deleteFailed": "Failed to delete logs",
+    "deleteResult": "Deleted {deleted} log files, {failed} failed",
+    "toggle": {
+      "expand": "Expand",
+      "collapse": "Collapse"
+    },
+    "autoRefresh": {
+      "buttonAria": "Auto refresh",
+      "off": "Auto refresh: Off",
+      "offShort": "Off",
+      "interval": "Auto refresh: {seconds}s",
+      "intervalLabel": "{seconds}s",
+      "changed": "Auto refresh: {label}",
+      "disabled": "Auto refresh disabled"
+    },
+    "deleteSelected": "Delete Selected"
+  },
+  "token": {
+    "pageTitle": "Grok2API - Token Mgmt",
+    "title": "Token List",
+    "subtitle": "Manage the Grok2API Token service pool.",
+    "import": "Import",
+    "add": "Add",
+    "statTotal": "Total Tokens",
+    "statActive": "Active",
+    "statCooling": "Rate Limited",
+    "statInvalid": "Invalid",
+    "statChatQuota": "Chat Remaining",
+    "statImageQuota": "Image Remaining",
+    "statVideoQuota": "Video Remaining",
+    "statVideoUnavailable": "N/A",
+    "statTotalCalls": "Total Calls",
+    "tabAll": "All",
+    "tabActive": "Active",
+    "tabCooling": "Rate Limited",
+    "tabExpired": "Expired",
+    "tabNsfw": "NSFW On",
+    "tabNoNsfw": "NSFW Off",
+    "statusFilterAria": "Token status filter",
+    "tableToken": "Token",
+    "tableType": "Type",
+    "tableStatus": "Status",
+    "tableQuota": "Quota",
+    "tableNote": "Note",
+    "tableActions": "Actions",
+    "refreshStatus": "Refresh status",
+    "emptyState": "No Tokens yet. Click Import or Add above.",
+    "emptyFilterState": "No results for current filter. Try a different filter.",
+    "selectPage": "Select page",
+    "selectAllFiltered": "Select all",
+    "clearSelection": "Clear selection",
+    "prevPage": "Prev",
+    "nextPage": "Next",
+    "perPage": "{size} / page",
+    "pagination": "Page {current} / {total} · {count} items",
+    "batchExport": "Export",
+    "batchRefresh": "Refresh",
+    "batchDisable": "Disable",
+    "batchEnable": "Enable",
+    "batchDelete": "Delete",
+    "importTitle": "Batch Import Tokens",
+    "importTargetPool": "Target Pool",
+    "importTokenList": "Token List (one per line)",
+    "importPlaceholder": "Paste Tokens, one per line...",
+    "startImport": "Start Import",
+    "editTitle": "Edit Token",
+    "addTitle": "Add Token",
+    "editType": "Type",
+    "editQuota": "Quota",
+    "editNote": "Note",
+    "editNotePlaceholder": "Optional note",
+    "tokenEmpty": "Token cannot be empty",
+    "tokenExists": "Token already exists",
+    "confirmDelete": "Are you sure you want to delete this Token?",
+    "confirmDisable": "Are you sure you want to disable this Token?\n{token}",
+    "confirmEnable": "Are you sure you want to enable this Token?\n{token}",
+    "confirmBatchDelete": "Are you sure you want to delete {count} selected Tokens?",
+    "confirmBatchDisable": "Are you sure you want to disable {count} selected Tokens?",
+    "confirmBatchEnable": "Are you sure you want to enable {count} selected Tokens?",
+    "disableToken": "Disable",
+    "enableToken": "Enable",
+    "disableDone": "Token disabled",
+    "enableDone": "Token enabled",
+    "batchDisableDone": "Batch disable complete",
+    "batchEnableDone": "Batch enable complete",
+    "noTokenToDisable": "All selected Tokens are already disabled",
+    "noTokenToEnable": "All selected Tokens are already enabled",
+    "deleteDone": "Delete complete",
+    "refreshDone": "Refresh complete",
+    "refreshSuccess": "Refresh successful",
+    "refreshFailed": "Refresh failed",
+    "refreshError": "Refresh failed: {msg}",
+    "requestError": "Request error",
+    "notValidJson": "Response is not valid JSON (HTTP {status})",
+    "listEmpty": "List is empty",
+    "stopRefresh": "Refresh stopped",
+    "stopDelete": "Delete stopped",
+    "stopNsfw": "NSFW stopped",
+    "nsfwConfirm": "Enable NSFW mode for {count} selected Tokens?",
+    "nsfwEnable": "Enable NSFW",
+    "nsfwDone": "NSFW enable complete",
+    "nsfwResult": "NSFW enable complete: {ok} succeeded, {fail} failed",
+    "nsfwFailed": "Enable failed: {msg}",
+    "emptyResponse": "Empty response (HTTP {status})"
+  },
+  "cache": {
+    "pageTitle": "Grok2API - Cache Mgmt",
+    "title": "Cache Management",
+    "subtitle": "Manage local resources and online asset cache.",
+    "localImages": "Local Images",
+    "localVideos": "Local Videos",
+    "onlineAssets": "Online Assets",
+    "tableFile": "File",
+    "tableSize": "Size",
+    "tableTime": "Time",
+    "tableActions": "Actions",
+    "tableToken": "Token",
+    "tableType": "Type",
+    "tableAssetCount": "Asset Count",
+    "tableLastClear": "Last Cleared",
+    "notLoaded": "Not loaded",
+    "noAccounts": "No accounts available",
+    "noFiles": "No files",
+    "noTokenAvailable": "No Token available",
+    "cannotConnect": "Cannot connect",
+    "lastClear": "Last cleared: {time}",
+    "clear": "Clear",
+    "clean": "Clean",
+    "confirmClearImage": "Clear all local image cache?",
+    "confirmClearVideo": "Clear all local video cache?",
+    "clearSuccess": "Cleanup successful, freed {size} MB",
+    "clearFailed": "Cleanup failed",
+    "confirmDeleteFile": "Are you sure you want to delete this file?",
+    "confirmBatchDeleteFiles": "Are you sure you want to delete {count} selected files?",
+    "noFilesSelected": "No files selected",
+    "deletedFiles": "Deleted {count} files",
+    "deleteResult": "Delete complete: {success} succeeded, {failed} failed",
+    "loadStatsFailed": "Failed to load statistics",
+    "selectAccountsToLoad": "Please select accounts to load",
+    "selectAccountsToClear": "Please select accounts to clear",
+    "confirmClearAccounts": "Clear online assets for {count} selected accounts?",
+    "confirmClearAccount": "Clear online assets for account {label}?",
+    "batchCleanInProgress": "Batch cleaning online assets, please wait...",
+    "cleanInProgress": "Cleaning online assets, please wait...",
+    "batchCleanDone": "Batch cleanup complete",
+    "cleanResult": "Cleanup complete (succeeded: {success}, failed: {failed})",
+    "cleanFailedEntry": "Cleanup failed",
+    "requestTimeout": "Request timed out or failed",
+    "loadDone": "Load complete",
+    "loadingStatus": "Loading",
+    "loadStopped": "Load stopped",
+    "loadFailedMsg": "Load failed: {msg}",
+    "stoppedLoadRequests": "Remaining load requests stopped",
+    "cleanStopped": "Clean stopped",
+    "cleanFailedMsg": "Clean failed: {msg}",
+    "stoppedCleanRequests": "Remaining clean requests stopped"
+  },
+  "chat": {
+    "pageTitle": "Grok2API - Chat",
+    "title": "Chat",
+    "subtitle": "Chat with Grok via the chat API",
+    "sessions": "Sessions",
+    "newChat": "New",
+    "collapseSidebar": "Collapse",
+    "expandSidebar": "Expand",
+    "sessionList": "Session list",
+    "newSession": "New Session",
+    "ready": "Ready",
+    "emptyState": "Type a message to start a conversation.",
+    "uploadFile": "Upload file",
+    "placeholder": "Ask anything",
+    "settings": "Settings",
+    "send": "Send",
+    "temperature": "Temperature",
+    "topP": "Top P",
+    "systemPrompt": "System Prompt",
+    "systemPromptPlaceholder": "Optional, set system prompt",
+    "fileLabel": "[File]",
+    "compositeContent": "[Composite]",
+    "storageFull": "Local storage is full, some sessions were not saved",
+    "attachmentNoEdit": "Attachment messages cannot be edited yet",
+    "saveEdit": "Save",
+    "saveEditTitle": "Save edit",
+    "cancelEdit": "Cancel",
+    "cancelEditTitle": "Cancel edit",
+    "contentEmpty": "Content cannot be empty",
+    "editMessage": "Edit",
+    "editMessageTitle": "Edit message content",
+    "regenerate": "Regenerate",
+    "regenerateTitle": "Regenerate response from here",
+    "retryTitle": "Retry last response",
+    "editAnswer": "Edit",
+    "editAnswerTitle": "Edit response content",
+    "copyAnswer": "Copy",
+    "copyAnswerTitle": "Copy response content",
+    "feedback": "Feedback",
+    "feedbackTitle": "Feedback to Grok2API",
+    "noContentToCopy": "No content to copy",
+    "noChatToRetry": "No conversation to retry",
+    "requestFailedCheck": "Request failed, please check service status",
+    "requestFailedStatus": "Request failed: {status}",
+    "clickRetry": "Click to retry",
+    "thinking": "Thinking",
+    "thinkingSec": "Thinking {sec}s",
+    "thought": "Thought",
+    "thinkLabel": "Thinking",
+    "empty": "(empty)",
+    "toolWebSearch": "Web search",
+    "toolImageSearch": "Image search",
+    "toolAgentThink": "Reasoning",
+    "toolDefault": "Tool"
+  },
+  "imagine": {
+    "pageTitle": "Grok2API - Imagine Gallery",
+    "title": "Imagine Gallery",
+    "subtitle": "Continuously generate images via WebSocket, real-time base64 gallery.",
+    "genSettings": "Generation Settings",
+    "prompt": "Prompt",
+    "promptPlaceholder": "Describe the image you want, e.g.: futuristic city neon rain at night, wide angle photography",
+    "autoFollow": "Auto Follow",
+    "autoFollowDesc": "Scroll to latest",
+    "autoSave": "Auto Save",
+    "autoSaveDesc": "Auto-save images",
+    "aspectRatio": "Aspect Ratio",
+    "ratio2_3": "2:3 Portrait",
+    "ratio1_1": "1:1 Square",
+    "ratio3_2": "3:2 Landscape",
+    "ratio16_9": "16:9 Wide",
+    "ratio9_16": "9:16 Tall",
+    "concurrent": "Concurrency",
+    "tasks": "{n} tasks",
+    "concurrentTask1": "1 task",
+    "concurrentTask2": "2 tasks",
+    "concurrentTask3": "3 tasks",
+    "autoFilter": "Auto Filter",
+    "autoFilterDesc": "Filter substandard images",
+    "nsfwLabel": "NSFW",
+    "nsfwOn": "On",
+    "nsfwOff": "Off",
+    "saveLocation": "Save Location",
+    "browserDefault": "Browser default location",
+    "reverseOrder": "Reverse Order",
+    "reverseOrderDesc": "Show newest on top",
+    "connectionStatus": "Connection Status",
+    "connectionMode": "Connection Mode",
+    "connectionModeAria": "Connection mode",
+    "imageCount": "Image Count",
+    "activeTasks": "Active Tasks",
+    "avgTime": "Avg Time",
+    "gallery": "Gallery",
+    "waitingTitle": "Waiting for connection",
+    "waitingSubtitle": "Generated images will appear here after starting a task",
+    "start": "Start",
+    "batch": "Batch",
+    "batchDownloadTitle": "Batch download",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
+    "download": "Download",
+    "startedTasks": "Started {count} concurrent tasks",
+    "startedTasksSSE": "Started {count} concurrent tasks (SSE)",
+    "generatingSSE": "Generating (SSE)",
+    "selectFolder": "Selected folder: {name}",
+    "selectFolderFailed": "Failed to select folder",
+    "noImagesSelected": "Please select images to download first",
+    "jszipFailed": "JSZip library failed to load, please refresh and try again",
+    "packing": "Packing {count} images...",
+    "packingBtn": "Packing...",
+    "packingProgress": "Packing... ({done}/{total})",
+    "noImagesDownloaded": "No images were downloaded successfully",
+    "generatingZip": "Generating ZIP...",
+    "packSuccess": "Successfully packed {count} images",
+    "packFailed": "Packing failed, please try again"
+  },
+  "video": {
+    "pageTitle": "Grok2API - Video Generation",
+    "title": "Video Generation",
+    "subtitle": "Generate short videos with reference images and preset styles.",
+    "startGenerate": "Generate",
+    "genSettings": "Generation Settings",
+    "prompt": "Prompt",
+    "promptPlaceholder": "e.g.: neon rain at night on the street, slow motion, film grain",
+    "referenceImage": "Reference Image",
+    "referenceImagePlaceholder": "https://... or data:image/...",
+    "aspectRatio": "Aspect Ratio",
+    "ratio3_2": "3:2 Landscape",
+    "ratio2_3": "2:3 Portrait",
+    "ratio16_9": "16:9 Wide",
+    "ratio9_16": "9:16 Tall",
+    "ratio1_1": "1:1 Square",
+    "duration": "Duration",
+    "seconds": "{n}s",
+    "resolution": "Resolution",
+    "stylePreset": "Style Preset",
+    "upload": "Upload",
+    "clearImage": "Clear",
+    "runStatus": "Run Status",
+    "elapsedTime": "Elapsed {sec}s",
+    "elapsedTimeNone": "Elapsed -",
+    "metaRatio": "Ratio",
+    "metaDuration": "Duration",
+    "metaResolution": "Resolution",
+    "metaPreset": "Preset",
+    "videoPreview": "Video Preview",
+    "clearPreview": "Clear",
+    "waitingGenerate": "Waiting for video generation",
+    "videoTitle": "Video {n}",
+    "open": "Open",
+    "generatingPlaceholder": "Generating...",
+    "superResolution": "Super Resolution",
+    "superResolutionInProgress": "Super resolution in progress",
+    "alreadyGenerating": "Already generating",
+    "referenceConflict": "Reference image: choose either URL/Base64 or file upload",
+    "downloadFailed": "Download failed, please check if the video link is accessible",
+    "sec6": "6s",
+    "sec10": "10s",
+    "sec15": "15s"
+  },
+  "voice": {
+    "pageTitle": "Grok2API - LiveKit Voice",
+    "title": "LiveKit Voice",
+    "subtitle": "LiveKit voice session, connect to Grok Voice.",
+    "startSession": "Start Session",
+    "stopSession": "Stop Session",
+    "connectionSettings": "Connection Settings",
+    "voiceLabel": "Voice",
+    "personalityLabel": "Personality",
+    "speedLabel": "Speed",
+    "settingsHint": "Tip: Voice / Personality settings are sent to the server before connecting.",
+    "sessionLog": "Session Log",
+    "clearLog": "Clear",
+    "copyLog": "Copy",
+    "sessionStatus": "Session Status",
+    "audioOutput": "Audio Output",
+    "audioHint": "Subscribed audio tracks will be automatically inserted here.",
+    "livekitSDKError": "Error: LiveKit SDK failed to load properly, please refresh the page",
+    "livekitLoadFailed": "LiveKit SDK failed to load",
+    "secureContextBrowser": "Please use a modern browser and allow microphone access",
+    "secureContextHTTPS": "Please use HTTPS or access from localhost",
+    "secureContextError": "Current environment does not support microphone access, {hint}",
+    "connectingStatus": "Connecting",
+    "fetchingToken": "Fetching Token...",
+    "fetchTokenFailed": "Failed to get Token: {status}",
+    "fetchTokenSuccess": "Token obtained successfully",
+    "participantConnected": "Participant connected: {identity}",
+    "participantDisconnected": "Participant disconnected: {identity}",
+    "trackSubscribed": "Track subscribed: {kind}",
+    "disconnected": "Disconnected",
+    "connectedToServer": "Connected to LiveKit server",
+    "inCall": "In call",
+    "openingMic": "Opening microphone...",
+    "voiceEnabled": "Voice enabled",
+    "voiceConnected": "Voice connected successfully",
+    "errorPrefix": "Error: {msg}",
+    "logCopied": "Log copied",
+    "copyLogFailed": "Copy failed, please select manually"
+  }
 }

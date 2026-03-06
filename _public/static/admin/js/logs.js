@@ -21,7 +21,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   bindEvents();
   syncFilePanelMode();
-  updateAutoRefreshButton();
+  if (window.I18n?.onReady) {
+    I18n.onReady(() => {
+      updateAutoRefreshButton();
+      updateFileCountSummary();
+      updateStats(currentResponse);
+    });
+  } else {
+    updateAutoRefreshButton();
+  }
   await loadFiles();
   syncAutoRefresh();
 });
