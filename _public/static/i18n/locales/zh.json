@@ -482,8 +482,8 @@
             "entriesHint": "\u6309\u5f53\u524d\u7b5b\u9009\u5c55\u793a",
             "errorWarn": "\u544a\u8b66 / \u9519\u8bef",
             "errorWarnHint": "warning + error",
-            "size": "\u6587\u4ef6\u5927\u5c0f",
-            "sizeHint": "\u78c1\u76d8\u5360\u7528"
+            "size": "\u603b\u5927\u5c0f",
+            "sizeHint": "\u65e5\u5fd7\u76ee\u5f55\u5360\u7528"
         },
         "loadFilesFailed": "\u52a0\u8f7d\u65e5\u5fd7\u6587\u4ef6\u5931\u8d25",
         "loadFailed": "\u52a0\u8f7d\u65e5\u5fd7\u5931\u8d25",

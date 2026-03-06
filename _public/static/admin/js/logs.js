@@ -398,14 +398,14 @@ function updateClearLevelButton() {
 function updateStats(response) {
   const fileName = response?.file?.name || currentFileName || '-';
   const updated = response?.file?.updated_at ? formatDate(response.file.updated_at) : '-';
-  const size = response?.file?.size ? formatBytes(response.file.size) : '0 B';
+  const totalSize = logFiles.reduce((sum, item) => sum + Number(item?.size || 0), 0);
   const matched = response?.stats?.matched || 0;
   const warning = response?.stats?.levels?.warning || 0;
   const error = response?.stats?.levels?.error || 0;
 
   logsById('stat-file').textContent = fileName;
   logsById('stat-updated').textContent = updated;
-  logsById('stat-size').textContent = size;
+  logsById('stat-size').textContent = formatBytes(totalSize);
   logsById('stat-matched').textContent = `${matched}`;
   logsById('stat-risk').textContent = `${warning + error}`;
 }

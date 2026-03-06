@@ -482,8 +482,8 @@
             "entriesHint": "Shown with current filters",
             "errorWarn": "Warnings / Errors",
             "errorWarnHint": "warning + error",
-            "size": "File Size",
-            "sizeHint": "Disk usage"
+            "size": "Total Size",
+            "sizeHint": "Log directory usage"
         },
         "loadFilesFailed": "Failed to load log files",
         "loadFailed": "Failed to load logs",

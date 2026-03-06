@@ -20,13 +20,8 @@ class LogViewerError(ValueError):
 
 
 def list_log_files() -> list[dict[str, Any]]:
-    if not LOG_DIR.exists():
-        return []
-
     files: list[dict[str, Any]] = []
-    for path in sorted(LOG_DIR.iterdir(), key=_sort_key, reverse=True):
-        if not path.is_file() or path.suffix.lower() not in ALLOWED_SUFFIXES:
-            continue
+    for path in sorted(_allowed_log_paths().values(), key=_sort_key, reverse=True):
         stat = path.stat()
         files.append(
             {
@@ -108,13 +103,40 @@ def delete_log_files(file_names: list[str]) -> dict[str, Any]:
     }
 
 
-def _resolve_log_path(file_name: str) -> Path:
+def _allowed_log_paths() -> dict[str, Path]:
+    if not LOG_DIR.exists():
+        return {}
+
+    base_dir = LOG_DIR.resolve()
+    allowed: dict[str, Path] = {}
+    for path in LOG_DIR.iterdir():
+        if not path.is_file() or path.suffix.lower() not in ALLOWED_SUFFIXES:
+            continue
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved.parent != base_dir:
+            continue
+        allowed[path.name] = resolved
+    return allowed
+
+
+def _validate_log_file_name(file_name: str) -> str:
     candidate = Path(file_name)
     if candidate.name != file_name:
         raise LogViewerError("Invalid log file name")
     if candidate.suffix.lower() not in ALLOWED_SUFFIXES:
         raise LogViewerError("Unsupported log file")
-    return LOG_DIR / candidate.name
+    return candidate.name
+
+
+def _resolve_log_path(file_name: str) -> Path:
+    safe_name = _validate_log_file_name(file_name)
+    path = _allowed_log_paths().get(safe_name)
+    if path is None:
+        raise FileNotFoundError(safe_name)
+    return path
 
 
 def _sort_key(path: Path) -> tuple[float, str]:
