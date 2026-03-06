@@ -324,18 +324,13 @@ function updateAccountSelect(accounts) {
   });
 }
 
-function renderAccountTable(data) {
-  const tbody = ui.accountTableBody;
-  const empty = ui.accountEmpty;
-  if (!tbody || !empty) return;
-
+function buildOnlineRows(data) {
   const details = Array.isArray(data.online_details) ? data.online_details : [];
   const accounts = Array.isArray(data.online_accounts) ? data.online_accounts : [];
   const detailsMap = new Map(details.map(item => [item.token, item]));
-  let rows = [];
 
   if (accounts.length > 0) {
-    rows = accounts.map(item => {
+    return accounts.map(item => {
       const detail = detailsMap.get(item.token);
       const state = accountStates.get(item.token);
       let count = '-';
@@ -365,8 +360,10 @@ function renderAccountTable(data) {
         last_asset_clear_at
       };
     });
-  } else if (details.length > 0) {
-    rows = details.map(item => ({
+  }
+
+  if (details.length > 0) {
+    return details.map(item => ({
       token: item.token,
       token_masked: item.token_masked,
       pool: (accountMap.get(item.token) || {}).pool || '-',
@@ -376,7 +373,15 @@ function renderAccountTable(data) {
     }));
   }
 
-  onlineTableState.rows = rows;
+  return [];
+}
+
+function renderOnlineTablePage() {
+  const tbody = ui.accountTableBody;
+  const empty = ui.accountEmpty;
+  if (!tbody || !empty) return;
+
+  const rows = onlineTableState.rows;
   const totalPages = Math.max(1, Math.ceil(rows.length / onlineTableState.pageSize));
   onlineTableState.page = Math.min(Math.max(1, onlineTableState.page), totalPages);
 
@@ -461,6 +466,11 @@ function renderAccountTable(data) {
   syncSelectAllState();
   updateSelectedCount();
   updateBatchActionsVisibility();
+}
+
+function renderAccountTable(data) {
+  onlineTableState.rows = buildOnlineRows(data);
+  renderOnlineTablePage();
 }
 
 function getVisibleOnlineRows() {
@@ -710,14 +720,14 @@ function clearAllAccountSelection() {
 function onlineGoPrevPage() {
   if (onlineTableState.page <= 1) return;
   onlineTableState.page -= 1;
-  renderAccountTable({ online_accounts: Array.from(accountMap.values()), online_details: [], online: {} });
+  renderOnlineTablePage();
 }
 
 function onlineGoNextPage() {
   const totalPages = Math.max(1, Math.ceil(onlineTableState.rows.length / onlineTableState.pageSize));
   if (onlineTableState.page >= totalPages) return;
   onlineTableState.page += 1;
-  renderAccountTable({ online_accounts: Array.from(accountMap.values()), online_details: [], online: {} });
+  renderOnlineTablePage();
 }
 
 function changeOnlinePageSize() {
@@ -725,7 +735,7 @@ function changeOnlinePageSize() {
   if (!sizeSelect) return;
   onlineTableState.pageSize = Number(sizeSelect.value || 50);
   onlineTableState.page = 1;
-  renderAccountTable({ online_accounts: Array.from(accountMap.values()), online_details: [], online: {} });
+  renderOnlineTablePage();
 }
 
 window.selectVisibleAccounts = selectVisibleAccounts;
@@ -1311,7 +1321,7 @@ async function startBatchLoad(tokens) {
   setOnlineStatus(t('cache.loadingStatus'), 'text-xs text-blue-600 mt-1');
   updateLoadButton();
   if (accountMap.size > 0) {
-    renderAccountTable({ online_accounts: Array.from(accountMap.values()), online_details: [], online: {} });
+    renderOnlineTablePage();
   }
   refreshBatchUI();
 
