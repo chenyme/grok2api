@@ -5,6 +5,7 @@ let selectedFiles = new Set();
 let autoRefreshTimer = null;
 let autoRefreshIndex = -1;
 let autoRefreshLongPressTimer = null;
+let autoRefreshLongPressTriggered = false;
 let isRefreshing = false;
 let currentFileName = '';
 let isMobileFilePanelCollapsed = false;
@@ -12,6 +13,7 @@ let isMobileFilePanelCollapsed = false;
 const AUTO_REFRESH_OPTIONS = [5000, 10000, 30000];
 const logsById = (id) => document.getElementById(id);
 const isMobileViewport = () => window.innerWidth <= 768;
+const t = (key, vars = {}) => (window.I18n?.t ? I18n.t(key, vars) : key);
 
 document.addEventListener('DOMContentLoaded', async () => {
   adminAuthHeader = await ensureAdminKey();
@@ -30,7 +32,12 @@ function bindEvents() {
   });
 
   const autoRefreshBtn = logsById('auto-refresh-btn');
-  autoRefreshBtn?.addEventListener('click', () => {
+  autoRefreshBtn?.addEventListener('click', (event) => {
+    if (autoRefreshLongPressTriggered) {
+      autoRefreshLongPressTriggered = false;
+      event.preventDefault();
+      return;
+    }
     cycleAutoRefresh();
   });
   autoRefreshBtn?.addEventListener('mousedown', startAutoRefreshLongPress);
@@ -108,7 +115,7 @@ async function loadFiles(keepSelection = false) {
       renderEmptyFiles();
     }
   } catch (error) {
-    showToast(error.message || '加载日志文件失败', 'error');
+    showToast(error.message || t('logs.loadFilesFailed'), 'error');
     renderEmptyFiles();
   } finally {
     setLoading(false);
@@ -169,7 +176,7 @@ async function loadLogs() {
     renderEntries([]);
     renderLevelBreakdown({});
     updateStats(null);
-    showToast(error.message || '加载日志失败', 'error');
+    showToast(error.message || t('logs.loadFailed'), 'error');
   } finally {
     setLoading(false);
   }
@@ -181,25 +188,40 @@ function renderFileList() {
   const selectAll = logsById('select-all-files');
   if (!container || !count || !selectAll) return;
 
-  count.textContent = `${logFiles.length} 个日志文件`;
-  container.innerHTML = '';
+  count.textContent = t('logs.fileCount', { count: logFiles.length });
+  container.replaceChildren();
 
   logFiles.forEach((item) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `log-file-item ${item.name === currentFileName ? 'active' : ''}`;
-    button.innerHTML = `
-      <div class="log-file-row">
-        <input type="checkbox" class="checkbox log-file-check" ${selectedFiles.has(item.name) ? 'checked' : ''}>
-        <div class="log-file-body">
-          <div class="log-file-name font-mono">${escapeHtml(item.name)}</div>
-          <div class="log-file-meta">
-            <span>${escapeHtml(formatDate(item.updated_at))}</span>
-            <span>${escapeHtml(formatBytes(item.size))}</span>
-          </div>
-        </div>
-      </div>
-    `;
+
+    const row = document.createElement('div');
+    row.className = 'log-file-row';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'checkbox log-file-check';
+    checkbox.checked = selectedFiles.has(item.name);
+
+    const body = document.createElement('div');
+    body.className = 'log-file-body';
+
+    const name = document.createElement('div');
+    name.className = 'log-file-name font-mono';
+    name.textContent = item.name;
+
+    const meta = document.createElement('div');
+    meta.className = 'log-file-meta';
+    const updated = document.createElement('span');
+    updated.textContent = formatDate(item.updated_at);
+    const size = document.createElement('span');
+    size.textContent = formatBytes(item.size);
+    meta.append(updated, size);
+
+    body.append(name, meta);
+    row.append(checkbox, body);
+    button.appendChild(row);
 
     button.addEventListener('click', async () => {
       currentFileName = item.name;
@@ -210,11 +232,10 @@ function renderFileList() {
       await loadLogs();
     });
 
-    const checkbox = button.querySelector('.log-file-check');
-    checkbox?.addEventListener('click', (event) => {
+    checkbox.addEventListener('click', (event) => {
       event.stopPropagation();
     });
-    checkbox?.addEventListener('change', (event) => {
+    checkbox.addEventListener('change', (event) => {
       if (event.target.checked) {
         selectedFiles.add(item.name);
       } else {
@@ -234,53 +255,102 @@ function renderEntries(entries) {
   const empty = logsById('empty-state');
   if (!list || !empty) return;
 
-  list.innerHTML = '';
+  list.replaceChildren();
   empty.classList.toggle('hidden', entries.length > 0);
 
   entries.forEach((entry) => {
     const card = document.createElement('article');
     card.className = 'log-entry';
+
+    const header = document.createElement('div');
+    header.className = 'log-entry-header';
+
+    const main = document.createElement('div');
+    main.className = 'log-entry-main';
+
+    const levelBtn = document.createElement('button');
+    levelBtn.type = 'button';
+    levelBtn.className = `log-badge ${sanitizeLevelClass(entry.level)}`;
+    levelBtn.dataset.level = entry.level || '';
+    levelBtn.textContent = entry.level || 'unknown';
+
+    const time = document.createElement('div');
+    time.className = 'log-entry-time font-mono';
+    time.textContent = entry.time_display || '-';
+
+    const caller = document.createElement('div');
+    caller.className = 'text-xs text-[var(--accents-4)] font-mono';
+    caller.textContent = entry.caller || '-';
+
+    main.append(levelBtn, time, caller);
+
+    const actions = document.createElement('div');
+    actions.className = 'log-entry-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'geist-button-outline text-xs h-8 px-3';
+    copyBtn.dataset.action = 'copy';
+    copyBtn.textContent = t('common.copy');
+
+    const rawBtn = document.createElement('button');
+    rawBtn.type = 'button';
+    rawBtn.className = 'geist-button-outline text-xs h-8 px-3';
+    rawBtn.dataset.action = 'raw';
+    rawBtn.textContent = t('common.raw');
+
+    actions.append(copyBtn, rawBtn);
+    header.append(main, actions);
+
+    const body = document.createElement('div');
+    body.className = 'log-entry-body';
+    const scroll = document.createElement('div');
+    scroll.className = 'log-entry-scroll';
+
+    const message = document.createElement('div');
+    message.className = 'log-message';
+    message.textContent = entry.msg || '';
+    scroll.appendChild(message);
+
     const extras = extractExtras(entry);
-    const extrasHtml = extras.map(([key, value]) => `
-      <div class="log-meta-card">
-        <div class="log-meta-key">${escapeHtml(key)}</div>
-        <div class="log-meta-value font-mono">${escapeHtml(stringifyValue(value))}</div>
-      </div>
-    `).join('');
-    const stacktrace = entry.stacktrace
-      ? `<pre class="log-stacktrace font-mono">${escapeHtml(entry.stacktrace)}</pre>`
-      : '';
+    if (extras.length) {
+      const extrasGrid = document.createElement('div');
+      extrasGrid.className = 'log-meta-grid';
+      extras.forEach(([key, value]) => {
+        const extraCard = document.createElement('div');
+        extraCard.className = 'log-meta-card';
+        const extraKey = document.createElement('div');
+        extraKey.className = 'log-meta-key';
+        extraKey.textContent = key;
+        const extraValue = document.createElement('div');
+        extraValue.className = 'log-meta-value font-mono';
+        extraValue.textContent = stringifyValue(value);
+        extraCard.append(extraKey, extraValue);
+        extrasGrid.appendChild(extraCard);
+      });
+      scroll.appendChild(extrasGrid);
+    }
 
-    card.innerHTML = `
-      <div class="log-entry-header">
-        <div class="log-entry-main">
-          <button type="button" class="log-badge ${escapeHtml(entry.level)}" data-level="${escapeHtml(entry.level)}">${escapeHtml(entry.level || 'unknown')}</button>
-          <div class="log-entry-time font-mono">${escapeHtml(entry.time_display || '-')}</div>
-          <div class="text-xs text-[var(--accents-4)] font-mono">${escapeHtml(entry.caller || '-')}</div>
-        </div>
-        <div class="log-entry-actions">
-          <button type="button" class="geist-button-outline text-xs h-8 px-3" data-action="copy">复制</button>
-          <button type="button" class="geist-button-outline text-xs h-8 px-3" data-action="raw">原始</button>
-        </div>
-      </div>
-      <div class="log-entry-body">
-        <div class="log-entry-scroll">
-          <div class="log-message">${escapeHtml(entry.msg || '')}</div>
-          ${extrasHtml ? `<div class="log-meta-grid">${extrasHtml}</div>` : ''}
-          ${stacktrace}
-        </div>
-      </div>
-    `;
+    if (entry.stacktrace) {
+      const stacktrace = document.createElement('pre');
+      stacktrace.className = 'log-stacktrace font-mono';
+      stacktrace.textContent = entry.stacktrace;
+      scroll.appendChild(stacktrace);
+    }
 
-    card.querySelector('[data-action="copy"]')?.addEventListener('click', async () => {
+    body.appendChild(scroll);
+    card.append(header, body);
+
+    copyBtn.addEventListener('click', async () => {
       await copyText(entry.raw || JSON.stringify(entry, null, 2));
     });
-    card.querySelector('[data-action="raw"]')?.addEventListener('click', () => {
+    rawBtn.addEventListener('click', () => {
       openModal(entry);
     });
-    card.querySelector('[data-level]')?.addEventListener('click', async () => {
+    levelBtn.addEventListener('click', async () => {
       await setLevelFilter(entry.level || '');
     });
+
     list.appendChild(card);
   });
 }
@@ -288,19 +358,24 @@ function renderEntries(entries) {
 function renderLevelBreakdown(levels) {
   const container = logsById('level-breakdown');
   if (!container) return;
-  container.innerHTML = '';
+  container.replaceChildren();
   const activeLevel = logsById('log-level').value;
   const names = Object.keys(levels).sort((a, b) => (levels[b] || 0) - (levels[a] || 0));
 
   names.forEach((level) => {
     const pill = document.createElement('button');
     pill.type = 'button';
-    pill.className = `level-pill ${escapeHtml(level)} ${activeLevel === level ? 'active' : ''}`;
-    pill.innerHTML = `
-      <span class="level-pill-dot ${escapeHtml(level)}"></span>
-      <span class="font-mono">${escapeHtml(level)}</span>
-      <strong>${levels[level]}</strong>
-    `;
+    pill.className = `level-pill ${sanitizeLevelClass(level)} ${activeLevel === level ? 'active' : ''}`;
+
+    const dot = document.createElement('span');
+    dot.className = `level-pill-dot ${sanitizeLevelClass(level)}`;
+    const label = document.createElement('span');
+    label.className = 'font-mono';
+    label.textContent = level;
+    const count = document.createElement('strong');
+    count.textContent = String(levels[level]);
+
+    pill.append(dot, label, count);
     pill.addEventListener('click', async () => {
       await setLevelFilter(activeLevel === level ? '' : level);
     });
@@ -336,7 +411,13 @@ function updateStats(response) {
 }
 
 function renderEmptyFiles() {
-  logsById('log-file-list').innerHTML = '<div class="table-empty">暂无日志文件</div>';
+  const list = logsById('log-file-list');
+  if (list) {
+    const empty = document.createElement('div');
+    empty.className = 'table-empty';
+    empty.textContent = t('logs.noFiles');
+    list.replaceChildren(empty);
+  }
   currentFileName = '';
   selectedFiles.clear();
   updateFileCountSummary();
@@ -349,7 +430,7 @@ function renderEmptyFiles() {
 function updateFileCountSummary() {
   const summary = logsById('file-count-summary');
   if (summary) {
-    summary.textContent = `${logFiles.length} 个日志文件`;
+    summary.textContent = t('logs.fileCount', { count: logFiles.length });
   }
 }
 
@@ -384,10 +465,10 @@ function updateFileSelectionState() {
 async function deleteSelectedFiles() {
   const files = [...selectedFiles];
   if (!files.length) {
-    showToast('请先选择要清理的日志文件', 'error');
+    showToast(t('logs.deleteNone'), 'error');
     return;
   }
-  if (!window.confirm(`确认清理 ${files.length} 个日志文件？`)) {
+  if (!window.confirm(t('logs.deleteConfirm', { count: files.length }))) {
     return;
   }
 
@@ -403,10 +484,12 @@ async function deleteSelectedFiles() {
     if (!res.ok) throw new Error(await getErrorMessage(res));
     const data = await res.json();
     selectedFiles.clear();
-    showToast(`已清理 ${data.deleted?.length || 0} 个日志文件`, 'success');
+    const deleted = Number(data.deleted?.length || 0);
+    const failed = Number(data.failed?.length || 0);
+    showToast(t('logs.deleteResult', { deleted, failed }), failed > 0 ? 'info' : 'success');
     await loadFiles(true);
   } catch (error) {
-    showToast(error.message || '清理日志失败', 'error');
+    showToast(error.message || t('logs.deleteFailed'), 'error');
   }
 }
 
@@ -417,8 +500,10 @@ function cycleAutoRefresh() {
   }
   syncAutoRefresh();
   updateAutoRefreshButton();
-  const label = autoRefreshIndex >= 0 ? `${AUTO_REFRESH_OPTIONS[autoRefreshIndex] / 1000}s` : '关闭';
-  showToast(`自动刷新：${label}`, 'success');
+  const label = autoRefreshIndex >= 0
+    ? t('logs.autoRefresh.intervalLabel', { seconds: AUTO_REFRESH_OPTIONS[autoRefreshIndex] / 1000 })
+    : t('logs.autoRefresh.offShort');
+  showToast(t('logs.autoRefresh.changed', { label }), 'success');
 }
 
 function syncAutoRefresh() {
@@ -441,19 +526,24 @@ function syncAutoRefresh() {
 function updateAutoRefreshButton() {
   const button = logsById('auto-refresh-btn');
   if (!button) return;
-  const text = autoRefreshIndex < 0 ? '自动刷新：关' : `自动刷新：${AUTO_REFRESH_OPTIONS[autoRefreshIndex] / 1000}s`;
+  const text = autoRefreshIndex < 0
+    ? t('logs.autoRefresh.off')
+    : t('logs.autoRefresh.interval', { seconds: AUTO_REFRESH_OPTIONS[autoRefreshIndex] / 1000 });
   button.textContent = text;
+  button.setAttribute('aria-label', t('logs.autoRefresh.buttonAria'));
   button.classList.toggle('auto-refresh-active', autoRefreshIndex >= 0);
 }
 
 function startAutoRefreshLongPress() {
   cancelAutoRefreshLongPress();
+  autoRefreshLongPressTriggered = false;
   autoRefreshLongPressTimer = window.setTimeout(() => {
     if (autoRefreshIndex >= 0) {
       autoRefreshIndex = -1;
+      autoRefreshLongPressTriggered = true;
       syncAutoRefresh();
       updateAutoRefreshButton();
-      showToast('自动刷新已关闭', 'success');
+      showToast(t('logs.autoRefresh.disabled'), 'success');
     }
     autoRefreshLongPressTimer = null;
   }, 600);
@@ -497,12 +587,12 @@ function setMobileFilePanelCollapsed(collapsed) {
     toggle.classList.remove('desktop-hidden');
     body.classList.toggle('mobile-collapsed', collapsed);
     toggle.setAttribute('aria-expanded', String(!collapsed));
-    text.textContent = collapsed ? '展开' : '收起';
+    text.textContent = collapsed ? t('logs.toggle.expand') : t('logs.toggle.collapse');
   } else {
     body.classList.remove('mobile-collapsed');
     toggle.classList.add('desktop-hidden');
     toggle.setAttribute('aria-expanded', 'true');
-    text.textContent = '展开';
+    text.textContent = t('logs.toggle.expand');
   }
 }
 
@@ -524,9 +614,9 @@ function closeModal() {
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
-    showToast(I18n?.t('common.copied') || '已复制', 'success');
+    showToast(t('common.copied'), 'success');
   } catch (error) {
-    showToast(I18n?.t('common.copyFailed') || '复制失败', 'error');
+    showToast(t('common.copyFailed'), 'error');
   }
 }
 
@@ -572,11 +662,7 @@ function formatBytes(bytes) {
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+function sanitizeLevelClass(level) {
+  const normalized = String(level || '').toLowerCase();
+  return ['debug', 'info', 'warning', 'error'].includes(normalized) ? normalized : 'unknown';
 }

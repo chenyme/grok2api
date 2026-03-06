@@ -34,8 +34,8 @@
             </svg>
             <span data-i18n="common.refresh">刷新</span>
           </button>
-          <button id="auto-refresh-btn" type="button" class="geist-button-outline auto-refresh-btn" aria-label="自动刷新">
-            自动刷新：关
+          <button id="auto-refresh-btn" type="button" class="geist-button-outline auto-refresh-btn" aria-label="自动刷新" data-i18n-aria-label="logs.autoRefresh.buttonAria">
+            <span data-i18n="logs.autoRefresh.off">自动刷新：关</span>
           </button>
         </div>
       </div>
@@ -92,7 +92,7 @@
         <div class="flex flex-wrap items-center gap-3">
           <label class="inline-flex items-center gap-2 text-xs text-[var(--accents-5)]">
             <input id="exclude-admin-routes" type="checkbox" class="checkbox" checked>
-            仅在此页过滤 `/v1/admin/*`
+            <span data-i18n="logs.filters.excludeAdminRoutes">仅在此页过滤 `/v1/admin/*`</span>
           </label>
           <button id="apply-btn" type="button" class="geist-button" data-i18n="logs.filters.apply">应用筛选</button>
           <button id="reset-btn" type="button" class="geist-button-outline" data-i18n="logs.filters.reset">重置</button>
@@ -106,10 +106,10 @@
           <div class="panel-title-row file-panel-header">
             <div>
               <h3 class="panel-title" data-i18n="logs.filesTitle">日志文件</h3>
-              <div id="file-count-summary" class="panel-subtle">0 个日志文件</div>
+              <div id="file-count-summary" class="panel-subtle" data-i18n="logs.fileCount" data-i18n-vars="{&quot;count&quot;:0}">0 个日志文件</div>
             </div>
             <button id="file-panel-toggle" type="button" class="file-panel-toggle" aria-expanded="false">
-              <span id="file-panel-toggle-text">展开</span>
+              <span id="file-panel-toggle-text" data-i18n="logs.toggle.expand">展开</span>
               <svg class="file-panel-toggle-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
@@ -119,9 +119,9 @@
             <div class="file-toolbar">
               <label class="inline-flex items-center gap-2 text-xs text-[var(--accents-5)]">
                 <input id="select-all-files" type="checkbox" class="checkbox">
-                全选
+                <span data-i18n="common.selectAll">全选</span>
               </label>
-              <button id="delete-selected-btn" type="button" class="geist-button-danger text-xs px-3 h-8">清理所选</button>
+              <button id="delete-selected-btn" type="button" class="geist-button-danger text-xs px-3 h-8" data-i18n="logs.deleteSelected">清理所选</button>
             </div>
             <div id="log-file-list" class="log-file-list"></div>
           </div>

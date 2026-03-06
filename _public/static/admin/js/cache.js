@@ -574,8 +574,38 @@ function selectVisibleLocal(type) {
   updateSelectedCount();
 }
 
-function selectAllLocal(type) {
-  selectVisibleLocal(type);
+async function selectAllLocal(type) {
+  const state = cacheListState[type];
+  const set = selectedLocal[type];
+  if (!state || !set) return;
+
+  const total = Number(state.total || 0);
+  if (total === 0) return;
+
+  try {
+    const params = new URLSearchParams({
+      type,
+      page: '1',
+      page_size: String(total),
+    });
+    const res = await fetch(`/v1/admin/cache/list?${params.toString()}`, {
+      headers: buildAuthHeaders(apiKey),
+    });
+    if (!res.ok) {
+      showToast(t('common.loadFailed'), 'error');
+      return;
+    }
+    const data = await res.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    set.clear();
+    items.forEach((item) => {
+      if (item && item.name) set.add(item.name);
+    });
+    syncLocalRowCheckboxes(type);
+    updateSelectedCount();
+  } catch (error) {
+    showToast(t('common.loadFailed'), 'error');
+  }
 }
 
 function clearAllLocalSelection(type) {

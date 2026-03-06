@@ -88,18 +88,23 @@ def read_log_entries(
 def delete_log_files(file_names: list[str]) -> dict[str, Any]:
     deleted: list[str] = []
     missing: list[str] = []
+    failed: list[str] = []
 
     for file_name in file_names:
         path = _resolve_log_path(file_name)
         if not path.exists() or not path.is_file():
             missing.append(path.name)
             continue
-        path.unlink()
-        deleted.append(path.name)
+        try:
+            path.unlink()
+            deleted.append(path.name)
+        except OSError:
+            failed.append(path.name)
 
     return {
         "deleted": deleted,
         "missing": missing,
+        "failed": failed,
     }
 
 
