@@ -171,6 +171,7 @@
         "stream_timeout": {"title": "Stream Idle Timeout", "desc": "Streaming idle timeout (seconds)."}
       },
       "video": {
+        "enable_public_asset": {"title": "Public Asset Link", "desc": "Whether to create a public asset link after video generation finishes."},
         "concurrent": {"title": "Concurrency Limit", "desc": "Reverse API concurrency limit."},
         "timeout": {"title": "Request Timeout", "desc": "Reverse API timeout (seconds)."},
         "stream_timeout": {"title": "Stream Idle Timeout", "desc": "Streaming idle timeout (seconds)."},

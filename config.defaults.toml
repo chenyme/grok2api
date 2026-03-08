@@ -142,6 +142,8 @@ response_format = "url"
 
 # ==================== 视频配置 ====================
 [video]
+# 是否开启生成结束后 Public 资产
+enable_public_asset = true
 # Reverse 接口并发上限
 concurrent = 100
 # Reverse 接口超时时间（秒）

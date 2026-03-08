@@ -29,6 +29,7 @@ from app.services.grok.utils.retry import rate_limited
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.reverse.app_chat import AppChatReverse
 from app.services.reverse.media_post import MediaPostReverse
+from app.services.reverse.media_post_link import MediaPostLinkReverse
 from app.services.reverse.utils.session import ResettableSession
 from app.services.reverse.video_upscale import VideoUpscaleReverse
 from app.services.token import EffortType, get_token_manager
@@ -1092,6 +1093,7 @@ class VideoStreamProcessor:
         self.token = token
         self.show_think = bool(show_think)
         self.upscale_on_finish = bool(upscale_on_finish)
+        self.enable_public_asset = bool(get_config("video.enable_public_asset"))
         self.round_index = max(1, int(round_index or 1))
         self.round_total = max(self.round_index, int(round_total or self.round_index))
 
@@ -1123,6 +1125,28 @@ class VideoStreamProcessor:
         if self._dl_service:
             await self._dl_service.close()
             self._dl_service = None
+
+    async def _create_public_link(self, video_url: str) -> str:
+        if not video_url or not self.enable_public_asset:
+            return video_url
+        video_id = _extract_video_id(video_url)
+        if not video_id:
+            logger.warning("Video public link skipped: unable to extract video id")
+            return video_url
+        try:
+            async with _new_session() as session:
+                response = await MediaPostLinkReverse.request(
+                    session, self.token, video_id
+                )
+            payload = response.json() if response is not None else {}
+            share_link = payload.get("shareLink") if isinstance(payload, dict) else None
+            if share_link:
+                public_url = f"https://imagine-public.x.ai/imagine-public/share-videos/{video_id}.mp4?cache=1"
+                logger.info(f"Video public link created: {public_url}")
+                return public_url
+        except Exception as e:
+            logger.warning(f"Video public link failed: {e}")
+        return video_url
 
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         result = VideoRoundResult()
@@ -1157,6 +1181,11 @@ class VideoStreamProcessor:
                 if not upscaled:
                     logger.warning("Video upscale failed, fallback to 480p result")
 
+            if self.enable_public_asset:
+                for chunk in self.writer.emit_note("正在生成可公开访问链接\n"):
+                    yield chunk
+                final_video_url = await self._create_public_link(final_video_url)
+
             rendered = await self._get_dl().render_video(
                 final_video_url,
                 self.token,
@@ -1187,6 +1216,7 @@ class VideoCollectProcessor:
         self.model = model
         self.token = token
         self.upscale_on_finish = bool(upscale_on_finish)
+        self.enable_public_asset = bool(get_config("video.enable_public_asset"))
         self.round_index = max(1, int(round_index or 1))
         self.round_total = max(self.round_index, int(round_total or self.round_index))
         self._dl_service: Optional[DownloadService] = None
@@ -1200,6 +1230,28 @@ class VideoCollectProcessor:
         if self._dl_service:
             await self._dl_service.close()
             self._dl_service = None
+
+    async def _create_public_link(self, video_url: str) -> str:
+        if not video_url or not self.enable_public_asset:
+            return video_url
+        video_id = _extract_video_id(video_url)
+        if not video_id:
+            logger.warning("Video public link skipped: unable to extract video id")
+            return video_url
+        try:
+            async with _new_session() as session:
+                response = await MediaPostLinkReverse.request(
+                    session, self.token, video_id
+                )
+            payload = response.json() if response is not None else {}
+            share_link = payload.get("shareLink") if isinstance(payload, dict) else None
+            if share_link:
+                public_url = f"https://imagine-public.x.ai/imagine-public/share-videos/{video_id}.mp4?cache=1"
+                logger.info(f"Video public link created: {public_url}")
+                return public_url
+        except Exception as e:
+            logger.warning(f"Video public link failed: {e}")
+        return video_url
 
     async def process(self, response: AsyncIterable[bytes]) -> Dict[str, Any]:
         try:
@@ -1221,6 +1273,9 @@ class VideoCollectProcessor:
                 final_video_url, upscaled = await _upscale_video_url(self.token, final_video_url)
                 if not upscaled:
                     logger.warning("Video upscale failed, fallback to 480p result")
+
+            if self.enable_public_asset:
+                final_video_url = await self._create_public_link(final_video_url)
 
             content = await self._get_dl().render_video(
                 final_video_url,

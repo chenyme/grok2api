@@ -92,6 +92,7 @@ const LOCALE_MAP = {
 
   "video": {
     "label": "视频配置",
+    "enable_public_asset": { title: "公开资产链接", desc: "是否开启生成结束后创建 Public 资产。" },
     "concurrent": { title: "并发上限", desc: "Reverse 接口并发上限。" },
     "timeout": { title: "请求超时", desc: "Reverse 接口超时时间（秒）。" },
     "stream_timeout": { title: "流空闲超时", desc: "流式空闲超时时间（秒）。" },
