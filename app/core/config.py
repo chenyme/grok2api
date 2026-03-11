@@ -374,8 +374,14 @@ class Config:
 config = Config()
 
 
+_ROUND_ROBIN_KEYS = frozenset({"proxy.base_proxy_url", "proxy.asset_proxy_url"})
+
+
 def get_config(key: str, default: Any = None) -> Any:
     """获取配置"""
+    if key in _ROUND_ROBIN_KEYS:
+        from app.core.proxy_pool import get_next_proxy
+        return get_next_proxy(key)
     return config.get(key, default)
 
 
