@@ -46,9 +46,11 @@ def _sanitize_token_text(value) -> str:
 @router.get("/tokens", dependencies=[Depends(verify_app_key)])
 async def get_tokens():
     """获取所有 Token"""
-    storage = get_storage()
-    tokens = await storage.load_tokens()
-    return tokens or {}
+    mgr = await get_token_manager()
+    results = {}
+    for pool_name, pool in mgr.pools.items():
+        results[pool_name] = [t.model_dump() for t in pool.list()]
+    return results or {}
 
 
 @router.post("/tokens", dependencies=[Depends(verify_app_key)])
@@ -146,10 +148,15 @@ async def refresh_tokens(data: dict):
             mgr,
         )
 
+        # 强制保存变更到存储
+        await mgr._save(force=True)
+
         results = {}
         for token, res in raw_results.items():
-            if res.get("ok"):
-                results[token] = res.get("data", False)
+            # 只要请求执行了（不论 Token 是否可用），对于刷新动作来说都是完成的
+            # 我们通过检查是否包含 ok 字段来判定任务是否真正执行过
+            if "ok" in res:
+                results[token] = res.get("ok")
             else:
                 results[token] = False
 

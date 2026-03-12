@@ -32,7 +32,7 @@ class RetryContext:
         # Decorrelated jitter state
         self._last_delay = self.backoff_base
 
-    def should_retry(self, status_code: int) -> bool:
+    def should_retry(self, status_code: int, error: Exception = None) -> bool:
         """Check if should retry."""
         if self.attempt >= self.max_retry:
             return False
@@ -40,6 +40,15 @@ class RetryContext:
             return False
         if self.total_delay >= self.retry_budget:
             return False
+        
+        # --- 准确判定逻辑开始 ---
+        # 如果已经明确判定为 Token 过期，则不进行重试
+        if isinstance(error, UpstreamException) and error.details:
+            if error.details.get("is_token_expired", False):
+                logger.warning("Confirmed Token Expired, skipping retries.")
+                return False
+        # --- 准确判定逻辑结束 ---
+            
         return True
 
     def record_error(self, status_code: int, error: Exception):
@@ -175,14 +184,16 @@ async def retry_on_status(
 
             if status_code is None:
                 # Error cannot be identified as retryable
-                logger.error(f"Non-retryable error: {e}")
+                import traceback
+                error_details = traceback.format_exc()
+                logger.error(f"Non-retryable error: {type(e).__name__}: {e}\n{error_details}")
                 raise
 
             # Record error
             ctx.record_error(status_code, e)
 
             # Check if should retry
-            if ctx.should_retry(status_code):
+            if ctx.should_retry(status_code, e):
                 # Extract Retry-After
                 retry_after = extract_retry_after(e)
 
