@@ -2,10 +2,13 @@
 Direct video extension service (app-chat based).
 """
 
+import aiohttp
 import re
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+import orjson
 
 from app.core.exceptions import AppException, ErrorType, UpstreamException, ValidationException
 from app.core.logger import logger
@@ -17,6 +20,51 @@ from app.services.token import EffortType, get_token_manager
 
 
 VIDEO_MODEL_ID = "grok-imagine-1.0-video"
+
+
+async def _generate_scene_prompt_for_extend(original_prompt: str, current_scene: int, total_scenes: int) -> str:
+    """Use local Grok API to generate unique scene prompt for video extension."""
+    
+    system_msg = f"""Continue this video concept with scene {current_scene} of {total_scenes}.
+
+Original concept: "{original_prompt}"
+
+CRITICAL RULES:
+- Scene MUST continue from previous scene
+- Natural progression, NO repetition
+- Different angle/action from previous
+- Output ONLY the scene description (no JSON, no quotes)
+
+Generate scene {current_scene}:"""
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "http://localhost:8000/v1/chat/completions",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "model": "grok-4.1-fast",
+                    "messages": [{"role": "user", "content": system_msg}],
+                    "temperature": 0.8,
+                    "max_tokens": 300
+                },
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                    if content:
+                        logger.info(f"Generated extend scene {current_scene}/{total_scenes} via LLM")
+                        return content
+                else:
+                    logger.warning(f"LLM API error {resp.status}")
+    except Exception as e:
+        logger.warning(f"LLM extend scene generation failed: {e}")
+    
+    # Fallback
+    logger.info(f"Using fallback extend prompt")
+    return f"{original_prompt} (continuation {current_scene}/{total_scenes})"
+
 
 _RATIO_MAP = {
     "1280x720": "16:9",
@@ -120,6 +168,14 @@ class VideoExtendService:
             )
         resolution_name = _normalize_resolution(resolution)
 
+        # LLM ile extend için sahne promptu oluştur
+        current_scene = int(start_time / 6) + 2  # +2 çünkü base video 1. sahne
+        total_scenes = 6  # Max 6 sahne (30 saniye)
+        
+        logger.info(f"🎬 EXTEND: start_time={start_time}s → scene {current_scene}/{total_scenes}")
+        extend_prompt = await _generate_scene_prompt_for_extend(prompt, current_scene, total_scenes)
+        logger.info(f"🎥 EXTEND scene {current_scene}: {extend_prompt[:150]}...")
+
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
 
@@ -147,7 +203,7 @@ class VideoExtendService:
                     "videoExtensionStartTime": float(start_time),
                     "extendPostId": reference_id,
                     "stitchWithExtendPostId": True,
-                    "originalPrompt": prompt,
+                    "originalPrompt": extend_prompt,
                     "originalPostId": reference_id,
                     "originalRefType": "ORIGINAL_REF_TYPE_VIDEO_EXTENSION",
                     "mode": "custom",
@@ -165,7 +221,7 @@ class VideoExtendService:
         response = await AppChatReverse.request(
             session,
             token,
-            message=f"{prompt} --mode=custom",
+            message=f"{extend_prompt} --mode=custom",
             model="grok-3",
             tool_overrides={"videoGen": True},
             model_config_override=model_config_override,
@@ -200,7 +256,7 @@ class VideoExtendService:
             "created_at": now,
             "completed_at": now,
             "status": "completed",
-            "prompt": prompt,
+            "prompt": extend_prompt,
             "reference_id": reference_id,
             "start_time": float(start_time),
             "ratio": aspect_ratio,
