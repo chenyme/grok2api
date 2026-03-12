@@ -29,6 +29,8 @@ DEFAULT_REFRESH_INTERVAL_HOURS = 8
 DEFAULT_RELOAD_INTERVAL_SEC = 30
 DEFAULT_SAVE_DELAY_MS = 500
 DEFAULT_USAGE_FLUSH_INTERVAL_SEC = 5
+DEFAULT_ON_DEMAND_REFRESH_MIN_INTERVAL_SEC = 300
+DEFAULT_ON_DEMAND_REFRESH_MAX_TOKENS = 100
 SUPER_WINDOW_THRESHOLD_SECONDS = 14400
 
 SUPER_POOL_NAME = "ssoSuper"
@@ -62,6 +64,8 @@ class TokenManager:
         self._last_usage_flush_at = 0.0
         self._dirty_tokens = {}
         self._dirty_deletes = set()
+        self._on_demand_refresh_lock = asyncio.Lock()
+        self._last_on_demand_refresh_at = 0.0
 
     @classmethod
     async def get_instance(cls) -> "TokenManager":
@@ -123,7 +127,7 @@ class TokenManager:
                 self.initialized = True
                 self._last_reload_at = time.monotonic()
                 total = sum(p.count() for p in self.pools.values())
-                logger.info(
+                logger.debug(
                     f"TokenManager initialized: {len(self.pools)} pools with {total} tokens"
                 )
             except Exception as e:
@@ -343,12 +347,12 @@ class TokenManager:
         """
         pool = self.pools.get(pool_name)
         if not pool:
-            logger.warning(f"Pool '{pool_name}' not found")
+            logger.debug(f"Pool '{pool_name}' not found")
             return None
 
         token_info = pool.select(exclude=exclude, prefer_tags=prefer_tags)
         if not token_info:
-            logger.warning(f"No available token in pool '{pool_name}'")
+            logger.debug(f"No available token in pool '{pool_name}'")
             return None
 
         token = token_info.token
@@ -368,12 +372,12 @@ class TokenManager:
         """
         pool = self.pools.get(pool_name)
         if not pool:
-            logger.warning(f"Pool '{pool_name}' not found")
+            logger.debug(f"Pool '{pool_name}' not found")
             return None
 
         token_info = pool.select(prefer_tags=prefer_tags)
         if not token_info:
-            logger.warning(f"No available token in pool '{pool_name}'")
+            logger.debug(f"No available token in pool '{pool_name}'")
             return None
 
         return token_info
@@ -561,7 +565,7 @@ class TokenManager:
                         )
 
                 consumed = max(0, old_quota - new_quota)
-                logger.info(
+                logger.debug(
                     f"Token {raw_token[:10]}...: synced quota "
                     f"{old_quota} -> {new_quota} (consumed: {consumed}, use_count: {target_token.use_count})"
                 )
@@ -843,7 +847,12 @@ class TokenManager:
             return []
         return pool.list()
 
-    async def refresh_cooling_tokens(self) -> Dict[str, int]:
+    async def refresh_cooling_tokens(
+        self,
+        *,
+        trigger: str = "scheduler",
+        max_tokens: Optional[int] = None,
+    ) -> Dict[str, int]:
         """
         批量刷新 cooling 状态的 Token 配额
 
@@ -867,11 +876,30 @@ class TokenManager:
                 if token.need_refresh(interval_hours):
                     to_refresh.append((pool.name, token))
 
+        to_refresh.sort(
+            key=lambda item: (
+                item[1].last_sync_at or 0,
+                item[1].last_used_at or 0,
+                item[1].created_at or 0,
+            )
+        )
+        candidate_count = len(to_refresh)
+        if max_tokens is not None and max_tokens > 0:
+            to_refresh = to_refresh[:max_tokens]
+
         if not to_refresh:
-            logger.debug("Refresh check: no tokens need refresh")
+            logger.debug(f"Refresh check: trigger={trigger}, no tokens need refresh")
             return {"checked": 0, "refreshed": 0, "recovered": 0, "expired": 0}
 
-        logger.info(f"Refresh check: found {len(to_refresh)} cooling tokens to refresh")
+        logger.info(
+            f"Refresh check: trigger={trigger}, candidates={candidate_count}, "
+            f"selected={len(to_refresh)}"
+            + (
+                f", limit={max_tokens}"
+                if max_tokens is not None and max_tokens > 0
+                else ""
+            )
+        )
 
         # 批量并发刷新
         semaphore = asyncio.Semaphore(DEFAULT_REFRESH_CONCURRENCY)
@@ -962,7 +990,7 @@ class TokenManager:
                                 reason=f"windowSizeSeconds={window_size}",
                             )
 
-                    logger.info(
+                    logger.debug(
                         f"Token {token_info.token[:10]}...: refreshed "
                         f"{old_quota} -> {new_quota}, status: {old_status} -> {token_info.status}"
                     )
@@ -1005,7 +1033,7 @@ class TokenManager:
         await self._save(force=True)
 
         logger.info(
-            f"Refresh completed: "
+            f"Refresh completed: trigger={trigger}, candidates={candidate_count}, "
             f"checked={len(to_refresh)}, refreshed={refreshed}, "
             f"recovered={recovered}, expired={expired}"
         )
@@ -1016,6 +1044,69 @@ class TokenManager:
             "recovered": recovered,
             "expired": expired,
         }
+
+    async def refresh_cooling_tokens_on_demand(self) -> Dict[str, int]:
+        """请求链路触发的按需刷新，带限流与并发保护。"""
+        enabled = bool(get_config("token.on_demand_refresh_enabled", True))
+        if not enabled:
+            logger.debug("On-demand refresh skipped: disabled")
+            return {"checked": 0, "refreshed": 0, "recovered": 0, "expired": 0}
+
+        try:
+            min_interval_sec = float(
+                get_config(
+                    "token.on_demand_refresh_min_interval_sec",
+                    DEFAULT_ON_DEMAND_REFRESH_MIN_INTERVAL_SEC,
+                )
+            )
+        except (TypeError, ValueError):
+            min_interval_sec = float(DEFAULT_ON_DEMAND_REFRESH_MIN_INTERVAL_SEC)
+
+        try:
+            max_tokens = int(
+                get_config(
+                    "token.on_demand_refresh_max_tokens",
+                    DEFAULT_ON_DEMAND_REFRESH_MAX_TOKENS,
+                )
+            )
+        except (TypeError, ValueError):
+            max_tokens = DEFAULT_ON_DEMAND_REFRESH_MAX_TOKENS
+
+        if self._on_demand_refresh_lock.locked():
+            logger.debug("On-demand refresh skipped: another refresh is already running")
+            return {"checked": 0, "refreshed": 0, "recovered": 0, "expired": 0}
+
+        now = time.monotonic()
+        if (
+            min_interval_sec > 0
+            and self._last_on_demand_refresh_at > 0
+            and (now - self._last_on_demand_refresh_at) < min_interval_sec
+        ):
+            logger.debug(
+                "On-demand refresh skipped: last refresh {:.2f}s ago",
+                now - self._last_on_demand_refresh_at,
+            )
+            return {"checked": 0, "refreshed": 0, "recovered": 0, "expired": 0}
+
+        async with self._on_demand_refresh_lock:
+            now = time.monotonic()
+            if (
+                min_interval_sec > 0
+                and self._last_on_demand_refresh_at > 0
+                and (now - self._last_on_demand_refresh_at) < min_interval_sec
+            ):
+                logger.debug(
+                    "On-demand refresh skipped after lock: last refresh {:.2f}s ago",
+                    now - self._last_on_demand_refresh_at,
+                )
+                return {"checked": 0, "refreshed": 0, "recovered": 0, "expired": 0}
+
+            result = await self.refresh_cooling_tokens(
+                trigger="on_demand",
+                max_tokens=max_tokens,
+            )
+            self._last_on_demand_refresh_at = time.monotonic()
+            return result
 
 
 # 便捷函数

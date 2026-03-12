@@ -55,7 +55,7 @@ class UsageService:
                     remaining = data.get("remainingQueries")
                     if remaining is not None:
                         data["remainingTokens"] = remaining
-                logger.info(
+                logger.debug(
                     f"Usage sync success: remaining={remaining}, token={token[:10]}..."
                 )
                 return data
