@@ -90,6 +90,8 @@ save_delay_ms = 500
 usage_flush_interval_sec = 5
 # 多 worker 状态同步间隔（秒）
 reload_interval_sec = 30
+# 启用消耗模式（试验性功能，默认关闭）
+consumed_mode_enabled = false
 
 # ==================== 缓存管理 ====================
 [cache]

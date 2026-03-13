@@ -150,7 +150,8 @@ const LOCALE_MAP = {
     "fail_threshold": { title: "失败阈值", desc: "单个 Token 连续失败多少次后被标记为不可用。" },
     "save_delay_ms": { title: "保存延迟", desc: "Token 变更合并写入的延迟（毫秒）。" },
     "usage_flush_interval_sec": { title: "用量落库间隔", desc: "用量类字段写入数据库的最小间隔（秒）。" },
-    "reload_interval_sec": { title: "同步间隔", desc: "多 worker 场景下 Token 状态刷新间隔（秒）。" }
+    "reload_interval_sec": { title: "同步间隔", desc: "多 worker 场景下 Token 状态刷新间隔（秒）。" },
+    "consumed_mode_enabled": { title: "启用消耗模式", desc: "启用新额度管理逻辑：使用本地消耗记录而非 API 返回值，支持更均衡的负载分配。（试验性功能，默认关闭）" }
   },
 
 

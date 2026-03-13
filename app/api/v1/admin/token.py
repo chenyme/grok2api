@@ -48,7 +48,14 @@ async def get_tokens():
     """获取所有 Token"""
     storage = get_storage()
     tokens = await storage.load_tokens()
-    return tokens or {}
+    # 获取消耗模式配置
+    from app.core.config import get_config
+    consumed_mode = get_config("token.consumed_mode_enabled", False)
+    
+    return {
+        "tokens": tokens or {},
+        "consumed_mode_enabled": consumed_mode
+    }
 
 
 @router.post("/tokens", dependencies=[Depends(verify_app_key)])
