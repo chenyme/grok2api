@@ -197,7 +197,8 @@ curl http://localhost:8000/v1/chat/completions \
 - `grok-imagine-1.0-fast` 流式 URL 出图会保持原始图片名（不追加 `-final` 后缀）。
 - 当图片疑似被审查拦截导致无最终图时，若开启 `image.blocked_parallel_enabled`，服务端会按 `image.blocked_parallel_attempts` 自动并行补偿生成，并优先使用不同 token；若仍无满足 `image.final_min_bytes` 的最终图则返回失败。
 - `grok-imagine-1.0-edit` 必须提供图片，多图默认取**最后 3 张**与最后一个文本。
-- `grok-imagine-1.0-video` 支持文生视频与图生视频（通过 `image_url` 传参考图，**仅取第 1 张**）。
+- `grok-imagine-1.0-video` 支持文生视频与多图参考视频：可通过多个 `image_url` 传最多 `7` 张参考图，并在文本中使用 `@图1`、`@图2` 这类占位符；服务端会自动替换为对应 `assetId`。
+- `@图N` 与 `image_url` 的顺序一一对应；若引用了不存在的图片序号，会直接报错。
 - 除上述外的其他参数将自动丢弃并忽略。
 
 <br>

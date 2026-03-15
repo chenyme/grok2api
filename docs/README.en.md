@@ -196,7 +196,8 @@ curl http://localhost:8000/v1/chat/completions \
 - `grok-imagine-1.0-fast` streaming output in `/chat/completions` only returns the final image, hiding intermediate preview images.
 - `grok-imagine-1.0-fast` streaming URL output will retain the original image filename (without appending `-final`).
 - `grok-imagine-1.0-edit` requires an image; if multiple are provided, the **last 3** images and last text are used.
-- `grok-imagine-1.0-video` supports text-to-video and image-to-video via `image_url` (**only the first image is used**).
+- `grok-imagine-1.0-video` supports text-to-video and multi-image reference video: pass up to `7` `image_url` blocks and use placeholders like `@图1`, `@图2` in the prompt; the server will replace them with the corresponding `assetId` values.
+- `@图N` placeholders map to `image_url` order; referencing a missing image index returns an error.
 - Any other parameters will be discarded and ignored.
 
 <br>
