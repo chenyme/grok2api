@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.auth import get_app_key, verify_app_key
 from app.core.batch import create_task, expire_task, get_task
+from app.core.config import get_config
 from app.core.logger import logger
 from app.core.storage import get_storage
 from app.services.grok.batch_services.usage import UsageService
@@ -161,6 +162,8 @@ async def refresh_tokens(data: dict):
 
         response = {"status": "success", "results": results}
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -225,10 +228,8 @@ async def refresh_tokens_async(data: dict):
         except Exception as e:
             task.fail_task(str(e))
         finally:
-            import asyncio
             asyncio.create_task(expire_task(task.id, 300))
 
-    import asyncio
     asyncio.create_task(_run())
 
     return {
@@ -419,10 +420,8 @@ async def enable_nsfw_async(data: dict):
         except Exception as e:
             task.fail_task(str(e))
         finally:
-            import asyncio
             asyncio.create_task(expire_task(task.id, 300))
 
-    import asyncio
     asyncio.create_task(_run())
 
     return {
