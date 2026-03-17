@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.auth import get_app_key, verify_app_key
 from app.core.batch import create_task, expire_task, get_task
+from app.core.config import get_config
 from app.core.logger import logger
 from app.core.storage import get_storage
 from app.services.grok.batch_services.usage import UsageService
