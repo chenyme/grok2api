@@ -2,6 +2,7 @@
 Grok video generation service.
 """
 
+import aiohttp
 import asyncio
 import math
 import re
@@ -39,6 +40,56 @@ _VIDEO_SEMAPHORE = None
 _VIDEO_SEM_VALUE = 0
 _APP_CHAT_MODEL = "grok-3"
 _POST_ID_URL_PATTERN = r"/generated/([0-9a-fA-F-]{32,36})/"
+
+
+async def _generate_scene_prompts_llm(original_prompt: str, num_scenes: int) -> List[str]:
+    """Use local Grok API to generate unique scene prompts for each video round."""
+    
+    num_scenes = min(num_scenes, 6)
+    
+    system_msg = f"""Break this video concept into {num_scenes} sequential scenes that flow naturally.
+
+Original concept: "{original_prompt}"
+
+CRITICAL RULES:
+- Each scene MUST be DIFFERENT (no repetition)
+- Scenes progress naturally like a story
+- Smooth transitions between scenes
+- Each scene continues from the previous one
+- Output ONLY a JSON array: ["scene 1 description", "scene 2 description", ...]
+
+Generate exactly {num_scenes} unique scenes:"""
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "http://localhost:8000/v1/chat/completions",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "model": "grok-4.1-fast",
+                    "messages": [{"role": "user", "content": system_msg}],
+                    "temperature": 0.8,
+                    "max_tokens": 2000
+                },
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    match = re.search(r'\[[\s\S]*?\]', content)
+                    if match:
+                        scenes = orjson.loads(match.group(0))
+                        if isinstance(scenes, list) and len(scenes) >= num_scenes:
+                            logger.info(f"Generated {len(scenes)} unique scene prompts via LLM")
+                            return [str(s) for s in scenes[:num_scenes]]
+                else:
+                    logger.warning(f"LLM API error {resp.status}")
+    except Exception as e:
+        logger.warning(f"LLM scene generation failed: {e}")
+    
+    # Fallback to original prompt with scene numbers
+    logger.info(f"Using fallback scene prompts")
+    return [f"{original_prompt} (scene {i+1}/{num_scenes})" for i in range(num_scenes)]
 
 
 @dataclass(frozen=True)
@@ -843,6 +894,10 @@ class VideoService:
         round_plan = _build_round_plan(target_length, is_super=is_super_pool)
         total_rounds = len(round_plan)
 
+        # Generate unique scene prompts for each round using LLM
+        scene_prompts = await _generate_scene_prompts_llm(prompt, total_rounds)
+        logger.info(f"Using {len(scene_prompts)} scene prompts for {total_rounds} rounds")
+
         service = VideoService()
         message = _build_message(prompt, preset)
 
@@ -881,18 +936,22 @@ class VideoService:
             original_id: Optional[str],
             source: str,
         ) -> VideoRoundResult:
+            # Use unique scene prompt for this round
+            round_prompt = scene_prompts[plan.round_index - 1] if plan.round_index <= len(scene_prompts) else prompt
+            round_message = _build_message(round_prompt, preset)
+            
             config_override = _build_round_config(
                 plan,
                 seed_post_id=seed_id,
                 last_post_id=last_id,
                 original_post_id=original_id,
-                prompt=prompt,
+                prompt=round_prompt,
                 aspect_ratio=aspect_ratio,
                 resolution_name=generation_resolution,
             )
             response = await _request_round_stream(
                 token=token,
-                message=message,
+                message=round_message,
                 model_config_override=config_override,
             )
             return await _collect_round_result(response, model=model, source=source)
@@ -906,18 +965,22 @@ class VideoService:
 
             try:
                 for plan in round_plan:
+                    # Use unique scene prompt for this round
+                    round_prompt = scene_prompts[plan.round_index - 1] if plan.round_index <= len(scene_prompts) else prompt
+                    round_message = _build_message(round_prompt, preset)
+                    
                     config_override = _build_round_config(
                         plan,
                         seed_post_id=seed_id,
                         last_post_id=last_id,
                         original_post_id=original_id,
-                        prompt=prompt,
+                        prompt=round_prompt,
                         aspect_ratio=aspect_ratio,
                         resolution_name=generation_resolution,
                     )
                     response = await _request_round_stream(
                         token=token,
-                        message=message,
+                        message=round_message,
                         model_config_override=config_override,
                     )
 
