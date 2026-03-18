@@ -49,7 +49,7 @@ async def _new_session(
     video_length: int,
     resolution_name: str,
     preset: str,
-    image_url: Optional[str],
+    image_urls: Optional[List[str]],
     reasoning_effort: Optional[str],
 ) -> str:
     task_id = uuid.uuid4().hex
@@ -62,7 +62,7 @@ async def _new_session(
             "video_length": video_length,
             "resolution_name": resolution_name,
             "preset": preset,
-            "image_url": image_url,
+            "image_urls": image_urls or [],
             "reasoning_effort": reasoning_effort,
             "created_at": now,
         }
@@ -123,13 +123,23 @@ def _validate_image_url(image_url: str) -> None:
     )
 
 
+def _normalize_image_urls(values: Optional[List[str]]) -> List[str]:
+    normalized: List[str] = []
+    if isinstance(values, list):
+        for item in values:
+            value = (item or "").strip()
+            if value:
+                normalized.append(value)
+    return normalized
+
+
 class VideoStartRequest(BaseModel):
     prompt: str
     aspect_ratio: Optional[str] = "3:2"
     video_length: Optional[int] = 6
     resolution_name: Optional[str] = "480p"
     preset: Optional[str] = "normal"
-    image_url: Optional[str] = None
+    image_urls: Optional[List[str]] = None
     reasoning_effort: Optional[str] = None
 
 
@@ -166,8 +176,12 @@ async def function_video_start(data: VideoStartRequest):
             detail="preset must be one of ['fun','normal','spicy','custom']",
         )
 
-    image_url = (data.image_url or "").strip() or None
-    if image_url:
+    image_urls = _normalize_image_urls(data.image_urls)
+    if len(image_urls) > 7:
+        raise HTTPException(
+            status_code=400, detail="image_urls supports at most 7 references"
+        )
+    for image_url in image_urls:
         _validate_image_url(image_url)
 
     reasoning_effort = (data.reasoning_effort or "").strip() or None
@@ -185,7 +199,7 @@ async def function_video_start(data: VideoStartRequest):
         video_length,
         resolution_name,
         preset,
-        image_url,
+        image_urls,
         reasoning_effort,
     )
     return {"task_id": task_id, "aspect_ratio": aspect_ratio}
@@ -202,7 +216,11 @@ async def function_video_sse(request: Request, task_id: str = Query("")):
     video_length = int(session.get("video_length") or 6)
     resolution_name = str(session.get("resolution_name") or "480p")
     preset = str(session.get("preset") or "normal")
-    image_url = session.get("image_url")
+    image_urls = [
+        str(item).strip()
+        for item in (session.get("image_urls") or [])
+        if str(item).strip()
+    ]
     reasoning_effort = session.get("reasoning_effort")
 
     async def event_stream():
@@ -218,14 +236,16 @@ async def function_video_sse(request: Request, task_id: str = Query("")):
                 yield "data: [DONE]\n\n"
                 return
 
-            if image_url:
+            if image_urls:
+                content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+                for image_url in image_urls:
+                    content.append(
+                        {"type": "image_url", "image_url": {"url": image_url}}
+                    )
                 messages: List[Dict[str, Any]] = [
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": image_url}},
-                        ],
+                        "content": content,
                     }
                 ]
             else:

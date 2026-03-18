@@ -24,7 +24,11 @@ from app.core.exceptions import (
 from app.core.logger import logger
 from app.services.grok.services.model import ModelService
 from app.services.grok.utils.download import DownloadService
-from app.services.grok.utils.process import _is_http2_error, _normalize_line, _with_idle_timeout
+from app.services.grok.utils.process import (
+    _is_http2_error,
+    _normalize_line,
+    _with_idle_timeout,
+)
 from app.services.grok.utils.retry import rate_limited
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.reverse.app_chat import AppChatReverse
@@ -39,6 +43,7 @@ _VIDEO_SEMAPHORE = None
 _VIDEO_SEM_VALUE = 0
 _APP_CHAT_MODEL = "grok-3"
 _POST_ID_URL_PATTERN = r"/generated/([0-9a-fA-F-]{32,36})/"
+_REFERENCE_PLACEHOLDER_RE = re.compile(r"@(?:(?:图|image|img)\s*(\d+))", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -106,7 +111,9 @@ async def _create_public_video_link(token: str, video_url: str) -> str:
         async with _new_session() as session:
             response = await MediaPostLinkReverse.request(session, token, video_id)
         payload = response.json() if response is not None else {}
-        share_link = _pick_str(payload.get("shareLink")) if isinstance(payload, dict) else ""
+        share_link = (
+            _pick_str(payload.get("shareLink")) if isinstance(payload, dict) else ""
+        )
         if share_link:
             if share_link.endswith(".mp4"):
                 logger.info(f"Video public link created: {share_link}")
@@ -230,14 +237,20 @@ def _build_round_config(
     prompt: str,
     aspect_ratio: str,
     resolution_name: str,
+    image_references: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     if not plan.is_extension:
-        return _build_base_config(
+        config = _build_base_config(
             seed_post_id,
             aspect_ratio,
             resolution_name,
             plan.video_length,
         )
+        if image_references:
+            video_config = config["modelMap"]["videoGenModelConfig"]
+            video_config["imageReferences"] = image_references
+            video_config["isReferenceToVideo"] = True
+        return config
 
     if not original_post_id:
         raise UpstreamException(
@@ -305,7 +318,9 @@ def _extract_post_id_candidates(resp: Dict[str, Any]) -> List[Tuple[int, str]]:
     return candidates
 
 
-def _apply_post_id_candidates(result: VideoRoundResult, candidates: List[Tuple[int, str]]):
+def _apply_post_id_candidates(
+    result: VideoRoundResult, candidates: List[Tuple[int, str]]
+):
     for rank, value in candidates:
         if rank < result.post_id_rank:
             result.post_id_rank = rank
@@ -371,7 +386,9 @@ async def _iter_round_events(
                 rid = _pick_str(model_resp.get("responseId"))
                 if rid:
                     result.response_id = rid
-                _append_unique_errors(result.stream_errors, model_resp.get("streamErrors"))
+                _append_unique_errors(
+                    result.stream_errors, model_resp.get("streamErrors")
+                )
 
             _apply_post_id_candidates(result, _extract_post_id_candidates(resp))
 
@@ -447,7 +464,9 @@ async def _collect_round_result(
     source: str,
 ) -> VideoRoundResult:
     result = VideoRoundResult()
-    async for event_type, payload in _iter_round_events(response, model=model, source=source):
+    async for event_type, payload in _iter_round_events(
+        response, model=model, source=source
+    ):
         if event_type == "done":
             result = payload
     return result
@@ -478,7 +497,9 @@ def _ensure_round_result(
     final_round: bool,
 ):
     if not result.post_id:
-        err_type = "moderated_or_stream_errors" if result.stream_errors else "missing_post_id"
+        err_type = (
+            "moderated_or_stream_errors" if result.stream_errors else "missing_post_id"
+        )
         raise UpstreamException(
             message=f"Video round {round_index}/{total_rounds} missing post_id",
             status_code=502,
@@ -553,6 +574,7 @@ async def _request_round_stream(
     token: str,
     message: str,
     model_config_override: Dict[str, Any],
+    file_attachments: Optional[List[str]] = None,
 ) -> AsyncGenerator[bytes, None]:
     async def _stream():
         session = _new_session()
@@ -563,6 +585,7 @@ async def _request_round_stream(
                     token,
                     message=message,
                     model=_APP_CHAT_MODEL,
+                    file_attachments=file_attachments,
                     tool_overrides={"videoGen": True},
                     model_config_override=model_config_override,
                 )
@@ -650,7 +673,9 @@ class _VideoChainSSEWriter:
         self.role_sent = True
         return [self._sse(role="assistant")]
 
-    def emit_progress(self, *, round_index: int, total_rounds: int, progress: Any) -> List[str]:
+    def emit_progress(
+        self, *, round_index: int, total_rounds: int, progress: Any
+    ) -> List[str]:
         if not self.show_think:
             return []
 
@@ -661,7 +686,9 @@ class _VideoChainSSEWriter:
 
         progress_text = _format_progress(progress)
         chunks.append(
-            self._sse(f"[round={round_index}/{total_rounds}] progress={progress_text}%\n")
+            self._sse(
+                f"[round={round_index}/{total_rounds}] progress={progress_text}%\n"
+            )
         )
         return chunks
 
@@ -763,29 +790,65 @@ class VideoService:
             model_config_override=model_config_override,
         )
 
-    async def generate_from_image(
+    async def generate_from_images(
         self,
         token: str,
         prompt: str,
-        image_url: str,
+        image_urls: list[str],
+        asset_ids: list[str],
         aspect_ratio: str = "3:2",
         video_length: int = 6,
         resolution: str = "480p",
         preset: str = "normal",
     ) -> AsyncGenerator[bytes, None]:
-        """Single-round image-to-video generation stream."""
-        post_id = await self.create_image_post(token, image_url)
-        model_config_override = _build_base_config(
-            post_id,
-            aspect_ratio,
-            resolution,
-            video_length,
+        """Generate video from one or more reference images."""
+        if not image_urls:
+            raise ValidationException("At least one reference image is required")
+        if len(image_urls) != len(asset_ids):
+            raise ValidationException("Reference image metadata mismatch")
+        logger.info(
+            f"Image to video: prompt='{prompt[:50]}...', images={len(image_urls)}"
         )
+        post_id = await self.create_post(token, prompt)
+        mode_map = {
+            "fun": "--mode=extremely-crazy",
+            "normal": "--mode=normal",
+            "spicy": "--mode=extremely-spicy-or-crazy",
+        }
+        mode_flag = mode_map.get(preset, "--mode=custom")
+        message = f"{prompt} {mode_flag}"
+        model_config_override = {
+            "modelMap": {
+                "videoGenModelConfig": {
+                    "aspectRatio": aspect_ratio,
+                    "imageReferences": image_urls,
+                    "isReferenceToVideo": True,
+                    "parentPostId": post_id,
+                    "resolutionName": resolution,
+                    "videoLength": video_length,
+                }
+            }
+        }
         return await _request_round_stream(
             token=token,
-            message=_build_message(prompt, preset),
+            message=message,
             model_config_override=model_config_override,
+            file_attachments=asset_ids,
         )
+
+    @staticmethod
+    def _replace_reference_placeholders(prompt: str, asset_ids: list[str]) -> str:
+        """Replace @图N / @imageN placeholders with uploaded asset ids."""
+
+        def _replace(match: re.Match[str]) -> str:
+            index = int(match.group(1)) - 1
+            if index < 0 or index >= len(asset_ids):
+                raise ValidationException(
+                    f"Reference placeholder {match.group(0)} has no matching uploaded image"
+                )
+            return f"@{asset_ids[index]}"
+
+        return _REFERENCE_PLACEHOLDER_RE.sub(_replace, prompt)
 
     @staticmethod
     async def completions(
@@ -812,308 +875,385 @@ class VideoService:
 
         prompt, _, image_attachments = MessageExtractor.extract(messages)
 
-        pool_candidates = ModelService.pool_candidates_for_model(model)
-        token_info = token_mgr.get_token_for_video(
-            resolution=resolution,
-            video_length=video_length,
-            pool_candidates=pool_candidates,
-        )
+        max_token_retries = max(1, int(get_config("retry.max_retry") or 1))
+        last_error: Exception | None = None
 
-        if not token_info:
-            raise AppException(
-                message="No available tokens. Please try again later.",
-                error_type=ErrorType.RATE_LIMIT.value,
-                code="rate_limit_exceeded",
-                status_code=429,
+        for attempt in range(max_token_retries):
+            pool_candidates = ModelService.pool_candidates_for_model(model)
+            token_info = token_mgr.get_token_for_video(
+                resolution=resolution,
+                video_length=video_length,
+                pool_candidates=pool_candidates,
             )
 
-        token = token_info.token
-        if token.startswith("sso="):
-            token = token[4:]
+            if not token_info:
+                if last_error:
+                    raise last_error
+                raise AppException(
+                    message="No available tokens. Please try again later.",
+                    error_type=ErrorType.RATE_LIMIT.value,
+                    code="rate_limit_exceeded",
+                    status_code=429,
+                )
 
-        pool_name = token_mgr.get_pool_name_for_token(token) or BASIC_POOL_NAME
-        is_super_pool = pool_name != BASIC_POOL_NAME
+            token = token_info.token
+            if token.startswith("sso="):
+                token = token[4:]
 
-        requested_resolution = resolution
-        should_upscale = requested_resolution == "720p" and pool_name == BASIC_POOL_NAME
-        generation_resolution = "480p" if should_upscale else requested_resolution
-        upscale_timing = _resolve_upscale_timing() if should_upscale else "complete"
+            pool_name = token_mgr.get_pool_name_for_token(token) or BASIC_POOL_NAME
+            is_super_pool = pool_name != BASIC_POOL_NAME
 
-        target_length = int(video_length or 6)
-        round_plan = _build_round_plan(target_length, is_super=is_super_pool)
-        total_rounds = len(round_plan)
+            requested_resolution = resolution
+            should_upscale = (
+                requested_resolution == "720p" and pool_name == BASIC_POOL_NAME
+            )
+            generation_resolution = "480p" if should_upscale else requested_resolution
+            upscale_timing = _resolve_upscale_timing() if should_upscale else "complete"
 
-        service = VideoService()
-        message = _build_message(prompt, preset)
+            target_length = int(video_length or 6)
+            round_plan = _build_round_plan(target_length, is_super=is_super_pool)
 
-        image_url = None
-        if image_attachments:
-            upload_service = UploadService()
+            prompt_text = prompt
+            image_urls: List[str] = []
+            asset_ids: List[str] = []
+
             try:
-                if len(image_attachments) > 1:
-                    logger.info(
-                        "Video generation supports a single reference image; using the first one."
+                if image_attachments:
+                    if len(image_attachments) > 7:
+                        raise ValidationException(
+                            "Video generation supports at most 7 reference images"
+                        )
+                    upload_service = UploadService()
+                    try:
+                        for attach_data in image_attachments:
+                            asset_id, file_uri = await upload_service.upload_file(
+                                attach_data, token
+                            )
+                            asset_ids.append(asset_id)
+                            image_urls.append(f"https://assets.grok.com/{file_uri}")
+                        prompt_text = VideoService._replace_reference_placeholders(
+                            prompt_text, asset_ids
+                        )
+                        logger.info(
+                            f"Images uploaded for video: count={len(image_urls)}"
+                        )
+                    finally:
+                        await upload_service.close()
+                elif _REFERENCE_PLACEHOLDER_RE.search(prompt_text):
+                    raise ValidationException(
+                        "Reference placeholders require uploaded images"
                     )
-                attach_data = image_attachments[0]
-                _, file_uri = await upload_service.upload_file(attach_data, token)
-                image_url = f"https://assets.grok.com/{file_uri}"
-                logger.info(f"Image uploaded for video: {image_url}")
-            finally:
-                await upload_service.close()
 
-        if image_url:
-            seed_post_id = await service.create_image_post(token, image_url)
-        else:
-            seed_post_id = await service.create_post(token, prompt)
+                service = VideoService()
+                message = _build_message(prompt_text, preset)
+                seed_post_id = await service.create_post(token, prompt_text)
 
-        model_info = ModelService.get(model)
-        effort = (
-            EffortType.HIGH
-            if (model_info and model_info.cost.value == "high")
-            else EffortType.LOW
-        )
+                model_info = ModelService.get(model)
+                effort = (
+                    EffortType.HIGH
+                    if (model_info and model_info.cost.value == "high")
+                    else EffortType.LOW
+                )
 
-        async def _run_round_collect(
-            plan: VideoRoundPlan,
-            *,
-            seed_id: str,
-            last_id: str,
-            original_id: Optional[str],
-            source: str,
-        ) -> VideoRoundResult:
-            config_override = _build_round_config(
-                plan,
-                seed_post_id=seed_id,
-                last_post_id=last_id,
-                original_post_id=original_id,
-                prompt=prompt,
-                aspect_ratio=aspect_ratio,
-                resolution_name=generation_resolution,
-            )
-            response = await _request_round_stream(
-                token=token,
-                message=message,
-                model_config_override=config_override,
-            )
-            return await _collect_round_result(response, model=model, source=source)
-
-        async def _stream_chain() -> AsyncGenerator[str, None]:
-            writer = _VideoChainSSEWriter(model, show_think)
-            seed_id = seed_post_id
-            last_id = seed_id
-            original_id: Optional[str] = seed_id
-            final_result: Optional[VideoRoundResult] = None
-
-            try:
-                for plan in round_plan:
+                async def _run_round_collect(
+                    plan: VideoRoundPlan,
+                    *,
+                    seed_id: str,
+                    last_id: str,
+                    original_id: Optional[str],
+                    source: str,
+                ) -> VideoRoundResult:
                     config_override = _build_round_config(
                         plan,
                         seed_post_id=seed_id,
                         last_post_id=last_id,
                         original_post_id=original_id,
-                        prompt=prompt,
+                        prompt=prompt_text,
                         aspect_ratio=aspect_ratio,
                         resolution_name=generation_resolution,
+                        image_references=image_urls if plan.round_index == 1 else None,
                     )
                     response = await _request_round_stream(
                         token=token,
                         message=message,
                         model_config_override=config_override,
+                        file_attachments=asset_ids if plan.round_index == 1 else None,
+                    )
+                    return await _collect_round_result(
+                        response, model=model, source=source
                     )
 
-                    round_result = VideoRoundResult()
-                    async for event_type, payload in _iter_round_events(
-                        response,
-                        model=model,
-                        source=f"stream-round-{plan.round_index}",
-                    ):
-                        if event_type == "progress":
-                            for chunk in writer.emit_progress(
-                                round_index=plan.round_index,
-                                total_rounds=plan.total_rounds,
-                                progress=payload,
-                            ):
-                                yield chunk
-                        elif event_type == "done":
-                            round_result = payload
+                async def _stream_chain() -> AsyncGenerator[str, None]:
+                    writer = _VideoChainSSEWriter(model, show_think)
+                    seed_id = seed_post_id
+                    last_id = seed_id
+                    original_id: Optional[str] = seed_id
+                    final_result: Optional[VideoRoundResult] = None
 
-                    _ensure_round_result(
-                        round_result,
-                        round_index=plan.round_index,
-                        total_rounds=plan.total_rounds,
-                        final_round=(plan.round_index == plan.total_rounds),
-                    )
-
-                    if should_upscale and upscale_timing == "single" and round_result.video_url:
-                        for chunk in writer.emit_note(
-                            f"[round={plan.round_index}/{plan.total_rounds}] 正在对当前轮结果进行超分辨率\n"
-                        ):
-                            yield chunk
-                        upgraded_url, upscaled = await _upscale_video_url(
-                            token, round_result.video_url
-                        )
-                        if upscaled:
-                            round_result.video_url = upgraded_url
-                        else:
-                            logger.warning(
-                                "Video upscale failed in single mode, fallback to 480p result"
+                    try:
+                        for plan in round_plan:
+                            config_override = _build_round_config(
+                                plan,
+                                seed_post_id=seed_id,
+                                last_post_id=last_id,
+                                original_post_id=original_id,
+                                prompt=prompt_text,
+                                aspect_ratio=aspect_ratio,
+                                resolution_name=generation_resolution,
+                                image_references=image_urls
+                                if plan.round_index == 1
+                                else None,
+                            )
+                            response = await _request_round_stream(
+                                token=token,
+                                message=message,
+                                model_config_override=config_override,
+                                file_attachments=asset_ids
+                                if plan.round_index == 1
+                                else None,
                             )
 
-                    if plan.round_index == 1 and round_result.post_id:
-                        original_id = round_result.post_id
-                    if round_result.post_id:
-                        last_id = round_result.post_id
+                            round_result = VideoRoundResult()
+                            async for event_type, payload in _iter_round_events(
+                                response,
+                                model=model,
+                                source=f"stream-round-{plan.round_index}",
+                            ):
+                                if event_type == "progress":
+                                    for chunk in writer.emit_progress(
+                                        round_index=plan.round_index,
+                                        total_rounds=plan.total_rounds,
+                                        progress=payload,
+                                    ):
+                                        yield chunk
+                                elif event_type == "done":
+                                    round_result = payload
 
-                    if plan.round_index == plan.total_rounds:
-                        final_result = round_result
+                            _ensure_round_result(
+                                round_result,
+                                round_index=plan.round_index,
+                                total_rounds=plan.total_rounds,
+                                final_round=(plan.round_index == plan.total_rounds),
+                            )
 
-                if final_result is None:
-                    raise UpstreamException(
-                        message="Video generation produced no final round",
-                        status_code=502,
-                        details={"type": "empty_video_stream"},
-                    )
+                            if (
+                                should_upscale
+                                and upscale_timing == "single"
+                                and round_result.video_url
+                            ):
+                                for chunk in writer.emit_note(
+                                    f"[round={plan.round_index}/{plan.total_rounds}] 正在对当前轮结果进行超分辨率\n"
+                                ):
+                                    yield chunk
+                                upgraded_url, upscaled = await _upscale_video_url(
+                                    token, round_result.video_url
+                                )
+                                if upscaled:
+                                    round_result.video_url = upgraded_url
+                                else:
+                                    logger.warning(
+                                        "Video upscale failed in single mode, fallback to 480p result"
+                                    )
 
-                final_video_url = final_result.video_url
-                if should_upscale and upscale_timing == "complete":
-                    for chunk in writer.emit_note("正在对视频进行超分辨率\n"):
-                        yield chunk
-                    final_video_url, upscaled = await _upscale_video_url(token, final_video_url)
-                    if not upscaled:
-                        logger.warning("Video upscale failed, fallback to 480p result")
+                            if plan.round_index == 1 and round_result.post_id:
+                                original_id = round_result.post_id
+                            if round_result.post_id:
+                                last_id = round_result.post_id
 
-                if _public_asset_enabled():
-                    for chunk in writer.emit_note("正在生成可公开访问链接\n"):
-                        yield chunk
-                    final_video_url = await _create_public_video_link(token, final_video_url)
+                            if plan.round_index == plan.total_rounds:
+                                final_result = round_result
 
-                dl_service = DownloadService()
-                try:
-                    rendered = await dl_service.render_video(
-                        final_video_url,
-                        token,
-                        final_result.thumbnail_url,
-                    )
-                finally:
-                    await dl_service.close()
+                        if final_result is None:
+                            raise UpstreamException(
+                                message="Video generation produced no final round",
+                                status_code=502,
+                                details={"type": "empty_video_stream"},
+                            )
 
-                for chunk in writer.emit_content(rendered):
-                    yield chunk
-                for chunk in writer.finish():
-                    yield chunk
-            except asyncio.CancelledError:
-                logger.debug("Video stream chain cancelled by client", extra={"model": model})
-                raise
-            except UpstreamException as e:
-                if rate_limited(e):
-                    await token_mgr.mark_rate_limited(token)
-                raise
+                        final_video_url = final_result.video_url
+                        if should_upscale and upscale_timing == "complete":
+                            for chunk in writer.emit_note("正在对视频进行超分辨率\n"):
+                                yield chunk
+                            final_video_url, upscaled = await _upscale_video_url(
+                                token, final_video_url
+                            )
+                            if not upscaled:
+                                logger.warning(
+                                    "Video upscale failed, fallback to 480p result"
+                                )
 
-        async def _collect_chain() -> Dict[str, Any]:
-            seed_id = seed_post_id
-            last_id = seed_id
-            original_id: Optional[str] = seed_id
-            final_result: Optional[VideoRoundResult] = None
+                        if _public_asset_enabled():
+                            for chunk in writer.emit_note("正在生成可公开访问链接\n"):
+                                yield chunk
+                            final_video_url = await _create_public_video_link(
+                                token, final_video_url
+                            )
 
-            for plan in round_plan:
-                round_result = await _run_round_collect(
-                    plan,
-                    seed_id=seed_id,
-                    last_id=last_id,
-                    original_id=original_id,
-                    source=f"collect-round-{plan.round_index}",
-                )
+                        dl_service = DownloadService()
+                        try:
+                            rendered = await dl_service.render_video(
+                                final_video_url,
+                                token,
+                                final_result.thumbnail_url,
+                            )
+                        finally:
+                            await dl_service.close()
 
-                _ensure_round_result(
-                    round_result,
-                    round_index=plan.round_index,
-                    total_rounds=plan.total_rounds,
-                    final_round=(plan.round_index == plan.total_rounds),
-                )
+                        for chunk in writer.emit_content(rendered):
+                            yield chunk
+                        for chunk in writer.finish():
+                            yield chunk
+                    except asyncio.CancelledError:
+                        logger.debug(
+                            "Video stream chain cancelled by client",
+                            extra={"model": model},
+                        )
+                        raise
+                    except UpstreamException as e:
+                        if rate_limited(e):
+                            await token_mgr.mark_rate_limited(token)
+                        raise
 
-                if should_upscale and upscale_timing == "single" and round_result.video_url:
-                    upgraded_url, upscaled = await _upscale_video_url(
-                        token, round_result.video_url
-                    )
-                    if upscaled:
-                        round_result.video_url = upgraded_url
-                    else:
-                        logger.warning(
-                            "Video upscale failed in single mode, fallback to 480p result"
+                async def _collect_chain() -> Dict[str, Any]:
+                    seed_id = seed_post_id
+                    last_id = seed_id
+                    original_id: Optional[str] = seed_id
+                    final_result: Optional[VideoRoundResult] = None
+
+                    for plan in round_plan:
+                        round_result = await _run_round_collect(
+                            plan,
+                            seed_id=seed_id,
+                            last_id=last_id,
+                            original_id=original_id,
+                            source=f"collect-round-{plan.round_index}",
                         )
 
-                if plan.round_index == 1 and round_result.post_id:
-                    original_id = round_result.post_id
-                if round_result.post_id:
-                    last_id = round_result.post_id
+                        _ensure_round_result(
+                            round_result,
+                            round_index=plan.round_index,
+                            total_rounds=plan.total_rounds,
+                            final_round=(plan.round_index == plan.total_rounds),
+                        )
 
-                if plan.round_index == plan.total_rounds:
-                    final_result = round_result
+                        if (
+                            should_upscale
+                            and upscale_timing == "single"
+                            and round_result.video_url
+                        ):
+                            upgraded_url, upscaled = await _upscale_video_url(
+                                token, round_result.video_url
+                            )
+                            if upscaled:
+                                round_result.video_url = upgraded_url
+                            else:
+                                logger.warning(
+                                    "Video upscale failed in single mode, fallback to 480p result"
+                                )
 
-            if final_result is None:
-                raise UpstreamException(
-                    message="Video generation produced no final round",
-                    status_code=502,
-                    details={"type": "empty_video_stream"},
-                )
+                        if plan.round_index == 1 and round_result.post_id:
+                            original_id = round_result.post_id
+                        if round_result.post_id:
+                            last_id = round_result.post_id
 
-            final_video_url = final_result.video_url
-            if should_upscale and upscale_timing == "complete":
-                final_video_url, upscaled = await _upscale_video_url(token, final_video_url)
-                if not upscaled:
-                    logger.warning("Video upscale failed, fallback to 480p result")
+                        if plan.round_index == plan.total_rounds:
+                            final_result = round_result
 
-            if _public_asset_enabled():
-                final_video_url = await _create_public_video_link(token, final_video_url)
+                    if final_result is None:
+                        raise UpstreamException(
+                            message="Video generation produced no final round",
+                            status_code=502,
+                            details={"type": "empty_video_stream"},
+                        )
 
-            dl_service = DownloadService()
-            try:
-                content = await dl_service.render_video(
-                    final_video_url,
-                    token,
-                    final_result.thumbnail_url,
-                )
-            finally:
-                await dl_service.close()
+                    final_video_url = final_result.video_url
+                    if should_upscale and upscale_timing == "complete":
+                        final_video_url, upscaled = await _upscale_video_url(
+                            token, final_video_url
+                        )
+                        if not upscaled:
+                            logger.warning(
+                                "Video upscale failed, fallback to 480p result"
+                            )
 
-            return {
-                "id": final_result.response_id,
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": content,
-                            "refusal": None,
+                    if _public_asset_enabled():
+                        final_video_url = await _create_public_video_link(
+                            token, final_video_url
+                        )
+
+                    dl_service = DownloadService()
+                    try:
+                        content = await dl_service.render_video(
+                            final_video_url,
+                            token,
+                            final_result.thumbnail_url,
+                        )
+                    finally:
+                        await dl_service.close()
+
+                    return {
+                        "id": final_result.response_id,
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": content,
+                                    "refusal": None,
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0,
                         },
-                        "finish_reason": "stop",
                     }
-                ],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            }
 
-        if is_stream:
-            return wrap_stream_with_usage(_stream_chain(), token_mgr, token, model)
+                if is_stream:
+                    return wrap_stream_with_usage(
+                        _stream_chain(), token_mgr, token, model
+                    )
 
-        try:
-            result = await _collect_chain()
-        except UpstreamException as e:
-            if rate_limited(e):
-                await token_mgr.mark_rate_limited(token)
-            raise
+                try:
+                    result = await _collect_chain()
+                except UpstreamException as e:
+                    if rate_limited(e):
+                        await token_mgr.mark_rate_limited(token)
+                    raise
 
-        try:
-            await token_mgr.consume(token, effort)
-            logger.debug(
-                f"Video completed, recorded usage (effort={effort.value})"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to record video usage: {e}")
+                try:
+                    await token_mgr.consume(token, effort)
+                    logger.debug(
+                        f"Video completed, recorded usage (effort={effort.value})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record video usage: {e}")
 
-        return result
+                return result
+            except UpstreamException as e:
+                last_error = e
+                if rate_limited(e):
+                    await token_mgr.mark_rate_limited(token)
+                    logger.warning(
+                        f"Token {token[:10]}... rate limited (429), "
+                        f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                    )
+                    continue
+                raise
+
+        if last_error:
+            raise last_error
+        raise AppException(
+            message="No available tokens. Please try again later.",
+            error_type=ErrorType.RATE_LIMIT.value,
+            code="rate_limit_exceeded",
+            status_code=429,
+        )
 
 
 class VideoStreamProcessor:
@@ -1165,7 +1305,9 @@ class VideoStreamProcessor:
             await self._dl_service.close()
             self._dl_service = None
 
-    async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
+    async def process(
+        self, response: AsyncIterable[bytes]
+    ) -> AsyncGenerator[str, None]:
         result = VideoRoundResult()
         try:
             async for event_type, payload in _iter_round_events(
@@ -1194,14 +1336,18 @@ class VideoStreamProcessor:
             if self.upscale_on_finish:
                 for chunk in self.writer.emit_note("正在对视频进行超分辨率\n"):
                     yield chunk
-                final_video_url, upscaled = await _upscale_video_url(self.token, final_video_url)
+                final_video_url, upscaled = await _upscale_video_url(
+                    self.token, final_video_url
+                )
                 if not upscaled:
                     logger.warning("Video upscale failed, fallback to 480p result")
 
             if self.enable_public_asset:
                 for chunk in self.writer.emit_note("正在生成可公开访问链接\n"):
                     yield chunk
-                final_video_url = await _create_public_video_link(self.token, final_video_url)
+                final_video_url = await _create_public_video_link(
+                    self.token, final_video_url
+                )
 
             rendered = await self._get_dl().render_video(
                 final_video_url,
@@ -1213,7 +1359,9 @@ class VideoStreamProcessor:
             for chunk in self.writer.finish():
                 yield chunk
         except asyncio.CancelledError:
-            logger.debug("Video stream cancelled by client", extra={"model": self.model})
+            logger.debug(
+                "Video stream cancelled by client", extra={"model": self.model}
+            )
             raise
         finally:
             await self.close()
@@ -1265,12 +1413,16 @@ class VideoCollectProcessor:
 
             final_video_url = result.video_url
             if self.upscale_on_finish:
-                final_video_url, upscaled = await _upscale_video_url(self.token, final_video_url)
+                final_video_url, upscaled = await _upscale_video_url(
+                    self.token, final_video_url
+                )
                 if not upscaled:
                     logger.warning("Video upscale failed, fallback to 480p result")
 
             if self.enable_public_asset:
-                final_video_url = await _create_public_video_link(self.token, final_video_url)
+                final_video_url = await _create_public_video_link(
+                    self.token, final_video_url
+                )
 
             content = await self._get_dl().render_video(
                 final_video_url,
@@ -1294,7 +1446,11 @@ class VideoCollectProcessor:
                         "finish_reason": "stop",
                     }
                 ],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             }
         finally:
             await self.close()

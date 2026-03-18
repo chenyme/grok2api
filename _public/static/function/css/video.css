@@ -222,9 +222,8 @@ body {
 .ref-name {
   font-size: 11px;
   color: var(--accents-4);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   max-width: 100%;
   display: inline-block;
 }
@@ -250,6 +249,18 @@ body {
 .video-textarea {
   min-height: calc(var(--field-block) * 2 + var(--field-row-gap) - var(--field-label) - var(--field-label-gap));
   height: calc(var(--field-block) * 2 + var(--field-row-gap) - var(--field-label) - var(--field-label-gap));
+  resize: vertical;
+}
+
+.prompt-tip {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--accents-4);
+  line-height: 1.5;
+}
+
+.ref-textarea {
+  min-height: 88px;
   resize: vertical;
 }
 

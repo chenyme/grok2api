@@ -51,15 +51,16 @@
           <div class="settings-grid">
             <div class="settings-block prompt-block">
               <label class="field-label" for="promptInput" data-i18n="video.prompt">提示词</label>
-              <textarea id="promptInput" class="geist-input video-textarea" placeholder="例如：街头霓虹雨夜，慢镜头，胶片质感" data-i18n-placeholder="video.promptPlaceholder"></textarea>
+              <textarea id="promptInput" class="geist-input video-textarea" placeholder="例如：@图1街头霓虹雨夜，@图2人物回头微笑，慢镜头，胶片质感" data-i18n-placeholder="video.promptPlaceholder"></textarea>
+              <div class="prompt-tip" data-i18n="video.promptTip">多图参考可在提示词中使用 @图1 到 @图7，按参考图顺序对应。</div>
             </div>
             <div class="settings-block ref-block">
               <label class="field-label" for="imageUrlInput" data-i18n="video.referenceImage">参考图</label>
               <div class="ref-controls">
-                <input id="imageUrlInput" class="geist-input" placeholder="https://... 或 data:image/..." data-i18n-placeholder="video.referenceImagePlaceholder">
+                <textarea id="imageUrlInput" class="geist-input ref-textarea" placeholder="每行一个 https://... 或 data:image/...，最多 7 张" data-i18n-placeholder="video.referenceImagePlaceholder"></textarea>
               </div>
               <div class="ref-meta">
-                <span id="imageFileName" class="ref-name" data-i18n="common.noFileSelected">未选择文件</span>
+                <span id="imageFileName" class="ref-name" data-i18n="video.noReferenceSelected">未选择参考图</span>
               </div>
             </div>
             <div class="settings-block ratio-block">
@@ -95,7 +96,7 @@
             <div class="settings-block upload-block">
               <label class="field-label">&nbsp;</label>
               <button id="selectImageFileBtn" class="geist-button-outline text-xs px-3" type="button" data-i18n="video.upload">上传</button>
-              <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*">
+              <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*" multiple>
             </div>
             <div class="settings-block clear-block">
               <label class="field-label">&nbsp;</label>
