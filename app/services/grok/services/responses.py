@@ -9,6 +9,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 import orjson
 
 from app.services.grok.services.chat import ChatService
+from app.services.grok.utils.usage import to_responses_usage
 from app.services.grok.utils import process as proc_base
 
 
@@ -725,8 +726,7 @@ class ResponsesService:
                 model=model,
                 output_text=content,
                 tool_calls=tool_calls,
-                usage=result.get("usage")
-                or {"total_tokens": 0, "input_tokens": 0, "output_tokens": 0},
+                usage=to_responses_usage(result.get("usage")),
                 status="completed",
                 instructions=instructions,
                 max_output_tokens=max_output_tokens,
@@ -768,6 +768,7 @@ class ResponsesService:
         )
 
         async def _stream() -> AsyncGenerator[str, None]:
+            final_usage: Optional[Dict[str, Any]] = None
             yield adapter.created_event()
             yield adapter.in_progress_event()
             async for chunk in result:
@@ -780,6 +781,8 @@ class ResponsesService:
                     continue
 
                 if data.get("object") == "chat.completion.chunk":
+                    if data.get("usage"):
+                        final_usage = to_responses_usage(data.get("usage"))
                     delta = (data.get("choices") or [{}])[0].get("delta") or {}
                     if "content" in delta and delta["content"]:
                         for event in adapter.ensure_message_started():
@@ -815,7 +818,7 @@ class ResponsesService:
                     yield event
             for event in adapter.tool_arguments_done_events():
                 yield event
-            yield adapter.completed_event()
+            yield adapter.completed_event(final_usage)
 
         return _stream()
 
