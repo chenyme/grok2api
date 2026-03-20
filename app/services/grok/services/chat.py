@@ -262,6 +262,7 @@ class GrokChatService:
         file_attachments: List[str] = None,
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
+        request_overrides: Dict[str, Any] = None,
     ):
         """发送聊天请求"""
         if stream is None:
@@ -285,6 +286,7 @@ class GrokChatService:
                 file_attachments=file_attachments,
                 tool_overrides=tool_overrides,
                 model_config_override=model_config_override,
+                request_overrides=request_overrides,
             )
             logger.info(f"Chat connected: model={model}, stream={stream}")
         except Exception:
