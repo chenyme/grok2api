@@ -626,23 +626,21 @@ class TokenManager:
     async def record_fail(
         self, token_str: str, status_code: int = 401, reason: str = "", threshold: Optional[int] = None
     ) -> bool:
-        """
-        记录 Token 失败
-
-        Args:
-            token_str: Token 字符串
-            status_code: HTTP Status Code
-            reason: 失败原因
-            threshold: 强制失败阈值
-
-        Returns:
-            是否成功
-        """
         raw_token = token_str.replace("sso=", "")
 
-        for pool in self.pools.values():
+        for pool_name, pool in self.pools.items():
             token = pool.get(raw_token)
             if token:
+                # 400 + email-domain-rejected → anında sil
+                if status_code == 400 and "email-domain-rejected" in reason:
+                    pool.remove(raw_token)
+                    self._track_token_delete(raw_token)
+                    await self._save(force=True)
+                    logger.warning(
+                        f"Token {raw_token[:10]}...: email-domain-rejected, removed from pool '{pool_name}'"
+                    )
+                    return True
+
                 if status_code == 401:
                     if threshold is None:
                         threshold = get_config("token.fail_threshold", FAIL_THRESHOLD)
@@ -661,7 +659,7 @@ class TokenManager:
                         f"Token {raw_token[:10]}...: recorded {status_code} failure "
                         f"({token.fail_count}/{threshold}) - {reason} - status: {token.status}"
                     )
-                    self._track_token_change(token, pool.name, "state")
+                    self._track_token_change(token, pool_name, "state")
                     self._schedule_save()
                 else:
                     logger.info(
@@ -1024,6 +1022,16 @@ class TokenManager:
                         f"keeping current status"
                     )
                     return {"recovered": False, "expired": False}
+
+                if status == 400 and error and "email-domain-rejected" in str(error):
+                    logger.warning(
+                        f"Token {token_info.token[:10]}...: email-domain-rejected (400), removing from pool"
+                    )
+                    current_pool = self.get_pool_name_for_token(token_info.token)
+                    if current_pool and current_pool in self.pools:
+                        self.pools[current_pool].remove(token_info.token)
+                        self._track_token_delete(token_info.token)
+                    return {"recovered": False, "expired": True}
 
                 if error:
                     logger.warning(

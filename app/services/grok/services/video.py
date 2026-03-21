@@ -35,6 +35,44 @@ from app.services.reverse.video_upscale import VideoUpscaleReverse
 from app.services.token import EffortType, get_token_manager
 from app.services.token.manager import BASIC_POOL_NAME
 
+async def _generate_continuation_prompt(original_prompt: str, round_index: int, token: str) -> str:
+    """Use local Grok API to generate a unique continuation prompt for each extension round."""
+    try:
+        from curl_cffi.requests import AsyncSession
+        api_key = get_config("app.api_key")
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        system_msg = (
+            f"You are a video director. The original video prompt is: '{original_prompt}'. "
+            f"Generate a SHORT continuation prompt for extension round {round_index} that naturally "
+            f"continues the scene with new action or movement. "
+            f"Return ONLY the prompt text, no explanation, max 20 words."
+        )
+        payload = {
+            "model": "grok-3-fast",
+            "messages": [{"role": "user", "content": system_msg}],
+            "temperature": 0.8,
+            "max_tokens": 60,
+            "stream": False,
+        }
+        async with AsyncSession() as session:
+            resp = await session.post(
+                "http://localhost:8000/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if content:
+                    logger.info(f"LLM continuation prompt (round {round_index}): {content}")
+                    return content
+    except Exception as e:
+        logger.warning(f"LLM prompt generation failed (round {round_index}): {e}")
+    return original_prompt
+
 _VIDEO_SEMAPHORE = None
 _VIDEO_SEM_VALUE = 0
 _APP_CHAT_MODEL = "grok-3"
@@ -880,19 +918,21 @@ class VideoService:
             last_id: str,
             original_id: Optional[str],
             source: str,
+            round_prompt: str = None,
         ) -> VideoRoundResult:
+            rp = round_prompt if round_prompt is not None else prompt
             config_override = _build_round_config(
                 plan,
                 seed_post_id=seed_id,
                 last_post_id=last_id,
                 original_post_id=original_id,
-                prompt=prompt,
+                prompt=rp,
                 aspect_ratio=aspect_ratio,
                 resolution_name=generation_resolution,
             )
             response = await _request_round_stream(
                 token=token,
-                message=message,
+                message=_build_message(rp, preset),
                 model_config_override=config_override,
             )
             return await _collect_round_result(response, model=model, source=source)
@@ -906,18 +946,21 @@ class VideoService:
 
             try:
                 for plan in round_plan:
+                    round_prompt = prompt
+                    if plan.is_extension:
+                        round_prompt = await _generate_continuation_prompt(prompt, plan.round_index, token)
                     config_override = _build_round_config(
                         plan,
                         seed_post_id=seed_id,
                         last_post_id=last_id,
                         original_post_id=original_id,
-                        prompt=prompt,
+                        prompt=round_prompt,
                         aspect_ratio=aspect_ratio,
                         resolution_name=generation_resolution,
                     )
                     response = await _request_round_stream(
                         token=token,
-                        message=message,
+                        message=_build_message(round_prompt, preset),
                         model_config_override=config_override,
                     )
 
@@ -926,8 +969,7 @@ class VideoService:
                         response,
                         model=model,
                         source=f"stream-round-{plan.round_index}",
-                    ):
-                        if event_type == "progress":
+                    ):                        if event_type == "progress":
                             for chunk in writer.emit_progress(
                                 round_index=plan.round_index,
                                 total_rounds=plan.total_rounds,
@@ -1016,12 +1058,16 @@ class VideoService:
             final_result: Optional[VideoRoundResult] = None
 
             for plan in round_plan:
+                round_prompt = prompt
+                if plan.is_extension:
+                    round_prompt = await _generate_continuation_prompt(prompt, plan.round_index, token)
                 round_result = await _run_round_collect(
                     plan,
                     seed_id=seed_id,
                     last_id=last_id,
                     original_id=original_id,
                     source=f"collect-round-{plan.round_index}",
+                    round_prompt=round_prompt,
                 )
 
                 _ensure_round_result(
