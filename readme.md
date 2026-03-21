@@ -125,6 +125,12 @@ docker compose up -d
 | `grok-imagine-1.0-edit` | - | Basic/Super | - | 支持 | - |
 | `grok-imagine-1.0-video` | - | Basic/Super | - | - | 支持 |
 
+> [!WARNING]
+> **图像生成和视频生成功能目前在免费（Basic）Grok 账号上已被禁用。**
+> X/xAI 已将图像和视频生成功能限制为仅付费/已验证账号可用。
+> 使用免费账号注册的 Token 在调用图像或视频模型时会收到错误。
+> 请仅使用 **Super**（付费/已验证）账号的 Token 进行图像和视频生成。
+
 <br>
 
 ## 接口说明

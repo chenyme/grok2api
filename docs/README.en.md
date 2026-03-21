@@ -125,6 +125,12 @@ docker compose up -d
 | `grok-imagine-1.0-edit` | - | Basic/Super | - | Yes | - |
 | `grok-imagine-1.0-video` | - | Basic/Super | - | - | Yes |
 
+> [!WARNING]
+> **Image and video generation are currently disabled on free (Basic) Grok accounts.**
+> X/xAI has restricted image and video generation features to paid/verified accounts only.
+> Tokens registered with free accounts will receive errors when calling image or video models.
+> Only use **Super** (paid/verified) account tokens for image and video generation.
+
 <br>
 
 ## API
