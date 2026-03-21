@@ -981,16 +981,6 @@ class TokenManager:
                     return {"recovered": False, "expired": True}
 
                 if error:
-                    error_str = str(error)
-                    if "email-domain-rejected" in error_str or "account:email-domain-rejected" in error_str:
-                        logger.warning(
-                            f"Token {token_info.token[:10]}...: email domain rejected, removing token"
-                        )
-                        current_pool = self.get_pool_name_for_token(token_info.token)
-                        if current_pool and current_pool in self.pools:
-                            self.pools[current_pool].remove(token_info.token)
-                            self._track_token_delete(token_info.token)
-                        return {"recovered": False, "expired": True}
                     logger.warning(
                         f"Token {token_info.token[:10]}...: refresh failed ({error})"
                     )
