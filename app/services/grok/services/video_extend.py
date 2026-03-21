@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from app.core.exceptions import AppException, ErrorType, UpstreamException, ValidationException
 from app.core.logger import logger
 from app.services.grok.services.model import ModelService
-from app.services.grok.services.video import VideoCollectProcessor
+from app.services.grok.services.video import VideoCollectProcessor, _generate_continuation_prompt
 from app.services.reverse.app_chat import AppChatReverse
 from app.services.reverse.utils.session import ResettableSession
 from app.services.token import EffortType, get_token_manager
