@@ -60,8 +60,9 @@ class UsageService:
                 )
                 return data
 
-            except Exception:
+            except Exception as e:
                 # 最后一次失败已经被记录
+                logger.debug(f"UsageService.get failed for token {token[:10]}...: {str(e)}")
                 raise
 
 

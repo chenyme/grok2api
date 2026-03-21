@@ -52,6 +52,26 @@ def json_dumps_sorted(obj: Any) -> str:
     return orjson.dumps(obj, option=orjson.OPT_SORT_KEYS).decode("utf-8")
 
 
+def has_token_entries(data: Any) -> bool:
+    """Return True when the payload contains at least one non-empty token."""
+    if not isinstance(data, dict):
+        return False
+
+    for tokens in data.values():
+        if not isinstance(tokens, list):
+            continue
+        for item in tokens:
+            if isinstance(item, str):
+                if item.strip():
+                    return True
+                continue
+            if isinstance(item, dict):
+                token = item.get("token")
+                if isinstance(token, str) and token.strip():
+                    return True
+    return False
+
+
 class StorageError(Exception):
     """存储服务基础异常"""
 
@@ -269,6 +289,13 @@ class LocalStorage(BaseStorage):
 
     async def save_tokens(self, data: Dict[str, Any]):
         try:
+            if not has_token_entries(data):
+                existing = await self.load_tokens() or {}
+                if has_token_entries(existing):
+                    logger.warning(
+                        "LocalStorage: 跳过空 Token 全量保存，避免覆盖已有数据"
+                    )
+                    return
             TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
             temp_path = TOKEN_FILE.with_suffix(".tmp")
 
@@ -488,6 +515,13 @@ class RedisStorage(BaseStorage):
                     pool_tokens_res = await pipe.execute()
                 for tokens in pool_tokens_res:
                     existing_token_ids.update(list(tokens or []))
+
+            if not new_token_ids:
+                if existing_token_ids:
+                    logger.warning(
+                        "RedisStorage: 跳过空 Token 全量保存，避免删除已有数据"
+                    )
+                return
 
             tokens_to_delete = existing_token_ids - new_token_ids
             all_pools = existing_pools.union(new_pools)
@@ -1082,6 +1116,12 @@ class SQLStorage(BaseStorage):
                 res = await session.execute(text("SELECT token FROM tokens"))
                 rows = res.fetchall()
                 existing_tokens = {row[0] for row in rows}
+            if not new_tokens:
+                if existing_tokens:
+                    logger.warning(
+                        "SQLStorage: 跳过空 Token 全量保存，避免删除已有数据"
+                    )
+                return
             tokens_to_delete = list(existing_tokens - new_tokens)
             await self.save_tokens_delta(updates, tokens_to_delete)
         except Exception as e:

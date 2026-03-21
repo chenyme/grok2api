@@ -1,4 +1,5 @@
 let apiKey = '';
+let consumedModeEnabled = false;
 let allTokens = {};
 let flatTokens = [];
 let isBatchProcessing = false;
@@ -123,9 +124,11 @@ async function loadData() {
     });
     if (res.ok) {
       const data = await res.json();
-      allTokens = data;
-      processTokens(data);
-      updateStats(data);
+      allTokens = data.tokens;
+      consumedModeEnabled = data.consumed_mode_enabled || false;
+      updateQuotaHeader();
+      processTokens(data.tokens);
+      updateStats(data.tokens);
       renderTable();
     } else if (res.status === 401) {
       logout();
@@ -151,6 +154,7 @@ function processTokens(data) {
             token: t.token,
             status: t.status || 'active',
             quota: t.quota || 0,
+            consumed: t.consumed || 0,
             note: t.note || '',
             fail_count: t.fail_count || 0,
             use_count: t.use_count || 0,
@@ -166,6 +170,19 @@ function processTokens(data) {
       });
     }
   });
+}
+
+function updateQuotaHeader() {
+  const thQuota = document.getElementById('th-quota');
+  if (thQuota) {
+    if (consumedModeEnabled) {
+      thQuota.textContent = t('token.tableQuotaConsumed');
+      thQuota.dataset.i18n = 'token.tableQuotaConsumed';
+    } else {
+      thQuota.textContent = t('token.tableQuota');
+      thQuota.dataset.i18n = 'token.tableQuota';
+    }
+  }
 }
 
 function updateStats(data) {
@@ -197,14 +214,27 @@ function updateStats(data) {
   });
 
   const imageQuota = Math.floor(chatQuota / 2);
+  const totalConsumed = flatTokens.reduce((sum, t) => sum + (t.consumed || 0), 0);
 
+  // 更新统计卡片 (这些不受 consumedMode 影响)
   setText('stat-total', totalTokens.toLocaleString());
   setText('stat-active', activeTokens.toLocaleString());
   setText('stat-cooling', coolingTokens.toLocaleString());
   setText('stat-invalid', invalidTokens.toLocaleString());
 
-  setText('stat-chat-quota', chatQuota.toLocaleString());
-  setText('stat-image-quota', imageQuota.toLocaleString());
+  // 根据配置决定显示消耗还是剩余
+  if (consumedModeEnabled) {
+    setText('stat-chat-quota', totalConsumed.toLocaleString());
+    setText('stat-image-quota', Math.floor(totalConsumed / 2).toLocaleString());
+    const chatLabel = document.querySelector('[data-i18n="token.statChatQuota"]');
+    const imageLabel = document.querySelector('[data-i18n="token.statImageQuota"]');
+    if (chatLabel) chatLabel.textContent = t('token.statChatConsumed');
+    if (imageLabel) imageLabel.textContent = t('token.statImageConsumed');
+  } else {
+    setText('stat-chat-quota', chatQuota.toLocaleString());
+    setText('stat-image-quota', imageQuota.toLocaleString());
+  }
+
   setText('stat-total-calls', totalCalls.toLocaleString());
 
   updateTabCounts({
@@ -293,7 +323,16 @@ function renderTable() {
     // Quota (Center)
     const tdQuota = document.createElement('td');
     tdQuota.className = 'text-center font-mono text-xs';
-    tdQuota.innerText = item.quota;
+    // 根据配置决定显示消耗还是剩余
+    if (consumedModeEnabled) {
+      tdQuota.innerText = item.consumed;
+      tdQuota.title = t('token.tableQuotaConsumed');
+    } else {
+      tdQuota.innerText = item.quota;
+      tdQuota.title = t('token.tableQuota');
+    }
+
+
 
     // Note (Left)
     const tdNote = document.createElement('td');
@@ -501,8 +540,24 @@ function openEditModal(index) {
     byId('edit-original-token').value = item.token;
     byId('edit-original-pool').value = item.pool;
     byId('edit-pool').value = item.pool;
-    byId('edit-quota').value = item.quota;
     byId('edit-note').value = item.note;
+
+    // 根据配置决定是否禁用 quota 编辑
+    const quotaInput = byId('edit-quota');
+    const quotaField = quotaInput?.closest('div');
+    const quotaLabel = quotaField?.querySelector('label');
+    if (consumedModeEnabled) {
+      quotaInput.value = item.consumed || 0;
+      quotaInput.disabled = true;
+      quotaInput.classList.add('bg-gray-100', 'text-gray-400');
+      if (quotaLabel) quotaLabel.textContent = t('token.tableQuotaConsumed');
+    } else {
+      quotaInput.value = item.quota;
+      quotaInput.disabled = false;
+      quotaInput.classList.remove('bg-gray-100', 'text-gray-400');
+      if (quotaLabel) quotaLabel.textContent = t('token.editQuota');
+    }
+
     document.querySelector('#edit-modal h3').innerText = t('token.editTitle');
   } else {
     // New Token
@@ -518,6 +573,14 @@ function openEditModal(index) {
     byId('edit-quota').value = getDefaultQuotaForPool('ssoBasic');
     byId('edit-note').value = '';
     document.querySelector('#edit-modal h3').innerText = t('token.addTitle');
+
+    // 新建 Token 时启用 quota 编辑
+    const newQuotaInput = byId('edit-quota');
+    const newQuotaField = newQuotaInput?.closest('div');
+    const newQuotaLabel = newQuotaField?.querySelector('label');
+    newQuotaInput.disabled = false;
+    newQuotaInput.classList.remove('bg-gray-100', 'text-gray-400');
+    if (newQuotaLabel) newQuotaLabel.textContent = t('token.editQuota');
   }
 
   openModal('edit-modal');
@@ -548,13 +611,16 @@ async function saveEdit() {
   // Collect data
   let token;
   const newPool = byId('edit-pool').value.trim();
-  const newQuota = parseInt(byId('edit-quota').value) || 0;
+  const quotaFieldValue = parseInt(byId('edit-quota').value, 10);
   const newNote = byId('edit-note').value.trim().slice(0, 50);
 
   if (currentEditIndex >= 0) {
     // Updating existing
     const item = flatTokens[currentEditIndex];
     token = item.token;
+    const newQuota = consumedModeEnabled
+      ? item.quota
+      : (Number.isNaN(quotaFieldValue) ? 0 : quotaFieldValue);
 
     // Update flatTokens first to reflect UI
     item.pool = newPool || 'ssoBasic';
@@ -562,6 +628,7 @@ async function saveEdit() {
     item.note = newNote;
   } else {
     // Creating new
+    const newQuota = Number.isNaN(quotaFieldValue) ? 0 : quotaFieldValue;
     token = byId('edit-token-display').value.trim();
     if (!token) return showToast(t('token.tokenEmpty'), 'error');
 
@@ -574,6 +641,7 @@ async function saveEdit() {
       token: token,
       pool: newPool || 'ssoBasic',
       quota: newQuota,
+      consumed: 0,
       note: newNote,
       status: 'active', // default
       use_count: 0,
@@ -668,6 +736,7 @@ async function syncToServer() {
       token: t.token,
       status: t.status,
       quota: t.quota,
+      consumed: t.consumed || 0,
       note: t.note,
       fail_count: t.fail_count,
       use_count: t.use_count || 0,
@@ -723,6 +792,7 @@ async function submitImport() {
         pool: pool,
         status: 'active',
         quota: defaultQuota,
+        consumed: 0,
         note: '',
         tags: [],
         fail_count: 0,

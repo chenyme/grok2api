@@ -5,10 +5,17 @@ Reverse interface: download asset.
 import urllib.parse
 from typing import Any
 from pathlib import Path
+from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
 from app.core.config import get_config
+from app.core.proxy_pool import (
+    build_http_proxies,
+    get_current_proxy_from,
+    rotate_proxy,
+    should_rotate_proxy,
+)
 from app.core.exceptions import UpstreamException
 from app.services.token.service import TokenService
 from app.services.reverse.utils.headers import build_headers
@@ -42,30 +49,31 @@ class AssetsDownloadReverse:
             Any: The response from the request.
         """
         try:
-            # Normalize path
-            if not file_path.startswith("/"):
-                file_path = f"/{file_path}"
-            url = f"{DOWNLOAD_API}{file_path}"
-
-            # Get proxies
-            base_proxy = get_config("proxy.base_proxy_url") or ""
-            assert_proxy = get_config("proxy.asset_proxy_url") or ""
-            if assert_proxy:
-                proxies = {"http": assert_proxy, "https": assert_proxy}
-            elif base_proxy:
-                proxies = {"http": base_proxy, "https": base_proxy}
+            parsed = urlparse(file_path)
+            origin = "https://assets.grok.com"
+            referer = "https://grok.com/"
+            if parsed.scheme and parsed.netloc:
+                url = file_path
+                request_path = parsed.path or "/"
+                if parsed.query:
+                    request_path = f"{request_path}?{parsed.query}"
+                origin = f"{parsed.scheme}://{parsed.netloc}"
+                referer = f"{origin}/"
             else:
-                proxies = None
+                if not file_path.startswith("/"):
+                    file_path = f"/{file_path}"
+                request_path = file_path
+                url = f"{DOWNLOAD_API}{file_path}"
 
             # Guess content type by extension for Accept/Sec-Fetch-Dest
-            content_type = _CONTENT_TYPES.get(Path(urllib.parse.urlparse(file_path).path).suffix.lower())
+            content_type = _CONTENT_TYPES.get(Path(urllib.parse.urlparse(request_path).path).suffix.lower())
 
             # Build headers
             headers = build_headers(
                 cookie_token=token,
                 content_type=content_type,
-                origin="https://assets.grok.com",
-                referer="https://grok.com/",
+                origin=origin,
+                referer=referer,
             )
             ## Align with browser download navigation headers
             headers["Cache-Control"] = "no-cache"
@@ -78,8 +86,15 @@ class AssetsDownloadReverse:
             # Curl Config
             timeout = get_config("asset.download_timeout")
             browser = get_config("proxy.browser")
+            active_proxy_key = None
 
             async def _do_request():
+                nonlocal active_proxy_key
+                active_proxy_key, proxy_url = get_current_proxy_from(
+                    "proxy.asset_proxy_url",
+                    "proxy.base_proxy_url",
+                )
+                proxies = build_http_proxies(proxy_url)
                 response = await session.get(
                     url,
                     headers=headers,
@@ -102,7 +117,11 @@ class AssetsDownloadReverse:
 
                 return response
 
-            return await retry_on_status(_do_request)
+            async def _on_retry(attempt: int, status_code: int, error: Exception, delay: float):
+                if active_proxy_key and should_rotate_proxy(status_code):
+                    rotate_proxy(active_proxy_key)
+
+            return await retry_on_status(_do_request, on_retry=_on_retry)
 
         except Exception as e:
             # Handle upstream exception

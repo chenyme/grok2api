@@ -150,6 +150,13 @@ class TokenManager:
             return
         await self.reload()
 
+    def _is_consumed_mode(self) -> bool:
+        """集中处理 consumed mode 配置读取。"""
+        try:
+            return bool(get_config("token.consumed_mode_enabled", False))
+        except Exception:
+            return False
+
     def _mark_state_change(self):
         self._has_state_changes = True
         self._state_change_seq += 1
@@ -471,7 +478,10 @@ class TokenManager:
             token = pool.get(raw_token)
             if token:
                 old_status = token.status
-                consumed = token.consume(effort)
+                if self._is_consumed_mode():
+                    consumed = token.consume_with_consumed(effort)
+                else:
+                    consumed = token.consume(effort)
                 logger.debug(
                     f"Token {raw_token[:10]}...: consumed {consumed} quota, use_count={token.use_count}"
                 )
@@ -533,7 +543,10 @@ class TokenManager:
                 old_quota = target_token.quota
                 old_status = target_token.status
 
-                target_token.update_quota(new_quota)
+                if self._is_consumed_mode():
+                    target_token.update_quota_with_consumed(new_quota)
+                else:
+                    target_token.update_quota(new_quota)
                 target_token.record_success(is_usage=is_usage)
                 target_token.mark_synced()
 
@@ -576,16 +589,29 @@ class TokenManager:
 
         except Exception as e:
             if isinstance(e, UpstreamException):
-                status = None
-                if e.details and "status" in e.details:
-                    status = e.details["status"]
-                else:
-                    status = getattr(e, "status_code", None)
+                status = e.details.get("status") if e.details else getattr(e, "status_code", None)
+                is_token_expired = e.details.get("is_token_expired", False) if e.details else False
+                
                 if status == 401:
-                    await self.record_fail(token_str, status, "rate_limits_auth_failed")
+                    # 只要是 401，都应该记录一次失败，增加 fail_count
+                    reason = "rate_limits_auth_failed" if is_token_expired else "rate_limits_auth_unknown"
+                    
+                    # 如果确认为过期，传入 threshold=1 强制立即失效
+                    await self.record_fail(token_str, status, reason, threshold=1 if is_token_expired else None)
+                    
+                    if is_token_expired:
+                        # 只有确认过期的才跳过 fallback
+                        logger.warning(
+                            f"Token {raw_token[:10]}...: API sync failed (Confirmed Token Expired), skipping fallback"
+                        )
+                        return False
+                
             logger.warning(
-                f"Token {raw_token[:10]}...: API sync failed, fallback to local ({e})"
+                f"Token {raw_token[:10]}...: API sync failed, error: {e}"
             )
+            # 如果不执行降级扣费（例如在刷新状态时），则直接返回 False 表示同步失败
+            if not consume_on_fail:
+                return False
 
         # 降级：本地预估扣费
         if consume_on_fail:
@@ -598,7 +624,7 @@ class TokenManager:
             return False
 
     async def record_fail(
-        self, token_str: str, status_code: int = 401, reason: str = ""
+        self, token_str: str, status_code: int = 401, reason: str = "", threshold: Optional[int] = None
     ) -> bool:
         raw_token = token_str.replace("sso=", "")
 
@@ -616,18 +642,22 @@ class TokenManager:
                     return True
 
                 if status_code == 401:
-                    threshold = get_config("token.fail_threshold", FAIL_THRESHOLD)
-                    try:
-                        threshold = int(threshold)
-                    except (TypeError, ValueError):
-                        threshold = FAIL_THRESHOLD
+                    if threshold is None:
+                        threshold = get_config("token.fail_threshold", FAIL_THRESHOLD)
+                        try:
+                            threshold = int(threshold)
+                        except (TypeError, ValueError):
+                            threshold = FAIL_THRESHOLD
+                    
                     if threshold < 1:
                         threshold = 1
 
                     token.record_fail(status_code, reason, threshold=threshold)
-                    logger.warning(
+                    
+                    log_level = logger.warning if token.status == TokenStatus.EXPIRED else logger.info
+                    log_level(
                         f"Token {raw_token[:10]}...: recorded {status_code} failure "
-                        f"({token.fail_count}/{threshold}) - {reason}"
+                        f"({token.fail_count}/{threshold}) - {reason} - status: {token.status}"
                     )
                     self._track_token_change(token, pool_name, "state")
                     self._schedule_save()
@@ -660,7 +690,7 @@ class TokenManager:
             if token:
                 old_quota = token.quota
                 token.quota = 0
-                token.status = TokenStatus.COOLING
+                token.enter_cooling()
                 logger.warning(
                     f"Token {raw_token[:10]}...: marked as rate limited "
                     f"(quota {old_quota} -> 0, status -> cooling)"
@@ -899,7 +929,7 @@ class TokenManager:
                         return None, None, e
 
                     ctx.record_error(status, e)
-                    if not ctx.should_retry(status):
+                    if not ctx.should_retry(status, e):
                         return None, status, e
 
                     retry_after = extract_retry_after(e)
@@ -934,7 +964,10 @@ class TokenManager:
                     old_quota = token_info.quota
                     old_status = token_info.status
 
-                    token_info.update_quota(new_quota)
+                    if self._is_consumed_mode():
+                        token_info.update_quota_with_consumed(new_quota)
+                    else:
+                        token_info.update_quota(new_quota)
                     token_info.mark_synced()
 
                     window_size = self._extract_window_size_seconds(result)
@@ -972,12 +1005,23 @@ class TokenManager:
                     }
 
                 if status == 401:
-                    logger.error(
-                        f"Token {token_info.token[:10]}...: 401 after retries, "
-                        f"marking as expired"
+                    is_token_expired = (
+                        isinstance(error, UpstreamException)
+                        and isinstance(error.details, dict)
+                        and error.details.get("is_token_expired", False)
                     )
-                    token_info.status = TokenStatus.EXPIRED
-                    return {"recovered": False, "expired": True}
+                    if is_token_expired:
+                        logger.error(
+                            f"Token {token_info.token[:10]}...: confirmed expired after refresh, "
+                            f"marking as expired"
+                        )
+                        token_info.status = TokenStatus.EXPIRED
+                        return {"recovered": False, "expired": True}
+                    logger.warning(
+                        f"Token {token_info.token[:10]}...: 401 during refresh but not confirmed expired, "
+                        f"keeping current status"
+                    )
+                    return {"recovered": False, "expired": False}
 
                 if status == 400 and error and "email-domain-rejected" in str(error):
                     logger.warning(

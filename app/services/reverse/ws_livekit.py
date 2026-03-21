@@ -9,6 +9,12 @@ from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
 from app.core.config import get_config
+from app.core.proxy_pool import (
+    build_http_proxies,
+    get_current_proxy_from,
+    rotate_proxy,
+    should_rotate_proxy,
+)
 from app.core.exceptions import UpstreamException
 from app.services.token.service import TokenService
 from app.services.reverse.utils.headers import build_headers, build_ws_headers
@@ -43,10 +49,6 @@ class LivekitTokenReverse:
             Dict[str, Any]: The LiveKit token.
         """
         try:
-            # Get proxies
-            base_proxy = get_config("proxy.base_proxy_url")
-            proxies = {"http": base_proxy, "https": base_proxy} if base_proxy else None
-
             # Build headers
             headers = build_headers(
                 cookie_token=token,
@@ -74,8 +76,12 @@ class LivekitTokenReverse:
             # Curl Config
             timeout = get_config("voice.timeout")
             browser = get_config("proxy.browser")
+            active_proxy_key = None
 
             async def _do_request():
+                nonlocal active_proxy_key
+                active_proxy_key, proxy_url = get_current_proxy_from("proxy.base_proxy_url")
+                proxies = build_http_proxies(proxy_url)
                 response = await session.post(
                     LIVEKIT_TOKEN_API,
                     headers=headers,
@@ -97,7 +103,11 @@ class LivekitTokenReverse:
 
                 return response
 
-            response = await retry_on_status(_do_request)
+            async def _on_retry(attempt: int, status_code: int, error: Exception, delay: float):
+                if active_proxy_key and should_rotate_proxy(status_code):
+                    rotate_proxy(active_proxy_key)
+
+            response = await retry_on_status(_do_request, on_retry=_on_retry)
             return response
 
         except Exception as e:

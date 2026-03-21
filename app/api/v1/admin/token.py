@@ -46,9 +46,17 @@ def _sanitize_token_text(value) -> str:
 @router.get("/tokens", dependencies=[Depends(verify_app_key)])
 async def get_tokens():
     """获取所有 Token"""
-    storage = get_storage()
-    tokens = await storage.load_tokens()
-    return tokens or {}
+    # 获取消耗模式配置
+    from app.core.config import get_config
+    mgr = await get_token_manager()
+    results = {}
+    for pool_name, pool in mgr.pools.items():
+        results[pool_name] = [t.model_dump() for t in pool.list()]
+    consumed_mode = get_config("token.consumed_mode_enabled", False)
+    return {
+        "tokens": results or {},
+        "consumed_mode_enabled": consumed_mode,
+    }
 
 
 @router.post("/tokens", dependencies=[Depends(verify_app_key)])
@@ -146,12 +154,12 @@ async def refresh_tokens(data: dict):
             mgr,
         )
 
+        # 强制保存变更到存储
+        await mgr._save(force=True)
+
         results = {}
         for token, res in raw_results.items():
-            if res.get("ok"):
-                results[token] = res.get("data", False)
-            else:
-                results[token] = False
+            results[token] = bool(res.get("ok")) and res.get("data") is True
 
         response = {"status": "success", "results": results}
         return response
@@ -180,7 +188,7 @@ async def refresh_tokens_async(data: dict):
         try:
 
             async def _on_item(item: str, res: dict):
-                task.record(bool(res.get("ok")))
+                task.record(bool(res.get("ok")) and res.get("data") is True)
 
             raw_results = await UsageService.batch(
                 unique_tokens,

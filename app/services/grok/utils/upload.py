@@ -15,10 +15,17 @@ from urllib.parse import urlparse
 import aiofiles
 
 from app.core.config import get_config
+from app.core.proxy_pool import (
+    build_http_proxies,
+    get_current_proxy_from,
+    rotate_proxy,
+    should_rotate_proxy,
+)
 from app.core.exceptions import AppException, UpstreamException, ValidationException
 from app.core.logger import logger
 from app.core.storage import DATA_DIR
 from app.services.reverse.assets_upload import AssetsUploadReverse
+from app.services.reverse.utils.retry import retry_on_status
 from app.services.reverse.utils.session import ResettableSession
 from app.services.grok.utils.locks import _get_upload_semaphore, _file_lock
 
@@ -140,20 +147,36 @@ class UploadService:
 
             lock_name = f"ul_url_{hashlib.sha1(url.encode()).hexdigest()[:16]}"
             timeout = float(get_config("asset.upload_timeout"))
-            proxy_url = get_config("proxy.base_proxy_url")
-            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
             lock_timeout = max(1, int(get_config("asset.upload_timeout")))
             async with _file_lock(lock_name, timeout=lock_timeout):
                 session = await self.create()
-                response = await session.get(
-                    url, timeout=timeout, proxies=proxies, stream=True
-                )
-                if response.status_code >= 400:
-                    raise UpstreamException(
-                        message=f"Failed to fetch: {response.status_code}",
-                        details={"url": url, "status": response.status_code},
+                active_proxy_key = None
+
+                async def _do_fetch():
+                    nonlocal active_proxy_key
+                    active_proxy_key, proxy_url = get_current_proxy_from(
+                        "proxy.base_proxy_url"
                     )
+                    proxies = build_http_proxies(proxy_url)
+                    response = await session.get(
+                        url,
+                        timeout=timeout,
+                        proxies=proxies,
+                        stream=True,
+                    )
+                    if response.status_code >= 400:
+                        raise UpstreamException(
+                            message=f"Failed to fetch: {response.status_code}",
+                            details={"url": url, "status": response.status_code},
+                        )
+                    return response
+
+                async def _on_retry(attempt: int, status_code: int, error: Exception, delay: float):
+                    if active_proxy_key and should_rotate_proxy(status_code):
+                        rotate_proxy(active_proxy_key)
+
+                response = await retry_on_status(_do_fetch, on_retry=_on_retry)
 
                 filename = url.split("/")[-1].split("?")[0] or "download"
                 content_type = response.headers.get(

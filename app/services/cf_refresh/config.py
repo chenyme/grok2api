@@ -5,8 +5,8 @@ GROK_URL = "https://grok.com"
 
 def _get(key: str, default=None):
     """从 app config 读取 proxy.* 配置"""
-    from app.core.config import get_config
-    return get_config(f"proxy.{key}", default)
+    from app.core.config import config
+    return config.get(f"proxy.{key}", default)
 
 
 def get_flaresolverr_url() -> str:

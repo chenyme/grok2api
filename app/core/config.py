@@ -6,6 +6,7 @@
 """
 
 from copy import deepcopy
+import asyncio
 from pathlib import Path
 from typing import Any, Dict
 import tomllib
@@ -244,6 +245,8 @@ class Config:
         self._defaults = {}
         self._code_defaults = {}
         self._defaults_loaded = False
+        self._loaded = False
+        self._load_lock = asyncio.Lock()
 
     def register_defaults(self, defaults: Dict[str, Any]):
         """注册代码中定义的默认值"""
@@ -330,9 +333,20 @@ class Config:
                 )
 
             self._config = merged
+            self._loaded = True
         except Exception as e:
             logger.error(f"Error loading config: {e}")
             self._config = {}
+            self._loaded = False
+
+    async def ensure_loaded(self):
+        """确保配置至少成功加载一次（按需懒加载，线程安全）"""
+        if self._loaded:
+            return
+        async with self._load_lock:
+            if self._loaded:
+                return
+            await self.load()
 
     def get(self, key: str, default: Any = None) -> Any:
         """

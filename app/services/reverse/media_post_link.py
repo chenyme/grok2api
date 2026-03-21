@@ -1,7 +1,8 @@
 """
-Reverse interface: upload asset.
+Reverse interface: media post create link.
 """
 
+import orjson
 from typing import Any
 from curl_cffi.requests import AsyncSession
 
@@ -18,71 +19,67 @@ from app.services.token.service import TokenService
 from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import retry_on_status
 
-UPLOAD_API = "https://grok.com/rest/app-chat/upload-file"
+MEDIA_POST_LINK_API = "https://grok.com/rest/media/post/create-link"
 
 
-class AssetsUploadReverse:
-    """/rest/app-chat/upload-file reverse interface."""
+class MediaPostLinkReverse:
+    """/rest/media/post/create-link reverse interface."""
 
     @staticmethod
-    async def request(session: AsyncSession, token: str, fileName: str, fileMimeType: str, content: str) -> Any:
-        """Upload asset to Grok.
-
-        Args:
-            session: AsyncSession, the session to use for the request.
-            token: str, the SSO token.
-            fileName: str, the name of the file.
-            fileMimeType: str, the MIME type of the file.
-            content: str, the content of the file.
-
-        Returns:
-            Any: The response from the request.
-        """
+    async def request(
+        session: AsyncSession,
+        token: str,
+        post_id: str,
+    ) -> Any:
         try:
             # Build headers
             headers = build_headers(
                 cookie_token=token,
                 content_type="application/json",
                 origin="https://grok.com",
-                referer="https://grok.com/",
+                referer="https://grok.com",
             )
 
             # Build payload
             payload = {
-                "fileName": fileName,
-                "fileMimeType": fileMimeType,
-                "content": content,
+                "postId": post_id,
+                "source": "post-page",
+                "platform": "web"
             }
 
             # Curl Config
-            timeout = get_config("asset.upload_timeout")
+            timeout = get_config("video.timeout")
             browser = get_config("proxy.browser")
             active_proxy_key = None
 
             async def _do_request():
                 nonlocal active_proxy_key
-                active_proxy_key, proxy_url = get_current_proxy_from(
-                    "proxy.asset_proxy_url",
-                    "proxy.base_proxy_url",
-                )
+                active_proxy_key, proxy_url = get_current_proxy_from("proxy.base_proxy_url")
                 proxies = build_http_proxies(proxy_url)
                 response = await session.post(
-                    UPLOAD_API,
+                    MEDIA_POST_LINK_API,
                     headers=headers,
-                    json=payload,
-                    proxies=proxies,
+                    data=orjson.dumps(payload),
                     timeout=timeout,
+                    proxies=proxies,
                     impersonate=browser,
                 )
+
                 if response.status_code != 200:
+                    content = ""
+                    try:
+                        content = await response.text()
+                    except Exception:
+                        pass
                     logger.error(
-                        f"AssetsUploadReverse: Upload failed, {response.status_code}",
+                        f"MediaPostLinkReverse: Media post create link failed, {response.status_code}",
                         extra={"error_type": "UpstreamException"},
                     )
                     raise UpstreamException(
-                        message=f"AssetsUploadReverse: Upload failed, {response.status_code}",
-                        details={"status": response.status_code},
+                        message=f"MediaPostLinkReverse: Media post create link failed, {response.status_code}",
+                        details={"status": response.status_code, "body": content},
                     )
+
                 return response
 
             async def _on_retry(attempt: int, status_code: int, error: Exception, delay: float):
@@ -101,20 +98,20 @@ class AssetsUploadReverse:
                     status = getattr(e, "status_code", None)
                 if status == 401:
                     try:
-                        await TokenService.record_fail(token, status, "assets_upload_auth_failed")
+                        await TokenService.record_fail(token, status, "media_post_link_auth_failed")
                     except Exception:
                         pass
                 raise
 
             # Handle other non-upstream exceptions
             logger.error(
-                f"AssetsUploadReverse: Upload failed, {str(e)}",
+                f"MediaPostLinkReverse: Media post create link failed, {str(e)}",
                 extra={"error_type": type(e).__name__},
             )
             raise UpstreamException(
-                message=f"AssetsUploadReverse: Upload failed, {str(e)}",
+                message=f"MediaPostLinkReverse: Media post create link failed, {str(e)}",
                 details={"status": 502, "error": str(e)},
             )
 
 
-__all__ = ["AssetsUploadReverse"]
+__all__ = ["MediaPostLinkReverse"]

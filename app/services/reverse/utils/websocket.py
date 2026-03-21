@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from app.core.logger import logger
 from app.core.config import get_config
+from app.core.proxy_pool import get_current_proxy_from, rotate_proxy
 
 
 def _default_ssl_context() -> ssl.SSLContext:
@@ -111,61 +112,76 @@ class WebSocketClient:
         Returns:
             WebSocketConnection: The WebSocket connection.
         """
-        # Resolve proxy dynamically from config if not overridden
-        proxy_url = self._proxy_override or get_config("proxy.base_proxy_url")
-        connector, resolved_proxy = resolve_proxy(proxy_url, self._ssl_context)
-        logger.debug(f"WebSocket connect: proxy_url={proxy_url}, resolved_proxy={resolved_proxy}, connector={type(connector).__name__}")
+        max_retry = max(0, int(get_config("retry.max_retry") or 0))
+        last_error: Optional[Exception] = None
 
-        # Build client timeout
-        total_timeout = (
-            float(timeout)
-            if timeout is not None
-            else float(get_config("voice.timeout") or 120)
-        )
-        client_timeout = aiohttp.ClientTimeout(total=total_timeout)
+        for attempt in range(max_retry + 1):
+            active_proxy_key = None
+            proxy_url = self._proxy_override
+            if not proxy_url:
+                active_proxy_key, proxy_url = get_current_proxy_from("proxy.base_proxy_url")
+            connector, resolved_proxy = resolve_proxy(proxy_url, self._ssl_context)
+            logger.debug(
+                f"WebSocket connect: proxy_url={proxy_url}, resolved_proxy={resolved_proxy}, connector={type(connector).__name__}"
+            )
 
-        # Create session
-        session = aiohttp.ClientSession(connector=connector, timeout=client_timeout)
-        try:
-            # Cast to Any to avoid Pylance errors with **extra_kwargs
-            extra_kwargs: dict[str, Any] = dict(ws_kwargs or {})
-            skip_proxy_ssl = bool(get_config("proxy.skip_proxy_ssl_verify")) and bool(proxy_url)
-            if skip_proxy_ssl and urlparse(proxy_url).scheme.lower() == "https":
-                proxy_ssl_context = ssl.create_default_context()
-                proxy_ssl_context.check_hostname = False
-                proxy_ssl_context.verify_mode = ssl.CERT_NONE
-                try:
+            total_timeout = (
+                float(timeout)
+                if timeout is not None
+                else float(get_config("voice.timeout") or 120)
+            )
+            client_timeout = aiohttp.ClientTimeout(total=total_timeout)
+            session = aiohttp.ClientSession(connector=connector, timeout=client_timeout)
+            try:
+                # Cast to Any to avoid Pylance errors with **extra_kwargs
+                extra_kwargs: dict[str, Any] = dict(ws_kwargs or {})
+                skip_proxy_ssl = bool(get_config("proxy.skip_proxy_ssl_verify")) and bool(proxy_url)
+                if skip_proxy_ssl and urlparse(proxy_url).scheme.lower() == "https":
+                    proxy_ssl_context = ssl.create_default_context()
+                    proxy_ssl_context.check_hostname = False
+                    proxy_ssl_context.verify_mode = ssl.CERT_NONE
+                    try:
+                        ws = await session.ws_connect(
+                            url,
+                            headers=headers,
+                            proxy=resolved_proxy,
+                            ssl=self._ssl_context,
+                            proxy_ssl=proxy_ssl_context,
+                            **extra_kwargs,
+                        )
+                    except TypeError:
+                        logger.warning(
+                            "proxy.skip_proxy_ssl_verify is enabled, but aiohttp does not support proxy_ssl; keeping proxy SSL verification enabled"
+                        )
+                        ws = await session.ws_connect(
+                            url,
+                            headers=headers,
+                            proxy=resolved_proxy,
+                            ssl=self._ssl_context,
+                            **extra_kwargs,
+                        )
+                else:
                     ws = await session.ws_connect(
                         url,
                         headers=headers,
                         proxy=resolved_proxy,
                         ssl=self._ssl_context,
-                        proxy_ssl=proxy_ssl_context,
                         **extra_kwargs,
                     )
-                except TypeError:
-                    logger.warning(
-                        "proxy.skip_proxy_ssl_verify is enabled, but aiohttp does not support proxy_ssl; keeping proxy SSL verification enabled"
-                    )
-                    ws = await session.ws_connect(
-                        url,
-                        headers=headers,
-                        proxy=resolved_proxy,
-                        ssl=self._ssl_context,
-                        **extra_kwargs,
-                    )
-            else:
-                ws = await session.ws_connect(
-                    url,
-                    headers=headers,
-                    proxy=resolved_proxy,
-                    ssl=self._ssl_context,
-                    **extra_kwargs,
+                return WebSocketConnection(session, ws)
+            except Exception as exc:
+                last_error = exc
+                await session.close()
+                if self._proxy_override or not active_proxy_key or attempt >= max_retry:
+                    raise
+                rotate_proxy(active_proxy_key)
+                logger.warning(
+                    f"WebSocket connect failed via {active_proxy_key}, rotating proxy and retrying ({attempt + 1}/{max_retry})"
                 )
-            return WebSocketConnection(session, ws)
-        except Exception:
-            await session.close()
-            raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("WebSocket connect failed without error")
 
 
 __all__ = ["WebSocketClient", "WebSocketConnection", "resolve_proxy"]

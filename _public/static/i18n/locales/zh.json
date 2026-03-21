@@ -171,6 +171,7 @@
         "stream_timeout": {"title": "流空闲超时", "desc": "流式空闲超时时间（秒）。"}
       },
       "video": {
+        "enable_public_asset": {"title": "公开资产链接", "desc": "是否开启生成结束后创建 Public 资产。"},
         "concurrent": {"title": "并发上限", "desc": "Reverse 接口并发上限。"},
         "timeout": {"title": "请求超时", "desc": "Reverse 接口超时时间（秒）。"},
         "stream_timeout": {"title": "流空闲超时", "desc": "流式空闲超时时间（秒）。"},
@@ -244,6 +245,8 @@
     "statInvalid": "Token 失效",
     "statChatQuota": "Chat 剩余",
     "statImageQuota": "Image 剩余",
+    "statChatConsumed": "Chat 已消耗",
+    "statImageConsumed": "Image 已消耗",
     "statVideoQuota": "Video 剩余",
     "statVideoUnavailable": "无法统计",
     "statTotalCalls": "总调用次数",
@@ -258,6 +261,7 @@
     "tableType": "类型",
     "tableStatus": "状态",
     "tableQuota": "额度",
+    "tableQuotaConsumed": "已消耗",
     "tableNote": "备注",
     "tableActions": "操作",
     "refreshStatus": "刷新状态",

@@ -60,8 +60,8 @@ user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
 [retry]
 # 最大重试次数
 max_retry = 3
-# 触发重试的 HTTP 状态码
-retry_status_codes = [401,429,403]
+# 触发重试的状态码（代理连接失败等传输错误会映射为 502）
+retry_status_codes = [401,429,403,502]
 # 触发重建 session 的 HTTP 状态码（用于轮换代理）
 reset_session_status_codes = [403]
 # 退避基础延迟（秒）
@@ -90,6 +90,8 @@ save_delay_ms = 500
 usage_flush_interval_sec = 5
 # 多 worker 状态同步间隔（秒）
 reload_interval_sec = 30
+# 启用消耗模式（试验性功能，默认关闭）
+consumed_mode_enabled = false
 
 # ==================== 缓存管理 ====================
 [cache]
@@ -142,6 +144,8 @@ response_format = "url"
 
 # ==================== 视频配置 ====================
 [video]
+# 是否开启生成结束后 Public 资产
+enable_public_asset = false
 # Reverse 接口并发上限
 concurrent = 100
 # Reverse 接口超时时间（秒）
