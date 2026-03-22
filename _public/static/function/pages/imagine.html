@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title data-i18n="imagine.pageTitle">Grok2API - Imagine 瀑布流</title>
+  <title data-i18n="imagine.pageTitle">Grok2API - Imagine 图像生成</title>
   <link rel="icon" href="/favicon.ico">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
@@ -20,12 +20,12 @@
 
   <main class="flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in">
     <div class="space-y-6">
-        <div>
-          <h2 class="text-2xl font-semibold tracking-tight" data-i18n="imagine.title">Imagine 瀑布流</h2>
-          <p class="text-[var(--accents-4)] mt-1 text-sm" data-i18n="imagine.subtitle">通过 WebSocket 持续生成图片，实时展示 base64 瀑布流。</p>
-        </div>
+      <div>
+        <h2 class="text-2xl font-semibold tracking-tight" data-i18n="imagine.title">Imagine 图像生成</h2>
+        <p class="text-[var(--accents-4)] mt-1 text-sm" data-i18n="imagine.subtitle">浏览器直接发起 Bearer JSON 请求，返回图片 URL 后轮询资源可用性。</p>
+      </div>
 
-        <div class="h-px bg-[var(--border)]"></div>
+      <div class="h-px bg-[var(--border)]"></div>
 
       <div class="imagine-top-grid">
         <div class="imagine-card imagine-card-collapsible settings-card">
@@ -73,11 +73,11 @@
                     </select>
                   </div>
                   <div class="settings-field">
-                    <label class="field-label" for="concurrentSelect" data-i18n="imagine.concurrent">并发数量</label>
+                    <label class="field-label" for="concurrentSelect" data-i18n="imagine.imageBatchCount">图片数量</label>
                     <select id="concurrentSelect" class="geist-input">
-                      <option value="1" selected data-i18n="imagine.concurrentTask1">1 个任务</option>
-                      <option value="2" data-i18n="imagine.concurrentTask2">2 个任务</option>
-                      <option value="3" data-i18n="imagine.concurrentTask3">3 个任务</option>
+                      <option value="1" selected data-i18n="imagine.imageCount1">1 张</option>
+                      <option value="2" data-i18n="imagine.imageCount2">2 张</option>
+                      <option value="3" data-i18n="imagine.imageCount3">3 张</option>
                     </select>
                   </div>
                 </div>
@@ -85,22 +85,19 @@
               <div class="settings-block settings-block-row2b settings-block-single">
                 <div class="toggle-row toggle-row-fill">
                   <div class="toggle-text">
-                    <div class="toggle-title" data-i18n="imagine.autoFilter">自动过滤</div>
-                    <div class="toggle-desc" data-i18n="imagine.autoFilterDesc">过滤不达标图片</div>
+                    <div class="toggle-title" data-i18n="imagine.requestMode">请求方式</div>
+                    <div class="toggle-desc" data-i18n="imagine.requestModeDesc">单次 JSON 请求 + URL 轮询</div>
                   </div>
-                  <label class="toggle">
-                    <input id="autoFilterToggle" type="checkbox">
-                    <span class="toggle-track"></span>
-                  </label>
+                  <span class="meta-pill" data-i18n="imagine.nonStreaming">非流式</span>
                 </div>
               </div>
               <div class="settings-block settings-block-row3">
                 <div class="settings-row">
                   <div class="settings-field">
                     <label class="field-label" for="nsfwSelect" data-i18n="imagine.nsfwLabel">是否 NSFW</label>
-                    <select id="nsfwSelect" class="geist-input">
+                    <select id="nsfwSelect" class="geist-input" disabled>
                       <option value="true" data-i18n="imagine.nsfwOn">开启</option>
-                      <option value="false" data-i18n="imagine.nsfwOff">关闭</option>
+                      <option value="false" selected data-i18n="imagine.nsfwOff">关闭</option>
                     </select>
                   </div>
                   <div class="settings-folder">
@@ -131,35 +128,24 @@
         </div>
 
         <div class="imagine-card imagine-card-collapsible">
-          <div class="status-header-row" id="statusToggle">
-            <div class="card-title" data-i18n="imagine.connectionStatus">连接状态</div>
+          <div class="status-header-row">
+            <div class="card-title" data-i18n="imagine.requestStatus">请求状态</div>
             <span id="statusText" class="status-text" data-i18n="common.notConnected">未连接</span>
-            <svg class="collapse-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
           </div>
           <div class="card-content" id="statusContent">
             <div class="meta-grid">
-            <div class="meta-item mode-item">
-              <div class="meta-label" data-i18n="imagine.connectionMode">连接模式</div>
-              <div class="mode-switch" role="group" aria-label="Connection mode" data-i18n-aria-label="imagine.connectionModeAria">
-                <button class="mode-btn" data-mode="auto" type="button">Auto</button>
-                <button class="mode-btn" data-mode="ws" type="button">WS</button>
-                <button class="mode-btn" data-mode="sse" type="button">SSE</button>
+              <div class="meta-item">
+                <div class="meta-label" data-i18n="imagine.imageCount">图片数量</div>
+                <div id="countValue" class="meta-value">0</div>
               </div>
-            </div>
-            <div class="meta-item">
-              <div class="meta-label" data-i18n="imagine.imageCount">图片数量</div>
-              <div id="countValue" class="meta-value">0</div>
-            </div>
-            <div class="meta-item">
-              <div class="meta-label" data-i18n="imagine.activeTasks">活跃任务</div>
-              <div id="activeValue" class="meta-value">0</div>
-            </div>
-            <div class="meta-item">
-              <div class="meta-label" data-i18n="imagine.avgTime">平均耗时</div>
-              <div id="latencyValue" class="meta-value">-</div>
-            </div>
+              <div class="meta-item">
+                <div class="meta-label" data-i18n="imagine.requestState">请求中</div>
+                <div id="activeValue" class="meta-value">0</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label" data-i18n="imagine.totalTime">总耗时</div>
+                <div id="latencyValue" class="meta-value">-</div>
+              </div>
             </div>
           </div>
         </div>
@@ -167,19 +153,18 @@
 
       <div class="imagine-card" style="overflow: hidden;">
         <div class="waterfall-header">
-          <div class="card-title" data-i18n="imagine.gallery">瀑布流</div>
-          <div class="waterfall-actions">
-          </div>
+          <div class="card-title" data-i18n="imagine.gallery">图像结果</div>
+          <div class="waterfall-actions"></div>
         </div>
         <div id="emptyState" class="imagine-empty">
-          <div class="empty-title" data-i18n="imagine.waitingTitle">等待连接中</div>
-          <div class="empty-subtitle" data-i18n="imagine.waitingSubtitle">启动任务后，生成的图片会自动汇聚到这里</div>
+          <div class="empty-title" data-i18n="imagine.waitingTitle">等待发起请求</div>
+          <div class="empty-subtitle" data-i18n="imagine.waitingSubtitle">生成完成后，图片会在 URL 可用时显示在这里</div>
         </div>
         <div id="waterfall" class="waterfall"></div>
       </div>
+    </div>
   </main>
 
-  <!-- 图片放大预览 -->
   <div id="lightbox" class="image-lightbox">
     <button class="lightbox-close" id="closeLightbox">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

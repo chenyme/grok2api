@@ -23,7 +23,7 @@
       <div class="video-header-row">
         <div>
           <h2 class="text-2xl font-semibold tracking-tight" data-i18n="video.title">Video 视频生成</h2>
-          <p class="text-[var(--accents-4)] mt-1 text-sm" data-i18n="video.subtitle">生成短视频，支持参考图与多种预设风格。</p>
+          <p class="text-[var(--accents-4)] mt-1 text-sm" data-i18n="video.subtitle">浏览器直接发起 Bearer JSON 请求，返回视频 URL 后轮询资源可用性。</p>
         </div>
         <div class="video-actions">
           <button id="startBtn" class="geist-button gap-2">
@@ -63,33 +63,30 @@
               </div>
             </div>
             <div class="settings-block ratio-block">
-              <label class="field-label" for="ratioSelect" data-i18n="video.aspectRatio">画面比例</label>
-              <select id="ratioSelect" class="geist-input">
-                <option value="3:2" selected data-i18n="video.ratio3_2">3:2 横构图</option>
-                <option value="2:3" data-i18n="video.ratio2_3">2:3 竖构图</option>
-                <option value="16:9" data-i18n="video.ratio16_9">16:9 宽屏</option>
-                <option value="9:16" data-i18n="video.ratio9_16">9:16 竖屏</option>
-                <option value="1:1" data-i18n="video.ratio1_1">1:1 方形</option>
+              <label class="field-label" for="sizeSelect" data-i18n="video.outputSize">输出尺寸</label>
+              <select id="sizeSelect" class="geist-input">
+                <option value="1280x720" selected>1280x720</option>
+                <option value="720x1280">720x1280</option>
+                <option value="1792x1024">1792x1024</option>
+                <option value="1024x1792">1024x1792</option>
+                <option value="1024x1024">1024x1024</option>
               </select>
             </div>
             <div class="settings-block length-block">
-              <label class="field-label" for="lengthSelect" data-i18n="video.duration">视频时长</label>
-              <input id="lengthSelect" class="geist-input" type="number" min="6" max="30" step="1" value="6" />
+              <label class="field-label" for="secondsInput" data-i18n="video.secondsLabel">时长（秒）</label>
+              <input id="secondsInput" class="geist-input" type="number" min="6" max="30" step="1" value="6" />
             </div>
             <div class="settings-block resolution-block">
-              <label class="field-label" for="resolutionSelect" data-i18n="video.resolution">分辨率</label>
-              <select id="resolutionSelect" class="geist-input">
-                <option value="480p" selected>480p</option>
-                <option value="720p">720p</option>
+              <label class="field-label" for="qualitySelect" data-i18n="video.quality">质量</label>
+              <select id="qualitySelect" class="geist-input">
+                <option value="standard" selected data-i18n="video.qualityStandard">standard</option>
+                <option value="high" data-i18n="video.qualityHigh">high</option>
               </select>
             </div>
             <div class="settings-block preset-block">
-              <label class="field-label" for="presetSelect" data-i18n="video.stylePreset">风格预设</label>
-              <select id="presetSelect" class="geist-input">
-                <option value="normal" selected>Normal</option>
-                <option value="fun">Fun</option>
-                <option value="spicy">Spicy</option>
-                <option value="custom">Custom</option>
+              <label class="field-label" data-i18n="video.responseMode">返回方式</label>
+              <select class="geist-input" disabled>
+                <option selected data-i18n="video.responseModeValue">URL + 轮询</option>
               </select>
             </div>
             <div class="settings-block upload-block">
@@ -106,34 +103,34 @@
 
         <div class="video-card">
           <div class="status-header">
-            <div class="card-title" data-i18n="video.runStatus">运行状态</div>
+            <div class="card-title" data-i18n="video.requestStatus">请求状态</div>
             <span id="statusText" class="status-text" data-i18n="common.notConnected">未连接</span>
           </div>
-            <div class="progress-wrap">
-              <div id="progressBar" class="progress-bar">
-                <div id="progressFill" class="progress-fill"></div>
-              </div>
-              <div class="progress-meta">
-                <span id="progressText">0%</span>
-                <span id="durationValue" data-i18n="video.elapsedTimeNone">耗时 -</span>
+          <div class="progress-wrap">
+            <div id="progressBar" class="progress-bar">
+              <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <div class="progress-meta">
+              <span id="progressText">0%</span>
+              <span id="durationValue" data-i18n="video.elapsedTimeNone">耗时 -</span>
             </div>
           </div>
           <div class="meta-grid">
             <div class="meta-item">
-              <div class="meta-label" data-i18n="video.metaRatio">比例</div>
-              <div id="aspectValue" class="meta-value">-</div>
+              <div class="meta-label" data-i18n="video.metaSize">尺寸</div>
+              <div id="sizeValue" class="meta-value">-</div>
             </div>
             <div class="meta-item">
-              <div class="meta-label" data-i18n="video.metaDuration">时长</div>
-              <div id="lengthValue" class="meta-value">-</div>
+              <div class="meta-label" data-i18n="video.metaSeconds">时长</div>
+              <div id="secondsValue" class="meta-value">-</div>
             </div>
             <div class="meta-item">
-              <div class="meta-label" data-i18n="video.metaResolution">分辨率</div>
-              <div id="resolutionValue" class="meta-value">-</div>
+              <div class="meta-label" data-i18n="video.metaQuality">质量</div>
+              <div id="qualityValue" class="meta-value">-</div>
             </div>
             <div class="meta-item">
-              <div class="meta-label" data-i18n="video.metaPreset">预设</div>
-              <div id="presetValue" class="meta-value">-</div>
+              <div class="meta-label" data-i18n="video.metaReference">参考图</div>
+              <div id="referenceValue" class="meta-value" data-i18n="video.referenceNone">无</div>
             </div>
           </div>
         </div>
@@ -146,7 +143,7 @@
             <button id="clearBtn" class="geist-button-outline text-xs px-3" data-i18n="video.clearPreview">清空</button>
           </div>
         </div>
-        <div id="videoEmpty" class="video-empty" data-i18n="video.waitingGenerate">等待生成视频</div>
+        <div id="videoEmpty" class="video-empty" data-i18n="video.waitingGenerate">等待发起生成请求</div>
         <div id="videoStage" class="video-stage hidden"></div>
       </div>
     </div>

@@ -8,35 +8,39 @@
   const imageFileName = document.getElementById('imageFileName');
   const clearImageFileBtn = document.getElementById('clearImageFileBtn');
   const selectImageFileBtn = document.getElementById('selectImageFileBtn');
-  const ratioSelect = document.getElementById('ratioSelect');
-  const lengthSelect = document.getElementById('lengthSelect');
-  const resolutionSelect = document.getElementById('resolutionSelect');
-  const presetSelect = document.getElementById('presetSelect');
+  const sizeSelect = document.getElementById('sizeSelect');
+  const secondsInput = document.getElementById('secondsInput');
+  const qualitySelect = document.getElementById('qualitySelect');
   const statusText = document.getElementById('statusText');
   const progressBar = document.getElementById('progressBar');
   const progressFill = document.getElementById('progressFill');
   const progressText = document.getElementById('progressText');
   const durationValue = document.getElementById('durationValue');
-  const aspectValue = document.getElementById('aspectValue');
-  const lengthValue = document.getElementById('lengthValue');
-  const resolutionValue = document.getElementById('resolutionValue');
-  const presetValue = document.getElementById('presetValue');
+  const sizeValue = document.getElementById('sizeValue');
+  const secondsValue = document.getElementById('secondsValue');
+  const qualityValue = document.getElementById('qualityValue');
+  const referenceValue = document.getElementById('referenceValue');
   const videoEmpty = document.getElementById('videoEmpty');
   const videoStage = document.getElementById('videoStage');
 
-  let currentSource = null;
-  let currentTaskId = '';
+  const REQUEST_TIMEOUT = 120000;
+  const MEDIA_READY_MAX_CHECKS = 30;
+  const MEDIA_READY_INTERVAL = 3000;
+  const DEFAULT_SIZE = '1280x720';
+  const DEFAULT_SECONDS = 6;
+  const DEFAULT_QUALITY = 'standard';
+
+  let activeController = null;
   let isRunning = false;
-  let progressBuffer = '';
-  let contentBuffer = '';
-  let collectingContent = false;
-  let startAt = 0;
   let fileDataUrl = '';
   let elapsedTimer = null;
-  let lastProgress = 0;
+  let startAt = 0;
   let currentPreviewItem = null;
   let previewCount = 0;
-  const DEFAULT_REASONING_EFFORT = 'low';
+
+  function tr(key, vars) {
+    return typeof t === 'function' ? t(key, vars) : key;
+  }
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -46,7 +50,7 @@
 
   function setStatus(state, text) {
     if (!statusText) return;
-    statusText.textContent = text;
+    statusText.textContent = text || tr('common.notConnected');
     statusText.classList.remove('connected', 'connecting', 'error');
     if (state) {
       statusText.classList.add(state);
@@ -65,40 +69,52 @@
     }
   }
 
-  function updateProgress(value) {
+  function setIndeterminate(active) {
+    if (!progressBar) return;
+    progressBar.classList.toggle('indeterminate', Boolean(active));
+  }
+
+  function updateProgress(value, label) {
     const safe = Math.max(0, Math.min(100, Number(value) || 0));
-    lastProgress = safe;
     if (progressFill) {
       progressFill.style.width = `${safe}%`;
     }
     if (progressText) {
-      progressText.textContent = `${safe}%`;
+      progressText.textContent = label || `${safe}%`;
     }
   }
 
+  function getSecondsValue() {
+    const value = secondsInput ? parseInt(secondsInput.value, 10) : DEFAULT_SECONDS;
+    if (!Number.isFinite(value)) return DEFAULT_SECONDS;
+    return Math.min(30, Math.max(6, value));
+  }
+
   function updateMeta() {
-    if (aspectValue && ratioSelect) {
-      aspectValue.textContent = ratioSelect.value;
+    if (sizeValue) {
+      sizeValue.textContent = sizeSelect ? sizeSelect.value : DEFAULT_SIZE;
     }
-    if (lengthValue && lengthSelect) {
-      lengthValue.textContent = `${lengthSelect.value}s`;
+    if (secondsValue) {
+      secondsValue.textContent = `${getSecondsValue()}s`;
     }
-    if (resolutionValue && resolutionSelect) {
-      resolutionValue.textContent = resolutionSelect.value;
+    if (qualityValue) {
+      qualityValue.textContent = qualitySelect ? qualitySelect.value : DEFAULT_QUALITY;
     }
-    if (presetValue && presetSelect) {
-      presetValue.textContent = presetSelect.value;
+    if (referenceValue) {
+      if (fileDataUrl) {
+        referenceValue.textContent = tr('video.referenceUploaded');
+      } else if (imageUrlInput && imageUrlInput.value.trim()) {
+        referenceValue.textContent = tr('video.referenceUrl');
+      } else {
+        referenceValue.textContent = tr('video.referenceNone');
+      }
     }
   }
 
   function resetOutput(keepPreview) {
-    progressBuffer = '';
-    contentBuffer = '';
-    collectingContent = false;
-    lastProgress = 0;
     currentPreviewItem = null;
-    updateProgress(0);
     setIndeterminate(false);
+    updateProgress(0, '0%');
     if (!keepPreview) {
       if (videoStage) {
         videoStage.innerHTML = '';
@@ -110,24 +126,31 @@
       previewCount = 0;
     }
     if (durationValue) {
-      durationValue.textContent = t('video.elapsedTimeNone');
+      durationValue.textContent = tr('video.elapsedTimeNone');
     }
   }
 
+  function createPlaceholder(message) {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'video-item-placeholder';
+    placeholder.textContent = message;
+    return placeholder;
+  }
+
   function initPreviewSlot() {
-    if (!videoStage) return;
+    if (!videoStage) return null;
+
     previewCount += 1;
     currentPreviewItem = document.createElement('div');
-    currentPreviewItem.className = 'video-item';
+    currentPreviewItem.className = 'video-item is-pending';
     currentPreviewItem.dataset.index = String(previewCount);
-    currentPreviewItem.classList.add('is-pending');
 
     const header = document.createElement('div');
     header.className = 'video-item-bar';
 
     const title = document.createElement('div');
     title.className = 'video-item-title';
-    title.textContent = t('video.videoTitle', { n: previewCount });
+    title.textContent = tr('video.videoTitle', { n: previewCount });
 
     const actions = document.createElement('div');
     actions.className = 'video-item-actions';
@@ -136,12 +159,12 @@
     openBtn.className = 'geist-button-outline text-xs px-3 video-open hidden';
     openBtn.target = '_blank';
     openBtn.rel = 'noopener';
-    openBtn.textContent = t('video.open');
+    openBtn.textContent = tr('video.open');
 
     const downloadBtn = document.createElement('button');
     downloadBtn.className = 'geist-button-outline text-xs px-3 video-download';
     downloadBtn.type = 'button';
-    downloadBtn.textContent = t('imagine.download');
+    downloadBtn.textContent = tr('imagine.download');
     downloadBtn.disabled = true;
 
     actions.appendChild(openBtn);
@@ -151,7 +174,7 @@
 
     const body = document.createElement('div');
     body.className = 'video-item-body';
-    body.innerHTML = '<div class="video-item-placeholder">' + t('video.generatingPlaceholder') + '</div>';
+    body.appendChild(createPlaceholder(tr('video.generatingPlaceholder')));
 
     const link = document.createElement('div');
     link.className = 'video-item-link';
@@ -164,21 +187,29 @@
     if (videoEmpty) {
       videoEmpty.classList.add('hidden');
     }
+    return currentPreviewItem;
   }
 
   function ensurePreviewSlot() {
-    if (!currentPreviewItem) {
-      initPreviewSlot();
-    }
-    return currentPreviewItem;
+    return currentPreviewItem || initPreviewSlot();
+  }
+
+  function setPreviewMessage(message) {
+    const item = ensurePreviewSlot();
+    if (!item) return;
+    const body = item.querySelector('.video-item-body');
+    if (!body) return;
+    body.innerHTML = '';
+    body.appendChild(createPlaceholder(message));
   }
 
   function updateItemLinks(item, url) {
     if (!item) return;
+    const safeUrl = url || '';
     const openBtn = item.querySelector('.video-open');
     const downloadBtn = item.querySelector('.video-download');
     const link = item.querySelector('.video-item-link');
-    const safeUrl = url || '';
+
     item.dataset.url = safeUrl;
     if (link) {
       link.textContent = safeUrl;
@@ -189,26 +220,36 @@
         openBtn.href = safeUrl;
         openBtn.classList.remove('hidden');
       } else {
-        openBtn.classList.add('hidden');
         openBtn.removeAttribute('href');
+        openBtn.classList.add('hidden');
       }
     }
     if (downloadBtn) {
       downloadBtn.dataset.url = safeUrl;
       downloadBtn.disabled = !safeUrl;
     }
-    if (safeUrl) {
-      item.classList.remove('is-pending');
-    }
+    item.classList.toggle('is-pending', !safeUrl);
   }
 
-  function setIndeterminate(active) {
-    if (!progressBar) return;
-    if (active) {
-      progressBar.classList.add('indeterminate');
-    } else {
-      progressBar.classList.remove('indeterminate');
-    }
+  function renderVideoUrl(url) {
+    const item = ensurePreviewSlot();
+    if (!item) return;
+    const body = item.querySelector('.video-item-body');
+    if (!body) return;
+
+    body.innerHTML = '';
+
+    const video = document.createElement('video');
+    video.controls = true;
+    video.preload = 'metadata';
+
+    const source = document.createElement('source');
+    source.src = url;
+    source.type = 'video/mp4';
+
+    video.appendChild(source);
+    body.appendChild(video);
+    updateItemLinks(item, url);
   }
 
   function startElapsedTimer() {
@@ -217,7 +258,7 @@
     elapsedTimer = setInterval(() => {
       if (!startAt) return;
       const seconds = Math.max(0, Math.round((Date.now() - startAt) / 1000));
-      durationValue.textContent = t('video.elapsedTime', { sec: seconds });
+      durationValue.textContent = tr('video.elapsedTime', { sec: seconds });
     }, 1000);
   }
 
@@ -234,329 +275,278 @@
       imageFileInput.value = '';
     }
     if (imageFileName) {
-      imageFileName.textContent = t('common.noFileSelected');
+      imageFileName.textContent = tr('common.noFileSelected');
     }
+    updateMeta();
   }
 
-  function normalizeAuthHeader(authHeader) {
-    if (!authHeader) return '';
-    if (authHeader.startsWith('Bearer ')) {
-      return authHeader.slice(7).trim();
-    }
-    return authHeader;
+  function normalizeUrl(url) {
+    if (!url) return '';
+    const base = window.location.origin.replace(/\/+$/, '');
+    if (/^https?:\/\//i.test(url)) return url;
+    if (url.startsWith('/')) return `${base}${url}`;
+    return `${base}/${url}`;
   }
 
-  function buildSseUrl(taskId, rawPublicKey) {
-    const httpProtocol = window.location.protocol === 'https:' ? 'https' : 'http';
-    const base = `${httpProtocol}://${window.location.host}/v1/function/video/sse`;
-    const params = new URLSearchParams();
-    params.set('task_id', taskId);
-    params.set('t', String(Date.now()));
-    if (rawPublicKey) {
-      params.set('function_key', rawPublicKey);
-    }
-    return `${base}?${params.toString()}`;
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  async function createVideoTask(authHeader) {
-    const prompt = promptInput ? promptInput.value.trim() : '';
-    const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
-    if (fileDataUrl && rawUrl) {
-      toast(t('video.referenceConflict'), 'error');
-      throw new Error('invalid_reference');
+  function timeoutSignal(ms, extraSignal) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('timeout')), ms);
+
+    if (extraSignal) {
+      if (extraSignal.aborted) {
+        controller.abort(extraSignal.reason || new Error('aborted'));
+      } else {
+        extraSignal.addEventListener(
+          'abort',
+          () => controller.abort(extraSignal.reason || new Error('aborted')),
+          { once: true }
+        );
+      }
     }
-    const imageUrl = fileDataUrl || rawUrl;
-    const res = await fetch('/v1/function/video/start', {
-      method: 'POST',
-      headers: {
-        ...buildAuthHeaders(authHeader),
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        prompt,
-        image_url: imageUrl || null,
-        reasoning_effort: DEFAULT_REASONING_EFFORT,
-        aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
-        video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
-        resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
-        preset: presetSelect ? presetSelect.value : 'normal'
-      })
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || 'Failed to create task');
-    }
-    const data = await res.json();
-    return data && data.task_id ? String(data.task_id) : '';
+
+    return {
+      signal: controller.signal,
+      clear() {
+        clearTimeout(timer);
+      }
+    };
   }
 
-  async function stopVideoTask(taskId, authHeader) {
-    if (!taskId) return;
+  async function postJson(url, payload, signal, authHeader) {
+    const timer = timeoutSignal(REQUEST_TIMEOUT, signal);
     try {
-      await fetch('/v1/function/video/stop', {
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           ...buildAuthHeaders(authHeader),
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ task_ids: [taskId] })
+        body: JSON.stringify(payload),
+        signal: timer.signal
       });
-    } catch (e) {
-      // ignore
+
+      const text = await response.text();
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (error) {
+        data = { raw: text };
+      }
+
+      if (!response.ok) {
+        const message = data?.error?.message || data?.detail || data?.raw || `${tr('common.requestFailed')} (${response.status})`;
+        throw new Error(String(message));
+      }
+
+      return data;
+    } finally {
+      timer.clear();
     }
   }
 
-  function extractVideoInfo(buffer) {
-    if (!buffer) return null;
-    if (buffer.includes('<video')) {
-      const matches = buffer.match(/<video[\s\S]*?<\/video>/gi);
-      if (matches && matches.length) {
-        return { html: matches[matches.length - 1] };
+  function extractVideoUrls(data) {
+    const list = [];
+
+    for (const key of ['url', 'video_url', 'file_url']) {
+      const value = data?.[key];
+      if (typeof value === 'string' && value.trim()) {
+        list.push(value.trim());
       }
     }
-    const mdMatches = buffer.match(/\[video\]\(([^)]+)\)/g);
-    if (mdMatches && mdMatches.length) {
-      const last = mdMatches[mdMatches.length - 1];
-      const urlMatch = last.match(/\[video\]\(([^)]+)\)/);
-      if (urlMatch) {
-        return { url: urlMatch[1] };
+
+    for (const groupKey of ['data', 'output']) {
+      const group = data?.[groupKey];
+      if (!Array.isArray(group)) continue;
+      for (const item of group) {
+        if (!item || typeof item !== 'object') continue;
+        for (const key of ['url', 'video_url', 'file_url']) {
+          const value = item[key];
+          if (typeof value === 'string' && value.trim()) {
+            list.push(value.trim());
+          }
+        }
       }
     }
-    const urlMatches = buffer.match(/https?:\/\/[^\s<)]+/g);
-    if (urlMatches && urlMatches.length) {
-      return { url: urlMatches[urlMatches.length - 1] };
+
+    return [...new Set(list.map((value) => normalizeUrl(value)).filter(Boolean))];
+  }
+
+  async function checkMediaReady(url, signal) {
+    const timer = timeoutSignal(30000, signal);
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: timer.signal
+      });
+      if (!response.ok) return false;
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      return contentType.startsWith('video/') || contentType.includes('application/octet-stream');
+    } catch (error) {
+      return false;
+    } finally {
+      timer.clear();
+    }
+  }
+
+  async function waitForVideoReady(url, signal) {
+    for (let i = 0; i < MEDIA_READY_MAX_CHECKS; i += 1) {
+      if (signal?.aborted) return null;
+      updateProgress(
+        Math.min(95, 60 + Math.round(((i + 1) / MEDIA_READY_MAX_CHECKS) * 35)),
+        tr('video.pollingProgress', { current: i + 1, total: MEDIA_READY_MAX_CHECKS })
+      );
+      const ready = await checkMediaReady(url, signal);
+      if (ready) {
+        return url;
+      }
+      await sleep(MEDIA_READY_INTERVAL);
     }
     return null;
   }
 
-  function renderVideoFromHtml(html) {
-    const container = ensurePreviewSlot();
-    if (!container) return;
-    const body = container.querySelector('.video-item-body');
-    if (!body) return;
-    body.innerHTML = html;
-    const videoEl = body.querySelector('video');
-    let videoUrl = '';
-    if (videoEl) {
-      videoEl.controls = true;
-      videoEl.preload = 'metadata';
-      const source = videoEl.querySelector('source');
-      if (source && source.getAttribute('src')) {
-        videoUrl = source.getAttribute('src');
-      } else if (videoEl.getAttribute('src')) {
-        videoUrl = videoEl.getAttribute('src');
-      }
+  function buildPayload(prompt, referenceImage) {
+    const payload = {
+      model: 'grok-imagine-1.0-video',
+      prompt,
+      size: sizeSelect ? sizeSelect.value : DEFAULT_SIZE,
+      seconds: getSecondsValue(),
+      quality: qualitySelect ? qualitySelect.value : DEFAULT_QUALITY
+    };
+
+    if (referenceImage) {
+      payload.image_reference = { image_url: referenceImage };
     }
-    updateItemLinks(container, videoUrl);
+
+    return payload;
   }
 
-  function renderVideoFromUrl(url) {
-    const container = ensurePreviewSlot();
-    if (!container) return;
-    const safeUrl = url || '';
-    const body = container.querySelector('.video-item-body');
-    if (!body) return;
-    body.innerHTML = `\n      <video controls preload="metadata">\n        <source src="${safeUrl}" type="video/mp4">\n      </video>\n    `;
-    updateItemLinks(container, safeUrl);
-  }
-
-  function handleDelta(text) {
-    if (!text) return;
-    if (text.includes('<think>') || text.includes('</think>')) {
-      return;
+  function resolveReferenceImage() {
+    const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
+    if (fileDataUrl && rawUrl) {
+      throw new Error(tr('video.referenceConflict'));
     }
-    if (text.includes('超分辨率') || text.includes('super resolution')) {
-      setStatus('connecting', t('video.superResolutionInProgress'));
-      setIndeterminate(true);
-      if (progressText) {
-        progressText.textContent = t('video.superResolutionInProgress');
-      }
-      return;
+    if (fileDataUrl) {
+      return fileDataUrl;
     }
-
-    if (!collectingContent) {
-      const maybeVideo = text.includes('<video') || text.includes('[video](') || text.includes('http://') || text.includes('https://');
-      if (maybeVideo) {
-        collectingContent = true;
-      }
+    if (!rawUrl) {
+      return '';
     }
-
-    if (collectingContent) {
-      contentBuffer += text;
-      const info = extractVideoInfo(contentBuffer);
-      if (info) {
-        if (info.html) {
-          renderVideoFromHtml(info.html);
-        } else if (info.url) {
-          renderVideoFromUrl(info.url);
-        }
-      }
-      return;
+    if (rawUrl.startsWith('data:')) {
+      return rawUrl;
     }
-
-    progressBuffer += text;
-    const roundMatches = [...progressBuffer.matchAll(/\[round=(\d+)\/(\d+)\]\s*progress=([0-9]+(?:\.[0-9]+)?)%/g)];
-    if (roundMatches.length) {
-      const last = roundMatches[roundMatches.length - 1];
-      const round = parseInt(last[1], 10);
-      const total = parseInt(last[2], 10);
-      const value = parseFloat(last[3]);
-      setIndeterminate(false);
-      updateProgress(value);
-      if (progressText && Number.isFinite(round) && Number.isFinite(total) && total > 0) {
-        progressText.textContent = `${Math.round(value)}% · ${round}/${total}`;
-      }
-      progressBuffer = progressBuffer.slice(Math.max(0, progressBuffer.length - 300));
-      return;
-    }
-
-    const genericProgressMatches = [...progressBuffer.matchAll(/progress=([0-9]+(?:\.[0-9]+)?)%/g)];
-    if (genericProgressMatches.length) {
-      const last = genericProgressMatches[genericProgressMatches.length - 1];
-      const value = parseFloat(last[1]);
-      setIndeterminate(false);
-      updateProgress(value);
-      progressBuffer = progressBuffer.slice(Math.max(0, progressBuffer.length - 240));
-      return;
-    }
-
-    const matches = [...progressBuffer.matchAll(/进度\s*(\d+)%/g)];
-    if (matches.length) {
-      const last = matches[matches.length - 1];
-      const value = parseInt(last[1], 10);
-      setIndeterminate(false);
-      updateProgress(value);
-      progressBuffer = progressBuffer.slice(Math.max(0, progressBuffer.length - 200));
-    }
-  }
-
-  function closeSource() {
-    if (currentSource) {
-      try {
-        currentSource.close();
-      } catch (e) {
-        // ignore
-      }
-      currentSource = null;
-    }
+    return normalizeUrl(rawUrl);
   }
 
   async function startConnection() {
     const prompt = promptInput ? promptInput.value.trim() : '';
     if (!prompt) {
-      toast(t('common.enterPrompt'), 'error');
+      toast(tr('common.enterPrompt'), 'error');
       return;
     }
-
     if (isRunning) {
-      toast(t('video.alreadyGenerating'), 'warning');
+      toast(tr('video.alreadyGenerating'), 'warning');
       return;
     }
 
     const authHeader = await ensureFunctionKey();
     if (authHeader === null) {
-      toast(t('common.configurePublicKey'), 'error');
+      toast(tr('common.configurePublicKey'), 'error');
       window.location.href = '/login';
       return;
     }
 
-    isRunning = true;
-    startBtn.disabled = true;
-    updateMeta();
-    resetOutput(true);
-    initPreviewSlot();
-    setStatus('connecting', t('common.connecting'));
-
-    let taskId = '';
+    let referenceImage = '';
     try {
-      taskId = await createVideoTask(authHeader);
-    } catch (e) {
-      setStatus('error', t('common.createTaskFailed'));
-      startBtn.disabled = false;
-      isRunning = false;
+      referenceImage = resolveReferenceImage();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : tr('video.referenceConflict');
+      toast(message, 'error');
       return;
     }
 
-    currentTaskId = taskId;
+    if (secondsInput) {
+      secondsInput.value = String(getSecondsValue());
+    }
+    updateMeta();
+    resetOutput(true);
+    initPreviewSlot();
+
+    const controller = new AbortController();
+    activeController = controller;
+    isRunning = true;
     startAt = Date.now();
-    setStatus('connected', t('common.generating'));
-    setButtons(true);
-    setIndeterminate(true);
     startElapsedTimer();
+    setButtons(true);
+    setStatus('connecting', tr('video.requestingStatus'));
+    setIndeterminate(false);
+    updateProgress(15, tr('video.requesting'));
+    setPreviewMessage(tr('video.generatingPlaceholder'));
 
-    const rawPublicKey = normalizeAuthHeader(authHeader);
-    const url = buildSseUrl(taskId, rawPublicKey);
-    closeSource();
-    const es = new EventSource(url);
-    currentSource = es;
+    try {
+      const payload = buildPayload(prompt, referenceImage);
+      const data = await postJson('/v1/function/videos', payload, controller.signal, authHeader);
 
-    es.onopen = () => {
-      setStatus('connected', t('common.generating'));
-    };
+      if (controller.signal.aborted) return;
 
-    es.onmessage = (event) => {
-      if (!event || !event.data) return;
-      if (event.data === '[DONE]') {
-        finishRun();
-        return;
+      const urls = extractVideoUrls(data);
+      if (!urls.length) {
+        throw new Error(tr('common.generationFailed'));
       }
-      let payload = null;
-      try {
-        payload = JSON.parse(event.data);
-      } catch (e) {
-        return;
-      }
-      if (payload && payload.error) {
-        toast(payload.error, 'error');
-        setStatus('error', t('common.generationFailed'));
-        finishRun(true);
-        return;
-      }
-      const choice = payload.choices && payload.choices[0];
-      const delta = choice && choice.delta ? choice.delta : null;
-      if (delta && delta.content) {
-        handleDelta(delta.content);
-      }
-      if (choice && choice.finish_reason === 'stop') {
-        finishRun();
-      }
-    };
 
-    es.onerror = () => {
-      if (!isRunning) return;
-      setStatus('error', t('common.connectionError'));
-      finishRun(true);
-    };
-  }
+      const videoUrl = urls[0];
+      setStatus('connecting', tr('video.pollingStatus'));
+      setPreviewMessage(tr('video.pollingMedia'));
+      updateItemLinks(currentPreviewItem, videoUrl);
+      const readyUrl = await waitForVideoReady(videoUrl, controller.signal);
+      if (controller.signal.aborted) return;
+      if (!readyUrl) {
+        throw new Error(tr('common.generationFailed'));
+      }
 
-  async function stopConnection() {
-    const authHeader = await ensureFunctionKey();
-    if (authHeader !== null) {
-      await stopVideoTask(currentTaskId, authHeader);
-    }
-    closeSource();
-    isRunning = false;
-    currentTaskId = '';
-    stopElapsedTimer();
-    setButtons(false);
-    setStatus('', t('common.notConnected'));
-  }
-
-  function finishRun(hasError) {
-    if (!isRunning) return;
-    closeSource();
-    isRunning = false;
-    setButtons(false);
-    stopElapsedTimer();
-    if (!hasError) {
-      setStatus('connected', t('common.done'));
+      renderVideoUrl(readyUrl);
       setIndeterminate(false);
-      updateProgress(100);
+      updateProgress(100, '100%');
+      setStatus('connected', tr('common.done'));
+    } catch (error) {
+      if (controller.signal.aborted) {
+        setPreviewMessage(tr('common.stopped'));
+        setStatus('', tr('common.stopped'));
+      } else {
+        const message = error instanceof Error ? error.message : tr('common.generationFailed');
+        setPreviewMessage(message);
+        setStatus('error', tr('common.generationFailed'));
+        toast(message, 'error');
+      }
+    } finally {
+      if (activeController === controller) {
+        activeController = null;
+      }
+      isRunning = false;
+      setButtons(false);
+      stopElapsedTimer();
+      if (durationValue && startAt) {
+        const seconds = Math.max(0, Math.round((Date.now() - startAt) / 1000));
+        durationValue.textContent = tr('video.elapsedTime', { sec: seconds });
+      }
+      startAt = 0;
     }
-    if (durationValue && startAt) {
-      const seconds = Math.max(0, Math.round((Date.now() - startAt) / 1000));
-      durationValue.textContent = t('video.elapsedTime', { sec: seconds });
+  }
+
+  function stopConnection() {
+    if (activeController) {
+      activeController.abort(new Error('stopped'));
+      activeController = null;
     }
+    isRunning = false;
+    stopElapsedTimer();
+    setButtons(false);
+    setStatus('', tr('common.stopped'));
+    setPreviewMessage(tr('common.stopped'));
   }
 
   if (startBtn) {
@@ -568,7 +558,7 @@
   }
 
   if (clearBtn) {
-    clearBtn.addEventListener('click', () => resetOutput());
+    clearBtn.addEventListener('click', () => resetOutput(false));
   }
 
   if (videoStage) {
@@ -577,11 +567,13 @@
       if (!(target instanceof HTMLElement)) return;
       if (!target.classList.contains('video-download')) return;
       event.preventDefault();
+
       const item = target.closest('.video-item');
       if (!item) return;
       const url = item.dataset.url || target.dataset.url || '';
       const index = item.dataset.index || '';
       if (!url) return;
+
       try {
         const response = await fetch(url, { mode: 'cors' });
         if (!response.ok) {
@@ -596,8 +588,8 @@
         anchor.click();
         anchor.remove();
         URL.revokeObjectURL(blobUrl);
-      } catch (e) {
-        toast(t('video.downloadFailed'), 'error');
+      } catch (error) {
+        toast(tr('video.downloadFailed'), 'error');
       }
     });
   }
@@ -619,14 +611,17 @@
       reader.onload = () => {
         if (typeof reader.result === 'string') {
           fileDataUrl = reader.result;
+          updateMeta();
         } else {
           fileDataUrl = '';
-          toast(t('common.fileReadFailed'), 'error');
+          updateMeta();
+          toast(tr('common.fileReadFailed'), 'error');
         }
       };
       reader.onerror = () => {
         fileDataUrl = '';
-        toast(t('common.fileReadFailed'), 'error');
+        updateMeta();
+        toast(tr('common.fileReadFailed'), 'error');
       };
       reader.readAsDataURL(file);
     });
@@ -649,6 +644,7 @@
       if (imageUrlInput.value.trim() && fileDataUrl) {
         clearFileSelection();
       }
+      updateMeta();
     });
   }
 
@@ -661,5 +657,22 @@
     });
   }
 
+  if (sizeSelect) {
+    sizeSelect.addEventListener('change', () => updateMeta());
+  }
+
+  if (secondsInput) {
+    secondsInput.addEventListener('change', () => {
+      secondsInput.value = String(getSecondsValue());
+      updateMeta();
+    });
+  }
+
+  if (qualitySelect) {
+    qualitySelect.addEventListener('change', () => updateMeta());
+  }
+
   updateMeta();
+  setStatus('', tr('common.notConnected'));
+  updateProgress(0, '0%');
 })();
