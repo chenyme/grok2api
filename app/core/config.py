@@ -74,17 +74,12 @@ def _migrate_deprecated_config(
         "grok.image_ws_final_min_bytes": "image.final_min_bytes",
         "grok.image_ws_medium_min_bytes": "image.medium_min_bytes",
         # legacy sections
-        "network.base_proxy_url": "proxy.base_proxy_url",
-        "network.asset_proxy_url": "proxy.asset_proxy_url",
         "network.timeout": [
             "chat.timeout",
             "image.timeout",
             "video.timeout",
             "voice.timeout",
         ],
-        "security.cf_clearance": "proxy.cf_clearance",
-        "security.browser": "proxy.browser",
-        "security.user_agent": "proxy.user_agent",
         "timeout.stream_idle_timeout": [
             "chat.stream_timeout",
             "image.stream_timeout",
@@ -364,6 +359,10 @@ class Config:
                 return default
 
         return self._config.get(key, default)
+
+    def snapshot(self) -> Dict[str, Any]:
+        """返回当前配置快照，避免外部直接持有内部可变引用。"""
+        return deepcopy(self._config)
 
     async def update(self, new_config: dict):
         """更新配置"""

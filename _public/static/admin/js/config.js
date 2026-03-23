@@ -2,6 +2,7 @@ let apiKey = '';
 let currentConfig = {};
 const byId = (id) => document.getElementById(id);
 const NUMERIC_FIELDS = new Set([
+  'refresh_interval',
   'timeout',
   'max_retry',
   'retry_backoff_base',
@@ -32,8 +33,10 @@ const NUMERIC_FIELDS = new Set([
   'medium_min_bytes',
   'blocked_parallel_attempts',
   'concurrent',
-  'batch_size'
+  'batch_size',
+  'n'
 ]);
+const CONFIG_INPUT_SELECTOR = 'input[data-section], textarea[data-section], select[data-section]';
 
 const LOCALE_MAP = {
   "app": {
@@ -356,12 +359,14 @@ async function loadData() {
     if (res.ok) {
       currentConfig = await res.json();
       renderConfig(currentConfig);
+      return currentConfig;
     } else if (res.status === 401) {
       logout();
     }
   } catch (e) {
     showToast(t('common.connectionFailed'), 'error');
   }
+  return null;
 }
 
 function renderConfig(data) {
@@ -556,6 +561,65 @@ function buildFieldCard(section, key, val) {
   return fieldCard;
 }
 
+function isNumericField(section, key) {
+  return NUMERIC_FIELDS.has(key) || typeof (currentConfig?.[section]?.[key]) === 'number';
+}
+
+function collectConfigPatch() {
+  const patch = {};
+  const inputs = document.querySelectorAll(CONFIG_INPUT_SELECTOR);
+
+  // Only send editable fields so stale disabled/server-managed values are preserved.
+  inputs.forEach(input => {
+    if (input.disabled) return;
+
+    const s = input.dataset.section;
+    const k = input.dataset.key;
+    let val = input.value;
+
+    if (input.type === 'checkbox') {
+      val = input.checked;
+    } else if (input.dataset.type === 'json') {
+      try {
+        val = JSON.parse(val);
+      } catch (e) {
+        throw new Error(t('config.invalidJson', { field: getText(s, k).title }));
+      }
+    } else if (k === 'app_key' && val.trim() === '') {
+      throw new Error(t('config.appKeyRequired'));
+    } else if (isNumericField(s, k)) {
+      if (val.trim() !== '' && !Number.isNaN(Number(val))) {
+        val = Number(val);
+      }
+    }
+
+    if (!patch[s]) patch[s] = {};
+    patch[s][k] = val;
+  });
+
+  return patch;
+}
+
+async function syncSavedConfig(savedConfig) {
+  if (!savedConfig || typeof savedConfig !== 'object') return;
+
+  currentConfig = savedConfig;
+  renderConfig(currentConfig);
+
+  const savedAppKey = savedConfig.app && typeof savedConfig.app.app_key === 'string'
+    ? savedConfig.app.app_key
+    : '';
+  if (!savedAppKey) return;
+
+  const nextApiKey = `Bearer ${savedAppKey}`;
+  if (apiKey === nextApiKey) return;
+
+  apiKey = nextApiKey;
+  if (typeof storeAppKey === 'function') {
+    await storeAppKey(savedAppKey);
+  }
+}
+
 async function saveConfig() {
   const btn = byId('save-btn');
   const originalText = btn.innerText;
@@ -563,31 +627,7 @@ async function saveConfig() {
   btn.innerText = t('config.saving');
 
   try {
-    const newConfig = typeof structuredClone === 'function'
-      ? structuredClone(currentConfig)
-      : JSON.parse(JSON.stringify(currentConfig));
-    const inputs = document.querySelectorAll('input[data-section], textarea[data-section], select[data-section]');
-
-    inputs.forEach(input => {
-      const s = input.dataset.section;
-      const k = input.dataset.key;
-      let val = input.value;
-
-      if (input.type === 'checkbox') {
-        val = input.checked;
-      } else if (input.dataset.type === 'json') {
-        try { val = JSON.parse(val); } catch (e) { throw new Error(t('config.invalidJson', { field: getText(s, k).title })); }
-      } else if (k === 'app_key' && val.trim() === '') {
-        throw new Error(t('config.appKeyRequired'));
-      } else if (NUMERIC_FIELDS.has(k)) {
-        if (val.trim() !== '' && !Number.isNaN(Number(val))) {
-          val = Number(val);
-        }
-      }
-
-      if (!newConfig[s]) newConfig[s] = {};
-      newConfig[s][k] = val;
-    });
+    const newConfig = collectConfigPatch();
 
     if (newConfig.proxy && newConfig.proxy.enabled) {
       const url = String(newConfig.proxy.flaresolverr_url || '').trim();
@@ -608,7 +648,18 @@ async function saveConfig() {
       body: JSON.stringify(newConfig)
     });
 
+    let responseData = null;
+    try {
+      responseData = await res.json();
+    } catch (e) {
+      responseData = null;
+    }
+
     if (res.ok) {
+      const savedConfig = responseData && typeof responseData.config === 'object'
+        ? responseData.config
+        : await loadData();
+      await syncSavedConfig(savedConfig);
       btn.innerText = t('config.saved');
       showToast(t('config.configSaved'), 'success');
       setTimeout(() => {
@@ -617,13 +668,8 @@ async function saveConfig() {
       }, 2000);
     } else {
       let errMsg = t('common.saveFailed');
-      try {
-        const data = await res.json();
-        if (data && (data.detail || data.message)) {
-          errMsg = data.detail || data.message;
-        }
-      } catch (e) {
-        // ignore parse errors and keep generic fallback
+      if (responseData && (responseData.detail || responseData.message)) {
+        errMsg = responseData.detail || responseData.message;
       }
       showToast(errMsg, 'error');
     }

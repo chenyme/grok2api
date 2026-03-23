@@ -5,7 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import verify_app_key
 from app.core.config import config
-from app.core.storage import get_storage as resolve_storage, LocalStorage, RedisStorage, SQLStorage
+from app.core.storage import (
+    LocalStorage,
+    RedisStorage,
+    SQLStorage,
+    get_storage as resolve_storage,
+)
 from app.core.logger import logger
 
 router = APIRouter()
@@ -81,6 +86,10 @@ def _sanitize_proxy_config_payload(data: dict) -> dict:
     return payload
 
 
+def _current_config_payload() -> dict:
+    return config.snapshot()
+
+
 @router.get("/verify", dependencies=[Depends(verify_app_key)])
 async def admin_verify():
     """验证后台访问密钥（app_key）"""
@@ -90,8 +99,7 @@ async def admin_verify():
 @router.get("/config", dependencies=[Depends(verify_app_key)])
 async def get_config():
     """获取当前配置"""
-    # 暴露原始配置字典
-    return config._config
+    return _current_config_payload()
 
 
 @router.post("/config", dependencies=[Depends(verify_app_key)])
@@ -99,7 +107,11 @@ async def update_config(data: dict):
     """更新配置"""
     try:
         await config.update(_sanitize_proxy_config_payload(data))
-        return {"status": "success", "message": "配置已更新"}
+        return {
+            "status": "success",
+            "message": "配置已更新",
+            "config": _current_config_payload(),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
