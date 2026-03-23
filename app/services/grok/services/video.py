@@ -799,7 +799,6 @@ class VideoService:
         preset: str = "normal",
     ):
         token_mgr = await get_token_manager()
-        await token_mgr.reload_if_stale()
 
         is_stream = stream if stream is not None else get_config("app.stream")
         if reasoning_effort is None:
@@ -841,8 +840,6 @@ class VideoService:
 
         target_length = int(video_length or 6)
         round_plan = _build_round_plan(target_length, is_super=is_super_pool)
-        total_rounds = len(round_plan)
-
         service = VideoService()
         message = _build_message(prompt, preset)
 

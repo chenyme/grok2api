@@ -1,14 +1,19 @@
 import unittest
+from contextlib import asynccontextmanager
+from copy import deepcopy
 from dataclasses import dataclass, field
+from unittest.mock import AsyncMock, patch
 
+from app.api.v1.admin import token as admin_token_module
 from app.api.v1.admin.token import (
     MAX_TOKEN_PAGE_SIZE,
     _build_paginated_token_payload,
     _collect_token_refs,
     _normalize_token_filter,
     _token_matches_filter,
+    update_tokens,
 )
-from app.services.token.manager import TokenManager
+from app.services.token.manager import TokenManager, get_token_manager
 from app.services.token.models import TokenInfo
 from app.services.token.pool import TokenPool
 
@@ -36,6 +41,36 @@ class FakePool:
 class FakeManager:
     def __init__(self, pools):
         self.pools = pools
+
+
+class FakeVersionedStorage:
+    def __init__(self, data, version: str):
+        self.data = deepcopy(data)
+        self.version = version
+
+    async def load_tokens(self):
+        return deepcopy(self.data)
+
+    async def load_tokens_version(self):
+        return self.version
+
+
+class FakeAdminTokenStorage:
+    def __init__(self, existing=None):
+        self.existing = deepcopy(existing or {})
+        self.saved_tokens = []
+
+    @asynccontextmanager
+    async def acquire_lock(self, name: str, timeout: int = 10):
+        yield
+
+    async def load_tokens(self):
+        return deepcopy(self.existing)
+
+    async def save_tokens(self, data):
+        snapshot = deepcopy(data)
+        self.saved_tokens.append(snapshot)
+        self.existing = snapshot
 
 
 class AdminTokenPaginationTests(unittest.TestCase):
@@ -172,6 +207,68 @@ class TokenManagerPoolScopedTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(removed)
         self.assertIsNotNone(self.manager.pools["ssoBasic"].get("dup-token"))
         self.assertIsNone(self.manager.pools["ssoSuper"].get("dup-token"))
+
+
+class TokenManagerFreshnessTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        TokenManager._instance = None
+
+    def tearDown(self):
+        TokenManager._instance = None
+
+    async def test_get_token_manager_reloads_immediately_when_storage_version_changes(self):
+        storage = FakeVersionedStorage(
+            {"ssoBasic": [{"token": "token-a", "quota": 80}]},
+            version="v1",
+        )
+
+        with patch("app.services.token.manager.get_storage", return_value=storage):
+            manager = await get_token_manager()
+            self.assertEqual(manager.pools["ssoBasic"].count(), 1)
+
+            storage.data = {
+                "ssoBasic": [
+                    {"token": "token-a", "quota": 80},
+                    {"token": "token-b", "quota": 80},
+                ]
+            }
+            storage.version = "v2"
+
+            same_manager = await get_token_manager()
+
+        self.assertIs(same_manager, manager)
+        self.assertEqual(same_manager.pools["ssoBasic"].count(), 2)
+
+
+class AdminTokenUpdateRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_update_tokens_dedupes_duplicate_entries_in_same_pool_payload(self):
+        storage = FakeAdminTokenStorage()
+        mgr = type("ReloadableManager", (), {})()
+        mgr.reload = AsyncMock()
+
+        with (
+            patch.object(admin_token_module, "get_storage", return_value=storage),
+            patch.object(
+                admin_token_module,
+                "get_token_manager",
+                AsyncMock(return_value=mgr),
+            ),
+        ):
+            payload = await update_tokens(
+                {
+                    "ssoBasic": [
+                        {"token": "dup-token", "status": "active", "quota": 80, "note": "first"},
+                        {"token": "dup-token", "status": "active", "quota": 80, "note": "second"},
+                    ]
+                }
+            )
+
+        self.assertEqual(payload["status"], "success")
+        saved = storage.saved_tokens[-1]["ssoBasic"]
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["token"], "dup-token")
+        self.assertEqual(saved[0]["note"], "second")
+        mgr.reload.assert_awaited_once()
 
 
 if __name__ == "__main__":

@@ -226,7 +226,6 @@ def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
 async def _get_token(model: str):
     """获取可用 token"""
     token_mgr = await get_token_manager()
-    await token_mgr.reload_if_stale()
 
     token = None
     for pool_name in ModelService.pool_candidates_for_model(model):

@@ -121,7 +121,6 @@ class VideoExtendService:
         resolution_name = _normalize_resolution(resolution)
 
         token_mgr = await get_token_manager()
-        await token_mgr.reload_if_stale()
 
         token_info = token_mgr.get_token_for_video(
             resolution=resolution_name,

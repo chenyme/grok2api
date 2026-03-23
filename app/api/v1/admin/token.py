@@ -396,7 +396,7 @@ async def update_tokens(data: dict):
             for pool_name, tokens in (data or {}).items():
                 if not isinstance(tokens, list):
                     continue
-                pool_list = []
+                pool_map = {}
                 for item in tokens:
                     if isinstance(item, str):
                         token_data = {"token": item}
@@ -412,8 +412,9 @@ async def update_tokens(data: dict):
                         logger.warning(f"Skip empty token in pool '{pool_name}'")
                         continue
 
-                    base = existing_map.get(pool_name, {}).get(
-                        token_data.get("token"), {}
+                    token_key = token_data.get("token")
+                    base = pool_map.get(token_key) or existing_map.get(pool_name, {}).get(
+                        token_key, {}
                     )
                     merged = dict(base)
                     merged.update(token_data)
@@ -423,11 +424,11 @@ async def update_tokens(data: dict):
                     filtered = {k: v for k, v in merged.items() if k in allowed_fields}
                     try:
                         info = TokenInfo(**filtered)
-                        pool_list.append(info.model_dump())
+                        pool_map[token_key] = info.model_dump()
                     except Exception as e:
                         logger.warning(f"Skip invalid token in pool '{pool_name}': {e}")
                         continue
-                normalized[pool_name] = pool_list
+                normalized[pool_name] = list(pool_map.values())
 
             await storage.save_tokens(normalized)
             mgr = await get_token_manager()

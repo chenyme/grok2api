@@ -50,6 +50,7 @@ class TokenManager:
     def __init__(self):
         self.pools: Dict[str, TokenPool] = {}
         self.initialized = False
+        self._storage_tokens_version: Optional[str] = None
         self._save_lock = asyncio.Lock()
         self._dirty = False
         self._save_task: Optional[asyncio.Task] = None
@@ -93,6 +94,10 @@ class TokenManager:
                     else:
                         data = {}
 
+                self._storage_tokens_version = await self._load_storage_tokens_version(
+                    storage
+                )
+
                 self.pools = {}
                 for pool_name, tokens in data.items():
                     pool = TokenPool(pool_name)
@@ -129,6 +134,7 @@ class TokenManager:
             except Exception as e:
                 logger.error(f"Failed to initialize TokenManager: {e}")
                 self.pools = {}
+                self._storage_tokens_version = None
                 self.initialized = True
 
     async def reload(self):
@@ -136,6 +142,33 @@ class TokenManager:
         async with self.__class__._lock:
             self.initialized = False
             await self._load()
+
+    async def _load_storage_tokens_version(self, storage=None) -> Optional[str]:
+        storage = storage or get_storage()
+        try:
+            version = await storage.load_tokens_version()
+            return str(version) if version is not None else None
+        except Exception as e:
+            logger.warning(f"Failed to load token storage version: {e}")
+            return None
+
+    async def sync_with_storage(self) -> bool:
+        """
+        根据存储版本与当前实例状态保持一致。
+
+        返回:
+            是否执行了 reload
+        """
+        storage_version = await self._load_storage_tokens_version()
+        if storage_version is not None:
+            if storage_version != self._storage_tokens_version:
+                await self.reload()
+                return True
+            return False
+
+        before_reload_at = self._last_reload_at
+        await self.reload_if_stale()
+        return self._last_reload_at != before_reload_at
 
     async def reload_if_stale(self):
         """在多 worker 场景下保持短周期一致性"""
@@ -283,6 +316,9 @@ class TokenManager:
                 storage = get_storage()
                 async with storage.acquire_lock("tokens_save", timeout=10):
                     await storage.save_tokens_delta(updates, deleted)
+                    self._storage_tokens_version = (
+                        await self._load_storage_tokens_version(storage)
+                    )
 
                 if state_seq == self._state_change_seq:
                     self._has_state_changes = False
@@ -1110,7 +1146,9 @@ class TokenManager:
 # 便捷函数
 async def get_token_manager() -> TokenManager:
     """获取 TokenManager 单例"""
-    return await TokenManager.get_instance()
+    manager = await TokenManager.get_instance()
+    await manager.sync_with_storage()
+    return manager
 
 
 __all__ = ["TokenManager", "get_token_manager"]

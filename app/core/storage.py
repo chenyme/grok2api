@@ -101,6 +101,10 @@ class BaseStorage(abc.ABC):
         """保存所有 Token"""
         pass
 
+    async def load_tokens_version(self) -> Optional[str]:
+        """加载 Token 存储版本，用于多 worker 之间的快速一致性检查。"""
+        return None
+
     async def save_tokens_delta(
         self, updated: list[Dict[str, Any]], deleted: Optional[list[str]] = None
     ):
@@ -287,6 +291,16 @@ class LocalStorage(BaseStorage):
             logger.error(f"LocalStorage: 加载 Token 失败: {e}")
             return {}
 
+    async def load_tokens_version(self) -> Optional[str]:
+        if not TOKEN_FILE.exists():
+            return "missing"
+        try:
+            stat = TOKEN_FILE.stat()
+            return f"{stat.st_mtime_ns}:{stat.st_size}"
+        except Exception as e:
+            logger.warning(f"LocalStorage: 读取 Token 版本失败: {e}")
+            return None
+
     async def save_tokens(self, data: Dict[str, Any]):
         try:
             if not has_token_entries(data):
@@ -337,6 +351,7 @@ class RedisStorage(BaseStorage):
         self.key_pools = "grok2api:pools"  # Set: pool_names
         self.prefix_pool_set = "grok2api:pool:"  # Set: pool -> token_ids
         self.prefix_token_hash = "grok2api:token:"  # Hash: token_id -> token_data
+        self.tokens_version_key = "grok2api:tokens_version"
         self.lock_prefix = "grok2api:lock:"
 
     @asynccontextmanager
@@ -485,6 +500,14 @@ class RedisStorage(BaseStorage):
             logger.error(f"RedisStorage: 加载 Token 失败: {e}")
             return None
 
+    async def load_tokens_version(self) -> Optional[str]:
+        try:
+            version = await self.redis.get(self.tokens_version_key)
+            return str(version) if version is not None else None
+        except Exception as e:
+            logger.warning(f"RedisStorage: 读取 Token 版本失败: {e}")
+            return None
+
     async def save_tokens(self, data: Dict[str, Any]):
         """保存所有 Token"""
         if data is None:
@@ -563,6 +586,8 @@ class RedisStorage(BaseStorage):
                         pipe.hset(
                             f"{self.prefix_token_hash}{token_str}", mapping=t_flat
                         )
+
+                pipe.set(self.tokens_version_key, str(time.time_ns()))
 
                 await pipe.execute()
 
@@ -794,7 +819,7 @@ class SQLStorage(BaseStorage):
             "last_asset_clear_at": token_data.get("last_asset_clear_at"),
             "data": data_json,
             "data_hash": data_hash,
-            "updated_at": 0,
+            "updated_at": int(time.time() * 1000),
         }
 
     async def _migrate_legacy_tokens(self):
@@ -1080,6 +1105,24 @@ class SQLStorage(BaseStorage):
                 return pools
         except Exception as e:
             logger.error(f"SQLStorage: 加载 Token 失败: {e}")
+            return None
+
+    async def load_tokens_version(self) -> Optional[str]:
+        await self._ensure_schema()
+        from sqlalchemy import text
+
+        try:
+            async with self.async_session() as session:
+                res = await session.execute(
+                    text(
+                        "SELECT COALESCE(MAX(updated_at), 0), COUNT(*) "
+                        "FROM tokens"
+                    )
+                )
+                max_updated_at, count = res.one()
+                return f"{int(max_updated_at or 0)}:{int(count or 0)}"
+        except Exception as e:
+            logger.warning(f"SQLStorage: 读取 Token 版本失败: {e}")
             return None
 
     async def save_tokens(self, data: Dict[str, Any]):

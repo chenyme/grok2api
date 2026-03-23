@@ -394,7 +394,6 @@ class ChatService:
         """Chat Completions 入口"""
         # 获取 token
         token_mgr = await get_token_manager()
-        await token_mgr.reload_if_stale()
 
         # 解析参数
         if reasoning_effort is None:

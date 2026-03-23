@@ -188,7 +188,7 @@ async def function_imagine_ws(websocket: WebSocket):
 
         while not stop_event.is_set():
             try:
-                await token_mgr.reload_if_stale()
+                await token_mgr.sync_with_storage()
                 token = None
                 for pool_name in ModelService.pool_candidates_for_model(
                     model_info.model_id
@@ -397,7 +397,7 @@ async def function_imagine_sse(
                         break
 
                 try:
-                    await token_mgr.reload_if_stale()
+                    await token_mgr.sync_with_storage()
                     token = None
                     for pool_name in ModelService.pool_candidates_for_model(
                         model_info.model_id
