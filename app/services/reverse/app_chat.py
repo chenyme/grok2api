@@ -18,6 +18,13 @@ from app.services.reverse.utils.retry import extract_status_for_retry, retry_on_
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 _LAST_PROXY_LOG_STATE: tuple[str, str] | None = None
 
+# grok-420 使用新的 modeId API 格式（替代 modelName/modelMode）
+# 官方 web 端已将 grok-420 切换为 modeId 字段，旧的 MODEL_MODE_GROK_420 已废弃
+_GROK420_MODE_ID_MAP = {
+    "MODEL_MODE_EXPERT": "expert",
+    "MODEL_MODE_FAST": "fast",
+}
+
 
 def _normalize_chat_proxy(proxy_url: str) -> str:
     """Normalize proxy URL for curl-cffi app-chat requests."""
@@ -114,6 +121,11 @@ class AppChatReverse:
         }
 
         if model == "grok-420":
+            # grok-420: 使用新的 modeId 格式，移除旧的 modelName/modelMode
+            payload.pop("modelName", None)
+            payload.pop("modelMode", None)
+            payload["responseMetadata"] = {}
+            payload["modeId"] = _GROK420_MODE_ID_MAP.get(mode, "expert")
             payload["enable420"] = True
 
         custom_personality = AppChatReverse._resolve_custom_personality()
