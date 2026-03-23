@@ -263,6 +263,8 @@ async def clear_online(data: dict):
         if res.get("ok") and data.get("status") == "success":
             return {"status": "success", "result": data.get("result")}
         return {"status": "error", "error": data.get("error") or res.get("error")}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -442,4 +444,3 @@ async def load_cache_async(data: dict):
         "task_id": task.id,
         "total": len(selected_tokens),
     }
-
