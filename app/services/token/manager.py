@@ -459,8 +459,33 @@ class TokenManager:
                 return pool_name
         return None
 
+    @staticmethod
+    def _normalize_token_value(token_str: str) -> str:
+        return token_str.removeprefix("sso=")
+
+    def _find_token_entry(
+        self, token_str: str, pool_name: Optional[str] = None
+    ) -> tuple[Optional[str], Optional[TokenInfo]]:
+        raw_token = self._normalize_token_value(token_str)
+
+        if pool_name:
+            pool = self.pools.get(pool_name)
+            if not pool:
+                return None, None
+            return pool_name, pool.get(raw_token)
+
+        for current_pool_name, pool in self.pools.items():
+            token = pool.get(raw_token)
+            if token:
+                return current_pool_name, token
+
+        return None, None
+
     async def consume(
-        self, token_str: str, effort: EffortType = EffortType.LOW
+        self,
+        token_str: str,
+        effort: EffortType = EffortType.LOW,
+        pool_name: Optional[str] = None,
     ) -> bool:
         """
         消耗配额（本地预估）
@@ -472,23 +497,21 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token_str.replace("sso=", "")
-
-        for pool in self.pools.values():
-            token = pool.get(raw_token)
-            if token:
-                old_status = token.status
-                if self._is_consumed_mode():
-                    consumed = token.consume_with_consumed(effort)
-                else:
-                    consumed = token.consume(effort)
-                logger.debug(
-                    f"Token {raw_token[:10]}...: consumed {consumed} quota, use_count={token.use_count}"
-                )
-                change_kind = "state" if token.status != old_status else "usage"
-                self._track_token_change(token, pool.name, change_kind)
-                self._schedule_save()
-                return True
+        raw_token = self._normalize_token_value(token_str)
+        resolved_pool_name, token = self._find_token_entry(raw_token, pool_name)
+        if token and resolved_pool_name:
+            old_status = token.status
+            if self._is_consumed_mode():
+                consumed = token.consume_with_consumed(effort)
+            else:
+                consumed = token.consume(effort)
+            logger.debug(
+                f"Token {raw_token[:10]}...: consumed {consumed} quota, use_count={token.use_count}"
+            )
+            change_kind = "state" if token.status != old_status else "usage"
+            self._track_token_change(token, resolved_pool_name, change_kind)
+            self._schedule_save()
+            return True
 
         logger.warning(f"Token {raw_token[:10]}...: not found for consumption")
         return False
@@ -499,6 +522,7 @@ class TokenManager:
         fallback_effort: EffortType = EffortType.LOW,
         consume_on_fail: bool = True,
         is_usage: bool = True,
+        pool_name: Optional[str] = None,
     ) -> bool:
         """
         同步 Token 用量
@@ -514,16 +538,10 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token_str.replace("sso=", "")
+        raw_token = self._normalize_token_value(token_str)
 
         # 查找 Token 对象
-        target_token: Optional[TokenInfo] = None
-        target_pool_name: Optional[str] = None
-        for pool in self.pools.values():
-            target_token = pool.get(raw_token)
-            if target_token:
-                target_pool_name = pool.name
-                break
+        target_pool_name, target_token = self._find_token_entry(raw_token, pool_name)
 
         if not target_token:
             logger.warning(f"Token {raw_token[:10]}...: not found for sync")
@@ -597,7 +615,13 @@ class TokenManager:
                     reason = "rate_limits_auth_failed" if is_token_expired else "rate_limits_auth_unknown"
                     
                     # 如果确认为过期，传入 threshold=1 强制立即失效
-                    await self.record_fail(token_str, status, reason, threshold=1 if is_token_expired else None)
+                    await self.record_fail(
+                        token_str,
+                        status,
+                        reason,
+                        threshold=1 if is_token_expired else None,
+                        pool_name=target_pool_name,
+                    )
                     
                     if is_token_expired:
                         # 只有确认过期的才跳过 fallback
@@ -616,7 +640,9 @@ class TokenManager:
         # 降级：本地预估扣费
         if consume_on_fail:
             logger.debug(f"Token {raw_token[:10]}...: using local consumption")
-            return await self.consume(token_str, fallback_effort)
+            return await self.consume(
+                token_str, fallback_effort, pool_name=target_pool_name
+            )
         else:
             logger.debug(
                 f"Token {raw_token[:10]}...: sync failed, skipping local consumption"
@@ -624,7 +650,12 @@ class TokenManager:
             return False
 
     async def record_fail(
-        self, token_str: str, status_code: int = 401, reason: str = "", threshold: Optional[int] = None
+        self,
+        token_str: str,
+        status_code: int = 401,
+        reason: str = "",
+        threshold: Optional[int] = None,
+        pool_name: Optional[str] = None,
     ) -> bool:
         """
         记录 Token 失败
@@ -638,41 +669,43 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token_str.replace("sso=", "")
+        raw_token = self._normalize_token_value(token_str)
+        resolved_pool_name, token = self._find_token_entry(raw_token, pool_name)
+        if token and resolved_pool_name:
+            if status_code == 401:
+                if threshold is None:
+                    threshold = get_config("token.fail_threshold", FAIL_THRESHOLD)
+                    try:
+                        threshold = int(threshold)
+                    except (TypeError, ValueError):
+                        threshold = FAIL_THRESHOLD
+                
+                if threshold < 1:
+                    threshold = 1
 
-        for pool in self.pools.values():
-            token = pool.get(raw_token)
-            if token:
-                if status_code == 401:
-                    if threshold is None:
-                        threshold = get_config("token.fail_threshold", FAIL_THRESHOLD)
-                        try:
-                            threshold = int(threshold)
-                        except (TypeError, ValueError):
-                            threshold = FAIL_THRESHOLD
-                    
-                    if threshold < 1:
-                        threshold = 1
-
-                    token.record_fail(status_code, reason, threshold=threshold)
-                    
-                    log_level = logger.warning if token.status == TokenStatus.EXPIRED else logger.info
-                    log_level(
-                        f"Token {raw_token[:10]}...: recorded {status_code} failure "
-                        f"({token.fail_count}/{threshold}) - {reason} - status: {token.status}"
-                    )
-                    self._track_token_change(token, pool.name, "state")
-                    self._schedule_save()
-                else:
-                    logger.info(
-                        f"Token {raw_token[:10]}...: non-auth error ({status_code}) - {reason} (not counted)"
-                    )
-                return True
+                token.record_fail(status_code, reason, threshold=threshold)
+                
+                log_level = (
+                    logger.warning if token.status == TokenStatus.EXPIRED else logger.info
+                )
+                log_level(
+                    f"Token {raw_token[:10]}...: recorded {status_code} failure "
+                    f"({token.fail_count}/{threshold}) - {reason} - status: {token.status}"
+                )
+                self._track_token_change(token, resolved_pool_name, "state")
+                self._schedule_save()
+            else:
+                logger.info(
+                    f"Token {raw_token[:10]}...: non-auth error ({status_code}) - {reason} (not counted)"
+                )
+            return True
 
         logger.warning(f"Token {raw_token[:10]}...: not found for failure record")
         return False
 
-    async def mark_rate_limited(self, token_str: str) -> bool:
+    async def mark_rate_limited(
+        self, token_str: str, pool_name: Optional[str] = None
+    ) -> bool:
         """
         将 Token 标记为配额耗尽（COOLING）
 
@@ -685,21 +718,19 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token_str.removeprefix("sso=")
-
-        for pool in self.pools.values():
-            token = pool.get(raw_token)
-            if token:
-                old_quota = token.quota
-                token.quota = 0
-                token.enter_cooling()
-                logger.warning(
-                    f"Token {raw_token[:10]}...: marked as rate limited "
-                    f"(quota {old_quota} -> 0, status -> cooling)"
-                )
-                self._track_token_change(token, pool.name, "state")
-                self._schedule_save()
-                return True
+        raw_token = self._normalize_token_value(token_str)
+        resolved_pool_name, token = self._find_token_entry(raw_token, pool_name)
+        if token and resolved_pool_name:
+            old_quota = token.quota
+            token.quota = 0
+            token.enter_cooling()
+            logger.warning(
+                f"Token {raw_token[:10]}...: marked as rate limited "
+                f"(quota {old_quota} -> 0, status -> cooling)"
+            )
+            self._track_token_change(token, resolved_pool_name, "state")
+            self._schedule_save()
+            return True
 
         logger.warning(f"Token {raw_token[:10]}...: not found for rate limit marking")
         return False
@@ -735,19 +766,22 @@ class TokenManager:
         logger.info(f"Pool '{pool_name}': token added")
         return True
 
-    async def mark_asset_clear(self, token: str) -> bool:
+    async def mark_asset_clear(
+        self, token: str, pool_name: Optional[str] = None
+    ) -> bool:
         """记录在线资产清理时间"""
-        raw_token = token[4:] if token.startswith("sso=") else token
-        for pool in self.pools.values():
-            info = pool.get(raw_token)
-            if info:
-                info.last_asset_clear_at = int(datetime.now().timestamp() * 1000)
-                self._track_token_change(info, pool.name, "state")
-                self._schedule_save()
-                return True
+        raw_token = self._normalize_token_value(token)
+        resolved_pool_name, info = self._find_token_entry(raw_token, pool_name)
+        if info and resolved_pool_name:
+            info.last_asset_clear_at = int(datetime.now().timestamp() * 1000)
+            self._track_token_change(info, resolved_pool_name, "state")
+            self._schedule_save()
+            return True
         return False
 
-    async def add_tag(self, token: str, tag: str) -> bool:
+    async def add_tag(
+        self, token: str, tag: str, pool_name: Optional[str] = None
+    ) -> bool:
         """
         给 Token 添加标签
 
@@ -758,19 +792,20 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token[4:] if token.startswith("sso=") else token
-        for pool in self.pools.values():
-            info = pool.get(raw_token)
-            if info:
-                if tag not in info.tags:
-                    info.tags.append(tag)
-                    self._track_token_change(info, pool.name, "state")
-                    self._schedule_save()
-                    logger.debug(f"Token {raw_token[:10]}...: added tag '{tag}'")
-                return True
+        raw_token = self._normalize_token_value(token)
+        resolved_pool_name, info = self._find_token_entry(raw_token, pool_name)
+        if info and resolved_pool_name:
+            if tag not in info.tags:
+                info.tags.append(tag)
+                self._track_token_change(info, resolved_pool_name, "state")
+                self._schedule_save()
+                logger.debug(f"Token {raw_token[:10]}...: added tag '{tag}'")
+            return True
         return False
 
-    async def remove_tag(self, token: str, tag: str) -> bool:
+    async def remove_tag(
+        self, token: str, tag: str, pool_name: Optional[str] = None
+    ) -> bool:
         """
         移除 Token 标签
 
@@ -781,19 +816,18 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token[4:] if token.startswith("sso=") else token
-        for pool in self.pools.values():
-            info = pool.get(raw_token)
-            if info:
-                if tag in info.tags:
-                    info.tags.remove(tag)
-                    self._track_token_change(info, pool.name, "state")
-                    self._schedule_save()
-                    logger.debug(f"Token {raw_token[:10]}...: removed tag '{tag}'")
-                return True
+        raw_token = self._normalize_token_value(token)
+        resolved_pool_name, info = self._find_token_entry(raw_token, pool_name)
+        if info and resolved_pool_name:
+            if tag in info.tags:
+                info.tags.remove(tag)
+                self._track_token_change(info, resolved_pool_name, "state")
+                self._schedule_save()
+                logger.debug(f"Token {raw_token[:10]}...: removed tag '{tag}'")
+            return True
         return False
 
-    async def remove(self, token: str) -> bool:
+    async def remove(self, token: str, pool_name: Optional[str] = None) -> bool:
         """
         删除 Token
 
@@ -803,12 +837,22 @@ class TokenManager:
         Returns:
             是否成功
         """
-        for pool_name, pool in self.pools.items():
-            if pool.remove(token):
-                self._track_token_delete(token)
+        raw_token = self._normalize_token_value(token)
+
+        if pool_name:
+            pool = self.pools.get(pool_name)
+            if pool and pool.remove(raw_token):
+                self._track_token_delete(raw_token)
                 await self._save(force=True)
                 logger.info(f"Pool '{pool_name}': token removed")
                 return True
+        else:
+            for current_pool_name, pool in self.pools.items():
+                if pool.remove(raw_token):
+                    self._track_token_delete(raw_token)
+                    await self._save(force=True)
+                    logger.info(f"Pool '{current_pool_name}': token removed")
+                    return True
 
         logger.warning("Token not found for removal")
         return False

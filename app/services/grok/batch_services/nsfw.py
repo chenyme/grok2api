@@ -3,7 +3,7 @@ Batch NSFW service.
 """
 
 import asyncio
-from typing import Callable, Awaitable, Dict, Any, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from app.core.logger import logger
 from app.core.config import get_config
@@ -32,15 +32,18 @@ class NSFWService:
     """NSFW 模式服务"""
     @staticmethod
     async def batch(
-        tokens: list[str],
+        token_refs: list[tuple[Optional[str], str]],
         mgr,
         *,
-        on_item: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+        on_item: Optional[
+            Callable[[tuple[Optional[str], str], Dict[str, Any]], Awaitable[None]]
+        ] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
-    ) -> Dict[str, Dict[str, Any]]:
+    ) -> Dict[tuple[Optional[str], str], Dict[str, Any]]:
         """Batch enable NSFW."""
         batch_size = get_config("nsfw.batch_size")
-        async def _enable(token: str):
+        async def _enable(token_ref: tuple[Optional[str], str]):
+            pool_name, token = token_ref
             try:
                 browser = get_config("proxy.browser")
                 async with ResettableSession(impersonate=browser) as session:
@@ -51,7 +54,9 @@ class NSFWService:
                         else:
                             status = getattr(err, "status_code", None)
                         if status == 401:
-                            await mgr.record_fail(token, status, reason)
+                            await mgr.record_fail(
+                                token, status, reason, pool_name=pool_name
+                            )
                         return status or 0
 
                     try:
@@ -88,7 +93,7 @@ class NSFWService:
                             "error": f"NSFW enable failed: {str(e)}",
                         }
                     if success:
-                        await mgr.add_tag(token, "nsfw")
+                        await mgr.add_tag(token, "nsfw", pool_name=pool_name)
                     return {
                         "success": success,
                         "http_status": 200,
@@ -101,7 +106,7 @@ class NSFWService:
                 return {"success": False, "http_status": 0, "error": str(e)[:100]}
 
         return await run_batch(
-            tokens,
+            token_refs,
             _enable,
             batch_size=batch_size,
             on_item=on_item,

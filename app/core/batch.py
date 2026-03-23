@@ -12,18 +12,26 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from app.core.logger import logger
 
-T = TypeVar("T")
+ItemT = TypeVar("ItemT")
+ResultT = TypeVar("ResultT")
+
+
+def _short_item_repr(item: Any) -> str:
+    text = str(item)
+    if len(text) <= 32:
+        return text
+    return f"{text[:32]}..."
 
 
 async def run_batch(
-    items: List[str],
-    worker: Callable[[str], Awaitable[T]],
+    items: List[ItemT],
+    worker: Callable[[ItemT], Awaitable[ResultT]],
     *,
     batch_size: int = 50,
     task: Optional["BatchTask"] = None,
-    on_item: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    on_item: Optional[Callable[[ItemT, Dict[str, Any]], Awaitable[None]]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[ItemT, Dict[str, Any]]:
     """
     分批并发执行，单项失败不影响整体
 
@@ -42,7 +50,7 @@ async def run_batch(
 
     batch_size = max(1, batch_size)
 
-    async def _one(item: str) -> tuple[str, dict]:
+    async def _one(item: ItemT) -> tuple[ItemT, dict]:
         if (should_cancel and should_cancel()) or (task and task.cancelled):
             return item, {"ok": False, "error": "cancelled", "cancelled": True}
         try:
@@ -57,7 +65,7 @@ async def run_batch(
                     pass
             return item, result
         except Exception as e:
-            logger.warning(f"Batch item failed: {item[:16]}... - {e}")
+            logger.warning(f"Batch item failed: {_short_item_repr(item)} - {e}")
             result = {"ok": False, "error": str(e)}
             if task:
                 task.record(False, error=str(e))
@@ -68,7 +76,7 @@ async def run_batch(
                     pass
             return item, result
 
-    results: Dict[str, dict] = {}
+    results: Dict[ItemT, dict] = {}
 
     # 分批执行，避免一次性创建所有 task
     for i in range(0, len(items), batch_size):

@@ -3,7 +3,7 @@ Batch usage service.
 """
 
 import asyncio
-from typing import Callable, Awaitable, Dict, Any, Optional, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.core.logger import logger
 from app.core.config import get_config
@@ -68,18 +68,26 @@ class UsageService:
 
     @staticmethod
     async def batch(
-        tokens: List[str],
+        token_refs: List[tuple[Optional[str], str]],
         mgr,
         *,
-        on_item: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+        on_item: Optional[
+            Callable[[tuple[Optional[str], str], Dict[str, Any]], Awaitable[None]]
+        ] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
-    ) -> Dict[str, Dict[str, Any]]:
+    ) -> Dict[tuple[Optional[str], str], Dict[str, Any]]:
         batch_size = get_config("usage.batch_size")
-        async def _refresh_one(t: str):
-            return await mgr.sync_usage(t, consume_on_fail=False, is_usage=False)
+        async def _refresh_one(token_ref: tuple[Optional[str], str]):
+            pool_name, token = token_ref
+            return await mgr.sync_usage(
+                token,
+                consume_on_fail=False,
+                is_usage=False,
+                pool_name=pool_name,
+            )
 
         return await run_batch(
-            tokens,
+            token_refs,
             _refresh_one,
             batch_size=batch_size,
             on_item=on_item,

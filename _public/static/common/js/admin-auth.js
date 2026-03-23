@@ -5,6 +5,8 @@ const APP_KEY_XOR_PREFIX = 'enc:xor:';
 const APP_KEY_SECRET = 'grok2api-admin-key';
 let cachedAdminKey = null;
 let cachedFunctionKey = null;
+let pendingAdminKey = null;
+let pendingFunctionKey = null;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -146,11 +148,13 @@ async function storeFunctionKey(publicKey) {
 function clearStoredAppKey() {
   localStorage.removeItem(APP_KEY_STORAGE);
   cachedAdminKey = null;
+  pendingAdminKey = null;
 }
 
 function clearStoredFunctionKey() {
   localStorage.removeItem(FUNCTION_KEY_STORAGE);
   cachedFunctionKey = null;
+  pendingFunctionKey = null;
 }
 
 async function verifyKey(url, key) {
@@ -161,48 +165,67 @@ async function verifyKey(url, key) {
 
 async function ensureAdminKey() {
   if (cachedAdminKey) return cachedAdminKey;
-  const appKey = await getStoredAppKey();
-  if (!appKey) {
-    window.location.href = '/admin/login';
-    return null;
-  }
+  if (pendingAdminKey) return pendingAdminKey;
+
+  pendingAdminKey = (async () => {
+    const appKey = await getStoredAppKey();
+    if (!appKey) {
+      window.location.replace('/admin/login');
+      return null;
+    }
+    try {
+      const ok = await verifyKey('/v1/admin/verify', appKey);
+      if (!ok) throw new Error('Unauthorized');
+      cachedAdminKey = `Bearer ${appKey}`;
+      return cachedAdminKey;
+    } catch (e) {
+      clearStoredAppKey();
+      window.location.replace('/admin/login');
+      return null;
+    }
+  })();
+
   try {
-    const ok = await verifyKey('/v1/admin/verify', appKey);
-    if (!ok) throw new Error('Unauthorized');
-    cachedAdminKey = `Bearer ${appKey}`;
-    return cachedAdminKey;
-  } catch (e) {
-    clearStoredAppKey();
-    window.location.href = '/admin/login';
-    return null;
+    return await pendingAdminKey;
+  } finally {
+    pendingAdminKey = null;
   }
 }
 
 async function ensureFunctionKey() {
   if (cachedFunctionKey !== null) return cachedFunctionKey;
+  if (pendingFunctionKey) return pendingFunctionKey;
 
-  const key = await getStoredFunctionKey();
-  if (!key) {
-    try {
-      const ok = await verifyKey('/v1/function/verify', '');
-      if (ok) {
-        cachedFunctionKey = '';
-        return cachedFunctionKey;
+  pendingFunctionKey = (async () => {
+    const key = await getStoredFunctionKey();
+    if (!key) {
+      try {
+        const ok = await verifyKey('/v1/function/verify', '');
+        if (ok) {
+          cachedFunctionKey = '';
+          return cachedFunctionKey;
+        }
+      } catch (e) {
+        // ignore
       }
-    } catch (e) {
-      // ignore
+      return null;
     }
-    return null;
-  }
+
+    try {
+      const ok = await verifyKey('/v1/function/verify', key);
+      if (!ok) throw new Error('Unauthorized');
+      cachedFunctionKey = `Bearer ${key}`;
+      return cachedFunctionKey;
+    } catch (e) {
+      clearStoredFunctionKey();
+      return null;
+    }
+  })();
 
   try {
-    const ok = await verifyKey('/v1/function/verify', key);
-    if (!ok) throw new Error('Unauthorized');
-    cachedFunctionKey = `Bearer ${key}`;
-    return cachedFunctionKey;
-  } catch (e) {
-    clearStoredFunctionKey();
-    return null;
+    return await pendingFunctionKey;
+  } finally {
+    pendingFunctionKey = null;
   }
 }
 
@@ -262,6 +285,27 @@ async function updateStorageModeButton() {
   btn.title = typeof t === 'function' ? t('nav.storageMode') : '存储模式';
   if (label !== '-') {
     btn.classList.add('storage-ready');
+  }
+}
+
+function runWhenDomReady(task) {
+  const start = () => {
+    try {
+      const result = task();
+      if (result && typeof result.catch === 'function') {
+        result.catch((err) => {
+          console.error('runWhenDomReady task failed', err);
+        });
+      }
+    } catch (err) {
+      console.error('runWhenDomReady task failed', err);
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
   }
 }
 

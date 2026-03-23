@@ -658,4 +658,4 @@ async function copyToClipboard(text, btn) {
   }
 }
 
-window.onload = init;
+runWhenDomReady(init);

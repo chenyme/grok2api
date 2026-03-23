@@ -13,6 +13,9 @@ let currentBatchTaskId = null;
 let batchEventSource = null;
 let currentPage = 1;
 let pageSize = 50;
+let currentTotalCount = 0;
+let currentTotalPages = 1;
+const selectedTokenKeys = new Set();
 
 const byId = (id) => document.getElementById(id);
 const qsa = (selector) => document.querySelectorAll(selector);
@@ -21,6 +24,35 @@ const DEFAULT_QUOTA_SUPER = 140;
 
 function getDefaultQuotaForPool(pool) {
   return pool === 'ssoSuper' ? DEFAULT_QUOTA_SUPER : DEFAULT_QUOTA_BASIC;
+}
+
+function getTokenRowKey(poolOrItem, tokenValue = null) {
+  if (poolOrItem && typeof poolOrItem === 'object') {
+    return JSON.stringify([poolOrItem.pool || '', poolOrItem.token || '']);
+  }
+  return JSON.stringify([poolOrItem || '', tokenValue || '']);
+}
+
+function parseTokenRowKey(key) {
+  try {
+    const parsed = JSON.parse(key);
+    if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+    const [pool, token] = parsed;
+    if (!token) return null;
+    return {
+      pool: String(pool || ''),
+      token: String(token)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sameTokenRef(left, right) {
+  return !!left
+    && !!right
+    && String(left.token || '') === String(right.token || '')
+    && String(left.pool || '') === String(right.pool || '');
 }
 
 function setText(id, text) {
@@ -70,21 +102,112 @@ async function readJsonResponse(res) {
   }
 }
 
+function normalizeTokenItem(pool, tokenData, selected = false) {
+  const normalized = typeof tokenData === 'string'
+    ? { token: tokenData, status: 'active', quota: 0, note: '', use_count: 0, tags: [] }
+    : {
+      token: tokenData.token,
+      status: tokenData.status || 'active',
+      quota: tokenData.quota || 0,
+      consumed: tokenData.consumed || 0,
+      note: tokenData.note || '',
+      fail_count: tokenData.fail_count || 0,
+      use_count: tokenData.use_count || 0,
+      tags: tokenData.tags || [],
+      created_at: tokenData.created_at,
+      last_used_at: tokenData.last_used_at,
+      last_fail_at: tokenData.last_fail_at,
+      last_fail_reason: tokenData.last_fail_reason,
+      last_sync_at: tokenData.last_sync_at,
+      last_asset_clear_at: tokenData.last_asset_clear_at
+    };
+  const rowKey = getTokenRowKey(pool, normalized.token);
+  return { ...normalized, pool, _rowKey: rowKey, _selected: selected };
+}
+
+function normalizeTokensByPool(data, selectedIds = selectedTokenKeys) {
+  const items = [];
+  Object.keys(data || {}).forEach((pool) => {
+    const tokens = data[pool];
+    if (!Array.isArray(tokens)) return;
+    tokens.forEach((tokenData) => {
+      const token = typeof tokenData === 'string' ? tokenData : (tokenData.token || '');
+      const rowKey = getTokenRowKey(pool, token);
+      items.push(normalizeTokenItem(pool, tokenData, selectedIds.has(rowKey)));
+    });
+  });
+  return items;
+}
+
+function buildTokensPayload(items) {
+  const payload = {};
+  items.forEach((item) => {
+    if (!payload[item.pool]) payload[item.pool] = [];
+    const tokenPayload = {
+      token: item.token,
+      status: item.status,
+      quota: item.quota,
+      consumed: item.consumed || 0,
+      note: item.note,
+      fail_count: item.fail_count,
+      use_count: item.use_count || 0,
+      tags: Array.isArray(item.tags) ? item.tags : []
+    };
+    if (typeof item.created_at === 'number') tokenPayload.created_at = item.created_at;
+    if (typeof item.last_used_at === 'number') tokenPayload.last_used_at = item.last_used_at;
+    if (typeof item.last_fail_at === 'number') tokenPayload.last_fail_at = item.last_fail_at;
+    if (typeof item.last_sync_at === 'number') tokenPayload.last_sync_at = item.last_sync_at;
+    if (typeof item.last_asset_clear_at === 'number') tokenPayload.last_asset_clear_at = item.last_asset_clear_at;
+    if (typeof item.last_fail_reason === 'string' && item.last_fail_reason) tokenPayload.last_fail_reason = item.last_fail_reason;
+    payload[item.pool].push(tokenPayload);
+  });
+  return payload;
+}
+
+async function fetchAllTokenItems() {
+  const res = await fetch('/v1/admin/tokens', {
+    headers: buildAuthHeaders(apiKey)
+  });
+  if (res.status === 401) {
+    logout();
+    throw new Error('Unauthorized');
+  }
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  consumedModeEnabled = data.consumed_mode_enabled || false;
+  updateQuotaHeader();
+  return normalizeTokensByPool(data.tokens || {});
+}
+
 function getSelectedTokens() {
-  return flatTokens.filter(t => t._selected);
+  return getSelectedTokenRefs().map((item) => item.token);
+}
+
+function getSelectedTokenRefs() {
+  return Array.from(selectedTokenKeys)
+    .map((key) => parseTokenRowKey(key))
+    .filter((item) => item && item.token);
 }
 
 function countSelected(tokens) {
   let count = 0;
-  for (const t of tokens) {
-    if (t._selected) count++;
+  for (const token of tokens || []) {
+    if (token && token._selected) count++;
   }
   return count;
 }
 
 function setSelectedForTokens(tokens, selected) {
-  tokens.forEach(t => {
-    t._selected = selected;
+  (tokens || []).forEach((token) => {
+    token._selected = selected;
+    if (!token?._rowKey) return;
+    if (selected) {
+      selectedTokenKeys.add(token._rowKey);
+    } else {
+      selectedTokenKeys.delete(token._rowKey);
+    }
   });
 }
 
@@ -97,14 +220,8 @@ function syncVisibleSelectionUI(selected) {
   });
 }
 
-function getPaginationData() {
-  const filteredTokens = getFilteredTokens();
-  const totalCount = filteredTokens.length;
-  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  if (currentPage > totalPages) currentPage = totalPages;
-  const startIndex = (currentPage - 1) * pageSize;
-  const visibleTokens = filteredTokens.slice(startIndex, startIndex + pageSize);
-  return { filteredTokens, totalCount, totalPages, visibleTokens };
+function getVisibleTokens() {
+  return flatTokens;
 }
 
 async function init() {
@@ -114,21 +231,37 @@ async function init() {
   setupConfirmDialog();
   setupSelectAllMenu();
   refreshPageSizeOptionsI18n();
-  loadData();
+  await loadData();
+}
+
+function getPagedTokensUrl() {
+  const params = new URLSearchParams();
+  params.set('page', String(currentPage));
+  params.set('page_size', String(pageSize));
+  params.set('filter', currentFilter);
+  return `/v1/admin/tokens?${params.toString()}`;
 }
 
 async function loadData() {
   try {
-    const res = await fetch('/v1/admin/tokens', {
+    const res = await fetch(getPagedTokensUrl(), {
       headers: buildAuthHeaders(apiKey)
     });
     if (res.ok) {
       const data = await res.json();
-      allTokens = data.tokens;
       consumedModeEnabled = data.consumed_mode_enabled || false;
+      currentPage = Number(data.page || currentPage) || 1;
+      pageSize = Number(data.page_size || pageSize) || 50;
+      currentTotalCount = Number(data.total || 0);
+      currentTotalPages = Math.max(1, Number(data.total_pages || 1));
+      flatTokens = (data.items || []).map((item) => normalizeTokenItem(
+        item.pool,
+        item,
+        selectedTokenKeys.has(getTokenRowKey(item.pool, item.token))
+      ));
       updateQuotaHeader();
-      processTokens(data.tokens);
-      updateStats(data.tokens);
+      updateStats(data.summary || {});
+      updateTabCounts(data.counts || {});
       renderTable();
     } else if (res.status === 401) {
       logout();
@@ -138,38 +271,6 @@ async function loadData() {
   } catch (e) {
     showToast(t('common.loadError', { msg: e.message }), 'error');
   }
-}
-
-// Convert pool dict to flattened array
-function processTokens(data) {
-  flatTokens = [];
-  Object.keys(data).forEach(pool => {
-    const tokens = data[pool];
-    if (Array.isArray(tokens)) {
-      tokens.forEach(t => {
-        // Normalize
-        const tObj = typeof t === 'string'
-          ? { token: t, status: 'active', quota: 0, note: '', use_count: 0, tags: [] }
-          : {
-            token: t.token,
-            status: t.status || 'active',
-            quota: t.quota || 0,
-            consumed: t.consumed || 0,
-            note: t.note || '',
-            fail_count: t.fail_count || 0,
-            use_count: t.use_count || 0,
-            tags: t.tags || [],
-            created_at: t.created_at,
-            last_used_at: t.last_used_at,
-            last_fail_at: t.last_fail_at,
-            last_fail_reason: t.last_fail_reason,
-            last_sync_at: t.last_sync_at,
-            last_asset_clear_at: t.last_asset_clear_at
-          };
-        flatTokens.push({ ...tObj, pool: pool, _selected: false });
-      });
-    }
-  });
 }
 
 function updateQuotaHeader() {
@@ -185,44 +286,22 @@ function updateQuotaHeader() {
   }
 }
 
-function updateStats(data) {
-  // Logic same as before, simplified reuse if possible, but let's re-run on flatTokens
-  let totalTokens = flatTokens.length;
-  let activeTokens = 0;
-  let coolingTokens = 0;
-  let invalidTokens = 0;
-  let nsfwTokens = 0;
-  let noNsfwTokens = 0;
-  let chatQuota = 0;
-  let totalCalls = 0;
+function updateStats(summary) {
+  const safeSummary = summary || {};
+  const totalTokens = Number(safeSummary.total || 0);
+  const activeTokens = Number(safeSummary.active || 0);
+  const coolingTokens = Number(safeSummary.cooling || 0);
+  const invalidTokens = Number(safeSummary.invalid || 0);
+  const chatQuota = Number(safeSummary.chat_quota || 0);
+  const imageQuota = Number(safeSummary.image_quota || 0);
+  const totalConsumed = Number(safeSummary.total_consumed || 0);
+  const totalCalls = Number(safeSummary.total_calls || 0);
 
-  flatTokens.forEach(t => {
-    if (t.status === 'active') {
-      activeTokens++;
-      chatQuota += t.quota;
-    } else if (t.status === 'cooling') {
-      coolingTokens++;
-    } else {
-      invalidTokens++;
-    }
-    if (t.tags && t.tags.includes('nsfw')) {
-      nsfwTokens++;
-    } else {
-      noNsfwTokens++;
-    }
-    totalCalls += Number(t.use_count || 0);
-  });
-
-  const imageQuota = Math.floor(chatQuota / 2);
-  const totalConsumed = flatTokens.reduce((sum, t) => sum + (t.consumed || 0), 0);
-
-  // 更新统计卡片 (这些不受 consumedMode 影响)
   setText('stat-total', totalTokens.toLocaleString());
   setText('stat-active', activeTokens.toLocaleString());
   setText('stat-cooling', coolingTokens.toLocaleString());
   setText('stat-invalid', invalidTokens.toLocaleString());
 
-  // 根据配置决定显示消耗还是剩余
   if (consumedModeEnabled) {
     setText('stat-chat-quota', totalConsumed.toLocaleString());
     setText('stat-image-quota', Math.floor(totalConsumed / 2).toLocaleString());
@@ -236,15 +315,6 @@ function updateStats(data) {
   }
 
   setText('stat-total-calls', totalCalls.toLocaleString());
-
-  updateTabCounts({
-    all: totalTokens,
-    active: activeTokens,
-    cooling: coolingTokens,
-    expired: invalidTokens,
-    nsfw: nsfwTokens,
-    'no-nsfw': noNsfwTokens
-  });
 }
 
 function renderTable() {
@@ -254,11 +324,8 @@ function renderTable() {
 
   if (loading) loading.classList.add('hidden');
 
-  // 获取筛选后的列表
-  const { totalCount, totalPages, visibleTokens } = getPaginationData();
-  const indexByRef = new Map(flatTokens.map((t, i) => [t, i]));
-
-  updatePaginationControls(totalCount, totalPages);
+  const visibleTokens = flatTokens;
+  updatePaginationControls(currentTotalCount, currentTotalPages);
 
   if (visibleTokens.length === 0) {
     tbody.replaceChildren();
@@ -274,19 +341,15 @@ function renderTable() {
   emptyState.classList.add('hidden');
 
   const fragment = document.createDocumentFragment();
-  visibleTokens.forEach((item) => {
-    // 获取原始索引用于操作
-    const originalIndex = indexByRef.get(item);
+  visibleTokens.forEach((item, originalIndex) => {
     const tr = document.createElement('tr');
     tr.dataset.index = originalIndex;
     if (item._selected) tr.classList.add('row-selected');
 
-    // Checkbox (Center)
     const tdCheck = document.createElement('td');
     tdCheck.className = 'text-center';
     tdCheck.innerHTML = `<input type="checkbox" class="checkbox" ${item._selected ? 'checked' : ''} onchange="toggleSelect(${originalIndex})">`;
 
-    // Token (Left)
     const tdToken = document.createElement('td');
     tdToken.className = 'text-left';
     const tokenShort = item.token.length > 24
@@ -301,12 +364,10 @@ function renderTable() {
                 </div>
              `;
 
-    // Type (Center)
     const tdType = document.createElement('td');
     tdType.className = 'text-center';
     tdType.innerHTML = `<span class="badge badge-gray">${escapeHtml(item.pool)}</span>`;
 
-    // Status (Center) - 显示状态和 nsfw 标签
     const tdStatus = document.createElement('td');
     let statusClass = 'badge-gray';
     if (item.status === 'active') statusClass = 'badge-green';
@@ -320,10 +381,8 @@ function renderTable() {
     }
     tdStatus.innerHTML = statusHtml;
 
-    // Quota (Center)
     const tdQuota = document.createElement('td');
     tdQuota.className = 'text-center font-mono text-xs';
-    // 根据配置决定显示消耗还是剩余
     if (consumedModeEnabled) {
       tdQuota.innerText = item.consumed;
       tdQuota.title = t('token.tableQuotaConsumed');
@@ -332,14 +391,10 @@ function renderTable() {
       tdQuota.title = t('token.tableQuota');
     }
 
-
-
-    // Note (Left)
     const tdNote = document.createElement('td');
     tdNote.className = 'text-left text-gray-500 text-xs truncate max-w-[150px]';
     tdNote.innerText = item.note || '-';
 
-    // Actions (Center)
     const tdActions = document.createElement('td');
     tdActions.className = 'text-center';
     const isDisabled = item.status === 'disabled';
@@ -352,7 +407,7 @@ function renderTable() {
       : 'p-1 text-gray-400 hover:text-orange-600 rounded';
     tdActions.innerHTML = `
                 <div class="flex items-center justify-center gap-2">
-                     <button onclick="refreshStatus('${item.token}')" class="p-1 text-gray-400 hover:text-black rounded" title="${t('token.refreshStatus')}">
+                     <button onclick="refreshStatus(${originalIndex})" class="p-1 text-gray-400 hover:text-black rounded" title="${t('token.refreshStatus')}">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                      </button>
                      <button onclick="toggleTokenEnabled(${originalIndex})" class="${toggleClass}" title="${toggleTitle}">
@@ -423,7 +478,7 @@ function setupSelectAllMenu() {
 
 function handleSelectAllPrimary(event) {
   if (event) event.stopPropagation();
-  const selected = countSelected(flatTokens);
+  const selected = selectedTokenKeys.size;
   if (selected > 0) {
     clearAllSelection();
     return;
@@ -442,16 +497,38 @@ function selectVisibleAllFromMenu() {
 
 function selectAllFilteredFromMenu() {
   selectAllFiltered();
-  closeSelectAllMenu();
 }
 
-function selectAllFiltered() {
-  const filtered = getFilteredTokens();
-  if (filtered.length === 0) return;
-  setSelectedForTokens(filtered, true);
-  syncVisibleSelectionUI(true);
-  updateSelectionState();
-  closeSelectAllMenu();
+async function selectAllFiltered() {
+  try {
+    const params = new URLSearchParams();
+    params.set('filter', currentFilter);
+    params.set('keys_only', 'true');
+    const res = await fetch(`/v1/admin/tokens?${params.toString()}`, {
+      headers: buildAuthHeaders(apiKey)
+    });
+    if (res.status === 401) {
+      logout();
+      return;
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (items.length === 0) return;
+    items.forEach((item) => {
+      if (item?.token) selectedTokenKeys.add(getTokenRowKey(item.pool, item.token));
+    });
+    flatTokens.forEach((item) => {
+      item._selected = selectedTokenKeys.has(item._rowKey);
+    });
+    syncVisibleSelectionUI(flatTokens.length > 0 && flatTokens.every((item) => item._selected));
+    updateSelectionState();
+    closeSelectAllMenu();
+  } catch (e) {
+    showToast(t('common.loadError', { msg: e.message }), 'error');
+  }
 }
 
 function selectVisibleAll() {
@@ -464,7 +541,8 @@ function selectVisibleAll() {
 }
 
 function clearAllSelection() {
-  if (flatTokens.length === 0) return;
+  if (selectedTokenKeys.size === 0 && flatTokens.length === 0) return;
+  selectedTokenKeys.clear();
   setSelectedForTokens(flatTokens, false);
   syncVisibleSelectionUI(false);
   updateSelectionState();
@@ -472,14 +550,21 @@ function clearAllSelection() {
 }
 
 function toggleSelect(index) {
-  flatTokens[index]._selected = !flatTokens[index]._selected;
+  const item = flatTokens[index];
+  if (!item) return;
+  item._selected = !item._selected;
+  if (item._selected) {
+    selectedTokenKeys.add(item._rowKey);
+  } else {
+    selectedTokenKeys.delete(item._rowKey);
+  }
   const row = document.querySelector(`#token-table-body tr[data-index="${index}"]`);
-  if (row) row.classList.toggle('row-selected', flatTokens[index]._selected);
+  if (row) row.classList.toggle('row-selected', item._selected);
   updateSelectionState();
 }
 
 function updateSelectionState() {
-  const selectedCount = countSelected(flatTokens);
+  const selectedCount = selectedTokenKeys.size;
   const visible = getVisibleTokens();
   const visibleSelected = countSelected(visible);
   const selectAll = byId('select-all');
@@ -520,7 +605,7 @@ function addToken() {
 function batchExport() {
   const selected = getSelectedTokens();
   if (selected.length === 0) return showToast(t('common.noTokenSelected'), 'error');
-  const content = selected.map(t => t.token).join('\n') + '\n';
+  const content = selected.join('\n') + '\n';
   downloadTextFile(content, `tokens_export_selected_${new Date().toISOString().slice(0, 10)}.txt`);
 }
 
@@ -608,59 +693,70 @@ function closeEditModal() {
 }
 
 async function saveEdit() {
-  // Collect data
-  let token;
   const newPool = byId('edit-pool').value.trim();
   const quotaFieldValue = parseInt(byId('edit-quota').value, 10);
   const newNote = byId('edit-note').value.trim().slice(0, 50);
+  const allItems = await fetchAllTokenItems();
 
   if (currentEditIndex >= 0) {
-    // Updating existing
     const item = flatTokens[currentEditIndex];
-    token = item.token;
+    if (!item) return;
     const newQuota = consumedModeEnabled
       ? item.quota
       : (Number.isNaN(quotaFieldValue) ? 0 : quotaFieldValue);
-
-    // Update flatTokens first to reflect UI
-    item.pool = newPool || 'ssoBasic';
-    item.quota = newQuota;
-    item.note = newNote;
+    const target = allItems.find((tokenItem) => sameTokenRef(tokenItem, item));
+    if (!target) {
+      showToast(t('common.loadError', { msg: 'Token not found' }), 'error');
+      return;
+    }
+    const nextRef = { pool: newPool || 'ssoBasic', token: item.token };
+    const hasCollision = allItems.some((tokenItem) => !sameTokenRef(tokenItem, item) && sameTokenRef(tokenItem, nextRef));
+    if (hasCollision) {
+      showToast(t('token.tokenExists'), 'error');
+      return;
+    }
+    target.pool = nextRef.pool;
+    target.quota = newQuota;
+    target.note = newNote;
   } else {
-    // Creating new
     const newQuota = Number.isNaN(quotaFieldValue) ? 0 : quotaFieldValue;
-    token = byId('edit-token-display').value.trim();
+    const token = byId('edit-token-display').value.trim();
     if (!token) return showToast(t('token.tokenEmpty'), 'error');
-
-    // Check if exists
-    if (flatTokens.some(t => t.token === token)) {
+    const nextRef = { pool: newPool || 'ssoBasic', token };
+    if (allItems.some((item) => sameTokenRef(item, nextRef))) {
       return showToast(t('token.tokenExists'), 'error');
     }
-
-    flatTokens.push({
+    allItems.push({
       token: token,
-      pool: newPool || 'ssoBasic',
+      pool: nextRef.pool,
       quota: newQuota,
       consumed: 0,
       note: newNote,
-      status: 'active', // default
+      status: 'active',
       use_count: 0,
+      tags: [],
+      fail_count: 0,
+      _rowKey: getTokenRowKey(nextRef),
       _selected: false
     });
   }
 
-  await syncToServer();
+  selectedTokenKeys.clear();
+  await syncToServer(allItems);
   closeEditModal();
-  // Reload to ensure consistent state/grouping
-  // Or simpler: just re-render but syncToServer does the hard work
-  loadData();
+  await loadData();
 }
 
 async function deleteToken(index) {
   const ok = await confirmAction(t('token.confirmDelete'), { okText: t('common.delete') });
   if (!ok) return;
-  flatTokens.splice(index, 1);
-  syncToServer().then(loadData);
+  const item = flatTokens[index];
+  if (!item) return;
+  const allItems = await fetchAllTokenItems();
+  const nextItems = allItems.filter((tokenItem) => !sameTokenRef(tokenItem, item));
+  selectedTokenKeys.clear();
+  await syncToServer(nextItems);
+  await loadData();
 }
 
 async function toggleTokenEnabled(index) {
@@ -675,8 +771,15 @@ async function toggleTokenEnabled(index) {
     : item.token;
   const ok = await confirmAction(t(confirmKey, { token: tokenLabel }), { okText });
   if (!ok) return;
-  item.status = targetStatus;
-  await syncToServer();
+  const allItems = await fetchAllTokenItems();
+  const target = allItems.find((tokenItem) => sameTokenRef(tokenItem, item));
+  if (!target) {
+    showToast(t('common.loadError', { msg: 'Token not found' }), 'error');
+    return;
+  }
+  target.status = targetStatus;
+  selectedTokenKeys.clear();
+  await syncToServer(allItems);
   await loadData();
   showToast(toDisabled ? t('token.disableDone') : t('token.enableDone'), 'success');
 }
@@ -686,10 +789,8 @@ function batchDelete() {
 }
 
 function _getBatchStatusTargets(targetStatus) {
-  const selected = getSelectedTokens();
-  if (selected.length === 0) return { selected, targets: [] };
-  const targets = selected.filter(item => item.status !== targetStatus);
-  return { selected, targets };
+  const selected = getSelectedTokenRefs();
+  return { selected, targetStatus };
 }
 
 async function batchSetStatus(targetStatus) {
@@ -697,12 +798,14 @@ async function batchSetStatus(targetStatus) {
     showToast(t('common.taskInProgress'), 'info');
     return;
   }
-  const { selected, targets } = _getBatchStatusTargets(targetStatus);
+  const { selected } = _getBatchStatusTargets(targetStatus);
   if (selected.length === 0) {
     showToast(t('common.noTokenSelected'), 'error');
     return;
   }
   const toDisabled = targetStatus === 'disabled';
+  const allItems = await fetchAllTokenItems();
+  const targets = allItems.filter((item) => selectedTokenKeys.has(item._rowKey) && item.status !== targetStatus);
   if (targets.length === 0) {
     showToast(toDisabled ? t('token.noTokenToDisable') : t('token.noTokenToEnable'), 'info');
     return;
@@ -714,7 +817,8 @@ async function batchSetStatus(targetStatus) {
   targets.forEach(item => {
     item.status = targetStatus;
   });
-  await syncToServer();
+  selectedTokenKeys.clear();
+  await syncToServer(allItems);
   await loadData();
   showToast(toDisabled ? t('token.batchDisableDone') : t('token.batchEnableDone'), 'success');
 }
@@ -727,30 +831,8 @@ async function batchEnableTokens() {
   await batchSetStatus('active');
 }
 
-// Reconstruct object structure and save
-async function syncToServer() {
-  const newTokens = {};
-  flatTokens.forEach(t => {
-    if (!newTokens[t.pool]) newTokens[t.pool] = [];
-    const payload = {
-      token: t.token,
-      status: t.status,
-      quota: t.quota,
-      consumed: t.consumed || 0,
-      note: t.note,
-      fail_count: t.fail_count,
-      use_count: t.use_count || 0,
-      tags: Array.isArray(t.tags) ? t.tags : []
-    };
-    if (typeof t.created_at === 'number') payload.created_at = t.created_at;
-    if (typeof t.last_used_at === 'number') payload.last_used_at = t.last_used_at;
-    if (typeof t.last_fail_at === 'number') payload.last_fail_at = t.last_fail_at;
-    if (typeof t.last_sync_at === 'number') payload.last_sync_at = t.last_sync_at;
-    if (typeof t.last_asset_clear_at === 'number') payload.last_asset_clear_at = t.last_asset_clear_at;
-    if (typeof t.last_fail_reason === 'string' && t.last_fail_reason) payload.last_fail_reason = t.last_fail_reason;
-    newTokens[t.pool].push(payload);
-  });
-
+async function syncToServer(items) {
+  const newTokens = buildTokensPayload(items || []);
   try {
     const res = await fetch('/v1/admin/tokens', {
       method: 'POST',
@@ -783,11 +865,15 @@ async function submitImport() {
   const text = byId('import-text').value;
   const lines = text.split('\n');
   const defaultQuota = getDefaultQuotaForPool(pool);
+  const allItems = await fetchAllTokenItems();
+  const existing = new Set(allItems.map((item) => item._rowKey));
 
   lines.forEach(line => {
     const t = line.trim();
-    if (t && !flatTokens.some(ft => ft.token === t)) {
-      flatTokens.push({
+    const rowKey = getTokenRowKey(pool, t);
+    if (t && !existing.has(rowKey)) {
+      existing.add(rowKey);
+      allItems.push({
         token: t,
         pool: pool,
         status: 'active',
@@ -797,20 +883,23 @@ async function submitImport() {
         tags: [],
         fail_count: 0,
         use_count: 0,
+        _rowKey: rowKey,
         _selected: false
       });
     }
   });
 
-  await syncToServer();
+  selectedTokenKeys.clear();
+  await syncToServer(allItems);
   closeImportModal();
-  loadData();
+  await loadData();
 }
 
 // Export Logic
-function exportTokens() {
-  if (flatTokens.length === 0) return showToast(t('token.listEmpty'), 'error');
-  const content = flatTokens.map(t => t.token).join('\n') + '\n';
+async function exportTokens() {
+  const allItems = await fetchAllTokenItems();
+  if (allItems.length === 0) return showToast(t('token.listEmpty'), 'error');
+  const content = allItems.map(t => t.token).join('\n') + '\n';
   downloadTextFile(content, `tokens_export_${new Date().toISOString().slice(0, 10)}.txt`);
 }
 
@@ -832,8 +921,10 @@ async function copyToClipboard(text, btn) {
   }
 }
 
-async function refreshStatus(token) {
+async function refreshStatus(index) {
   try {
+    const item = flatTokens[index];
+    if (!item) return;
     const btn = event.currentTarget; // Get button element if triggered by click
     if (btn) {
       btn.innerHTML = `<svg class="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
@@ -845,13 +936,14 @@ async function refreshStatus(token) {
         'Content-Type': 'application/json',
         ...buildAuthHeaders(apiKey)
       },
-      body: JSON.stringify({ token: token })
+      body: JSON.stringify({ token: item.token, pool: item.pool })
     });
 
     const data = await res.json();
 
     if (res.ok && data.status === 'success') {
-      const isSuccess = data.results && data.results[token];
+      const resultItem = Array.isArray(data.items) ? data.items[0] : null;
+      const isSuccess = !!(resultItem && resultItem.ok);
       loadData();
 
       if (isSuccess) {
@@ -875,14 +967,14 @@ async function startBatchRefresh() {
     return;
   }
 
-  const selected = getSelectedTokens();
+  const selected = getSelectedTokenRefs();
   if (selected.length === 0) return showToast(t('common.noTokenSelected'), 'error');
 
   // Init state
   isBatchProcessing = true;
   isBatchPaused = false;
   currentBatchAction = 'refresh';
-  batchQueue = selected.map(t => t.token);
+  batchQueue = selected.slice();
   batchTotal = batchQueue.length;
   batchProcessed = 0;
 
@@ -975,6 +1067,10 @@ function finishBatchProcess(aborted = false, options = {}) {
   isBatchPaused = false;
   batchQueue = [];
   currentBatchAction = null;
+  selectedTokenKeys.clear();
+  flatTokens.forEach((token) => {
+    token._selected = false;
+  });
 
   updateBatchProgress();
   setActionButtonsState();
@@ -1029,7 +1125,7 @@ function updateBatchProgress() {
 function setActionButtonsState(selectedCount = null) {
   let count = selectedCount;
   if (count === null) {
-    count = countSelected(flatTokens);
+    count = selectedTokenKeys.size;
   }
   const disabled = isBatchProcessing;
   const exportBtn = byId('btn-batch-export');
@@ -1051,7 +1147,7 @@ async function startBatchDelete() {
     showToast(t('common.taskInProgress'), 'info');
     return;
   }
-  const selected = getSelectedTokens();
+  const selected = getSelectedTokenRefs();
   if (selected.length === 0) return showToast(t('common.noTokenSelected'), 'error');
   const ok = await confirmAction(t('token.confirmBatchDelete', { count: selected.length }), { okText: t('common.delete') });
   if (!ok) return;
@@ -1059,7 +1155,7 @@ async function startBatchDelete() {
   isBatchProcessing = true;
   isBatchPaused = false;
   currentBatchAction = 'delete';
-  batchQueue = selected.map(t => t.token);
+  batchQueue = selected.slice();
   batchTotal = batchQueue.length;
   batchProcessed = 0;
 
@@ -1067,9 +1163,11 @@ async function startBatchDelete() {
   setActionButtonsState();
 
   try {
-    const toRemove = new Set(batchQueue);
-    flatTokens = flatTokens.filter(t => !toRemove.has(t.token));
-    await syncToServer();
+    const toRemove = new Set(batchQueue.map((item) => getTokenRowKey(item)));
+    const allItems = await fetchAllTokenItems();
+    const nextItems = allItems.filter(t => !toRemove.has(t._rowKey));
+    toRemove.forEach((tokenKey) => selectedTokenKeys.delete(tokenKey));
+    await syncToServer(nextItems);
     batchProcessed = batchTotal;
     updateBatchProgress();
     finishBatchProcess(false, { silent: true });
@@ -1153,20 +1251,11 @@ function filterByStatus(status) {
     tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
   });
 
-  renderTable();
+  loadData();
 }
 
 function getFilteredTokens() {
-  if (currentFilter === 'all') return flatTokens;
-
-  return flatTokens.filter(t => {
-    if (currentFilter === 'active') return t.status === 'active';
-    if (currentFilter === 'cooling') return t.status === 'cooling';
-    if (currentFilter === 'expired') return t.status !== 'active' && t.status !== 'cooling';
-    if (currentFilter === 'nsfw') return t.tags && t.tags.includes('nsfw');
-    if (currentFilter === 'no-nsfw') return !t.tags || !t.tags.includes('nsfw');
-    return true;
-  });
+  return flatTokens;
 }
 
 function updateTabCounts(counts) {
@@ -1186,7 +1275,7 @@ function updateTabCounts(counts) {
 }
 
 function getVisibleTokens() {
-  return getPaginationData().visibleTokens;
+  return flatTokens;
 }
 
 function refreshPageSizeOptionsI18n() {
@@ -1222,16 +1311,14 @@ function goPrevPage() {
   if (currentPage <= 1) return;
   currentPage -= 1;
   closeSelectAllMenu();
-  renderTable();
+  loadData();
 }
 
 function goNextPage() {
-  const totalCount = getFilteredTokens().length;
-  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  if (currentPage >= totalPages) return;
+  if (currentPage >= currentTotalPages) return;
   currentPage += 1;
   closeSelectAllMenu();
-  renderTable();
+  loadData();
 }
 
 function changePageSize() {
@@ -1241,7 +1328,7 @@ function changePageSize() {
   pageSize = value;
   currentPage = 1;
   closeSelectAllMenu();
-  renderTable();
+  loadData();
 }
 
 // ========== NSFW 批量开启 ==========
@@ -1252,7 +1339,7 @@ async function batchEnableNSFW() {
     return;
   }
 
-  const selected = getSelectedTokens();
+  const selected = getSelectedTokenRefs();
   const targetCount = selected.length;
   if (targetCount === 0) {
     showToast(t('common.noTokenSelected'), 'error');
@@ -1275,7 +1362,7 @@ async function batchEnableNSFW() {
   setActionButtonsState();
 
   try {
-    const tokens = selected.length > 0 ? selected.map(t => t.token) : null;
+    const tokens = selected.length > 0 ? selected.slice() : null;
     const res = await fetch('/v1/admin/tokens/nsfw/enable/async', {
       method: 'POST',
       headers: {
@@ -1359,4 +1446,4 @@ async function batchEnableNSFW() {
 
 
 
-window.onload = init;
+runWhenDomReady(init);

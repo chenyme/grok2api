@@ -1725,4 +1725,4 @@ async function clearOnlineCache(targetToken = '', skipConfirm = false) {
   }
 }
 
-window.onload = init;
+runWhenDomReady(init);

@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 
+from app.api.pages.admin import _admin_entry_response
 from app.core.auth import is_function_enabled
 
 router = APIRouter()
@@ -20,7 +21,7 @@ def _function_page_response(relative_path: str) -> FileResponse:
 async def root():
     if is_function_enabled():
         return RedirectResponse(url="/login")
-    return RedirectResponse(url="/admin/login")
+    return _admin_entry_response()
 
 
 @router.get("/login", include_in_schema=False)
