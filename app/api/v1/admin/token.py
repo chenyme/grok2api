@@ -13,7 +13,11 @@ from app.core.logger import logger
 from app.core.storage import get_storage
 from app.services.grok.batch_services.usage import UsageService
 from app.services.grok.batch_services.nsfw import NSFWService
-from app.services.token.manager import get_token_manager
+from app.services.token.manager import (
+    BASIC_POOL_NAME,
+    SUPER_POOL_NAME,
+    get_token_manager,
+)
 
 router = APIRouter()
 
@@ -38,6 +42,7 @@ _TOKEN_CHAR_REPLACEMENTS = str.maketrans(
 _TOKEN_FILTERS = {"all", "active", "cooling", "expired", "nsfw", "no-nsfw"}
 MAX_TOKEN_PAGE_SIZE = 2000
 TokenRef = tuple[str | None, str]
+_POOL_ORDER = {BASIC_POOL_NAME: 0, SUPER_POOL_NAME: 1}
 
 
 def _sanitize_token_text(value) -> str:
@@ -140,9 +145,21 @@ def _normalize_token_filter(value: str | None) -> str:
     return "all"
 
 
+def _normalize_token_status_value(status: Any) -> str:
+    if status is None:
+        return "active"
+
+    raw_value = getattr(status, "value", status)
+    normalized = str(raw_value).strip()
+    if not normalized:
+        return "active"
+    if normalized.startswith("TokenStatus."):
+        normalized = normalized.split(".", 1)[1]
+    return normalized.lower()
+
+
 def _token_status(info: Any) -> str:
-    status = getattr(info, "status", None) or "active"
-    return str(status)
+    return _normalize_token_status_value(getattr(info, "status", None))
 
 
 def _token_tags(info: Any) -> list[str]:
@@ -239,26 +256,25 @@ def _serialize_token(pool_name: str, info: Any) -> dict[str, Any]:
     return data
 
 
-def _collect_token_page_items(
-    mgr: Any,
-    status_filter: str,
-    start_index: int,
-    end_index: int,
-) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    matched = 0
+def _token_sort_key(pool_name: str, info: Any) -> tuple[int, int, int, str]:
+    created_at = int(getattr(info, "created_at", 0) or 0)
+    last_used_at = int(getattr(info, "last_used_at", 0) or 0)
+    token = str(getattr(info, "token", "") or "")
+    return (
+        _POOL_ORDER.get(pool_name, 99),
+        -created_at,
+        -last_used_at,
+        token,
+    )
 
+
+def _iter_token_entries(mgr: Any) -> list[tuple[str, Any]]:
+    entries: list[tuple[str, Any]] = []
     for pool_name, pool in mgr.pools.items():
         for info in pool.list():
-            if not _token_matches_filter(info, status_filter):
-                continue
-            if start_index <= matched < end_index:
-                items.append(_serialize_token(pool_name, info))
-            matched += 1
-            if matched >= end_index and items:
-                continue
-
-    return items
+            entries.append((pool_name, info))
+    entries.sort(key=lambda item: _token_sort_key(item[0], item[1]))
+    return entries
 
 
 def _build_paginated_token_payload(
@@ -271,24 +287,25 @@ def _build_paginated_token_payload(
     keys_only: bool = False,
 ) -> dict[str, Any]:
     summary = _empty_token_summary()
-    matched_items: list[dict[str, str]] = []
+    matched_items: list[dict[str, Any]] = []
     filtered_total = 0
 
-    for pool_name, pool in mgr.pools.items():
-        for info in pool.list():
-            _accumulate_token_summary(summary, info)
+    for pool_name, info in _iter_token_entries(mgr):
+        _accumulate_token_summary(summary, info)
 
-            if not _token_matches_filter(info, status_filter):
-                continue
+        if not _token_matches_filter(info, status_filter):
+            continue
 
-            filtered_total += 1
-            if keys_only:
-                matched_items.append(
-                    {
-                        "token": getattr(info, "token", ""),
-                        "pool": pool_name,
-                    }
-                )
+        filtered_total += 1
+        if keys_only:
+            matched_items.append(
+                {
+                    "token": getattr(info, "token", ""),
+                    "pool": pool_name,
+                }
+            )
+        else:
+            matched_items.append(_serialize_token(pool_name, info))
 
     summary["image_quota"] = summary["chat_quota"] // 2
     counts = {
@@ -314,7 +331,7 @@ def _build_paginated_token_payload(
     current_page = min(max(page, 1), total_pages)
     start_index = (current_page - 1) * page_size
     end_index = start_index + page_size
-    items = _collect_token_page_items(mgr, status_filter, start_index, end_index)
+    items = matched_items[start_index:end_index]
 
     return {
         "items": items,
@@ -356,7 +373,7 @@ async def get_tokens(
 
     results = {}
     for pool_name, pool in mgr.pools.items():
-        results[pool_name] = [t.model_dump() for t in pool.list()]
+        results[pool_name] = [t.model_dump(mode="json") for t in pool.list()]
     return {
         "tokens": results or {},
         "consumed_mode_enabled": consumed_mode,

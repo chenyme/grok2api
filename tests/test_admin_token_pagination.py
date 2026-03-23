@@ -14,7 +14,7 @@ from app.api.v1.admin.token import (
     update_tokens,
 )
 from app.services.token.manager import TokenManager, get_token_manager
-from app.services.token.models import TokenInfo
+from app.services.token.models import TokenInfo, TokenStatus
 from app.services.token.pool import TokenPool
 
 
@@ -28,6 +28,8 @@ class FakeTokenInfo:
     fail_count: int = 0
     use_count: int = 0
     tags: list[str] = field(default_factory=list)
+    created_at: int = 0
+    last_used_at: int | None = None
 
 
 class FakePool:
@@ -138,6 +140,59 @@ class AdminTokenPaginationTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["image_quota"], 180)
         self.assertEqual(payload["summary"]["total_consumed"], 4)
         self.assertEqual(payload["summary"]["total_calls"], 3)
+
+    def test_build_paginated_payload_normalizes_enum_statuses_and_orders_basic_first(self):
+        manager = FakeManager(
+            {
+                "ssoSuper": FakePool(
+                    [
+                        TokenInfo(
+                            token="super-token",
+                            status=TokenStatus.ACTIVE,
+                            quota=140,
+                            created_at=10,
+                        )
+                    ]
+                ),
+                "ssoBasic": FakePool(
+                    [
+                        TokenInfo(
+                            token="basic-new",
+                            status=TokenStatus.ACTIVE,
+                            quota=80,
+                            created_at=30,
+                        ),
+                        TokenInfo(
+                            token="basic-cooling",
+                            status=TokenStatus.COOLING,
+                            quota=0,
+                            created_at=20,
+                        ),
+                    ]
+                ),
+            }
+        )
+
+        payload = _build_paginated_token_payload(
+            manager,
+            status_filter="all",
+            page=1,
+            page_size=10,
+            consumed_mode_enabled=False,
+        )
+
+        self.assertEqual(
+            [item["token"] for item in payload["items"]],
+            ["basic-new", "basic-cooling", "super-token"],
+        )
+        self.assertEqual(
+            [item["status"] for item in payload["items"]],
+            ["active", "cooling", "active"],
+        )
+        self.assertEqual(payload["counts"]["active"], 2)
+        self.assertEqual(payload["counts"]["cooling"], 1)
+        self.assertEqual(payload["counts"]["expired"], 0)
+        self.assertEqual(payload["summary"]["invalid"], 0)
 
     def test_keys_only_payload_honors_filter(self):
         payload = _build_paginated_token_payload(

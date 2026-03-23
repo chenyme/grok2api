@@ -102,12 +102,21 @@ async function readJsonResponse(res) {
   }
 }
 
+function normalizeTokenStatus(status) {
+  const raw = String(status || 'active').trim();
+  if (!raw) return 'active';
+  const normalized = raw.startsWith('TokenStatus.')
+    ? raw.slice('TokenStatus.'.length)
+    : raw;
+  return normalized.toLowerCase();
+}
+
 function normalizeTokenItem(pool, tokenData, selected = false) {
   const normalized = typeof tokenData === 'string'
     ? { token: tokenData, status: 'active', quota: 0, note: '', use_count: 0, tags: [] }
     : {
       token: tokenData.token,
-      status: tokenData.status || 'active',
+      status: normalizeTokenStatus(tokenData.status),
       quota: tokenData.quota || 0,
       consumed: tokenData.consumed || 0,
       note: tokenData.note || '',
