@@ -1,13 +1,3 @@
----
-title: Grok2API
-emoji: 📈
-colorFrom: purple
-colorTo: yellow
-sdk: docker
-app_port: 8000
-pinned: false
----
-
 # Grok2API
 
 **中文** | [English](docs/README.en.md) | [文档](https://blog.cheny.me/blog/posts/grok2api)
@@ -69,16 +59,6 @@ docker compose up -d
 > Render 免费实例 15 分钟无访问会休眠；重启/重新部署会丢失数据。
 >
 > 持久化请使用 MySQL / Redis / PostgreSQL，并设置：`SERVER_STORAGE_TYPE` 与 `SERVER_STORAGE_URL`。
-
-### Hugging Face Spaces 部署
-
-> 详见：[docs/HUGGINGFACE_SPACES.md](docs/HUGGINGFACE_SPACES.md)
->
-> 当前仓库已补齐 Docker Space 运行时兼容：
-> - 默认使用 `local` 存储，无需额外数据库/Redis
-> - 检测到 Space 环境后，优先使用 `/data`，不可用时回落到临时目录
-> - 默认关闭文件日志 `LOG_FILE_ENABLED=false`
-> - 保持现有 FastAPI + Docker 启动方式，不需要改业务入口
 
 <br>
 

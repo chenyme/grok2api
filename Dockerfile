@@ -61,15 +61,14 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 
-COPY --chown=1000:1000 config.defaults.toml ./
-COPY --chown=1000:1000 app ./app
-COPY --chown=1000:1000 _public ./_public
-COPY --chown=1000:1000 main.py ./
-COPY --chown=1000:1000 scripts ./scripts
+COPY config.defaults.toml ./
+COPY app ./app
+COPY _public ./_public
+COPY main.py ./
+COPY scripts ./scripts
 
-RUN mkdir -p /app/data /app/logs /data \
-    && chmod +x /app/scripts/entrypoint.sh /app/scripts/init_storage.sh \
-    && chown -R 1000:1000 /app /data
+RUN mkdir -p /app/data /app/logs \
+    && chmod +x /app/scripts/entrypoint.sh
 
 EXPOSE 8000
 

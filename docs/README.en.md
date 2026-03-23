@@ -1,6 +1,6 @@
 # Grok2API
 
-[中文](../README.md) | **English** | [Docs](https://blog.cheny.me/blog/posts/grok2api)
+[中文](../readme.md) | **English** | [Docs](https://blog.cheny.me/blog/posts/grok2api)
 
 > [!NOTE]
 > This project is for learning and research only. You must comply with Grok **Terms of Use** and **local laws and regulations**. Do not use for illegal purposes.
