@@ -196,7 +196,8 @@ curl http://localhost:8000/v1/chat/completions \
 - `grok-imagine-1.0-fast` streaming output in `/chat/completions` only returns the final image, hiding intermediate preview images.
 - `grok-imagine-1.0-fast` streaming URL output will retain the original image filename (without appending `-final`).
 - `grok-imagine-1.0-edit` requires an image; if multiple are provided, the **last 3** images and last text are used.
-- `grok-imagine-1.0-video` supports text-to-video and image-to-video via `image_url` (**only the first image is used**).
+- `grok-imagine-1.0-video` supports text-to-video and multi-image reference video: pass up to `7` `image_url` blocks and use placeholders like `@图1`, `@图2` in the prompt; the server will replace them with the corresponding `assetId` values.
+- `@图N` placeholders map to `image_url` order; referencing a missing image index returns an error.
 - Any other parameters will be discarded and ignored.
 
 <br>
@@ -361,7 +362,7 @@ curl http://localhost:8000/v1/videos \
 | `size` | string | Frame size (mapped to aspect_ratio) | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
 | `seconds` | integer | Target duration (seconds) | `6` ~ `30` |
 | `quality` | string | Video quality (mapped to resolution) | `standard`, `high` |
-| `image_reference` | object/string | Reference image (optional) | `{"image_url":"https://..."}` or Data URI |
+| `image_reference` | array | Reference image (optional) | OpenAI-compatible content block array (`[{"type":"image_url"...}]`) or an array of URL strings; single-image requests should use a one-item array |
 | `input_reference` | file | multipart reference image (optional) | `png`, `jpg`, `webp` |
 
 **Notes**:
@@ -369,7 +370,7 @@ curl http://localhost:8000/v1/videos \
 - Server-side chain extension now supports 6~30 seconds automatically, so **`/v1/video/extend` is not required**.
 - `quality=standard` maps to `480p`; `quality=high` maps to `720p`.
 - For basic-pool requests at `720p`, generation falls back to `480p` first, then upscales according to `video.upscale_timing`.
-- If both `image_reference` and `input_reference` are provided, references are processed in order; the video pipeline uses the first image only.
+- `image_reference` now uses array format only and supports up to 7 images; single-image requests should also use a one-item array. If both `image_reference` and `input_reference` are provided, references are processed and merged in order; you can use placeholders like `@图1`, `@图2` in prompts.
 
 <br>
 

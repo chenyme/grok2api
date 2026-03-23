@@ -5,13 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import verify_app_key
 from app.core.config import config
+from app.core.logger import logger, reload_logging_from_config
 from app.core.storage import (
     LocalStorage,
     RedisStorage,
     SQLStorage,
     get_storage as resolve_storage,
 )
-from app.core.logger import logger
 
 router = APIRouter()
 
@@ -107,6 +107,10 @@ async def update_config(data: dict):
     """更新配置"""
     try:
         await config.update(_sanitize_proxy_config_payload(data))
+        reload_logging_from_config(
+            default_level=os.getenv("LOG_LEVEL", "INFO"),
+            json_console=False,
+        )
         return {
             "status": "success",
             "message": "配置已更新",

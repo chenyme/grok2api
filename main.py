@@ -29,7 +29,7 @@ from fastapi import Depends  # noqa: E402
 
 from app.core.auth import verify_api_key  # noqa: E402
 from app.core.config import config, get_config  # noqa: E402
-from app.core.logger import logger, setup_logging  # noqa: E402
+from app.core.logger import logger, reload_logging_from_config, setup_logging  # noqa: E402
 from app.core.exceptions import register_exception_handlers  # noqa: E402
 from app.core.response_middleware import ResponseLoggerMiddleware  # noqa: E402
 from app.api.v1.chat import router as chat_router  # noqa: E402
@@ -39,11 +39,11 @@ from app.api.v1.files import router as files_router  # noqa: E402
 from app.api.v1.models import router as models_router  # noqa: E402
 from app.api.v1.response import router as responses_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
-from app.api.v1.admin import router as admin_router
-from app.api.v1.function import router as function_router
-from app.api.pages import router as pages_router
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
+from app.api.v1.admin import router as admin_router  # noqa: E402
+from app.api.v1.function import router as function_router  # noqa: E402
+from app.api.pages import router as pages_router  # noqa: E402
+from fastapi.responses import RedirectResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 # 初始化日志
 setup_logging(
@@ -55,13 +55,17 @@ setup_logging(
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 1. 注册服务默认配置
-    from app.core.config import config, register_defaults
+    from app.core.config import register_defaults
     from app.services.grok.defaults import get_grok_defaults
 
     register_defaults(get_grok_defaults())
 
     # 2. 加载配置
-    await config.ensure_loaded()
+    await config.load()
+    reload_logging_from_config(
+        default_level=os.getenv("LOG_LEVEL", "INFO"),
+        json_console=False,
+    )
 
     # 3. 启动服务显示
     logger.info("Starting Grok2API...")

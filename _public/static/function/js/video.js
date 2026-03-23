@@ -31,12 +31,13 @@
   let contentBuffer = '';
   let collectingContent = false;
   let startAt = 0;
-  let fileDataUrl = '';
+  let fileDataUrls = [];
   let elapsedTimer = null;
   let lastProgress = 0;
   let currentPreviewItem = null;
   let previewCount = 0;
   const DEFAULT_REASONING_EFFORT = 'low';
+  const MAX_REFERENCE_IMAGES = 7;
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -229,13 +230,43 @@
   }
 
   function clearFileSelection() {
-    fileDataUrl = '';
+    fileDataUrls = [];
     if (imageFileInput) {
       imageFileInput.value = '';
     }
     if (imageFileName) {
-      imageFileName.textContent = t('common.noFileSelected');
+      imageFileName.textContent = t('video.noReferenceSelected');
     }
+  }
+
+  function updateReferenceSummary(names) {
+    if (!imageFileName) return;
+    if (!names || !names.length) {
+      imageFileName.textContent = t('video.noReferenceSelected');
+      return;
+    }
+    imageFileName.textContent = names.join('\n');
+  }
+
+  function parseReferenceUrls(value) {
+    return (value || '')
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean);
+  }
+
+  function getReferenceImages() {
+    const rawUrls = imageUrlInput ? parseReferenceUrls(imageUrlInput.value) : [];
+    if (fileDataUrls.length && rawUrls.length) {
+      toast(t('video.referenceConflict'), 'error');
+      throw new Error('invalid_reference');
+    }
+    const images = fileDataUrls.length ? [...fileDataUrls] : rawUrls;
+    if (images.length > MAX_REFERENCE_IMAGES) {
+      toast(t('video.referenceLimit'), 'error');
+      throw new Error('too_many_references');
+    }
+    return images;
   }
 
   function normalizeAuthHeader(authHeader) {
@@ -260,12 +291,7 @@
 
   async function createVideoTask(authHeader) {
     const prompt = promptInput ? promptInput.value.trim() : '';
-    const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
-    if (fileDataUrl && rawUrl) {
-      toast(t('video.referenceConflict'), 'error');
-      throw new Error('invalid_reference');
-    }
-    const imageUrl = fileDataUrl || rawUrl;
+    const imageUrls = getReferenceImages();
     const res = await fetch('/v1/function/video/start', {
       method: 'POST',
       headers: {
@@ -274,7 +300,7 @@
       },
       body: JSON.stringify({
         prompt,
-        image_url: imageUrl || null,
+        image_urls: imageUrls,
         reasoning_effort: DEFAULT_REASONING_EFFORT,
         aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
         video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
@@ -604,31 +630,38 @@
 
   if (imageFileInput) {
     imageFileInput.addEventListener('change', () => {
-      const file = imageFileInput.files && imageFileInput.files[0];
-      if (!file) {
+      const files = imageFileInput.files ? Array.from(imageFileInput.files) : [];
+      if (!files.length) {
         clearFileSelection();
+        return;
+      }
+      if (files.length > MAX_REFERENCE_IMAGES) {
+        clearFileSelection();
+        toast(t('video.referenceLimit'), 'error');
         return;
       }
       if (imageUrlInput && imageUrlInput.value.trim()) {
         imageUrlInput.value = '';
       }
-      if (imageFileName) {
-        imageFileName.textContent = file.name;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          fileDataUrl = reader.result;
-        } else {
-          fileDataUrl = '';
-          toast(t('common.fileReadFailed'), 'error');
-        }
-      };
-      reader.onerror = () => {
-        fileDataUrl = '';
+      Promise.all(files.map(file => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            resolve({ name: file.name, data: reader.result });
+          } else {
+            reject(new Error('read_failed'));
+          }
+        };
+        reader.onerror = () => reject(new Error('read_failed'));
+        reader.readAsDataURL(file);
+      }))).then(items => {
+        fileDataUrls = items.map(item => item.data);
+        updateReferenceSummary(items.map((item, index) => `${index + 1}. ${item.name}`));
+      }).catch(() => {
+        fileDataUrls = [];
         toast(t('common.fileReadFailed'), 'error');
-      };
-      reader.readAsDataURL(file);
+        updateReferenceSummary([]);
+      });
     });
   }
 
@@ -646,8 +679,17 @@
 
   if (imageUrlInput) {
     imageUrlInput.addEventListener('input', () => {
-      if (imageUrlInput.value.trim() && fileDataUrl) {
+      const urls = parseReferenceUrls(imageUrlInput.value);
+      if (urls.length > MAX_REFERENCE_IMAGES) {
+        toast(t('video.referenceLimit'), 'error');
+      }
+      if (imageUrlInput.value.trim() && fileDataUrls.length) {
         clearFileSelection();
+      }
+      if (urls.length) {
+        updateReferenceSummary(urls.map((url, index) => `${index + 1}. ${url}`));
+      } else if (!fileDataUrls.length) {
+        updateReferenceSummary([]);
       }
     });
   }

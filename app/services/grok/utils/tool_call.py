@@ -288,7 +288,6 @@ def format_tool_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 func = tc.get("function", {})
                 tc_name = func.get("name", "")
                 tc_args = func.get("arguments", "{}")
-                tc_id = tc.get("id", "")
                 parts.append(f'<tool_call>{{"name":"{tc_name}","arguments":{tc_args}}}</tool_call>')
             result.append({
                 "role": "assistant",

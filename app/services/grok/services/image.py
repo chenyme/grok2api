@@ -20,6 +20,11 @@ from app.services.grok.utils.process import BaseProcessor
 from app.services.grok.utils.retry import pick_token, rate_limited
 from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
 from app.services.grok.utils.stream import wrap_stream_with_usage
+from app.services.grok.services.chat import GrokChatService
+from app.services.grok.services.image_edit import (
+    ImageStreamProcessor as AppChatImageStreamProcessor,
+    ImageCollectProcessor as AppChatImageCollectProcessor,
+)
 from app.services.token import EffortType
 from app.services.reverse.ws_imagine import ImagineWebSocketReverse
 
@@ -36,6 +41,18 @@ class ImageGenerationResult:
 
 class ImageGenerationService:
     """Image generation orchestration service."""
+
+    @staticmethod
+    def _app_chat_request_overrides(
+        count: int,
+        enable_nsfw: Optional[bool],
+    ) -> Dict[str, Any]:
+        overrides: Dict[str, Any] = {
+            "imageGenerationCount": max(1, int(count or 1)),
+        }
+        if enable_nsfw is not None:
+            overrides["enableNsfw"] = bool(enable_nsfw)
+        return overrides
 
     async def generate(
         self,
@@ -87,18 +104,36 @@ class ImageGenerationService:
                     tried_tokens.add(current_token)
                     yielded = False
                     try:
-                        result = await self._stream_ws(
-                            token_mgr=token_mgr,
-                            token=current_token,
-                            model_info=model_info,
-                            prompt=prompt,
-                            n=n,
-                            response_format=response_format,
-                            size=size,
-                            aspect_ratio=aspect_ratio,
-                            enable_nsfw=enable_nsfw,
-                            chat_format=chat_format,
-                        )
+                        try:
+                            result = await self._stream_app_chat(
+                                token_mgr=token_mgr,
+                                token=current_token,
+                                model_info=model_info,
+                                prompt=prompt,
+                                n=n,
+                                response_format=response_format,
+                                enable_nsfw=enable_nsfw,
+                                chat_format=chat_format,
+                            )
+                        except UpstreamException as app_chat_error:
+                            if rate_limited(app_chat_error):
+                                raise
+                            logger.warning(
+                                "App-chat image stream failed, falling back to ws_imagine: %s",
+                                app_chat_error,
+                            )
+                            result = await self._stream_ws(
+                                token_mgr=token_mgr,
+                                token=current_token,
+                                model_info=model_info,
+                                prompt=prompt,
+                                n=n,
+                                response_format=response_format,
+                                size=size,
+                                aspect_ratio=aspect_ratio,
+                                enable_nsfw=enable_nsfw,
+                                chat_format=chat_format,
+                            )
                         async for chunk in result.data:
                             yielded = True
                             yield chunk
@@ -148,17 +183,34 @@ class ImageGenerationService:
 
             tried_tokens.add(current_token)
             try:
-                return await self._collect_ws(
-                    token_mgr=token_mgr,
-                    token=current_token,
-                    model_info=model_info,
-                    tried_tokens=tried_tokens,
-                    prompt=prompt,
-                    n=n,
-                    response_format=response_format,
-                    aspect_ratio=aspect_ratio,
-                    enable_nsfw=enable_nsfw,
-                )
+                try:
+                    return await self._collect_app_chat(
+                        token_mgr=token_mgr,
+                        token=current_token,
+                        model_info=model_info,
+                        prompt=prompt,
+                        n=n,
+                        response_format=response_format,
+                        enable_nsfw=enable_nsfw,
+                    )
+                except UpstreamException as app_chat_error:
+                    if rate_limited(app_chat_error):
+                        raise
+                    logger.warning(
+                        "App-chat image collect failed, falling back to ws_imagine: %s",
+                        app_chat_error,
+                    )
+                    return await self._collect_ws(
+                        token_mgr=token_mgr,
+                        token=current_token,
+                        model_info=model_info,
+                        tried_tokens=tried_tokens,
+                        prompt=prompt,
+                        n=n,
+                        response_format=response_format,
+                        aspect_ratio=aspect_ratio,
+                        enable_nsfw=enable_nsfw,
+                    )
             except UpstreamException as e:
                 last_error = e
                 if rate_limited(e):
@@ -220,6 +272,125 @@ class ImageGenerationService:
             model_info.model_id,
         )
         return ImageGenerationResult(stream=True, data=stream)
+
+    async def _stream_app_chat(
+        self,
+        *,
+        token_mgr: Any,
+        token: str,
+        model_info: Any,
+        prompt: str,
+        n: int,
+        response_format: str,
+        enable_nsfw: Optional[bool] = None,
+        chat_format: bool = False,
+    ) -> ImageGenerationResult:
+        response = await GrokChatService().chat(
+            token=token,
+            message=prompt,
+            model=model_info.grok_model,
+            mode=model_info.model_mode,
+            stream=True,
+            tool_overrides={"imageGen": True},
+            request_overrides=self._app_chat_request_overrides(n, enable_nsfw),
+        )
+        processor = AppChatImageStreamProcessor(
+            model_info.model_id,
+            token,
+            n=n,
+            response_format=response_format,
+            chat_format=chat_format,
+        )
+        stream = wrap_stream_with_usage(
+            processor.process(response),
+            token_mgr,
+            token,
+            model_info.model_id,
+        )
+        return ImageGenerationResult(stream=True, data=stream)
+
+    async def _collect_app_chat(
+        self,
+        *,
+        token_mgr: Any,
+        token: str,
+        model_info: Any,
+        prompt: str,
+        n: int,
+        response_format: str,
+        enable_nsfw: Optional[bool] = None,
+    ) -> ImageGenerationResult:
+        per_call = min(max(1, n), 2)
+        calls_needed = max(1, int(math.ceil(n / per_call)))
+
+        async def _call_generate(call_target: int) -> List[str]:
+            response = await GrokChatService().chat(
+                token=token,
+                message=prompt,
+                model=model_info.grok_model,
+                mode=model_info.model_mode,
+                stream=True,
+                tool_overrides={"imageGen": True},
+                request_overrides=self._app_chat_request_overrides(
+                    call_target, enable_nsfw
+                ),
+            )
+            processor = AppChatImageCollectProcessor(
+                model_info.model_id,
+                token,
+                response_format=response_format,
+            )
+            return await processor.process(response)
+
+        if calls_needed == 1:
+            all_images = await _call_generate(n)
+        else:
+            tasks = []
+            for i in range(calls_needed):
+                remaining = n - (i * per_call)
+                tasks.append(_call_generate(min(per_call, remaining)))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            all_images: List[str] = []
+            last_error: Optional[Exception] = None
+            rate_limit_error: Optional[Exception] = None
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning(f"Concurrent app-chat image call failed: {result}")
+                    last_error = result
+                    if rate_limited(result):
+                        rate_limit_error = result
+                    continue
+                for image in result:
+                    if image not in all_images:
+                        all_images.append(image)
+
+            if not all_images:
+                if rate_limit_error:
+                    raise rate_limit_error
+                if last_error:
+                    raise last_error
+
+        if not all_images:
+            raise UpstreamException(
+                "Image generation returned no results",
+                details={"error": "empty_result", "path": "app_chat"},
+            )
+
+        try:
+            await token_mgr.consume(token, self._get_effort(model_info))
+        except Exception as e:
+            logger.warning(f"Failed to consume token: {e}")
+
+        selected = self._select_images(all_images, n)
+        usage_override = {
+            "total_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "input_tokens_details": {"text_tokens": 0, "image_tokens": 0},
+        }
+        return ImageGenerationResult(
+            stream=False, data=selected, usage_override=usage_override
+        )
 
     async def _collect_ws(
         self,

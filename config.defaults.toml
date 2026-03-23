@@ -90,8 +90,27 @@ save_delay_ms = 500
 usage_flush_interval_sec = 5
 # 多 worker 状态同步间隔（秒）
 reload_interval_sec = 30
+# 是否启用请求侧按需刷新
+on_demand_refresh_enabled = true
+# 请求侧按需刷新最小间隔（秒）
+on_demand_refresh_min_interval_sec = 300
+# 请求侧按需刷新最大检查 Token 数量
+on_demand_refresh_max_tokens = 100
 # 启用消耗模式（试验性功能，默认关闭）
 consumed_mode_enabled = false
+
+# ==================== 日志配置 ====================
+[log]
+# 单个日志文件大小上限（MB），<=0 表示不按大小轮转
+max_file_size_mb = 100
+# 最多保留日志文件数量，<=0 表示不限制
+max_files = 7
+# 是否记录健康检查请求
+log_health_requests = false
+# 是否记录所有请求（关闭时仅记录慢请求与错误请求）
+log_all_requests = false
+# 慢请求阈值（毫秒）
+request_slow_ms = 3000
 
 # ==================== 缓存管理 ====================
 [cache]

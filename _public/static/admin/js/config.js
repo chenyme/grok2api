@@ -15,6 +15,8 @@ const NUMERIC_FIELDS = new Set([
   'limit_mb',
   'save_delay_ms',
   'usage_flush_interval_sec',
+  'on_demand_refresh_min_interval_sec',
+  'on_demand_refresh_max_tokens',
   'upload_concurrent',
   'upload_timeout',
   'download_concurrent',
@@ -34,7 +36,10 @@ const NUMERIC_FIELDS = new Set([
   'blocked_parallel_attempts',
   'concurrent',
   'batch_size',
-  'n'
+  'n',
+  'max_file_size_mb',
+  'max_files',
+  'request_slow_ms'
 ]);
 const CONFIG_INPUT_SELECTOR = 'input[data-section], textarea[data-section], select[data-section]';
 
@@ -155,7 +160,19 @@ const LOCALE_MAP = {
     "save_delay_ms": { title: "保存延迟", desc: "Token 变更合并写入的延迟（毫秒）。" },
     "usage_flush_interval_sec": { title: "用量落库间隔", desc: "用量类字段写入数据库的最小间隔（秒）。" },
     "reload_interval_sec": { title: "同步间隔", desc: "多 worker 场景下 Token 状态刷新间隔（秒）。" },
+    "on_demand_refresh_enabled": { title: "按需刷新", desc: "当请求拿不到可用 Token 时，是否允许触发受限的按需刷新。" },
+    "on_demand_refresh_min_interval_sec": { title: "按需刷新最小间隔", desc: "请求侧按需刷新之间的最小间隔（秒），用于避免刷新风暴。" },
+    "on_demand_refresh_max_tokens": { title: "按需刷新最大数量", desc: "单次请求侧按需刷新最多检查多少个 cooling Token。" },
     "consumed_mode_enabled": { title: "启用消耗模式", desc: "启用新额度管理逻辑：使用本地消耗记录而非 API 返回值，支持更均衡的负载分配。（试验性功能，默认关闭）" }
+  },
+
+  "log": {
+    "label": "日志配置",
+    "max_file_size_mb": { title: "单文件上限", desc: "单个日志文件大小上限（MB），超过后自动轮转；设置为 0 或负数表示不按大小轮转。" },
+    "max_files": { title: "保留文件数", desc: "最多保留多少个日志文件；设置为 0 或负数表示不限制数量。" },
+    "log_health_requests": { title: "记录健康检查", desc: "是否记录 `/health` 健康检查请求。" },
+    "log_all_requests": { title: "记录全部请求", desc: "开启后记录所有请求；关闭时仅记录慢请求、异常请求和错误请求。" },
+    "request_slow_ms": { title: "慢请求阈值", desc: "请求耗时超过该值（毫秒）时会写入日志。" }
   },
 
 

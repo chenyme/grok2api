@@ -197,7 +197,8 @@ curl http://localhost:8000/v1/chat/completions \
 - `grok-imagine-1.0-fast` 流式 URL 出图会保持原始图片名（不追加 `-final` 后缀）。
 - 当图片疑似被审查拦截导致无最终图时，若开启 `image.blocked_parallel_enabled`，服务端会按 `image.blocked_parallel_attempts` 自动并行补偿生成，并优先使用不同 token；若仍无满足 `image.final_min_bytes` 的最终图则返回失败。
 - `grok-imagine-1.0-edit` 必须提供图片，多图默认取**最后 3 张**与最后一个文本。
-- `grok-imagine-1.0-video` 支持文生视频与图生视频（通过 `image_url` 传参考图，**仅取第 1 张**）。
+- `grok-imagine-1.0-video` 支持文生视频与多图参考视频：可通过多个 `image_url` 传最多 `7` 张参考图，并在文本中使用 `@图1`、`@图2` 这类占位符；服务端会自动替换为对应 `assetId`。
+- `@图N` 与 `image_url` 的顺序一一对应；若引用了不存在的图片序号，会直接报错。
 - 除上述外的其他参数将自动丢弃并忽略。
 
 <br>
@@ -362,7 +363,7 @@ curl http://localhost:8000/v1/videos \
 | `size` | string | 画面比例（会映射到 aspect_ratio） | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
 | `seconds` | integer | 目标时长（秒） | `6` ~ `30` |
 | `quality` | string | 视频质量（映射到 resolution） | `standard`, `high` |
-| `image_reference` | object/string | 参考图（可选） | `{"image_url":"https://..."}` 或 Data URI |
+| `image_reference` | array | 参考图（可选） | 兼容 OpenAI content block 数组格式 (`[{"type":"image_url"...}]`) 或纯 URL 字符串数组；单图也请传单元素数组 |
 | `input_reference` | file | multipart 参考图（可选） | `png`, `jpg`, `webp` |
 
 **注意事项**：
@@ -370,7 +371,7 @@ curl http://localhost:8000/v1/videos \
 - 服务端已支持 6~30 秒自动链式扩展，**无需使用 `/v1/video/extend`**。
 - `quality=standard` 对应 `480p`；`quality=high` 对应 `720p`。
 - 基础号池请求 `720p` 时会先产出 `480p` 再按 `video.upscale_timing` 执行超分。
-- `image_reference` 与 `input_reference` 同时传入时，会按顺序作为参考图输入；视频链路只使用第 1 张。
+- `image_reference` 统一使用数组格式，最多可传 7 张参考图；单图场景也请传单元素数组。`input_reference` 主要以表单上传参考图；若两者同时传入，会按顺序作为参考图合并输入；可在提示词中使用 `@图1`、`@图2`。
 
 <br>
 
