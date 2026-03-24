@@ -163,6 +163,8 @@ blocked_parallel_enabled = true
 n = 1
 # 图片尺寸：1280x720 / 720x1280 / 1792x1024 / 1024x1792 / 1024x1024
 size = "1024x1024"
+# 是否显式开启 NSFW（默认继承 [image].nsfw）
+nsfw = true
 # 响应格式：url / b64_json / base64
 response_format = "url"
 

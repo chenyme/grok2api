@@ -170,6 +170,7 @@ curl http://localhost:8000/v1/chat/completions \
 | └─`n` | integer | 生成数量 | `1` ~ `10` |
 | └─`size` | string | 图片尺寸 | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
 | └─`response_format` | string | 响应格式 | `url`, `b64_json`, `base64` |
+| └─`nsfw` | boolean | 显式开启 NSFW | `true`, `false` |
 
 **消息格式 (messages)**：
 
@@ -281,6 +282,7 @@ curl http://localhost:8000/v1/images/generations \
 | `size` | string | 图片尺寸 | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
 | `quality` | string | 图片质量 | - (暂不支持) |
 | `response_format` | string | 响应格式 | `url`, `b64_json`, `base64` |
+| `nsfw` | boolean | 显式开启 NSFW | `true`, `false` |
 | `style` | string | 风格 | - (暂不支持) |
 
 **注意事项**：

@@ -49,6 +49,7 @@ class ImageConfig(BaseModel):
     n: Optional[int] = Field(1, ge=1, le=10, description="生成数量 (1-10)")
     size: Optional[str] = Field("1024x1024", description="图片尺寸")
     response_format: Optional[str] = Field(None, description="响应格式")
+    nsfw: Optional[bool] = Field(None, description="是否显式开启 NSFW")
 
 
 class ChatCompletionRequest(BaseModel):
@@ -194,7 +195,8 @@ def _imagine_fast_server_image_config() -> ImageConfig:
         get_config("imagine_fast.response_format", get_config("app.image_format") or "url")
         or "url"
     )
-    return ImageConfig(n=n, size=size, response_format=response_format)
+    nsfw = get_config("imagine_fast.nsfw", get_config("image.nsfw"))
+    return ImageConfig(n=n, size=size, response_format=response_format, nsfw=bool(nsfw))
 
 
 async def _safe_sse_stream(stream: AsyncIterable[str]) -> AsyncGenerator[str, None]:
@@ -817,6 +819,7 @@ async def chat_completions(request: ChatCompletionRequest):
             size=size,
             aspect_ratio=aspect_ratio,
             stream=bool(is_stream),
+            enable_nsfw=image_conf.nsfw,
             chat_format=True,
         )
 
