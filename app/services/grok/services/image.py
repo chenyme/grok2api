@@ -5,6 +5,7 @@ Grok image services.
 import asyncio
 import base64
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,11 @@ class ImageGenerationResult:
 class ImageGenerationService:
     """Image generation orchestration service."""
 
+    _APP_CHAT_GENERATE_PREFIX_RE = re.compile(
+        r"^\s*(generate an image|create an image|draw an image|make an image)\s*:",
+        re.IGNORECASE,
+    )
+
     @staticmethod
     def _app_chat_request_overrides(
         count: int,
@@ -49,10 +55,20 @@ class ImageGenerationService:
     ) -> Dict[str, Any]:
         overrides: Dict[str, Any] = {
             "imageGenerationCount": max(1, int(count or 1)),
+            "disableSearch": True,
         }
         if enable_nsfw is not None:
             overrides["enableNsfw"] = bool(enable_nsfw)
         return overrides
+
+    @classmethod
+    def _build_app_chat_message(cls, prompt: str) -> str:
+        text = (prompt or "").strip()
+        if not text:
+            return prompt
+        if cls._APP_CHAT_GENERATE_PREFIX_RE.match(text):
+            return text
+        return f"Generate an image: {text}"
 
     async def generate(
         self,
@@ -196,9 +212,11 @@ class ImageGenerationService:
                 except UpstreamException as app_chat_error:
                     if rate_limited(app_chat_error):
                         raise
+                    error_details = getattr(app_chat_error, "details", None)
                     logger.warning(
-                        "App-chat image collect failed, falling back to ws_imagine: %s",
-                        app_chat_error,
+                        "App-chat image collect failed, falling back to ws_imagine: "
+                        f"{type(app_chat_error).__name__}: {app_chat_error}; "
+                        f"details={error_details}"
                     )
                     return await self._collect_ws(
                         token_mgr=token_mgr,
@@ -285,9 +303,10 @@ class ImageGenerationService:
         enable_nsfw: Optional[bool] = None,
         chat_format: bool = False,
     ) -> ImageGenerationResult:
+        message = self._build_app_chat_message(prompt)
         response = await GrokChatService().chat(
             token=token,
-            message=prompt,
+            message=message,
             model=model_info.grok_model,
             mode=model_info.model_mode,
             stream=True,
@@ -322,11 +341,12 @@ class ImageGenerationService:
     ) -> ImageGenerationResult:
         per_call = min(max(1, n), 2)
         calls_needed = max(1, int(math.ceil(n / per_call)))
+        message = self._build_app_chat_message(prompt)
 
         async def _call_generate(call_target: int) -> List[str]:
             response = await GrokChatService().chat(
                 token=token,
-                message=prompt,
+                message=message,
                 model=model_info.grok_model,
                 mode=model_info.model_mode,
                 stream=True,

@@ -3,7 +3,9 @@
 """
 
 import asyncio
+import re
 import time
+import orjson
 from typing import Any, AsyncGenerator, Optional, AsyncIterable, List, TypeVar
 
 from app.core.config import get_config
@@ -13,6 +15,35 @@ from app.services.grok.utils.download import DownloadService
 
 
 T = TypeVar("T")
+_ASSET_URL_RE = re.compile(r"https://assets\.grok\.com[^\s\"'<>)]*")
+_ASSET_PATH_RE = re.compile(r"(?P<path>/?users/[^\s\"'<>)]*\.(?:png|jpe?g|webp|gif|bmp)(?:\?[^\s\"'<>)]*)?)")
+_URLISH_KEYS = {
+    "url",
+    "uri",
+    "path",
+    "imageUrl",
+    "imageURI",
+    "imageUri",
+    "assetUrl",
+    "assetURI",
+    "assetUri",
+    "downloadUrl",
+    "downloadURI",
+    "downloadUri",
+    "fileUrl",
+    "fileURI",
+    "fileUri",
+    "contentUrl",
+    "contentURI",
+    "contentUri",
+}
+_IMAGE_COLLECTION_KEYS = {
+    "generatedImageUrls",
+    "imageUrls",
+    "imageURLs",
+    "fileUris",
+    "imageEditUris",
+}
 
 
 def _is_http2_error(e: Exception) -> bool:
@@ -51,15 +82,36 @@ def _collect_images(obj: Any) -> List[str]:
         urls.append(url)
 
     def walk(value: Any):
+        if isinstance(value, str):
+            text = value.strip()
+            if text[:1] in {"{", "["}:
+                try:
+                    parsed = orjson.loads(text)
+                except orjson.JSONDecodeError:
+                    parsed = None
+                if parsed is not None:
+                    walk(parsed)
+                    return
+            for match in _ASSET_URL_RE.findall(text):
+                add(match)
+            for match in _ASSET_PATH_RE.findall(text):
+                add(match)
+            return
+
         if isinstance(value, dict):
+            image_url = value.get("imageUrl")
+            progress = value.get("progress")
+            if isinstance(image_url, str) and image_url:
+                if progress is None or float(progress) >= 100:
+                    add(image_url)
             for key, item in value.items():
-                if key in {"generatedImageUrls", "imageUrls", "imageURLs"}:
-                    if isinstance(item, list):
-                        for url in item:
-                            if isinstance(url, str):
-                                add(url)
-                    elif isinstance(item, str):
-                        add(item)
+                if key in _IMAGE_COLLECTION_KEYS:
+                    walk(item)
+                    continue
+                if key == "imageUrl" and "progress" in value:
+                    continue
+                if key in _URLISH_KEYS and isinstance(item, str):
+                    add(item)
                     continue
                 walk(item)
         elif isinstance(value, list):
