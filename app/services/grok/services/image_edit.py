@@ -29,14 +29,88 @@ from app.services.grok.utils.process import (
     _is_http2_error,
 )
 from app.services.grok.utils.upload import UploadService
+from app.services.grok.utils.download import DownloadService
 from app.services.grok.utils.retry import pick_token, rate_limited
-from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
+from app.services.grok.utils.response import (
+    make_response_id,
+    make_chat_chunk,
+    wrap_image_content,
+)
 from app.services.grok.services.chat import GrokChatService
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
 
 _EDIT_UPSTREAM_MODEL = "grok-4"
 _EDIT_UPSTREAM_MODE = "MODEL_MODE_AUTO"
+
+
+def _render_card_images(message: str, card_attachments: list[str]) -> list[str]:
+    if not message or not card_attachments:
+        return []
+
+    card_map: dict[str, str] = {}
+    for raw in card_attachments:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            card_data = orjson.loads(raw)
+        except orjson.JSONDecodeError:
+            continue
+        if not isinstance(card_data, dict):
+            continue
+        card_id = card_data.get("id")
+        image = card_data.get("image") or {}
+        original = image.get("original")
+        if card_id and isinstance(original, str) and original.strip():
+            card_map[str(card_id)] = original.strip()
+            continue
+
+        image_chunk = card_data.get("image_chunk") or {}
+        image_url = image_chunk.get("imageUrl")
+        if card_id and isinstance(image_url, str) and image_url.strip():
+            card_map[str(card_id)] = image_url.strip()
+
+    if not card_map:
+        return []
+
+    urls: list[str] = []
+    for match in re.finditer(
+        r'<grok:render[^>]*card_id="([^"]+)"[^>]*>.*?</grok:render>',
+        message,
+        flags=re.DOTALL,
+    ):
+        url = card_map.get(match.group(1))
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+async def _convert_urls(urls: list[str], response_format: str, token: str) -> list[str]:
+    outputs: list[str] = []
+    dl_service = DownloadService()
+    try:
+        for url in urls:
+            if response_format == "url":
+                rendered = await dl_service.resolve_url(url, token, "image")
+                if rendered:
+                    outputs.append(rendered)
+                continue
+            try:
+                base64_data = await dl_service.parse_b64(url, token, "image")
+                if base64_data:
+                    outputs.append(
+                        base64_data.split(",", 1)[1]
+                        if "," in base64_data
+                        else base64_data
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to convert rendered edit image to base64: {e}")
+                rendered = await dl_service.resolve_url(url, token, "image")
+                if rendered:
+                    outputs.append(rendered)
+    finally:
+        await dl_service.close()
+    return outputs
 
 
 @dataclass
@@ -94,7 +168,7 @@ class ImageEditService:
             tried_tokens.add(current_token)
             try:
                 file_attachments = await self._upload_images(images, current_token)
-                tool_overrides: Dict[str, Any] | None = None
+                tool_overrides: Dict[str, Any] = {}
                 request_overrides = self._build_request_overrides(n)
 
                 if stream:
@@ -167,9 +241,7 @@ class ImageEditService:
             status_code=429,
         )
 
-    async def _upload_images(
-        self, images: List[str], token: str
-    ) -> List[str]:
+    async def _upload_images(self, images: List[str], token: str) -> List[str]:
         file_attachments: List[str] = []
         upload_service = UploadService()
         try:
@@ -199,7 +271,7 @@ class ImageEditService:
         file_attachments: List[str],
         tool_overrides: dict,
     ) -> List[str]:
-        per_call = 2
+        per_call = max(1, min(int(n or 1), 2))
         calls_needed = max(1, (n + per_call - 1) // per_call)
 
         async def _call_edit():
@@ -259,7 +331,12 @@ class ImageStreamProcessor(BaseProcessor):
     """HTTP image stream processor."""
 
     def __init__(
-        self, model: str, token: str = "", n: int = 1, response_format: str = "b64_json", chat_format: bool = False
+        self,
+        model: str,
+        token: str = "",
+        n: int = 1,
+        response_format: str = "b64_json",
+        chat_format: bool = False,
     ):
         super().__init__(model, token)
         self.partial_index = 0
@@ -280,7 +357,9 @@ class ImageStreamProcessor(BaseProcessor):
     def _get_image_id(self, image_index: int) -> str:
         """Get or create a stable image_id for a given image index."""
         if image_index not in self._image_ids:
-            self._image_ids[image_index] = f"app-chat-{int(time.time() * 1000)}-{image_index}"
+            self._image_ids[image_index] = (
+                f"app-chat-{int(time.time() * 1000)}-{image_index}"
+            )
         return self._image_ids[image_index]
 
     def _sse(self, event: str, data: dict) -> str:
@@ -333,31 +412,17 @@ class ImageStreamProcessor(BaseProcessor):
 
                 # modelResponse
                 if mr := resp.get("modelResponse"):
-                    if urls := _collect_images(mr):
-                        for url in urls:
-                            if self.response_format == "url":
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    final_images.append(processed)
-                                continue
-                            try:
-                                dl_service = self._get_dl()
-                                base64_data = await dl_service.parse_b64(
-                                    url, self.token, "image"
-                                )
-                                if base64_data:
-                                    if "," in base64_data:
-                                        b64 = base64_data.split(",", 1)[1]
-                                    else:
-                                        b64 = base64_data
-                                    final_images.append(b64)
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to convert image to base64, falling back to URL: {e}"
-                                )
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    final_images.append(processed)
+                    urls = _collect_images(mr)
+                    urls.extend(
+                        _render_card_images(
+                            mr.get("message", ""),
+                            mr.get("cardAttachmentsJson") or [],
+                        )
+                    )
+                    for item in await _convert_urls(
+                        urls, self.response_format, self.token
+                    ):
+                        final_images.append(item)
                     continue
 
             for index, img_data in enumerate(final_images):
@@ -492,31 +557,16 @@ class ImageCollectProcessor(BaseProcessor):
                 resp = data.get("result", {}).get("response", {})
 
                 if mr := resp.get("modelResponse"):
-                    if urls := _collect_images(mr):
-                        for url in urls:
-                            if self.response_format == "url":
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    images.append(processed)
-                                continue
-                            try:
-                                dl_service = self._get_dl()
-                                base64_data = await dl_service.parse_b64(
-                                    url, self.token, "image"
-                                )
-                                if base64_data:
-                                    if "," in base64_data:
-                                        b64 = base64_data.split(",", 1)[1]
-                                    else:
-                                        b64 = base64_data
-                                    images.append(b64)
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to convert image to base64, falling back to URL: {e}"
-                                )
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    images.append(processed)
+                    urls = _collect_images(mr)
+                    urls.extend(
+                        _render_card_images(
+                            mr.get("message", ""),
+                            mr.get("cardAttachmentsJson") or [],
+                        )
+                    )
+                    images.extend(
+                        await _convert_urls(urls, self.response_format, self.token)
+                    )
 
         except asyncio.CancelledError:
             logger.debug("Image collect cancelled by client")

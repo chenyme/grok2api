@@ -12,6 +12,13 @@ services:
       SERVER_WORKERS: ${SERVER_WORKERS:-1}
       SERVER_STORAGE_TYPE: ${SERVER_STORAGE_TYPE:-local}
       SERVER_STORAGE_URL: ${SERVER_STORAGE_URL:-}
+      # 覆盖 Docker 默认 proxy 注入（~/.docker/config.json -> proxies.default）
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      NO_PROXY: 192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.1,localhost,*.local
+      no_proxy: 192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.1,localhost,*.local
       # 启用 CF 自动刷新: 取消以下三行注释，并取消底部 flaresolverr 服务的注释
       # FLARESOLVERR_URL: http://flaresolverr:8191
       # CF_REFRESH_INTERVAL: "600"
