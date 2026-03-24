@@ -16,6 +16,7 @@ async def list_models():
     data = [
         {
             "id": m.model_id,
+            "name": m.display_name or m.model_id,
             "object": "model",
             "created": 0,
             "owned_by": "grok2api@chenyme",

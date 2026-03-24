@@ -42,6 +42,9 @@ def _build_alias_model(alias_id: str, base: ModelInfo) -> ModelInfo:
     description = f"Alias of {base.model_id}"
     if base.description:
         description = f"{base.description} ({description})"
+    display_name = alias_id.upper()
+    if alias_id == "grok-imagine-1.0-edit-vision":
+        display_name = "Grok Image Edit Vision"
 
     return ModelInfo(
         model_id=alias_id,
@@ -49,7 +52,7 @@ def _build_alias_model(alias_id: str, base: ModelInfo) -> ModelInfo:
         model_mode=base.model_mode,
         tier=base.tier,
         cost=base.cost,
-        display_name=alias_id.upper(),
+        display_name=display_name,
         description=description,
         is_image=base.is_image,
         is_image_edit=base.is_image_edit,
@@ -246,6 +249,7 @@ class ModelService:
         "grok-code-fast-1": "grok-4.1-fast",
         "grok-4.20-beta-latest-non-reasoning": "grok-4.20-beta",
         "grok-4-20-beta-latest-non-reasoning": "grok-4.20-beta",
+        "grok-imagine-1.0-edit-vision": "grok-imagine-1.0-edit",
     }
 
     _base_map = {m.model_id: m for m in MODELS}
