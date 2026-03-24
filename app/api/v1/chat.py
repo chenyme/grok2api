@@ -187,7 +187,7 @@ def _image_field(response_format: str) -> str:
     return "b64_json"
 
 
-def _imagine_fast_server_image_config() -> ImageConfig:
+def _imagine_fast_server_image_config(client_config: Optional[ImageConfig] = None) -> ImageConfig:
     """Load server-side image generation parameters for grok-imagine-1.0-fast."""
     n = int(get_config("imagine_fast.n", 1) or 1)
     size = str(get_config("imagine_fast.size", "1024x1024") or "1024x1024")
@@ -195,7 +195,11 @@ def _imagine_fast_server_image_config() -> ImageConfig:
         get_config("imagine_fast.response_format", get_config("app.image_format") or "url")
         or "url"
     )
-    nsfw = get_config("imagine_fast.nsfw", get_config("image.nsfw"))
+    nsfw = (
+        client_config.nsfw
+        if client_config and client_config.nsfw is not None
+        else get_config("imagine_fast.nsfw", get_config("image.nsfw"))
+    )
     return ImageConfig(n=n, size=size, response_format=response_format, nsfw=bool(nsfw))
 
 
@@ -603,7 +607,7 @@ def validate_request(request: ChatCompletionRequest):
                 param="messages",
                 code="empty_prompt",
             )
-        image_conf = _imagine_fast_server_image_config() if request.model == IMAGINE_FAST_MODEL_ID else (request.image_config or ImageConfig())
+        image_conf = _imagine_fast_server_image_config(request.image_config) if request.model == IMAGINE_FAST_MODEL_ID else (request.image_config or ImageConfig())
         n = image_conf.n or 1
         if not (1 <= n <= 10):
             raise ValidationException(
@@ -777,7 +781,7 @@ async def chat_completions(request: ChatCompletionRequest):
         is_stream = (
             request.stream if request.stream is not None else get_config("app.stream")
         )
-        image_conf = _imagine_fast_server_image_config() if request.model == IMAGINE_FAST_MODEL_ID else (request.image_config or ImageConfig())
+        image_conf = _imagine_fast_server_image_config(request.image_config) if request.model == IMAGINE_FAST_MODEL_ID else (request.image_config or ImageConfig())
         _validate_image_config(image_conf, stream=bool(is_stream))
         response_format = _resolve_image_format(image_conf.response_format)
         response_field = _image_field(response_format)
