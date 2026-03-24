@@ -66,6 +66,20 @@ def _sanitize_proxy_config_payload(data: dict) -> dict:
             sanitized_proxy["user_agent"] = val
             changed = True
 
+    if "raw_cookie" in sanitized_proxy:
+        raw = sanitized_proxy.get("raw_cookie")
+        val = _sanitize_proxy_text(raw, remove_all_spaces=False)
+        if val != raw:
+            sanitized_proxy["raw_cookie"] = val
+            changed = True
+
+    if "sso_rw" in sanitized_proxy:
+        raw = sanitized_proxy.get("sso_rw")
+        val = _sanitize_proxy_text(raw, remove_all_spaces=True)
+        if val != raw:
+            sanitized_proxy["sso_rw"] = val
+            changed = True
+
     if "cf_cookies" in sanitized_proxy:
         raw = sanitized_proxy.get("cf_cookies")
         val = _sanitize_proxy_text(raw, remove_all_spaces=False)

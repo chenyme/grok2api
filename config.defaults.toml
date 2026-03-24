@@ -37,9 +37,15 @@ base_proxy_url = ""
 # 资源代理地址（代理静态资源如图片/视频）
 asset_proxy_url = ""
 # 完整 CF Cookies（自动刷新写入）
+raw_cookie = ""
+sso_rw = ""
 cf_cookies = ""
 # 跳过代理 SSL 证书验证（代理使用自签名证书时启用）
 skip_proxy_ssl_verify = false
+# 是否将 Windows 系统证书合并进运行时 CA Bundle（Windows 推荐开启）
+use_system_ca = true
+# 额外自定义根证书文件（PEM/DER/CER/P7B），用于公司代理/安全软件签发证书
+custom_ca_file = ""
 # 是否启用 CF 自动刷新
 enabled = false
 # FlareSolverr 服务地址（通过环境变量 FLARESOLVERR_URL 自动设置）
@@ -53,7 +59,7 @@ cf_clearance = ""
 # curl_cffi 浏览器指纹
 browser = "chrome136"
 # User-Agent 字符串
-user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 
 # ==================== 重试策略 ====================

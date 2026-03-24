@@ -2,7 +2,6 @@
 Reverse interface: upload asset.
 """
 
-from typing import Any
 from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
@@ -16,6 +15,7 @@ from app.core.proxy_pool import (
 from app.core.exceptions import UpstreamException
 from app.services.token.service import TokenService
 from app.services.reverse.utils.headers import build_headers
+from app.services.reverse.utils.http_fallback import request_with_aiohttp_fallback
 from app.services.reverse.utils.retry import retry_on_status
 
 UPLOAD_API = "https://grok.com/rest/app-chat/upload-file"
@@ -25,7 +25,7 @@ class AssetsUploadReverse:
     """/rest/app-chat/upload-file reverse interface."""
 
     @staticmethod
-    async def request(session: AsyncSession, token: str, fileName: str, fileMimeType: str, content: str) -> Any:
+    async def request(session: AsyncSession, token: str, fileName: str, fileMimeType: str, content: str):
         """Upload asset to Grok.
 
         Args:
@@ -107,6 +107,28 @@ class AssetsUploadReverse:
                 raise
 
             # Handle other non-upstream exceptions
+            if not get_config("proxy.asset_proxy_url") and not get_config("proxy.base_proxy_url"):
+                try:
+                    logger.warning(
+                        "AssetsUploadReverse: curl-cffi failed; retrying with aiohttp fallback"
+                    )
+                    return await request_with_aiohttp_fallback(
+                        method="POST",
+                        url=UPLOAD_API,
+                        headers=headers,
+                        timeout=float(get_config("asset.upload_timeout") or 60),
+                        logger_prefix="AssetsUploadReverse: Upload failed",
+                        expected_statuses=(200,),
+                        response_kind="json",
+                        json_payload=payload,
+                    )
+                except UpstreamException:
+                    raise
+                except Exception as fallback_exc:
+                    logger.warning(
+                        f"AssetsUploadReverse: aiohttp fallback failed, {fallback_exc}"
+                    )
+
             logger.error(
                 f"AssetsUploadReverse: Upload failed, {str(e)}",
                 extra={"error_type": type(e).__name__},

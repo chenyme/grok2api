@@ -17,6 +17,7 @@ from app.core.proxy_pool import (
 from app.core.exceptions import UpstreamException
 from app.services.token.service import TokenService
 from app.services.reverse.utils.headers import build_headers
+from app.services.reverse.utils.http_fallback import request_with_aiohttp_fallback
 from app.services.reverse.utils.retry import retry_on_status
 
 VIDEO_UPSCALE_API = "https://grok.com/rest/media/video/upscale"
@@ -106,6 +107,28 @@ class VideoUpscaleReverse:
                 raise
 
             # Handle other non-upstream exceptions
+            if not get_config("proxy.base_proxy_url"):
+                try:
+                    logger.warning(
+                        "VideoUpscaleReverse: curl-cffi failed; retrying with aiohttp fallback"
+                    )
+                    return await request_with_aiohttp_fallback(
+                        method="POST",
+                        url=VIDEO_UPSCALE_API,
+                        headers=headers,
+                        timeout=float(get_config("video.timeout") or 60),
+                        logger_prefix="VideoUpscaleReverse: Upscale failed",
+                        expected_statuses=(200,),
+                        response_kind="json",
+                        data=orjson.dumps(payload),
+                    )
+                except UpstreamException:
+                    raise
+                except Exception as fallback_exc:
+                    logger.warning(
+                        f"VideoUpscaleReverse: aiohttp fallback failed, {fallback_exc}"
+                    )
+
             logger.error(
                 f"VideoUpscaleReverse: Upscale failed, {str(e)}",
                 extra={"error_type": type(e).__name__},

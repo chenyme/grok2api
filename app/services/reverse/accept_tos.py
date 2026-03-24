@@ -2,6 +2,7 @@
 Reverse interface: accept ToS (gRPC-Web).
 """
 
+from typing import Any
 from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
@@ -14,6 +15,7 @@ from app.core.proxy_pool import (
 )
 from app.core.exceptions import UpstreamException
 from app.services.reverse.utils.headers import build_headers
+from app.services.reverse.utils.http_fallback import request_with_aiohttp_fallback
 from app.services.reverse.utils.retry import retry_on_status
 from app.services.reverse.utils.grpc import GrpcClient, GrpcStatus
 
@@ -115,6 +117,44 @@ class AcceptTosReverse:
                 raise
 
             # Handle other non-upstream exceptions
+            if not get_config("proxy.base_proxy_url"):
+                try:
+                    logger.warning(
+                        "AcceptTosReverse: curl-cffi failed; retrying with aiohttp fallback"
+                    )
+                    wrapped = await request_with_aiohttp_fallback(
+                        method="POST",
+                        url=ACCEPT_TOS_API,
+                        headers=headers,
+                        timeout=float(get_config("nsfw.timeout") or 60),
+                        logger_prefix="AcceptTosReverse: Request failed",
+                        expected_statuses=(200,),
+                        response_kind="binary",
+                        data=payload,
+                    )
+                    _, trailers = GrpcClient.parse_response(
+                        wrapped.content,
+                        content_type=wrapped.headers.get("content-type"),
+                        headers=wrapped.headers,
+                    )
+                    grpc_status = GrpcClient.get_status(trailers)
+                    if grpc_status.code not in (-1, 0):
+                        raise UpstreamException(
+                            message=f"AcceptTosReverse: gRPC failed, {grpc_status.code}",
+                            details={
+                                "status": grpc_status.http_equiv,
+                                "grpc_status": grpc_status.code,
+                                "grpc_message": grpc_status.message,
+                            },
+                        )
+                    return grpc_status
+                except UpstreamException:
+                    raise
+                except Exception as fallback_exc:
+                    logger.warning(
+                        f"AcceptTosReverse: aiohttp fallback failed, {fallback_exc}"
+                    )
+
             logger.error(
                 f"AcceptTosReverse: Request failed, {str(e)}",
                 extra={"error_type": type(e).__name__},

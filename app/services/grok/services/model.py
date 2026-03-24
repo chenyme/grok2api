@@ -38,6 +38,25 @@ class ModelInfo(BaseModel):
     is_video: bool = False
 
 
+def _build_alias_model(alias_id: str, base: ModelInfo) -> ModelInfo:
+    description = f"Alias of {base.model_id}"
+    if base.description:
+        description = f"{base.description} ({description})"
+
+    return ModelInfo(
+        model_id=alias_id,
+        grok_model=base.grok_model,
+        model_mode=base.model_mode,
+        tier=base.tier,
+        cost=base.cost,
+        display_name=alias_id.upper(),
+        description=description,
+        is_image=base.is_image,
+        is_image_edit=base.is_image_edit,
+        is_video=base.is_video,
+    )
+
+
 class ModelService:
     """模型管理服务"""
 
@@ -100,7 +119,7 @@ class ModelService:
         ModelInfo(
             model_id="grok-4-heavy",
             grok_model="grok-4",
-            model_mode="MODEL_MODE_HEAVY",
+            model_mode="MODEL_MODE_EXPERT",
             tier=Tier.SUPER,
             cost=Cost.HIGH,
             display_name="GROK-4-HEAVY",
@@ -111,7 +130,7 @@ class ModelService:
         ModelInfo(
             model_id="grok-4.1-mini",
             grok_model="grok-4-1-thinking-1129",
-            model_mode="MODEL_MODE_GROK_4_1_MINI_THINKING",
+            model_mode="MODEL_MODE_FAST",
             tier=Tier.BASIC,
             cost=Cost.LOW,
             display_name="GROK-4.1-MINI",
@@ -144,7 +163,7 @@ class ModelService:
         ModelInfo(
             model_id="grok-4.1-thinking",
             grok_model="grok-4-1-thinking-1129",
-            model_mode="MODEL_MODE_GROK_4_1_THINKING",
+            model_mode="MODEL_MODE_EXPERT",
             tier=Tier.BASIC,
             cost=Cost.HIGH,
             display_name="GROK-4.1-THINKING",
@@ -155,7 +174,7 @@ class ModelService:
         ModelInfo(
             model_id="grok-4.20-beta",
             grok_model="grok-420",
-            model_mode="MODEL_MODE_GROK_420",
+            model_mode="MODEL_MODE_FAST",
             tier=Tier.BASIC,
             cost=Cost.LOW,
             display_name="GROK-4.20-BETA",
@@ -213,7 +232,26 @@ class ModelService:
         ),
     ]
 
-    _map = {m.model_id: m for m in MODELS}
+    ALIASES = {
+        "grok-4-1-mini": "grok-4.1-mini",
+        "grok-4-1-fast": "grok-4.1-fast",
+        "grok-4-1-expert": "grok-4.1-expert",
+        "grok-4-1-thinking": "grok-4.1-thinking",
+        "grok-4-20-beta": "grok-4.20-beta",
+        "grok-4-fast": "grok-4.1-fast",
+        "grok-4-fast-reasoning": "grok-4.1-fast",
+        "grok-4-fast-non-reasoning": "grok-4.1-fast",
+        "grok-4-1-fast-reasoning": "grok-4.1-fast",
+        "grok-4-1-fast-non-reasoning": "grok-4.1-fast",
+        "grok-code-fast-1": "grok-4.1-fast",
+        "grok-4.20-beta-latest-non-reasoning": "grok-4.20-beta",
+        "grok-4-20-beta-latest-non-reasoning": "grok-4.20-beta",
+    }
+
+    _base_map = {m.model_id: m for m in MODELS}
+    _map = dict(_base_map)
+    for alias_id, canonical_id in ALIASES.items():
+        _map[alias_id] = _build_alias_model(alias_id, _base_map[canonical_id])
 
     @classmethod
     def get(cls, model_id: str) -> Optional[ModelInfo]:

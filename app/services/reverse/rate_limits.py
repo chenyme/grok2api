@@ -16,6 +16,10 @@ from app.core.proxy_pool import (
 )
 from app.core.exceptions import UpstreamException
 from app.services.reverse.utils.headers import build_headers
+from app.services.reverse.utils.auth_probe import (
+    ProbeJSONResponse,
+    probe_rate_limits_status,
+)
 from app.services.reverse.utils.retry import retry_on_status
 
 RATE_LIMITS_API = "https://grok.com/rest/rate-limits"
@@ -137,6 +141,32 @@ class RateLimitsReverse:
             # Handle other non-upstream exceptions
             import traceback
             error_details = traceback.format_exc()
+            probe = await probe_rate_limits_status(token)
+            if probe is not None:
+                if probe.status == 200:
+                    logger.warning(
+                        "RateLimitsReverse: curl-cffi failed but aiohttp probe succeeded; using fallback response"
+                    )
+                    return ProbeJSONResponse(probe)
+
+                logger.warning(
+                    "RateLimitsReverse: curl-cffi failed; fallback probe returned status={}, token_expired={}, cloudflare={}",
+                    probe.status,
+                    probe.is_token_expired,
+                    probe.is_cloudflare,
+                )
+                raise UpstreamException(
+                    message=f"RateLimitsReverse: Request failed, {probe.status}",
+                    details={
+                        "status": probe.status,
+                        "body": probe.body,
+                        "is_token_expired": probe.is_token_expired,
+                        "is_cloudflare": probe.is_cloudflare,
+                        "error": str(e),
+                    },
+                    status_code=probe.status,
+                )
+
             logger.error(
                 f"RateLimitsReverse: Unexpected error, {type(e).__name__}: {str(e)}\n{error_details}"
             )

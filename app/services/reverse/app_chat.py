@@ -4,16 +4,19 @@ Reverse interface: app chat conversations.
 
 import inspect
 import orjson
+import aiohttp
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
 from app.core.config import get_config
+from app.core.ssl_certs import create_ssl_context
 from app.core.proxy_pool import get_current_proxy_from, rotate_proxy, should_rotate_proxy
 from app.core.exceptions import UpstreamException
 from app.services.token.service import TokenService
 from app.services.reverse.utils.headers import build_headers
+from app.services.reverse.utils.auth_probe import classify_probe, probe_rate_limits_status
 from app.services.reverse.utils.retry import extract_status_for_retry, retry_on_status
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
@@ -171,6 +174,63 @@ class AppChatReverse:
         return payload
 
     @staticmethod
+    async def _aiohttp_fallback_request(
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        timeout: float,
+    ):
+        """Fallback to aiohttp when curl-cffi is reset by the remote edge."""
+        client_timeout = aiohttp.ClientTimeout(total=timeout or 30)
+        session = aiohttp.ClientSession(timeout=client_timeout, trust_env=True)
+        try:
+            response = await session.post(
+                CHAT_API,
+                headers=headers,
+                data=orjson.dumps(payload),
+                ssl=create_ssl_context(),
+            )
+
+            if response.status != 200:
+                content = await response.text()
+                content_type = str(response.headers.get("Content-Type", ""))
+                server_header = str(response.headers.get("Server", ""))
+                is_token_expired, is_cloudflare = classify_probe(
+                    response.status,
+                    content_type,
+                    server_header,
+                    content,
+                )
+                response.close()
+                await session.close()
+                raise UpstreamException(
+                    message=f"AppChatReverse: Chat failed, {response.status}",
+                    details={
+                        "status": response.status,
+                        "body": content,
+                        "is_token_expired": is_token_expired,
+                        "is_cloudflare": is_cloudflare,
+                    },
+                    status_code=response.status,
+                )
+
+            async def stream_response():
+                try:
+                    while True:
+                        line = await response.content.readline()
+                        if not line:
+                            break
+                        yield line.decode("utf-8", errors="ignore").rstrip("\r\n")
+                finally:
+                    response.close()
+                    await session.close()
+
+            return stream_response()
+        except Exception:
+            if not session.closed:
+                await session.close()
+            raise
+
+    @staticmethod
     async def request(
         session: AsyncSession,
         token: str,
@@ -285,10 +345,8 @@ class AppChatReverse:
                     content_type = str(response.headers.get("content-type", ""))
 
                     logger.error(
-                        "AppChatReverse: Chat failed, %s, content_type=%s, body=%s",
-                        response.status_code,
-                        content_type,
-                        content[:500],
+                        f"AppChatReverse: Chat failed, status={response.status_code}, "
+                        f"content_type={content_type}, body={content[:500]}",
                         extra={"error_type": "UpstreamException"},
                     )
                     raise UpstreamException(
@@ -342,6 +400,51 @@ class AppChatReverse:
                 raise
 
             # Handle other non-upstream exceptions
+            if not get_config("proxy.base_proxy_url"):
+                try:
+                    logger.warning(
+                        "AppChatReverse: curl-cffi failed; retrying with aiohttp fallback"
+                    )
+                    return await AppChatReverse._aiohttp_fallback_request(
+                        headers=headers,
+                        payload=payload,
+                        timeout=timeout,
+                    )
+                except UpstreamException as fallback_error:
+                    if fallback_error.status_code == 401:
+                        try:
+                            await TokenService.record_fail(
+                                token, 401, "app_chat_auth_failed", threshold=1
+                            )
+                        except Exception:
+                            pass
+                    raise fallback_error
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "AppChatReverse: aiohttp fallback failed, {}",
+                        fallback_exc,
+                    )
+
+            probe = await probe_rate_limits_status(token)
+            if probe is not None and probe.status == 401:
+                try:
+                    await TokenService.record_fail(
+                        token, 401, "app_chat_auth_failed", threshold=1
+                    )
+                except Exception:
+                    pass
+                raise UpstreamException(
+                    message="AppChatReverse: Chat failed, 401",
+                    details={
+                        "status": 401,
+                        "body": probe.body,
+                        "is_token_expired": probe.is_token_expired,
+                        "is_cloudflare": probe.is_cloudflare,
+                        "error": str(e),
+                    },
+                    status_code=401,
+                )
+
             logger.error(
                 f"AppChatReverse: Chat failed, {str(e)}",
                 extra={"error_type": type(e).__name__},

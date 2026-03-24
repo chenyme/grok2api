@@ -52,6 +52,15 @@ def _normalize_api_keys(value: Optional[object]) -> list[str]:
         return keys
     return []
 
+
+def _compare_token(left: str, right: str) -> bool:
+    """Use byte comparison so non-ASCII tokens do not raise TypeError."""
+    return hmac.compare_digest(
+        left.encode("utf-8", errors="surrogatepass"),
+        right.encode("utf-8", errors="surrogatepass"),
+    )
+
+
 def get_app_key() -> str:
     """
     获取 App Key（后台管理密码）。
@@ -84,7 +93,7 @@ def _match_function_key(credentials: str, function_key: str) -> bool:
     if not normalized:
         return False
     # 常量时间比较，避免基于时序的探测
-    return hmac.compare_digest(credentials, normalized)
+    return _compare_token(credentials, normalized)
 
 
 async def verify_api_key(
@@ -109,7 +118,7 @@ async def verify_api_key(
 
     # 标准 api_key 验证
     for key in api_keys:
-        if hmac.compare_digest(auth.credentials, key):
+        if _compare_token(auth.credentials, key):
             return auth.credentials
 
     raise HTTPException(
@@ -143,7 +152,7 @@ async def verify_app_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not hmac.compare_digest(auth.credentials, app_key):
+    if not _compare_token(auth.credentials, app_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",

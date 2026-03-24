@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import json
 import time
 from typing import Any, AsyncGenerator, Optional, AsyncIterable, List, TypeVar
 
@@ -50,6 +51,29 @@ def _collect_images(obj: Any) -> List[str]:
         seen.add(url)
         urls.append(url)
 
+    def collect_card_attachment(value: Any):
+        if not isinstance(value, dict):
+            return
+        image_chunk = value.get("image_chunk") or {}
+        if isinstance(image_chunk, dict):
+            image_url = image_chunk.get("imageUrl")
+            if isinstance(image_url, str):
+                add(image_url)
+
+        image = value.get("image") or {}
+        if isinstance(image, dict):
+            original = image.get("original")
+            if isinstance(original, str):
+                add(original)
+
+    def parse_card_json(raw: Any):
+        if not isinstance(raw, str) or not raw.strip():
+            return
+        try:
+            collect_card_attachment(json.loads(raw))
+        except Exception:
+            return
+
     def walk(value: Any):
         if isinstance(value, dict):
             for key, item in value.items():
@@ -60,6 +84,16 @@ def _collect_images(obj: Any) -> List[str]:
                                 add(url)
                     elif isinstance(item, str):
                         add(item)
+                    continue
+                if key == "cardAttachmentsJson" and isinstance(item, list):
+                    for raw in item:
+                        parse_card_json(raw)
+                    continue
+                if key == "cardAttachment" and isinstance(item, dict):
+                    parse_card_json(item.get("jsonData"))
+                    continue
+                if key in {"imageUrl", "original"} and isinstance(item, str):
+                    add(item)
                     continue
                 walk(item)
         elif isinstance(value, list):

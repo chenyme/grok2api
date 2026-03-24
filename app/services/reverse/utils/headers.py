@@ -57,6 +57,18 @@ def _sanitize_header_value(
     return normalized
 
 
+def _strip_cookie_fields(cookie_header: str, field_names: tuple[str, ...]) -> str:
+    """Remove duplicate cookie fields so appended values stay deterministic."""
+    value = cookie_header
+    for field_name in field_names:
+        value = re.sub(
+            rf"(^|;\s*){re.escape(field_name)}=[^;]*",
+            "",
+            value,
+        )
+    return value.strip(" ;")
+
+
 def build_sso_cookie(sso_token: str) -> str:
     """
     Build SSO Cookie string.
@@ -67,19 +79,32 @@ def build_sso_cookie(sso_token: str) -> str:
     Returns:
         str: The SSO Cookie string.
     """
+    raw_cookie = _sanitize_header_value(
+        get_config("proxy.raw_cookie") or "",
+        field_name="proxy.raw_cookie",
+    )
+    if raw_cookie:
+        return raw_cookie
+
     # Format
     sso_token = sso_token[4:] if sso_token.startswith("sso=") else sso_token
     sso_token = _sanitize_header_value(
         sso_token, field_name="sso_token", remove_all_spaces=True
     )
+    sso_rw_token = _sanitize_header_value(
+        get_config("proxy.sso_rw") or sso_token,
+        field_name="proxy.sso_rw",
+        remove_all_spaces=True,
+    )
 
     # SSO Cookie
-    cookie = f"sso={sso_token}; sso-rw={sso_token}"
+    cookie = f"sso={sso_token}; sso-rw={sso_rw_token}"
 
     # CF Cookies
     cf_cookies = _sanitize_header_value(
         get_config("proxy.cf_cookies") or "", field_name="proxy.cf_cookies"
     )
+    cf_cookies = _strip_cookie_fields(cf_cookies, ("sso", "sso-rw", "cf_clearance"))
     cf_clearance = _sanitize_header_value(
         get_config("proxy.cf_clearance") or "",
         field_name="proxy.cf_clearance",

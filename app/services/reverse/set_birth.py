@@ -17,6 +17,7 @@ from app.core.proxy_pool import (
 )
 from app.core.exceptions import UpstreamException
 from app.services.reverse.utils.headers import build_headers
+from app.services.reverse.utils.http_fallback import request_with_aiohttp_fallback
 from app.services.reverse.utils.retry import retry_on_status
 
 SET_BIRTH_API = "https://grok.com/rest/auth/set-birth-date"
@@ -108,6 +109,28 @@ class SetBirthReverse:
                 raise
 
             # Handle other non-upstream exceptions
+            if not get_config("proxy.base_proxy_url"):
+                try:
+                    logger.warning(
+                        "SetBirthReverse: curl-cffi failed; retrying with aiohttp fallback"
+                    )
+                    return await request_with_aiohttp_fallback(
+                        method="POST",
+                        url=SET_BIRTH_API,
+                        headers=headers,
+                        timeout=float(get_config("nsfw.timeout") or 60),
+                        logger_prefix="SetBirthReverse: Request failed",
+                        expected_statuses=(200, 204),
+                        response_kind="json",
+                        json_payload=payload,
+                    )
+                except UpstreamException:
+                    raise
+                except Exception as fallback_exc:
+                    logger.warning(
+                        f"SetBirthReverse: aiohttp fallback failed, {fallback_exc}"
+                    )
+
             logger.error(
                 f"SetBirthReverse: Request failed, {str(e)}",
                 extra={"error_type": type(e).__name__},

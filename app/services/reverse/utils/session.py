@@ -10,6 +10,7 @@ from curl_cffi.const import CurlOpt
 
 from app.core.config import get_config
 from app.core.logger import logger
+from app.core.ssl_certs import get_combined_ca_bundle_path
 
 
 def _should_skip_proxy_ssl() -> bool:
@@ -47,11 +48,14 @@ class ResettableSession:
 
     def _create_session(self) -> AsyncSession:
         kwargs = dict(self._session_kwargs)
+        opts = dict(kwargs.get("curl_options", {}))
+        ca_bundle = get_combined_ca_bundle_path()
+        opts[CurlOpt.CAINFO] = ca_bundle
+        opts[CurlOpt.PROXY_CAINFO] = ca_bundle
         if self._skip_proxy_ssl:
-            opts = kwargs.get("curl_options", {})
             opts[CurlOpt.PROXY_SSL_VERIFYPEER] = 0
             opts[CurlOpt.PROXY_SSL_VERIFYHOST] = 0
-            kwargs["curl_options"] = opts
+        kwargs["curl_options"] = opts
         return AsyncSession(**kwargs)
 
     async def _maybe_reset(self) -> None:

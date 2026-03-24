@@ -3,21 +3,22 @@ WebSocket helpers for reverse interfaces.
 """
 
 import ssl
-import certifi
 import aiohttp
+import orjson
+import websockets
 from aiohttp_socks import ProxyConnector
-from typing import Mapping, Optional, Any
+from dataclasses import dataclass
+from typing import Mapping, Optional, Any, Awaitable, Callable
 from urllib.parse import urlparse
 
 from app.core.logger import logger
 from app.core.config import get_config
 from app.core.proxy_pool import get_current_proxy_from, rotate_proxy
+from app.core.ssl_certs import create_ssl_context
 
 
 def _default_ssl_context() -> ssl.SSLContext:
-    context = ssl.create_default_context()
-    context.load_verify_locations(certifi.where())
-    return context
+    return create_ssl_context()
 
 
 def _normalize_socks_proxy(proxy_url: str) -> tuple[str, Optional[bool]]:
@@ -72,20 +73,59 @@ def resolve_proxy(proxy_url: Optional[str] = None, ssl_context: ssl.SSLContext =
 class WebSocketConnection:
     """WebSocket connection wrapper."""
 
-    def __init__(self, session: aiohttp.ClientSession, ws: aiohttp.ClientWebSocketResponse) -> None:
+    def __init__(self, session: Optional[aiohttp.ClientSession], ws: Any) -> None:
         self.session = session
         self.ws = ws
 
     async def close(self) -> None:
         if not self.ws.closed:
             await self.ws.close()
-        await self.session.close()
+        if self.session is not None:
+            await self.session.close()
 
     async def __aenter__(self) -> aiohttp.ClientWebSocketResponse:
         return self.ws
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.close()
+
+
+@dataclass
+class _CompatWSMessage:
+    type: aiohttp.WSMsgType
+    data: Any
+
+
+class _WebsocketsAdapter:
+    """Adapter exposing a minimal aiohttp-style WebSocket API."""
+
+    def __init__(self, ws: Any):
+        self._ws = ws
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    async def send_json(self, data: Any) -> None:
+        await self._ws.send(orjson.dumps(data).decode())
+
+    async def receive(self) -> _CompatWSMessage:
+        try:
+            data = await self._ws.recv()
+        except websockets.ConnectionClosed as exc:
+            self._closed = True
+            return _CompatWSMessage(aiohttp.WSMsgType.CLOSED, exc)
+        except Exception as exc:
+            return _CompatWSMessage(aiohttp.WSMsgType.ERROR, exc)
+
+        if isinstance(data, bytes):
+            return _CompatWSMessage(aiohttp.WSMsgType.BINARY, data)
+        return _CompatWSMessage(aiohttp.WSMsgType.TEXT, data)
+
+    async def close(self) -> None:
+        self._closed = True
+        await self._ws.close()
 
 
 class WebSocketClient:
@@ -167,11 +207,30 @@ class WebSocketClient:
                         proxy=resolved_proxy,
                         ssl=self._ssl_context,
                         **extra_kwargs,
-                    )
+                        )
                 return WebSocketConnection(session, ws)
             except Exception as exc:
                 last_error = exc
                 await session.close()
+                if not proxy_url:
+                    try:
+                        origin = None
+                        extra_headers = dict(headers or {})
+                        if "Origin" in extra_headers:
+                            origin = extra_headers.pop("Origin")
+                        logger.warning(
+                            "WebSocket connect failed via aiohttp; retrying with websockets fallback"
+                        )
+                        ws = await websockets.connect(
+                            url,
+                            additional_headers=extra_headers,
+                            origin=origin,
+                            open_timeout=total_timeout,
+                            ssl=self._ssl_context,
+                        )
+                        return WebSocketConnection(None, _WebsocketsAdapter(ws))
+                    except Exception as fallback_exc:
+                        last_error = fallback_exc
                 if self._proxy_override or not active_proxy_key or attempt >= max_retry:
                     raise
                 rotate_proxy(active_proxy_key)

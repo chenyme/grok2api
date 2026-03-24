@@ -18,6 +18,7 @@ from app.core.proxy_pool import (
 from app.core.exceptions import UpstreamException
 from app.services.token.service import TokenService
 from app.services.reverse.utils.headers import build_headers, build_ws_headers
+from app.services.reverse.utils.http_fallback import request_with_aiohttp_fallback
 from app.services.reverse.utils.retry import retry_on_status
 from app.services.reverse.utils.websocket import WebSocketClient, WebSocketConnection
 
@@ -128,6 +129,28 @@ class LivekitTokenReverse:
                 raise
 
             # Handle other non-upstream exceptions
+            if not get_config("proxy.base_proxy_url"):
+                try:
+                    logger.warning(
+                        "LivekitTokenReverse: curl-cffi failed; retrying with aiohttp fallback"
+                    )
+                    return await request_with_aiohttp_fallback(
+                        method="POST",
+                        url=LIVEKIT_TOKEN_API,
+                        headers=headers,
+                        timeout=float(get_config("voice.timeout") or 120),
+                        logger_prefix="LivekitTokenReverse: Request failed",
+                        expected_statuses=(200,),
+                        response_kind="json",
+                        data=orjson.dumps(payload),
+                    )
+                except UpstreamException:
+                    raise
+                except Exception as fallback_exc:
+                    logger.warning(
+                        f"LivekitTokenReverse: aiohttp fallback failed, {fallback_exc}"
+                    )
+
             logger.error(
                 f"LivekitTokenReverse: Request failed, {str(e)}",
                 extra={"error_type": type(e).__name__},
