@@ -95,7 +95,9 @@ class LivekitTokenReverse:
                 if response.status_code != 200:
                     body = response.text[:200]
                     logger.error(
-                        f"LivekitTokenReverse: Request failed, {response.status_code}, body={body}"
+                        "LivekitTokenReverse: Request failed, {}, body={}",
+                        response.status_code,
+                        body,
                     )
                     raise UpstreamException(
                         message=f"LivekitTokenReverse: Request failed, {response.status_code}",
