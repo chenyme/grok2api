@@ -68,6 +68,7 @@ class ImageGenerationService:
         stream: bool,
         enable_nsfw: Optional[bool] = None,
         chat_format: bool = False,
+        prefer_ws: bool = False,
     ) -> ImageGenerationResult:
         max_token_retries = int(get_config("retry.max_retry") or 3)
         tried_tokens: set[str] = set()
@@ -77,6 +78,32 @@ class ImageGenerationService:
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
         prefer_tags = {"nsfw"} if enable_nsfw else None
+
+        if prefer_ws:
+            if stream:
+                return await self._stream_ws(
+                    token_mgr=token_mgr,
+                    token=token,
+                    model_info=model_info,
+                    prompt=prompt,
+                    n=n,
+                    response_format=response_format,
+                    size=size,
+                    aspect_ratio=aspect_ratio,
+                    enable_nsfw=enable_nsfw,
+                    chat_format=chat_format,
+                )
+            return await self._collect_ws(
+                token_mgr=token_mgr,
+                token=token,
+                model_info=model_info,
+                tried_tokens=tried_tokens,
+                prompt=prompt,
+                n=n,
+                response_format=response_format,
+                aspect_ratio=aspect_ratio,
+                enable_nsfw=enable_nsfw,
+            )
 
         if stream:
 

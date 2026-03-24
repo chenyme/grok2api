@@ -825,6 +825,7 @@ async def chat_completions(request: ChatCompletionRequest):
             stream=bool(is_stream),
             enable_nsfw=image_conf.nsfw,
             chat_format=True,
+            prefer_ws=(request.model == IMAGINE_FAST_MODEL_ID),
         )
 
         if result.stream:
