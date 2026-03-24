@@ -69,7 +69,10 @@ class ImageGenerationService:
         enable_nsfw: Optional[bool] = None,
         chat_format: bool = False,
     ) -> ImageGenerationResult:
-        max_token_retries = int(get_config("retry.max_retry") or 3)
+        # Image generation is much more bursty than text chat.
+        # Keep a wider retry budget so temporary per-token image 429s
+        # do not fail fast when there are still many healthy tokens.
+        max_token_retries = max(int(get_config("retry.max_retry") or 3), 8)
         tried_tokens: set[str] = set()
         last_error: Optional[Exception] = None
 
@@ -285,14 +288,15 @@ class ImageGenerationService:
         enable_nsfw: Optional[bool] = None,
         chat_format: bool = False,
     ) -> ImageGenerationResult:
+        overrides = self._app_chat_request_overrides(n, enable_nsfw)
+        overrides["modeId"] = "auto"
         response = await GrokChatService().chat(
             token=token,
             message=prompt,
-            model=model_info.grok_model,
-            mode=model_info.model_mode,
+            model=None,
+            mode=None,
             stream=True,
-            tool_overrides={"imageGen": True},
-            request_overrides=self._app_chat_request_overrides(n, enable_nsfw),
+            request_overrides=overrides,
         )
         processor = AppChatImageStreamProcessor(
             model_info.model_id,
@@ -324,16 +328,15 @@ class ImageGenerationService:
         calls_needed = max(1, int(math.ceil(n / per_call)))
 
         async def _call_generate(call_target: int) -> List[str]:
+            overrides = self._app_chat_request_overrides(call_target, enable_nsfw)
+            overrides["modeId"] = "auto"
             response = await GrokChatService().chat(
                 token=token,
                 message=prompt,
-                model=model_info.grok_model,
-                mode=model_info.model_mode,
+                model=None,
+                mode=None,
                 stream=True,
-                tool_overrides={"imageGen": True},
-                request_overrides=self._app_chat_request_overrides(
-                    call_target, enable_nsfw
-                ),
+                request_overrides=overrides,
             )
             processor = AppChatImageCollectProcessor(
                 model_info.model_id,
