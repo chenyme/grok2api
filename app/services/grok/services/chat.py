@@ -5,7 +5,7 @@ Grok Chat 服务
 import asyncio
 import re
 import uuid
-from typing import Dict, List, Any, AsyncGenerator, AsyncIterable
+from typing import Dict, List, Any, AsyncGenerator, AsyncIterable, Optional
 
 import orjson
 from curl_cffi.requests.errors import RequestsError
@@ -24,7 +24,9 @@ from app.services.grok.utils.upload import UploadService
 from app.services.grok.utils import process as proc_base
 from app.services.grok.utils.retry import pick_token, rate_limited, transient_upstream
 from app.services.reverse.app_chat import AppChatReverse
+from app.services.reverse.app_chat_share import AppChatShareReverse
 from app.services.reverse.utils.session import ResettableSession
+from app.services.grok.utils.share_resolver import resolve_grok_share_image
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.grok.utils.tool_call import (
     build_tool_prompt,
@@ -38,6 +40,111 @@ from app.services.token import get_token_manager, EffortType
 
 _CHAT_SEMAPHORE = None
 _CHAT_SEM_VALUE = None
+
+
+def _pick_str(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _extract_app_chat_share_context(data: Dict[str, Any]) -> tuple[str, str]:
+    if not isinstance(data, dict):
+        return "", ""
+
+    result = data.get("result")
+    if not isinstance(result, dict):
+        return "", ""
+
+    response = result.get("response")
+    if not isinstance(response, dict):
+        response = result
+
+    conversation_id = ""
+    for value in (
+        result.get("conversationId"),
+        response.get("conversationId"),
+        ((result.get("conversation") or {}).get("conversationId"))
+        if isinstance(result.get("conversation"), dict)
+        else "",
+        ((response.get("conversation") or {}).get("conversationId"))
+        if isinstance(response.get("conversation"), dict)
+        else "",
+    ):
+        conversation_id = _pick_str(value)
+        if conversation_id:
+            break
+
+    response_id = ""
+    model_resp = response.get("modelResponse")
+    if isinstance(model_resp, dict):
+        response_id = _pick_str(model_resp.get("responseId"))
+
+    if not response_id:
+        for source in (response, result):
+            if not isinstance(source, dict):
+                continue
+            candidate = _pick_str(source.get("responseId"))
+            if candidate:
+                response_id = candidate
+                break
+
+    return conversation_id, response_id
+
+
+def _build_app_chat_share_url(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+
+    for key in ("shareLink", "shareUrl", "shareURL"):
+        value = _pick_str(payload.get(key))
+        if value:
+            return value
+
+    share_link_id = _pick_str(payload.get("shareLinkId")) or _pick_str(
+        payload.get("publicId")
+    )
+    if not share_link_id:
+        return ""
+
+    return f"https://grok.com/share/{share_link_id}"
+
+
+async def _create_chat_share_link(
+    token: str,
+    conversation_id: str,
+    response_id: str,
+) -> str:
+    if not token or not conversation_id or not response_id:
+        return ""
+
+    try:
+        async with ResettableSession() as session:
+            response = await AppChatShareReverse.request(
+                session,
+                token,
+                conversation_id,
+                response_id,
+            )
+        payload = response.json() if response is not None else {}
+        return _build_app_chat_share_url(payload)
+    except Exception as e:
+        logger.warning(f"Chat share link failed: {e}")
+        return ""
+
+
+async def _resolve_share_image_details(
+    share_url: str,
+) -> tuple[str, str, str]:
+    if not share_url:
+        return "", "", ""
+
+    try:
+        resolved = await resolve_grok_share_image(share_url)
+        return resolved.image_url, resolved.source, resolved.expires_at
+    except Exception as e:
+        logger.warning(f"Chat share image resolve failed: {e}")
+        return "", "", ""
 
 
 def extract_tool_text(raw: str, rollout_id: str = "") -> str:
@@ -559,6 +666,8 @@ class StreamProcessor(proc_base.BaseProcessor):
         self.prompt_tokens = max(0, int(prompt_tokens or 0))
         self._completion_parts: list[str] = []
         self._completion_tool_calls: list[dict[str, Any]] = []
+        self._pending_image_candidates: dict[str, proc_base.ImageCandidate] = {}
+        self._emitted_image_keys: set[str] = set()
 
     def _record_content(self, content: str) -> None:
         if content:
@@ -567,6 +676,46 @@ class StreamProcessor(proc_base.BaseProcessor):
     def _record_tool_call(self, tool_call: Any) -> None:
         if isinstance(tool_call, dict):
             self._completion_tool_calls.append(tool_call)
+
+    def _image_alt_text(self, url: str) -> str:
+        path = proc_base._image_candidate_path(url)
+        parts = path.split("/")
+        if len(parts) >= 2 and parts[-2]:
+            return parts[-2]
+        return "image"
+
+    def _buffer_image_candidate(self, candidate: proc_base.ImageCandidate) -> None:
+        if not candidate or candidate.key in self._emitted_image_keys:
+            return
+        existing = self._pending_image_candidates.get(candidate.key)
+        self._pending_image_candidates[candidate.key] = (
+            proc_base._pick_preferred_image_candidate(existing, candidate)
+        )
+
+    async def _render_image_candidate(
+        self, candidate: proc_base.ImageCandidate
+    ) -> str:
+        if not candidate or candidate.key in self._emitted_image_keys:
+            return ""
+        dl_service = self._get_dl()
+        rendered = await dl_service.render_image(
+            candidate.url, self.token, self._image_alt_text(candidate.url)
+        )
+        if not rendered:
+            return ""
+        self._emitted_image_keys.add(candidate.key)
+        self._pending_image_candidates.pop(candidate.key, None)
+        return f"{rendered}\n"
+
+    async def _flush_pending_images(self) -> list[str]:
+        rendered_images: list[str] = []
+        for candidate in sorted(
+            self._pending_image_candidates.values(), key=lambda item: item.order
+        ):
+            rendered = await self._render_image_candidate(candidate)
+            if rendered:
+                rendered_images.append(rendered)
+        return rendered_images
 
     def _with_tool_index(self, tool_call: Any) -> Any:
         if not isinstance(tool_call, dict):
@@ -818,15 +967,8 @@ class StreamProcessor(proc_base.BaseProcessor):
                         self.think_opened = False
                         self.think_closed_once = True
                     self.image_think_active = False
-                    for url in proc_base._collect_images(mr):
-                        parts = url.split("/")
-                        img_id = parts[-2] if len(parts) >= 2 else "image"
-                        dl_service = self._get_dl()
-                        rendered = await dl_service.render_image(
-                            url, self.token, img_id
-                        )
-                        self._record_content(f"{rendered}\n")
-                        yield self._sse(f"{rendered}\n")
+                    for candidate in proc_base._collect_image_candidates(mr):
+                        self._buffer_image_candidate(candidate)
 
                     if (
                         (meta := mr.get("metadata", {}))
@@ -837,24 +979,16 @@ class StreamProcessor(proc_base.BaseProcessor):
                     continue
 
                 if card := resp.get("cardAttachment"):
-                    json_data = card.get("jsonData")
-                    if isinstance(json_data, str) and json_data.strip():
-                        try:
-                            card_data = orjson.loads(json_data)
-                        except orjson.JSONDecodeError:
-                            card_data = None
-                        if isinstance(card_data, dict):
-                            image = card_data.get("image") or {}
-                            original = image.get("original")
-                            title = image.get("title") or ""
-                            if original:
-                                title_safe = title.replace("\n", " ").strip()
-                                if title_safe:
-                                    self._record_content(f"![{title_safe}]({original})\n")
-                                    yield self._sse(f"![{title_safe}]({original})\n")
-                                else:
-                                    self._record_content(f"![image]({original})\n")
-                                    yield self._sse(f"![image]({original})\n")
+                    for candidate in proc_base._collect_image_candidates(
+                        {"cardAttachment": card}
+                    ):
+                        self._buffer_image_candidate(candidate)
+                        if proc_base._is_preview_image_url(candidate.url):
+                            continue
+                        rendered = await self._render_image_candidate(candidate)
+                        if rendered:
+                            self._record_content(rendered)
+                            yield self._sse(rendered)
                     continue
 
                 if (token := resp.get("token")) is not None:
@@ -902,6 +1036,10 @@ class StreamProcessor(proc_base.BaseProcessor):
             if self.think_opened:
                 yield self._sse("</think>\n")
                 self.think_closed_once = True
+
+            for rendered in await self._flush_pending_images():
+                self._record_content(rendered)
+                yield self._sse(rendered)
 
             if self._tool_stream_enabled:
                 for kind, payload in self._flush_tool_stream():
@@ -1020,8 +1158,11 @@ class CollectProcessor(proc_base.BaseProcessor):
     async def process(self, response: AsyncIterable[bytes]) -> dict[str, Any]:
         """Process and collect full response."""
         response_id = ""
+        conversation_id = ""
         fingerprint = ""
         content = ""
+        rendered_image_keys: set[str] = set()
+        has_image_output = False
         idle_timeout = get_config("chat.stream_timeout")
 
         try:
@@ -1037,12 +1178,21 @@ class CollectProcessor(proc_base.BaseProcessor):
                     continue
 
                 resp = data.get("result", {}).get("response", {})
+                current_conversation_id, current_response_id = (
+                    _extract_app_chat_share_context(data)
+                )
+                if current_conversation_id:
+                    conversation_id = current_conversation_id
+                if current_response_id:
+                    response_id = current_response_id
 
                 if (llm := resp.get("llmInfo")) and not fingerprint:
                     fingerprint = llm.get("modelHash", "")
 
                 if mr := resp.get("modelResponse"):
-                    response_id = mr.get("responseId", "")
+                    mr_response_id = _pick_str(mr.get("responseId"))
+                    if mr_response_id:
+                        response_id = mr_response_id
                     content = mr.get("message", "")
 
                     card_map: dict[str, tuple[str, str]] = {}
@@ -1064,12 +1214,16 @@ class CollectProcessor(proc_base.BaseProcessor):
                         card_map[card_id] = (title, original)
 
                     if content and card_map:
+                        has_image_output = True
                         def _render_card(match: re.Match) -> str:
                             card_id = match.group(1)
                             item = card_map.get(card_id)
                             if not item:
                                 return ""
                             title, original = item
+                            rendered_image_keys.add(
+                                proc_base._image_candidate_key(original)
+                            )
                             title_safe = title.replace("\n", " ").strip() or "image"
                             prefix = ""
                             if match.start() > 0:
@@ -1085,16 +1239,22 @@ class CollectProcessor(proc_base.BaseProcessor):
                             flags=re.DOTALL,
                         )
 
-                    if urls := proc_base._collect_images(mr):
-                        content += "\n"
-                        for url in urls:
-                            parts = url.split("/")
-                            img_id = parts[-2] if len(parts) >= 2 else "image"
-                            dl_service = self._get_dl()
-                            rendered = await dl_service.render_image(
-                                url, self.token, img_id
-                            )
-                            content += f"{rendered}\n"
+                    extra_images: list[str] = []
+                    for candidate in proc_base._collect_image_candidates(mr):
+                        if candidate.key in rendered_image_keys:
+                            continue
+                        has_image_output = True
+                        dl_service = self._get_dl()
+                        rendered = await dl_service.render_image(
+                            candidate.url,
+                            self.token,
+                            candidate.key or "image",
+                        )
+                        if rendered:
+                            extra_images.append(rendered)
+
+                    if extra_images:
+                        content += "\n" + "\n".join(extra_images) + "\n"
 
                     if (
                         (meta := mr.get("metadata", {}))
@@ -1161,7 +1321,7 @@ class CollectProcessor(proc_base.BaseProcessor):
         if tool_calls_result:
             message_obj["tool_calls"] = tool_calls_result
 
-        return {
+        result = {
             "id": response_id,
             "object": "chat.completion",
             "created": self.created,
@@ -1180,6 +1340,28 @@ class CollectProcessor(proc_base.BaseProcessor):
                 tool_calls=tool_calls_result,
             ),
         }
+
+        if has_image_output and conversation_id and response_id:
+            share_url = await _create_chat_share_link(
+                self.token,
+                conversation_id,
+                response_id,
+            )
+            if share_url:
+                result["share_url"] = share_url
+                (
+                    share_image_url,
+                    share_image_source,
+                    share_image_expires_at,
+                ) = await _resolve_share_image_details(share_url)
+                if share_image_url:
+                    result["share_image_url"] = share_image_url
+                if share_image_source:
+                    result["share_image_source"] = share_image_source
+                if share_image_expires_at:
+                    result["share_image_expires_at"] = share_image_expires_at
+
+        return result
 
 
 __all__ = [

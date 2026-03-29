@@ -18,7 +18,8 @@ from app.services.grok.services.image import ImageGenerationService
 from app.services.grok.services.image_edit import ImageEditService
 from app.services.grok.services.model import ModelService
 from app.services.grok.services.video import VideoService
-from app.services.grok.utils.response import make_chat_response
+from app.api.v1.image import append_share_payload
+from app.services.grok.utils.response import make_chat_response, wrap_image_content
 from app.services.token import get_token_manager
 from app.core.config import get_config
 from app.core.exceptions import ValidationException, AppException, ErrorType
@@ -49,6 +50,9 @@ class ImageConfig(BaseModel):
     n: Optional[int] = Field(1, ge=1, le=10, description="生成数量 (1-10)")
     size: Optional[str] = Field("1024x1024", description="图片尺寸")
     response_format: Optional[str] = Field(None, description="响应格式")
+    return_share_url: Optional[bool] = Field(
+        False, description="是否返回 Grok 分享页链接"
+    )
 
 
 class ChatCompletionRequest(BaseModel):
@@ -186,7 +190,9 @@ def _image_field(response_format: str) -> str:
     return "b64_json"
 
 
-def _imagine_fast_server_image_config() -> ImageConfig:
+def _imagine_fast_server_image_config(
+    client_config: Optional[ImageConfig] = None,
+) -> ImageConfig:
     """Load server-side image generation parameters for grok-imagine-1.0-fast."""
     n = int(get_config("imagine_fast.n", 1) or 1)
     size = str(get_config("imagine_fast.size", "1024x1024") or "1024x1024")
@@ -194,7 +200,12 @@ def _imagine_fast_server_image_config() -> ImageConfig:
         get_config("imagine_fast.response_format", get_config("app.image_format") or "url")
         or "url"
     )
-    return ImageConfig(n=n, size=size, response_format=response_format)
+    return ImageConfig(
+        n=n,
+        size=size,
+        response_format=response_format,
+        return_share_url=bool(client_config and client_config.return_share_url),
+    )
 
 
 async def _safe_sse_stream(stream: AsyncIterable[str]) -> AsyncGenerator[str, None]:
@@ -274,6 +285,12 @@ def _validate_image_config(image_conf: ImageConfig, *, stream: bool):
                 param="image_config.response_format",
                 code="invalid_response_format",
             )
+    if stream and image_conf.return_share_url:
+        raise ValidationException(
+            message="return_share_url is only supported when stream=false",
+            param="image_config.return_share_url",
+            code="share_url_stream_not_supported",
+        )
     if image_conf.size and image_conf.size not in ALLOWED_IMAGE_SIZES:
         raise ValidationException(
             message=f"size must be one of {sorted(ALLOWED_IMAGE_SIZES)}",
@@ -601,7 +618,11 @@ def validate_request(request: ChatCompletionRequest):
                 param="messages",
                 code="empty_prompt",
             )
-        image_conf = _imagine_fast_server_image_config() if request.model == IMAGINE_FAST_MODEL_ID else (request.image_config or ImageConfig())
+        image_conf = (
+            _imagine_fast_server_image_config(request.image_config)
+            if request.model == IMAGINE_FAST_MODEL_ID
+            else (request.image_config or ImageConfig())
+        )
         n = image_conf.n or 1
         if not (1 <= n <= 10):
             raise ValidationException(
@@ -765,6 +786,7 @@ async def chat_completions(request: ChatCompletionRequest):
             )
 
         content = result.data[0] if result.data else ""
+        content = wrap_image_content(content, response_format)
         return JSONResponse(
             content=make_chat_response(request.model, content)
         )
@@ -775,7 +797,11 @@ async def chat_completions(request: ChatCompletionRequest):
         is_stream = (
             request.stream if request.stream is not None else get_config("app.stream")
         )
-        image_conf = _imagine_fast_server_image_config() if request.model == IMAGINE_FAST_MODEL_ID else (request.image_config or ImageConfig())
+        image_conf = (
+            _imagine_fast_server_image_config(request.image_config)
+            if request.model == IMAGINE_FAST_MODEL_ID
+            else (request.image_config or ImageConfig())
+        )
         _validate_image_config(image_conf, stream=bool(is_stream))
         response_format = _resolve_image_format(image_conf.response_format)
         response_field = _image_field(response_format)
@@ -818,6 +844,7 @@ async def chat_completions(request: ChatCompletionRequest):
             aspect_ratio=aspect_ratio,
             stream=bool(is_stream),
             chat_format=True,
+            return_share_url=bool(image_conf.return_share_url),
         )
 
         if result.stream:
@@ -828,10 +855,10 @@ async def chat_completions(request: ChatCompletionRequest):
             )
 
         content = result.data[0] if result.data else ""
+        content = wrap_image_content(content, response_format)
         usage = result.usage_override
-        return JSONResponse(
-            content=make_chat_response(request.model, content, usage=usage)
-        )
+        payload = make_chat_response(request.model, content, usage=usage)
+        return JSONResponse(content=append_share_payload(payload, result))
 
     if model_info and model_info.is_video:
         # 提取视频配置 (默认值在 Pydantic 模型中处理)

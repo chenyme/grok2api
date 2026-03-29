@@ -11,21 +11,31 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterable, Dict, List, Optional, Union
 
 import orjson
+from curl_cffi.requests.errors import RequestsError
 
 from app.core.config import get_config
 from app.core.logger import logger
 from app.core.storage import DATA_DIR
 from app.core.exceptions import AppException, ErrorType, UpstreamException
-from app.services.grok.utils.process import BaseProcessor
+from app.services.grok.utils.process import (
+    BaseProcessor,
+    _collect_image_candidates,
+    _is_http2_error,
+    _normalize_line,
+    _pick_preferred_image_candidate,
+    _with_idle_timeout,
+)
 from app.services.grok.utils.retry import pick_token, rate_limited
 from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
+from app.services.grok.utils.share_resolver import resolve_grok_share_image
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.grok.services.chat import GrokChatService
 from app.services.grok.services.image_edit import (
     ImageStreamProcessor as AppChatImageStreamProcessor,
-    ImageCollectProcessor as AppChatImageCollectProcessor,
 )
 from app.services.token import EffortType
+from app.services.reverse.app_chat_share import AppChatShareReverse
+from app.services.reverse.utils.session import ResettableSession
 from app.services.reverse.ws_imagine import ImagineWebSocketReverse
 
 
@@ -37,6 +47,386 @@ class ImageGenerationResult:
     stream: bool
     data: Union[AsyncGenerator[str, None], List[str]]
     usage_override: Optional[dict] = None
+    share_url: str = ""
+    share_image_url: str = ""
+    share_image_source: str = ""
+    share_image_expires_at: str = ""
+
+
+@dataclass
+class AppChatImageCollectPayload:
+    images: List[str]
+    post_id: str = ""
+    post_id_rank: int = 999
+    conversation_id: str = ""
+    response_id: str = ""
+
+
+def _pick_str(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _maybe_extract_uuid(value: Any) -> str:
+    text = _pick_str(value)
+    if not text:
+        return ""
+
+    if (
+        len(text) in (32, 36)
+        and text.replace("-", "").isalnum()
+        and text.count("-") in (0, 4)
+    ):
+        return text
+
+    import re
+
+    match = re.search(r"/generated/([0-9a-fA-F-]{32,36})/", text)
+    if match:
+        return match.group(1)
+
+    match = re.search(r"\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b", text)
+    if match:
+        return match.group(1)
+
+    return ""
+
+
+def _append_post_id_candidate(
+    candidates: List[tuple[int, str]],
+    rank: int,
+    value: Any,
+):
+    post_id = _maybe_extract_uuid(value)
+    if post_id:
+        candidates.append((rank, post_id))
+
+
+def _collect_post_id_candidates(resp: Dict[str, Any]) -> List[tuple[int, str]]:
+    candidates: List[tuple[int, str]] = []
+
+    post = resp.get("post")
+    if isinstance(post, dict):
+        _append_post_id_candidate(candidates, 1, post.get("id"))
+
+    for key in ("postId", "post_id"):
+        _append_post_id_candidate(candidates, 2, resp.get(key))
+
+    for key in ("parentPostId", "parent_post_id", "originalPostId", "original_post_id"):
+        _append_post_id_candidate(candidates, 3, resp.get(key))
+
+    image_resp = resp.get("streamingImageGenerationResponse")
+    if isinstance(image_resp, dict):
+        for key in ("postId", "parentPostId", "originalPostId"):
+            _append_post_id_candidate(candidates, 4, image_resp.get(key))
+
+    model_resp = resp.get("modelResponse")
+    if isinstance(model_resp, dict):
+        file_attachments = model_resp.get("fileAttachments")
+        if isinstance(file_attachments, list):
+            for value in file_attachments:
+                _append_post_id_candidate(candidates, 5, value)
+        elif file_attachments:
+            _append_post_id_candidate(candidates, 5, file_attachments)
+
+        for key in ("postId", "parentPostId", "originalPostId"):
+            _append_post_id_candidate(candidates, 5, model_resp.get(key))
+
+        metadata = model_resp.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("postId", "parentPostId", "originalPostId"):
+                _append_post_id_candidate(candidates, 6, metadata.get(key))
+
+        raw_cards = model_resp.get("cardAttachmentsJson") or []
+        if isinstance(raw_cards, list):
+            for raw in raw_cards:
+                if not isinstance(raw, str) or not raw.strip():
+                    continue
+                try:
+                    card = orjson.loads(raw)
+                except orjson.JSONDecodeError:
+                    continue
+                if not isinstance(card, dict):
+                    continue
+                for key in ("postId", "parentPostId", "originalPostId"):
+                    _append_post_id_candidate(candidates, 6, card.get(key))
+
+    card_attachment = resp.get("cardAttachment")
+    if isinstance(card_attachment, dict):
+        raw = card_attachment.get("jsonData")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                card = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                card = None
+            if isinstance(card, dict):
+                for key in ("postId", "parentPostId", "originalPostId"):
+                    _append_post_id_candidate(candidates, 6, card.get(key))
+
+    return candidates
+
+
+def _pick_best_post_id(candidates: List[tuple[int, str]]) -> tuple[str, int]:
+    best_rank = 999
+    best_post_id = ""
+    for rank, value in candidates:
+        if value and rank < best_rank:
+            best_rank = rank
+            best_post_id = value
+    return best_post_id, best_rank
+
+
+def _new_session() -> ResettableSession:
+    browser = get_config("proxy.browser")
+    if browser:
+        return ResettableSession(impersonate=browser)
+    return ResettableSession()
+
+
+def _extract_app_chat_result_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+    result = data.get("result")
+    if not isinstance(result, dict):
+        return {}
+    response = result.get("response")
+    if isinstance(response, dict):
+        return response
+    return result
+
+
+def _extract_app_chat_share_context(data: Dict[str, Any]) -> tuple[str, str]:
+    if not isinstance(data, dict):
+        return "", ""
+
+    result = data.get("result")
+    if not isinstance(result, dict):
+        return "", ""
+
+    response = result.get("response")
+    if not isinstance(response, dict):
+        response = result
+
+    conversation_id = ""
+    for value in (
+        result.get("conversationId"),
+        response.get("conversationId"),
+        ((result.get("conversation") or {}).get("conversationId"))
+        if isinstance(result.get("conversation"), dict)
+        else "",
+        ((response.get("conversation") or {}).get("conversationId"))
+        if isinstance(response.get("conversation"), dict)
+        else "",
+    ):
+        conversation_id = _pick_str(value)
+        if conversation_id:
+            break
+
+    response_id = ""
+    model_resp = response.get("modelResponse")
+    if isinstance(model_resp, dict):
+        response_id = _pick_str(model_resp.get("responseId"))
+
+    if not response_id:
+        for source in (response, result):
+            if not isinstance(source, dict):
+                continue
+            candidate = _pick_str(source.get("responseId"))
+            if not candidate:
+                continue
+            if any(
+                key in source
+                for key in (
+                    "modelResponse",
+                    "cardAttachment",
+                    "token",
+                    "finalMetadata",
+                    "progressReport",
+                    "uiLayout",
+                    "llmInfo",
+                    "streamingImageGenerationResponse",
+                )
+            ):
+                response_id = candidate
+                break
+
+    if not response_id:
+        user_response = result.get("userResponse")
+        if isinstance(user_response, dict):
+            response_id = _pick_str(user_response.get("responseId"))
+
+    return conversation_id, response_id
+
+
+def _build_app_chat_share_url(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+
+    for key in ("shareLink", "shareUrl", "shareURL"):
+        value = _pick_str(payload.get(key))
+        if value:
+            return value
+
+    share_link_id = _pick_str(payload.get("shareLinkId")) or _pick_str(
+        payload.get("publicId")
+    )
+    if not share_link_id:
+        return ""
+
+    return f"https://grok.com/share/{share_link_id}"
+
+
+async def _create_image_share_link(
+    token: str,
+    conversation_id: str,
+    response_id: str,
+) -> str:
+    if not token or not conversation_id or not response_id:
+        return ""
+
+    try:
+        async with _new_session() as session:
+            response = await AppChatShareReverse.request(
+                session,
+                token,
+                conversation_id,
+                response_id,
+            )
+        payload = response.json() if response is not None else {}
+        share_link = _build_app_chat_share_url(payload)
+        if share_link:
+            logger.info(f"Image share link created: {share_link}")
+            return share_link
+    except Exception as e:
+        logger.warning(f"Image share link failed: {e}")
+
+    return ""
+
+
+async def _resolve_share_image_details(
+    share_url: str,
+) -> tuple[str, str, str]:
+    if not share_url:
+        return "", "", ""
+
+    try:
+        resolved = await resolve_grok_share_image(share_url)
+        return (
+            resolved.image_url,
+            resolved.source,
+            resolved.expires_at,
+        )
+    except Exception as e:
+        logger.warning(f"Share image resolve failed: {e}")
+        return "", "", ""
+
+
+class ImageAppChatCollectProcessor(BaseProcessor):
+    """App-chat image non-stream processor with share-context collection."""
+
+    def __init__(self, model: str, token: str = "", response_format: str = "b64_json"):
+        if response_format == "base64":
+            response_format = "b64_json"
+        super().__init__(model, token)
+        self.response_format = response_format
+
+    async def _process_image_url(self, url: str) -> str:
+        if self.response_format == "url":
+            return await self.process_url(url, "image")
+
+        try:
+            dl_service = self._get_dl()
+            base64_data = await dl_service.parse_b64(url, self.token, "image")
+            if base64_data:
+                if "," in base64_data:
+                    return base64_data.split(",", 1)[1]
+                return base64_data
+        except Exception as e:
+            logger.warning(
+                f"Failed to convert image to base64, falling back to URL: {e}"
+            )
+            return await self.process_url(url, "image")
+
+        return ""
+
+    async def process(self, response: AsyncIterable[bytes]) -> AppChatImageCollectPayload:
+        best_candidates: dict[str, Any] = {}
+        post_id = ""
+        post_id_rank = 999
+        conversation_id = ""
+        response_id = ""
+        idle_timeout = get_config("image.stream_timeout")
+
+        try:
+            async for line in _with_idle_timeout(response, idle_timeout, self.model):
+                line = _normalize_line(line)
+                if not line:
+                    continue
+                try:
+                    data = orjson.loads(line)
+                except orjson.JSONDecodeError:
+                    continue
+
+                resp = _extract_app_chat_result_payload(data)
+                if not resp:
+                    continue
+
+                current_conversation_id, current_response_id = (
+                    _extract_app_chat_share_context(data)
+                )
+                if current_conversation_id:
+                    conversation_id = current_conversation_id
+                if current_response_id:
+                    response_id = current_response_id
+
+                current_post_id, current_rank = _pick_best_post_id(
+                    _collect_post_id_candidates(resp)
+                )
+                if current_post_id and current_rank < post_id_rank:
+                    post_id = current_post_id
+                    post_id_rank = current_rank
+
+                if mr := resp.get("modelResponse"):
+                    if candidates := _collect_image_candidates(mr):
+                        for candidate in candidates:
+                            fallback_post_id = _maybe_extract_uuid(candidate.url)
+                            if fallback_post_id and post_id_rank > 7:
+                                post_id = fallback_post_id
+                                post_id_rank = 7
+                            existing = best_candidates.get(candidate.key)
+                            best_candidates[candidate.key] = (
+                                _pick_preferred_image_candidate(existing, candidate)
+                            )
+
+        except asyncio.CancelledError:
+            logger.debug("Image collect cancelled by client")
+        except RequestsError as e:
+            if _is_http2_error(e):
+                logger.warning(f"HTTP/2 stream error in image collect: {e}")
+            else:
+                logger.error(f"Image collect request error: {e}")
+        except Exception as e:
+            logger.error(
+                f"Image collect processing error: {e}",
+                extra={"error_type": type(e).__name__},
+            )
+        finally:
+            await self.close()
+
+        images: List[str] = []
+        for candidate in sorted(best_candidates.values(), key=lambda item: item.order):
+            processed = await self._process_image_url(candidate.url)
+            if processed:
+                images.append(processed)
+
+        return AppChatImageCollectPayload(
+            images=images,
+            post_id=post_id,
+            post_id_rank=post_id_rank,
+            conversation_id=conversation_id,
+            response_id=response_id,
+        )
 
 
 class ImageGenerationService:
@@ -68,6 +458,7 @@ class ImageGenerationService:
         stream: bool,
         enable_nsfw: Optional[bool] = None,
         chat_format: bool = False,
+        return_share_url: bool = False,
     ) -> ImageGenerationResult:
         max_token_retries = int(get_config("retry.max_retry") or 3)
         tried_tokens: set[str] = set()
@@ -192,6 +583,7 @@ class ImageGenerationService:
                         n=n,
                         response_format=response_format,
                         enable_nsfw=enable_nsfw,
+                        return_share_url=return_share_url,
                     )
                 except UpstreamException as app_chat_error:
                     if rate_limited(app_chat_error):
@@ -319,11 +711,12 @@ class ImageGenerationService:
         n: int,
         response_format: str,
         enable_nsfw: Optional[bool] = None,
+        return_share_url: bool = False,
     ) -> ImageGenerationResult:
         per_call = min(max(1, n), 2)
         calls_needed = max(1, int(math.ceil(n / per_call)))
 
-        async def _call_generate(call_target: int) -> List[str]:
+        async def _call_generate(call_target: int) -> AppChatImageCollectPayload:
             response = await GrokChatService().chat(
                 token=token,
                 message=prompt,
@@ -335,7 +728,7 @@ class ImageGenerationService:
                     call_target, enable_nsfw
                 ),
             )
-            processor = AppChatImageCollectProcessor(
+            processor = ImageAppChatCollectProcessor(
                 model_info.model_id,
                 token,
                 response_format=response_format,
@@ -343,7 +736,10 @@ class ImageGenerationService:
             return await processor.process(response)
 
         if calls_needed == 1:
-            all_images = await _call_generate(n)
+            payload = await _call_generate(n)
+            all_images = payload.images
+            share_conversation_id = payload.conversation_id
+            share_response_id = payload.response_id
         else:
             tasks = []
             for i in range(calls_needed):
@@ -351,6 +747,8 @@ class ImageGenerationService:
                 tasks.append(_call_generate(min(per_call, remaining)))
             results = await asyncio.gather(*tasks, return_exceptions=True)
             all_images: List[str] = []
+            share_conversation_id = ""
+            share_response_id = ""
             last_error: Optional[Exception] = None
             rate_limit_error: Optional[Exception] = None
             for result in results:
@@ -360,7 +758,14 @@ class ImageGenerationService:
                     if rate_limited(result):
                         rate_limit_error = result
                     continue
-                for image in result:
+                if (
+                    not share_conversation_id
+                    and result.conversation_id
+                    and result.response_id
+                ):
+                    share_conversation_id = result.conversation_id
+                    share_response_id = result.response_id
+                for image in result.images:
                     if image not in all_images:
                         all_images.append(image)
 
@@ -382,6 +787,22 @@ class ImageGenerationService:
             logger.warning(f"Failed to consume token: {e}")
 
         selected = self._select_images(all_images, n)
+        share_url = ""
+        share_image_url = ""
+        share_image_source = ""
+        share_image_expires_at = ""
+        if return_share_url and share_conversation_id and share_response_id:
+            share_url = await _create_image_share_link(
+                token,
+                share_conversation_id,
+                share_response_id,
+            )
+            if share_url:
+                (
+                    share_image_url,
+                    share_image_source,
+                    share_image_expires_at,
+                ) = await _resolve_share_image_details(share_url)
         usage_override = {
             "total_tokens": 0,
             "input_tokens": 0,
@@ -389,7 +810,13 @@ class ImageGenerationService:
             "input_tokens_details": {"text_tokens": 0, "image_tokens": 0},
         }
         return ImageGenerationResult(
-            stream=False, data=selected, usage_override=usage_override
+            stream=False,
+            data=selected,
+            usage_override=usage_override,
+            share_url=share_url,
+            share_image_url=share_image_url,
+            share_image_source=share_image_source,
+            share_image_expires_at=share_image_expires_at,
         )
 
     async def _collect_ws(

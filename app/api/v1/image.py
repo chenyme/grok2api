@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.services.grok.services.image import ImageGenerationService
 from app.services.grok.services.image_edit import ImageEditService
 from app.services.grok.services.model import ModelService
+from app.services.grok.utils.share_resolver import resolve_grok_share_image
 from app.services.token import get_token_manager
 from app.core.exceptions import ValidationException, AppException, ErrorType
 from app.core.config import get_config
@@ -53,6 +54,9 @@ class ImageGenerationRequest(BaseModel):
     response_format: Optional[str] = Field(None, description="响应格式")
     style: Optional[str] = Field(None, description="风格 (暂不支持)")
     stream: Optional[bool] = Field(False, description="是否流式输出")
+    return_share_url: Optional[bool] = Field(
+        False, description="是否返回 Grok 分享页链接"
+    )
 
 
 class ImageEditRequest(BaseModel):
@@ -70,6 +74,30 @@ class ImageEditRequest(BaseModel):
     response_format: Optional[str] = Field(None, description="响应格式")
     style: Optional[str] = Field(None, description="风格 (暂不支持)")
     stream: Optional[bool] = Field(False, description="是否流式输出")
+
+
+class ShareImageResolveRequest(BaseModel):
+    share_url: str = Field(..., description="Grok 分享页链接")
+
+
+def append_share_payload(payload: dict, result) -> dict:
+    share_url = getattr(result, "share_url", "") or ""
+    if share_url:
+        payload["share_url"] = share_url
+
+    share_image_url = getattr(result, "share_image_url", "") or ""
+    if share_image_url:
+        payload["share_image_url"] = share_image_url
+
+    share_image_source = getattr(result, "share_image_source", "") or ""
+    if share_image_source:
+        payload["share_image_source"] = share_image_source
+
+    share_image_expires_at = getattr(result, "share_image_expires_at", "") or ""
+    if share_image_expires_at:
+        payload["share_image_expires_at"] = share_image_expires_at
+
+    return payload
 
 
 def _validate_common_request(
@@ -108,6 +136,13 @@ def _validate_common_request(
                     code="invalid_response_format",
                 )
 
+    if request.stream and getattr(request, "return_share_url", False):
+        raise ValidationException(
+            message="return_share_url is only supported when stream=false",
+            param="return_share_url",
+            code="share_url_stream_not_supported",
+        )
+
     if request.response_format:
         allowed_formats = {"b64_json", "base64", "url"}
         if request.response_format not in allowed_formats:
@@ -127,16 +162,8 @@ def _validate_common_request(
 
 def validate_generation_request(request: ImageGenerationRequest):
     """验证图片生成请求参数"""
-    if request.model != "grok-imagine-1.0":
-        raise ValidationException(
-            message="The model `grok-imagine-1.0` is required for image generation.",
-            param="model",
-            code="model_not_supported",
-        )
-    # 验证模型 - 通过 is_image 检查
     model_info = ModelService.get(request.model)
     if not model_info or not model_info.is_image:
-        # 获取支持的图片模型列表
         image_models = [m.model_id for m in ModelService.MODELS if m.is_image]
         raise ValidationException(
             message=(
@@ -289,6 +316,7 @@ async def create_image(request: ImageGenerationRequest):
         size=request.size,
         aspect_ratio=aspect_ratio,
         stream=bool(request.stream),
+        return_share_url=bool(request.return_share_url),
     )
 
     if result.stream:
@@ -306,13 +334,28 @@ async def create_image(request: ImageGenerationRequest):
         "input_tokens_details": {"text_tokens": 0, "image_tokens": 0},
     }
 
-    return JSONResponse(
-        content={
-            "created": int(time.time()),
-            "data": data,
-            "usage": usage,
-        }
-    )
+    payload = {
+        "created": int(time.time()),
+        "data": data,
+        "usage": usage,
+    }
+    return JSONResponse(content=append_share_payload(payload, result))
+
+
+@router.post("/images/share/resolve")
+async def resolve_share_image(request: ShareImageResolveRequest):
+    result = await resolve_grok_share_image(request.share_url)
+    payload = {
+        "share_url": result.share_url,
+        "resolved": bool(result.image_url),
+    }
+    if result.image_url:
+        payload["share_image_url"] = result.image_url
+    if result.source:
+        payload["share_image_source"] = result.source
+    if result.expires_at:
+        payload["share_image_expires_at"] = result.expires_at
+    return JSONResponse(content=payload)
 
 
 @router.post("/images/edits")

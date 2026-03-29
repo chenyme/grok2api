@@ -999,7 +999,7 @@
           signal: abortController.signal
         });
         if (!res.ok) throw new Error(t('chat.requestFailedStatus', { status: res.status }));
-        await handleStream(res, assistantEntry, sendSessionId);
+        await handleAssistantResponse(res, payload, assistantEntry, sendSessionId);
         setStatus('connected', t('common.done'));
       } catch (e) {
         if (e && e.name === 'AbortError') {
@@ -1293,6 +1293,45 @@
     return payload;
   }
 
+  function extractPromptText(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    return content
+      .filter((block) => block && block.type === 'text' && block.text)
+      .map((block) => String(block.text))
+      .join('\n')
+      .trim();
+  }
+
+  function isImageModelSelected(model) {
+    return /^grok-imagine/i.test(String(model || '').trim());
+  }
+
+  function isLikelyImagePrompt(prompt) {
+    const value = String(prompt || '').trim();
+    if (!value) return false;
+    const patterns = [
+      /generate\s+(?:a|an)?\s*(?:picture|image|photo|illustration|drawing)/i,
+      /\b(?:draw|illustrate|render|create|make)\b[\s\S]{0,32}\b(?:image|picture|photo|art|illustration)\b/i,
+      /生成[\s\S]{0,16}(?:图片|图像|照片|插画|绘图|一张图)/,
+      /画[\s\S]{0,16}(?:图|图片|插画|照片)/,
+      /来[\s\S]{0,8}(?:张|幅)(?:图|图片|插画)/,
+    ];
+    return patterns.some((pattern) => pattern.test(value));
+  }
+
+  function shouldUseImageResultMode(history) {
+    if (isImageModelSelected(modelValue)) return true;
+    const items = Array.isArray(history) ? history : [];
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const item = items[i];
+      if (!item || item.role !== 'user') continue;
+      const prompt = extractPromptText(item.content);
+      return isLikelyImagePrompt(prompt);
+    }
+    return false;
+  }
+
   function buildPayload() {
     const payload = {
       model: modelValue || 'grok-3',
@@ -1301,6 +1340,13 @@
       temperature: Number(tempRange ? tempRange.value : 0.8),
       top_p: Number(topPRange ? topPRange.value : 0.95)
     };
+    if (shouldUseImageResultMode(messageHistory)) {
+      payload.stream = false;
+      payload.image_config = {
+        response_format: 'url',
+        return_share_url: true
+      };
+    }
     return payload;
   }
 
@@ -1312,7 +1358,52 @@
       temperature: Number(tempRange ? tempRange.value : 0.8),
       top_p: Number(topPRange ? topPRange.value : 0.95)
     };
+    if (shouldUseImageResultMode(history)) {
+      payload.stream = false;
+      payload.image_config = {
+        response_format: 'url',
+        return_share_url: true
+      };
+    }
     return payload;
+  }
+
+  function appendShareLinks(content, payload) {
+    const base = String(content || '').trimEnd();
+    const extras = [];
+    const shareUrl = payload && payload.share_url ? String(payload.share_url).trim() : '';
+    const shareImageUrl = payload && payload.share_image_url ? String(payload.share_image_url).trim() : '';
+
+    if (shareUrl && !base.includes(shareUrl)) {
+      extras.push(`Share link: [${shareUrl}](${shareUrl})`);
+    }
+    if (shareImageUrl && !base.includes(shareImageUrl)) {
+      extras.push(`Direct link: [${shareImageUrl}](${shareImageUrl})`);
+    }
+
+    if (!extras.length) return base;
+    return base ? `${base}\n\n${extras.join('\n')}` : extras.join('\n');
+  }
+
+  async function handleJsonResponse(res, assistantEntry, targetSessionId) {
+    const payload = await res.json();
+    if (payload && payload.error) {
+      throw new Error(payload.error.message || t('common.failed'));
+    }
+    const content = payload && payload.choices && payload.choices[0] && payload.choices[0].message
+      ? (payload.choices[0].message.content || '')
+      : '';
+    const assistantText = appendShareLinks(content, payload);
+    updateMessage(assistantEntry, assistantText, true);
+    assistantEntry.committed = true;
+    commitToSession(targetSessionId, assistantText);
+  }
+
+  async function handleAssistantResponse(res, requestPayload, assistantEntry, targetSessionId) {
+    if (requestPayload && requestPayload.stream === false) {
+      return handleJsonResponse(res, assistantEntry, targetSessionId);
+    }
+    return handleStream(res, assistantEntry, targetSessionId);
   }
 
   function selectModel(value) {
@@ -1514,7 +1605,7 @@
         throw new Error(t('chat.requestFailedStatus', { status: res.status }));
       }
 
-      await handleStream(res, assistantEntry, retrySessionId);
+      await handleAssistantResponse(res, payload, assistantEntry, retrySessionId);
       setStatus('connected', t('common.done'));
     } catch (e) {
       updateMessage(assistantEntry, t('chat.requestFailedStatus', { status: e.message || e }), true);
@@ -1597,7 +1688,7 @@
         throw new Error(t('chat.requestFailedStatus', { status: res.status }));
       }
 
-      await handleStream(res, assistantEntry, sendSessionId);
+      await handleAssistantResponse(res, payload, assistantEntry, sendSessionId);
       setStatus('connected', t('common.done'));
     } catch (e) {
       if (e && e.name === 'AbortError') {

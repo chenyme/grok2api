@@ -109,6 +109,232 @@ def test_stream_processor_final_chunk_has_usage(monkeypatch):
     asyncio.run(_run())
 
 
+def test_stream_processor_prefers_final_image_over_preview(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.grok.services.chat.get_config",
+        lambda key, default=None: 0 if key == "chat.stream_timeout" else [],
+    )
+
+    class DummyDownloadService:
+        async def render_image(self, url, token, image_id="image"):
+            return f"![{image_id}]({url})"
+
+    preview = (
+        "users/demo/generated/11111111-2222-3333-4444-555555555555-part-0/image.jpg"
+    )
+    original = (
+        "https://assets.grok.com/users/demo/generated/"
+        "11111111-2222-3333-4444-555555555555/image.jpg"
+    )
+
+    monkeypatch.setattr(
+        StreamProcessor,
+        "_get_dl",
+        lambda self: DummyDownloadService(),
+    )
+
+    async def _run():
+        processor = StreamProcessor("grok-4.20-beta", prompt_tokens=9, show_think=True)
+        chunks = []
+        async for chunk in processor.process(
+            _iter_lines(
+                [
+                    _json_line(
+                        {
+                            "result": {
+                                "response": {
+                                    "responseId": "resp_stream_image",
+                                    "streamingImageGenerationResponse": {
+                                        "imageIndex": 0,
+                                        "progress": 42,
+                                    },
+                                }
+                            }
+                        }
+                    ),
+                    _json_line(
+                        {
+                            "result": {
+                                "response": {
+                                    "responseId": "resp_stream_image",
+                                    "modelResponse": {
+                                        "cardAttachmentsJson": [
+                                            orjson.dumps(
+                                                {
+                                                    "id": "card-demo",
+                                                    "image_chunk": {
+                                                        "imageUrl": preview
+                                                    },
+                                                }
+                                            ).decode()
+                                        ]
+                                    },
+                                }
+                            }
+                        }
+                    ),
+                    _json_line(
+                        {
+                            "result": {
+                                "response": {
+                                    "responseId": "resp_stream_image",
+                                    "cardAttachment": {
+                                        "jsonData": orjson.dumps(
+                                            {
+                                                "id": "card-demo",
+                                                "image": {"original": original},
+                                            }
+                                        ).decode()
+                                    },
+                                }
+                            }
+                        }
+                    ),
+                ]
+            )
+        ):
+            chunks.append(chunk)
+
+        combined = "".join(chunks)
+        assert preview not in combined
+        assert combined.count(original) == 1
+
+    asyncio.run(_run())
+
+
+def test_stream_processor_falls_back_to_preview_when_final_missing(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.grok.services.chat.get_config",
+        lambda key, default=None: 0 if key == "chat.stream_timeout" else [],
+    )
+
+    class DummyDownloadService:
+        async def render_image(self, url, token, image_id="image"):
+            return f"![{image_id}]({url})"
+
+    preview = (
+        "users/demo/generated/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-part-0/image.jpg"
+    )
+
+    monkeypatch.setattr(
+        StreamProcessor,
+        "_get_dl",
+        lambda self: DummyDownloadService(),
+    )
+
+    async def _run():
+        processor = StreamProcessor("grok-4.20-beta", prompt_tokens=7, show_think=True)
+        chunks = []
+        async for chunk in processor.process(
+            _iter_lines(
+                [
+                    _json_line(
+                        {
+                            "result": {
+                                "response": {
+                                    "responseId": "resp_stream_preview",
+                                    "modelResponse": {
+                                        "cardAttachmentsJson": [
+                                            orjson.dumps(
+                                                {
+                                                    "id": "card-demo",
+                                                    "image_chunk": {
+                                                        "imageUrl": preview
+                                                    },
+                                                }
+                                            ).decode()
+                                        ]
+                                    },
+                                }
+                            }
+                        }
+                    )
+                ]
+            )
+        ):
+            chunks.append(chunk)
+
+        combined = "".join(chunks)
+        assert combined.count(preview) == 1
+
+    asyncio.run(_run())
+
+
+def test_collect_processor_image_result_includes_share_fields(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.grok.services.chat.get_config",
+        lambda key, default=None: 0 if key == "chat.stream_timeout" else [],
+    )
+
+    class DummyDownloadService:
+        async def render_image(self, url, token, image_id="image"):
+            return f"![{image_id}]({url})"
+
+    original = (
+        "https://assets.grok.com/users/demo/generated/"
+        "11111111-2222-3333-4444-555555555555/image.jpg"
+    )
+
+    monkeypatch.setattr(
+        CollectProcessor,
+        "_get_dl",
+        lambda self: DummyDownloadService(),
+    )
+    monkeypatch.setattr(
+        "app.services.grok.services.chat._create_chat_share_link",
+        lambda token, conversation_id, response_id: asyncio.sleep(0, result="https://grok.com/share/demo-share"),
+    )
+    monkeypatch.setattr(
+        "app.services.grok.services.chat._resolve_share_image_details",
+        lambda share_url: asyncio.sleep(
+            0,
+            result=(
+                "https://grok.com/share/demo-share/opengraph-image/demo-share?cache=1",
+                "og:image",
+                "",
+            ),
+        ),
+    )
+
+    async def _run():
+        processor = CollectProcessor("grok-4.20-beta", token="token-demo", prompt_tokens=9)
+        result = await processor.process(
+            _iter_lines(
+                [
+                    _json_line(
+                        {
+                            "result": {
+                                "conversationId": "conv-share",
+                                "response": {
+                                    "modelResponse": {
+                                        "responseId": "resp-share",
+                                        "message": "",
+                                        "cardAttachmentsJson": [
+                                            orjson.dumps(
+                                                {
+                                                    "id": "card-demo",
+                                                    "image": {"original": original},
+                                                }
+                                            ).decode()
+                                        ],
+                                    }
+                                },
+                            }
+                        }
+                    )
+                ]
+            )
+        )
+        assert result["share_url"] == "https://grok.com/share/demo-share"
+        assert (
+            result["share_image_url"]
+            == "https://grok.com/share/demo-share/opengraph-image/demo-share?cache=1"
+        )
+        assert result["share_image_source"] == "og:image"
+
+    asyncio.run(_run())
+
+
 def test_responses_stream_completed_event_uses_chat_usage(monkeypatch):
     async def fake_chat_completions(**kwargs):
         async def _gen():
