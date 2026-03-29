@@ -57,6 +57,60 @@ def test_collect_processor_returns_estimated_usage(monkeypatch):
     asyncio.run(_run())
 
 
+def test_collect_processor_extracts_web_search_citations(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.grok.services.chat.get_config",
+        lambda key, default=None: 0 if key == "chat.stream_timeout" else [],
+    )
+
+    async def _run():
+        processor = CollectProcessor("grok-4", prompt_tokens=7)
+        result = await processor.process(
+            _iter_lines(
+                [
+                    _json_line(
+                        {
+                            "result": {
+                                "response": {
+                                    "modelResponse": {
+                                        "responseId": "resp_collect_citations",
+                                        "message": "这里是答案",
+                                        "webSearchResults": [
+                                            {
+                                                "url": "https://example.com/a",
+                                                "title": "Example A",
+                                                "preview": "Preview A",
+                                            },
+                                            {
+                                                "url": "https://example.com/b",
+                                                "title": "Example B",
+                                                "preview": "Preview B",
+                                            },
+                                        ],
+                                    }
+                                }
+                            }
+                        }
+                    )
+                ]
+            )
+        )
+        assert result["citations"] == [
+            {
+                "url": "https://example.com/a",
+                "title": "Example A",
+                "preview": "Preview A",
+            },
+            {
+                "url": "https://example.com/b",
+                "title": "Example B",
+                "preview": "Preview B",
+            },
+        ]
+
+    asyncio.run(_run())
+
+
 def test_stream_processor_final_chunk_has_usage(monkeypatch):
     monkeypatch.setattr(
         "app.services.grok.services.chat.get_config",
@@ -109,6 +163,125 @@ def test_stream_processor_final_chunk_has_usage(monkeypatch):
     asyncio.run(_run())
 
 
+def test_stream_processor_final_chunk_includes_citations(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.grok.services.chat.get_config",
+        lambda key, default=None: 0 if key == "chat.stream_timeout" else [],
+    )
+
+    async def _run():
+        processor = StreamProcessor("grok-4", prompt_tokens=5)
+        chunks = []
+        async for chunk in processor.process(
+            _iter_lines(
+                [
+                    _json_line(
+                        {
+                            "result": {
+                                "response": {
+                                    "responseId": "resp_stream_citations",
+                                    "token": "hello",
+                                }
+                            }
+                        }
+                    ),
+                    _json_line(
+                        {
+                            "result": {
+                                "response": {
+                                    "modelResponse": {
+                                        "responseId": "resp_stream_citations",
+                                        "message": "hello",
+                                        "webSearchResults": [
+                                            {
+                                                "url": "https://example.com/search",
+                                                "title": "Search Result",
+                                                "preview": "Search Preview",
+                                            }
+                                        ],
+                                    }
+                                }
+                            }
+                        }
+                    ),
+                ]
+            )
+        ):
+            chunks.append(chunk)
+
+        final_payload = _decode_sse_json(chunks[-2])
+        assert final_payload["citations"] == [
+            {
+                "url": "https://example.com/search",
+                "title": "Search Result",
+                "preview": "Search Preview",
+            }
+        ]
+
+    asyncio.run(_run())
+
+
+def test_responses_non_stream_includes_chat_citations(monkeypatch):
+    async def fake_chat_completions(**kwargs):
+        return {
+            "id": "chatcmpl_test",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "grok-4",
+            "citations": [
+                {
+                    "url": "https://example.com/citation",
+                    "title": "Citation",
+                    "preview": "Citation Preview",
+                }
+            ],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Hello"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 3,
+                "completion_tokens": 2,
+                "total_tokens": 5,
+                "prompt_tokens_details": {
+                    "cached_tokens": 0,
+                    "text_tokens": 3,
+                    "audio_tokens": 0,
+                    "image_tokens": 0,
+                },
+                "completion_tokens_details": {
+                    "text_tokens": 2,
+                    "audio_tokens": 0,
+                    "reasoning_tokens": 0,
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.services.grok.services.responses.ChatService.completions",
+        fake_chat_completions,
+    )
+
+    async def _run():
+        response = await ResponsesService.create(
+            model="grok-4",
+            input_value="hi",
+            stream=False,
+        )
+        assert response["citations"] == [
+            {
+                "url": "https://example.com/citation",
+                "title": "Citation",
+                "preview": "Citation Preview",
+            }
+        ]
+
+    asyncio.run(_run())
+
+
 def test_responses_stream_completed_event_uses_chat_usage(monkeypatch):
     async def fake_chat_completions(**kwargs):
         async def _gen():
@@ -126,6 +299,7 @@ def test_responses_stream_completed_event_uses_chat_usage(monkeypatch):
                 'data: {"id":"chatcmpl_test","object":"chat.completion.chunk","created":1,'
                 '"model":"grok-4","choices":[{"index":0,"delta":{},'
                 '"logprobs":null,"finish_reason":"stop"}],'
+                '"citations":[{"url":"https://example.com/citation","title":"Citation","preview":"Citation Preview"}],'
                 '"usage":{"prompt_tokens":13,"completion_tokens":5,"total_tokens":18,'
                 '"prompt_tokens_details":{"cached_tokens":0,"text_tokens":13,"audio_tokens":0,"image_tokens":0},'
                 '"completion_tokens_details":{"text_tokens":5,"audio_tokens":0,"reasoning_tokens":0}}}\n\n'
@@ -157,5 +331,12 @@ def test_responses_stream_completed_event_uses_chat_usage(monkeypatch):
         assert usage["input_tokens"] == 13
         assert usage["output_tokens"] == 5
         assert usage["total_tokens"] == 18
+        assert completed["response"]["citations"] == [
+            {
+                "url": "https://example.com/citation",
+                "title": "Citation",
+                "preview": "Citation Preview",
+            }
+        ]
 
     asyncio.run(_run())

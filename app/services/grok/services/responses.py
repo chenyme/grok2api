@@ -327,6 +327,7 @@ def _build_response_object(
     truncation: Optional[str] = None,
     user: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    citations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     response_id = response_id or _new_response_id()
     created_at = created_at or _now_ts()
@@ -366,6 +367,7 @@ def _build_response_object(
         "usage": usage,
         "user": user,
         "metadata": metadata or {},
+        "citations": citations or [],
     }
 
 
@@ -406,6 +408,7 @@ class ResponseStreamAdapter:
         self.truncation = truncation
         self.user = user
         self.metadata = metadata
+        self.citations: List[Dict[str, Any]] = []
 
         self.output_text_parts: List[str] = []
         self.tool_calls_by_index: Dict[int, Dict[str, Any]] = {}
@@ -447,6 +450,7 @@ class ResponseStreamAdapter:
             truncation=self.truncation,
             user=self.user,
             metadata=self.metadata,
+            citations=self.citations,
         )
 
     def _alloc_output_index(self) -> int:
@@ -741,6 +745,7 @@ class ResponsesService:
                 truncation=truncation,
                 user=user,
                 metadata=metadata,
+                citations=result.get("citations"),
             )
 
         if not hasattr(result, "__aiter__"):
@@ -783,6 +788,8 @@ class ResponsesService:
                 if data.get("object") == "chat.completion.chunk":
                     if data.get("usage"):
                         final_usage = to_responses_usage(data.get("usage"))
+                    if "citations" in data:
+                        adapter.citations = data.get("citations") or []
                     delta = (data.get("choices") or [{}])[0].get("delta") or {}
                     if "content" in delta and delta["content"]:
                         for event in adapter.ensure_message_started():

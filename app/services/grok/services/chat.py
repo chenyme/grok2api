@@ -97,6 +97,29 @@ def extract_tool_text(raw: str, rollout_id: str = "") -> str:
     return re.sub(r"<[^>]+>", "", raw, flags=re.DOTALL).strip()
 
 
+def extract_web_citations(model_response: Dict[str, Any] | None) -> List[Dict[str, str]]:
+    """Extract web search citations from Grok model response."""
+    if not isinstance(model_response, dict):
+        return []
+
+    citations: List[Dict[str, str]] = []
+    for item in model_response.get("webSearchResults") or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        citation = {"url": url}
+        title = str(item.get("title") or "").strip()
+        preview = str(item.get("preview") or "").strip()
+        if title:
+            citation["title"] = title
+        if preview:
+            citation["preview"] = preview
+        citations.append(citation)
+    return citations
+
+
 def _get_chat_semaphore() -> asyncio.Semaphore:
     global _CHAT_SEMAPHORE, _CHAT_SEM_VALUE
     value = max(1, int(get_config("chat.concurrent")))
@@ -559,6 +582,7 @@ class StreamProcessor(proc_base.BaseProcessor):
         self.prompt_tokens = max(0, int(prompt_tokens or 0))
         self._completion_parts: list[str] = []
         self._completion_tool_calls: list[dict[str, Any]] = []
+        self.citations: list[dict[str, str]] = []
 
     def _record_content(self, content: str) -> None:
         if content:
@@ -734,6 +758,7 @@ class StreamProcessor(proc_base.BaseProcessor):
         finish: str = None,
         tool_calls: list = None,
         usage: dict | None = None,
+        citations: list[dict[str, str]] | None = None,
     ) -> str:
         """Build SSE response."""
         delta = {}
@@ -757,6 +782,8 @@ class StreamProcessor(proc_base.BaseProcessor):
         }
         if usage is not None:
             chunk["usage"] = usage
+        if citations is not None:
+            chunk["citations"] = citations
         return f"data: {orjson.dumps(chunk).decode()}\n\n"
 
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
@@ -813,6 +840,9 @@ class StreamProcessor(proc_base.BaseProcessor):
                     continue
 
                 if mr := resp.get("modelResponse"):
+                    citations = extract_web_citations(mr)
+                    if citations:
+                        self.citations = citations
                     if self.image_think_active and self.think_opened:
                         yield self._sse("\n</think>\n")
                         self.think_opened = False
@@ -917,8 +947,9 @@ class StreamProcessor(proc_base.BaseProcessor):
                     usage=estimate_chat_usage(
                         prompt_tokens=self.prompt_tokens,
                         content="".join(self._completion_parts),
-                        tool_calls=self._completion_tool_calls or None,
+                    tool_calls=self._completion_tool_calls or None,
                     ),
+                    citations=self.citations,
                 )
             else:
                 yield self._sse(
@@ -928,6 +959,7 @@ class StreamProcessor(proc_base.BaseProcessor):
                         content="".join(self._completion_parts),
                         tool_calls=self._completion_tool_calls or None,
                     ),
+                    citations=self.citations,
                 )
 
             yield "data: [DONE]\n\n"
@@ -1022,6 +1054,7 @@ class CollectProcessor(proc_base.BaseProcessor):
         response_id = ""
         fingerprint = ""
         content = ""
+        citations: List[Dict[str, str]] = []
         idle_timeout = get_config("chat.stream_timeout")
 
         try:
@@ -1044,6 +1077,7 @@ class CollectProcessor(proc_base.BaseProcessor):
                 if mr := resp.get("modelResponse"):
                     response_id = mr.get("responseId", "")
                     content = mr.get("message", "")
+                    citations = extract_web_citations(mr)
 
                     card_map: dict[str, tuple[str, str]] = {}
                     for raw in mr.get("cardAttachmentsJson") or []:
@@ -1167,6 +1201,7 @@ class CollectProcessor(proc_base.BaseProcessor):
             "created": self.created,
             "model": self.model,
             "system_fingerprint": fingerprint,
+            "citations": citations,
             "choices": [
                 {
                     "index": 0,
