@@ -98,7 +98,7 @@ def extract_tool_text(raw: str, rollout_id: str = "") -> str:
 
 
 def extract_web_citations(model_response: Dict[str, Any] | None) -> List[Dict[str, str]]:
-    """Extract web search citations from Grok model response."""
+    """Extract web and X search citations from Grok model response."""
     if not isinstance(model_response, dict):
         return []
 
@@ -109,13 +109,52 @@ def extract_web_citations(model_response: Dict[str, Any] | None) -> List[Dict[st
         url = str(item.get("url") or "").strip()
         if not url:
             continue
-        citation = {"url": url}
+        citation = {"type": "web_page", "url": url}
         title = str(item.get("title") or "").strip()
         preview = str(item.get("preview") or "").strip()
         if title:
             citation["title"] = title
         if preview:
             citation["preview"] = preview
+        citations.append(citation)
+
+    for item in model_response.get("xposts") or []:
+        if not isinstance(item, dict):
+            continue
+        username = str(item.get("username") or "").strip()
+        post_id = str(item.get("postId") or "").strip()
+        if not username or not post_id:
+            continue
+
+        url = f"https://x.com/{username}/status/{post_id}"
+        citation = {
+            "type": "x_post",
+            "url": url,
+            "post_id": post_id,
+            "username": username,
+        }
+
+        name = str(item.get("name") or "").strip()
+        text = str(item.get("text") or "").strip()
+        create_time = str(item.get("createTime") or "").strip()
+        profile_image_url = str(item.get("profileImageUrl") or "").strip()
+        community_note = str(item.get("communityNote") or "").strip()
+
+        if name:
+            citation["name"] = name
+            citation["title"] = f"{name} (@{username})"
+        else:
+            citation["title"] = f"@{username}"
+        if text:
+            citation["text"] = text
+            citation["preview"] = text
+        if create_time:
+            citation["create_time"] = create_time
+        if profile_image_url:
+            citation["profile_image_url"] = profile_image_url
+        if community_note:
+            citation["community_note"] = community_note
+
         citations.append(citation)
     return citations
 

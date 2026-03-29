@@ -87,6 +87,17 @@ def test_collect_processor_extracts_web_search_citations(monkeypatch):
                                                 "preview": "Preview B",
                                             },
                                         ],
+                                        "xposts": [
+                                            {
+                                                "username": "alice",
+                                                "name": "Alice",
+                                                "text": "Hello from X",
+                                                "createTime": "2026-03-29T16:04:00Z",
+                                                "profileImageUrl": "https://example.com/alice.jpg",
+                                                "postId": "12345",
+                                                "communityNote": "",
+                                            }
+                                        ],
                                     }
                                 }
                             }
@@ -97,14 +108,28 @@ def test_collect_processor_extracts_web_search_citations(monkeypatch):
         )
         assert result["citations"] == [
             {
+                "type": "web_page",
                 "url": "https://example.com/a",
                 "title": "Example A",
                 "preview": "Preview A",
             },
             {
+                "type": "web_page",
                 "url": "https://example.com/b",
                 "title": "Example B",
                 "preview": "Preview B",
+            },
+            {
+                "type": "x_post",
+                "url": "https://x.com/alice/status/12345",
+                "post_id": "12345",
+                "username": "alice",
+                "name": "Alice",
+                "title": "Alice (@alice)",
+                "text": "Hello from X",
+                "preview": "Hello from X",
+                "create_time": "2026-03-29T16:04:00Z",
+                "profile_image_url": "https://example.com/alice.jpg",
             },
         ]
 
@@ -212,6 +237,7 @@ def test_stream_processor_final_chunk_includes_citations(monkeypatch):
         final_payload = _decode_sse_json(chunks[-2])
         assert final_payload["citations"] == [
             {
+                "type": "web_page",
                 "url": "https://example.com/search",
                 "title": "Search Result",
                 "preview": "Search Preview",
@@ -273,6 +299,7 @@ def test_responses_non_stream_includes_chat_citations(monkeypatch):
         )
         assert response["citations"] == [
             {
+                "type": "web_page",
                 "url": "https://example.com/citation",
                 "title": "Citation",
                 "preview": "Citation Preview",
@@ -333,6 +360,7 @@ def test_responses_stream_completed_event_uses_chat_usage(monkeypatch):
         assert usage["total_tokens"] == 18
         assert completed["response"]["citations"] == [
             {
+                "type": "web_page",
                 "url": "https://example.com/citation",
                 "title": "Citation",
                 "preview": "Citation Preview",

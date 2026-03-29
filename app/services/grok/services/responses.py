@@ -28,6 +28,24 @@ _BUILTIN_TOOL_TYPES = {
 }
 
 
+def _normalize_citations(citations: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    if not citations:
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for item in citations:
+        if not isinstance(item, dict):
+            continue
+        citation = dict(item)
+        if not citation.get("type"):
+            if citation.get("post_id") or citation.get("username"):
+                citation["type"] = "x_post"
+            else:
+                citation["type"] = "web_page"
+        normalized.append(citation)
+    return normalized
+
+
 def _now_ts() -> int:
     return int(time.time())
 
@@ -745,7 +763,7 @@ class ResponsesService:
                 truncation=truncation,
                 user=user,
                 metadata=metadata,
-                citations=result.get("citations"),
+                citations=_normalize_citations(result.get("citations")),
             )
 
         if not hasattr(result, "__aiter__"):
@@ -789,7 +807,7 @@ class ResponsesService:
                     if data.get("usage"):
                         final_usage = to_responses_usage(data.get("usage"))
                     if "citations" in data:
-                        adapter.citations = data.get("citations") or []
+                        adapter.citations = _normalize_citations(data.get("citations"))
                     delta = (data.get("choices") or [{}])[0].get("delta") or {}
                     if "content" in delta and delta["content"]:
                         for event in adapter.ensure_message_started():
