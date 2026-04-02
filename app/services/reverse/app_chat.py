@@ -102,6 +102,19 @@ class AppChatReverse:
             return None
         return value
 
+    # modelMode → modeId 映射（Grok Web 新 API 格式）
+    # 基于浏览器前端 JS 逆向和 API 全量测试验证：
+    #   付费 SuperGrok 的多智能体模式需要 modeId 字段才能正常响应
+    #   有 modeId 时不发 modelName/modelMode（浏览器前端逻辑）
+    _MODE_ID_MAP = {
+        "MODEL_MODE_FAST": "fast",
+        "MODEL_MODE_EXPERT": "expert",
+        "MODEL_MODE_HEAVY": "heavy",
+        "MODEL_MODE_GROK_420": "expert",
+        "MODEL_MODE_GROK_4_1_THINKING": "expert",
+        "MODEL_MODE_GROK_4_1_MINI_THINKING": "expert",
+    }
+
     @staticmethod
     def build_payload(
         message: str,
@@ -152,8 +165,13 @@ class AppChatReverse:
             "toolOverrides": tool_overrides or {},
         }
 
-        if model == "grok-420":
-            payload["enable420"] = True
+        # 优先使用 modeId（Grok 新 API 格式，付费号多智能体模式必需）
+        # 有 modeId 时移除 modelName/modelMode（浏览器前端逻辑）
+        mode_id = AppChatReverse._MODE_ID_MAP.get(mode)
+        if mode_id:
+            payload["modeId"] = mode_id
+            payload.pop("modelName", None)
+            payload.pop("modelMode", None)
 
         custom_personality = AppChatReverse._resolve_custom_personality()
         if custom_personality is not None:
