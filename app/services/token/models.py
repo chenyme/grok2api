@@ -69,6 +69,7 @@ class TokenInfo(BaseModel):
 
     # 冷却管理
     last_sync_at: Optional[int] = None  # 上次同步时间
+    cooldown_until: Optional[int] = None  # 短退避结束时间
 
     # 扩展
     tags: List[str] = Field(default_factory=list)
@@ -111,52 +112,52 @@ class TokenInfo(BaseModel):
 
     def is_available(self, consumed_mode: bool = False) -> bool:
         """检查当前模式下 token 是否可用。"""
-        if self.status != TokenStatus.ACTIVE:
-            return False
-        if consumed_mode:
-            return True
-        return self.quota > 0
+        return self.status == TokenStatus.ACTIVE
 
-    def enter_cooling(self, reset_consumed: bool = True):
-        """进入冷却状态，并在新窗口开始时清空 consumed。"""
+    def enter_cooling(
+        self,
+        reset_consumed: bool = True,
+        cooldown_seconds: Optional[int] = None,
+    ):
+        """进入冷却状态，并按需设置短退避时间。"""
         self.status = TokenStatus.COOLING
         if reset_consumed:
             self.consumed = 0
+        if cooldown_seconds is not None and cooldown_seconds > 0:
+            self.cooldown_until = (
+                int(datetime.now().timestamp() * 1000) + int(cooldown_seconds * 1000)
+            )
+        elif cooldown_seconds == 0:
+            self.cooldown_until = int(datetime.now().timestamp() * 1000)
+        else:
+            self.cooldown_until = None
 
     def recover_active(self, allow_from_expired: bool = False):
         """仅在允许的前提下恢复为 active。"""
         if self.status == TokenStatus.COOLING:
             self.status = TokenStatus.ACTIVE
+            self.cooldown_until = None
         elif allow_from_expired and self.status == TokenStatus.EXPIRED:
             self.status = TokenStatus.ACTIVE
+            self.cooldown_until = None
 
     def consume(self, effort: EffortType = EffortType.LOW) -> int:
         """
-        消耗配额（默认：扣减 quota）
+        记录一次本地消耗估算，不再依据本地 quota 推导冷却。
 
         Args:
             effort: LOW 计 1 次，HIGH 计 4 次
 
         Returns:
-            实际扣除的配额
+            本次计入的消耗值
         """
         cost = EFFORT_COST[effort]
 
-        # 默认行为：扣减 quota
-        actual_cost = min(cost, self.quota)
-
         self.last_used_at = int(datetime.now().timestamp() * 1000)
-        self.consumed += cost  # 无论是否开启消耗模式，都记录消耗
-        self.use_count += actual_cost
-        self.quota = max(0, self.quota - actual_cost)
+        self.consumed += cost
+        self.use_count += 1
 
-        # 默认行为：quota 耗尽时标记冷却，并重置消耗记录
-        if self.quota == 0:
-            self.enter_cooling()
-        else:
-            self.recover_active()
-
-        return actual_cost
+        return cost
 
     def consume_with_consumed(self, effort: EffortType = EffortType.LOW) -> int:
         """
@@ -251,14 +252,21 @@ class TokenInfo(BaseModel):
             self.last_used_at = int(datetime.now().timestamp() * 1000)
 
     def need_refresh(self, interval_hours: int = 8) -> bool:
-        """检查是否需要刷新配额"""
+        """检查是否需要刷新配额。"""
         if self.status != TokenStatus.COOLING:
             return False
+
+        now = int(datetime.now().timestamp() * 1000)
+        if self.cooldown_until is not None:
+            if now < self.cooldown_until:
+                return False
+            if self.last_sync_at is None:
+                return True
+            return self.last_sync_at < self.cooldown_until
 
         if self.last_sync_at is None:
             return True
 
-        now = int(datetime.now().timestamp() * 1000)
         interval_ms = interval_hours * 3600 * 1000
         return (now - self.last_sync_at) >= interval_ms
 

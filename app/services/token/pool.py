@@ -43,9 +43,9 @@ class TokenPool:
         选择一个可用 Token
 
         默认模式（consumed_mode_enabled=false）:
-            1. 选择 active 状态且 quota > 0 的 token
-            2. 优先选择剩余额度最多的
-            3. 如果额度相同，随机选择
+            1. 选择 active 状态的 token
+            2. 优先选择本地消耗次数（consumed）最少的
+            3. 如果 consumed 相同，随机选择
 
         Consumed 模式（consumed_mode_enabled=true）:
             1. 选择 active 状态的 token
@@ -85,7 +85,7 @@ class TokenPool:
 
 
         else:
-            # ===== 默认模式（旧逻辑）=====
+            # ===== 默认模式 =====
             available = [
                 t
                 for t in self._tokens.values()
@@ -96,7 +96,6 @@ class TokenPool:
             if not available:
                 return None
 
-            # 优先选带指定标签的 token（若存在）
             if prefer_tags:
                 preferred = [
                     t for t in available if prefer_tags.issubset(set(t.tags or []))
@@ -104,13 +103,8 @@ class TokenPool:
                 if preferred:
                     available = preferred
 
-            # 找到最大额度
-            max_quota = max(t.quota for t in available)
-
-            # 筛选最大额度
-            candidates = [t for t in available if t.quota == max_quota]
-
-            # 随机选择
+            min_consumed = min(t.consumed for t in available)
+            candidates = [t for t in available if t.consumed == min_consumed]
             return random.choice(candidates)
 
     def count(self) -> int:

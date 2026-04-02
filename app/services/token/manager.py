@@ -26,6 +26,7 @@ DEFAULT_REFRESH_BATCH_SIZE = 10
 DEFAULT_REFRESH_CONCURRENCY = 5
 DEFAULT_SUPER_REFRESH_INTERVAL_HOURS = 2
 DEFAULT_REFRESH_INTERVAL_HOURS = 8
+DEFAULT_RATE_LIMIT_BACKOFF_SECONDS = 300
 DEFAULT_RELOAD_INTERVAL_SEC = 30
 DEFAULT_SAVE_DELAY_MS = 500
 DEFAULT_USAGE_FLUSH_INTERVAL_SEC = 5
@@ -214,6 +215,81 @@ class TokenManager:
                     except (TypeError, ValueError):
                         return None
         return None
+
+    def _extract_remaining_quota(self, result: dict) -> tuple[Optional[int], bool]:
+        if not isinstance(result, dict):
+            return None, False
+
+        value = result.get("remainingTokens")
+        authoritative = value is not None
+        if value is None:
+            value = result.get("remainingQueries")
+
+        if value is None:
+            return None, authoritative
+
+        try:
+            return max(0, int(value)), authoritative
+        except (TypeError, ValueError):
+            return None, authoritative
+
+    def _apply_usage_result(
+        self,
+        token: TokenInfo,
+        pool_name: Optional[str],
+        result: dict,
+        *,
+        allow_from_expired: bool = False,
+    ) -> dict:
+        new_quota, authoritative = self._extract_remaining_quota(result)
+        if new_quota is None:
+            return {
+                "applied": False,
+                "pool_name": pool_name,
+            }
+
+        old_quota = token.quota
+        old_status = token.status
+        token.quota = new_quota
+
+        if new_quota > 0:
+            token.recover_active(allow_from_expired=allow_from_expired)
+        elif authoritative:
+            token.enter_cooling(reset_consumed=False)
+
+        token.mark_synced()
+
+        window_size = self._extract_window_size_seconds(result)
+        if window_size is not None and pool_name is not None:
+            if (
+                pool_name == SUPER_POOL_NAME
+                and window_size >= SUPER_WINDOW_THRESHOLD_SECONDS
+            ):
+                pool_name = self._move_token_pool(
+                    token,
+                    SUPER_POOL_NAME,
+                    BASIC_POOL_NAME,
+                    reason=f"windowSizeSeconds={window_size}",
+                )
+            elif (
+                pool_name == BASIC_POOL_NAME
+                and window_size < SUPER_WINDOW_THRESHOLD_SECONDS
+            ):
+                pool_name = self._move_token_pool(
+                    token,
+                    BASIC_POOL_NAME,
+                    SUPER_POOL_NAME,
+                    reason=f"windowSizeSeconds={window_size}",
+                )
+
+        return {
+            "applied": True,
+            "pool_name": pool_name,
+            "old_quota": old_quota,
+            "old_status": old_status,
+            "new_quota": new_quota,
+            "authoritative": authoritative,
+        }
 
     def _move_token_pool(
         self,
@@ -539,44 +615,19 @@ class TokenManager:
             usage_service = UsageService()
             result = await usage_service.get(token_str)
 
-            if result and "remainingTokens" in result:
-                new_quota = result.get("remainingTokens")
-                if new_quota is None:
-                    new_quota = result.get("remainingQueries")
-                if new_quota is None:
-                    return False
-                old_quota = target_token.quota
-                old_status = target_token.status
+            usage_update = self._apply_usage_result(
+                target_token,
+                target_pool_name,
+                result,
+                allow_from_expired=True,
+            )
+            if usage_update.get("applied"):
+                target_pool_name = usage_update.get("pool_name")
+                old_quota = usage_update["old_quota"]
+                old_status = usage_update["old_status"]
+                new_quota = usage_update["new_quota"]
 
-                if self._is_consumed_mode():
-                    target_token.update_quota_with_consumed(new_quota)
-                else:
-                    target_token.update_quota(new_quota)
                 target_token.record_success(is_usage=is_usage)
-                target_token.mark_synced()
-
-                window_size = self._extract_window_size_seconds(result)
-                if window_size is not None:
-                    if (
-                        target_pool_name == SUPER_POOL_NAME
-                        and window_size >= SUPER_WINDOW_THRESHOLD_SECONDS
-                    ):
-                        target_pool_name = self._move_token_pool(
-                            target_token,
-                            SUPER_POOL_NAME,
-                            BASIC_POOL_NAME,
-                            reason=f"windowSizeSeconds={window_size}",
-                        )
-                    elif (
-                        target_pool_name == BASIC_POOL_NAME
-                        and window_size < SUPER_WINDOW_THRESHOLD_SECONDS
-                    ):
-                        target_pool_name = self._move_token_pool(
-                            target_token,
-                            BASIC_POOL_NAME,
-                            SUPER_POOL_NAME,
-                            reason=f"windowSizeSeconds={window_size}",
-                        )
 
                 consumed = max(0, old_quota - new_quota)
                 logger.debug(
@@ -695,12 +746,22 @@ class TokenManager:
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
-                old_quota = token.quota
-                token.quota = 0
-                token.enter_cooling()
+                backoff_seconds = get_config(
+                    "token.rate_limit_backoff_seconds",
+                    DEFAULT_RATE_LIMIT_BACKOFF_SECONDS,
+                )
+                try:
+                    backoff_seconds = int(backoff_seconds)
+                except (TypeError, ValueError):
+                    backoff_seconds = DEFAULT_RATE_LIMIT_BACKOFF_SECONDS
+
+                token.enter_cooling(
+                    reset_consumed=False,
+                    cooldown_seconds=max(0, backoff_seconds),
+                )
                 logger.warning(
                     f"Token {raw_token[:10]}...: marked as rate limited "
-                    f"(quota {old_quota} -> 0, status -> cooling)"
+                    f"(status -> cooling, backoff={backoff_seconds}s, quota={token.quota})"
                 )
                 self._track_token_change(token, pool.name, "state")
                 self._schedule_save()
@@ -986,44 +1047,15 @@ class TokenManager:
 
                 result, status, error = await _get_usage_with_retry(token_str)
 
-                if result and "remainingTokens" in result:
-                    new_quota = result.get("remainingTokens")
-                    if new_quota is None:
-                        new_quota = result.get("remainingQueries")
-                    if new_quota is None:
-                        return {"recovered": False, "expired": False}
-                    old_quota = token_info.quota
-                    old_status = token_info.status
-
-                    if self._is_consumed_mode():
-                        token_info.update_quota_with_consumed(new_quota)
-                    else:
-                        token_info.update_quota(new_quota)
-                    token_info.mark_synced()
-
-                    window_size = self._extract_window_size_seconds(result)
-                    if window_size is not None:
-                        current_pool = self.get_pool_name_for_token(token_info.token)
-                        if (
-                            current_pool == SUPER_POOL_NAME
-                            and window_size >= SUPER_WINDOW_THRESHOLD_SECONDS
-                        ):
-                            self._move_token_pool(
-                                token_info,
-                                SUPER_POOL_NAME,
-                                BASIC_POOL_NAME,
-                                reason=f"windowSizeSeconds={window_size}",
-                            )
-                        elif (
-                            current_pool == BASIC_POOL_NAME
-                            and window_size < SUPER_WINDOW_THRESHOLD_SECONDS
-                        ):
-                            self._move_token_pool(
-                                token_info,
-                                BASIC_POOL_NAME,
-                                SUPER_POOL_NAME,
-                                reason=f"windowSizeSeconds={window_size}",
-                            )
+                usage_update = self._apply_usage_result(
+                    token_info,
+                    self.get_pool_name_for_token(token_info.token),
+                    result,
+                )
+                if usage_update.get("applied"):
+                    old_quota = usage_update["old_quota"]
+                    old_status = usage_update["old_status"]
+                    new_quota = usage_update["new_quota"]
 
                     logger.debug(
                         f"Token {token_info.token[:10]}...: refreshed "
@@ -1031,7 +1063,7 @@ class TokenManager:
                     )
 
                     return {
-                        "recovered": new_quota > 0 and old_quota == 0,
+                        "recovered": old_status == TokenStatus.COOLING and token_info.status == TokenStatus.ACTIVE,
                         "expired": False,
                     }
 
