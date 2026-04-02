@@ -39,6 +39,27 @@ async def _update_app_config(
         return False
 
 
+async def _refresh_cooling_tokens_after_cf_update() -> None:
+    """在 cf 配置更新成功后，顺手恢复一次 cooling token。"""
+    try:
+        from app.core.config import get_config
+        from app.services.token.manager import get_token_manager
+
+        max_tokens = int(get_config("token.on_demand_refresh_max_tokens", 100) or 100)
+        manager = await get_token_manager()
+        result = await manager.refresh_cooling_tokens(
+            trigger="cf_refresh",
+            max_tokens=max_tokens,
+        )
+        logger.info(
+            "cf_refresh token check completed: "
+            f"checked={result['checked']}, refreshed={result['refreshed']}, "
+            f"recovered={result['recovered']}, expired={result['expired']}"
+        )
+    except Exception as e:
+        logger.warning(f"cf_refresh token recovery skipped: {e}")
+
+
 async def refresh_once() -> bool:
     """执行一次刷新流程"""
     logger.info("=" * 50)
@@ -58,6 +79,7 @@ async def refresh_once() -> bool:
 
     if success:
         logger.info("刷新完成")
+        await _refresh_cooling_tokens_after_cf_update()
     else:
         logger.error("刷新失败: 更新配置失败")
 
@@ -72,10 +94,16 @@ async def _scheduler_loop():
 
     # 周期性刷新（每次循环重新读取配置，支持面板修改实时生效）
     while True:
-        if is_enabled():
-            await refresh_once()
-        else:
-            logger.debug("cf_refresh disabled, skip refresh")
+        try:
+            if is_enabled():
+                await refresh_once()
+            else:
+                logger.debug("cf_refresh disabled, skip refresh")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception(f"cf_refresh loop error: {e}")
+
         interval = get_refresh_interval()
         await asyncio.sleep(interval)
 
