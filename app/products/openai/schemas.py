@@ -40,6 +40,9 @@ class ChatCompletionRequest(BaseModel):
     tool_choice:         str | dict[str, Any] | None = None
     parallel_tool_calls: bool | None                = True
     max_tokens:          int | None                 = None
+    deepsearch:          Literal["default", "deeper"] | None = Field(
+        None, description="深度搜索预设: default/deeper"
+    )
 
 
 class ImageGenerationRequest(BaseModel):

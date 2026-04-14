@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import re
 from typing import Any, AsyncGenerator
 
 import orjson
@@ -209,6 +210,19 @@ def _normalize_image_format(value: str | None) -> str:
     return fmt
 
 
+_THINK_TAG_RE = re.compile(r"<think>[\s\S]*?</think>")
+_INLINE_BASE64_IMG_RE = re.compile(r"!\[image\]\(data:[^)]*?base64,[^)]*?\)")
+
+
+def _strip_think_and_inline_images(text: str) -> str:
+    """Remove <think>...</think> blocks and inline base64 images from text."""
+    if not text or not isinstance(text, str):
+        return text
+    text = _THINK_TAG_RE.sub("", text).strip()
+    text = _INLINE_BASE64_IMG_RE.sub("[图片]", text)
+    return text
+
+
 def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
     """Flatten OpenAI messages into a single prompt string + file attachments."""
     parts: list[str] = []
@@ -243,15 +257,16 @@ def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
 
         # ── normal content handling ───────────────────────────────────────────
         if isinstance(content, str):
-            if content.strip():
-                parts.append(f"[{role}]: {content.strip()}")
+            cleaned = _strip_think_and_inline_images(content.strip())
+            if cleaned:
+                parts.append(f"[{role}]: {cleaned}")
         elif isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
                     continue
                 btype = block.get("type")
                 if btype == "text":
-                    text = (block.get("text") or "").strip()
+                    text = _strip_think_and_inline_images((block.get("text") or "").strip())
                     if text:
                         parts.append(f"[{role}]: {text}")
                 elif btype == "image_url":
