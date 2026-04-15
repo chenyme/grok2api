@@ -369,6 +369,36 @@ const SCHEMA_DEF = [
           },
         ]
       },
+      {
+        title: '本地存储', titleKey: 'config.schema.groups.storage',
+        section: 'storage',
+        fields: [
+          {
+            key: 'media_max_mb',
+            label: '媒体缓存总上限（MB）',
+            labelKey: 'config.schema.fields.mediaCacheMaxMb.label',
+            type: 'number',
+            desc: '本地图片与视频缓存共享的总容量上限，单位 MB。设置为 0 或负数表示不限制。',
+            descKey: 'config.schema.fields.mediaCacheMaxMb.desc',
+          },
+          {
+            key: 'image_max_mb',
+            label: '图片缓存上限（MB）',
+            labelKey: 'config.schema.fields.imageCacheMaxMb.label',
+            type: 'number',
+            desc: '本地图片缓存的独立容量上限，单位 MB。设置为 0 或负数表示不限制。',
+            descKey: 'config.schema.fields.imageCacheMaxMb.desc',
+          },
+          {
+            key: 'video_max_mb',
+            label: '视频缓存上限（MB）',
+            labelKey: 'config.schema.fields.videoCacheMaxMb.label',
+            type: 'number',
+            desc: '本地视频缓存的独立容量上限，单位 MB。设置为 0 或负数表示不限制。',
+            descKey: 'config.schema.fields.videoCacheMaxMb.desc',
+          },
+        ]
+      },
     ]
   },
   {
