@@ -15,7 +15,7 @@ from app.platform.tokens import (
     estimate_tokens,
     estimate_tool_call_tokens,
 )
-from app.platform.storage import image_files_dir
+from app.platform.storage import image_files_dir, save_media_bytes
 from app.control.account.runtime import get_refresh_service
 from app.control.account.invalid_credentials import feedback_kind_for_error
 from app.control.model.registry import resolve as resolve_model
@@ -148,8 +148,7 @@ def _save_image(raw: bytes, mime: str, image_id: str) -> str:
     img_dir = image_files_dir()
     ext = ".png" if "png" in mime else ".jpg"
     path = img_dir / f"{image_id}{ext}"
-    if not path.exists():
-        path.write_bytes(raw)
+    save_media_bytes(raw, path, media_type="image")
     return image_id
 
 

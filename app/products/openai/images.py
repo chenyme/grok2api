@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Awaitable, Callable
+from urllib.parse import urlparse
 
 import orjson
 
@@ -15,7 +16,7 @@ from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
 from app.platform.errors import RateLimitError, UpstreamError, ValidationError
 from app.platform.runtime.clock import now_s
-from app.platform.storage import image_files_dir
+from app.platform.storage import image_files_dir, save_media_bytes
 from app.control.model.registry import resolve as resolve_model
 from app.control.model.enums import ModeId
 from app.control.model.spec import ModelSpec
@@ -146,6 +147,16 @@ def _normalize_response_format(response_format: str) -> str:
     return fmt
 
 
+def _normalize_configured_image_format(value: str | None) -> str:
+    fmt = (value or "grok_url").strip().lower()
+    if fmt not in {"grok_url", "local_url", "grok_md", "local_md", "base64"}:
+        raise ValidationError(
+            "image_format must be one of [grok_url, local_url, grok_md, local_md, base64]",
+            param="features.image_format",
+        )
+    return fmt
+
+
 def _app_url() -> str:
     return get_config().get_str("app.app_url", "").rstrip("/")
 
@@ -156,10 +167,17 @@ def _local_image_url(file_id: str) -> str:
 
 
 def _extract_image_file_id(url: str) -> str:
-    parts = [part for part in url.split("/") if part]
+    parsed = urlparse(url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if parsed.scheme == "https" and parsed.netloc == "assets.grok.com" and len(parts) >= 2:
+        last_stem = parts[-1].split(".", 1)[0].lower()
+        if last_stem == "content":
+            asset_id = parts[-2].strip()
+            if asset_id:
+                return asset_id
     for part in reversed(parts):
         stem = part.split(".", 1)[0]
-        if stem and stem not in {"image", "original", "thumbnail"}:
+        if stem and stem.lower() not in {"image", "original", "thumbnail", "content"}:
             return stem
     return hashlib.sha1(url.encode("utf-8")).hexdigest()[:32]
 
@@ -168,8 +186,7 @@ def _save_image(raw: bytes, mime: str, file_id: str) -> str:
     img_dir = image_files_dir()
     ext = ".png" if "png" in mime else ".jpg"
     path = img_dir / f"{file_id}{ext}"
-    if not path.exists():
-        path.write_bytes(raw)
+    save_media_bytes(raw, path, media_type="image")
     return file_id
 
 
@@ -194,7 +211,24 @@ async def _resolve_image_output(
     blob_b64: str | None = None,
 ) -> _ImageOutput:
     fmt = _normalize_response_format(response_format)
-    if fmt == "url" and not _app_url():
+    if fmt == "b64_json":
+        mime = infer_content_type(url) or "image/jpeg"
+        if blob_b64 is not None:
+            try:
+                raw = base64.b64decode(blob_b64)
+            except (ValueError, TypeError, binascii.Error) as exc:
+                raise UpstreamError(f"Invalid upstream image blob: {exc}") from exc
+        else:
+            raw, mime = await _download_image_bytes(token, url)
+
+        b64 = blob_b64 or base64.b64encode(raw).decode()
+        data_uri = f"data:{mime};base64,{b64}"
+        return _ImageOutput(api_value=b64, markdown_value=f"![image]({data_uri})")
+
+    image_format = _normalize_configured_image_format(
+        get_config().get_str("features.image_format", "grok_url")
+    )
+    if image_format in {"grok_url", "grok_md"}:
         return _ImageOutput(api_value=url, markdown_value=f"![image]({url})")
 
     mime = infer_content_type(url) or "image/jpeg"
@@ -206,10 +240,10 @@ async def _resolve_image_output(
     else:
         raw, mime = await _download_image_bytes(token, url)
 
-    if fmt == "b64_json":
+    if image_format == "base64":
         b64 = blob_b64 or base64.b64encode(raw).decode()
         data_uri = f"data:{mime};base64,{b64}"
-        return _ImageOutput(api_value=b64, markdown_value=f"![image]({data_uri})")
+        return _ImageOutput(api_value=data_uri, markdown_value=f"![image]({data_uri})")
 
     file_id = _save_image(raw, mime, _extract_image_file_id(url))
     local_url = _local_image_url(file_id)

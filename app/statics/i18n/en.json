@@ -335,7 +335,8 @@
         "retry": "Retry Policy",
         "timeouts": "Request Timeouts",
         "imageProtocol": "NSFW and Image Streaming",
-        "logging": "Logging"
+        "logging": "Logging",
+        "storage": "Local Storage"
       },
       "options": {
         "imageFormat": {
@@ -578,6 +579,18 @@
         "logMaxFiles": {
           "label": "Log Retention (days)",
           "desc": "Maximum number of daily log files to keep during rotation. Default: 7."
+        },
+        "mediaCacheMaxMb": {
+          "label": "Total Media Cache Limit (MB)",
+          "desc": "Shared size limit for local image and video cache, in MB. Set to 0 or a negative value to disable the limit."
+        },
+        "imageCacheMaxMb": {
+          "label": "Image Cache Limit (MB)",
+          "desc": "Dedicated size limit for local image cache, in MB. Set to 0 or a negative value to disable the limit."
+        },
+        "videoCacheMaxMb": {
+          "label": "Video Cache Limit (MB)",
+          "desc": "Dedicated size limit for local video cache, in MB. Set to 0 or a negative value to disable the limit."
         }
       }
     }

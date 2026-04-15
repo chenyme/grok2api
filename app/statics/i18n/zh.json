@@ -335,7 +335,8 @@
         "retry": "重试策略",
         "timeouts": "请求超时设置",
         "imageProtocol": "NSFW 与图像协议",
-        "logging": "日志配置"
+        "logging": "日志配置",
+        "storage": "本地存储"
       },
       "options": {
         "imageFormat": {
@@ -578,6 +579,18 @@
         "logMaxFiles": {
           "label": "日志保留天数",
           "desc": "按天轮转时最多保留的日志文件数量。默认 7。"
+        },
+        "mediaCacheMaxMb": {
+          "label": "媒体缓存总上限（MB）",
+          "desc": "本地图片与视频缓存共享的总容量上限，单位 MB。设置为 0 或负数表示不限制。"
+        },
+        "imageCacheMaxMb": {
+          "label": "图片缓存上限（MB）",
+          "desc": "本地图片缓存的独立容量上限，单位 MB。设置为 0 或负数表示不限制。"
+        },
+        "videoCacheMaxMb": {
+          "label": "视频缓存上限（MB）",
+          "desc": "本地视频缓存的独立容量上限，单位 MB。设置为 0 或负数表示不限制。"
         }
       }
     }
