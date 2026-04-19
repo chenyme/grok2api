@@ -14,9 +14,11 @@ from app.platform.config.snapshot import get_config
 from app.platform.errors import RateLimitError, UpstreamError
 from app.platform.runtime.clock import now_s
 from app.platform.tokens import estimate_prompt_tokens, estimate_tokens, estimate_tool_call_tokens
+from app.control.model.enums import ModeId
 from app.control.model.registry import resolve as resolve_model
 from app.control.account.enums import FeedbackKind
 from app.dataplane.reverse.protocol.xai_chat import classify_line, StreamAdapter
+from app.products._account_selection import reserve_account
 
 from .chat import _stream_chat, _extract_message, _resolve_image, _quota_sync, _fail_sync, _parse_retry_codes, _feedback_kind, _log_task_exception, _upstream_body_excerpt
 from .chat import _configured_retry_codes, _should_retry_upstream
@@ -258,11 +260,11 @@ async def create(
     async def _run_stream() -> AsyncGenerator[str, None]:
         excluded: list[str] = []
         for attempt in range(max_retries + 1):
-            acct = await directory.reserve(
-                pool_candidates = spec.pool_candidates(),
-                mode_id         = mode_id,
-                now_s_override  = now_s(),
-                exclude_tokens  = excluded or None,
+            acct, selected_mode_id = await reserve_account(
+                directory,
+                spec,
+                now_s_override=now_s(),
+                exclude_tokens=excluded or None,
             )
             if acct is None:
                 raise RateLimitError("No available accounts for this model tier")
@@ -292,7 +294,7 @@ async def create(
                     ended = False
                     async for line in _stream_chat(
                         token     = token,
-                        mode_id   = spec.mode_id,
+                        mode_id   = ModeId(selected_mode_id),
                         message   = message,
                         files     = files,
                         timeout_s = timeout_s,
@@ -586,11 +588,11 @@ async def create(
             finally:
                 await directory.release(acct)
                 kind = FeedbackKind.SUCCESS if success else _feedback_kind(fail_exc) if fail_exc else FeedbackKind.SERVER_ERROR
-                await directory.feedback(token, kind, mode_id, now_s_val=now_s())
+                await directory.feedback(token, kind, selected_mode_id, now_s_val=now_s())
                 if success:
-                    asyncio.create_task(_quota_sync(token, mode_id)).add_done_callback(_log_task_exception)
+                    asyncio.create_task(_quota_sync(token, selected_mode_id)).add_done_callback(_log_task_exception)
                 else:
-                    asyncio.create_task(_fail_sync(token, mode_id, fail_exc)).add_done_callback(_log_task_exception)
+                    asyncio.create_task(_fail_sync(token, selected_mode_id, fail_exc)).add_done_callback(_log_task_exception)
 
             if success or not _retry:
                 return
@@ -606,11 +608,11 @@ async def create(
     token    = ""
     adapter  = StreamAdapter()
     for attempt in range(max_retries + 1):
-        acct = await directory.reserve(
-            pool_candidates = spec.pool_candidates(),
-            mode_id         = mode_id,
-            now_s_override  = now_s(),
-            exclude_tokens  = excluded or None,
+        acct, selected_mode_id = await reserve_account(
+            directory,
+            spec,
+            now_s_override=now_s(),
+            exclude_tokens=excluded or None,
         )
         if acct is None:
             raise RateLimitError("No available accounts for this model tier")
@@ -625,7 +627,7 @@ async def create(
             try:
                 async for line in _stream_chat(
                     token     = token,
-                    mode_id   = spec.mode_id,
+                    mode_id   = ModeId(selected_mode_id),
                     message   = message,
                     files     = files,
                     timeout_s = timeout_s,
@@ -664,11 +666,11 @@ async def create(
         finally:
             await directory.release(acct)
             kind = FeedbackKind.SUCCESS if success else _feedback_kind(fail_exc) if fail_exc else FeedbackKind.SERVER_ERROR
-            await directory.feedback(token, kind, mode_id)
+            await directory.feedback(token, kind, selected_mode_id)
             if success:
-                asyncio.create_task(_quota_sync(token, mode_id)).add_done_callback(_log_task_exception)
+                asyncio.create_task(_quota_sync(token, selected_mode_id)).add_done_callback(_log_task_exception)
             else:
-                asyncio.create_task(_fail_sync(token, mode_id, fail_exc)).add_done_callback(_log_task_exception)
+                asyncio.create_task(_fail_sync(token, selected_mode_id, fail_exc)).add_done_callback(_log_task_exception)
 
         if success or not _retry:
             break

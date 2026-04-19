@@ -30,6 +30,10 @@ memory = false
 stream = true
 # 是否输出思考过程
 thinking = true
+# 聊天类 AUTO 模型在 auto 额度耗尽时，是否自动降级到 fast/expert
+auto_chat_mode_fallback = true
+# 当本地额度缓存判定无可用账号时，是否先触发一次按需刷新再重试
+on_empty_retry_enabled = true
 # 思考精简输出（false=完整原始推理过程，true=提炼结构化摘要）
 thinking_summary = false
 # 是否动态生成 Statsig 指纹
