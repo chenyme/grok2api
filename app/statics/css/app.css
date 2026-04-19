@@ -150,10 +150,14 @@ button{cursor:pointer}
 .webui-chatkit-shell{width:min(100%,1120px);margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr);gap:18px;min-height:calc(100vh - 106px)}
 .webui-chatkit-stage{display:grid;gap:18px;align-content:center}
 .webui-chatkit-toolbar{
-  width:min(100%,240px);margin:0 auto;min-width:0
+  width:min(100%,520px);margin:0 auto;min-width:0
 }
 .webui-chatkit-toolbar-controls{
-  display:grid;grid-template-columns:minmax(0,1fr);align-items:start;gap:10px;min-width:0
+  display:grid;grid-template-columns:repeat(4,1fr);align-items:start;gap:10px;min-width:0
+}
+@media (max-width: 600px){
+  .webui-chatkit-toolbar{width:min(100%,100%)}
+  .webui-chatkit-toolbar-controls{grid-template-columns:repeat(2,1fr)}
 }
 .webui-chatkit-pill{
   width:100%;min-width:0;padding:0;border-radius:0;display:grid;
@@ -171,6 +175,45 @@ button{cursor:pointer}
 .webui-chatkit-pill-input:focus{
   outline:none !important;box-shadow:none !important
 }
+.webui-chatkit-instruction-wrap{
+  display:flex;align-items:center;gap:4px;min-width:0
+}
+.webui-chatkit-expand-btn{
+  flex-shrink:0;width:22px;height:22px;padding:0;border:0;border-radius:999px;
+  background:var(--webui-control-surface);cursor:pointer;display:grid;place-items:center;
+  color:#7d786f;transition:color .15s
+}
+.webui-chatkit-expand-btn:hover{color:#111}
+.webui-chatkit-pill-row{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
+.webui-chatkit-pill-row .webui-chatkit-pill-input{flex:1;min-width:0;width:100%}
+.webui-chatkit-modal-overlay{
+  position:fixed;inset:0;z-index:9999;display:grid;place-items:center;
+  background:rgba(0,0,0,.35);backdrop-filter:blur(4px);animation:webui-modal-fade-in .15s ease-out
+}
+.webui-chatkit-modal-dialog{
+  width:min(100%,520px);padding:24px;border-radius:16px;
+  background:#fff;box-shadow:0 12px 40px rgba(0,0,0,.18);animation:webui-modal-slide-in .2s ease-out
+}
+.webui-chatkit-modal-textarea{
+  width:100%;min-height:200px;max-height:400px;padding:12px;border:1px solid #e0dbd5;border-radius:10px;
+  font-size:14px;font-weight:500;color:#111;resize:vertical;outline:none;
+  font-family:inherit;line-height:1.6;background:#faf9f7;box-sizing:border-box
+}
+.webui-chatkit-modal-textarea:focus{border-color:#c8c0b8;background:#fff}
+.webui-chatkit-modal-textarea::placeholder{color:#a09890;font-weight:600}
+.webui-chatkit-modal-actions{
+  display:flex;justify-content:flex-end;gap:8px;margin-top:14px
+}
+.webui-chatkit-modal-btn-cancel{
+  padding:6px 16px;border-radius:8px;font-size:12px;font-weight:600;color:#666;
+  background:transparent;border:1px solid #e0dbd5;cursor:pointer
+}
+.webui-chatkit-modal-btn-cancel:hover{background:#f5f3f0}
+.webui-chatkit-modal-btn-confirm{
+  padding:6px 16px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer
+}
+@keyframes webui-modal-fade-in{from{opacity:0}to{opacity:1}}
+@keyframes webui-modal-slide-in{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 .webui-chatkit-stage-card{
   min-height:calc(100vh - 300px);display:grid;place-items:center;align-content:center;text-align:center;
   padding:28px 24px 20px;background:transparent;border:0;border-radius:0

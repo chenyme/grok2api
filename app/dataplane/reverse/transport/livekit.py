@@ -12,7 +12,12 @@ import orjson
 from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
 from app.platform.errors import UpstreamError
-from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind, ProxyScope, RequestKind
+from app.control.proxy.models import (
+    ProxyFeedback,
+    ProxyFeedbackKind,
+    ProxyScope,
+    RequestKind,
+)
 from app.dataplane.proxy import get_proxy_runtime
 from app.dataplane.proxy.adapters.headers import build_http_headers, build_ws_headers
 from app.dataplane.reverse.protocol.xai_livekit import (
@@ -21,7 +26,10 @@ from app.dataplane.reverse.protocol.xai_livekit import (
     build_ws_url,
 )
 from app.dataplane.reverse.transport.http import post_json
-from app.dataplane.reverse.transport.websocket import WebSocketClient, WebSocketConnection
+from app.dataplane.reverse.transport.websocket import (
+    WebSocketClient,
+    WebSocketConnection,
+)
 from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
 
 
@@ -29,28 +37,31 @@ from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
 # Token fetch
 # ------------------------------------------------------------------
 
+
 async def fetch_livekit_token(
-    token:       str,
+    token: str,
     *,
-    voice:       str   = "ara",
-    personality: str   = "assistant",
-    speed:       float = 1.0,
+    voice: str = "ara",
+    personality: str = "assistant",
+    speed: float = 1.0,
+    custom_instruction: str = "",
 ) -> Dict[str, Any]:
     """Fetch a LiveKit session token for *token*.
 
     Returns the parsed JSON body from /rest/livekit/tokens.
     Raises ``UpstreamError`` on failure.
     """
-    cfg       = get_config()
+    cfg = get_config()
     timeout_s = cfg.get_float("voice.timeout", 60.0)
 
     proxy = await get_proxy_runtime()
     lease = await proxy.acquire(scope=ProxyScope.APP, kind=RequestKind.HTTP)
 
     payload = build_token_request_payload(
-        voice       = voice,
-        personality = personality,
-        speed       = speed,
+        voice=voice,
+        personality=personality,
+        speed=speed,
+        custom_instruction=custom_instruction,
     )
 
     try:
@@ -58,16 +69,18 @@ async def fetch_livekit_token(
             LIVEKIT_TOKEN_URL,
             token,
             payload,
-            lease     = lease,
-            timeout_s = timeout_s,
-            origin    = "https://grok.com",
-            referer   = "https://grok.com/",
+            lease=lease,
+            timeout_s=timeout_s,
+            origin="https://grok.com",
+            referer="https://grok.com/",
         )
     except UpstreamError as exc:
         await proxy.feedback(lease, upstream_feedback(exc))
         raise
     except Exception as exc:
-        await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.TRANSPORT_ERROR))
+        await proxy.feedback(
+            lease, ProxyFeedback(kind=ProxyFeedbackKind.TRANSPORT_ERROR)
+        )
         raise UpstreamError(f"fetch_livekit_token: transport error: {exc}") from exc
 
     await proxy.feedback(
@@ -82,11 +95,12 @@ async def fetch_livekit_token(
 # WebSocket connect
 # ------------------------------------------------------------------
 
+
 async def connect_livekit_ws(
-    token:           str,
-    access_token:    str,
+    token: str,
+    access_token: str,
     *,
-    timeout_s:       Optional[float] = None,
+    timeout_s: Optional[float] = None,
 ) -> WebSocketConnection:
     """Open a WebSocket connection to the LiveKit RTC endpoint.
 
@@ -101,15 +115,17 @@ async def connect_livekit_ws(
     Raises:
         ``UpstreamError`` on connection failure.
     """
-    cfg     = get_config()
-    timeout = timeout_s if timeout_s is not None else cfg.get_float("voice.timeout", 120.0)
+    cfg = get_config()
+    timeout = (
+        timeout_s if timeout_s is not None else cfg.get_float("voice.timeout", 120.0)
+    )
 
     proxy = await get_proxy_runtime()
     lease = await proxy.acquire(scope=ProxyScope.APP, kind=RequestKind.WEBSOCKET)
 
-    url     = build_ws_url(access_token)
+    url = build_ws_url(access_token)
     headers = build_ws_headers(token=token, lease=lease)
-    client  = WebSocketClient()
+    client = WebSocketClient()
 
     async def _on_close() -> None:
         try:
@@ -123,10 +139,10 @@ async def connect_livekit_ws(
     try:
         connection = await client.connect(
             url,
-            headers  = headers,
-            timeout  = timeout,
-            lease    = lease,
-            on_close = _on_close,
+            headers=headers,
+            timeout=timeout,
+            lease=lease,
+            on_close=_on_close,
         )
     except Exception as exc:
         await proxy.feedback(
