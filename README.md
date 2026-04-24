@@ -592,7 +592,7 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
 | `size` | 支持 `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | `resolution_name` | `480p` 或 `720p` |
 | `preset` | `fun`, `normal`, `spicy`, `custom` |
-| `input_reference[]` | 可选图生视频参考图，multipart 文件字段；最多使用前 5 张 |
+| `input_reference[]` | 可选图生视频参考图，multipart 文件字段；最多使用前 7 张 |
 | `video_id` | `POST /v1/videos` 返回的视频任务 ID，用于查询任务或下载成片 |
 
 <br>

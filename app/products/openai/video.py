@@ -993,7 +993,7 @@ def _extract_video_prompt_and_reference(
 
     input_references: list[dict[str, Any]] | None = None
     if reference_urls:
-        input_references = [{"image_url": url} for url in reference_urls[:5]]
+        input_references = [{"image_url": url} for url in reference_urls[:7]]
     return prompt, input_references
 
 

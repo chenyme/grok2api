@@ -478,7 +478,7 @@ async def videos_create(
     if input_reference:
         references_payload = [
             {"image_url": await _upload_to_data_uri(f, param="input_reference")}
-            for f in input_reference[:5]
+            for f in input_reference[:7]
         ]
 
     result = await create_video(

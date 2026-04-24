@@ -591,7 +591,7 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
 | `size` | Supports `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | `resolution_name` | `480p` or `720p` |
 | `preset` | `fun`, `normal`, `spicy`, `custom` |
-| `input_reference[]` | Optional image-to-video reference multipart file field; at most the first 5 images are used |
+| `input_reference[]` | Optional image-to-video reference multipart file field; at most the first 7 images are used |
 | `video_id` | Video job ID returned by `POST /v1/videos`; used to retrieve the job or download the final video |
 
 <br>
