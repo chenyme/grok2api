@@ -359,7 +359,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
 
     if isinstance(result, dict):
         return JSONResponse(result)
-    if not (spec.is_image_edit() or spec.is_image() or spec.is_video()):
+    if not (spec.is_image_edit() or spec.is_image()):
         result = await _prime_sse(result)
     return StreamingResponse(
         _safe_sse(result), media_type="text/event-stream", headers=_SSE_HEADERS

@@ -75,6 +75,7 @@ _SUPPORTED_MODE_IDS_BY_POOL: dict[str, frozenset[int]] = {
     "basic": frozenset((1,)),
     "super": frozenset((0, 1, 2, 4)),
     "heavy": frozenset((0, 1, 2, 3, 4)),
+    "auto":  frozenset((0, 1, 2, 3, 4)),  # 探测用全集，确保 infer_pool 能拿到 auto.total
 }
 
 # ---------------------------------------------------------------------------
