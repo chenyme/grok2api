@@ -78,6 +78,31 @@ class CodexToolFallbackTests(unittest.TestCase):
 
         self.assertEqual(normalized, [])
 
+    def test_synthesizes_desktop_listing_despite_injected_tool_text(self):
+        message = (
+            "[system]: AVAILABLE TOOLS:\n"
+            "function_call_output session_id patch: completed\n\n"
+            "[user]: 帮我看看我的桌面文件有哪些"
+        )
+
+        calls = _synthesize_codex_tool_call(["exec_command"], message, "")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            json.loads(calls[0].arguments),
+            {"cmd": "ls -la ~/Desktop | sed -n '1,40p'"},
+        )
+
+    def test_does_not_repeat_desktop_listing_after_command_output(self):
+        message = (
+            "[user]: 帮我看看我的桌面文件有哪些\n\n"
+            "[tool result]: command_execution exit_code=0 aggregated_output='total 77944'"
+        )
+
+        calls = _synthesize_codex_tool_call(["exec_command"], message, "")
+
+        self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

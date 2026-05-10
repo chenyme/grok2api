@@ -74,6 +74,11 @@ _TOOL_RESULT_RE = re.compile(
     r"\[tool result|function_call_output|tool_call_id|session_id|patch:\s*(failed|completed)",
     re.IGNORECASE,
 )
+_CODEX_COMMAND_OUTPUT_RE = re.compile(
+    r"command_execution|aggregated_output|exit_code|Process exited with code|"
+    r"Chunk ID:|Wall time:|Original token count:",
+    re.IGNORECASE,
+)
 _PATCH_COMPLETED_RE = re.compile(r"patch:\s*completed", re.IGNORECASE)
 _PATCH_FAILURE_RE = re.compile(
     r"apply_patch|patch\b|补丁|diff",
@@ -116,12 +121,13 @@ def _synthesize_codex_tool_call(
             return [ParsedToolCall.make("write_stdin", stdin_args)]
     if "exec_command" not in tool_names:
         return []
-    if _has_prior_tool_result(message):
+    intent = _latest_user_intent(message)
+    if _has_prior_tool_result(intent) or _has_prior_command_output(message):
         return []
-    patch_cmd = _synthesize_apply_patch_command(message)
+    patch_cmd = _synthesize_apply_patch_command(intent)
     if patch_cmd:
         return [ParsedToolCall.make("exec_command", {"cmd": patch_cmd})]
-    cmd = _extract_requested_shell_command(message, previous_text)
+    cmd = _extract_requested_shell_command(intent, previous_text)
     if not cmd:
         return []
     return [ParsedToolCall.make("exec_command", {"cmd": cmd})]
@@ -157,6 +163,15 @@ def _normalize_codex_tool_calls(
 
 def _has_prior_tool_result(message: str) -> bool:
     return bool(_TOOL_RESULT_RE.search(message))
+
+
+def _has_prior_command_output(message: str) -> bool:
+    if not _CODEX_COMMAND_OUTPUT_RE.search(message):
+        return False
+    latest_user_idx = message.lower().rfind("[user]:")
+    if latest_user_idx < 0:
+        return True
+    return bool(_CODEX_COMMAND_OUTPUT_RE.search(message[latest_user_idx:]))
 
 
 def _is_duplicate_completed_patch(cmd: str, message: str) -> bool:
@@ -353,7 +368,7 @@ def _synthesize_write_stdin_args(message: str, previous_text: str) -> dict[str, 
 
 
 def _extract_requested_shell_command(message: str, previous_text: str) -> str | None:
-    haystack = f"{message}\n\n{previous_text}"
+    haystack = f"{_latest_user_intent(message)}\n\n{previous_text}"
 
     # Commands in code spans are the cleanest signal.
     for m in re.finditer(r"`([^`\n]{1,300})`", haystack):
@@ -376,6 +391,16 @@ def _extract_requested_shell_command(message: str, previous_text: str) -> str | 
     lowered = haystack.lower()
     if re.search(r"\bpwd\b", lowered) or "当前路径" in haystack or "当前目录路径" in haystack:
         return "pwd"
+    if (
+        "desktop" in lowered
+        or "桌面" in haystack
+    ) and (
+        "有哪些" in haystack
+        or "列出" in haystack
+        or "看看" in haystack
+        or re.search(r"\b(list|show|see)\b", lowered)
+    ):
+        return "ls -la ~/Desktop | sed -n '1,40p'"
     if (
         "有哪些文件" in haystack
         or "列出" in haystack and "文件" in haystack
