@@ -56,6 +56,49 @@ def _model_available_for_pools(spec: ModelSpec, pools: frozenset[str]) -> bool:
     return False
 
 
+_CODEX_BASE_INSTRUCTIONS = """You are Codex, a coding agent running on the user's computer.
+
+Use the available tools carefully, prefer rg for searches, and preserve user changes.
+When editing files, prefer apply_patch for manual changes and report what you changed.
+"""
+
+
+def _codex_model_catalog(models: list[dict]) -> dict:
+    catalog = []
+    for idx, model in enumerate(models):
+        model_id = str(model["id"])
+        catalog.append(
+            {
+                "slug": model_id,
+                "display_name": str(model.get("name") or model_id),
+                "description": f"{model.get('name') or model_id} via grok2api.",
+                "default_reasoning_level": None,
+                "supported_reasoning_levels": [],
+                "supports_reasoning_summaries": False,
+                "default_reasoning_summary": "none",
+                "support_verbosity": False,
+                "default_verbosity": None,
+                "shell_type": "shell_command",
+                "visibility": "list",
+                "supported_in_api": True,
+                "priority": idx + 10,
+                "base_instructions": _CODEX_BASE_INSTRUCTIONS,
+                "apply_patch_tool_type": "freeform",
+                "web_search_tool_type": "text_and_image",
+                "truncation_policy": {"mode": "tokens", "limit": 10000},
+                "supports_parallel_tool_calls": True,
+                "supports_image_detail_original": False,
+                "context_window": 131072,
+                "max_context_window": 131072,
+                "effective_context_window_percent": 95,
+                "experimental_supported_tools": [],
+                "input_modalities": ["text", "image"],
+                "supports_search_tool": False,
+            }
+        )
+    return {"models": catalog}
+
+
 # ---------------------------------------------------------------------------
 # /v1/models
 # ---------------------------------------------------------------------------
@@ -77,6 +120,8 @@ async def list_models(request: Request):
         for m in model_registry.list_enabled()
         if _model_available_for_pools(m, pools)
     ]
+    if "client_version" in request.query_params:
+        return JSONResponse(_codex_model_catalog(models))
     return JSONResponse({"object": "list", "data": models})
 
 

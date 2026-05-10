@@ -42,6 +42,19 @@ I'll call the search tool now. <tool_calls>...</tool_calls>
 NOTE: Even if you believe you cannot fulfill the request, you must still follow the WHEN TO CALL rule above.\
 """
 
+_CODEX_TOOL_NOTE = """
+
+CODEX TOOL RULES:
+- If the user asks you to inspect local files, list directories, run shell/bash commands, edit files, apply patches, or verify tests, you MUST call the matching tool instead of describing what you would do.
+- For shell/bash/terminal commands, use exec_command with a JSON object containing at least {"cmd": "..."}.
+- For interactive or long-running shell sessions, use write_stdin with the existing session_id when you need to send input or poll output. Do not replace write_stdin with exec_command.
+- For file edits, use exec_command to run apply_patch with a heredoc. Do not write files with echo, printf, cat, tee, sed -i, or Python.
+- Example edit command: apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: example.txt\n+hello\n*** End Patch\nPATCH
+- If apply_patch fails, inspect the target file and retry with a corrected, minimal patch. Do not repeat the same failed patch unchanged.
+- Do not invent results from the filesystem, web, or tools. Call the tool and wait for the tool result.
+- Do not mention unavailable tool names. Use exactly one of the AVAILABLE TOOLS names.
+"""
+
 _CHOICE_AUTO     = "WHEN TO CALL: Call a tool when it is clearly needed. Otherwise respond in plain text."
 _CHOICE_NONE     = "WHEN TO CALL: Do NOT call any tools. Respond in plain text only."
 _CHOICE_REQUIRED = "WHEN TO CALL: You MUST output a <tool_calls> XML block. Do NOT write any plain-text reply. If you are uncertain, still call the most relevant tool with your best guess at the parameters."
@@ -65,10 +78,13 @@ def build_tool_system_prompt(
     """
     tool_defs = _format_tool_definitions(tools)
     choice_instruction = _build_choice_instruction(tools, tool_choice)
-    return _TOOL_SYSTEM_HEADER.format(
+    prompt = _TOOL_SYSTEM_HEADER.format(
         tool_definitions=tool_defs,
         tool_choice_instruction=choice_instruction,
     )
+    if _looks_like_codex_tools(tools):
+        prompt += _CODEX_TOOL_NOTE
+    return prompt
 
 
 def extract_tool_names(tools: list[dict[str, Any]]) -> list[str]:
@@ -84,7 +100,12 @@ def extract_tool_names(tools: list[dict[str, Any]]) -> list[str]:
 
 def inject_into_message(message: str, system_prompt: str) -> str:
     """Prepend the tool system prompt to the flattened message string."""
-    return f"[system]: {system_prompt}\n\n{message}"
+    return (
+        f"[system]: {system_prompt}\n\n"
+        f"{message}\n\n"
+        "[system]: If a tool is needed now, your next response must be only the "
+        "<tool_calls> XML block. Do not say that you will call a tool; call it."
+    )
 
 
 def tool_calls_to_xml(tool_calls: list[dict[str, Any]]) -> str:
@@ -155,3 +176,8 @@ def _build_choice_instruction(
             if forced_name:
                 return _CHOICE_FORCED.format(name=forced_name)
     return _CHOICE_AUTO
+
+
+def _looks_like_codex_tools(tools: list[dict[str, Any]]) -> bool:
+    names = set(extract_tool_names(tools))
+    return bool({"exec_command", "apply_patch", "write_stdin"} & names)

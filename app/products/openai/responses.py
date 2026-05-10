@@ -5,9 +5,8 @@ Streaming emits standard Responses API SSE events.
 """
 
 import asyncio
+import re
 from typing import Any, AsyncGenerator
-
-import orjson
 
 from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
@@ -32,33 +31,110 @@ from app.dataplane.reverse.protocol.tool_parser import parse_tool_calls
 from ._tool_sieve import ToolSieve
 
 
-# ---------------------------------------------------------------------------
-# Tool format normalisation
-# ---------------------------------------------------------------------------
+from ._codex_tools import (
+    _PATCH_COMPLETED_RE,
+    _PATCH_FAILURE_RE,
+    _forced_tool_choice,
+    _looks_like_codex_tool_run,
+    _normalize_codex_tool_calls,
+    _synthesize_codex_tool_call,
+    _to_chat_tools,
+)
 
-def _to_chat_tools(tools: list[dict]) -> list[dict]:
-    """Normalise Responses API tool format → Chat Completions format.
 
-    Responses API:  {type, name, description, parameters}       (flat)
-    Chat Completions: {type, function: {name, description, parameters}}
+async def _collect_chat_text(
+    *,
+    token: str,
+    selected_mode_id: int,
+    message: str,
+    files: list[str],
+    timeout_s: float,
+) -> tuple[str, str, StreamAdapter]:
+    adapter = StreamAdapter()
+    async for line in _stream_chat(
+        token     = token,
+        mode_id   = ModeId(selected_mode_id),
+        message   = message,
+        files     = files,
+        timeout_s = timeout_s,
+    ):
+        event_type, data = classify_line(line)
+        if event_type == "done":
+            break
+        if event_type != "data" or not data:
+            continue
+        ended = False
+        for ev in adapter.feed(data):
+            if ev.kind == "soft_stop":
+                ended = True
+                break
+        if ended:
+            break
+    return "".join(adapter.text_buf), "".join(adapter.thinking_buf), adapter
 
-    Already-wrapped tools are passed through unchanged so this is safe to
-    call regardless of which format the caller used.
-    """
-    normalised = []
-    for tool in tools:
-        if tool.get("type") == "function" and "function" not in tool and "name" in tool:
-            normalised.append({
-                "type": "function",
-                "function": {
-                    "name":        tool.get("name", ""),
-                    "description": tool.get("description", ""),
-                    "parameters":  tool.get("parameters"),
-                },
-            })
-        else:
-            normalised.append(tool)
-    return normalised
+
+async def _repair_tool_calls(
+    *,
+    token: str,
+    selected_mode_id: int,
+    original_message: str,
+    previous_text: str,
+    chat_tools: list[dict],
+    tool_names: list[str],
+    timeout_s: float,
+) -> list | None:
+    if not _looks_like_codex_tool_run(tool_names, original_message, previous_text):
+        return None
+    if _PATCH_COMPLETED_RE.search(original_message) and _PATCH_FAILURE_RE.search(original_message):
+        return None
+
+    forced_choice = _forced_tool_choice(tool_names, original_message, previous_text)
+    repair_prompt = build_tool_system_prompt(chat_tools, forced_choice)
+    retry_hint = ""
+    if _PATCH_FAILURE_RE.search(original_message) and re.search(r"patch:\s*failed|apply_patch.*failed|Invalid Context", original_message, re.I):
+        retry_hint = (
+            "\n[system]: The previous apply_patch failed. Inspect the target "
+            "file if needed, then emit a corrected minimal apply_patch command. "
+            "Do not repeat the same failed patch unchanged.\n"
+        )
+    repair_message = (
+        f"[system]: {repair_prompt}\n\n"
+        "[system]: The previous assistant response failed because it described "
+        "a tool call instead of emitting a structured tool call. Convert the "
+        "intended next action into the required XML now. Output XML only.\n\n"
+        f"{retry_hint}"
+        f"[conversation]:\n{original_message}\n\n"
+        f"[previous assistant response]:\n{previous_text}"
+    )
+    repaired_text, _, _ = await _collect_chat_text(
+        token=token,
+        selected_mode_id=selected_mode_id,
+        message=repair_message,
+        files=[],
+        timeout_s=timeout_s,
+    )
+    result = parse_tool_calls(repaired_text, tool_names)
+    if result.calls:
+        logger.info(
+            "responses repaired missed tool call: tool_names={} call_count={}",
+            tool_names,
+            len(result.calls),
+        )
+        return result.calls
+    synthetic = _synthesize_codex_tool_call(tool_names, original_message, previous_text)
+    if synthetic:
+        logger.info(
+            "responses synthesized codex tool call: tool={} args={}",
+            synthetic[0].name,
+            synthetic[0].arguments,
+        )
+        return synthetic
+    logger.warning(
+        "responses tool repair failed: tool_names={} text_excerpt={}",
+        tool_names,
+        repaired_text[:500],
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +194,19 @@ async def _emit_fc_events(items: list[dict], base_idx: int):
             "output_index": out_idx,
             "item":         item,
         })
+
+
+async def _emit_response_start(response_id: str, model: str):
+    """Emit the standard Responses API stream opening events."""
+    response = make_resp_object(response_id, model, "in_progress", [])
+    yield format_sse("response.created", {
+        "type":     "response.created",
+        "response": response,
+    })
+    yield format_sse("response.in_progress", {
+        "type":     "response.in_progress",
+        "response": response,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -235,12 +324,14 @@ async def create(
     # Tool prompt injection — only modify the message text, never the Grok payload
     # Normalise to Chat Completions format first (Responses API uses a flat structure)
     tool_names: list[str] = []
+    chat_tools: list[dict] = []
     if tools:
         chat_tools = _to_chat_tools(tools)
         tool_names = extract_tool_names(chat_tools)
-        tool_prompt = build_tool_system_prompt(chat_tools, tool_choice)
-        message = inject_into_message(message, tool_prompt)
-        logger.info("responses tool injection: tool_names={} choice={}", tool_names, tool_choice)
+        if chat_tools:
+            tool_prompt = build_tool_system_prompt(chat_tools, tool_choice)
+            message = inject_into_message(message, tool_prompt)
+            logger.info("responses tool injection: tool_names={} choice={}", tool_names, tool_choice)
 
     from app.dataplane.account import _directory as _acct_dir
     if _acct_dir is None:
@@ -286,10 +377,129 @@ async def create(
 
             try:
                 try:
-                    yield format_sse("response.created", {
-                        "type":     "response.created",
-                        "response": make_resp_object(response_id, model, "in_progress", []),
-                    })
+                    if tool_names:
+                        async for evt in _emit_response_start(response_id, model):
+                            yield evt
+                        full_text, full_think, tool_adapter = await _collect_chat_text(
+                            token=token,
+                            selected_mode_id=selected_mode_id,
+                            message=message,
+                            files=files,
+                            timeout_s=timeout_s,
+                        )
+                        parse_result = parse_tool_calls(full_text, tool_names)
+                        calls = parse_result.calls
+                        parsed_calls = list(calls)
+                        if not calls:
+                            repaired = await _repair_tool_calls(
+                                token=token,
+                                selected_mode_id=selected_mode_id,
+                                original_message=message,
+                                previous_text=full_text or full_think,
+                                chat_tools=chat_tools,
+                                tool_names=tool_names,
+                                timeout_s=timeout_s,
+                            )
+                            calls = repaired or []
+                        calls = _normalize_codex_tool_calls(
+                            calls,
+                            tool_names=tool_names,
+                            message=message,
+                        )
+                        if parsed_calls and not calls and _PATCH_COMPLETED_RE.search(message):
+                            full_text = "Done."
+
+                        if calls:
+                            fc_items = _build_fc_items(calls)
+                            async for evt in _emit_fc_events(fc_items, 0):
+                                yield evt
+                            pt = estimate_prompt_tokens(message)
+                            ct = estimate_tool_call_tokens(calls)
+                            yield format_sse("response.completed", {
+                                "type":     "response.completed",
+                                "response": make_resp_object(
+                                    response_id, model, "completed", fc_items,
+                                    build_resp_usage(pt, ct, 0),
+                                ),
+                            })
+                            yield "data: [DONE]\n\n"
+                            success = True
+                            logger.info("responses stream tool_calls buffered: attempt={}/{} model={} call_count={}",
+                                        attempt + 1, max_retries + 1, model, len(calls))
+                        else:
+                            if tool_adapter.image_urls:
+                                for url, img_id in tool_adapter.image_urls:
+                                    img_text = await _resolve_image(token, url, img_id)
+                                    full_text += ("\n\n" if full_text else "") + img_text
+                            references = tool_adapter.references_suffix()
+                            if references:
+                                full_text += references
+                            msg_item = {
+                                "id":      message_id,
+                                "type":    "message",
+                                "role":    "assistant",
+                                "content": [{"type": "output_text", "text": full_text, "annotations": tool_adapter.annotations_list()}],
+                                "status":  "completed",
+                            }
+                            yield format_sse("response.output_item.added", {
+                                "type":         "response.output_item.added",
+                                "output_index": 0,
+                                "item":         {
+                                    "id": message_id, "type": "message",
+                                    "role": "assistant", "content": [], "status": "in_progress",
+                                },
+                            })
+                            yield format_sse("response.content_part.added", {
+                                "type":          "response.content_part.added",
+                                "item_id":       message_id,
+                                "output_index":  0,
+                                "content_index": 0,
+                                "part":          {"type": "output_text", "text": "", "annotations": []},
+                            })
+                            if full_text:
+                                yield format_sse("response.output_text.delta", {
+                                    "type":          "response.output_text.delta",
+                                    "item_id":       message_id,
+                                    "output_index":  0,
+                                    "content_index": 0,
+                                    "delta":         full_text,
+                                })
+                            yield format_sse("response.output_text.done", {
+                                "type":          "response.output_text.done",
+                                "item_id":       message_id,
+                                "output_index":  0,
+                                "content_index": 0,
+                                "text":          full_text,
+                            })
+                            yield format_sse("response.content_part.done", {
+                                "type":          "response.content_part.done",
+                                "item_id":       message_id,
+                                "output_index":  0,
+                                "content_index": 0,
+                                "part":          msg_item["content"][0],
+                            })
+                            yield format_sse("response.output_item.done", {
+                                "type":         "response.output_item.done",
+                                "output_index": 0,
+                                "item":         msg_item,
+                            })
+                            pt = estimate_prompt_tokens(message)
+                            ct = estimate_tokens(full_text)
+                            yield format_sse("response.completed", {
+                                "type":     "response.completed",
+                                "response": make_resp_object(
+                                    response_id, model, "completed", [msg_item],
+                                    build_resp_usage(pt, ct, 0),
+                                ),
+                            })
+                            yield "data: [DONE]\n\n"
+                            success = True
+                            logger.info("responses stream text buffered: attempt={}/{} model={} text_len={}",
+                                        attempt + 1, max_retries + 1, model, len(full_text))
+                        return
+
+                    async for evt in _emit_response_start(response_id, model):
+                        yield evt
 
                     ended = False
                     async for line in _stream_chat(
@@ -698,7 +908,27 @@ async def create(
     # Check for tool calls in the accumulated text
     if tool_names:
         tc_result = parse_tool_calls(full_text, tool_names)
-        if tc_result.calls:
+        calls = tc_result.calls
+        parsed_calls = list(calls)
+        if not calls:
+            repaired = await _repair_tool_calls(
+                token=token,
+                selected_mode_id=selected_mode_id,
+                original_message=message,
+                previous_text=full_text or full_think,
+                chat_tools=chat_tools,
+                tool_names=tool_names,
+                timeout_s=timeout_s,
+            )
+            calls = repaired or []
+        calls = _normalize_codex_tool_calls(
+            calls,
+            tool_names=tool_names,
+            message=message,
+        )
+        if parsed_calls and not calls and _PATCH_COMPLETED_RE.search(message):
+            full_text = "Done."
+        if calls:
             output: list[dict] = []
             if full_think:
                 output.append({
@@ -707,11 +937,11 @@ async def create(
                     "summary": [{"type": "summary_text", "text": full_think}],
                     "status":  "completed",
                 })
-            output.extend(_build_fc_items(tc_result.calls))
+            output.extend(_build_fc_items(calls))
             pt = estimate_prompt_tokens(message)
-            ct = estimate_tool_call_tokens(tc_result.calls)
+            ct = estimate_tool_call_tokens(calls)
             rt = estimate_tokens(full_think) if full_think else 0
-            logger.info("responses tool_calls: model={} calls={}", model, len(tc_result.calls))
+            logger.info("responses tool_calls: model={} calls={}", model, len(calls))
             return make_resp_object(
                 response_id, model, "completed", output,
                 build_resp_usage(pt, ct + rt, rt),

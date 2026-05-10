@@ -1,11 +1,15 @@
 services:
   grok2api:
     container_name: grok2api
+    build:
+      context: .
     image: ghcr.io/chenyme/grok2api:latest
+    env_file:
+      - .env
     ports:
       - "${HOST_PORT:-8000}:${SERVER_PORT:-8000}"
     environment:
-      TZ: Asia/Shanghai
+      TZ: ${TZ:-Asia/Shanghai}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
       SERVER_PORT: ${SERVER_PORT:-8000}
