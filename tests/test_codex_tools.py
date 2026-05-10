@@ -6,6 +6,10 @@ from app.products.openai._codex_tools import (
     _normalize_codex_tool_calls,
     _synthesize_codex_tool_call,
 )
+from app.dataplane.reverse.protocol.tool_prompt import (
+    build_tool_system_prompt,
+    inject_into_message,
+)
 
 
 class CodexToolFallbackTests(unittest.TestCase):
@@ -102,6 +106,66 @@ class CodexToolFallbackTests(unittest.TestCase):
         calls = _synthesize_codex_tool_call(["exec_command"], message, "")
 
         self.assertEqual(calls, [])
+
+    def test_synthesizes_read_file_command(self):
+        calls = _synthesize_codex_tool_call(
+            ["exec_command"],
+            "[user]: 读取 sample.txt 内容并告诉我",
+            "",
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(calls[0].arguments), {"cmd": "sed -n '1,200p' sample.txt"})
+
+    def test_synthesizes_read_file_command_after_tool_injection(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "exec_command",
+                    "description": "Run a command.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "cmd": {"type": "string", "description": "Example: python pyrepl.py"},
+                        },
+                    },
+                },
+            }
+        ]
+        message = inject_into_message(
+            "读取 sample.txt 内容并告诉我",
+            build_tool_system_prompt(tools, "auto"),
+        )
+
+        calls = _synthesize_codex_tool_call(["exec_command"], message, "")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(calls[0].arguments), {"cmd": "sed -n '1,200p' sample.txt"})
+
+    def test_synthesizes_search_command(self):
+        calls = _synthesize_codex_tool_call(
+            ["exec_command"],
+            "[user]: 搜索当前目录下包含 alpha 的文件，并告诉我文件路径",
+            "",
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(calls[0].arguments), {"cmd": "rg -n -- alpha ."})
+
+    def test_synthesizes_simple_replace_patch(self):
+        calls = _synthesize_codex_tool_call(
+            ["exec_command"],
+            "[user]: 把 sample.txt 里的 alpha 改成 beta，然后告诉我修改后的内容",
+            "",
+        )
+
+        self.assertEqual(len(calls), 1)
+        cmd = json.loads(calls[0].arguments)["cmd"]
+        self.assertIn("apply_patch <<'PATCH'", cmd)
+        self.assertIn("*** Update File: sample.txt", cmd)
+        self.assertIn("-alpha", cmd)
+        self.assertIn("+beta", cmd)
 
 
 if __name__ == "__main__":

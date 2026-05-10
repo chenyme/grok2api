@@ -1,0 +1,10 @@
+services:
+  grok2api:
+    networks:
+      default:
+      caddy:
+
+networks:
+  caddy:
+    external: true
+    name: tlzl-erp_default

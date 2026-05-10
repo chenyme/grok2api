@@ -349,6 +349,34 @@ async def create(
     # Streaming
     # -------------------------------------------------------------------------
     async def _run_stream() -> AsyncGenerator[str, None]:
+        pre_calls = _normalize_codex_tool_calls(
+            _synthesize_codex_tool_call(tool_names, message, "") if tool_names else [],
+            tool_names=tool_names,
+            message=message,
+        )
+        if pre_calls:
+            async for evt in _emit_response_start(response_id, model):
+                yield evt
+            fc_items = _build_fc_items(pre_calls)
+            async for evt in _emit_fc_events(fc_items, 0):
+                yield evt
+            pt = estimate_prompt_tokens(message)
+            ct = estimate_tool_call_tokens(pre_calls)
+            yield format_sse("response.completed", {
+                "type":     "response.completed",
+                "response": make_resp_object(
+                    response_id, model, "completed", fc_items,
+                    build_resp_usage(pt, ct, 0),
+                ),
+            })
+            yield "data: [DONE]\n\n"
+            logger.info(
+                "responses stream pre-synthesized codex tool_calls: model={} call_count={}",
+                model,
+                len(pre_calls),
+            )
+            return
+
         excluded: list[str] = []
         for attempt in range(max_retries + 1):
             acct, selected_mode_id = await reserve_account(
@@ -814,6 +842,21 @@ async def create(
     # -------------------------------------------------------------------------
     # Non-streaming
     # -------------------------------------------------------------------------
+    pre_calls = _normalize_codex_tool_calls(
+        _synthesize_codex_tool_call(tool_names, message, "") if tool_names else [],
+        tool_names=tool_names,
+        message=message,
+    )
+    if pre_calls:
+        output = _build_fc_items(pre_calls)
+        pt = estimate_prompt_tokens(message)
+        ct = estimate_tool_call_tokens(pre_calls)
+        logger.info("responses pre-synthesized codex tool_calls: model={} call_count={}", model, len(pre_calls))
+        return make_resp_object(
+            response_id, model, "completed", output,
+            build_resp_usage(pt, ct, 0),
+        )
+
     excluded: list[str] = []
     token    = ""
     adapter  = StreamAdapter()

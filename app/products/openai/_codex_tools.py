@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from typing import Any
 
 import orjson
@@ -261,6 +262,9 @@ def _parse_simple_write_command(cmd: str) -> tuple[str, str, bool] | None:
 
 def _synthesize_apply_patch_command(message: str) -> str | None:
     intent = _latest_user_intent(message)
+    replace_cmd = _synthesize_simple_replace_patch(intent)
+    if replace_cmd:
+        return replace_cmd
     if not _looks_like_simple_create_request(intent):
         return None
     path = _extract_target_filename(intent)
@@ -268,6 +272,36 @@ def _synthesize_apply_patch_command(message: str) -> str | None:
     if not path or content is None:
         return None
     return _apply_patch_add_file_command(path, content)
+
+
+def _synthesize_simple_replace_patch(intent: str) -> str | None:
+    if not intent or len(intent) > 1200:
+        return None
+    if not re.search(r"修改|编辑|替换|改成|replace|change", intent, re.I):
+        return None
+    path = _extract_target_filename(intent)
+    if not path:
+        return None
+    pair = _extract_replacement_pair(intent)
+    if not pair:
+        return None
+    old, new = pair
+    return _apply_patch_replace_line_command(path, old, new)
+
+
+def _extract_replacement_pair(intent: str) -> tuple[str, str] | None:
+    patterns = (
+        r"(?:把|将)\s*(?:文件\s*)?`?[A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+`?\s*(?:里|中的|里面的)?(?:的)?\s*[`'\"]?([^`'\"\n。；;，,\s]+)[`'\"]?\s*(?:改成|替换成|换成)\s*[`'\"]?([^`'\"\n。；;，,\s]+)[`'\"]?",
+        r"(?:replace|change)\s+[`'\"]?([^`'\"\n]+?)[`'\"]?\s+(?:with|to)\s+[`'\"]?([^`'\"\n]+?)[`'\"]?\s+(?:in|inside)\s+`?[A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+`?",
+    )
+    for pattern in patterns:
+        m = re.search(pattern, intent, re.I)
+        if m:
+            old = m.group(1).strip()
+            new = m.group(2).strip()
+            if _valid_patch_line(old) and _valid_patch_line(new):
+                return old, new
+    return None
 
 
 def _latest_user_intent(message: str) -> str:
@@ -289,8 +323,16 @@ def _latest_user_intent(message: str) -> str:
     # a flattened prompt built by inject_into_message().
     text = re.split(r"\n\n\[system\]:\s*If a tool is needed now", message, maxsplit=1, flags=re.I)[0]
     if text.startswith("[system]:") and "AVAILABLE TOOLS:" in text:
-        parts = text.split("\n\n", 1)
-        text = parts[1] if len(parts) > 1 else ""
+        for marker in (
+            "Do not mention unavailable tool names. Use exactly one of the AVAILABLE TOOLS names.",
+            "NOTE: Even if you believe you cannot fulfill the request, you must still follow the WHEN TO CALL rule above.",
+        ):
+            if marker in text:
+                text = text.rsplit(marker, 1)[1]
+                break
+        else:
+            parts = text.split("\n\n", 1)
+            text = parts[1] if len(parts) > 1 else ""
     return text.strip()
 
 
@@ -343,6 +385,27 @@ def _apply_patch_add_file_command(path: str, content: str) -> str:
         lines.append("+")
     lines.extend(["*** End Patch", "PATCH"])
     return "\n".join(lines)
+
+
+def _apply_patch_replace_line_command(path: str, old: str, new: str) -> str:
+    return "\n".join(
+        [
+            "apply_patch <<'PATCH'",
+            "*** Begin Patch",
+            f"*** Update File: {path}",
+            "@@",
+            f"-{old}",
+            f"+{new}",
+            "*** End Patch",
+            "PATCH",
+        ]
+    )
+
+
+def _valid_patch_line(value: str) -> bool:
+    if not value or len(value) > 300:
+        return False
+    return "\n" not in value and "\r" not in value
 
 
 def _synthesize_write_stdin_args(message: str, previous_text: str) -> dict[str, Any] | None:
@@ -407,8 +470,48 @@ def _extract_requested_shell_command(message: str, previous_text: str) -> str | 
         or re.search(r"\blist\b.*\bfiles\b", lowered)
     ):
         return "find . -maxdepth 2 -print | sort"
+    read_cmd = _synthesize_read_file_command(haystack)
+    if read_cmd:
+        return read_cmd
+    search_cmd = _synthesize_search_command(haystack)
+    if search_cmd:
+        return search_cmd
     if re.search(r"\bls\b", lowered):
         return "ls -la"
+    return None
+
+
+def _synthesize_read_file_command(haystack: str) -> str | None:
+    if not re.search(r"读取|查看|打开|读一下|read|show|cat", haystack, re.I):
+        return None
+    path = _extract_target_filename(haystack)
+    if not path:
+        return None
+    return f"sed -n '1,200p' {shlex.quote(path)}"
+
+
+def _synthesize_search_command(haystack: str) -> str | None:
+    if not re.search(r"搜索|查找|包含|grep|rg|search|find", haystack, re.I):
+        return None
+    term = _extract_search_term(haystack)
+    if not term:
+        return None
+    return f"rg -n -- {shlex.quote(term)} ."
+
+
+def _extract_search_term(haystack: str) -> str | None:
+    patterns = (
+        r"(?:包含|含有)\s*[`'\"]?([^`'\"\n。；;，,\s]{1,120})[`'\"]?",
+        r"(?:搜索|查找)\s*[`'\"]?([^`'\"\n。；;，,\s]{1,120})[`'\"]?",
+        r"(?:search|find|grep)\s+(?:for\s+)?[`'\"]?([^`'\"\n]{1,120})[`'\"]?",
+    )
+    for pattern in patterns:
+        m = re.search(pattern, haystack, re.I)
+        if not m:
+            continue
+        term = m.group(1).strip()
+        if term and not re.search(r"\s(?:的|文件|路径)$", term):
+            return term
     return None
 
 
