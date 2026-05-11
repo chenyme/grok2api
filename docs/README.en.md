@@ -362,15 +362,31 @@ curl http://localhost:8000/v1/chat/completions \
     "model": "grok-imagine-video",
     "stream": true,
     "messages": [
-      {"role":"user","content":"A neon rainy street at night, cinematic slow tracking shot"}
+      {"role":"user","content":"A neon rainy street at night, cinematic slow tracking shot"},
+      {"role":"user","content":"The camera passes under glowing signs as the character turns toward distant headlights"}
     ],
-    "video_config": {
-      "seconds": 10,
-      "size": "1792x1024",
-      "resolution_name": "720p",
-      "preset": "normal"
+    "metadata": {
+      "video_config": {
+        "seconds": 16,
+        "size": "1792x1024",
+        "resolution_name": "720p",
+        "preset": "normal"
+      }
     }
   }'
+```
+
+`image_config` / `video_config` may also be sent at the request top level; top-level fields take precedence over matching `metadata` fields.
+
+```json
+{
+  "video_config": {
+    "seconds": 10,
+    "size": "1792x1024",
+    "resolution_name": "720p",
+    "preset": "normal"
+  }
+}
 ```
 
 <details>
@@ -390,10 +406,11 @@ curl http://localhost:8000/v1/chat/completions \
 | \|_ `size` | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
 | \|_ `response_format` | `url`, `b64_json` |
 | `video_config` | Video model parameters |
-| \|_ `seconds` | `6`, `10`, `12`, `16`, `20` |
+| \|_ `seconds` | `6`, `10`, `12`, `16`, `20`, `22`, `26`, `30`, `32`, `36`, `40`; longer videos require one user prompt per segment |
 | \|_ `size` | `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | \|_ `resolution_name` | `480p`, `720p` |
 | \|_ `preset` | `fun`, `normal`, `spicy`, `custom` |
+| `metadata.image_config` / `metadata.video_config` | Compatibility location for `image_config` / `video_config`; top-level config wins |
 
 <br>
 </details>
@@ -589,7 +606,7 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
 | :-- | :-- |
 | `model` | Video model, currently `grok-imagine-video` |
 | `prompt` | Video generation prompt |
-| `seconds` | Video length: `6`, `10`, `12`, `16`, `20` |
+| `seconds` | Video length: `6`, `10`; use `/v1/chat/completions` for longer videos |
 | `size` | Supports `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | `resolution_name` | `480p` or `720p` |
 | `preset` | `fun`, `normal`, `spicy`, `custom` |

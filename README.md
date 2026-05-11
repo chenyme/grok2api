@@ -363,15 +363,31 @@ curl http://localhost:8000/v1/chat/completions \
     "model": "grok-imagine-video",
     "stream": true,
     "messages": [
-      {"role":"user","content":"霓虹雨夜街头，电影感慢镜头追拍"}
+      {"role":"user","content":"霓虹雨夜街头，电影感慢镜头追拍"},
+      {"role":"user","content":"镜头穿过霓虹招牌，人物回头看向远处车灯"}
     ],
-    "video_config": {
+    "metadata": {
+      "video_config": {
+        "seconds": 16,
+        "size": "1792x1024",
+        "resolution_name": "720p",
+        "preset": "normal"
+      }
+    }
+  }'
+```
+
+`image_config` / `video_config` 也可以放在请求顶层；顶层字段优先于 `metadata` 内的同名配置。
+
+```json
+{
+  "video_config": {
       "seconds": 10,
       "size": "1792x1024",
       "resolution_name": "720p",
       "preset": "normal"
-    }
-  }'
+  }
+}
 ```
 
 <details>
@@ -391,10 +407,11 @@ curl http://localhost:8000/v1/chat/completions \
 | \|_ `size` | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
 | \|_ `response_format` | `url`, `b64_json` |
 | `video_config` | 视频模型参数 |
-| \|_ `seconds` | `6`, `10`, `12`, `16`, `20` |
+| \|_ `seconds` | `6`, `10`, `12`, `16`, `20`, `22`, `26`, `30`, `32`, `36`, `40`；长视频需要按分段数量提供同数量 user 提示词 |
 | \|_ `size` | `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | \|_ `resolution_name` | `480p`, `720p` |
 | \|_ `preset` | `fun`, `normal`, `spicy`, `custom` |
+| `metadata.image_config` / `metadata.video_config` | `image_config` / `video_config` 的兼容位置；顶层配置优先 |
 
 <br>
 </details>
@@ -590,7 +607,7 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
 | :-- | :-- |
 | `model` | 视频模型，目前为 `grok-imagine-video` |
 | `prompt` | 视频生成提示词 |
-| `seconds` | 视频长度：`6`, `10`, `12`, `16`, `20` |
+| `seconds` | 视频长度：`6`, `10`；更长视频请使用 `/v1/chat/completions` |
 | `size` | 支持 `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | `resolution_name` | `480p` 或 `720p` |
 | `preset` | `fun`, `normal`, `spicy`, `custom` |

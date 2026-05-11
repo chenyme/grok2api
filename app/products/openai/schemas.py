@@ -39,6 +39,7 @@ class ChatCompletionRequest(BaseModel):
     tool_choice:         str | dict[str, Any] | None = None
     parallel_tool_calls: bool | None                = True
     max_tokens:          int | None                 = None
+    metadata:            dict[str, Any] | None      = None
 
 
 class ImageGenerationRequest(BaseModel):

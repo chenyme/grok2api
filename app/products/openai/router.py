@@ -3,11 +3,12 @@
 import base64
 import binascii
 import mimetypes
-from typing import Annotated, AsyncGenerator, AsyncIterable, Literal
+from typing import Annotated, AsyncGenerator, AsyncIterable, Literal, TypeVar
 
 import orjson
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from pydantic import ValidationError as PydanticValidationError
 
 from app.control.account.state_machine import is_manageable
 from app.platform.auth.middleware import verify_api_key
@@ -163,6 +164,48 @@ _USER_BLOCK_TYPES = {"text", "image_url", "input_audio", "file"}
 _ALLOWED_SIZES = {"1280x720", "720x1280", "1792x1024", "1024x1792", "1024x1024"}
 _EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _LITE_IMAGE_MODELS = {"grok-imagine-image-lite"}
+_ConfigT = TypeVar("_ConfigT", ImageConfig, VideoConfig)
+
+
+def _metadata_config(
+    req: ChatCompletionRequest,
+    key: str,
+    model_cls: type[_ConfigT],
+) -> _ConfigT | None:
+    metadata = req.metadata
+    if not isinstance(metadata, dict) or key not in metadata:
+        return None
+    value = metadata.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValidationError(
+            f"metadata.{key} must be an object",
+            param=f"metadata.{key}",
+        )
+    try:
+        return model_cls.model_validate(value)
+    except PydanticValidationError as exc:
+        raise ValidationError(
+            f"metadata.{key} is invalid: {exc.errors()[0].get('msg', 'invalid value')}",
+            param=f"metadata.{key}",
+        ) from exc
+
+
+def _resolve_image_config(req: ChatCompletionRequest) -> ImageConfig:
+    return (
+        req.image_config
+        or _metadata_config(req, "image_config", ImageConfig)
+        or ImageConfig()
+    )
+
+
+def _resolve_video_config(req: ChatCompletionRequest) -> VideoConfig:
+    return (
+        req.video_config
+        or _metadata_config(req, "video_config", VideoConfig)
+        or VideoConfig()
+    )
 
 
 def _validate_chat(req: ChatCompletionRequest) -> None:
@@ -256,7 +299,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
         if spec.is_image_edit():
             from .images import edit as img_edit
 
-            cfg = req.image_config or ImageConfig()
+            cfg = _resolve_image_config(req)
             _validate_image_edit_n(cfg.n or 1, param="image_config.n")
             result = await img_edit(
                 model=req.model,
@@ -271,7 +314,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
         elif spec.is_image():
             from .images import generate as img_gen
 
-            cfg = req.image_config or ImageConfig()
+            cfg = _resolve_image_config(req)
             size = cfg.size or "1024x1024"
             fmt = cfg.response_format or "url"
             n = cfg.n or 1
@@ -300,7 +343,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
         elif spec.is_video():
             from .video import completions as vid_comp
 
-            vcfg = req.video_config or VideoConfig()
+            vcfg = _resolve_video_config(req)
             from .video import validate_video_length as _validate_video_length
 
             _validate_video_length(vcfg.seconds or 6)

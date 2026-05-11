@@ -74,7 +74,21 @@ _VIDEO_JOB_TTL_S = 3600
 _VIDEO_EXTENSION_REF_TYPE = "ORIGINAL_REF_TYPE_VIDEO_EXTENSION"
 _VIDEO_MAX_REFERENCES = 7
 _VIDEO_ALLOWED_POOL_IDS = frozenset((1, 2))  # super / heavy only
-_SUPPORTED_VIDEO_LENGTHS = frozenset({6, 10, 12, 16, 20})
+_SUPPORTED_VIDEO_LENGTHS = frozenset({6, 10, 12, 16, 20, 22, 26, 30, 32, 36, 40})
+_ASYNC_VIDEO_LENGTHS = frozenset({6, 10})
+_VIDEO_SEGMENT_LENGTHS: dict[int, list[int]] = {
+    6: [6],
+    10: [10],
+    12: [6, 6],
+    16: [10, 6],
+    20: [10, 10],
+    22: [10, 6, 6],
+    26: [10, 10, 6],
+    30: [10, 10, 10],
+    32: [10, 10, 6, 6],
+    36: [10, 10, 10, 6],
+    40: [10, 10, 10, 10],
+}
 _VIDEO_SIZE_MAP: dict[str, tuple[str, str]] = {
     "720x1280": ("9:16", "720p"),
     "1280x720": ("16:9", "720p"),
@@ -194,6 +208,16 @@ def validate_video_length(seconds: int) -> None:
         raise ValidationError(f"seconds must be one of [{allowed}]", param="seconds")
 
 
+def validate_async_video_length(seconds: int) -> None:
+    if seconds not in _ASYNC_VIDEO_LENGTHS:
+        allowed = ", ".join(str(item) for item in sorted(_ASYNC_VIDEO_LENGTHS))
+        raise ValidationError(
+            f"seconds must be one of [{allowed}] for /v1/videos; "
+            "use /v1/chat/completions for longer videos",
+            param="seconds",
+        )
+
+
 def _resolve_video_size(size: str) -> tuple[str, str]:
     normalized = (size or "720x1280").strip()
     config = _VIDEO_SIZE_MAP.get(normalized)
@@ -221,16 +245,9 @@ def _resolve_video_preset(value: str | None, *, default: str = "custom") -> str:
 
 
 def _build_segment_lengths(seconds: int) -> list[int]:
-    if seconds == 6:
-        return [6]
-    if seconds == 10:
-        return [10]
-    if seconds == 12:
-        return [6, 6]
-    if seconds == 16:
-        return [10, 6]
-    if seconds == 20:
-        return [10, 10]
+    segments = _VIDEO_SEGMENT_LENGTHS.get(seconds)
+    if segments is not None:
+        return list(segments)
     validate_video_length(seconds)
     raise AssertionError("unreachable")
 
@@ -239,10 +256,18 @@ def _normalize_segment_prompts(
     prompt: str,
     segment_lengths: list[int],
     segment_prompts: list[str] | None = None,
+    *,
+    strict: bool = False,
 ) -> list[str]:
     prompts = [p.strip() for p in (segment_prompts or [prompt]) if p and p.strip()]
     if not prompts:
         raise ValidationError("Video prompt cannot be empty", param="messages")
+    if strict and len(prompts) != len(segment_lengths):
+        raise ValidationError(
+            "Video generation requires exactly "
+            f"{len(segment_lengths)} prompt segment(s) for this duration",
+            param="messages",
+        )
     if len(prompts) > len(segment_lengths):
         raise ValidationError(
             f"Video generation uses {len(segment_lengths)} prompt segment(s) for this duration",
@@ -1040,7 +1065,7 @@ async def create_video(
         raise ValidationError("prompt cannot be empty", param="prompt")
 
     normalized_seconds = _coerce_seconds(seconds)
-    validate_video_length(normalized_seconds)
+    validate_async_video_length(normalized_seconds)
     normalized_size = (size or "720x1280").strip()
     _aspect_ratio, default_resolution_name = _resolve_video_size(normalized_size)
     _resolve_video_resolution_name(resolution_name, default=default_resolution_name)
@@ -1190,6 +1215,7 @@ async def completions(
         segment_prompts[0],
         segments,
         segment_prompts,
+        strict=True,
     )
     prompt = normalized_segment_prompts[0]
 
@@ -1274,6 +1300,7 @@ __all__ = [
     "retrieve",
     "content_path",
     "validate_video_length",
+    "validate_async_video_length",
     "completions",
     "_build_segment_lengths",
     "_empty_video_response_error",
