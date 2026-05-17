@@ -20,6 +20,12 @@ class ModelSpec:
     ``public_name`` is the human-readable display name.
     ``prefer_best`` when True, reverses pool priority to try higher-tier
                     pools first (hard priority, not soft preference).
+    ``console_model`` when non-empty, route this model through the
+                    ``console.x.ai/v1/responses`` endpoint instead of the
+                    ``grok.com`` web chat API. The string is the actual
+                    model ID sent to console.x.ai (e.g. ``"grok-4.3"``).
+                    SSO cookies from grok.com work for both endpoints,
+                    so basic-tier accounts can access all models this way.
     """
 
     model_name: str
@@ -29,6 +35,7 @@ class ModelSpec:
     enabled: bool
     public_name: str
     prefer_best: bool = False
+    console_model: str = ""
 
     # --- convenience predicates ---
 
@@ -46,6 +53,10 @@ class ModelSpec:
 
     def is_voice(self) -> bool:
         return bool(self.capability & Capability.VOICE)
+
+    def is_console(self) -> bool:
+        """Return True if this model routes through console.x.ai."""
+        return bool(self.console_model)
 
     def pool_name(self) -> str:
         """Return the canonical pool string for this tier."""
@@ -80,7 +91,7 @@ class ModelSpec:
         """
         if self.prefer_best:
             if self.tier == Tier.HEAVY:
-                return (2,)  # heavy only
+                return (2, )  # heavy only
             if self.tier == Tier.SUPER:
                 return (2, 1)  # heavy, super
             return (2, 1, 0)  # heavy, super, basic
@@ -88,7 +99,7 @@ class ModelSpec:
             return (0, 1, 2)  # basic, super, heavy
         if self.tier == Tier.SUPER:
             return (1, 2)  # super, heavy
-        return (2,)  # heavy only
+        return (2, )  # heavy only
 
 
 __all__ = ["ModelSpec"]

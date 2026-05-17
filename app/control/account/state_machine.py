@@ -27,7 +27,6 @@ class StatePolicy:
 
 _DEFAULT_POLICY = StatePolicy()
 
-
 # ---------------------------------------------------------------------------
 # Feedback
 # ---------------------------------------------------------------------------
@@ -66,7 +65,9 @@ class AccountFeedback:
             kind = FeedbackKind.UNAUTHORIZED
         elif status_code == 403:
             kind = FeedbackKind.FORBIDDEN
-        elif status_code == 429:
+        elif status_code == 429 or status_code == 402:
+            # 402 from console.x.ai = account credits exhausted; treat as a
+            # rate-limited token so the pool routes around it.
             kind = FeedbackKind.RATE_LIMITED
         elif status_code >= 500:
             kind = FeedbackKind.SERVER_ERROR
@@ -111,9 +112,7 @@ def derive_status(record: AccountRecord, *, now: int | None = None) -> AccountSt
     return AccountStatus.COOLING
 
 
-def is_selectable(
-    record: AccountRecord, mode_id: int, *, now: int | None = None
-) -> bool:
+def is_selectable(record: AccountRecord, mode_id: int, *, now: int | None = None) -> bool:
     """Return True if the account can be selected for *mode_id*."""
     if record.is_deleted():
         return False
@@ -185,10 +184,7 @@ def apply_feedback(
         win = qs.get(feedback.mode_id)
         if win is not None:
             reset_at = (
-                ts + feedback.retry_after_ms
-                if feedback.retry_after_ms
-                else (ts + win.window_seconds * 1000)
-            )
+                ts + feedback.retry_after_ms if feedback.retry_after_ms else (ts + win.window_seconds * 1000))
             qs.set(
                 feedback.mode_id,
                 QuotaWindow(
@@ -206,10 +202,10 @@ def apply_feedback(
         use_count += 1
         last_use_at = ts
     elif feedback.kind not in (
-        FeedbackKind.SUCCESS,
-        FeedbackKind.RESTORE,
-        FeedbackKind.DISABLE,
-        FeedbackKind.DELETE,
+            FeedbackKind.SUCCESS,
+            FeedbackKind.RESTORE,
+            FeedbackKind.DISABLE,
+            FeedbackKind.DELETE,
     ):
         fail_count += 1
         last_fail_at = ts
@@ -236,11 +232,7 @@ def apply_feedback(
             ext[_DISABLED_REASON_KEY] = state_reason
 
     elif feedback.kind == FeedbackKind.RATE_LIMITED:
-        cooldown_ms = (
-            feedback.retry_after_ms
-            if feedback.retry_after_ms
-            else policy.default_cooling_ms
-        )
+        cooldown_ms = (feedback.retry_after_ms if feedback.retry_after_ms else policy.default_cooling_ms)
         status = AccountStatus.COOLING
         state_reason = feedback.reason or "rate_limited"
         ext[_COOLDOWN_UNTIL_KEY] = ts + cooldown_ms
@@ -292,21 +284,20 @@ def apply_feedback(
             "state_reason": state_reason,
             "ext": ext,
             "updated_at": ts,
-        }
-    )
+        })
 
 
 def clear_failures(record: AccountRecord) -> AccountRecord:
     """Reset failure counters and restore ACTIVE status."""
     ext = dict(record.ext)
     for k in (
-        _COOLDOWN_UNTIL_KEY,
-        _COOLDOWN_REASON_KEY,
-        _DISABLED_AT_KEY,
-        _DISABLED_REASON_KEY,
-        _EXPIRED_AT_KEY,
-        _EXPIRED_REASON_KEY,
-        _FORBIDDEN_STRIKE_KEY,
+            _COOLDOWN_UNTIL_KEY,
+            _COOLDOWN_REASON_KEY,
+            _DISABLED_AT_KEY,
+            _DISABLED_REASON_KEY,
+            _EXPIRED_AT_KEY,
+            _EXPIRED_REASON_KEY,
+            _FORBIDDEN_STRIKE_KEY,
     ):
         ext.pop(k, None)
     return record.model_copy(
@@ -318,8 +309,7 @@ def clear_failures(record: AccountRecord) -> AccountRecord:
             "state_reason": None,
             "ext": ext,
             "updated_at": now_ms(),
-        }
-    )
+        })
 
 
 __all__ = [

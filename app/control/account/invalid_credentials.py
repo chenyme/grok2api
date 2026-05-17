@@ -45,8 +45,7 @@ async def mark_account_invalid_credentials(
                     "expired_reason": reason,
                 },
             )
-        ]
-    )
+        ])
     logger.info(
         "account expired from {}: token={}... status={} upstream_status={}",
         source,
@@ -71,6 +70,12 @@ def feedback_kind_for_error(exc: BaseException | None) -> FeedbackKind:
         return FeedbackKind.UNAUTHORIZED
     status = getattr(exc, "status", 0)
     if status == 429:
+        return FeedbackKind.RATE_LIMITED
+    if status == 402:
+        # console.x.ai returns 402 when the account has exhausted its
+        # prepaid web_search/credit balance. Treat it like a rate limit
+        # so the account pool routes around this token until credits
+        # refresh or the operator tops up the balance.
         return FeedbackKind.RATE_LIMITED
     if status == 401:
         return FeedbackKind.UNAUTHORIZED
