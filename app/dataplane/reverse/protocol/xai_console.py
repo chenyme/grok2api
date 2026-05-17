@@ -399,10 +399,18 @@ def extract_console_search_sources(response_json: dict[str, Any], ) -> list[dict
     existing grok.com path:
         [{"url": "https://...", "title": ""}, ...]
 
-    Console responses include each search action as a top-level output item
-    of type ``web_search_call`` with an ``action`` containing either:
-      - ``{"type": "search", "query": "...", "sources": [{"type":"url","url":"..."}, ...]}``
-      - ``{"type": "open_page", "url": "..."}`` (page-open action)
+    Two upstream variants are handled:
+
+    1. Single-agent models (grok-4.3, grok-4.20-reasoning) emit a
+       ``web_search_call`` output item per search with full sources:
+         ``{"type": "search", "sources": [{"url": "..."}, ...]}``
+       or ``{"type": "open_page", "url": "..."}``.
+
+    2. Multi-agent models (grok-4.20-multi-agent) skip ``web_search_call``
+       items entirely and embed URLs only as document-level annotations on
+       the final assistant message with ``start_index == end_index == 0``.
+       We fall back to those annotation URLs so callers always see a
+       useful citation list regardless of the upstream emission format.
     """
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
@@ -432,6 +440,32 @@ def extract_console_search_sources(response_json: dict[str, Any], ) -> list[dict
             if url and url not in seen:
                 seen.add(url)
                 out.append({"url": url, "title": ""})
+
+    # Fallback: harvest URLs from message annotations. Multi-agent
+    # responses publish citations only here. We dedupe against the
+    # web_search_call sources collected above so single-agent paths
+    # remain unchanged.
+    for item in response_json.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            for ann in content.get("annotations") or []:
+                if not isinstance(ann, dict):
+                    continue
+                if ann.get("type") not in (None, "url_citation"):
+                    continue
+                url = ann.get("url") or ""
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                title = ann.get("title") or ""
+                # Multi-agent annotations sometimes set title=url; strip
+                # the duplicate so the source list reads cleanly.
+                if title == url:
+                    title = ""
+                out.append({"url": url, "title": title})
     return out
 
 
@@ -726,13 +760,26 @@ class ConsoleStreamAdapter:
             if isinstance(ann, dict) and ann.get("type") in (None, "url_citation"):
                 url = ann.get("url") or ""
                 if url:
+                    title = ann.get("title") or ""
+                    if title == url:
+                        # Multi-agent often duplicates URL into title; clean it.
+                        title = ""
                     record = {
                         "url": url,
-                        "title": ann.get("title") or "",
+                        "title": title,
                         "start_index": int(ann.get("start_index") or 0),
                         "end_index": int(ann.get("end_index") or 0),
                     }
                     self.annotations.append(record)
+                    # Fallback for multi-agent: harvest citation URL into
+                    # search_sources too. Dedupe against web_search_call
+                    # sources to avoid duplicating single-agent entries.
+                    if url not in self._seen_source_urls:
+                        self._seen_source_urls.add(url)
+                        self.search_sources.append({
+                            "url": url,
+                            "title": title,
+                        })
                     return {"kind": "annotation", "annotation_data": record}
             return {"kind": "skip"}
 
