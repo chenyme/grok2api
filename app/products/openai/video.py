@@ -759,9 +759,8 @@ async def _run_video_with_account(
     if _acct_dir is None:
         raise RateLimitError("Account directory not initialised")
 
-    acct = await _acct_dir.reserve(
+    acct = await _acct_dir.reserve_any(
         pool_candidates=spec.pool_candidates(),
-        mode_id=int(spec.mode_id),
         now_s_override=now_s(),
     )
     if acct is None:
@@ -847,9 +846,8 @@ async def _run_video_job(
         if _acct_dir is None:
             raise RateLimitError("Account directory not initialised")
 
-        acct = await _acct_dir.reserve(
+        acct = await _acct_dir.reserve_any(
             pool_candidates=spec.pool_candidates(),
-            mode_id=int(spec.mode_id),
             now_s_override=now_s(),
         )
         if acct is None:
