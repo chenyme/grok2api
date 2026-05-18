@@ -25,6 +25,14 @@ from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind
 
 _UPLOAD_URL = "https://grok.com/rest/app-chat/upload-file"
 _X_USER_ID_RE = re.compile(r"(?:^|;\s*)x-userid=([^;]+)")
+_URL_FETCH_HEADERS = {
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+}
 
 # Global semaphore — limits concurrent upload_file() calls across all requests.
 # Initialised lazily on first call so the event loop is guaranteed to be running.
@@ -186,10 +194,13 @@ async def upload_from_input(token: str, file_input: str) -> tuple[str, str]:
         proxy = await get_proxy_runtime()
         lease = await proxy.acquire()
         try:
-            headers = build_http_headers(token, lease=lease)
             kwargs  = build_session_kwargs(lease=lease)
             async with ResettableSession(**kwargs) as session:
-                resp = await session.get(file_input, headers=headers, timeout=30.0)
+                resp = await session.get(
+                    file_input,
+                    headers=_URL_FETCH_HEADERS,
+                    timeout=30.0,
+                )
             raw  = resp.content
             if resp.status_code != 200:
                 await proxy.feedback(
