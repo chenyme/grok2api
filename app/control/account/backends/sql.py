@@ -785,6 +785,10 @@ class SqlAccountRepository:
                 stmt = stmt.where(accounts_table.c.pool == query.pool)
             if query.status:
                 stmt = stmt.where(accounts_table.c.status == query.status.value)
+            if query.exclude_statuses:
+                stmt = stmt.where(accounts_table.c.status.notin_(
+                    [s.value for s in query.exclude_statuses]
+                ))
 
             total_row = (await conn.execute(
                 sa.select(sa.func.count()).select_from(stmt.subquery())

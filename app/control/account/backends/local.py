@@ -449,6 +449,10 @@ class LocalAccountRepository:
                 if query.status:
                     where_parts.append("status = ?")
                     params.append(query.status.value)
+                if query.exclude_statuses:
+                    placeholders = ", ".join("?" for _ in query.exclude_statuses)
+                    where_parts.append(f"status NOT IN ({placeholders})")
+                    params.extend(s.value for s in query.exclude_statuses)
 
                 where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
                 order_dir = "DESC" if query.sort_desc else "ASC"

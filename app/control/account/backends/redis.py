@@ -369,6 +369,8 @@ class RedisAccountRepository:
                 continue
             if query.status and r.status != query.status:
                 continue
+            if query.exclude_statuses and r.status in query.exclude_statuses:
+                continue
             all_records.append(r)
 
         # Sort.
