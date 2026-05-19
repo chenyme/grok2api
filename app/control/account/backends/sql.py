@@ -839,6 +839,89 @@ class SqlAccountRepository:
             revision=upserted_result.revision,
         )
 
+    async def get_stats(self) -> dict:
+        """Return aggregated stats via SQL — no Python-side row iteration."""
+        import time as _time
+        t = accounts_table
+
+        t0 = _time.monotonic()
+        async with self._session() as session:
+            # 1. Status counts
+            stmt = (
+                sa.select(t.c.status, sa.func.count())
+                .where(t.c.deleted_at.is_(None))
+                .group_by(t.c.status)
+            )
+            rows = (await session.execute(stmt)).all()
+            status_counts = {r[0]: r[1] for r in rows}
+            total = sum(status_counts.values())
+
+            # 2. Pool counts
+            stmt = (
+                sa.select(t.c.pool, sa.func.count())
+                .where(t.c.deleted_at.is_(None))
+                .group_by(t.c.pool)
+            )
+            rows = (await session.execute(stmt)).all()
+            pool_counts = {r[0]: r[1] for r in rows}
+
+            # 3. Pool × status
+            stmt = (
+                sa.select(t.c.pool, t.c.status, sa.func.count())
+                .where(t.c.deleted_at.is_(None))
+                .group_by(t.c.pool, t.c.status)
+            )
+            rows = (await session.execute(stmt)).all()
+            pool_status: dict[str, dict[str, int]] = {}
+            for r in rows:
+                pool_status.setdefault(r[0], {})[r[1]] = r[2]
+
+            # 4. Usage sums
+            stmt = sa.select(
+                sa.func.coalesce(sa.func.sum(t.c.usage_use_count), 0),
+                sa.func.coalesce(sa.func.sum(t.c.usage_fail_count), 0),
+            ).where(t.c.deleted_at.is_(None))
+            row = (await session.execute(stmt)).one()
+            success, fail = int(row[0]), int(row[1])
+
+            # 5. Quota sums (dialect-aware JSON extraction)
+            quota_sums: dict[str, int] = {}
+            for mode in ("auto", "fast", "expert", "heavy"):
+                col = getattr(t.c, f"quota_{mode}")
+                if self._dialect == "mysql":
+                    remaining_expr = sa.cast(
+                        sa.func.json_extract(col, "$.remaining"), sa.Integer
+                    )
+                else:  # postgresql
+                    remaining_expr = sa.cast(
+                        sa.func.json_extract_path_text(col, "remaining"), sa.Integer
+                    )
+                stmt = sa.select(
+                    sa.func.coalesce(sa.func.sum(remaining_expr), 0)
+                ).where(t.c.deleted_at.is_(None))
+                r = (await session.execute(stmt)).scalar()
+                quota_sums[mode] = int(r)
+
+            # 6. NSFW
+            stmt = sa.select(sa.func.count()).where(
+                t.c.deleted_at.is_(None),
+                t.c.tags.like('%"nsfw"%'),
+            )
+            nsfw_enabled = int((await session.execute(stmt)).scalar())
+            nsfw_disabled = total - nsfw_enabled
+
+        elapsed = _time.monotonic() - t0
+        return {
+            "total": total,
+            "status_counts": status_counts,
+            "pool_counts": pool_counts,
+            "pool_status": pool_status,
+            "usage": {"success": success, "fail": fail, "calls": success + fail},
+            "quota_sums": quota_sums,
+            "nsfw": {"enabled": nsfw_enabled, "disabled": nsfw_disabled},
+            "elapsed_ms": round(elapsed * 1000, 1),
+        }
+
     async def close(self) -> None:
         """Dispose the SQLAlchemy connection pool."""
         if self._dispose_engine:

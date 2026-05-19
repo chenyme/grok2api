@@ -79,6 +79,10 @@ class AccountRepository(Protocol):
         """Atomically replace all accounts in a pool."""
         ...
 
+    async def get_stats(self) -> dict:
+        """Return aggregated stats (status/pool/usage/quota counts)."""
+        ...
+
     async def close(self) -> None:
         """Release database connections / file handles."""
         ...

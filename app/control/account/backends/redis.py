@@ -409,6 +409,56 @@ class RedisAccountRepository:
             revision=upserted_result.revision,
         )
 
+    async def get_stats(self) -> dict:
+        """Return aggregated stats — scans all record keys (Redis has no aggregation)."""
+        import time as _time
+
+        t0 = _time.monotonic()
+        status_counts: dict[str, int] = {}
+        pool_counts: dict[str, int] = {}
+        pool_status: dict[str, dict[str, int]] = {}
+        success = fail = 0
+        quota_sums: dict[str, int] = {"auto": 0, "fast": 0, "expert": 0, "heavy": 0}
+        nsfw_enabled = 0
+        total = 0
+
+        async for key in self._r.scan_iter("accounts:record:*"):
+            token = (key.decode() if isinstance(key, bytes) else key).split(":", 2)[-1]
+            h = await self._r.hgetall(key)
+            if not h:
+                continue
+            r = self._from_hash(token, h)
+            if r.is_deleted():
+                continue
+            total += 1
+            st = r.status or "active"
+            status_counts[st] = status_counts.get(st, 0) + 1
+            pool = r.pool or "basic"
+            pool_counts[pool] = pool_counts.get(pool, 0) + 1
+            ps = pool_status.setdefault(pool, {})
+            ps[st] = ps.get(st, 0) + 1
+            success += r.usage_use_count or 0
+            fail += r.usage_fail_count or 0
+            if "nsfw" in (r.tags or []):
+                nsfw_enabled += 1
+            if isinstance(r.quota, dict):
+                for mode in ("auto", "fast", "expert", "heavy"):
+                    v = r.quota.get(mode)
+                    if isinstance(v, dict):
+                        quota_sums[mode] += int(v.get("remaining", 0) or 0)
+
+        elapsed = _time.monotonic() - t0
+        return {
+            "total": total,
+            "status_counts": status_counts,
+            "pool_counts": pool_counts,
+            "pool_status": pool_status,
+            "usage": {"success": success, "fail": fail, "calls": success + fail},
+            "quota_sums": quota_sums,
+            "nsfw": {"enabled": nsfw_enabled, "disabled": total - nsfw_enabled},
+            "elapsed_ms": round(elapsed * 1000, 1),
+        }
+
     async def close(self) -> None:
         """Close the underlying Redis connection pool."""
         await self._r.aclose()

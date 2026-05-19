@@ -516,5 +516,77 @@ class LocalAccountRepository:
     async def close(self) -> None:
         """No-op for SQLite — connections are opened and closed per operation."""
 
+    async def get_stats(self) -> dict:
+        """Return aggregated stats via SQL — no Python-side row iteration."""
+        import json as _json
+        import time as _time
+
+        def _sync() -> dict:
+            t0 = _time.monotonic()
+            with closing(self._connect()) as conn:
+                # 1. Status counts
+                status_rows = conn.execute(
+                    f"SELECT status, COUNT(*) FROM {_TBL} WHERE deleted_at IS NULL GROUP BY status"
+                ).fetchall()
+                status_counts: dict[str, int] = {}
+                for row in status_rows:
+                    status_counts[row[0]] = row[1]
+                total = sum(status_counts.values())
+
+                # 2. Pool counts
+                pool_rows = conn.execute(
+                    f"SELECT pool, COUNT(*) FROM {_TBL} WHERE deleted_at IS NULL GROUP BY pool"
+                ).fetchall()
+                pool_counts: dict[str, int] = {}
+                for row in pool_rows:
+                    pool_counts[row[0]] = row[1]
+
+                # 3. Pool × status
+                ps_rows = conn.execute(
+                    f"SELECT pool, status, COUNT(*) FROM {_TBL} WHERE deleted_at IS NULL GROUP BY pool, status"
+                ).fetchall()
+                pool_status: dict[str, dict[str, int]] = {}
+                for row in ps_rows:
+                    pool_status.setdefault(row[0], {})[row[1]] = row[2]
+
+                # 4. Usage sums
+                usage_row = conn.execute(
+                    f"SELECT COALESCE(SUM(usage_use_count),0), COALESCE(SUM(usage_fail_count),0) "
+                    f"FROM {_TBL} WHERE deleted_at IS NULL"
+                ).fetchone()
+                success = int(usage_row[0])
+                fail = int(usage_row[1])
+
+                # 5. Quota sums — extract "remaining" from JSON without Python parse
+                quota_sums: dict[str, int] = {"auto": 0, "fast": 0, "expert": 0, "heavy": 0}
+                for mode in ("auto", "fast", "expert", "heavy"):
+                    row = conn.execute(
+                        f"SELECT COALESCE(SUM(CAST("
+                        f"  json_extract(quota_{mode}, '$.remaining') AS INTEGER"
+                        f")), 0) FROM {_TBL} WHERE deleted_at IS NULL"
+                    ).fetchone()
+                    quota_sums[mode] = int(row[0])
+
+                # 6. NSFW counts — tags is stored as JSON array, check for "nsfw"
+                nsfw_row = conn.execute(
+                    f"SELECT COUNT(*) FROM {_TBL} WHERE deleted_at IS NULL AND tags LIKE '%\"nsfw\"%'"
+                ).fetchone()
+                nsfw_enabled = int(nsfw_row[0])
+                nsfw_disabled = total - nsfw_enabled
+
+                elapsed = _time.monotonic() - t0
+                return {
+                    "total": total,
+                    "status_counts": status_counts,
+                    "pool_counts": pool_counts,
+                    "pool_status": pool_status,
+                    "usage": {"success": success, "fail": fail, "calls": success + fail},
+                    "quota_sums": quota_sums,
+                    "nsfw": {"enabled": nsfw_enabled, "disabled": nsfw_disabled},
+                    "elapsed_ms": round(elapsed * 1000, 1),
+                }
+
+        return await asyncio.to_thread(_sync)
+
 
 __all__ = ["LocalAccountRepository"]
