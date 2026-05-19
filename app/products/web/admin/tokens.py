@@ -12,7 +12,7 @@ import re
 from typing import TYPE_CHECKING
 
 import orjson
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, RootModel
 
@@ -125,6 +125,7 @@ def _serialize_record(r) -> dict:
         "status":      r.status,
         "quota":       _quota_brief(r.quota) if isinstance(r.quota, dict) else {},
         "use_count":   r.usage_use_count or 0,
+        "fail_count":  r.usage_fail_count or 0,
         "last_used_at": r.last_use_at,
         "tags":        r.tags or [],
     }
@@ -140,18 +141,77 @@ def _json(data) -> Response:
 # ---------------------------------------------------------------------------
 
 @router.get("/tokens")
-async def list_tokens(repo: "AccountRepository" = Depends(get_repo)):
-    """Return flat token list."""
-    all_items: list = []
-    page_num = 1
-    while True:
-        page = await repo.list_accounts(ListAccountsQuery(page=page_num, page_size=2000))
-        all_items.extend(page.items)
-        if page_num * 2000 >= page.total:
-            break
-        page_num += 1
+async def list_tokens(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=2000),
+    pool: str | None = Query(None),
+    status: str | None = Query(None),
+    exclude_statuses: str | None = Query(None, description="Comma-separated statuses to exclude"),
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    """Return paginated token list."""
+    import time as _time
+    _t0 = _time.monotonic()
 
-    return _json({"tokens": [_serialize_record(r) for r in all_items]})
+    query = ListAccountsQuery(page=page, page_size=page_size)
+    if pool:
+        query.pool = pool
+    if status:
+        try:
+            query.status = AccountStatus(status)
+        except ValueError:
+            raise ValidationError(f"Invalid status: {status}", param="status")
+    if exclude_statuses:
+        for s in exclude_statuses.split(","):
+            s = s.strip()
+            if s:
+                try:
+                    query.exclude_statuses.append(AccountStatus(s))
+                except ValueError:
+                    pass
+
+    result = await repo.list_accounts(query)
+    elapsed = _time.monotonic() - _t0
+    logger.info(
+        "admin list_tokens: page={} page_size={} total={} elapsed_ms={:.1f}",
+        page, page_size, result.total, elapsed * 1000,
+    )
+    return _json({
+        "tokens": [_serialize_record(r) for r in result.items],
+        "total": result.total,
+        "page": result.page,
+        "page_size": result.page_size,
+        "total_pages": result.total_pages,
+    })
+
+
+@router.get("/tokens/stats")
+async def token_stats(repo: "AccountRepository" = Depends(get_repo)):
+    """Return aggregated stats across all tokens (SQL-optimised)."""
+    import time as _time
+    _t0 = _time.monotonic()
+    raw = await repo.get_stats()
+    elapsed = _time.monotonic() - _t0
+    logger.info("admin token_stats: total={} elapsed_ms={:.1f}", raw.get("total", 0), elapsed * 1000)
+    sc = raw.get("status_counts", {})
+    usage = raw.get("usage", {})
+    nsfw = raw.get("nsfw", {})
+    return _json({
+        "stats": {
+            "total":    raw.get("total", 0),
+            "active":   sc.get("active", 0),
+            "cooling":  sc.get("cooling", 0),
+            "expired":  sc.get("expired", 0),
+            "disabled": sc.get("disabled", 0),
+            "calls":    usage.get("calls", 0),
+            "success":  usage.get("success", 0),
+            "fail":     usage.get("fail", 0),
+        },
+        "quota_sums":   raw.get("quota_sums", {}),
+        "pool_counts":  raw.get("pool_counts", {}),
+        "pool_status":  raw.get("pool_status", {}),
+        "nsfw_counts":  {"enabled": nsfw.get("enabled", 0), "disabled": nsfw.get("disabled", 0)},
+    })
 
 
 @router.post("/tokens")
