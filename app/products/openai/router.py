@@ -37,12 +37,31 @@ _TAG_FILES = "OpenAI - Files"
 
 
 async def _available_pools(request: Request) -> frozenset[str]:
-    repo = getattr(request.app.state, "repository", None)
-    if repo is None:
-        return frozenset()
+    """Return the set of pool names that have at least one manageable account.
 
-    snapshot = await repo.runtime_snapshot()
-    pools = {record.pool for record in snapshot.items if is_manageable(record)}
+    Uses the in-memory AccountRuntimeTable (O(n) array scan, no DB hit)
+    instead of repo.runtime_snapshot() which would deserialise every row.
+    """
+    from app.dataplane.account import _directory
+    from app.dataplane.shared.enums import POOL_ID_TO_STR, StatusId
+
+    if _directory is None or _directory._table is None:
+        # Fallback: no runtime table yet — use repo (startup path)
+        repo = getattr(request.app.state, "repository", None)
+        if repo is None:
+            return frozenset()
+        snapshot = await repo.runtime_snapshot()
+        pools = {record.pool for record in snapshot.items if is_manageable(record)}
+        return frozenset(pools)
+
+    table = _directory._table
+    manageable_statuses = {int(StatusId.ACTIVE), int(StatusId.COOLING)}
+    pools: set[str] = set()
+    for i in range(len(table.pool_by_idx)):
+        if table.status_by_idx[i] in manageable_statuses:
+            pool_name = POOL_ID_TO_STR.get(table.pool_by_idx[i])
+            if pool_name:
+                pools.add(pool_name)
     return frozenset(pools)
 
 
@@ -64,7 +83,9 @@ def _model_available_for_pools(spec: ModelSpec, pools: frozenset[str]) -> bool:
 @router.get("/models", tags=[_TAG_MODELS], dependencies=[Depends(verify_api_key)])
 async def list_models(request: Request):
     import time
+    import time as _time
 
+    t0 = _time.monotonic()
     pools = await _available_pools(request)
     models = [
         {
@@ -77,6 +98,8 @@ async def list_models(request: Request):
         for m in model_registry.list_enabled()
         if _model_available_for_pools(m, pools)
     ]
+    elapsed = _time.monotonic() - t0
+    logger.info("openai list_models: pools={} models={} elapsed_ms={:.1f}", pools, len(models), elapsed * 1000)
     return JSONResponse({"object": "list", "data": models})
 
 
