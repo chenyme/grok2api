@@ -1094,21 +1094,14 @@
 const PAGE_SIZE_KEY = 'admin.account.page_size';
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000, 2000];
 
-let allTokens = [], curStatus = 'all', curNsfw = 'all', curPool = 'all', curPage = 1, pageSize = loadSavedPageSize();
+let pageTokens = [], curStatus = 'all', curNsfw = 'all', curPool = 'all', curPage = 1, pageSize = loadSavedPageSize();
+let globalStats = null; // from /tokens/stats
+let serverTotal = 0, serverTotalPages = 0;
 const sel = new Set();
 const refreshingTokens = new Set();
 let _cb = null;
 let _editingToken = '';
 let _filterMenuBound = false;
-let _tokenViewVersion = 0;
-let _tokenViewCacheKey = '';
-let _tokenViewCache = null;
-
-function invalidateTokenView() {
-  _tokenViewVersion += 1;
-  _tokenViewCacheKey = '';
-  _tokenViewCache = null;
-}
 
 function tr(key, params, fallback) {
   const value = t(key, params);
@@ -1158,7 +1151,7 @@ function waitI18n() {
   const key = await adminKey.get();
   if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false))
     return location.href = '/admin/login';
-  load();
+  await load();
 })();
 
 // ── API ────────────────────────────────────────────────────────────────────
@@ -1180,20 +1173,44 @@ let selectionStrategy = 'quota';
 // ── Load ───────────────────────────────────────────────────────────────────
 async function load() {
   try {
-    const [data, status] = await Promise.all([
-      _api('GET', '/tokens'),
+    const [statsData, status] = await Promise.all([
+      _api('GET', '/tokens/stats'),
       _api('GET', '/status').catch(() => null),
     ]);
     if (status && typeof status.selection_strategy === 'string') {
       selectionStrategy = status.selection_strategy;
     }
-    allTokens = Array.isArray(data.tokens)
-      ? data.tokens
-      : Object.entries(data.tokens || {}).flatMap(([pool, items]) =>
-          Array.isArray(items) ? items.map(t => ({ ...t, pool: t.pool || pool })) : []);
+    globalStats = statsData;
     applyStrategyUI();
-    invalidateTokenView();
-    render();
+    renderStats();
+    renderFilters();
+    await loadPage();
+  } catch (e) { showToast(`${tr('account.loadFailed', null, '加载失败')}: ${e.message}`, 'error'); }
+}
+
+async function loadPage() {
+  try {
+    let url = `/tokens?page=${curPage}&page_size=${pageSize}`;
+    if (curPool !== 'all') url += `&pool=${encodeURIComponent(curPool)}`;
+    // Status / exclude sent to backend for server-side filtering
+    if (curStatus === 'invalid') {
+      url += `&exclude_statuses=active,cooling,disabled`;
+    } else if (curStatus !== 'all') {
+      url += `&status=${encodeURIComponent(curStatus)}`;
+    }
+    const data = await _api('GET', url);
+    let items = Array.isArray(data.tokens) ? data.tokens : [];
+    serverTotal = data.total || 0;
+    serverTotalPages = data.total_pages || 1;
+    // NSFW filter: client-side on current page (tag-based, not server-filtered)
+    if (curNsfw !== 'all') {
+      items = items.filter(t => curNsfw === 'enabled'
+        ? (t.tags || []).includes('nsfw')
+        : !(t.tags || []).includes('nsfw'));
+    }
+    pageTokens = items;
+    sel.clear();
+    renderTable();
   } catch (e) { showToast(`${tr('account.loadFailed', null, '加载失败')}: ${e.message}`, 'error'); }
 }
 
@@ -1209,100 +1226,10 @@ function applyStrategyUI() {
 
 // ── Render ─────────────────────────────────────────────────────────────────
 function render() {
-  const view = getTokenView();
-  renderStats(view);
-  renderFilters(view);
-  renderTable(view);
+  renderStats();
+  renderFilters();
+  renderTable();
   applyStrategyUI();
-}
-
-function getTokenView() {
-  const cacheKey = `${_tokenViewVersion}|${curStatus}|${curNsfw}|${curPool}`;
-  if (_tokenViewCache && _tokenViewCacheKey === cacheKey) return _tokenViewCache;
-
-  const stats = {
-    active: 0,
-    cooling: 0,
-    invalid: 0,
-    disabled: 0,
-    calls: 0,
-    success: 0,
-    fail: 0,
-    qa: 0,
-    qf: 0,
-    qe: 0,
-    qh: 0,
-  };
-  const statusCounts = { all: 0, active: 0, cooling: 0, invalid: 0, disabled: 0 };
-  const nsfwCounts = { all: 0, enabled: 0, disabled: 0 };
-  const poolCounts = new Map([['all', 0]]);
-  const poolsSet = new Set(['basic', 'super', 'heavy']);
-  const filteredItems = [];
-
-  for (const token of allTokens) {
-    const pool = token.pool || 'basic';
-    const quota = token.quota || {};
-    const nsfwEnabled = (token.tags || []).includes('nsfw');
-    const invalid = isInvalidStatus(token.status);
-    const disabled = isDisabledStatus(token.status);
-    const matchesPool = curPool === 'all' || pool === curPool;
-    const matchesStatus = curStatus === 'all'
-      || (curStatus === 'invalid' ? invalid : curStatus === 'disabled' ? disabled : token.status === curStatus);
-    const matchesNsfw = curNsfw === 'all' || (curNsfw === 'enabled' ? nsfwEnabled : !nsfwEnabled);
-
-    poolsSet.add(pool);
-    const successCount = token.use_count || 0;
-    const failCount = token.fail_count || 0;
-    stats.success += successCount;
-    stats.fail += failCount;
-    stats.calls += successCount + failCount;
-    stats.qa += quota.auto?.remaining || 0;
-    stats.qf += quota.fast?.remaining || 0;
-    stats.qe += quota.expert?.remaining || 0;
-    stats.qh += quota.heavy?.remaining || 0;
-
-    if (token.status === 'active') stats.active += 1;
-    if (token.status === 'cooling') stats.cooling += 1;
-    if (invalid) stats.invalid += 1;
-    if (disabled) stats.disabled += 1;
-
-    if (matchesPool && matchesNsfw) {
-      statusCounts.all += 1;
-      if (token.status === 'active') statusCounts.active += 1;
-      if (token.status === 'cooling') statusCounts.cooling += 1;
-      if (invalid) statusCounts.invalid += 1;
-      if (disabled) statusCounts.disabled += 1;
-    }
-
-    if (matchesPool && matchesStatus) {
-      nsfwCounts.all += 1;
-      if (nsfwEnabled) nsfwCounts.enabled += 1;
-      else nsfwCounts.disabled += 1;
-    }
-
-    if (matchesStatus && matchesNsfw) {
-      poolCounts.set('all', poolCounts.get('all') + 1);
-      poolCounts.set(pool, (poolCounts.get(pool) || 0) + 1);
-    }
-
-    if (matchesPool && matchesStatus && matchesNsfw) filteredItems.push(token);
-  }
-
-  if (curPool !== 'all' && !poolsSet.has(curPool)) {
-    curPool = 'all';
-    return getTokenView();
-  }
-
-  _tokenViewCacheKey = `${_tokenViewVersion}|${curStatus}|${curNsfw}|${curPool}`;
-  _tokenViewCache = {
-    stats,
-    statusCounts,
-    nsfwCounts,
-    poolCounts,
-    pools: Array.from(poolsSet),
-    filteredItems,
-  };
-  return _tokenViewCache;
 }
 
 function poolLabel(pool) {
@@ -1317,23 +1244,25 @@ function isInvalidStatus(status) {
   return !['active', 'cooling', 'disabled'].includes(status);
 }
 
-function renderStats(view = getTokenView()) {
-  const { stats } = view;
-  $('s-total',   allTokens.length);
-  $('s-active',  stats.active);
-  $('s-cooling', stats.cooling);
-  $('s-invalid', stats.invalid);
-  $('s-disabled', stats.disabled);
-  $('s-calls', fmt(stats.calls));
-  $('s-success', fmt(stats.success));
-  $('s-rate', fmtRate(stats.success, stats.fail));
-  $('s-qa', fmt(stats.qa)); $('s-qf', fmt(stats.qf)); $('s-qe', fmt(stats.qe)); $('s-qh', fmt(stats.qh));
+function renderStats() {
+  if (!globalStats) return;
+  const s = globalStats.stats || {};
+  const qs = globalStats.quota_sums || {};
+  $('s-total',   s.total || 0);
+  $('s-active',  s.active || 0);
+  $('s-cooling', s.cooling || 0);
+  $('s-invalid', s.expired || 0);
+  $('s-disabled', s.disabled || 0);
+  $('s-calls', fmt(s.calls || 0));
+  $('s-success', fmt(s.success || 0));
+  $('s-rate', fmtRate(s.success || 0, s.fail || 0));
+  $('s-qa', fmt(qs.auto || 0)); $('s-qf', fmt(qs.fast || 0)); $('s-qe', fmt(qs.expert || 0)); $('s-qh', fmt(qs.heavy || 0));
 }
 
-function renderFilters(view = getTokenView()) {
-  renderStatusFilters(view);
-  renderNsfwFilters(view);
-  renderPoolFilters(view);
+function renderFilters() {
+  renderStatusFilters();
+  renderNsfwFilters();
+  renderPoolFilters();
   syncFilterTrigger();
 }
 
@@ -1377,30 +1306,39 @@ function syncFilterTrigger() {
   trigger.classList.toggle('is-active', active);
 }
 
-function renderStatusFilters(view = getTokenView()) {
-  setFilterCount('fc-status-all', view.statusCounts.all);
-  setFilterCount('fc-status-active', view.statusCounts.active);
-  setFilterCount('fc-status-cooling', view.statusCounts.cooling);
-  setFilterCount('fc-status-invalid', view.statusCounts.invalid);
-  setFilterCount('fc-status-disabled', view.statusCounts.disabled);
+function renderStatusFilters() {
+  if (!globalStats) return;
+  const s = globalStats.stats || {};
+  const invalidCount = s.expired || 0;
+  setFilterCount('fc-status-all', s.total || 0);
+  setFilterCount('fc-status-active', s.active || 0);
+  setFilterCount('fc-status-cooling', s.cooling || 0);
+  setFilterCount('fc-status-invalid', invalidCount);
+  setFilterCount('fc-status-disabled', s.disabled || 0);
   document.querySelectorAll('[data-status]').forEach(el => el.classList.toggle('active', el.dataset.status === curStatus));
 }
 
-function renderNsfwFilters(view = getTokenView()) {
-  setFilterCount('fc-nsfw-all', view.nsfwCounts.all);
-  setFilterCount('fc-nsfw-enabled', view.nsfwCounts.enabled);
-  setFilterCount('fc-nsfw-disabled', view.nsfwCounts.disabled);
+function renderNsfwFilters() {
+  if (!globalStats) return;
+  const nc = globalStats.nsfw_counts || {};
+  const total = (nc.enabled || 0) + (nc.disabled || 0);
+  setFilterCount('fc-nsfw-all', total);
+  setFilterCount('fc-nsfw-enabled', nc.enabled || 0);
+  setFilterCount('fc-nsfw-disabled', nc.disabled || 0);
   document.querySelectorAll('[data-nsfw]').forEach(el => el.classList.toggle('active', el.dataset.nsfw === curNsfw));
 }
 
-function renderPoolFilters(view = getTokenView()) {
+function renderPoolFilters() {
   const wrap = document.getElementById('pool-filter-chips');
   if (!wrap) return;
-  const pools = view.pools;
+  const pc = (globalStats && globalStats.pool_counts) || {};
+  const pools = ['basic', 'super', 'heavy', ...Object.keys(pc).filter(p => !['basic','super','heavy'].includes(p))];
+  const uniquePools = [...new Set(pools)];
+  const allCount = Object.values(pc).reduce((a, b) => a + b, 0);
   wrap.innerHTML = [
-    `<button type="button" class="filter-chip${curPool === 'all' ? ' active' : ''}" data-pool="all" onclick="switchPool('all')"><span>${tr('account.filterTypeAll', null, '全部')}</span><span class="filter-chip-count">${view.poolCounts.get('all') || 0}</span></button>`,
-    ...pools.map(pool => {
-      const count = view.poolCounts.get(pool) || 0;
+    `<button type="button" class="filter-chip${curPool === 'all' ? ' active' : ''}" data-pool="all" onclick="switchPool('all')"><span>${tr('account.filterTypeAll', null, '全部')}</span><span class="filter-chip-count">${allCount}</span></button>`,
+    ...uniquePools.map(pool => {
+      const count = pc[pool] || 0;
       return `<button type="button" class="filter-chip${curPool === pool ? ' active' : ''}" data-pool="${xe(pool)}" onclick="switchPool('${xe(pool)}')"><span>${xe(poolLabel(pool))}</span><span class="filter-chip-count">${count}</span></button>`;
     }),
   ].join('');
@@ -1411,43 +1349,31 @@ function setFilterCount(id, value) {
   if (el) el.textContent = value;
 }
 
-function applyPoolFilter(items, pool = curPool) {
-  if (pool === 'all') return items;
-  return items.filter(t => (t.pool || 'basic') === pool);
-}
-
-function applyStatusFilter(items, status = curStatus) {
-  if (status === 'all') return items;
-  if (status === 'invalid') return items.filter(t => isInvalidStatus(t.status));
-  if (status === 'disabled') return items.filter(t => isDisabledStatus(t.status));
-  return items.filter(t => t.status === status);
-}
-
-function applyNsfwFilter(items, mode = curNsfw) {
-  if (mode === 'all') return items;
-  if (mode === 'enabled') return items.filter(t => (t.tags || []).includes('nsfw'));
-  return items.filter(t => !(t.tags || []).includes('nsfw'));
-}
-
 function filtered() {
-  return getTokenView().filteredItems;
+  // For export: return current page tokens (server already filtered by pool/status).
+  // NSFW filter applied client-side.
+  if (curNsfw === 'enabled') return pageTokens.filter(t => (t.tags || []).includes('nsfw'));
+  if (curNsfw === 'disabled') return pageTokens.filter(t => !(t.tags || []).includes('nsfw'));
+  return pageTokens;
 }
 
 function preserveScroll(fn) {
   const y = window.scrollY;
-  fn();
-  requestAnimationFrame(() => window.scrollTo({ top: y, behavior: 'auto' }));
+  const result = fn();
+  if (result && typeof result.then === 'function') {
+    result.then(() => requestAnimationFrame(() => window.scrollTo({ top: y, behavior: 'auto' })));
+  } else {
+    requestAnimationFrame(() => window.scrollTo({ top: y, behavior: 'auto' }));
+  }
 }
 
-function renderTable(view = getTokenView()) {
-  const items = view.filteredItems;
-  const total = items.length;
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  if (curPage > pages) curPage = pages;
-  const slice = items.slice((curPage - 1) * pageSize, curPage * pageSize);
+function renderTable() {
+  const items = pageTokens;
+  const total = serverTotal;
+  const pages = serverTotalPages;
 
-  document.getElementById('tbody').innerHTML = slice.length
-    ? slice.map(rowHtml).join('')
+  document.getElementById('tbody').innerHTML = items.length
+    ? items.map(rowHtml).join('')
     : `<tr><td colspan="10" class="empty-state">${tr('account.empty', null, '暂无 Token，请点击右上角导入或添加。')}</td></tr>`;
 
   $('pagi-page', tr('account.pageIndicator', { current: total ? curPage : 0, total: pages }, `第 ${total ? curPage : 0} / ${pages} 页`));
@@ -1534,55 +1460,50 @@ function qpills(q) {
 
 // ── Nav & Pagination ────────────────────────────────────────────────────────
 function switchStatus(status) {
-  preserveScroll(() => {
+  preserveScroll(async () => {
     curStatus = status || 'all';
     curPage = 1;
-    sel.clear();
     renderFilters();
-    renderTable();
+    await loadPage();
   });
 }
 function switchNsfw(mode) {
-  preserveScroll(() => {
+  preserveScroll(async () => {
     curNsfw = mode || 'all';
     curPage = 1;
-    sel.clear();
     renderFilters();
-    renderTable();
+    await loadPage();
   });
 }
 function switchPool(pool) {
-  preserveScroll(() => {
+  preserveScroll(async () => {
     curPool = pool || 'all';
     curPage = 1;
-    sel.clear();
     renderFilters();
-    renderTable();
+    await loadPage();
   });
 }
-function prevPage() { if (curPage > 1) { curPage--; renderTable(); } }
-function nextPage() {
-  const pages = Math.max(1, Math.ceil(getTokenView().filteredItems.length / pageSize));
-  if (curPage < pages) { curPage++; renderTable(); }
+async function prevPage() { if (curPage > 1) { curPage--; await loadPage(); } }
+async function nextPage() {
+  if (curPage < serverTotalPages) { curPage++; await loadPage(); }
 }
-function changePageSize(v) {
+async function changePageSize(v) {
   const next = Number(v);
   pageSize = PAGE_SIZE_OPTIONS.includes(next) ? next : 50;
   localStorage.setItem(PAGE_SIZE_KEY, String(pageSize));
   curPage = 1;
-  renderTable();
+  await loadPage();
 }
 
 function toggleAll(checked) {
-  getTokenView().filteredItems.slice((curPage-1)*pageSize, curPage*pageSize).forEach(t => checked ? sel.add(t.token) : sel.delete(t.token));
+  pageTokens.forEach(t => checked ? sel.add(t.token) : sel.delete(t.token));
   document.querySelectorAll('.row-cb').forEach(el => el.checked = checked);
   updateBatchBtns();
 }
 function toggleRow(el) {
   el.checked ? sel.add(el.dataset.token) : sel.delete(el.dataset.token);
-  const page = getTokenView().filteredItems.slice((curPage-1)*pageSize, curPage*pageSize);
   const cbAll = document.getElementById('cb-all');
-  cbAll.checked = page.every(t => sel.has(t.token));
+  cbAll.checked = pageTokens.every(t => sel.has(t.token));
   cbAll.indeterminate = !cbAll.checked && sel.size > 0;
   updateBatchBtns();
 }
@@ -1633,18 +1554,20 @@ async function copy(t) {
 
 // For import modals: includes "auto（自动检测）" as the first / default option.
 function fillImportPoolOptions(id) {
-  const known = [...new Set(['basic', 'super', 'heavy', ...allTokens.map(t => t.pool || 'basic')])];
+  const known = ['basic', 'super', 'heavy', ...Object.keys((globalStats && globalStats.pool_counts) || {}).filter(p => !['basic','super','heavy'].includes(p))];
+  const uniquePools = [...new Set(known)];
   const opts = [
     `<option value="auto">${xe(tr('account.pool.autoRecommended', null, '自动检测（推荐）'))}</option>`,
-    ...known.map(p => `<option value="${p}">${xe(poolLabel(p))}</option>`),
+    ...uniquePools.map(p => `<option value="${p}">${xe(poolLabel(p))}</option>`),
   ];
   document.getElementById(id).innerHTML = opts.join('');
 }
 
 // For edit modal: shows real pool names only (no "auto").
 function fillPoolOptions(id) {
-  const pools = [...new Set(['basic', 'super', 'heavy', ...allTokens.map(t => t.pool || 'basic')])];
-  document.getElementById(id).innerHTML = pools.map(p => `<option value="${p}">${xe(poolLabel(p))}</option>`).join('');
+  const known = ['basic', 'super', 'heavy', ...Object.keys((globalStats && globalStats.pool_counts) || {}).filter(p => !['basic','super','heavy'].includes(p))];
+  const uniquePools = [...new Set(known)];
+  document.getElementById(id).innerHTML = uniquePools.map(p => `<option value="${p}">${xe(poolLabel(p))}</option>`).join('');
 }
 
 function openAdd() {
@@ -1661,7 +1584,7 @@ function openImport() {
 }
 
 function openEdit(token) {
-  const item = allTokens.find(t => t.token === token);
+  const item = pageTokens.find(t => t.token === token);
   if (!item) return showToast(tr('account.notFound', null, '账户不存在'), 'error');
   _editingToken = item.token;
   document.getElementById('edit-token').value = item.token;
@@ -1704,7 +1627,7 @@ async function doImport() {
       await _api('POST', '/tokens', parsed);
       closeModal('modal-import-file');
       showToast(tr('account.importJsonDone', { n: total }, `导入完成，共 ${total} 个`), 'success');
-      load();
+      await load();
     } catch (e) { showToast(`${tr('account.importFailed', null, '导入失败')}: ${e.message}`, 'error'); }
   } else {
     // TXT 格式: 每行一个 token
@@ -1733,7 +1656,7 @@ async function doEdit() {
     closeModal('modal-edit');
     _editingToken = '';
     showToast(tr('account.editDone', null, '编辑完成'), 'success');
-    load();
+    await load();
   } catch (e) { showToast(`${tr('account.editFailed', null, '编辑失败')}: ${e.message}`, 'error'); }
 }
 
@@ -1762,7 +1685,7 @@ async function saveTokens(pool, newToks, modalId, pendingMessage, successPrefix,
       ? tr('account.saveResultSkipped', { prefix: successPrefix, count: d.count, skipped: d.skipped }, `${successPrefix}，新增 ${d.count}，已存在跳过 ${d.skipped}`)
       : tr('account.saveResult', { prefix: successPrefix, count: d.count }, `${successPrefix}，新增 ${d.count} 个`);
     showToast(msg, 'success');
-    load();
+    await load();
   } catch (e) { showToast(`${errorPrefix}: ${e.message}`, 'error'); }
 }
 
@@ -1807,7 +1730,7 @@ function doDelete(tokens) {
         await _api('DELETE', '/tokens', tokens);
         tokens.forEach(t => sel.delete(t));
         showToast(tr('account.deleteDone', { n }, `已删除 ${n} 个`), 'success');
-        load();
+        await load();
       } catch (e) { showToast(`${tr('account.deleteFailed', null, '删除失败')}: ${e.message}`, 'error'); }
     });
 }
@@ -1845,7 +1768,7 @@ async function _runBatch(endpoint, tokens, label, onDone) {
     const es = new EventSource(`${ADMIN_API}/batch/${_batchTaskId}/stream?app_key=${encodeURIComponent(key)}`);
     _batchEs = es;
 
-    es.onmessage = (e) => {
+    es.onmessage = async (e) => {
       const ev = JSON.parse(e.data);
       if (ev.type === 'snapshot' || ev.type === 'progress') {
         progress.update(ev.processed || 0, total);
@@ -1857,7 +1780,7 @@ async function _runBatch(endpoint, tokens, label, onDone) {
           const ok = s.ok ?? 0, fail = s.fail ?? 0;
           progress.finish(`${label.replace('…','').replace('正在','')} 完成：成功 ${ok}，失败 ${fail}`, fail > 0 ? 'error' : 'success');
           onDone(ok, fail);
-          load();
+          await load();
         } else if (ev.type === 'cancelled') {
           progress.finish('已取消', 'error');
         } else {
@@ -1996,7 +1919,7 @@ async function nsfwOne(token, enabled = true) {
       ? tr('account.nsfwDone', { ok: d.summary?.ok ?? 0, fail: d.summary?.fail ?? 0 }, `NSFW 已开启：成功 ${d.summary?.ok??0}，失败 ${d.summary?.fail??0}`)
       : tr('account.nsfwDisableDone', { ok: d.summary?.ok ?? 0, fail: d.summary?.fail ?? 0 }, `NSFW 已关闭：成功 ${d.summary?.ok??0}，失败 ${d.summary?.fail??0}`),
       'success');
-    load();
+    await load();
   } catch (e) { showToast(`${tr('account.operationFailed', null, '操作失败')}: ${e.message}`, 'error'); }
 }
 
