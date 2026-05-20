@@ -48,6 +48,7 @@ from app.dataplane.reverse.protocol.xai_console import (
     extract_console_text,
     extract_console_tool_calls,
     extract_console_usage,
+    format_search_sources_suffix,
     inject_web_search_tool,
     parse_console_error,
 )
@@ -454,6 +455,7 @@ async def _console_post(
     tools: list[dict] | None,
     tool_choice: Any,
     timeout_s: float,
+    reasoning_effort: str | None = None,
 ) -> Any:
     """POST to console.x.ai/v1/responses; return ``(session, response)``.
 
@@ -472,6 +474,7 @@ async def _console_post(
         stream=stream,
         temperature=temperature,
         top_p=top_p,
+        reasoning_effort=reasoning_effort,
         tools=tools,
         tool_choice=tool_choice,
     )
@@ -540,6 +543,7 @@ async def _console_completions(
     emit_think: bool,
     temperature: float = 0.8,
     top_p: float = 0.95,
+    reasoning_effort: str | None = None,
     tools: list[dict] | None = None,
     tool_choice: Any = None,
 ) -> dict | AsyncGenerator[str, None]:
@@ -555,6 +559,11 @@ async def _console_completions(
       - SSE streaming for both text and tool call arguments
       - URL citation annotations from upstream search results
     """
+    # Apply per-model default effort when caller didn't specify. Hybrid
+    # reasoning models (grok-4, grok-4.3, grok-4.20) default to "high" so
+    # callers expecting "think hard by default" get it without explicit opt-in.
+    if reasoning_effort is None and spec.default_reasoning_effort:
+        reasoning_effort = spec.default_reasoning_effort
     cfg = get_config()
     console_model = spec.console_model
 
@@ -622,6 +631,7 @@ async def _console_completions(
                             stream=True,
                             temperature=temperature,
                             top_p=top_p,
+                            reasoning_effort=reasoning_effort,
                             tools=console_tools,
                             tool_choice=console_tool_choice,
                             timeout_s=timeout_s,
@@ -690,6 +700,15 @@ async def _console_completions(
                         else:
                             chat_anns = (
                                 _to_chat_annotations(adapter.annotations) if adapter.annotations else None)
+                            # Append ## Sources markdown block when
+                            # features.show_search_sources is enabled (mirrors
+                            # the grok.com path). Emitted as a separate text
+                            # chunk before the final empty chunk so clients
+                            # streaming raw deltas see the suffix in order.
+                            references = adapter.references_suffix()
+                            if references:
+                                ref_chunk = make_stream_chunk(response_id, model, references)
+                                yield f"data: {orjson.dumps(ref_chunk).decode()}\n\n"
                             final = make_stream_chunk(
                                 response_id,
                                 model,
@@ -790,6 +809,7 @@ async def _console_completions(
                     stream=False,
                     temperature=temperature,
                     top_p=top_p,
+                    reasoning_effort=reasoning_effort,
                     tools=console_tools,
                     tool_choice=console_tool_choice,
                     timeout_s=timeout_s,
@@ -893,6 +913,11 @@ async def _console_completions(
         return resp
 
     chat_anns = (_to_chat_annotations(response_annotations) if response_annotations else None)
+    # Append ## Sources markdown block to the body when
+    # features.show_search_sources is enabled (mirrors grok.com path).
+    references = format_search_sources_suffix(response_search_sources)
+    if references:
+        full_text = (full_text or "") + references
     return make_chat_response(
         model,
         full_text,
@@ -915,6 +940,7 @@ async def completions(
     tool_choice: Any = None,
     temperature: float = 0.8,
     top_p: float = 0.95,
+    reasoning_effort: str | None = None,
     request_overrides: dict | None = None,
 ) -> dict | AsyncGenerator[str, None]:
     """Entry point for /v1/chat/completions.
@@ -950,6 +976,7 @@ async def completions(
             emit_think=emit_think,
             temperature=temperature,
             top_p=top_p,
+            reasoning_effort=reasoning_effort,
             tools=tools,
             tool_choice=tool_choice,
         )

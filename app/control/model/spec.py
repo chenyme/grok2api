@@ -26,6 +26,17 @@ class ModelSpec:
                     model ID sent to console.x.ai (e.g. ``"grok-4.3"``).
                     SSO cookies from grok.com work for both endpoints,
                     so basic-tier accounts can access all models this way.
+    ``default_reasoning_effort`` when non-empty, this value is forwarded as
+                    ``reasoning.effort`` to the console upstream when the
+                    caller doesn't specify ``reasoning_effort`` themselves.
+                    Use ``"high"`` for hybrid reasoning models the user
+                    expects to "think hard by default" (grok-4, grok-4.3,
+                    grok-4.20). Leave empty for models that either don't
+                    support the effort field (grok-4.20-reasoning is fixed
+                    intensity; the upstream rejects effort with HTTP 400)
+                    or don't reason at all (grok-4.20-non-reasoning).
+                    Only consulted when ``console_model`` is set; ignored
+                    on the legacy grok.com path.
     """
 
     model_name: str
@@ -36,6 +47,7 @@ class ModelSpec:
     public_name: str
     prefer_best: bool = False
     console_model: str = ""
+    default_reasoning_effort: str = ""
 
     # --- convenience predicates ---
 

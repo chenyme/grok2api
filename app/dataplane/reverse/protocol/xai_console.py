@@ -15,7 +15,8 @@ Request format (string input):
     {"model": "grok-4.3", "input": "What is 1+1?", "stream": true}
 
 Request format (structured input + tools):
-    {
+    {s model. Please try again later. Resets in: 30m0s (trace ID: 681cf17538e7dbc5a2362c74348fb8b9)
+    Feedback submitted   
         "model": "grok-4.3",
         "input": [
             {"role": "user", "content": [
@@ -41,6 +42,7 @@ from typing import Any
 
 import orjson
 
+from app.platform.config.snapshot import get_config
 from app.platform.errors import UpstreamError
 from app.platform.logging.logger import logger
 
@@ -282,6 +284,12 @@ def build_console_payload(
 
     ``tools`` should already be in console format (use
     :func:`convert_openai_tools_to_console`).
+
+    ``features.custom_instruction`` (the admin-configured global system
+    prompt) is merged into ``instructions`` at the protocol layer so that
+    every console request mirrors the grok.com path's ``customPersonality``
+    injection. The global instruction is prepended; per-request system
+    messages follow and may refine or override it.
     """
     payload: dict[str, Any] = {
         "model": console_model,
@@ -289,15 +297,22 @@ def build_console_payload(
     }
     if stream:
         payload["stream"] = True
-    if instructions:
-        payload["instructions"] = instructions
+
+    custom = get_config().get_str("features.custom_instruction", "").strip()
+    user_sys = (instructions or "").strip()
+    merged = "\n\n".join(p for p in (custom, user_sys) if p)
+    if merged:
+        payload["instructions"] = merged
     if temperature is not None:
         payload["temperature"] = temperature
     if top_p is not None:
         payload["top_p"] = top_p
-    if reasoning_effort:
-        # Valid values: "minimal" | "low" | "medium" | "high"
-        payload["reasoning"] = {"effort": reasoning_effort}
+    # Console upstream accepts effort ∈ {"minimal", "low", "medium", "high"}.
+    # Map project-specific values: "none" → omit (emit_think handles client-side
+    # suppression separately); "xhigh" → "high" (upstream cap).
+    if reasoning_effort and reasoning_effort != "none":
+        upstream_effort = "high" if reasoning_effort == "xhigh" else reasoning_effort
+        payload["reasoning"] = {"effort": upstream_effort}
     if tools:
         payload["tools"] = tools
         if tool_choice is not None:
@@ -469,6 +484,36 @@ def extract_console_search_sources(response_json: dict[str, Any], ) -> list[dict
     return out
 
 
+def format_search_sources_suffix(search_sources: list[dict[str, Any]] | None) -> str:
+    """Format collected search sources as a ``## Sources`` markdown section.
+
+    Returns ``""`` when ``features.show_search_sources`` is disabled or the
+    input list is empty. Mirrors :meth:`xai_chat.StreamAdapter.references_suffix`
+    so that text-parsing clients (which can't read the structured
+    ``search_sources`` field) see identical formatting across both the
+    grok.com app-chat and console.x.ai paths.
+
+    The leading ``[grok2api-sources]: #`` marker is a markdown link reference
+    definition that renderers ignore; multi-turn handlers use it to identify
+    and strip prior-turn ``## Sources`` blocks.
+    """
+    if not search_sources:
+        return ""
+    if not get_config().get_bool("features.show_search_sources", False):
+        return ""
+    lines = ["\n\n## Sources", "[grok2api-sources]: #"]
+    for item in search_sources:
+        url = (item or {}).get("url") or ""
+        if not url:
+            continue
+        title = (item or {}).get("title") or url
+        title = title.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        lines.append(f"- [{title}]({url})")
+    if len(lines) == 2:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
 def inject_web_search_tool(tools: list[dict[str, Any]] | None, ) -> list[dict[str, Any]]:
     """Ensure a ``web_search`` tool is present in the console tools list.
 
@@ -620,6 +665,15 @@ class ConsoleStreamAdapter:
         self.text_buf: list[str] = []
         self.thinking_buf: list[str] = []
         self._usage: dict[str, int] = {}
+
+    def references_suffix(self) -> str:
+        """Return the ``## Sources`` markdown block for the collected sources.
+
+        Returns ``""`` when ``features.show_search_sources`` is disabled or
+        no sources were collected. Shared formatting with the grok.com path
+        via :func:`format_search_sources_suffix`.
+        """
+        return format_search_sources_suffix(self.search_sources)
 
     def feed_event(self, event_name: str) -> None:
         """Record the most recent ``event:`` name from the SSE stream."""
@@ -831,6 +885,7 @@ __all__ = [
     "extract_console_annotations",
     "extract_console_search_sources",
     "extract_console_usage",
+    "format_search_sources_suffix",
     "parse_console_error",
     "classify_console_sse_line",
     "ConsoleStreamAdapter",

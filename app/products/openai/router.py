@@ -73,16 +73,12 @@ async def list_models(request: Request):
             "created": int(time.time()),
             "owned_by": "xai",
             "name": m.public_name,
-        }
-        for m in model_registry.list_enabled()
-        if _model_available_for_pools(m, pools)
+        } for m in model_registry.list_enabled() if _model_available_for_pools(m, pools)
     ]
     return JSONResponse({"object": "list", "data": models})
 
 
-@router.get(
-    "/models/{model_id}", tags=[_TAG_MODELS], dependencies=[Depends(verify_api_key)]
-)
+@router.get("/models/{model_id}", tags=[_TAG_MODELS], dependencies=[Depends(verify_api_key)])
 async def get_model_endpoint(model_id: str, request: Request):
     import time
 
@@ -90,12 +86,10 @@ async def get_model_endpoint(model_id: str, request: Request):
     pools = await _available_pools(request)
     if spec is None or not _model_available_for_pools(spec, pools):
         return JSONResponse(
-            {
-                "error": {
-                    "message": f"Model {model_id!r} not found",
-                    "type": "invalid_request_error",
-                }
-            },
+            {"error": {
+                "message": f"Model {model_id!r} not found",
+                "type": "invalid_request_error",
+            }},
             status_code=404,
         )
     return JSONResponse(
@@ -105,8 +99,7 @@ async def get_model_endpoint(model_id: str, request: Request):
             "created": int(time.time()),
             "owned_by": "xai",
             "name": spec.public_name,
-        }
-    )
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -124,15 +117,12 @@ async def _safe_sse(stream: AsyncIterable[str]) -> AsyncGenerator[str, None]:
         yield f"event: error\ndata: {payload}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as exc:
-        payload = orjson.dumps(
-            {"error": {"message": str(exc), "type": "server_error"}}
-        ).decode()
+        payload = orjson.dumps({"error": {"message": str(exc), "type": "server_error"}}).decode()
         yield f"event: error\ndata: {payload}\n\n"
         yield "data: [DONE]\n\n"
 
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
-
 
 # ---------------------------------------------------------------------------
 # /v1/chat/completions
@@ -164,9 +154,7 @@ def _validate_chat(req: ChatCompletionRequest) -> None:
                 param=f"messages.{i}.role",
             )
     if req.temperature is not None and not (0 <= req.temperature <= 2):
-        raise ValidationError(
-            "temperature must be between 0 and 2", param="temperature"
-        )
+        raise ValidationError("temperature must be between 0 and 2", param="temperature")
     if req.top_p is not None and not (0 <= req.top_p <= 1):
         raise ValidationError("top_p must be between 0 and 1", param="top_p")
     if req.reasoning_effort is not None and req.reasoning_effort not in _EFFORT_VALUES:
@@ -196,10 +184,8 @@ async def _upload_to_data_uri(upload: UploadFile, *, param: str) -> str:
         raise ValidationError("Uploaded image cannot be empty", param=param)
 
     mime = (
-        (upload.content_type or "").strip().lower()
-        or mimetypes.guess_type(upload.filename or "")[0]
-        or "application/octet-stream"
-    )
+        (upload.content_type or "").strip().lower() or mimetypes.guess_type(upload.filename or "")[0] or
+        "application/octet-stream")
     if not mime.startswith("image/"):
         raise ValidationError("Uploaded file must be an image", param=param)
 
@@ -210,17 +196,13 @@ async def _upload_to_data_uri(upload: UploadFile, *, param: str) -> str:
     return f"data:{mime};base64,{blob_b64}"
 
 
-@router.post(
-    "/chat/completions", tags=[_TAG_CHAT], dependencies=[Depends(verify_api_key)]
-)
+@router.post("/chat/completions", tags=[_TAG_CHAT], dependencies=[Depends(verify_api_key)])
 async def chat_completions_endpoint(req: ChatCompletionRequest):
     _validate_chat(req)
     from app.platform.config.snapshot import get_config
 
     cfg = get_config()
-    is_stream = (
-        req.stream if req.stream is not None else cfg.get_bool("features.stream", True)
-    )
+    is_stream = (req.stream if req.stream is not None else cfg.get_bool("features.stream", True))
 
     spec = model_registry.get(req.model)
     if spec is None:
@@ -259,12 +241,8 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
             # Extract prompt from last user message.
             prompt = next(
                 (
-                    m.content
-                    for m in reversed(req.messages)
-                    if m.role == "user"
-                    and isinstance(m.content, str)
-                    and m.content.strip()
-                ),
+                    m.content for m in reversed(req.messages)
+                    if m.role == "user" and isinstance(m.content, str) and m.content.strip()),
                 "",
             )
             result = await img_gen(
@@ -309,6 +287,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
                 tool_choice=req.tool_choice,
                 temperature=req.temperature or 0.8,
                 top_p=req.top_p or 0.95,
+                reasoning_effort=req.reasoning_effort,
             )
 
     except AppError:
@@ -321,27 +300,19 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
             exc,
         )
         if is_stream:
-            _err_msg = str(
-                exc
-            )  # capture before Python clears the except-scope variable
+            _err_msg = str(exc)  # capture before Python clears the except-scope variable
 
             async def _err_stream():
-                payload = orjson.dumps(
-                    {"error": {"message": _err_msg, "type": "server_error"}}
-                ).decode()
+                payload = orjson.dumps({"error": {"message": _err_msg, "type": "server_error"}}).decode()
                 yield f"event: error\ndata: {payload}\n\n"
                 yield "data: [DONE]\n\n"
 
-            return StreamingResponse(
-                _err_stream(), media_type="text/event-stream", headers=_SSE_HEADERS
-            )
+            return StreamingResponse(_err_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
         raise
 
     if isinstance(result, dict):
         return JSONResponse(result)
-    return StreamingResponse(
-        _safe_sse(result), media_type="text/event-stream", headers=_SSE_HEADERS
-    )
+    return StreamingResponse(_safe_sse(result), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 # ---------------------------------------------------------------------------
@@ -371,9 +342,7 @@ async def _safe_sse_responses(stream) -> AsyncGenerator[str, None]:
         yield "data: [DONE]\n\n"
 
 
-@router.post(
-    "/responses", tags=[_TAG_RESPONSES], dependencies=[Depends(verify_api_key)]
-)
+@router.post("/responses", tags=[_TAG_RESPONSES], dependencies=[Depends(verify_api_key)])
 async def responses_endpoint(req: ResponsesCreateRequest):
     from app.platform.config.snapshot import get_config
     from app.platform.errors import ValidationError as _ValidationError
@@ -389,15 +358,18 @@ async def responses_endpoint(req: ResponsesCreateRequest):
         raise _ValidationError("input cannot be empty", param="input")
 
     cfg = get_config()
-    is_stream = (
-        req.stream if req.stream is not None else cfg.get_bool("features.stream", True)
-    )
+    is_stream = (req.stream if req.stream is not None else cfg.get_bool("features.stream", True))
 
     # Map reasoning param → emit_think flag.
     # reasoning=None → use config; reasoning.effort="none" → off; otherwise on.
+    reasoning_effort: str | None = None
+    if isinstance(req.reasoning, dict):
+        eff = req.reasoning.get("effort")
+        if isinstance(eff, str):
+            reasoning_effort = eff
     if req.reasoning is None:
         emit_think = cfg.get_bool("features.thinking", True)
-    elif isinstance(req.reasoning, dict) and req.reasoning.get("effort") == "none":
+    elif reasoning_effort == "none":
         emit_think = False
     else:
         emit_think = True
@@ -412,6 +384,7 @@ async def responses_endpoint(req: ResponsesCreateRequest):
         emit_think=emit_think,
         temperature=req.temperature or 0.8,
         top_p=req.top_p or 0.95,
+        reasoning_effort=reasoning_effort,
         tools=req.tools or None,
         tool_choice=req.tool_choice,
     )
@@ -420,8 +393,8 @@ async def responses_endpoint(req: ResponsesCreateRequest):
         return JSONResponse(result)
     return StreamingResponse(
         _safe_sse_responses(result),
-        media_type = "text/event-stream",
-        headers    = _SSE_HEADERS,
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 
@@ -430,15 +403,11 @@ async def responses_endpoint(req: ResponsesCreateRequest):
 # ---------------------------------------------------------------------------
 
 
-@router.post(
-    "/images/generations", tags=[_TAG_IMAGES], dependencies=[Depends(verify_api_key)]
-)
+@router.post("/images/generations", tags=[_TAG_IMAGES], dependencies=[Depends(verify_api_key)])
 async def image_generations(req: ImageGenerationRequest):
     spec = model_registry.get(req.model)
     if spec is None or not spec.enabled or not spec.is_image():
-        raise ValidationError(
-            f"Model {req.model!r} is not an image model", param="model"
-        )
+        raise ValidationError(f"Model {req.model!r} is not an image model", param="model")
     _validate_image_n(req.model, req.n or 1, param="n")
 
     from .images import generate as img_gen
@@ -465,24 +434,21 @@ async def videos_create(
     model: Annotated[str, Form(...)],
     prompt: Annotated[str, Form(...)],
     seconds: Annotated[int, Form()] = 6,
-    size: Annotated[
-        Literal["720x1280", "1280x720", "1024x1024", "1024x1792", "1792x1024"], Form()
-    ] = "720x1280",
+    size: Annotated[Literal["720x1280", "1280x720", "1024x1024", "1024x1792", "1792x1024"],
+                    Form()] = "720x1280",
     resolution_name: Annotated[Literal["480p", "720p"] | None, Form()] = None,
-    preset: Annotated[
-        Literal["fun", "normal", "spicy", "custom"] | None, Form()
-    ] = None,
-    input_reference: Annotated[
-        list[UploadFile] | None, File(alias="input_reference[]")
-    ] = None,
+    preset: Annotated[Literal["fun", "normal", "spicy", "custom"] | None,
+                      Form()] = None,
+    input_reference: Annotated[list[UploadFile] | None, File(alias="input_reference[]")] = None,
 ):
     from .video import create_video
 
     references_payload = None
     if input_reference:
         references_payload = [
-            {"image_url": await _upload_to_data_uri(f, param="input_reference")}
-            for f in input_reference[:7]
+            {
+                "image_url": await _upload_to_data_uri(f, param="input_reference")
+            } for f in input_reference[:7]
         ]
 
     result = await create_video(
@@ -497,9 +463,7 @@ async def videos_create(
     return JSONResponse(result)
 
 
-@router.get(
-    "/videos/{video_id}", tags=[_TAG_VIDEOS], dependencies=[Depends(verify_api_key)]
-)
+@router.get("/videos/{video_id}", tags=[_TAG_VIDEOS], dependencies=[Depends(verify_api_key)])
 async def videos_retrieve(video_id: str):
     from .video import retrieve
 
@@ -523,9 +487,7 @@ async def videos_content(video_id: str):
 # ---------------------------------------------------------------------------
 
 
-@router.post(
-    "/images/edits", tags=[_TAG_IMAGES], dependencies=[Depends(verify_api_key)]
-)
+@router.post("/images/edits", tags=[_TAG_IMAGES], dependencies=[Depends(verify_api_key)])
 async def image_edits(
     model: Annotated[str, Form(...)],
     prompt: Annotated[str, Form(...)],
@@ -537,25 +499,17 @@ async def image_edits(
 ):
     spec = model_registry.get(model)
     if spec is None or not spec.enabled or not spec.is_image_edit():
-        raise ValidationError(
-            f"Model {model!r} is not an image-edit model", param="model"
-        )
+        raise ValidationError(f"Model {model!r} is not an image-edit model", param="model")
     if mask is not None:
         raise ValidationError("mask is not supported yet", param="mask")
     _validate_image_edit_n(n, param="n")
 
     from .images import edit as img_edit
 
-    image_inputs = [
-        await _upload_to_data_uri(item, param=f"image.{index}")
-        for index, item in enumerate(image)
-    ]
+    image_inputs = [await _upload_to_data_uri(item, param=f"image.{index}") for index, item in enumerate(image)]
     # Wrap input into a single-message conversation.
     content = [{"type": "text", "text": prompt}]
-    content.extend(
-        {"type": "image_url", "image_url": {"url": image_input}}
-        for image_input in image_inputs
-    )
+    content.extend({"type": "image_url", "image_url": {"url": image_input}} for image_input in image_inputs)
     messages = [{"role": "user", "content": content}]
     result = await img_edit(
         model=model,
