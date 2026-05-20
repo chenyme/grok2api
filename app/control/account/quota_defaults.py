@@ -159,16 +159,17 @@ def normalize_quota_set(pool: str, quota_set: AccountQuotaSet) -> AccountQuotaSe
     return qs
 
 
-def infer_pool(windows: dict[int, QuotaWindow]) -> str:
+def infer_pool(windows: dict[int, QuotaWindow], *, fallback: str = "basic") -> str:
     """Infer pool type from live quota windows returned by the rate-limits API.
 
     Uses ``auto.total`` (mode_id=0) as the discriminating signal.
-    Falls back to ``"basic"`` when the value is absent or unrecognised.
+    Falls back to the current pool when the value is absent or unrecognised so
+    partial refreshes do not silently downgrade paid accounts.
     """
     auto_win = windows.get(0)
     if auto_win is None:
-        return "basic"
-    return _AUTO_TOTAL_TO_POOL.get(auto_win.total, "basic")
+        return fallback
+    return _AUTO_TOTAL_TO_POOL.get(auto_win.total, fallback)
 
 
 __all__ = [
