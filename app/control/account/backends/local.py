@@ -169,7 +169,7 @@ class LocalAccountRepository:
                 token = AccountRecord.model_validate({"token": item.token, "pool": item.pool}).token
             except ValueError:
                 continue
-            pool = item.pool if item.pool in ("basic", "super", "heavy") else "basic"
+            pool = item.pool if item.pool in ("basic", "lite", "super", "heavy") else "basic"
             qs   = default_quota_set(pool)
             conn.execute(
                 f"""

@@ -308,6 +308,7 @@ class AccountDirectory:
 
 _POOL_INTERVAL_CONFIG: dict[str, tuple[str, int]] = {
     "basic": ("account.refresh.basic_interval_sec", 86_400),
+    "lite": ("account.refresh.super_interval_sec", 7_200),
     "super": ("account.refresh.super_interval_sec", 7_200),
     "heavy": ("account.refresh.heavy_interval_sec", 7_200),
 }

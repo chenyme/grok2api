@@ -49,6 +49,13 @@ BASIC_QUOTA_DEFAULTS = AccountQuotaSet(
     expert=_w(0, 0, 0),  # unsupported on basic accounts
 )
 
+LITE_QUOTA_DEFAULTS = AccountQuotaSet(
+    auto=_w(25, 25, 7_200),  # 25  queries / 2 h
+    fast=_w(70, 70, 7_200),  # 70  queries / 2 h
+    expert=_w(12, 12, 7_200),  # 12  queries / 2 h
+    grok_4_3=_w(12, 12, 7_200),  # 12  queries / 2 h
+)
+
 SUPER_QUOTA_DEFAULTS = AccountQuotaSet(
     auto=_w(50, 50, 7_200),  # 50  queries / 2 h
     fast=_w(140, 140, 7_200),  # 140 queries / 2 h
@@ -67,24 +74,16 @@ HEAVY_QUOTA_DEFAULTS = AccountQuotaSet(
 # Map pool name → defaults object (used by backends on upsert).
 _POOL_DEFAULTS: dict[str, AccountQuotaSet] = {
     "basic": BASIC_QUOTA_DEFAULTS,
+    "lite": LITE_QUOTA_DEFAULTS,
     "super": SUPER_QUOTA_DEFAULTS,
     "heavy": HEAVY_QUOTA_DEFAULTS,
 }
 
 _SUPPORTED_MODE_IDS_BY_POOL: dict[str, frozenset[int]] = {
     "basic": frozenset((1,)),
+    "lite": frozenset((0, 1, 2, 4)),
     "super": frozenset((0, 1, 2, 4)),
     "heavy": frozenset((0, 1, 2, 3, 4)),
-}
-
-# ---------------------------------------------------------------------------
-# Pool inference — keyed on auto.total (unique across pool types)
-# ---------------------------------------------------------------------------
-
-_AUTO_TOTAL_TO_POOL: dict[int, str] = {
-    20: "basic",
-    50: "super",
-    150: "heavy",
 }
 
 
@@ -162,17 +161,30 @@ def normalize_quota_set(pool: str, quota_set: AccountQuotaSet) -> AccountQuotaSe
 def infer_pool(windows: dict[int, QuotaWindow]) -> str:
     """Infer pool type from live quota windows returned by the rate-limits API.
 
-    Uses ``auto.total`` (mode_id=0) as the discriminating signal.
+    Uses ``auto.total`` (mode_id=0) as the discriminating signal:
+      - 25 -> lite
+      - 50 -> super
+      - 150 -> heavy
+      - otherwise -> basic
     Falls back to ``"basic"`` when the value is absent or unrecognised.
     """
     auto_win = windows.get(0)
     if auto_win is None:
         return "basic"
-    return _AUTO_TOTAL_TO_POOL.get(auto_win.total, "basic")
+    total = auto_win.total
+    if total == 25:
+        return "lite"
+    elif total == 50:
+        return "super"
+    elif total >= 150:
+        return "heavy"
+    else:
+        return "basic"
 
 
 __all__ = [
     "BASIC_QUOTA_DEFAULTS",
+    "LITE_QUOTA_DEFAULTS",
     "SUPER_QUOTA_DEFAULTS",
     "HEAVY_QUOTA_DEFAULTS",
     "default_quota_set",

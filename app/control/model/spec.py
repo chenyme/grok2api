@@ -49,6 +49,8 @@ class ModelSpec:
 
     def pool_name(self) -> str:
         """Return the canonical pool string for this tier."""
+        if self.tier == Tier.LITE:
+            return "lite"
         if self.tier == Tier.SUPER:
             return "super"
         if self.tier == Tier.HEAVY:
@@ -69,26 +71,32 @@ class ModelSpec:
         when all accounts in higher pools are exhausted).
 
         Default (prefer_best=False):
-          BASIC tier  → try basic first, then super, then heavy
+          BASIC tier  → try basic first, then lite, then super, then heavy
+          LITE tier   → try lite first, then super, then heavy
           SUPER tier  → try super first, then heavy
           HEAVY tier  → heavy only
 
         Reversed (prefer_best=True):
-          BASIC tier  → try heavy first, then super, then basic
+          BASIC tier  → try heavy first, then super, then lite, then basic
+          LITE tier   → try heavy first, then super, then lite
           SUPER tier  → try heavy first, then super
           HEAVY tier  → heavy only
         """
         if self.prefer_best:
             if self.tier == Tier.HEAVY:
-                return (2,)  # heavy only
+                return (3,)  # heavy only
             if self.tier == Tier.SUPER:
-                return (2, 1)  # heavy, super
-            return (2, 1, 0)  # heavy, super, basic
+                return (3, 2, 1)  # heavy, super, lite
+            if self.tier == Tier.LITE:
+                return (3, 2, 1)  # heavy, super, lite
+            return (3, 2, 1, 0)  # heavy, super, lite, basic
         if self.tier == Tier.BASIC:
-            return (0, 1, 2)  # basic, super, heavy
+            return (0, 1, 2, 3)  # basic, lite, super, heavy
+        if self.tier == Tier.LITE:
+            return (1, 2, 3)  # lite, super, heavy
         if self.tier == Tier.SUPER:
-            return (1, 2)  # super, heavy
-        return (2,)  # heavy only
+            return (2, 1, 3)  # super, lite, heavy
+        return (3,)  # heavy only
 
 
 __all__ = ["ModelSpec"]

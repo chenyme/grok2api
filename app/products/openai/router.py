@@ -27,7 +27,7 @@ from .schemas import (
 from .chat import completions as chat_completions
 
 router = APIRouter(prefix="/v1")
-_POOL_ID_TO_NAME = {0: "basic", 1: "super", 2: "heavy"}
+_POOL_ID_TO_NAME = {0: "basic", 1: "lite", 2: "super", 3: "heavy"}
 _TAG_MODELS = "OpenAI - Models"
 _TAG_CHAT = "OpenAI - Chat"
 _TAG_RESPONSES = "OpenAI - Responses"

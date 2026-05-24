@@ -26,8 +26,9 @@ class Tier(IntEnum):
     """Account tier — determines which pool is selected."""
 
     BASIC = 0  # pool="basic"
-    SUPER = 1  # pool="super"
-    HEAVY = 2  # pool="heavy"
+    LITE = 1  # pool="lite"
+    SUPER = 2  # pool="super"
+    HEAVY = 3  # pool="heavy"
 
 
 class Capability(IntFlag):

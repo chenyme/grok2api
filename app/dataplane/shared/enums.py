@@ -17,8 +17,9 @@ class ModeId(IntEnum):
 
 class PoolId(IntEnum):
     BASIC = 0
-    SUPER = 1
-    HEAVY = 2
+    LITE = 1
+    SUPER = 2
+    HEAVY = 3
 
 
 class StatusId(IntEnum):
@@ -32,6 +33,7 @@ class StatusId(IntEnum):
 # Map pool string → PoolId integer (used during sync from control plane).
 POOL_STR_TO_ID: dict[str, int] = {
     "basic": int(PoolId.BASIC),
+    "lite": int(PoolId.LITE),
     "super": int(PoolId.SUPER),
     "heavy": int(PoolId.HEAVY),
 }
