@@ -1,9 +1,10 @@
 services:
   grok2api:
     container_name: grok2api
-    image: ghcr.io/chenyme/grok2api:latest
+    build: .
+    image: grok2api:local
     ports:
-      - "${HOST_PORT:-8000}:${SERVER_PORT:-8000}"
+      - "${HOST_PORT:-8015}:${SERVER_PORT:-8000}"
     environment:
       TZ: Asia/Shanghai
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -15,6 +16,11 @@ services:
       ACCOUNT_REDIS_URL: ${ACCOUNT_REDIS_URL:-}
       ACCOUNT_MYSQL_URL: ${ACCOUNT_MYSQL_URL:-}
       ACCOUNT_POSTGRESQL_URL: ${ACCOUNT_POSTGRESQL_URL:-}
+      GROK_APP_APP_URL: ${GROK_APP_APP_URL:-}
+      GROK_APP_API_KEY: ${GROK_APP_API_KEY:-}
+      GROK_APP_APP_KEY: ${GROK_APP_APP_KEY:-grok2api}
+      GROK_APP_WEBUI_ENABLED: ${GROK_APP_WEBUI_ENABLED:-true}
+      GROK_APP_WEBUI_KEY: ${GROK_APP_WEBUI_KEY:-}
       # 启用 CF 自动刷新: 取消以下三行注释，并取消底部 flaresolverr 服务的注释
       # FLARESOLVERR_URL: http://flaresolverr:8191
       # CF_REFRESH_INTERVAL: "600"

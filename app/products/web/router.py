@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 
-from app.platform.auth.middleware import is_webui_enabled, verify_webui_key
+from app.platform.auth.middleware import verify_webui_key
 from app.platform.meta import get_project_version
 from app.platform.update_check import get_latest_release_info
 from .static_html import serve_static_html
@@ -58,17 +58,19 @@ async def admin_config():
 async def admin_cache():
     return _serve_html("admin/cache.html")
 
+@router.get("/admin/images", include_in_schema=False)
+async def admin_images():
+    return _serve_html("webui/images.html")
+
 
 # --- WebUI ---
 @router.get("/webui", include_in_schema=False)
 async def webui_root():
-    return RedirectResponse("/webui/login")
+    return RedirectResponse("/admin")
 
 @router.get("/webui/login", include_in_schema=False)
 async def webui_login():
-    if not is_webui_enabled():
-        raise HTTPException(404, "Not Found")
-    return _serve_html("webui/login.html")
+    return RedirectResponse("/admin/login")
 
 @router.get("/webui/api/verify", dependencies=[Depends(verify_webui_key)], tags=["WebUI - System"])
 async def webui_verify():

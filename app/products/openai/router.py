@@ -11,11 +11,12 @@ from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 
 from app.control.account.state_machine import is_manageable
 from app.platform.auth.middleware import verify_api_key
-from app.platform.errors import AppError, ValidationError
+from app.platform.errors import AppError, RateLimitError, ValidationError
 from app.platform.logging.logger import logger
 from app.platform.storage import image_files_dir, video_files_dir
 from app.control.model import registry as model_registry
 from app.control.model.spec import ModelSpec
+from app.control.model.enums import Capability
 from app.control.account.quota_defaults import supports_mode
 from .schemas import (
     ChatCompletionRequest,
@@ -61,6 +62,16 @@ def _model_available_for_pools(spec: ModelSpec, pools: frozenset[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+_CAPABILITY_TO_TYPE: dict[int, str] = {
+    int(Capability.CHAT): "chat",
+    int(Capability.IMAGE): "image_generation",
+    int(Capability.IMAGE_EDIT): "image_edit",
+    int(Capability.VIDEO): "video",
+    int(Capability.VOICE): "voice",
+    int(Capability.ASSET): "asset",
+}
+
+
 @router.get("/models", tags=[_TAG_MODELS], dependencies=[Depends(verify_api_key)])
 async def list_models(request: Request):
     import time
@@ -73,6 +84,7 @@ async def list_models(request: Request):
             "created": int(time.time()),
             "owned_by": "xai",
             "name": m.public_name,
+            "type": _CAPABILITY_TO_TYPE.get(int(m.capability), "chat"),
         }
         for m in model_registry.list_enabled()
         if _model_available_for_pools(m, pools)
@@ -105,6 +117,7 @@ async def get_model_endpoint(model_id: str, request: Request):
             "created": int(time.time()),
             "owned_by": "xai",
             "name": spec.public_name,
+            "type": _CAPABILITY_TO_TYPE.get(int(spec.capability), "chat"),
         }
     )
 
@@ -141,8 +154,32 @@ _SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 _VALID_ROLES = {"developer", "system", "user", "assistant", "tool"}
 _USER_BLOCK_TYPES = {"text", "image_url", "input_audio", "file"}
 _ALLOWED_SIZES = {"1280x720", "720x1280", "1792x1024", "1024x1792", "1024x1024"}
+_ALLOWED_ASPECT_RATIOS = {"16:9", "9:16", "3:2", "2:3", "1:1"}
 _EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _LITE_IMAGE_MODELS = {"grok-imagine-image-lite"}
+
+
+def _raise_model_not_available(model_name: str) -> None:
+    raise ValidationError(
+        (
+            f"Model {model_name!r} is not available for the configured accounts. "
+            "Free/basic accounts can use 'grok-imagine-image-lite'; higher-tier "
+            "image/edit/video models require a super/heavy account."
+        ),
+        param="model",
+        code="model_not_available",
+    )
+
+
+async def _ensure_model_available(request: Request, spec: ModelSpec) -> None:
+    pools = await _available_pools(request)
+    if not pools:
+        raise RateLimitError(
+            "No active accounts are configured; add a free/basic account for "
+            "grok-imagine-image-lite or wait for account recovery."
+        )
+    if not _model_available_for_pools(spec, pools):
+        _raise_model_not_available(spec.model_name)
 
 
 def _validate_chat(req: ChatCompletionRequest) -> None:
@@ -183,6 +220,91 @@ def _validate_image_n(model_name: str, n: int, *, param: str) -> None:
             f"n must be between 1 and {max_n} for model {model_name!r}",
             param=param,
         )
+
+
+def _validate_image_shape(size: str | None, aspect_ratio: str | None, *, param_prefix: str = "") -> None:
+    if aspect_ratio:
+        normalized_ratio = aspect_ratio.strip().lower()
+        if normalized_ratio not in _ALLOWED_ASPECT_RATIOS:
+            raise ValidationError(
+                f"aspect_ratio must be one of {sorted(_ALLOWED_ASPECT_RATIOS)}",
+                param=f"{param_prefix}aspect_ratio",
+            )
+        return
+    normalized_size = (size or "1024x1024").strip().lower()
+    if normalized_size not in _ALLOWED_SIZES:
+        raise ValidationError(
+            f"size must be one of {sorted(_ALLOWED_SIZES)}",
+            param=f"{param_prefix}size",
+        )
+
+
+def _image_generation_tool(tools: list | None) -> dict | None:
+    for tool in tools or []:
+        if isinstance(tool, dict) and tool.get("type") == "image_generation":
+            return tool
+    return None
+
+
+def _extract_responses_image_prompt(input_val: str | list, instructions: str | None) -> str:
+    texts: list[str] = []
+    if instructions and instructions.strip():
+        texts.append(instructions.strip())
+    if isinstance(input_val, str):
+        if input_val.strip():
+            texts.append(input_val.strip())
+    elif isinstance(input_val, list):
+        for item in input_val:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content", "")
+            if isinstance(content, str) and content.strip():
+                texts.append(content.strip())
+            elif isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") in {"input_text", "text"}:
+                        text = str(part.get("text") or "").strip()
+                        if text:
+                            texts.append(text)
+    prompt = "\n".join(texts).strip()
+    if not prompt:
+        raise ValidationError("image generation requires a non-empty text prompt", param="input")
+    return prompt
+
+
+def _responses_image_options(req: ResponsesCreateRequest, tool: dict | None) -> tuple[int, str, str | None, str]:
+    cfg = req.image_config
+    tool = tool or {}
+    raw_n = (
+        req.n
+        or (cfg.n if cfg is not None else None)
+        or tool.get("n")
+        or tool.get("count")
+        or 1
+    )
+    try:
+        n = int(raw_n)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("n must be an integer", param="n") from exc
+    size = (
+        req.size
+        or (cfg.size if cfg is not None else None)
+        or str(tool.get("size") or "1024x1024")
+    )
+    aspect_ratio = (
+        req.aspect_ratio
+        or (cfg.aspect_ratio if cfg is not None else None)
+        or tool.get("aspect_ratio")
+    )
+    response_format = (
+        req.response_format
+        or (cfg.response_format if cfg is not None else None)
+        or tool.get("response_format")
+        or "url"
+    )
+    return n, str(size), str(aspect_ratio) if aspect_ratio else None, str(response_format)
 
 
 def _validate_image_edit_n(n: int, *, param: str) -> None:
@@ -253,9 +375,11 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
 
             cfg = req.image_config or ImageConfig()
             size = cfg.size or "1024x1024"
+            aspect_ratio = cfg.aspect_ratio
             fmt = cfg.response_format or "url"
             n = cfg.n or 1
             _validate_image_n(req.model, n, param="image_config.n")
+            _validate_image_shape(size, aspect_ratio, param_prefix="image_config.")
             # Extract prompt from last user message.
             prompt = next(
                 (
@@ -272,6 +396,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
                 prompt=prompt or "",
                 n=n,
                 size=size,
+                aspect_ratio=aspect_ratio,
                 response_format=fmt,
                 stream=is_stream,
                 chat_format=True,
@@ -374,7 +499,7 @@ async def _safe_sse_responses(stream) -> AsyncGenerator[str, None]:
 @router.post(
     "/responses", tags=[_TAG_RESPONSES], dependencies=[Depends(verify_api_key)]
 )
-async def responses_endpoint(req: ResponsesCreateRequest):
+async def responses_endpoint(req: ResponsesCreateRequest, request: Request):
     from app.platform.config.snapshot import get_config
     from app.platform.errors import ValidationError as _ValidationError
 
@@ -392,6 +517,41 @@ async def responses_endpoint(req: ResponsesCreateRequest):
     is_stream = (
         req.stream if req.stream is not None else cfg.get_bool("features.stream", True)
     )
+
+    image_tool = _image_generation_tool(req.tools)
+    if spec.is_image() or image_tool is not None:
+        image_model = req.model if spec.is_image() else "grok-imagine-image-lite"
+        image_spec = model_registry.get(image_model)
+        if image_spec is None or not image_spec.enabled or not image_spec.is_image():
+            raise _ValidationError(
+                f"Model {image_model!r} is not an image model",
+                param="model",
+                code="model_not_found",
+            )
+        await _ensure_model_available(request, image_spec)
+        prompt = _extract_responses_image_prompt(req.input, req.instructions)
+        n, size, aspect_ratio, response_format = _responses_image_options(req, image_tool)
+        _validate_image_n(image_model, n, param="n")
+        _validate_image_shape(size, aspect_ratio)
+
+        from .responses import create_image as responses_create_image
+
+        result = await responses_create_image(
+            model=image_model,
+            prompt=prompt,
+            n=n,
+            size=size,
+            aspect_ratio=aspect_ratio,
+            response_format=response_format,
+            stream=is_stream,
+        )
+        if isinstance(result, dict):
+            return JSONResponse(result)
+        return StreamingResponse(
+            _safe_sse_responses(result),
+            media_type="text/event-stream",
+            headers=_SSE_HEADERS,
+        )
 
     # Map reasoning param → emit_think flag.
     # reasoning=None → use config; reasoning.effort="none" → off; otherwise on.
@@ -433,13 +593,15 @@ async def responses_endpoint(req: ResponsesCreateRequest):
 @router.post(
     "/images/generations", tags=[_TAG_IMAGES], dependencies=[Depends(verify_api_key)]
 )
-async def image_generations(req: ImageGenerationRequest):
+async def image_generations(req: ImageGenerationRequest, request: Request):
     spec = model_registry.get(req.model)
     if spec is None or not spec.enabled or not spec.is_image():
         raise ValidationError(
             f"Model {req.model!r} is not an image model", param="model"
         )
+    await _ensure_model_available(request, spec)
     _validate_image_n(req.model, req.n or 1, param="n")
+    _validate_image_shape(req.size, req.aspect_ratio)
 
     from .images import generate as img_gen
 
@@ -448,6 +610,7 @@ async def image_generations(req: ImageGenerationRequest):
         prompt=req.prompt,
         n=req.n or 1,
         size=req.size or "1024x1024",
+        aspect_ratio=req.aspect_ratio,
         response_format=req.response_format or "url",
         stream=False,
         chat_format=False,

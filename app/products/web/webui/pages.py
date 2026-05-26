@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from app.platform.auth.middleware import is_webui_enabled
 from ..static_html import serve_static_html
@@ -36,6 +36,11 @@ async def webui_chatkit_page():
     if not is_webui_enabled():
         raise HTTPException(status_code=404, detail="Not Found")
     return _serve_html("chatkit.html")
+
+
+@router.get("/webui/images")
+async def webui_images_page():
+    return RedirectResponse("/admin/images")
 
 
 @router.get("/webui/masonry")

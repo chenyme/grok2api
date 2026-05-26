@@ -7,8 +7,6 @@ Streaming emits standard Responses API SSE events.
 import asyncio
 from typing import Any, AsyncGenerator
 
-import orjson
-
 from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
 from app.platform.errors import RateLimitError, UpstreamError
@@ -20,16 +18,139 @@ from app.control.account.enums import FeedbackKind
 from app.dataplane.reverse.protocol.xai_chat import classify_line, StreamAdapter
 from app.products._account_selection import reserve_account, selection_max_retries
 
-from .chat import _stream_chat, _extract_message, _resolve_image, _quota_sync, _fail_sync, _parse_retry_codes, _feedback_kind, _log_task_exception, _upstream_body_excerpt
+from .chat import _stream_chat, _extract_message, _resolve_image, _quota_sync, _fail_sync, _feedback_kind, _log_task_exception, _upstream_body_excerpt
 from .chat import _configured_retry_codes, _should_retry_upstream
 from ._format import (
     make_resp_id, build_resp_usage, make_resp_object, format_sse,
 )
 from app.dataplane.reverse.protocol.tool_prompt import (
-    build_tool_system_prompt, extract_tool_names, inject_into_message, tool_calls_to_xml,
+    build_tool_system_prompt, extract_tool_names, inject_into_message,
 )
 from app.dataplane.reverse.protocol.tool_parser import parse_tool_calls
 from ._tool_sieve import ToolSieve
+
+
+# ---------------------------------------------------------------------------
+# Image generation compatibility
+# ---------------------------------------------------------------------------
+
+def _build_image_response_payload(
+    *,
+    response_id: str,
+    model: str,
+    prompt: str,
+    image_response: dict,
+    response_format: str,
+) -> dict:
+    fmt = (response_format or "url").strip().lower()
+    output: list[dict] = []
+    text_lines: list[str] = []
+
+    for index, image in enumerate(image_response.get("data") or []):
+        if not isinstance(image, dict):
+            continue
+        item_id = make_resp_id("ig")
+        if fmt == "b64_json":
+            result = str(image.get("b64_json") or "")
+            output.append({
+                "id": item_id,
+                "type": "image_generation_call",
+                "status": "completed",
+                "result": result,
+            })
+        else:
+            url = str(image.get("url") or "")
+            output.append({
+                "id": item_id,
+                "type": "image_generation_call",
+                "status": "completed",
+                "result": url,
+                "url": url,
+            })
+            if url:
+                text_lines.append(url)
+
+    if not output:
+        raise UpstreamError("Image generation returned no images")
+
+    if fmt == "b64_json":
+        text = f"Generated {len(output)} image(s)."
+    else:
+        text = "\n".join(text_lines)
+    output.append({
+        "id": make_resp_id("msg"),
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": text, "annotations": []}],
+        "status": "completed",
+    })
+
+    return make_resp_object(
+        response_id,
+        model,
+        "completed",
+        output,
+        build_resp_usage(estimate_prompt_tokens(prompt), 0, 0),
+    )
+
+
+async def create_image(
+    *,
+    model: str,
+    prompt: str,
+    n: int,
+    size: str,
+    aspect_ratio: str | None,
+    response_format: str,
+    stream: bool,
+) -> dict | AsyncGenerator[str, None]:
+    response_id = make_resp_id("resp")
+
+    async def _run_once() -> dict:
+        from .images import generate as image_generate
+
+        result = await image_generate(
+            model=model,
+            prompt=prompt,
+            n=n,
+            size=size,
+            aspect_ratio=aspect_ratio,
+            response_format=response_format,
+            stream=False,
+            chat_format=False,
+        )
+        if not isinstance(result, dict):
+            raise UpstreamError("Image generation returned an unexpected stream")
+        return _build_image_response_payload(
+            response_id=response_id,
+            model=model,
+            prompt=prompt,
+            image_response=result,
+            response_format=response_format,
+        )
+
+    if not stream:
+        return await _run_once()
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        yield format_sse("response.created", {
+            "type": "response.created",
+            "response": make_resp_object(response_id, model, "in_progress", []),
+        })
+        payload = await _run_once()
+        for index, item in enumerate(payload["output"]):
+            yield format_sse("response.output_item.done", {
+                "type": "response.output_item.done",
+                "output_index": index,
+                "item": item,
+            })
+        yield format_sse("response.completed", {
+            "type": "response.completed",
+            "response": payload,
+        })
+        yield "data: [DONE]\n\n"
+
+    return _stream()
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +342,6 @@ async def create(
 
     cfg     = get_config()
     spec    = resolve_model(model)
-    mode_id = int(spec.mode_id)   # cast once, reuse everywhere
 
     messages: list[dict] = []
     if instructions:
@@ -749,4 +869,4 @@ async def create(
     )
 
 
-__all__ = ["create"]
+__all__ = ["create", "create_image"]

@@ -16,6 +16,7 @@ class MessageItem(BaseModel):
 class ImageConfig(BaseModel):
     n:               int | None = Field(1, ge=1, le=10)
     size:            str | None = "1024x1024"
+    aspect_ratio:    str | None = None
     response_format: str | None = None
 
 
@@ -46,6 +47,7 @@ class ImageGenerationRequest(BaseModel):
     prompt:          str
     n:               int | None = Field(1, ge=1, le=10)
     size:            str | None = "1024x1024"
+    aspect_ratio:    str | None = None
     response_format: str | None = "url"
 
 
@@ -72,6 +74,12 @@ class ResponsesCreateRequest(BaseModel):
     reasoning:            dict[str, Any] | None = None
     temperature:          float | None         = None
     top_p:                float | None         = None
+    # image-generation compatibility fields
+    n:                    int | None           = Field(None, ge=1, le=10)
+    size:                 str | None           = None
+    aspect_ratio:         str | None           = None
+    response_format:      str | None           = None
+    image_config:         ImageConfig | None   = None
     # silently ignored
     max_output_tokens:    int | None            = None
     tools:                list[Any] | None      = None

@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.119%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Version](https://img.shields.io/badge/version-2.0.4.rc2-111827)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-v1.1-111827)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
 [![English](https://img.shields.io/badge/English-2563EB?logo=bookstack&logoColor=white)](docs/README.en.md)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/chenyme/grok2api)
@@ -22,6 +22,18 @@ Grok2API 是一个基于 **FastAPI** 构建的 Grok 网关，支持将 Grok Web 
 - 支持本地缓存图片、视频与本地代理链接返回
 - 支持文生图、图像编辑、文生视频、图生视频
 - 内置 Admin 后台管理、Web Chat、Masonry 生图、ChatKit 语音页面
+
+<br>
+
+## v1.1 更新
+
+- 新增 `grok-imagine-image-lite` 的 `/v1/images/generations` P0 兼容路径，适配 free/basic 账号可用的文生图模型。
+- `/v1/responses` 新增图片生成最小兼容：图片模型或 `image_generation` tool 会路由到同一生图能力，并返回 `image_generation_call` 输出项。
+- 支持 `prompt`、`model`、`size`/`aspect_ratio`、`n`、`response_format=url|b64_json` 参数映射。
+- `response_format=url` 会先缓存到本地并返回 `/v1/files/image?id=...` 代理链接，避免上游临时 URL 过期。
+- free/basic 账号无权限、无可用账号或额度不足时返回明确的 `model_not_available` / `rate_limit_exceeded` 错误。
+- `/admin/images` 作为统一后台入口下的生图页，复用原 `/webui/images` 能力，并扩大 prompt 多行输入框。
+- 旧 `/webui`、`/webui/login`、`/webui/images` 页面入口会跳转到对应 `/admin` 入口；`/webui/api/images/generations` 保持兼容。
 
 <br>
 
@@ -124,6 +136,17 @@ docker compose up -d
 2. 设置 `app.api_key`
 3. 设置 `app.app_url`（否则图片、视频的链接会 403 无权访问）
 
+### Docker 部署到 8015
+
+```bash
+cp .env.example .env
+# 按需修改 .env；默认 HOST_PORT=8015
+docker compose up -d --build
+```
+
+部署到局域网机器时，建议将运行时配置中的 `app.app_url` 设置为 `http://<机器 IP>:8015`，登录 `/admin` 后可从顶部“生图”进入 `/admin/images` 使用 `grok-imagine-image-lite` 文生图入口；旧 `/webui` 页面入口会跳转到 `/admin`，原 `/webui/api/images/generations` 仍保留给旧脚本兼容。若部署在 OpenWrt 且 Docker bridge 端口转发被 fw4 拒绝，可使用 host 网络模式直接监听 `SERVER_PORT=8015`。
+
+
 <br>
 
 ## WebUI
@@ -136,8 +159,10 @@ docker compose up -d
 | 账号管理 | `/admin/account` |
 | 配置管理 | `/admin/config` |
 | 缓存管理 | `/admin/cache` |
-| WebUI 登录页 | `/webui/login` |
+| 生图 | `/admin/images` |
+| WebUI 登录页（兼容跳转） | `/webui/login` → `/admin/login` |
 | Web Chat | `/webui/chat` |
+| Images（兼容跳转） | `/webui/images` → `/admin/images` |
 | Masonry | `/webui/masonry` |
 | ChatKit | `/webui/chatkit` |
 
@@ -175,7 +200,7 @@ docker compose up -d
 | `SERVER_HOST` | 服务监听地址 | `0.0.0.0` |
 | `SERVER_PORT` | 服务监听端口 | `8000` |
 | `SERVER_WORKERS` | Granian worker 数量 | `1` |
-| `HOST_PORT` | Docker Compose 宿主机映射端口 | `8000` |
+| `HOST_PORT` | Docker Compose 宿主机映射端口 | `8015` |
 | `DATA_DIR` | 本地数据根目录（账号库、本地媒体文件、缓存索引统一位于此目录下） | `./data` |
 | `LOG_DIR` | 本地日志目录 | `./logs` |
 | `ACCOUNT_STORAGE` | 账号存储后端 | `local` |
@@ -438,6 +463,21 @@ curl http://localhost:8000/v1/responses \
 <br>
 </details>
 
+图片生成最小兼容：
+
+```bash
+curl http://localhost:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -d '{
+    "model": "grok-imagine-image-lite",
+    "input": "一只在太空漂浮的猫",
+    "n": 1,
+    "size": "1024x1024",
+    "response_format": "url"
+  }'
+```
+
 <br>
 </details>
 
@@ -495,10 +535,11 @@ curl http://localhost:8000/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-imagine-image",
+    "model": "grok-imagine-image-lite",
     "prompt": "一只在太空漂浮的猫",
     "n": 1,
     "size": "1792x1024",
+    "aspect_ratio": "3:2",
     "response_format": "url"
   }'
 ```
@@ -513,7 +554,10 @@ curl http://localhost:8000/v1/images/generations \
 | `prompt` | 图片生成提示词 |
 | `n` | 生成数量；`lite` 为 `1-4`，其他图像模型为 `1-10` |
 | `size` | 支持 `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
+| `aspect_ratio` | 可选，优先于 `size`；支持 `16:9`, `9:16`, `3:2`, `2:3`, `1:1` |
 | `response_format` | `url` 或 `b64_json` |
+
+`response_format=url` 返回本地缓存代理链接。部署时建议配置 `app.app_url`，否则返回相对路径 `/v1/files/image?id=...`。
 
 <br>
 </details>

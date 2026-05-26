@@ -18,6 +18,8 @@ from app.platform.config.snapshot import config
 from app.platform.errors import AppError, ErrorKind, ValidationError
 from app.platform.logging.logger import logger, reload_file_logging
 from app.platform.storage import reconcile_local_media_cache_async
+from app.products.openai.images import generate as generate_image
+from app.products.openai.schemas import ImageGenerationRequest
 
 if TYPE_CHECKING:
     from app.control.account.refresh import AccountRefreshService
@@ -180,6 +182,24 @@ router.include_router(_cache_router)
 @router.get("/verify", tags=[_TAG_ADMIN_SYSTEM])
 async def admin_verify():
     return {"status": "success"}
+
+
+@router.post("/images/generations", tags=[_TAG_ADMIN_SYSTEM])
+async def admin_image_generations(req: ImageGenerationRequest):
+    result = await generate_image(
+        model=req.model,
+        prompt=req.prompt,
+        n=req.n or 1,
+        size=req.size or "1024x1024",
+        aspect_ratio=req.aspect_ratio,
+        response_format=req.response_format or "url",
+        stream=False,
+        chat_format=False,
+    )
+    return Response(
+        content=orjson.dumps(result),
+        media_type="application/json",
+    )
 
 
 @router.get("/config", tags=[_TAG_ADMIN_SYSTEM])

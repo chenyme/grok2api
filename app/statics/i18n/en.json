@@ -20,6 +20,7 @@
     "account": "Account Management",
     "config": "Configuration Management",
     "cache": "Cache Management",
+    "images": "Images",
     "languageLabel": "Language",
     "logout": "Sign Out",
     "versionDialogTitle": "Version",
@@ -38,6 +39,7 @@
   "webui": {
     "header": {
       "chat": "Chat",
+      "images": "Images",
       "masonry": "Masonry",
       "chatkit": "ChatKit"
     },

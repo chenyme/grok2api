@@ -76,10 +76,37 @@ _RATIO_MAP: dict[str, str] = {
     "1024x1792": "2:3",  "2:3":  "2:3",
     "1024x1024": "1:1",  "1:1":  "1:1",
 }
+SUPPORTED_IMAGE_SIZES = frozenset(key for key in _RATIO_MAP if "x" in key)
+SUPPORTED_IMAGE_ASPECT_RATIOS = frozenset(value for value in _RATIO_MAP.values())
 
 
 def resolve_aspect_ratio(size: str) -> str:
     return _RATIO_MAP.get(size, "2:3")
+
+
+def normalize_image_aspect_ratio(
+    size: str | None = "1024x1024",
+    aspect_ratio: str | None = None,
+) -> str:
+    """Validate OpenAI size / x.ai aspect_ratio input and return an aspect ratio."""
+    ratio = (aspect_ratio or "").strip().lower()
+    if ratio:
+        mapped = _RATIO_MAP.get(ratio)
+        if mapped:
+            return mapped
+        raise ValidationError(
+            "aspect_ratio must be one of ['16:9', '9:16', '3:2', '2:3', '1:1']",
+            param="aspect_ratio",
+        )
+
+    normalized_size = (size or "1024x1024").strip().lower()
+    mapped = _RATIO_MAP.get(normalized_size)
+    if mapped:
+        return mapped
+    raise ValidationError(
+        "size must be one of ['1280x720', '720x1280', '1792x1024', '1024x1792', '1024x1024']",
+        param="size",
+    )
 
 
 @dataclass(slots=True)
@@ -176,14 +203,20 @@ def _app_url() -> str:
 
 def _local_image_url(file_id: str) -> str:
     app_url = _app_url()
-    return f"{app_url}/v1/files/image?id={file_id}"
+    if app_url:
+        return f"{app_url}/v1/files/image?id={file_id}"
+    return f"/v1/files/image?id={file_id}"
 
 
 def _extract_image_file_id(url: str) -> str:
     parts = [part for part in url.split("/") if part]
     for part in reversed(parts):
         stem = part.split(".", 1)[0]
-        if stem and stem not in {"image", "original", "thumbnail"}:
+        if (
+            stem
+            and stem not in {"image", "original", "thumbnail"}
+            and re.fullmatch(r"[0-9a-f\-]{16,36}", stem, re.IGNORECASE)
+        ):
             return stem
     return hashlib.sha1(url.encode("utf-8")).hexdigest()[:32]
 
@@ -219,16 +252,19 @@ async def _resolve_image_output(
     url: str,
     response_format: str,
     blob_b64: str | None = None,
+    force_local_url: bool = False,
 ) -> _ImageOutput:
     fmt = _normalize_response_format(response_format)
     cfg = get_config()
     if (
+        not force_local_url
+        and
         fmt == "url"
         and _is_imagine_public_url(url)
         and not cfg.get_bool("features.imagine_public_image_proxy", False)
     ):
         return _ImageOutput(api_value=url, markdown_value=f"![image]({url})")
-    if fmt == "url" and not _app_url():
+    if not force_local_url and fmt == "url" and not _app_url():
         return _ImageOutput(api_value=url, markdown_value=f"![image]({url})")
 
     mime = infer_content_type(url) or "image/jpeg"
@@ -275,6 +311,7 @@ async def generate(
     prompt:          str,
     n:               int  = 1,
     size:            str  = "1024x1024",
+    aspect_ratio:    str | None = None,
     response_format: str  = "url",
     stream:          bool = False,
     chat_format:     bool = False,
@@ -282,7 +319,7 @@ async def generate(
     """Generate images.
 
     Routes to the appropriate backend based on model:
-      grok-imagine-image-lite  → chat endpoint (fast quota, no aspect-ratio control)
+      grok-imagine-image-lite  → chat endpoint (fast quota)
       grok-imagine-image       → WebSocket speed mode (super+)
       grok-imagine-image-pro   → WebSocket quality mode (super+)
 
@@ -292,19 +329,20 @@ async def generate(
     """
     cfg          = get_config()
     spec         = resolve_model(model)
-    aspect_ratio = resolve_aspect_ratio(size)
+    resolved_aspect_ratio = normalize_image_aspect_ratio(size, aspect_ratio)
     enable_nsfw  = cfg.get_bool("features.enable_nsfw", True)
 
     from app.dataplane.account import _directory as _acct_dir
     if _acct_dir is None:
         raise RateLimitError("Account directory not initialised")
 
-    # Lite model: chat-based generation (no WS, ignores aspect_ratio).
+    # Lite model: chat-based generation.
     if model in _LITE_IMAGE_MODELS:
         return await _generate_lite(
             spec            = spec,
             prompt          = prompt,
             n               = n,
+            aspect_ratio    = resolved_aspect_ratio,
             response_format = response_format,
             stream          = stream,
             chat_format     = chat_format,
@@ -332,7 +370,7 @@ async def generate(
             try:
                 async for ev in stream_images(
                     token, prompt,
-                    aspect_ratio = aspect_ratio,
+                    aspect_ratio = resolved_aspect_ratio,
                     n            = n,
                     enable_nsfw  = enable_nsfw,
                     enable_pro   = enable_pro,
@@ -374,6 +412,7 @@ async def generate(
                         url=ev.get("url", ""),
                         response_format=response_format,
                         blob_b64=ev.get("blob") or None,
+                        force_local_url=True,
                     )
                     content = _output_content(image, chat_format=chat_format)
                     chunk = make_stream_chunk(response_id, model, content)
@@ -407,7 +446,7 @@ async def generate(
     try:
         async for ev in stream_images(
             token, prompt,
-            aspect_ratio = aspect_ratio,
+            aspect_ratio = resolved_aspect_ratio,
             n            = n,
             enable_nsfw  = enable_nsfw,
             enable_pro   = enable_pro,
@@ -447,6 +486,7 @@ async def generate(
                     url=ev.get("url", ""),
                     response_format=response_format,
                     blob_b64=ev.get("blob") or None,
+                    force_local_url=True,
                 )
                 finals.append(image)
         success = True
@@ -482,7 +522,7 @@ async def generate(
 
 
 # ---------------------------------------------------------------------------
-# Lite image generation (chat-based, no WS, no aspect-ratio control)
+# Lite image generation (chat-based, no WS)
 # ---------------------------------------------------------------------------
 
 async def _generate_lite(
@@ -490,13 +530,14 @@ async def _generate_lite(
     spec:            ModelSpec,
     prompt:          str,
     n:               int,
+    aspect_ratio:    str,
     response_format: str,
     stream:          bool,
     chat_format:     bool,
 ) -> dict | AsyncGenerator[str, None]:
     """Generate images via the chat endpoint (Aurora model path).
 
-    Does not support aspect ratio or quality control.  It uses fast quota.
+    Uses fast quota and maps the requested size/aspect_ratio to Grok's image controls.
     """
     response_id = make_response_id()
     cfg         = get_config()
@@ -522,6 +563,7 @@ async def _generate_lite(
                     prompt=prompt,
                     n=n,
                     timeout_s=timeout_s,
+                    aspect_ratio=aspect_ratio,
                     response_format=response_format,
                     progress_cb=_progress,
                 )
@@ -568,6 +610,7 @@ async def _generate_lite(
         prompt=prompt,
         n=n,
         timeout_s=timeout_s,
+        aspect_ratio=aspect_ratio,
         response_format=response_format,
         progress_cb=lambda idx, progress: _lite_progress_updates(
             idx=idx,
@@ -938,6 +981,7 @@ async def _stream_lite_generate(
     message:     str,
     mode_id:     ModeId,
     *,
+    aspect_ratio: str = "1:1",
     timeout_s: float = 120.0,
 ) -> AsyncGenerator[str, None]:
     proxy   = await get_proxy_runtime()
@@ -946,7 +990,10 @@ async def _stream_lite_generate(
         message           = f"Drawing: {message}",
         mode_id           = mode_id,
         file_attachments  = [],
-        request_overrides = {"imageGenerationCount": 2},
+        request_overrides = {
+            "imageGenerationCount": 1,
+            "imageGenerationAspectRatio": aspect_ratio,
+        },
     )
     headers = build_http_headers(token, lease=lease)
     kwargs  = build_session_kwargs(lease=lease)
@@ -961,8 +1008,20 @@ async def _stream_lite_generate(
         )
         if response.status_code != 200:
             body = response.content.decode("utf-8", "replace")[:300]
+            if response.status_code in (401, 403):
+                message = (
+                    "grok-imagine-image-lite is not available for this account "
+                    "or the session has expired"
+                )
+            elif response.status_code == 429:
+                message = (
+                    "grok-imagine-image-lite quota is exhausted or rate limited; "
+                    "wait for reset or add another account"
+                )
+            else:
+                message = f"Image-generation upstream returned {response.status_code}"
             raise UpstreamError(
-                f"Image-generation upstream returned {response.status_code}",
+                message,
                 status = response.status_code,
                 body   = body,
             )
@@ -975,6 +1034,7 @@ async def _run_lite_request(
     spec:      ModelSpec,
     prompt:    str,
     timeout_s: float,
+    aspect_ratio: str,
     response_format: str,
     progress_cb: Callable[[int], Awaitable[None]] | None = None,
 ) -> _ImageOutput:
@@ -995,7 +1055,10 @@ async def _run_lite_request(
             exclude_tokens=excluded or None,
         )
         if acct is None:
-            raise RateLimitError("No available accounts for image generation")
+            raise RateLimitError(
+                "No available accounts for grok-imagine-image-lite image generation; "
+                "free/basic quota may be exhausted or accounts are cooling down"
+            )
 
         token = acct.token
         adapter = StreamAdapter()
@@ -1008,6 +1071,7 @@ async def _run_lite_request(
                 token,
                 prompt,
                 spec.mode_id,
+                aspect_ratio=aspect_ratio,
                 timeout_s=timeout_s,
             ):
                 ev_type, data = classify_line(line)
@@ -1029,6 +1093,7 @@ async def _run_lite_request(
                             token=token,
                             url=ev.content,
                             response_format=response_format,
+                            force_local_url=True,
                         )
                         success = True
                         return image
@@ -1072,7 +1137,10 @@ async def _run_lite_request(
             excluded.append(token)
             continue
 
-    raise RateLimitError("No available accounts for image generation")
+    raise RateLimitError(
+        "No available accounts for grok-imagine-image-lite image generation; "
+        "free/basic quota may be exhausted or accounts are cooling down"
+    )
 
 
 async def _run_lite_batch(
@@ -1081,6 +1149,7 @@ async def _run_lite_batch(
     prompt:    str,
     n: int,
     timeout_s: float,
+    aspect_ratio: str,
     response_format: str,
     progress_cb: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> list[_ImageOutput]:
@@ -1091,6 +1160,7 @@ async def _run_lite_batch(
             spec=spec,
             prompt=prompt,
             timeout_s=timeout_s,
+            aspect_ratio=aspect_ratio,
             response_format=response_format,
             progress_cb=None if progress_cb is None else lambda progress: progress_cb(idx, progress),
         )
@@ -1291,4 +1361,11 @@ async def edit(
     return {"created": int(time.time()), "data": data_list}
 
 
-__all__ = ["generate", "edit", "resolve_aspect_ratio"]
+__all__ = [
+    "generate",
+    "edit",
+    "resolve_aspect_ratio",
+    "normalize_image_aspect_ratio",
+    "SUPPORTED_IMAGE_SIZES",
+    "SUPPORTED_IMAGE_ASPECT_RATIOS",
+]

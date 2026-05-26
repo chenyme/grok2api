@@ -75,6 +75,33 @@
       background:#222;
       border-color:#222;
     }
+    .admin-images-entry {
+      margin:-4px 0 22px;
+      padding:14px 16px;
+      border-radius:16px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:14px;
+      background:#fff;
+      border:1px solid rgba(24,24,27,.08);
+      box-shadow:0 10px 24px rgba(24,24,27,.05);
+    }
+    .admin-images-entry-title {
+      font-size:14px;
+      font-weight:700;
+      color:#191713;
+    }
+    .admin-images-entry-text {
+      margin-top:4px;
+      color:#6f675d;
+      font-size:12px;
+      line-height:1.6;
+    }
+    @media (max-width: 700px) {
+      .admin-images-entry { align-items:flex-start; flex-direction:column }
+      .admin-images-entry .page-action-btn { width:100% }
+    }
 
     /* Stats */
     .stat-grid {
@@ -734,6 +761,14 @@
       </button>
     </div>
   </div>
+
+  <section class="admin-images-entry" aria-label="生图入口">
+    <div>
+      <div class="admin-images-entry-title">生图入口</div>
+      <div class="admin-images-entry-text">进入统一后台生图页，使用多图批量、生成参数、历史、下载与重试功能。</div>
+    </div>
+    <a href="/admin/images" class="page-action-btn page-action-btn-primary">进入生图页</a>
+  </section>
 
   <div class="section-head">
     <div class="section-title" data-i18n="account.sectionOverview">账户概览</div>

@@ -20,6 +20,7 @@
     "account": "账户管理",
     "config": "配置管理",
     "cache": "缓存管理",
+    "images": "生图",
     "languageLabel": "语言",
     "logout": "退出登录",
     "versionDialogTitle": "版本信息",
@@ -38,6 +39,7 @@
   "webui": {
     "header": {
       "chat": "聊天",
+      "images": "生图",
       "masonry": "瀑布流",
       "chatkit": "ChatKit"
     },

@@ -131,6 +131,7 @@
     "account": "Gestion des Comptes",
     "config": "Gestion de la Configuration",
     "cache": "Gestion du Cache",
+    "images": "Images",
     "languageLabel": "Langue",
     "logout": "Se déconnecter",
     "versionDialogTitle": "Version",

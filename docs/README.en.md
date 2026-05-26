@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.119%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Version](https://img.shields.io/badge/version-2.0.4.rc2-111827)](../pyproject.toml)
+[![Version](https://img.shields.io/badge/version-v1.1-111827)](../pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-16a34a)](../LICENSE)
 [![中文](https://img.shields.io/badge/中文-2563EB?logo=bookstack&logoColor=white)](../README.md)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/chenyme/grok2api)
@@ -21,6 +21,15 @@ Grok2API is a **FastAPI**-based Grok gateway that exposes Grok Web capabilities 
 - Local image/video caching and locally proxied media URLs
 - Text-to-image, image editing, text-to-video, and image-to-video support
 - Built-in Admin dashboard, Web Chat, Masonry image generation, and ChatKit voice page
+
+<br>
+
+## v1.1 Updates
+
+- Added the P0 `/v1/images/generations` compatibility path for `grok-imagine-image-lite` on free/basic accounts.
+- Added minimal `/v1/responses` image generation compatibility via image models or the `image_generation` tool.
+- Added `/admin/images` as the unified Admin image-generation entry while preserving `/webui/images`; the prompt field now uses a larger multi-line textarea.
+- Redirected legacy `/webui`, `/webui/login`, and `/webui/images` page entrypoints to Admin while keeping `/webui/api/images/generations` for older scripted callers.
 
 <br>
 
@@ -135,8 +144,10 @@ docker compose up -d
 | Account management | `/admin/account` |
 | Config management | `/admin/config` |
 | Cache management | `/admin/cache` |
-| WebUI login | `/webui/login` |
+| Images | `/admin/images` |
+| WebUI login (compat redirect) | `/webui/login` -> `/admin/login` |
 | Web Chat | `/webui/chat` |
+| Images (compat redirect) | `/webui/images` -> `/admin/images` |
 | Masonry | `/webui/masonry` |
 | ChatKit | `/webui/chatkit` |
 

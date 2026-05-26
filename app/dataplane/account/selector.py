@@ -300,7 +300,7 @@ def _random_select(
     if not candidates:
         return None
 
-    max_inflight = int(get_config("account.selection.max_inflight", 8))
+    max_inflight = int(get_config().get_int("account.selection.max_inflight", 8))
     cooling_col  = table.cooling_until_s_by_idx
     inflight_col = table.inflight_by_idx
 
