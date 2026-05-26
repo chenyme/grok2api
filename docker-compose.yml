@@ -3,13 +3,12 @@ services:
     container_name: grok2api
     build: .
     image: grok2api:local
-    ports:
-      - "${HOST_PORT:-8015}:${SERVER_PORT:-8000}"
+    network_mode: host
     environment:
       TZ: Asia/Shanghai
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
-      SERVER_PORT: ${SERVER_PORT:-8000}
+      SERVER_PORT: ${SERVER_PORT:-8015}
       SERVER_WORKERS: ${SERVER_WORKERS:-1}
       ACCOUNT_STORAGE: ${ACCOUNT_STORAGE:-local}
       ACCOUNT_LOCAL_PATH: ${ACCOUNT_LOCAL_PATH:-data/accounts.db}
