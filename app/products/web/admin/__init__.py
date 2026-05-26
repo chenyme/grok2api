@@ -5,21 +5,24 @@ Heavy handlers are split into ``tokens`` and ``batch`` sub-modules.
 """
 
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 import orjson
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import RootModel
 
 from app.control.account.backends.factory import get_repository_backend
+from app.control.model import registry as model_registry
 from app.platform.auth.middleware import verify_admin_key
 from app.platform.config.snapshot import config
 from app.platform.errors import AppError, ErrorKind, ValidationError
 from app.platform.logging.logger import logger, reload_file_logging
 from app.platform.storage import reconcile_local_media_cache_async
 from app.products.openai.images import generate as generate_image
-from app.products.openai.schemas import ImageGenerationRequest
+from app.products.openai.router import chat_completions_endpoint
+from app.products.openai.schemas import ChatCompletionRequest, ImageGenerationRequest
 
 if TYPE_CHECKING:
     from app.control.account.refresh import AccountRefreshService
@@ -179,9 +182,40 @@ router.include_router(_cache_router)
 # ---------------------------------------------------------------------------
 
 
+def _capability_name(spec) -> str:
+    if spec.is_image_edit():
+        return "image_edit"
+    if spec.is_image():
+        return "image"
+    if spec.is_video():
+        return "video"
+    return "chat"
+
+
 @router.get("/verify", tags=[_TAG_ADMIN_SYSTEM])
 async def admin_verify():
     return {"status": "success"}
+
+
+@router.get("/models", tags=[_TAG_ADMIN_SYSTEM])
+async def admin_models():
+    models = [
+        {
+            "id": spec.model_name,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "xai",
+            "name": spec.public_name,
+            "capability": _capability_name(spec),
+        }
+        for spec in model_registry.list_enabled()
+    ]
+    return JSONResponse({"object": "list", "data": models})
+
+
+@router.post("/chat/completions", tags=[_TAG_ADMIN_SYSTEM])
+async def admin_chat_completions(req: ChatCompletionRequest):
+    return await chat_completions_endpoint(req)
 
 
 @router.post("/images/generations", tags=[_TAG_ADMIN_SYSTEM])
@@ -200,6 +234,14 @@ async def admin_image_generations(req: ImageGenerationRequest):
         content=orjson.dumps(result),
         media_type="application/json",
     )
+
+
+from app.products.web.webui.imagine import imagine_ws as _admin_imagine_ws  # noqa: E402
+from app.products.web.webui.voice import voice_token as _admin_voice_token  # noqa: E402
+
+
+router.add_api_websocket_route("/imagine/ws", _admin_imagine_ws)
+router.post("/voice/token", tags=[_TAG_ADMIN_SYSTEM])(_admin_voice_token)
 
 
 @router.get("/config", tags=[_TAG_ADMIN_SYSTEM])

@@ -1,4 +1,5 @@
 window.renderSiteFooter = async function renderSiteFooter() {
+  if (document.body?.classList.contains('webui-embedded-page')) return;
   if (document.querySelector('.site-footer')) return;
 
   let version = '';

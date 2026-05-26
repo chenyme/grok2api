@@ -8,7 +8,7 @@ from typing import Optional
 import orjson
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.platform.auth.middleware import get_webui_key, is_webui_enabled
+from app.platform.auth.middleware import get_admin_key, get_webui_key, is_webui_enabled
 from app.platform.config.snapshot import get_config
 from app.platform.logging.logger import logger
 from app.platform.runtime.clock import now_s
@@ -45,7 +45,10 @@ def _extract_token(value: str | None) -> str:
     return raw
 
 
-def _is_allowed(token: str) -> bool:
+def _is_allowed(token: str, *, admin: bool = False) -> bool:
+    if admin:
+        admin_key = get_admin_key()
+        return bool(admin_key) and bool(token) and hmac.compare_digest(token, admin_key)
     webui_key = get_webui_key()
     if not webui_key:
         return is_webui_enabled()
@@ -56,12 +59,14 @@ def _websocket_token(websocket: WebSocket) -> str:
     return (
         _extract_token(websocket.headers.get("authorization"))
         or str(websocket.query_params.get("access_token") or "").strip()
+        or str(websocket.query_params.get("app_key") or "").strip()
     )
 
 
 @router.websocket("/imagine/ws")
 async def imagine_ws(websocket: WebSocket):
-    if not _is_allowed(_websocket_token(websocket)):
+    admin_socket = websocket.url.path.startswith("/admin/api/")
+    if not _is_allowed(_websocket_token(websocket), admin=admin_socket):
         await websocket.close(code=1008)
         return
 

@@ -1,6 +1,10 @@
 (() => {
-  const VERIFY_ENDPOINT = '/webui/api/verify';
-  const IMAGINE_WS_ENDPOINT = '/webui/api/imagine/ws';
+  const isAdminPage = window.location.pathname.startsWith('/admin');
+  const isEmbedded = new URLSearchParams(window.location.search).get('embed') === '1';
+  const VERIFY_ENDPOINT = isAdminPage ? `${ADMIN_API}/verify` : '/webui/api/verify';
+  const IMAGINE_WS_ENDPOINT = isAdminPage ? `${ADMIN_API}/imagine/ws` : '/webui/api/imagine/ws';
+  const keyStore = isAdminPage ? adminKey : webuiKey;
+  const loginPath = isAdminPage ? '/admin/login' : '/webui/login';
   const IMAGE_COUNT = 6;
   const PROMPT_MIN_HEIGHT = 52;
   const PROMPT_MAX_HEIGHT = 160;
@@ -448,11 +452,11 @@
   }
 
   async function ensureAccess() {
-    const stored = await webuiKey.get();
+    const stored = await keyStore.get();
     if (stored && await verifyKey(VERIFY_ENDPOINT, stored)) return true;
-    if (stored) webuiKey.clear();
-    if (await verifyKey(VERIFY_ENDPOINT, '')) return true;
-    location.href = '/webui/login';
+    if (stored) keyStore.clear();
+    if (!isAdminPage && await verifyKey(VERIFY_ENDPOINT, '')) return true;
+    location.href = loginPath;
     return false;
   }
 
@@ -462,8 +466,11 @@
       return;
     }
 
-    const token = await webuiKey.get();
-    const wsUrl = buildWebSocketUrl(IMAGINE_WS_ENDPOINT, token ? { access_token: token } : {});
+    const token = await keyStore.get();
+    const tokenParams = isAdminPage
+      ? (token ? { app_key: token, access_token: token } : {})
+      : (token ? { access_token: token } : {});
+    const wsUrl = buildWebSocketUrl(IMAGINE_WS_ENDPOINT, tokenParams);
     const socket = new WebSocket(wsUrl);
     activeSocket = socket;
 
@@ -669,7 +676,21 @@
   }
 
   async function boot() {
-    await renderWebuiHeader?.();
+    const header = document.getElementById('webui-header');
+    if (isAdminPage && header) {
+      header.id = 'admin-header';
+      header.dataset.active = '/admin/images';
+    }
+    if (isEmbedded) document.body.classList.add('webui-embedded-page');
+    if (!isEmbedded) {
+      if (isAdminPage) {
+        await renderAdminHeader?.();
+      } else {
+        await renderWebuiHeader?.();
+      }
+    } else {
+      header?.remove();
+    }
     await renderSiteFooter?.();
     window.I18n?.apply?.(document);
     if (!await ensureAccess()) return;

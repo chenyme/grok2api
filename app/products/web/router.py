@@ -60,7 +60,27 @@ async def admin_cache():
 
 @router.get("/admin/images", include_in_schema=False)
 async def admin_images():
-    return _serve_html("webui/images.html")
+    return _serve_html("admin/images.html")
+
+
+@router.get("/admin/images-tools", include_in_schema=False)
+async def admin_images_tools():
+    return _serve_html("admin/images-tools.html")
+
+
+@router.get("/admin/chat", include_in_schema=False)
+async def admin_chat():
+    return _serve_html("webui/chat.html")
+
+
+@router.get("/admin/masonry", include_in_schema=False)
+async def admin_masonry():
+    return _serve_html("webui/masonry.html")
+
+
+@router.get("/admin/chatkit", include_in_schema=False)
+async def admin_chatkit():
+    return _serve_html("webui/chatkit.html")
 
 
 # --- WebUI ---

@@ -1,10 +1,15 @@
 (() => {
-  const VERIFY_ENDPOINT = '/webui/api/verify';
-  const MODELS_ENDPOINT = '/webui/api/models';
-  const CHAT_ENDPOINT = '/webui/api/chat/completions';
+  const isAdminPage = window.location.pathname.startsWith('/admin');
+  const isEmbedded = new URLSearchParams(window.location.search).get('embed') === '1';
+  const VERIFY_ENDPOINT = isAdminPage ? `${ADMIN_API}/verify` : '/webui/api/verify';
+  const MODELS_ENDPOINT = isAdminPage ? `${ADMIN_API}/models` : '/webui/api/models';
+  const CHAT_ENDPOINT = isAdminPage ? `${ADMIN_API}/chat/completions` : '/webui/api/chat/completions';
+  const keyStore = isAdminPage ? adminKey : webuiKey;
+  const loginPath = isAdminPage ? '/admin/login' : '/webui/login';
+  const storeScope = isAdminPage ? 'admin' : 'webui';
   const PREFERRED_MODEL = 'grok-4.20-0309-non-reasoning';
-  const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
-  const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
+  const STORE_KEY = `grok2api_${storeScope}_chat_sessions_v1`;
+  const SIDEBAR_STORE_KEY = `grok2api_${storeScope}_sidebar_collapsed_v1`;
 
   const chatLayout = document.getElementById('chatLayout');
   const modelSelect = document.getElementById('modelSelect');
@@ -733,16 +738,16 @@
   }
 
   async function getAuthHeaders() {
-    const key = await webuiKey.get();
+    const key = await keyStore.get();
     return key ? { Authorization: `Bearer ${key}` } : {};
   }
 
   async function ensureAccess() {
-    const stored = await webuiKey.get();
+    const stored = await keyStore.get();
     if (stored && await verifyKey(VERIFY_ENDPOINT, stored)) return true;
-    if (stored) webuiKey.clear();
-    if (await verifyKey(VERIFY_ENDPOINT, '')) return true;
-    location.href = '/webui/login';
+    if (stored) keyStore.clear();
+    if (!isAdminPage && await verifyKey(VERIFY_ENDPOINT, '')) return true;
+    location.href = loginPath;
     return false;
   }
 
@@ -842,6 +847,11 @@
       ? availableModels.find((item) => item && item.id === modelSelect.value)
       : null;
     return selected && selected.capability ? selected.capability : 'chat';
+  }
+
+  function requestedCapability() {
+    const raw = new URLSearchParams(window.location.search).get('capability') || '';
+    return String(raw).trim().toLowerCase();
   }
 
   async function fileToDataUrl(file) {
@@ -1445,11 +1455,15 @@
 
     const data = await res.json();
     const items = Array.isArray(data && data.data) ? data.data : [];
+    const capability = requestedCapability();
     availableModels = items.filter((item) => item && item.id);
-    const ids = items.map((item) => item && item.id).filter(Boolean);
+    const visibleModels = capability
+      ? availableModels.filter((item) => item.capability === capability)
+      : availableModels;
+    const ids = visibleModels.map((item) => item && item.id).filter(Boolean);
 
     modelSelect.innerHTML = '';
-    availableModels.forEach((item) => {
+    visibleModels.forEach((item) => {
       const opt = document.createElement('option');
       opt.value = item.id;
       opt.textContent = formatModelOptionLabel(item.id, item.name || item.id);
@@ -1640,7 +1654,21 @@
   }
 
   async function boot() {
-    await renderWebuiHeader?.();
+    const header = document.getElementById('webui-header');
+    if (isAdminPage && header) {
+      header.id = 'admin-header';
+      header.dataset.active = '/admin/images';
+    }
+    if (isEmbedded) document.body.classList.add('webui-embedded-page');
+    if (!isEmbedded) {
+      if (isAdminPage) {
+        await renderAdminHeader?.();
+      } else {
+        await renderWebuiHeader?.();
+      }
+    } else {
+      header?.remove();
+    }
     await renderSiteFooter?.();
     if (window.I18n?.apply) I18n.apply(document);
     renderSendButton();
@@ -1648,6 +1676,9 @@
     if (!await ensureAccess()) return;
     loadSidebarState();
     await loadModels();
+    if (isEmbedded && !modelSelect.options.length) {
+      throw new Error('No models available for the selected capability');
+    }
     restoreSessions();
     resizePromptInput();
     promptInput.focus();

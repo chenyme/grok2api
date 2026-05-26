@@ -140,7 +140,25 @@ button{cursor:pointer}
 .admin-main{max-width:1280px;margin:0 auto;padding:78px 28px 24px}
 
 /* WebUI layout */
+.admin-experiments-page{min-height:100vh;background:#FAF9F5;color:#171717}
+.admin-experiments-main{max-width:1280px;margin:0 auto;padding:78px 28px 24px}
+.admin-experiments-shell{display:grid;gap:16px;min-height:calc(100vh - 102px)}
+.admin-experiments-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.admin-experiments-title{font-size:24px;font-weight:700;letter-spacing:-.03em;line-height:1.15;color:#191713}
+.admin-experiments-subtitle{margin-top:6px;color:#6f675d;font-size:13px;line-height:1.6}
+.admin-experiments-tabs,.admin-image-mode-tabs{display:flex;align-items:center;gap:8px;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
+.admin-experiments-tabs::-webkit-scrollbar,.admin-image-mode-tabs::-webkit-scrollbar{display:none}
+.admin-experiments-tab,.admin-image-mode-tab{height:34px;padding:0 14px;border-radius:999px;background:#fff;color:#6a6258;border:1px solid rgba(24,24,27,.08);font-size:13px;font-weight:700;white-space:nowrap;transition:background .15s,color .15s,border-color .15s}
+.admin-experiments-tab:hover,.admin-image-mode-tab:hover{background:#f7f2ea;color:#211d19}
+.admin-experiments-tab.is-active,.admin-image-mode-tab.is-active{background:#181614;color:#fff;border-color:#181614}
+.admin-experiments-content{min-height:0;display:grid;border:1px solid rgba(24,24,27,.08);border-radius:22px;overflow:hidden;background:#fff;box-shadow:0 14px 36px rgba(24,24,27,.08)}
+.admin-experiments-frame{width:100%;height:calc(100vh - 210px);min-height:620px;border:0;background:#FAF9F5}
 .webui-page{--webui-control-surface:#f1ece2;min-height:100vh;background:#FAF9F5;color:#171717;padding-top:54px}
+.webui-embedded-page{padding-top:0;min-height:100vh}
+.webui-embedded-page .site-footer{display:none}
+.webui-embedded-page .webui-chat-layout{height:100vh}
+.webui-embedded-page .webui-masonry-main{height:100vh;overflow:hidden}
+.webui-embedded-page .webui-chatkit-main{min-height:100vh}
 .webui-main{width:100%;max-width:none;margin:0;padding:6px 0 8px;box-sizing:border-box}
 .webui-chat-layout{
   display:grid;grid-template-columns:284px minmax(0,1fr);gap:0;
@@ -946,6 +964,11 @@ textarea.input{height:auto;padding:8px 10px;resize:vertical}
 textarea.input.webui-textarea{padding:8px 0 !important;resize:none !important}
 
 @media (max-width: 960px){
+  .admin-experiments-main{padding:112px 12px 16px}
+  .admin-experiments-shell{min-height:calc(100vh - 128px)}
+  .admin-experiments-frame{height:calc(100vh - 258px);min-height:560px}
+  .admin-image-tools-main{padding:14px 12px 18px}
+  .admin-image-mode-frame{height:calc(100vh - 124px);min-height:520px}
   .admin-header-inner{
     height:auto;padding:10px 12px;
     grid-template-columns:minmax(0,1fr) auto;
@@ -1031,6 +1054,10 @@ textarea.input.webui-textarea{padding:8px 0 !important;resize:none !important}
 }
 
 @media (max-width: 520px){
+  .admin-experiments-title,.admin-image-tools-title{font-size:24px}
+  .admin-experiments-tab,.admin-image-mode-tab{height:32px;padding:0 11px;font-size:12px}
+  .admin-experiments-frame{min-height:520px}
+  .admin-image-mode-frame{min-height:500px}
   .site-footer{right:12px;bottom:8px;font-size:10px}
   .admin-header-inner{padding:10px 10px 8px}
   .admin-brand{font-size:12px}
@@ -1127,6 +1154,17 @@ textarea.input.webui-textarea{padding:8px 0 !important;resize:none !important}
 .action-btns{display:flex;gap:4px}
 .empty-state{text-align:center;padding:40px;color:var(--fg-muted);font-size:13px}
 
+.admin-image-tools-page{padding-top:54px}
+.webui-embedded-page.admin-image-tools-page{padding-top:0}
+.admin-image-tools-main{padding:18px 24px 24px}
+.admin-image-tools-shell{display:grid;gap:16px;min-height:100vh}
+.admin-image-tools-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.admin-image-tools-title{font-size:30px;line-height:1;font-weight:700;letter-spacing:-.05em;color:#191713;margin:0 0 8px}
+.admin-image-tools-subtitle{max-width:840px;margin:0;color:#6f675d;font-size:13px;line-height:1.7}
+.admin-image-mode-panel{min-height:0}
+.admin-image-mode-panel:not(.is-active){display:none}
+.admin-image-mode-frame{display:block;width:100%;height:calc(100vh - 130px);min-height:560px;border:0;border-radius:20px;background:#FAF9F5}
+.admin-image-text-shell{min-height:auto}
 .webui-images-main{width:100%;max-width:none;padding:18px 24px 24px}
 .webui-images-shell{display:grid;gap:18px;min-height:calc(100dvh - 104px)}
 .webui-images-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grok2API - 实验生成</title>
+  <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
+</head>
+<body class="admin-experiments-page">
+  <div id="admin-header" data-active="/admin/images"></div>
+
+  <main class="admin-experiments-main">
+    <section class="admin-experiments-shell">
+      <header class="admin-experiments-head">
+        <div>
+          <h1 class="admin-experiments-title">实验生成</h1>
+          <p class="admin-experiments-subtitle">统一体验 Web Chat、图像/视频生成、Masonry 生图与 ChatKit 语音能力。</p>
+        </div>
+      </header>
+
+      <nav class="admin-experiments-tabs" aria-label="实验生成子标签">
+        <button class="admin-experiments-tab is-active" type="button" data-tab="chat">Web Chat</button>
+        <button class="admin-experiments-tab" type="button" data-tab="images">生图/视频</button>
+        <button class="admin-experiments-tab" type="button" data-tab="masonry">Masonry 生图</button>
+        <button class="admin-experiments-tab" type="button" data-tab="chatkit">ChatKit</button>
+      </nav>
+
+      <section class="admin-experiments-content">
+        <iframe
+          id="experimentFrame"
+          class="admin-experiments-frame"
+          title="实验生成内容"
+          src="/admin/chat?embed=1"
+        ></iframe>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin/images.js?v={{APP_VERSION}}"></script>
+</body>
+</html>

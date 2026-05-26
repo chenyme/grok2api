@@ -1,5 +1,8 @@
 (() => {
-  const VOICE_ENDPOINT = '/webui/api/voice/token';
+  const isAdminPage = window.location.pathname.startsWith('/admin');
+  const isEmbedded = new URLSearchParams(window.location.search).get('embed') === '1';
+  const VOICE_ENDPOINT = isAdminPage ? `${ADMIN_API}/voice/token` : '/webui/api/voice/token';
+  const keyStore = isAdminPage ? adminKey : webuiKey;
   const voiceSelect = document.getElementById('voiceSelect');
   const personalitySelect = document.getElementById('personalitySelect');
   const speedSelect = document.getElementById('speedSelect');
@@ -308,7 +311,7 @@
   const getLiveKit = () => window.LiveKitClient || window.LivekitClient || null;
 
   const getAuthHeaders = async () => {
-    const key = await webuiKey.get();
+    const key = await keyStore.get();
     return key ? { Authorization: `Bearer ${key}` } : {};
   };
 
@@ -492,7 +495,19 @@
     text('webui.chatkit.statusIdle', '未连接'),
     text('webui.chatkit.idleText', '点击并授权，通过 ChatKit 语音会话连接 Grok Voice。'),
   );
-  if (typeof renderWebuiHeader === 'function') {
+  if (isEmbedded) {
+    document.body.classList.add('webui-embedded-page');
+    document.getElementById('webui-header')?.remove();
+  } else if (isAdminPage) {
+    const header = document.getElementById('webui-header');
+    if (header) {
+      header.id = 'admin-header';
+      header.dataset.active = '/admin/images';
+    }
+    if (typeof renderAdminHeader === 'function') {
+      void renderAdminHeader();
+    }
+  } else if (typeof renderWebuiHeader === 'function') {
     void renderWebuiHeader();
   }
   if (typeof renderSiteFooter === 'function') {

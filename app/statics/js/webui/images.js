@@ -1,5 +1,6 @@
 (() => {
   const isAdminPage = window.location.pathname.startsWith('/admin');
+  const isEmbedded = new URLSearchParams(window.location.search).get('embed') === '1';
   const VERIFY_ENDPOINT = isAdminPage ? `${ADMIN_API}/verify` : '/webui/api/verify';
   const IMAGE_ENDPOINT = isAdminPage ? `${ADMIN_API}/images/generations` : '/webui/api/images/generations';
   const keyStore = isAdminPage ? adminKey : webuiKey;
@@ -338,7 +339,10 @@
       header.id = isAdminPage ? 'admin-header' : 'webui-header';
       header.dataset.active = isAdminPage ? '/admin/images' : '/webui/images';
     }
-    if (isAdminPage) {
+    if (isEmbedded) {
+      document.body.classList.add('webui-embedded-page');
+      header?.remove();
+    } else if (isAdminPage) {
       await window.renderAdminHeader?.();
     } else {
       await window.renderWebuiHeader?.();

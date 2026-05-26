@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grok2API - 生图/视频</title>
+  <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
+</head>
+<body class="webui-page webui-images-page admin-image-tools-page">
+  <div id="image-header"></div>
+  <main class="webui-main admin-image-tools-main">
+    <section class="admin-image-tools-shell">
+      <header class="admin-image-tools-head">
+        <div>
+          <h1 class="admin-image-tools-title">生图/视频</h1>
+          <p class="admin-image-tools-subtitle">按能力切换文生图、图像编辑、文生视频和图生视频。</p>
+        </div>
+      </header>
+
+      <nav class="admin-image-mode-tabs" aria-label="生图/视频子功能">
+        <button class="admin-image-mode-tab is-active" type="button" data-mode="text-image">文生图</button>
+        <button class="admin-image-mode-tab" type="button" data-mode="image-edit">图像编辑</button>
+        <button class="admin-image-mode-tab" type="button" data-mode="text-video">文生视频</button>
+        <button class="admin-image-mode-tab" type="button" data-mode="image-video">图生视频</button>
+      </nav>
+
+      <section class="admin-image-mode-panel is-active" data-mode-panel="text-image">
+        <section class="webui-images-shell admin-image-text-shell">
+          <header class="webui-images-head">
+            <div>
+              <h2 class="webui-images-title">文生图</h2>
+              <p class="webui-images-subtitle">使用 <code>grok-imagine-image-lite</code> 进行 OpenAI 兼容文生图。支持批量/多张、生成参数、连续循环、历史保留、下载/复制与重试。</p>
+            </div>
+            <span id="imageStatus" class="webui-images-status" data-state="ready">就绪</span>
+          </header>
+
+          <section class="webui-images-form">
+            <label class="webui-images-field webui-images-field-wide">
+              <span>Prompt</span>
+              <textarea id="promptInput" class="input webui-textarea webui-images-prompt" rows="6" placeholder="描述你想生成的画面，支持多行输入；Ctrl/⌘ + Enter 生成"></textarea>
+            </label>
+            <label class="webui-images-field">
+              <span>Model</span>
+              <select id="modelSelect" class="input">
+                <option value="grok-imagine-image-lite">grok-imagine-image-lite</option>
+              </select>
+            </label>
+            <label class="webui-images-field">
+              <span>Size / Ratio</span>
+              <select id="sizeSelect" class="input">
+                <option value="1024x1024" data-ratio="1:1">1024x1024 · 1:1</option>
+                <option value="1792x1024" data-ratio="3:2">1792x1024 · 3:2</option>
+                <option value="1024x1792" data-ratio="2:3" selected>1024x1792 · 2:3</option>
+                <option value="1280x720" data-ratio="16:9">1280x720 · 16:9</option>
+                <option value="720x1280" data-ratio="9:16">720x1280 · 9:16</option>
+              </select>
+            </label>
+            <label class="webui-images-field">
+              <span>Count</span>
+              <input id="countInput" class="input" type="number" min="1" max="4" value="4">
+            </label>
+            <label class="webui-images-field">
+              <span>Mode</span>
+              <select id="modeSelect" class="input">
+                <option value="single" selected>单轮批量</option>
+                <option value="continuous">连续循环</option>
+              </select>
+            </label>
+            <label class="webui-images-field">
+              <span>Response</span>
+              <select id="formatSelect" class="input">
+                <option value="url" selected>url</option>
+                <option value="b64_json">b64_json</option>
+              </select>
+            </label>
+            <div class="webui-images-actions">
+              <button id="generateBtn" class="btn btn-primary" type="button">生成图片</button>
+              <button id="stopBtn" class="btn btn-ghost" type="button" disabled>停止</button>
+              <button id="clearHistoryBtn" class="btn btn-ghost" type="button" disabled>清空历史</button>
+            </div>
+          </section>
+
+          <section id="imageEmpty" class="webui-images-empty" aria-live="polite">
+            <div class="webui-images-empty-card">
+              <div class="webui-images-empty-title">从一句提示词开始</div>
+              <div class="webui-images-empty-text">每轮可生成多张图片，结果会保留在历史中，方便下载、复制和重试。</div>
+            </div>
+          </section>
+          <section id="resultHistory" class="webui-images-history" aria-live="polite"></section>
+        </section>
+      </section>
+
+      <section class="admin-image-mode-panel" data-mode-panel="image-edit" hidden>
+        <iframe class="admin-image-mode-frame" title="图像编辑" data-src="/admin/chat?embed=1&capability=image_edit"></iframe>
+      </section>
+
+      <section class="admin-image-mode-panel" data-mode-panel="text-video" hidden>
+        <iframe class="admin-image-mode-frame" title="文生视频" data-src="/admin/chat?embed=1&capability=video"></iframe>
+      </section>
+
+      <section class="admin-image-mode-panel" data-mode-panel="image-video" hidden>
+        <iframe class="admin-image-mode-frame" title="图生视频" data-src="/admin/chat?embed=1&capability=video&reference=1"></iframe>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/webui-header.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/webui/images.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin/images-tools.js?v={{APP_VERSION}}"></script>
+</body>
+</html>

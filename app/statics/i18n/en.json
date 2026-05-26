@@ -20,7 +20,7 @@
     "account": "Account Management",
     "config": "Configuration Management",
     "cache": "Cache Management",
-    "images": "Images",
+    "images": "Experimental Generation",
     "languageLabel": "Language",
     "logout": "Sign Out",
     "versionDialogTitle": "Version",
