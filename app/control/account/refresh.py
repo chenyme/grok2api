@@ -147,10 +147,10 @@ class AccountRefreshService:
             return None
 
     async def _refresh_subscription(self, record: AccountRecord) -> None:
-        """Fetch subscription info for an account and persist account_id + pool.
+        """Fetch subscription info, persist account_id, and store tier hint for Phase 2.
 
-        Only called for accounts that are missing ``account_id`` or whose pool
-        needs verification from the subscription API.
+        Does NOT set pool — that's Phase 2's job (multi-factor: rate-limits + subscription).
+        Stores ``sub_tier`` and ``sub_active`` in ext so _refresh_one can cross-validate.
         """
         if record.is_deleted():
             return
@@ -169,20 +169,24 @@ class AccountRefreshService:
         from .commands import AccountPatch
 
         patch_fields: dict[str, Any] = {}
+        ext_merge: dict[str, Any] = {
+            "sub_tier": info.tier,
+            "sub_active": info.is_active,
+        }
+
         if info.xai_user_id and not record.account_id:
             patch_fields["account_id"] = info.xai_user_id
-        if info.pool and info.pool != record.pool and info.is_active:
-            patch_fields["pool"] = info.pool
 
-        if patch_fields:
+        if patch_fields or ext_merge:
+            patch_fields["ext_merge"] = ext_merge
             await self._repo.patch_accounts([
                 AccountPatch(token=record.token, **patch_fields)
             ])
             logger.info(
-                "subscription info updated: token={}... account_id={} pool={}",
+                "subscription info updated: token={}... account_id={} tier={} active={}",
                 record.token[:10],
                 info.xai_user_id or record.account_id,
-                patch_fields.get("pool", record.pool),
+                info.tier, info.is_active,
             )
 
     # ------------------------------------------------------------------
@@ -307,8 +311,11 @@ class AccountRefreshService:
         if record.is_deleted():
             return RefreshResult()
 
+        # For basic accounts, fetch all modes (like "auto" pool) so infer_pool
+        # can see auto.total and correctly upgrade to super/heavy when warranted.
+        fetch_pool = "auto" if record.pool == "basic" else record.pool
         try:
-            windows = await self._fetch_all_quotas(record.token, record.pool)
+            windows = await self._fetch_all_quotas(record.token, fetch_pool)
         except UpstreamError as exc:
             if await self._expire_invalid_credentials(record, exc):
                 return RefreshResult(checked=1, expired=1, failed=0)
@@ -364,12 +371,40 @@ class AccountRefreshService:
         if not patches:
             return RefreshResult(checked=1, failed=0 if refreshed else 1)
 
-        # Infer pool type from live quota data and patch if it changed.
+        # ── Multi-factor pool inference ──────────────────────────────
+        # Primary:  rate-limits auto.total (ground truth of current quota)
+        # Fallback: subscription API (active subscription = paying customer)
+        #
+        # Scenarios handled:
+        #   auto=50, any sub status        → super   (rate-limits wins)
+        #   auto=7,  INACTIVE sub          → basic   (genuinely downgraded)
+        #   auto=?,  ACTIVE sub            → super   (subscription wins, API fluke)
+        #   auto=7,  ACTIVE sub (anomaly)  → super   (active sub > anomalous quota)
         inferred = infer_pool(windows)  # type: ignore[arg-type]
+
+        if inferred == "basic":
+            sub_tier   = record.ext.get("sub_tier", "")
+            sub_active = record.ext.get("sub_active", False)
+            if sub_active and sub_tier in (
+                "SUBSCRIPTION_TIER_GROK_PRO",
+                "SUBSCRIPTION_TIER_SUPER_GROK",
+                "SUBSCRIPTION_TIER_SUPER_GROK_PRO",
+                "SUBSCRIPTION_TIER_GROK_PRO_HEAVY",
+                "SUBSCRIPTION_TIER_SUPER_GROK_LITE",
+                "SUBSCRIPTION_TIER_GROK_TEAMS",
+            ):
+                from app.dataplane.reverse.protocol.xai_subscription import tier_to_pool as _t2p
+                inferred = _t2p(sub_tier)
+                logger.info(
+                    "account pool upgraded by subscription: token={}... "
+                    "rate_limits_pool=basic subscription_tier={} → pool={}",
+                    record.token[:10], sub_tier, inferred,
+                )
+
         pool_patch = inferred if inferred != record.pool else None
         if pool_patch:
             logger.info(
-                "account pool updated from live quota: token={}... previous_pool={} current_pool={}",
+                "account pool updated: token={}... previous_pool={} current_pool={}",
                 record.token[:10],
                 record.pool,
                 inferred,
