@@ -334,10 +334,17 @@ class AccountRefreshService:
         patches: dict[str, dict] = {}
         refreshed = False
 
+        # Use the inferred pool for quota normalization when it represents
+        # an upgrade (e.g. basic→super).  Without this, auto/expert/grok_4_3
+        # quota data fetched for basic accounts gets discarded by
+        # normalize_quota_window (basic pool doesn't support those modes).
+        inferred = infer_pool(windows)  # type: ignore[arg-type]
+        effective_pool = inferred if inferred != "basic" else record.pool
+
         for mode in ALL_MODES_FULL:
             mode_id = int(mode)
             if mode_id in windows:
-                window = normalize_quota_window(record.pool, mode_id, windows[mode_id])
+                window = normalize_quota_window(effective_pool, mode_id, windows[mode_id])
                 if window is None:
                     continue
                 patches[_MODE_KEYS[mode_id]] = window.to_dict()
@@ -372,16 +379,14 @@ class AccountRefreshService:
             return RefreshResult(checked=1, failed=0 if refreshed else 1)
 
         # ── Multi-factor pool inference ──────────────────────────────
-        # Primary:  rate-limits auto.total (ground truth of current quota)
-        # Fallback: subscription API (active subscription = paying customer)
+        # 'inferred' was set above from rate-limits auto.total (primary).
+        # Now cross-validate with subscription data (fallback).
         #
         # Scenarios handled:
         #   auto=50, any sub status        → super   (rate-limits wins)
         #   auto=7,  INACTIVE sub          → basic   (genuinely downgraded)
         #   auto=?,  ACTIVE sub            → super   (subscription wins, API fluke)
         #   auto=7,  ACTIVE sub (anomaly)  → super   (active sub > anomalous quota)
-        inferred = infer_pool(windows)  # type: ignore[arg-type]
-
         if inferred == "basic":
             sub_tier   = record.ext.get("sub_tier", "")
             sub_active = record.ext.get("sub_active", False)
@@ -397,7 +402,7 @@ class AccountRefreshService:
                 inferred = _t2p(sub_tier)
                 logger.info(
                     "account pool upgraded by subscription: token={}... "
-                    "rate_limits_pool=basic subscription_tier={} → pool={}",
+                    "rate_limits_pool=basic subscription_tier={} -> pool={}",
                     record.token[:10], sub_tier, inferred,
                 )
 
