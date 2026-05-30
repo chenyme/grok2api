@@ -121,6 +121,7 @@ def _quota_brief(q: dict) -> dict:
 def _serialize_record(r) -> dict:
     return {
         "token":       r.token,
+        "account_id":  r.account_id,
         "pool":        r.pool or "basic",
         "status":      r.status,
         "quota":       _quota_brief(r.quota) if isinstance(r.quota, dict) else {},

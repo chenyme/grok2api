@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from app.platform.errors import UpstreamError
 from app.platform.config.snapshot import get_config
@@ -127,16 +127,86 @@ class AccountRefreshService:
             return None
 
     # ------------------------------------------------------------------
+    # Subscription API fetch (account type + account_id)
+    # ------------------------------------------------------------------
+
+    async def _fetch_subscription(self, token: str):
+        """Fetch subscription info (account type + xaiUserId) for *token*."""
+        try:
+            from app.dataplane.reverse.protocol.xai_subscription import (
+                fetch_subscription,
+            )
+            return await fetch_subscription(token)
+        except UpstreamError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "subscription fetch failed: token={}... error={}",
+                token[:10], exc,
+            )
+            return None
+
+    async def _refresh_subscription(self, record: AccountRecord) -> None:
+        """Fetch subscription info for an account and persist account_id + pool.
+
+        Only called for accounts that are missing ``account_id`` or whose pool
+        needs verification from the subscription API.
+        """
+        if record.is_deleted():
+            return
+        try:
+            info = await self._fetch_subscription(record.token)
+        except UpstreamError as exc:
+            if await self._expire_invalid_credentials(record, exc):
+                return
+            raise
+        except Exception:
+            return
+
+        if info is None:
+            return
+
+        from .commands import AccountPatch
+
+        patch_fields: dict[str, Any] = {}
+        if info.xai_user_id and not record.account_id:
+            patch_fields["account_id"] = info.xai_user_id
+        if info.pool and info.pool != record.pool and info.is_active:
+            patch_fields["pool"] = info.pool
+
+        if patch_fields:
+            await self._repo.patch_accounts([
+                AccountPatch(token=record.token, **patch_fields)
+            ])
+            logger.info(
+                "subscription info updated: token={}... account_id={} pool={}",
+                record.token[:10],
+                info.xai_user_id or record.account_id,
+                patch_fields.get("pool", record.pool),
+            )
+
+    # ------------------------------------------------------------------
     # Core refresh logic
     # ------------------------------------------------------------------
 
     async def refresh_on_import(self, tokens: list[str]) -> RefreshResult:
-        """Called after bulk import — sync real quotas for all accounts."""
+        """Called after bulk import — sync real quotas and subscription info for all accounts."""
         records = await self._repo.get_accounts(tokens)
         active = [r for r in records if is_manageable(r)]
         if not active:
             return RefreshResult(checked=len(records))
 
+        # Phase 1: Fetch subscription info (account_id + tier) for accounts missing it.
+        sub_results = await run_batch(
+            [r for r in active if not r.account_id],
+            lambda r: self._refresh_subscription(r),
+            concurrency=get_config("account.refresh.usage_concurrency", 50),
+        )
+        # Refresh the records after subscription updates.
+        records = await self._repo.get_accounts(tokens)
+        active = [r for r in records if is_manageable(r)]
+
+        # Phase 2: Fetch quota windows.
         concurrency = get_config("account.refresh.usage_concurrency", 50)
         results = await run_batch(
             active,
@@ -145,7 +215,8 @@ class AccountRefreshService:
         )
         agg = RefreshResult(checked=len(records))
         for r in results:
-            agg.merge(r)
+            if r:
+                agg.merge(r)
         return agg
 
     async def refresh_call_async(self, token: str, mode_id: int) -> None:

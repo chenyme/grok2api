@@ -14,6 +14,7 @@ class AccountUpsert(BaseModel):
     """
 
     token: str
+    account_id: str | None = None  # Grok xaiUserId for deduplication
     pool:  str = "basic"
     tags:  list[str] = Field(default_factory=list)
     ext:   dict[str, Any] = Field(default_factory=dict)
@@ -26,6 +27,7 @@ class AccountPatch(BaseModel):
     """
 
     token:            str
+    account_id:       str | None             = None  # update account ID (from subscription API)
     pool:             str | None             = None  # update pool type when inferred
     status:           AccountStatus | None   = None
     tags:             list[str] | None       = None

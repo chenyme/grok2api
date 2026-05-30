@@ -176,6 +176,7 @@ class AccountRecord(BaseModel):
     """
 
     token: str
+    account_id: str | None = None  # Grok's xaiUserId — UUID, used for deduplication
     pool: str = "basic"
     status: AccountStatus = AccountStatus.ACTIVE
     created_at: int = Field(default_factory=now_ms)

@@ -37,6 +37,7 @@ accounts_table = sa.Table(
     _TBL_ACCOUNTS,
     metadata,
     sa.Column("token",            sa.String(512), primary_key=True),
+    sa.Column("account_id",       sa.String(64), nullable=True, index=True),  # xaiUserId UUID for dedup
     sa.Column("pool",             sa.Text,    nullable=False, default="basic"),
     sa.Column("status",           sa.Text,    nullable=False, default="active"),
     sa.Column("created_at",       sa.BigInteger, nullable=False),
@@ -404,6 +405,8 @@ def _evict_cached_engine(engine: AsyncEngine) -> None:
 
 def _row_to_record(row: Any) -> AccountRecord:
     d = dict(row._mapping)
+    # Normalise account_id — stored as string, can be empty.
+    d["account_id"] = d.get("account_id") or None
     d["tags"]  = json.loads(d.get("tags")  or "[]")
     heavy_raw     = d.pop("quota_heavy",    "{}") or "{}"
     grok_4_3_raw  = d.pop("quota_grok_4_3", "{}") or "{}"
@@ -522,6 +525,23 @@ class SqlAccountRepository:
     async def _ensure_columns(self, conn: Any) -> None:
         """Idempotent ALTER TABLE migrations for columns added after the initial schema."""
         existing = await self._table_columns(conn, _TBL_ACCOUNTS)
+        if "account_id" not in existing:
+            if self._dialect == "mysql":
+                await conn.exec_driver_sql(
+                    f"ALTER TABLE {_TBL_ACCOUNTS} "
+                    f"ADD COLUMN account_id VARCHAR(64) NULL"
+                )
+                await conn.exec_driver_sql(
+                    f"CREATE INDEX idx_accounts_account_id ON {_TBL_ACCOUNTS} (account_id)"
+                )
+            else:
+                await conn.exec_driver_sql(
+                    f"ALTER TABLE {_TBL_ACCOUNTS} "
+                    f"ADD COLUMN account_id VARCHAR(64)"
+                )
+                await conn.exec_driver_sql(
+                    f"CREATE INDEX idx_accounts_account_id ON {_TBL_ACCOUNTS} (account_id)"
+                )
         if "quota_grok_4_3" not in existing:
             if self._dialect == "mysql":
                 # MySQL forbids DEFAULT values on TEXT/BLOB columns;
@@ -629,8 +649,10 @@ class SqlAccountRepository:
                     continue
                 pool = item.pool if item.pool in ("basic", "super", "heavy") else "basic"
                 qs   = default_quota_set(pool)
+                account_id = item.account_id or None
                 row  = {
                     "token":            token,
+                    "account_id":       account_id,
                     "pool":             pool,
                     "status":           "active",
                     "created_at":       ts,
@@ -648,6 +670,29 @@ class SqlAccountRepository:
                     "ext":              json.dumps(item.ext),
                     "revision":         rev,
                 }
+                # Dedup by account_id: if this account_id already exists under a
+                # *different* token, soft-delete the old token record so we
+                # maintain one canonical token per xaiUserId.
+                if account_id:
+                    existing = (await conn.execute(
+                        sa.select(accounts_table.c.token).where(
+                            accounts_table.c.account_id == account_id,
+                            accounts_table.c.token != token,
+                            accounts_table.c.deleted_at.is_(None),
+                        )
+                    )).fetchall()
+                    for dup in existing:
+                        dup_token = dup[0]
+                        await conn.execute(
+                            accounts_table.update()
+                            .where(accounts_table.c.token == dup_token)
+                            .values(deleted_at=ts, updated_at=ts, revision=rev)
+                        )
+                        logger.info(
+                            "account deduplicated by account_id: old_token={}... new_token={}... account_id={}",
+                            dup_token[:10], token[:10], account_id,
+                        )
+
                 await conn.execute(self._build_upsert(row))
                 count += 1
             return AccountMutationResult(upserted=count, revision=rev)
@@ -672,6 +717,8 @@ class SqlAccountRepository:
                 record = _row_to_record(row)
 
                 updates: dict[str, Any] = {"updated_at": ts, "revision": rev}
+                if patch.account_id is not None:
+                    updates["account_id"] = patch.account_id
                 if patch.pool is not None:
                     updates["pool"] = patch.pool
                 if patch.status is not None:

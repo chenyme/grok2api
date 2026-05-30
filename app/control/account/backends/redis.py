@@ -55,6 +55,7 @@ class RedisAccountRepository:
     def _to_hash(record: AccountRecord, revision: int) -> dict[str, str]:
         qs = record.quota_set()
         return {
+            "account_id":       record.account_id or "",
             "pool":             record.pool,
             "status":           record.status.value,
             "created_at":       str(record.created_at),
@@ -64,6 +65,7 @@ class RedisAccountRepository:
             "quota_fast":       json.dumps(qs.fast.to_dict()),
             "quota_expert":     json.dumps(qs.expert.to_dict()),
             "quota_heavy":      json.dumps(qs.heavy.to_dict()) if qs.heavy else "{}",
+            "quota_grok_4_3":   json.dumps(qs.grok_4_3.to_dict()) if qs.grok_4_3 else "{}",
             "usage_use_count":  str(record.usage_use_count),
             "usage_fail_count": str(record.usage_fail_count),
             "usage_sync_count": str(record.usage_sync_count),
@@ -88,8 +90,10 @@ class RedisAccountRepository:
             v = _s(k)
             return int(v) if v else None
 
+        aid = _s("account_id")
         return AccountRecord.model_validate({
             "token":            token,
+            "account_id":       aid if aid else None,
             "pool":             _s("pool") or "basic",
             "status":           _s("status") or "active",
             "created_at":       _i("created_at") or now_ms(),
@@ -102,6 +106,9 @@ class RedisAccountRepository:
                 **({
                     "heavy": json.loads(_s("quota_heavy"))
                 } if _s("quota_heavy") and _s("quota_heavy") != "{}" else {}),
+                **({
+                    "grok_4_3": json.loads(_s("quota_grok_4_3"))
+                } if _s("quota_grok_4_3") and _s("quota_grok_4_3") != "{}" else {}),
             },
             "usage_use_count":  int(_s("usage_use_count")  or 0),
             "usage_fail_count": int(_s("usage_fail_count") or 0),
@@ -207,14 +214,40 @@ class RedisAccountRepository:
             pool = item.pool if item.pool in ("basic", "super", "heavy") else "basic"
             qs   = default_quota_set(pool)
             ts   = now_ms()
+            account_id = item.account_id or None
+
+            # Dedup by account_id: scan for existing records with same account_id.
+            if account_id:
+                async for key in self._r.scan_iter("accounts:record:*"):
+                    h = await self._r.hgetall(key)
+                    if not h:
+                        continue
+                    existing_aid = (h.get(b"account_id") or h.get("account_id") or b"")
+                    if isinstance(existing_aid, bytes):
+                        existing_aid = existing_aid.decode()
+                    if existing_aid == account_id:
+                        dup_token = (key.decode() if isinstance(key, bytes) else key).split(":", 2)[-1]
+                        if dup_token != token:
+                            await self._r.hset(key, mapping={
+                                "deleted_at": str(ts),
+                                "updated_at": str(ts),
+                                "revision":   str(rev),
+                            })
+                            # Remove from pool set and add to deleted pool tracking.
+                            dup_pool = (h.get(b"pool") or h.get("pool") or b"basic")
+                            if isinstance(dup_pool, bytes):
+                                dup_pool = dup_pool.decode()
+                            await self._r.srem(_pool_key(dup_pool), dup_token)
+
             record = AccountRecord(
-                token    = token,
-                pool     = pool,
-                tags     = item.tags,
-                ext      = item.ext,
-                quota    = qs.to_dict(),
-                created_at = ts,
-                updated_at = ts,
+                token       = token,
+                account_id  = account_id,
+                pool        = pool,
+                tags        = item.tags,
+                ext         = item.ext,
+                quota       = qs.to_dict(),
+                created_at  = ts,
+                updated_at  = ts,
             )
             key = _record_key(token)
             await self._r.hset(key, mapping=self._to_hash(record, rev))
@@ -258,6 +291,8 @@ class RedisAccountRepository:
                 updates["last_sync_at"] = str(patch.last_sync_at)
             if patch.last_clear_at is not None:
                 updates["last_clear_at"] = str(patch.last_clear_at)
+            if patch.account_id is not None:
+                updates["account_id"] = patch.account_id
             if patch.pool is not None:
                 updates["pool"] = patch.pool
             if patch.quota_auto is not None:
@@ -268,6 +303,8 @@ class RedisAccountRepository:
                 updates["quota_expert"] = json.dumps(patch.quota_expert)
             if patch.quota_heavy is not None:
                 updates["quota_heavy"] = json.dumps(patch.quota_heavy)
+            if patch.quota_grok_4_3 is not None:
+                updates["quota_grok_4_3"] = json.dumps(patch.quota_grok_4_3)
 
             # Usage counters.
             if patch.usage_use_delta is not None:

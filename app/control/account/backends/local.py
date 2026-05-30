@@ -55,6 +55,7 @@ class LocalAccountRepository:
 
                 CREATE TABLE IF NOT EXISTS {_TBL} (
                     token              TEXT    NOT NULL PRIMARY KEY,
+                    account_id         TEXT,
                     pool               TEXT    NOT NULL DEFAULT 'basic',
                     status             TEXT    NOT NULL DEFAULT 'active',
                     created_at         INTEGER NOT NULL,
@@ -85,7 +86,13 @@ class LocalAccountRepository:
                 CREATE INDEX IF NOT EXISTS idx_acc_deleted
                     ON {_TBL} (deleted_at) WHERE deleted_at IS NOT NULL;
             """)
+            # Migration: add account_id column if missing.
+            self._ensure_column_sync(conn, "account_id", "TEXT")
             self._ensure_column_sync(conn, "quota_grok_4_3", "TEXT NOT NULL DEFAULT '{}'")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_acc_account_id "
+                f"ON {_TBL} (account_id) WHERE account_id IS NOT NULL"
+            )
             conn.commit()
 
     @staticmethod
@@ -112,6 +119,7 @@ class LocalAccountRepository:
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> AccountRecord:
         d = dict(row)
+        d["account_id"] = d.get("account_id") or None
         d["tags"]  = json.loads(d.get("tags")  or "[]")
         heavy_raw     = d.pop("quota_heavy",     "{}") or "{}"
         grok_4_3_raw  = d.pop("quota_grok_4_3",  "{}") or "{}"
@@ -132,6 +140,7 @@ class LocalAccountRepository:
         qs = record.quota_set()
         return {
             "token":            record.token,
+            "account_id":       record.account_id,
             "pool":             record.pool,
             "status":           record.status.value,
             "created_at":       record.created_at,
@@ -171,19 +180,36 @@ class LocalAccountRepository:
                 continue
             pool = item.pool if item.pool in ("basic", "super", "heavy") else "basic"
             qs   = default_quota_set(pool)
+            account_id = item.account_id or None
+
+            # Dedup by account_id: soft-delete old token records with same account_id.
+            if account_id:
+                dups = conn.execute(
+                    f"SELECT token FROM {_TBL} "
+                    f"WHERE account_id = ? AND token != ? AND deleted_at IS NULL",
+                    (account_id, token),
+                ).fetchall()
+                for dup in dups:
+                    conn.execute(
+                        f"UPDATE {_TBL} SET deleted_at = ?, updated_at = ?, revision = ? "
+                        f"WHERE token = ?",
+                        (ts, ts, revision, dup[0]),
+                    )
+
             conn.execute(
                 f"""
                 INSERT INTO {_TBL} (
-                    token, pool, status, created_at, updated_at,
+                    token, account_id, pool, status, created_at, updated_at,
                     tags, quota_auto, quota_fast, quota_expert, quota_heavy, quota_grok_4_3,
                     usage_use_count, usage_fail_count, usage_sync_count,
                     ext, revision
                 ) VALUES (
-                    :token, :pool, 'active', :ts, :ts,
+                    :token, :account_id, :pool, 'active', :ts, :ts,
                     :tags, :qa, :qf, :qe, :qh, :qg,
                     0, 0, 0, :ext, :rev
                 )
                 ON CONFLICT(token) DO UPDATE SET
+                    account_id = COALESCE(excluded.account_id, account_id),
                     pool       = excluded.pool,
                     status     = 'active',
                     deleted_at = NULL,
@@ -193,17 +219,18 @@ class LocalAccountRepository:
                     revision   = excluded.revision
                 """,
                 {
-                    "token": token,
-                    "pool":  pool,
-                    "ts":    ts,
-                    "tags":  json.dumps(item.tags),
-                    "qa":    json.dumps(qs.auto.to_dict()),
-                    "qf":    json.dumps(qs.fast.to_dict()),
-                    "qe":    json.dumps(qs.expert.to_dict()),
-                    "qh":    json.dumps(qs.heavy.to_dict())    if qs.heavy    else "{}",
-                    "qg":    json.dumps(qs.grok_4_3.to_dict()) if qs.grok_4_3 else "{}",
-                    "ext":   json.dumps(item.ext),
-                    "rev":   revision,
+                    "token":      token,
+                    "account_id": account_id,
+                    "pool":       pool,
+                    "ts":         ts,
+                    "tags":       json.dumps(item.tags),
+                    "qa":         json.dumps(qs.auto.to_dict()),
+                    "qf":         json.dumps(qs.fast.to_dict()),
+                    "qe":         json.dumps(qs.expert.to_dict()),
+                    "qh":         json.dumps(qs.heavy.to_dict())    if qs.heavy    else "{}",
+                    "qg":         json.dumps(qs.grok_4_3.to_dict()) if qs.grok_4_3 else "{}",
+                    "ext":        json.dumps(item.ext),
+                    "rev":        revision,
                 },
             )
             count += conn.execute("SELECT changes()").fetchone()[0]
@@ -229,6 +256,8 @@ class LocalAccountRepository:
 
             sets: dict[str, Any] = {"updated_at": ts, "revision": revision}
 
+            if patch.account_id is not None:
+                sets["account_id"] = patch.account_id
             if patch.pool is not None:
                 sets["pool"] = patch.pool
             if patch.status is not None:
