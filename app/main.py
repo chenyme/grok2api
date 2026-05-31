@@ -243,6 +243,14 @@ async def lifespan(app: FastAPI):
     if is_leader:
         proxy_scheduler.start()
 
+    # 6. Asset cleanup scheduler — leader only, deletes stale Grok cloud assets.
+    from app.control.asset_cleanup import AssetCleanupService
+
+    _repo_getter = lambda: app.state.repository  # noqa: E731
+    asset_cleanup = AssetCleanupService(_repo_getter)
+    if is_leader:
+        asset_cleanup.start()
+
     logger.info("application startup completed")
     yield
 
@@ -259,6 +267,7 @@ async def lifespan(app: FastAPI):
     if is_leader:
         scheduler.stop()
         proxy_scheduler.stop()
+        asset_cleanup.stop()
         _release_scheduler_lock()
 
     set_refresh_scheduler(None)

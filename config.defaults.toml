@@ -155,6 +155,17 @@ download_timeout = 60
 list_timeout = 60
 delete_timeout = 60
 
+# 自动清理 Grok 云盘过期资源
+[asset.cleanup]
+# 总开关
+enabled = true
+# 清理超过 N 天的资源（默认 3 天）
+max_age_days = 3
+# 清理间隔（小时）
+interval_hours = 6
+# 并发清理数（token 级）
+concurrency = 10
+
 
 # ==================== NSFW 操作 ====================
 [nsfw]

@@ -268,4 +268,29 @@ async def force_sync():
     )
 
 
+@router.post("/cleanup-assets", tags=[_TAG_ADMIN_SYSTEM])
+async def trigger_asset_cleanup(request: Request):
+    """Manually trigger a Grok cloud asset cleanup cycle (async, returns immediately)."""
+    from app.control.asset_cleanup import run_cleanup_once
+
+    asyncio.create_task(_run_cleanup_and_log(request))
+    return Response(
+        content=orjson.dumps({"status": "started", "message": "cleanup running in background"}),
+        media_type="application/json",
+    )
+
+
+async def _run_cleanup_and_log(request: Request):
+    try:
+        result = await run_cleanup_once(lambda: request.app.state.repository)
+        logger.info(
+            "manual asset cleanup completed: scanned={} found={} deleted={} failed={}",
+            result.scanned, result.total_assets, result.deleted, result.failed,
+        )
+    except Exception as exc:
+        logger.error("manual asset cleanup failed: error={}", exc)
+
+
+import asyncio  # noqa: E402
+
 __all__ = ["router", "get_repo", "get_refresh_svc"]
