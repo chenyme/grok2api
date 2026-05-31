@@ -12,6 +12,7 @@ from app.control.account.commands import ListAccountsQuery
 from app.control.account.invalid_credentials import mark_account_invalid_credentials
 from app.control.account.state_machine import is_manageable
 from app.platform.errors import UpstreamError
+from app.platform.logging.logger import logger
 
 if TYPE_CHECKING:
     from app.control.account.repository import AccountRepository
@@ -135,6 +136,28 @@ async def clear_token_assets(req: ClearTokenRequest, repo: "AccountRepository" =
     except Exception as exc:
         await mark_account_invalid_credentials(repo, req.token, exc, source="asset clear")
         raise UpstreamError(str(exc)) from exc
+
+
+@router.post("/cleanup-assets")
+async def trigger_cleanup(repo: "AccountRepository" = Depends(get_repo)):
+    """Manually trigger stale asset cleanup (runs async, returns immediately)."""
+    from app.control.asset_cleanup import run_cleanup_once
+
+    async def _run():
+        try:
+            result = await run_cleanup_once(lambda: repo)
+            logger.info(
+                "manual asset cleanup done: scanned={} found={} deleted={} failed={}",
+                result.scanned, result.total_assets, result.deleted, result.failed,
+            )
+        except Exception as exc:
+            logger.error("manual asset cleanup failed: error={}", exc)
+
+    asyncio.create_task(_run())
+    return Response(
+        content=orjson.dumps({"status": "started"}),
+        media_type="application/json",
+    )
 
 
 __all__ = ["router"]
