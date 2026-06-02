@@ -27,16 +27,16 @@ def build_chat_payload(
 
     payload: dict[str, Any] = {
         "collectionIds":               [],
-        "connectors":                  [],
+        "disabledConnectorIds":         [],
         "deviceEnvInfo": {
-            "darkModeEnabled":  False,
-            "devicePixelRatio": 2,
-            "screenHeight":     1329,
-            "screenWidth":      2056,
-            "viewportHeight":   1083,
-            "viewportWidth":    2056,
+            "darkModeEnabled":  True,
+            "devicePixelRatio": 1.75,
+            "screenHeight":     1440,
+            "screenWidth":      2560,
+            "viewportHeight":   726,
+            "viewportWidth":    899,
         },
-        "disableMemory":               not cfg.get_bool("features.memory", False),
+        "disableMemory":               False,
         "disableSearch":               False,
         "disableSelfHarmShortCircuit": False,
         "disableTextFollowUps":        False,
@@ -49,22 +49,18 @@ def build_chat_payload(
         "imageAttachments":            [],
         "imageGenerationCount":        2,
         "isAsyncChat":                 False,
+        "linkQuery":                   False,
         "message":                     message,
         "modeId":                      mode_id.to_api_str(),
         "responseMetadata":            {},
         "returnImageBytes":            False,
         "returnRawGrokInXaiRequest":   False,
-        "searchAllConnectors":         False,
         "sendFinalMetadata":           True,
-        "temporary":                   cfg.get_bool("features.temporary", True),
-        "toolOverrides": tool_overrides or {
-            "gmailSearch":           False,
-            "googleCalendarSearch":  False,
-            "outlookSearch":         False,
-            "outlookCalendarSearch": False,
-            "googleDriveSearch":     False,
-        },
+        "temporary":                   False,
     }
+
+    if tool_overrides:
+        payload["toolOverrides"] = tool_overrides
 
     custom = cfg.get_str("features.custom_instruction", "").strip()
     if custom:

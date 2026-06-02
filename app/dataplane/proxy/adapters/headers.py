@@ -66,6 +66,9 @@ def _sanitize(value: Optional[str], *, field: str, strip_spaces: bool = False) -
 
 def _statsig_id() -> str:
     cfg = get_config()
+    configured = cfg.get_str("proxy.statsig_id", "").strip()
+    if configured:
+        return configured
     if cfg.get_bool("features.dynamic_statsig", False):
         if random.choice((True, False)):
             rand = "".join(random.choices(string.ascii_lowercase + string.digits, k=5))
@@ -86,8 +89,12 @@ def _statsig_id() -> str:
 
 
 def _major_version(browser: Optional[str], ua: Optional[str]) -> Optional[str]:
-    for src in (browser or "", ua or ""):
-        m = re.search(r"(\d{2,3})", src)
+    for src in (browser or "",):
+        m = re.search(r"(?:chrome|chromium|edge|firefox|safari)(\d{2,3})", src.lower())
+        if m:
+            return m.group(1)
+    for src in (ua or "",):
+        m = re.search(r"(?:Chrome|Chromium|CriOS|Edg|Firefox)/(\d{2,3})", src)
         if m:
             return m.group(1)
     return None
@@ -105,15 +112,6 @@ def _platform(ua: str) -> Optional[str]:
         return "iOS"
     if "linux" in u:
         return "Linux"
-    return None
-
-
-def _arch(ua: str) -> Optional[str]:
-    u = ua.lower()
-    if "aarch64" in u or "arm" in u:
-        return "arm"
-    if "x86_64" in u or "x64" in u or "win64" in u or "intel" in u:
-        return "x86"
     return None
 
 
@@ -137,21 +135,19 @@ def _client_hints(browser: Optional[str], ua: Optional[str]) -> dict[str, str]:
     else:
         brand = "Google Chrome"
 
-    sec_ch_ua = f'"{brand}";v="{ver}", "Chromium";v="{ver}", "Not(A:Brand";v="24"'
+    if brand == "Google Chrome":
+        sec_ch_ua = f'"Chromium";v="{ver}", "Google Chrome";v="{ver}", "Not/A)Brand";v="99"'
+    else:
+        sec_ch_ua = f'"{brand}";v="{ver}", "Chromium";v="{ver}", "Not/A)Brand";v="99"'
     plat = _platform(ua or "")
-    arch = _arch(ua or "")
     mobile = "?1" if ("mobile" in u or plat in ("Android", "iOS")) else "?0"
 
     hints: dict[str, str] = {
         "Sec-Ch-Ua": sec_ch_ua,
         "Sec-Ch-Ua-Mobile": mobile,
-        "Sec-Ch-Ua-Model": "",
     }
     if plat:
         hints["Sec-Ch-Ua-Platform"] = f'"{plat}"'
-    if arch:
-        hints["Sec-Ch-Ua-Arch"] = arch
-        hints["Sec-Ch-Ua-Bitness"] = "64"
     return hints
 
 
@@ -252,27 +248,21 @@ def build_http_headers(
     site = "same-origin" if org_host and org_host == ref_host else "same-site"
 
     headers: dict[str, str] = {
-        "Accept": accept,
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Baggage": (
-            "sentry-environment=production,"
-            "sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,"
-            "sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c"
-        ),
-        "Content-Type": ct,
-        "Origin": org,
-        "Priority": "u=1, i",
-        "Referer": ref,
-        "Sec-Fetch-Dest": fd,
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": site,
-        "User-Agent": ua,
+        "accept": accept,
+        "accept-language": "zh-CN,zh;q=0.9",
+        "content-type": ct,
+        "origin": org,
+        "priority": "u=1, i",
+        "referer": ref,
+        "sec-fetch-dest": fd,
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": site,
+        "user-agent": ua,
         "x-statsig-id": _statsig_id(),
         "x-xai-request-id": str(uuid.uuid4()),
     }
-    headers.update(_client_hints(browser, raw_ua))
-    headers["Cookie"] = build_sso_cookie(cookie_token, lease=lease)
+    headers.update({k.lower(): v for k, v in _client_hints(browser, raw_ua).items()})
+    headers["cookie"] = build_sso_cookie(cookie_token, lease=lease)
 
     logger.debug("http headers built: header_count={}", len(headers))
     return headers

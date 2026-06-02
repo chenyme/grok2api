@@ -198,6 +198,7 @@ docker compose up -d
 | `app` | `app_key`, `app_url`, `api_key`, `webui_enabled`, `webui_key` |
 | `logging` | `file_level`, `max_files` |
 | `features` | `temporary`, `memory`, `stream`, `thinking`, `auto_chat_mode_fallback`, `thinking_summary`, `dynamic_statsig`, `enable_nsfw`, `show_search_sources`, `custom_instruction`, `image_format`, `imagine_public_image_proxy`, `video_format` |
+| `proxy` | `statsig_id` |
 | `proxy.egress` | `mode`, `proxy_url`, `proxy_pool`, `resource_proxy_url`, `resource_proxy_pool`, `skip_ssl_verify` |
 | `proxy.clearance` | `mode`, `cf_cookies`, `user_agent`, `browser`, `flaresolverr_url`, `timeout_sec`, `refresh_interval` |
 | `retry` | `reset_session_status_codes`, `max_retries`, `on_codes` |
@@ -210,6 +211,58 @@ docker compose up -d
 | `asset` | `upload_timeout`, `download_timeout`, `list_timeout`, `delete_timeout` |
 | `nsfw` | `timeout` |
 | `batch` | `nsfw_concurrency`, `refresh_concurrency`, `asset_upload_concurrency`, `asset_list_concurrency`, `asset_delete_concurrency` |
+
+### Grok App-Chat 兼容性
+
+如果聊天请求出现如下上游错误：
+
+```text
+Chat upstream returned 403
+Request rejected by anti-bot rules.
+```
+
+可以检查当前 Grok 网页端请求是否需要额外的浏览器会话 header。`x-statsig-id` 不是 Cloudflare Cookie，FlareSolverr 不会自动提供；如有需要，可以从自己的浏览器会话中复制该请求头并写入运行时配置：
+
+```toml
+[proxy]
+statsig_id = "your-browser-x-statsig-id"
+```
+
+不需要时保持为空：
+
+```toml
+[proxy]
+statsig_id = ""
+```
+
+获取方式：
+
+1. 在浏览器打开 `https://grok.com`
+2. 打开开发者工具的 Network 面板
+3. 正常发送一条 Grok 消息
+4. 找到 `https://grok.com/rest/app-chat/conversations/new`
+5. 在 Request Headers 中复制 `x-statsig-id`
+6. 写入本地 `config.toml`，保存后重试
+
+Cloudflare 放行凭证仍由 `proxy.clearance` 负责。例如使用 FlareSolverr 时：
+
+```toml
+[proxy.clearance]
+mode = "flaresolverr"
+flaresolverr_url = "http://flaresolverr:8191"
+timeout_sec = 120
+refresh_interval = 3600
+```
+
+请勿提交或公开真实的登录态、Cookie、请求头或密钥，包括：
+
+- `sso`
+- `sso-rw`
+- `cf_clearance`
+- `__cf_bm`
+- `x-statsig-id`
+- API Key
+- 管理后台密码
 
 ### 图片、视频格式
 
