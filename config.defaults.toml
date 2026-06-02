@@ -71,6 +71,10 @@ video_max_mb = 0
 
 
 # ==================== 代理配置 ====================
+[proxy]
+# 可选：从浏览器 app-chat 请求中抓取的 x-statsig-id。留空时使用内置生成逻辑。
+statsig_id = ""
+
 [proxy.egress]
 # 出口模式：direct | single_proxy | proxy_pool
 mode = "direct"

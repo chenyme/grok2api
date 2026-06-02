@@ -338,7 +338,7 @@ def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
         if isinstance(content, str):
             cleaned = _strip_generated_artifacts(content.strip())
             if cleaned:
-                parts.append(f"[{role}]: {cleaned}")
+                parts.append(cleaned if role == "user" else f"[{role}]: {cleaned}")
         elif isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
@@ -351,7 +351,7 @@ def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
                         strip_sources=(role == "assistant"),
                     )
                     if text:
-                        parts.append(f"[{role}]: {text}")
+                        parts.append(text if role == "user" else f"[{role}]: {text}")
                 elif btype == "image_url":
                     url = (block.get("image_url") or {}).get("url", "")
                     if url:
