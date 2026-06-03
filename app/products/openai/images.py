@@ -300,7 +300,7 @@ async def generate(
         raise RateLimitError("Account directory not initialised")
 
     # Lite model: chat-based generation (no WS, ignores aspect_ratio).
-    if model in _LITE_IMAGE_MODELS:
+    if model in _LITE_IMAGE_MODELS or spec.upstream_model_name:
         return await _generate_lite(
             spec            = spec,
             prompt          = prompt,
@@ -938,6 +938,7 @@ async def _stream_lite_generate(
     message:     str,
     mode_id:     ModeId,
     *,
+    upstream_model_name: str | None = None,
     timeout_s: float = 120.0,
 ) -> AsyncGenerator[str, None]:
     proxy   = await get_proxy_runtime()
@@ -945,6 +946,7 @@ async def _stream_lite_generate(
     payload = build_chat_payload(
         message           = f"Drawing: {message}",
         mode_id           = mode_id,
+        upstream_model_name = upstream_model_name,
         file_attachments  = [],
         request_overrides = {"imageGenerationCount": 2},
     )
@@ -1008,6 +1010,7 @@ async def _run_lite_request(
                 token,
                 prompt,
                 spec.mode_id,
+                upstream_model_name=spec.upstream_model_name,
                 timeout_s=timeout_s,
             ):
                 ev_type, data = classify_line(line)

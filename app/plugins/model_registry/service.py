@@ -100,12 +100,20 @@ def _title_from_id(model_id: str) -> str:
     return " ".join(part.capitalize() for part in model_id.replace("_", "-").split("-") if part)
 
 
+def _manual_capability(model_id: str) -> Capability:
+    if model_id.startswith("grok-imagine-image-edit"):
+        return Capability.IMAGE_EDIT
+    if model_id.startswith("grok-imagine-image"):
+        return Capability.IMAGE
+    return Capability.CHAT
+
+
 def _manual_direct_spec(model_id: str, public_name: str | None = None) -> ModelSpec:
     return ModelSpec(
         model_id,
         ModeId.FAST,
         Tier.BASIC,
-        Capability.CHAT,
+        _manual_capability(model_id),
         True,
         public_name or _title_from_id(model_id),
         upstream_model_name=model_id,

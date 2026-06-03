@@ -71,6 +71,25 @@ class ModelRegistryOverlayTests(unittest.TestCase):
         self.assertNotIn("modelName", builtin_payload)
         self.assertNotIn("requestModelDetails", builtin_payload["responseMetadata"])
 
+    def test_manual_imagine_model_is_image_capability(self):
+        registry_data = {
+            "enabled": True,
+            "manual_models": [
+                {"id": "grok-imagine-image-1k", "name": "Grok Imagine Image 1k"}
+            ],
+            "aliases": {},
+        }
+
+        with patch(
+            "app.plugins.model_registry.service.registry_config",
+            return_value=registry_data,
+        ):
+            spec = model_registry.get("grok-imagine-image-1k")
+            self.assertIsNotNone(spec)
+            self.assertEqual(spec.capability, Capability.IMAGE)
+            self.assertEqual(spec.mode_id, ModeId.FAST)
+            self.assertEqual(spec.upstream_model_name, "grok-imagine-image-1k")
+
 
 if __name__ == "__main__":
     unittest.main()
