@@ -17,6 +17,7 @@ def build_chat_payload(
     *,
     message:               str,
     mode_id:               ModeId,
+    upstream_model_name:   str | None      = None,
     file_attachments:      list[str]        = (),
     tool_overrides:        dict[str, Any]   | None = None,
     model_config_override: dict[str, Any]   | None = None,
@@ -66,6 +67,12 @@ def build_chat_payload(
         },
     }
 
+    if upstream_model_name:
+        payload["modelName"] = upstream_model_name
+        payload["responseMetadata"]["requestModelDetails"] = {
+            "modelId": upstream_model_name,
+        }
+
     custom = cfg.get_str("features.custom_instruction", "").strip()
     if custom:
         payload["customPersonality"] = custom
@@ -77,8 +84,8 @@ def build_chat_payload(
         payload.update({k: v for k, v in request_overrides.items() if v is not None})
 
     logger.debug(
-        "chat payload built: mode={} message_len={} file_count={}",
-        mode_id.to_api_str(), len(message), len(file_attachments),
+        "chat payload built: mode={} upstream_model={} message_len={} file_count={}",
+        mode_id.to_api_str(), upstream_model_name or "-", len(message), len(file_attachments),
     )
     return payload
 

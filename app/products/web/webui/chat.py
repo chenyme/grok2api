@@ -25,17 +25,41 @@ def _capability_name(spec) -> str:
 
 @router.get("/models")
 async def list_webui_models():
+    created = int(time.time())
     models = [
         {
             "id": spec.model_name,
             "object": "model",
-            "created": int(time.time()),
+            "created": created,
             "owned_by": "xai",
             "name": spec.public_name,
             "capability": _capability_name(spec),
+            **model_registry.describe(spec.model_name),
         }
         for spec in model_registry.list_enabled()
     ]
+    seen = {item["id"] for item in models}
+    from app.plugins.model_registry import service as model_registry_overlay
+
+    for manual in model_registry_overlay.manual_models():
+        model_id = manual["id"]
+        if model_id in seen:
+            continue
+        models.append(
+            {
+                "id": model_id,
+                "object": "model",
+                "created": created,
+                "owned_by": "manual",
+                "name": manual.get("name") or model_id,
+                "capability": "chat",
+                "source": "manual",
+                "manual": True,
+                "mapped_to": manual.get("mapped_to") or None,
+                "executable": False,
+            }
+        )
+        seen.add(model_id)
     return JSONResponse({"object": "list", "data": models})
 
 

@@ -4,7 +4,7 @@ Pre-built profiles eliminate per-request config lookups in the hot path.
 Each profile specifies timeout, max retries, and retry-eligible status codes.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(slots=True, frozen=True)

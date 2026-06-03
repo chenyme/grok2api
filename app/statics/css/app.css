@@ -703,6 +703,36 @@ button{cursor:pointer}
   box-shadow:none;
   border:0;
 }
+.webui-model-refresh-btn{
+  width:32px;
+  height:32px;
+  padding:0;
+  border-radius:999px;
+  color:#5f5a52;
+  display:grid;
+  place-items:center;
+  flex:0 0 auto;
+}
+.webui-model-refresh-btn:hover{background:rgba(0,0,0,.05);color:#211f1b}
+.webui-model-refresh-btn:disabled{opacity:.45;cursor:default}
+.webui-model-refresh-btn svg{width:16px;height:16px}
+.webui-model-filter-btn{
+  height:32px;
+  padding:0 10px;
+  border-radius:999px;
+  color:#5f5a52;
+  font-size:12px;
+  font-weight:650;
+  white-space:nowrap;
+  flex:0 0 auto;
+}
+.webui-model-filter-btn:hover{background:rgba(0,0,0,.05);color:#211f1b}
+.webui-model-filter-btn[aria-pressed="true"]{background:#201d19;color:#fff}
+.webui-model-filter-btn:disabled{opacity:.45;cursor:default}
+.webui-model-option-manual{
+  color:#d92d20;
+  font-weight:700;
+}
 .webui-textarea{
   height:36px;min-height:36px;max-height:none;padding:8px 0 !important;margin:0;display:block;align-self:center;overflow:hidden;resize:none !important;
   border-radius:0 !important;border:0 !important;background:transparent !important;line-height:20px;font-size:14px;color:#20201e

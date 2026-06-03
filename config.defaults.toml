@@ -62,6 +62,21 @@ imagine_public_image_proxy = false
 video_format = "grok_url"
 
 
+# ==================== 模型注册表 ====================
+[model_registry]
+# 启用后，后台发现的远程模型可作为候选；手工模型按真实模型 ID 请求上游。
+# 内置模型继续走 modeId 链路，手工模型和内置模型互不映射。
+enabled = false
+source = "xai_public_docs"
+last_sync_at = 0
+remote_model_ids = []
+remote_models = []
+manual_models = []
+
+[model_registry.aliases]
+# "grok-4.3-latest" = "grok-4.3-beta"
+
+
 # ==================== 本地缓存 ====================
 [cache.local]
 # 图片缓存上限（MB），0 = 不限制；超限后按最旧文件优先清理，并回落到上限的 60%

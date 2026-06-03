@@ -8,7 +8,6 @@ Layout:
 """
 
 import json
-from typing import Any
 
 from app.platform.runtime.clock import now_ms
 from ..commands import AccountPatch, AccountUpsert, BulkReplacePoolCommand, ListAccountsQuery
@@ -238,7 +237,6 @@ class RedisAccountRepository:
             if not h:
                 continue
             record = self._from_hash(patch.token, h)
-            qs = record.quota_set()
 
             updates: dict[str, str] = {
                 "updated_at": str(ts),

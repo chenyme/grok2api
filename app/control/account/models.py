@@ -72,14 +72,14 @@ class AccountQuotaSet:
     """Quota set — one window per mode (auto / fast / expert / heavy / grok_4_3).
 
     ``heavy``    is ``None`` for basic and super accounts.
-    ``grok_4_3`` is ``None`` for basic accounts (super/heavy only).
+    ``grok_4_3`` is available on basic/super/heavy accounts.
     """
 
     auto: QuotaWindow
     fast: QuotaWindow
     expert: QuotaWindow
     heavy: QuotaWindow | None = None  # heavy-pool accounts only
-    grok_4_3: QuotaWindow | None = None  # super/heavy accounts only
+    grok_4_3: QuotaWindow | None = None
 
     def get(self, mode_id: int) -> QuotaWindow | None:
         """Return the quota window for *mode_id* (0=auto, 1=fast, 2=expert, 3=heavy, 4=grok_4_3)."""

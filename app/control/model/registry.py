@@ -33,8 +33,7 @@ MODELS: tuple[ModelSpec, ...] = (
     ModelSpec("grok-4.20-heavy",                        ModeId.HEAVY,    Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 Heavy",         prefer_best=True),
 
     # === grok-4.3 (grok-420-computer-use-sa) ==================================
-    # Super+（basic 池不支持此模式）
-    ModelSpec("grok-4.3-beta",                          ModeId.GROK_4_3, Tier.SUPER, Capability.CHAT,       True, "Grok 4.3 Beta"),
+    ModelSpec("grok-4.3-beta",                          ModeId.GROK_4_3, Tier.BASIC, Capability.CHAT,       True, "Grok 4.3 Beta"),
 
     # === Image ==============================================================
 
@@ -74,25 +73,52 @@ for _m in MODELS:
 
 def get(model_name: str) -> ModelSpec | None:
     """Return the spec for *model_name*, or ``None`` if not registered."""
-    return _BY_NAME.get(model_name)
+    spec = _BY_NAME.get(model_name)
+    if spec is not None:
+        return spec
+    from app.plugins.model_registry import service as overlay
+
+    return overlay.overlay_get(model_name, _BY_NAME)
 
 
 def resolve(model_name: str) -> ModelSpec:
     """Return the spec for *model_name*; raise ``ValueError`` if unknown."""
-    spec = _BY_NAME.get(model_name)
+    spec = get(model_name)
     if spec is None:
         raise ValueError(f"Unknown model: {model_name!r}")
     return spec
 
 
+def list_builtin_enabled() -> list[ModelSpec]:
+    """Return enabled built-in models only."""
+    return [m for m in MODELS if m.enabled]
+
+
 def list_enabled() -> list[ModelSpec]:
     """Return all enabled models in registration order."""
-    return [m for m in MODELS if m.enabled]
+    from app.plugins.model_registry import service as overlay
+
+    return list_builtin_enabled() + overlay.overlay_list(_BY_NAME)
 
 
 def list_by_capability(cap: Capability) -> list[ModelSpec]:
     """Return enabled models that include *cap* in their capability mask."""
-    return [m for m in MODELS if m.enabled and bool(m.capability & cap)]
+    return [m for m in list_enabled() if m.enabled and bool(m.capability & cap)]
 
 
-__all__ = ["MODELS", "get", "resolve", "list_enabled", "list_by_capability"]
+def describe(model_name: str) -> dict:
+    """Return source metadata for a built-in or overlay model."""
+    from app.plugins.model_registry import service as overlay
+
+    return overlay.describe_model(model_name, _BY_NAME)
+
+
+__all__ = [
+    "MODELS",
+    "describe",
+    "get",
+    "resolve",
+    "list_builtin_enabled",
+    "list_enabled",
+    "list_by_capability",
+]

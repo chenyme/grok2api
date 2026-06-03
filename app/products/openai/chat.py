@@ -380,6 +380,7 @@ async def _prepare_file_attachments(token: str, file_inputs: list[str]) -> list[
 async def _stream_chat(
     token: str,
     mode_id: "ModeId",
+    upstream_model_name: str | None,
     message: str,
     files: list[str],
     *,
@@ -396,6 +397,7 @@ async def _stream_chat(
     payload = build_chat_payload(
         message=message,
         mode_id=mode_id,
+        upstream_model_name=upstream_model_name,
         file_attachments=attachments,
         tool_overrides=tool_overrides,
         model_config_override=model_config_override,
@@ -530,6 +532,7 @@ async def completions(
                         async for line in _stream_chat(
                             token=token,
                             mode_id=ModeId(selected_mode_id),
+                            upstream_model_name=spec.upstream_model_name,
                             message=message,
                             files=files,
                             tool_overrides=tool_overrides,
@@ -746,6 +749,7 @@ async def completions(
                 async for line in _stream_chat(
                     token=token,
                     mode_id=ModeId(selected_mode_id),
+                    upstream_model_name=spec.upstream_model_name,
                     message=message,
                     files=files,
                     tool_overrides=tool_overrides,

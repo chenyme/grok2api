@@ -29,7 +29,7 @@ _DEFAULT_WINDOW_SECS: dict[int, int] = {
     1: 86_400,  # fast   — 24 h (basic; real value overrides for super/heavy)
     2: 7_200,  # expert — 2 h  (super/heavy only)
     3: 7_200,  # heavy  — 2 h  (heavy-pool only)
-    4: 7_200,  # grok_4_3 — 2 h  (super/heavy only)
+    4: 7_200,  # grok_4_3 — real value overrides this fallback
 }
 
 

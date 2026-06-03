@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="modelRegistry.pageTitle">Grok2API - 模型管理</title>
+  <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
+  <style>
+    body{background:#FAF9F5}
+    .model-page{max-width:1180px;margin:0 auto;padding:24px}
+    .page-hd{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px}
+    .page-title{font-size:22px;font-weight:700;line-height:1.2}
+    .page-sub{font-size:13px;color:var(--fg-muted);margin-top:5px}
+    .page-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+    .model-grid{display:grid;grid-template-columns:minmax(320px,420px) minmax(0,1fr);gap:16px;align-items:start}
+    .panel{background:#fff;border-radius:14px;padding:16px;display:grid;gap:14px}
+    .panel-title{font-size:13px;font-weight:700;color:#222}
+    .panel-sub{font-size:12px;color:#8d8d8d;line-height:1.5}
+    .model-sync-note{display:grid;gap:7px;margin-top:8px;margin-bottom:10px}
+    .form-grid{display:grid;gap:10px}
+    .field{display:grid;gap:6px}
+    .field label{font-size:12px;font-weight:600;color:#555}
+    .field input,.field select{height:34px;border:1px solid #ececec;border-radius:9px;background:#fbfbfb;padding:0 10px;font:inherit;font-size:13px}
+    .model-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .btn-pill{height:32px;padding:0 13px;border-radius:999px;background:#f5f5f5;color:#444;font-size:12px;font-weight:600;border:1px solid #ececec}
+    .btn-pill.primary{background:#111;border-color:#111;color:#fff}
+    .btn-pill.danger{color:#b42318}
+    .registry-meta{font-size:12px;color:#777;line-height:1.6;word-break:break-word}
+    .alias-list{font-size:12px;color:#555;display:grid;gap:6px;line-height:1.45}
+    .mono{font-family:'Geist Mono','Courier New',monospace}
+    .table-card{background:#fff;border-radius:14px;overflow:auto}
+    table{width:100%;border-collapse:collapse;min-width:760px}
+    th{font-size:11px;font-weight:600;color:#999;text-align:left;padding:11px 14px;background:#fff}
+    td{font-size:12px;color:#3f3f3f;padding:12px 14px;vertical-align:middle}
+    tr:hover td{background:#fdfdfd}
+    .badge{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:600;background:#f3f4f6;color:#555}
+    .badge.yes{background:#ecfdf3;color:#027a48}
+    .badge.no{background:#fff1f3;color:#b42318}
+    .status-line{min-height:18px;font-size:12px;color:#777}
+    @media (max-width:900px){.model-page{padding:16px}.model-grid{grid-template-columns:1fr}.page-hd{display:grid}}
+  </style>
+</head>
+<body>
+  <div id="admin-header" data-active="/admin/models"></div>
+  <main class="model-page">
+    <div class="page-hd">
+      <div>
+        <div class="page-title" data-i18n="modelRegistry.heading">模型管理</div>
+        <div class="page-sub" data-i18n="modelRegistry.subtitle">同步公开模型 ID，可加入手工模型；手工模型按真实 ID 请求上游，内置模型走独立链路。</div>
+      </div>
+      <div class="page-actions">
+        <button id="discover-btn" class="btn-pill primary" type="button" data-i18n="modelRegistry.discover">同步公开模型</button>
+        <button id="enable-btn" class="btn-pill" type="button" data-i18n="modelRegistry.enable">启用 Overlay</button>
+        <button id="disable-btn" class="btn-pill" type="button" data-i18n="modelRegistry.disable">停用 Overlay</button>
+      </div>
+    </div>
+
+    <section class="model-grid">
+      <div class="panel">
+        <div>
+          <div class="panel-title" data-i18n="modelRegistry.manualTitle">手工模型</div>
+          <div class="panel-sub" data-i18n="modelRegistry.manualDesc">手工模型按实际模型 ID 请求上游，和内置模型链路分开；上游返回什么就显示什么。</div>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label for="manual-model-id" data-i18n="modelRegistry.modelId">模型 ID</label>
+            <input id="manual-model-id" placeholder="grok-4.3-latest">
+          </div>
+          <div class="field">
+            <label for="manual-model-name" data-i18n="modelRegistry.modelName">显示名称</label>
+            <input id="manual-model-name" placeholder="Grok 4.3 Latest">
+          </div>
+        </div>
+        <div class="model-actions">
+          <button id="save-manual-btn" class="btn-pill primary" type="button" data-i18n="modelRegistry.saveManual">保存手工模型</button>
+          <button id="delete-manual-btn" class="btn-pill danger" type="button" data-i18n="modelRegistry.deleteManual">按 ID 删除</button>
+        </div>
+        <div>
+          <div class="panel-title" data-i18n="modelRegistry.currentMappings">当前手工模型</div>
+          <div id="alias-list" class="alias-list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div>
+          <div class="panel-title" data-i18n="modelRegistry.remoteTitle">公开模型候选</div>
+          <div class="panel-sub model-sync-note">
+            <div data-i18n="modelRegistry.syncNoteTitle">从公开文档同步模型（无需 API Key）：</div>
+            <div>• <span data-i18n="modelRegistry.syncSource1">来源 1</span>: <span class="mono">https://docs.x.ai/developers/models</span></div>
+            <div>• <span data-i18n="modelRegistry.syncSource2">来源 2</span>: <span class="mono">https://x.ai/api</span> <span data-i18n="modelRegistry.syncSource2Fallback">（兜底）</span></div>
+            <div>• <span data-i18n="modelRegistry.syncNoteBody">说明：同步的是公开模型 ID；加入手工模型后会按该 ID 直接请求上游。</span></div>
+          </div>
+          <div id="registry-meta" class="registry-meta"></div>
+          <div id="sync-status" class="status-line"></div>
+        </div>
+        <div class="model-actions">
+          <button id="discover-panel-btn" class="btn-pill primary" type="button" data-i18n="modelRegistry.discover">同步公开模型</button>
+          <button id="select-all-btn" class="btn-pill" type="button" data-i18n="modelRegistry.selectAll">全选可见</button>
+          <button id="clear-selection-btn" class="btn-pill" type="button" data-i18n="modelRegistry.clearSelection">清空选择</button>
+          <button id="batch-add-btn" class="btn-pill" type="button" data-i18n="modelRegistry.batchAdd">批量加入手工列表</button>
+        </div>
+        <div class="table-card">
+          <table>
+            <thead>
+              <tr>
+                <th></th>
+                <th data-i18n="modelRegistry.colId">模型 ID</th>
+                <th data-i18n="modelRegistry.colOwner">来源</th>
+                <th data-i18n="modelRegistry.colBuiltin">内置</th>
+                <th data-i18n="modelRegistry.colExecutable">可执行</th>
+                <th data-i18n="modelRegistry.colMapped">映射</th>
+              </tr>
+            </thead>
+            <tbody id="models-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-model.js?v={{APP_VERSION}}"></script>
+  <script>
+    renderAdminHeader?.();
+    window.I18n?.onReady?.(() => I18n.apply(document));
+    initModelRegistryPage?.();
+  </script>
+</body>
+</html>

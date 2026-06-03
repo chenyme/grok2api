@@ -5,7 +5,6 @@ including trailer extraction and gRPC status code mapping.
 """
 
 import base64
-import json
 import re
 import struct
 from dataclasses import dataclass

@@ -13,7 +13,7 @@ class ModeId(IntEnum):
     FAST = 1  # modeId="fast"
     EXPERT = 2  # modeId="expert"
     HEAVY = 3  # modeId="heavy"    — only available on heavy-pool accounts
-    GROK_4_3 = 4  # modeId="grok-420-computer-use-sa" — super/heavy only
+    GROK_4_3 = 4  # modeId="grok-420-computer-use-sa"
 
     def to_api_str(self) -> str:
         _OVERRIDES: dict[int, str] = {

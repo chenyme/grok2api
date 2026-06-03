@@ -56,6 +56,50 @@ def _model_available_for_pools(spec: ModelSpec, pools: frozenset[str]) -> bool:
     return False
 
 
+def _capability_name(spec: ModelSpec) -> str:
+    if spec.is_image_edit():
+        return "image_edit"
+    if spec.is_image():
+        return "image"
+    if spec.is_video():
+        return "video"
+    if spec.is_voice():
+        return "voice"
+    return "chat"
+
+
+def _model_payload(spec: ModelSpec, created: int) -> dict:
+    meta = model_registry.describe(spec.model_name)
+    return {
+        "id": spec.model_name,
+        "object": "model",
+        "created": created,
+        "owned_by": "xai",
+        "name": spec.public_name,
+        "capability": _capability_name(spec),
+        "source": meta.get("source", "builtin"),
+        "manual": bool(meta.get("manual", False)),
+        "mapped_to": meta.get("mapped_to"),
+        "executable": bool(meta.get("executable", True)),
+    }
+
+
+def _manual_model_payload(item: dict, created: int, executable: bool = False) -> dict:
+    model_id = str(item.get("id") or "")
+    return {
+        "id": model_id,
+        "object": "model",
+        "created": created,
+        "owned_by": "manual",
+        "name": str(item.get("name") or model_id),
+        "capability": "chat",
+        "source": "manual",
+        "manual": True,
+        "mapped_to": item.get("mapped_to") or None,
+        "executable": executable,
+    }
+
+
 # ---------------------------------------------------------------------------
 # /v1/models
 # ---------------------------------------------------------------------------
@@ -66,17 +110,28 @@ async def list_models(request: Request):
     import time
 
     pools = await _available_pools(request)
+    created = int(time.time())
     models = [
-        {
-            "id": m.model_name,
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "xai",
-            "name": m.public_name,
-        }
+        _model_payload(m, created)
         for m in model_registry.list_enabled()
         if _model_available_for_pools(m, pools)
     ]
+    seen = {item["id"] for item in models}
+    from app.plugins.model_registry import service as model_registry_overlay
+
+    for manual in model_registry_overlay.manual_models():
+        model_id = manual["id"]
+        if model_id in seen:
+            continue
+        spec = model_registry.get(model_id)
+        models.append(
+            _manual_model_payload(
+                manual,
+                created,
+                bool(spec and _model_available_for_pools(spec, pools)),
+            )
+        )
+        seen.add(model_id)
     return JSONResponse({"object": "list", "data": models})
 
 
@@ -89,6 +144,11 @@ async def get_model_endpoint(model_id: str, request: Request):
     spec = model_registry.get(model_id)
     pools = await _available_pools(request)
     if spec is None or not _model_available_for_pools(spec, pools):
+        from app.plugins.model_registry import service as model_registry_overlay
+
+        manual = model_registry_overlay.manual_index().get(model_id)
+        if manual is not None:
+            return JSONResponse(_manual_model_payload(manual, int(time.time()), False))
         return JSONResponse(
             {
                 "error": {
@@ -99,13 +159,7 @@ async def get_model_endpoint(model_id: str, request: Request):
             status_code=404,
         )
     return JSONResponse(
-        {
-            "id": spec.model_name,
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "xai",
-            "name": spec.public_name,
-        }
+        _model_payload(spec, int(time.time()))
     )
 
 

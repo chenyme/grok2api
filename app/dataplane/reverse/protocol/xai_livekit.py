@@ -5,7 +5,7 @@ a short-lived LiveKit access token.  The WebSocket connection uses that
 access token as a query parameter on wss://livekit.grok.com/rtc.
 """
 
-from typing import Any, Dict
+from typing import Dict
 from urllib.parse import urlencode
 
 import orjson

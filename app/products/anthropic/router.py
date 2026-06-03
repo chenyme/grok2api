@@ -3,13 +3,12 @@
 from typing import Any
 
 import orjson
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.platform.auth.middleware import verify_api_key
 from app.platform.errors import AppError, ValidationError
-from app.platform.logging.logger import logger
 from app.control.model import registry as model_registry
 
 

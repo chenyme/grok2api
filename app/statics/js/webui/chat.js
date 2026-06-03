@@ -5,9 +5,12 @@
   const PREFERRED_MODEL = 'grok-4.20-0309-non-reasoning';
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
+  const HIDE_BUILTIN_STORE_KEY = 'grok2api_webui_hide_builtin_models_v1';
 
   const chatLayout = document.getElementById('chatLayout');
   const modelSelect = document.getElementById('modelSelect');
+  const modelRefreshBtn = document.getElementById('modelRefreshBtn');
+  const hideBuiltinModelsBtn = document.getElementById('hideBuiltinModelsBtn');
   const systemInput = document.getElementById('systemInput');
   const thread = document.getElementById('thread');
   const emptyState = document.getElementById('emptyState');
@@ -37,6 +40,7 @@
   let modalResolver = null;
   let sidebarCollapsed = false;
   let availableModels = [];
+  let hideBuiltinModels = false;
   let activeEdit = null;
   const PROMPT_MIN_HEIGHT = 36;
   const PROMPT_MAX_HEIGHT = 108;
@@ -638,6 +642,30 @@
     } catch {}
   }
 
+  function loadModelFilterState() {
+    try {
+      hideBuiltinModels = localStorage.getItem(HIDE_BUILTIN_STORE_KEY) === 'true';
+    } catch {
+      hideBuiltinModels = false;
+    }
+  }
+
+  function persistModelFilterState() {
+    try {
+      localStorage.setItem(HIDE_BUILTIN_STORE_KEY, String(hideBuiltinModels));
+    } catch {}
+  }
+
+  function syncModelFilterButton() {
+    if (!hideBuiltinModelsBtn) return;
+    hideBuiltinModelsBtn.setAttribute('aria-pressed', hideBuiltinModels ? 'true' : 'false');
+    const label = hideBuiltinModels
+      ? text('webui.chat.showBuiltinModels', '显示内置模型')
+      : text('webui.chat.hideBuiltinModels', '隐藏内置模型');
+    hideBuiltinModelsBtn.textContent = label;
+    hideBuiltinModelsBtn.title = label;
+  }
+
   function createSessionTitle(messagesList) {
     const firstUser = messagesList.find((item) => {
       if (!item || item.role !== 'user') return false;
@@ -775,6 +803,8 @@
     sending = next;
     promptInput.disabled = next;
     modelSelect.disabled = next;
+    if (modelRefreshBtn) modelRefreshBtn.disabled = next;
+    if (hideBuiltinModelsBtn) hideBuiltinModelsBtn.disabled = next;
     if (systemInput) systemInput.disabled = next;
     renderSendButton();
   }
@@ -1438,7 +1468,37 @@
     };
   }
 
-  async function loadModels() {
+  function visibleModels() {
+    return hideBuiltinModels
+      ? availableModels.filter((item) => item && item.manual)
+      : availableModels;
+  }
+
+  function renderModelOptions(previous = '') {
+    const models = visibleModels();
+    const ids = models.map((item) => item && item.id).filter(Boolean);
+    modelSelect.innerHTML = '';
+    models.forEach((item) => {
+      const opt = document.createElement('option');
+      opt.value = item.id;
+      const label = formatModelOptionLabel(item.id, item.name || item.id);
+      opt.textContent = item.manual ? `${label}（手工）` : label;
+      if (item.manual) {
+        opt.classList.add('webui-model-option-manual');
+        opt.dataset.source = item.source || 'manual';
+      }
+      modelSelect.appendChild(opt);
+    });
+    if (previous && ids.includes(previous)) {
+      modelSelect.value = previous;
+    } else {
+      modelSelect.value = ids.includes(PREFERRED_MODEL) ? PREFERRED_MODEL : (ids[0] || PREFERRED_MODEL);
+    }
+    syncModelFilterButton();
+  }
+
+  async function loadModels(options = {}) {
+    const previous = options.preserve ? modelSelect.value : '';
     const headers = await getAuthHeaders();
     const res = await fetch(MODELS_ENDPOINT, { headers, cache: 'no-store' });
     if (!res.ok) throw new Error(`models ${res.status}`);
@@ -1446,16 +1506,7 @@
     const data = await res.json();
     const items = Array.isArray(data && data.data) ? data.data : [];
     availableModels = items.filter((item) => item && item.id);
-    const ids = items.map((item) => item && item.id).filter(Boolean);
-
-    modelSelect.innerHTML = '';
-    availableModels.forEach((item) => {
-      const opt = document.createElement('option');
-      opt.value = item.id;
-      opt.textContent = formatModelOptionLabel(item.id, item.name || item.id);
-      modelSelect.appendChild(opt);
-    });
-    modelSelect.value = ids.includes(PREFERRED_MODEL) ? PREFERRED_MODEL : (ids[0] || PREFERRED_MODEL);
+    renderModelOptions(previous);
   }
 
   async function sendMessage() {
@@ -1647,6 +1698,8 @@
     window.I18n?.onReady?.(renderSendButton);
     if (!await ensureAccess()) return;
     loadSidebarState();
+    loadModelFilterState();
+    syncModelFilterButton();
     await loadModels();
     restoreSessions();
     resizePromptInput();
@@ -1663,6 +1716,26 @@
     sendMessage();
   });
   modelSelect.addEventListener('change', syncCurrentSession);
+  hideBuiltinModelsBtn?.addEventListener('click', () => {
+    if (sending) return;
+    hideBuiltinModels = !hideBuiltinModels;
+    persistModelFilterState();
+    renderModelOptions(modelSelect.value);
+    syncCurrentSession();
+  });
+  modelRefreshBtn?.addEventListener('click', async () => {
+    if (sending) return;
+    modelRefreshBtn.disabled = true;
+    try {
+      await loadModels({ preserve: true });
+      syncCurrentSession();
+      toast(text('webui.chat.modelsRefreshed', 'Models refreshed'), 'success');
+    } catch (error) {
+      toast(`${text('webui.chat.errors.requestFailed', 'Request failed')}: ${error.message}`, 'error');
+    } finally {
+      modelRefreshBtn.disabled = false;
+    }
+  });
   systemInput?.addEventListener('change', syncCurrentSession);
   uploadBtn.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', async () => {

@@ -3,7 +3,7 @@
 import hmac
 
 from fastapi import Header, HTTPException, Query, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPBearer
 
 from app.platform.config.snapshot import get_config
 

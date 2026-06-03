@@ -20,6 +20,7 @@ class ModelSpec:
     ``public_name`` is the human-readable display name.
     ``prefer_best`` when True, reverses pool priority to try higher-tier
                     pools first (hard priority, not soft preference).
+    ``upstream_model_name`` when set, is sent to Grok as the real ``modelName``.
     """
 
     model_name: str
@@ -29,6 +30,7 @@ class ModelSpec:
     enabled: bool
     public_name: str
     prefer_best: bool = False
+    upstream_model_name: str | None = None
 
     # --- convenience predicates ---
 

@@ -15,6 +15,7 @@ from .models import AccountRecord, QuotaWindow
 from .quota_defaults import (
     default_quota_window,
     infer_pool,
+    normalize_quota_set,
     normalize_quota_window,
     supported_mode_ids,
     supports_mode,
@@ -79,7 +80,7 @@ class AccountRefreshService:
         """Fetch quota windows for every mode supported by *pool*.
 
         Examples:
-          - basic -> fast
+          - basic -> fast / grok_4_3
           - super -> auto / fast / expert / grok_4_3
           - heavy -> auto / fast / expert / heavy / grok_4_3
         """
@@ -251,7 +252,7 @@ class AccountRefreshService:
             return await self._apply_fallback(record)
 
         # We got at least a response — apply real data per mode.
-        qs = record.quota_set()
+        qs = normalize_quota_set(record.pool, record.quota_set())
         now = now_ms()
         patches: dict[str, dict] = {}
         refreshed = False
@@ -327,7 +328,7 @@ class AccountRefreshService:
 
     async def _apply_fallback(self, record: AccountRecord) -> RefreshResult:
         """Conservative fallback when API is unreachable (scheduled/import path only)."""
-        qs = record.quota_set()
+        qs = normalize_quota_set(record.pool, record.quota_set())
         now = now_ms()
         patches: dict[str, dict] = {}
 
@@ -439,7 +440,7 @@ class AccountRefreshService:
         is_use: bool = False,
         use_at_ms: int | None = None,
     ) -> None:
-        qs = record.quota_set()
+        qs = normalize_quota_set(record.pool, record.quota_set())
         mode_key = _MODE_KEYS.get(mode_id)
         if mode_key is None:
             logger.warning(
