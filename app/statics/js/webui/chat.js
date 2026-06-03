@@ -875,6 +875,12 @@
     return selected && selected.capability ? selected.capability : 'chat';
   }
 
+  function webuiImageConfigForCapability(capability) {
+    return capability === 'image' || capability === 'image_edit'
+      ? { response_format: 'local_url' }
+      : null;
+  }
+
   async function fileToDataUrl(file) {
     return await new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -1460,13 +1466,16 @@
     messages
       .filter((message) => message && (message.role === 'user' || message.role === 'assistant'))
       .forEach((message) => outgoing.push(message));
-    return {
+    const payload = {
       model: modelSelect.value || PREFERRED_MODEL,
       messages: outgoing,
       stream: true,
       temperature: 0.8,
       top_p: 0.95,
     };
+    const imageConfig = webuiImageConfigForCapability(currentModelCapability());
+    if (imageConfig) payload.image_config = imageConfig;
+    return payload;
   }
 
   function visibleModels() {

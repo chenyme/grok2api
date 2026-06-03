@@ -162,9 +162,9 @@ async def _lite_progress_updates(
 
 def _normalize_response_format(response_format: str) -> str:
     fmt = (response_format or "url").strip().lower()
-    if fmt not in {"url", "b64_json"}:
+    if fmt not in {"url", "b64_json", "local_url"}:
         raise ValidationError(
-            "response_format must be one of ['url', 'b64_json']",
+            "response_format must be one of ['url', 'b64_json', 'local_url']",
             param="response_format",
         )
     return fmt
