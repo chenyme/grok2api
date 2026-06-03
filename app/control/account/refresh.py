@@ -20,9 +20,19 @@ from .quota_defaults import (
     supports_mode,
 )
 from .state_machine import is_manageable
+from app.dataplane.shared.enums import GROK_POOLS
 
 if TYPE_CHECKING:
     from .repository import AccountRepository
+
+
+def _is_grok_pool(record: AccountRecord) -> bool:
+    """Return True if *record* uses the grok.com quota/usage machinery.
+
+    Accounts in non-grok pools (e.g. ``"xai"`` for the official api.x.ai OAuth
+    provider) must not be probed against grok.com's usage API.
+    """
+    return record.pool in GROK_POOLS
 
 
 @dataclass
@@ -151,7 +161,7 @@ class AccountRefreshService:
     async def refresh_call_async(self, token: str, mode_id: int) -> None:
         """Fire-and-forget single-mode quota sync after a successful call."""
         record = (await self._repo.get_accounts([token]) or [None])[0]
-        if record is None or record.is_deleted():
+        if record is None or record.is_deleted() or not _is_grok_pool(record):
             return
         try:
             window = await self._fetch_mode_quota(token, record.pool, mode_id)
@@ -233,7 +243,7 @@ class AccountRefreshService:
         apply_fallback=False — used by manual/on-demand paths: if API fails, return
                                failed=1 immediately without touching stored data.
         """
-        if record.is_deleted():
+        if record.is_deleted() or not _is_grok_pool(record):
             return RefreshResult()
 
         try:

@@ -267,6 +267,13 @@ class AccountRecord(BaseModel):
             return "super"
         if val in ("heavy",):
             return "heavy"
+        if val == "xai":
+            # Official api.x.ai OAuth provider pool — excluded from grok.com
+            # selection / quota machinery (see dataplane GROK_POOLS).
+            return "xai"
+        if val == "_xai_oauth_pending":
+            # Reserved transient pool for in-flight xAI OAuth state (non-grok).
+            return "_xai_oauth_pending"
         if val in ("ssobasic", "basic", "", "auto"):
             # "auto" is a UI alias meaning "let quota sync decide";
             # save as basic for now — refresh will correct to the real type.

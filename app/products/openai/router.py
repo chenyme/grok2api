@@ -49,6 +49,10 @@ async def _available_pools(request: Request) -> frozenset[str]:
 def _model_available_for_pools(spec: ModelSpec, pools: frozenset[str]) -> bool:
     if not spec.enabled:
         return False
+    # xAI-provider models are available whenever an active xAI account exists
+    # (pool="xai"); they do not use grok pools / modes.
+    if spec.is_xai():
+        return "xai" in pools
     for pool_id in spec.pool_candidates():
         pool = _POOL_ID_TO_NAME[pool_id]
         if pool in pools and supports_mode(pool, int(spec.mode_id)):
@@ -213,7 +217,7 @@ async def _upload_to_data_uri(upload: UploadFile, *, param: str) -> str:
 @router.post(
     "/chat/completions", tags=[_TAG_CHAT], dependencies=[Depends(verify_api_key)]
 )
-async def chat_completions_endpoint(req: ChatCompletionRequest):
+async def chat_completions_endpoint(req: ChatCompletionRequest, request: Request):
     _validate_chat(req)
     from app.platform.config.snapshot import get_config
 
@@ -232,8 +236,23 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
     messages = [m.model_dump(exclude_none=True) for m in req.messages]
 
     try:
-        # Dispatch by model capability.
-        if spec.is_image_edit():
+        # Dispatch by provider first: xAI models use the official api.x.ai API.
+        if spec.is_xai():
+            from .xai_chat import completions as xai_completions
+
+            result = await xai_completions(
+                request.app.state.repository,
+                model=req.model,
+                messages=messages,
+                stream=is_stream,
+                temperature=req.temperature or 0.8,
+                top_p=req.top_p or 0.95,
+                tools=req.tools,
+                tool_choice=req.tool_choice,
+            )
+
+        # Otherwise dispatch by model capability (grok.com reverse-proxy).
+        elif spec.is_image_edit():
             from .images import edit as img_edit
 
             cfg = req.image_config or ImageConfig()

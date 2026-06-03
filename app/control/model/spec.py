@@ -20,6 +20,11 @@ class ModelSpec:
     ``public_name`` is the human-readable display name.
     ``prefer_best`` when True, reverses pool priority to try higher-tier
                     pools first (hard priority, not soft preference).
+    ``provider``    selects the upstream backend:
+                      "grok" — grok.com web reverse-proxy (SSO cookie tokens);
+                      "xai"  — official api.x.ai API (OAuth Bearer token).
+                    For ``provider="xai"`` the ``mode_id`` / ``tier`` fields are
+                    inert placeholders (xAI routing does not use grok pools).
     """
 
     model_name: str
@@ -29,11 +34,16 @@ class ModelSpec:
     enabled: bool
     public_name: str
     prefer_best: bool = False
+    provider: str = "grok"
 
     # --- convenience predicates ---
 
     def is_chat(self) -> bool:
         return bool(self.capability & Capability.CHAT)
+
+    def is_xai(self) -> bool:
+        """Return True if this model is served via the official api.x.ai API."""
+        return self.provider == "xai"
 
     def is_image(self) -> bool:
         return bool(self.capability & Capability.IMAGE)

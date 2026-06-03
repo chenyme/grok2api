@@ -166,10 +166,13 @@ class LocalAccountRepository:
         count = 0
         for item in items:
             try:
-                token = AccountRecord.model_validate({"token": item.token, "pool": item.pool}).token
+                _validated = AccountRecord.model_validate({"token": item.token, "pool": item.pool})
             except ValueError:
                 continue
-            pool = item.pool if item.pool in ("basic", "super", "heavy") else "basic"
+            token = _validated.token
+            # Use the validator-normalised pool (accepts non-grok pools such as
+            # "xai" / "_xai_oauth_pending"); only grok pools get real defaults.
+            pool = _validated.pool
             qs   = default_quota_set(pool)
             conn.execute(
                 f"""

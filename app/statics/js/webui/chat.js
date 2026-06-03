@@ -1455,7 +1455,11 @@
       opt.textContent = formatModelOptionLabel(item.id, item.name || item.id);
       modelSelect.appendChild(opt);
     });
-    modelSelect.value = ids.includes(PREFERRED_MODEL) ? PREFERRED_MODEL : (ids[0] || PREFERRED_MODEL);
+    const xaiPreferred = 'grok-build-0.1';
+    const preferred = ids.includes(PREFERRED_MODEL)
+      ? PREFERRED_MODEL
+      : (ids.includes(xaiPreferred) ? xaiPreferred : (ids[0] || PREFERRED_MODEL));
+    modelSelect.value = preferred;
   }
 
   async function sendMessage() {

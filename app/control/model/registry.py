@@ -36,6 +36,13 @@ MODELS: tuple[ModelSpec, ...] = (
     # Super+（basic 池不支持此模式）
     ModelSpec("grok-4.3-beta",                          ModeId.GROK_4_3, Tier.SUPER, Capability.CHAT,       True, "Grok 4.3 Beta"),
 
+    # === xAI Grok Build OAuth (grok-cli / SuperGrok subscription) ==========
+    # OAuth tokens from auth.x.ai only cover Grok Build + Composer 2.5 Fast —
+    # not the full api.x.ai API-key catalog (grok-4, grok-3, etc.).
+    # grok-build-0.1 → api.x.ai /chat/completions ; composer → api.x.ai /responses.
+    ModelSpec("grok-build-0.1",         ModeId.AUTO, Tier.BASIC, Capability.CHAT, True, "Grok Build 0.1",         provider="xai"),
+    ModelSpec("grok-composer-2.5-fast", ModeId.AUTO, Tier.BASIC, Capability.CHAT, True, "Composer 2.5 Fast",      provider="xai"),
+
     # === Image ==============================================================
 
     # Basic fast

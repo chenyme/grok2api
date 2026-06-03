@@ -201,10 +201,13 @@ class RedisAccountRepository:
         count = 0
         for item in items:
             try:
-                token = AccountRecord.model_validate({"token": item.token, "pool": item.pool}).token
+                _validated = AccountRecord.model_validate({"token": item.token, "pool": item.pool})
             except ValueError:
                 continue
-            pool = item.pool if item.pool in ("basic", "super", "heavy") else "basic"
+            token = _validated.token
+            # Use the validator-normalised pool (accepts non-grok pools such as
+            # "xai" / "_xai_oauth_pending").
+            pool = _validated.pool
             qs   = default_quota_set(pool)
             ts   = now_ms()
             record = AccountRecord(

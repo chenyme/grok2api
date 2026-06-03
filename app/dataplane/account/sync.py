@@ -11,8 +11,18 @@ from app.control.account.models import AccountRecord
 from app.control.account.quota_defaults import normalize_quota_set
 from app.control.account.repository import AccountRepository
 from app.control.account.state_machine import derive_status
-from ..shared.enums import POOL_STR_TO_ID, STATUS_STR_TO_ID, StatusId
+from ..shared.enums import GROK_POOLS, POOL_STR_TO_ID, STATUS_STR_TO_ID, StatusId
 from .table import AccountRuntimeTable, make_empty_table
+
+
+def _is_grok_pool(record: AccountRecord) -> bool:
+    """Return True if *record* belongs to the grok.com reverse-proxy machinery.
+
+    Accounts in non-grok pools (e.g. ``"xai"`` for the official api.x.ai OAuth
+    provider) are excluded from the hot-path runtime table so they are never
+    selected for grok.com chat requests.
+    """
+    return record.pool in GROK_POOLS
 
 
 def _record_to_slot_args(record: AccountRecord) -> dict:
@@ -75,7 +85,7 @@ async def bootstrap(repository: AccountRepository) -> AccountRuntimeTable:
     _tags_by_token: dict[str, list[str]] = {}
 
     for record in snapshot.items:
-        if record.is_deleted():
+        if record.is_deleted() or not _is_grok_pool(record):
             continue
         args = _record_to_slot_args(record)
         tags = args.pop("tags")
@@ -116,8 +126,9 @@ async def apply_changes(
                 changed = True
 
         for record in changeset.items:
-            if record.is_deleted():
-                # Handle soft-delete from items list too.
+            if record.is_deleted() or not _is_grok_pool(record):
+                # Soft-deleted records, or records that moved to a non-grok pool
+                # (e.g. "xai"), are removed from the hot-path table.
                 idx = table.idx_by_token.get(record.token)
                 if idx is not None:
                     table._remove_from_indexes(idx)

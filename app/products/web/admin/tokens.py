@@ -26,6 +26,7 @@ from app.control.account.commands import (
     ListAccountsQuery,
 )
 from app.control.account.enums import AccountStatus
+from app.control.xai.pending import is_internal_record
 
 if TYPE_CHECKING:
     from app.control.account.refresh import AccountRefreshService
@@ -151,7 +152,8 @@ async def list_tokens(repo: "AccountRepository" = Depends(get_repo)):
             break
         page_num += 1
 
-    return _json({"tokens": [_serialize_record(r) for r in all_items]})
+    visible = [r for r in all_items if not is_internal_record(r)]
+    return _json({"tokens": [_serialize_record(r) for r in visible]})
 
 
 @router.post("/tokens")

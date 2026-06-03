@@ -735,6 +735,22 @@
     </div>
   </div>
 
+  <!-- xAI 官方 API（OAuth 登录） -->
+  <div class="section-head">
+    <div class="section-title">xAI 官方 API（OAuth）</div>
+  </div>
+  <div class="stat-cell" id="xai-card" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px">
+    <div style="min-width:0">
+      <div class="stat-label">通过 grok-cli OAuth 登录（回调 <code style="font-size:12px">127.0.0.1:56121</code>）。可用模型：<code style="font-size:12px">grok-build-0.1</code>、<code style="font-size:12px">grok-composer-2.5-fast</code>（非 API Key 全量模型）。</div>
+      <div id="xai-status" style="margin-top:6px;font-size:13px;color:#9ca3af">加载中…</div>
+    </div>
+    <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap">
+      <button id="xai-login-btn" onclick="xaiLogin()" class="page-action-btn page-action-btn-primary">登录 xAI</button>
+      <button id="xai-paste-btn" onclick="xaiPasteOpen()" class="page-action-btn">手动粘贴</button>
+      <button id="xai-remove-btn" onclick="xaiRemove()" class="page-action-btn" style="display:none">移除</button>
+    </div>
+  </div>
+
   <div class="section-head">
     <div class="section-title" data-i18n="account.sectionOverview">账户概览</div>
   </div>
@@ -993,6 +1009,21 @@
 
 </main>
 
+<!-- ── xAI OAuth paste modal ───────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-xai-paste">
+  <div class="modal">
+    <div class="modal-title">粘贴 xAI 授权回调</div>
+    <div class="dialog-body">
+      <div class="dialog-help">授权完成后，将浏览器地址栏的完整 URL、或页面上的授权码粘贴到下方。若仅粘贴授权码，需先点击「登录 xAI」发起本次会话。</div>
+      <textarea class="input dialog-textarea" id="xai-paste-callback" rows="5" placeholder="http://127.0.0.1:56121/callback?code=...&state=...&#10;或仅粘贴 code 值"></textarea>
+    </div>
+    <div class="dialog-actions">
+      <button onclick="closeModal('modal-xai-paste')" class="dialog-btn">取消</button>
+      <button onclick="xaiPasteSubmit()" class="dialog-btn dialog-btn-primary">完成登录</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Add Modal ───────────────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="modal-import">
   <div class="modal">
@@ -1173,6 +1204,129 @@ async function _api(method, path, body) {
   return r.json();
 }
 
+// ── xAI OAuth ────────────────────────────────────────────────────────────────
+let _xaiOAuthState = null;
+let _xaiPollTimer = null;
+
+function xaiStopPoll() {
+  if (_xaiPollTimer) {
+    clearInterval(_xaiPollTimer);
+    _xaiPollTimer = null;
+  }
+}
+
+async function xaiPollOnce() {
+  if (!_xaiOAuthState) return;
+  try {
+    const data = await _api('GET', `/xai/oauth/poll?state=${encodeURIComponent(_xaiOAuthState)}`);
+    if (data.status === 'pending') return;
+    xaiStopPoll();
+    _xaiOAuthState = null;
+    if (data.status === 'ok') {
+      showToast(data.message || 'xAI 登录成功', 'success');
+      xaiRefresh();
+      return;
+    }
+    showToast(data.message || `xAI 登录失败（${data.status}）`, 'error');
+  } catch (e) {
+    xaiStopPoll();
+    showToast(`轮询登录状态失败：${e.message}`, 'error');
+  }
+}
+
+function xaiStartPoll() {
+  xaiStopPoll();
+  if (!_xaiOAuthState) return;
+  _xaiPollTimer = setInterval(xaiPollOnce, 2000);
+  xaiPollOnce();
+}
+
+async function xaiRefresh() {
+  const statusEl = document.getElementById('xai-status');
+  const removeBtn = document.getElementById('xai-remove-btn');
+  const loginBtn = document.getElementById('xai-login-btn');
+  if (!statusEl) return;
+  try {
+    const data = await _api('GET', '/xai/accounts');
+    const acc = (data.accounts || [])[0];
+    if (acc) {
+      const exp = acc.expires_at ? new Date(acc.expires_at).toLocaleString() : '未知';
+      statusEl.textContent = `已登录：${acc.email || acc.token}（令牌到期：${exp}）`;
+      statusEl.style.color = '#16a34a';
+      removeBtn.style.display = '';
+      loginBtn.textContent = '重新登录';
+    } else {
+      statusEl.textContent = '尚未登录 xAI 账号。';
+      statusEl.style.color = '#9ca3af';
+      removeBtn.style.display = 'none';
+      loginBtn.textContent = '登录 xAI';
+    }
+  } catch (e) {
+    statusEl.textContent = `加载 xAI 状态失败：${e.message}`;
+    statusEl.style.color = '#dc2626';
+  }
+}
+
+async function xaiLogin() {
+  try {
+    const data = await _api('POST', '/xai/oauth/start');
+    _xaiOAuthState = data.state || null;
+    if (data.authorize_url) {
+      window.open(data.authorize_url, '_blank');
+    }
+    if (data.loopback_available) {
+      xaiStartPoll();
+      showToast('已打开 xAI 登录页；本机 127.0.0.1:56121 正在等待回调，成功后自动保存。', 'info');
+    } else {
+      showToast('端口 56121 已被占用或未监听，请用「手动粘贴」完成登录。', 'info');
+      xaiPasteOpen();
+    }
+  } catch (e) {
+    showToast(`发起 xAI 登录失败：${e.message}`, 'error');
+  }
+}
+
+function xaiPasteOpen() {
+  document.getElementById('xai-paste-callback').value = '';
+  openModal('modal-xai-paste');
+}
+
+async function xaiPasteSubmit() {
+  const callback = document.getElementById('xai-paste-callback').value.trim();
+  if (!callback) {
+    showToast('请粘贴回调 URL 或授权码', 'error');
+    return;
+  }
+  if (!_xaiOAuthState) {
+    showToast('请先点击「登录 xAI」发起本次授权会话', 'error');
+    return;
+  }
+  try {
+    const data = await _api('POST', '/xai/oauth/complete', {
+      state: _xaiOAuthState,
+      callback,
+    });
+    xaiStopPoll();
+    _xaiOAuthState = null;
+    closeModal('modal-xai-paste');
+    showToast(data.message || 'xAI 登录成功', 'success');
+    xaiRefresh();
+  } catch (e) {
+    showToast(`完成登录失败：${e.message}`, 'error');
+  }
+}
+
+async function xaiRemove() {
+  if (!confirm('确定要移除已登录的 xAI 账号吗？')) return;
+  try {
+    await _api('DELETE', '/xai/accounts');
+    showToast('已移除 xAI 账号。', 'success');
+    xaiRefresh();
+  } catch (e) {
+    showToast(`移除失败：${e.message}`, 'error');
+  }
+}
+
 // Selection strategy reported by /status — "quota" | "random".
 // Controls whether quota columns / stats are rendered (hidden in random mode).
 let selectionStrategy = 'quota';
@@ -1194,6 +1348,7 @@ async function load() {
     applyStrategyUI();
     invalidateTokenView();
     render();
+    xaiRefresh();
   } catch (e) { showToast(`${tr('account.loadFailed', null, '加载失败')}: ${e.message}`, 'error'); }
 }
 

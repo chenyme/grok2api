@@ -38,6 +38,11 @@ POOL_STR_TO_ID: dict[str, int] = {
 
 POOL_ID_TO_STR: dict[int, str] = {v: k for k, v in POOL_STR_TO_ID.items()}
 
+# Pools that participate in the grok.com reverse-proxy hot path (selection,
+# runtime table, quota probing).  Accounts in other pools (e.g. "xai", which
+# use the official api.x.ai OAuth provider) must be excluded from this machinery.
+GROK_POOLS: frozenset[str] = frozenset(POOL_STR_TO_ID.keys())
+
 STATUS_STR_TO_ID: dict[str, int] = {
     "active": int(StatusId.ACTIVE),
     "cooling": int(StatusId.COOLING),
@@ -59,6 +64,7 @@ __all__ = [
     "StatusId",
     "POOL_STR_TO_ID",
     "POOL_ID_TO_STR",
+    "GROK_POOLS",
     "STATUS_STR_TO_ID",
     "ALL_MODE_IDS",
 ]

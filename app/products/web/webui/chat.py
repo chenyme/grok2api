@@ -2,12 +2,16 @@
 
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from app.control.model import registry as model_registry
 from app.platform.auth.middleware import verify_webui_key
-from app.products.openai.router import chat_completions_endpoint
+from app.products.openai.router import (
+    _available_pools,
+    _model_available_for_pools,
+    chat_completions_endpoint,
+)
 from app.products.openai.schemas import ChatCompletionRequest
 
 router = APIRouter(prefix="/webui/api", dependencies=[Depends(verify_webui_key)], tags=["WebUI - Chat"])
@@ -24,24 +28,31 @@ def _capability_name(spec) -> str:
 
 
 @router.get("/models")
-async def list_webui_models():
+async def list_webui_models(request: Request):
+    """List models available for the WebUI chat picker.
+
+    Uses the same pool/mode rules as ``GET /v1/models``: Grok Build OAuth
+    (pool ``xai`` only) yields ``grok-build-0.1`` and ``grok-composer-2.5-fast``.
+    """
+    pools = await _available_pools(request)
     models = [
         {
             "id": spec.model_name,
             "object": "model",
             "created": int(time.time()),
-            "owned_by": "xai",
+            "owned_by": "xai" if spec.is_xai() else "grok",
             "name": spec.public_name,
             "capability": _capability_name(spec),
         }
         for spec in model_registry.list_enabled()
+        if _model_available_for_pools(spec, pools)
     ]
     return JSONResponse({"object": "list", "data": models})
 
 
 @router.post("/chat/completions")
-async def webui_chat_completions(req: ChatCompletionRequest):
-    return await chat_completions_endpoint(req)
+async def webui_chat_completions(req: ChatCompletionRequest, request: Request):
+    return await chat_completions_endpoint(req, request)
 
 
 __all__ = ["router"]
