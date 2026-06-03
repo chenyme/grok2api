@@ -312,10 +312,11 @@
 
   function normalizeMediaContent(source) {
     const input = String(source || '').replace(/\[video\]\(([^)]+)\)/gi, '$1');
-    return input.replace(/^(https?:\/\/\S+|\/v1\/files\/(?:image|video)\?id=\S+|data:image\/[^\s]+)$/gm, (match) => {
+    return input.replace(/(https?:\/\/[^\s<>)]+|\/v1\/files\/(?:image|video)\?id=[^\s<>)]+|data:image\/[^\s<>)]+)/g, (match, _url, offset, fullText) => {
+      if (fullText.slice(Math.max(0, offset - 2), offset) === '](') return match;
       const url = match.trim();
-      if (isImageUrl(url)) return `![image](${url})`;
-      if (isVideoUrl(url)) return `<video controls preload="metadata" src="${escapeHtml(url)}"></video>`;
+      if (isImageUrl(url)) return `\n\n![image](${url})\n\n`;
+      if (isVideoUrl(url)) return `\n\n<video controls preload="metadata" src="${escapeHtml(url)}"></video>\n\n`;
       return match;
     });
   }
