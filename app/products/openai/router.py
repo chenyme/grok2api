@@ -25,6 +25,7 @@ from .schemas import (
     ResponsesCreateRequest,
 )
 from .chat import completions as chat_completions
+from ._format import format_sse
 
 router = APIRouter(prefix="/v1")
 _POOL_ID_TO_NAME = {0: "basic", 1: "super", 2: "heavy"}
@@ -405,8 +406,36 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
 
 async def _safe_sse_responses(stream) -> AsyncGenerator[str, None]:
     """SSE wrapper that converts errors to Responses API error events."""
+    response_obj: dict | None = None
+    terminal_seen = False
+
     try:
         async for chunk in stream:
+            event_name = ""
+            data_payload: dict | None = None
+            for line in chunk.splitlines():
+                if line.startswith("event: "):
+                    event_name = line.removeprefix("event: ")
+                elif line.startswith("data: ") and event_name:
+                    try:
+                        payload = orjson.loads(line.removeprefix("data: "))
+                    except orjson.JSONDecodeError:
+                        continue
+                    if isinstance(payload, dict):
+                        data_payload = payload
+
+            if event_name in {"response.created", "response.in_progress"}:
+                candidate = (data_payload or {}).get("response")
+                if isinstance(candidate, dict):
+                    response_obj = candidate
+            elif event_name in {
+                "response.completed",
+                "response.failed",
+                "response.cancelled",
+                "response.incomplete",
+            }:
+                terminal_seen = True
+
             yield chunk
     except Exception as exc:
         from app.platform.errors import AppError
@@ -420,6 +449,21 @@ async def _safe_sse_responses(stream) -> AsyncGenerator[str, None]:
                 "code": None,
                 "param": None,
             }
+        if response_obj is not None and not terminal_seen:
+            failed_response = {
+                **response_obj,
+                "status": "failed",
+                "error": {
+                    "message": str(err.get("message") or str(exc)),
+                    "type": str(err.get("type") or "server_error"),
+                    "code": err.get("code"),
+                    "param": err.get("param"),
+                },
+            }
+            yield format_sse(
+                "response.failed",
+                {"type": "response.failed", "response": failed_response},
+            )
         payload = orjson.dumps({"type": "error", **err}).decode()
         yield f"event: error\ndata: {payload}\n\n"
         yield "data: [DONE]\n\n"
@@ -648,7 +692,7 @@ async def serve_image(id: str = Query(..., description="Image file ID")):
     """Serve a locally cached image by file ID."""
     import re
 
-    if not re.fullmatch(r"[0-9a-f\-]{16,36}", id):
+    if not re.fullmatch(r"(?:[0-9a-f\-]{16,36}|inline-[0-9a-f]{24})", id):
         raise ValidationError("Invalid file ID", param="id")
 
     img_dir = image_files_dir()

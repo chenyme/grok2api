@@ -99,6 +99,14 @@
     }
   }
 
+  function sanitizeSrcUrl(value) {
+    const raw = String(value || '').trim();
+    if (/^data:image\/(?:png|jpe?g|gif|webp|bmp);base64,[a-z0-9+/]+=*$/i.test(raw)) {
+      return raw;
+    }
+    return sanitizeUrl(raw);
+  }
+
   function sanitizeRenderedHtml(html) {
     const template = document.createElement('template');
     template.innerHTML = html;
@@ -122,7 +130,11 @@
           el.removeAttribute(attr.name);
           return;
         }
-        if ((name === 'href' || name === 'src') && !sanitizeUrl(value)) {
+        if (name === 'href' && !sanitizeUrl(value)) {
+          el.removeAttribute(attr.name);
+          return;
+        }
+        if (name === 'src' && !sanitizeSrcUrl(value)) {
           el.removeAttribute(attr.name);
           return;
         }
@@ -312,11 +324,10 @@
 
   function normalizeMediaContent(source) {
     const input = String(source || '').replace(/\[video\]\(([^)]+)\)/gi, '$1');
-    return input.replace(/(https?:\/\/[^\s<>)]+|\/v1\/files\/(?:image|video)\?id=[^\s<>)]+|data:image\/[^\s<>)]+)/g, (match, _url, offset, fullText) => {
-      if (fullText.slice(Math.max(0, offset - 2), offset) === '](') return match;
+    return input.replace(/^(https?:\/\/\S+|\/v1\/files\/(?:image|video)\?id=\S+|data:image\/[^\s]+)$/gm, (match) => {
       const url = match.trim();
-      if (isImageUrl(url)) return `\n\n![image](${url})\n\n`;
-      if (isVideoUrl(url)) return `\n\n<video controls preload="metadata" src="${escapeHtml(url)}"></video>\n\n`;
+      if (isImageUrl(url)) return `![image](${url})`;
+      if (isVideoUrl(url)) return `<video controls preload="metadata" src="${escapeHtml(url)}"></video>`;
       return match;
     });
   }

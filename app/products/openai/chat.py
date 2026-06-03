@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import re
 from typing import Any, AsyncGenerator
 from urllib.parse import urlparse
@@ -222,6 +223,80 @@ def _is_imagine_public_url(url: str) -> bool:
     return host.startswith("imagine-public")
 
 
+def _is_grok_generated_image_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url or "")
+    except Exception:
+        return False
+    host = parsed.hostname or ""
+    if host.startswith("imagine-public"):
+        return True
+    return host == "assets.grok.com" and "/generated/" in parsed.path
+
+
+def _inline_generated_image_id(url: str) -> str:
+    return hashlib.sha1(url.encode("utf-8")).hexdigest()[:32]
+
+
+async def _resolve_inline_generated_image(token: str, url: str) -> str:
+    """Download one direct-chat generated image and return a local image URL."""
+    try:
+        raw, mime = await _download_image_bytes(token, url)
+    except Exception as exc:
+        logger.warning(
+            "chat inline image download failed: fallback_to=upstream_url error={}",
+            exc,
+        )
+        return url
+
+    file_id = await asyncio.to_thread(
+        _save_image,
+        raw,
+        mime,
+        _inline_generated_image_id(url),
+    )
+    app_url = get_config().get_str("app.app_url", "").rstrip("/")
+    return (
+        f"{app_url}/v1/files/image?id={file_id}"
+        if app_url
+        else f"/v1/files/image?id={file_id}"
+    )
+
+
+_INLINE_GROK_IMAGE_RE = re.compile(
+    r"!\[[^\]]*\]\((?P<md_url>https?://[^)\s]+)\)"
+    r"|(?P<bare_url>https?://(?:assets\.grok\.com|imagine-public)[^ \t\r\n<>)]+)",
+    re.IGNORECASE,
+)
+
+
+async def _localize_inline_generated_images(token: str, text: str) -> str:
+    """Replace generated Grok image URLs embedded in direct-chat text with local URLs."""
+    if not text or "grok.com" not in text and "imagine-public" not in text:
+        return text
+
+    parts: list[str] = []
+    cursor = 0
+    cache: dict[str, str] = {}
+
+    for match in _INLINE_GROK_IMAGE_RE.finditer(text):
+        url = match.group("md_url") or match.group("bare_url") or ""
+        if not _is_grok_generated_image_url(url):
+            continue
+        parts.append(text[cursor : match.start()])
+        local_url = cache.get(url)
+        if local_url is None:
+            local_url = await _resolve_inline_generated_image(token, url)
+            cache[url] = local_url
+        parts.append(f"![image]({local_url})")
+        cursor = match.end()
+
+    if cursor == 0:
+        return text
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
 async def _resolve_image(token: str, url: str, image_id: str) -> str:
     """Return the image embed text for the response body based on image_format config.
 
@@ -287,14 +362,40 @@ def _normalize_image_format(value: str | None) -> str:
 _SOURCES_STRIP_RE = re.compile(
     r"(?:^|\r?\n\r?\n)## Sources\r?\n\[grok2api-sources\]: #\r?\n[\s\S]*$"
 )
+_MEDIA_MARKDOWN_STRIP_RE = re.compile(
+    r"!\[[^\]]*\]\((?:https?://[^)\s]+|/v1/files/(?:image|video)\?id=[^)\s]+|data:image/[^)\s]+)\)"
+    r"|\[video\]\((?:https?://[^)\s]+|/v1/files/video\?id=[^)\s]+)\)",
+    re.IGNORECASE,
+)
+_MEDIA_TAG_STRIP_RE = re.compile(
+    r"<(?:img|video)\b[^>]*(?:src=[\"'](?:https?://[^\"']+|/v1/files/(?:image|video)\?id=[^\"']+|data:image/[^\"']+)[\"'])?[^>]*>(?:</video>)?",
+    re.IGNORECASE,
+)
+_MEDIA_URL_STRIP_RE = re.compile(
+    r"https?://[^ \t\r\n<>)]+/v1/files/(?:image|video)\?id=[^ \t\r\n<>)]+"
+    r"|/v1/files/(?:image|video)\?id=[^ \t\r\n<>)]+"
+    r"|https?://assets\.grok\.com/[^ \t\r\n<>)]+"
+    r"|https?://imagine-public[^ \t\r\n<>)]+"
+    r"|data:image/[^ \t\r\n<>)]+",
+    re.IGNORECASE,
+)
 
 
-def _strip_generated_artifacts(text: str, *, strip_sources: bool = False) -> str:
+def _strip_generated_artifacts(
+    text: str,
+    *,
+    strip_sources: bool = False,
+    strip_media: bool = False,
+) -> str:
     """Remove generated assistant artifacts before reusing conversation history."""
     if not text or not isinstance(text, str):
         return text
     if strip_sources:
         text = _SOURCES_STRIP_RE.sub("", text)
+    if strip_media:
+        text = _MEDIA_MARKDOWN_STRIP_RE.sub("", text)
+        text = _MEDIA_TAG_STRIP_RE.sub("", text)
+        text = _MEDIA_URL_STRIP_RE.sub("", text)
     return text.strip()
 
 
@@ -332,7 +433,11 @@ def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
 
         # ── 剥离前轮 assistant 消息中 grok2api 注入的 Sources 段落 ────────────
         if role == "assistant" and isinstance(content, str):
-            content = _strip_generated_artifacts(content, strip_sources=True)
+            content = _strip_generated_artifacts(
+                content,
+                strip_sources=True,
+                strip_media=True,
+            )
 
         # ── normal content handling ───────────────────────────────────────────
         if isinstance(content, str):
@@ -349,6 +454,7 @@ def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
                     text = _strip_generated_artifacts(
                         text.strip(),
                         strip_sources=(role == "assistant"),
+                        strip_media=(role == "assistant"),
                     )
                     if text:
                         parts.append(f"[{role}]: {text}")
@@ -471,6 +577,7 @@ async def completions(
     is_stream = stream if stream is not None else cfg.get_bool("features.stream", True)
     if emit_think is None:
         emit_think = cfg.get_bool("features.thinking", True)
+    localize_inline_images = bool(spec.upstream_model_name)
 
     logger.info(
         "chat request accepted: model={} stream={} message_count={}",
@@ -523,6 +630,7 @@ async def completions(
                 fail_exc: BaseException | None = None
                 adapter = StreamAdapter()
                 collected_annotations: list[dict] = []
+                buffered_direct_text: list[str] = []
 
                 try:
                     try:
@@ -585,10 +693,13 @@ async def completions(
                                             ended = True
                                             break  # stop processing remaining events in this batch
                                     else:
-                                        chunk = make_stream_chunk(
-                                            response_id, model, ev.content
-                                        )
-                                        yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                                        if localize_inline_images:
+                                            buffered_direct_text.append(ev.content)
+                                        else:
+                                            chunk = make_stream_chunk(
+                                                response_id, model, ev.content
+                                            )
+                                            yield f"data: {orjson.dumps(chunk).decode()}\n\n"
                                 elif ev.kind == "thinking" and emit_think:
                                     chunk = make_thinking_chunk(
                                         response_id, model, ev.content
@@ -635,6 +746,17 @@ async def completions(
                                 )
 
                         if not tool_calls_emitted:
+                            if localize_inline_images and buffered_direct_text:
+                                text = await _localize_inline_generated_images(
+                                    token,
+                                    "".join(buffered_direct_text),
+                                )
+                                if text:
+                                    chunk = make_stream_chunk(
+                                        response_id, model, text
+                                    )
+                                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+
                             for url, img_id in adapter.image_urls:
                                 img_text = await _resolve_image(token, url, img_id)
                                 chunk = make_stream_chunk(
@@ -816,6 +938,8 @@ async def completions(
         excluded.append(token)
 
     full_text = "".join(adapter.text_buf)
+    if localize_inline_images:
+        full_text = await _localize_inline_generated_images(token, full_text)
     if adapter.image_urls:
         img_texts = await asyncio.gather(
             *[_resolve_image(token, url, img_id) for url, img_id in adapter.image_urls],
