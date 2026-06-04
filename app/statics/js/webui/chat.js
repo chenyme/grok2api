@@ -410,6 +410,129 @@
     });
   }
 
+  function normalizeImageReferenceUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('data:image/')) return raw;
+    try {
+      return new URL(raw, window.location.origin).href;
+    } catch {
+      return raw;
+    }
+  }
+
+  function extractMarkdownImageUrls(source) {
+    const textValue = String(source || '');
+    const urls = [];
+    const markdownRe = /!\[[^\]]*\]\(([^)\s]+)\)/gi;
+    for (let match = markdownRe.exec(textValue); match; match = markdownRe.exec(textValue)) {
+      const url = normalizeImageReferenceUrl(match[1]);
+      if (url && isImageUrl(url)) urls.push(url);
+    }
+    return urls;
+  }
+
+  function extractTextImageUrls(source) {
+    const textValue = String(source || '');
+    const urls = extractMarkdownImageUrls(textValue);
+    const urlRe = /(https?:\/\/[^\s<>)]+|\/v1\/files\/image\?id=[^\s<>)]+|data:image\/[^\s<>)]+)/gi;
+    for (let match = urlRe.exec(textValue); match; match = urlRe.exec(textValue)) {
+      const url = normalizeImageReferenceUrl(match[1]);
+      if (url && isImageUrl(url) && !urls.includes(url)) urls.push(url);
+    }
+    return urls;
+  }
+
+  function extractLatestAssistantImageUrl(history) {
+    for (let index = (history || []).length - 1; index >= 0; index -= 1) {
+      const message = history[index];
+      if (!message || message.role !== 'assistant') continue;
+      const urls = Array.isArray(message.content)
+        ? extractImageUrls(message.content).map(normalizeImageReferenceUrl).filter(Boolean)
+        : extractTextImageUrls(message.content);
+      if (urls.length) return urls[urls.length - 1];
+    }
+    return '';
+  }
+
+  function imageDownloadExtension(url) {
+    const value = String(url || '').trim().toLowerCase();
+    const dataMatch = value.match(/^data:image\/([^;,]+)/);
+    if (dataMatch) {
+      const mimeType = dataMatch[1];
+      if (mimeType === 'jpeg') return 'jpg';
+      if (mimeType === 'svg+xml') return 'svg';
+      return mimeType.split('+')[0] || 'png';
+    }
+    const pathMatch = value.match(/\.([a-z0-9]+)(?:[?#]|$)/);
+    if (pathMatch) {
+      const ext = pathMatch[1] === 'jpeg' ? 'jpg' : pathMatch[1];
+      if (['png', 'jpg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) return ext;
+    }
+    if (value.includes('/v1/files/image')) return 'png';
+    return 'png';
+  }
+
+  function imageDownloadFilename(url, now = new Date()) {
+    const stamp = now.toISOString().replace(/[:.]/g, '-');
+    return `grok-image-${stamp}.${imageDownloadExtension(url)}`;
+  }
+
+  function assistantEntryImageUrl(entry) {
+    if (!entry) return '';
+    const message = entry.messageIndex >= 0 ? messages[entry.messageIndex] : null;
+    const content = message && message.content !== undefined ? message.content : entry.text;
+    return extractLatestAssistantImageUrl([{ role: 'assistant', content }]);
+  }
+
+  function clickDownloadLink(href, filename) {
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = filename;
+    link.rel = 'noreferrer';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  async function downloadImageUrl(url) {
+    const href = normalizeImageReferenceUrl(url);
+    if (!href) return false;
+    const filename = imageDownloadFilename(href);
+    if (href.startsWith('data:image/')) {
+      clickDownloadLink(href, filename);
+      return true;
+    }
+    try {
+      const parsed = new URL(href, window.location.origin);
+      const sameOrigin = parsed.origin === window.location.origin;
+      const response = await fetch(parsed.href, { credentials: sameOrigin ? 'same-origin' : 'omit' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      clickDownloadLink(objectUrl, filename);
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      return true;
+    } catch (_error) {
+      clickDownloadLink(href, filename);
+      return true;
+    }
+  }
+
+  function promptRequestsNewImage(prompt) {
+    const normalized = String(prompt || '').trim().toLowerCase();
+    if (!normalized) return false;
+    return /(?:重新|从头|全新|新图|新图片|新的图|新的图片|新生成|生成新的|画一张新的|换一张新的|不要基于上一张|不基于上一张|不要沿用|不要参考上一张|new image|new picture|start over|from scratch)/i.test(normalized);
+  }
+
+  function stripUserImageBlocks(content) {
+    if (!Array.isArray(content)) return content;
+    const filtered = content.filter((block) => !block || block.type !== 'image_url');
+    if (!filtered.length) return '';
+    return filtered;
+  }
+
   function extractFileItems(content) {
     if (!Array.isArray(content)) return [];
     return content.flatMap((block) => {
@@ -521,6 +644,89 @@
     return parts.join('\n\n');
   }
 
+  function serializeMessageContentForStore(content, previousMessages = []) {
+    if (!Array.isArray(content)) return content;
+    const latestAssistantImage = extractLatestAssistantImageUrl(previousMessages);
+    return content.map((block) => {
+      if (!block || typeof block !== 'object') return block;
+      const copy = JSON.parse(JSON.stringify(block));
+      if (copy.type === 'image_url') {
+        const image = copy.image_url;
+        const url = typeof image === 'string' ? image : image && typeof image.url === 'string' ? image.url : '';
+        if (url && url.startsWith('data:image/') && latestAssistantImage && url === latestAssistantImage) {
+          copy.image_url = { url: 'webui:latest-assistant-image' };
+        }
+      }
+      return copy;
+    });
+  }
+
+  function restoreLegacyUserImageSummaries(messagesList) {
+    const restored = [];
+    (messagesList || []).forEach((entry) => {
+      if (entry && entry.role === 'user' && Array.isArray(entry.content)) {
+        const imageUrl = extractLatestAssistantImageUrl(restored);
+        if (imageUrl) {
+          const content = entry.content.map((block) => {
+            if (!block || block.type !== 'image_url') return block;
+            const image = block.image_url;
+            const url = typeof image === 'string' ? image : image && typeof image.url === 'string' ? image.url : '';
+            if (url !== 'webui:latest-assistant-image') return block;
+            return { ...block, image_url: { url: imageUrl } };
+          });
+          restored.push({ ...entry, content });
+          return;
+        }
+      }
+      if (
+        entry
+        && entry.role === 'user'
+        && typeof entry.content === 'string'
+        && /(?:^|\n)\s*\[1 image\]\s*$/i.test(entry.content)
+      ) {
+        const imageUrl = extractLatestAssistantImageUrl(restored);
+        if (imageUrl) {
+          const textContent = entry.content.replace(/(?:^|\n)\s*\[1 image\]\s*$/i, '').trim();
+          restored.push({
+            ...entry,
+            content: [
+              ...(textContent ? [{ type: 'text', text: textContent }] : []),
+              { type: 'image_url', image_url: { url: imageUrl } },
+            ],
+          });
+          return;
+        }
+      }
+      restored.push(entry);
+    });
+    return restored;
+  }
+
+  function compactStoredMediaForQuota(sessionsForStore) {
+    const omitted = '[image omitted from local storage]';
+    const compactText = (value) => String(value || '')
+      .replace(/!\[[^\]]*\]\(data:image\/[^)]+\)/gi, omitted)
+      .replace(/data:image\/[^\s<>)]+/gi, omitted);
+    const compactValue = (value) => {
+      if (typeof value === 'string') return compactText(value);
+      if (Array.isArray(value)) {
+        return value.map((item) => {
+          if (item && item.type === 'image_url') {
+            const image = item.image_url;
+            const url = typeof image === 'string' ? image : image && typeof image.url === 'string' ? image.url : '';
+            if (url.startsWith('data:image/')) return { type: 'text', text: omitted };
+          }
+          return compactValue(item);
+        });
+      }
+      if (value && typeof value === 'object') {
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compactValue(item)]));
+      }
+      return value;
+    };
+    return compactValue(sessionsForStore);
+  }
+
   function renderMessageContent(card, role, content) {
     if (Array.isArray(content)) {
       const textContent = extractTextContent(content);
@@ -620,15 +826,28 @@
     const serializedSessions = sessions.map((session) => ({
       ...session,
       messages: Array.isArray(session.messages)
-        ? session.messages.map((message) => ({
+        ? session.messages.map((message, index) => ({
             ...message,
             content: Array.isArray(message.content)
-              ? summarizeMessageContent(message.content)
+              ? serializeMessageContentForStore(message.content, session.messages.slice(0, index))
               : message.content,
           }))
         : [],
     }));
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: serializedSessions, currentSessionId }));
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: serializedSessions, currentSessionId }));
+    } catch (_error) {
+      try {
+        const compactSessions = compactStoredMediaForQuota(serializedSessions);
+        localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: compactSessions, currentSessionId }));
+        toast(
+          text('webui.chat.errors.historyStorageCompacted', 'Browser storage is full; image data was compacted in saved history.'),
+          'error',
+        );
+      } catch (compactError) {
+        toast(compactError.message || String(compactError), 'error');
+      }
+    }
   }
 
   function applySidebarState() {
@@ -707,7 +926,7 @@
       titleLocked: Boolean(item && item.titleLocked),
       model: item && item.model ? String(item.model) : PREFERRED_MODEL,
       system: item && item.system ? String(item.system) : '',
-      messages: Array.isArray(item && item.messages)
+      messages: restoreLegacyUserImageSummaries(Array.isArray(item && item.messages)
         ? item.messages
           .filter((entry) => {
             if (!entry || typeof entry.role !== 'string') return false;
@@ -722,7 +941,7 @@
             createdAt: Number(entry && entry.createdAt) || Date.now(),
             feedback: entry && typeof entry.feedback === 'string' ? entry.feedback : '',
           }))
-        : [],
+        : []),
       updatedAt: Number(item && item.updatedAt) || Date.now(),
     };
   }
@@ -918,7 +1137,7 @@
     return prepared;
   }
 
-  function buildUserMessage(prompt, capability) {
+  function buildUserMessage(prompt, capability, contextImageUrl = '') {
     const textBlock = prompt ? [{ type: 'text', text: prompt }] : [];
     const imageFiles = pendingFiles.filter((file) => (file.type || '').startsWith('image/'));
     const audioFiles = pendingFiles.filter((file) => (file.type || '').startsWith('audio/'));
@@ -931,6 +1150,10 @@
       type: 'image_url',
       image_url: { url: file.dataUrl },
     }));
+    const contextImage = !imageBlocks.length && contextImageUrl
+      ? [{ type: 'image_url', image_url: { url: contextImageUrl } }]
+      : [];
+    const effectiveImageBlocks = imageBlocks.length ? imageBlocks : contextImage;
     const audioBlocks = audioFiles.map((file) => ({
       type: 'input_audio',
       input_audio: {
@@ -956,13 +1179,13 @@
       return { role: 'user', content: prompt };
     }
     if (capability === 'image_edit') {
-      if (!imageBlocks.length) {
+      if (!effectiveImageBlocks.length) {
         throw new Error(text('webui.chat.errors.imageRequired', 'Image edit requires at least one reference image'));
       }
       if (audioBlocks.length || fileBlocks.length) {
         throw new Error(text('webui.chat.errors.imageOnly', 'Image edit only supports image uploads'));
       }
-      return { role: 'user', content: [...textBlock, ...imageBlocks] };
+      return { role: 'user', content: [...textBlock, ...effectiveImageBlocks] };
     }
     if (capability === 'video') {
       if (audioBlocks.length || fileBlocks.length) {
@@ -974,6 +1197,9 @@
     }
     if (imageBlocks.length || audioBlocks.length || fileBlocks.length) {
       return { role: 'user', content: [...textBlock, ...imageBlocks, ...audioBlocks, ...fileBlocks] };
+    }
+    if (capability === 'chat' && contextImage.length) {
+      return { role: 'user', content: [...textBlock, ...contextImage] };
     }
     return { role: 'user', content: prompt };
   }
@@ -1206,6 +1432,26 @@
         }
       });
 
+      const downloadBtn = document.createElement('button');
+      downloadBtn.type = 'button';
+      downloadBtn.className = 'msg-action-btn';
+      downloadBtn.hidden = true;
+      downloadBtn.setAttribute('aria-label', text('webui.chat.downloadImage', 'Download image'));
+      downloadBtn.setAttribute('title', text('webui.chat.downloadImage', 'Download image'));
+      downloadBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="m8 10 4 4 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 20h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
+      downloadBtn.addEventListener('click', async () => {
+        try {
+          const imageUrl = assistantEntryImageUrl(entry);
+          if (!imageUrl) {
+            toast(text('webui.chat.errors.noImageToDownload', 'No image to download'), 'error');
+            return;
+          }
+          await downloadImageUrl(imageUrl);
+        } catch (error) {
+          toast(error.message || String(error), 'error');
+        }
+      });
+
       const likeBtn = document.createElement('button');
       likeBtn.type = 'button';
       likeBtn.className = `msg-action-btn${message && message.feedback === 'up' ? ' active' : ''}`;
@@ -1228,11 +1474,13 @@
 
       right.appendChild(regenBtn);
       right.appendChild(copyBtn);
+      right.appendChild(downloadBtn);
       right.appendChild(likeBtn);
       right.appendChild(dislikeBtn);
       actions.appendChild(right);
       wrap.appendChild(actions);
       entry.actions = actions;
+      entry.downloadBtn = downloadBtn;
       entry.likeBtn = likeBtn;
       entry.dislikeBtn = dislikeBtn;
     }
@@ -1247,6 +1495,7 @@
     if (!entry || !entry.actions) return;
     entry.actions.hidden = entry.messageIndex < 0;
     const message = entry.messageIndex >= 0 ? messages[entry.messageIndex] : null;
+    if (entry.downloadBtn) entry.downloadBtn.hidden = !assistantEntryImageUrl(entry);
     if (entry.likeBtn) entry.likeBtn.classList.toggle('active', Boolean(message && message.feedback === 'up'));
     if (entry.dislikeBtn) entry.dislikeBtn.classList.toggle('active', Boolean(message && message.feedback === 'down'));
   }
@@ -1474,9 +1723,27 @@
     const outgoing = [];
     const system = currentSystemPrompt();
     if (system) outgoing.push({ role: 'system', content: system });
+    const lastUserIndex = (() => {
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index]?.role === 'user') return index;
+      }
+      return -1;
+    })();
+    const lastUserHasImage = lastUserIndex >= 0 && extractImageUrls(messages[lastUserIndex].content).length > 0;
     messages
       .filter((message) => message && (message.role === 'user' || message.role === 'assistant'))
-      .forEach((message) => outgoing.push(message));
+      .forEach((message) => {
+        const originalIndex = messages.indexOf(message);
+        if (
+          lastUserHasImage
+          && message.role === 'user'
+          && originalIndex !== lastUserIndex
+        ) {
+          outgoing.push({ ...message, content: stripUserImageBlocks(message.content) });
+          return;
+        }
+        outgoing.push(message);
+      });
     const payload = {
       model: modelSelect.value || PREFERRED_MODEL,
       messages: outgoing,
@@ -1546,7 +1813,10 @@
 
     let userMessage;
     try {
-      userMessage = buildUserMessage(prompt, capability);
+      const contextImageUrl = promptRequestsNewImage(prompt)
+        ? ''
+        : extractLatestAssistantImageUrl(messages);
+      userMessage = buildUserMessage(prompt, capability, contextImageUrl);
     } catch (error) {
       toast(error.message || String(error), 'error');
       return;
