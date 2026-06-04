@@ -6,6 +6,9 @@
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
   const HIDE_BUILTIN_STORE_KEY = 'grok2api_webui_hide_builtin_models_v1';
+  const MEDIA_DB_NAME = 'grok2api_webui_media_v1';
+  const MEDIA_DB_STORE = 'images';
+  const STORED_IMAGE_PREFIX = 'webui:stored-image:';
 
   const chatLayout = document.getElementById('chatLayout');
   const modelSelect = document.getElementById('modelSelect');
@@ -46,6 +49,8 @@
   const PROMPT_MAX_HEIGHT = 108;
   let pendingThreadScrollFrame = 0;
   let sessionListRenderSignature = '';
+  const pendingMediaWrites = new Map();
+  let pendingMediaFlushFrame = 0;
 
   function text(key, fallback, params) {
     if (typeof window.t !== 'function') return fallback;
@@ -313,7 +318,8 @@
     const normalized = String(value || '').trim().toLowerCase();
     return normalized.includes('/v1/files/image')
       || /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/.test(normalized)
-      || normalized.startsWith('data:image/');
+      || normalized.startsWith('data:image/')
+      || normalized.startsWith(STORED_IMAGE_PREFIX);
   }
 
   function isVideoUrl(value) {
@@ -414,6 +420,7 @@
     const raw = String(value || '').trim();
     if (!raw) return '';
     if (raw.startsWith('data:image/')) return raw;
+    if (raw.startsWith(STORED_IMAGE_PREFIX)) return raw;
     try {
       return new URL(raw, window.location.origin).href;
     } catch {
@@ -435,7 +442,7 @@
   function extractTextImageUrls(source) {
     const textValue = String(source || '');
     const urls = extractMarkdownImageUrls(textValue);
-    const urlRe = /(https?:\/\/[^\s<>)]+|\/v1\/files\/image\?id=[^\s<>)]+|data:image\/[^\s<>)]+)/gi;
+    const urlRe = /(https?:\/\/[^\s<>)]+|\/v1\/files\/image\?id=[^\s<>)]+|data:image\/[^\s<>)]+|webui:stored-image:[a-z0-9-]+)/gi;
     for (let match = urlRe.exec(textValue); match; match = urlRe.exec(textValue)) {
       const url = normalizeImageReferenceUrl(match[1]);
       if (url && isImageUrl(url) && !urls.includes(url)) urls.push(url);
@@ -499,6 +506,12 @@
   async function downloadImageUrl(url) {
     const href = normalizeImageReferenceUrl(url);
     if (!href) return false;
+    if (href.startsWith(STORED_IMAGE_PREFIX)) {
+      const dataUrl = await readStoredImageDataUrl(href);
+      if (!dataUrl) return false;
+      clickDownloadLink(dataUrl, imageDownloadFilename(dataUrl));
+      return true;
+    }
     const filename = imageDownloadFilename(href);
     if (href.startsWith('data:image/')) {
       clickDownloadLink(href, filename);
@@ -644,21 +657,167 @@
     return parts.join('\n\n');
   }
 
+  function storedImageReference(dataUrl) {
+    const value = String(dataUrl || '');
+    let hash = 5381;
+    for (let index = 0; index < value.length; index += 1) {
+      hash = ((hash << 5) + hash + value.charCodeAt(index)) >>> 0;
+    }
+    return `${STORED_IMAGE_PREFIX}${value.length.toString(36)}-${hash.toString(36)}`;
+  }
+
+  function scheduleMediaStoreFlush() {
+    if (pendingMediaFlushFrame || !pendingMediaWrites.size) return;
+    const flush = () => {
+      pendingMediaFlushFrame = 0;
+      void flushPendingMediaWrites();
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      pendingMediaFlushFrame = window.requestIdleCallback(flush, { timeout: 1500 });
+    } else if (typeof window.setTimeout === 'function') {
+      pendingMediaFlushFrame = window.setTimeout(flush, 0);
+    }
+  }
+
+  function queueStoredImageDataUrl(dataUrl) {
+    const value = String(dataUrl || '');
+    const ref = storedImageReference(value);
+    if (value.startsWith('data:image/')) {
+      pendingMediaWrites.set(ref, value);
+      scheduleMediaStoreFlush();
+    }
+    return ref;
+  }
+
+  function openMediaStore() {
+    if (!window.indexedDB) return Promise.reject(new Error('IndexedDB unavailable'));
+    return new Promise((resolve, reject) => {
+      const request = window.indexedDB.open(MEDIA_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(MEDIA_DB_STORE)) db.createObjectStore(MEDIA_DB_STORE, { keyPath: 'id' });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('IndexedDB open failed'));
+    });
+  }
+
+  async function flushPendingMediaWrites() {
+    if (!pendingMediaWrites.size) return;
+    const writes = Array.from(pendingMediaWrites.entries());
+    pendingMediaWrites.clear();
+    let db;
+    try {
+      db = await openMediaStore();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(MEDIA_DB_STORE, 'readwrite');
+        const store = tx.objectStore(MEDIA_DB_STORE);
+        writes.forEach(([id, dataUrl]) => store.put({ id, dataUrl, updatedAt: Date.now() }));
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+        tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
+      });
+    } catch (_error) {
+      writes.forEach(([id, dataUrl]) => pendingMediaWrites.set(id, dataUrl));
+    } finally {
+      if (db) db.close();
+    }
+  }
+
+  async function readStoredImageDataUrl(ref) {
+    if (!String(ref || '').startsWith(STORED_IMAGE_PREFIX)) return '';
+    let db;
+    try {
+      db = await openMediaStore();
+      return await new Promise((resolve) => {
+        const tx = db.transaction(MEDIA_DB_STORE, 'readonly');
+        const request = tx.objectStore(MEDIA_DB_STORE).get(ref);
+        request.onsuccess = () => resolve(request.result && request.result.dataUrl ? request.result.dataUrl : '');
+        request.onerror = () => resolve('');
+      });
+    } catch {
+      return '';
+    } finally {
+      if (db) db.close();
+    }
+  }
+
+  async function hydrateStoredImageRefsInContent(content) {
+    const refRe = /webui:stored-image:[a-z0-9-]+/gi;
+    if (typeof content === 'string') {
+      const refs = Array.from(new Set(content.match(refRe) || []));
+      let hydrated = content;
+      for (const ref of refs) {
+        const dataUrl = await readStoredImageDataUrl(ref);
+        if (dataUrl) hydrated = hydrated.split(ref).join(dataUrl);
+      }
+      return hydrated;
+    }
+    if (!Array.isArray(content)) return content;
+    const next = [];
+    for (const block of content) {
+      if (!block || typeof block !== 'object') {
+        next.push(block);
+        continue;
+      }
+      if (block.type === 'text' && typeof block.text === 'string') {
+        next.push({ ...block, text: await hydrateStoredImageRefsInContent(block.text) });
+        continue;
+      }
+      if (block.type === 'image_url') {
+        const image = block.image_url;
+        const url = typeof image === 'string' ? image : image && typeof image.url === 'string' ? image.url : '';
+        if (url.startsWith(STORED_IMAGE_PREFIX)) {
+          const dataUrl = await readStoredImageDataUrl(url);
+          next.push(dataUrl ? { ...block, image_url: { url: dataUrl } } : block);
+          continue;
+        }
+      }
+      next.push(block);
+    }
+    return next;
+  }
+
+  async function hydrateStoredImageRefsInSessions(sessionsList) {
+    for (const session of sessionsList || []) {
+      for (const message of session.messages || []) {
+        message.content = await hydrateStoredImageRefsInContent(message.content);
+      }
+    }
+  }
+
+  function serializeTextMediaForStore(textValue) {
+    return String(textValue || '').replace(/data:image\/[^\s<>)]+/gi, (match) => queueStoredImageDataUrl(match));
+  }
+
   function serializeMessageContentForStore(content, previousMessages = []) {
+    if (typeof content === 'string') return serializeTextMediaForStore(content);
     if (!Array.isArray(content)) return content;
     const latestAssistantImage = extractLatestAssistantImageUrl(previousMessages);
     return content.map((block) => {
       if (!block || typeof block !== 'object') return block;
       const copy = JSON.parse(JSON.stringify(block));
+      if (copy.type === 'text' && typeof copy.text === 'string') {
+        copy.text = serializeTextMediaForStore(copy.text);
+      }
       if (copy.type === 'image_url') {
         const image = copy.image_url;
         const url = typeof image === 'string' ? image : image && typeof image.url === 'string' ? image.url : '';
         if (url && url.startsWith('data:image/') && latestAssistantImage && url === latestAssistantImage) {
           copy.image_url = { url: 'webui:latest-assistant-image' };
+        } else if (url && url.startsWith('data:image/')) {
+          copy.image_url = { url: queueStoredImageDataUrl(url) };
         }
       }
       return copy;
     });
+  }
+
+  function serializeMessageForStore(message, previousMessages = []) {
+    return {
+      ...message,
+      content: serializeMessageContentForStore(message && message.content, previousMessages),
+    };
   }
 
   function restoreLegacyUserImageSummaries(messagesList) {
@@ -703,21 +862,10 @@
   }
 
   function compactStoredMediaForQuota(sessionsForStore) {
-    const omitted = '[image omitted from local storage]';
-    const compactText = (value) => String(value || '')
-      .replace(/!\[[^\]]*\]\(data:image\/[^)]+\)/gi, omitted)
-      .replace(/data:image\/[^\s<>)]+/gi, omitted);
     const compactValue = (value) => {
-      if (typeof value === 'string') return compactText(value);
+      if (typeof value === 'string') return serializeTextMediaForStore(value);
       if (Array.isArray(value)) {
-        return value.map((item) => {
-          if (item && item.type === 'image_url') {
-            const image = item.image_url;
-            const url = typeof image === 'string' ? image : image && typeof image.url === 'string' ? image.url : '';
-            if (url.startsWith('data:image/')) return { type: 'text', text: omitted };
-          }
-          return compactValue(item);
-        });
+        return value.map((item) => compactValue(item));
       }
       if (value && typeof value === 'object') {
         return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compactValue(item)]));
@@ -826,20 +974,17 @@
     const serializedSessions = sessions.map((session) => ({
       ...session,
       messages: Array.isArray(session.messages)
-        ? session.messages.map((message, index) => ({
-            ...message,
-            content: Array.isArray(message.content)
-              ? serializeMessageContentForStore(message.content, session.messages.slice(0, index))
-              : message.content,
-          }))
+        ? session.messages.map((message, index) => serializeMessageForStore(message, session.messages.slice(0, index)))
         : [],
     }));
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: serializedSessions, currentSessionId }));
+      void flushPendingMediaWrites();
     } catch (_error) {
       try {
         const compactSessions = compactStoredMediaForQuota(serializedSessions);
         localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: compactSessions, currentSessionId }));
+        void flushPendingMediaWrites();
         toast(
           text('webui.chat.errors.historyStorageCompacted', 'Browser storage is full; image data was compacted in saved history.'),
           'error',
@@ -1967,9 +2112,10 @@
     if (abortController) abortController.abort();
   }
 
-  function restoreSessions() {
+  async function restoreSessions() {
     const stored = loadStore();
     sessions = stored.sessions.map(normalizeSession);
+    await hydrateStoredImageRefsInSessions(sessions);
     currentSessionId = stored.currentSessionId;
 
     if (!sessions.length) {
@@ -1992,7 +2138,7 @@
     loadModelFilterState();
     syncModelFilterButton();
     await loadModels();
-    restoreSessions();
+    await restoreSessions();
     resizePromptInput();
     promptInput.focus();
   }

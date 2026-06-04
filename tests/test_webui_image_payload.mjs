@@ -19,7 +19,10 @@ function extractFunction(name) {
 
 const helpers = Function([
   'const window = { location: { origin: "http://localhost:8000" } };',
+  'const STORED_IMAGE_PREFIX = "webui:stored-image:";',
   'let pendingFiles = [];',
+  'const pendingMediaWrites = new Map();',
+  'let pendingMediaFlushFrame = 0;',
   'const text = (_key, fallback) => fallback;',
   extractFunction('isImageUrl'),
   extractFunction('extractImageUrls'),
@@ -30,6 +33,11 @@ const helpers = Function([
   extractFunction('imageDownloadExtension'),
   extractFunction('imageDownloadFilename'),
   extractFunction('compactStoredMediaForQuota'),
+  extractFunction('storedImageReference'),
+  extractFunction('scheduleMediaStoreFlush'),
+  extractFunction('queueStoredImageDataUrl'),
+  extractFunction('serializeTextMediaForStore'),
+  extractFunction('serializeMessageForStore'),
   extractFunction('promptRequestsNewImage'),
   extractFunction('restoreLegacyUserImageSummaries'),
   extractFunction('serializeMessageContentForStore'),
@@ -42,11 +50,16 @@ const helpers = Function([
   '  imageDownloadExtension,',
   '  imageDownloadFilename,',
   '  compactStoredMediaForQuota,',
+  '  storedImageReference,',
+  '  queueStoredImageDataUrl,',
+  '  serializeTextMediaForStore,',
+  '  serializeMessageForStore,',
   '  promptRequestsNewImage,',
   '  restoreLegacyUserImageSummaries,',
   '  serializeMessageContentForStore,',
   '  stripUserImageBlocks,',
   '  buildUserMessage,',
+  '  pendingMediaWrites,',
   '  setPendingFiles(value) { pendingFiles = value; },',
   '};',
 ].join('\n'))();
@@ -131,6 +144,14 @@ assert.equal(
   'http://localhost:8000/v1/files/image?id=abc123456789abcd',
 );
 
+const storedAssistantImage = helpers.storedImageReference(assistantImage);
+assert.equal(
+  helpers.extractLatestAssistantImageUrl([
+    { role: 'assistant', content: `完成了\n![image](${storedAssistantImage})` },
+  ]),
+  storedAssistantImage,
+);
+
 assert.deepEqual(
   helpers.stripUserImageBlocks([
     { type: 'text', text: '上一轮' },
@@ -157,9 +178,17 @@ assert.deepEqual(
   ], history),
   [
     { type: 'text', text: '上传参考图' },
-    { type: 'image_url', image_url: { url: 'data:image/png;base64,bWFudWFs' } },
+    { type: 'image_url', image_url: { url: helpers.storedImageReference('data:image/png;base64,bWFudWFs') } },
   ],
 );
+assert.equal(helpers.pendingMediaWrites.get(helpers.storedImageReference('data:image/png;base64,bWFudWFs')), 'data:image/png;base64,bWFudWFs');
+
+const assistantStored = helpers.serializeMessageForStore(
+  { role: 'assistant', content: `完成了\n![image](${assistantImage})` },
+  [],
+);
+assert.equal(assistantStored.content.includes('data:image/'), false);
+assert.equal(assistantStored.content.includes(helpers.storedImageReference(assistantImage)), true);
 
 assert.deepEqual(
   helpers.restoreLegacyUserImageSummaries([
@@ -195,12 +224,12 @@ assert.deepEqual(
   [{
     id: 's1',
     messages: [
-      { role: 'assistant', content: '完成了\n[image omitted from local storage]' },
+      { role: 'assistant', content: `完成了\n![image](${helpers.storedImageReference(assistantImage)})` },
       {
         role: 'user',
         content: [
           { type: 'text', text: '上传参考图' },
-          { type: 'text', text: '[image omitted from local storage]' },
+          { type: 'image_url', image_url: { url: helpers.storedImageReference('data:image/png;base64,bWFudWFs') } },
         ],
       },
     ],
