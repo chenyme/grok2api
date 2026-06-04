@@ -13,6 +13,7 @@ from app.control.model.enums import Capability, ModeId, Tier
 from app.control.model.spec import ModelSpec
 from app.products.openai.images import _normalize_response_format
 from app.products.openai.chat import _extract_message, _inline_generated_image_id
+from app.products.openai.schemas import ChatCompletionRequest, ImageConfig, MessageItem
 
 
 class ImageResponseFormatTests(unittest.TestCase):
@@ -75,6 +76,46 @@ class ImageResponseFormatTests(unittest.TestCase):
         self.assertIn("[user]: 你好", message)
         self.assertNotIn("assets.grok.com", message)
         self.assertNotIn("image.jpg", message)
+
+    def test_chat_endpoint_passes_image_format_override_to_chat_service(self):
+        async def run_case():
+            router_module = importlib.import_module("app.products.openai.router")
+
+            spec = ModelSpec(
+                "grok-4.3-latest",
+                ModeId.GROK_4_3,
+                Tier.BASIC,
+                Capability.CHAT,
+                True,
+                "Grok 4.3 Latest",
+                upstream_model_name="grok-4.3-latest",
+            )
+            captured = {}
+
+            async def fake_chat_completions(**kwargs):
+                captured.update(kwargs)
+                return {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                }
+
+            with (
+                patch.object(router_module.model_registry, "get", return_value=spec),
+                patch.object(router_module, "chat_completions", fake_chat_completions),
+            ):
+                response = await router_module.chat_completions_endpoint(
+                    ChatCompletionRequest(
+                        model="grok-4.3-latest",
+                        messages=[MessageItem(role="user", content="画一张图")],
+                        image_config=ImageConfig(response_format="local_md"),
+                    )
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(captured["image_format"], "local_md")
+
+        asyncio.run(run_case())
 
     def test_manual_direct_chat_localizes_inline_generated_image_markdown(self):
         async def run_case():

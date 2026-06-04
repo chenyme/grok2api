@@ -72,7 +72,10 @@ assert.deepEqual(
   helpers.webuiImageConfigForCapability('image_edit'),
   { response_format: 'local_url' },
 );
-assert.equal(helpers.webuiImageConfigForCapability('chat'), null);
+assert.deepEqual(
+  helpers.webuiImageConfigForCapability('chat'),
+  { response_format: 'local_md' },
+);
 
 const assistantImage = 'data:image/jpeg;base64,aW1hZ2U=';
 const history = [

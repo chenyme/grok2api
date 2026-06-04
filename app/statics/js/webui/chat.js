@@ -1251,6 +1251,7 @@
   }
 
   function webuiImageConfigForCapability(capability) {
+    if (capability === 'chat') return { response_format: 'local_md' };
     return capability === 'image' || capability === 'image_edit'
       ? { response_format: 'local_url' }
       : null;

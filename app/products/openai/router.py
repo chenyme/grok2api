@@ -355,6 +355,11 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
                 emit_think: bool | None = None
             else:
                 emit_think = req.reasoning_effort != "none"
+            image_format = (
+                req.image_config.response_format
+                if req.image_config and req.image_config.response_format
+                else None
+            )
             result = await chat_completions(
                 model=req.model,
                 messages=messages,
@@ -364,6 +369,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
                 tool_choice=req.tool_choice,
                 temperature=req.temperature or 0.8,
                 top_p=req.top_p or 0.95,
+                image_format=image_format,
             )
 
     except AppError:

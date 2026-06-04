@@ -297,7 +297,7 @@ async def _localize_inline_generated_images(token: str, text: str) -> str:
     return "".join(parts)
 
 
-async def _resolve_image(token: str, url: str, image_id: str) -> str:
+async def _resolve_image(token: str, url: str, image_id: str, image_format: str | None = None) -> str:
     """Return the image embed text for the response body based on image_format config.
 
     Format values:
@@ -308,7 +308,7 @@ async def _resolve_image(token: str, url: str, image_id: str) -> str:
       base64    — ![image](data:...) markdown
     """
     cfg = get_config()
-    fmt = _normalize_image_format(cfg.get_str("features.image_format", "grok_url"))
+    fmt = _normalize_image_format(image_format or cfg.get_str("features.image_format", "grok_url"))
 
     proxy_imagine_public = (
         _is_imagine_public_url(url)
@@ -565,6 +565,7 @@ async def completions(
     temperature: float = 0.8,
     top_p: float = 0.95,
     request_overrides: dict | None = None,
+    image_format: str | None = None,
 ) -> dict | AsyncGenerator[str, None]:
     """Entry point for /v1/chat/completions.
 
@@ -758,7 +759,7 @@ async def completions(
                                     yield f"data: {orjson.dumps(chunk).decode()}\n\n"
 
                             for url, img_id in adapter.image_urls:
-                                img_text = await _resolve_image(token, url, img_id)
+                                img_text = await _resolve_image(token, url, img_id, image_format)
                                 chunk = make_stream_chunk(
                                     response_id, model, img_text + "\n"
                                 )
@@ -942,7 +943,7 @@ async def completions(
         full_text = await _localize_inline_generated_images(token, full_text)
     if adapter.image_urls:
         img_texts = await asyncio.gather(
-            *[_resolve_image(token, url, img_id) for url, img_id in adapter.image_urls],
+            *[_resolve_image(token, url, img_id, image_format) for url, img_id in adapter.image_urls],
             return_exceptions=True,
         )
         for img_text in img_texts:
