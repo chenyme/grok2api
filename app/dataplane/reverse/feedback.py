@@ -61,10 +61,17 @@ def build_account_feedback(
 # Proxy feedback
 # ---------------------------------------------------------------------------
 
+# AUTH_FAILURE is an account-side credential problem (blocked-user,
+# bad-credentials, session-not-found, etc. — see is_invalid_credentials_body),
+# not a proxy/clearance problem. Mapping it to UNAUTHORIZED would invalidate
+# the cached ClearanceBundle (ProxyDirectory.feedback, control/proxy/__init__.py),
+# burning a healthy cf_clearance every time a banned account is exercised.
+# Map to FORBIDDEN so the pool cursor still advances under PROXY_POOL but the
+# bundle stays intact. Aligns with the principle in xai_usage._proxy_feedback_kind_for_error.
 _CATEGORY_TO_PROXY: dict[ResultCategory, ProxyFeedbackKind] = {
     ResultCategory.SUCCESS:      ProxyFeedbackKind.SUCCESS,
     ResultCategory.RATE_LIMITED:  ProxyFeedbackKind.RATE_LIMITED,
-    ResultCategory.AUTH_FAILURE:  ProxyFeedbackKind.UNAUTHORIZED,
+    ResultCategory.AUTH_FAILURE:  ProxyFeedbackKind.FORBIDDEN,
     ResultCategory.FORBIDDEN:     ProxyFeedbackKind.CHALLENGE,
     ResultCategory.UPSTREAM_5XX:  ProxyFeedbackKind.UPSTREAM_5XX,
     ResultCategory.TRANSPORT_ERR: ProxyFeedbackKind.TRANSPORT_ERROR,
