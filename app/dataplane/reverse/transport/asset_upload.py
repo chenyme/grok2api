@@ -192,13 +192,15 @@ async def upload_from_input(token: str, file_input: str) -> tuple[str, str]:
                 resp = await session.get(file_input, headers=headers, timeout=30.0)
             raw  = resp.content
             if resp.status_code != 200:
+                body_text = ""
+                try:
+                    body_text = raw.decode("utf-8", "replace")[:300]
+                except Exception:
+                    pass
+                is_cloudflare = "just a moment" in body_text.lower()
                 await proxy.feedback(
                     lease,
-                    ProxyFeedback(
-                        kind        = ProxyFeedbackKind.UPSTREAM_5XX if resp.status_code >= 500
-                                      else ProxyFeedbackKind.FORBIDDEN,
-                        status_code = resp.status_code,
-                    ),
+                    build_feedback(resp.status_code, is_cloudflare=is_cloudflare),
                 )
                 raise UpstreamError(
                     f"Failed to fetch input URL: {resp.status_code}",
