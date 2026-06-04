@@ -2,11 +2,17 @@
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 from .loader import _deep_merge, get_nested, load_toml
 from .backends import ConfigBackend, create_config_backend
+
+# List-valued config can arrive as a single string from the WebUI textarea
+# (each item on a new line) or a comma-separated string from env-var overrides.
+# Split on either delimiter so operators can use whichever feels natural.
+_LIST_SEPARATOR_RE = re.compile(r"[,\r\n]+")
 
 _BASE_DIR = Path(__file__).resolve().parents[3]  # project root
 
@@ -121,7 +127,7 @@ class ConfigSnapshot:
         if isinstance(val, list):
             return val
         if isinstance(val, str):
-            return [p.strip() for p in val.split(",") if p.strip()]
+            return [p.strip() for p in _LIST_SEPARATOR_RE.split(val) if p.strip()]
         return [val]
 
     async def update(self, patch: dict[str, Any]) -> None:
