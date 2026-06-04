@@ -30,6 +30,7 @@ const helpers = Function([
   extractFunction('extractMarkdownImageUrls'),
   extractFunction('extractTextImageUrls'),
   extractFunction('extractLatestAssistantImageUrl'),
+  extractFunction('createImageSeedMessage'),
   extractFunction('imageDownloadExtension'),
   extractFunction('imageDownloadFilename'),
   extractFunction('compactStoredMediaForQuota'),
@@ -47,6 +48,7 @@ const helpers = Function([
   'return {',
   '  webuiImageConfigForCapability,',
   '  extractLatestAssistantImageUrl,',
+  '  createImageSeedMessage,',
   '  imageDownloadExtension,',
   '  imageDownloadFilename,',
   '  compactStoredMediaForQuota,',
@@ -90,6 +92,29 @@ assert.equal(helpers.imageDownloadExtension('https://example.com/output.webp?x=1
 assert.equal(
   helpers.imageDownloadFilename(assistantImage, new Date('2026-06-04T09:08:07.006Z')),
   'grok-image-2026-06-04T09-08-07-006Z.jpg',
+);
+
+const seedMessage = helpers.createImageSeedMessage('/v1/files/image?id=seed123456789abcd', 123);
+assert.deepEqual(seedMessage, {
+  role: 'assistant',
+  content: '![image](http://localhost:8000/v1/files/image?id=seed123456789abcd)',
+  createdAt: 123,
+  feedback: '',
+});
+assert.equal(
+  helpers.extractLatestAssistantImageUrl([seedMessage]),
+  'http://localhost:8000/v1/files/image?id=seed123456789abcd',
+);
+helpers.setPendingFiles([]);
+assert.deepEqual(
+  helpers.buildUserMessage('基于这张继续改', 'chat', helpers.extractLatestAssistantImageUrl([seedMessage])),
+  {
+    role: 'user',
+    content: [
+      { type: 'text', text: '基于这张继续改' },
+      { type: 'image_url', image_url: { url: 'http://localhost:8000/v1/files/image?id=seed123456789abcd' } },
+    ],
+  },
 );
 
 helpers.setPendingFiles([]);

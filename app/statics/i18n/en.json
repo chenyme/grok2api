@@ -85,6 +85,8 @@
       "edit": "Edit",
       "copy": "Copy",
       "regenerate": "Regenerate",
+      "downloadImage": "Download image",
+      "addImageToNewChat": "Add to new chat",
       "like": "Like",
       "dislike": "Dislike",
       "reasoning": "Thinking",
@@ -92,6 +94,8 @@
       "cancel": "Cancel",
       "confirm": "Confirm",
       "copySuccess": "Copied",
+      "imageBaseChat": "Image chat",
+      "imageAddedToNewChat": "Added to a new chat",
       "renamePrompt": "Rename session",
       "deleteConfirm": "Delete this session?",
       "modelLabel": "Model",
@@ -120,6 +124,8 @@
         "videoImageOnly": "Video generation only supports image reference uploads",
         "imageProxyRequired": "Image failed to load. Set APP Base URL and change image output format to local_url, local_md, or base64.",
         "videoProxyRequired": "Video loading returned 403. Go to the admin page, set the APP Base URL, then change the video output format to local proxy mode (local_url or local_html) and retry.",
+        "noImageToDownload": "No image to download",
+        "noImageToAdd": "No image to add",
         "requestFailed": "Request failed",
         "initFailed": "Chat page initialization failed"
       }

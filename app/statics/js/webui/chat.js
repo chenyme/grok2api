@@ -462,6 +462,18 @@
     return '';
   }
 
+  function createImageSeedMessage(imageUrl, now = Date.now()) {
+    const url = normalizeImageReferenceUrl(imageUrl);
+    if (!url || !isImageUrl(url)) return null;
+    const createdAt = Number(now);
+    return {
+      role: 'assistant',
+      content: `![image](${url})`,
+      createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : Date.now(),
+      feedback: '',
+    };
+  }
+
   function imageDownloadExtension(url) {
     const value = String(url || '').trim().toLowerCase();
     const dataMatch = value.match(/^data:image\/([^;,]+)/);
@@ -1498,6 +1510,7 @@
       waiting: isAssistantWaiting,
       messageIndex,
       actions: null,
+      addToNewChatBtn: null,
       likeBtn: null,
       dislikeBtn: null,
       renderFrame: 0,
@@ -1598,6 +1611,22 @@
         }
       });
 
+      const addToNewChatBtn = document.createElement('button');
+      addToNewChatBtn.type = 'button';
+      addToNewChatBtn.className = 'msg-action-btn';
+      addToNewChatBtn.hidden = true;
+      addToNewChatBtn.setAttribute('aria-label', text('webui.chat.addImageToNewChat', 'Add to new chat'));
+      addToNewChatBtn.setAttribute('title', text('webui.chat.addImageToNewChat', 'Add to new chat'));
+      addToNewChatBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3" stroke="currentColor" stroke-width="1.7"/><path d="M12 9v6M9 12h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M8 19 5 22v-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      addToNewChatBtn.addEventListener('click', () => {
+        const imageUrl = assistantEntryImageUrl(entry);
+        if (!imageUrl) {
+          toast(text('webui.chat.errors.noImageToAdd', 'No image to add'), 'error');
+          return;
+        }
+        startNewSessionFromImage(imageUrl);
+      });
+
       const likeBtn = document.createElement('button');
       likeBtn.type = 'button';
       likeBtn.className = `msg-action-btn${message && message.feedback === 'up' ? ' active' : ''}`;
@@ -1621,12 +1650,14 @@
       right.appendChild(regenBtn);
       right.appendChild(copyBtn);
       right.appendChild(downloadBtn);
+      right.appendChild(addToNewChatBtn);
       right.appendChild(likeBtn);
       right.appendChild(dislikeBtn);
       actions.appendChild(right);
       wrap.appendChild(actions);
       entry.actions = actions;
       entry.downloadBtn = downloadBtn;
+      entry.addToNewChatBtn = addToNewChatBtn;
       entry.likeBtn = likeBtn;
       entry.dislikeBtn = dislikeBtn;
     }
@@ -1641,7 +1672,9 @@
     if (!entry || !entry.actions) return;
     entry.actions.hidden = entry.messageIndex < 0;
     const message = entry.messageIndex >= 0 ? messages[entry.messageIndex] : null;
-    if (entry.downloadBtn) entry.downloadBtn.hidden = !assistantEntryImageUrl(entry);
+    const imageUrl = assistantEntryImageUrl(entry);
+    if (entry.downloadBtn) entry.downloadBtn.hidden = !imageUrl;
+    if (entry.addToNewChatBtn) entry.addToNewChatBtn.hidden = !imageUrl;
     if (entry.likeBtn) entry.likeBtn.classList.toggle('active', Boolean(message && message.feedback === 'up'));
     if (entry.dislikeBtn) entry.dislikeBtn.classList.toggle('active', Boolean(message && message.feedback === 'down'));
   }
@@ -1817,6 +1850,32 @@
     setStatus(text('webui.chat.statusReady', 'Ready'));
     persistStore();
     promptInput.focus();
+  }
+
+  function startNewSessionFromImage(imageUrl) {
+    const seedMessage = createImageSeedMessage(imageUrl);
+    if (!seedMessage) {
+      toast(text('webui.chat.errors.noImageToAdd', 'No image to add'), 'error');
+      return;
+    }
+    const session = createSession();
+    session.title = text('webui.chat.imageBaseChat', 'Image chat');
+    session.messages = [seedMessage];
+    session.updatedAt = Date.now();
+    sessions.unshift(session);
+    currentSessionId = session.id;
+    messages = session.messages;
+    pendingFiles = [];
+    activeEdit = null;
+    if (fileInput) fileInput.value = '';
+    renderUploadMeta();
+    renderSessionList();
+    renderThread();
+    resizePromptInput();
+    setStatus(text('webui.chat.statusReady', 'Ready'));
+    persistStore();
+    promptInput.focus();
+    toast(text('webui.chat.imageAddedToNewChat', 'Added to a new chat'), 'success');
   }
 
   function renameSession(id) {

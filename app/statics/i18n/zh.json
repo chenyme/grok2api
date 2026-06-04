@@ -85,6 +85,8 @@
       "edit": "编辑",
       "copy": "复制",
       "regenerate": "重新生成",
+      "downloadImage": "下载图片",
+      "addImageToNewChat": "添加到新对话",
       "like": "点赞",
       "dislike": "点踩",
       "reasoning": "思考过程",
@@ -92,6 +94,8 @@
       "cancel": "取消",
       "confirm": "确认",
       "copySuccess": "已复制",
+      "imageBaseChat": "图片新对话",
+      "imageAddedToNewChat": "已添加到新对话",
       "renamePrompt": "修改会话名称",
       "deleteConfirm": "确定删除这个会话吗？",
       "modelLabel": "模型",
@@ -120,6 +124,8 @@
         "videoImageOnly": "视频生成只支持上传图片作为参考图",
         "imageProxyRequired": "图片加载失败。请先设置 APP 访问地址，并将图片返回格式改为 local_url、local_md 或 base64。",
         "videoProxyRequired": "视频加载 403，请前往管理页面设置 APP 访问地址后，将频返回格式改为本地代理（ local_url 或 local_html）模式后重试。",
+        "noImageToDownload": "没有可下载的图片",
+        "noImageToAdd": "没有可添加的图片",
         "requestFailed": "请求失败",
         "initFailed": "聊天页面初始化失败"
       }
