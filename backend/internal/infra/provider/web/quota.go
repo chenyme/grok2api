@@ -28,9 +28,16 @@ func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) 
 			return provider.QuotaSnapshot{}, weeklyErr
 		}
 		return provider.QuotaSnapshot{Tier: credential.WebTier, Windows: []account.QuotaWindow{weekly}, SyncedAt: time.Now().UTC()}, nil
-	case account.WebTierAuto:
+	case account.WebTierAuto, account.WebTierBasic:
 		if weeklyErr == nil {
 			return provider.QuotaSnapshot{Tier: account.WebTierSuper, Windows: []account.QuotaWindow{weekly}, SyncedAt: time.Now().UTC()}, nil
+		}
+		if autoWindow, autoErr := a.SyncQuotaMode(ctx, credential, "auto"); autoErr == nil {
+			windows := []account.QuotaWindow{autoWindow}
+			if fastWindow, fastErr := a.SyncQuotaMode(ctx, credential, "fast"); fastErr == nil {
+				windows = append(windows, fastWindow)
+			}
+			return provider.QuotaSnapshot{Tier: account.WebTierSuper, Windows: windows, SyncedAt: time.Now().UTC()}, nil
 		}
 	}
 	fast, err := a.SyncQuotaMode(ctx, credential, "fast")

@@ -134,7 +134,7 @@ func (a *Adapter) PricingModel(upstreamModel string) string {
 
 func (a *Adapter) ListModels(_ context.Context, credential account.Credential) ([]string, error) {
 	tier := credential.WebTier
-	if tier == "" || tier == account.WebTierAuto {
+	if tier == "" || tier == account.WebTierAuto || tier == account.WebTierBasic {
 		tier = account.WebTierBasic
 	}
 	values := make([]string, 0, len(catalog))

@@ -194,7 +194,40 @@ func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
 	if err := s.models.UpsertDiscovered(ctx, account.ProviderBuild, models); err != nil {
 		return 0, err
 	}
-	return len(models), nil
+	synced := len(models)
+
+	// Web SSO accounts: sync model capabilities so /v1/models includes Web-only models.
+	webAccounts, webErr := s.accounts.ListEnabled(ctx, account.ProviderWeb)
+	if webErr == nil && len(webAccounts) > 0 {
+		webAdapter, webOk := s.providers.Models(account.ProviderWeb)
+		if webOk {
+			webResults, _, _ := batch.Map(ctx, webAccounts, batch.Options{Workers: s.bulkPool.Limit(), Pool: s.bulkPool}, func(workCtx context.Context, value account.Credential) ([]string, error) {
+				return s.syncAccountCapabilities(workCtx, value, webAdapter)
+			})
+			webModels := make(map[string]struct{})
+			for _, result := range webResults {
+				if result.Err == nil {
+					for _, value := range result.Value {
+						value = strings.TrimSpace(value)
+						if value != "" {
+							webModels[value] = struct{}{}
+						}
+					}
+				}
+			}
+			if len(webModels) > 0 {
+				webModelSlice := make([]string, 0, len(webModels))
+				for value := range webModels {
+					webModelSlice = append(webModelSlice, value)
+				}
+				if upsertErr := s.models.UpsertDiscovered(ctx, account.ProviderWeb, webModelSlice); upsertErr == nil {
+					synced += len(webModelSlice)
+				}
+			}
+		}
+	}
+
+	return synced, nil
 }
 
 // HasSuccessfulAccountSync 判断账号是否已有成功模型能力快照，不触发上游请求。

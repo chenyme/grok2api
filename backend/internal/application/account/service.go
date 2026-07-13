@@ -1343,7 +1343,12 @@ func (s *Service) refreshWebQuotaMode(ctx context.Context, id uint64, mode strin
 	}
 	tier := value.WebTier
 	if tier == "" || tier == accountdomain.WebTierAuto {
-		tier = accountdomain.WebTierBasic
+		if snapshot, syncErr := adapter.SyncQuota(ctx, value); syncErr == nil {
+			tier = snapshot.Tier
+			_ = s.accounts.ReplaceQuotaWindows(ctx, id, snapshot.Tier, snapshot.SyncedAt, snapshot.Windows)
+		} else {
+			tier = accountdomain.WebTierBasic
+		}
 	}
 	now := time.Now().UTC()
 	if err := s.accounts.SaveQuotaWindows(ctx, id, tier, now, []accountdomain.QuotaWindow{window}); err != nil {
