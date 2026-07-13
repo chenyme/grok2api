@@ -43,6 +43,7 @@ type responsesToolCompatibility struct {
 	streamCalls       map[string]*responsesStreamCall
 	legacyLocalShell  bool
 	nativeShell       bool
+	webSearchDisabled bool
 	warnings          []string
 	warningSet        map[string]struct{}
 	changed           bool
@@ -117,8 +118,11 @@ func normalizeResponsesTools(payload map[string]json.RawMessage) (*responsesTool
 		normalizedTools = append(normalizedTools, searchTool)
 	}
 	normalizedTools = dedupeNormalizedTools(normalizedTools)
-	if hasTools || len(normalizedTools) > 0 {
+	if len(normalizedTools) > 0 {
 		payload["tools"] = mustJSON(normalizedTools)
+	} else if hasTools && compatibility.webSearchDisabled {
+		delete(payload, "tools")
+		compatibility.changed = true
 	}
 	if err := compatibility.normalizeToolChoice(payload, normalizedTools); err != nil {
 		return nil, err
@@ -533,9 +537,20 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 	}
 	object, ok := choice.(map[string]any)
 	if !ok {
+		if value, isString := choice.(string); isString && (value == "auto" || value == "required") && c.webSearchDisabled && len(normalizedTools) == 0 {
+			payload["tool_choice"] = mustJSON("none")
+			c.changed = true
+			c.addWarning("web_search_tool_choice_disabled")
+		}
 		return nil
 	}
 	kind := stringField(object, "type")
+	if c.webSearchDisabled && normalizeHostedToolChoiceKind(kind) == "web_search" && !hasToolType(normalizedTools, "web_search") {
+		payload["tool_choice"] = mustJSON("none")
+		c.changed = true
+		c.addWarning("web_search_tool_choice_disabled")
+		return nil
+	}
 	if kind == "tool_search" {
 		if c.clientSearchTool == nil {
 			return &responsesRequestError{Message: "tool_choice 引用了未声明的 tool_search", Param: "tool_choice", Code: "invalid_parameter"}

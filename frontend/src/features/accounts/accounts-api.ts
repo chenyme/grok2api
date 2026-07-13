@@ -22,7 +22,16 @@ export type BillingDTO = {
   usagePeriodEnd?: string;
   billingPeriodStart?: string;
   billingPeriodEnd?: string;
+  history?: BillingHistoryDTO[];
   syncedAt: string;
+};
+
+export type BillingHistoryDTO = {
+  year: number;
+  month: number;
+  includedUsed: number;
+  onDemandUsed: number;
+  totalUsed: number;
 };
 
 export type QuotaDTO = {
@@ -114,12 +123,15 @@ export type DevicePollDTO = {
   syncFailed?: number;
 };
 
+const billingHistoryValidator = hasShape({
+  year: isNumber, month: isNumber, includedUsed: isNumber, onDemandUsed: isNumber, totalUsed: isNumber,
+});
 const billingValidator = hasShape({
   planCode: isOptional(isString), planName: isOptional(isString), monthlyLimit: isNumber, used: isNumber, remaining: isNumber,
   onDemandCap: isNumber, onDemandUsed: isNumber, prepaidBalance: isNumber, creditUsagePercent: isNumber,
   isUnifiedBillingUser: isBoolean, topUpMethod: isOptional(isString), usagePeriodType: isOptional(isString),
   usagePeriodStart: isOptional(isString), usagePeriodEnd: isOptional(isString), billingPeriodStart: isOptional(isString),
-  billingPeriodEnd: isOptional(isString), syncedAt: isString,
+  billingPeriodEnd: isOptional(isString), history: isOptional(isArrayOf(billingHistoryValidator)), syncedAt: isString,
 });
 const quotaValidator = hasShape({
   type: isOneOf("free", "paid", "unknown"), source: isOneOf("unknown", "upstreamBilling", "upstreamExhaustion", "responseModel", "billingProfile"),
@@ -144,6 +156,7 @@ const accountValidator = hasShape({
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")),
   createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
 });
+const decodeBilling = createValidatedDecoder<BillingDTO>("billing", billingValidator);
 const decodeAccount = createValidatedDecoder<AccountDTO>("account", accountValidator);
 const decodeAccountPage = createPaginatedDecoder<AccountDTO>(accountValidator);
 const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account summary", {
@@ -198,8 +211,8 @@ export function deleteAccount(id: string): Promise<{ deleted: boolean }> {
   return apiRequest(`/api/admin/v1/accounts/${id}`, { method: "DELETE" }, decodeBooleanResult<{ deleted: boolean }>("deleted"));
 }
 
-export function refreshAccountBilling(id: string): Promise<AccountDTO> {
-  return apiRequest(`/api/admin/v1/accounts/${id}/refresh-billing`, { method: "POST" }, decodeAccount);
+export function refreshAccountBilling(id: string): Promise<BillingDTO> {
+  return apiRequest(`/api/admin/v1/accounts/${id}/refresh-billing`, { method: "POST" }, decodeBilling);
 }
 
 export function refreshAccountToken(id: string): Promise<AccountDTO> {

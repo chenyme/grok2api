@@ -82,13 +82,13 @@ Grok Build `0.2.99` 尚未原生接受 OpenAI 新版 `namespace` 与 `tool_searc
 
 `apply_patch` 不在 0.2.99 上游枚举中，网关将其包装为具有严格 operation schema 的内部 function，并在 JSON、SSE 和续轮历史中双向恢复 `apply_patch_call`/`apply_patch_call_output`。流式 function 参数事件不会泄露给 Codex；网关等待 operation 完整后再发出标准 output item added/done。`computer_use_preview` 涉及截图与动作循环，无法安全等价模拟，继续返回明确的不支持错误。
 
-`web_search_preview` 及其版本别名会转换为最小 `web_search` 声明；当前上游会以 `Argument not supported` 拒绝 Codex/OpenAI 新版的 `external_web_access`、`indexed_web_access`、`search_content_types`、`search_context_size`、`user_location` 和 `filters` 等控制字段，因此兼容层会将可安全放宽的已知字段降级为 0.2.99 的最小搜索声明。`external_web_access: false`、非空 `filters` 或 `allowed_domains` 属于权限/范围约束，无法保证时明确拒绝，不会静默扩大搜索范围；其他未知字段同样报错。
+`web_search_preview` 及其版本别名会转换为最小 `web_search` 声明；当前上游会以 `Argument not supported` 拒绝 Codex/OpenAI 新版的 `external_web_access`、`indexed_web_access`、`search_content_types`、`search_context_size`、`user_location` 和 `filters` 等控制字段，因此兼容层会将可安全放宽的已知字段降级为 0.2.99 的最小搜索声明。遇到 `external_web_access: false` 时会移除整个 Web Search 工具，并将显式选择该工具的 `tool_choice` 收敛为 `none`，确保不会把“禁止外网”静默扩大为可联网搜索；这会禁用包括索引搜索在内的全部 Web Search，并通过兼容警告公开该降级。非空 `filters` 或 `allowed_domains` 等无法用更严格子集等价执行的范围约束仍会明确拒绝；其他未知字段同样报错。
 
 OpenAI `custom` 工具会转换为只接受 `input` 字符串的普通函数，并在 JSON/SSE 响应及续轮历史中恢复为 `custom_tool_call`、`custom_tool_call_output` 和 `response.custom_tool_call_input.*` 事件。纯文本 format 可兼容；grammar 无法等价表达，会返回 `unsupported_parameter`。
 
 Codex 的可见 `agent_message` 与 `mcp_tool_call_output` 会保留为 developer 文本；`local_shell_call/output` 与 `apply_patch_call/output` 保持结构化续轮协议。不透明或加密的 agent 内容会替换为不含密文的边界消息，`compaction_trigger` 会替换为压缩边界消息，避免静默丢弃或让整轮失败。SSE 兼容层只向下游保留标准 `response.*`、`error` 与 `[DONE]`，过滤上游私有事件，同时保留标准 comment、`id` 和 `retry` 字段。
 
-发生协议降级时，响应 Header `X-Grok2API-Compatibility-Warnings` 会返回稳定的逗号分隔代码，例如 `web_search_controls_downgraded`、`legacy_local_shell_upgraded`、`apply_patch_emulated`、`additional_tools_position_approximated`。客户端可记录这些代码进行审计，不包含提示词、工具参数或凭据。
+发生协议降级时，响应 Header `X-Grok2API-Compatibility-Warnings` 会返回稳定的逗号分隔代码，例如 `web_search_controls_downgraded`、`web_search_disabled_no_external_access`、`web_search_tool_choice_disabled`、`legacy_local_shell_upgraded`、`apply_patch_emulated`、`additional_tools_position_approximated`。客户端可记录这些代码进行审计，不包含提示词、工具参数或凭据。
 
 Chat Completions 与 Messages 都先转换为标准 Responses 输入项。Build 将其发送到原生 Responses 上游，并把 JSON/SSE 转回调用方协议；Web 再把同一规范输入转换为 app-chat 对话载荷。两种 Provider 都支持文本、URL/Base64 图片、客户端函数工具和工具结果。不支持的音频、Files API、Anthropic server tools 和 Web `/responses/compact` 会返回明确错误，不会静默丢弃。
 
@@ -96,7 +96,7 @@ Anthropic Messages 使用 `POST /v1/messages`，要求 `anthropic-version`，客
 
 Messages 转换层兼容 Claude Code 常见载荷：标准顶层 `system` 与误放在 `messages` 数组中的 `system`/`developer` 都会按原顺序合并为 Responses `instructions`，不会再因 `role: "system"` 返回 400。请求固定使用 `store: false`；`metadata.user_id` 映射为 `safety_identifier`。`thinking.enabled`/`thinking.adaptive` 会依据 `budget_tokens` 和 effort 映射到 Grok reasoning，并请求 `reasoning.encrypted_content`；JSON 与 SSE 会恢复 `thinking_delta`、`signature_delta`、`thinking` 或 `redacted_thinking`，便于下一轮原样回放，不伪造签名。
 
-客户端工具支持 `strict`、`tool_choice.disable_parallel_tool_use`、严格的 `tool_use`/`tool_result` 配对和重复 ID 校验；带 `is_error` 的结果会保留失败语义。`tool_result` 可包含文本、图片和文档，Messages 普通输入也支持 URL/Base64 图片、文本 document，以及 Build 上游可处理的 URL/Base64 `input_file`。Build 可把 `mcp_servers` 转换为原生 MCP 工具；Grok Web 对无法等价执行的 MCP 或文件内容返回明确错误。`stop_sequences` 在 JSON/SSE 下由网关跨内容块、跨增量执行并返回真实 `stop_sequence`；无法等价表示的 `top_k` 会在请求上游前明确拒绝。
+客户端工具支持 `strict`、`tool_choice.disable_parallel_tool_use`、严格的 `tool_use`/`tool_result` 配对和重复 ID 校验；带 `is_error` 的结果会保留失败语义。`tool_result` 可包含文本、图片、文档和 Anthropic `tool_reference`；引用只允许指向本次请求已声明的工具，并转换为确定性的搜索命中结果，因为对应工具定义已随请求提供给 Build。Messages 普通输入也支持 URL/Base64 图片、文本 document，以及 Build 上游可处理的 URL/Base64 `input_file`。Build 可把 `mcp_servers` 转换为原生 MCP 工具；Grok Web 对无法等价执行的 MCP 或文件内容返回明确错误。`stop_sequences` 在 JSON/SSE 下由网关跨内容块、跨增量执行并返回真实 `stop_sequence`；无法等价表示的 `top_k` 会在请求上游前明确拒绝。
 
 图片编辑严格使用 xAI 当前 JSON 结构：`image.url` 或 `images[].url` 可使用公网 HTTPS URL 或 Base64 data URI，数量参数使用 `n`，`resolution` 支持 `1k`、`2k` 且默认 `1k`。不接受 multipart 或 `image_count` 等非官方兼容字段。当前未实现 Files API，因此 `image.file_id` 会返回明确的不支持错误。
 
