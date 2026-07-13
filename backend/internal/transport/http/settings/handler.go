@@ -100,7 +100,7 @@ type providerBuildRecommendationDTO struct {
 }
 
 type updateRequest struct {
-	Revision uint64            `json:"revision,string" binding:"required"`
+	Revision uint64            `json:"revision,string"`
 	Config   settingsConfigDTO `json:"config" binding:"required"`
 }
 
@@ -110,8 +110,8 @@ func (h *Handler) get(c *gin.Context) {
 
 func (h *Handler) update(c *gin.Context) {
 	var request updateRequest
-	if c.ShouldBindJSON(&request) != nil {
-		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+	if err := c.ShouldBindJSON(&request); err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效: "+err.Error())
 		return
 	}
 	result, err := h.service.Update(c.Request.Context(), request.Revision, request.Config.toApplication())
