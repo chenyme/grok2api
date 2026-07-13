@@ -27,6 +27,7 @@ func (c *responsesToolCompatibility) normalizeCustomTool(tool map[string]any, na
 	}
 	description += "Provide the custom tool input in the input string field."
 	c.changed = true
+	c.addWarning("custom_tool_emulated")
 	return []any{map[string]any{
 		"type": "function", "name": c.alias(identity), "description": description,
 		"parameters": map[string]any{

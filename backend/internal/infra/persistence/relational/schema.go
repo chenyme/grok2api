@@ -17,7 +17,6 @@ var schemaModels = []any{
 	&quotaRecoveryModel{},
 	&modelRouteModel{},
 	&modelRouteAccountModel{},
-	&modelRouteSuppressionModel{},
 	&accountModelCapabilityModel{},
 	&accountModelSyncStateModel{},
 	&clientKeyModel{},

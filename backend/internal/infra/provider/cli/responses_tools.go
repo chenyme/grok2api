@@ -19,6 +19,7 @@ const (
 	responsesFunctionTool responsesToolKind = iota
 	responsesCustomTool
 	responsesToolSearch
+	responsesApplyPatchTool
 )
 
 type responsesToolIdentity struct {
@@ -40,6 +41,10 @@ type responsesToolCompatibility struct {
 	clientSearchTool  map[string]any
 	clientSearchParam string
 	streamCalls       map[string]*responsesStreamCall
+	legacyLocalShell  bool
+	nativeShell       bool
+	warnings          []string
+	warningSet        map[string]struct{}
 	changed           bool
 }
 
@@ -57,6 +62,7 @@ func newResponsesToolCompatibility() *responsesToolCompatibility {
 		aliases:         make(map[string]responsesToolIdentity),
 		identityAliases: make(map[string]string),
 		streamCalls:     make(map[string]*responsesStreamCall),
+		warningSet:      make(map[string]struct{}),
 	}
 }
 
@@ -110,6 +116,7 @@ func normalizeResponsesTools(payload map[string]json.RawMessage) (*responsesTool
 		}
 		normalizedTools = append(normalizedTools, searchTool)
 	}
+	normalizedTools = dedupeNormalizedTools(normalizedTools)
 	if hasTools || len(normalizedTools) > 0 {
 		payload["tools"] = mustJSON(normalizedTools)
 	}
@@ -237,6 +244,7 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 			return nil, &responsesRequestError{Message: param + ".tools 必须是数组", Param: param + ".tools", Code: "invalid_parameter"}
 		}
 		c.changed = true
+		c.addWarning("namespace_flattened")
 		if clientSearch && !force && namespaceHasDeferredFunctions(children) {
 			c.deferredSurfaces = append(c.deferredSurfaces, describeDeferredTool(name, stringField(tool, "description")))
 		}
@@ -262,6 +270,7 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 			return nil, &responsesRequestError{Message: "tool_search_output.tools 不能再次声明 tool_search", Param: param, Code: "unsupported_parameter"}
 		}
 		c.changed = true
+		c.addWarning("client_tool_search_emulated")
 		c.clientSearchTool = cloneJSONObject(tool)
 		c.clientSearchParam = param
 		return nil, nil
@@ -271,9 +280,15 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 		return c.normalizeWebSearchTool(tool, kind, param)
 	case "mcp":
 		return c.normalizeMCPTool(tool, clientSearch, force, param)
-	case "x_search", "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter", "shell":
+	case "shell":
+		return c.normalizeShellTool(tool, param)
+	case "local_shell":
+		return c.normalizeLegacyLocalShellTool(tool, param)
+	case "apply_patch":
+		return c.normalizeApplyPatchTool(tool, namespace, param)
+	case "x_search", "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter":
 		return c.normalizeNativeTool(tool, param)
-	case "local_shell", "apply_patch", "computer_use_preview":
+	case "computer_use_preview":
 		return nil, unsupportedBuildToolError(kind, param)
 	default:
 		if kind == "" {
@@ -428,7 +443,24 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			delete(converted, "namespace")
 			c.changed = true
 			rewritten = append(rewritten, converted)
+		case "apply_patch_call":
+			converted, err := c.normalizeApplyPatchCallInput(item, param)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			c.changed = true
+			rewritten = append(rewritten, converted)
+		case "apply_patch_call_output":
+			converted, err := normalizeApplyPatchOutputInput(item, param)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			c.changed = true
+			rewritten = append(rewritten, converted)
 		case "agent_message":
+			if _, visible := textInputContent(item["content"]); !visible {
+				c.addWarning("opaque_agent_message_redacted")
+			}
 			converted, err := normalizeAgentMessageInput(item, param)
 			if err != nil {
 				return nil, nil, nil, err
@@ -436,7 +468,14 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			c.changed = true
 			rewritten = append(rewritten, converted)
 		case "local_shell_call":
-			converted, err := normalizeLocalShellInput(item, param)
+			converted, err := normalizeLegacyLocalShellCallInput(item, param)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			c.changed = true
+			rewritten = append(rewritten, converted)
+		case "local_shell_call_output":
+			converted, err := normalizeLegacyLocalShellOutputInput(item, param)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -450,15 +489,18 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			c.changed = true
 			rewritten = append(rewritten, converted)
 		case "compaction_trigger":
-			return nil, nil, nil, &responsesRequestError{
-				Message: "Grok Build 不支持 compaction_trigger input item",
-				Param:   param, Code: "unsupported_parameter",
-			}
+			c.changed = true
+			c.addWarning("compaction_boundary_preserved")
+			rewritten = append(rewritten, compatibilityBoundaryMessage("Codex context compaction boundary reached."))
 		case "additional_tools":
-			return nil, nil, nil, &responsesRequestError{
-				Message: "Grok Build 当前不支持 additional_tools 的位置语义",
-				Param:   param, Code: "unsupported_parameter",
+			marker, additional, visible, err := c.normalizeAdditionalToolsInput(item, param)
+			if err != nil {
+				return nil, nil, nil, err
 			}
+			loadedTools = append(loadedTools, additional...)
+			visibleTools = append(visibleTools, visible...)
+			c.changed = true
+			rewritten = append(rewritten, marker)
 		default:
 			rewritten = append(rewritten, cloneJSONValue(item))
 		}
@@ -524,6 +566,16 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 		payload["tool_choice"] = mustJSON(object)
 		return nil
 	}
+	if kind == "apply_patch" {
+		identity := responsesToolIdentity{Kind: responsesApplyPatchTool, Name: "apply_patch"}
+		alias, exists := c.identityAliases[identity.key()]
+		if !exists {
+			return &responsesRequestError{Message: "tool_choice 引用了未声明的 apply_patch 工具", Param: "tool_choice", Code: "invalid_parameter"}
+		}
+		payload["tool_choice"] = mustJSON(map[string]any{"type": "function", "name": alias})
+		c.changed = true
+		return nil
+	}
 	if normalizedKind := normalizeHostedToolChoiceKind(kind); normalizedKind != "" {
 		if !hasSingleToolType(normalizedTools, normalizedKind) {
 			return &responsesRequestError{
@@ -579,6 +631,8 @@ func (c *responsesToolCompatibility) alias(identity responsesToolIdentity) strin
 	base := identity.Name
 	if identity.Kind == responsesToolSearch {
 		base = "grok2api_tool_search"
+	} else if identity.Kind == responsesApplyPatchTool {
+		base = "grok2api_apply_patch"
 	} else if identity.Namespace != "" {
 		separator := "__"
 		if strings.HasSuffix(identity.Namespace, separator) {

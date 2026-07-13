@@ -1001,6 +1001,7 @@ func writeOpenAIError(c *gin.Context, status int, code, message string) {
 func writeGatewayError(c *gin.Context, err error) {
 	status, code := http.StatusBadGateway, "upstream_unavailable"
 	message := "上游服务暂不可用"
+	var upstreamFailure *gateway.UpstreamFailure
 	switch {
 	case errors.Is(err, clientkeyapp.ErrBillingLimit):
 		status, code = http.StatusTooManyRequests, "billing_limit_exceeded"
@@ -1011,6 +1012,8 @@ func writeGatewayError(c *gin.Context, err error) {
 	case errors.Is(err, gateway.ErrResponseNotFound):
 		status, code = http.StatusNotFound, "response_not_found"
 		message = "Response 不存在或已过期"
+	case errors.As(err, &upstreamFailure):
+		status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
 	case errors.Is(err, gateway.ErrResponseAccountUnavailable), errors.Is(err, gateway.ErrNoAvailableAccount):
 		status, code = http.StatusServiceUnavailable, "upstream_unavailable"
 		message = "当前没有可用的上游账号"
@@ -1021,6 +1024,7 @@ func writeGatewayError(c *gin.Context, err error) {
 func writeGatewayAnthropicError(c *gin.Context, err error) {
 	status, errorType := http.StatusBadGateway, "api_error"
 	message := "上游服务暂不可用"
+	var upstreamFailure *gateway.UpstreamFailure
 	switch {
 	case errors.Is(err, clientkeyapp.ErrBillingLimit):
 		status, errorType = http.StatusTooManyRequests, "rate_limit_error"
@@ -1028,6 +1032,11 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 	case errors.Is(err, gateway.ErrModelNotFound):
 		status, errorType = http.StatusNotFound, "not_found_error"
 		message = "模型不存在"
+	case errors.As(err, &upstreamFailure):
+		status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
+		if status == http.StatusTooManyRequests {
+			errorType = "rate_limit_error"
+		}
 	case errors.Is(err, gateway.ErrResponseAccountUnavailable), errors.Is(err, gateway.ErrNoAvailableAccount):
 		status, errorType = http.StatusServiceUnavailable, "overloaded_error"
 		message = "当前没有可用的上游账号"

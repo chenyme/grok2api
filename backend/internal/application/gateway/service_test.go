@@ -157,6 +157,86 @@ func TestParseFreeQuotaExhaustion(t *testing.T) {
 	}
 }
 
+func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "systemic-forbidden.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credentials := make([]account.Credential, 0, 3)
+	for index, name := range []string{"first", "second", "third"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 300 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-systemic"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-systemic"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "systemic-key", Prefix: "systemic", SecretHash: strings.Repeat("a", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &systemicForbiddenAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	_, err = service.CreateResponse(ctx, Input{
+		RequestID: "req-systemic-403", ClientKey: clientKey, PublicModel: "grok-systemic",
+		Body: []byte(`{"model":"grok-systemic","input":"hello"}`),
+	})
+	var upstreamFailure *UpstreamFailure
+	if !errors.As(err, &upstreamFailure) || errors.Is(err, ErrNoAvailableAccount) {
+		t.Fatalf("error = %T %v", err, err)
+	}
+	if upstreamFailure.HTTPStatus != http.StatusForbidden || upstreamFailure.Code != "upstream_forbidden" || upstreamFailure.AccountScoped {
+		t.Fatalf("upstream failure = %#v", upstreamFailure)
+	}
+	attempts := adapter.Attempts()
+	if len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+		t.Fatalf("attempts = %#v", attempts)
+	}
+	for _, credential := range credentials {
+		observed, getErr := accountRepo.Get(ctx, credential.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if observed.FailureCount != 0 || observed.CooldownUntil != nil || observed.AuthStatus != account.AuthStatusActive {
+			t.Fatalf("account %d was incorrectly penalized: %#v", credential.ID, observed)
+		}
+	}
+	logs, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 1 || logs[0].StatusCode != http.StatusForbidden || logs[0].ErrorCode != "upstream_forbidden" || logs[0].AccountID == nil || *logs[0].AccountID != credentials[1].ID {
+		t.Fatalf("audit = %#v, total=%d, err=%v", logs, total, err)
+	}
+}
+
 func TestWebRateLimitExhaustsOnlyRequestedQuotaMode(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "web-rate-limit.db"))
@@ -508,6 +588,27 @@ type failoverAdapter struct {
 	lastMethod     string
 	lastPath       string
 	resourceStatus int
+}
+
+type systemicForbiddenAdapter struct {
+	mu       sync.Mutex
+	attempts []uint64
+}
+
+func (a *systemicForbiddenAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (a *systemicForbiddenAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	a.attempts = append(a.attempts, request.Credential.ID)
+	a.mu.Unlock()
+	return &provider.Response{
+		StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"error":"upstream policy rejected request"}`)),
+	}, nil
+}
+func (a *systemicForbiddenAdapter) Attempts() []uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]uint64(nil), a.attempts...)
 }
 
 type webRateLimitAdapter struct{}

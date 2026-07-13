@@ -2,7 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,18 +33,25 @@ type Config struct {
 
 // Adapter 实现 Grok Build CLI Responses、模型、Billing 与 OAuth 协议。
 type Adapter struct {
-	cfgMu  sync.RWMutex
-	cfg    Config
-	http   *http.Client
-	oauth  *oauthClient
-	cipher *security.Cipher
-	base   http.RoundTripper
+	cfgMu      sync.RWMutex
+	cfg        Config
+	http       *http.Client
+	oauth      *oauthClient
+	cipher     *security.Cipher
+	base       http.RoundTripper
+	identityMu sync.Mutex
+	identities map[uint64]clientIdentity
+}
+
+type clientIdentity struct {
+	agentID   string
+	sessionID string
 }
 
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, MaxIdleConns: 256, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 256, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 30 * time.Second}
 	httpClient := &http.Client{Transport: transport}
-	return &Adapter{cfg: cfg, http: httpClient, oauth: newOAuthClient(httpClient), cipher: cipher, base: transport}
+	return &Adapter{cfg: cfg, http: httpClient, oauth: newOAuthClient(httpClient), cipher: cipher, base: transport, identities: make(map[uint64]clientIdentity)}
 }
 
 func (a *Adapter) SetEgress(manager *infraegress.Manager) {
@@ -71,9 +81,10 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	body := request.Body
 	var toolCompatibility *responsesToolCompatibility
+	var conversationOptions conversation.ResponseOptions
 	if request.NormalizeBody {
 		if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
-			body, err = conversation.ConvertRequest(body, request.Model, request.Operation)
+			body, conversationOptions, err = conversation.ConvertRequestWithOptions(body, request.Model, request.Operation)
 		} else {
 			body, toolCompatibility, err = normalizeResponsesRequest(body, request.Model)
 		}
@@ -92,12 +103,15 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if err != nil {
 		return nil, err
 	}
-	a.applyHeaders(req, accessToken, request.Model, request.PromptCacheKey)
+	if err := a.applyHeaders(req, request.Credential, accessToken, request.Model, request.PromptCacheKey, true); err != nil {
+		return nil, err
+	}
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if request.Streaming {
 		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Accept-Encoding", "identity")
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
@@ -108,7 +122,15 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if err != nil {
 		return nil, err
 	}
+	if err := normalizeGzipResponse(resp); err != nil {
+		return nil, err
+	}
 	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses
+	if responsesOperation && toolCompatibility != nil {
+		if warnings := toolCompatibility.warningHeader(); warnings != "" {
+			resp.Header.Set("X-Grok2API-Compatibility-Warnings", warnings)
+		}
+	}
 	if responsesOperation && toolCompatibility != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if request.Streaming {
 			resp.Body = toolCompatibility.normalizeResponseStream(resp.Body)
@@ -134,7 +156,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 		if request.Streaming && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			resp.Body = conversation.ConvertResponseStream(resp.Body, request.Operation)
+			resp.Body = conversation.ConvertResponseStreamWithOptions(resp.Body, request.Operation, conversationOptions)
 			resp.Header.Del("Content-Length")
 			resp.Header.Set("Content-Type", "text/event-stream")
 		} else {
@@ -146,7 +168,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			if len(data) > 64<<20 {
 				return nil, fmt.Errorf("上游对话响应超过 64 MiB")
 			}
-			converted, convertErr := conversation.ConvertResponseJSON(data, request.Operation)
+			converted, convertErr := conversation.ConvertResponseJSONWithOptions(data, request.Operation, conversationOptions)
 			if convertErr != nil {
 				return nil, convertErr
 			}
@@ -203,9 +225,14 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	if err != nil {
 		return nil, err
 	}
-	a.applyHeaders(req, accessToken, "", "")
+	if err := a.applyHeaders(req, credential, accessToken, "", "", false); err != nil {
+		return nil, err
+	}
 	resp, err := a.http.Do(req)
 	if err != nil {
+		return nil, err
+	}
+	if err := normalizeGzipResponse(resp); err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -238,12 +265,12 @@ func (a *Adapter) GetBilling(ctx context.Context, credential account.Credential)
 	if err != nil {
 		return account.Billing{}, err
 	}
-	monthly, err := a.getBilling(ctx, accessToken, "")
+	monthly, err := a.getBilling(ctx, credential, accessToken, "")
 	if err != nil {
 		return account.Billing{}, err
 	}
 	monthly.AccountID = credential.ID
-	if credits, creditsErr := a.getBilling(ctx, accessToken, "format=credits"); creditsErr == nil {
+	if credits, creditsErr := a.getBilling(ctx, credential, accessToken, "format=credits"); creditsErr == nil {
 		monthly = mergeBillingSnapshots(monthly, credits)
 	}
 	monthly.SyncedAt = time.Now().UTC()
@@ -313,26 +340,133 @@ func (a *Adapter) MarshalCredentials(values []provider.CredentialSeed) ([]byte, 
 	return marshalCredentials(values)
 }
 
-func (a *Adapter) applyHeaders(req *http.Request, accessToken, model, promptCacheKey string) {
+func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential, accessToken, model, promptCacheKey string, trace bool) error {
 	cfg := a.config()
+	identity, err := a.clientIdentity(credential.ID)
+	if err != nil {
+		return err
+	}
+	requestID, err := randomHex(16)
+	if err != nil {
+		return err
+	}
+	conversationID := strings.TrimSpace(promptCacheKey)
+	if conversationID == "" {
+		conversationID, err = randomHex(16)
+		if err != nil {
+			return err
+		}
+	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("X-XAI-Token-Auth", cfg.TokenAuth)
 	req.Header.Set("x-grok-client-version", cfg.ClientVersion)
 	req.Header.Set("x-grok-client-identifier", cfg.ClientIdentifier)
+	req.Header.Set("x-grok-client-surface", "tui")
+	req.Header.Set("x-grok-client-name", cfg.ClientIdentifier)
+	req.Header.Set("x-grok-agent-id", identity.agentID)
+	req.Header.Set("x-grok-session-id", identity.sessionID)
+	req.Header.Set("x-grok-conv-id", conversationID)
+	req.Header.Set("x-grok-req-id", requestID)
+	req.Header.Set("x-grok-conversation-id", conversationID)
+	req.Header.Set("x-grok-session-id-legacy", identity.sessionID)
+	req.Header.Set("x-grok-request-id", requestID)
+	if credential.UserID != "" {
+		req.Header.Set("x-userid", credential.UserID)
+	}
+	if trace {
+		traceID, traceErr := randomHex(16)
+		if traceErr != nil {
+			return traceErr
+		}
+		spanID, spanErr := randomHex(8)
+		if spanErr != nil {
+			return spanErr
+		}
+		req.Header.Set("traceparent", "00-"+traceID+"-"+spanID+"-01")
+		req.Header.Set("tracestate", "")
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("User-Agent", cfg.UserAgent)
 	if model != "" {
 		req.Header.Set("x-grok-model-override", model)
 	}
-	if promptCacheKey != "" {
-		req.Header.Set("x-grok-conv-id", promptCacheKey)
+	return nil
+}
+
+func (a *Adapter) clientIdentity(accountID uint64) (clientIdentity, error) {
+	a.identityMu.Lock()
+	defer a.identityMu.Unlock()
+	if value, ok := a.identities[accountID]; ok {
+		return value, nil
 	}
+	agentID, err := randomHex(16)
+	if err != nil {
+		return clientIdentity{}, err
+	}
+	sessionID, err := randomUUID()
+	if err != nil {
+		return clientIdentity{}, err
+	}
+	value := clientIdentity{agentID: agentID, sessionID: sessionID}
+	a.identities[accountID] = value
+	return value, nil
+}
+
+func randomHex(bytesLength int) (string, error) {
+	value := make([]byte, bytesLength)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func randomUUID() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	hexValue := hex.EncodeToString(value)
+	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:], nil
+}
+
+func normalizeGzipResponse(response *http.Response) error {
+	if response == nil || response.Body == nil || !strings.EqualFold(strings.TrimSpace(response.Header.Get("Content-Encoding")), "gzip") {
+		return nil
+	}
+	reader, err := gzip.NewReader(response.Body)
+	if err != nil {
+		_ = response.Body.Close()
+		return err
+	}
+	response.Body = &gzipResponseBody{Reader: reader, source: response.Body}
+	response.Header.Del("Content-Encoding")
+	response.Header.Del("Content-Length")
+	response.ContentLength = -1
+	return nil
+}
+
+type gzipResponseBody struct {
+	*gzip.Reader
+	source io.Closer
+}
+
+func (b *gzipResponseBody) Close() error {
+	readerErr := b.Reader.Close()
+	sourceErr := b.source.Close()
+	if readerErr != nil {
+		return readerErr
+	}
+	return sourceErr
 }
 
 func (a *Adapter) url(path string) string {
 	return strings.TrimRight(a.config().BaseURL, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
-func (a *Adapter) getBilling(ctx context.Context, accessToken, query string) (account.Billing, error) {
+func (a *Adapter) getBilling(ctx context.Context, credential account.Credential, accessToken, query string) (account.Billing, error) {
 	endpoint := a.url("/billing")
 	if query != "" {
 		endpoint += "?" + query
@@ -341,9 +475,14 @@ func (a *Adapter) getBilling(ctx context.Context, accessToken, query string) (ac
 	if err != nil {
 		return account.Billing{}, err
 	}
-	a.applyHeaders(req, accessToken, "", "")
+	if err := a.applyHeaders(req, credential, accessToken, "", "", false); err != nil {
+		return account.Billing{}, err
+	}
 	resp, err := a.http.Do(req)
 	if err != nil {
+		return account.Billing{}, err
+	}
+	if err := normalizeGzipResponse(resp); err != nil {
 		return account.Billing{}, err
 	}
 	defer resp.Body.Close()

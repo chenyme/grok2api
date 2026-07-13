@@ -187,7 +187,7 @@ func TestReplaceProviderRoutesCanRenameUpstreamModels(t *testing.T) {
 	}
 }
 
-func TestManualModelRouteBindingsAndDeletionSuppression(t *testing.T) {
+func TestManualModelRouteBindingsAndRediscovery(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
 	models := NewModelRepository(database)
@@ -231,21 +231,17 @@ func TestManualModelRouteBindingsAndDeletionSuppression(t *testing.T) {
 	if err := models.Delete(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := models.ReplaceAccountCapabilities(ctx, first.ID, []string{created.UpstreamModel}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	if err := models.UpsertDiscovered(ctx, account.ProviderBuild, []string{created.UpstreamModel}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := models.GetByPublicID(ctx, created.PublicID); !errors.Is(err, repository.ErrNotFound) {
-		t.Fatalf("deleted route was rediscovered: %v", err)
-	}
-
-	recreated, err := models.Create(ctx, model.Route{
-		PublicID: created.PublicID, Provider: account.ProviderBuild, UpstreamModel: created.UpstreamModel,
-		Capability: model.CapabilityResponses, Enabled: true,
-	}, []uint64{second.ID})
+	recreated, err := models.GetByPublicID(ctx, created.UpstreamModel)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("deleted route was not rediscovered: %v", err)
 	}
-	if len(recreated.BoundAccountIDs) != 1 || recreated.BoundAccountIDs[0] != second.ID {
+	if recreated.ID == created.ID || recreated.PublicID != created.UpstreamModel || recreated.Origin != model.OriginDiscovered || len(recreated.BoundAccountIDs) != 0 {
 		t.Fatalf("recreated route = %#v", recreated)
 	}
 }
@@ -273,7 +269,7 @@ func TestManualWebRouteSurvivesCatalogReconciliation(t *testing.T) {
 	}
 }
 
-func TestBatchDeleteModelRoutesSuppressesRediscovery(t *testing.T) {
+func TestBatchDeleteModelRoutesAllowsRediscovery(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
 	repo := NewModelRepository(database)
@@ -300,7 +296,37 @@ func TestBatchDeleteModelRoutesSuppressesRediscovery(t *testing.T) {
 	}
 	for _, value := range []model.Route{first, second} {
 		if _, err := repo.Get(ctx, value.ID); !errors.Is(err, repository.ErrNotFound) {
-			t.Fatalf("route %d was rediscovered: %v", value.ID, err)
+			t.Fatalf("deleted route %d still exists: %v", value.ID, err)
 		}
+		items, total, err := repo.List(ctx, repository.ModelListQuery{Page: repository.PageQuery{Limit: 10, Search: value.UpstreamModel}})
+		if err != nil || total != 1 || len(items) != 1 || items[0].ID == value.ID || items[0].UpstreamModel != value.UpstreamModel {
+			t.Fatalf("rediscovered route for %s = %#v, total=%d, err=%v", value.UpstreamModel, items, total, err)
+		}
+	}
+}
+
+func TestWebRediscoveryRestoresCatalogRouteDefaults(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewModelRepository(database)
+	value, err := repo.Create(ctx, model.Route{
+		PublicID: "grok-imagine-image-edit", Provider: account.ProviderWeb, UpstreamModel: "imagine-image-edit",
+		Capability: model.CapabilityImageEdit, Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Delete(ctx, value.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertDiscovered(ctx, account.ProviderWeb, []string{value.UpstreamModel}); err != nil {
+		t.Fatal(err)
+	}
+	items, total, err := repo.List(ctx, repository.ModelListQuery{Page: repository.PageQuery{Limit: 10, Search: value.UpstreamModel}})
+	if err != nil || total != 1 || len(items) != 1 {
+		t.Fatalf("rediscovered web route = %#v, total=%d, err=%v", items, total, err)
+	}
+	if items[0].PublicID != value.PublicID || items[0].Capability != model.CapabilityImageEdit || items[0].Origin != model.OriginDiscovered {
+		t.Fatalf("rediscovered web route defaults = %#v", items[0])
 	}
 }

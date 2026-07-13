@@ -207,9 +207,11 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		}
 	}
 	excluded := make(map[uint64]bool)
+	failureFingerprints := make(map[string]int)
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
 	quotaProbeAttempted := false
 	var lastErr error
+	var lastFailure *UpstreamFailure
 	for attempt := 0; attempt < attempts; attempt++ {
 		var lease *accountLease
 		var err error
@@ -219,7 +221,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, input.PromptCacheKey, excluded, !quotaProbeAttempted)
 		}
 		if err != nil {
-			lastErr = err
+			if lastFailure == nil {
+				lastErr = err
+			}
 			break
 		}
 		if lease.QuotaProbe {
@@ -242,13 +246,22 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		if err != nil {
 			lease.Release()
 			lastErr = err
+			lastFailure = newCredentialUpstreamFailure(err, lease.Credential.ID, lease.Credential.Name)
 			continue
 		}
 		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
 		if err != nil {
-			s.selector.MarkFailure(ctx, credential, 0, 0)
 			lease.Release()
 			lastErr = err
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				lastFailure = &UpstreamFailure{HTTPStatus: 499, Code: "request_canceled", PublicMessage: "请求已取消", AccountID: credential.ID, AccountName: credential.Name, Cause: firstError(ctx.Err(), err)}
+				break
+			}
+			lastFailure = newTransportUpstreamFailure(err, credential.ID, credential.Name)
+			failureFingerprints[lastFailure.Fingerprint]++
+			if failureFingerprints[lastFailure.Fingerprint] >= 2 {
+				break
+			}
 			continue
 		}
 		if response.StatusCode == http.StatusUnauthorized {
@@ -258,6 +271,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				s.selector.MarkFailure(ctx, credential, http.StatusUnauthorized, 0)
 				lease.Release()
 				lastErr = fmt.Errorf("Grok Web SSO 凭据已失效")
+				lastFailure = newHTTPUpstreamFailure(http.StatusUnauthorized, nil, credential.ID, credential.Name)
 				continue
 			}
 			refreshed, refreshErr := s.accounts.EnsureCredential(ctx, credential, true)
@@ -266,16 +280,25 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				credential = refreshed
 			}
 			if refreshErr != nil || err != nil {
-				s.selector.MarkFailure(ctx, credential, http.StatusUnauthorized, 0)
 				lease.Release()
 				lastErr = firstError(refreshErr, err)
+				if refreshErr != nil {
+					lastFailure = newCredentialUpstreamFailure(refreshErr, credential.ID, credential.Name)
+				} else if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+					lastFailure = &UpstreamFailure{HTTPStatus: 499, Code: "request_canceled", PublicMessage: "请求已取消", AccountID: credential.ID, AccountName: credential.Name, Cause: firstError(ctx.Err(), err)}
+					break
+				} else {
+					lastFailure = newTransportUpstreamFailure(err, credential.ID, credential.Name)
+				}
 				continue
 			}
 			if response.StatusCode == http.StatusUnauthorized {
-				response.Body.Close()
-				s.selector.MarkFailure(ctx, credential, http.StatusUnauthorized, 0)
+				body, _ := readRetryableBody(response.Body)
+				_ = s.accounts.MarkReauthRequired(ctx, credential.ID, "Grok Build OAuth credential rejected after refresh")
+				s.selector.MarkQuotaStateChanged(credential.Provider)
 				lease.Release()
 				lastErr = fmt.Errorf("刷新后上游仍返回 401")
+				lastFailure = newHTTPUpstreamFailure(http.StatusUnauthorized, body, credential.ID, credential.Name)
 				continue
 			}
 		}
@@ -288,26 +311,47 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				delete(excluded, credential.ID)
 				lease.Release()
 				lastErr = fmt.Errorf("Grok Web 出口会话被反机器人规则拒绝")
+				lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
 				continue
 			}
+			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
+			failureHandled := false
 			if credential.Provider == accountdomain.ProviderWeb {
 				if lease.QuotaMode != "" && response.StatusCode == http.StatusTooManyRequests {
 					exhausted, reconcileErr := s.accounts.ReconcileWebRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
 					s.selector.MarkQuotaStateChanged(credential.Provider)
-					if reconcileErr != nil || !exhausted {
-						s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
-					}
+					failureHandled = reconcileErr == nil && exhausted
 				}
 			} else if used, limit, exhausted := parseFreeQuotaExhaustion(body); exhausted {
 				s.selector.MarkFreeQuotaExhausted(ctx, credential, used, limit)
-			} else {
-				s.selector.MarkPaidQuotaExhausted(ctx, credential, lease.Billing)
+				failureHandled = true
+			} else if lastFailure.FreeQuotaExhausted {
+				s.selector.MarkFreeQuotaExhausted(ctx, credential, 0, 0)
+				failureHandled = true
+			} else if lastFailure.QuotaExhausted {
+				failureHandled = s.selector.MarkPaidQuotaExhausted(ctx, credential, lease.Billing)
 			}
-			if credential.Provider != accountdomain.ProviderWeb || response.StatusCode != http.StatusTooManyRequests {
+			if credential.Provider == accountdomain.ProviderBuild && lastFailure.PermanentAccountDenial {
+				_ = s.accounts.MarkReauthRequired(ctx, credential.ID, "Grok Build chat endpoint access denied")
+				s.selector.MarkQuotaStateChanged(credential.Provider)
+				failureHandled = true
+			} else if credential.Provider == accountdomain.ProviderBuild && lastFailure.CredentialRejected {
+				_ = s.accounts.MarkReauthRequired(ctx, credential.ID, "Grok Build credential rejected")
+				s.selector.MarkQuotaStateChanged(credential.Provider)
+				failureHandled = true
+			}
+			if lastFailure.AccountScoped && !failureHandled {
 				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
 			}
 			lease.Release()
 			lastErr = fmt.Errorf("上游返回 %d", response.StatusCode)
+			s.logger.Warn("upstream_request_failed", "request_id", input.RequestID, "account_id", credential.ID, "provider", credential.Provider, "status", response.StatusCode, "upstream_code", lastFailure.UpstreamCode, "account_scoped", lastFailure.AccountScoped)
+			if !lastFailure.AccountScoped {
+				failureFingerprints[lastFailure.Fingerprint]++
+				if failureFingerprints[lastFailure.Fingerprint] >= 2 {
+					break
+				}
+			}
 			continue
 		}
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
@@ -376,6 +420,24 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			})
 		}
 		return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
+	}
+	if lastFailure != nil {
+		record := auditBase
+		record.StatusCode = lastFailure.HTTPStatus
+		record.DurationMS = time.Since(startedAt).Milliseconds()
+		record.ErrorCode = lastFailure.AuditCode()
+		record.CreatedAt = time.Now().UTC()
+		if lastFailure.AccountID != 0 {
+			accountID := lastFailure.AccountID
+			record.AccountID = &accountID
+			record.AccountName = lastFailure.AccountName
+		}
+		persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
+		defer cancel()
+		if err := s.audits.Create(persistCtx, record); err != nil {
+			s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
+		}
+		return nil, lastFailure
 	}
 	if lastErr == nil {
 		lastErr = ErrNoAvailableAccount

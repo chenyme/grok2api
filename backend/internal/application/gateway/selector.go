@@ -315,13 +315,13 @@ func (s *Selector) MarkFreeQuotaExhausted(ctx context.Context, credential accoun
 }
 
 // MarkPaidQuotaExhausted 使用已知真实账期将付费账号移出号池，到期后才允许 Billing 探测。
-func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential account.Credential, billing *account.Billing) {
+func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential account.Credential, billing *account.Billing) bool {
 	if billing == nil || (billing.MonthlyLimit <= 0 && billing.OnDemandCap <= 0 && billing.OnDemandUsed <= 0 && billing.PrepaidBalance <= 0 && billing.CreditUsagePercent <= 0) {
-		return
+		return false
 	}
 	periodEnd, ok := billing.PeriodEnd()
 	if !ok {
-		return
+		return false
 	}
 	now := time.Now().UTC()
 	_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
@@ -330,6 +330,7 @@ func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential accoun
 	})
 	_ = s.sticky.DeleteByAccount(ctx, credential.ID)
 	s.invalidateCandidates(credential.Provider)
+	return true
 }
 
 // MarkQuotaStateChanged 在 Billing 探测改变持久化额度状态后立即失效候选快照。

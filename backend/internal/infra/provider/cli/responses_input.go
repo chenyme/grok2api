@@ -5,14 +5,11 @@ import (
 	"strings"
 )
 
-// normalizeAgentMessageInput 将可见的 inter-agent 文本保留为 developer 消息；不透明内容不会静默丢弃。
-func normalizeAgentMessageInput(item map[string]any, param string) (map[string]any, error) {
+// normalizeAgentMessageInput 将 inter-agent 历史保留为 developer 消息；不透明内容保留边界标记而不泄露密文。
+func normalizeAgentMessageInput(item map[string]any, _ string) (map[string]any, error) {
 	content, ok := textInputContent(item["content"])
 	if !ok {
-		return nil, &responsesRequestError{
-			Message: "agent_message 只支持可见文本内容",
-			Param:   param + ".content", Code: "unsupported_parameter",
-		}
+		return compatibilityBoundaryMessage("An encrypted inter-agent message occurred here but is not portable to the Grok Build account."), nil
 	}
 	author := strings.TrimSpace(stringField(item, "author"))
 	if author == "" {

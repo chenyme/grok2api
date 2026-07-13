@@ -103,12 +103,14 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if request.Method != http.MethodPost {
 		return jsonProviderResponse(http.StatusMethodNotAllowed, map[string]any{"error": map[string]any{"message": "method not allowed"}}), nil
 	}
+	var conversationOptions conversation.ResponseOptions
 	if request.Operation == conversation.OperationMessages {
-		converted, err := conversation.ConvertRequest(request.Body, request.Model, request.Operation)
+		converted, options, err := conversation.ConvertRequestWithOptions(request.Body, request.Model, request.Operation)
 		if err != nil {
 			return jsonProviderResponse(http.StatusBadRequest, map[string]any{"type": "error", "error": map[string]any{"type": "invalid_request_error", "message": err.Error()}}), nil
 		}
 		request.Body = converted
+		conversationOptions = options
 	}
 
 	var input openAIRequest
@@ -173,7 +175,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		if streaming {
 			prepared, preflightErr := preflightUpstream(upstream.Body)
 			if preflightErr == nil {
-				body := a.streamOpenAIResponse(ctx, prepared, lease, request.Credential, responseID, input.Model, request.Operation, normalized.Prompt, previous, tools, parallelTools)
+				body := a.streamOpenAIResponse(ctx, prepared, lease, request.Credential, responseID, input.Model, request.Operation, normalized.Prompt, previous, tools, parallelTools, conversationOptions)
 				return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: body}, nil
 			}
 			if errors.Is(preflightErr, errWebAntiBot) && attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
@@ -216,7 +218,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if err := a.archiveChatImages(ctx, request.Credential, &parsed); err != nil {
 		return nil, err
 	}
-	payload := buildOpenAIResult(request.Operation, responseID, input.Model, parsed, false)
+	payload := buildOpenAIResult(request.Operation, responseID, input.Model, parsed, false, conversationOptions)
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -349,7 +351,7 @@ func (a *Adapter) handleResponseResource(ctx context.Context, request provider.R
 	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: jsonHeaders(), Body: io.NopCloser(strings.NewReader(state.ResponseJSON))}, nil
 }
 
-func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser, lease *infraegress.Lease, credential account.Credential, responseID, model, operation, prompt string, previous *inferencedomain.WebResponseState, tools toolConfiguration, parallelTools bool) io.ReadCloser {
+func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser, lease *infraegress.Lease, credential account.Credential, responseID, model, operation, prompt string, previous *inferencedomain.WebResponseState, tools toolConfiguration, parallelTools bool, options conversation.ResponseOptions) io.ReadCloser {
 	reader, writer := io.Pipe()
 	go func() {
 		defer source.Close()
@@ -367,7 +369,10 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 		if len(tools.Functions) > 0 && tools.Choice != "none" {
 			sieve = newToolStreamSieve(tools.available)
 		}
-		writeStreamStart(writer, operation, responseID, model, parsed.InputTokens)
+		messagesStream := newWebMessagesStream(writer, responseID, model, parsed.InputTokens, options)
+		if operation != conversation.OperationMessages {
+			writeStreamStart(writer, operation, responseID, model, parsed.InputTokens)
+		}
 		err := consumeUpstreamInto(source, parsed, func(kind, delta string) error {
 			if len(parsed.ToolCalls) > 0 && kind != "reasoning" {
 				return nil
@@ -390,24 +395,24 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 				result := sieve.Feed(delta)
 				if result.SafeText != "" {
 					clientText.WriteString(result.SafeText)
-					if err := writeStreamDelta(writer, operation, responseID, model, kind, result.SafeText); err != nil {
+					if err := writeWebStreamDelta(writer, messagesStream, operation, responseID, model, kind, result.SafeText); err != nil {
 						return err
 					}
 				}
 				if result.Complete {
 					if len(result.Calls) == 0 {
 						clientText.WriteString(result.Raw)
-						return writeStreamDelta(writer, operation, responseID, model, kind, result.Raw)
+						return writeWebStreamDelta(writer, messagesStream, operation, responseID, model, kind, result.Raw)
 					}
 					parsed.ToolCalls = result.Calls
-					return writeStreamToolCalls(writer, operation, responseID, model, result.Calls)
+					return writeWebStreamToolCalls(writer, messagesStream, operation, responseID, model, result.Calls)
 				}
 				return nil
 			}
 			if kind == "text" {
 				clientText.WriteString(delta)
 			}
-			return writeStreamDelta(writer, operation, responseID, model, kind, delta)
+			return writeWebStreamDelta(writer, messagesStream, operation, responseID, model, kind, delta)
 		})
 		if err != nil {
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
@@ -418,14 +423,14 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 			result := sieve.Flush()
 			if result.SafeText != "" {
 				clientText.WriteString(result.SafeText)
-				if err := writeStreamDelta(writer, operation, responseID, model, "text", result.SafeText); err != nil {
+				if err := writeWebStreamDelta(writer, messagesStream, operation, responseID, model, "text", result.SafeText); err != nil {
 					_ = writer.CloseWithError(err)
 					return
 				}
 			}
 			if len(result.Calls) > 0 {
 				parsed.ToolCalls = result.Calls
-				if err := writeStreamToolCalls(writer, operation, responseID, model, result.Calls); err != nil {
+				if err := writeWebStreamToolCalls(writer, messagesStream, operation, responseID, model, result.Calls); err != nil {
 					_ = writer.CloseWithError(err)
 					return
 				}
@@ -446,7 +451,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 					delta = "\n\n" + delta
 				}
 				clientText.WriteString(delta)
-				if err := writeStreamDelta(writer, operation, responseID, model, "text", delta); err != nil {
+				if err := writeWebStreamDelta(writer, messagesStream, operation, responseID, model, "text", delta); err != nil {
 					_ = writer.CloseWithError(err)
 					return
 				}
@@ -455,12 +460,19 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 		parsed.Text.Reset()
 		parsed.Text.WriteString(clientText.String())
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, http.StatusOK, nil)
-		payload := buildOpenAIResult(operation, responseID, model, *parsed, false)
+		payload := buildOpenAIResult(operation, responseID, model, *parsed, false, options)
 		data, _ := json.Marshal(payload)
 		if operation == conversation.OperationResponses {
 			a.saveResponseState(context.WithoutCancel(ctx), credential.ID, responseID, *parsed, data)
 		}
-		writeStreamDone(writer, operation, responseID, model, *parsed, payload)
+		if operation == conversation.OperationMessages {
+			if finishErr := messagesStream.Finish(*parsed, payload); finishErr != nil {
+				_ = writer.CloseWithError(finishErr)
+				return
+			}
+		} else {
+			writeStreamDone(writer, operation, responseID, model, *parsed, payload)
+		}
 		_ = writer.Close()
 	}()
 	return reader
@@ -619,8 +631,10 @@ func contentTextAndImages(raw json.RawMessage) (string, []string, error) {
 			} else {
 				return "", nil, errors.New("图片内容缺少 image_url")
 			}
-		case "input_audio", "file":
+		case "input_audio", "file", "input_file":
 			return "", nil, fmt.Errorf("Grok Web 对话暂不支持 %s 内容", typeName)
+		default:
+			return "", nil, fmt.Errorf("Grok Web 对话暂不支持 content.type=%q", typeName)
 		}
 	}
 	return strings.Join(values, "\n"), images, nil
@@ -1123,8 +1137,12 @@ func searchSourceTitle(sources []map[string]any, rawURL string) string {
 	return rawURL
 }
 
-func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, streaming bool) map[string]any {
+func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, streaming bool, responseOptions ...conversation.ResponseOptions) map[string]any {
 	created := time.Now().Unix()
+	options := conversation.ResponseOptions{}
+	if len(responseOptions) > 0 {
+		options = responseOptions[0]
+	}
 	inputTokens := parsed.InputTokens
 	outputTokens := estimateTokens(parsed.Text.String()) + estimateTokens(parsed.Reasoning.String()) + estimateToolCallTokens(parsed.ToolCalls)
 	if operation == "chat" {
@@ -1151,24 +1169,30 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 		return value
 	}
 	if operation == conversation.OperationMessages {
-		content := make([]any, 0, len(parsed.ToolCalls)+1)
-		if parsed.Text.Len() > 0 || len(parsed.ToolCalls) == 0 {
-			content = append(content, map[string]any{"type": "text", "text": parsed.Text.String()})
+		visibleText, stopSequence := applyWebStopSequences(parsed.Text.String(), options.StopSequences)
+		content := make([]any, 0, len(parsed.ToolCalls)+2)
+		if options.AnthropicThinking && parsed.Reasoning.Len() > 0 {
+			content = append(content, map[string]any{"type": "thinking", "thinking": parsed.Reasoning.String()})
+		}
+		if visibleText != "" || len(parsed.ToolCalls) == 0 {
+			content = append(content, map[string]any{"type": "text", "text": visibleText})
 		}
 		for _, call := range parsed.ToolCalls {
 			var input any = map[string]any{}
 			if json.Unmarshal([]byte(call.Arguments), &input) != nil {
 				input = map[string]any{}
 			}
-			content = append(content, map[string]any{"type": "tool_use", "id": call.ID, "name": call.Name, "input": input})
+			content = append(content, map[string]any{"type": "tool_use", "id": webAnthropicToolID(call.ID), "name": call.Name, "input": input})
 		}
 		stopReason := "end_turn"
 		if len(parsed.ToolCalls) > 0 {
 			stopReason = "tool_use"
+		} else if stopSequence != "" {
+			stopReason = "stop_sequence"
 		}
 		return map[string]any{
 			"id": strings.Replace(responseID, "resp_", "msg_", 1), "type": "message", "role": "assistant", "model": model,
-			"content": content, "stop_reason": stopReason, "stop_sequence": nil,
+			"content": content, "stop_reason": stopReason, "stop_sequence": nullableWebString(stopSequence),
 			"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
 		}
 	}
@@ -1213,6 +1237,38 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 	}
 }
 
+func applyWebStopSequences(text string, sequences []string) (string, string) {
+	matchAt := -1
+	matched := ""
+	for _, sequence := range sequences {
+		if sequence == "" {
+			continue
+		}
+		if index := strings.Index(text, sequence); index >= 0 && (matchAt < 0 || index < matchAt) {
+			matchAt = index
+			matched = sequence
+		}
+	}
+	if matchAt < 0 {
+		return text, ""
+	}
+	return text[:matchAt], matched
+}
+
+func nullableWebString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func webAnthropicToolID(value string) string {
+	if strings.HasPrefix(value, "toolu_") {
+		return value
+	}
+	return "toolu_" + value
+}
+
 func chatToolCalls(calls []parsedToolCall) []any {
 	values := make([]any, 0, len(calls))
 	for _, call := range calls {
@@ -1244,6 +1300,279 @@ func estimateToolCallTokens(calls []parsedToolCall) int64 {
 		total += estimateTokens(call.Name) + estimateTokens(call.Arguments)
 	}
 	return total
+}
+
+type webMessagesStream struct {
+	writer          io.Writer
+	responseID      string
+	model           string
+	inputTokens     int64
+	options         conversation.ResponseOptions
+	started         bool
+	thinkingStarted bool
+	thinkingClosed  bool
+	thinkingIndex   int
+	textStarted     bool
+	textClosed      bool
+	textIndex       int
+	nextIndex       int
+	hasTools        bool
+	stopSequence    string
+	stopFilter      *webStopFilter
+}
+
+func newWebMessagesStream(writer io.Writer, responseID, model string, inputTokens int64, options conversation.ResponseOptions) *webMessagesStream {
+	return &webMessagesStream{
+		writer: writer, responseID: responseID, model: model, inputTokens: inputTokens,
+		options: options, stopFilter: newWebStopFilter(options.StopSequences),
+	}
+}
+
+func (s *webMessagesStream) Start() error {
+	if s.started {
+		return nil
+	}
+	s.started = true
+	return writeSSE(s.writer, "message_start", map[string]any{
+		"type": "message_start", "message": map[string]any{
+			"id": strings.Replace(s.responseID, "resp_", "msg_", 1), "type": "message", "role": "assistant", "model": s.model,
+			"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
+			"usage": map[string]any{"input_tokens": s.inputTokens, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+		},
+	})
+}
+
+func (s *webMessagesStream) Delta(kind, delta string) error {
+	if err := s.Start(); err != nil {
+		return err
+	}
+	if s.stopSequence != "" {
+		return nil
+	}
+	if kind == "reasoning" {
+		if !s.options.AnthropicThinking {
+			return nil
+		}
+		if !s.thinkingStarted {
+			s.thinkingStarted = true
+			s.thinkingIndex = s.nextIndex
+			s.nextIndex++
+			if err := writeSSE(s.writer, "content_block_start", map[string]any{
+				"type": "content_block_start", "index": s.thinkingIndex,
+				"content_block": map[string]any{"type": "thinking", "thinking": ""},
+			}); err != nil {
+				return err
+			}
+		}
+		return writeSSE(s.writer, "content_block_delta", map[string]any{
+			"type": "content_block_delta", "index": s.thinkingIndex,
+			"delta": map[string]any{"type": "thinking_delta", "thinking": delta},
+		})
+	}
+	if kind != "text" {
+		return nil
+	}
+	if err := s.startText(); err != nil {
+		return err
+	}
+	emit, matched := s.stopFilter.Push(delta)
+	if matched != "" {
+		s.stopSequence = matched
+	}
+	if emit == "" {
+		return nil
+	}
+	return s.writeTextDelta(emit)
+}
+
+func (s *webMessagesStream) startText() error {
+	if s.textStarted && !s.textClosed {
+		return nil
+	}
+	if err := s.closeThinking(); err != nil {
+		return err
+	}
+	s.textStarted = true
+	s.textClosed = false
+	s.textIndex = s.nextIndex
+	s.nextIndex++
+	return writeSSE(s.writer, "content_block_start", map[string]any{
+		"type": "content_block_start", "index": s.textIndex,
+		"content_block": map[string]any{"type": "text", "text": ""},
+	})
+}
+
+func (s *webMessagesStream) writeTextDelta(delta string) error {
+	if delta == "" {
+		return nil
+	}
+	return writeSSE(s.writer, "content_block_delta", map[string]any{
+		"type": "content_block_delta", "index": s.textIndex,
+		"delta": map[string]any{"type": "text_delta", "text": delta},
+	})
+}
+
+func (s *webMessagesStream) Tools(calls []parsedToolCall) error {
+	if err := s.Start(); err != nil {
+		return err
+	}
+	if err := s.closeThinking(); err != nil {
+		return err
+	}
+	if err := s.closeText(); err != nil {
+		return err
+	}
+	for _, call := range calls {
+		index := s.nextIndex
+		s.nextIndex++
+		id := webAnthropicToolID(call.ID)
+		if err := writeSSE(s.writer, "content_block_start", map[string]any{
+			"type": "content_block_start", "index": index,
+			"content_block": map[string]any{"type": "tool_use", "id": id, "name": call.Name, "input": map[string]any{}},
+		}); err != nil {
+			return err
+		}
+		if err := writeSSE(s.writer, "content_block_delta", map[string]any{
+			"type": "content_block_delta", "index": index,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": call.Arguments},
+		}); err != nil {
+			return err
+		}
+		if err := writeSSE(s.writer, "content_block_stop", map[string]any{"type": "content_block_stop", "index": index}); err != nil {
+			return err
+		}
+		s.hasTools = true
+	}
+	return nil
+}
+
+func (s *webMessagesStream) Finish(parsed parsedChat, payload map[string]any) error {
+	if err := s.Start(); err != nil {
+		return err
+	}
+	if s.stopSequence == "" {
+		if pending := s.stopFilter.Flush(); pending != "" {
+			if err := s.startText(); err != nil {
+				return err
+			}
+			if err := s.writeTextDelta(pending); err != nil {
+				return err
+			}
+		}
+	}
+	if err := s.closeThinking(); err != nil {
+		return err
+	}
+	if err := s.closeText(); err != nil {
+		return err
+	}
+	stopReason := "end_turn"
+	if s.hasTools || len(parsed.ToolCalls) > 0 {
+		stopReason = "tool_use"
+	} else if s.stopSequence != "" {
+		stopReason = "stop_sequence"
+	}
+	usage, _ := payload["usage"].(map[string]any)
+	if err := writeSSE(s.writer, "message_delta", map[string]any{
+		"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nullableWebString(s.stopSequence)},
+		"usage": map[string]any{"output_tokens": usage["output_tokens"]},
+	}); err != nil {
+		return err
+	}
+	return writeSSE(s.writer, "message_stop", map[string]any{"type": "message_stop"})
+}
+
+func (s *webMessagesStream) closeThinking() error {
+	if !s.thinkingStarted || s.thinkingClosed {
+		return nil
+	}
+	s.thinkingClosed = true
+	return writeSSE(s.writer, "content_block_stop", map[string]any{"type": "content_block_stop", "index": s.thinkingIndex})
+}
+
+func (s *webMessagesStream) closeText() error {
+	if !s.textStarted || s.textClosed {
+		return nil
+	}
+	s.textClosed = true
+	return writeSSE(s.writer, "content_block_stop", map[string]any{"type": "content_block_stop", "index": s.textIndex})
+}
+
+func writeWebStreamDelta(writer io.Writer, stream *webMessagesStream, operation, responseID, model, kind, delta string) error {
+	if operation == conversation.OperationMessages {
+		return stream.Delta(kind, delta)
+	}
+	return writeStreamDelta(writer, operation, responseID, model, kind, delta)
+}
+
+func writeWebStreamToolCalls(writer io.Writer, stream *webMessagesStream, operation, responseID, model string, calls []parsedToolCall) error {
+	if operation == conversation.OperationMessages {
+		return stream.Tools(calls)
+	}
+	return writeStreamToolCalls(writer, operation, responseID, model, calls)
+}
+
+type webStopFilter struct {
+	sequences []string
+	pending   string
+	matched   string
+}
+
+func newWebStopFilter(sequences []string) *webStopFilter {
+	filtered := make([]string, 0, len(sequences))
+	for _, sequence := range sequences {
+		if sequence != "" {
+			filtered = append(filtered, sequence)
+		}
+	}
+	return &webStopFilter{sequences: filtered}
+}
+
+func (f *webStopFilter) Push(delta string) (string, string) {
+	if f == nil || len(f.sequences) == 0 {
+		return delta, ""
+	}
+	if f.matched != "" {
+		return "", f.matched
+	}
+	f.pending += delta
+	matchAt := -1
+	matched := ""
+	for _, sequence := range f.sequences {
+		if index := strings.Index(f.pending, sequence); index >= 0 && (matchAt < 0 || index < matchAt) {
+			matchAt = index
+			matched = sequence
+		}
+	}
+	if matchAt >= 0 {
+		emit := f.pending[:matchAt]
+		f.pending = ""
+		f.matched = matched
+		return emit, matched
+	}
+	hold := 0
+	for _, sequence := range f.sequences {
+		maxPrefix := min(len(sequence)-1, len(f.pending))
+		for size := maxPrefix; size > hold; size-- {
+			if strings.HasSuffix(f.pending, sequence[:size]) {
+				hold = size
+				break
+			}
+		}
+	}
+	emitAt := len(f.pending) - hold
+	emit := f.pending[:emitAt]
+	f.pending = f.pending[emitAt:]
+	return emit, ""
+}
+
+func (f *webStopFilter) Flush() string {
+	if f == nil || f.matched != "" {
+		return ""
+	}
+	value := f.pending
+	f.pending = ""
+	return value
 }
 
 func writeStreamStart(writer io.Writer, operation, responseID, model string, inputTokens int64) {

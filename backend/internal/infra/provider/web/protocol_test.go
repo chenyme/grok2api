@@ -123,6 +123,18 @@ func TestNormalizeResponsesInputImage(t *testing.T) {
 	}
 }
 
+func TestNormalizeResponsesInputFileFailsExplicitly(t *testing.T) {
+	input, _ := json.Marshal([]any{map[string]any{
+		"type": "message", "role": "user", "content": []any{
+			map[string]any{"type": "input_file", "file_url": "https://example.com/a.pdf"},
+		},
+	}})
+	_, err := normalizeOpenAIInput(openAIRequest{Input: input}, "responses")
+	if err == nil || !strings.Contains(err.Error(), "input_file") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestParseChatImageDataURIValidatesContent(t *testing.T) {
 	value := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 	image, err := parseChatImageDataURI(value, 1<<20)

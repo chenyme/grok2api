@@ -163,14 +163,6 @@ type modelRouteAccountModel struct {
 
 func (modelRouteAccountModel) TableName() string { return "model_route_accounts" }
 
-type modelRouteSuppressionModel struct {
-	Provider      string    `gorm:"size:32;primaryKey;check:chk_model_route_suppressions_provider,provider IN ('grok_build','grok_web')"`
-	UpstreamModel string    `gorm:"size:255;primaryKey;check:chk_model_route_suppressions_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
-	CreatedAt     time.Time `gorm:"not null"`
-}
-
-func (modelRouteSuppressionModel) TableName() string { return "model_route_suppressions" }
-
 type accountModelCapabilityModel struct {
 	AccountID     uint64        `gorm:"primaryKey"`
 	UpstreamModel string        `gorm:"size:255;primaryKey;not null;check:chk_account_model_capabilities_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`

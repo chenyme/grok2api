@@ -76,17 +76,27 @@ Grok Build `0.2.99` 尚未原生接受 OpenAI 新版 `namespace` 与 `tool_searc
 - 客户端 Tool Search 会默认写入 `parallel_tool_calls: false`；显式要求并行会返回错误，避免搜索函数与普通函数在工具定义加载完成前同时执行。
 - 单独声明 `defer_loading: true` 但没有客户端 `tool_search` 时返回参数错误，避免把原本延迟的工具静默改成立即可调用。
 - 服务端托管 Tool Search 需要上游在同一次推理中搜索并注入工具，当前无法等价模拟，因此缺省或 `execution: "server"` 会返回 `400 unsupported_parameter`，不会静默展开全部延迟工具。
-- `additional_tools` 依赖工具在输入历史中的精确插入位置，当前同样返回明确的不支持错误，不会改写成含义不同的顶层工具。
+- `additional_tools` 中的定义会进入上游顶层工具集合，同时在原输入位置保留 developer 边界消息，提示这些工具从该位置开始可用。由于 0.2.99 没有位置化工具定义，响应会携带 `additional_tools_position_approximated` 兼容警告。
 
-`0.2.99` OAuth 上游实测原生工具 discriminator 为 `function`、`web_search`、`x_search`、`image_generation`、`collections_search`、`file_search`、`code_execution`、`code_interpreter`、`mcp` 和 `shell`。其中 `collections_search` 需要 `vector_store_ids`，`shell` 需要 `environment`；网关保留这些原生工具参数交由上游校验。`web_search_preview` 及其版本别名会转换为最小 `web_search` 声明；当前上游会以 `Argument not supported` 拒绝 `search_context_size` 等控制字段，因此网关在请求前明确报错，不静默删字段。`local_shell`、`apply_patch` 与 `computer_use_preview` 不在 0.2.99 枚举中，同样返回明确错误。
+`0.2.99` OAuth 上游实测原生工具 discriminator 为 `function`、`web_search`、`x_search`、`image_generation`、`collections_search`、`file_search`、`code_execution`、`code_interpreter`、`mcp` 和 `shell`。其中 `collections_search` 需要 `vector_store_ids`，`shell` 需要 `environment`；网关保留这些原生工具参数交由上游校验。旧 Codex `local_shell` 会升级为 `shell + environment.type=local`，JSON/SSE 中的 `shell_call` 恢复为 `local_shell_call`，续轮输出升级为结构化 `shell_call_output`；同一请求不能混用新旧 shell 声明。
+
+`apply_patch` 不在 0.2.99 上游枚举中，网关将其包装为具有严格 operation schema 的内部 function，并在 JSON、SSE 和续轮历史中双向恢复 `apply_patch_call`/`apply_patch_call_output`。流式 function 参数事件不会泄露给 Codex；网关等待 operation 完整后再发出标准 output item added/done。`computer_use_preview` 涉及截图与动作循环，无法安全等价模拟，继续返回明确的不支持错误。
+
+`web_search_preview` 及其版本别名会转换为最小 `web_search` 声明；当前上游会以 `Argument not supported` 拒绝 Codex/OpenAI 新版的 `external_web_access`、`indexed_web_access`、`search_content_types`、`search_context_size`、`user_location` 和 `filters` 等控制字段，因此兼容层会将可安全放宽的已知字段降级为 0.2.99 的最小搜索声明。`external_web_access: false`、非空 `filters` 或 `allowed_domains` 属于权限/范围约束，无法保证时明确拒绝，不会静默扩大搜索范围；其他未知字段同样报错。
 
 OpenAI `custom` 工具会转换为只接受 `input` 字符串的普通函数，并在 JSON/SSE 响应及续轮历史中恢复为 `custom_tool_call`、`custom_tool_call_output` 和 `response.custom_tool_call_input.*` 事件。纯文本 format 可兼容；grammar 无法等价表达，会返回 `unsupported_parameter`。
 
-Codex 的可见 `agent_message`、`local_shell_call` 历史和 `mcp_tool_call_output` 会分别降级为 developer/assistant 可见文本，避免把客户端执行记录伪装成上游 hosted 调用。不透明或加密的 agent 内容、`compaction_trigger` 不会被静默丢弃，而是返回明确的不支持错误。SSE 兼容层只向下游保留标准 `response.*`、`error` 与 `[DONE]`，过滤上游私有事件，同时保留标准 comment、`id` 和 `retry` 字段。
+Codex 的可见 `agent_message` 与 `mcp_tool_call_output` 会保留为 developer 文本；`local_shell_call/output` 与 `apply_patch_call/output` 保持结构化续轮协议。不透明或加密的 agent 内容会替换为不含密文的边界消息，`compaction_trigger` 会替换为压缩边界消息，避免静默丢弃或让整轮失败。SSE 兼容层只向下游保留标准 `response.*`、`error` 与 `[DONE]`，过滤上游私有事件，同时保留标准 comment、`id` 和 `retry` 字段。
+
+发生协议降级时，响应 Header `X-Grok2API-Compatibility-Warnings` 会返回稳定的逗号分隔代码，例如 `web_search_controls_downgraded`、`legacy_local_shell_upgraded`、`apply_patch_emulated`、`additional_tools_position_approximated`。客户端可记录这些代码进行审计，不包含提示词、工具参数或凭据。
 
 Chat Completions 与 Messages 都先转换为标准 Responses 输入项。Build 将其发送到原生 Responses 上游，并把 JSON/SSE 转回调用方协议；Web 再把同一规范输入转换为 app-chat 对话载荷。两种 Provider 都支持文本、URL/Base64 图片、客户端函数工具和工具结果。不支持的音频、Files API、Anthropic server tools 和 Web `/responses/compact` 会返回明确错误，不会静默丢弃。
 
-Anthropic Messages 使用 `POST /v1/messages`，要求 `anthropic-version`，客户端密钥可通过 `x-api-key` 或 `Authorization: Bearer` 提供。返回使用 Anthropic `message` 对象；流式事件依次为 `message_start`、`content_block_*`、`message_delta` 和 `message_stop`。由于上游不是 Claude，模型 ID 仍使用本平台公开 Grok 模型名称；Anthropic 原生 thinking signature、容器和 server tools 不会伪造。
+Anthropic Messages 使用 `POST /v1/messages`，要求 `anthropic-version`，客户端密钥可通过 `x-api-key` 或 `Authorization: Bearer` 提供。返回使用 Anthropic `message` 对象；流式事件依次为 `message_start`、`content_block_*`、`message_delta` 和 `message_stop`。由于上游不是 Claude，模型 ID 仍使用本平台公开 Grok 模型名称。
+
+Messages 转换层兼容 Claude Code 常见载荷：标准顶层 `system` 与误放在 `messages` 数组中的 `system`/`developer` 都会按原顺序合并为 Responses `instructions`，不会再因 `role: "system"` 返回 400。请求固定使用 `store: false`；`metadata.user_id` 映射为 `safety_identifier`。`thinking.enabled`/`thinking.adaptive` 会依据 `budget_tokens` 和 effort 映射到 Grok reasoning，并请求 `reasoning.encrypted_content`；JSON 与 SSE 会恢复 `thinking_delta`、`signature_delta`、`thinking` 或 `redacted_thinking`，便于下一轮原样回放，不伪造签名。
+
+客户端工具支持 `strict`、`tool_choice.disable_parallel_tool_use`、严格的 `tool_use`/`tool_result` 配对和重复 ID 校验；带 `is_error` 的结果会保留失败语义。`tool_result` 可包含文本、图片和文档，Messages 普通输入也支持 URL/Base64 图片、文本 document，以及 Build 上游可处理的 URL/Base64 `input_file`。Build 可把 `mcp_servers` 转换为原生 MCP 工具；Grok Web 对无法等价执行的 MCP 或文件内容返回明确错误。`stop_sequences` 在 JSON/SSE 下由网关跨内容块、跨增量执行并返回真实 `stop_sequence`；无法等价表示的 `top_k` 会在请求上游前明确拒绝。
 
 图片编辑严格使用 xAI 当前 JSON 结构：`image.url` 或 `images[].url` 可使用公网 HTTPS URL 或 Base64 data URI，数量参数使用 `n`，`resolution` 支持 `1k`、`2k` 且默认 `1k`。不接受 multipart 或 `image_count` 等非官方兼容字段。当前未实现 Files API，因此 `image.file_id` 会返回明确的不支持错误。
 
@@ -230,5 +240,8 @@ Grok Build `0.2.93` 实测使用 `GET /billing` 与 `GET /billing?format=credits
 OpenAI Responses 参考：
 
 - https://platform.openai.com/docs/api-reference/responses
+- https://developers.openai.com/api/docs/guides/tools-shell
+- https://developers.openai.com/api/docs/guides/tools-local-shell
+- https://developers.openai.com/api/docs/guides/tools-apply-patch
 
 `cli-chat-proxy.grok.com` 是 Grok Build 产品上游，不是公开、长期稳定的第三方 API 契约。项目通过版本锁定和协议回归降低变化风险，但不能承诺跨未知未来版本的零变更兼容。

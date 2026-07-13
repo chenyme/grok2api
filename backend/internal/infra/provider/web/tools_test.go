@@ -1,9 +1,12 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 )
 
 func TestParseToolConfigurationSupportsChatAndResponsesSchemas(t *testing.T) {
@@ -83,6 +86,45 @@ func TestParseToolCallsBuildsStandardResults(t *testing.T) {
 	content := messages["content"].([]any)
 	if messages["type"] != "message" || messages["stop_reason"] != "tool_use" || content[0].(map[string]any)["type"] != "tool_use" {
 		t.Fatalf("messages tool result = %#v", messages)
+	}
+}
+
+func TestBuildMessagesResultPreservesThinkingAndStopSequence(t *testing.T) {
+	parsed := parsedChat{}
+	parsed.Reasoning.WriteString("thought")
+	parsed.Text.WriteString("ABCSTOPXYZ")
+	result := buildOpenAIResult("messages", "resp_test", "grok-chat-fast", parsed, false, conversation.ResponseOptions{
+		AnthropicThinking: true, StopSequences: []string{"STOP"},
+	})
+	content := result["content"].([]any)
+	if result["stop_reason"] != "stop_sequence" || result["stop_sequence"] != "STOP" || len(content) != 2 {
+		t.Fatalf("result = %#v", result)
+	}
+	if content[0].(map[string]any)["type"] != "thinking" || content[1].(map[string]any)["text"] != "ABC" {
+		t.Fatalf("content = %#v", content)
+	}
+}
+
+func TestWebMessagesStreamPreservesThinkingAndSplitStopSequence(t *testing.T) {
+	var output bytes.Buffer
+	stream := newWebMessagesStream(&output, "resp_test", "grok-chat-fast", 3, conversation.ResponseOptions{
+		AnthropicThinking: true, StopSequences: []string{"STOP"},
+	})
+	for _, delta := range []struct{ kind, value string }{
+		{kind: "reasoning", value: "thought"},
+		{kind: "text", value: "ABCST"},
+		{kind: "text", value: "OPXYZ"},
+	} {
+		if err := stream.Delta(delta.kind, delta.value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stream.Finish(parsedChat{}, map[string]any{"usage": map[string]any{"output_tokens": int64(2)}}); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	if strings.Contains(text, "XYZ") || !strings.Contains(text, `"thinking":"thought"`) || !strings.Contains(text, `"text":"ABC"`) || !strings.Contains(text, `"stop_reason":"stop_sequence"`) {
+		t.Fatalf("stream = %s", text)
 	}
 }
 

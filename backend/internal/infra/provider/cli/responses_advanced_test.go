@@ -146,13 +146,49 @@ func TestResponsesWebSearchAliasesAndOptions(t *testing.T) {
 		t.Fatalf("web search alias = %#v, choice = %#v", tool, request["tool_choice"])
 	}
 
+	normalized, compatibility, err = normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"search",
+		"tools":[{"type":"web_search","external_web_access":true,"indexed_web_access":true,"search_content_types":["text"],"search_context_size":"low","user_location":{"type":"approximate","country":"CN"},"filters":{"allowed_domains":[]}}]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility == nil {
+		t.Fatal("Codex web_search 控制字段未启用兼容层")
+	}
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tool = request["tools"].([]any)[0].(map[string]any)
+	if len(tool) != 1 || tool["type"] != "web_search" {
+		t.Fatalf("Codex web search 未降级: %#v", tool)
+	}
+	if !strings.Contains(compatibility.warningHeader(), "web_search_controls_downgraded") {
+		t.Fatalf("compatibility warnings = %q", compatibility.warningHeader())
+	}
+
+	for _, restricted := range []string{
+		`{"external_web_access":false}`,
+		`{"filters":{"allowed_domains":["example.com"]}}`,
+		`{"allowed_domains":["example.com"]}`,
+		`{"search_content_types":["image"]}`,
+	} {
+		_, _, err = normalizeResponsesRequest([]byte(`{
+			"model":"public","input":"search","tools":[{"type":"web_search",`+strings.TrimPrefix(strings.TrimSuffix(restricted, "}"), "{")+`}]
+		}`), "grok-4.5")
+		requestErr, ok := err.(*responsesRequestError)
+		if !ok || requestErr.Code != "unsupported_parameter" {
+			t.Fatalf("restricted web search error = %#v", err)
+		}
+	}
+
 	_, _, err = normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"search",
-		"tools":[{"type":"web_search","search_context_size":"low"}]
+		"tools":[{"type":"web_search","unknown_control":true}]
 	}`), "grok-4.5")
 	requestErr, ok := err.(*responsesRequestError)
-	if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].search_context_size" {
-		t.Fatalf("web search option error = %#v", err)
+	if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].unknown_control" {
+		t.Fatalf("unknown web search option error = %#v", err)
 	}
 }
 
@@ -176,7 +212,17 @@ func TestResponsesBuild0299NativeAndUnsupportedToolMatrix(t *testing.T) {
 		})
 	}
 
-	unsupported := []string{"local_shell", "apply_patch", "computer_use_preview", "unknown_tool"}
+	compatible := []string{"local_shell", "apply_patch"}
+	for _, kind := range compatible {
+		t.Run("compatible_"+kind, func(t *testing.T) {
+			body := []byte(`{"model":"public","input":"hello","tools":[{"type":"` + kind + `"}]}`)
+			if _, compatibility, err := normalizeResponsesRequest(body, "grok-4.5"); err != nil || compatibility == nil {
+				t.Fatalf("compatibility=%#v error=%v", compatibility, err)
+			}
+		})
+	}
+
+	unsupported := []string{"computer_use_preview", "unknown_tool"}
 	for _, kind := range unsupported {
 		t.Run("unsupported_"+kind, func(t *testing.T) {
 			body := []byte(`{"model":"public","input":"hello","tools":[{"type":"` + kind + `"}]}`)
@@ -241,11 +287,12 @@ func TestResponsesMCPDeferLoadingUsesClientToolSearch(t *testing.T) {
 	}
 }
 
-func TestResponsesCodexHistoryItemsAreVisibleOrRejected(t *testing.T) {
+func TestResponsesCodexHistoryItemsAreStructuredOrVisible(t *testing.T) {
 	normalized, _, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":[
 			{"type":"agent_message","author":"worker","recipient":"root","content":[{"type":"input_text","text":"analysis result"}]},
-			{"type":"local_shell_call","status":"completed","action":{"type":"exec","command":"pwd"}},
+			{"type":"local_shell_call","call_id":"shell_1","status":"completed","action":{"type":"exec","command":"pwd"}},
+			{"type":"local_shell_call_output","call_id":"shell_1","status":"completed","output":"/workspace\n"},
 			{"type":"mcp_tool_call_output","call_id":"mcp_1","output":{"content":"done"}}
 		]
 	}`), "grok-4.5")
@@ -257,22 +304,28 @@ func TestResponsesCodexHistoryItemsAreVisibleOrRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	items := request["input"].([]any)
-	if items[0].(map[string]any)["role"] != "developer" || items[1].(map[string]any)["role"] != "assistant" || items[2].(map[string]any)["role"] != "developer" {
+	if items[0].(map[string]any)["role"] != "developer" || items[1].(map[string]any)["type"] != "shell_call" || items[2].(map[string]any)["type"] != "shell_call_output" || items[3].(map[string]any)["role"] != "developer" {
 		t.Fatalf("Codex 历史转换 = %#v", items)
 	}
-	for index, expected := range []string{"Agent message", "Local shell call", "MCP tool output"} {
+	for index, expected := range map[int]string{0: "Agent message", 3: "MCP tool output"} {
 		content := items[index].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
 		if !strings.Contains(content, expected) {
 			t.Fatalf("input[%d] = %q", index, content)
 		}
 	}
 
-	_, _, err = normalizeResponsesRequest([]byte(`{
+	normalized, _, err = normalizeResponsesRequest([]byte(`{
 		"model":"public","input":[{"type":"agent_message","content":[{"type":"encrypted_text","encrypted_content":"opaque"}]}]
 	}`), "grok-4.5")
-	requestErr, ok := err.(*responsesRequestError)
-	if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "input[0].content" {
-		t.Fatalf("opaque agent error = %#v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	marker := request["input"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(marker, "encrypted inter-agent message") {
+		t.Fatalf("opaque agent marker = %q", marker)
 	}
 }
 

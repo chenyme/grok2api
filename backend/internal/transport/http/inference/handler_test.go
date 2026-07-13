@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chenyme/grok2api/backend/internal/application/gateway"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/gin-gonic/gin"
 )
@@ -99,6 +100,34 @@ func TestGatewayErrorDoesNotExposeInternalDetails(t *testing.T) {
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 	if recorder.Code != http.StatusBadGateway || strings.Contains(recorder.Body.String(), "postgres") || !strings.Contains(recorder.Body.String(), "上游服务暂不可用") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGatewayErrorPreservesSanitizedUpstreamClassification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	openAIRouter := gin.New()
+	openAIRouter.GET("/", func(c *gin.Context) {
+		writeGatewayError(c, &gateway.UpstreamFailure{
+			HTTPStatus: http.StatusForbidden, Code: "upstream_forbidden", PublicMessage: "上游拒绝了该请求",
+			Cause: errors.New("secret upstream response"),
+		})
+	})
+	openAIRecorder := httptest.NewRecorder()
+	openAIRouter.ServeHTTP(openAIRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if openAIRecorder.Code != http.StatusForbidden || !strings.Contains(openAIRecorder.Body.String(), `"code":"upstream_forbidden"`) || strings.Contains(openAIRecorder.Body.String(), "secret") {
+		t.Fatalf("OpenAI status=%d body=%s", openAIRecorder.Code, openAIRecorder.Body.String())
+	}
+
+	anthropicRouter := gin.New()
+	anthropicRouter.GET("/", func(c *gin.Context) {
+		writeGatewayAnthropicError(c, &gateway.UpstreamFailure{
+			HTTPStatus: http.StatusTooManyRequests, Code: "upstream_rate_limited", PublicMessage: "上游请求频率受限",
+		})
+	})
+	anthropicRecorder := httptest.NewRecorder()
+	anthropicRouter.ServeHTTP(anthropicRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if anthropicRecorder.Code != http.StatusTooManyRequests || !strings.Contains(anthropicRecorder.Body.String(), `"type":"rate_limit_error"`) {
+		t.Fatalf("Anthropic status=%d body=%s", anthropicRecorder.Code, anthropicRecorder.Body.String())
 	}
 }
 

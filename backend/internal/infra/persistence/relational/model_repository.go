@@ -165,14 +165,6 @@ func (r *ModelRepository) HasSuccessfulAccountSync(ctx context.Context, accountI
 
 func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account.Provider, upstreamModels []string) error {
 	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var suppressions []modelRouteSuppressionModel
-		if err := tx.Where("provider = ?", provider).Find(&suppressions).Error; err != nil {
-			return err
-		}
-		suppressed := make(map[string]bool, len(suppressions))
-		for _, value := range suppressions {
-			suppressed[value.UpstreamModel] = true
-		}
 		var existing []modelRouteModel
 		if err := tx.Where("provider = ? OR public_id IN ?", provider, upstreamModels).Find(&existing).Error; err != nil {
 			return err
@@ -187,18 +179,14 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 		}
 		rows := make([]modelRouteModel, 0, len(upstreamModels))
 		for _, upstreamModel := range upstreamModels {
-			if existingUpstream[upstreamModel] || suppressed[upstreamModel] {
+			if existingUpstream[upstreamModel] {
 				continue
 			}
-			publicID := upstreamModel
+			publicID, capability := discoveredRouteDefaults(provider, upstreamModel)
 			if publicIDs[publicID] {
 				publicID = fmt.Sprintf("%s/%s", provider, upstreamModel)
 			}
 			publicIDs[publicID] = true
-			capability := model.CapabilityResponses
-			if provider == account.ProviderWeb {
-				capability = model.CapabilityChat
-			}
 			rows = append(rows, modelRouteModel{PublicID: publicID, Provider: string(provider), UpstreamModel: upstreamModel, Capability: string(capability), Origin: string(model.OriginDiscovered), Enabled: true})
 		}
 		if len(rows) > 0 {
@@ -207,6 +195,22 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 		}
 		return nil
 	})
+}
+
+func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (string, model.Capability) {
+	if provider != account.ProviderWeb {
+		return upstreamModel, model.CapabilityResponses
+	}
+	switch upstreamModel {
+	case "grok-imagine-image", "grok-imagine-image-quality":
+		return upstreamModel, model.CapabilityImage
+	case "imagine-image-edit":
+		return "grok-imagine-image-edit", model.CapabilityImageEdit
+	case "grok-imagine-video":
+		return upstreamModel, model.CapabilityVideo
+	default:
+		return upstreamModel, model.CapabilityChat
+	}
 }
 
 func (r *ModelRepository) UpsertRoutes(ctx context.Context, values []model.Route) error {
@@ -243,20 +247,6 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 				return fmt.Errorf("模型路由目录包含无效条目")
 			}
 		}
-		var suppressions []modelRouteSuppressionModel
-		if err := tx.Where("provider = ?", provider).Find(&suppressions).Error; err != nil {
-			return err
-		}
-		suppressed := make(map[string]bool, len(suppressions))
-		for _, value := range suppressions {
-			suppressed[value.UpstreamModel] = true
-		}
-		catalog := make([]model.Route, 0, len(values))
-		for _, value := range values {
-			if !suppressed[value.UpstreamModel] {
-				catalog = append(catalog, value)
-			}
-		}
 		var existing []modelRouteModel
 		if err := tx.Where("provider = ?", provider).Find(&existing).Error; err != nil {
 			return err
@@ -268,9 +258,9 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 			byUpstream[row.UpstreamModel] = row
 			byPublicID[row.PublicID] = row
 		}
-		matched := make(map[int]modelRouteModel, len(catalog))
-		usedIDs := make(map[uint64]bool, len(catalog))
-		for index, value := range catalog {
+		matched := make(map[int]modelRouteModel, len(values))
+		usedIDs := make(map[uint64]bool, len(values))
+		for index, value := range values {
 			row, ok := byUpstream[value.UpstreamModel]
 			if !ok || usedIDs[row.ID] {
 				row, ok = byPublicID[value.PublicID]
@@ -299,7 +289,7 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 				return mapError(err)
 			}
 		}
-		for index, value := range catalog {
+		for index, value := range values {
 			updates := map[string]any{
 				"public_id":      value.PublicID,
 				"upstream_model": value.UpstreamModel,
@@ -352,7 +342,7 @@ func (r *ModelRepository) Create(ctx context.Context, value model.Route, account
 		if err := replaceModelRouteAccounts(tx, row.ID, accountIDs); err != nil {
 			return err
 		}
-		return tx.Where("provider = ? AND upstream_model = ?", row.Provider, row.UpstreamModel).Delete(&modelRouteSuppressionModel{}).Error
+		return nil
 	})
 	if err != nil {
 		return model.Route{}, err
@@ -390,58 +380,22 @@ func (r *ModelRepository) Update(ctx context.Context, value model.Route, account
 }
 
 func (r *ModelRepository) Delete(ctx context.Context, id uint64) error {
-	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var row modelRouteModel
-		if err := tx.First(&row, id).Error; err != nil {
-			return mapError(err)
-		}
-		suppression := modelRouteSuppressionModel{Provider: row.Provider, UpstreamModel: row.UpstreamModel, CreatedAt: time.Now().UTC()}
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "provider"}, {Name: "upstream_model"}},
-			DoUpdates: clause.AssignmentColumns([]string{"created_at"}),
-		}).Create(&suppression).Error; err != nil {
-			return err
-		}
-		result := tx.Delete(&modelRouteModel{}, id)
-		if result.Error != nil {
-			return mapError(result.Error)
-		}
-		if result.RowsAffected == 0 {
-			return repository.ErrNotFound
-		}
-		return nil
-	})
+	result := r.db.db.WithContext(ctx).Delete(&modelRouteModel{}, id)
+	if result.Error != nil {
+		return mapError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return repository.ErrNotFound
+	}
+	return nil
 }
 
 func (r *ModelRepository) DeleteMany(ctx context.Context, ids []uint64) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	var deleted int64
-	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var rows []modelRouteModel
-		if err := tx.Where("id IN ?", ids).Find(&rows).Error; err != nil {
-			return err
-		}
-		if len(rows) == 0 {
-			return nil
-		}
-		now := time.Now().UTC()
-		suppressions := make([]modelRouteSuppressionModel, 0, len(rows))
-		for _, row := range rows {
-			suppressions = append(suppressions, modelRouteSuppressionModel{Provider: row.Provider, UpstreamModel: row.UpstreamModel, CreatedAt: now})
-		}
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "provider"}, {Name: "upstream_model"}},
-			DoUpdates: clause.AssignmentColumns([]string{"created_at"}),
-		}).CreateInBatches(suppressions, 200).Error; err != nil {
-			return err
-		}
-		result := tx.Where("id IN ?", ids).Delete(&modelRouteModel{})
-		deleted = result.RowsAffected
-		return mapError(result.Error)
-	})
-	return deleted, err
+	result := r.db.db.WithContext(ctx).Where("id IN ?", ids).Delete(&modelRouteModel{})
+	return result.RowsAffected, mapError(result.Error)
 }
 
 func replaceModelRouteAccounts(tx *gorm.DB, routeID uint64, accountIDs []uint64) error {
