@@ -168,7 +168,6 @@ func TestResponsesWebSearchAliasesAndOptions(t *testing.T) {
 	}
 
 	for _, restricted := range []string{
-		`{"external_web_access":false}`,
 		`{"filters":{"allowed_domains":["example.com"]}}`,
 		`{"allowed_domains":["example.com"]}`,
 		`{"search_content_types":["image"]}`,
@@ -180,6 +179,64 @@ func TestResponsesWebSearchAliasesAndOptions(t *testing.T) {
 		if !ok || requestErr.Code != "unsupported_parameter" {
 			t.Fatalf("restricted web search error = %#v", err)
 		}
+	}
+
+	normalized, compatibility, err = normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"do not access the internet",
+		"tools":[{"type":"web_search","external_web_access":false}],
+		"tool_choice":{"type":"web_search"}
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = nil
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := request["tools"]; exists || request["tool_choice"] != "none" {
+		t.Fatalf("disabled web search request = %#v", request)
+	}
+	warnings := compatibility.warningHeader()
+	if !strings.Contains(warnings, "web_search_disabled_no_external_access") || !strings.Contains(warnings, "web_search_tool_choice_disabled") {
+		t.Fatalf("compatibility warnings = %q", warnings)
+	}
+
+	normalized, compatibility, err = normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"use local tools only",
+		"tools":[
+			{"type":"web_search","external_web_access":false},
+			{"type":"function","name":"local_lookup","parameters":{"type":"object"}}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = nil
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tools := request["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "local_lookup" {
+		t.Fatalf("local-only tools = %#v", tools)
+	}
+	if !strings.Contains(compatibility.warningHeader(), "web_search_disabled_no_external_access") {
+		t.Fatalf("compatibility warnings = %q", compatibility.warningHeader())
+	}
+
+	normalized, _, err = normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"offline only",
+		"tools":[{"type":"web_search","external_web_access":false}],
+		"tool_choice":"auto"
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = nil
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := request["tools"]; exists || request["tool_choice"] != "none" {
+		t.Fatalf("disabled automatic web search request = %#v", request)
 	}
 
 	_, _, err = normalizeResponsesRequest([]byte(`{

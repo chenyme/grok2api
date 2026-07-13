@@ -54,10 +54,12 @@ func (c *responsesToolCompatibility) normalizeWebSearchTool(tool map[string]any,
 			return nil, &responsesRequestError{Message: "external_web_access 必须是布尔值", Param: param + ".external_web_access", Code: "invalid_parameter"}
 		}
 		if !enabled {
-			return nil, &responsesRequestError{
-				Message: "Grok Build 0.2.99 无法保证禁用外部网络搜索",
-				Param:   param + ".external_web_access", Code: "unsupported_parameter",
-			}
+			// 0.2.99 不能表达“只允许索引、禁止外网”。发送最小 web_search
+			// 会扩大客户端授权，因此直接移除该搜索工具，形成安全的能力子集。
+			c.webSearchDisabled = true
+			c.changed = true
+			c.addWarning("web_search_disabled_no_external_access")
+			return nil, nil
 		}
 	}
 	if filters, exists := tool["filters"]; exists && hasNonEmptyWebSearchConstraint(filters) {
@@ -175,4 +177,14 @@ func hasSingleToolType(tools []any, kind string) bool {
 	}
 	tool, ok := tools[0].(map[string]any)
 	return ok && stringField(tool, "type") == kind
+}
+
+func hasToolType(tools []any, kind string) bool {
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if ok && stringField(tool, "type") == kind {
+			return true
+		}
+	}
+	return false
 }

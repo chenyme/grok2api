@@ -148,6 +148,7 @@ func TestConvertAnthropicClaudeCodeRequestToResponses(t *testing.T) {
 			{"role":"user","content":[
 				{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":[
 					{"type":"text","text":"failed"},
+					{"type":"tool_reference","tool_name":"Read"},
 					{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}
 				]},
 				{"type":"document","title":"notes.txt","source":{"type":"text","data":"document text"}},
@@ -182,12 +183,28 @@ func TestConvertAnthropicClaudeCodeRequestToResponses(t *testing.T) {
 		t.Fatalf("input = %#v", input)
 	}
 	output := input[2].(map[string]any)["output"].([]any)
-	if len(output) != 3 || !strings.Contains(output[0].(map[string]any)["text"].(string), "failed") || output[2].(map[string]any)["type"] != "input_image" {
+	if len(output) != 4 || !strings.Contains(output[0].(map[string]any)["text"].(string), "failed") ||
+		!strings.Contains(output[2].(map[string]any)["text"].(string), `"Read"`) || output[3].(map[string]any)["type"] != "input_image" {
 		t.Fatalf("tool result = %#v", output)
 	}
 	tools := payload["tools"].([]any)
 	if len(tools) != 2 || tools[0].(map[string]any)["type"] != "function" || tools[0].(map[string]any)["strict"] != true || tools[1].(map[string]any)["type"] != "mcp" {
 		t.Fatalf("tools = %#v", tools)
+	}
+}
+
+func TestConvertAnthropicToolReferenceValidatesDeclaredTool(t *testing.T) {
+	body := []byte(`{
+		"model":"public","max_tokens":64,
+		"messages":[
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"SearchTools","input":{}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"tool_reference","tool_name":"Missing"}]}]}
+		],
+		"tools":[{"name":"SearchTools","input_schema":{"type":"object"}}]
+	}`)
+	_, _, err := ConvertRequestWithOptions(body, "grok-4.5", OperationMessages)
+	if err == nil || !strings.Contains(err.Error(), `未声明的工具 "Missing"`) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

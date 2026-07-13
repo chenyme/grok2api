@@ -283,7 +283,7 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 			return nil, ResponseOptions{}, fmt.Errorf("不支持 thinking.type=%q", request.Thinking.Type)
 		}
 	}
-	input, inlineInstructions, err := convertAnthropicMessages(request.Messages)
+	input, inlineInstructions, err := convertAnthropicMessages(request.Messages, anthropicDeclaredToolNames(request.Tools))
 	if err != nil {
 		return nil, ResponseOptions{}, err
 	}
@@ -402,7 +402,7 @@ type anthropicToolChoice struct {
 	DisableParallelToolUse bool   `json:"disable_parallel_tool_use"`
 }
 
-func convertAnthropicMessages(messages []anthropicMessage) ([]any, []string, error) {
+func convertAnthropicMessages(messages []anthropicMessage, declaredTools map[string]struct{}) ([]any, []string, error) {
 	input := make([]any, 0, len(messages))
 	instructions := make([]string, 0)
 	pendingCalls := make(map[string]struct{})
@@ -505,7 +505,7 @@ func convertAnthropicMessages(messages []anthropicMessage) ([]any, []string, err
 				if regularBeforeResult {
 					return nil, nil, fmt.Errorf("%s tool_result 必须位于文本、图片或文档块之前", path)
 				}
-				output, err := anthropicToolResult(block["content"])
+				output, err := anthropicToolResult(block["content"], declaredTools)
 				if err != nil {
 					return nil, nil, fmt.Errorf("%s.content: %w", path, err)
 				}
@@ -650,7 +650,7 @@ func anthropicDocument(block map[string]json.RawMessage) (map[string]any, error)
 	}
 }
 
-func anthropicToolResult(raw json.RawMessage) (any, error) {
+func anthropicToolResult(raw json.RawMessage, declaredTools map[string]struct{}) (any, error) {
 	if isEmptyJSON(raw) {
 		return "", nil
 	}
@@ -685,11 +685,38 @@ func anthropicToolResult(raw json.RawMessage) (any, error) {
 				return nil, err
 			}
 			parts = append(parts, document)
+		case "tool_reference":
+			var toolName string
+			if json.Unmarshal(block["tool_name"], &toolName) != nil || strings.TrimSpace(toolName) == "" {
+				return nil, errors.New("tool_reference.tool_name 无效")
+			}
+			toolName = strings.TrimSpace(toolName)
+			if _, exists := declaredTools[toolName]; !exists {
+				return nil, fmt.Errorf("tool_reference 引用了未声明的工具 %q", toolName)
+			}
+			// Responses 没有 Anthropic tool_reference 内容块。Messages 请求中的全部
+			// 工具定义已发送给上游，因此用确定性的结果文本保留“搜索命中”语义。
+			parts = append(parts, map[string]any{
+				"type": "input_text",
+				"text": fmt.Sprintf("Tool search matched declared tool %q; its definition is available in this request.", toolName),
+			})
 		default:
 			return nil, fmt.Errorf("tool_result 暂不支持 type=%q", typeName)
 		}
 	}
 	return parts, nil
+}
+
+func anthropicDeclaredToolNames(tools []map[string]json.RawMessage) map[string]struct{} {
+	declared := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		var name string
+		_ = json.Unmarshal(tool["name"], &name)
+		if name = strings.TrimSpace(name); name != "" {
+			declared[name] = struct{}{}
+		}
+	}
+	return declared
 }
 
 func markAnthropicToolError(output any) any {
