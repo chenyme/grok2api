@@ -73,6 +73,67 @@ func TestConvertAnthropicMessagesRequestToResponses(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicMessagesInlineSystemRole(t *testing.T) {
+	// Claude Code 会在 messages 中注入 role="system"（mid-conversation system）。
+	// 该 system 消息应被提取并合并到顶层 instructions，而不是报 400。
+	body := []byte(`{
+		"model":"public-chat","max_tokens":1024,
+		"system":"Top-level rules.",
+		"messages":[
+			{"role":"system","content":"Inline directive."},
+			{"role":"system","content":[{"type":"text","text":"Inline block."}]},
+			{"role":"user","content":"hi"}
+		]
+	}`)
+	converted, err := ConvertRequest(body, "grok-chat-fast", OperationMessages)
+	if err != nil {
+		t.Fatalf("inline system role should not fail: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if instructions, _ := payload["instructions"].(string); instructions != "Top-level rules.\n\nInline directive.\n\nInline block." {
+		t.Fatalf("instructions = %q", instructions)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("input should only contain the user message, got %#v", input)
+	}
+	if role := input[0].(map[string]any)["role"]; role != "user" {
+		t.Fatalf("remaining input role = %v", role)
+	}
+}
+
+func TestConvertAnthropicMessagesInlineSystemOnly(t *testing.T) {
+	body := []byte(`{
+		"model":"public-chat","max_tokens":256,
+		"messages":[
+			{"role":"system","content":"Only inline."},
+			{"role":"user","content":"go"}
+		]
+	}`)
+	converted, err := ConvertRequest(body, "grok-chat-fast", OperationMessages)
+	if err != nil {
+		t.Fatalf("inline-only system should not fail: %v", err)
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(converted, &payload)
+	if payload["instructions"] != "Only inline." {
+		t.Fatalf("instructions = %#v", payload["instructions"])
+	}
+}
+
+func TestConvertAnthropicMessagesRejectsUnknownRole(t *testing.T) {
+	body := []byte(`{
+		"model":"public-chat","max_tokens":256,
+		"messages":[{"role":"tool","content":"nope"}]
+	}`)
+	if _, err := ConvertRequest(body, "grok-chat-fast", OperationMessages); err == nil {
+		t.Fatal("unknown role should be rejected")
+	}
+}
+
 func TestConvertResponsesJSONToChatAndMessages(t *testing.T) {
 	body := []byte(`{
 		"id":"resp_1","object":"response","created_at":123,"model":"grok-4.5","status":"completed",
