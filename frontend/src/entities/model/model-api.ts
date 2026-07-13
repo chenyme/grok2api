@@ -7,7 +7,7 @@ type ListModelsInput = {
   pageSize: number;
   search?: string;
   status?: string;
-  provider?: "grok_build" | "grok_web" | "";
+  provider?: "grok_build" | "grok_web" | "grok_console" | "";
   sortBy?: string;
   sortOrder?: SortOrder;
 };
@@ -32,14 +32,14 @@ export type ModelAccountOptionDTO = { id: string; name: string };
 
 export type CreateModelInput = {
   publicId: string;
-  provider: "grok_build" | "grok_web";
+  provider: ModelRouteDTO["provider"];
   upstreamModel: string;
   capability: ModelRouteDTO["capability"];
   enabled: boolean;
   accountIds: string[];
 };
 
-export function listModelAccountOptions(provider: "grok_build" | "grok_web"): Promise<{ items: ModelAccountOptionDTO[] }> {
+export function listModelAccountOptions(provider: ModelRouteDTO["provider"]): Promise<{ items: ModelAccountOptionDTO[] }> {
   return apiRequest<{ items: ModelAccountOptionDTO[] }>(`/api/admin/v1/models/accounts?provider=${provider}`);
 }
 

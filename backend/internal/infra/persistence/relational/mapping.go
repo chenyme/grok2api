@@ -87,7 +87,7 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 	}
 	authType := value.AuthType
 	if authType == "" {
-		if value.Provider == account.ProviderWeb {
+		if value.Provider == account.ProviderWeb || value.Provider == account.ProviderConsole {
 			authType = account.AuthTypeSSO
 		} else {
 			authType = account.AuthTypeOAuth

@@ -82,7 +82,7 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 
 func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]modeldomain.Route, int64, error) {
 	page, pageSize = normalizePage(page, pageSize)
-	if !validModelFilter(filter.Provider, "", string(account.ProviderBuild), string(account.ProviderWeb)) || !validModelFilter(filter.Status, "", "enabled", "disabled") || !repository.IsValidSort(filter.Sort, "publicId", "upstreamModel", "status", "provider", "accountSupport", "lastSyncedAt") {
+	if !validModelFilter(filter.Provider, "", string(account.ProviderBuild), string(account.ProviderWeb), string(account.ProviderConsole)) || !validModelFilter(filter.Status, "", "enabled", "disabled") || !repository.IsValidSort(filter.Sort, "publicId", "upstreamModel", "status", "provider", "accountSupport", "lastSyncedAt") {
 		return nil, 0, ErrInvalidFilter
 	}
 	var enabled *bool
@@ -111,6 +111,10 @@ func (s *Service) GetByPublicID(ctx context.Context, publicID string) (modeldoma
 	return s.models.GetByPublicID(ctx, publicID)
 }
 
+func (s *Service) GetByProviderUpstream(ctx context.Context, providerValue account.Provider, upstreamModel string) (modeldomain.Route, error) {
+	return s.models.GetByProviderUpstream(ctx, providerValue, upstreamModel)
+}
+
 func (s *Service) Create(ctx context.Context, input CreateInput) (modeldomain.Route, error) {
 	publicID := strings.TrimSpace(input.PublicID)
 	upstreamModel := strings.TrimSpace(input.UpstreamModel)
@@ -125,6 +129,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (modeldomain.Ro
 	}
 	if input.Provider == account.ProviderWeb && (s.providers == nil || len(s.providers.TierOrder(input.Provider, upstreamModel)) == 0) {
 		return modeldomain.Route{}, invalidInput("Grok Web 仅支持内置模型目录中的上游模型")
+	}
+	if input.Provider == account.ProviderConsole && (s.providers == nil || s.providers.QuotaMode(input.Provider, upstreamModel) == "") {
+		return modeldomain.Route{}, invalidInput("Grok Console 仅支持内置模型目录中的上游模型")
 	}
 	accountIDs, err := s.validateBoundAccounts(ctx, input.Provider, input.AccountIDs)
 	if err != nil {
@@ -181,7 +188,7 @@ func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) 
 }
 
 func (s *Service) ListBindableAccounts(ctx context.Context, providerValue account.Provider) ([]AccountOption, error) {
-	if providerValue != account.ProviderBuild && providerValue != account.ProviderWeb {
+	if providerValue != account.ProviderBuild && providerValue != account.ProviderWeb && providerValue != account.ProviderConsole {
 		return nil, invalidInput("账号来源无效")
 	}
 	values, _, err := s.accounts.List(ctx, repository.AccountListQuery{
@@ -199,7 +206,7 @@ func (s *Service) ListBindableAccounts(ctx context.Context, providerValue accoun
 }
 
 func validateProviderCapability(providerValue account.Provider, capability modeldomain.Capability) error {
-	if providerValue != account.ProviderBuild && providerValue != account.ProviderWeb {
+	if providerValue != account.ProviderBuild && providerValue != account.ProviderWeb && providerValue != account.ProviderConsole {
 		return invalidInput("provider 无效")
 	}
 	valid := capability == modeldomain.CapabilityResponses || capability == modeldomain.CapabilityChat || capability == modeldomain.CapabilityImage || capability == modeldomain.CapabilityImageEdit || capability == modeldomain.CapabilityVideo
@@ -211,6 +218,9 @@ func validateProviderCapability(providerValue account.Provider, capability model
 	}
 	if providerValue == account.ProviderWeb && capability == modeldomain.CapabilityResponses {
 		return invalidInput("Grok Web 不支持 responses 能力")
+	}
+	if providerValue == account.ProviderConsole && capability != modeldomain.CapabilityResponses {
+		return invalidInput("Grok Console 仅支持 responses 能力")
 	}
 	return nil
 }
@@ -263,7 +273,7 @@ func (s *Service) BatchSetEnabled(ctx context.Context, ids []uint64, enabled boo
 	return updated, err
 }
 
-// Sync 从全部启用的 Build 与 Web 账号同步模型能力，并按 Provider 幂等更新公开路由表。
+// Sync 从全部启用账号同步模型能力，并按 Provider 幂等更新公开路由表。
 func (s *Service) Sync(ctx context.Context) (int, error) {
 	result := s.syncAll.DoChan("all", func() (any, error) {
 		return s.syncAllAccounts(ctx)
@@ -280,7 +290,7 @@ func (s *Service) Sync(ctx context.Context) (int, error) {
 }
 
 func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
-	providerValues := []account.Provider{account.ProviderBuild, account.ProviderWeb}
+	providerValues := []account.Provider{account.ProviderBuild, account.ProviderWeb, account.ProviderConsole}
 	credentials := make([]account.Credential, 0)
 	for _, providerValue := range providerValues {
 		values, err := s.accounts.ListEnabled(ctx, providerValue)

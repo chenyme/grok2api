@@ -17,6 +17,10 @@ const auditFlushDuration = durationSchema.refine((value) => {
   const seconds = durationSeconds(value);
   return seconds >= 0.01 && seconds <= 60;
 });
+const consoleChatDuration = durationSchema.refine((value) => {
+  const seconds = durationSeconds(value);
+  return seconds >= 5 && seconds <= 30 * 60;
+});
 
 export const settingsSchema = z.object({
   providerBuild: z.object({
@@ -50,6 +54,11 @@ export const settingsSchema = z.object({
         context.addIssue({ code: "custom", path: ["statsigSignerURL"], message: "invalid" });
       }
     }
+  }),
+  providerConsole: z.object({
+    baseURL: z.url().refine((value) => value.startsWith("https://")),
+    userAgent: z.string().trim().min(1).max(512),
+    chatTimeout: consoleChatDuration,
   }),
   batch: z.object({
     importConcurrency: positiveInteger.max(50),
@@ -88,6 +97,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       imageTimeout: parseDuration(config.providerWeb.imageTimeout), videoTimeout: parseDuration(config.providerWeb.videoTimeout),
       recoveryBackoffBase: parseDuration(config.providerWeb.recoveryBackoffBase), recoveryBackoffMax: parseDuration(config.providerWeb.recoveryBackoffMax),
     },
+    providerConsole: { ...config.providerConsole, chatTimeout: parseDuration(config.providerConsole.chatTimeout) },
     batch: { ...config.batch, randomDelay: parseDurationMilliseconds(config.batch.randomDelay) },
     media: {
       maxImageSize: parseByteSize(config.media.maxImageBytes), maxTotalSize: parseByteSize(config.media.maxTotalBytes),
@@ -112,6 +122,7 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
       imageTimeout: formatDuration(config.providerWeb.imageTimeout), videoTimeout: formatDuration(config.providerWeb.videoTimeout),
       recoveryBackoffBase: formatDuration(config.providerWeb.recoveryBackoffBase), recoveryBackoffMax: formatDuration(config.providerWeb.recoveryBackoffMax),
     },
+    providerConsole: { ...config.providerConsole, chatTimeout: formatDuration(config.providerConsole.chatTimeout) },
     batch: { ...config.batch, randomDelay: `${config.batch.randomDelay}ms` },
     media: {
       maxImageBytes: byteSizeBytes(config.media.maxImageSize), maxTotalBytes: byteSizeBytes(config.media.maxTotalSize),

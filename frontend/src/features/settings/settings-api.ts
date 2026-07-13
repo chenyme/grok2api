@@ -9,6 +9,7 @@ export type SettingsConfigDTO = {
     mediaConcurrency: number; allowNSFW: boolean;
     recoveryBackoffBase: string; recoveryBackoffMax: string;
   };
+  providerConsole: { baseURL: string; userAgent: string; chatTimeout: string };
   batch: { importConcurrency: number; conversionConcurrency: number; syncConcurrency: number; refreshConcurrency: number; randomDelay: string };
   media: {
     maxImageBytes: number; maxTotalBytes: number; cleanupThresholdPercent: number;
@@ -30,7 +31,7 @@ export type EgressNodeInput = {
   clearProxyURL?: boolean; userAgent: string; cloudflareCookies?: string; clearCookies?: boolean;
 };
 
-export type EgressScope = "grok_build" | "grok_web" | "grok_web_asset";
+export type EgressScope = "grok_build" | "grok_web" | "grok_console" | "grok_web_asset";
 export type EgressNodeListDTO = { items: EgressNodeDTO[]; defaultUserAgents: Record<EgressScope, string> };
 
 export type SettingsSnapshotDTO = {

@@ -128,6 +128,22 @@ func (r *ModelRepository) GetByPublicID(ctx context.Context, publicID string) (m
 	return toModelDomain(row), nil
 }
 
+func (r *ModelRepository) GetByPublicIDIncludingDisabled(ctx context.Context, publicID string) (model.Route, error) {
+	var row modelRouteModel
+	if err := r.db.db.WithContext(ctx).Where("public_id = ?", publicID).First(&row).Error; err != nil {
+		return model.Route{}, mapError(err)
+	}
+	return toModelDomain(row), nil
+}
+
+func (r *ModelRepository) GetByProviderUpstream(ctx context.Context, provider account.Provider, upstreamModel string) (model.Route, error) {
+	var row modelRouteModel
+	if err := r.availableRoutes(r.db.db.WithContext(ctx)).Where("provider = ? AND upstream_model = ? AND enabled = ?", provider, upstreamModel, true).First(&row).Error; err != nil {
+		return model.Route{}, mapError(err)
+	}
+	return toModelDomain(row), nil
+}
+
 func (r *ModelRepository) ReplaceAccountCapabilities(ctx context.Context, accountID uint64, upstreamModels []string, syncedAt time.Time) error {
 	unique := make(map[string]struct{}, len(upstreamModels))
 	rows := make([]accountModelCapabilityModel, 0, len(upstreamModels))

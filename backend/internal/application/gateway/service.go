@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -81,6 +82,7 @@ type auditRecorder interface {
 
 type routeResolver interface {
 	GetByPublicID(ctx context.Context, publicID string) (modeldomain.Route, error)
+	GetByProviderUpstream(ctx context.Context, providerValue accountdomain.Provider, upstreamModel string) (modeldomain.Route, error)
 }
 
 // Service 负责模型路由、账号选择、故障切换与审计收口。
@@ -151,9 +153,32 @@ func (s *Service) CompactResponse(ctx context.Context, input Input) (*Result, er
 func (s *Service) createResponseAt(ctx context.Context, input Input, path string) (*Result, error) {
 	startedAt := time.Now()
 	eventID := newAuditEventID()
+	operation := input.Operation
+	if operation == "" {
+		operation = audit.OperationResponses
+	}
 	route, err := s.models.GetByPublicID(ctx, input.PublicModel)
 	if err != nil {
-		return nil, ErrModelNotFound
+		if s.providers == nil {
+			return nil, ErrModelNotFound
+		}
+		alias, ok := s.providers.ResolveModelAlias(input.PublicModel)
+		if !ok {
+			return nil, ErrModelNotFound
+		}
+		if alias.Provider != "" && alias.UpstreamModel != "" {
+			route, err = s.models.GetByProviderUpstream(ctx, alias.Provider, alias.UpstreamModel)
+		} else {
+			route, err = s.models.GetByPublicID(ctx, alias.PublicModel)
+		}
+		if err != nil {
+			return nil, ErrModelNotFound
+		}
+		input.PublicModel = route.PublicID
+		input.Body, err = rewriteAliasedModel(input.Body, route.PublicID, alias.ReasoningEffort, operation)
+		if err != nil {
+			return nil, err
+		}
 	}
 	timing := newGenerationTiming(route.PublicID, route.Provider)
 	timingHandedOff := false
@@ -162,10 +187,6 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			timing.finish(s.logger, "failed")
 		}
 	}()
-	operation := input.Operation
-	if operation == "" {
-		operation = audit.OperationResponses
-	}
 	usageSource := audit.UsageSourceUpstream
 	if route.Provider == accountdomain.ProviderWeb {
 		usageSource = audit.UsageSourceEstimated
@@ -290,11 +311,11 @@ attemptLoop:
 	handleResponse:
 		if response.StatusCode == http.StatusUnauthorized {
 			response.Body.Close()
-			if credential.Provider == accountdomain.ProviderWeb {
-				_ = s.accounts.MarkReauthRequired(ctx, credential.ID, "Grok Web SSO credential rejected")
+			if credential.AuthType == accountdomain.AuthTypeSSO {
+				_ = s.accounts.MarkReauthRequired(ctx, credential.ID, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
 				s.selector.MarkFailure(ctx, credential, http.StatusUnauthorized, 0)
 				lease.Release()
-				lastErr = fmt.Errorf("Grok Web SSO 凭据已失效")
+				lastErr = fmt.Errorf("%s SSO 凭据已失效", credential.Provider)
 				lastFailure = newHTTPUpstreamFailure(http.StatusUnauthorized, nil, credential.ID, credential.Name)
 				continue
 			}
@@ -364,12 +385,10 @@ attemptLoop:
 				goto handleResponse
 			}
 			failureHandled := false
-			if credential.Provider == accountdomain.ProviderWeb {
-				if lease.QuotaMode != "" && response.StatusCode == http.StatusTooManyRequests {
-					exhausted, reconcileErr := s.accounts.ReconcileWebRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
-					s.selector.MarkQuotaStateChanged(credential.Provider)
-					failureHandled = reconcileErr == nil && exhausted
-				}
+			if lease.QuotaMode != "" && response.StatusCode == http.StatusTooManyRequests {
+				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
+				s.selector.MarkQuotaStateChanged(credential.Provider)
+				failureHandled = reconcileErr == nil && exhausted
 			} else if used, limit, exhausted := parseFreeQuotaExhaustion(body); exhausted {
 				s.selector.MarkFreeQuotaExhausted(ctx, credential, used, limit)
 				failureHandled = true
@@ -453,17 +472,19 @@ attemptLoop:
 				if usage.ResponseModel != "" {
 					_ = s.accounts.ObserveResponseModel(persistCtx, accountID, usage.ResponseModel)
 				}
-				if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" && credential.Provider == accountdomain.ProviderWeb && lease.QuotaMode != "" {
+				if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" && lease.QuotaMode != "" {
 					if lease.QuotaMode != "weekly" {
 						units := max(1, response.QuotaUnits)
-						updated, err := s.accounts.DecrementWebQuota(persistCtx, accountID, lease.QuotaMode, units)
+						updated, err := s.accounts.DecrementQuota(persistCtx, accountID, lease.QuotaMode, units)
 						if err != nil {
-							s.logger.Warn("web_quota_decrement_failed", "account_id", accountID, "mode", lease.QuotaMode, "units", units, "error", err)
+							s.logger.Warn("provider_quota_decrement_failed", "provider", credential.Provider, "account_id", accountID, "mode", lease.QuotaMode, "units", units, "error", err)
 						} else if updated {
 							s.selector.ConsumeQuota(credential.Provider, accountID, lease.QuotaMode, units)
 						}
 					}
-					s.accounts.QueueWebQuotaRefresh(accountID, lease.QuotaMode)
+					if credential.Provider == accountdomain.ProviderWeb {
+						s.accounts.QueueWebQuotaRefresh(accountID, lease.QuotaMode)
+					}
 				}
 				if operation == audit.OperationResponses && responseID != "" && response.StatusCode >= 200 && response.StatusCode < 300 {
 					_ = s.responses.Save(persistCtx, inferencedomain.ResponseOwnership{ResponseID: responseID, AccountID: accountID, ClientKeyID: input.ClientKey.ID, Provider: route.Provider, ExpiresAt: now.Add(responseOwnershipTTL), CreatedAt: now, UpdatedAt: now})
@@ -511,6 +532,35 @@ attemptLoop:
 		s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
 	}
 	return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, lastErr)
+}
+
+func rewriteAliasedModel(body []byte, publicModel, reasoningEffort string, operation audit.Operation) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("解析兼容模型请求: %w", err)
+	}
+	payload["model"] = publicModel
+	if reasoningEffort != "" {
+		switch operation {
+		case audit.OperationChat:
+			payload["reasoning_effort"] = reasoningEffort
+		case audit.OperationMessages:
+			config, _ := payload["output_config"].(map[string]any)
+			if config == nil {
+				config = make(map[string]any)
+			}
+			config["effort"] = reasoningEffort
+			payload["output_config"] = config
+		default:
+			reasoning, _ := payload["reasoning"].(map[string]any)
+			if reasoning == nil {
+				reasoning = make(map[string]any)
+			}
+			reasoning["effort"] = reasoningEffort
+			payload["reasoning"] = reasoning
+		}
+	}
+	return json.Marshal(payload)
 }
 
 type ResourceInput struct {

@@ -40,23 +40,25 @@ type Service struct {
 	cipher     *security.Cipher
 	mu         sync.RWMutex
 	webUA      string
+	consoleUA  string
 }
 
-func NewService(repository repository.EgressRepository, cipher *security.Cipher, webUA string) *Service {
-	return &Service{repository: repository, cipher: cipher, webUA: strings.TrimSpace(webUA)}
+func NewService(repository repository.EgressRepository, cipher *security.Cipher, webUA, consoleUA string) *Service {
+	return &Service{repository: repository, cipher: cipher, webUA: strings.TrimSpace(webUA), consoleUA: strings.TrimSpace(consoleUA)}
 }
 
-func (s *Service) UpdateDefaults(webUA string) {
+func (s *Service) UpdateDefaults(webUA, consoleUA string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.webUA = strings.TrimSpace(webUA)
+	s.consoleUA = strings.TrimSpace(consoleUA)
 }
 
 func (s *Service) DefaultUserAgents() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return map[string]string{
-		string(domain.ScopeBuild): "", string(domain.ScopeWeb): s.webUA,
+		string(domain.ScopeBuild): "", string(domain.ScopeWeb): s.webUA, string(domain.ScopeConsole): s.consoleUA,
 		string(domain.ScopeWebAsset): s.webUA,
 	}
 }
@@ -114,8 +116,8 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	if name == "" || len(name) > 160 {
 		return domain.Node{}, fmt.Errorf("%w: 名称必须在 1 到 160 个字符之间", ErrInvalidInput)
 	}
-	if input.Scope != domain.ScopeBuild && input.Scope != domain.ScopeWeb && input.Scope != domain.ScopeWebAsset {
-		return domain.Node{}, fmt.Errorf("%w: scope 必须是 grok_build、grok_web 或 grok_web_asset", ErrInvalidInput)
+	if input.Scope != domain.ScopeBuild && input.Scope != domain.ScopeWeb && input.Scope != domain.ScopeConsole && input.Scope != domain.ScopeWebAsset {
+		return domain.Node{}, fmt.Errorf("%w: scope 必须是 grok_build、grok_web、grok_console 或 grok_web_asset", ErrInvalidInput)
 	}
 	value.Name, value.Scope, value.Enabled = name, input.Scope, input.Enabled
 	if input.Scope == domain.ScopeBuild {
@@ -126,7 +128,7 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	}
 	if input.Scope != domain.ScopeBuild && value.UserAgent == "" {
 		s.mu.RLock()
-		value.UserAgent = s.webUA
+		value.UserAgent = s.defaultUserAgent(input.Scope)
 		s.mu.RUnlock()
 	}
 	if len(value.UserAgent) > 512 {
@@ -167,6 +169,13 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 		value.Health = 1
 	}
 	return value, nil
+}
+
+func (s *Service) defaultUserAgent(scope domain.Scope) string {
+	if scope == domain.ScopeConsole {
+		return s.consoleUA
+	}
+	return s.webUA
 }
 
 func publicNode(value domain.Node) domain.PublicNode {

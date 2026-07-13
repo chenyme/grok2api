@@ -37,7 +37,7 @@ export function ModelsPage() {
   const [pageSize, setPageSize] = useState(50);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
-  const [providerFilter, setProviderFilter] = useState<"grok_build" | "grok_web" | "">("");
+  const [providerFilter, setProviderFilter] = useState<ModelRouteDTO["provider"] | "">("");
   const [sort, setSort] = useState<TableSort>({ field: "", order: "asc" });
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [editing, setEditing] = useState<ModelRouteDTO | "new" | null>(null);
@@ -47,7 +47,7 @@ export function ModelsPage() {
   const debouncedSearch = useDebouncedValue(search);
   const schema = z.object({
     publicId: z.string().min(1, t("errors.required")),
-    provider: z.enum(["grok_build", "grok_web"]),
+    provider: z.enum(["grok_build", "grok_web", "grok_console"]),
     upstreamModel: z.string().min(1, t("errors.required")),
     capability: z.enum(["responses", "chat", "image", "image_edit", "video"]),
     enabled: z.boolean(),
@@ -212,9 +212,10 @@ export function ModelsPage() {
                 <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={t("models.search")} aria-label={t("models.search")} />
               </div>
               <DataTableFilters filters={[
-                { id: "provider", label: t("models.provider"), value: providerFilter, onChange: (value) => { setProviderFilter(value as "grok_build" | "grok_web" | ""); setPage(1); }, options: [
+                { id: "provider", label: t("models.provider"), value: providerFilter, onChange: (value) => { setProviderFilter(value as ModelRouteDTO["provider"] | ""); setPage(1); }, options: [
                   { value: "grok_build", label: t("models.providerGrokBuild") },
                   { value: "grok_web", label: t("models.providerGrokWeb") },
+                  { value: "grok_console", label: t("console.name") },
                 ] },
                 { id: "status", label: t("models.status"), value: statusFilter, onChange: (value) => { setStatusFilter(value); setPage(1); }, options: [
                   { value: "enabled", label: t("common.enabled") },
@@ -278,7 +279,7 @@ export function ModelsPage() {
                     <span className="block truncate text-xs text-muted-foreground" title={model.upstreamModel}>{model.upstreamModel}</span>
                   </TableCell>
                   <TableCell className="text-center">{model.enabled ? <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("common.enabled")}</Badge> : <Badge variant="outline" className="text-muted-foreground">{t("common.disabled")}</Badge>}</TableCell>
-                  <TableCell className="text-center"><Badge variant="outline">{model.provider === "grok_web" ? t("models.providerGrokWeb") : t("models.providerGrokBuild")}</Badge></TableCell>
+                  <TableCell className="text-center"><Badge variant="outline">{model.provider === "grok_web" ? t("models.providerGrokWeb") : model.provider === "grok_console" ? t("console.name") : t("models.providerGrokBuild")}</Badge></TableCell>
                   <TableCell className="text-center text-xs">
                     <div title={t("models.supportSummary", { supported: model.supportedAccounts, total: model.totalAccounts })}>
                       <span className="inline-flex items-baseline gap-1 tabular-nums"><span className="font-medium text-foreground">{model.supportedAccounts}</span><span className="text-muted-foreground">/ {model.totalAccounts}</span></span>

@@ -162,9 +162,9 @@ func readinessSnapshot(
 	}
 	snapshot.Components["model_routes"] = httpserver.ReadinessComponent{State: "ready", Detail: fmt.Sprintf("%d 条已启用路由", len(routes))}
 
-	required := make(map[accountdomain.Provider]bool, 2)
-	usable := make(map[accountdomain.Provider]bool, 2)
-	providerErrors := make(map[accountdomain.Provider]bool, 2)
+	required := make(map[accountdomain.Provider]bool, 3)
+	usable := make(map[accountdomain.Provider]bool, 3)
+	providerErrors := make(map[accountdomain.Provider]bool, 3)
 	now := time.Now().UTC()
 	for _, route := range routes {
 		required[route.Provider] = true
@@ -186,7 +186,7 @@ func readinessSnapshot(
 
 	readyProviders := 0
 	unavailableProviders := 0
-	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderWeb} {
+	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderWeb, accountdomain.ProviderConsole} {
 		name := string(providerValue)
 		if !required[providerValue] {
 			snapshot.Components[name] = httpserver.ReadinessComponent{State: "disabled"}
@@ -271,7 +271,7 @@ func (a *Application) reconcileStartup(ctx context.Context) {
 		a.logger.Warn("model_cooldown_cleanup_failed", "error", err)
 		a.startup.recordError("model_cooldown_cleanup", err)
 	}
-	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderWeb} {
+	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderWeb, accountdomain.ProviderConsole} {
 		values, err := a.accountRepo.ListEnabled(recoveryCtx, providerValue)
 		if err != nil {
 			a.startup.recordError("cooldown_restore", err)

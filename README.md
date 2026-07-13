@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>面向 Grok Build 与 Grok Web 的多账号 API 网关</strong>
+  <strong>面向 Grok Build、Grok Web 与 Grok Console 的多账号 API 网关</strong>
 </p>
 
 <p align="center">
@@ -19,11 +19,11 @@
 > [!NOTE]
 > 本项目仅供学习与研究交流。请务必遵循 Grok 的使用条款及当地法律法规，不得用于非法用途！
 
-Grok2API 是一个纯 Go 实现的 Grok API 网关。项目将 Grok Build OAuth 与 Grok Web SSO 组织为独立账号池，对外提供 OpenAI 风格接口、Anthropic Messages 兼容接口，以及账号、模型、密钥、用量和代理管理后台。
+Grok2API 是一个纯 Go 实现的 Grok API 网关。项目将 Grok Build OAuth、Grok Web SSO 与 Grok Console SSO 组织为独立账号池，对外提供 OpenAI 风格接口、Anthropic Messages 兼容接口，以及账号、模型、密钥、用量和代理管理后台。
 
 ## 功能概览
 
-- **双 Provider**：`grok_build` 与 `grok_web` 独立路由、额度和故障状态
+- **三 Provider**：`grok_build`、`grok_web` 与 `grok_console` 独立路由、额度和故障状态
 - **标准接口**：Responses、Chat Completions、Images、异步 Videos、Anthropic Messages
 - **多账号调度**：优先级、并发限制、额度门控、会话粘滞、冷却与故障切换
 - **账号接入**：Device OAuth、OAuth JSON、SSO JSON、逐行 SSO Token
@@ -42,11 +42,14 @@ flowchart LR
     Gateway --> Router["Model Router"]
     Router --> Build["Grok Build"]
     Router --> Web["Grok Web"]
+    Router --> Console["Grok Console"]
 
     Build --> BuildPool["OAuth Account Pool"]
     Web --> WebPool["SSO Account Pool"]
+    Console --> ConsolePool["SSO Account Pool"]
     Build --> Egress["Egress Pool"]
     Web --> Egress
+    Console --> Egress
 
     Gateway --> Database["SQLite / PostgreSQL"]
     Gateway --> Runtime["Memory / Redis"]
@@ -124,7 +127,7 @@ pnpm dev
 ## 首次使用
 
 1. 使用 `bootstrapAdmin` 配置的管理员登录。
-2. 在“上游账号”中接入 Grok Build 或 Grok Web 账号。
+2. 在“上游账号”中接入 Grok Build、Grok Web 或 Grok Console 账号。
 3. 等待本次额度和模型能力同步完成。
 4. 在“模型管理”中确认对外模型名称与启用状态。
 5. 在“客户端密钥”中创建 `g2a_` API Key。
@@ -138,10 +141,13 @@ pnpm dev
 | :-- | :-- | :-- |
 | Grok Build | Device OAuth、OAuth JSON | 原生 Responses、Chat、Messages、Billing、模型同步 |
 | Grok Web | SSO JSON、逐行 SSO Token | Chat、Responses、Messages、图片、图片编辑、视频 |
+| Grok Console | SSO JSON、逐行 SSO Token | 原生 Responses、兼容 Chat 与 Messages |
 
-Grok Build OAuth 支持按需续期。Grok Web SSO 不可自动续期，凭据失效后账号会退出可用号池并等待重新授权。
+Grok Build OAuth 支持按需续期。Grok Web 与 Grok Console 的 SSO 不可自动续期，凭据失效后账号会退出可用号池并等待重新授权。
 
-Grok Web 支持账号列表 JSON，也支持每行一个 Token 的快速导入。账号接入接口会等待本批账号的首次额度与模型能力同步完成后再返回结果。
+Grok Web 与 Grok Console 均支持账号列表 JSON，也支持每行一个 Token 的快速导入。账号接入接口会等待本批账号的首次额度与模型能力同步完成后再返回结果。
+
+管理端可复用 Console 账号的同一份 SSO 创建或更新对应的 Web 账号；同步按 Web 身份键幂等执行，不会改变已有 Build 关联。
 
 ## 模型
 
@@ -160,7 +166,20 @@ Grok Web 内置模型：
 | `grok-imagine-image-edit` | 图片编辑 | Super |
 | `grok-imagine-video` | 视频生成 | Super |
 
-两个 Provider 不会自动跨来源降级。请求只会进入目标模型所属 Provider 的可用账号池。
+Grok Console 内置模型：
+
+| 模型 | 能力 |
+| :-- | :-- |
+| `grok-4.3` | Responses / Chat / Messages |
+| `grok-4.20-0309` | Responses / Chat / Messages |
+| `grok-4.20-0309-reasoning` | Responses / Chat / Messages |
+| `grok-4.20-0309-non-reasoning` | Responses / Chat / Messages |
+| `grok-4.20-multi-agent-0309` | Responses / Chat / Messages |
+| `grok-build-0.1` | Responses / Chat / Messages |
+
+Console 模型默认保留上游模型 ID；只有公开名称冲突时才使用 `-console` 后缀。兼容别名不会出现在 `GET /v1/models`。
+
+三个 Provider 不会自动跨来源降级。请求只会进入目标模型所属 Provider 的可用账号池。
 
 ## API
 
@@ -216,7 +235,7 @@ curl http://127.0.0.1:8000/v1/responses \
 | `runtimeStore` | Memory 或 Redis |
 | `auth` | 管理员 Token 与安全 Cookie |
 | `secrets` | JWT 与凭据加密密钥 |
-| `provider` | Build/Web 上游默认配置 |
+| `provider` | Build/Web/Console 上游默认配置 |
 | `media` | 媒体存储驱动与路径 |
 
 账号、模型、额度、审计、客户端密钥、媒体任务和运行设置始终保存在关系型数据库。Redis 用于限流、并发租约、粘滞路由、分布式锁、额度恢复事件和多实例设置通知。
@@ -228,7 +247,7 @@ curl http://127.0.0.1:8000/v1/responses \
 | 本地或单实例 | SQLite | Memory | 本地目录 |
 | 多实例 | PostgreSQL | Redis | 共享卷或实例亲和 |
 
-可热加载的 Provider、批量任务并发、路由、媒体容量、审计和代理参数统一在管理端 `/settings` 修改，不需要直接编辑数据库。导入同步、账号转换、数据同步和凭据刷新默认并发均为 `25`，可分别限制为 `1–50`，并支持随机启动延迟；多实例使用 Redis 时，分类上限和总上限均在集群范围内生效。
+可热加载的 Provider（包括 Console 上游地址与 User-Agent）、批量任务并发、路由、媒体容量、审计和代理参数统一在管理端 `/settings` 修改，不需要直接编辑数据库。导入同步、账号转换、数据同步和凭据刷新默认并发均为 `25`，可分别限制为 `1–50`，并支持随机启动延迟；多实例使用 Redis 时，分类上限和总上限均在集群范围内生效。
 
 ## 生产部署
 

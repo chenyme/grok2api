@@ -95,7 +95,7 @@ type quotaSyncStub struct {
 	due           []accountdomain.QuotaWindow
 }
 
-func (s *quotaSyncStub) RefreshWebQuotaMode(_ context.Context, accountID uint64, mode string) (accountdomain.QuotaWindow, error) {
+func (s *quotaSyncStub) RefreshQuotaMode(_ context.Context, accountID uint64, mode string) (accountdomain.QuotaWindow, error) {
 	s.mu.Lock()
 	s.current++
 	if s.current > s.maxConcurrent {
@@ -109,7 +109,7 @@ func (s *quotaSyncStub) RefreshWebQuotaMode(_ context.Context, accountID uint64,
 	return accountdomain.QuotaWindow{AccountID: accountID, Mode: mode, Remaining: 1}, nil
 }
 
-func (s *quotaSyncStub) ListDueWebQuotaWindows(context.Context, time.Time, int) ([]accountdomain.QuotaWindow, error) {
+func (s *quotaSyncStub) ListDueQuotaWindows(context.Context, time.Time, int) ([]accountdomain.QuotaWindow, error) {
 	return s.due, nil
 }
 

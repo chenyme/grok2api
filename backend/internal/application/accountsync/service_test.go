@@ -35,6 +35,22 @@ func (s accountReaderStub) Get(context.Context, uint64) (accountapp.View, error)
 	return accountapp.View{Credential: accountdomain.Credential{Provider: s.provider}}, nil
 }
 
+type quotaStub struct {
+	hasSnapshot bool
+	checks      int
+	syncs       int
+}
+
+func (s *quotaStub) HasQuotaWindows(context.Context, uint64) (bool, error) {
+	s.checks++
+	return s.hasSnapshot, nil
+}
+
+func (s *quotaStub) RefreshQuota(context.Context, uint64) ([]accountdomain.QuotaWindow, error) {
+	s.syncs++
+	return []accountdomain.QuotaWindow{{Mode: "console", Remaining: 20}}, nil
+}
+
 func (s *billingStub) HasBillingSnapshot(context.Context, uint64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -113,6 +129,22 @@ func TestSyncAccountFetchesOnlyMissingSnapshots(t *testing.T) {
 	_, modelSyncs := models.counts()
 	if billingSyncs != 0 || modelSyncs != 1 {
 		t.Fatalf("billing syncs = %d, model syncs = %d", billingSyncs, modelSyncs)
+	}
+}
+
+func TestSyncAccountUsesQuotaForConsoleProvider(t *testing.T) {
+	billing := &billingStub{}
+	quota := &quotaStub{}
+	models := &modelStub{hasSnapshot: true}
+	service := NewService(slog.Default(), accountReaderStub{provider: accountdomain.ProviderConsole}, billing, quota, models)
+
+	if err := service.syncAccount(context.Background(), 9); err != nil {
+		t.Fatal(err)
+	}
+
+	billingChecks, billingSyncs := billing.counts()
+	if billingChecks != 0 || billingSyncs != 0 || quota.checks != 1 || quota.syncs != 1 {
+		t.Fatalf("billing = %d/%d, quota = %d/%d", billingChecks, billingSyncs, quota.checks, quota.syncs)
 	}
 }
 

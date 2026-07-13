@@ -68,6 +68,7 @@ export function EgressNodes() {
 
   function scopeLabel(scope: EgressScope) {
     if (scope === "grok_build") return t("settings.egress.scopeBuild");
+    if (scope === "grok_console") return t("console.name");
     if (scope === "grok_web_asset") return t("settings.egress.scopeWebAsset");
     return t("settings.egress.scopeWeb");
   }
@@ -110,7 +111,7 @@ export function EgressNodes() {
           <DialogHeader><DialogTitle>{editing ? t("settings.egress.editTitle") : t("settings.egress.addTitle")}</DialogTitle><DialogDescription>{t("settings.egress.dialogDescription")}</DialogDescription></DialogHeader>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={t("settings.egress.name")} className="sm:col-span-2"><Input className="border-transparent" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
-            <Field label={t("settings.egress.scope")}><Select value={form.scope} onValueChange={(value) => changeScope(value as EgressScope)}><SelectTrigger className="border-transparent"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="grok_build">{t("settings.egress.scopeBuild")}</SelectItem><SelectItem value="grok_web">{t("settings.egress.scopeWeb")}</SelectItem><SelectItem value="grok_web_asset">{t("settings.egress.scopeWebAsset")}</SelectItem></SelectContent></Select></Field>
+            <Field label={t("settings.egress.scope")}><Select value={form.scope} onValueChange={(value) => changeScope(value as EgressScope)}><SelectTrigger className="border-transparent"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="grok_build">{t("settings.egress.scopeBuild")}</SelectItem><SelectItem value="grok_web">{t("settings.egress.scopeWeb")}</SelectItem><SelectItem value="grok_console">{t("console.name")}</SelectItem><SelectItem value="grok_web_asset">{t("settings.egress.scopeWebAsset")}</SelectItem></SelectContent></Select></Field>
             <Field label={t("settings.egress.enabled")}><div className="flex h-9 items-center"><Switch checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} /></div></Field>
             <Field label={t("settings.egress.proxyURL")} className="sm:col-span-2"><Input className="border-transparent" type="password" autoComplete="new-password" placeholder={editing?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL} onChange={(event) => setForm({ ...form, proxyURL: event.target.value })} /><p className="text-[11px] text-muted-foreground">{t("settings.egress.proxyProtocols")}</p></Field>
             {form.scope !== "grok_build" ? <Field label={t("settings.egress.userAgent")} className="sm:col-span-2"><Input className="border-transparent" value={form.userAgent} onChange={(event) => setForm({ ...form, userAgent: event.target.value })} /></Field> : null}

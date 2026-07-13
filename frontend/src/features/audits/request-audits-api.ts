@@ -12,7 +12,7 @@ export type AuditDTO = {
   modelRouteId: string;
   modelPublicId?: string;
   modelUpstreamModel?: string;
-  provider: "grok_build" | "grok_web";
+  provider: "grok_build" | "grok_web" | "grok_console";
   operation: "responses" | "chat" | "messages" | "image" | "image_edit" | "video";
   usageSource: "upstream" | "estimated" | "none";
   accountId?: string;

@@ -3,6 +3,7 @@ package relational
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 var schemaModels = []any{
@@ -76,10 +77,85 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	if err := db.AutoMigrate(schemaModels...); err != nil {
 		return fmt.Errorf("初始化数据库表: %w", err)
 	}
+	if err := d.ensureConsoleConstraints(ctx); err != nil {
+		return fmt.Errorf("迁移 Console 数据库约束: %w", err)
+	}
 	for _, statement := range schemaIndexes {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("初始化数据库索引: %w", err)
 		}
 	}
 	return nil
+}
+
+type consoleConstraint struct {
+	model any
+	table string
+	name  string
+}
+
+func (d *Database) ensureConsoleConstraints(ctx context.Context) error {
+	constraints := []consoleConstraint{
+		{model: &accountModel{}, table: "provider_accounts", name: "chk_accounts_provider"},
+		{model: &modelRouteModel{}, table: "model_routes", name: "chk_model_routes_provider"},
+		{model: &requestAuditModel{}, table: "request_audits", name: "chk_request_audits_provider"},
+		{model: &responseOwnershipModel{}, table: "response_ownership", name: "chk_response_ownership_provider"},
+		{model: &egressNodeModel{}, table: "egress_nodes", name: "chk_egress_nodes_specific_scope"},
+	}
+	db := d.db.WithContext(ctx)
+	for _, value := range constraints {
+		definition, err := d.constraintDefinition(ctx, value)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(definition, "grok_console") {
+			continue
+		}
+		if definition != "" {
+			if err := db.Migrator().DropConstraint(value.model, value.name); err != nil {
+				return fmt.Errorf("删除旧约束 %s: %w", value.name, err)
+			}
+		}
+		if err := db.Migrator().CreateConstraint(value.model, value.name); err != nil {
+			return fmt.Errorf("创建约束 %s: %w", value.name, err)
+		}
+	}
+	return nil
+}
+
+func (d *Database) constraintDefinition(ctx context.Context, value consoleConstraint) (string, error) {
+	var definition string
+	switch d.dialect {
+	case "sqlite":
+		if err := d.db.WithContext(ctx).Raw("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", value.table).Scan(&definition).Error; err != nil {
+			return "", err
+		}
+		definition = sqliteConstraintDefinition(definition, value.name)
+	case "postgres":
+		if err := d.db.WithContext(ctx).Raw(`
+			SELECT pg_get_constraintdef(constraint_row.oid)
+			FROM pg_constraint constraint_row
+			JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+			WHERE table_row.relname = ? AND constraint_row.conname = ?
+		`, value.table, value.name).Scan(&definition).Error; err != nil {
+			return "", err
+		}
+	default:
+		return "", fmt.Errorf("不支持的数据库驱动: %s", d.dialect)
+	}
+	return definition, nil
+}
+
+func sqliteConstraintDefinition(tableSQL, name string) string {
+	lower := strings.ToLower(tableSQL)
+	start := strings.Index(lower, strings.ToLower(name))
+	if start < 0 {
+		return ""
+	}
+	definition := tableSQL[start:]
+	rest := strings.ToLower(definition[len(name):])
+	if next := strings.Index(rest, "constraint "); next >= 0 {
+		definition = definition[:len(name)+next]
+	}
+	return definition
 }

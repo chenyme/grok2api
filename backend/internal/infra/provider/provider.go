@@ -224,6 +224,20 @@ type RoutingMetadataAdapter interface {
 	TierOrder(upstreamModel string) []account.WebTier
 }
 
+// ModelAlias 将隐藏兼容模型名解析到唯一公开路由，并可固定推理强度。
+type ModelAlias struct {
+	Alias           string
+	PublicModel     string
+	Provider        account.Provider
+	UpstreamModel   string
+	ReasoningEffort string
+}
+
+type ModelAliasAdapter interface {
+	Adapter
+	ModelAliases() []ModelAlias
+}
+
 // PricingMetadataAdapter 将 Provider 私有模型标识映射到公开计费模型。
 type PricingMetadataAdapter interface {
 	Adapter
@@ -233,12 +247,21 @@ type PricingMetadataAdapter interface {
 // Registry 保存已启用 Provider Adapter，不创建未实现来源的占位对象。
 type Registry struct {
 	adapters map[account.Provider]Adapter
+	aliases  map[string]ModelAlias
 }
 
 func NewRegistry(adapters ...Adapter) *Registry {
-	registry := &Registry{adapters: make(map[account.Provider]Adapter, len(adapters))}
+	registry := &Registry{adapters: make(map[account.Provider]Adapter, len(adapters)), aliases: make(map[string]ModelAlias)}
 	for _, adapter := range adapters {
 		registry.adapters[adapter.Provider()] = adapter
+		if source, ok := adapter.(ModelAliasAdapter); ok {
+			for _, value := range source.ModelAliases() {
+				if value.Alias == "" || value.PublicModel == "" {
+					continue
+				}
+				registry.aliases[value.Alias] = value
+			}
+		}
 	}
 	return registry
 }
@@ -247,6 +270,12 @@ func NewRegistry(adapters ...Adapter) *Registry {
 func (r *Registry) Get(value account.Provider) (Adapter, bool) {
 	adapter, ok := r.adapters[value]
 	return adapter, ok
+}
+
+// ResolveModelAlias 返回隐藏兼容模型名对应的规范公开模型。
+func (r *Registry) ResolveModelAlias(value string) (ModelAlias, bool) {
+	result, ok := r.aliases[value]
+	return result, ok
 }
 
 func (r *Registry) Responses(value account.Provider) (ResponseAdapter, bool) {

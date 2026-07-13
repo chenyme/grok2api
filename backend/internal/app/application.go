@@ -23,12 +23,14 @@ import (
 	quotarecoveryapp "github.com/chenyme/grok2api/backend/internal/application/quotarecovery"
 	settingsapp "github.com/chenyme/grok2api/backend/internal/application/settings"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/config"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	inframedia "github.com/chenyme/grok2api/backend/internal/infra/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	cliprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/cli"
+	consoleprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/console"
 	webprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/web"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	redisruntime "github.com/chenyme/grok2api/backend/internal/infra/runtime/redis"
@@ -157,7 +159,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	cliAdapter.SetEgress(egressManager)
 	webAdapter := webprovider.NewAdapter(webProviderConfig(cfg), egressManager, cipher, responseRepo, mediaService)
 	webAdapter.SetLogger(logger)
-	providers := provider.NewRegistry(cliAdapter, webAdapter)
+	consoleAdapter := consoleprovider.NewAdapter(consoleProviderConfig(cfg), egressManager, cipher)
+	providers := provider.NewRegistry(cliAdapter, webAdapter, consoleAdapter)
 	adminService := adminauth.NewService(adminRepo, sessionRepo, security.NewTokenService(cfg.Secrets.JWTSecret), cfg.Auth.AccessTokenTTL.Value(), cfg.Auth.RefreshTokenTTL.Value())
 	adminService.SetLoginRateLimiter(rateLimiter)
 	if err := adminService.Bootstrap(ctx, cfg.BootstrapAdmin.Username, cfg.BootstrapAdmin.Password); err != nil {
@@ -208,10 +211,25 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		database.Close()
 		return nil, fmt.Errorf("初始化 Grok Web 模型目录: %w", err)
 	}
+	consoleRoutes, err := resolveConsoleRoutes(ctx, modelRepo)
+	if err != nil {
+		if runtimeStore != nil {
+			_ = runtimeStore.Close()
+		}
+		database.Close()
+		return nil, fmt.Errorf("解析 Grok Console 模型目录: %w", err)
+	}
+	if err := modelRepo.ReplaceProviderRoutes(ctx, account.ProviderConsole, consoleRoutes); err != nil {
+		if runtimeStore != nil {
+			_ = runtimeStore.Close()
+		}
+		database.Close()
+		return nil, fmt.Errorf("初始化 Grok Console 模型目录: %w", err)
+	}
 	accountSyncService := accountsyncapp.NewService(logger, accountService, accountService, accountService, modelService)
 	accountSyncService.SetBulkPool(importPool)
 	accountSyncService.UpdateConcurrency(cfg.Batch.ImportConcurrency)
-	egressService := egressapp.NewService(egressRepo, cipher, infraegress.DefaultUserAgent)
+	egressService := egressapp.NewService(egressRepo, cipher, infraegress.DefaultUserAgent, cfg.Provider.Console.UserAgent)
 	clientKeyService := clientkeyapp.NewService(clientKeyRepo, rateLimiter, concurrency, cfg.ClientKeyDefaults.RPMLimit, cfg.ClientKeyDefaults.MaxConcurrent, cipher)
 	auditService := auditapp.NewService(auditRepo, logger, cfg.Audit.BufferSize, cfg.Audit.BatchSize, cfg.Audit.FlushInterval.Value())
 	dashboardService := dashboardapp.NewService(dashboardRepo)
@@ -246,7 +264,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 			UserAgent: next.Provider.Build.UserAgent,
 		})
 		webAdapter.UpdateConfig(webProviderConfig(next))
-		egressService.UpdateDefaults(infraegress.DefaultUserAgent)
+		consoleAdapter.UpdateConfig(consoleProviderConfig(next))
+		egressService.UpdateDefaults(infraegress.DefaultUserAgent, next.Provider.Console.UserAgent)
 		mediaService.UpdateConfig(mediaConfig(next))
 		quotaRecoveryService.UpdateConfig(next.Provider.Web.RecoveryBackoffBase.Value(), next.Provider.Web.RecoveryBackoffMax.Value())
 		accountSyncService.UpdateConcurrency(next.Batch.ImportConcurrency)
@@ -283,6 +302,44 @@ func webProviderConfig(cfg config.Config) webprovider.Config {
 		VideoTimeoutSeconds: int(cfg.Provider.Web.VideoTimeout.Value().Seconds()), MaxInputImageBytes: cfg.Media.MaxImageBytes,
 		AllowNSFW: cfg.Provider.Web.AllowNSFW,
 	}
+}
+
+func consoleProviderConfig(cfg config.Config) consoleprovider.Config {
+	return consoleprovider.Config{
+		BaseURL: cfg.Provider.Console.BaseURL, UserAgent: cfg.Provider.Console.UserAgent,
+		TimeoutSeconds: int(cfg.Provider.Console.ChatTimeout.Value().Seconds()),
+	}
+}
+
+type publicModelLookup interface {
+	GetByPublicIDIncludingDisabled(ctx context.Context, publicID string) (modeldomain.Route, error)
+}
+
+func resolveConsoleRoutes(ctx context.Context, models publicModelLookup) ([]modeldomain.Route, error) {
+	routes := consoleprovider.Routes()
+	for index := range routes {
+		route := &routes[index]
+		existing, err := models.GetByPublicIDIncludingDisabled(ctx, route.PublicID)
+		if errors.Is(err, repository.ErrNotFound) || (err == nil && existing.Provider == account.ProviderConsole) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		fallback := consoleprovider.ConflictPublicID(route.UpstreamModel)
+		if fallback == "" {
+			return nil, fmt.Errorf("模型 %s 与 %s 冲突且没有兼容名称", route.PublicID, existing.Provider)
+		}
+		conflict, conflictErr := models.GetByPublicIDIncludingDisabled(ctx, fallback)
+		if conflictErr == nil && conflict.Provider != account.ProviderConsole {
+			return nil, fmt.Errorf("模型兼容名称 %s 已由 %s 使用", fallback, conflict.Provider)
+		}
+		if conflictErr != nil && !errors.Is(conflictErr, repository.ErrNotFound) {
+			return nil, conflictErr
+		}
+		route.PublicID = fallback
+	}
+	return routes, nil
 }
 
 func mediaConfig(cfg config.Config) mediaapp.Config {

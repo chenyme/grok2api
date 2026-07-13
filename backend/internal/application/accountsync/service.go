@@ -35,9 +35,9 @@ type accountReader interface {
 	Get(ctx context.Context, id uint64) (accountapp.View, error)
 }
 
-type webQuotaSynchronizer interface {
+type quotaSynchronizer interface {
 	HasQuotaWindows(ctx context.Context, accountID uint64) (bool, error)
-	RefreshWebQuota(ctx context.Context, accountID uint64) ([]accountdomain.QuotaWindow, error)
+	RefreshQuota(ctx context.Context, accountID uint64) ([]accountdomain.QuotaWindow, error)
 }
 
 // Service 对新接入账号执行一次性额度与模型补齐，并限制批量同步并发。
@@ -45,15 +45,15 @@ type Service struct {
 	logger   *slog.Logger
 	accounts accountReader
 	billing  billingSynchronizer
-	webQuota webQuotaSynchronizer
+	quota    quotaSynchronizer
 	models   modelSynchronizer
 	syncs    singleflight.Group
 	workers  atomic.Int64
 	bulkPool *batch.Pool
 }
 
-func NewService(logger *slog.Logger, accounts accountReader, billing billingSynchronizer, webQuota webQuotaSynchronizer, models modelSynchronizer) *Service {
-	service := &Service{logger: logger, accounts: accounts, billing: billing, webQuota: webQuota, models: models, bulkPool: batch.NewPool(defaultWorkerCount)}
+func NewService(logger *slog.Logger, accounts accountReader, billing billingSynchronizer, quota quotaSynchronizer, models modelSynchronizer) *Service {
+	service := &Service{logger: logger, accounts: accounts, billing: billing, quota: quota, models: models, bulkPool: batch.NewPool(defaultWorkerCount)}
 	service.workers.Store(defaultWorkerCount)
 	return service
 }
@@ -172,16 +172,16 @@ func (s *Service) syncAccount(ctx context.Context, accountID uint64) error {
 	if err != nil {
 		return fmt.Errorf("读取账号: %w", err)
 	}
-	if view.Credential.Provider == accountdomain.ProviderWeb {
-		hasQuota, quotaErr := s.webQuota.HasQuotaWindows(ctx, accountID)
+	if view.Credential.Provider == accountdomain.ProviderWeb || view.Credential.Provider == accountdomain.ProviderConsole {
+		hasQuota, quotaErr := s.quota.HasQuotaWindows(ctx, accountID)
 		if quotaErr != nil {
-			syncErr = errors.Join(syncErr, fmt.Errorf("检查 Web 额度快照: %w", quotaErr))
+			syncErr = errors.Join(syncErr, fmt.Errorf("检查 Provider 额度快照: %w", quotaErr))
 		} else if !hasQuota {
 			operationCtx, cancel := context.WithTimeout(ctx, operationTimeout)
-			_, quotaErr = s.webQuota.RefreshWebQuota(operationCtx, accountID)
+			_, quotaErr = s.quota.RefreshQuota(operationCtx, accountID)
 			cancel()
 			if quotaErr != nil {
-				syncErr = errors.Join(syncErr, fmt.Errorf("同步 Web 额度: %w", quotaErr))
+				syncErr = errors.Join(syncErr, fmt.Errorf("同步 Provider 额度: %w", quotaErr))
 			}
 		}
 	} else {

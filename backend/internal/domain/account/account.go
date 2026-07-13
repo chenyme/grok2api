@@ -10,8 +10,9 @@ import (
 type Provider string
 
 const (
-	ProviderBuild Provider = "grok_build"
-	ProviderWeb   Provider = "grok_web"
+	ProviderBuild   Provider = "grok_build"
+	ProviderWeb     Provider = "grok_web"
+	ProviderConsole Provider = "grok_console"
 )
 
 type AuthType string
