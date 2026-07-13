@@ -34,7 +34,7 @@ go run ./cmd/grok2api --config /path/to/config.yaml --listen 0.0.0.0:8000
 
 ## 配置与存储
 
-启动配置统一由根目录 `config.yaml` 管理，完整字段见 [`config.example.yaml`](../config.example.yaml)。
+启动配置统一由根目录 `config.yaml` 管理，启动阶段字段见 [`config.example.yaml`](../config.example.yaml)。Provider、批量任务、路由、媒体容量、审计和客户端密钥默认限制由管理端设置页持久化并热加载。
 
 | 场景 | 数据库 | 运行态存储 |
 | --- | --- | --- |
