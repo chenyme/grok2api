@@ -42,10 +42,14 @@ type Handler struct {
 }
 
 type accountSyncPipeline struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	ids    chan uint64
-	done   chan accountsyncapp.Result
+	ctx        context.Context
+	cancel     context.CancelFunc
+	ids        chan uint64
+	done       chan accountsyncapp.Result
+	progress   func(completed, total int)
+	progressMu sync.Mutex
+	queued     atomic.Int64
+	completed  atomic.Int64
 }
 
 func NewHandler(service *accountapp.Service, sync accountSynchronizer) *Handler {
@@ -54,7 +58,7 @@ func NewHandler(service *accountapp.Service, sync accountSynchronizer) *Handler 
 
 func (h *Handler) startSyncPipeline(parent context.Context, progress func(completed, total int)) *accountSyncPipeline {
 	ctx, cancel := context.WithCancel(parent)
-	pipeline := &accountSyncPipeline{ctx: ctx, cancel: cancel}
+	pipeline := &accountSyncPipeline{ctx: ctx, cancel: cancel, progress: progress}
 	if h.sync == nil {
 		return pipeline
 	}
@@ -62,7 +66,10 @@ func (h *Handler) startSyncPipeline(parent context.Context, progress func(comple
 	pipeline.done = make(chan accountsyncapp.Result, 1)
 	go func() {
 		if observed, ok := h.sync.(accountSyncProgressor); ok && progress != nil {
-			pipeline.done <- observed.SyncStreamObserved(ctx, pipeline.ids, progress)
+			pipeline.done <- observed.SyncStreamObserved(ctx, pipeline.ids, func(completed, _ int) {
+				pipeline.completed.Store(int64(completed))
+				pipeline.reportProgress()
+			})
 			return
 		}
 		pipeline.done <- h.sync.SyncStream(ctx, pipeline.ids)
@@ -74,10 +81,12 @@ func (p *accountSyncPipeline) Observe(accountID uint64) error {
 	if p.ids == nil {
 		return nil
 	}
+	p.queued.Add(1)
 	select {
 	case p.ids <- accountID:
 		return nil
 	case <-p.ctx.Done():
+		p.queued.Add(-1)
 		return p.ctx.Err()
 	}
 }
@@ -89,12 +98,30 @@ func (p *accountSyncPipeline) Finish(abort bool) accountsyncapp.Result {
 	if p.ids != nil {
 		close(p.ids)
 	}
+	if !abort {
+		// 转换阶段结束后不再增加同步任务，先报告一次固定分母，避免前端看到总数跳变。
+		p.reportProgress()
+	}
 	result := accountsyncapp.Result{}
 	if p.done != nil {
 		result = <-p.done
 	}
+	if !abort && p.ids != nil {
+		p.completed.Store(int64(result.Succeeded + result.Failed))
+		p.reportProgress()
+	}
 	p.cancel()
 	return result
+}
+
+// reportProgress 使用已进入同步流水线的任务数报告进度；转换结束后该分母保持固定。
+func (p *accountSyncPipeline) reportProgress() {
+	if p.ids == nil || p.progress == nil {
+		return
+	}
+	p.progressMu.Lock()
+	defer p.progressMu.Unlock()
+	p.progress(int(p.completed.Load()), int(p.queued.Load()))
 }
 
 func (h *Handler) Register(router *gin.RouterGroup) {

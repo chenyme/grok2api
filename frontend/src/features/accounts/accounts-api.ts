@@ -207,6 +207,11 @@ async function runAccountTask<T>(path: string, body: BodyInit | object | undefin
     onProgress(value);
   };
   const reportProgress = (value: AccountTaskProgressDTO) => {
+    if (pendingProgress && pendingProgress.phase !== value.phase && pendingProgress.completed === pendingProgress.total) {
+      if (progressTimer !== undefined) window.clearTimeout(progressTimer);
+      progressTimer = undefined;
+      flushProgress();
+    }
     pendingProgress = value;
     const delay = Math.max(0, 100 - (performance.now() - lastProgressAt));
     if (delay === 0) {

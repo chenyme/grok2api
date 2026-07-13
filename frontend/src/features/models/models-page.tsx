@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Pencil, Search } from "lucide-react";
+import { MoreHorizontal, Pencil, RefreshCw, Search } from "lucide-react";
 import { useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { listModels, updateModel, updateModelsEnabled } from "@/entities/model/model-api";
+import { listModels, syncModels, updateModel, updateModelsEnabled } from "@/entities/model/model-api";
 import type { ModelRouteDTO } from "@/entities/model/types";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
@@ -75,6 +75,15 @@ export function ModelsPage() {
       setSelected(new Set());
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       toast.success(t("models.batchUpdated"));
+    },
+    onError: showError,
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: syncModels,
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      toast.success(t("models.synced", { count: result.synced }));
     },
     onError: showError,
   });
@@ -144,13 +153,19 @@ export function ModelsPage() {
                 ] },
               ]} />
             </div>
-            {selected.size > 0 ? (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
-                <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
-                <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
-              </div>
-            ) : null}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {selected.size > 0 ? (
+                <>
+                  <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
+                  <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
+                  <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
+                </>
+              ) : null}
+              <Button variant="secondary" size="sm" disabled={syncMutation.isPending} onClick={() => syncMutation.mutate()}>
+                {syncMutation.isPending ? <Spinner /> : <RefreshCw />}
+                {t("models.sync")}
+              </Button>
+            </div>
           </>
         )}
         footer={result && result.total > 0 ? <Pagination page={result.page} pageSize={result.pageSize} total={result.total} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} /> : undefined}
