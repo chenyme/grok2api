@@ -24,6 +24,10 @@ export function listModels(input: ListModelsInput): Promise<PaginatedDTO<ModelRo
   return apiRequest<PaginatedDTO<ModelRouteDTO>>(`/api/admin/v1/models?${query}`);
 }
 
+export function syncModels(): Promise<{ synced: number }> {
+  return apiRequest<{ synced: number }>("/api/admin/v1/models/sync", { method: "POST" });
+}
+
 export function updateModel(id: string, input: { publicId: string; enabled: boolean }): Promise<ModelRouteDTO> {
   return apiRequest<ModelRouteDTO>(`/api/admin/v1/models/${id}`, { method: "PATCH", body: input });
 }

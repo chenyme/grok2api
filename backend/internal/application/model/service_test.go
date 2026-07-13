@@ -60,21 +60,31 @@ func TestSyncAggregatesCapabilitiesFromAllAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	webAccount, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper, Name: "web-super", SourceKey: "web-super", EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
 	adapter := &modelCapabilityAdapter{models: map[uint64][]string{
 		first.ID:  {"grok-basic"},
 		second.ID: {"grok-basic", "grok-premium"},
 	}}
-	registry := provider.NewRegistry(adapter)
+	webAdapter := &modelCapabilityAdapter{provider: account.ProviderWeb, models: map[uint64][]string{
+		webAccount.ID: {"grok-chat-fast", "grok-chat-auto"},
+	}}
+	registry := provider.NewRegistry(adapter, webAdapter)
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, cipher, nil)
 	service := NewService(modelRepo, accountRepo, accountService, registry)
 
 	count, err := service.Sync(ctx)
-	if err != nil || count != 2 {
+	if err != nil || count != 4 {
 		t.Fatalf("sync count = %d, err = %v", count, err)
 	}
 	if attempts := adapter.attemptCount(); attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
+	}
+	if attempts := webAdapter.attemptCount(); attempts != 1 {
+		t.Fatalf("web attempts = %d", attempts)
 	}
 	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-premium", "")
 	if err != nil {
@@ -89,6 +99,13 @@ func TestSyncAggregatesCapabilitiesFromAllAccounts(t *testing.T) {
 	}
 	if support[first.ID] || !support[second.ID] {
 		t.Fatalf("support = %#v", support)
+	}
+	webCandidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderWeb, "grok-chat-auto", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(webCandidates) != 1 || !webCandidates[0].ModelCapabilityKnown || !webCandidates[0].SupportsModel {
+		t.Fatalf("web candidates = %#v", webCandidates)
 	}
 }
 
@@ -165,6 +182,7 @@ func TestSyncAccountRunsUpstreamDiscoveryConcurrently(t *testing.T) {
 }
 
 type modelCapabilityAdapter struct {
+	provider account.Provider
 	mu       sync.Mutex
 	models   map[uint64][]string
 	attempts []uint64
@@ -174,7 +192,12 @@ type modelCapabilityAdapter struct {
 	peak     atomic.Int64
 }
 
-func (a *modelCapabilityAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (a *modelCapabilityAdapter) Provider() account.Provider {
+	if a.provider == "" {
+		return account.ProviderBuild
+	}
+	return a.provider
+}
 func (a *modelCapabilityAdapter) ListModels(ctx context.Context, credential account.Credential) ([]string, error) {
 	a.mu.Lock()
 	a.attempts = append(a.attempts, credential.ID)

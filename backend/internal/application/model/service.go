@@ -124,7 +124,7 @@ func (s *Service) BatchSetEnabled(ctx context.Context, ids []uint64, enabled boo
 	return updated, err
 }
 
-// Sync 从全部启用 CLI 账号同步模型能力，并以能力并集幂等更新公开路由表。
+// Sync 从全部启用的 Build 与 Web 账号同步模型能力，并按 Provider 幂等更新公开路由表。
 func (s *Service) Sync(ctx context.Context) (int, error) {
 	result := s.syncAll.DoChan("all", func() (any, error) {
 		return s.syncAllAccounts(ctx)
@@ -141,18 +141,23 @@ func (s *Service) Sync(ctx context.Context) (int, error) {
 }
 
 func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
-	accounts, err := s.accounts.ListEnabled(ctx, account.ProviderBuild)
-	if err != nil {
-		return 0, err
+	providerValues := []account.Provider{account.ProviderBuild, account.ProviderWeb}
+	credentials := make([]account.Credential, 0)
+	for _, providerValue := range providerValues {
+		values, err := s.accounts.ListEnabled(ctx, providerValue)
+		if err != nil {
+			return 0, err
+		}
+		credentials = append(credentials, values...)
 	}
-	adapter, ok := s.providers.Models(account.ProviderBuild)
-	if !ok {
-		return 0, fmt.Errorf("CLI Provider 未注册")
+	if len(credentials) == 0 {
+		return 0, fmt.Errorf("没有可用于模型同步的账号")
 	}
-	if len(accounts) == 0 {
-		return 0, fmt.Errorf("没有可用于模型同步的 CLI 账号")
-	}
-	results, summary, runErr := batch.Map(ctx, accounts, batch.Options{Workers: s.bulkPool.Limit(), Pool: s.bulkPool}, func(workCtx context.Context, value account.Credential) ([]string, error) {
+	results, summary, runErr := batch.Map(ctx, credentials, batch.Options{Workers: s.bulkPool.Limit(), Pool: s.bulkPool}, func(workCtx context.Context, value account.Credential) ([]string, error) {
+		adapter, ok := s.providers.Models(value.Provider)
+		if !ok {
+			return nil, fmt.Errorf("Provider %s 未注册模型同步能力", value.Provider)
+		}
 		return s.syncAccountCapabilities(workCtx, value, adapter)
 	})
 	pool := s.bulkPool.Snapshot()
@@ -161,23 +166,28 @@ func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
 		return 0, runErr
 	}
 
-	uniqueModels := make(map[string]struct{})
+	uniqueModels := make(map[account.Provider]map[string]struct{}, len(providerValues))
 	succeeded := 0
 	var lastErr error
 	for index, result := range results {
 		if result.Err != nil {
 			var panicErr *batch.PanicError
 			if errors.As(result.Err, &panicErr) {
-				s.logger.Error("model_sync_panicked", "account_id", accounts[index].ID, "error", panicErr, "stack", string(panicErr.Stack))
+				s.logger.Error("model_sync_panicked", "account_id", credentials[index].ID, "error", panicErr, "stack", string(panicErr.Stack))
 			}
 			lastErr = result.Err
 			continue
 		}
 		succeeded++
+		providerModels := uniqueModels[credentials[index].Provider]
+		if providerModels == nil {
+			providerModels = make(map[string]struct{})
+			uniqueModels[credentials[index].Provider] = providerModels
+		}
 		for _, value := range result.Value {
 			value = strings.TrimSpace(value)
 			if value != "" {
-				uniqueModels[value] = struct{}{}
+				providerModels[value] = struct{}{}
 			}
 		}
 	}
@@ -187,14 +197,22 @@ func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
 		}
 		return 0, fmt.Errorf("没有账号成功同步模型")
 	}
-	models := make([]string, 0, len(uniqueModels))
-	for value := range uniqueModels {
-		models = append(models, value)
+	syncedModels := 0
+	for _, providerValue := range providerValues {
+		providerModels := uniqueModels[providerValue]
+		if len(providerModels) == 0 {
+			continue
+		}
+		models := make([]string, 0, len(providerModels))
+		for value := range providerModels {
+			models = append(models, value)
+		}
+		if err := s.models.UpsertDiscovered(ctx, providerValue, models); err != nil {
+			return 0, err
+		}
+		syncedModels += len(models)
 	}
-	if err := s.models.UpsertDiscovered(ctx, account.ProviderBuild, models); err != nil {
-		return 0, err
-	}
-	return len(models), nil
+	return syncedModels, nil
 }
 
 // HasSuccessfulAccountSync 判断账号是否已有成功模型能力快照，不触发上游请求。

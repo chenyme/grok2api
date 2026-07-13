@@ -17,6 +17,10 @@ type accountSynchronizerStub struct {
 	accountIDs []uint64
 }
 
+type accountProgressSynchronizerStub struct {
+	accountSynchronizerStub
+}
+
 func TestWriteServiceErrorUsesCredentialLimitCodes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
@@ -47,6 +51,16 @@ func (s *accountSynchronizerStub) Sync(_ context.Context, accountIDs ...uint64) 
 func (s *accountSynchronizerStub) SyncStream(_ context.Context, accountIDs <-chan uint64) accountsyncapp.Result {
 	for accountID := range accountIDs {
 		s.accountIDs = append(s.accountIDs, accountID)
+	}
+	return accountsyncapp.Result{Succeeded: len(s.accountIDs)}
+}
+
+func (s *accountProgressSynchronizerStub) SyncStreamObserved(_ context.Context, accountIDs <-chan uint64, observer func(completed, total int)) accountsyncapp.Result {
+	for accountID := range accountIDs {
+		s.accountIDs = append(s.accountIDs, accountID)
+	}
+	for completed := 1; completed <= len(s.accountIDs); completed++ {
+		observer(completed, completed)
 	}
 	return accountsyncapp.Result{Succeeded: len(s.accountIDs)}
 }
@@ -92,5 +106,33 @@ func TestAccountProgressEventIncludesOptionalPhase(t *testing.T) {
 	}
 	if total.Load() != 10 {
 		t.Fatalf("total = %d", total.Load())
+	}
+}
+
+func TestAccountSyncPipelineUsesFinalQueuedTotal(t *testing.T) {
+	syncer := &accountProgressSynchronizerStub{}
+	handler := NewHandler(nil, syncer)
+	progress := make([][2]int, 0, 5)
+	pipeline := handler.startSyncPipeline(context.Background(), func(completed, total int) {
+		progress = append(progress, [2]int{completed, total})
+	})
+
+	for _, accountID := range []uint64{11, 12, 13} {
+		if err := pipeline.Observe(accountID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := pipeline.Finish(false)
+
+	if result.Succeeded != 3 {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(progress) == 0 || progress[len(progress)-1] != [2]int{3, 3} {
+		t.Fatalf("progress = %#v", progress)
+	}
+	for _, value := range progress {
+		if value[1] != 3 {
+			t.Fatalf("progress contains changing total: %#v", progress)
+		}
 	}
 }

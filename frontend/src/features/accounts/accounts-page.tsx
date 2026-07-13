@@ -64,6 +64,11 @@ function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
 }
 
+type BuildConversionProgressState = {
+  converting?: AccountTaskProgressDTO;
+  syncing?: AccountTaskProgressDTO;
+};
+
 export function AccountsPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -87,7 +92,7 @@ export function AccountsPage() {
   const [syncAllOpen, setSyncAllOpen] = useState(false);
   const [syncProgress, setSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [conversionTargets, setConversionTargets] = useState<string[] | "all" | null>(null);
-  const [conversionProgress, setConversionProgress] = useState<AccountTaskProgressDTO | null>(null);
+  const [conversionProgress, setConversionProgress] = useState<BuildConversionProgressState | null>(null);
   const [renewAllOpen, setRenewAllOpen] = useState(false);
   const [renewalProgress, setRenewalProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [editing, setEditing] = useState<AccountDTO | null>(null);
@@ -234,8 +239,11 @@ export function AccountsPage() {
     mutationFn: (input: BuildConversionInput) => {
       const controller = new AbortController();
       conversionAbortRef.current = controller;
-      setConversionProgress(Array.isArray(conversionTargets) ? { completed: 0, total: conversionTargets.length } : null);
-      return convertWebAccountsToBuild(input, setConversionProgress, controller.signal);
+      setConversionProgress(Array.isArray(conversionTargets) ? { converting: { completed: 0, total: conversionTargets.length, phase: "converting" } } : null);
+      return convertWebAccountsToBuild(input, (progress) => {
+        const phase = progress.phase === "syncing" ? "syncing" : "converting";
+        setConversionProgress((current) => ({ ...(current ?? {}), [phase]: progress }));
+      }, controller.signal);
     },
     onSuccess: (conversion) => {
       setConversionProgress(null);
@@ -410,6 +418,12 @@ export function AccountsPage() {
       minimumRemaining: account.minimumRemaining,
     });
   }
+
+  const convertingProgress = conversionProgress?.converting;
+  const syncingProgress = conversionProgress?.syncing;
+  const activeConversionProgress = convertingProgress?.completed === convertingProgress?.total && syncingProgress
+    ? syncingProgress
+    : convertingProgress ?? syncingProgress;
 
   function showError(error: unknown): void {
     toast.error(error instanceof Error ? error.message : t("errors.generic"));
@@ -660,7 +674,7 @@ export function AccountsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction disabled={conversionMutation.isPending || conversionTargets === null || (Array.isArray(conversionTargets) && conversionTargets.length === 0)} onClick={(event) => { event.preventDefault(); if (conversionTargets === "all") conversionMutation.mutate({ all: true }); else if (conversionTargets) conversionMutation.mutate({ ids: conversionTargets }); }}>
-              {conversionMutation.isPending ? <><Spinner />{conversionProgress ? <span className="tabular-nums">{conversionProgress.completed} / {conversionProgress.total}</span> : t("common.loading")}</> : t(conversionTargets === "all" ? "accountBulk.convertAllToBuild" : "accounts.convertToBuild")}
+              {conversionMutation.isPending ? <><Spinner />{activeConversionProgress ? <span className="whitespace-nowrap tabular-nums">{t(activeConversionProgress.phase === "syncing" ? "accounts.syncingProgress" : "accounts.convertingProgress", activeConversionProgress)}</span> : t("common.loading")}</> : t(conversionTargets === "all" ? "accountBulk.convertAllToBuild" : "accounts.convertToBuild")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
