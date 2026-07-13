@@ -136,7 +136,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/web/import", h.importWebAuth)
 	router.POST("/accounts/console/import", h.importConsoleAuth)
 	router.POST("/accounts/web/convert-to-build", h.convertWebToBuild)
-	router.POST("/accounts/console/sync-to-web", h.syncConsoleToWeb)
+	router.POST("/accounts/web/sync-to-console", h.syncWebToConsole)
 	router.POST("/accounts/web/refresh-quotas", h.refreshAllWebQuotas)
 	router.POST("/accounts/console/refresh-quotas", h.refreshAllConsoleQuotas)
 	router.POST("/accounts/refresh-billing", h.refreshAllBilling)
@@ -507,7 +507,7 @@ func (h *Handler) convertWebToBuild(c *gin.Context) {
 	h.streamWebToBuildConversion(c, request.All, ids)
 }
 
-func (h *Handler) syncConsoleToWeb(c *gin.Context) {
+func (h *Handler) syncWebToConsole(c *gin.Context) {
 	var request accountSelectionRequest
 	if c.ShouldBindJSON(&request) != nil {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "同步请求无效")
@@ -526,31 +526,31 @@ func (h *Handler) syncConsoleToWeb(c *gin.Context) {
 			return
 		}
 	}
-	h.streamConsoleToWebSync(c, request.All, ids)
+	h.streamWebToConsoleSync(c, request.All, ids)
 }
 
-func (h *Handler) runConsoleToWebSync(ctx context.Context, all bool, ids []uint64, progress accountapp.BatchProgressObserver, syncProgress func(completed, total int)) (accountapp.ImportResult, accountsyncapp.Result, error) {
+func (h *Handler) runWebToConsoleSync(ctx context.Context, all bool, ids []uint64, progress accountapp.BatchProgressObserver, syncProgress func(completed, total int)) (accountapp.ImportResult, accountsyncapp.Result, error) {
 	pipeline := h.startSyncPipeline(ctx, syncProgress)
 	var (
 		result accountapp.ImportResult
 		err    error
 	)
 	if all {
-		result, err = h.service.SyncAllConsoleAccountsToWebWithProgress(pipeline.ctx, pipeline.Observe, progress)
+		result, err = h.service.SyncAllWebAccountsToConsoleWithProgress(pipeline.ctx, pipeline.Observe, progress)
 	} else {
-		result, err = h.service.SyncConsoleAccountsToWebWithProgress(pipeline.ctx, ids, pipeline.Observe, progress)
+		result, err = h.service.SyncWebAccountsToConsoleWithProgress(pipeline.ctx, ids, pipeline.Observe, progress)
 	}
 	syncResult := pipeline.Finish(err != nil)
 	return result, syncResult, err
 }
 
-func (h *Handler) streamConsoleToWebSync(c *gin.Context, all bool, ids []uint64) {
+func (h *Handler) streamWebToConsoleSync(c *gin.Context, all bool, ids []uint64) {
 	stream := newAccountEventStream(c)
 	defer stream.Close()
 	var total atomic.Int64
-	result, syncResult, err := h.runConsoleToWebSync(c.Request.Context(), all, ids, stream.PhaseProgressObserver("importing", &total), stream.SyncProgressObserver())
+	result, syncResult, err := h.runWebToConsoleSync(c.Request.Context(), all, ids, stream.PhaseProgressObserver("importing", &total), stream.SyncProgressObserver())
 	if err != nil {
-		stream.WriteError("accountWebSyncFailed", "Grok Console 账号同步到 Web 失败")
+		stream.WriteError("accountConsoleSyncFailed", "Grok Web 账号同步到 Console 失败")
 		return
 	}
 	_ = stream.Write("complete", accountImportResponse{Created: result.Created, Updated: result.Updated, Synced: syncResult.Succeeded, SyncFailed: syncResult.Failed})

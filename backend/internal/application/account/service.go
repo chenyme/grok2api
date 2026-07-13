@@ -49,7 +49,7 @@ const (
 	maxCredentialImportAccounts               = 10000
 	credentialImportChunkSize                 = 100
 	maxBuildConversionAccounts                = 1000
-	maxConsoleWebSyncAccounts                 = 1000
+	maxWebConsoleSyncAccounts                 = 1000
 )
 
 type webQuotaRefreshState struct {
@@ -722,9 +722,9 @@ func (s *Service) persistImportedSeeds(ctx context.Context, seeds []provider.Cre
 	return result, nil
 }
 
-// SyncConsoleAccountsToWebWithProgress 使用 Console 账号的同一份 SSO 创建或更新 Web 账号。
-func (s *Service) SyncConsoleAccountsToWebWithProgress(ctx context.Context, ids []uint64, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
-	ids, err := normalizeIDs(ids, maxConsoleWebSyncAccounts)
+// SyncWebAccountsToConsoleWithProgress 使用 Web 账号的同一份 SSO 创建或更新 Console 账号。
+func (s *Service) SyncWebAccountsToConsoleWithProgress(ctx context.Context, ids []uint64, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	ids, err := normalizeIDs(ids, maxWebConsoleSyncAccounts)
 	if err != nil {
 		return ImportResult{}, err
 	}
@@ -736,61 +736,61 @@ func (s *Service) SyncConsoleAccountsToWebWithProgress(ctx context.Context, ids 
 		}
 		values = append(values, value)
 	}
-	return s.syncConsoleCredentialsToWeb(ctx, values, observer, progress)
+	return s.syncWebCredentialsToConsole(ctx, values, observer, progress)
 }
 
-// SyncAllConsoleAccountsToWebWithProgress 同步完整 Console 号池，避免前端分页遗漏账号。
-func (s *Service) SyncAllConsoleAccountsToWebWithProgress(ctx context.Context, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+// SyncAllWebAccountsToConsoleWithProgress 同步完整 Web 号池，避免前端分页遗漏账号。
+func (s *Service) SyncAllWebAccountsToConsoleWithProgress(ctx context.Context, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
 	values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
-		Page:   repository.PageQuery{Limit: maxConsoleWebSyncAccounts + 1},
-		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderConsole)},
+		Page:   repository.PageQuery{Limit: maxWebConsoleSyncAccounts + 1},
+		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderWeb)},
 	})
 	if err != nil {
 		return ImportResult{}, err
 	}
-	if total > maxConsoleWebSyncAccounts || len(values) > maxConsoleWebSyncAccounts {
-		return ImportResult{}, invalidInput("Grok Console 账号超过 1000 个，请分批勾选同步")
+	if total > maxWebConsoleSyncAccounts || len(values) > maxWebConsoleSyncAccounts {
+		return ImportResult{}, invalidInput("Grok Web 账号超过 1000 个，请分批勾选同步")
 	}
-	return s.syncConsoleCredentialsToWeb(ctx, values, observer, progress)
+	return s.syncWebCredentialsToConsole(ctx, values, observer, progress)
 }
 
-func (s *Service) syncConsoleCredentialsToWeb(ctx context.Context, values []accountdomain.Credential, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
-	adapter, ok := s.providers.CredentialCodec(accountdomain.ProviderWeb)
+func (s *Service) syncWebCredentialsToConsole(ctx context.Context, values []accountdomain.Credential, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	adapter, ok := s.providers.CredentialCodec(accountdomain.ProviderConsole)
 	if !ok {
-		return ImportResult{}, fmt.Errorf("Grok Web Provider 未注册")
+		return ImportResult{}, fmt.Errorf("Grok Console Provider 未注册")
 	}
 	seeds := make([]provider.CredentialSeed, 0, len(values))
 	for _, value := range values {
-		if value.Provider != accountdomain.ProviderConsole || value.AuthType != accountdomain.AuthTypeSSO {
-			return ImportResult{}, fmt.Errorf("%w: 仅 Grok Console SSO 账号支持同步到 Web", ErrUnsupported)
+		if value.Provider != accountdomain.ProviderWeb || value.AuthType != accountdomain.AuthTypeSSO {
+			return ImportResult{}, fmt.Errorf("%w: 仅 Grok Web SSO 账号支持同步到 Console", ErrUnsupported)
 		}
 		token, err := s.cipher.Decrypt(value.EncryptedAccessToken)
 		if err != nil {
-			return ImportResult{}, fmt.Errorf("解密 Grok Console SSO: %w", err)
+			return ImportResult{}, fmt.Errorf("解密 Grok Web SSO: %w", err)
 		}
 		parsed, err := adapter.ParseImportedCredentials([]byte(token))
 		if err != nil {
-			return ImportResult{}, fmt.Errorf("生成 Grok Web SSO 凭据: %w", err)
+			return ImportResult{}, fmt.Errorf("生成 Grok Console SSO 凭据: %w", err)
 		}
 		if len(parsed) != 1 {
-			return ImportResult{}, fmt.Errorf("生成 Grok Web SSO 凭据: 预期 1 个账号，实际 %d 个", len(parsed))
+			return ImportResult{}, fmt.Errorf("生成 Grok Console SSO 凭据: 预期 1 个账号，实际 %d 个", len(parsed))
 		}
 		seed := parsed[0]
-		seed.Provider = accountdomain.ProviderWeb
+		seed.Provider = accountdomain.ProviderConsole
 		seed.AuthType = accountdomain.AuthTypeSSO
-		seed.Name = consoleWebAccountName(value.Name, seed.Name)
+		seed.Name = webConsoleAccountName(value.Name, seed.Name)
 		seeds = append(seeds, seed)
 	}
 	return s.persistImportedSeeds(ctx, seeds, observer, progress)
 }
 
-func consoleWebAccountName(consoleName, fallback string) string {
-	name := strings.TrimSpace(consoleName)
+func webConsoleAccountName(webName, fallback string) string {
+	name := strings.TrimSpace(webName)
 	if name == "" {
 		return fallback
 	}
-	if suffix, ok := strings.CutPrefix(name, "Grok Console "); ok {
-		return "Grok Web " + suffix
+	if suffix, ok := strings.CutPrefix(name, "Grok Web "); ok {
+		return "Grok Console " + suffix
 	}
 	return name
 }

@@ -52,7 +52,7 @@ import {
   refreshAllConsoleAccountQuotas,
   refreshAllWebAccountQuotas,
   startDeviceAuthorization,
-  syncConsoleAccountsToWeb,
+  syncWebAccountsToConsole,
   updateAccount,
   updateAccountsEnabled,
   type AccountDTO,
@@ -60,7 +60,7 @@ import {
   type AccountUpdateInput,
   type AccountTaskProgressDTO,
   type BuildConversionInput,
-  type ConsoleWebSyncInput,
+  type WebConsoleSyncInput,
   type DeviceSessionDTO,
   type QuotaDTO,
 } from "@/features/accounts/accounts-api";
@@ -82,7 +82,7 @@ export function AccountsPage() {
   const syncAbortRef = useRef<AbortController | null>(null);
   const renewalAbortRef = useRef<AbortController | null>(null);
   const conversionAbortRef = useRef<AbortController | null>(null);
-  const consoleWebSyncAbortRef = useRef<AbortController | null>(null);
+  const webConsoleSyncAbortRef = useRef<AbortController | null>(null);
   const importAbortRef = useRef<AbortController | null>(null);
   const importToastRef = useRef<string | number | null>(null);
   const [provider, setProvider] = useState<AccountProvider>("grok_build");
@@ -100,8 +100,8 @@ export function AccountsPage() {
   const [syncProgress, setSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [conversionTargets, setConversionTargets] = useState<string[] | "all" | null>(null);
   const [conversionProgress, setConversionProgress] = useState<BuildConversionProgressState | null>(null);
-  const [consoleWebSyncTargets, setConsoleWebSyncTargets] = useState<string[] | "all" | null>(null);
-  const [consoleWebSyncProgress, setConsoleWebSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
+  const [webConsoleSyncTargets, setWebConsoleSyncTargets] = useState<string[] | "all" | null>(null);
+  const [webConsoleSyncProgress, setWebConsoleSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [renewAllOpen, setRenewAllOpen] = useState(false);
   const [renewalProgress, setRenewalProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [editing, setEditing] = useState<AccountDTO | null>(null);
@@ -117,7 +117,7 @@ export function AccountsPage() {
     syncAbortRef.current?.abort();
     renewalAbortRef.current?.abort();
     conversionAbortRef.current?.abort();
-    consoleWebSyncAbortRef.current?.abort();
+    webConsoleSyncAbortRef.current?.abort();
     importAbortRef.current?.abort();
     if (importToastRef.current !== null) toast.dismiss(importToastRef.current);
   }, []);
@@ -285,22 +285,22 @@ export function AccountsPage() {
     },
   });
 
-  const consoleWebSyncMutation = useMutation({
-    mutationFn: (input: ConsoleWebSyncInput) => {
+  const webConsoleSyncMutation = useMutation({
+    mutationFn: (input: WebConsoleSyncInput) => {
       const controller = new AbortController();
-      consoleWebSyncAbortRef.current = controller;
-      setConsoleWebSyncProgress(null);
-      return syncConsoleAccountsToWeb(input, setConsoleWebSyncProgress, controller.signal);
+      webConsoleSyncAbortRef.current = controller;
+      setWebConsoleSyncProgress(null);
+      return syncWebAccountsToConsole(input, setWebConsoleSyncProgress, controller.signal);
     },
     onSuccess: (result) => {
-      setConsoleWebSyncTargets(null);
+      setWebConsoleSyncTargets(null);
       setSelected(new Set());
-      toast.success(t("consoleWebSync.completed", result));
+      toast.success(t("webConsoleSync.completed", result));
     },
     onError: (error) => { if (!isAbortError(error)) showError(error); },
     onSettled: () => {
-      consoleWebSyncAbortRef.current = null;
-      setConsoleWebSyncProgress(null);
+      webConsoleSyncAbortRef.current = null;
+      setWebConsoleSyncProgress(null);
       invalidateAccountData();
       void queryClient.invalidateQueries({ queryKey: ["models"] });
     },
@@ -596,14 +596,14 @@ export function AccountsPage() {
                 <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" onClick={() => setConversionTargets([...selected])}>{t("accounts.convertToBuild")}</Button> : null}
-                {provider === "grok_console" ? <Button variant="secondary" size="sm" onClick={() => setConsoleWebSyncTargets([...selected])}>{t("consoleWebSync.action")}</Button> : null}
+                {provider === "grok_web" ? <Button variant="secondary" size="sm" onClick={() => setWebConsoleSyncTargets([...selected])}>{t("webConsoleSync.action")}</Button> : null}
                 {provider === "grok_build" ? <Button variant="secondary" size="sm" onClick={() => batchBillingMutation.mutate()}>{t("accounts.refreshBilling")}</Button> : null}
                 <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
               </div>
             ) : (
               <div className="flex items-center gap-1.5">
                 {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" onClick={() => setConversionTargets("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
-                {provider === "grok_console" && consoleSummary.total > 0 ? <Button variant="secondary" size="sm" onClick={() => setConsoleWebSyncTargets("all")}>{t("consoleWebSync.allAction")}</Button> : null}
+                {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" onClick={() => setWebConsoleSyncTargets("all")}>{t("webConsoleSync.allAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" onClick={() => setSyncAllOpen(true)}>{t("accounts.syncAll")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" onClick={() => setRenewAllOpen(true)}>{t("accounts.renewAll")}</Button> : null}
                 <DropdownMenu>
@@ -698,7 +698,7 @@ export function AccountsPage() {
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onClick={() => beginEdit(account)}><Pencil />{t("common.edit")}</DropdownMenuItem>
                           {provider === "grok_web" && !account.linkedAccountId ? <DropdownMenuItem onClick={() => setConversionTargets([account.id])}><ArrowRight />{t("accounts.convertToBuild")}</DropdownMenuItem> : null}
-                          {provider === "grok_console" ? <DropdownMenuItem onClick={() => setConsoleWebSyncTargets([account.id])}><ArrowRight />{t("consoleWebSync.action")}</DropdownMenuItem> : null}
+                          {provider === "grok_web" ? <DropdownMenuItem onClick={() => setWebConsoleSyncTargets([account.id])}><ArrowRight />{t("webConsoleSync.action")}</DropdownMenuItem> : null}
                           {provider === "grok_build" ? <DropdownMenuItem onClick={() => tokenMutation.mutate(account.id)}><RotateCw />{t("accounts.refreshToken")}</DropdownMenuItem> : null}
                           <DropdownMenuItem onClick={() => provider === "grok_build" ? billingMutation.mutate(account.id) : quotaMutation.mutate(account.id)}><RefreshCw />{provider === "grok_build" ? t("accounts.refreshBilling") : t("accounts.refreshModeQuota")}</DropdownMenuItem>
                           <DropdownMenuSeparator />
@@ -722,16 +722,16 @@ export function AccountsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={consoleWebSyncTargets !== null} onOpenChange={(open) => { if (!open) { consoleWebSyncAbortRef.current?.abort(); setConsoleWebSyncTargets(null); } }}>
+      <AlertDialog open={webConsoleSyncTargets !== null} onOpenChange={(open) => { if (!open) { webConsoleSyncAbortRef.current?.abort(); setWebConsoleSyncTargets(null); } }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t(consoleWebSyncTargets === "all" ? "consoleWebSync.allTitle" : "consoleWebSync.selectedTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>{consoleWebSyncTargets === "all" ? t("consoleWebSync.allDescription") : t("consoleWebSync.selectedDescription", { count: consoleWebSyncTargets?.length ?? 0 })}</AlertDialogDescription>
+            <AlertDialogTitle>{t(webConsoleSyncTargets === "all" ? "webConsoleSync.allTitle" : "webConsoleSync.selectedTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{webConsoleSyncTargets === "all" ? t("webConsoleSync.allDescription") : t("webConsoleSync.selectedDescription", { count: webConsoleSyncTargets?.length ?? 0 })}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction disabled={consoleWebSyncMutation.isPending || consoleWebSyncTargets === null || (Array.isArray(consoleWebSyncTargets) && consoleWebSyncTargets.length === 0)} onClick={(event) => { event.preventDefault(); if (consoleWebSyncTargets === "all") consoleWebSyncMutation.mutate({ all: true }); else if (consoleWebSyncTargets) consoleWebSyncMutation.mutate({ ids: consoleWebSyncTargets }); }}>
-              {consoleWebSyncMutation.isPending ? <><Spinner />{consoleWebSyncProgress ? <span className="tabular-nums">{consoleWebSyncProgress.completed} / {consoleWebSyncProgress.total}</span> : t("common.loading")}</> : t(consoleWebSyncTargets === "all" ? "consoleWebSync.allAction" : "consoleWebSync.action")}
+            <AlertDialogAction disabled={webConsoleSyncMutation.isPending || webConsoleSyncTargets === null || (Array.isArray(webConsoleSyncTargets) && webConsoleSyncTargets.length === 0)} onClick={(event) => { event.preventDefault(); if (webConsoleSyncTargets === "all") webConsoleSyncMutation.mutate({ all: true }); else if (webConsoleSyncTargets) webConsoleSyncMutation.mutate({ ids: webConsoleSyncTargets }); }}>
+              {webConsoleSyncMutation.isPending ? <><Spinner />{webConsoleSyncProgress ? <span className="tabular-nums">{webConsoleSyncProgress.completed} / {webConsoleSyncProgress.total}</span> : t("common.loading")}</> : t(webConsoleSyncTargets === "all" ? "webConsoleSync.allAction" : "webConsoleSync.action")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

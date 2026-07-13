@@ -222,7 +222,7 @@ export type BuildConversionInput =
   | { all: true; ids?: never }
   | { all?: false; ids: string[] };
 
-export type ConsoleWebSyncInput = BuildConversionInput;
+export type WebConsoleSyncInput = BuildConversionInput;
 
 export type AccountTaskProgressDTO = {
   completed: number;
@@ -339,8 +339,8 @@ export function convertWebAccountsToBuild(input: BuildConversionInput, onProgres
   return runAccountTask("/api/admin/v1/accounts/web/convert-to-build", input, ["created", "linked", "skipped", "failed", "synced", "syncFailed"], onProgress, signal);
 }
 
-export function syncConsoleAccountsToWeb(input: ConsoleWebSyncInput, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
-  return runAccountTask("/api/admin/v1/accounts/console/sync-to-web", input, ["created", "updated", "synced", "syncFailed"], onProgress, signal);
+export function syncWebAccountsToConsole(input: WebConsoleSyncInput, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
+  return runAccountTask("/api/admin/v1/accounts/web/sync-to-console", input, ["created", "updated", "synced", "syncFailed"], onProgress, signal);
 }
 
 export function importAccounts(files: readonly File[], onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
