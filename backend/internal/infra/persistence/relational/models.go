@@ -59,6 +59,10 @@ type accountCredentialModel struct {
 	EncryptedPrimary string `gorm:"type:text;not null;default:'';check:chk_account_credentials_secret,((auth_type = 'oauth' AND (encrypted_primary <> '' OR encrypted_refresh <> '')) OR (auth_type = 'sso' AND encrypted_primary <> '' AND encrypted_refresh = '')) AND length(encrypted_primary) <= 65536 AND length(encrypted_refresh) <= 65536"`
 	EncryptedRefresh string `gorm:"type:text;not null;default:''"`
 	ExpiresAt        *time.Time
+	RefreshDueAt     *time.Time
+	LastRefreshAt    *time.Time
+	RefreshFailures  int           `gorm:"not null;default:0;check:chk_account_credentials_refresh_failures,refresh_failures >= 0"`
+	LastRefreshError string        `gorm:"size:100;not null;default:'';check:chk_account_credentials_refresh_error,length(last_refresh_error) <= 100"`
 	UpdatedAt        time.Time     `gorm:"not null"`
 	Account          *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }

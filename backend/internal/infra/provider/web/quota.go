@@ -22,29 +22,89 @@ const weeklyQuotaMode = "weekly"
 
 func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) (provider.QuotaSnapshot, error) {
 	weekly, weeklyErr := a.syncWeeklyCredits(ctx, credential)
-	switch credential.WebTier {
-	case account.WebTierSuper, account.WebTierHeavy:
-		if weeklyErr != nil {
-			return provider.QuotaSnapshot{}, weeklyErr
+	windows := make([]account.QuotaWindow, 0, 2)
+	if autoWindow, autoErr := a.SyncQuotaMode(ctx, credential, "auto"); autoErr == nil {
+		windows = append(windows, autoWindow)
+	}
+	fastWindow, fastErr := a.SyncQuotaMode(ctx, credential, "fast")
+	if fastErr == nil {
+		windows = append(windows, fastWindow)
+	}
+	if len(windows) > 0 {
+		tier, useWeekly := resolveWebTierFromQuota(credential.WebTier, windows, weeklyErr == nil)
+		if useWeekly {
+			windows = []account.QuotaWindow{weekly}
 		}
-		return provider.QuotaSnapshot{Tier: credential.WebTier, Windows: []account.QuotaWindow{weekly}, SyncedAt: time.Now().UTC()}, nil
-	case account.WebTierAuto, account.WebTierBasic:
-		if weeklyErr == nil {
-			return provider.QuotaSnapshot{Tier: account.WebTierSuper, Windows: []account.QuotaWindow{weekly}, SyncedAt: time.Now().UTC()}, nil
+		return provider.QuotaSnapshot{Tier: tier, Windows: windows, SyncedAt: time.Now().UTC()}, nil
+	}
+	if weeklyErr == nil {
+		tier, _ := resolveWebTierFromQuota(credential.WebTier, nil, true)
+		return provider.QuotaSnapshot{Tier: tier, Windows: []account.QuotaWindow{weekly}, SyncedAt: time.Now().UTC()}, nil
+	}
+	if fastErr != nil {
+		return provider.QuotaSnapshot{}, fastErr
+	}
+	return provider.QuotaSnapshot{}, weeklyErr
+}
+
+func resolveWebTierFromQuota(current account.WebTier, windows []account.QuotaWindow, weeklyAvailable bool) (account.WebTier, bool) {
+	if len(windows) > 0 {
+		tier, known := inferWebTierFromQuota(windows)
+		if !known {
+			// 上游可能随时调整额度。无法识别的新形态保持 Auto，并由路由层
+			// 按 Basic 的最小权限处理；不能伪造一个已确认的套餐等级。
+			return account.WebTierAuto, false
 		}
-		if autoWindow, autoErr := a.SyncQuotaMode(ctx, credential, "auto"); autoErr == nil {
-			windows := []account.QuotaWindow{autoWindow}
-			if fastWindow, fastErr := a.SyncQuotaMode(ctx, credential, "fast"); fastErr == nil {
-				windows = append(windows, fastWindow)
+		return tier, weeklyAvailable && tier != account.WebTierBasic
+	}
+	// 周额度是付费账号信号，但无法区分 Super/Heavy。只有已确认的 Heavy
+	// 可以在模式额度暂时不可用时保留，其余账号只授予最低付费等级。
+	if current == account.WebTierHeavy {
+		return account.WebTierHeavy, weeklyAvailable
+	}
+	return account.WebTierSuper, weeklyAvailable
+}
+
+// inferWebTierFromQuota 使用 Grok Web /rest/rate-limits 的真实额度形态判级。
+// 同一快照出现矛盾信号时选择较低等级，避免把 Basic 账号路由到付费能力。
+func inferWebTierFromQuota(windows []account.QuotaWindow) (account.WebTier, bool) {
+	detected := account.WebTierAuto
+	rank := map[account.WebTier]int{
+		account.WebTierBasic: 1,
+		account.WebTierSuper: 2,
+		account.WebTierHeavy: 3,
+	}
+	for _, window := range windows {
+		candidate := account.WebTierAuto
+		switch window.Mode {
+		case "auto":
+			switch window.Total {
+			case 7, 20:
+				candidate = account.WebTierBasic
+			case 50:
+				candidate = account.WebTierSuper
+			case 150:
+				candidate = account.WebTierHeavy
 			}
-			return provider.QuotaSnapshot{Tier: account.WebTierSuper, Windows: windows, SyncedAt: time.Now().UTC()}, nil
+		case "fast":
+			switch window.Total {
+			case 30:
+				candidate = account.WebTierBasic
+			case 140:
+				candidate = account.WebTierSuper
+			case 400:
+				candidate = account.WebTierHeavy
+			}
+		case "heavy":
+			if window.Total > 0 {
+				candidate = account.WebTierHeavy
+			}
+		}
+		if candidate != account.WebTierAuto && (detected == account.WebTierAuto || rank[candidate] < rank[detected]) {
+			detected = candidate
 		}
 	}
-	fast, err := a.SyncQuotaMode(ctx, credential, "fast")
-	if err != nil {
-		return provider.QuotaSnapshot{}, err
-	}
-	return provider.QuotaSnapshot{Tier: account.WebTierBasic, Windows: []account.QuotaWindow{fast}, SyncedAt: time.Now().UTC()}, nil
+	return detected, detected != account.WebTierAuto
 }
 
 func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credential, mode string) (account.QuotaWindow, error) {

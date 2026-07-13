@@ -208,10 +208,15 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	}
 	excluded := make(map[uint64]bool)
 	failureFingerprints := make(map[string]int)
+	authRecoveryAttempted := make(map[uint64]bool)
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
 	quotaProbeAttempted := false
 	var lastErr error
 	var lastFailure *UpstreamFailure
+	forwardResponse := func(credential accountdomain.Credential) (*provider.Response, error) {
+		return adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+	}
+attemptLoop:
 	for attempt := 0; attempt < attempts; attempt++ {
 		var lease *accountLease
 		var err error
@@ -249,7 +254,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			lastFailure = newCredentialUpstreamFailure(err, lease.Credential.ID, lease.Credential.Name)
 			continue
 		}
-		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+		response, err := forwardResponse(credential)
 		if err != nil {
 			lease.Release()
 			lastErr = err
@@ -264,6 +269,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			}
 			continue
 		}
+	handleResponse:
 		if response.StatusCode == http.StatusUnauthorized {
 			response.Body.Close()
 			if credential.Provider == accountdomain.ProviderWeb {
@@ -274,9 +280,10 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				lastFailure = newHTTPUpstreamFailure(http.StatusUnauthorized, nil, credential.ID, credential.Name)
 				continue
 			}
+			authRecoveryAttempted[credential.ID] = true
 			refreshed, refreshErr := s.accounts.EnsureCredential(ctx, credential, true)
 			if refreshErr == nil {
-				response, err = adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: refreshed, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+				response, err = forwardResponse(refreshed)
 				credential = refreshed
 			}
 			if refreshErr != nil || err != nil {
@@ -315,6 +322,29 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				continue
 			}
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
+			if credential.Provider == accountdomain.ProviderBuild && !authRecoveryAttempted[credential.ID] && credential.EncryptedRefreshToken != "" && (lastFailure.PermanentAccountDenial || lastFailure.CredentialRejected) {
+				authRecoveryAttempted[credential.ID] = true
+				refreshed, refreshErr := s.accounts.EnsureCredential(ctx, credential, true)
+				if refreshErr != nil {
+					lease.Release()
+					lastErr = refreshErr
+					lastFailure = newCredentialUpstreamFailure(refreshErr, credential.ID, credential.Name)
+					continue attemptLoop
+				}
+				response, err = forwardResponse(refreshed)
+				credential = refreshed
+				if err != nil {
+					lease.Release()
+					lastErr = err
+					if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+						lastFailure = &UpstreamFailure{HTTPStatus: 499, Code: "request_canceled", PublicMessage: "请求已取消", AccountID: credential.ID, AccountName: credential.Name, Cause: firstError(ctx.Err(), err)}
+						break attemptLoop
+					}
+					lastFailure = newTransportUpstreamFailure(err, credential.ID, credential.Name)
+					continue attemptLoop
+				}
+				goto handleResponse
+			}
 			failureHandled := false
 			if credential.Provider == accountdomain.ProviderWeb {
 				if lease.QuotaMode != "" && response.StatusCode == http.StatusTooManyRequests {

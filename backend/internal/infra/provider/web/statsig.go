@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"golang.org/x/net/html"
 	"golang.org/x/sync/singleflight"
@@ -35,6 +37,11 @@ type statsigCacheEntry struct {
 type statsigSignResult struct {
 	value  string
 	source string
+}
+
+type statsigWarmTarget struct {
+	method string
+	target string
 }
 
 type statsigSigner struct {
@@ -88,6 +95,44 @@ func (s *statsigSigner) Sign(ctx context.Context, baseURL, signerURL, token stri
 	}
 	result := value.(statsigSignResult)
 	return result.value, result.source, nil
+}
+
+// Warm 使用一次 metaContent 请求预热多个常用签名键，避免按账号或按路径重复抓取首页。
+func (s *statsigSigner) Warm(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, targets []statsigWarmTarget) (int, error) {
+	now := s.now().UTC()
+	type pendingTarget struct {
+		key    string
+		method string
+		path   string
+	}
+	pending := make([]pendingTarget, 0, len(targets))
+	for _, target := range targets {
+		key, path, err := statsigSignatureKey(baseURL, signerURL, target.method, target.target)
+		if err != nil {
+			return 0, err
+		}
+		if _, ok := s.cached(key, now); ok {
+			continue
+		}
+		pending = append(pending, pendingTarget{key: key, method: target.method, path: path})
+	}
+	if len(pending) == 0 {
+		return 0, nil
+	}
+	meta, err := s.fetchMeta(ctx, baseURL, token, lease)
+	if err != nil {
+		return 0, err
+	}
+	warmed := 0
+	for _, target := range pending {
+		value, signErr := s.requestSignature(ctx, signerURL, target.method, target.path, meta)
+		if signErr != nil {
+			return warmed, signErr
+		}
+		s.store(target.key, value, now.Add(statsigCacheTTL), now)
+		warmed++
+	}
+	return warmed, nil
 }
 
 func (s *statsigSigner) freshSignature(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, method, path string) (string, error) {
@@ -355,6 +400,35 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 		return
 	}
 	a.log().Warn("web_statsig_fetch_failed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)
+}
+
+// WarmStatsig 只使用一个 Web 账号和一个出口租约预热共享签名，不会逐账号访问上游。
+func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential) (int, error) {
+	cfg := a.config()
+	if cfg.StatsigMode == "manual" {
+		if !validStatsigID(strings.TrimSpace(cfg.StatsigManualValue)) {
+			return 0, fmt.Errorf("手动 Statsig 配置无效")
+		}
+		return 0, nil
+	}
+	if a.statsig == nil {
+		return 0, fmt.Errorf("Statsig 签名器未初始化")
+	}
+	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
+	if err != nil {
+		return 0, err
+	}
+	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", credential.ID))
+	if err != nil {
+		return 0, err
+	}
+	defer lease.Release()
+	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	return a.statsig.Warm(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, []statsigWarmTarget{
+		{method: http.MethodPost, target: baseURL + "/rest/app-chat/conversations/new"},
+		{method: http.MethodPost, target: baseURL + "/rest/rate-limits"},
+		{method: http.MethodPost, target: baseURL + "/rest/media/post/create"},
+	})
 }
 
 func (a *Adapter) invalidateSignedStatsig(method, target string) bool {

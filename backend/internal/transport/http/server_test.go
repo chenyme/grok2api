@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,57 @@ import (
 	"testing"
 	"time"
 )
+
+func TestReadinessEndpointReturnsStructuredDegradedStateAsReady(t *testing.T) {
+	router := New(Dependencies{
+		RequestTimeout: time.Second,
+		MaxBodyBytes:   1024,
+		Readiness: func(context.Context) ReadinessSnapshot {
+			return ReadinessSnapshot{
+				Ready: true, State: "degraded", UpdatedAt: time.Now().UTC(),
+				Components: map[string]ReadinessComponent{
+					"grok_build": {State: "ready"},
+					"grok_web":   {State: "unavailable"},
+				},
+			}
+		},
+	})
+	request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var body ReadinessSnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Ready || body.State != "degraded" || body.Components["grok_build"].State != "ready" {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestReadinessEndpointReturns503WhileReconciling(t *testing.T) {
+	router := New(Dependencies{RequestTimeout: time.Second, MaxBodyBytes: 1024, Readiness: func(context.Context) ReadinessSnapshot {
+		return ReadinessSnapshot{Ready: false, State: "reconciling", UpdatedAt: time.Now().UTC()}
+	}})
+	request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"state":"reconciling"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestInferenceTrafficIsRejectedWhileReconciling(t *testing.T) {
+	router := New(Dependencies{RequestTimeout: time.Second, MaxBodyBytes: 1024, TrafficReady: func() bool { return false }})
+	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"service_reconciling"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
 
 func TestSystemInfoRequiresAdminAuthentication(t *testing.T) {
 	router := New(Dependencies{RequestTimeout: time.Second, MaxBodyBytes: 1024, PublicAPIBaseURL: "https://api.example.com"})

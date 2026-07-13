@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 )
 
 func TestEnsureCredentialReusesRotatedTokenAndThrottlesForcedRefresh(t *testing.T) {
@@ -53,7 +55,7 @@ func TestEnsureCredentialReusesRotatedTokenAndThrottlesForcedRefresh(t *testing.
 		t.Fatalf("refresh after cooldown = %#v, count = %d", afterCooldown, adapter.refreshCount.Load())
 	}
 
-	manual, err := service.ensureCredential(ctx, afterCooldown, true, true)
+	manual, err := service.ensureCredential(ctx, afterCooldown, true, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +100,51 @@ func TestEnsureCredentialCollapsesConcurrentForcedRefreshes(t *testing.T) {
 	}
 }
 
+func TestEnsureCredentialCollapsesRefreshAcrossServiceInstances(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "credential-refresh-multi-instance.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	credential, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "multi-instance", SourceKey: "multi-instance",
+		EncryptedAccessToken: "access-0", EncryptedRefreshToken: "refresh-0", ExpiresAt: now.Add(time.Hour),
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &credentialRefreshAdapter{delay: 40 * time.Millisecond}
+	registry := provider.NewRegistry(adapter)
+	lock := memory.NewLockStore()
+	first := NewService(repository, nil, nil, nil, registry, nil, lock)
+	second := NewService(repository, nil, nil, nil, registry, nil, lock)
+	start := make(chan struct{})
+	errors := make(chan error, 2)
+	for _, service := range []*Service{first, second} {
+		go func(service *Service) {
+			<-start
+			_, refreshErr := service.EnsureCredential(ctx, credential, true)
+			errors <- refreshErr
+		}(service)
+	}
+	close(start)
+	for range 2 {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if adapter.refreshCount.Load() != 1 {
+		t.Fatalf("refresh count = %d", adapter.refreshCount.Load())
+	}
+}
+
 func TestEnsureCredentialRefreshesWhenAccessTokenIsMissing(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
@@ -114,6 +161,188 @@ func TestEnsureCredentialRefreshesWhenAccessTokenIsMissing(t *testing.T) {
 	}
 	if adapter.refreshCount.Load() != 1 || refreshed.EncryptedAccessToken != "access-1" {
 		t.Fatalf("refresh-only credential was not refreshed: %#v, count = %d", refreshed, adapter.refreshCount.Load())
+	}
+}
+
+func TestCredentialRefreshSchedulerRefreshesOnlyDueAccounts(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return time.Now().UTC() }
+	dueAt := now.Add(-time.Minute)
+	credential.RefreshDueAt = &dueAt
+	credential, err := service.accounts.Update(ctx, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	far, _, err := service.accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "far", SourceKey: "far",
+		EncryptedAccessToken: "far-access", EncryptedRefreshToken: "far-refresh", ExpiresAt: now.Add(6 * time.Hour),
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		service.RunCredentialRefresh(runCtx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("credential refresh scheduler did not stop")
+		}
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for adapter.refreshCount.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if adapter.refreshCount.Load() != 1 {
+		t.Fatalf("refresh count = %d", adapter.refreshCount.Load())
+	}
+	updated, err := service.accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RefreshDueAt == nil || !updated.RefreshDueAt.After(time.Now()) || updated.LastRefreshAt == nil || updated.RefreshFailureCount != 0 {
+		t.Fatalf("updated credential = %#v", updated)
+	}
+	farUpdated, err := service.accounts.Get(ctx, far.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if farUpdated.EncryptedAccessToken != "far-access" || farUpdated.LastRefreshAt != nil {
+		t.Fatalf("far credential was refreshed: %#v", farUpdated)
+	}
+}
+
+func TestStartupRecoveryPreservesFutureRefreshSchedule(t *testing.T) {
+	now := time.Now().UTC()
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+	originalDue := credential.RefreshDueAt
+
+	report, err := service.RecoverCriticalCredentials(context.Background(), 2*time.Minute, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CriticalFound != 0 || adapter.refreshCount.Load() != 0 {
+		t.Fatalf("report=%#v refreshes=%d", report, adapter.refreshCount.Load())
+	}
+	stored, err := service.accounts.Get(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if originalDue == nil || stored.RefreshDueAt == nil || !stored.RefreshDueAt.Equal(*originalDue) {
+		t.Fatalf("refresh due changed: before=%v after=%v", originalDue, stored.RefreshDueAt)
+	}
+}
+
+func TestStartupRecoveryRefreshesExpiredCredential(t *testing.T) {
+	now := time.Now().UTC()
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+	expired, err := service.accounts.UpdateTokens(context.Background(), credential.ID, credential.EncryptedAccessToken, credential.EncryptedRefreshToken, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expired.RefreshDueAt == nil || expired.RefreshDueAt.After(now) {
+		t.Fatalf("expired refresh due = %v", expired.RefreshDueAt)
+	}
+
+	report, err := service.RecoverCriticalCredentials(context.Background(), 2*time.Minute, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CriticalFound != 1 || report.Refreshed != 1 || report.Failed != 0 || adapter.refreshCount.Load() != 1 {
+		t.Fatalf("report=%#v refreshes=%d", report, adapter.refreshCount.Load())
+	}
+}
+
+func TestStartupRecoveryRespectsContextBudget(t *testing.T) {
+	now := time.Now().UTC()
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+	if _, err := service.accounts.UpdateTokens(context.Background(), credential.ID, credential.EncryptedAccessToken, credential.EncryptedRefreshToken, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	adapter.delay = time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := service.RecoverCriticalCredentials(ctx, 2*time.Minute, 100)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("startup recovery exceeded budget: %s", elapsed)
+	}
+}
+
+func TestCredentialRefreshDueQueryStaysBoundedForLargePool(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	service, _, _ := newCredentialRefreshTestService(t, now)
+	values := make([]accountdomain.Credential, 0, 1000)
+	for index := range 1000 {
+		name := fmt.Sprintf("large-%04d", index)
+		values = append(values, accountdomain.Credential{
+			Provider: accountdomain.ProviderBuild, Name: name, SourceKey: name,
+			EncryptedAccessToken: "access", EncryptedRefreshToken: "refresh", ExpiresAt: now.Add(time.Minute),
+			Enabled: true, AuthStatus: accountdomain.AuthStatusActive, MaxConcurrent: 1,
+		})
+	}
+	if _, err := service.accounts.UpsertManyByIdentity(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := service.accounts.ListDueCredentialRefreshIDs(ctx, now, credentialRefreshBatchSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != credentialRefreshBatchSize {
+		t.Fatalf("due batch size = %d", len(ids))
+	}
+	next, err := service.accounts.NextCredentialRefreshDueAt(ctx)
+	if err != nil || next == nil || next.After(now) {
+		t.Fatalf("next due = %v, err = %v", next, err)
+	}
+}
+
+func TestCredentialRefreshFailureDistinguishesTransientAndPermanent(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 503, Code: "oauth_unavailable"}
+	if _, err := service.EnsureCredential(ctx, credential, true); err == nil {
+		t.Fatal("transient refresh unexpectedly succeeded")
+	}
+	transient, err := service.accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transient.AuthStatus != accountdomain.AuthStatusActive || transient.RefreshFailureCount != 1 || transient.LastRefreshErrorCode != "oauth_unavailable" || transient.RefreshDueAt == nil || !transient.RefreshDueAt.After(now) {
+		t.Fatalf("transient state = %#v", transient)
+	}
+
+	service.clearRefreshState(credential.ID)
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 400, Code: "invalid_grant", Permanent: true}
+	if _, err := service.EnsureCredential(ctx, transient, true); err == nil {
+		t.Fatal("permanent refresh unexpectedly succeeded")
+	}
+	permanent, err := service.accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permanent.AuthStatus != accountdomain.AuthStatusReauthRequired || permanent.RefreshFailureCount != 2 || permanent.LastRefreshErrorCode != "invalid_grant" {
+		t.Fatalf("permanent state = %#v", permanent)
 	}
 }
 
@@ -215,17 +444,27 @@ type credentialRefreshAdapter struct {
 	billingDelay time.Duration
 	billing      accountdomain.Billing
 	billingErr   error
+	refreshErr   error
 }
 
 func (a *credentialRefreshAdapter) Provider() accountdomain.Provider {
 	return accountdomain.ProviderBuild
 }
 
-func (a *credentialRefreshAdapter) RefreshCredential(context.Context, accountdomain.Credential) (provider.RefreshedCredential, error) {
+func (a *credentialRefreshAdapter) RefreshCredential(ctx context.Context, _ accountdomain.Credential) (provider.RefreshedCredential, error) {
 	if a.delay > 0 {
-		time.Sleep(a.delay)
+		timer := time.NewTimer(a.delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return provider.RefreshedCredential{}, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	count := a.refreshCount.Add(1)
+	if a.refreshErr != nil {
+		return provider.RefreshedCredential{}, a.refreshErr
+	}
 	return provider.RefreshedCredential{EncryptedAccessToken: fmt.Sprintf("access-%d", count), EncryptedRefreshToken: fmt.Sprintf("refresh-%d", count), ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
 }
 

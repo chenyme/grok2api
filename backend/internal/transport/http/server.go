@@ -43,18 +43,34 @@ type Dependencies struct {
 	SwaggerEnabled     bool
 	PublicAPIBaseURL   string
 	FrontendStaticPath string
-	Ready              func(context.Context) bool
-	AdminAuth          *adminauthapp.Service
-	Accounts           *accountapp.Service
-	AccountSync        *accountsyncapp.Service
-	Models             *modelapp.Service
-	ClientKeys         *clientkeyapp.Service
-	Audits             *auditapp.Service
-	Dashboard          *dashboardapp.Service
-	Gateway            *gateway.Service
-	Media              *mediaapp.Service
-	Settings           *settingsapp.Service
-	Egress             *egressapp.Service
+	// Readiness 返回可观测的分层就绪状态。Ready 仅为旧调用方保留。
+	Readiness    func(context.Context) ReadinessSnapshot
+	Ready        func(context.Context) bool
+	TrafficReady func() bool
+	AdminAuth    *adminauthapp.Service
+	Accounts     *accountapp.Service
+	AccountSync  *accountsyncapp.Service
+	Models       *modelapp.Service
+	ClientKeys   *clientkeyapp.Service
+	Audits       *auditapp.Service
+	Dashboard    *dashboardapp.Service
+	Gateway      *gateway.Service
+	Media        *mediaapp.Service
+	Settings     *settingsapp.Service
+	Egress       *egressapp.Service
+}
+
+type ReadinessComponent struct {
+	State  string `json:"state"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type ReadinessSnapshot struct {
+	Ready      bool                          `json:"ready"`
+	State      string                        `json:"state"`
+	UpdatedAt  time.Time                     `json:"updatedAt"`
+	Components map[string]ReadinessComponent `json:"components,omitempty"`
+	Startup    any                           `json:"startup,omitempty"`
 }
 
 // New 创建完整 HTTP 路由并明确区分公共、管理员和客户端鉴权边界。
@@ -67,11 +83,20 @@ func New(deps Dependencies) *gin.Engine {
 	router.Use(gin.Recovery(), middleware.RequestID(), middleware.SecurityHeaders(), middleware.MaxBodyBytes(deps.MaxBodyBytes), middleware.Timeout(deps.RequestTimeout), middleware.AccessLog(deps.Logger))
 	router.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 	router.GET("/readyz", func(c *gin.Context) {
-		if deps.Ready != nil && deps.Ready(c.Request.Context()) {
-			c.JSON(http.StatusOK, gin.H{"ready": true})
+		if deps.Readiness != nil {
+			snapshot := deps.Readiness(c.Request.Context())
+			status := http.StatusServiceUnavailable
+			if snapshot.Ready {
+				status = http.StatusOK
+			}
+			c.JSON(status, snapshot)
 			return
 		}
-		c.JSON(http.StatusServiceUnavailable, gin.H{"ready": false})
+		if deps.Ready != nil && deps.Ready(c.Request.Context()) {
+			c.JSON(http.StatusOK, gin.H{"ready": true, "state": "ready"})
+			return
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{"ready": false, "state": "not_ready"})
 	})
 	if deps.SwaggerEnabled {
 		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -94,6 +119,17 @@ func New(deps Dependencies) *gin.Engine {
 	systemhttp.NewHandler(deps.PublicAPIBaseURL).Register(adminProtected)
 
 	v1 := router.Group("/v1")
+	if deps.TrafficReady != nil {
+		v1.Use(func(c *gin.Context) {
+			if deps.TrafficReady() {
+				c.Next()
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{
+				"code": "service_reconciling", "message": "服务正在完成启动恢复，请稍后重试", "param": nil, "type": "server_error",
+			}})
+		})
+	}
 	v1.Use(middleware.ClientAuth(deps.ClientKeys))
 	inference.NewHandler(deps.Gateway, deps.Models, deps.MaxBodyBytes).Register(v1)
 	registerFrontend(router, deps.FrontendStaticPath)

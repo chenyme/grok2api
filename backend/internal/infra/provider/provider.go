@@ -19,6 +19,35 @@ var (
 	ErrUnauthorized         = errors.New("upstream credential unauthorized")
 )
 
+// CredentialRefreshError 区分需要重新认证的永久 OAuth 错误与可后台退避重试的临时错误。
+type CredentialRefreshError struct {
+	Status     int
+	Code       string
+	Permanent  bool
+	RetryAfter time.Duration
+	Cause      error
+}
+
+func (e *CredentialRefreshError) Error() string {
+	if e == nil {
+		return "credential refresh failed"
+	}
+	if e.Code != "" {
+		return "credential refresh failed: " + e.Code
+	}
+	if e.Cause != nil {
+		return "credential refresh failed: " + e.Cause.Error()
+	}
+	return "credential refresh failed"
+}
+
+func (e *CredentialRefreshError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 // ResponseResourceRequest 表示对 Responses 资源端点的通用上游请求。
 type ResponseResourceRequest struct {
 	Credential     account.Credential

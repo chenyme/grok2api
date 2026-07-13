@@ -527,7 +527,12 @@ func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64
 }
 
 func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time) (account.Credential, error) {
-	updates := map[string]any{"encrypted_primary": accessToken, "expires_at": expiresAt, "updated_at": time.Now().UTC()}
+	now := time.Now().UTC()
+	refreshDueAt := account.CredentialRefreshDueAt(id, expiresAt)
+	updates := map[string]any{
+		"encrypted_primary": accessToken, "expires_at": expiresAt, "refresh_due_at": refreshDueAt,
+		"last_refresh_at": now, "refresh_failures": 0, "last_refresh_error": "", "updated_at": now,
+	}
 	if refreshToken != "" {
 		updates["encrypted_refresh"] = refreshToken
 	}
@@ -540,6 +545,99 @@ func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessT
 		return account.Credential{}, err
 	}
 	return r.Get(ctx, id)
+}
+
+// BackfillCredentialRefreshSchedules 为升级前凭据分批补齐调度时间，不解密 Token，也不发起 OAuth 请求。
+func (r *AccountRepository) BackfillCredentialRefreshSchedules(ctx context.Context, now time.Time, limit int) (int, error) {
+	if limit < 1 {
+		return 0, nil
+	}
+	var rows []struct {
+		AccountID        uint64
+		ExpiresAt        *time.Time
+		EncryptedPrimary string
+	}
+	err := r.db.db.WithContext(ctx).
+		Table("account_credentials AS credential").
+		Select("credential.account_id, credential.expires_at, credential.encrypted_primary").
+		Joins("JOIN provider_accounts AS account ON account.id = credential.account_id").
+		Where("account.provider = ? AND account.enabled = ? AND account.auth_status = ?", account.ProviderBuild, true, account.AuthStatusActive).
+		Where("credential.auth_type = ? AND credential.encrypted_refresh <> '' AND credential.refresh_due_at IS NULL", account.AuthTypeOAuth).
+		Where("credential.expires_at IS NOT NULL OR credential.encrypted_primary = ''").
+		Order("credential.account_id ASC").Limit(limit).Scan(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return 0, err
+	}
+	err = r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, row := range rows {
+			dueAt := now
+			if row.EncryptedPrimary != "" && row.ExpiresAt != nil && !row.ExpiresAt.IsZero() {
+				dueAt = account.CredentialRefreshDueAt(row.AccountID, *row.ExpiresAt)
+			}
+			if err := tx.Model(&accountCredentialModel{}).Where("account_id = ? AND refresh_due_at IS NULL", row.AccountID).Update("refresh_due_at", dueAt).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return len(rows), err
+}
+
+// ListCriticalCredentialRefreshIDs 只返回重启后必须优先恢复的凭据，避免启动时刷新整个账号池。
+func (r *AccountRepository) ListCriticalCredentialRefreshIDs(ctx context.Context, now, expiresBefore time.Time, limit int) ([]uint64, error) {
+	if limit < 1 {
+		return []uint64{}, nil
+	}
+	var ids []uint64
+	err := r.db.db.WithContext(ctx).
+		Table("account_credentials AS credential").
+		Select("credential.account_id").
+		Joins("JOIN provider_accounts AS account ON account.id = credential.account_id").
+		Where("account.provider = ? AND account.enabled = ? AND account.auth_status = ?", account.ProviderBuild, true, account.AuthStatusActive).
+		Where("credential.auth_type = ? AND credential.encrypted_refresh <> ''", account.AuthTypeOAuth).
+		Where("credential.encrypted_primary = '' OR credential.expires_at <= ? OR (credential.refresh_failures > 0 AND credential.refresh_due_at IS NOT NULL AND credential.refresh_due_at <= ?)", expiresBefore.UTC(), now.UTC()).
+		Order(gorm.Expr("CASE WHEN credential.encrypted_primary = '' THEN 0 WHEN credential.expires_at <= ? THEN 1 ELSE 2 END, credential.expires_at ASC, credential.account_id ASC", now.UTC())).
+		Limit(limit).
+		Scan(&ids).Error
+	return ids, err
+}
+
+func (r *AccountRepository) ListDueCredentialRefreshIDs(ctx context.Context, now time.Time, limit int) ([]uint64, error) {
+	if limit < 1 {
+		return []uint64{}, nil
+	}
+	var ids []uint64
+	err := r.db.db.WithContext(ctx).
+		Table("account_credentials AS credential").
+		Select("credential.account_id").
+		Joins("JOIN provider_accounts AS account ON account.id = credential.account_id").
+		Where("account.provider = ? AND account.enabled = ? AND account.auth_status = ?", account.ProviderBuild, true, account.AuthStatusActive).
+		Where("credential.auth_type = ? AND credential.encrypted_refresh <> '' AND credential.refresh_due_at IS NOT NULL AND credential.refresh_due_at <= ?", account.AuthTypeOAuth, now).
+		Order("credential.refresh_due_at ASC, credential.account_id ASC").Limit(limit).Scan(&ids).Error
+	return ids, err
+}
+
+func (r *AccountRepository) NextCredentialRefreshDueAt(ctx context.Context) (*time.Time, error) {
+	var rows []struct{ RefreshDueAt time.Time }
+	err := r.db.db.WithContext(ctx).
+		Table("account_credentials AS credential").
+		Select("credential.refresh_due_at").
+		Joins("JOIN provider_accounts AS account ON account.id = credential.account_id").
+		Where("account.provider = ? AND account.enabled = ? AND account.auth_status = ?", account.ProviderBuild, true, account.AuthStatusActive).
+		Where("credential.auth_type = ? AND credential.encrypted_refresh <> '' AND credential.refresh_due_at IS NOT NULL", account.AuthTypeOAuth).
+		Order("credential.refresh_due_at ASC, credential.account_id ASC").Limit(1).Scan(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	value := rows[0].RefreshDueAt.UTC()
+	return &value, nil
+}
+
+func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string) error {
+	return r.db.db.WithContext(ctx).Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(map[string]any{
+		"refresh_due_at": retryAt.UTC(), "refresh_failures": max(0, failureCount),
+		"last_refresh_error": truncate(errorCode, 100), "updated_at": time.Now().UTC(),
+	}).Error
 }
 
 func (r *AccountRepository) UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error {
@@ -755,6 +853,25 @@ func (r *AccountRepository) ListQuotaRecoveryWindows(ctx context.Context, limit 
 		values = append(values, toQuotaWindowDomain(row))
 	}
 	return values, nil
+}
+
+// ListStaleWebQuotaAccountIDs 返回缺失或长期未同步额度的 Web 账号，供重启后的低优先级追赶任务使用。
+func (r *AccountRepository) ListStaleWebQuotaAccountIDs(ctx context.Context, before time.Time, limit int) ([]uint64, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	var ids []uint64
+	err := r.db.db.WithContext(ctx).
+		Table("provider_accounts AS account").
+		Select("account.id").
+		Joins("LEFT JOIN account_quota_windows AS quota ON quota.account_id = account.id").
+		Where("account.provider = ? AND account.enabled = ? AND account.auth_status = ?", account.ProviderWeb, true, account.AuthStatusActive).
+		Group("account.id").
+		Having("MAX(quota.synced_at) IS NULL OR MAX(quota.synced_at) < ?", before.UTC()).
+		Order("MIN(quota.synced_at) ASC, account.id ASC").
+		Limit(limit).
+		Scan(&ids).Error
+	return ids, err
 }
 
 func toQuotaWindowDomain(row quotaWindowModel) account.QuotaWindow {

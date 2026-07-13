@@ -24,6 +24,9 @@ func toSessionDomain(value adminSessionModel) admin.Session {
 
 func toAccountDomain(value accountModel) account.Credential {
 	var expiresAt time.Time
+	var refreshDueAt, lastRefreshAt *time.Time
+	var refreshFailures int
+	var lastRefreshError string
 	var authType account.AuthType
 	var clientID, encryptedPrimary, encryptedRefresh string
 	if value.Credential != nil {
@@ -34,6 +37,10 @@ func toAccountDomain(value accountModel) account.Credential {
 		if value.Credential.ExpiresAt != nil {
 			expiresAt = *value.Credential.ExpiresAt
 		}
+		refreshDueAt = value.Credential.RefreshDueAt
+		lastRefreshAt = value.Credential.LastRefreshAt
+		refreshFailures = value.Credential.RefreshFailures
+		lastRefreshError = value.Credential.LastRefreshError
 	}
 	var webTier account.WebTier
 	var webTierSyncedAt *time.Time
@@ -45,7 +52,9 @@ func toAccountDomain(value accountModel) account.Credential {
 		ID: value.ID, Provider: account.Provider(value.Provider), AuthType: authType, Name: value.Name, Email: value.Email,
 		UserID: value.UserID, TeamID: value.TeamID, SourceKey: value.SourceKey, OIDCClientID: clientID,
 		EncryptedAccessToken: encryptedPrimary, EncryptedRefreshToken: encryptedRefresh,
-		ExpiresAt: expiresAt, Enabled: value.Enabled, AuthStatus: account.AuthStatus(value.AuthStatus), Priority: value.Priority,
+		ExpiresAt: expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: lastRefreshAt,
+		RefreshFailureCount: refreshFailures, LastRefreshErrorCode: lastRefreshError,
+		Enabled: value.Enabled, AuthStatus: account.AuthStatus(value.AuthStatus), Priority: value.Priority,
 		MaxConcurrent: value.MaxConcurrent, MinimumRemaining: value.MinimumRemaining, FailureCount: value.FailureCount,
 		CooldownUntil: value.CooldownUntil, LastError: value.LastError, LastUsedAt: value.LastUsedAt,
 		ObservedModel: value.ObservedModel, ObservedModelAt: value.ObservedModelAt, WebTier: webTier, WebTierSyncedAt: webTierSyncedAt,
@@ -71,6 +80,11 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 		copy := value.ExpiresAt
 		expiresAt = &copy
 	}
+	refreshDueAt := value.RefreshDueAt
+	if refreshDueAt == nil && value.EncryptedRefreshToken != "" && !value.ExpiresAt.IsZero() {
+		due := account.CredentialRefreshDueAt(value.ID, value.ExpiresAt)
+		refreshDueAt = &due
+	}
 	authType := value.AuthType
 	if authType == "" {
 		if value.Provider == account.ProviderWeb {
@@ -82,7 +96,9 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 	return accountCredentialModel{
 		AccountID: value.ID, AuthType: string(authType), ClientID: value.OIDCClientID,
 		EncryptedPrimary: value.EncryptedAccessToken, EncryptedRefresh: value.EncryptedRefreshToken,
-		ExpiresAt: expiresAt, UpdatedAt: time.Now().UTC(),
+		ExpiresAt: expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: value.LastRefreshAt,
+		RefreshFailures: value.RefreshFailureCount, LastRefreshError: value.LastRefreshErrorCode,
+		UpdatedAt: time.Now().UTC(),
 	}
 }
 

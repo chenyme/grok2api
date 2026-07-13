@@ -12,6 +12,7 @@ import (
 type ModelRepository interface {
 	List(ctx context.Context, query ModelListQuery) ([]model.Route, int64, error)
 	ListEnabled(ctx context.Context) ([]model.Route, error)
+	ListConfiguredEnabled(ctx context.Context) ([]model.Route, error)
 	Get(ctx context.Context, id uint64) (model.Route, error)
 	GetByPublicID(ctx context.Context, publicID string) (model.Route, error)
 	UpsertDiscovered(ctx context.Context, provider account.Provider, upstreamModels []string) error
@@ -20,6 +21,7 @@ type ModelRepository interface {
 	ReplaceAccountCapabilities(ctx context.Context, accountID uint64, upstreamModels []string, syncedAt time.Time) error
 	MarkAccountCapabilitySyncFailed(ctx context.Context, accountID uint64, attemptedAt time.Time, message string) error
 	HasSuccessfulAccountSync(ctx context.Context, accountID uint64) (bool, error)
+	ListStaleAccountSyncIDs(ctx context.Context, before time.Time, limit int) ([]uint64, error)
 	Create(ctx context.Context, value model.Route, accountIDs []uint64) (model.Route, error)
 	Update(ctx context.Context, value model.Route, accountIDs *[]uint64) (model.Route, error)
 	Delete(ctx context.Context, id uint64) error

@@ -38,6 +38,10 @@ const (
 	forcedRefreshMinInterval    time.Duration = 30 * time.Second
 	paidProbeRetryInterval      time.Duration = 15 * time.Minute
 	credentialRefreshAdvance    time.Duration = 3 * time.Minute
+	credentialRefreshSafetyPoll time.Duration = time.Minute
+	credentialRefreshTimeout    time.Duration = 30 * time.Second
+	credentialRefreshStateTTL   time.Duration = 5 * time.Second
+	credentialRefreshBatchSize                = 100
 	managedTaskWorkerCeiling                  = 50
 	webQuotaRefreshQueueSize                  = 4096
 	webQuotaRefreshTimeout                    = 30 * time.Second
@@ -198,27 +202,28 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 
 // Service 负责 OAuth 账号接入、刷新、额度和持久化生命周期。
 type Service struct {
-	accounts          repository.AccountRepository
-	audits            repository.AuditRepository
-	deviceSessions    repository.DeviceSessionRepository
-	sticky            repository.StickySessionRepository
-	refreshLock       repository.DistributedLock
-	quotaQueue        repository.QuotaRecoveryQueue
-	providers         *provider.Registry
-	cipher            *security.Cipher
-	refreshes         singleflight.Group
-	billingSyncs      singleflight.Group
-	quotaSyncs        singleflight.Group
-	refreshMu         sync.Mutex
-	lastRefreshAt     map[uint64]time.Time
-	quotaRefreshMu    sync.Mutex
-	quotaRefreshes    map[string]*webQuotaRefreshState
-	quotaRefreshQueue chan webQuotaRefreshRequest
-	conversionPool    *batch.Pool
-	syncPool          *batch.Pool
-	refreshPool       *batch.Pool
-	logger            *slog.Logger
-	now               func() time.Time
+	accounts              repository.AccountRepository
+	audits                repository.AuditRepository
+	deviceSessions        repository.DeviceSessionRepository
+	sticky                repository.StickySessionRepository
+	refreshLock           repository.DistributedLock
+	quotaQueue            repository.QuotaRecoveryQueue
+	providers             *provider.Registry
+	cipher                *security.Cipher
+	refreshes             singleflight.Group
+	billingSyncs          singleflight.Group
+	quotaSyncs            singleflight.Group
+	refreshMu             sync.Mutex
+	lastRefreshAt         map[uint64]time.Time
+	quotaRefreshMu        sync.Mutex
+	quotaRefreshes        map[string]*webQuotaRefreshState
+	quotaRefreshQueue     chan webQuotaRefreshRequest
+	conversionPool        *batch.Pool
+	syncPool              *batch.Pool
+	refreshPool           *batch.Pool
+	credentialRefreshWake chan struct{}
+	logger                *slog.Logger
+	now                   func() time.Time
 }
 
 func (s *Service) SetQuotaRecoveryQueue(queue repository.QuotaRecoveryQueue) {
@@ -230,8 +235,9 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		accounts: accounts, audits: audits, deviceSessions: deviceSessions, sticky: sticky,
 		providers: providers, cipher: cipher, refreshLock: refreshLock,
 		lastRefreshAt: make(map[uint64]time.Time), quotaRefreshes: make(map[string]*webQuotaRefreshState),
-		quotaRefreshQueue: make(chan webQuotaRefreshRequest, webQuotaRefreshQueueSize),
-		conversionPool:    batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), logger: slog.Default(),
+		quotaRefreshQueue:     make(chan webQuotaRefreshRequest, webQuotaRefreshQueueSize),
+		credentialRefreshWake: make(chan struct{}, 1),
+		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), logger: slog.Default(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -690,6 +696,7 @@ func (s *Service) persistImportedSeeds(ctx context.Context, seeds []provider.Cre
 			}
 		}
 	}
+	s.WakeCredentialRefresh()
 	return result, nil
 }
 
@@ -951,14 +958,18 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 	if err != nil {
 		return View{}, mapRepositoryError(err)
 	}
-	if !updated.Enabled {
+	if !updated.Enabled && s.sticky != nil {
 		_ = s.sticky.DeleteByAccount(ctx, updated.ID)
+	} else if updated.Enabled && updated.Provider == accountdomain.ProviderBuild {
+		s.WakeCredentialRefresh()
 	}
 	return s.Get(ctx, updated.ID)
 }
 
 func (s *Service) Delete(ctx context.Context, id uint64) error {
-	_ = s.sticky.DeleteByAccount(ctx, id)
+	if s.sticky != nil {
+		_ = s.sticky.DeleteByAccount(ctx, id)
+	}
 	s.clearRefreshState(id)
 	return mapRepositoryError(s.accounts.Delete(ctx, id))
 }
@@ -976,16 +987,18 @@ func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason stri
 	if _, err := s.accounts.Update(ctx, value); err != nil {
 		return mapRepositoryError(err)
 	}
-	_ = s.sticky.DeleteByAccount(ctx, id)
+	if s.sticky != nil {
+		_ = s.sticky.DeleteByAccount(ctx, id)
+	}
 	return nil
 }
 
 // EnsureCredential 在即将过期时刷新 token，同一账号并发请求只执行一次刷新。
 func (s *Service) EnsureCredential(ctx context.Context, value accountdomain.Credential, force bool) (accountdomain.Credential, error) {
-	return s.ensureCredential(ctx, value, force, false)
+	return s.ensureCredential(ctx, value, force, false, false)
 }
 
-func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Credential, force, bypassCooldown bool) (accountdomain.Credential, error) {
+func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Credential, force, bypassCooldown, respectSchedule bool) (accountdomain.Credential, error) {
 	if value.AuthType == accountdomain.AuthTypeSSO || value.Provider == accountdomain.ProviderWeb {
 		if force {
 			return accountdomain.Credential{}, ErrUnsupported
@@ -999,19 +1012,26 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 	if !force && value.EncryptedAccessToken != "" && !value.ExpiresAt.IsZero() && now.Add(credentialRefreshAdvance).Before(value.ExpiresAt) {
 		return value, nil
 	}
-	result, err, _ := s.refreshes.Do(strconv.FormatUint(value.ID, 10), func() (any, error) {
+	refreshKey := strconv.FormatUint(value.ID, 10)
+	if respectSchedule {
+		refreshKey += ":scheduled"
+	}
+	result, err, _ := s.refreshes.Do(refreshKey, func() (any, error) {
 		latest, err := s.accounts.Get(ctx, value.ID)
 		if err != nil {
 			return nil, err
 		}
 		currentTime := s.now()
+		if respectSchedule && latest.RefreshDueAt != nil && latest.RefreshDueAt.After(currentTime) {
+			return latest, nil
+		}
 		if force && latest.EncryptedAccessToken != "" && latest.EncryptedAccessToken != value.EncryptedAccessToken {
 			return latest, nil
 		}
 		if !force && latest.EncryptedAccessToken != "" && !latest.ExpiresAt.IsZero() && currentTime.Add(credentialRefreshAdvance).Before(latest.ExpiresAt) {
 			return latest, nil
 		}
-		if force && !bypassCooldown && s.refreshCoolingDown(latest.ID, currentTime) {
+		if force && !bypassCooldown && s.credentialRefreshCoolingDown(latest, currentTime) {
 			return latest, nil
 		}
 		release, err := s.acquireRefreshLock(ctx, latest.ID)
@@ -1025,6 +1045,12 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 				return nil, err
 			}
 			currentTime = s.now()
+			if respectSchedule && latest.RefreshDueAt != nil && latest.RefreshDueAt.After(currentTime) {
+				return latest, nil
+			}
+			if force && !bypassCooldown && s.credentialRefreshCoolingDown(latest, currentTime) {
+				return latest, nil
+			}
 			if latest.EncryptedAccessToken != "" && latest.EncryptedAccessToken != value.EncryptedAccessToken {
 				return latest, nil
 			}
@@ -1038,10 +1064,9 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 		}
 		refreshed, err := adapter.RefreshCredential(ctx, latest)
 		if err != nil {
-			latest.AuthStatus = accountdomain.AuthStatusReauthRequired
-			latest.LastError = "OAuth refresh failed"
-			_, _ = s.accounts.Update(ctx, latest)
-			_ = s.sticky.DeleteByAccount(ctx, latest.ID)
+			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialRefreshStateTTL)
+			s.recordCredentialRefreshFailure(persistCtx, latest, err)
+			cancel()
 			return nil, err
 		}
 		updated, err := s.accounts.UpdateTokens(ctx, latest.ID, refreshed.EncryptedAccessToken, refreshed.EncryptedRefreshToken, refreshed.ExpiresAt)
@@ -1049,6 +1074,7 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 			return nil, err
 		}
 		s.markRefreshSuccess(latest.ID, currentTime)
+		s.WakeCredentialRefresh()
 		return updated, nil
 	})
 	if err != nil {
@@ -1090,7 +1116,7 @@ func (s *Service) RefreshToken(ctx context.Context, id uint64) (View, error) {
 	if err != nil {
 		return View{}, mapRepositoryError(err)
 	}
-	if _, err := s.ensureCredential(ctx, value, true, true); err != nil {
+	if _, err := s.ensureCredential(ctx, value, true, true, false); err != nil {
 		return View{}, err
 	}
 	return s.Get(ctx, id)
@@ -1103,6 +1129,16 @@ func (s *Service) refreshCoolingDown(accountID uint64, now time.Time) bool {
 	return !last.IsZero() && now.Sub(last) < forcedRefreshMinInterval
 }
 
+func (s *Service) credentialRefreshCoolingDown(credential accountdomain.Credential, now time.Time) bool {
+	if credential.LastRefreshAt != nil {
+		age := now.Sub(*credential.LastRefreshAt)
+		if age >= 0 && age < forcedRefreshMinInterval {
+			return true
+		}
+	}
+	return s.refreshCoolingDown(credential.ID, now)
+}
+
 func (s *Service) markRefreshSuccess(accountID uint64, now time.Time) {
 	s.refreshMu.Lock()
 	s.lastRefreshAt[accountID] = now
@@ -1113,6 +1149,53 @@ func (s *Service) clearRefreshState(accountID uint64) {
 	s.refreshMu.Lock()
 	delete(s.lastRefreshAt, accountID)
 	s.refreshMu.Unlock()
+}
+
+func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential accountdomain.Credential, refreshErr error) {
+	if errors.Is(refreshErr, context.Canceled) || errors.Is(refreshErr, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.Canceled) {
+		return
+	}
+	failureCount := credential.RefreshFailureCount + 1
+	errorCode := "oauth_transport_error"
+	permanent := false
+	retryAfter := time.Duration(0)
+	var typed *provider.CredentialRefreshError
+	if errors.As(refreshErr, &typed) {
+		errorCode = strings.TrimSpace(typed.Code)
+		if errorCode == "" {
+			errorCode = "oauth_refresh_error"
+		}
+		permanent = typed.Permanent
+		retryAfter = typed.RetryAfter
+	} else if errors.Is(refreshErr, context.DeadlineExceeded) {
+		errorCode = "oauth_timeout"
+	}
+	now := s.now()
+	retryAt := now.Add(credentialRefreshBackoff(credential.ID, failureCount, retryAfter))
+	if permanent {
+		retryAt = now
+	}
+	if err := s.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, failureCount, retryAt, errorCode); err != nil {
+		s.logger.Warn("credential_refresh_state_write_failed", "account_id", credential.ID, "error", err)
+	}
+	if permanent {
+		if err := s.MarkReauthRequired(ctx, credential.ID, "OAuth refresh failed: "+errorCode); err != nil {
+			s.logger.Warn("credential_refresh_reauth_mark_failed", "account_id", credential.ID, "error", err)
+		}
+		return
+	}
+	s.logger.Warn("credential_refresh_deferred", "account_id", credential.ID, "failure_count", failureCount, "retry_at", retryAt, "error_code", errorCode)
+	s.WakeCredentialRefresh()
+}
+
+func credentialRefreshBackoff(accountID uint64, failureCount int, retryAfter time.Duration) time.Duration {
+	delays := [...]time.Duration{30 * time.Second, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute}
+	index := max(0, min(failureCount-1, len(delays)-1))
+	delay := delays[index]
+	if retryAfter > delay {
+		delay = min(retryAfter, 30*time.Minute)
+	}
+	return delay + time.Duration((accountID*37)%16)*time.Second
 }
 
 func (s *Service) RefreshBilling(ctx context.Context, id uint64) (accountdomain.Billing, error) {
@@ -1533,6 +1616,14 @@ func (s *Service) SyncAllWebQuotasWithProgress(ctx context.Context, progress Bat
 	})
 }
 
+// SyncWebQuotaAccounts 同步指定 Web 账号集合，供启动追赶任务复用共享并发池。
+func (s *Service) SyncWebQuotaAccounts(ctx context.Context, ids []uint64) (int, int, error) {
+	return s.runAccountBatch(ctx, "web_quota_startup_catchup", ids, s.syncPool, nil, func(workCtx context.Context, id uint64) error {
+		_, err := s.RefreshWebQuota(workCtx, id)
+		return err
+	})
+}
+
 // RefreshAllTokens 续期全部可刷新的 Grok Build 凭据，不可续期账号会被跳过。
 func (s *Service) RefreshAllTokens(ctx context.Context) (int, int, int, error) {
 	return s.RefreshAllTokensWithProgress(ctx, nil)
@@ -1556,7 +1647,7 @@ func (s *Service) refreshTokens(ctx context.Context, ids []uint64, progress Batc
 	return s.runAccountBatch(ctx, "credential_refresh", ids, s.refreshPool, progress, func(workCtx context.Context, id uint64) error {
 		value, err := s.accounts.Get(workCtx, id)
 		if err == nil {
-			_, err = s.ensureCredential(workCtx, value, true, true)
+			_, err = s.ensureCredential(workCtx, value, true, true, false)
 		}
 		return err
 	})
@@ -1622,7 +1713,11 @@ func (s *Service) persistSeed(ctx context.Context, seed provider.CredentialSeed)
 	if err != nil {
 		return accountdomain.Credential{}, false, err
 	}
-	return s.accounts.UpsertByIdentity(ctx, value)
+	stored, created, err := s.accounts.UpsertByIdentity(ctx, value)
+	if err == nil {
+		s.WakeCredentialRefresh()
+	}
+	return stored, created, err
 }
 
 func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomain.Credential, error) {

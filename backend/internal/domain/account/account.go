@@ -1,6 +1,10 @@
 package account
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"time"
+)
 
 // Provider 表示上游能力来源。
 type Provider string
@@ -55,6 +59,10 @@ type Credential struct {
 	EncryptedAccessToken  string
 	EncryptedRefreshToken string
 	ExpiresAt             time.Time
+	RefreshDueAt          *time.Time
+	LastRefreshAt         *time.Time
+	RefreshFailureCount   int
+	LastRefreshErrorCode  string
 	Enabled               bool
 	AuthStatus            AuthStatus
 	Priority              int
@@ -73,6 +81,18 @@ type Credential struct {
 	LinkedProvider        Provider
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
+}
+
+// CredentialRefreshDueAt 将账号稳定地分散到到期前 5~8 分钟，避免同批导入账号同时刷新。
+func CredentialRefreshDueAt(accountID uint64, expiresAt time.Time) time.Time {
+	if expiresAt.IsZero() {
+		return time.Time{}
+	}
+	var identity [8]byte
+	binary.BigEndian.PutUint64(identity[:], accountID)
+	digest := sha256.Sum256(identity[:])
+	jitterSeconds := binary.BigEndian.Uint16(digest[:2]) % 181
+	return expiresAt.UTC().Add(-5*time.Minute - time.Duration(jitterSeconds)*time.Second)
 }
 
 type QuotaSource string

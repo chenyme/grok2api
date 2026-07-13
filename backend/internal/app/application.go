@@ -52,7 +52,13 @@ type Application struct {
 	media         *mediaapp.Service
 	quotaRecovery *quotarecoveryapp.Service
 	accounts      *accountapp.Service
+	models        *modelapp.Service
 	clientKeys    *clientkeyapp.Service
+	accountRepo   repository.AccountRepository
+	modelRepo     repository.ModelRepository
+	providers     *provider.Registry
+	web           *webprovider.Adapter
+	startup       *startupState
 }
 
 // New 完成数据库、Provider、应用服务和 HTTP 路由装配。
@@ -250,38 +256,17 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		clientKeyService.UpdateDefaults(next.ClientKeyDefaults.RPMLimit, next.ClientKeyDefaults.MaxConcurrent)
 	})
 
-	ready := func(readyCtx context.Context) bool {
-		healthCtx, cancel := context.WithTimeout(readyCtx, time.Second)
-		defer cancel()
-		if err := runtimeHealth(healthCtx); err != nil {
-			return false
-		}
-		routes, routeErr := modelRepo.ListEnabled(readyCtx)
-		if routeErr != nil {
-			return false
-		}
-		active := make(map[account.Provider]bool, 2)
-		for _, route := range routes {
-			if _, checked := active[route.Provider]; checked {
-				continue
-			}
-			value, err := accountRepo.HasActive(readyCtx, route.Provider)
-			if err != nil {
-				return false
-			}
-			active[route.Provider] = value
-			if value {
-				return true
-			}
-		}
-		return false
+	startup := newStartupState(len(windows))
+	readiness := func(readyCtx context.Context) httpserver.ReadinessSnapshot {
+		return readinessSnapshot(readyCtx, startup, runtimeHealth, modelRepo, accountRepo, providers)
 	}
-	router := httpserver.New(httpserver.Dependencies{Logger: logger, RequestTimeout: cfg.Server.RequestTimeout.Value(), MaxBodyBytes: cfg.Server.MaxBodyBytes, SecureCookies: cfg.Auth.SecureCookies, SwaggerEnabled: cfg.Server.SwaggerEnabled, PublicAPIBaseURL: cfg.Frontend.PublicAPIBaseURL, FrontendStaticPath: cfg.Frontend.StaticPath, Ready: ready, AdminAuth: adminService, Accounts: accountService, AccountSync: accountSyncService, Models: modelService, ClientKeys: clientKeyService, Audits: auditService, Dashboard: dashboardService, Gateway: gatewayService, Media: mediaService, Settings: settingsService, Egress: egressService})
+	router := httpserver.New(httpserver.Dependencies{Logger: logger, RequestTimeout: cfg.Server.RequestTimeout.Value(), MaxBodyBytes: cfg.Server.MaxBodyBytes, SecureCookies: cfg.Auth.SecureCookies, SwaggerEnabled: cfg.Server.SwaggerEnabled, PublicAPIBaseURL: cfg.Frontend.PublicAPIBaseURL, FrontendStaticPath: cfg.Frontend.StaticPath, Readiness: readiness, TrafficReady: startup.acceptsTraffic, AdminAuth: adminService, Accounts: accountService, AccountSync: accountSyncService, Models: modelService, ClientKeys: clientKeyService, Audits: auditService, Dashboard: dashboardService, Gateway: gatewayService, Media: mediaService, Settings: settingsService, Egress: egressService})
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: router, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: cfg.Server.ReadTimeout.Value(), IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10}
 	return &Application{
 		logger: logger, database: database, server: server,
 		audits: auditService, responses: responseRepo, runtime: runtimeStore,
-		settingsBus: settingsBus, settings: settingsService, gateway: gatewayService, media: mediaService, quotaRecovery: quotaRecoveryService, accounts: accountService, clientKeys: clientKeyService,
+		settingsBus: settingsBus, settings: settingsService, gateway: gatewayService, media: mediaService, quotaRecovery: quotaRecoveryService, accounts: accountService, models: modelService, clientKeys: clientKeyService,
+		accountRepo: accountRepo, modelRepo: modelRepo, providers: providers, web: webAdapter, startup: startup,
 	}, nil
 }
 
@@ -310,12 +295,6 @@ func mediaConfig(cfg config.Config) mediaapp.Config {
 
 // Run 启动 HTTP 服务和本地后台维护任务。
 func (a *Application) Run(ctx context.Context) error {
-	if _, err := a.clientKeys.CleanupExpiredBilling(ctx, 1000); err != nil {
-		a.logger.Warn("billing_reservation_cleanup_failed", "error", err)
-	}
-	if err := a.gateway.RecoverVideoJobs(ctx); err != nil {
-		a.logger.Warn("video_job_recovery_failed", "error", err)
-	}
 	a.audits.Start()
 	defer func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -330,6 +309,12 @@ func (a *Application) Run(ctx context.Context) error {
 		cancelBackground()
 		background.Wait()
 	}()
+	errCh := make(chan error, 1)
+	go func() {
+		a.logger.Info("server_started", "listen", a.server.Addr)
+		errCh <- a.server.ListenAndServe()
+	}()
+	a.reconcileStartup(runCtx)
 	startBackground := func(name string, task func(context.Context) error) {
 		background.Add(1)
 		go func() {
@@ -365,6 +350,22 @@ func (a *Application) Run(ctx context.Context) error {
 		a.accounts.RunWebQuotaRefresh(taskCtx)
 		return nil
 	})
+	startBackground("credential_refresh", func(taskCtx context.Context) error {
+		a.accounts.RunCredentialRefresh(taskCtx)
+		return nil
+	})
+	startBackground("statsig_warmup", func(taskCtx context.Context) error {
+		a.runStatsigWarmup(taskCtx)
+		return nil
+	})
+	startBackground("web_quota_startup_catchup", func(taskCtx context.Context) error {
+		a.runWebQuotaCatchup(taskCtx)
+		return nil
+	})
+	startBackground("model_catalog_startup_catchup", func(taskCtx context.Context) error {
+		a.runModelCatalogCatchup(taskCtx)
+		return nil
+	})
 	startBackground("video_recovery", func(taskCtx context.Context) error {
 		a.gateway.RunVideoRecovery(taskCtx)
 		return nil
@@ -391,12 +392,7 @@ func (a *Application) Run(ctx context.Context) error {
 			})
 		})
 	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		a.logger.Info("server_started", "listen", a.server.Addr)
-		errCh <- a.server.ListenAndServe()
-	}()
+	a.queueDueWebQuotaRefresh(runCtx)
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

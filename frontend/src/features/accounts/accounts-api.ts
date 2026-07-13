@@ -57,6 +57,10 @@ export type AccountDTO = {
   authStatus: "active" | "reauthRequired";
   expiresAt?: string;
   refreshable: boolean;
+  refreshDueAt?: string;
+  lastRefreshAt?: string;
+  refreshFailureCount: number;
+  lastRefreshErrorCode?: string;
   priority: number;
   maxConcurrent: number;
   minimumRemaining: number;

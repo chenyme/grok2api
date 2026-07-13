@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,7 +66,11 @@ func (c *oauthClient) pollDevice(ctx context.Context, deviceCode string) (tokenP
 
 func (c *oauthClient) refresh(ctx context.Context, refreshToken string) (tokenPayload, error) {
 	form := url.Values{"grant_type": {"refresh_token"}, "client_id": {c.clientID}, "refresh_token": {refreshToken}}
-	return c.exchange(ctx, form, refreshToken)
+	value, err := c.exchange(ctx, form, refreshToken)
+	if errors.Is(err, provider.ErrAuthorizationDenied) {
+		return tokenPayload{}, &provider.CredentialRefreshError{Code: "refresh_denied", Permanent: true, Cause: err}
+	}
+	return value, err
 }
 
 type tokenPayload struct {
@@ -110,16 +116,31 @@ func (c *oauthClient) exchange(ctx context.Context, form url.Values, fallbackRef
 		case "access_denied", "expired_token":
 			return tokenPayload{}, provider.ErrAuthorizationDenied
 		default:
-			return tokenPayload{}, fmt.Errorf("xAI OAuth 返回 %d: %s", resp.StatusCode, firstNonEmpty(value.ErrorDescription, value.Error))
+			return tokenPayload{}, &provider.CredentialRefreshError{
+				Status: resp.StatusCode, Code: firstNonEmpty(value.Error, "oauth_http_"+strconv.Itoa(resp.StatusCode)),
+				Permanent:  resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized,
+				RetryAfter: parseOAuthRetryAfter(resp.Header.Get("Retry-After")),
+			}
 		}
 	}
 	if value.AccessToken == "" {
-		return tokenPayload{}, fmt.Errorf("xAI OAuth 未返回 access_token")
+		return tokenPayload{}, &provider.CredentialRefreshError{Status: resp.StatusCode, Code: "missing_access_token", Permanent: true}
 	}
 	if value.ExpiresIn <= 0 {
 		value.ExpiresIn = 3600
 	}
 	return tokenPayload{AccessToken: value.AccessToken, RefreshToken: firstNonEmpty(value.RefreshToken, fallbackRefresh), ExpiresAt: time.Now().UTC().Add(time.Duration(value.ExpiresIn) * time.Second), IDToken: value.IDToken}, nil
+}
+
+func parseOAuthRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if parsed, err := http.ParseTime(value); err == nil && parsed.After(time.Now()) {
+		return time.Until(parsed)
+	}
+	return 0
 }
 
 func (c *oauthClient) postForm(ctx context.Context, endpoint string, form url.Values, output any) error {

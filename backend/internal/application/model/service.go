@@ -379,6 +379,28 @@ func (s *Service) SyncAccount(ctx context.Context, accountID uint64) (int, error
 	return len(models), nil
 }
 
+// SyncAccounts 使用共享同步池追赶指定账号的模型能力，不扩大为全量同步。
+func (s *Service) SyncAccounts(ctx context.Context, accountIDs []uint64) (int, int, error) {
+	ids, err := normalizeBatchIDs(accountIDs)
+	if err != nil {
+		return 0, 0, err
+	}
+	results, summary, runErr := batch.Map(ctx, ids, batch.Options{Workers: s.bulkPool.Limit(), Pool: s.bulkPool}, func(workCtx context.Context, id uint64) (int, error) {
+		return s.SyncAccount(workCtx, id)
+	})
+	for index, result := range results {
+		if result.Err == nil {
+			continue
+		}
+		var panicErr *batch.PanicError
+		if errors.As(result.Err, &panicErr) {
+			s.logger.Error("model_startup_sync_panicked", "account_id", ids[index], "error", panicErr, "stack", string(panicErr.Stack))
+		}
+	}
+	s.logger.Info("model_startup_sync_completed", "total", summary.Total, "succeeded", summary.Succeeded, "failed", summary.Failed, "canceled", summary.Canceled, "error", runErr)
+	return summary.Succeeded, summary.Failed, runErr
+}
+
 func (s *Service) syncAccountCapabilities(ctx context.Context, value account.Credential, adapter provider.ModelCatalogAdapter) ([]string, error) {
 	attemptedAt := time.Now().UTC()
 	credential, err := s.account.EnsureCredential(ctx, value, false)

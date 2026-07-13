@@ -95,6 +95,19 @@ func (r *ModelRepository) ListEnabled(ctx context.Context) ([]model.Route, error
 	return values, nil
 }
 
+// ListConfiguredEnabled 返回所有已启用配置，包括暂时没有可用账号的路由，供 readiness 展示部分故障。
+func (r *ModelRepository) ListConfiguredEnabled(ctx context.Context) ([]model.Route, error) {
+	var rows []modelRouteModel
+	if err := r.db.db.WithContext(ctx).Where("enabled = ?", true).Order("public_id ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	values := mapModelRows(rows)
+	if err := r.annotateAvailability(ctx, values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
 func (r *ModelRepository) Get(ctx context.Context, id uint64) (model.Route, error) {
 	var row modelRouteModel
 	if err := r.db.db.WithContext(ctx).First(&row, id).Error; err != nil {
@@ -161,6 +174,24 @@ func (r *ModelRepository) HasSuccessfulAccountSync(ctx context.Context, accountI
 		return false, nil
 	}
 	return row.AccountID > 0, err
+}
+
+// ListStaleAccountSyncIDs 返回模型能力快照缺失或过期的启用账号，不扫描已禁用账号。
+func (r *ModelRepository) ListStaleAccountSyncIDs(ctx context.Context, before time.Time, limit int) ([]uint64, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	var ids []uint64
+	err := r.db.db.WithContext(ctx).
+		Table("provider_accounts AS account").
+		Select("account.id").
+		Joins("LEFT JOIN account_model_sync_states AS sync ON sync.account_id = account.id").
+		Where("account.enabled = ? AND account.auth_status = ?", true, account.AuthStatusActive).
+		Where("sync.last_success_at IS NULL OR sync.last_success_at < ?", before.UTC()).
+		Order("sync.last_success_at ASC, account.id ASC").
+		Limit(limit).
+		Scan(&ids).Error
+	return ids, err
 }
 
 func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account.Provider, upstreamModels []string) error {

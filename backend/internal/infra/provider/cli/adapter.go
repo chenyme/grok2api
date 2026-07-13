@@ -300,7 +300,10 @@ func mergeBillingSnapshots(monthly, credits account.Billing) account.Billing {
 func (a *Adapter) RefreshCredential(ctx context.Context, credential account.Credential) (provider.RefreshedCredential, error) {
 	refreshToken, err := a.cipher.Decrypt(credential.EncryptedRefreshToken)
 	if err != nil {
-		return provider.RefreshedCredential{}, err
+		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "credential_decrypt_failed", Permanent: true, Cause: err}
+	}
+	if strings.TrimSpace(refreshToken) == "" {
+		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "missing_refresh_token", Permanent: true}
 	}
 	tokens, err := a.oauth.refresh(ctx, refreshToken)
 	if err != nil {

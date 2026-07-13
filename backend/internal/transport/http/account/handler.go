@@ -222,6 +222,10 @@ type accountResponse struct {
 	AuthStatus       string                `json:"authStatus"`
 	ExpiresAt        *time.Time            `json:"expiresAt,omitempty"`
 	Refreshable      bool                  `json:"refreshable"`
+	RefreshDueAt     *time.Time            `json:"refreshDueAt,omitempty"`
+	LastRefreshAt    *time.Time            `json:"lastRefreshAt,omitempty"`
+	RefreshFailures  int                   `json:"refreshFailureCount"`
+	LastRefreshError string                `json:"lastRefreshErrorCode,omitempty"`
 	Priority         int                   `json:"priority"`
 	MaxConcurrent    int                   `json:"maxConcurrent"`
 	MinimumRemaining float64               `json:"minimumRemaining"`
@@ -870,6 +874,8 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		ID: c.ID, Provider: string(c.Provider), AuthType: string(c.AuthType), WebTier: string(c.WebTier),
 		WebTierSyncedAt: c.WebTierSyncedAt, Name: c.Name, Email: c.Email, UserID: c.UserID, TeamID: c.TeamID,
 		Enabled: c.Enabled, AuthStatus: string(c.AuthStatus), Refreshable: c.EncryptedRefreshToken != "",
+		RefreshDueAt: c.RefreshDueAt, LastRefreshAt: c.LastRefreshAt,
+		RefreshFailures: c.RefreshFailureCount, LastRefreshError: c.LastRefreshErrorCode,
 		Priority: c.Priority, MaxConcurrent: c.MaxConcurrent, MinimumRemaining: c.MinimumRemaining,
 		FailureCount: c.FailureCount, CooldownUntil: c.CooldownUntil, LastError: c.LastError,
 		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),

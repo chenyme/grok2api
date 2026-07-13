@@ -154,6 +154,49 @@ func TestStatsigSignerCachesByMethodAndPathForOneHour(t *testing.T) {
 	}
 }
 
+func TestStatsigWarmupFetchesMetaOnceForSharedPaths(t *testing.T) {
+	var fetches, signatures int
+	signer := newStatsigSigner()
+	signer.validateEndpoint = func(context.Context, string) error { return nil }
+	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		fetches++
+		return "shared-meta", nil
+	}
+	signer.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		signatures++
+		var payload struct {
+			Environment struct {
+				MetaContent string `json:"metaContent"`
+			} `json:"environment"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Environment.MetaContent != "shared-meta" {
+			t.Fatalf("meta = %q", payload.Environment.MetaContent)
+		}
+		raw := make([]byte, 70)
+		raw[0] = byte(signatures)
+		body, _ := json.Marshal(map[string]string{"x-statsig-id": base64.RawStdEncoding.EncodeToString(raw)})
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: http.Header{}}, nil
+	})}
+	targets := []statsigWarmTarget{
+		{method: http.MethodPost, target: "https://grok.com/rest/chat"},
+		{method: http.MethodPost, target: "https://grok.com/rest/rate-limits"},
+		{method: http.MethodPost, target: "https://grok.com/rest/media/post/create"},
+	}
+	warmed, err := signer.Warm(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warmed != len(targets) || fetches != 1 || signatures != len(targets) {
+		t.Fatalf("warmed=%d fetches=%d signatures=%d", warmed, fetches, signatures)
+	}
+	if warmedAgain, err := signer.Warm(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, targets); err != nil || warmedAgain != 0 || fetches != 1 {
+		t.Fatalf("cached warmup=%d fetches=%d err=%v", warmedAgain, fetches, err)
+	}
+}
+
 func TestApplySignedStatsigUsesManualValue(t *testing.T) {
 	value := base64.RawStdEncoding.EncodeToString(make([]byte, 70))
 	adapter := &Adapter{cfg: Config{BaseURL: "https://grok.com", StatsigMode: "manual", StatsigManualValue: value}}
