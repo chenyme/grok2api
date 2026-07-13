@@ -1013,6 +1013,9 @@ func writeGatewayError(c *gin.Context, err error) {
 	case errors.Is(err, gateway.ErrResponseNotFound):
 		status, code = http.StatusNotFound, "response_not_found"
 		message = "Response 不存在或已过期"
+	case errors.Is(err, gateway.ErrResponseStateUnsupported):
+		status, code = http.StatusBadRequest, "unsupported_parameter"
+		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
 	case errors.As(err, &selectionFailure):
@@ -1036,6 +1039,9 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 	case errors.Is(err, gateway.ErrModelNotFound):
 		status, errorType = http.StatusNotFound, "not_found_error"
 		message = "模型不存在"
+	case errors.Is(err, gateway.ErrResponseStateUnsupported):
+		status, errorType = http.StatusBadRequest, "invalid_request_error"
+		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
 		if status == http.StatusTooManyRequests {

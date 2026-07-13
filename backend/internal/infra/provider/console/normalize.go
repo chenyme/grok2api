@@ -16,6 +16,25 @@ func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("解析 Console Responses 请求: %w", err)
 	}
+	if value, exists := payload["store"]; exists {
+		store, ok := value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("Console store 必须是布尔值")
+		}
+		if store {
+			return nil, fmt.Errorf("Grok Console 不支持 store: true；请使用无状态 Responses 输入回放")
+		}
+	}
+	if value, exists := payload["previous_response_id"]; exists && value != nil {
+		previousID, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("Console previous_response_id 必须是字符串")
+		}
+		if strings.TrimSpace(previousID) != "" {
+			return nil, fmt.Errorf("Grok Console 不支持 previous_response_id；请回放完整输入")
+		}
+		delete(payload, "previous_response_id")
+	}
 	payload["model"] = spec.UpstreamModel
 	payload["store"] = false
 	delete(payload, "metadata")

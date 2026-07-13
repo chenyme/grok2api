@@ -66,6 +66,8 @@ func (a *Adapter) config() Config {
 
 func (a *Adapter) ModelAliases() []provider.ModelAlias { return Aliases() }
 
+func (a *Adapter) SupportsStoredResponses() bool { return false }
+
 func (a *Adapter) QuotaMode(upstreamModel string) string {
 	if _, ok := Resolve(upstreamModel); ok {
 		return QuotaMode
@@ -193,6 +195,12 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		if len(data) > 64<<20 {
 			return nil, fmt.Errorf("Console 对话响应超过 64 MiB")
 		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			converted := normalizeConversationError(data, request.Operation, response.StatusCode)
+			response.Header.Set("Content-Length", strconv.Itoa(len(converted)))
+			response.Header.Set("Content-Type", "application/json")
+			return responseResult(response, io.NopCloser(bytes.NewReader(converted))), nil
+		}
 		converted, convertErr := conversation.ConvertResponseJSONWithOptions(data, request.Operation, conversationOptions)
 		if convertErr != nil {
 			return nil, convertErr
@@ -202,6 +210,58 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		return responseResult(response, io.NopCloser(bytes.NewReader(converted))), nil
 	}
 	return responseResult(response, &releaseBody{ReadCloser: response.Body, release: release}), nil
+}
+
+func normalizeConversationError(data []byte, operation string, status int) []byte {
+	var envelope struct {
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+	}
+	if json.Unmarshal(data, &envelope) == nil && len(bytes.TrimSpace(envelope.Error)) > 0 && string(bytes.TrimSpace(envelope.Error)) != "null" {
+		if converted, err := conversation.ConvertResponseJSON(data, operation); err == nil {
+			return converted
+		}
+	}
+	message := strings.TrimSpace(envelope.Message)
+	if message == "" {
+		message = strings.TrimSpace(string(data))
+	}
+	if message == "" {
+		message = http.StatusText(status)
+	}
+	if len(message) > 4096 {
+		message = message[:4096]
+	}
+	errorType := conversationErrorType(status, operation)
+	if operation == conversation.OperationMessages {
+		result, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{"type": errorType, "message": message}})
+		return result
+	}
+	result, _ := json.Marshal(map[string]any{"error": map[string]any{"type": errorType, "message": message}})
+	return result
+}
+
+func conversationErrorType(status int, operation string) string {
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return "invalid_request_error"
+	case http.StatusUnauthorized:
+		return "authentication_error"
+	case http.StatusForbidden:
+		return "permission_error"
+	case http.StatusNotFound:
+		return "not_found_error"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case http.StatusServiceUnavailable:
+		if operation == conversation.OperationMessages {
+			return "overloaded_error"
+		}
+	}
+	if operation == conversation.OperationMessages {
+		return "api_error"
+	}
+	return "server_error"
 }
 
 func consoleEndpoint(baseURL string) string {

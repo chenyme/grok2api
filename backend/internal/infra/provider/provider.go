@@ -163,6 +163,13 @@ type ResponseAdapter interface {
 	ForwardResponse(ctx context.Context, request ResponseResourceRequest) (*Response, error)
 }
 
+// StoredResponseMetadataAdapter 声明 Provider 是否支持 store、previous_response_id
+// 以及 Responses 资源的 retrieve/delete 生命周期。未声明的现有 Provider 默认支持。
+type StoredResponseMetadataAdapter interface {
+	Adapter
+	SupportsStoredResponses() bool
+}
+
 type ModelCatalogAdapter interface {
 	Adapter
 	ListModels(ctx context.Context, credential account.Credential) ([]string, error)
@@ -276,6 +283,15 @@ func (r *Registry) Get(value account.Provider) (Adapter, bool) {
 func (r *Registry) ResolveModelAlias(value string) (ModelAlias, bool) {
 	result, ok := r.aliases[value]
 	return result, ok
+}
+
+func (r *Registry) SupportsStoredResponses(value account.Provider) bool {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return false
+	}
+	metadata, ok := adapter.(StoredResponseMetadataAdapter)
+	return !ok || metadata.SupportsStoredResponses()
 }
 
 func (r *Registry) Responses(value account.Provider) (ResponseAdapter, bool) {

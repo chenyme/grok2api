@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 )
@@ -34,11 +35,22 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
+	if err := accountRepository.SaveQuotaWindows(ctx, created.ID, account.WebTierAuto, now, []account.QuotaWindow{{
+		AccountID: created.ID, Mode: "test", Remaining: 7, Total: 20, WindowSeconds: 3600,
+		Source: account.QuotaSourceUpstream, SyncedAt: &now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := database.InitializeSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if preserved, err := accountRepository.Get(ctx, created.ID); err != nil || preserved.Name != "existing-build" {
+	if preserved, err := accountRepository.Get(ctx, created.ID); err != nil || preserved.Name != "existing-build" || preserved.EncryptedAccessToken != "encrypted" || preserved.AuthType != account.AuthTypeOAuth {
 		t.Fatalf("existing account was not preserved: %#v, err=%v", preserved, err)
+	}
+	windows, err := accountRepository.GetQuotaWindows(ctx, []uint64{created.ID})
+	if err != nil || len(windows[created.ID]) != 1 || windows[created.ID][0].Remaining != 7 {
+		t.Fatalf("existing quota windows were not preserved: %#v, err=%v", windows, err)
 	}
 	for _, table := range []string{"provider_accounts", "model_routes", "request_audits", "response_ownership", "egress_nodes"} {
 		var sql string
@@ -47,6 +59,30 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 		}
 		if !strings.Contains(sql, "grok_console") {
 			t.Fatalf("table %s was not upgraded: %s", table, sql)
+		}
+	}
+	assertSQLiteUniqueIndexes(t, database, "provider_accounts", "idx_provider_accounts_identity_key")
+	assertSQLiteUniqueIndexes(t, database, "model_routes", "idx_model_routes_public_id", "uidx_provider_upstream")
+}
+
+func assertSQLiteUniqueIndexes(t *testing.T, database *Database, table string, expected ...string) {
+	t.Helper()
+	var indexes []struct {
+		Name   string
+		Unique int
+	}
+	if err := database.db.Raw("PRAGMA index_list('" + table + "')").Scan(&indexes).Error; err != nil {
+		t.Fatal(err)
+	}
+	found := make(map[string]bool, len(indexes))
+	for _, index := range indexes {
+		if index.Unique == 1 {
+			found[index.Name] = true
+		}
+	}
+	for _, name := range expected {
+		if !found[name] {
+			t.Fatalf("table %s missing unique index %s: %#v", table, name, indexes)
 		}
 	}
 }

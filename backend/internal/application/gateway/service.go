@@ -33,6 +33,7 @@ var (
 	ErrNoAvailableAccount         = errors.New("没有可用上游账号")
 	ErrResponseNotFound           = errors.New("Response 不存在或已过期")
 	ErrResponseAccountUnavailable = errors.New("Response 绑定的上游账号不可用")
+	ErrResponseStateUnsupported   = errors.New("目标模型不支持有状态 Response")
 )
 
 const maxRetryableBodyBytes = 64 << 10
@@ -210,6 +211,10 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	adapter, ok := s.providers.Responses(route.Provider)
 	if !ok {
 		return nil, ErrNoAvailableAccount
+	}
+	supportsStoredResponses := s.providers.SupportsStoredResponses(route.Provider)
+	if input.PreviousResponseID != "" && !supportsStoredResponses {
+		return nil, ErrResponseStateUnsupported
 	}
 	attempts := int(s.maxAttempts.Load())
 	if attempts <= 0 {
@@ -486,7 +491,7 @@ attemptLoop:
 						s.accounts.QueueWebQuotaRefresh(accountID, lease.QuotaMode)
 					}
 				}
-				if operation == audit.OperationResponses && responseID != "" && response.StatusCode >= 200 && response.StatusCode < 300 {
+				if supportsStoredResponses && operation == audit.OperationResponses && responseID != "" && response.StatusCode >= 200 && response.StatusCode < 300 {
 					_ = s.responses.Save(persistCtx, inferencedomain.ResponseOwnership{ResponseID: responseID, AccountID: accountID, ClientKeyID: input.ClientKey.ID, Provider: route.Provider, ExpiresAt: now.Add(responseOwnershipTTL), CreatedAt: now, UpdatedAt: now})
 				}
 				outcome := "failed"
@@ -789,6 +794,10 @@ func (s *Service) DeleteResponse(ctx context.Context, input ResourceInput) (*Res
 func (s *Service) forwardOwnedResponse(ctx context.Context, input ResourceInput, method string) (*Result, error) {
 	ownership, err := s.responses.Get(ctx, input.ResponseID, input.ClientKey.ID, time.Now().UTC())
 	if err != nil {
+		return nil, ErrResponseNotFound
+	}
+	if !s.providers.SupportsStoredResponses(ownership.Provider) {
+		_ = s.responses.Delete(ctx, input.ResponseID, input.ClientKey.ID)
 		return nil, ErrResponseNotFound
 	}
 	adapter, ok := s.providers.Responses(ownership.Provider)

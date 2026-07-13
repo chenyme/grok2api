@@ -18,6 +18,7 @@ import (
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -48,6 +49,9 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 		t.Fatalf("aliases = %d, want 13", len(aliases))
 	}
 	registry := provider.NewRegistry(NewAdapter(Config{}, nil, nil))
+	if registry.SupportsStoredResponses(account.ProviderConsole) {
+		t.Fatal("console must not advertise stored Responses support")
+	}
 	for _, name := range []string{
 		"grok-4.3-console", "grok-4.20-0309-console", "grok-4.20-0309-reasoning-console",
 		"grok-4.20-0309-non-reasoning-console", "grok-4.20-multi-agent-console", "grok-build-console",
@@ -91,6 +95,14 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 	tools, _ := payload["tools"].([]any)
 	if len(tools) != 3 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "function:lookup" {
 		t.Fatalf("tools = %#v", tools)
+	}
+	for _, body := range []string{
+		`{"model":"grok-4.3","store":true,"input":"hello"}`,
+		`{"model":"grok-4.3","previous_response_id":"resp_1","input":"hello"}`,
+	} {
+		if _, err := normalizeRequest([]byte(body), spec); err == nil {
+			t.Fatalf("expected stateless validation error for %s", body)
+		}
 	}
 }
 
@@ -141,17 +153,9 @@ func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	encrypted, err := cipher.Encrypt("test-sso")
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapter := NewAdapter(Config{BaseURL: server.URL}, infraegress.NewManager(consoleEgressRepositoryStub{}, cipher), cipher)
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Credential: account.Credential{ID: 1, Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, EncryptedAccessToken: encrypted},
+		Credential: credential,
 		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.3", Operation: "responses", NormalizeBody: true,
 		Body: []byte(`{"model":"grok-4.3","input":"hello","metadata":{"drop":true}}`),
 	})
@@ -171,6 +175,68 @@ func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	if received["model"] != "grok-4.3" || received["store"] != false || received["metadata"] != nil {
 		t.Fatalf("received = %#v", received)
 	}
+}
+
+func TestAdapterPreservesConversationRateLimitStatusAndProtocol(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/plain")
+		writer.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(writer, "Rate limit reached. Resets in: 1h 2m 3s")
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	tests := []struct {
+		operation string
+		body      string
+	}{
+		{operation: conversation.OperationChat, body: `{"model":"grok-4.3","messages":[{"role":"user","content":"hello"}],"stream":true}`},
+		{operation: conversation.OperationMessages, body: `{"model":"grok-4.3","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"stream":true}`},
+	}
+	for _, test := range tests {
+		t.Run(test.operation, func(t *testing.T) {
+			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+				Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
+				Operation: test.operation, NormalizeBody: true, Streaming: true, Body: []byte(test.body),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, readErr := io.ReadAll(response.Body)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			_ = response.Body.Close()
+			if response.StatusCode != http.StatusTooManyRequests || response.Header.Get("Retry-After") != "3723" {
+				t.Fatalf("status=%d retry-after=%q body=%s", response.StatusCode, response.Header.Get("Retry-After"), data)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("invalid compatible error JSON: %v, body=%s", err, data)
+			}
+			if test.operation == conversation.OperationMessages && payload["type"] != "error" {
+				t.Fatalf("messages error = %#v", payload)
+			}
+			errorObject, _ := payload["error"].(map[string]any)
+			if errorObject["type"] != "rate_limit_error" || !strings.Contains(errorObject["message"].(string), "Rate limit reached") {
+				t.Fatalf("compatible error = %#v", payload)
+			}
+		})
+	}
+}
+
+func newConsoleTestAdapter(t *testing.T, baseURL string) (*Adapter, account.Credential) {
+	t.Helper()
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: baseURL}, infraegress.NewManager(consoleEgressRepositoryStub{}, cipher), cipher)
+	credential := account.Credential{ID: 1, Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, EncryptedAccessToken: encrypted}
+	return adapter, credential
 }
 
 type consoleEgressRepositoryStub struct{}

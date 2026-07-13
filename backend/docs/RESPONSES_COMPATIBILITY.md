@@ -1,6 +1,6 @@
 # Responses Compatibility
 
-本项目向下游提供 OpenAI 风格接口，向上游连接 Grok Build OAuth inference proxy 与 Grok Web SSO 会话。
+本项目向下游提供 OpenAI 风格接口，向上游连接 Grok Build OAuth inference proxy、Grok Web SSO 会话与 Grok Console SSO Responses。
 
 ## Supported Surface
 
@@ -8,13 +8,13 @@
 
 | Endpoint | Status | Notes |
 | --- | --- | --- |
-| `POST /v1/responses` | Supported | JSON 与 SSE，支持工具调用、结构化输出和 encrypted reasoning 回放 |
-| `POST /v1/responses/compact` | Supported | 强制非流式，使用正常模型路由和账号选择 |
-| `GET /v1/responses/{response_id}` | Supported | 根据持久化归属回到创建该 Response 的账号，并透传 `include` 等查询参数 |
-| `DELETE /v1/responses/{response_id}` | Supported | 上游删除成功后移除本地归属 |
+| `POST /v1/responses` | Build / Web / Console | JSON 与 SSE，支持工具调用、结构化输出和 encrypted reasoning 回放；Console 仅支持无状态请求 |
+| `POST /v1/responses/compact` | Build | 强制非流式；Web 与 Console 返回明确的不支持错误 |
+| `GET /v1/responses/{response_id}` | Build / Web | 根据持久化归属回到创建该 Response 的账号，并透传 `include` 等查询参数 |
+| `DELETE /v1/responses/{response_id}` | Build / Web | 上游删除成功后移除本地归属 |
 | `GET /v1/models` | Supported | 返回管理端已启用且账号池具备服务能力的公开模型路由 |
-| `POST /v1/chat/completions` | Build / Web | xAI Chat Completions JSON 与 SSE；支持图片输入和函数工具，Web Lite 图片模型支持 `image_config` |
-| `POST /v1/messages` | Build / Web | Anthropic Messages JSON 与 SSE；支持图片、客户端工具、`tool_use` 和 `tool_result` |
+| `POST /v1/chat/completions` | Build / Web / Console | xAI Chat Completions JSON 与 SSE；支持函数工具，Web Lite 图片模型支持 `image_config` |
+| `POST /v1/messages` | Build / Web / Console | Anthropic Messages JSON 与 SSE；支持客户端工具、`tool_use` 和 `tool_result` |
 | `POST /v1/images/generations` | Grok Web | Lite Chat 生图与 Imagine WebSocket 生图，支持 `n`、URL 与 Base64 |
 | `POST /v1/images/edits` | Grok Web | 官方 JSON `image.url`/`images[].url` 图片编辑 |
 | `GET /v1/media/images/{id}` | Public asset | 读取生成后归档到本地媒体存储的不可变图片 |
@@ -25,7 +25,7 @@
 
 ### Stateful
 
-调用方使用 `store` 与 `previous_response_id`。网关持久化 `response_id -> account_id`，后续创建、读取和删除必须回到原账号。绑定账号不可用时返回服务不可用，不会切换账号并制造无效状态链。上游对 retrieve 或 delete 明确返回 `404`/`410` 后，本地归属同步删除，避免失效映射长期滞留。
+Build/Web 调用方可使用 `store` 与 `previous_response_id`。网关持久化 `response_id -> account_id`，后续创建、读取和删除必须回到原账号。绑定账号不可用时返回服务不可用，不会切换账号并制造无效状态链。上游对 retrieve 或 delete 明确返回 `404`/`410` 后，本地归属同步删除，避免失效映射长期滞留。
 
 Grok Web 同时保存本地标准 Response JSON、上游 `conversationId` 和父响应游标。续轮仍绑定原账号；`/responses/compact` 对 Web 模型返回明确的不支持错误。
 
@@ -60,6 +60,12 @@ Grok Web 上游没有公开的 OpenAI function calling 协议。网关对 `grok-
 
 调用方使用 `store: false`，并通过 `include: ["reasoning.encrypted_content"]` 获取 encrypted reasoning。后续请求可以回放 `reasoning`、assistant message、function call 与 function output。网关完整保留这些输入项。
 
+### Grok Console Stateless
+
+Console 请求固定使用 `store: false`。显式提交 `store: true` 或非空 `previous_response_id` 会在请求上游前返回 `400`，避免客户端误以为状态已被保存。Console 响应不会写入本地 response ownership，因此 retrieve/delete 返回 `404`，旧版本遗留的 Console ownership 会在首次访问时清理。
+
+Chat Completions 与 Messages 同样采用无状态转换；客户端必须在下一轮回放所需消息、工具调用和工具结果。Console 上游的纯文本或 JSON 错误会按调用协议标准化，同时保留原始 HTTP 状态与 `Retry-After`，以便网关正确执行额度恢复和账号切换。
+
 ## Request Normalization
 
 Grok Build Responses 默认保持原生转发，只执行以下改写：
@@ -90,7 +96,7 @@ Codex 的可见 `agent_message` 与 `mcp_tool_call_output` 会保留为 develope
 
 发生协议降级时，响应 Header `X-Grok2API-Compatibility-Warnings` 会返回稳定的逗号分隔代码，例如 `web_search_controls_downgraded`、`web_search_disabled_no_external_access`、`web_search_tool_choice_disabled`、`legacy_local_shell_upgraded`、`apply_patch_emulated`、`additional_tools_position_approximated`。客户端可记录这些代码进行审计，不包含提示词、工具参数或凭据。
 
-Chat Completions 与 Messages 都先转换为标准 Responses 输入项。Build 将其发送到原生 Responses 上游，并把 JSON/SSE 转回调用方协议；Web 再把同一规范输入转换为 app-chat 对话载荷。两种 Provider 都支持文本、URL/Base64 图片、客户端函数工具和工具结果。不支持的音频、Files API、Anthropic server tools 和 Web `/responses/compact` 会返回明确错误，不会静默丢弃。
+Chat Completions 与 Messages 都先转换为标准 Responses 输入项。Build 与 Console 将其发送到各自的 Responses 上游，并把 JSON/SSE 转回调用方协议；Web 再把同一规范输入转换为 app-chat 对话载荷。不支持的音频、Files API、Anthropic server tools，以及 Web/Console `/responses/compact` 会返回明确错误，不会静默丢弃。
 
 Anthropic Messages 使用 `POST /v1/messages`，要求 `anthropic-version`，客户端密钥可通过 `x-api-key` 或 `Authorization: Bearer` 提供。返回使用 Anthropic `message` 对象；流式事件依次为 `message_start`、`content_block_*`、`message_delta` 和 `message_stop`。由于上游不是 Claude，模型 ID 仍使用本平台公开 Grok 模型名称。
 
