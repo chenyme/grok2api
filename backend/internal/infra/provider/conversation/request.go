@@ -249,7 +249,7 @@ func convertMessagesRequest(body []byte, model string) ([]byte, error) {
 	if len(request.Messages) == 0 {
 		return nil, errors.New("messages 必须是非空数组")
 	}
-	input, err := convertAnthropicMessages(request.Messages)
+	input, inlineSystem, err := convertAnthropicMessages(request.Messages)
 	if err != nil {
 		return nil, err
 	}
@@ -257,9 +257,19 @@ func convertMessagesRequest(body []byte, model string) ([]byte, error) {
 		"model": model, "input": input, "stream": request.Stream,
 		"max_output_tokens": request.MaxTokens,
 	}
-	if system, err := anthropicSystemText(request.System); err != nil {
+	system, err := anthropicSystemText(request.System)
+	if err != nil {
 		return nil, err
-	} else if system != "" {
+	}
+	// 合并顶层 system 与 messages 中内联的 system（Claude Code 会注入后者）。
+	if inlineSystem != "" {
+		if system != "" {
+			system = system + "\n\n" + inlineSystem
+		} else {
+			system = inlineSystem
+		}
+	}
+	if system != "" {
 		target["instructions"] = system
 	}
 	copyOptionalNumber(target, "temperature", request.Temperature)
@@ -333,12 +343,26 @@ type anthropicToolChoice struct {
 	DisableParallelToolUse bool   `json:"disable_parallel_tool_use"`
 }
 
-func convertAnthropicMessages(messages []anthropicMessage) ([]any, error) {
+func convertAnthropicMessages(messages []anthropicMessage) ([]any, string, error) {
 	input := make([]any, 0, len(messages))
+	systemTexts := make([]string, 0)
 	for _, message := range messages {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 		if role != "user" && role != "assistant" {
-			return nil, fmt.Errorf("Messages API 不支持 role=%q", message.Role)
+			// Claude Code 等客户端会在 messages 中注入 role="system"
+			// （mid-conversation system）。抽取其文本，合并到顶层 instructions，
+			// 而不是直接拒绝。
+			if role == "system" {
+				text, err := anthropicSystemText(message.Content)
+				if err != nil {
+					return nil, "", err
+				}
+				if text != "" {
+					systemTexts = append(systemTexts, text)
+				}
+				continue
+			}
+			return nil, "", fmt.Errorf("Messages API 不支持 role=%q", message.Role)
 		}
 		var text string
 		if json.Unmarshal(message.Content, &text) == nil {
@@ -347,7 +371,7 @@ func convertAnthropicMessages(messages []anthropicMessage) ([]any, error) {
 		}
 		var blocks []map[string]json.RawMessage
 		if json.Unmarshal(message.Content, &blocks) != nil {
-			return nil, errors.New("Messages content 必须是字符串或内容块数组")
+			return nil, "", errors.New("Messages content 必须是字符串或内容块数组")
 		}
 		messageParts := make([]any, 0, len(blocks))
 		flushMessage := func() {
@@ -363,13 +387,13 @@ func convertAnthropicMessages(messages []anthropicMessage) ([]any, error) {
 			case "text":
 				var value string
 				if json.Unmarshal(block["text"], &value) != nil {
-					return nil, errors.New("text block 无效")
+					return nil, "", errors.New("text block 无效")
 				}
 				messageParts = append(messageParts, map[string]any{"type": "input_text", "text": value})
 			case "image":
 				imageURL, err := anthropicImageURL(block["source"])
 				if err != nil {
-					return nil, err
+					return nil, "", err
 				}
 				messageParts = append(messageParts, map[string]any{"type": "input_image", "image_url": imageURL})
 			case "tool_use":
@@ -380,7 +404,7 @@ func convertAnthropicMessages(messages []anthropicMessage) ([]any, error) {
 					Input map[string]any `json:"input"`
 				}
 				if encoded, _ := json.Marshal(block); json.Unmarshal(encoded, &value) != nil || value.ID == "" || value.Name == "" {
-					return nil, errors.New("tool_use block 无效")
+					return nil, "", errors.New("tool_use block 无效")
 				}
 				arguments, _ := json.Marshal(value.Input)
 				input = append(input, map[string]any{"type": "function_call", "call_id": value.ID, "name": value.Name, "arguments": string(arguments)})
@@ -389,20 +413,20 @@ func convertAnthropicMessages(messages []anthropicMessage) ([]any, error) {
 				var toolUseID string
 				_ = json.Unmarshal(block["tool_use_id"], &toolUseID)
 				if toolUseID == "" {
-					return nil, errors.New("tool_result 缺少 tool_use_id")
+					return nil, "", errors.New("tool_result 缺少 tool_use_id")
 				}
 				output, err := anthropicToolResult(block["content"])
 				if err != nil {
-					return nil, err
+					return nil, "", err
 				}
 				input = append(input, map[string]any{"type": "function_call_output", "call_id": toolUseID, "output": output})
 			default:
-				return nil, fmt.Errorf("当前不支持 Anthropic content.type=%q", typeName)
+				return nil, "", fmt.Errorf("当前不支持 Anthropic content.type=%q", typeName)
 			}
 		}
 		flushMessage()
 	}
-	return input, nil
+	return input, strings.Join(systemTexts, "\n\n"), nil
 }
 
 func anthropicSystemText(raw json.RawMessage) (string, error) {

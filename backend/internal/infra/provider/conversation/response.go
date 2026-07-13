@@ -189,11 +189,18 @@ func anthropicUsage(value responseUsage) map[string]any {
 
 func anthropicErrorJSON(value any) []byte {
 	message := "Upstream request failed"
+	errorType := "api_error"
 	if object, ok := value.(map[string]any); ok {
 		if text, ok := object["message"].(string); ok && text != "" {
 			message = text
 		}
+		// 透传上游错误类型/代码，便于定位（限流、鉴权、转换失败等）。
+		if text, ok := object["type"].(string); ok && text != "" {
+			errorType = text
+		} else if text, ok := object["code"].(string); ok && text != "" {
+			errorType = text
+		}
 	}
-	data, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": message}})
+	data, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{"type": errorType, "message": message}})
 	return data
 }
