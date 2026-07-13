@@ -1,55 +1,44 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual Environment
-.venv/
-venv/
-ENV/
-env/
-
-# IDE
-.vscode/
+# OS and editors
+.DS_Store
+Thumbs.db
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
-.DS_Store
 
-# Environment Variables
+# Local environment and secrets
 .env
+.env.*
+!.env.example
+/config.yaml
+/config.local.yaml
+/config.*.local.yaml
+/docs/rules/
+*.har
+*.pcap
+*.pcapng
 
-# Logs
-logs/
+# Runtime data
+/data/
+/backend/data/
 *.log
 
-# Data
-data/
-app/data/
+# Go
+/.gocache/
+/backend/grok2api
+/backend/coverage.out
+*.coverprofile
+*.test
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
+# Frontend
+/.pnpm-store/
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.cache/
+/frontend/*.tsbuildinfo
 
-# Project specific
-.ace-tool/
+# Temporary files
+/release/
+/.tmp/
+/tmp/

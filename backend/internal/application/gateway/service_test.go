@@ -1,0 +1,674 @@
+package gateway
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"io"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
+	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
+	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/repository"
+)
+
+func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	first, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "first", SourceKey: "first", EncryptedAccessToken: "one", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "second", SourceKey: "second", EncryptedAccessToken: "two", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-test"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{first.ID, second.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-test"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{Name: "test-key", Prefix: "test-prefix", SecretHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", EncryptedSecret: "encrypted-key", Enabled: true, RPMLimit: 120, MaxConcurrent: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &failoverAdapter{firstID: first.ID}
+	registry := provider.NewRegistry(adapter)
+	cipher := testCipher(t)
+	sticky := memory.NewStickyStore()
+	concurrency := memory.NewConcurrencyLimiter()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, cipher, nil)
+	clientService := clientkeyapp.NewService(nil, nil, nil, 60, 4, nil)
+	selector := NewSelector(accountRepo, concurrency, sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientService, registry, selector, responseRepo, 3)
+	result, err := service.CreateResponse(ctx, Input{RequestID: "req-1", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Finalize(Usage{InputTokens: 120, CachedInputTokens: 80, OutputTokens: 30, TotalTokens: 150, ResponseModel: "grok-test-build-free"}, "resp-test", "")
+	_ = result.Body.Close()
+	if string(body) != "ok" {
+		t.Fatalf("body = %q", body)
+	}
+	if len(adapter.attempts) != 2 || adapter.attempts[0] != first.ID || adapter.attempts[1] != second.ID {
+		t.Fatalf("attempts = %#v", adapter.attempts)
+	}
+	observedAccount, err := accountRepo.Get(ctx, second.ID)
+	if err != nil || observedAccount.ObservedModel != "grok-test-build-free" {
+		t.Fatalf("observed account = %#v, err = %v", observedAccount, err)
+	}
+	logs, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "grok-test" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 {
+		t.Fatalf("audit = %#v, %d, %v", logs, total, err)
+	}
+	ownership, err := responseRepo.Get(ctx, "resp-test", clientKey.ID, time.Now().UTC())
+	if err != nil || ownership.AccountID != second.ID {
+		t.Fatalf("ownership = %#v, err = %v", ownership, err)
+	}
+
+	adapter.resetAttempts()
+	continued, err := service.CreateResponse(ctx, Input{RequestID: "req-2", ClientKey: clientKey, PublicModel: "grok-test", PreviousResponseID: "resp-test", Body: []byte(`{"model":"grok-test","previous_response_id":"resp-test"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(continued.Body)
+	continued.Finalize(Usage{}, "resp-next", "")
+	_ = continued.Body.Close()
+	if len(adapter.attempts) != 1 || adapter.attempts[0] != second.ID {
+		t.Fatalf("continued attempts = %#v", adapter.attempts)
+	}
+
+	adapter.resetAttempts()
+	resource, err := service.GetResponse(ctx, ResourceInput{ClientKey: clientKey, ResponseID: "resp-test", RawQuery: "include=reasoning.encrypted_content"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resource.Body)
+	resource.Finalize(Usage{}, "", "")
+	_ = resource.Body.Close()
+	if adapter.lastPath != "/responses/resp-test?include=reasoning.encrypted_content" || adapter.lastMethod != http.MethodGet || len(adapter.attempts) != 1 || adapter.attempts[0] != second.ID {
+		t.Fatalf("resource request = %s %s, attempts = %#v", adapter.lastMethod, adapter.lastPath, adapter.attempts)
+	}
+
+	deleted, err := service.DeleteResponse(ctx, ResourceInput{ClientKey: clientKey, ResponseID: "resp-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(deleted.Body)
+	deleted.Finalize(Usage{}, "", "")
+	_ = deleted.Body.Close()
+	if _, err := responseRepo.Get(ctx, "resp-test", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("deleted ownership err = %v", err)
+	}
+
+	adapter.setResourceStatus(http.StatusNotFound)
+	missing, err := service.GetResponse(ctx, ResourceInput{ClientKey: clientKey, ResponseID: "resp-next"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = missing.Body.Close()
+	missing.Finalize(Usage{}, "", "")
+	if _, err := responseRepo.Get(ctx, "resp-next", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("stale ownership err = %v", err)
+	}
+}
+
+func TestParseFreeQuotaExhaustion(t *testing.T) {
+	body := []byte(`{"error":{"code":"subscription:free-usage-exhausted","message":"tokens (actual/limit): 1065387/1000000; Usage resets over a rolling 24-hour window"}}`)
+	used, limit, exhausted := parseFreeQuotaExhaustion(body)
+	if !exhausted || used != 1_065_387 || limit != 1_000_000 {
+		t.Fatalf("parsed = %d/%d, exhausted = %v", used, limit, exhausted)
+	}
+	if _, _, exhausted := parseFreeQuotaExhaustion([]byte(`{"error":"rate limited"}`)); exhausted {
+		t.Fatal("ordinary 429 body must not be treated as Free quota exhaustion")
+	}
+}
+
+func TestWebRateLimitExhaustsOnlyRequestedQuotaMode(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "web-rate-limit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+		Name: "web", SourceKey: "web", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, MaxConcurrent: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accountRepo.SaveQuotaWindows(ctx, credential.ID, account.WebTierSuper, now, []account.QuotaWindow{
+		{AccountID: credential.ID, Mode: "fast", Remaining: 3, Total: 20, WindowSeconds: 3600, Source: account.QuotaSourceUpstream},
+		{AccountID: credential.ID, Mode: "auto", Remaining: 4, Total: 10, WindowSeconds: 3600, Source: account.QuotaSourceUpstream},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-web-test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-web-test"}, now); err != nil {
+		t.Fatal(err)
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{Name: "key", Prefix: "web-key", SecretHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", EncryptedSecret: "encrypted-key", Enabled: true, RPMLimit: 60, MaxConcurrent: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := webRateLimitAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	accountService.SetQuotaRecoveryQueue(memory.NewQuotaRecoveryQueue())
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
+	if _, err := service.CreateResponse(ctx, Input{RequestID: "req-web-429", ClientKey: key, PublicModel: "grok-web-test", Body: []byte(`{"model":"grok-web-test"}`)}); err == nil {
+		t.Fatal("expected rate-limited request to fail")
+	}
+	windows, err := accountRepo.GetQuotaWindows(ctx, []uint64{credential.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := map[string]int{}
+	for _, window := range windows[credential.ID] {
+		remaining[window.Mode] = window.Remaining
+	}
+	if remaining["fast"] != 0 || remaining["auto"] != 4 {
+		t.Fatalf("quota remaining = %#v", remaining)
+	}
+	if _, err := accountRepo.GetQuotaRecovery(ctx, credential.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("Web 429 must not create Build quota recovery state: %v", err)
+	}
+}
+
+func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "image-stream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+		Name: "web-image", SourceKey: "web-image", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, MaxConcurrent: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accountRepo.SaveQuotaWindows(ctx, credential.ID, account.WebTierSuper, now, []account.QuotaWindow{{
+		AccountID: credential.ID, Mode: "fast", Remaining: 3, Total: 10,
+		WindowSeconds: 3600, Source: account.QuotaSourceUpstream, SyncedAt: &now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertRoutes(ctx, []modeldomain.Route{
+		{PublicID: "grok-imagine-image-quality", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: modeldomain.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: modeldomain.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-edit", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-edit", Capability: modeldomain.CapabilityImageEdit, Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-imagine-image-quality", "grok-imagine-image", "grok-imagine-image-edit"}, now); err != nil {
+		t.Fatal(err)
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "image-key", Prefix: "image-key", SecretHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", EncryptedSecret: "encrypted-key",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &webImageStreamAdapter{synced: make(chan string, 1)}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	runQuotaRefreshWorkers(t, accountService)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
+
+	result, err := service.GenerateImage(ctx, ImageGenerationInput{
+		RequestID: "req-image-stream", ClientKey: key, PublicModel: "grok-imagine-image-quality",
+		Prompt: "test", Count: 2, Resolution: "1k", ResponseFormat: "url", Streaming: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "event: image_generation.completed\ndata: {}\n\ndata: [DONE]\n\n" {
+		t.Fatalf("stream body = %q", body)
+	}
+	if !adapter.Streaming() {
+		t.Fatal("stream flag was not propagated to the Web image adapter")
+	}
+	if logs, total, err := auditRepo.List(ctx, 0, 10); err != nil || total != 0 || len(logs) != 0 {
+		t.Fatalf("audit persisted before finalization: logs=%#v total=%d err=%v", logs, total, err)
+	}
+	result.Finalize(Usage{}, "", "")
+	_ = result.Body.Close()
+
+	logs, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 1 || len(logs) != 1 {
+		t.Fatalf("audit logs=%#v total=%d err=%v", logs, total, err)
+	}
+	if !logs[0].Streaming || logs[0].Operation != "image" || logs[0].Provider != string(account.ProviderWeb) || logs[0].ErrorCode != "" ||
+		logs[0].MediaInputImages != 0 || logs[0].MediaOutputImages != 2 ||
+		logs[0].PricingModel != "grok-imagine-image-quality-1k" || logs[0].EstimatedCostInUSDTicks != 1_000_000_000 {
+		t.Fatalf("audit = %#v", logs[0])
+	}
+	windows, err := accountRepo.GetQuotaWindows(ctx, []uint64{credential.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows[credential.ID]) != 1 || windows[credential.ID][0].Remaining != 3 {
+		t.Fatalf("quota windows = %#v", windows[credential.ID])
+	}
+
+	liteResult, err := service.GenerateImage(ctx, ImageGenerationInput{
+		RequestID: "req-image-lite", ClientKey: key, PublicModel: "grok-imagine-image",
+		Prompt: "test", Count: 1, ResponseFormat: "url",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(liteResult.Body); err != nil {
+		t.Fatal(err)
+	}
+	liteResult.Finalize(Usage{}, "", "")
+	_ = liteResult.Body.Close()
+	logs, total, err = auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 2 || logs[0].RequestID != "req-image-lite" || logs[0].PricingModel != "grok-imagine-image" || logs[0].EstimatedCostInUSDTicks != 200_000_000 {
+		t.Fatalf("Lite image pricing audit = %#v, total=%d, err=%v", logs, total, err)
+	}
+	select {
+	case mode := <-adapter.synced:
+		if mode != "fast" {
+			t.Fatalf("Lite image synced mode = %q", mode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Lite image quota refresh")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		windows, err = accountRepo.GetQuotaWindows(ctx, []uint64{credential.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(windows[credential.ID]) == 1 && windows[credential.ID][0].Remaining == 8 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Lite image quota was not refreshed: %#v", windows[credential.ID])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	chatResult, err := service.CreateChatCompletion(ctx, Input{
+		RequestID: "req-image-lite-chat", ClientKey: key, PublicModel: "grok-imagine-image",
+		Body: []byte(`{"model":"grok-imagine-image","messages":[{"role":"user","content":"draw"}],"image_config":{"n":3}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(chatResult.Body)
+	chatResult.Finalize(Usage{}, "resp-image-lite", "")
+	_ = chatResult.Body.Close()
+	logs, total, err = auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 3 || logs[0].RequestID != "req-image-lite-chat" || logs[0].MediaOutputImages != 3 || logs[0].PricingModel != "grok-imagine-image" || logs[0].EstimatedCostInUSDTicks != 600_000_000 {
+		t.Fatalf("Lite Chat pricing audit = %#v, total=%d, err=%v", logs, total, err)
+	}
+
+	editResult, err := service.EditImage(ctx, ImageEditInput{
+		RequestID: "req-image-edit", ClientKey: key, PublicModel: "grok-imagine-image-edit",
+		Prompt: "edit", ImageURLs: []string{"data:image/png;base64,a", "data:image/png;base64,b"},
+		Count: 3, Resolution: "2k", ResponseFormat: "url",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(editResult.Body)
+	editResult.Finalize(Usage{}, "", "")
+	_ = editResult.Body.Close()
+	logs, total, err = auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 4 || logs[0].RequestID != "req-image-edit" || logs[0].MediaInputImages != 2 || logs[0].MediaOutputImages != 3 || logs[0].PricingModel != "grok-imagine-image-edit-2k" || logs[0].EstimatedCostInUSDTicks != 2_300_000_000 {
+		t.Fatalf("image edit pricing audit = %#v, total=%d, err=%v", logs, total, err)
+	}
+	if adapter.EditResolution() != "2k" {
+		t.Fatalf("image edit resolution = %q", adapter.EditResolution())
+	}
+}
+
+func TestSuccessfulWebChatRefreshesCurrentModeQuota(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "chat-quota-refresh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierBasic,
+		Name: "web-chat", SourceKey: "web-chat", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, MaxConcurrent: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accountRepo.SaveQuotaWindows(ctx, credential.ID, account.WebTierBasic, now, []account.QuotaWindow{{
+		AccountID: credential.ID, Mode: "fast", Remaining: 3, Total: 20,
+		WindowSeconds: 3600, Source: account.QuotaSourceUpstream, SyncedAt: &now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertRoutes(ctx, []modeldomain.Route{{
+		PublicID: "grok-chat-fast", Provider: account.ProviderWeb, UpstreamModel: "grok-chat-fast",
+		Capability: modeldomain.CapabilityChat, Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-chat-fast"}, now); err != nil {
+		t.Fatal(err)
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "chat-key", Prefix: "chat-key", SecretHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", EncryptedSecret: "encrypted-key",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &webChatQuotaAdapter{synced: make(chan string, 1)}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	runQuotaRefreshWorkers(t, accountService)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
+
+	result, err := service.CreateChatCompletion(ctx, Input{
+		RequestID: "req-chat-quota", ClientKey: key, PublicModel: "grok-chat-fast",
+		Body: []byte(`{"model":"grok-chat-fast","messages":[{"role":"user","content":"hi"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(result.Body); err != nil {
+		t.Fatal(err)
+	}
+	result.Finalize(Usage{}, "", "")
+	_ = result.Body.Close()
+
+	select {
+	case mode := <-adapter.synced:
+		if mode != "fast" {
+			t.Fatalf("synced mode = %q", mode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for post-success quota refresh")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		windows, err := accountRepo.GetQuotaWindows(ctx, []uint64{credential.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(windows[credential.ID]) == 1 && windows[credential.ID][0].Remaining == 17 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("quota windows were not refreshed: %#v", windows[credential.ID])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func runQuotaRefreshWorkers(t *testing.T, service *accountapp.Service) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		service.RunWebQuotaRefresh(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("quota refresh workers did not stop")
+		}
+	})
+}
+
+type failoverAdapter struct {
+	mu             sync.Mutex
+	firstID        uint64
+	attempts       []uint64
+	lastMethod     string
+	lastPath       string
+	resourceStatus int
+}
+
+type webRateLimitAdapter struct{}
+
+type webImageStreamAdapter struct {
+	mu             sync.Mutex
+	streaming      bool
+	editResolution string
+	synced         chan string
+}
+
+type webChatQuotaAdapter struct {
+	synced chan string
+}
+
+func (webRateLimitAdapter) Provider() account.Provider { return account.ProviderWeb }
+func (webRateLimitAdapter) QuotaMode(string) string    { return "fast" }
+func (webRateLimitAdapter) TierOrder(string) []account.WebTier {
+	return []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}
+}
+func (webRateLimitAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
+	header := make(http.Header)
+	header.Set("Retry-After", "3600")
+	return &provider.Response{StatusCode: http.StatusTooManyRequests, Header: header, Body: io.NopCloser(strings.NewReader(`{"error":"limited"}`))}, nil
+}
+
+func (a *webImageStreamAdapter) Provider() account.Provider { return account.ProviderWeb }
+func (a *webImageStreamAdapter) QuotaMode(model string) string {
+	if model == "grok-imagine-image" {
+		return "fast"
+	}
+	return ""
+}
+func (a *webImageStreamAdapter) TierOrder(string) []account.WebTier {
+	return []account.WebTier{account.WebTierSuper, account.WebTierHeavy}
+}
+func (a *webImageStreamAdapter) GenerateImage(_ context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	a.streaming = request.Streaming
+	a.mu.Unlock()
+	body := "event: image_generation.completed\ndata: {}\n\ndata: [DONE]\n\n"
+	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body)), QuotaUnits: 1}, nil
+}
+func (a *webImageStreamAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
+	return &provider.Response{
+		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{"id":"resp-image-lite","object":"response"}`)), QuotaUnits: 3,
+	}, nil
+}
+func (a *webImageStreamAdapter) EditImage(_ context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	a.editResolution = request.Resolution
+	a.mu.Unlock()
+	return &provider.Response{
+		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{"created":1,"data":[{"url":"https://example.com/edit.png"}]}`)), QuotaUnits: request.Count,
+	}, nil
+}
+func (a *webImageStreamAdapter) Streaming() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.streaming
+}
+func (a *webImageStreamAdapter) EditResolution() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.editResolution
+}
+func (a *webImageStreamAdapter) SyncQuota(context.Context, account.Credential) (provider.QuotaSnapshot, error) {
+	return provider.QuotaSnapshot{}, errors.New("unexpected full quota sync")
+}
+func (a *webImageStreamAdapter) SyncQuotaMode(_ context.Context, credential account.Credential, mode string) (account.QuotaWindow, error) {
+	now := time.Now().UTC()
+	a.synced <- mode
+	return account.QuotaWindow{
+		AccountID: credential.ID, Mode: mode, Remaining: 8, Total: 10,
+		WindowSeconds: 3600, SyncedAt: &now, Source: account.QuotaSourceUpstream,
+	}, nil
+}
+
+func (a *webChatQuotaAdapter) Provider() account.Provider { return account.ProviderWeb }
+func (a *webChatQuotaAdapter) QuotaMode(string) string    { return "fast" }
+func (a *webChatQuotaAdapter) TierOrder(string) []account.WebTier {
+	return []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}
+}
+func (a *webChatQuotaAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
+	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"chat-response"}`))}, nil
+}
+func (a *webChatQuotaAdapter) SyncQuota(context.Context, account.Credential) (provider.QuotaSnapshot, error) {
+	return provider.QuotaSnapshot{}, errors.New("unexpected full quota sync")
+}
+func (a *webChatQuotaAdapter) SyncQuotaMode(_ context.Context, credential account.Credential, mode string) (account.QuotaWindow, error) {
+	now := time.Now().UTC()
+	a.synced <- mode
+	return account.QuotaWindow{
+		AccountID: credential.ID, Mode: mode, Remaining: 17, Total: 20,
+		WindowSeconds: 3600, SyncedAt: &now, Source: account.QuotaSourceUpstream,
+	}, nil
+}
+
+func (a *failoverAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	a.attempts = append(a.attempts, request.Credential.ID)
+	a.lastMethod = request.Method
+	a.lastPath = request.Path
+	resourceStatus := a.resourceStatus
+	a.mu.Unlock()
+	status, body := http.StatusOK, "ok"
+	if request.Method != http.MethodPost && resourceStatus != 0 {
+		status, body = resourceStatus, "missing"
+	} else if request.Credential.ID == a.firstID {
+		status, body = http.StatusTooManyRequests, "limited"
+	}
+	return &provider.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+}
+
+func (a *failoverAdapter) setResourceStatus(status int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.resourceStatus = status
+}
+
+func (a *failoverAdapter) resetAttempts() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.attempts = nil
+	a.lastMethod = ""
+	a.lastPath = ""
+}
+func (a *failoverAdapter) ListModels(context.Context, account.Credential) ([]string, error) {
+	return nil, nil
+}
+func (a *failoverAdapter) GetBilling(context.Context, account.Credential) (account.Billing, error) {
+	return account.Billing{}, nil
+}
+func (a *failoverAdapter) RefreshCredential(context.Context, account.Credential) (provider.RefreshedCredential, error) {
+	return provider.RefreshedCredential{}, nil
+}
+func (a *failoverAdapter) StartDeviceAuthorization(context.Context) (provider.DeviceAuthorization, error) {
+	return provider.DeviceAuthorization{}, nil
+}
+func (a *failoverAdapter) PollDeviceAuthorization(context.Context, string) (provider.CredentialSeed, error) {
+	return provider.CredentialSeed{}, nil
+}
+func (a *failoverAdapter) ParseImportedCredentials([]byte) ([]provider.CredentialSeed, error) {
+	return nil, nil
+}
+func (a *failoverAdapter) MarshalCredentials([]provider.CredentialSeed) ([]byte, error) {
+	return nil, nil
+}
+
+func testCipher(t *testing.T) *security.Cipher {
+	t.Helper()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cipher
+}

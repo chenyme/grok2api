@@ -1,77 +1,70 @@
-# ── Builder ───────────────────────────────────────────────────────────────────
-FROM python:3.13-alpine AS builder
+ARG NODE_VERSION=22
+ARG GO_VERSION=1.26
+ARG ALPINE_VERSION=3.23
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    UV_PROJECT_ENVIRONMENT=/opt/venv
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS frontend-builder
 
-ENV PATH="$UV_PROJECT_ENVIRONMENT/bin:$PATH"
+WORKDIR /src/frontend
+RUN corepack enable
 
-# Rust/Cargo are required to compile curl-cffi wheels on musl/Alpine.
-# If upstream ever ships musl wheels, remove cargo + rust to speed up builds.
-RUN apk add --no-cache \
-    ca-certificates \
-    build-base \
-    linux-headers \
-    libffi-dev \
-    openssl-dev \
-    curl-dev \
-    cargo \
-    rust
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN --mount=type=cache,id=grok2api-pnpm,target=/pnpm/store \
+    pnpm config set store-dir /pnpm/store && \
+    pnpm fetch --frozen-lockfile
 
-WORKDIR /app
+RUN --mount=type=cache,id=grok2api-pnpm,target=/pnpm/store \
+    pnpm config set store-dir /pnpm/store && \
+    pnpm install --offline --frozen-lockfile
 
-# Pin uv to a minor version for reproducible builds.
-# Bump manually when you want to pick up a newer uv release.
-COPY --from=ghcr.io/astral-sh/uv:0.6 /uv /uvx /bin/
+COPY frontend/index.html frontend/vite.config.ts frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.json ./
+COPY frontend/public ./public
+COPY frontend/src ./src
+RUN --mount=type=cache,id=grok2api-tsc,target=/src/frontend/.cache,sharing=locked \
+    pnpm build
 
-COPY pyproject.toml uv.lock ./
 
-RUN uv sync --frozen --no-dev --no-install-project \
-    && find /opt/venv -type d \
-         \( -name "__pycache__" -o -name "tests" -o -name "test" -o -name "testing" \) \
-         -prune -exec rm -rf {} + \
-    && find /opt/venv -type f -name "*.pyc" -delete \
-    && find /opt/venv -type f -name "*.so" -exec strip --strip-unneeded {} + 2>/dev/null; true \
-    && rm -rf /root/.cache /tmp/uv-cache
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS backend-builder
 
-# ── Runtime ───────────────────────────────────────────────────────────────────
-FROM python:3.13-alpine
+ARG TARGETOS
+ARG TARGETARCH
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    TZ=Asia/Shanghai \
-    VIRTUAL_ENV=/opt/venv \
-    SERVER_HOST=0.0.0.0 \
-    SERVER_PORT=8000 \
-    SERVER_WORKERS=1
+WORKDIR /src/backend
+RUN apk add --no-cache ca-certificates git
 
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+COPY backend/go.mod backend/go.sum ./
+RUN --mount=type=cache,id=grok2api-go-mod,target=/go/pkg/mod,sharing=locked \
+    go mod download
 
-RUN apk add --no-cache \
-    tzdata \
-    ca-certificates \
-    libffi \
-    openssl \
-    libgcc \
-    libstdc++ \
-    libcurl
+COPY backend/cmd ./cmd
+COPY backend/internal ./internal
+COPY backend/docs/docs.go ./docs/docs.go
+RUN --mount=type=cache,id=grok2api-go-mod,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,id=grok2api-go-build,target=/root/.cache/go-build,sharing=locked \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/grok2api ./cmd/grok2api
+
+
+FROM alpine:${ALPINE_VERSION}
+
+ENV TZ=Asia/Shanghai \
+    GROK2API_CONFIG_SOURCE=/run/grok2api/config.yaml
+
+RUN apk add --no-cache ca-certificates su-exec tzdata && \
+    addgroup -S -g 10001 grok2api && \
+    adduser -S -D -H -u 10001 -G grok2api grok2api && \
+    mkdir -p /app/data /run/grok2api && \
+    chown -R grok2api:grok2api /app/data /run/grok2api
 
 WORKDIR /app
 
-COPY --from=builder /opt/venv /opt/venv
-
-COPY pyproject.toml config.defaults.toml ./
-COPY app ./app
-COPY scripts ./scripts
-
-RUN mkdir -p /app/data /app/logs \
-    && chmod +x /app/scripts/entrypoint.sh /app/scripts/init_storage.sh
+COPY --from=backend-builder --chmod=0755 /out/grok2api /app/grok2api
+COPY --from=frontend-builder /src/frontend/dist /app/frontend/dist
+COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/grok2api-entrypoint
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD ["sh", "-c", "wget -qO /dev/null http://127.0.0.1:${SERVER_PORT}/health || exit 1"]
+    CMD wget -qO- http://127.0.0.1:8000/healthz >/dev/null || exit 1
 
-ENTRYPOINT ["/app/scripts/entrypoint.sh"]
-CMD ["sh", "-c", "exec granian --interface asgi --host ${SERVER_HOST} --port ${SERVER_PORT} --workers ${SERVER_WORKERS} app.main:app"]
+ENTRYPOINT ["/usr/local/bin/grok2api-entrypoint"]
+CMD ["/app/grok2api", "--config", "/app/config.yaml", "--listen", "0.0.0.0:8000"]
