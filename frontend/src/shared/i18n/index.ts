@@ -286,6 +286,16 @@ const resources = {
         batchBillingRefreshed: "额度同步完成：成功 {{succeeded}}，失败 {{failed}}",
         batchDeleteTitle: "删除所选 {{count}} 个账号？",
       },
+      quotaProducts: {
+        thirdParty: "第三方",
+        api: "API",
+        build: "Grok Build",
+        plugins: "Grok Plugins",
+        chat: "聊天",
+        imagine: "Imagine",
+        voice: "语音",
+        unknown: "产品 {{code}}",
+      },
       models: {
         title: "模型路由",
         description: "管理 Grok Build、Grok Web 与 Grok Console 的公开模型名称、能力类型和上游映射。",
@@ -828,6 +838,7 @@ const resources = {
           noteVideoBoundAccount: "Media jobs remain bound to their creating account; status and asset reads never splice across accounts.",
         },
       },
+      quotaProducts: { thirdParty: "Third Party", api: "API", build: "Grok Build", plugins: "Grok Plugins", chat: "Chat", imagine: "Imagine", voice: "Voice", unknown: "Product {{code}}" },
       errors: { generic: "The operation failed. Please try again.", required: "This field is required", minPassword: "Password must contain at least 8 characters", positive: "Enter a value greater than zero" },
       apiErrors: {
         accountBatchDeleteFailed: "Failed to delete accounts",

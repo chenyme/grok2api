@@ -30,6 +30,13 @@
   --sidebar-accent: oklch(0.96 0 0);
   --sidebar-accent-foreground: oklch(0.14 0 0);
   --sidebar-border: oklch(0.93 0 0);
+  --quota-product-0: oklch(0.55 0 0);
+  --quota-product-1: oklch(0.68 0.14 235);
+  --quota-product-2: oklch(0.64 0.15 155);
+  --quota-product-3: oklch(0.75 0.15 80);
+  --quota-product-4: oklch(0.68 0.14 285);
+  --quota-product-5: oklch(0.58 0.18 255);
+  --quota-product-6: oklch(0.65 0.19 20);
 }
 
 .dark {
@@ -58,6 +65,13 @@
   --sidebar-accent: oklch(0.22 0 0);
   --sidebar-accent-foreground: oklch(0.96 0 0);
   --sidebar-border: oklch(0.25 0 0);
+  --quota-product-0: oklch(0.66 0 0);
+  --quota-product-1: oklch(0.74 0.12 235);
+  --quota-product-2: oklch(0.72 0.13 155);
+  --quota-product-3: oklch(0.8 0.13 80);
+  --quota-product-4: oklch(0.74 0.12 285);
+  --quota-product-5: oklch(0.68 0.15 255);
+  --quota-product-6: oklch(0.72 0.16 20);
 }
 
 @theme inline {
@@ -86,6 +100,13 @@
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
+  --color-quota-product-0: var(--quota-product-0);
+  --color-quota-product-1: var(--quota-product-1);
+  --color-quota-product-2: var(--quota-product-2);
+  --color-quota-product-3: var(--quota-product-3);
+  --color-quota-product-4: var(--quota-product-4);
+  --color-quota-product-5: var(--quota-product-5);
+  --color-quota-product-6: var(--quota-product-6);
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);

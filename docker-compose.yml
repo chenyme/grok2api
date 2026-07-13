@@ -32,4 +32,3 @@ services:
 
 volumes:
   grok2api-data:
-

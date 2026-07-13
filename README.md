@@ -177,6 +177,8 @@ Grok Console 内置模型：
 | `grok-4.20-multi-agent-0309` | Responses / Chat / Messages |
 | `grok-build-0.1` | Responses / Chat / Messages |
 
+`grok-4.5` 仅属于 Grok Build，在 Grok Console 中不可用。
+
 Console 模型默认保留上游模型 ID；只有公开名称冲突时才使用 `-console` 后缀。兼容别名不会出现在 `GET /v1/models`。
 
 三个 Provider 不会自动跨来源降级。请求只会进入目标模型所属 Provider 的可用账号池。

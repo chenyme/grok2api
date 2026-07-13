@@ -1,8 +1,9 @@
 import { apiRequest } from "@/shared/api/client";
+import { createObjectDecoder, decodeBooleanResult, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isString } from "@/shared/api/decoder";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type SettingsConfigDTO = {
-  providerBuild: { baseURL: string; clientVersion: string; clientIdentifier: string; tokenAuth: string; userAgent: string };
+  providerBuild: { baseURL: string; clientVersion: string; clientIdentifier: string; tokenAuth: string; tokenAuthConfigured: boolean; userAgent: string };
   providerWeb: {
     baseURL: string; quotaTimeout: string; chatTimeout: string; imageTimeout: string; videoTimeout: string;
     statsigMode: "manual" | "url"; statsigManualValue?: string; statsigManualConfigured: boolean; statsigSignerURL: string;
@@ -42,12 +43,47 @@ export type SettingsSnapshotDTO = {
   restartRequired: string[];
 };
 
+const settingsConfigValidator = hasShape({
+  providerBuild: hasShape({ baseURL: isString, clientVersion: isString, clientIdentifier: isString, tokenAuth: isString, tokenAuthConfigured: isBoolean, userAgent: isString }),
+  providerWeb: hasShape({
+    baseURL: isString, quotaTimeout: isString, chatTimeout: isString, imageTimeout: isString, videoTimeout: isString,
+    statsigMode: isOneOf("manual", "url"), statsigManualValue: isOptional(isString), statsigManualConfigured: isBoolean,
+    statsigSignerURL: isString, mediaConcurrency: isNumber, allowNSFW: isBoolean, recoveryBackoffBase: isString, recoveryBackoffMax: isString,
+  }),
+  batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
+  media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),
+  routing: hasShape({ stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber }),
+  audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString }),
+  clientKeyDefaults: hasShape({ rpmLimit: isNumber, maxConcurrent: isNumber }),
+});
+const decodeSettingsSnapshot = createObjectDecoder<SettingsSnapshotDTO>("settings", {
+  config: settingsConfigValidator,
+  recommendedProviderBuild: hasShape({ clientVersion: isString, userAgent: isString }),
+  updatedAt: isString,
+  revision: isString,
+  restartRequired: isArrayOf(isString),
+});
+const egressNodeValidator = hasShape({
+  id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_web_asset"), enabled: isBoolean,
+  proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, health: isNumber, failureCount: isNumber,
+  cooldownUntil: isOptional(isString), lastError: isOptional(isString),
+});
+const decodeEgressNode = createObjectDecoder<EgressNodeDTO>("egress node", {
+  id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_web_asset"), enabled: isBoolean,
+  proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, health: isNumber, failureCount: isNumber,
+  cooldownUntil: isOptional(isString), lastError: isOptional(isString),
+});
+const decodeEgressNodeList = createObjectDecoder<EgressNodeListDTO>("egress node list", {
+  items: isArrayOf(egressNodeValidator),
+  defaultUserAgents: hasShape({ grok_build: isString, grok_web: isString, grok_web_asset: isString }),
+});
+
 export function getSettings(): Promise<SettingsSnapshotDTO> {
-  return apiRequest<SettingsSnapshotDTO>("/api/admin/v1/settings");
+  return apiRequest("/api/admin/v1/settings", {}, decodeSettingsSnapshot);
 }
 
 export function updateSettings(revision: string, config: SettingsConfigDTO): Promise<SettingsSnapshotDTO> {
-  return apiRequest<SettingsSnapshotDTO>("/api/admin/v1/settings", { method: "PUT", body: { revision, config } });
+  return apiRequest("/api/admin/v1/settings", { method: "PUT", body: { revision, config } }, decodeSettingsSnapshot);
 }
 
 export function listEgressNodes(input?: { sortBy?: string; sortOrder?: SortOrder }): Promise<EgressNodeListDTO> {
@@ -57,17 +93,17 @@ export function listEgressNodes(input?: { sortBy?: string; sortOrder?: SortOrder
     query.set("sortOrder", input.sortOrder);
   }
   const suffix = query.size > 0 ? `?${query}` : "";
-  return apiRequest<EgressNodeListDTO>(`/api/admin/v1/egress-nodes${suffix}`);
+  return apiRequest(`/api/admin/v1/egress-nodes${suffix}`, {}, decodeEgressNodeList);
 }
 
 export function createEgressNode(input: EgressNodeInput): Promise<EgressNodeDTO> {
-  return apiRequest<EgressNodeDTO>("/api/admin/v1/egress-nodes", { method: "POST", body: input });
+  return apiRequest("/api/admin/v1/egress-nodes", { method: "POST", body: input }, decodeEgressNode);
 }
 
 export function updateEgressNode(id: string, input: EgressNodeInput): Promise<EgressNodeDTO> {
-  return apiRequest<EgressNodeDTO>(`/api/admin/v1/egress-nodes/${id}`, { method: "PUT", body: input });
+  return apiRequest(`/api/admin/v1/egress-nodes/${id}`, { method: "PUT", body: input }, decodeEgressNode);
 }
 
 export function deleteEgressNode(id: string): Promise<{ deleted: boolean }> {
-  return apiRequest<{ deleted: boolean }>(`/api/admin/v1/egress-nodes/${id}`, { method: "DELETE" });
+  return apiRequest(`/api/admin/v1/egress-nodes/${id}`, { method: "DELETE" }, decodeBooleanResult<{ deleted: boolean }>("deleted"));
 }

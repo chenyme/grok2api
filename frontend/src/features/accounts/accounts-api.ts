@@ -1,4 +1,5 @@
 import { ApiError, apiDownload, apiEventStream, apiRequest, type PaginatedDTO } from "@/shared/api/client";
+import { createObjectDecoder, createPaginatedDecoder, createValidatedDecoder, decodeBooleanResult, decodeCountResult, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isRecordOf, isString } from "@/shared/api/decoder";
 import { i18n } from "@/shared/i18n";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
@@ -113,6 +114,52 @@ export type DevicePollDTO = {
   syncFailed?: number;
 };
 
+const billingValidator = hasShape({
+  planCode: isOptional(isString), planName: isOptional(isString), monthlyLimit: isNumber, used: isNumber, remaining: isNumber,
+  onDemandCap: isNumber, onDemandUsed: isNumber, prepaidBalance: isNumber, creditUsagePercent: isNumber,
+  isUnifiedBillingUser: isBoolean, topUpMethod: isOptional(isString), usagePeriodType: isOptional(isString),
+  usagePeriodStart: isOptional(isString), usagePeriodEnd: isOptional(isString), billingPeriodStart: isOptional(isString),
+  billingPeriodEnd: isOptional(isString), syncedAt: isString,
+});
+const quotaValidator = hasShape({
+  type: isOneOf("free", "paid", "unknown"), source: isOneOf("unknown", "upstreamBilling", "upstreamExhaustion", "responseModel", "billingProfile"),
+  confidence: isOneOf("estimated", "observed", "confirmed", ""), status: isOneOf("active", "waitingReset", "probing"),
+  unit: isOptional(isOneOf("tokens", "credits")), used: isNumber, limit: isNumber, remaining: isNumber, usagePercent: isNumber,
+  limitKnown: isBoolean, windowHours: isOptional(isNumber), observed: isBoolean, confirmed: isBoolean,
+  periodStart: isOptional(isString), periodEnd: isOptional(isString), exhaustedAt: isOptional(isString),
+  nextProbeAt: isOptional(isString), lastConfirmedAt: isOptional(isString),
+});
+const quotaBreakdownValidator = hasShape({ productCode: isNumber, usagePercent: isNumber });
+const quotaWindowValidator = hasShape({
+  mode: isString, remaining: isNumber, total: isNumber, usagePercent: isNumber, breakdown: isOptional(isArrayOf(quotaBreakdownValidator)),
+  windowSeconds: isNumber, resetAt: isOptional(isString), syncedAt: isOptional(isString), source: isOneOf("default", "estimated", "upstream"),
+});
+const accountValidator = hasShape({
+  id: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), authType: isOneOf("oauth", "sso"), webTier: isOptional(isOneOf("auto", "basic", "super", "heavy")),
+  webTierSyncedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
+  enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean,
+  refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
+  lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
+  failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
+  linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")),
+  createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
+});
+const decodeAccount = createValidatedDecoder<AccountDTO>("account", accountValidator);
+const decodeAccountPage = createPaginatedDecoder<AccountDTO>(accountValidator);
+const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account summary", {
+  total: isNumber, available: isNumber, recovering: isNumber, attention: isNumber,
+  providers: isRecordOf(hasShape({ total: isNumber, available: isNumber })),
+  recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
+  issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),
+});
+const decodeDeviceSession = createObjectDecoder<DeviceSessionDTO>("device session", {
+  sessionId: isString, userCode: isString, verificationUri: isString, verificationUriComplete: isOptional(isString),
+  intervalSeconds: isNumber, expiresAt: isString,
+});
+const decodeDevicePoll = createObjectDecoder<DevicePollDTO>("device poll", {
+  status: isOneOf("pending", "succeeded", "syncFailed"), account: isOptional(accountValidator), synced: isOptional(isNumber), syncFailed: isOptional(isNumber),
+});
+
 type ListAccountsInput = {
   page: number;
   pageSize: number;
@@ -136,27 +183,27 @@ export function listAccounts(input: ListAccountsInput): Promise<PaginatedDTO<Acc
     query.set("sortOrder", input.sortOrder);
   }
   query.set("provider", input.provider);
-  return apiRequest<PaginatedDTO<AccountDTO>>(`/api/admin/v1/accounts?${query}`);
+  return apiRequest(`/api/admin/v1/accounts?${query}`, {}, decodeAccountPage);
 }
 
 export function getAccountSummary(): Promise<AccountSummaryDTO> {
-  return apiRequest<AccountSummaryDTO>("/api/admin/v1/accounts/summary");
+  return apiRequest("/api/admin/v1/accounts/summary", {}, decodeAccountSummary);
 }
 
 export function updateAccount(id: string, input: AccountUpdateInput): Promise<AccountDTO> {
-  return apiRequest<AccountDTO>(`/api/admin/v1/accounts/${id}`, { method: "PATCH", body: input });
+  return apiRequest(`/api/admin/v1/accounts/${id}`, { method: "PATCH", body: input }, decodeAccount);
 }
 
 export function deleteAccount(id: string): Promise<{ deleted: boolean }> {
-  return apiRequest<{ deleted: boolean }>(`/api/admin/v1/accounts/${id}`, { method: "DELETE" });
+  return apiRequest(`/api/admin/v1/accounts/${id}`, { method: "DELETE" }, decodeBooleanResult<{ deleted: boolean }>("deleted"));
 }
 
 export function refreshAccountBilling(id: string): Promise<AccountDTO> {
-  return apiRequest<AccountDTO>(`/api/admin/v1/accounts/${id}/refresh-billing`, { method: "POST" });
+  return apiRequest(`/api/admin/v1/accounts/${id}/refresh-billing`, { method: "POST" }, decodeAccount);
 }
 
 export function refreshAccountToken(id: string): Promise<AccountDTO> {
-  return apiRequest<AccountDTO>(`/api/admin/v1/accounts/${id}/refresh-token`, { method: "POST" });
+  return apiRequest(`/api/admin/v1/accounts/${id}/refresh-token`, { method: "POST" }, decodeAccount);
 }
 
 export type AccountBatchResultDTO = { succeeded: number; failed: number };
@@ -194,6 +241,13 @@ type AccountTaskStreamPayload = Partial<BuildConversionResultDTO & AccountTaskPr
   code?: string;
   message?: string;
 };
+
+const decodeAccountTaskStreamPayload = createObjectDecoder<AccountTaskStreamPayload>("account task event", {
+  created: isOptional(isNumber), linked: isOptional(isNumber), skipped: isOptional(isNumber), failed: isOptional(isNumber),
+  synced: isOptional(isNumber), syncFailed: isOptional(isNumber), completed: isOptional(isNumber), total: isOptional(isNumber),
+  phase: isOptional(isOneOf("importing", "converting", "syncing")), updated: isOptional(isNumber), succeeded: isOptional(isNumber),
+  code: isOptional(isString), message: isOptional(isString),
+});
 
 function hasNumericResult(value: AccountTaskStreamPayload, fields: string[]): boolean {
   return fields.every((field) => {
@@ -234,12 +288,12 @@ async function runAccountTask<T>(path: string, body: BodyInit | object | undefin
     }
   };
   try {
-    await apiEventStream<AccountTaskStreamPayload>(path, {
+    await apiEventStream(path, {
       method: "POST",
       headers: { Accept: "text/event-stream" },
       body,
       signal,
-    }, ({ event, data }) => {
+    }, decodeAccountTaskStreamPayload, ({ event, data }) => {
       if (event === "progress" && typeof data.completed === "number" && typeof data.total === "number") {
         const phase = data.phase === "importing" || data.phase === "converting" || data.phase === "syncing" ? data.phase : undefined;
         reportProgress({ completed: data.completed, total: data.total, phase });
@@ -308,7 +362,7 @@ export function importConsoleAccounts(files: readonly File[], onProgress?: (valu
 }
 
 export function refreshAccountQuota(id: string): Promise<AccountDTO> {
-  return apiRequest<AccountDTO>(`/api/admin/v1/accounts/${id}/refresh-quota`, { method: "POST" });
+  return apiRequest(`/api/admin/v1/accounts/${id}/refresh-quota`, { method: "POST" }, decodeAccount);
 }
 
 export function exportAccounts(): Promise<Blob> {
@@ -316,21 +370,21 @@ export function exportAccounts(): Promise<Blob> {
 }
 
 export function updateAccountsEnabled(ids: string[], enabled: boolean, provider: AccountProvider): Promise<{ updated: number }> {
-  return apiRequest<{ updated: number }>("/api/admin/v1/accounts/batch", { method: "PATCH", body: { ids, enabled, provider } });
+  return apiRequest("/api/admin/v1/accounts/batch", { method: "PATCH", body: { ids, enabled, provider } }, decodeCountResult<{ updated: number }>("updated"));
 }
 
 export function refreshAccountsBilling(ids: string[], provider: AccountProvider): Promise<{ succeeded: number; failed: number }> {
-  return apiRequest<{ succeeded: number; failed: number }>("/api/admin/v1/accounts/batch/refresh-billing", { method: "POST", body: { ids, provider } });
+  return apiRequest("/api/admin/v1/accounts/batch/refresh-billing", { method: "POST", body: { ids, provider } }, createObjectDecoder("account batch", { succeeded: isNumber, failed: isNumber }));
 }
 
 export function deleteAccounts(ids: string[], provider: AccountProvider): Promise<{ deleted: number }> {
-  return apiRequest<{ deleted: number }>("/api/admin/v1/accounts", { method: "DELETE", body: { ids, provider } });
+  return apiRequest("/api/admin/v1/accounts", { method: "DELETE", body: { ids, provider } }, decodeCountResult<{ deleted: number }>("deleted"));
 }
 
 export function startDeviceAuthorization(): Promise<DeviceSessionDTO> {
-  return apiRequest<DeviceSessionDTO>("/api/admin/v1/accounts/device/start", { method: "POST" });
+  return apiRequest("/api/admin/v1/accounts/device/start", { method: "POST" }, decodeDeviceSession);
 }
 
 export function pollDeviceAuthorization(sessionId: string, signal: AbortSignal): Promise<DevicePollDTO> {
-  return apiRequest<DevicePollDTO>(`/api/admin/v1/accounts/device/${sessionId}/poll`, { method: "POST", signal });
+  return apiRequest(`/api/admin/v1/accounts/device/${sessionId}/poll`, { method: "POST", signal }, decodeDevicePoll);
 }

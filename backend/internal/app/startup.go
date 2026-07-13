@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,18 +25,18 @@ const (
 )
 
 type startupReport struct {
-	StartedAt                time.Time                          `json:"startedAt"`
-	CompletedAt              *time.Time                         `json:"completedAt,omitempty"`
-	Credentials              accountapp.CredentialStartupReport `json:"credentials"`
-	CooldownsRestored        int                                `json:"cooldownsRestored"`
-	QuotaRecoveriesRestored  int                                `json:"quotaRecoveriesRestored"`
-	DueWebQuotasQueued       int                                `json:"dueWebQuotasQueued"`
-	StatsigKeysWarmed        int                                `json:"statsigKeysWarmed"`
-	StaleWebQuotasFound      int                                `json:"staleWebQuotasFound"`
-	StaleWebQuotasSynced     int                                `json:"staleWebQuotasSynced"`
-	StaleModelCatalogsFound  int                                `json:"staleModelCatalogsFound"`
-	StaleModelCatalogsSynced int                                `json:"staleModelCatalogsSynced"`
-	Errors                   []string                           `json:"errors,omitempty"`
+	StartedAt                time.Time
+	CompletedAt              *time.Time
+	Credentials              accountapp.CredentialStartupReport
+	CooldownsRestored        int
+	QuotaRecoveriesRestored  int
+	DueWebQuotasQueued       int
+	StatsigKeysWarmed        int
+	StaleWebQuotasFound      int
+	StaleWebQuotasSynced     int
+	StaleModelCatalogsFound  int
+	StaleModelCatalogsSynced int
+	ErrorCount               int
 }
 
 type startupState struct {
@@ -79,18 +78,12 @@ func (s *startupState) updateReport(update func(*startupReport)) {
 	s.mu.Unlock()
 }
 
-func (s *startupState) recordError(component string, err error) {
+func (s *startupState) recordError(err error) {
 	if err == nil {
 		return
 	}
-	message := strings.TrimSpace(component + ": " + err.Error())
-	if len(message) > 300 {
-		message = message[:300]
-	}
 	s.updateReport(func(report *startupReport) {
-		if len(report.Errors) < 20 {
-			report.Errors = append(report.Errors, message)
-		}
+		report.ErrorCount++
 	})
 }
 
@@ -107,9 +100,7 @@ func (s *startupState) setStatsig(state, detail string, warmed int) {
 func (s *startupState) snapshot() (string, time.Time, startupReport, httpserver.ReadinessComponent) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	report := s.report
-	report.Errors = append([]string(nil), report.Errors...)
-	return s.phase, s.updatedAt, report, s.statsig
+	return s.phase, s.updatedAt, s.report, s.statsig
 }
 
 func (s *startupState) acceptsTraffic() bool {
@@ -128,7 +119,7 @@ func readinessSnapshot(
 ) httpserver.ReadinessSnapshot {
 	phase, updatedAt, report, statsig := state.snapshot()
 	snapshot := httpserver.ReadinessSnapshot{
-		Ready: false, State: phase, UpdatedAt: updatedAt, Startup: report,
+		Ready: false, State: phase, UpdatedAt: updatedAt, Startup: newReadinessStartupReport(report),
 		Components: map[string]httpserver.ReadinessComponent{
 			"runtime_store": {State: "unknown"},
 			"grok_build":    {State: "unknown"},
@@ -228,6 +219,29 @@ func readinessSnapshot(
 	return snapshot
 }
 
+// newReadinessStartupReport 只公开稳定统计，不把启动错误原文暴露到无鉴权就绪端点。
+func newReadinessStartupReport(report startupReport) *httpserver.ReadinessStartupReport {
+	return &httpserver.ReadinessStartupReport{
+		StartedAt:   report.StartedAt,
+		CompletedAt: report.CompletedAt,
+		Credentials: httpserver.ReadinessCredentialReport{
+			SchedulesBackfilled: report.Credentials.SchedulesBackfilled,
+			CriticalFound:       report.Credentials.CriticalFound,
+			Refreshed:           report.Credentials.Refreshed,
+			Failed:              report.Credentials.Failed,
+		},
+		CooldownsRestored:        report.CooldownsRestored,
+		QuotaRecoveriesRestored:  report.QuotaRecoveriesRestored,
+		DueWebQuotasQueued:       report.DueWebQuotasQueued,
+		StatsigKeysWarmed:        report.StatsigKeysWarmed,
+		StaleWebQuotasFound:      report.StaleWebQuotasFound,
+		StaleWebQuotasSynced:     report.StaleWebQuotasSynced,
+		StaleModelCatalogsFound:  report.StaleModelCatalogsFound,
+		StaleModelCatalogsSynced: report.StaleModelCatalogsSynced,
+		ErrorCount:               report.ErrorCount,
+	}
+}
+
 func startupCandidateUsable(candidate accountdomain.RoutingCandidate, now time.Time) bool {
 	credential := candidate.Credential
 	if credential.EncryptedAccessToken == "" || credential.AuthStatus != accountdomain.AuthStatusActive {
@@ -261,20 +275,20 @@ func (a *Application) reconcileStartup(ctx context.Context) {
 
 	if _, err := a.clientKeys.CleanupExpiredBilling(recoveryCtx, 1000); err != nil {
 		a.logger.Warn("billing_reservation_cleanup_failed", "error", err)
-		a.startup.recordError("billing_cleanup", err)
+		a.startup.recordError(err)
 	}
 	if err := a.gateway.RecoverVideoJobs(recoveryCtx); err != nil {
 		a.logger.Warn("video_job_recovery_failed", "error", err)
-		a.startup.recordError("video_recovery", err)
+		a.startup.recordError(err)
 	}
 	if _, err := a.accountRepo.PruneExpiredModelQuotaBlocks(recoveryCtx, time.Now().UTC(), 1000); err != nil {
 		a.logger.Warn("model_cooldown_cleanup_failed", "error", err)
-		a.startup.recordError("model_cooldown_cleanup", err)
+		a.startup.recordError(err)
 	}
 	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderWeb, accountdomain.ProviderConsole} {
 		values, err := a.accountRepo.ListEnabled(recoveryCtx, providerValue)
 		if err != nil {
-			a.startup.recordError("cooldown_restore", err)
+			a.startup.recordError(err)
 			continue
 		}
 		now := time.Now().UTC()
@@ -290,7 +304,7 @@ func (a *Application) reconcileStartup(ctx context.Context) {
 	a.startup.updateReport(func(startup *startupReport) { startup.Credentials = report })
 	if err != nil && ctx.Err() == nil {
 		a.logger.Warn("credential_startup_recovery_incomplete", "error", err, "found", report.CriticalFound, "refreshed", report.Refreshed, "failed", report.Failed)
-		a.startup.recordError("credential_recovery", err)
+		a.startup.recordError(err)
 	}
 	a.startup.setPhase("running")
 	a.logger.Info("startup_reconciliation_completed", "credentials_backfilled", report.SchedulesBackfilled, "critical_found", report.CriticalFound, "credentials_refreshed", report.Refreshed, "credentials_failed", report.Failed)
@@ -330,7 +344,7 @@ func (a *Application) queueDueWebQuotaRefresh(ctx context.Context) {
 	windows, err := a.accounts.ListDueWebQuotaWindows(ctx, time.Now().UTC(), 1000)
 	if err != nil {
 		a.logger.Warn("web_quota_startup_catchup_failed", "error", err)
-		a.startup.recordError("web_quota_catchup", err)
+		a.startup.recordError(err)
 		return
 	}
 	for _, window := range windows {

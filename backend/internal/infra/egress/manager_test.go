@@ -69,8 +69,12 @@ func TestConfiguredBuildNodeDoesNotOverrideProviderUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	encryptedProxy, err := cipher.Encrypt("socks5h://warp:1080")
+	if err != nil {
+		t.Fatal(err)
+	}
 	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{
-		ID: 1, Name: "build", Scope: domain.ScopeBuild, Enabled: true, Health: 1, UserAgent: "legacy-build-agent",
+		ID: 1, Name: "build", Scope: domain.ScopeBuild, Enabled: true, Health: 1, UserAgent: "legacy-build-agent", EncryptedProxyURL: encryptedProxy,
 	}}}, cipher)
 	lease, configured, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
 	if err != nil {
@@ -83,6 +87,72 @@ func TestConfiguredBuildNodeDoesNotOverrideProviderUserAgent(t *testing.T) {
 	if lease.UserAgent != "" {
 		t.Fatalf("build lease userAgent = %q", lease.UserAgent)
 	}
+	if _, ok := lease.client.(*http.Client); !ok || lease.browser != nil || lease.Scope != domain.ScopeBuild {
+		t.Fatalf("build lease client=%T browser=%p scope=%q", lease.client, lease.browser, lease.Scope)
+	}
+	if _, _, err := lease.DialWebSocket(context.Background(), "wss://example.com", nil, time.Second); err == nil {
+		t.Fatal("build lease unexpectedly exposed browser WebSocket")
+	}
+}
+
+func TestConfiguredWebNodeKeepsChromeBrowserTransport(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{
+		ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1,
+	}}}, cipher)
+	lease, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if _, ok := lease.client.(*browserClient); !ok || lease.browser == nil || lease.Scope != domain.ScopeWeb {
+		t.Fatalf("web lease client=%T browser=%p scope=%q", lease.client, lease.browser, lease.Scope)
+	}
+}
+
+func TestBuildForbiddenDoesNotPoisonEgressNode(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "build", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+	manager := NewManager(repository, cipher)
+	lease, _, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, http.StatusForbidden, nil)
+	if repository.updates != 0 || repository.node.Health != 1 || repository.node.LastError != "" {
+		t.Fatalf("build 403 poisoned node: updates=%d node=%#v", repository.updates, repository.node)
+	}
+	if _, exists := manager.clients[1]; !exists {
+		t.Fatal("build client was invalidated by an ambiguous 403")
+	}
+}
+
+func TestWebForbiddenStillRebuildsBrowserSession(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}
+	manager := NewManager(repository, cipher)
+	lease, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	manager.Feedback(context.Background(), 1, http.StatusForbidden, nil)
+	if repository.updates != 1 || repository.node.Health >= 1 || repository.node.LastError != "anti-bot rejection" {
+		t.Fatalf("web 403 feedback = updates=%d node=%#v", repository.updates, repository.node)
+	}
+	if _, exists := manager.clients[1]; exists {
+		t.Fatal("web browser session was not invalidated after 403")
+	}
 }
 
 func TestWebAssetFallsBackToWeb(t *testing.T) {
@@ -93,6 +163,11 @@ func TestWebAssetFallsBackToWeb(t *testing.T) {
 	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
 		{ID: 2, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1},
 	}}, cipher)
+	webLease, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer webLease.Release()
 	lease, err := manager.Acquire(context.Background(), domain.ScopeWebAsset, "account")
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +175,9 @@ func TestWebAssetFallsBackToWeb(t *testing.T) {
 	defer lease.Release()
 	if lease.NodeID != 2 {
 		t.Fatalf("node = %d, want web fallback node 2", lease.NodeID)
+	}
+	if lease.client != webLease.client {
+		t.Fatal("Web Asset fallback did not reuse the matching Web browser session")
 	}
 }
 
@@ -123,6 +201,44 @@ type egressRepositoryTestStub struct{ nodes []domain.Node }
 type countingEgressRepository struct {
 	egressRepositoryTestStub
 	calls int
+}
+
+type mutableEgressRepository struct {
+	node    domain.Node
+	updates int
+}
+
+func (r *mutableEgressRepository) ListEgressNodes(_ context.Context, scope domain.Scope, _ repository.SortQuery) ([]domain.Node, error) {
+	if scope != "" && r.node.Scope != scope {
+		return nil, nil
+	}
+	return []domain.Node{r.node}, nil
+}
+
+func (r *mutableEgressRepository) GetEgressNode(_ context.Context, id uint64) (domain.Node, error) {
+	if r.node.ID != id {
+		return domain.Node{}, errors.New("not found")
+	}
+	return r.node, nil
+}
+
+func (r *mutableEgressRepository) CreateEgressNode(_ context.Context, value domain.Node) (domain.Node, error) {
+	r.node = value
+	return value, nil
+}
+
+func (r *mutableEgressRepository) UpdateEgressNode(_ context.Context, value domain.Node) (domain.Node, error) {
+	r.node = value
+	r.updates++
+	return value, nil
+}
+
+func (r *mutableEgressRepository) DeleteEgressNode(_ context.Context, id uint64) error {
+	if r.node.ID != id {
+		return errors.New("not found")
+	}
+	r.node = domain.Node{}
+	return nil
 }
 
 func (r *countingEgressRepository) ListEgressNodes(ctx context.Context, scope domain.Scope, sort repository.SortQuery) ([]domain.Node, error) {

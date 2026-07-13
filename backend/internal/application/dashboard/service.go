@@ -106,7 +106,7 @@ func (s *Service) get(ctx context.Context, rawPeriod, rawTimezone string, useCac
 		return s.load(ctx, period, bucketCount, bucketDays, location, rawNow)
 	}
 	cacheKey := string(period) + "\x00" + location.String()
-	return s.cache.Load(cacheKey, rawNow, func() (Result, error) {
+	return s.cache.Load(ctx, cacheKey, rawNow, func() (Result, error) {
 		return s.load(ctx, period, bucketCount, bucketDays, location, rawNow)
 	})
 }

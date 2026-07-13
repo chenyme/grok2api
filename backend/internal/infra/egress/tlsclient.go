@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -15,10 +16,13 @@ import (
 type browserClient struct{ inner tlsclient.HttpClient }
 
 func (l *Lease) DialWebSocket(ctx context.Context, endpoint string, headers fhttp.Header, handshakeTimeout time.Duration) (*websocket.Conn, *fhttp.Response, error) {
+	if l == nil || l.browser == nil {
+		return nil, nil, errors.New("当前出口客户端不支持浏览器 WebSocket")
+	}
 	dialer := &websocket.Dialer{
 		HandshakeTimeout:  handshakeTimeout,
-		NetDialTLSContext: l.client.inner.GetTLSDialer(),
-		NetDialContext:    l.client.inner.GetDialer().DialContext,
+		NetDialTLSContext: l.browser.inner.GetTLSDialer(),
+		NetDialContext:    l.browser.inner.GetDialer().DialContext,
 	}
 	return dialer.DialContext(ctx, endpoint, headers)
 }
@@ -65,6 +69,12 @@ func fromFHTTPResponse(fresponse *fhttp.Response) *http.Response {
 		ProtoMajor: fresponse.ProtoMajor, ProtoMinor: fresponse.ProtoMinor, Header: header,
 		Body: fresponse.Body, ContentLength: contentLength, TransferEncoding: fresponse.TransferEncoding,
 		Close: fresponse.Close, Uncompressed: fresponse.Uncompressed, Trailer: http.Header(fresponse.Trailer),
+	}
+}
+
+func (c *browserClient) CloseIdleConnections() {
+	if c != nil && c.inner != nil {
+		c.inner.CloseIdleConnections()
 	}
 }
 
