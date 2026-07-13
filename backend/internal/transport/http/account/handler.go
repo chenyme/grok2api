@@ -31,6 +31,7 @@ type accountSyncProgressor interface {
 
 const (
 	maxAccountImportBytes         = 30 << 20
+	maxAccountImportFiles         = 1000
 	accountSyncQueueCapacity      = 20
 	accountEventHeartbeatInterval = 15 * time.Second
 	accountEventWriteTimeout      = 30 * time.Second
@@ -643,33 +644,8 @@ func (h *Handler) importFile(c *gin.Context, web bool) {
 	if web {
 		fileDescription = "Grok Web JSON 或 SSO 文本"
 	}
-	file, err := c.FormFile("file")
-	if err != nil {
-		var sizeError *http.MaxBytesError
-		if errors.As(err, &sizeError) {
-			response.Error(c, http.StatusRequestEntityTooLarge, "accountImportFileTooLarge", "账号凭据文件不能超过 30 MiB")
-			return
-		}
-		response.Error(c, http.StatusBadRequest, "invalidAuthFile", "请选择有效的"+fileDescription)
-		return
-	}
-	if file.Size > maxAccountImportBytes {
-		response.Error(c, http.StatusRequestEntityTooLarge, "accountImportFileTooLarge", "账号凭据文件不能超过 30 MiB")
-		return
-	}
-	opened, err := file.Open()
-	if err != nil {
-		response.Error(c, http.StatusBadRequest, "invalidAuthFile", "无法读取"+fileDescription)
-		return
-	}
-	defer opened.Close()
-	data, err := io.ReadAll(io.LimitReader(opened, maxAccountImportBytes+1))
-	if err != nil {
-		response.Error(c, http.StatusBadRequest, "invalidAuthFile", "无法读取"+fileDescription)
-		return
-	}
-	if len(data) > maxAccountImportBytes {
-		response.Error(c, http.StatusRequestEntityTooLarge, "accountImportFileTooLarge", "账号凭据文件不能超过 30 MiB")
+	documents, ok := readAccountImportDocuments(c, fileDescription)
+	if !ok {
 		return
 	}
 	stream := newAccountEventStream(c)
@@ -677,10 +653,11 @@ func (h *Handler) importFile(c *gin.Context, web bool) {
 	var total atomic.Int64
 	pipeline := h.startSyncPipeline(c.Request.Context(), stream.SyncProgressObserver())
 	var result accountapp.ImportResult
+	var err error
 	if web {
-		result, err = h.service.ImportWebCredentialsWithProgress(pipeline.ctx, data, pipeline.Observe, stream.PhaseProgressObserver("importing", &total))
+		result, err = h.service.ImportWebCredentialDocumentsWithProgress(pipeline.ctx, documents, pipeline.Observe, stream.PhaseProgressObserver("importing", &total))
 	} else {
-		result, err = h.service.ImportCredentialsWithProgress(pipeline.ctx, data, pipeline.Observe, stream.PhaseProgressObserver("importing", &total))
+		result, err = h.service.ImportCredentialDocumentsWithProgress(pipeline.ctx, documents, pipeline.Observe, stream.PhaseProgressObserver("importing", &total))
 	}
 	syncResult := pipeline.Finish(err != nil)
 	if err != nil {
@@ -688,6 +665,55 @@ func (h *Handler) importFile(c *gin.Context, web bool) {
 		return
 	}
 	_ = stream.Write("complete", accountImportResponse{Created: result.Created, Updated: result.Updated, Synced: syncResult.Succeeded, SyncFailed: syncResult.Failed})
+}
+
+func readAccountImportDocuments(c *gin.Context, fileDescription string) ([][]byte, bool) {
+	form, err := c.MultipartForm()
+	if err != nil {
+		var sizeError *http.MaxBytesError
+		if errors.As(err, &sizeError) {
+			response.Error(c, http.StatusRequestEntityTooLarge, "accountImportFileTooLarge", "账号凭据文件总大小不能超过 30 MiB")
+			return nil, false
+		}
+		response.Error(c, http.StatusBadRequest, "invalidAuthFile", "请选择有效的"+fileDescription)
+		return nil, false
+	}
+	defer form.RemoveAll()
+	files := append(form.File["files"], form.File["file"]...)
+	if len(files) == 0 {
+		response.Error(c, http.StatusBadRequest, "invalidAuthFile", "请选择有效的"+fileDescription)
+		return nil, false
+	}
+	if len(files) > maxAccountImportFiles {
+		response.Error(c, http.StatusBadRequest, "invalidAuthFile", "单次最多选择 1000 个账号文件")
+		return nil, false
+	}
+	documents := make([][]byte, 0, len(files))
+	totalBytes := int64(0)
+	for _, file := range files {
+		if file.Size < 0 || totalBytes+file.Size > maxAccountImportBytes {
+			response.Error(c, http.StatusRequestEntityTooLarge, "accountImportFileTooLarge", "账号凭据文件总大小不能超过 30 MiB")
+			return nil, false
+		}
+		opened, openErr := file.Open()
+		if openErr != nil {
+			response.Error(c, http.StatusBadRequest, "invalidAuthFile", "无法读取"+fileDescription)
+			return nil, false
+		}
+		data, readErr := io.ReadAll(io.LimitReader(opened, maxAccountImportBytes-totalBytes+1))
+		_ = opened.Close()
+		if readErr != nil {
+			response.Error(c, http.StatusBadRequest, "invalidAuthFile", "无法读取"+fileDescription)
+			return nil, false
+		}
+		totalBytes += int64(len(data))
+		if totalBytes > maxAccountImportBytes {
+			response.Error(c, http.StatusRequestEntityTooLarge, "accountImportFileTooLarge", "账号凭据文件总大小不能超过 30 MiB")
+			return nil, false
+		}
+		documents = append(documents, data)
+	}
+	return documents, true
 }
 
 func (h *Handler) refreshWebQuota(c *gin.Context) {

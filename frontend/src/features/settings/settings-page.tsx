@@ -1,4 +1,4 @@
-import { RotateCcw } from "lucide-react";
+import { RefreshCw, RotateCcw } from "lucide-react";
 import { type ReactNode } from "react";
 import { Controller } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -28,6 +28,17 @@ export function SettingsPage() {
   const loading = settingsQuery.isPending;
   const statsigMode = form.watch("providerWeb.statsigMode");
   const statsigManualConfigured = form.watch("providerWeb.statsigManualConfigured");
+  const buildClientVersion = form.watch("providerBuild.clientVersion");
+  const buildUserAgent = form.watch("providerBuild.userAgent");
+  const recommendedBuild = snapshot?.recommendedProviderBuild;
+  const recommendedBuildApplied = recommendedBuild != null
+    && buildClientVersion === recommendedBuild.clientVersion
+    && buildUserAgent === recommendedBuild.userAgent;
+  const syncRecommendedBuild = () => {
+    if (!recommendedBuild) return;
+    form.setValue("providerBuild.clientVersion", recommendedBuild.clientVersion, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
+    form.setValue("providerBuild.userAgent", recommendedBuild.userAgent, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
+  };
 
   return (
     <form className="w-full space-y-8 [&_input]:border-transparent" onSubmit={form.handleSubmit((values) => updateMutation.mutate(values))}>
@@ -61,10 +72,22 @@ export function SettingsPage() {
           </TabsList>
 
           <SettingsPane value="providers">
-          <SettingsSection title={t("settings.provider.title")}>
+          <SettingsSection
+            title={t("settings.provider.title")}
+            action={recommendedBuild ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button type="button" variant="secondary" size="sm" disabled={loading || updateMutation.isPending || recommendedBuildApplied} onClick={syncRecommendedBuild}>
+                    <RefreshCw />{recommendedBuildApplied ? t("settings.provider.recommendedVersionApplied") : t("settings.provider.syncRecommendedVersion")}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t("settings.provider.syncRecommendedVersionDescription")}</TooltipContent>
+              </Tooltip>
+            ) : undefined}
+          >
             <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
               <SettingsField controlId="provider-base-url" className="sm:col-span-2" label={t("settings.provider.baseURL")} error={form.formState.errors.providerBuild?.baseURL?.message}><Input id="provider-base-url" {...form.register("providerBuild.baseURL")} /></SettingsField>
-              <SettingsField controlId="provider-client-version" label={t("settings.provider.clientVersion")} error={form.formState.errors.providerBuild?.clientVersion?.message}><Input id="provider-client-version" {...form.register("providerBuild.clientVersion")} /></SettingsField>
+              <SettingsField controlId="provider-client-version" label={t("settings.provider.clientVersion")} badge={t("settings.provider.recommendedVersion", { version: recommendedBuild?.clientVersion ?? "-" })} error={form.formState.errors.providerBuild?.clientVersion?.message}><Input id="provider-client-version" {...form.register("providerBuild.clientVersion")} /></SettingsField>
               <SettingsField controlId="provider-client-identifier" label={t("settings.provider.clientIdentifier")} error={form.formState.errors.providerBuild?.clientIdentifier?.message}><Input id="provider-client-identifier" {...form.register("providerBuild.clientIdentifier")} /></SettingsField>
               <SettingsField controlId="provider-token-auth" label={t("settings.provider.tokenAuth")} error={form.formState.errors.providerBuild?.tokenAuth?.message}><Input id="provider-token-auth" {...form.register("providerBuild.tokenAuth")} /></SettingsField>
               <SettingsField controlId="provider-user-agent" label={t("settings.provider.userAgent")} error={form.formState.errors.providerBuild?.userAgent?.message}><Input id="provider-user-agent" {...form.register("providerBuild.userAgent")} /></SettingsField>
@@ -234,10 +257,13 @@ function SettingsPane({ value, children }: { value: string; children: ReactNode 
   );
 }
 
-function SettingsSection({ title, wide = false, children }: { title: string; wide?: boolean; children: ReactNode }) {
+function SettingsSection({ title, action, wide = false, children }: { title: string; action?: ReactNode; wide?: boolean; children: ReactNode }) {
   return (
     <section className="space-y-4">
-      <h2 className="text-sm font-medium">{title}</h2>
+      <div className="flex min-h-8 items-center justify-between gap-3">
+        <h2 className="text-sm font-medium">{title}</h2>
+        {action}
+      </div>
       <div className={wide ? "min-w-0" : "min-w-0 max-w-[860px]"}>{children}</div>
     </section>
   );

@@ -28,8 +28,23 @@ var (
 )
 
 type UpdateInput struct {
-	PublicID *string
-	Enabled  *bool
+	PublicID   *string
+	Enabled    *bool
+	AccountIDs *[]uint64
+}
+
+type CreateInput struct {
+	PublicID      string
+	Provider      account.Provider
+	UpstreamModel string
+	Capability    modeldomain.Capability
+	Enabled       bool
+	AccountIDs    []uint64
+}
+
+type AccountOption struct {
+	ID   uint64
+	Name string
 }
 
 type ListFilter struct {
@@ -96,22 +111,146 @@ func (s *Service) GetByPublicID(ctx context.Context, publicID string) (modeldoma
 	return s.models.GetByPublicID(ctx, publicID)
 }
 
+func (s *Service) Create(ctx context.Context, input CreateInput) (modeldomain.Route, error) {
+	publicID := strings.TrimSpace(input.PublicID)
+	upstreamModel := strings.TrimSpace(input.UpstreamModel)
+	if publicID == "" || len([]rune(publicID)) > 255 {
+		return modeldomain.Route{}, invalidInput("publicId 长度必须为 1-255 个字符")
+	}
+	if upstreamModel == "" || len([]rune(upstreamModel)) > 255 {
+		return modeldomain.Route{}, invalidInput("upstreamModel 长度必须为 1-255 个字符")
+	}
+	if err := validateProviderCapability(input.Provider, input.Capability); err != nil {
+		return modeldomain.Route{}, err
+	}
+	if input.Provider == account.ProviderWeb && (s.providers == nil || len(s.providers.TierOrder(input.Provider, upstreamModel)) == 0) {
+		return modeldomain.Route{}, invalidInput("Grok Web 仅支持内置模型目录中的上游模型")
+	}
+	accountIDs, err := s.validateBoundAccounts(ctx, input.Provider, input.AccountIDs)
+	if err != nil {
+		return modeldomain.Route{}, err
+	}
+	value := modeldomain.Route{
+		PublicID: publicID, Provider: input.Provider, UpstreamModel: upstreamModel,
+		Capability: input.Capability, Origin: modeldomain.OriginManual, Enabled: input.Enabled,
+	}
+	created, err := s.models.Create(ctx, value, accountIDs)
+	return created, mapRepositoryError(err)
+}
+
 func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (modeldomain.Route, error) {
 	value, err := s.models.Get(ctx, id)
 	if err != nil {
 		return modeldomain.Route{}, mapRepositoryError(err)
 	}
 	if input.PublicID != nil {
-		if strings.TrimSpace(*input.PublicID) == "" {
-			return modeldomain.Route{}, invalidInput("publicId 不能为空")
+		publicID := strings.TrimSpace(*input.PublicID)
+		if publicID == "" || len([]rune(publicID)) > 255 {
+			return modeldomain.Route{}, invalidInput("publicId 长度必须为 1-255 个字符")
 		}
-		value.PublicID = strings.TrimSpace(*input.PublicID)
+		value.PublicID = publicID
 	}
 	if input.Enabled != nil {
 		value.Enabled = *input.Enabled
 	}
-	updated, err := s.models.Update(ctx, value)
+	var accountIDs *[]uint64
+	if input.AccountIDs != nil {
+		validated, validateErr := s.validateBoundAccounts(ctx, value.Provider, *input.AccountIDs)
+		if validateErr != nil {
+			return modeldomain.Route{}, validateErr
+		}
+		accountIDs = &validated
+	}
+	updated, err := s.models.Update(ctx, value, accountIDs)
 	return updated, mapRepositoryError(err)
+}
+
+func (s *Service) Delete(ctx context.Context, id uint64) error {
+	if id == 0 {
+		return invalidInput("模型 ID 无效")
+	}
+	return mapRepositoryError(s.models.Delete(ctx, id))
+}
+
+func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) {
+	values, err := normalizeBatchIDs(ids)
+	if err != nil {
+		return 0, err
+	}
+	return s.models.DeleteMany(ctx, values)
+}
+
+func (s *Service) ListBindableAccounts(ctx context.Context, providerValue account.Provider) ([]AccountOption, error) {
+	if providerValue != account.ProviderBuild && providerValue != account.ProviderWeb {
+		return nil, invalidInput("账号来源无效")
+	}
+	values, _, err := s.accounts.List(ctx, repository.AccountListQuery{
+		Page:   repository.PageQuery{Offset: 0, Limit: 1000},
+		Filter: repository.AccountListFilter{Provider: string(providerValue)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]AccountOption, 0, len(values))
+	for _, value := range values {
+		result = append(result, AccountOption{ID: value.ID, Name: value.Name})
+	}
+	return result, nil
+}
+
+func validateProviderCapability(providerValue account.Provider, capability modeldomain.Capability) error {
+	if providerValue != account.ProviderBuild && providerValue != account.ProviderWeb {
+		return invalidInput("provider 无效")
+	}
+	valid := capability == modeldomain.CapabilityResponses || capability == modeldomain.CapabilityChat || capability == modeldomain.CapabilityImage || capability == modeldomain.CapabilityImageEdit || capability == modeldomain.CapabilityVideo
+	if !valid {
+		return invalidInput("capability 无效")
+	}
+	if providerValue == account.ProviderBuild && capability != modeldomain.CapabilityResponses {
+		return invalidInput("Grok Build 仅支持 responses 能力")
+	}
+	if providerValue == account.ProviderWeb && capability == modeldomain.CapabilityResponses {
+		return invalidInput("Grok Web 不支持 responses 能力")
+	}
+	return nil
+}
+
+func (s *Service) validateBoundAccounts(ctx context.Context, providerValue account.Provider, ids []uint64) ([]uint64, error) {
+	if len(ids) > 1000 {
+		return nil, invalidInput("单个模型最多绑定 1000 个账号")
+	}
+	unique := make(map[uint64]struct{}, len(ids))
+	result := make([]uint64, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			return nil, invalidInput("绑定账号 ID 无效")
+		}
+		if _, exists := unique[id]; exists {
+			continue
+		}
+		unique[id] = struct{}{}
+		result = append(result, id)
+	}
+	if len(result) == 0 {
+		return result, nil
+	}
+	values, _, err := s.accounts.List(ctx, repository.AccountListQuery{
+		Page:   repository.PageQuery{Offset: 0, Limit: 1000},
+		Filter: repository.AccountListFilter{Provider: string(providerValue)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	available := make(map[uint64]bool, len(values))
+	for _, value := range values {
+		available[value.ID] = true
+	}
+	for _, id := range result {
+		if !available[id] {
+			return nil, invalidInput(fmt.Sprintf("账号 %d 不存在或与模型来源不匹配", id))
+		}
+	}
+	return result, nil
 }
 
 // BatchSetEnabled 批量更新模型路由启停状态。

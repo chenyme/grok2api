@@ -23,16 +23,26 @@ const availableRoutePredicate = `
 		WHERE account.provider = model_routes.provider
 			AND account.enabled = ?
 			AND account.auth_status = ?
-			AND EXISTS (
-				SELECT 1 FROM account_model_capabilities capability
-				WHERE capability.account_id = account.id
-					AND capability.upstream_model = model_routes.upstream_model
+			AND (
+				EXISTS (
+					SELECT 1 FROM model_route_accounts binding
+					WHERE binding.model_route_id = model_routes.id
+						AND binding.account_id = account.id
+				)
+				OR (
+					NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id)
+					AND EXISTS (
+						SELECT 1 FROM account_model_capabilities capability
+						WHERE capability.account_id = account.id
+							AND capability.upstream_model = model_routes.upstream_model
+					)
+				)
 			)
 	)
 `
 
 const (
-	modelSupportSortExpression = `(SELECT COUNT(*) FROM provider_accounts account WHERE account.provider = model_routes.provider AND account.enabled = TRUE AND account.auth_status = 'active' AND EXISTS (SELECT 1 FROM account_model_capabilities capability WHERE capability.account_id = account.id AND capability.upstream_model = model_routes.upstream_model))`
+	modelSupportSortExpression = `(SELECT COUNT(*) FROM provider_accounts account WHERE account.provider = model_routes.provider AND account.enabled = TRUE AND account.auth_status = 'active' AND (EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id AND binding.account_id = account.id) OR (NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id) AND EXISTS (SELECT 1 FROM account_model_capabilities capability WHERE capability.account_id = account.id AND capability.upstream_model = model_routes.upstream_model))))`
 	modelSyncedSortExpression  = `(SELECT MAX(sync.last_success_at) FROM provider_accounts account JOIN account_model_sync_states sync ON sync.account_id = account.id WHERE account.provider = model_routes.provider AND account.enabled = TRUE AND account.auth_status = 'active')`
 )
 
@@ -155,6 +165,14 @@ func (r *ModelRepository) HasSuccessfulAccountSync(ctx context.Context, accountI
 
 func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account.Provider, upstreamModels []string) error {
 	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var suppressions []modelRouteSuppressionModel
+		if err := tx.Where("provider = ?", provider).Find(&suppressions).Error; err != nil {
+			return err
+		}
+		suppressed := make(map[string]bool, len(suppressions))
+		for _, value := range suppressions {
+			suppressed[value.UpstreamModel] = true
+		}
 		var existing []modelRouteModel
 		if err := tx.Where("provider = ? OR public_id IN ?", provider, upstreamModels).Find(&existing).Error; err != nil {
 			return err
@@ -169,7 +187,7 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 		}
 		rows := make([]modelRouteModel, 0, len(upstreamModels))
 		for _, upstreamModel := range upstreamModels {
-			if existingUpstream[upstreamModel] {
+			if existingUpstream[upstreamModel] || suppressed[upstreamModel] {
 				continue
 			}
 			publicID := upstreamModel
@@ -181,7 +199,7 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 			if provider == account.ProviderWeb {
 				capability = model.CapabilityChat
 			}
-			rows = append(rows, modelRouteModel{PublicID: publicID, Provider: string(provider), UpstreamModel: upstreamModel, Capability: string(capability), Enabled: true})
+			rows = append(rows, modelRouteModel{PublicID: publicID, Provider: string(provider), UpstreamModel: upstreamModel, Capability: string(capability), Origin: string(model.OriginDiscovered), Enabled: true})
 		}
 		if len(rows) > 0 {
 			// 多实例可能同时发现同一上游模型；唯一约束负责最终幂等，避免竞态变成整批失败。
@@ -205,7 +223,11 @@ func (r *ModelRepository) UpsertRoutes(ctx context.Context, values []model.Route
 			if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
-			row := modelRouteModel{PublicID: value.PublicID, Provider: string(value.Provider), UpstreamModel: value.UpstreamModel, Capability: string(value.Capability), Enabled: value.Enabled}
+			fallbackOrigin := model.OriginDiscovered
+			if value.Provider == account.ProviderWeb {
+				fallbackOrigin = model.OriginCatalog
+			}
+			row := modelRouteModel{PublicID: value.PublicID, Provider: string(value.Provider), UpstreamModel: value.UpstreamModel, Capability: string(value.Capability), Origin: string(normalizeRouteOrigin(value.Origin, fallbackOrigin)), Enabled: value.Enabled}
 			if err := tx.Create(&row).Error; err != nil {
 				return mapError(err)
 			}
@@ -221,8 +243,19 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 				return fmt.Errorf("模型路由目录包含无效条目")
 			}
 		}
-		if len(values) == 0 {
-			return fmt.Errorf("模型路由目录不能为空")
+		var suppressions []modelRouteSuppressionModel
+		if err := tx.Where("provider = ?", provider).Find(&suppressions).Error; err != nil {
+			return err
+		}
+		suppressed := make(map[string]bool, len(suppressions))
+		for _, value := range suppressions {
+			suppressed[value.UpstreamModel] = true
+		}
+		catalog := make([]model.Route, 0, len(values))
+		for _, value := range values {
+			if !suppressed[value.UpstreamModel] {
+				catalog = append(catalog, value)
+			}
 		}
 		var existing []modelRouteModel
 		if err := tx.Where("provider = ?", provider).Find(&existing).Error; err != nil {
@@ -235,9 +268,9 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 			byUpstream[row.UpstreamModel] = row
 			byPublicID[row.PublicID] = row
 		}
-		matched := make(map[int]modelRouteModel, len(values))
-		usedIDs := make(map[uint64]bool, len(values))
-		for index, value := range values {
+		matched := make(map[int]modelRouteModel, len(catalog))
+		usedIDs := make(map[uint64]bool, len(catalog))
+		for index, value := range catalog {
 			row, ok := byUpstream[value.UpstreamModel]
 			if !ok || usedIDs[row.ID] {
 				row, ok = byPublicID[value.PublicID]
@@ -248,7 +281,7 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 			}
 		}
 		for _, row := range existing {
-			if usedIDs[row.ID] {
+			if usedIDs[row.ID] || row.Origin == string(model.OriginManual) {
 				continue
 			}
 			if err := tx.Delete(&modelRouteModel{}, row.ID).Error; err != nil {
@@ -266,11 +299,12 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 				return mapError(err)
 			}
 		}
-		for index, value := range values {
+		for index, value := range catalog {
 			updates := map[string]any{
 				"public_id":      value.PublicID,
 				"upstream_model": value.UpstreamModel,
 				"capability":     value.Capability,
+				"origin":         model.OriginCatalog,
 			}
 			if row, ok := matched[index]; ok {
 				if err := tx.Model(&modelRouteModel{}).Where("id = ?", row.ID).Updates(updates).Error; err != nil {
@@ -283,7 +317,7 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 				}
 				continue
 			}
-			row := modelRouteModel{PublicID: value.PublicID, Provider: string(provider), UpstreamModel: value.UpstreamModel, Capability: string(value.Capability), Enabled: value.Enabled}
+			row := modelRouteModel{PublicID: value.PublicID, Provider: string(provider), UpstreamModel: value.UpstreamModel, Capability: string(value.Capability), Origin: string(model.OriginCatalog), Enabled: value.Enabled}
 			if err := tx.Create(&row).Error; err != nil {
 				return mapError(err)
 			}
@@ -306,16 +340,122 @@ func renameAccountModelCapability(tx *gorm.DB, provider account.Provider, oldMod
 		Update("upstream_model", newModel).Error
 }
 
-func (r *ModelRepository) Update(ctx context.Context, value model.Route) (model.Route, error) {
-	row := modelRouteModel{ID: value.ID, PublicID: value.PublicID, Provider: string(value.Provider), UpstreamModel: value.UpstreamModel, Capability: string(value.Capability), Enabled: value.Enabled, CreatedAt: value.CreatedAt}
-	if err := r.db.db.WithContext(ctx).Save(&row).Error; err != nil {
-		return model.Route{}, mapError(err)
+func (r *ModelRepository) Create(ctx context.Context, value model.Route, accountIDs []uint64) (model.Route, error) {
+	row := modelRouteModel{
+		PublicID: value.PublicID, Provider: string(value.Provider), UpstreamModel: value.UpstreamModel,
+		Capability: string(value.Capability), Origin: string(model.OriginManual), Enabled: value.Enabled,
 	}
-	values := []model.Route{toModelDomain(row)}
-	if err := r.annotateAvailability(ctx, values); err != nil {
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&row).Error; err != nil {
+			return mapError(err)
+		}
+		if err := replaceModelRouteAccounts(tx, row.ID, accountIDs); err != nil {
+			return err
+		}
+		return tx.Where("provider = ? AND upstream_model = ?", row.Provider, row.UpstreamModel).Delete(&modelRouteSuppressionModel{}).Error
+	})
+	if err != nil {
 		return model.Route{}, err
 	}
-	return values[0], nil
+	return r.Get(ctx, row.ID)
+}
+
+func (r *ModelRepository) Update(ctx context.Context, value model.Route, accountIDs *[]uint64) (model.Route, error) {
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&modelRouteModel{}).Where("id = ?", value.ID).Updates(map[string]any{
+			"public_id": value.PublicID,
+			"enabled":   value.Enabled,
+		})
+		if result.Error != nil {
+			return mapError(result.Error)
+		}
+		if result.RowsAffected == 0 {
+			var count int64
+			if err := tx.Model(&modelRouteModel{}).Where("id = ?", value.ID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				return repository.ErrNotFound
+			}
+		}
+		if accountIDs != nil {
+			return replaceModelRouteAccounts(tx, value.ID, *accountIDs)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.Route{}, err
+	}
+	return r.Get(ctx, value.ID)
+}
+
+func (r *ModelRepository) Delete(ctx context.Context, id uint64) error {
+	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row modelRouteModel
+		if err := tx.First(&row, id).Error; err != nil {
+			return mapError(err)
+		}
+		suppression := modelRouteSuppressionModel{Provider: row.Provider, UpstreamModel: row.UpstreamModel, CreatedAt: time.Now().UTC()}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "provider"}, {Name: "upstream_model"}},
+			DoUpdates: clause.AssignmentColumns([]string{"created_at"}),
+		}).Create(&suppression).Error; err != nil {
+			return err
+		}
+		result := tx.Delete(&modelRouteModel{}, id)
+		if result.Error != nil {
+			return mapError(result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return repository.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (r *ModelRepository) DeleteMany(ctx context.Context, ids []uint64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var deleted int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rows []modelRouteModel
+		if err := tx.Where("id IN ?", ids).Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		now := time.Now().UTC()
+		suppressions := make([]modelRouteSuppressionModel, 0, len(rows))
+		for _, row := range rows {
+			suppressions = append(suppressions, modelRouteSuppressionModel{Provider: row.Provider, UpstreamModel: row.UpstreamModel, CreatedAt: now})
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "provider"}, {Name: "upstream_model"}},
+			DoUpdates: clause.AssignmentColumns([]string{"created_at"}),
+		}).CreateInBatches(suppressions, 200).Error; err != nil {
+			return err
+		}
+		result := tx.Where("id IN ?", ids).Delete(&modelRouteModel{})
+		deleted = result.RowsAffected
+		return mapError(result.Error)
+	})
+	return deleted, err
+}
+
+func replaceModelRouteAccounts(tx *gorm.DB, routeID uint64, accountIDs []uint64) error {
+	if err := tx.Where("model_route_id = ?", routeID).Delete(&modelRouteAccountModel{}).Error; err != nil {
+		return err
+	}
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	rows := make([]modelRouteAccountModel, 0, len(accountIDs))
+	for _, accountID := range accountIDs {
+		rows = append(rows, modelRouteAccountModel{ModelRouteID: routeID, AccountID: accountID})
+	}
+	return tx.CreateInBatches(rows, 200).Error
 }
 
 func (r *ModelRepository) UpdateManyEnabled(ctx context.Context, ids []uint64, enabled bool) (int64, error) {
@@ -352,19 +492,37 @@ func (r *ModelRepository) annotateAvailability(ctx context.Context, values []mod
 	}
 	err := r.db.db.WithContext(ctx).Raw(fmt.Sprintf(`
 		SELECT route.id AS route_id,
-			COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND capability.account_id IS NOT NULL THEN account.id END) AS supported_accounts,
-			COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND sync.last_success_at IS NOT NULL THEN account.id END) AS synced_accounts,
-			COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? THEN account.id END) AS total_accounts,
+			CASE WHEN COUNT(DISTINCT binding.account_id) > 0
+				THEN COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND binding.account_id IS NOT NULL THEN account.id END)
+				ELSE COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND capability.account_id IS NOT NULL THEN account.id END)
+			END AS supported_accounts,
+			CASE WHEN COUNT(DISTINCT binding.account_id) > 0
+				THEN COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND binding.account_id IS NOT NULL AND sync.last_success_at IS NOT NULL THEN account.id END)
+				ELSE COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND sync.last_success_at IS NOT NULL THEN account.id END)
+			END AS synced_accounts,
+			CASE WHEN COUNT(DISTINCT binding.account_id) > 0
+				THEN COUNT(DISTINCT binding.account_id)
+				ELSE COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? THEN account.id END)
+			END AS total_accounts,
 			%s AS last_synced_unix
 		FROM model_routes route
 		LEFT JOIN provider_accounts account ON account.provider = route.provider
+		LEFT JOIN model_route_accounts binding ON binding.model_route_id = route.id AND binding.account_id = account.id
 		LEFT JOIN account_model_sync_states sync ON sync.account_id = account.id
 		LEFT JOIN account_model_capabilities capability ON capability.account_id = account.id AND capability.upstream_model = route.upstream_model
 		WHERE route.id IN ?
 		GROUP BY route.id
-	`, lastSyncedExpression), account.AuthStatusActive, account.AuthStatusActive, account.AuthStatusActive, ids).Scan(&rows).Error
+	`, lastSyncedExpression), account.AuthStatusActive, account.AuthStatusActive, account.AuthStatusActive, account.AuthStatusActive, account.AuthStatusActive, ids).Scan(&rows).Error
 	if err != nil {
 		return err
+	}
+	var bindings []modelRouteAccountModel
+	if err := r.db.db.WithContext(ctx).Where("model_route_id IN ?", ids).Order("model_route_id ASC, account_id ASC").Find(&bindings).Error; err != nil {
+		return err
+	}
+	boundByRoute := make(map[uint64][]uint64, len(values))
+	for _, binding := range bindings {
+		boundByRoute[binding.ModelRouteID] = append(boundByRoute[binding.ModelRouteID], binding.AccountID)
 	}
 	byID := make(map[uint64]availabilityRow, len(rows))
 	for _, row := range rows {
@@ -375,6 +533,7 @@ func (r *ModelRepository) annotateAvailability(ctx context.Context, values []mod
 		values[index].SupportedAccounts = row.SupportedAccounts
 		values[index].SyncedAccounts = row.SyncedAccounts
 		values[index].TotalAccounts = row.TotalAccounts
+		values[index].BoundAccountIDs = boundByRoute[values[index].ID]
 		if row.LastSyncedUnix.Valid {
 			lastSyncedAt := time.Unix(row.LastSyncedUnix.Int64, 0).UTC()
 			values[index].LastSyncedAt = &lastSyncedAt
@@ -397,4 +556,11 @@ func mapModelRows(rows []modelRouteModel) []model.Route {
 		out = append(out, toModelDomain(row))
 	}
 	return out
+}
+
+func normalizeRouteOrigin(value, fallback model.Origin) model.Origin {
+	if value == model.OriginCatalog || value == model.OriginDiscovered || value == model.OriginManual {
+		return value
+	}
+	return fallback
 }

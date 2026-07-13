@@ -261,7 +261,7 @@ export function AccountsPage() {
   });
 
   const importMutation = useMutation({
-    mutationFn: (file: File) => {
+    mutationFn: (files: File[]) => {
       const controller = new AbortController();
       importAbortRef.current = controller;
       const toastID = toast.loading(t("common.importingProgress", { completed: 0, total: "…" }));
@@ -269,7 +269,7 @@ export function AccountsPage() {
       const onProgress = (progress: AccountTaskProgressDTO) => {
         toast.loading(t(progress.phase === "syncing" ? "common.syncingProgress" : "common.importingProgress", progress), { id: toastID });
       };
-      return provider === "grok_web" ? importWebAccounts(file, onProgress, controller.signal) : importAccounts(file, onProgress, controller.signal);
+      return provider === "grok_web" ? importWebAccounts(files, onProgress, controller.signal) : importAccounts(files, onProgress, controller.signal);
     },
     onSuccess: (result) => {
       if (importToastRef.current !== null) toast.dismiss(importToastRef.current);
@@ -391,7 +391,7 @@ export function AccountsPage() {
   function submitQuickImport(): void {
     const value = quickImportTokens.trim();
     if (!value) return;
-    importMutation.mutate(new File([value], "grok-web-sso-tokens.txt", { type: "text/plain" }));
+    importMutation.mutate([new File([value], "grok-web-sso-tokens.txt", { type: "text/plain" })]);
   }
 
   async function startDeviceLogin(): Promise<void> {
@@ -492,12 +492,13 @@ export function AccountsPage() {
         <input
           ref={fileInputRef}
           type="file"
+          multiple
           accept={provider === "grok_web" ? "application/json,text/plain,.json,.txt" : "application/json,.json"}
           className="hidden"
           onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) {
-              importMutation.mutate(file);
+            const files = Array.from(event.target.files ?? []);
+            if (files.length > 0) {
+              importMutation.mutate(files);
             }
             event.target.value = "";
           }}

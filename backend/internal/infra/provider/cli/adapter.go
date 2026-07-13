@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,17 +70,18 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		return nil, err
 	}
 	body := request.Body
+	var toolCompatibility *responsesToolCompatibility
 	if request.NormalizeBody {
 		if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 			body, err = conversation.ConvertRequest(body, request.Model, request.Operation)
 		} else {
-			body, err = normalizeResponsesRequest(body, request.Model)
+			body, toolCompatibility, err = normalizeResponsesRequest(body, request.Model)
 		}
 		if err != nil {
 			if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 				return invalidConversationResponse(request.Operation, err), nil
 			}
-			return nil, err
+			return invalidResponsesResponse(err), nil
 		}
 	}
 	var bodyReader io.Reader
@@ -106,6 +108,30 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if err != nil {
 		return nil, err
 	}
+	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses
+	if responsesOperation && toolCompatibility != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if request.Streaming {
+			resp.Body = toolCompatibility.normalizeResponseStream(resp.Body)
+			resp.Header.Del("Content-Length")
+			resp.Header.Set("Content-Type", "text/event-stream")
+		} else {
+			data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxCompatibleResponseBytes+1))
+			_ = resp.Body.Close()
+			if readErr != nil {
+				return nil, readErr
+			}
+			if len(data) > maxCompatibleResponseBytes {
+				return nil, fmt.Errorf("上游兼容 Responses 响应超过 128 MiB")
+			}
+			converted, convertErr := toolCompatibility.normalizeResponseJSON(data)
+			if convertErr != nil {
+				return nil, convertErr
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(converted))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(converted)))
+			resp.Header.Set("Content-Type", "application/json")
+		}
+	}
 	if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 		if request.Streaming && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			resp.Body = conversation.ConvertResponseStream(resp.Body, request.Operation)
@@ -130,6 +156,29 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 	}
 	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body}, nil
+}
+
+// invalidResponsesResponse 将本地协议校验错误转换为标准 OpenAI 错误响应，避免触发上游账号重试。
+func invalidResponsesResponse(err error) *provider.Response {
+	code := "invalid_request"
+	param := ""
+	message := err.Error()
+	var requestErr *responsesRequestError
+	if errors.As(err, &requestErr) {
+		code = requestErr.Code
+		param = requestErr.Param
+		message = requestErr.Message
+	}
+	errorBody := map[string]any{"type": "invalid_request_error", "message": message, "code": code}
+	if param != "" {
+		errorBody["param"] = param
+	}
+	data, _ := json.Marshal(map[string]any{"error": errorBody})
+	return &provider.Response{
+		StatusCode: http.StatusBadRequest, Status: "400 Bad Request",
+		Header: http.Header{"Content-Type": []string{"application/json"}, "Content-Length": []string{strconv.Itoa(len(data))}},
+		Body:   io.NopCloser(bytes.NewReader(data)),
+	}
 }
 
 func invalidConversationResponse(operation string, err error) *provider.Response {

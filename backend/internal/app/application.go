@@ -205,7 +205,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	accountSyncService := accountsyncapp.NewService(logger, accountService, accountService, accountService, modelService)
 	accountSyncService.SetBulkPool(importPool)
 	accountSyncService.UpdateConcurrency(cfg.Batch.ImportConcurrency)
-	egressService := egressapp.NewService(egressRepo, cipher, cfg.Provider.Build.UserAgent, infraegress.DefaultUserAgent)
+	egressService := egressapp.NewService(egressRepo, cipher, infraegress.DefaultUserAgent)
 	clientKeyService := clientkeyapp.NewService(clientKeyRepo, rateLimiter, concurrency, cfg.ClientKeyDefaults.RPMLimit, cfg.ClientKeyDefaults.MaxConcurrent, cipher)
 	auditService := auditapp.NewService(auditRepo, logger, cfg.Audit.BufferSize, cfg.Audit.BatchSize, cfg.Audit.FlushInterval.Value())
 	dashboardService := dashboardapp.NewService(dashboardRepo)
@@ -240,7 +240,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 			UserAgent: next.Provider.Build.UserAgent,
 		})
 		webAdapter.UpdateConfig(webProviderConfig(next))
-		egressService.UpdateDefaults(next.Provider.Build.UserAgent, infraegress.DefaultUserAgent)
+		egressService.UpdateDefaults(infraegress.DefaultUserAgent)
 		mediaService.UpdateConfig(mediaConfig(next))
 		quotaRecoveryService.UpdateConfig(next.Provider.Web.RecoveryBackoffBase.Value(), next.Provider.Web.RecoveryBackoffMax.Value())
 		accountSyncService.UpdateConcurrency(next.Batch.ImportConcurrency)

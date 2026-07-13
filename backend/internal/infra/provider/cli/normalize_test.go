@@ -12,7 +12,7 @@ import (
 
 func TestNormalizeResponsesRequest(t *testing.T) {
 	body := []byte(`{"model":"public-model","input":[{"type":"reasoning","id":"old","encrypted_content":"cipher"},{"role":"user","content":"hello"}],"prompt_cache_key":"official-key","response_format":{"type":"json_object"}}`)
-	normalized, err := normalizeResponsesRequest(body, "grok-4.5")
+	normalized, _, err := normalizeResponsesRequest(body, "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestNormalizeResponsesRequest(t *testing.T) {
 }
 
 func TestNormalizeResponsesRequestPreservesExplicitPromptCacheKey(t *testing.T) {
-	normalized, err := normalizeResponsesRequest([]byte(`{"model":"public","input":"hello","prompt_cache_key":"official-key"}`), "grok-4.5")
+	normalized, _, err := normalizeResponsesRequest([]byte(`{"model":"public","input":"hello","prompt_cache_key":"official-key"}`), "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestNormalizeResponsesRequestPreservesExplicitPromptCacheKey(t *testing.T) 
 }
 
 func TestNormalizeResponsesRequestDoesNotInventPromptCacheKey(t *testing.T) {
-	normalized, err := normalizeResponsesRequest([]byte(`{"model":"public","input":"hello"}`), "grok-4.5")
+	normalized, _, err := normalizeResponsesRequest([]byte(`{"model":"public","input":"hello"}`), "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestNormalizeResponsesRequestDoesNotInventPromptCacheKey(t *testing.T) {
 
 func TestNormalizeResponsesRequestFlattensJSONSchema(t *testing.T) {
 	body := []byte(`{"model":"public","input":"hello","response_format":{"type":"json_schema","json_schema":{"name":"answer","strict":true,"schema":{"type":"object"}}}}`)
-	normalized, err := normalizeResponsesRequest(body, "grok-4.5")
+	normalized, _, err := normalizeResponsesRequest(body, "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
 	}

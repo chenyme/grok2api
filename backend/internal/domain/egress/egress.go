@@ -13,7 +13,6 @@ const (
 type Scope string
 
 const (
-	ScopeAll      Scope = "all"
 	ScopeBuild    Scope = "grok_build"
 	ScopeWeb      Scope = "grok_web"
 	ScopeWebAsset Scope = "grok_web_asset"

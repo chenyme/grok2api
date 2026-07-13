@@ -17,7 +17,7 @@ import { createEgressNode, deleteEgressNode, listEgressNodes, updateEgressNode, 
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
-const emptyInput: EgressNodeInput = { name: "", scope: "all", enabled: true, proxyURL: "", userAgent: "", cloudflareCookies: "" };
+const emptyInput: EgressNodeInput = { name: "", scope: "grok_build", enabled: true, proxyURL: "", userAgent: "", cloudflareCookies: "" };
 
 export function EgressNodes() {
   const { t } = useTranslation();
@@ -28,7 +28,12 @@ export function EgressNodes() {
   const query = useQuery({ queryKey: ["egress-nodes", sort.field, sort.order], queryFn: () => listEgressNodes({ sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined }) });
   const save = useMutation({
     mutationFn: () => {
-      const input = { ...form, proxyURL: form.proxyURL?.trim() || undefined, cloudflareCookies: form.cloudflareCookies?.trim() || undefined };
+      const input = {
+        ...form,
+        proxyURL: form.proxyURL?.trim() || undefined,
+        userAgent: form.scope === "grok_build" ? "" : form.userAgent,
+        cloudflareCookies: form.scope === "grok_build" ? undefined : form.cloudflareCookies?.trim() || undefined,
+      };
       return editing ? updateEgressNode(editing.id, input) : createEgressNode(input);
     },
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); setEditing(undefined); toast.success(t("settings.egress.saved")); },
@@ -41,12 +46,12 @@ export function EgressNodes() {
   });
 
   function openCreate() {
-    setForm({ ...emptyInput, userAgent: query.data?.defaultUserAgents.all ?? "" });
+    setForm(emptyInput);
     setEditing(null);
   }
 
   function openEdit(node: EgressNodeDTO) {
-    setForm({ name: node.name, scope: node.scope, enabled: node.enabled, userAgent: node.userAgent, proxyURL: "", cloudflareCookies: "" });
+    setForm({ name: node.name, scope: node.scope, enabled: node.enabled, userAgent: node.scope === "grok_build" ? "" : node.userAgent, proxyURL: "", cloudflareCookies: "" });
     setEditing(node);
   }
 
@@ -56,13 +61,12 @@ export function EgressNodes() {
     setForm({
       ...form,
       scope,
-      userAgent: form.userAgent === "" || form.userAgent === previousDefault ? nextDefault : form.userAgent,
+      userAgent: scope === "grok_build" ? "" : (form.userAgent === "" || form.userAgent === previousDefault ? nextDefault : form.userAgent),
       cloudflareCookies: scope === "grok_build" ? "" : form.cloudflareCookies,
     });
   }
 
   function scopeLabel(scope: EgressScope) {
-    if (scope === "all") return t("settings.egress.scopeAll");
     if (scope === "grok_build") return t("settings.egress.scopeBuild");
     if (scope === "grok_web_asset") return t("settings.egress.scopeWebAsset");
     return t("settings.egress.scopeWeb");
@@ -106,10 +110,10 @@ export function EgressNodes() {
           <DialogHeader><DialogTitle>{editing ? t("settings.egress.editTitle") : t("settings.egress.addTitle")}</DialogTitle><DialogDescription>{t("settings.egress.dialogDescription")}</DialogDescription></DialogHeader>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={t("settings.egress.name")} className="sm:col-span-2"><Input className="border-transparent" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
-            <Field label={t("settings.egress.scope")}><Select value={form.scope} onValueChange={(value) => changeScope(value as EgressScope)}><SelectTrigger className="border-transparent"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">{t("settings.egress.scopeAll")}</SelectItem><SelectItem value="grok_build">{t("settings.egress.scopeBuild")}</SelectItem><SelectItem value="grok_web">{t("settings.egress.scopeWeb")}</SelectItem><SelectItem value="grok_web_asset">{t("settings.egress.scopeWebAsset")}</SelectItem></SelectContent></Select></Field>
+            <Field label={t("settings.egress.scope")}><Select value={form.scope} onValueChange={(value) => changeScope(value as EgressScope)}><SelectTrigger className="border-transparent"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="grok_build">{t("settings.egress.scopeBuild")}</SelectItem><SelectItem value="grok_web">{t("settings.egress.scopeWeb")}</SelectItem><SelectItem value="grok_web_asset">{t("settings.egress.scopeWebAsset")}</SelectItem></SelectContent></Select></Field>
             <Field label={t("settings.egress.enabled")}><div className="flex h-9 items-center"><Switch checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} /></div></Field>
             <Field label={t("settings.egress.proxyURL")} className="sm:col-span-2"><Input className="border-transparent" type="password" autoComplete="new-password" placeholder={editing?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL} onChange={(event) => setForm({ ...form, proxyURL: event.target.value })} /><p className="text-[11px] text-muted-foreground">{t("settings.egress.proxyProtocols")}</p></Field>
-            <Field label={t("settings.egress.userAgent")} className="sm:col-span-2"><Input className="border-transparent" value={form.userAgent} onChange={(event) => setForm({ ...form, userAgent: event.target.value })} /></Field>
+            {form.scope !== "grok_build" ? <Field label={t("settings.egress.userAgent")} className="sm:col-span-2"><Input className="border-transparent" value={form.userAgent} onChange={(event) => setForm({ ...form, userAgent: event.target.value })} /></Field> : null}
             {form.scope !== "grok_build" ? <Field label={t("settings.egress.cloudflareCookie")} className="sm:col-span-2"><Input className="border-transparent" type="password" autoComplete="new-password" placeholder={editing?.cookieConfigured ? t("settings.egress.keepConfigured") : "cf_clearance=...; __cf_bm=..."} value={form.cloudflareCookies} onChange={(event) => setForm({ ...form, cloudflareCookies: event.target.value })} /></Field> : null}
           </div>
           <DialogFooter><Button type="button" variant="outline" onClick={() => setEditing(undefined)}>{t("common.cancel")}</Button><Button type="button" disabled={!form.name.trim() || save.isPending} onClick={() => save.mutate()}>{t("common.save")}</Button></DialogFooter>

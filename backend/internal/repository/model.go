@@ -20,6 +20,9 @@ type ModelRepository interface {
 	ReplaceAccountCapabilities(ctx context.Context, accountID uint64, upstreamModels []string, syncedAt time.Time) error
 	MarkAccountCapabilitySyncFailed(ctx context.Context, accountID uint64, attemptedAt time.Time, message string) error
 	HasSuccessfulAccountSync(ctx context.Context, accountID uint64) (bool, error)
-	Update(ctx context.Context, value model.Route) (model.Route, error)
+	Create(ctx context.Context, value model.Route, accountIDs []uint64) (model.Route, error)
+	Update(ctx context.Context, value model.Route, accountIDs *[]uint64) (model.Route, error)
+	Delete(ctx context.Context, id uint64) error
+	DeleteMany(ctx context.Context, ids []uint64) (int64, error)
 	UpdateManyEnabled(ctx context.Context, ids []uint64, enabled bool) (int64, error)
 }

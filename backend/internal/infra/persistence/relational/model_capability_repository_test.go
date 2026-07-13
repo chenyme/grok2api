@@ -186,3 +186,121 @@ func TestReplaceProviderRoutesCanRenameUpstreamModels(t *testing.T) {
 		}
 	}
 }
+
+func TestManualModelRouteBindingsAndDeletionSuppression(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	models := NewModelRepository(database)
+	accounts := NewAccountRepository(database)
+	first, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "first", SourceKey: "first",
+		EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "second", SourceKey: "second",
+		EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := models.Create(ctx, model.Route{
+		PublicID: "custom-build", Provider: account.ProviderBuild, UpstreamModel: "custom-upstream",
+		Capability: model.CapabilityResponses, Enabled: true,
+	}, []uint64{first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Origin != model.OriginManual || len(created.BoundAccountIDs) != 1 || created.BoundAccountIDs[0] != first.ID || created.SupportedAccounts != 1 || created.TotalAccounts != 1 {
+		t.Fatalf("created route = %#v", created)
+	}
+	if _, err := models.GetByPublicID(ctx, created.PublicID); err != nil {
+		t.Fatalf("bound route must be available without a discovery snapshot: %v", err)
+	}
+	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, created.UpstreamModel, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].Credential.ID != first.ID || !candidates[0].ModelCapabilityKnown || !candidates[0].SupportsModel {
+		t.Fatalf("bound candidates = %#v; second=%d", candidates, second.ID)
+	}
+
+	if err := models.Delete(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.UpsertDiscovered(ctx, account.ProviderBuild, []string{created.UpstreamModel}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.GetByPublicID(ctx, created.PublicID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("deleted route was rediscovered: %v", err)
+	}
+
+	recreated, err := models.Create(ctx, model.Route{
+		PublicID: created.PublicID, Provider: account.ProviderBuild, UpstreamModel: created.UpstreamModel,
+		Capability: model.CapabilityResponses, Enabled: true,
+	}, []uint64{second.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recreated.BoundAccountIDs) != 1 || recreated.BoundAccountIDs[0] != second.ID {
+		t.Fatalf("recreated route = %#v", recreated)
+	}
+}
+
+func TestManualWebRouteSurvivesCatalogReconciliation(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewModelRepository(database)
+	manual, err := repo.Create(ctx, model.Route{
+		PublicID: "manual-web", Provider: account.ProviderWeb, UpstreamModel: "manual-web-upstream",
+		Capability: model.CapabilityChat, Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReplaceProviderRoutes(ctx, account.ProviderWeb, []model.Route{{
+		PublicID: "grok-chat-fast", Provider: account.ProviderWeb, UpstreamModel: "grok-chat-fast",
+		Capability: model.CapabilityChat, Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	value, err := repo.Get(ctx, manual.ID)
+	if err != nil || value.Origin != model.OriginManual {
+		t.Fatalf("manual route after catalog reconciliation = %#v, err = %v", value, err)
+	}
+}
+
+func TestBatchDeleteModelRoutesSuppressesRediscovery(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewModelRepository(database)
+	first, err := repo.Create(ctx, model.Route{
+		PublicID: "batch-first", Provider: account.ProviderBuild, UpstreamModel: "batch-upstream-first",
+		Capability: model.CapabilityResponses, Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := repo.Create(ctx, model.Route{
+		PublicID: "batch-second", Provider: account.ProviderBuild, UpstreamModel: "batch-upstream-second",
+		Capability: model.CapabilityResponses, Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := repo.DeleteMany(ctx, []uint64{first.ID, second.ID})
+	if err != nil || deleted != 2 {
+		t.Fatalf("deleted = %d, err = %v", deleted, err)
+	}
+	if err := repo.UpsertDiscovered(ctx, account.ProviderBuild, []string{first.UpstreamModel, second.UpstreamModel}); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []model.Route{first, second} {
+		if _, err := repo.Get(ctx, value.ID); !errors.Is(err, repository.ErrNotFound) {
+			t.Fatalf("route %d was rediscovered: %v", value.ID, err)
+		}
+	}
+}

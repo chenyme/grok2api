@@ -27,6 +27,12 @@ type ProviderBuildConfig struct {
 	UserAgent        string
 }
 
+// ProviderBuildRecommendation 表示当前网关已完成兼容回归的 Grok Build 协议基线。
+type ProviderBuildRecommendation struct {
+	ClientVersion string
+	UserAgent     string
+}
+
 type ProviderWebConfig struct {
 	BaseURL                 string
 	StatsigMode             string
@@ -93,10 +99,11 @@ type EditableConfig struct {
 
 // Snapshot 表示当前运行设置和需要重启才能生效的字段。
 type Snapshot struct {
-	Config          EditableConfig
-	UpdatedAt       time.Time
-	Revision        uint64
-	RestartRequired []string
+	Config                   EditableConfig
+	RecommendedProviderBuild ProviderBuildRecommendation
+	UpdatedAt                time.Time
+	Revision                 uint64
+	RestartRequired          []string
 }
 
 // Service 管理允许在线修改的配置，并向后台任务广播配置变更。
@@ -303,7 +310,14 @@ func (s *Service) snapshotLocked() Snapshot {
 	if s.cfg.Provider.Web.MediaConcurrency != s.activeMediaConcurrency {
 		restartRequired = append(restartRequired, "providerWeb.mediaConcurrency")
 	}
-	return Snapshot{Config: toEditable(s.cfg), UpdatedAt: s.updatedAt, Revision: s.revision, RestartRequired: restartRequired}
+	return Snapshot{
+		Config: toEditable(s.cfg),
+		RecommendedProviderBuild: ProviderBuildRecommendation{
+			ClientVersion: config.RecommendedBuildClientVersion,
+			UserAgent:     config.RecommendedBuildUserAgent,
+		},
+		UpdatedAt: s.updatedAt, Revision: s.revision, RestartRequired: restartRequired,
+	}
 }
 
 func mergeEditable(current config.Config, input EditableConfig) (config.Config, error) {

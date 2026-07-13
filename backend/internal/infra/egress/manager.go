@@ -99,7 +99,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		if !allowDirect {
 			return nil, false, nil
 		}
-		available = []domain.Node{{ID: 0, Name: "direct", Scope: scope, Enabled: true, Health: 1, UserAgent: DefaultUserAgent}}
+		available = []domain.Node{{ID: 0, Name: "direct", Scope: scope, Enabled: true, Health: 1}}
 	}
 	sort.SliceStable(available, func(i, j int) bool { return available[i].ID < available[j].ID })
 	selected := m.selectNode(available, affinity)
@@ -119,15 +119,14 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		}
 		cookies = application.SanitizeCloudflareCookies(cookies)
 	}
-	userAgent := strings.TrimSpace(selected.UserAgent)
-	if userAgent == "" {
+	userAgent := ""
+	if scope != domain.ScopeBuild {
+		userAgent = strings.TrimSpace(selected.UserAgent)
+	}
+	if scope != domain.ScopeBuild && userAgent == "" {
 		userAgent = DefaultUserAgent
 	}
-	leaseUserAgent := userAgent
-	if scope == domain.ScopeBuild && selected.Scope == domain.ScopeAll {
-		leaseUserAgent = ""
-	}
-	client, err := m.clientFor(selected.ID, proxyURL, leaseUserAgent, cookies)
+	client, err := m.clientFor(selected.ID, proxyURL, userAgent, cookies)
 	if err != nil {
 		return nil, false, err
 	}
@@ -135,7 +134,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	m.inflight[selected.ID]++
 	m.mu.Unlock()
 	var once sync.Once
-	return &Lease{NodeID: selected.ID, ProxyURL: proxyURL, UserAgent: leaseUserAgent, CFCookies: cookies, client: client, release: func() {
+	return &Lease{NodeID: selected.ID, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client, release: func() {
 		once.Do(func() {
 			m.mu.Lock()
 			m.inflight[selected.ID]--
@@ -182,19 +181,14 @@ func (m *Manager) listNodes(ctx context.Context, scope domain.Scope, now time.Ti
 func (m *Manager) invalidateNodes(scope domain.Scope) {
 	m.mu.Lock()
 	delete(m.nodes, scope)
-	delete(m.nodes, domain.ScopeAll)
 	m.mu.Unlock()
 }
 
 func fallbackScopes(scope domain.Scope) []domain.Scope {
-	switch scope {
-	case domain.ScopeWebAsset:
-		return []domain.Scope{domain.ScopeWebAsset, domain.ScopeWeb, domain.ScopeAll}
-	case domain.ScopeAll:
-		return []domain.Scope{domain.ScopeAll}
-	default:
-		return []domain.Scope{scope, domain.ScopeAll}
+	if scope == domain.ScopeWebAsset {
+		return []domain.Scope{domain.ScopeWebAsset, domain.ScopeWeb}
 	}
+	return []domain.Scope{scope}
 }
 
 func (m *Manager) selectNode(nodes []domain.Node, affinity string) domain.Node {

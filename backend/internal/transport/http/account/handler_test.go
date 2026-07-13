@@ -1,8 +1,10 @@
 package account
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"mime/multipart"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
@@ -106,6 +108,33 @@ func TestAccountProgressEventIncludesOptionalPhase(t *testing.T) {
 	}
 	if total.Load() != 10 {
 		t.Fatalf("total = %d", total.Load())
+	}
+}
+
+func TestReadAccountImportDocumentsAcceptsMultipleFiles(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for name, value := range map[string]string{"first.json": `{"accounts":[]}`, "second.json": `{"provider":"grok_build"}`} {
+		part, err := writer.CreateFormFile("files", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest("POST", "/api/admin/v1/accounts/import", &body)
+	ctx.Request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	documents, ok := readAccountImportDocuments(ctx, "账号凭据 JSON")
+	if !ok || len(documents) != 2 {
+		t.Fatalf("documents = %q, status = %d", documents, recorder.Code)
 	}
 }
 

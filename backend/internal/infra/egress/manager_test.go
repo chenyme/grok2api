@@ -64,62 +64,33 @@ func TestAcquireIfConfiguredDoesNotChangeBuildDirectTransport(t *testing.T) {
 	}
 }
 
-func TestDedicatedScopeTakesPriorityOverAllScope(t *testing.T) {
+func TestConfiguredBuildNodeDoesNotOverrideProviderUserAgent(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
-		{ID: 1, Name: "all", Scope: domain.ScopeAll, Enabled: true, Health: 1},
-		{ID: 2, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1},
-	}}, cipher)
-	lease, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lease.Release()
-	if lease.NodeID != 2 {
-		t.Fatalf("node = %d, want dedicated node 2", lease.NodeID)
-	}
-}
-
-func TestAllScopeFallbackOmitsWebFieldsForBuild(t *testing.T) {
-	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxyURL, err := cipher.Encrypt("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookies, err := cipher.Encrypt("cf_clearance=secret")
 	if err != nil {
 		t.Fatal(err)
 	}
 	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{
-		ID: 1, Name: "all", Scope: domain.ScopeAll, Enabled: true, Health: 1,
-		EncryptedProxyURL: proxyURL, EncryptedCloudflareCookie: cookies, UserAgent: "web-agent",
+		ID: 1, Name: "build", Scope: domain.ScopeBuild, Enabled: true, Health: 1, UserAgent: "legacy-build-agent",
 	}}}, cipher)
 	lease, configured, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !configured || lease == nil {
-		t.Fatalf("lease=%#v configured=%v", lease, configured)
+		t.Fatal("configured build node did not produce a lease")
 	}
 	defer lease.Release()
-	if lease.UserAgent != "" || lease.CFCookies != "" {
-		t.Fatalf("build received web fields: ua=%q cookies=%q", lease.UserAgent, lease.CFCookies)
+	if lease.UserAgent != "" {
+		t.Fatalf("build lease userAgent = %q", lease.UserAgent)
 	}
 }
 
-func TestWebAssetFallsBackToWebBeforeAll(t *testing.T) {
+func TestWebAssetFallsBackToWeb(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
 		t.Fatal(err)
 	}
 	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
-		{ID: 1, Name: "all", Scope: domain.ScopeAll, Enabled: true, Health: 1},
 		{ID: 2, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1},
 	}}, cipher)
 	lease, err := manager.Acquire(context.Background(), domain.ScopeWebAsset, "account")

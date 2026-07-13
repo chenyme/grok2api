@@ -1,8 +1,12 @@
 package egress
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
 
 func TestSanitizeCloudflareCookiesDropsControlsAndNonCloudflareValues(t *testing.T) {
@@ -30,5 +34,33 @@ func TestNormalizeProxyURLValidatesStructure(t *testing.T) {
 		if _, err := NormalizeProxyURL(invalid); err == nil {
 			t.Fatalf("invalid proxy accepted: %q", invalid)
 		}
+	}
+}
+
+func TestServiceRejectsRemovedAllScope(t *testing.T) {
+	service := &Service{}
+	_, err := service.applyInput(domain.Node{}, Input{Name: "legacy", Scope: domain.Scope("all"), Enabled: true}, true)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("all scope error = %v", err)
+	}
+}
+
+func TestBuildNodeAlwaysUsesProviderUserAgent(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(nil, cipher, "web-agent")
+	value, err := service.applyInput(domain.Node{UserAgent: "legacy-build-agent"}, Input{
+		Name: "build", Scope: domain.ScopeBuild, Enabled: true, UserAgent: "custom-build-agent",
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.UserAgent != "" || publicNode(value).UserAgent != "" {
+		t.Fatalf("build node userAgent = %q", value.UserAgent)
+	}
+	if defaults := service.DefaultUserAgents(); defaults[string(domain.ScopeBuild)] != "" || defaults[string(domain.ScopeWeb)] != "web-agent" {
+		t.Fatalf("default user agents = %#v", defaults)
 	}
 }

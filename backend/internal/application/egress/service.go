@@ -39,26 +39,25 @@ type Service struct {
 	repository repository.EgressRepository
 	cipher     *security.Cipher
 	mu         sync.RWMutex
-	buildUA    string
 	webUA      string
 }
 
-func NewService(repository repository.EgressRepository, cipher *security.Cipher, buildUA, webUA string) *Service {
-	return &Service{repository: repository, cipher: cipher, buildUA: strings.TrimSpace(buildUA), webUA: strings.TrimSpace(webUA)}
+func NewService(repository repository.EgressRepository, cipher *security.Cipher, webUA string) *Service {
+	return &Service{repository: repository, cipher: cipher, webUA: strings.TrimSpace(webUA)}
 }
 
-func (s *Service) UpdateDefaults(buildUA, webUA string) {
+func (s *Service) UpdateDefaults(webUA string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.buildUA, s.webUA = strings.TrimSpace(buildUA), strings.TrimSpace(webUA)
+	s.webUA = strings.TrimSpace(webUA)
 }
 
 func (s *Service) DefaultUserAgents() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return map[string]string{
-		string(domain.ScopeAll): s.webUA, string(domain.ScopeBuild): s.buildUA,
-		string(domain.ScopeWeb): s.webUA, string(domain.ScopeWebAsset): s.webUA,
+		string(domain.ScopeBuild): "", string(domain.ScopeWeb): s.webUA,
+		string(domain.ScopeWebAsset): s.webUA,
 	}
 }
 
@@ -115,18 +114,19 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	if name == "" || len(name) > 160 {
 		return domain.Node{}, fmt.Errorf("%w: 名称必须在 1 到 160 个字符之间", ErrInvalidInput)
 	}
-	if input.Scope != domain.ScopeAll && input.Scope != domain.ScopeBuild && input.Scope != domain.ScopeWeb && input.Scope != domain.ScopeWebAsset {
-		return domain.Node{}, fmt.Errorf("%w: scope 必须是 all、grok_build、grok_web 或 grok_web_asset", ErrInvalidInput)
+	if input.Scope != domain.ScopeBuild && input.Scope != domain.ScopeWeb && input.Scope != domain.ScopeWebAsset {
+		return domain.Node{}, fmt.Errorf("%w: scope 必须是 grok_build、grok_web 或 grok_web_asset", ErrInvalidInput)
 	}
 	value.Name, value.Scope, value.Enabled = name, input.Scope, input.Enabled
-	value.UserAgent = strings.TrimSpace(input.UserAgent)
-	if value.UserAgent == "" {
+	if input.Scope == domain.ScopeBuild {
+		// Build 请求始终沿用 Provider 生成的 CLI User-Agent，出口节点不得覆盖协议身份。
+		value.UserAgent = ""
+	} else {
+		value.UserAgent = strings.TrimSpace(input.UserAgent)
+	}
+	if input.Scope != domain.ScopeBuild && value.UserAgent == "" {
 		s.mu.RLock()
-		if input.Scope == domain.ScopeBuild {
-			value.UserAgent = s.buildUA
-		} else {
-			value.UserAgent = s.webUA
-		}
+		value.UserAgent = s.webUA
 		s.mu.RUnlock()
 	}
 	if len(value.UserAgent) > 512 {
@@ -170,9 +170,13 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 }
 
 func publicNode(value domain.Node) domain.PublicNode {
+	userAgent := value.UserAgent
+	if value.Scope == domain.ScopeBuild {
+		userAgent = ""
+	}
 	return domain.PublicNode{
 		ID: value.ID, Name: value.Name, Scope: value.Scope, Enabled: value.Enabled,
-		ProxyConfigured: value.EncryptedProxyURL != "", UserAgent: value.UserAgent, CookieConfigured: value.EncryptedCloudflareCookie != "",
+		ProxyConfigured: value.EncryptedProxyURL != "", UserAgent: userAgent, CookieConfigured: value.EncryptedCloudflareCookie != "",
 		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}

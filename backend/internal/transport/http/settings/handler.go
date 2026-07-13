@@ -87,10 +87,16 @@ type clientKeyDefaultsConfigDTO struct {
 }
 
 type settingsResponse struct {
-	Config          settingsConfigDTO `json:"config"`
-	UpdatedAt       time.Time         `json:"updatedAt"`
-	Revision        uint64            `json:"revision,string"`
-	RestartRequired []string          `json:"restartRequired"`
+	Config                   settingsConfigDTO              `json:"config"`
+	RecommendedProviderBuild providerBuildRecommendationDTO `json:"recommendedProviderBuild"`
+	UpdatedAt                time.Time                      `json:"updatedAt"`
+	Revision                 uint64                         `json:"revision,string"`
+	RestartRequired          []string                       `json:"restartRequired"`
+}
+
+type providerBuildRecommendationDTO struct {
+	ClientVersion string `json:"clientVersion"`
+	UserAgent     string `json:"userAgent"`
 }
 
 type updateRequest struct {
@@ -199,6 +205,10 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			ClientKeyDefaults: clientKeyDefaultsConfigDTO{
 				RPMLimit: config.ClientKeyDefaults.RPMLimit, MaxConcurrent: config.ClientKeyDefaults.MaxConcurrent,
 			},
+		},
+		RecommendedProviderBuild: providerBuildRecommendationDTO{
+			ClientVersion: value.RecommendedProviderBuild.ClientVersion,
+			UserAgent:     value.RecommendedProviderBuild.UserAgent,
 		},
 		UpdatedAt: value.UpdatedAt, Revision: value.Revision, RestartRequired: value.RestartRequired,
 	}

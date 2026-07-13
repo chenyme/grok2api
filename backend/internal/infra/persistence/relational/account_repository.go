@@ -119,6 +119,30 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 	if err != nil {
 		return nil, err
 	}
+	bound := make(map[uint64]bool)
+	if strings.TrimSpace(upstreamModel) != "" {
+		var boundIDs []uint64
+		if err := r.db.db.WithContext(ctx).
+			Table("model_route_accounts AS binding").
+			Select("binding.account_id").
+			Joins("JOIN model_routes AS route ON route.id = binding.model_route_id").
+			Where("route.provider = ? AND route.upstream_model = ?", provider, upstreamModel).
+			Scan(&boundIDs).Error; err != nil {
+			return nil, err
+		}
+		if len(boundIDs) > 0 {
+			for _, id := range boundIDs {
+				bound[id] = true
+			}
+			filtered := values[:0]
+			for _, value := range values {
+				if bound[value.ID] {
+					filtered = append(filtered, value)
+				}
+			}
+			values = filtered
+		}
+	}
 	ids := make([]uint64, 0, len(values))
 	for _, value := range values {
 		ids = append(ids, value.ID)
@@ -167,7 +191,11 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 	}
 	result := make([]account.RoutingCandidate, 0, len(values))
 	for _, value := range values {
-		candidate := account.RoutingCandidate{Credential: value, ModelCapabilityKnown: known[value.ID], SupportsModel: supported[value.ID]}
+		capabilityKnown, supportsModel := known[value.ID], supported[value.ID]
+		if len(bound) > 0 {
+			capabilityKnown, supportsModel = true, true
+		}
+		candidate := account.RoutingCandidate{Credential: value, ModelCapabilityKnown: capabilityKnown, SupportsModel: supportsModel}
 		if billing, ok := billings[value.ID]; ok {
 			candidate.Billing = &billing
 		}

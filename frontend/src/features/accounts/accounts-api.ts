@@ -273,15 +273,15 @@ export function convertWebAccountsToBuild(input: BuildConversionInput, onProgres
   return runAccountTask("/api/admin/v1/accounts/web/convert-to-build", input, ["created", "linked", "skipped", "failed", "synced", "syncFailed"], onProgress, signal);
 }
 
-export function importAccounts(file: File, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
+export function importAccounts(files: readonly File[], onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
   const body = new FormData();
-  body.append("file", file);
+  files.forEach((file) => body.append("files", file, file.name));
   return runAccountTask("/api/admin/v1/accounts/import", body, ["created", "updated", "synced", "syncFailed"], onProgress, signal);
 }
 
-export function importWebAccounts(file: File, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
+export function importWebAccounts(files: readonly File[], onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
   const body = new FormData();
-  body.append("file", file);
+  files.forEach((file) => body.append("files", file, file.name));
   return runAccountTask("/api/admin/v1/accounts/web/import", body, ["created", "updated", "synced", "syncFailed"], onProgress, signal);
 }
 

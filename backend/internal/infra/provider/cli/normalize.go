@@ -6,18 +6,18 @@ import (
 	"fmt"
 )
 
-// normalizeResponsesRequest 只改写路由字段和兼容别名，保留完整 Responses 输入项。
-func normalizeResponsesRequest(body []byte, model string) ([]byte, error) {
+// normalizeResponsesRequest 改写路由字段和兼容别名，并为上游不支持的新工具协议建立请求级映射。
+func normalizeResponsesRequest(body []byte, model string) ([]byte, *responsesToolCompatibility, error) {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("解析 Responses 请求: %w", err)
+		return nil, nil, fmt.Errorf("解析 Responses 请求: %w", err)
 	}
 	payload["model"] = mustJSON(model)
 	if responseFormat, exists := payload["response_format"]; exists {
 		var text map[string]json.RawMessage
 		if raw := payload["text"]; len(raw) > 0 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			if err := json.Unmarshal(raw, &text); err != nil {
-				return nil, fmt.Errorf("解析 text: %w", err)
+				return nil, nil, fmt.Errorf("解析 text: %w", err)
 			}
 		}
 		if text == nil {
@@ -26,18 +26,26 @@ func normalizeResponsesRequest(body []byte, model string) ([]byte, error) {
 		if isEmptyJSON(text["format"]) {
 			formatted, err := normalizeResponseFormat(responseFormat)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			text["format"] = formatted
 		}
 		encoded, err := json.Marshal(text)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		payload["text"] = encoded
 		delete(payload, "response_format")
 	}
-	return json.Marshal(payload)
+	compatibility, err := normalizeResponsesTools(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	return normalized, compatibility, nil
 }
 
 func normalizeResponseFormat(raw json.RawMessage) (json.RawMessage, error) {

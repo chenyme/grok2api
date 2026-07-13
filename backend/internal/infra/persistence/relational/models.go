@@ -146,12 +146,30 @@ type modelRouteModel struct {
 	Provider      string    `gorm:"size:32;uniqueIndex:uidx_provider_upstream;not null;check:chk_model_routes_provider,provider IN ('grok_build','grok_web')"`
 	UpstreamModel string    `gorm:"size:255;uniqueIndex:uidx_provider_upstream;not null;check:chk_model_routes_upstream_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
 	Capability    string    `gorm:"size:32;not null;check:chk_model_routes_capability,capability IN ('responses','chat','image','image_edit','video')"`
+	Origin        string    `gorm:"size:32;not null;default:discovered;check:chk_model_routes_origin,origin IN ('catalog','discovered','manual')"`
 	Enabled       bool      `gorm:"not null"`
 	CreatedAt     time.Time `gorm:"not null"`
 	UpdatedAt     time.Time `gorm:"not null"`
 }
 
 func (modelRouteModel) TableName() string { return "model_routes" }
+
+type modelRouteAccountModel struct {
+	ModelRouteID uint64           `gorm:"primaryKey"`
+	AccountID    uint64           `gorm:"primaryKey"`
+	ModelRoute   *modelRouteModel `gorm:"foreignKey:ModelRouteID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Account      *accountModel    `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (modelRouteAccountModel) TableName() string { return "model_route_accounts" }
+
+type modelRouteSuppressionModel struct {
+	Provider      string    `gorm:"size:32;primaryKey;check:chk_model_route_suppressions_provider,provider IN ('grok_build','grok_web')"`
+	UpstreamModel string    `gorm:"size:255;primaryKey;check:chk_model_route_suppressions_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
+	CreatedAt     time.Time `gorm:"not null"`
+}
+
+func (modelRouteSuppressionModel) TableName() string { return "model_route_suppressions" }
 
 type accountModelCapabilityModel struct {
 	AccountID     uint64        `gorm:"primaryKey"`
@@ -337,7 +355,7 @@ func (runtimeSettingsModel) TableName() string { return "runtime_settings" }
 type egressNodeModel struct {
 	ID                        uint64  `gorm:"primaryKey;autoIncrement"`
 	Name                      string  `gorm:"size:160;not null;check:chk_egress_nodes_name,length(trim(name)) BETWEEN 1 AND 160"`
-	Scope                     string  `gorm:"size:32;not null;check:chk_egress_nodes_scope,scope IN ('all','grok_build','grok_web','grok_web_asset')"`
+	Scope                     string  `gorm:"size:32;not null;check:chk_egress_nodes_specific_scope,scope IN ('grok_build','grok_web','grok_web_asset')"`
 	Enabled                   bool    `gorm:"not null;default:true"`
 	EncryptedProxyURL         string  `gorm:"type:text;not null;default:'';check:chk_egress_nodes_proxy_url,length(encrypted_proxy_url) <= 65536"`
 	UserAgent                 string  `gorm:"size:512;not null;default:'';check:chk_egress_nodes_user_agent,length(user_agent) <= 512"`

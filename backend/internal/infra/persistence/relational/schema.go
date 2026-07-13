@@ -16,6 +16,8 @@ var schemaModels = []any{
 	&billingModel{},
 	&quotaRecoveryModel{},
 	&modelRouteModel{},
+	&modelRouteAccountModel{},
+	&modelRouteSuppressionModel{},
 	&accountModelCapabilityModel{},
 	&accountModelSyncStateModel{},
 	&clientKeyModel{},
@@ -38,6 +40,7 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_quota_windows_due ON account_quota_windows(remaining, reset_at, account_id)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_created_id ON model_routes(created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_enabled ON model_routes(enabled, public_id, id)",
+	"CREATE INDEX IF NOT EXISTS idx_model_route_accounts_account_route ON model_route_accounts(account_id, model_route_id)",
 	"CREATE INDEX IF NOT EXISTS idx_client_keys_created_id ON client_keys(created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_client_keys_status ON client_keys(enabled, expires_at, created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_client_key_models_route_key ON client_key_models(model_route_id, client_key_id)",
@@ -62,6 +65,12 @@ var schemaIndexes = []string{
 // InitializeSchema 以当前持久化模型作为首版数据库结构基线。
 func (d *Database) InitializeSchema(ctx context.Context) error {
 	db := d.db.WithContext(ctx)
+	// all 作用域会让 Build 与 Web 共用 UA、健康度和冷却状态，升级时直接移除旧节点。
+	if db.Migrator().HasTable(&egressNodeModel{}) {
+		if err := db.Where("scope = ?", "all").Delete(&egressNodeModel{}).Error; err != nil {
+			return fmt.Errorf("清理旧版所有域出口节点: %w", err)
+		}
+	}
 	if err := db.AutoMigrate(schemaModels...); err != nil {
 		return fmt.Errorf("初始化数据库表: %w", err)
 	}

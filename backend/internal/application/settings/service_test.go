@@ -76,6 +76,14 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	}
 }
 
+func TestSnapshotIncludesRecommendedBuildBaseline(t *testing.T) {
+	service := NewService(testConfig(t), time.Time{}, 0, &runtimeSettingsRepositoryStub{}, nil, nil)
+	recommended := service.Get().RecommendedProviderBuild
+	if recommended.ClientVersion != config.RecommendedBuildClientVersion || recommended.UserAgent != config.RecommendedBuildUserAgent {
+		t.Fatalf("recommended build = %#v", recommended)
+	}
+}
+
 func TestUpdateRejectsBatchConcurrencyOutsideSafeRange(t *testing.T) {
 	cfg := testConfig(t)
 	repository := &runtimeSettingsRepositoryStub{}

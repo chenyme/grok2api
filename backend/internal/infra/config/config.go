@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	StatsigModeManual       = "manual"
-	StatsigModeURL          = "url"
-	DefaultStatsigSignerURL = "https://grok.wodf.de/sign"
+	StatsigModeManual             = "manual"
+	StatsigModeURL                = "url"
+	DefaultStatsigSignerURL       = "https://grok.wodf.de/sign"
+	RecommendedBuildClientVersion = "0.2.99"
+	RecommendedBuildUserAgent     = "grok-shell/0.2.99 (linux; x86_64)"
 
 	maxServerBodyBytes    = 256 << 20
 	maxRequestTimeout     = 24 * time.Hour
@@ -427,9 +429,9 @@ func defaultConfig() Config {
 		},
 		Provider: ProviderConfig{
 			Build: BuildProviderConfig{
-				BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: "0.2.93",
+				BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: RecommendedBuildClientVersion,
 				ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli",
-				UserAgent: "grok-shell/0.2.93 (linux; x86_64)",
+				UserAgent: RecommendedBuildUserAgent,
 			},
 			Web: WebProviderConfig{
 				BaseURL: "https://grok.com", StatsigMode: StatsigModeURL, StatsigSignerURL: DefaultStatsigSignerURL,

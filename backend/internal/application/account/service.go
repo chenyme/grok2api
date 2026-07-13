@@ -42,6 +42,7 @@ const (
 	webQuotaRefreshQueueSize                  = 4096
 	webQuotaRefreshTimeout                    = 30 * time.Second
 	maxCredentialExportAccounts               = 10000
+	maxCredentialImportAccounts               = 10000
 	credentialImportChunkSize                 = 100
 	maxBuildConversionAccounts                = 1000
 )
@@ -579,18 +580,16 @@ func (s *Service) ImportCredentialsWithObserver(ctx context.Context, data []byte
 
 // ImportCredentialsWithProgress 导入 Build 凭据并报告已写入流水线的账号数。
 func (s *Service) ImportCredentialsWithProgress(ctx context.Context, data []byte, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	return s.ImportCredentialDocumentsWithProgress(ctx, [][]byte{data}, observer, progress)
+}
+
+// ImportCredentialDocumentsWithProgress 合并解析多个 Build 凭据文件，并作为一个批次写入和同步。
+func (s *Service) ImportCredentialDocumentsWithProgress(ctx context.Context, documents [][]byte, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
 	adapter, ok := s.providers.CredentialCodec(accountdomain.ProviderBuild)
 	if !ok {
 		return ImportResult{}, fmt.Errorf("CLI Provider 未注册")
 	}
-	seeds, err := adapter.ParseImportedCredentials(data)
-	if err != nil {
-		if errors.Is(err, provider.ErrCredentialLimit) {
-			return ImportResult{}, fmt.Errorf("%w: 单次最多导入 10000 个账号", ErrImportLimit)
-		}
-		return ImportResult{}, fmt.Errorf("%w: %v", ErrInvalidImport, err)
-	}
-	return s.persistImportedSeeds(ctx, seeds, observer, progress)
+	return s.importCredentialDocumentsWithProgress(ctx, adapter, documents, observer, progress)
 }
 
 // ImportWebCredentials 导入版本化或旧号池格式的 Grok Web SSO 凭据。
@@ -604,16 +603,47 @@ func (s *Service) ImportWebCredentialsWithObserver(ctx context.Context, data []b
 
 // ImportWebCredentialsWithProgress 导入 Web 凭据并报告已写入流水线的账号数。
 func (s *Service) ImportWebCredentialsWithProgress(ctx context.Context, data []byte, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	return s.ImportWebCredentialDocumentsWithProgress(ctx, [][]byte{data}, observer, progress)
+}
+
+// ImportWebCredentialDocumentsWithProgress 合并解析多个 Web JSON 或 SSO 文本文件，并作为一个批次写入和同步。
+func (s *Service) ImportWebCredentialDocumentsWithProgress(ctx context.Context, documents [][]byte, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
 	adapter, ok := s.providers.CredentialCodec(accountdomain.ProviderWeb)
 	if !ok {
 		return ImportResult{}, fmt.Errorf("Grok Web Provider 未注册")
 	}
-	seeds, err := adapter.ParseImportedCredentials(data)
-	if err != nil {
-		if errors.Is(err, provider.ErrCredentialLimit) {
-			return ImportResult{}, fmt.Errorf("%w: 单次最多导入 10000 个账号", ErrImportLimit)
+	return s.importCredentialDocumentsWithProgress(ctx, adapter, documents, observer, progress)
+}
+
+func (s *Service) importCredentialDocumentsWithProgress(ctx context.Context, adapter provider.CredentialCodecAdapter, documents [][]byte, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	if len(documents) == 0 {
+		return ImportResult{}, fmt.Errorf("%w: 没有可导入的账号文件", ErrInvalidImport)
+	}
+	seeds := make([]provider.CredentialSeed, 0)
+	seen := make(map[string]struct{})
+	parsedAccounts := 0
+	for index, document := range documents {
+		values, err := adapter.ParseImportedCredentials(document)
+		if err != nil {
+			if errors.Is(err, provider.ErrCredentialLimit) {
+				return ImportResult{}, fmt.Errorf("%w: 单次最多导入 %d 个账号", ErrImportLimit, maxCredentialImportAccounts)
+			}
+			return ImportResult{}, fmt.Errorf("%w: 第 %d 个文件: %v", ErrInvalidImport, index+1, err)
 		}
-		return ImportResult{}, fmt.Errorf("%w: %v", ErrInvalidImport, err)
+		parsedAccounts += len(values)
+		if parsedAccounts > maxCredentialImportAccounts {
+			return ImportResult{}, fmt.Errorf("%w: 单次最多导入 %d 个账号", ErrImportLimit, maxCredentialImportAccounts)
+		}
+		for _, value := range values {
+			if value.SourceKey != "" {
+				key := string(value.Provider) + "\x00" + value.SourceKey
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			seeds = append(seeds, value)
+		}
 	}
 	return s.persistImportedSeeds(ctx, seeds, observer, progress)
 }

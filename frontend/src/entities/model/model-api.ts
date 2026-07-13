@@ -28,8 +28,35 @@ export function syncModels(): Promise<{ synced: number }> {
   return apiRequest<{ synced: number }>("/api/admin/v1/models/sync", { method: "POST" });
 }
 
-export function updateModel(id: string, input: { publicId: string; enabled: boolean }): Promise<ModelRouteDTO> {
+export type ModelAccountOptionDTO = { id: string; name: string };
+
+export type CreateModelInput = {
+  publicId: string;
+  provider: "grok_build" | "grok_web";
+  upstreamModel: string;
+  capability: ModelRouteDTO["capability"];
+  enabled: boolean;
+  accountIds: string[];
+};
+
+export function listModelAccountOptions(provider: "grok_build" | "grok_web"): Promise<{ items: ModelAccountOptionDTO[] }> {
+  return apiRequest<{ items: ModelAccountOptionDTO[] }>(`/api/admin/v1/models/accounts?provider=${provider}`);
+}
+
+export function createModel(input: CreateModelInput): Promise<ModelRouteDTO> {
+  return apiRequest<ModelRouteDTO>("/api/admin/v1/models", { method: "POST", body: input });
+}
+
+export function updateModel(id: string, input: { publicId: string; enabled: boolean; accountIds: string[] }): Promise<ModelRouteDTO> {
   return apiRequest<ModelRouteDTO>(`/api/admin/v1/models/${id}`, { method: "PATCH", body: input });
+}
+
+export function deleteModel(id: string): Promise<{ deleted: boolean }> {
+  return apiRequest<{ deleted: boolean }>(`/api/admin/v1/models/${id}`, { method: "DELETE" });
+}
+
+export function deleteModels(ids: string[]): Promise<{ deleted: number }> {
+  return apiRequest<{ deleted: number }>("/api/admin/v1/models", { method: "DELETE", body: { ids } });
 }
 
 export function updateModelsEnabled(ids: string[], enabled: boolean): Promise<{ updated: number }> {

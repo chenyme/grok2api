@@ -33,3 +33,12 @@ func TestSettingsResponseDoesNotExposeManualStatsigValue(t *testing.T) {
 		t.Fatalf("settings response leaked manual Statsig: %s", data)
 	}
 }
+
+func TestSettingsResponseIncludesRecommendedBuildBaseline(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{RecommendedProviderBuild: settingsapp.ProviderBuildRecommendation{
+		ClientVersion: "0.2.99", UserAgent: "grok-shell/0.2.99 (linux; x86_64)",
+	}})
+	if response.RecommendedProviderBuild.ClientVersion != "0.2.99" || response.RecommendedProviderBuild.UserAgent == "" {
+		t.Fatalf("recommended build = %#v", response.RecommendedProviderBuild)
+	}
+}

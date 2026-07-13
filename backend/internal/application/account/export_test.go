@@ -74,4 +74,23 @@ func TestExportCredentialsRoundTripsImportFormat(t *testing.T) {
 	if len(progress) != 2 || progress[0] != [2]int{0, 1} || progress[1] != [2]int{1, 1} {
 		t.Fatalf("import progress = %#v", progress)
 	}
+
+	multiProgress := make([][2]int, 0, 3)
+	multiResult, err := service.ImportCredentialDocumentsWithProgress(ctx, [][]byte{
+		result.Data,
+		result.Data,
+		[]byte(`{"provider":"grok_build","name":"secondary","access_token":"second-access","refresh_token":"second-refresh","user_id":"user-2"}`),
+	}, nil, func(completed, total int) error {
+		multiProgress = append(multiProgress, [2]int{completed, total})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if multiResult.Created != 1 || multiResult.Updated != 1 {
+		t.Fatalf("multi-file import result = %#v", multiResult)
+	}
+	if len(multiProgress) != 3 || multiProgress[0] != [2]int{0, 2} || multiProgress[2] != [2]int{2, 2} {
+		t.Fatalf("multi-file import progress = %#v", multiProgress)
+	}
 }

@@ -30,11 +30,12 @@ export type EgressNodeInput = {
   clearProxyURL?: boolean; userAgent: string; cloudflareCookies?: string; clearCookies?: boolean;
 };
 
-export type EgressScope = "all" | "grok_build" | "grok_web" | "grok_web_asset";
+export type EgressScope = "grok_build" | "grok_web" | "grok_web_asset";
 export type EgressNodeListDTO = { items: EgressNodeDTO[]; defaultUserAgents: Record<EgressScope, string> };
 
 export type SettingsSnapshotDTO = {
   config: SettingsConfigDTO;
+  recommendedProviderBuild: { clientVersion: string; userAgent: string };
   updatedAt: string;
   revision: string;
   restartRequired: string[];
