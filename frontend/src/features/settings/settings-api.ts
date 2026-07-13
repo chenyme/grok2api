@@ -14,7 +14,7 @@ export type SettingsConfigDTO = {
     maxImageBytes: number; maxTotalBytes: number; cleanupThresholdPercent: number;
     cleanupInterval: string;
   };
-  routing: { stickyTTL: string; cooldownBase: string; cooldownMax: string; maxAttempts: number };
+  routing: { stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number };
   audit: { bufferSize: number; batchSize: number; flushInterval: string };
   clientKeyDefaults: { rpmLimit: number; maxConcurrent: number };
 };

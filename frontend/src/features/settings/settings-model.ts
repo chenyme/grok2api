@@ -12,6 +12,7 @@ const positiveInteger = z.number().int().positive();
 const byteSizeSchema = z.object({ value: z.number().positive(), unit: z.enum(["MiB", "GiB"]) });
 const routingTTLDuration = durationSchema.refine((value) => durationSeconds(value) <= 30 * 86_400);
 const routingCooldownDuration = durationSchema.refine((value) => durationSeconds(value) <= 86_400);
+const routingCapacityWaitDuration = durationSchema.refine((value) => durationSeconds(value) <= 5);
 const auditFlushDuration = durationSchema.refine((value) => {
   const seconds = durationSeconds(value);
   return seconds >= 0.01 && seconds <= 60;
@@ -45,15 +46,7 @@ export const settingsSchema = z.object({
       context.addIssue({ code: "custom", path: ["statsigManualValue"], message: "invalid" });
     }
     if (value.statsigMode === "url") {
-      const valid = (() => {
-        try {
-          const parsed = new URL(value.statsigSignerURL);
-          return parsed.protocol === "https:" && parsed.username === "" && parsed.password === "" && parsed.search === "" && parsed.hash === "" && (parsed.port === "" || parsed.port === "443");
-        } catch {
-          return false;
-        }
-      })();
-      if (!valid) {
+      if (!validStatsigSignerURL(value.statsigSignerURL)) {
         context.addIssue({ code: "custom", path: ["statsigSignerURL"], message: "invalid" });
       }
     }
@@ -75,6 +68,7 @@ export const settingsSchema = z.object({
     stickyTTL: routingTTLDuration,
     cooldownBase: routingCooldownDuration,
     cooldownMax: routingCooldownDuration,
+    capacityWait: routingCapacityWaitDuration,
     maxAttempts: positiveInteger.max(10),
   }).refine((value) => durationSeconds(value.cooldownMax) >= durationSeconds(value.cooldownBase), { path: ["cooldownMax"] }),
   audit: z.object({ bufferSize: positiveInteger.max(262_144), batchSize: positiveInteger.max(4_096), flushInterval: auditFlushDuration })
@@ -102,7 +96,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
     },
     routing: {
       stickyTTL: parseDuration(config.routing.stickyTTL), cooldownBase: parseDuration(config.routing.cooldownBase),
-      cooldownMax: parseDuration(config.routing.cooldownMax), maxAttempts: config.routing.maxAttempts,
+      cooldownMax: parseDuration(config.routing.cooldownMax), capacityWait: parseDuration(config.routing.capacityWait), maxAttempts: config.routing.maxAttempts,
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: parseDuration(config.audit.flushInterval) },
     clientKeyDefaults: config.clientKeyDefaults,
@@ -126,7 +120,7 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
     },
     routing: {
       stickyTTL: formatDuration(config.routing.stickyTTL), cooldownBase: formatDuration(config.routing.cooldownBase),
-      cooldownMax: formatDuration(config.routing.cooldownMax), maxAttempts: config.routing.maxAttempts,
+      cooldownMax: formatDuration(config.routing.cooldownMax), capacityWait: formatDuration(config.routing.capacityWait), maxAttempts: config.routing.maxAttempts,
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: formatDuration(config.audit.flushInterval) },
     clientKeyDefaults: config.clientKeyDefaults,
@@ -193,4 +187,28 @@ function validStatsigID(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function validStatsigSignerURL(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    if (parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") return false;
+    const internal = internalSignerHostname(parsed.hostname);
+    if (internal) return parsed.protocol === "http:" || parsed.protocol === "https:";
+    return parsed.protocol === "https:" && (parsed.port === "" || parsed.port === "443");
+  } catch {
+    return false;
+  }
+}
+
+function internalSignerHostname(value: string): boolean {
+  const host = value.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true;
+  if (!host.includes(".")) {
+    if (host.includes(":")) return host === "::1" || /^(?:fc|fd|fe[89ab])/i.test(host);
+    return /^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$/i.test(host);
+  }
+  const octets = host.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  return octets[0] === 10 || octets[0] === 127 || octets[0] === 169 && octets[1] === 254 || octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31 || octets[0] === 192 && octets[1] === 168;
 }

@@ -69,7 +69,14 @@ func TestStatsigSignerRejectsInvalidShape(t *testing.T) {
 }
 
 func TestValidateStatsigSignerEndpointUsesAdminURLBoundary(t *testing.T) {
-	for _, endpoint := range []string{"https://grok.wodf.de/sign", "https://signer.example/sign"} {
+	for _, endpoint := range []string{
+		"https://grok.wodf.de/sign",
+		"https://signer.example/sign",
+		"http://grok-signer-go:8788/sign",
+		"http://host.docker.internal:8788/sign",
+		"http://127.0.0.1:8788/sign",
+		"https://10.0.0.1:8443/sign",
+	} {
 		if err := validateStatsigSignerEndpoint(context.Background(), endpoint); err != nil {
 			t.Fatalf("endpoint %q rejected: %v", endpoint, err)
 		}
@@ -77,15 +84,24 @@ func TestValidateStatsigSignerEndpointUsesAdminURLBoundary(t *testing.T) {
 	for _, endpoint := range []string{
 		"http://grok.wodf.de/sign",
 		"https://user:pass@grok.wodf.de/sign",
-		"https://localhost/sign",
-		"https://127.0.0.1/sign",
-		"https://10.0.0.1/sign",
 		"https://grok.wodf.de:8443/sign",
 		"https://grok.wodf.de/sign?token=value",
+		"http://8.8.8.8:8788/sign",
 	} {
 		if err := validateStatsigSignerEndpoint(context.Background(), endpoint); err == nil {
 			t.Fatalf("unsafe endpoint %q accepted", endpoint)
 		}
+	}
+}
+
+func TestStatsigSignerClientRejectsRedirects(t *testing.T) {
+	signer := newStatsigSigner()
+	request, err := http.NewRequest(http.MethodGet, "http://grok-signer-go:8788/redirect", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signer.client.CheckRedirect(request, []*http.Request{request}); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("redirect policy error = %v", err)
 	}
 }
 

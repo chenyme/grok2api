@@ -56,7 +56,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
 	lease, err := s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", nil, false)
 	if err != nil {
-		return media.Job{}, fmt.Errorf("%w: %v", ErrNoAvailableAccount, err)
+		return media.Job{}, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 	}
 	accountID := lease.Credential.ID
 	lease.Release()

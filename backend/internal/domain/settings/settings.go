@@ -58,6 +58,7 @@ type RoutingConfig struct {
 	StickyTTL    time.Duration
 	CooldownBase time.Duration
 	CooldownMax  time.Duration
+	CapacityWait time.Duration
 	MaxAttempts  int
 }
 

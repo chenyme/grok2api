@@ -407,3 +407,27 @@ func TestCopyMediaAllowsExactLimit(t *testing.T) {
 		t.Fatalf("forwarded media = %q", destination.Bytes())
 	}
 }
+
+func TestSelectionErrorResponseDistinguishesCoolingAndSaturation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name       string
+		failure    *gateway.SelectionUnavailableError
+		status     int
+		code       string
+		retryAfter string
+	}{
+		{name: "cooling", failure: &gateway.SelectionUnavailableError{Reason: gateway.SelectionCooling, RetryAfter: 1500 * time.Millisecond}, status: http.StatusTooManyRequests, code: "upstream_cooling", retryAfter: "2"},
+		{name: "model cooling", failure: &gateway.SelectionUnavailableError{Reason: gateway.SelectionModelCooling, RetryAfter: time.Second}, status: http.StatusTooManyRequests, code: "upstream_model_cooling", retryAfter: "1"},
+		{name: "saturated", failure: &gateway.SelectionUnavailableError{Reason: gateway.SelectionSaturated, RetryAfter: time.Second}, status: http.StatusServiceUnavailable, code: "upstream_saturated", retryAfter: "1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			status, code, _ := selectionErrorResponse(context, test.failure)
+			if status != test.status || code != test.code || recorder.Header().Get("Retry-After") != test.retryAfter {
+				t.Fatalf("status=%d code=%q retry-after=%q", status, code, recorder.Header().Get("Retry-After"))
+			}
+		})
+	}
+}

@@ -242,6 +242,9 @@ func startupCandidateUsable(candidate accountdomain.RoutingCandidate, now time.T
 	if candidate.ModelCapabilityKnown && !candidate.SupportsModel {
 		return false
 	}
+	if candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
+		return false
+	}
 	if candidate.QuotaRecovery != nil && candidate.QuotaRecovery.Status != accountdomain.QuotaRecoveryStatusActive {
 		return false
 	}
@@ -263,6 +266,10 @@ func (a *Application) reconcileStartup(ctx context.Context) {
 	if err := a.gateway.RecoverVideoJobs(recoveryCtx); err != nil {
 		a.logger.Warn("video_job_recovery_failed", "error", err)
 		a.startup.recordError("video_recovery", err)
+	}
+	if _, err := a.accountRepo.PruneExpiredModelQuotaBlocks(recoveryCtx, time.Now().UTC(), 1000); err != nil {
+		a.logger.Warn("model_cooldown_cleanup_failed", "error", err)
+		a.startup.recordError("model_cooldown_cleanup", err)
 	}
 	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderWeb} {
 		values, err := a.accountRepo.ListEnabled(recoveryCtx, providerValue)

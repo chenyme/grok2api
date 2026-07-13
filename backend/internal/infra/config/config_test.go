@@ -209,9 +209,13 @@ func TestValidateStatsigModes(t *testing.T) {
 
 	remote := base
 	remote.Provider.Web.StatsigMode = StatsigModeURL
-	remote.Provider.Web.StatsigSignerURL = "http://127.0.0.1/sign"
+	remote.Provider.Web.StatsigSignerURL = "http://grok-signer-go:8788/sign"
+	if err := remote.Validate(); err != nil {
+		t.Fatalf("Docker internal Statsig signer rejected: %v", err)
+	}
+	remote.Provider.Web.StatsigSignerURL = "http://signer.example.com:8788/sign"
 	if err := remote.Validate(); err == nil {
-		t.Fatal("unsafe Statsig signer URL was accepted")
+		t.Fatal("public plaintext Statsig signer URL was accepted")
 	}
 }
 

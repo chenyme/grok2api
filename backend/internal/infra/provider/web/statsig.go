@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
+	"github.com/chenyme/grok2api/backend/internal/pkg/signerurl"
 	"golang.org/x/net/html"
 	"golang.org/x/sync/singleflight"
 )
@@ -265,18 +265,7 @@ func (s *statsigSigner) requestSignature(ctx context.Context, endpoint, method, 
 
 func validateStatsigSignerEndpoint(ctx context.Context, endpoint string) error {
 	_ = ctx
-	parsed, err := url.ParseRequestURI(strings.TrimSpace(endpoint))
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Port() != "" && parsed.Port() != "443") {
-		return fmt.Errorf("Statsig 签名 URL 必须是无凭据、查询参数和片段的 HTTPS 地址")
-	}
-	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
-		return fmt.Errorf("Statsig 签名 URL 指向受限主机")
-	}
-	if address, parseErr := netip.ParseAddr(host); parseErr == nil && !publicRemoteImageAddress(address.Unmap()) {
-		return fmt.Errorf("Statsig 签名 URL 必须使用公网地址")
-	}
-	return nil
+	return signerurl.Validate(endpoint)
 }
 
 func fetchStatsigMetaContent(ctx context.Context, baseURL, token string, lease *infraegress.Lease) (string, error) {

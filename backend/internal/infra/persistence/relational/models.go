@@ -185,6 +185,17 @@ type accountModelSyncStateModel struct {
 
 func (accountModelSyncStateModel) TableName() string { return "account_model_sync_states" }
 
+type accountModelQuotaBlockModel struct {
+	AccountID     uint64        `gorm:"primaryKey"`
+	UpstreamModel string        `gorm:"size:255;primaryKey;not null;check:chk_account_model_quota_blocks_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
+	Reason        string        `gorm:"size:100;not null;check:chk_account_model_quota_blocks_reason,length(trim(reason)) BETWEEN 1 AND 100"`
+	CooldownUntil time.Time     `gorm:"not null"`
+	UpdatedAt     time.Time     `gorm:"not null"`
+	Account       *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (accountModelQuotaBlockModel) TableName() string { return "account_model_quota_blocks" }
+
 type clientKeyModel struct {
 	ID                    uint64 `gorm:"primaryKey;autoIncrement"`
 	Name                  string `gorm:"size:160;not null;check:chk_client_keys_name,length(trim(name)) BETWEEN 1 AND 160"`

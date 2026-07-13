@@ -1002,6 +1002,7 @@ func writeGatewayError(c *gin.Context, err error) {
 	status, code := http.StatusBadGateway, "upstream_unavailable"
 	message := "上游服务暂不可用"
 	var upstreamFailure *gateway.UpstreamFailure
+	var selectionFailure *gateway.SelectionUnavailableError
 	switch {
 	case errors.Is(err, clientkeyapp.ErrBillingLimit):
 		status, code = http.StatusTooManyRequests, "billing_limit_exceeded"
@@ -1014,6 +1015,8 @@ func writeGatewayError(c *gin.Context, err error) {
 		message = "Response 不存在或已过期"
 	case errors.As(err, &upstreamFailure):
 		status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
+	case errors.As(err, &selectionFailure):
+		status, code, message = selectionErrorResponse(c, selectionFailure)
 	case errors.Is(err, gateway.ErrResponseAccountUnavailable), errors.Is(err, gateway.ErrNoAvailableAccount):
 		status, code = http.StatusServiceUnavailable, "upstream_unavailable"
 		message = "当前没有可用的上游账号"
@@ -1025,6 +1028,7 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 	status, errorType := http.StatusBadGateway, "api_error"
 	message := "上游服务暂不可用"
 	var upstreamFailure *gateway.UpstreamFailure
+	var selectionFailure *gateway.SelectionUnavailableError
 	switch {
 	case errors.Is(err, clientkeyapp.ErrBillingLimit):
 		status, errorType = http.StatusTooManyRequests, "rate_limit_error"
@@ -1037,11 +1041,42 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		if status == http.StatusTooManyRequests {
 			errorType = "rate_limit_error"
 		}
+	case errors.As(err, &selectionFailure):
+		status, _, message = selectionErrorResponse(c, selectionFailure)
+		if status == http.StatusTooManyRequests {
+			errorType = "rate_limit_error"
+		} else {
+			errorType = "overloaded_error"
+		}
 	case errors.Is(err, gateway.ErrResponseAccountUnavailable), errors.Is(err, gateway.ErrNoAvailableAccount):
 		status, errorType = http.StatusServiceUnavailable, "overloaded_error"
 		message = "当前没有可用的上游账号"
 	}
 	writeAnthropicError(c, status, errorType, message)
+}
+
+func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailableError) (int, string, string) {
+	status, code, message := http.StatusServiceUnavailable, "upstream_unavailable", "当前没有可用的上游账号"
+	if failure == nil {
+		return status, code, message
+	}
+	switch failure.Reason {
+	case gateway.SelectionCooling:
+		status, code, message = http.StatusTooManyRequests, "upstream_cooling", "上游账号正在冷却"
+	case gateway.SelectionModelCooling:
+		status, code, message = http.StatusTooManyRequests, "upstream_model_cooling", "上游账号的目标模型正在冷却"
+	case gateway.SelectionQuotaExhausted:
+		status, code, message = http.StatusTooManyRequests, "upstream_quota_exhausted", "上游账号额度等待恢复"
+	case gateway.SelectionSaturated:
+		code, message = "upstream_saturated", "上游账号当前均达到并发上限"
+	case gateway.SelectionUnsupportedModel:
+		code, message = "upstream_model_unavailable", "当前账号池不支持该模型"
+	}
+	if failure.RetryAfter > 0 {
+		seconds := max(int64(1), int64((failure.RetryAfter+time.Second-1)/time.Second))
+		c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+	}
+	return status, code, message
 }
 
 func writeAnthropicError(c *gin.Context, status int, errorType, message string) {

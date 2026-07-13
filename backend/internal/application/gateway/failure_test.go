@@ -13,6 +13,7 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 		permanentAccountDenial bool
 		quotaExhausted         bool
 		freeQuotaExhausted     bool
+		modelQuotaExhausted    bool
 		upstreamCode           string
 	}{
 		{
@@ -28,13 +29,13 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 		},
 		{
 			name: "free model quota", body: `{"error":"You've used all the included free usage for model grok-build"}`,
-			accountScoped: true, quotaExhausted: true, freeQuotaExhausted: true,
+			accountScoped: true, quotaExhausted: true, freeQuotaExhausted: true, modelQuotaExhausted: true,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			failure := newHTTPUpstreamFailure(http.StatusForbidden, []byte(test.body), 42, "build")
-			if failure.HTTPStatus != http.StatusForbidden || failure.Code != "upstream_forbidden" || failure.AccountScoped != test.accountScoped || failure.PermanentAccountDenial != test.permanentAccountDenial || failure.QuotaExhausted != test.quotaExhausted || failure.FreeQuotaExhausted != test.freeQuotaExhausted || failure.UpstreamCode != test.upstreamCode {
+			if failure.HTTPStatus != http.StatusForbidden || failure.Code != "upstream_forbidden" || failure.AccountScoped != test.accountScoped || failure.PermanentAccountDenial != test.permanentAccountDenial || failure.QuotaExhausted != test.quotaExhausted || failure.FreeQuotaExhausted != test.freeQuotaExhausted || failure.ModelQuotaExhausted != test.modelQuotaExhausted || failure.UpstreamCode != test.upstreamCode {
 				t.Fatalf("failure = %#v", failure)
 			}
 		})

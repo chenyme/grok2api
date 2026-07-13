@@ -46,6 +46,8 @@ type AccountRepository interface {
 	UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string) error
 	UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error
 	UpdateHealth(ctx context.Context, id uint64, failureCount int, cooldownUntil *time.Time, lastError string, success bool) error
+	UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error
+	PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error)
 	SaveBilling(ctx context.Context, value account.Billing) error
 	GetBilling(ctx context.Context, accountID uint64) (account.Billing, error)
 	GetQuotaRecovery(ctx context.Context, accountID uint64) (account.QuotaRecovery, error)

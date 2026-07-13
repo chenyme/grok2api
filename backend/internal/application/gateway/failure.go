@@ -22,6 +22,7 @@ type UpstreamFailure struct {
 	PermanentAccountDenial bool
 	QuotaExhausted         bool
 	FreeQuotaExhausted     bool
+	ModelQuotaExhausted    bool
 	CredentialRejected     bool
 	Fingerprint            string
 	Cause                  error
@@ -82,7 +83,8 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.Code = "upstream_forbidden"
 		failure.PublicMessage = "上游拒绝了该请求"
 		failure.PermanentAccountDenial = isPermanentAccountDenial(metadataText)
-		failure.FreeQuotaExhausted = isFreeQuotaExhaustion(metadataText)
+		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
+		failure.FreeQuotaExhausted = failure.ModelQuotaExhausted || isFreeQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
 		failure.CredentialRejected = !failure.QuotaExhausted && containsAny(metadataText, "authentication", "unauthorized", "invalid token", "token expired")
 		failure.AccountScoped = failure.PermanentAccountDenial || failure.QuotaExhausted || failure.CredentialRejected || isAccountScopedForbidden(metadataText)
@@ -90,7 +92,8 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.Code = "upstream_rate_limited"
 		failure.PublicMessage = "上游请求频率受限"
 		failure.AccountScoped = true
-		failure.FreeQuotaExhausted = isFreeQuotaExhaustion(metadataText)
+		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
+		failure.FreeQuotaExhausted = failure.ModelQuotaExhausted || isFreeQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
 	default:
 		failure.Code = "upstream_server_error"
@@ -161,6 +164,10 @@ func isPaidQuotaExhaustion(text string) bool {
 
 func isFreeQuotaExhaustion(text string) bool {
 	return containsAny(text, "subscription:free-usage-exhausted", "used all the included free usage for model")
+}
+
+func isModelQuotaExhaustion(text string) bool {
+	return strings.Contains(text, "used all the included free usage for model")
 }
 
 func containsAny(text string, signals ...string) bool {

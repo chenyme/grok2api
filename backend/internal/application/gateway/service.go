@@ -155,6 +155,13 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	if err != nil {
 		return nil, ErrModelNotFound
 	}
+	timing := newGenerationTiming(route.PublicID, route.Provider)
+	timingHandedOff := false
+	defer func() {
+		if !timingHandedOff {
+			timing.finish(s.logger, "failed")
+		}
+	}()
 	operation := input.Operation
 	if operation == "" {
 		operation = audit.OperationResponses
@@ -214,17 +221,28 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	var lastErr error
 	var lastFailure *UpstreamFailure
 	forwardResponse := func(credential accountdomain.Credential) (*provider.Response, error) {
-		return adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+		started := time.Now()
+		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+		timing.markUpstream(time.Since(started))
+		return response, err
+	}
+	ensureCredential := func(credential accountdomain.Credential, force bool) (accountdomain.Credential, error) {
+		started := time.Now()
+		result, err := s.accounts.EnsureCredential(ctx, credential, force)
+		timing.markCredential(time.Since(started))
+		return result, err
 	}
 attemptLoop:
 	for attempt := 0; attempt < attempts; attempt++ {
 		var lease *accountLease
 		var err error
+		selectionStarted := time.Now()
 		if ownership != nil {
 			lease, err = s.selector.AcquirePinned(ctx, route.Provider, ownership.AccountID, route.UpstreamModel, quotaMode, true)
 		} else {
 			lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, input.PromptCacheKey, excluded, !quotaProbeAttempted)
 		}
+		timing.markSelection(time.Since(selectionStarted))
 		if err != nil {
 			if lastFailure == nil {
 				lastErr = err
@@ -247,7 +265,7 @@ attemptLoop:
 			lease.QuotaProbeKind = ""
 			lease.Billing = nil
 		}
-		credential, err := s.accounts.EnsureCredential(ctx, lease.Credential, false)
+		credential, err := ensureCredential(lease.Credential, false)
 		if err != nil {
 			lease.Release()
 			lastErr = err
@@ -281,7 +299,7 @@ attemptLoop:
 				continue
 			}
 			authRecoveryAttempted[credential.ID] = true
-			refreshed, refreshErr := s.accounts.EnsureCredential(ctx, credential, true)
+			refreshed, refreshErr := ensureCredential(credential, true)
 			if refreshErr == nil {
 				response, err = forwardResponse(refreshed)
 				credential = refreshed
@@ -324,7 +342,7 @@ attemptLoop:
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
 			if credential.Provider == accountdomain.ProviderBuild && !authRecoveryAttempted[credential.ID] && credential.EncryptedRefreshToken != "" && (lastFailure.PermanentAccountDenial || lastFailure.CredentialRejected) {
 				authRecoveryAttempted[credential.ID] = true
-				refreshed, refreshErr := s.accounts.EnsureCredential(ctx, credential, true)
+				refreshed, refreshErr := ensureCredential(credential, true)
 				if refreshErr != nil {
 					lease.Release()
 					lastErr = refreshErr
@@ -354,6 +372,9 @@ attemptLoop:
 				}
 			} else if used, limit, exhausted := parseFreeQuotaExhaustion(body); exhausted {
 				s.selector.MarkFreeQuotaExhausted(ctx, credential, used, limit)
+				failureHandled = true
+			} else if lastFailure.ModelQuotaExhausted {
+				s.selector.MarkModelQuotaExhausted(ctx, credential, route.UpstreamModel, retryAfter)
 				failureHandled = true
 			} else if lastFailure.FreeQuotaExhausted {
 				s.selector.MarkFreeQuotaExhausted(ctx, credential, 0, 0)
@@ -447,8 +468,15 @@ attemptLoop:
 				if operation == audit.OperationResponses && responseID != "" && response.StatusCode >= 200 && response.StatusCode < 300 {
 					_ = s.responses.Save(persistCtx, inferencedomain.ResponseOwnership{ResponseID: responseID, AccountID: accountID, ClientKeyID: input.ClientKey.ID, Provider: route.Provider, ExpiresAt: now.Add(responseOwnershipTTL), CreatedAt: now, UpdatedAt: now})
 				}
+				outcome := "failed"
+				if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" {
+					outcome = "success"
+				}
+				timing.finish(s.logger, outcome)
 			})
 		}
+		response.Body = &firstByteReadCloser{ReadCloser: response.Body, mark: timing.markFirstBody}
+		timingHandedOff = true
 		return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
 	}
 	if lastFailure != nil {
@@ -482,7 +510,7 @@ attemptLoop:
 	if err := s.audits.Create(persistCtx, record); err != nil {
 		s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
 	}
-	return nil, fmt.Errorf("%w: %v", ErrNoAvailableAccount, lastErr)
+	return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, lastErr)
 }
 
 type ResourceInput struct {
@@ -584,7 +612,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	for attempt := 0; attempt < attempts; attempt++ {
 		lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrNoAvailableAccount, err)
+			return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 		}
 		excluded[lease.Credential.ID] = true
 		credential, err = s.accounts.EnsureCredential(ctx, lease.Credential, false)
@@ -719,12 +747,12 @@ func (s *Service) forwardOwnedResponse(ctx context.Context, input ResourceInput,
 	}
 	lease, err := s.selector.AcquirePinned(ctx, ownership.Provider, ownership.AccountID, "", "", false)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrResponseAccountUnavailable, err)
+		return nil, fmt.Errorf("%w: %w", ErrResponseAccountUnavailable, err)
 	}
 	credential, err := s.accounts.EnsureCredential(ctx, lease.Credential, false)
 	if err != nil {
 		lease.Release()
-		return nil, fmt.Errorf("%w: %v", ErrResponseAccountUnavailable, err)
+		return nil, fmt.Errorf("%w: %w", ErrResponseAccountUnavailable, err)
 	}
 	path := "/responses/" + url.PathEscape(input.ResponseID)
 	if input.RawQuery != "" {

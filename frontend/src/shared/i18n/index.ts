@@ -417,7 +417,7 @@ const resources = {
         batch: { title: "批量任务", importConcurrency: "导入同步并发", conversionConcurrency: "账号转换并发", syncConcurrency: "数据同步并发", refreshConcurrency: "凭据刷新并发", randomDelay: "随机延迟上限（ms）" },
         media: { title: "媒体存储", maxImageSize: "单张图片上限", maxTotalSize: "媒体存储上限", cleanupThresholdPercent: "自动清理阈值", cleanupInterval: "容量检查间隔", sizeUnit: "存储单位" },
         egress: { title: "出口代理", description: "节点按 Grok Build、Grok Web 或 Web 资源独立管理代理和健康状态。Build 沿用 Provider 的 User-Agent；Web 节点单独管理浏览器 User-Agent 与 Cookie。代理地址和 Cloudflare Cookie 仅写入。", add: "添加节点", saved: "代理节点已保存", deleted: "代理节点已删除", name: "名称", scope: "作用域", proxy: "代理", clearance: "Clearance", health: "健康度", directFallback: "未配置节点时使用直连", scopeBuild: "Grok Build", scopeWeb: "Grok Web", scopeWebAsset: "Grok Web（仅资源）", configured: "已配置", direct: "直连", none: "无", editTitle: "编辑代理节点", addTitle: "添加代理节点", dialogDescription: "Build 节点只配置代理并沿用 Provider 的 User-Agent；Web 节点使用各自的浏览器 User-Agent 和 Cloudflare Cookie。", enabled: "启用", proxyURL: "代理地址", proxyProtocols: "支持 HTTP、HTTPS、SOCKS4、SOCKS4A、SOCKS5、SOCKS5H，可携带用户名和密码。", userAgent: "User-Agent", cloudflareCookie: "Cloudflare Cookie", keepConfigured: "已配置，留空保持不变", operationFailed: "操作失败" },
-        routing: { title: "路由策略", stickyTTL: "会话粘性时长", cooldownBase: "基础冷却时间", cooldownMax: "最大冷却时间", maxAttempts: "最大尝试次数" },
+        routing: { title: "路由策略", stickyTTL: "会话粘性时长", cooldownBase: "基础冷却时间", cooldownMax: "最大冷却时间", capacityWait: "账号满载等待", maxAttempts: "最大尝试次数" },
         audit: { title: "请求审计", bufferSize: "队列容量", batchSize: "批量写入数", flushInterval: "刷新间隔" },
         clientKeys: { title: "密钥默认限制", rpmLimit: "默认 RPM", maxConcurrent: "默认并发数" },
         units: { seconds: "秒", minutes: "分", hours: "时", days: "天" },

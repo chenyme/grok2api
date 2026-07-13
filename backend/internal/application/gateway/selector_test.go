@@ -370,6 +370,95 @@ func TestSelectorConsumesOnlyMatchingQuotaSnapshot(t *testing.T) {
 	}
 }
 
+func TestSelectorWaitsBrieflyForAccountCapacity(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "capacity-wait.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	if _, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "capacity", SourceKey: "capacity", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 300*time.Millisecond)
+	first, err := selector.Acquire(ctx, account.ProviderBuild, "model", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		lease *accountLease
+		err   error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		lease, acquireErr := selector.Acquire(ctx, account.ProviderBuild, "model", "", "", nil, false)
+		resultCh <- result{lease: lease, err: acquireErr}
+	}()
+	select {
+	case value := <-resultCh:
+		t.Fatalf("second acquire returned before capacity release: %v", value.err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	first.Release()
+	select {
+	case value := <-resultCh:
+		if value.err != nil || value.lease == nil {
+			t.Fatalf("second acquire lease=%v err=%v", value.lease, value.err)
+		}
+		value.lease.Release()
+	case <-time.After(time.Second):
+		t.Fatal("second acquire did not wake after capacity release")
+	}
+}
+
+func TestSelectorAppliesPersistedCooldownOnlyToMatchingModel(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-cooldown.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "model-cooling", SourceKey: "model-cooling", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := time.Now().UTC().Add(time.Hour)
+	if err := accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{AccountID: credential.ID, UpstreamModel: "limited-model", Reason: "test", CooldownUntil: until}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{AccountID: credential.ID, UpstreamModel: "limited-model", Reason: "shorter", CooldownUntil: time.Now().UTC().Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	if _, err := selector.Acquire(ctx, account.ProviderBuild, "limited-model", "", "", nil, false); err == nil {
+		t.Fatal("matching model cooldown was ignored")
+	} else {
+		var unavailable *SelectionUnavailableError
+		if !errors.As(err, &unavailable) || unavailable.Reason != SelectionModelCooling || unavailable.RetryAfter < 30*time.Minute {
+			t.Fatalf("error = %v", err)
+		}
+	}
+	lease, err := selector.Acquire(ctx, account.ProviderBuild, "other-model", "", "", nil, false)
+	if err != nil {
+		t.Fatalf("other model was blocked: %v", err)
+	}
+	lease.Release()
+}
+
 type failingConcurrencyLimiter struct{ err error }
 
 type batchConcurrencyLimiter struct {

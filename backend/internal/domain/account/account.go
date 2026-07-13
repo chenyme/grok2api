@@ -229,8 +229,18 @@ type RoutingCandidate struct {
 	Billing              *Billing
 	QuotaWindow          *QuotaWindow
 	QuotaRecovery        *QuotaRecovery
+	ModelQuotaBlock      *ModelQuotaBlock
 	ModelCapabilityKnown bool
 	SupportsModel        bool
+}
+
+// ModelQuotaBlock 表示账号的单模型配额暂不可用，不影响该账号上的其他模型。
+type ModelQuotaBlock struct {
+	AccountID     uint64
+	UpstreamModel string
+	Reason        string
+	CooldownUntil time.Time
+	UpdatedAt     time.Time
 }
 
 // DeviceSession 表示一次短期 Device OAuth 授权流程。

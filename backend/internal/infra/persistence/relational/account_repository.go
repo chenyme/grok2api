@@ -173,6 +173,7 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 	}
 	known := make(map[uint64]bool, len(ids))
 	supported := make(map[uint64]bool, len(ids))
+	modelQuotaBlocks := make(map[uint64]account.ModelQuotaBlock, len(ids))
 	if strings.TrimSpace(upstreamModel) != "" && len(ids) > 0 {
 		var states []accountModelSyncStateModel
 		if err := r.db.db.WithContext(ctx).Where("account_id IN ? AND last_success_at IS NOT NULL", ids).Find(&states).Error; err != nil {
@@ -187,6 +188,13 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 		}
 		for _, capability := range capabilities {
 			supported[capability.AccountID] = true
+		}
+		var blockRows []accountModelQuotaBlockModel
+		if err := r.db.db.WithContext(ctx).Where("account_id IN ? AND upstream_model = ? AND cooldown_until > ?", ids, upstreamModel, time.Now().UTC()).Find(&blockRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range blockRows {
+			modelQuotaBlocks[row.AccountID] = account.ModelQuotaBlock{AccountID: row.AccountID, UpstreamModel: row.UpstreamModel, Reason: row.Reason, CooldownUntil: row.CooldownUntil.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
 		}
 	}
 	result := make([]account.RoutingCandidate, 0, len(values))
@@ -204,6 +212,9 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 		}
 		if window, ok := quotaWindows[value.ID]; ok {
 			candidate.QuotaWindow = &window
+		}
+		if block, ok := modelQuotaBlocks[value.ID]; ok {
+			candidate.ModelQuotaBlock = &block
 		}
 		result = append(result, candidate)
 	}
@@ -651,6 +662,48 @@ func (r *AccountRepository) UpdateHealth(ctx context.Context, id uint64, failure
 		updates["last_used_at"] = &now
 	}
 	return r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Updates(updates).Error
+}
+
+func (r *AccountRepository) UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error {
+	value.UpstreamModel = strings.TrimSpace(value.UpstreamModel)
+	value.Reason = strings.TrimSpace(value.Reason)
+	if value.AccountID == 0 || value.UpstreamModel == "" || value.Reason == "" || value.CooldownUntil.IsZero() {
+		return repository.ErrConflict
+	}
+	now := time.Now().UTC()
+	row := accountModelQuotaBlockModel{
+		AccountID: value.AccountID, UpstreamModel: truncate(value.UpstreamModel, 255), Reason: truncate(value.Reason, 100),
+		CooldownUntil: value.CooldownUntil.UTC(), UpdatedAt: now,
+	}
+	return r.db.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "account_id"}, {Name: "upstream_model"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"reason":         gorm.Expr("CASE WHEN cooldown_until > ? THEN reason ELSE ? END", row.CooldownUntil, row.Reason),
+			"cooldown_until": gorm.Expr("CASE WHEN cooldown_until > ? THEN cooldown_until ELSE ? END", row.CooldownUntil, row.CooldownUntil), "updated_at": now,
+		}),
+	}).Create(&row).Error
+}
+
+func (r *AccountRepository) PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	var rows []accountModelQuotaBlockModel
+	if err := r.db.db.WithContext(ctx).Select("account_id", "upstream_model").Where("cooldown_until <= ?", now.UTC()).Order("cooldown_until ASC").Limit(limit).Find(&rows).Error; err != nil || len(rows) == 0 {
+		return 0, err
+	}
+	var deleted int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, row := range rows {
+			result := tx.Where("account_id = ? AND upstream_model = ? AND cooldown_until <= ?", row.AccountID, row.UpstreamModel, now.UTC()).Delete(&accountModelQuotaBlockModel{})
+			if result.Error != nil {
+				return result.Error
+			}
+			deleted += result.RowsAffected
+		}
+		return nil
+	})
+	return deleted, err
 }
 
 func (r *AccountRepository) SaveBilling(ctx context.Context, value account.Billing) error {
