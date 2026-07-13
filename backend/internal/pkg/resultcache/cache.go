@@ -1,6 +1,7 @@
 package resultcache
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -53,16 +54,21 @@ func (c *Cache[K, V]) Get(key K, now time.Time) (V, bool) {
 	return value.value, true
 }
 
-// Load 合并同一键的并发加载，避免缓存过期瞬间重复执行昂贵查询。
-func (c *Cache[K, V]) Load(key K, now time.Time, loader func() (V, error)) (V, error) {
+// Load 合并同一键的并发加载；等待者可独立取消，不受首个请求生命周期拖累。
+func (c *Cache[K, V]) Load(ctx context.Context, key K, now time.Time, loader func() (V, error)) (V, error) {
 	if value, ok := c.Get(key, now); ok {
 		return value, nil
 	}
 	c.mu.Lock()
 	if pending, ok := c.loads[key]; ok {
 		c.mu.Unlock()
-		<-pending.done
-		return pending.value, pending.err
+		select {
+		case <-pending.done:
+			return pending.value, pending.err
+		case <-ctx.Done():
+			var zero V
+			return zero, ctx.Err()
+		}
 	}
 	pending := &flight[V]{done: make(chan struct{})}
 	c.loads[key] = pending

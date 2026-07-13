@@ -27,11 +27,11 @@ func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	}
 	response, err := lease.Do(request)
 	if err != nil {
-		t.manager.Feedback(context.WithoutCancel(request.Context()), lease.NodeID, 0, err)
+		t.manager.FeedbackForScope(context.WithoutCancel(request.Context()), domainegress.ScopeBuild, lease.NodeID, 0, err)
 		lease.Release()
 		return nil, err
 	}
-	t.manager.Feedback(context.WithoutCancel(request.Context()), lease.NodeID, response.StatusCode, nil)
+	t.manager.FeedbackForScope(context.WithoutCancel(request.Context()), domainegress.ScopeBuild, lease.NodeID, response.StatusCode, nil)
 	if response.Body == nil {
 		lease.Release()
 		return response, nil

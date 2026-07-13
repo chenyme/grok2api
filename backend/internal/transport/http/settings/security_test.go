@@ -34,6 +34,17 @@ func TestSettingsResponseDoesNotExposeManualStatsigValue(t *testing.T) {
 	}
 }
 
+func TestSettingsResponseDoesNotExposeBuildTokenAuth(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{ProviderBuild: settingsapp.ProviderBuildConfig{TokenAuth: "must-not-leak"}}})
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "must-not-leak") || !strings.Contains(string(data), `"tokenAuthConfigured":true`) {
+		t.Fatalf("settings response leaked or lost Build token status: %s", data)
+	}
+}
+
 func TestSettingsResponseIncludesRecommendedBuildBaseline(t *testing.T) {
 	response := newSettingsResponse(settingsapp.Snapshot{RecommendedProviderBuild: settingsapp.ProviderBuildRecommendation{
 		ClientVersion: "0.2.99", UserAgent: "grok-shell/0.2.99 (linux; x86_64)",

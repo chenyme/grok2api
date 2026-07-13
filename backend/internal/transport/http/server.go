@@ -65,12 +65,37 @@ type ReadinessComponent struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// ReadinessCredentialReport 表示可公开的启动凭据恢复统计。
+type ReadinessCredentialReport struct {
+	SchedulesBackfilled int `json:"schedulesBackfilled"`
+	CriticalFound       int `json:"criticalFound"`
+	Refreshed           int `json:"refreshed"`
+	Failed              int `json:"failed"`
+}
+
+// ReadinessStartupReport 表示可公开的启动恢复统计，不包含内部错误文本。
+type ReadinessStartupReport struct {
+	StartedAt                time.Time                 `json:"startedAt"`
+	CompletedAt              *time.Time                `json:"completedAt,omitempty"`
+	Credentials              ReadinessCredentialReport `json:"credentials"`
+	CooldownsRestored        int                       `json:"cooldownsRestored"`
+	QuotaRecoveriesRestored  int                       `json:"quotaRecoveriesRestored"`
+	DueWebQuotasQueued       int                       `json:"dueWebQuotasQueued"`
+	StatsigKeysWarmed        int                       `json:"statsigKeysWarmed"`
+	StaleWebQuotasFound      int                       `json:"staleWebQuotasFound"`
+	StaleWebQuotasSynced     int                       `json:"staleWebQuotasSynced"`
+	StaleModelCatalogsFound  int                       `json:"staleModelCatalogsFound"`
+	StaleModelCatalogsSynced int                       `json:"staleModelCatalogsSynced"`
+	ErrorCount               int                       `json:"errorCount"`
+}
+
+// ReadinessSnapshot 表示公开就绪端点的稳定响应契约。
 type ReadinessSnapshot struct {
 	Ready      bool                          `json:"ready"`
 	State      string                        `json:"state"`
 	UpdatedAt  time.Time                     `json:"updatedAt"`
 	Components map[string]ReadinessComponent `json:"components,omitempty"`
-	Startup    any                           `json:"startup,omitempty"`
+	Startup    *ReadinessStartupReport       `json:"startup,omitempty"`
 }
 
 // New 创建完整 HTTP 路由并明确区分公共、管理员和客户端鉴权边界。

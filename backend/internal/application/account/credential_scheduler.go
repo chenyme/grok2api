@@ -9,11 +9,12 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 )
 
+// CredentialStartupReport 汇总启动阶段的凭据调度与恢复结果。
 type CredentialStartupReport struct {
-	SchedulesBackfilled int `json:"schedulesBackfilled"`
-	CriticalFound       int `json:"criticalFound"`
-	Refreshed           int `json:"refreshed"`
-	Failed              int `json:"failed"`
+	SchedulesBackfilled int
+	CriticalFound       int
+	Refreshed           int
+	Failed              int
 }
 
 // ReconcileCredentialSchedules 为升级前账号补齐持久化调度，不解密凭据，也不访问上游。

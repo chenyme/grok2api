@@ -245,16 +245,16 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	lease, err := s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.UpstreamModel, "", true)
 	if err != nil {
 		if parent.Err() != nil {
-			s.deferVideoJob(job)
+			s.deferVideoJob(parent, job)
 			return
 		}
-		s.failVideoJob(job, "account_unavailable", err)
+		s.failVideoJob(parent, job, "account_unavailable", err)
 		return
 	}
 	defer lease.Release()
 	adapter, ok := s.providers.Videos(route.Provider)
 	if !ok {
-		s.failVideoJob(job, "provider_unavailable", ErrNoAvailableAccount)
+		s.failVideoJob(parent, job, "provider_unavailable", ErrNoAvailableAccount)
 		return
 	}
 	lastProgress := job.Progress
@@ -277,20 +277,20 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	})
 	if err != nil {
 		if parent.Err() != nil {
-			s.deferVideoJob(job)
+			s.deferVideoJob(parent, job)
 			return
 		}
 		if errors.Is(err, provider.ErrUnauthorized) {
 			_ = s.accounts.MarkReauthRequired(context.Background(), lease.Credential.ID, "Grok Web SSO credential rejected")
 		}
 		s.selector.MarkFailure(context.Background(), lease.Credential, 0, 0)
-		s.failVideoJob(job, "generation_failed", err)
+		s.failVideoJob(parent, job, "generation_failed", err)
 		return
 	}
 	now := time.Now().UTC()
 	job.Status, job.Progress, job.UpstreamURL, job.ContentType = media.StatusCompleted, 100, result.URL, result.ContentType
 	job.LeaseUntil, job.UpdatedAt, job.CompletedAt = nil, now, &now
-	if err := s.persistVideoJobWithRetry(job); err != nil {
+	if err := s.persistVideoJobWithRetry(parent, job); err != nil {
 		s.logger.Error("video_job_terminal_write_failed", "job_id", job.ID, "error", err)
 		return
 	}
@@ -365,21 +365,21 @@ func decodeVideoInput(value string) []string {
 	return input["image_urls"]
 }
 
-func (s *Service) failVideoJob(job media.Job, code string, err error) {
+func (s *Service) failVideoJob(ctx context.Context, job media.Job, code string, err error) {
 	now := time.Now().UTC()
 	job.Status, job.ErrorCode, job.ErrorMessage = media.StatusFailed, code, err.Error()
 	if len(job.ErrorMessage) > 512 {
 		job.ErrorMessage = job.ErrorMessage[:512]
 	}
 	job.LeaseUntil, job.UpdatedAt, job.CompletedAt = nil, now, &now
-	if updateErr := s.persistVideoJobWithRetry(job); updateErr != nil {
+	if updateErr := s.persistVideoJobWithRetry(ctx, job); updateErr != nil {
 		s.logger.Error("video_job_terminal_write_failed", "job_id", job.ID, "error", updateErr)
 		return
 	}
 	s.cancelBillingReservation("video_usage_" + job.ID)
 }
 
-func (s *Service) deferVideoJob(job media.Job) {
+func (s *Service) deferVideoJob(ctx context.Context, job media.Job) {
 	now := time.Now().UTC()
 	leaseUntil := now.Add(5 * time.Minute)
 	job.Status = media.StatusInProgress
@@ -387,22 +387,29 @@ func (s *Service) deferVideoJob(job media.Job) {
 	job.UpdatedAt = now
 	job.ErrorCode = ""
 	job.ErrorMessage = ""
-	if err := s.persistVideoJobWithRetry(job); err != nil {
+	if err := s.persistVideoJobWithRetry(ctx, job); err != nil {
 		s.logger.Error("video_job_defer_write_failed", "job_id", job.ID, "error", err)
 	}
 }
 
-func (s *Service) persistVideoJobWithRetry(job media.Job) error {
+// persistVideoJobWithRetry 至少执行一次收尾写入；后续退避可被工作进程关闭信号取消。
+func (s *Service) persistVideoJobWithRetry(ctx context.Context, job media.Job) error {
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		lastErr = s.mediaJobs.UpdateMediaJob(ctx, job)
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		lastErr = s.mediaJobs.UpdateMediaJob(writeCtx, job)
 		cancel()
 		if lastErr == nil {
 			return nil
 		}
 		if attempt < 3 {
-			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+			timer := time.NewTimer(time.Duration(attempt) * 100 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return errors.Join(lastErr, ctx.Err())
+			case <-timer.C:
+			}
 		}
 	}
 	return lastErr

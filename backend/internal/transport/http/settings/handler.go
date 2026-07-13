@@ -3,6 +3,7 @@ package settings
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	settingsapp "github.com/chenyme/grok2api/backend/internal/application/settings"
@@ -37,11 +38,12 @@ type mediaConfigDTO struct {
 }
 
 type providerBuildConfigDTO struct {
-	BaseURL          string `json:"baseURL"`
-	ClientVersion    string `json:"clientVersion"`
-	ClientIdentifier string `json:"clientIdentifier"`
-	TokenAuth        string `json:"tokenAuth"`
-	UserAgent        string `json:"userAgent"`
+	BaseURL             string `json:"baseURL"`
+	ClientVersion       string `json:"clientVersion"`
+	ClientIdentifier    string `json:"clientIdentifier"`
+	TokenAuth           string `json:"tokenAuth"`
+	TokenAuthConfigured bool   `json:"tokenAuthConfigured"`
+	UserAgent           string `json:"userAgent"`
 }
 
 type providerWebConfigDTO struct {
@@ -175,7 +177,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 		Config: settingsConfigDTO{
 			ProviderBuild: providerBuildConfigDTO{
 				BaseURL: config.ProviderBuild.BaseURL, ClientVersion: config.ProviderBuild.ClientVersion,
-				ClientIdentifier: config.ProviderBuild.ClientIdentifier, TokenAuth: config.ProviderBuild.TokenAuth,
+				ClientIdentifier: config.ProviderBuild.ClientIdentifier, TokenAuthConfigured: strings.TrimSpace(config.ProviderBuild.TokenAuth) != "",
 				UserAgent: config.ProviderBuild.UserAgent,
 			},
 			ProviderWeb: providerWebConfigDTO{

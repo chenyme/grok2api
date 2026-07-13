@@ -120,8 +120,8 @@ type QuotaWindow struct {
 
 // QuotaBreakdown 保存上游周额度中的产品枚举及其使用百分比。
 type QuotaBreakdown struct {
-	ProductCode  int     `json:"productCode"`
-	UsagePercent float64 `json:"usagePercent"`
+	ProductCode  int
+	UsagePercent float64
 }
 
 const (

@@ -330,7 +330,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Provider.Build.BaseURL = strings.TrimSpace(input.ProviderBuild.BaseURL)
 	next.Provider.Build.ClientVersion = strings.TrimSpace(input.ProviderBuild.ClientVersion)
 	next.Provider.Build.ClientIdentifier = strings.TrimSpace(input.ProviderBuild.ClientIdentifier)
-	next.Provider.Build.TokenAuth = strings.TrimSpace(input.ProviderBuild.TokenAuth)
+	if tokenAuth := strings.TrimSpace(input.ProviderBuild.TokenAuth); tokenAuth != "" {
+		next.Provider.Build.TokenAuth = tokenAuth
+	}
 	next.Provider.Build.UserAgent = strings.TrimSpace(input.ProviderBuild.UserAgent)
 	next.Provider.Web.BaseURL = strings.TrimSpace(input.ProviderWeb.BaseURL)
 	next.Provider.Web.StatsigMode = strings.TrimSpace(input.ProviderWeb.StatsigMode)

@@ -1,6 +1,8 @@
 package resultcache
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,7 +39,7 @@ func TestCacheCoalescesConcurrentLoads(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			value, err := cache.Load("shared", now, func() (int, error) {
+			value, err := cache.Load(context.Background(), "shared", now, func() (int, error) {
 				calls.Add(1)
 				time.Sleep(10 * time.Millisecond)
 				return 42, nil
@@ -53,4 +55,32 @@ func TestCacheCoalescesConcurrentLoads(t *testing.T) {
 	if calls.Load() != 1 || results[0] != 42 || results[1] != 42 {
 		t.Fatalf("calls = %d, results = %#v", calls.Load(), results)
 	}
+}
+
+func TestCacheWaiterHonorsCancellation(t *testing.T) {
+	cache := New[string, int](2, time.Minute)
+	loaderStarted := make(chan struct{})
+	releaseLoader := make(chan struct{})
+	loaderDone := make(chan struct{})
+	go func() {
+		defer close(loaderDone)
+		_, _ = cache.Load(context.Background(), "shared", time.Now(), func() (int, error) {
+			close(loaderStarted)
+			<-releaseLoader
+			return 42, nil
+		})
+	}()
+	<-loaderStarted
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := cache.Load(ctx, "shared", time.Now(), func() (int, error) {
+		t.Fatal("canceled waiter unexpectedly became the loader")
+		return 0, nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("load error = %v, want context canceled", err)
+	}
+
+	close(releaseLoader)
+	<-loaderDone
 }

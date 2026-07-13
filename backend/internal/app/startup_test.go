@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +14,19 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
+
+func TestReadinessStartupReportDoesNotExposeInternalErrors(t *testing.T) {
+	state := newStartupState(0)
+	state.recordError(errors.New("postgres://private-host/internal"))
+	_, _, report, _ := state.snapshot()
+	payload, err := json.Marshal(newReadinessStartupReport(report))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "private-host") || !strings.Contains(string(payload), `"errorCount":1`) {
+		t.Fatalf("public readiness leaked internal error: %s", payload)
+	}
+}
 
 func TestReadinessKeepsBuildReadyWhenWebIsUnavailable(t *testing.T) {
 	ctx := context.Background()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -23,14 +24,26 @@ const nodeSnapshotTTL = time.Second
 
 type Lease struct {
 	NodeID    uint64
+	Scope     domain.Scope
 	ProxyURL  string
 	UserAgent string
 	CFCookies string
-	client    *browserClient
+	client    requestClient
+	browser   *browserClient
 	release   func()
 }
 
-func (l *Lease) Do(request *http.Request) (*http.Response, error) { return l.client.Do(request) }
+type requestClient interface {
+	Do(*http.Request) (*http.Response, error)
+	CloseIdleConnections()
+}
+
+func (l *Lease) Do(request *http.Request) (*http.Response, error) {
+	if l == nil || l.client == nil {
+		return nil, errors.New("出口客户端未初始化")
+	}
+	return l.client.Do(request)
+}
 func (l *Lease) Release() {
 	if l != nil && l.release != nil {
 		l.release()
@@ -50,7 +63,8 @@ type Manager struct {
 
 type cachedClient struct {
 	fingerprint string
-	client      *browserClient
+	client      requestClient
+	browser     *browserClient
 }
 
 type cachedNodeSnapshot struct {
@@ -126,7 +140,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	if scope != domain.ScopeBuild && userAgent == "" {
 		userAgent = DefaultUserAgent
 	}
-	client, err := m.clientFor(selected.ID, proxyURL, userAgent, cookies)
+	client, err := m.clientFor(selected.ID, scope, proxyURL, userAgent, cookies)
 	if err != nil {
 		return nil, false, err
 	}
@@ -134,7 +148,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	m.inflight[selected.ID]++
 	m.mu.Unlock()
 	var once sync.Once
-	return &Lease{NodeID: selected.ID, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client, release: func() {
+	return &Lease{NodeID: selected.ID, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, release: func() {
 		once.Do(func() {
 			m.mu.Lock()
 			m.inflight[selected.ID]--
@@ -216,26 +230,49 @@ func (m *Manager) selectNode(nodes []domain.Node, affinity string) domain.Node {
 	return best
 }
 
-func (m *Manager) clientFor(id uint64, proxyURL, userAgent, cookies string) (*browserClient, error) {
-	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(proxyURL+"\x00"+userAgent+"\x00"+cookies)))
+func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, cookies string) (cachedClient, error) {
+	clientKind := "browser"
+	if scope == domain.ScopeBuild {
+		clientKind = "build"
+	}
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(clientKind+"\x00"+proxyURL+"\x00"+userAgent+"\x00"+cookies)))
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if cached, ok := m.clients[id]; ok && cached.fingerprint == fingerprint {
-		return cached.client, nil
+		return cached, nil
 	}
-	client, err := newBrowserClient(proxyURL)
-	if err != nil {
-		return nil, err
+	var value cachedClient
+	value.fingerprint = fingerprint
+	if scope == domain.ScopeBuild {
+		client, err := newBuildClient(proxyURL)
+		if err != nil {
+			return cachedClient{}, err
+		}
+		value.client = client
+	} else {
+		client, err := newBrowserClient(proxyURL)
+		if err != nil {
+			return cachedClient{}, err
+		}
+		value.client = client
+		value.browser = client
 	}
-	m.clients[id] = cachedClient{fingerprint: fingerprint, client: client}
-	return client, nil
+	if previous, exists := m.clients[id]; exists && previous.client != nil {
+		previous.client.CloseIdleConnections()
+	}
+	m.clients[id] = value
+	return value, nil
 }
 
 func (m *Manager) Feedback(ctx context.Context, nodeID uint64, status int, transportErr error) {
+	m.FeedbackForScope(ctx, domain.ScopeWeb, nodeID, status, transportErr)
+}
+
+func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, nodeID uint64, status int, transportErr error) {
 	if nodeID == 0 {
-		if transportErr != nil || status == http.StatusForbidden || status >= 500 {
+		if transportErr != nil || status >= 500 || (scope != domain.ScopeBuild && status == http.StatusForbidden) {
 			m.mu.Lock()
-			delete(m.clients, 0)
+			m.invalidateClientLocked(0)
 			m.mu.Unlock()
 		}
 		return
@@ -253,13 +290,17 @@ func (m *Manager) Feedback(ctx context.Context, nodeID uint64, status int, trans
 		value.LastError = ""
 	case status == http.StatusUnauthorized || status == http.StatusTooManyRequests:
 		return
+	case scope == domain.ScopeBuild && status == http.StatusForbidden:
+		// Build 403 可能是账号权限、额度、Token 或出口策略，响应体由网关层
+		// 分类；仅凭状态码不能把标准 CLI 出口误判为 Web anti-bot。
+		return
 	case status == http.StatusForbidden:
 		value.FailureCount++
 		value.Health = max(0.05, value.Health*0.7)
 		value.CooldownUntil = nil
 		value.LastError = "anti-bot rejection"
 		m.mu.Lock()
-		delete(m.clients, nodeID)
+		m.invalidateClientLocked(nodeID)
 		m.mu.Unlock()
 	default:
 		value.FailureCount++
@@ -273,12 +314,19 @@ func (m *Manager) Feedback(ctx context.Context, nodeID uint64, status int, trans
 			value.LastError = fmt.Sprintf("upstream status %d", status)
 		}
 		m.mu.Lock()
-		delete(m.clients, nodeID)
+		m.invalidateClientLocked(nodeID)
 		m.mu.Unlock()
 	}
 	if _, err := m.repository.UpdateEgressNode(ctx, value); err == nil {
 		m.invalidateNodes(value.Scope)
 	}
+}
+
+func (m *Manager) invalidateClientLocked(nodeID uint64) {
+	if cached, exists := m.clients[nodeID]; exists && cached.client != nil {
+		cached.client.CloseIdleConnections()
+	}
+	delete(m.clients, nodeID)
 }
 
 func BuildSSOCookie(token, cloudflareCookies string) string {

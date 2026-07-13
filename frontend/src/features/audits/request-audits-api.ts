@@ -1,4 +1,5 @@
 import { apiRequest } from "@/shared/api/client";
+import { createObjectDecoder, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isString } from "@/shared/api/decoder";
 import type { PeriodValue } from "@/shared/lib/period";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
@@ -74,6 +75,32 @@ export type AuditSummaryDTO = {
   };
 };
 
+const auditValidator = hasShape({
+  id: isString, requestId: isString, clientKeyId: isString, clientKeyName: isOptional(isString), modelRouteId: isString,
+  modelPublicId: isOptional(isString), modelUpstreamModel: isOptional(isString), provider: isOneOf("grok_build", "grok_web"),
+  operation: isOneOf("responses", "chat", "messages", "image", "image_edit", "video"), usageSource: isOneOf("upstream", "estimated", "none"),
+  accountId: isOptional(isString), accountName: isOptional(isString), statusCode: isNumber, streaming: isBoolean,
+  mediaInputImages: isNumber, mediaOutputImages: isNumber, mediaOutputSeconds: isNumber, inputTokens: isNumber,
+  cachedInputTokens: isNumber, outputTokens: isNumber, reasoningTokens: isNumber, totalTokens: isNumber,
+  costInUsdTicks: isNumber, estimatedCostInUsdTicks: isNumber, pricingModel: isOptional(isString), pricingVersion: isOptional(isString),
+  numSourcesUsed: isNumber, numServerSideToolsUsed: isNumber, contextInputTokens: isNumber, contextOutputTokens: isNumber,
+  durationMs: isNumber, errorCode: isOptional(isString), createdAt: isString,
+});
+const decodeAuditPage = createObjectDecoder<AuditCursorPageDTO>("audit page", {
+  items: isArrayOf(auditValidator), pageSize: isNumber, nextCursor: isString, hasMore: isBoolean,
+});
+const decodeAuditSummary = createObjectDecoder<AuditSummaryDTO>("audit summary", {
+  period: isOneOf("24h", "7d", "30d", "90d"), generatedAt: isString, range: hasShape({ start: isString, end: isString }),
+  usage: hasShape({
+    requests: isNumber, successfulRequests: isNumber, failedRequests: isNumber, inputTokens: isNumber,
+    cachedInputTokens: isNumber, outputTokens: isNumber, reasoningTokens: isNumber, totalTokens: isNumber,
+    averageDurationMs: isNumber, successRate: isNumber, estimatedCostInUsdTicks: isNumber,
+  }),
+  pricing: hasShape({
+    source: isString, asOf: isString, pricedRequests: isNumber, unpricedRequests: isNumber, pricedTokens: isNumber, unpricedTokens: isNumber,
+  }),
+});
+
 type AuditQuery = {
   cursor?: string;
   pageSize?: number;
@@ -101,7 +128,7 @@ export function getRequestAudits(input: AuditQuery): Promise<AuditCursorPageDTO>
     query.set("sortBy", input.sortBy);
     query.set("sortOrder", input.sortOrder);
   }
-  return apiRequest<AuditCursorPageDTO>(`/api/admin/v1/request-audits?${query}`);
+  return apiRequest(`/api/admin/v1/request-audits?${query}`, {}, decodeAuditPage);
 }
 
 export function getRequestAuditSummary(input: Omit<AuditQuery, "cursor" | "pageSize">, refresh = false): Promise<AuditSummaryDTO> {
@@ -113,5 +140,5 @@ export function getRequestAuditSummary(input: Omit<AuditQuery, "cursor" | "pageS
   if (input.key) query.set("key", input.key);
   if (input.account) query.set("account", input.account);
   if (refresh) query.set("refresh", "1");
-  return apiRequest<AuditSummaryDTO>(`/api/admin/v1/request-audits/summary?${query}`);
+  return apiRequest(`/api/admin/v1/request-audits/summary?${query}`, {}, decodeAuditSummary);
 }

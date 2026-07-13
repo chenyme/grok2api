@@ -17,6 +17,11 @@ type AccountRepository struct{ db *Database }
 
 func NewAccountRepository(db *Database) *AccountRepository { return &AccountRepository{db: db} }
 
+type quotaBreakdownJSON struct {
+	ProductCode  int     `json:"productCode"`
+	UsagePercent float64 `json:"usagePercent"`
+}
+
 const (
 	accountPaidBillingPredicate = `EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND (billing.monthly_limit > 0 OR billing.on_demand_cap > 0 OR billing.on_demand_used > 0 OR billing.prepaid_balance > 0 OR billing.credit_usage_percent > 0))`
 	accountFreeSignalPredicate  = `(LOWER(TRIM(provider_accounts.observed_model)) LIKE '%-build-free' OR EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND (billing.is_unified_billing_user = TRUE OR billing.usage_period_type <> '' OR billing.top_up_method <> '' OR billing.billing_period_start <> '' OR (billing.history_json <> '' AND billing.history_json <> '[]' AND billing.history_json <> 'null'))))`
@@ -830,7 +835,11 @@ func (r *AccountRepository) saveQuotaWindows(ctx context.Context, accountID uint
 			}
 		}
 		for _, value := range values {
-			breakdownJSON, err := json.Marshal(value.Breakdown)
+			serializedBreakdown := make([]quotaBreakdownJSON, 0, len(value.Breakdown))
+			for _, item := range value.Breakdown {
+				serializedBreakdown = append(serializedBreakdown, quotaBreakdownJSON{ProductCode: item.ProductCode, UsagePercent: item.UsagePercent})
+			}
+			breakdownJSON, err := json.Marshal(serializedBreakdown)
 			if err != nil {
 				return err
 			}
@@ -928,8 +937,12 @@ func (r *AccountRepository) ListStaleWebQuotaAccountIDs(ctx context.Context, bef
 }
 
 func toQuotaWindowDomain(row quotaWindowModel) account.QuotaWindow {
-	var breakdown []account.QuotaBreakdown
-	_ = json.Unmarshal([]byte(row.BreakdownJSON), &breakdown)
+	var serializedBreakdown []quotaBreakdownJSON
+	_ = json.Unmarshal([]byte(row.BreakdownJSON), &serializedBreakdown)
+	breakdown := make([]account.QuotaBreakdown, 0, len(serializedBreakdown))
+	for _, item := range serializedBreakdown {
+		breakdown = append(breakdown, account.QuotaBreakdown{ProductCode: item.ProductCode, UsagePercent: item.UsagePercent})
+	}
 	return account.QuotaWindow{
 		AccountID: row.AccountID, Mode: row.Mode, Remaining: row.Remaining, Total: row.Total,
 		UsagePercent: row.UsagePercent, Breakdown: breakdown, WindowSeconds: row.WindowSeconds,
