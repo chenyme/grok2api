@@ -11,6 +11,7 @@ import { listModels } from "@/entities/model/model-api";
 import type { ModelRouteDTO } from "@/entities/model/types";
 import { getSystemInfo } from "@/entities/system/system-api";
 import { runtimeConfig } from "@/shared/config/runtime-config";
+import { copyToClipboard } from "@/shared/clipboard";
 import { cn } from "@/shared/lib/cn";
 
 type ExampleLanguage = "curl" | "python" | "javascript";
@@ -366,7 +367,7 @@ function CopyButton({ value, className }: { value: string; className?: string })
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   return (
-    <Button type="button" variant="ghost" size="icon" className={cn("size-7 shrink-0 text-muted-foreground", className)} aria-label={copied ? t("common.copied") : t("common.copy")} title={copied ? t("common.copied") : t("common.copy")} onClick={() => { void navigator.clipboard.writeText(value); setCopied(true); window.setTimeout(() => setCopied(false), 1500); }}>
+    <Button type="button" variant="ghost" size="icon" className={cn("size-7 shrink-0 text-muted-foreground", className)} aria-label={copied ? t("common.copied") : t("common.copy")} title={copied ? t("common.copied") : t("common.copy")} onClick={() => { void copyToClipboard(value); setCopied(true); window.setTimeout(() => setCopied(false), 1500); }}>
       {copied ? <Check /> : <Copy />}
     </Button>
   );

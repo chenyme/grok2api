@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 
+import { copyToClipboard } from "@/shared/clipboard";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -711,7 +712,7 @@ export function AccountsPage() {
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button type="button" variant="ghost" size="icon" className="absolute right-1.5 top-1/2 size-8 -translate-y-1/2 rounded-md" aria-label={t("common.copy")} onClick={() => {
-                        void navigator.clipboard.writeText(deviceSession.userCode);
+                        void copyToClipboard(deviceSession.userCode);
                         toast.success(t("common.copied"));
                       }}><Copy /></Button>
                     </TooltipTrigger>

@@ -7,6 +7,8 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 
+import { copyToClipboard } from "@/shared/clipboard";
+
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -125,7 +127,7 @@ export function ClientKeysPage() {
   const copyMutation = useMutation({
     mutationFn: async (id: string) => {
       const result = await getClientKeySecret(id);
-      await navigator.clipboard.writeText(result.secret);
+      await copyToClipboard(result.secret);
       return id;
     },
     onSuccess: () => toast.success(t("common.copied")),
@@ -404,7 +406,7 @@ export function ClientKeysPage() {
                 <TooltipTrigger asChild>
                   <Button type="button" variant="ghost" size="icon" className="h-full w-8 shrink-0 rounded-none border-l" aria-label={t("keys.copySecret")} onClick={() => {
                     if (createdSecret) {
-                      void navigator.clipboard.writeText(createdSecret);
+                      void copyToClipboard(createdSecret);
                       toast.success(t("common.copied"));
                     }
                   }}><Copy /></Button>
