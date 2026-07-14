@@ -65,7 +65,9 @@ func normalizeResponseFormat(raw json.RawMessage) (json.RawMessage, error) {
 	result := make(map[string]json.RawMessage, len(schema))
 	result["type"] = mustJSON("json_schema")
 	for key, value := range schema {
-		result[key] = value
+		if key != "type" {
+			result[key] = value
+		}
 	}
 	return json.Marshal(result)
 }
