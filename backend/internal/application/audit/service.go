@@ -178,6 +178,10 @@ func (s *Service) List(ctx context.Context, page, pageSize int) ([]auditdomain.R
 	return s.audits.List(ctx, (page-1)*pageSize, pageSize)
 }
 
+func (s *Service) Get(ctx context.Context, id uint64) (auditdomain.Record, error) {
+	return s.audits.Get(ctx, id)
+}
+
 // CursorResult 表示按递减 ID 游标读取的一页审计记录。
 type CursorResult struct {
 	Items      []auditdomain.Record

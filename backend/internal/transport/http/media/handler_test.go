@@ -30,7 +30,7 @@ func TestPublicImageSupportsGetHeadAndETag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := mediaapp.NewService(relational.NewMediaAssetRepository(database), objects, nil, mediaapp.Config{
+	service := mediaapp.NewService(relational.NewMediaAssetRepository(database), relational.NewMediaJobRepository(database), objects, nil, mediaapp.Config{
 		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
 		CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute,
 	})
@@ -59,5 +59,39 @@ func TestPublicImageSupportsGetHeadAndETag(t *testing.T) {
 	router.ServeHTTP(notModified, notModifiedRequest)
 	if notModified.Code != http.StatusNotModified || notModified.Body.Len() != 0 {
 		t.Fatalf("conditional GET status=%d size=%d", notModified.Code, notModified.Body.Len())
+	}
+}
+
+func TestAdminVideoListRejectsInvalidFilters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-admin-http.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service := mediaapp.NewService(
+		relational.NewMediaAssetRepository(database),
+		relational.NewMediaJobRepository(database),
+		nil,
+		nil,
+		mediaapp.Config{},
+	)
+	router := gin.New()
+	NewHandler(service).RegisterAdmin(router.Group("/api/admin/v1"))
+
+	for _, path := range []string{
+		"/api/admin/v1/media/videos?status=unknown",
+		"/api/admin/v1/media/videos?sortBy=input_json&sortOrder=asc",
+		"/api/admin/v1/media/videos?sortBy=createdAt&sortOrder=sideways",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s status = %d, body = %s", path, recorder.Code, recorder.Body.String())
+		}
 	}
 }

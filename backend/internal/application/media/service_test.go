@@ -33,7 +33,7 @@ func TestServicePersistsAndReopensImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(relational.NewMediaAssetRepository(database), objects, nil, Config{
+	service := NewService(relational.NewMediaAssetRepository(database), relational.NewMediaJobRepository(database), objects, nil, Config{
 		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
 		CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute,
 	})
@@ -96,7 +96,7 @@ func TestCleanupDeletesOldestAssetsAtThreshold(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	service := NewService(repository, objects, nil, Config{
+	service := NewService(repository, relational.NewMediaJobRepository(database), objects, nil, Config{
 		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20,
 		MaxTotalBytes: int64(len(raw) * 2), CleanupThresholdPercent: 50,
 		CleanupInterval: 10 * time.Minute,
@@ -146,11 +146,24 @@ func TestCleanupPreservesMetadataWhenLocalObjectIsMissing(t *testing.T) {
 	if err := objects.Delete(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(repository, objects, nil, Config{PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: int64(len(raw)), CleanupThresholdPercent: 50, CleanupInterval: 10 * time.Minute})
+	service := NewService(repository, relational.NewMediaJobRepository(database), objects, nil, Config{PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: int64(len(raw)), CleanupThresholdPercent: 50, CleanupInterval: 10 * time.Minute})
 	if _, err := service.Cleanup(ctx); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cleanup error = %v", err)
 	}
 	if _, err := repository.GetMediaAsset(ctx, id); err != nil {
 		t.Fatalf("shared metadata was deleted: %v", err)
+	}
+}
+
+func TestPublicImageURLUsesHotReloadedBase(t *testing.T) {
+	service := NewService(nil, nil, nil, nil, Config{PublicBaseURL: "https://config.example/base/"})
+	if got := service.PublicImageURL("img_demo"); got != "https://config.example/base/v1/media/images/img_demo" {
+		t.Fatalf("configured URL = %q", got)
+	}
+	updated := service.runtimeConfig()
+	updated.PublicBaseURL = "https://runtime.example/api/"
+	service.UpdateConfig(updated)
+	if got := service.PublicImageURL("img_demo"); got != "https://runtime.example/api/v1/media/images/img_demo" {
+		t.Fatalf("hot-reloaded URL = %q", got)
 	}
 }

@@ -126,7 +126,8 @@ func New(deps Dependencies) *gin.Engine {
 	if deps.SwaggerEnabled {
 		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	}
-	mediahttp.NewHandler(deps.Media).RegisterPublic(router)
+	mediaHandler := mediahttp.NewHandler(deps.Media)
+	mediaHandler.RegisterPublic(router)
 
 	adminRoot := router.Group("/api/admin/v1")
 	authHandler := adminauthhttp.NewHandler(deps.AdminAuth, deps.SecureCookies)
@@ -139,9 +140,15 @@ func New(deps Dependencies) *gin.Engine {
 	clientkeyhttp.NewHandler(deps.ClientKeys).Register(adminProtected)
 	audithttp.NewHandler(deps.Audits).Register(adminProtected)
 	dashboardhttp.NewHandler(deps.Dashboard).Register(adminProtected)
+	mediaHandler.RegisterAdmin(adminProtected)
 	settingshttp.NewHandler(deps.Settings).Register(adminProtected)
 	egresshttp.NewHandler(deps.Egress).Register(adminProtected)
-	systemhttp.NewHandler(deps.PublicAPIBaseURL).Register(adminProtected)
+	systemhttp.NewHandler(func() string {
+		if deps.Settings != nil {
+			return deps.Settings.PublicAPIBaseURL()
+		}
+		return deps.PublicAPIBaseURL
+	}).Register(adminProtected)
 
 	v1 := router.Group("/v1")
 	if deps.TrafficReady != nil {

@@ -68,15 +68,29 @@ func TestWebResponseStateAndMediaJobRoundTrip(t *testing.T) {
 	if err := jobs.UpdateMediaJob(ctx, claimed); err != nil {
 		t.Fatal(err)
 	}
-	unrecorded, err := jobs.ListUnrecordedCompletedMediaJobs(ctx, 10)
+	unrecorded, err := jobs.ListUnrecordedTerminalMediaJobs(ctx, 10)
 	if err != nil || len(unrecorded) != 1 || unrecorded[0].RequestID != job.RequestID || unrecorded[0].ModelRouteID != job.ModelRouteID {
 		t.Fatalf("unrecorded jobs = %#v, err = %v", unrecorded, err)
 	}
 	if err := jobs.MarkMediaJobUsageRecorded(ctx, job.ID, completedAt.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	unrecorded, err = jobs.ListUnrecordedCompletedMediaJobs(ctx, 10)
+	unrecorded, err = jobs.ListUnrecordedTerminalMediaJobs(ctx, 10)
 	if err != nil || len(unrecorded) != 0 {
 		t.Fatalf("recorded jobs = %#v, err = %v", unrecorded, err)
+	}
+	failedAt := completedAt.Add(2 * time.Second)
+	failed := job
+	failed.ID, failed.RequestID, failed.Status, failed.ErrorCode = "video_failed", "request-video-failed", mediadomain.StatusFailed, "generation_failed"
+	failed.Progress, failed.ClaimToken, failed.CompletedAt, failed.UpdatedAt = 50, "", &failedAt, failedAt
+	if err := jobs.CreateMediaJob(ctx, failed); err != nil {
+		t.Fatal(err)
+	}
+	unrecorded, err = jobs.ListUnrecordedTerminalMediaJobs(ctx, 10)
+	if err != nil || len(unrecorded) != 1 || unrecorded[0].ID != failed.ID {
+		t.Fatalf("failed unrecorded jobs = %#v, err = %v", unrecorded, err)
+	}
+	if err := jobs.MarkMediaJobUsageRecorded(ctx, failed.ID, failedAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 }
