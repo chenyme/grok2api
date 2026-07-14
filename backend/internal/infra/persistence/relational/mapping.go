@@ -156,6 +156,38 @@ func toAuditDomain(value requestAuditModel) audit.Record {
 		EstimatedCostInUSDTicks: value.EstimatedCostInUSDTicks, PricingModel: value.PricingModel, PricingVersion: value.PricingVersion,
 		NumSourcesUsed: value.NumSourcesUsed, NumServerSideToolsUsed: value.NumServerSideToolsUsed,
 		ContextInputTokens: value.ContextInputTokens, ContextOutputTokens: value.ContextOutputTokens, DurationMS: value.DurationMS,
-		ErrorCode: value.ErrorCode, CreatedAt: value.CreatedAt,
+		ErrorCode: value.ErrorCode, AttemptCount: value.AttemptCount, CreatedAt: value.CreatedAt,
 	}
+}
+
+func toAuditAttemptDomain(value requestAuditAttemptModel) (audit.Attempt, error) {
+	var responseHeaders map[string][]string
+	if err := json.Unmarshal([]byte(value.ResponseHeadersJSON), &responseHeaders); err != nil {
+		return audit.Attempt{}, err
+	}
+	var errorChain []audit.ErrorFrame
+	if err := json.Unmarshal([]byte(value.ErrorChainJSON), &errorChain); err != nil {
+		return audit.Attempt{}, err
+	}
+	return audit.Attempt{
+		ID:                    value.ID,
+		AuditID:               value.AuditID,
+		Number:                value.Number,
+		Source:                audit.AttemptSource(value.Source),
+		Stage:                 value.Stage,
+		AccountID:             value.AccountID,
+		AccountName:           value.AccountName,
+		Method:                value.Method,
+		RequestPath:           value.RequestPath,
+		UpstreamURL:           value.UpstreamURL,
+		StartedAt:             value.StartedAt,
+		DurationMS:            value.DurationMS,
+		UpstreamStatusCode:    value.UpstreamStatusCode,
+		UpstreamStatus:        value.UpstreamStatus,
+		ResponseHeaders:       responseHeaders,
+		ResponseBody:          value.ResponseBody,
+		ResponseBodyTruncated: value.ResponseBodyTruncated,
+		TransportError:        value.TransportError,
+		ErrorChain:            errorChain,
+	}, nil
 }

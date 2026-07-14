@@ -109,11 +109,36 @@ type ResponseResourceRequest struct {
 
 // Response 表示尚未写入下游的上游响应。
 type Response struct {
-	StatusCode int
-	Status     string
-	Header     http.Header
-	Body       io.ReadCloser
-	QuotaUnits int
+	StatusCode  int
+	Status      string
+	Header      http.Header
+	Body        io.ReadCloser
+	QuotaUnits  int
+	UpstreamURL string
+	Diagnostic  *DiagnosticResponse
+}
+
+const MaxDiagnosticBodyBytes = 64 << 10
+
+// DiagnosticResponse 保留 Provider 转换前经过容量限制的失败响应。
+type DiagnosticResponse struct {
+	StatusCode    int
+	Status        string
+	Header        http.Header
+	Body          []byte
+	BodyTruncated bool
+}
+
+// ReadDiagnosticBody 最多读取诊断正文上限，并报告上游是否还有未保留内容。
+func ReadDiagnosticBody(body io.Reader) ([]byte, bool, error) {
+	if body == nil {
+		return nil, false, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(body, MaxDiagnosticBodyBytes+1))
+	if len(data) <= MaxDiagnosticBodyBytes {
+		return data, false, err
+	}
+	return data[:MaxDiagnosticBodyBytes], true, err
 }
 
 // DeviceAuthorization 表示 Device OAuth 启动结果。

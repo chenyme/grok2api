@@ -38,7 +38,6 @@ var (
 	ErrConversationUnsupported    = errors.New("目标模型不支持当前对话协议")
 )
 
-const maxRetryableBodyBytes = 64 << 10
 const responseOwnershipTTL = 30 * 24 * time.Hour
 const finalizationTimeout = 5 * time.Second
 const textBillingReservationTTL = 2 * time.Hour
@@ -348,15 +347,18 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	quotaProbeAttempted := false
 	var lastErr error
 	var lastFailure *UpstreamFailure
+	failureAttempts := newFailureAttemptRecorder(http.MethodPost, path)
 	forwardResponse := func(credential accountdomain.Credential) (*provider.Response, error) {
 		started := time.Now()
 		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+		err = failureAttempts.captureResponse(credential, started, response, err)
 		timing.markUpstream(time.Since(started))
 		return response, err
 	}
 	ensureCredential := func(credential accountdomain.Credential, force bool) (accountdomain.Credential, error) {
 		started := time.Now()
 		result, err := s.accounts.EnsureCredential(ctx, credential, force)
+		failureAttempts.captureCredentialFailure(credential, started, force, err)
 		timing.markCredential(time.Since(started))
 		return result, err
 	}
@@ -573,6 +575,9 @@ attemptLoop:
 				record.ContextOutputTokens = usage.ContextOutputTokens
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
+				if response.StatusCode < 200 || response.StatusCode >= 300 || errorCode != "" {
+					record.Attempts = failureAttempts.snapshot()
+				}
 				record.CreatedAt = now
 				applyAuditEgress(&record, egressTrace, route.Provider)
 				if err := s.audits.Create(persistCtx, record); err != nil {
@@ -614,6 +619,7 @@ attemptLoop:
 		record.StatusCode = lastFailure.HTTPStatus
 		record.DurationMS = time.Since(startedAt).Milliseconds()
 		record.ErrorCode = lastFailure.AuditCode()
+		record.Attempts = failureAttempts.snapshot()
 		record.CreatedAt = time.Now().UTC()
 		applyAuditEgress(&record, egressTrace, route.Provider)
 		if lastFailure.AccountID != 0 {
@@ -635,6 +641,7 @@ attemptLoop:
 	record.StatusCode = http.StatusServiceUnavailable
 	record.DurationMS = time.Since(startedAt).Milliseconds()
 	record.ErrorCode = "upstream_unavailable"
+	record.Attempts = failureAttempts.snapshot()
 	record.CreatedAt = time.Now().UTC()
 	applyAuditEgress(&record, egressTrace, route.Provider)
 	persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
@@ -998,7 +1005,8 @@ func readRetryableBody(body io.ReadCloser) ([]byte, error) {
 		return nil, nil
 	}
 	defer body.Close()
-	return io.ReadAll(io.LimitReader(body, maxRetryableBodyBytes))
+	data, _, err := provider.ReadDiagnosticBody(body)
+	return data, err
 }
 
 func parseFreeQuotaExhaustion(body []byte) (int64, int64, bool) {

@@ -10,6 +10,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { listModels } from "@/entities/model/model-api";
+import { RequestAuditDetailDialog } from "@/features/audits/request-audit-detail-dialog";
 import { getRequestAudits, getRequestAuditSummary, type AuditDTO, type AuditPeriod } from "@/features/audits/request-audits-api";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
@@ -36,6 +37,7 @@ export function RequestAuditsPage() {
   const [periodDays, setPeriodDays] = useState<PeriodDays>(1);
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [selectedAudit, setSelectedAudit] = useState<AuditDTO | null>(null);
   const forceSummaryRefresh = useRef(false);
   const debouncedSearch = useDebouncedValue(search);
   const debouncedKeyFilter = useDebouncedValue(keyFilter);
@@ -195,7 +197,7 @@ export function RequestAuditsPage() {
                   <TableCell className="py-3"><EgressValue audit={audit} /></TableCell>
                   <TableCell className="py-3"><BillingValue audit={audit} /></TableCell>
                   <TableCell className="py-3"><UsageDetails audit={audit} locale={i18n.language} /></TableCell>
-                  <TableCell className="py-3 text-center"><AuditStatus statusCode={audit.statusCode} errorCode={audit.errorCode} /></TableCell>
+                  <TableCell className="py-3 text-center"><AuditStatus audit={audit} onOpen={() => setSelectedAudit(audit)} /></TableCell>
                   <TableCell className="py-3 text-center"><Badge variant="outline" className="whitespace-nowrap font-normal">{audit.streaming ? "Stream" : "Non-Stream"}</Badge></TableCell>
                   <TableCell className="whitespace-nowrap py-3 text-xs tabular-nums">{formatNumber(audit.durationMs, i18n.language)} ms</TableCell>
                   <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(audit.createdAt, i18n.language)}</TableCell>
@@ -205,6 +207,7 @@ export function RequestAuditsPage() {
           </Table>
         ) : null}
       </DataTableShell>
+      <RequestAuditDetailDialog key={selectedAudit?.id ?? "closed"} audit={selectedAudit} open={selectedAudit !== null} onOpenChange={(open) => !open && setSelectedAudit(null)} />
     </div>
   );
 }
@@ -379,17 +382,19 @@ function StatusBadge({ statusCode }: { statusCode: number }) {
   return <Badge variant="secondary" className={cn(compactClassName, "bg-muted text-muted-foreground")}>{statusCode || "-"}</Badge>;
 }
 
-function AuditStatus({ statusCode, errorCode }: { statusCode: number; errorCode?: string }) {
-  if (!errorCode) return <StatusBadge statusCode={statusCode} />;
+function AuditStatus({ audit, onOpen }: { audit: AuditDTO; onOpen: () => void }) {
+  const { t } = useTranslation();
+  if (!audit.errorCode && audit.attemptCount === 0) return <StatusBadge statusCode={audit.statusCode} />;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" className="cursor-help" aria-label={errorCode}>
-          <StatusBadge statusCode={statusCode} />
+        <button type="button" className="group inline-flex flex-col items-center gap-1 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50" aria-label={t("audits.openDiagnostics")} onClick={onOpen}>
+          <StatusBadge statusCode={audit.statusCode} />
+          <span className="whitespace-nowrap text-[10px] text-muted-foreground underline-offset-2 group-hover:text-foreground group-hover:underline">{audit.attemptCount > 0 ? t("audits.failedAttemptCount", { count: audit.attemptCount }) : t("audits.viewDetails")}</span>
         </button>
       </TooltipTrigger>
       <TooltipContent className="max-w-80 whitespace-normal break-words text-left leading-5" side="top">
-        {errorCode}
+        {audit.errorCode || t("audits.openDiagnostics")}
       </TooltipContent>
     </Tooltip>
   );
