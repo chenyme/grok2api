@@ -311,9 +311,9 @@ func consoleProviderConfig(cfg config.Config) consoleprovider.Config {
 
 func mediaConfig(cfg config.Config) mediaapp.Config {
 	return mediaapp.Config{
-		PublicBaseURL: cfg.Frontend.PublicAPIBaseURL, MaxImageBytes: cfg.Media.MaxImageBytes,
-		MaxTotalBytes: cfg.Media.MaxTotalBytes, CleanupThresholdPercent: cfg.Media.CleanupThresholdPercent,
-		CleanupInterval: cfg.Media.CleanupInterval.Value(),
+		PublicBaseURL: cfg.Frontend.PublicAPIBaseURL, PreferRequestBaseURL: cfg.Frontend.PreferRequestBaseURL,
+		MaxImageBytes: cfg.Media.MaxImageBytes, MaxTotalBytes: cfg.Media.MaxTotalBytes,
+		CleanupThresholdPercent: cfg.Media.CleanupThresholdPercent, CleanupInterval: cfg.Media.CleanupInterval.Value(),
 	}
 }
 

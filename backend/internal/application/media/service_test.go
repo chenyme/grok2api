@@ -154,3 +154,29 @@ func TestCleanupPreservesMetadataWhenLocalObjectIsMissing(t *testing.T) {
 		t.Fatalf("shared metadata was deleted: %v", err)
 	}
 }
+
+func TestPublicImageURLPriority(t *testing.T) {
+	cases := []struct {
+		name         string
+		prefer       bool
+		configured   string
+		requestBase  string
+		wantPrefix   string
+	}{
+		{name: "prefer request when enabled", prefer: true, configured: "https://config.example", requestBase: "https://request.example", wantPrefix: "https://request.example"},
+		{name: "configured wins when prefer disabled", prefer: false, configured: "https://config.example", requestBase: "https://request.example", wantPrefix: "https://config.example"},
+		{name: "configured fallback when request empty", prefer: true, configured: "https://config.example", requestBase: "", wantPrefix: "https://config.example"},
+		{name: "request fallback when config empty and prefer disabled", prefer: false, configured: "", requestBase: "https://request.example", wantPrefix: "https://request.example"},
+		{name: "default fallback when both empty", prefer: true, configured: "", requestBase: "", wantPrefix: "http://127.0.0.1:8000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			service := NewService(nil, nil, nil, Config{PublicBaseURL: tc.configured, PreferRequestBaseURL: tc.prefer})
+			got := service.PublicImageURL(tc.requestBase, "img_demo")
+			want := tc.wantPrefix + "/v1/media/images/img_demo"
+			if got != want {
+				t.Fatalf("got %q want %q", got, want)
+			}
+		})
+	}
+}

@@ -152,6 +152,12 @@ export function SettingsPage() {
               <SettingsField controlId="media-cleanup-interval" label={t("settings.media.cleanupInterval")} error={form.formState.errors.media?.cleanupInterval?.message}>
                 <Controller control={form.control} name="media.cleanupInterval" render={({ field }) => <DurationInput id="media-cleanup-interval" value={field.value} onChange={field.onChange} />} />
               </SettingsField>
+              <SettingsField controlId="frontend-public-api-base-url" label={t("settings.media.publicApiBaseURL")} description={t("settings.media.publicApiBaseURLHelp")} error={form.formState.errors.frontend?.publicApiBaseURL?.message} className="sm:col-span-2">
+                <Input id="frontend-public-api-base-url" placeholder="https://api.example.com" {...form.register("frontend.publicApiBaseURL")} />
+              </SettingsField>
+              <SettingsField controlId="frontend-prefer-request-base-url" label={t("settings.media.preferRequestBaseURL")} description={t("settings.media.preferRequestBaseURLHelp")}>
+                <Controller control={form.control} name="frontend.preferRequestBaseURL" render={({ field }) => <div className="flex h-8 items-center"><Switch id="frontend-prefer-request-base-url" checked={field.value} onCheckedChange={field.onChange} /></div>} />
+              </SettingsField>
             </div>
           </SettingsSection>
 
@@ -278,7 +284,7 @@ function SettingsSection({ title, action, wide = false, children }: { title: str
   );
 }
 
-function SettingsField({ controlId, label, badge, error, className, children }: { controlId: string; label: string; badge?: string; error?: string; className?: string; children: ReactNode }) {
+function SettingsField({ controlId, label, badge, description, error, className, children }: { controlId: string; label: string; badge?: string; description?: string; error?: string; className?: string; children: ReactNode }) {
   const { t } = useTranslation();
   return (
     <div className={className}>
@@ -287,6 +293,7 @@ function SettingsField({ controlId, label, badge, error, className, children }: 
         {badge ? <span className="text-[11px] font-normal text-muted-foreground">{badge}</span> : null}
       </div>
       {children}
+      {description ? <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p> : null}
       {error ? <p className="mt-1 text-xs text-destructive">{t("settings.invalidValue")}</p> : null}
     </div>
   );

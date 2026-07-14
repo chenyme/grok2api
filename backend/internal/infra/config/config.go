@@ -61,8 +61,9 @@ type ServerConfig struct {
 }
 
 type FrontendConfig struct {
-	PublicAPIBaseURL string `yaml:"publicApiBaseURL"`
-	StaticPath       string `yaml:"staticPath"`
+	PublicAPIBaseURL     string `yaml:"publicApiBaseURL"`
+	PreferRequestBaseURL bool   `yaml:"preferRequestBaseURL"`
+	StaticPath           string `yaml:"staticPath"`
 }
 
 type DatabaseConfig struct {
@@ -433,7 +434,7 @@ func defaultConfig() Config {
 			ReadTimeout:    Duration(15 * time.Minute),
 			RequestTimeout: Duration(2 * time.Hour),
 		},
-		Frontend: FrontendConfig{PublicAPIBaseURL: "", StaticPath: "./frontend/dist"},
+		Frontend: FrontendConfig{PublicAPIBaseURL: "", PreferRequestBaseURL: true, StaticPath: "./frontend/dist"},
 		Database: DatabaseConfig{
 			Driver:   "sqlite",
 			SQLite:   SQLiteDatabaseConfig{Path: "./data/backend.db"},

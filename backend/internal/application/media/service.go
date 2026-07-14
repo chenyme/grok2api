@@ -31,22 +31,24 @@ const defaultPublicBaseURL = "http://127.0.0.1:8000"
 
 // Service 负责图片校验、文件落盘和元数据持久化的一致性收口。
 type Service struct {
-	assets        repository.MediaAssetRepository
-	objects       repository.MediaObjectStorage
-	cleanupLock   repository.DistributedLock
-	publicBaseURL string
-	configMu      sync.RWMutex
-	maxImageBytes int64
-	maxTotalBytes int64
-	cleanupAt     int
-	cleanupEvery  time.Duration
-	cleanupSignal chan struct{}
-	configChanged chan struct{}
-	totalBytes    atomic.Int64
+	assets               repository.MediaAssetRepository
+	objects              repository.MediaObjectStorage
+	cleanupLock          repository.DistributedLock
+	publicBaseURL        string
+	preferRequestBaseURL bool
+	configMu             sync.RWMutex
+	maxImageBytes        int64
+	maxTotalBytes        int64
+	cleanupAt            int
+	cleanupEvery         time.Duration
+	cleanupSignal        chan struct{}
+	configChanged        chan struct{}
+	totalBytes           atomic.Int64
 }
 
 type Config struct {
 	PublicBaseURL           string
+	PreferRequestBaseURL    bool
 	MaxImageBytes           int64
 	MaxTotalBytes           int64
 	CleanupThresholdPercent int
@@ -56,8 +58,8 @@ type Config struct {
 func NewService(assets repository.MediaAssetRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
 	return &Service{
 		assets: assets, objects: objects, cleanupLock: cleanupLock,
-		publicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"), maxImageBytes: cfg.MaxImageBytes,
-		maxTotalBytes: cfg.MaxTotalBytes, cleanupAt: cfg.CleanupThresholdPercent, cleanupEvery: cfg.CleanupInterval,
+		publicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"), preferRequestBaseURL: cfg.PreferRequestBaseURL,
+		maxImageBytes: cfg.MaxImageBytes, maxTotalBytes: cfg.MaxTotalBytes, cleanupAt: cfg.CleanupThresholdPercent, cleanupEvery: cfg.CleanupInterval,
 		cleanupSignal: make(chan struct{}, 1), configChanged: make(chan struct{}, 1),
 	}
 }
@@ -66,6 +68,7 @@ func NewService(assets repository.MediaAssetRepository, objects repository.Media
 func (s *Service) UpdateConfig(cfg Config) {
 	s.configMu.Lock()
 	s.publicBaseURL = strings.TrimRight(cfg.PublicBaseURL, "/")
+	s.preferRequestBaseURL = cfg.PreferRequestBaseURL
 	s.maxImageBytes = cfg.MaxImageBytes
 	s.maxTotalBytes = cfg.MaxTotalBytes
 	s.cleanupAt = cfg.CleanupThresholdPercent
@@ -115,13 +118,23 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 }
 
 // PublicImageURL 返回可直接用于图片展示的公开资源地址。
-// Priority: non-empty explicit config wins over the request-derived baseURL;
-// if both are empty, defaultPublicBaseURL is used as a last-resort fallback.
+// Priority:
+//  1. request-derived baseURL when preferRequestBaseURL is enabled and request base is non-empty
+//  2. configured PublicBaseURL when non-empty
+//  3. request-derived baseURL when available
+//  4. defaultPublicBaseURL as a last-resort fallback
 func (s *Service) PublicImageURL(baseURL, id string) string {
-	if baseURL == "" {
-		baseURL = s.runtimeConfig().PublicBaseURL
-	}
-	if baseURL == "" {
+	cfg := s.runtimeConfig()
+	requestBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	configuredBase := strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/")
+	switch {
+	case cfg.PreferRequestBaseURL && requestBase != "":
+		baseURL = requestBase
+	case configuredBase != "":
+		baseURL = configuredBase
+	case requestBase != "":
+		baseURL = requestBase
+	default:
 		baseURL = defaultPublicBaseURL
 	}
 	return strings.TrimRight(baseURL, "/") + "/v1/media/images/" + id
@@ -237,7 +250,7 @@ func (s *Service) runtimeConfig() Config {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 	return Config{
-		PublicBaseURL: s.publicBaseURL,
+		PublicBaseURL: s.publicBaseURL, PreferRequestBaseURL: s.preferRequestBaseURL,
 		MaxImageBytes: s.maxImageBytes, MaxTotalBytes: s.maxTotalBytes,
 		CleanupThresholdPercent: s.cleanupAt, CleanupInterval: s.cleanupEvery,
 	}

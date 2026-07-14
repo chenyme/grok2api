@@ -71,6 +71,12 @@ type MediaConfig struct {
 	CleanupInterval         string
 }
 
+// FrontendConfig 是管理接口使用的公开 API 地址输入。
+type FrontendConfig struct {
+	PublicAPIBaseURL     string
+	PreferRequestBaseURL bool
+}
+
 // RoutingConfig 是管理接口使用的路由可编辑输入。
 type RoutingConfig struct {
 	StickyTTL    string
@@ -100,6 +106,7 @@ type EditableConfig struct {
 	ProviderConsole   ProviderConsoleConfig
 	Batch             BatchConfig
 	Media             MediaConfig
+	Frontend          FrontendConfig
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
@@ -157,6 +164,13 @@ func (s *Service) Get() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.snapshotLocked()
+}
+
+// PublicAPIBaseURL 返回当前配置的公开 API 根地址（可能为空）。
+func (s *Service) PublicAPIBaseURL() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return strings.TrimRight(strings.TrimSpace(s.cfg.Frontend.PublicAPIBaseURL), "/")
 }
 
 // Update 校验并持久化运行设置，再原子替换进程内配置。
@@ -268,6 +282,13 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.Media.MaxTotalBytes = value.Media.MaxTotalBytes
 	base.Media.CleanupThresholdPercent = value.Media.CleanupThresholdPercent
 	base.Media.CleanupInterval = config.Duration(value.Media.CleanupInterval)
+	// 旧持久化数据没有 Frontend 字段时保持 YAML/默认值，避免把 publicApiBaseURL 清空。
+	if value.Frontend.PreferRequestBaseURL != nil || strings.TrimSpace(value.Frontend.PublicAPIBaseURL) != "" {
+		base.Frontend.PublicAPIBaseURL = strings.TrimSpace(value.Frontend.PublicAPIBaseURL)
+		if value.Frontend.PreferRequestBaseURL != nil {
+			base.Frontend.PreferRequestBaseURL = *value.Frontend.PreferRequestBaseURL
+		}
+	}
 	base.Routing = config.RoutingConfig{
 		StickyTTL: config.Duration(value.Routing.StickyTTL), CooldownBase: config.Duration(value.Routing.CooldownBase),
 		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts,
@@ -310,6 +331,9 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		Media: settingsdomain.MediaConfig{
 			MaxImageBytes: value.Media.MaxImageBytes, MaxTotalBytes: value.Media.MaxTotalBytes,
 			CleanupThresholdPercent: value.Media.CleanupThresholdPercent, CleanupInterval: value.Media.CleanupInterval.Value(),
+		},
+		Frontend: settingsdomain.FrontendConfig{
+			PublicAPIBaseURL: value.Frontend.PublicAPIBaseURL, PreferRequestBaseURL: boolPtr(value.Frontend.PreferRequestBaseURL),
 		},
 		Routing: settingsdomain.RoutingConfig{
 			StickyTTL: value.Routing.StickyTTL.Value(), CooldownBase: value.Routing.CooldownBase.Value(),
@@ -372,6 +396,8 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Media.MaxImageBytes = input.Media.MaxImageBytes
 	next.Media.MaxTotalBytes = input.Media.MaxTotalBytes
 	next.Media.CleanupThresholdPercent = input.Media.CleanupThresholdPercent
+	next.Frontend.PublicAPIBaseURL = strings.TrimSpace(input.Frontend.PublicAPIBaseURL)
+	next.Frontend.PreferRequestBaseURL = input.Frontend.PreferRequestBaseURL
 	next.Routing.MaxAttempts = input.Routing.MaxAttempts
 	next.Audit.BufferSize = input.Audit.BufferSize
 	next.Audit.BatchSize = input.Audit.BatchSize
@@ -440,6 +466,9 @@ func toEditable(cfg config.Config) EditableConfig {
 			MaxImageBytes: cfg.Media.MaxImageBytes, MaxTotalBytes: cfg.Media.MaxTotalBytes,
 			CleanupThresholdPercent: cfg.Media.CleanupThresholdPercent, CleanupInterval: cfg.Media.CleanupInterval.String(),
 		},
+		Frontend: FrontendConfig{
+			PublicAPIBaseURL: cfg.Frontend.PublicAPIBaseURL, PreferRequestBaseURL: cfg.Frontend.PreferRequestBaseURL,
+		},
 		Routing: RoutingConfig{
 			StickyTTL: cfg.Routing.StickyTTL.String(), CooldownBase: cfg.Routing.CooldownBase.String(),
 			CooldownMax: cfg.Routing.CooldownMax.String(), CapacityWait: cfg.Routing.CapacityWait.String(), MaxAttempts: cfg.Routing.MaxAttempts,
@@ -449,4 +478,8 @@ func toEditable(cfg config.Config) EditableConfig {
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: cfg.ClientKeyDefaults.RPMLimit, MaxConcurrent: cfg.ClientKeyDefaults.MaxConcurrent},
 	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }

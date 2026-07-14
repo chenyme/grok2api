@@ -9,9 +9,17 @@ type Config struct {
 	ProviderConsole   ProviderConsoleConfig
 	Batch             BatchConfig
 	Media             MediaConfig
+	Frontend          FrontendConfig
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+}
+
+// FrontendConfig 定义公开 API 地址与图片 URL 解析策略。
+// PreferRequestBaseURL 使用指针，便于旧持久化数据缺省时保留默认 true。
+type FrontendConfig struct {
+	PublicAPIBaseURL     string
+	PreferRequestBaseURL *bool
 }
 
 type ProviderConsoleConfig struct {

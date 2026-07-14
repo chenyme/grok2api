@@ -22,6 +22,19 @@ const consoleChatDuration = durationSchema.refine((value) => {
   return seconds >= 5 && seconds <= 30 * 60;
 });
 
+
+function validPublicAPIBaseURL(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return true;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") return false;
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export const settingsSchema = z.object({
   providerBuild: z.object({
     baseURL: z.url(),
@@ -78,6 +91,10 @@ export const settingsSchema = z.object({
     cleanupThresholdPercent: z.number().int().min(50).max(95),
     cleanupInterval: durationSchema.refine((value) => durationSeconds(value) >= 60 && durationSeconds(value) <= 86_400),
   }).refine((value) => byteSizeBytes(value.maxTotalSize) >= byteSizeBytes(value.maxImageSize), { path: ["maxTotalSize"] }),
+  frontend: z.object({
+    publicApiBaseURL: z.string().trim().max(2048).refine((value) => validPublicAPIBaseURL(value), { message: "invalid" }),
+    preferRequestBaseURL: z.boolean(),
+  }),
   routing: z.object({
     stickyTTL: routingTTLDuration,
     cooldownBase: routingCooldownDuration,
@@ -109,6 +126,10 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       cleanupThresholdPercent: config.media.cleanupThresholdPercent,
       cleanupInterval: parseDuration(config.media.cleanupInterval),
     },
+    frontend: {
+      publicApiBaseURL: config.frontend?.publicApiBaseURL ?? "",
+      preferRequestBaseURL: config.frontend?.preferRequestBaseURL ?? true,
+    },
     routing: {
       stickyTTL: parseDuration(config.routing.stickyTTL), cooldownBase: parseDuration(config.routing.cooldownBase),
       cooldownMax: parseDuration(config.routing.cooldownMax), capacityWait: parseDuration(config.routing.capacityWait), maxAttempts: config.routing.maxAttempts,
@@ -133,6 +154,10 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
       maxImageBytes: byteSizeBytes(config.media.maxImageSize), maxTotalBytes: byteSizeBytes(config.media.maxTotalSize),
       cleanupThresholdPercent: config.media.cleanupThresholdPercent,
       cleanupInterval: formatDuration(config.media.cleanupInterval),
+    },
+    frontend: {
+      publicApiBaseURL: config.frontend.publicApiBaseURL.trim(),
+      preferRequestBaseURL: config.frontend.preferRequestBaseURL,
     },
     routing: {
       stickyTTL: formatDuration(config.routing.stickyTTL), cooldownBase: formatDuration(config.routing.cooldownBase),
