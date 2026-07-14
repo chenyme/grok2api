@@ -1,0 +1,496 @@
+basePath: /
+definitions:
+  httpserver.SwaggerChatRequest:
+    properties:
+      messages:
+        items:
+          $ref: '#/definitions/httpserver.SwaggerMessage'
+        type: array
+      model:
+        example: grok-chat-fast
+        type: string
+      stream:
+        example: false
+        type: boolean
+    type: object
+  httpserver.SwaggerImageEditRequest:
+    properties:
+      image:
+        $ref: '#/definitions/httpserver.SwaggerImageReference'
+      model:
+        example: grok-imagine-image-edit
+        type: string
+      "n":
+        example: 1
+        type: integer
+      prompt:
+        example: Change the background to black
+        type: string
+      resolution:
+        example: 1k
+        type: string
+      response_format:
+        example: url
+        type: string
+    type: object
+  httpserver.SwaggerImageGenerationRequest:
+    properties:
+      aspect_ratio:
+        example: "16:9"
+        type: string
+      model:
+        example: grok-imagine-image-quality
+        type: string
+      "n":
+        example: 1
+        type: integer
+      prompt:
+        example: A cinematic city at night
+        type: string
+      resolution:
+        example: 2k
+        type: string
+      response_format:
+        example: url
+        type: string
+    type: object
+  httpserver.SwaggerImageReference:
+    properties:
+      url:
+        example: https://example.com/source.png
+        type: string
+    type: object
+  httpserver.SwaggerMessage:
+    properties:
+      content: {}
+      role:
+        example: user
+        type: string
+    type: object
+  httpserver.SwaggerMessagesRequest:
+    properties:
+      max_tokens:
+        example: 1024
+        type: integer
+      messages:
+        items:
+          $ref: '#/definitions/httpserver.SwaggerMessage'
+        type: array
+      model:
+        example: grok-chat-expert
+        type: string
+      stream:
+        example: false
+        type: boolean
+    type: object
+  httpserver.SwaggerResponsesRequest:
+    properties:
+      input: {}
+      model:
+        example: grok-chat-auto
+        type: string
+      previous_response_id:
+        type: string
+      prompt_cache_key:
+        type: string
+      store:
+        example: false
+        type: boolean
+      stream:
+        example: false
+        type: boolean
+    type: object
+  httpserver.SwaggerVideoGenerationRequest:
+    properties:
+      aspect_ratio:
+        example: "16:9"
+        type: string
+      duration:
+        example: 8
+        type: integer
+      model:
+        example: grok-imagine-video
+        type: string
+      prompt:
+        example: A cinematic tracking shot in the rain
+        type: string
+      resolution:
+        example: 720p
+        type: string
+    type: object
+info:
+  contact: {}
+  description: Grok Build 与 Grok Web 多账号 API 网关。
+  title: Grok2API
+  version: "1.0"
+paths:
+  /healthz:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+      summary: 存活检查
+      tags:
+      - System
+  /readyz:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+      summary: 就绪检查
+      tags:
+      - System
+  /v1/chat/completions:
+    post:
+      consumes:
+      - application/json
+      description: 支持 JSON 与 SSE、图片输入和函数工具。
+      parameters:
+      - description: 请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpserver.SwaggerChatRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建 Chat Completion
+      tags:
+      - Chat
+  /v1/images/edits:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpserver.SwaggerImageEditRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 编辑图片
+      tags:
+      - Images
+  /v1/images/generations:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpserver.SwaggerImageGenerationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 生成图片
+      tags:
+      - Images
+  /v1/media/images/{asset_id}:
+    get:
+      parameters:
+      - description: Asset ID
+        in: path
+        name: asset_id
+        required: true
+        type: string
+      produces:
+      - image/png
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Not Found
+      summary: 获取归档图片
+      tags:
+      - Images
+  /v1/messages:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - default: "2023-06-01"
+        description: Anthropic API version
+        in: header
+        name: anthropic-version
+        required: true
+        type: string
+      - description: 请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpserver.SwaggerMessagesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建 Anthropic Message
+      tags:
+      - Messages
+  /v1/models:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 获取可用模型
+      tags:
+      - Models
+  /v1/responses:
+    post:
+      consumes:
+      - application/json
+      description: 支持 JSON 与 SSE；stream=true 时返回 text/event-stream。
+      parameters:
+      - description: 请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpserver.SwaggerResponsesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建 Response
+      tags:
+      - Responses
+  /v1/responses/{response_id}:
+    delete:
+      parameters:
+      - description: Response ID
+        in: path
+        name: response_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 删除 Response
+      tags:
+      - Responses
+    get:
+      parameters:
+      - description: Response ID
+        in: path
+        name: response_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 查询 Response
+      tags:
+      - Responses
+  /v1/responses/compact:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpserver.SwaggerResponsesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 压缩 Response 上下文
+      tags:
+      - Responses
+  /v1/videos/{request_id}:
+    get:
+      parameters:
+      - description: Request ID
+        in: path
+        name: request_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 查询异步视频任务
+      tags:
+      - Videos
+  /v1/videos/generations:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpserver.SwaggerVideoGenerationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建异步视频任务
+      tags:
+      - Videos
+securityDefinitions:
+  BearerAuth:
+    description: 使用 "Bearer g2a_xxx_xxx"。
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
