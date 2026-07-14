@@ -73,6 +73,9 @@ func newStreamConverter(writer io.Writer, operation string, options ResponseOpti
 }
 
 func (c *streamConverter) handle(event string, data []byte) error {
+	if c.finished {
+		return nil
+	}
 	if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
 		return nil
 	}

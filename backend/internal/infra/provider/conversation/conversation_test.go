@@ -403,7 +403,11 @@ func TestConvertResponsesStreamChatErrorIsTerminal(t *testing.T) {
 		`event: response.created`,
 		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.5","status":"in_progress"}}`, "",
 		`event: response.failed`,
-		`data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"message":"upstream failed"}}}`, "", "",
+		`data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"message":"upstream failed"}}}`, "",
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"late delta"}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`, "", "",
 	}, "\n")
 	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
 	if err != nil {
@@ -415,6 +419,9 @@ func TestConvertResponsesStreamChatErrorIsTerminal(t *testing.T) {
 	}
 	if strings.Contains(value, `"finish_reason":"stop"`) {
 		t.Fatalf("error stream must not end successfully: %s", value)
+	}
+	if strings.Contains(value, "late delta") {
+		t.Fatalf("events after an error must be ignored: %s", value)
 	}
 	if strings.Count(value, "data: [DONE]") != 1 {
 		t.Fatalf("error stream must send one terminator: %s", value)
