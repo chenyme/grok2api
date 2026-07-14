@@ -9,6 +9,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 func TestRecoverVideoJobsRetriesUsageWithoutRegeneratingVideo(t *testing.T) {
@@ -81,6 +82,14 @@ func (r *videoUsageRepository) GetMediaJob(context.Context, string, uint64) (med
 }
 
 func (r *videoUsageRepository) UpdateMediaJob(context.Context, media.Job) error { return nil }
+
+func (r *videoUsageRepository) ListMediaJobs(context.Context, repository.MediaJobListQuery) ([]media.Job, int64, error) {
+	return nil, 0, nil
+}
+
+func (r *videoUsageRepository) SummarizeMediaJobs(context.Context) (repository.MediaJobStats, error) {
+	return repository.MediaJobStats{}, nil
+}
 
 func (r *videoUsageRepository) ListRecoverableMediaJobs(context.Context, int) ([]media.Job, error) {
 	return nil, nil

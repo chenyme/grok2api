@@ -2,6 +2,7 @@ package relational
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
@@ -35,6 +36,40 @@ func (r *MediaAssetRepository) GetMediaAsset(ctx context.Context, id string) (me
 		ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
 		SizeBytes: row.SizeBytes, SHA256: row.SHA256, CreatedAt: row.CreatedAt,
 	}, nil
+}
+
+// ListMediaAssets 通过字段投影返回符合筛选条件的稳定分页结果。
+func (r *MediaAssetRepository) ListMediaAssets(ctx context.Context, input repository.MediaAssetListQuery) ([]media.Asset, int64, error) {
+	query := r.db.db.WithContext(ctx).Model(&mediaAssetModel{})
+	if search := strings.TrimSpace(input.Page.Search); search != "" {
+		pattern := "%" + strings.ToLower(search) + "%"
+		query = query.Where("LOWER(id) LIKE ? OR LOWER(kind) LIKE ? OR LOWER(mime_type) LIKE ? OR LOWER(sha256) LIKE ?", pattern, pattern, pattern, pattern)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []mediaAssetModel
+	if err := query.Select("id", "kind", "mime_type", "size_bytes", "sha256", "created_at").Order("created_at DESC, id DESC").Offset(input.Page.Offset).Limit(input.Page.Limit).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	values := make([]media.Asset, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, media.Asset{
+			ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
+			SizeBytes: row.SizeBytes, SHA256: row.SHA256, CreatedAt: row.CreatedAt,
+		})
+	}
+	return values, total, nil
+}
+
+// SummarizeMediaAssets 通过单次聚合查询返回图片数量和存储占用。
+func (r *MediaAssetRepository) SummarizeMediaAssets(ctx context.Context) (repository.MediaAssetStats, error) {
+	var stats repository.MediaAssetStats
+	err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).
+		Select("COUNT(*) AS total_images, COALESCE(SUM(size_bytes), 0) AS total_bytes").
+		Scan(&stats).Error
+	return stats, err
 }
 
 func (r *MediaAssetRepository) TotalMediaAssetBytes(ctx context.Context) (int64, error) {
@@ -98,6 +133,58 @@ func (r *MediaJobRepository) UpdateMediaJob(ctx context.Context, value media.Job
 		return repository.ErrNotFound
 	}
 	return nil
+}
+
+// ListMediaJobs 通过固定搜索字段和排序白名单返回稳定分页结果。
+func (r *MediaJobRepository) ListMediaJobs(ctx context.Context, input repository.MediaJobListQuery) ([]media.Job, int64, error) {
+	query := r.db.db.WithContext(ctx).Model(&mediaJobModel{})
+	if input.Filter.Status != "" {
+		query = query.Where("status = ?", input.Filter.Status)
+	}
+	if search := strings.TrimSpace(input.Page.Search); search != "" {
+		pattern := "%" + strings.ToLower(search) + "%"
+		query = query.Where("LOWER(id) LIKE ? OR LOWER(prompt) LIKE ? OR LOWER(model) LIKE ? OR LOWER(account_name) LIKE ? OR LOWER(client_key_name) LIKE ?", pattern, pattern, pattern, pattern, pattern)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []mediaJobModel
+	query = applyStableSort(query, input.Page.Sort, map[string]sortSpec{
+		"prompt":      {expression: "LOWER(prompt)"},
+		"model":       {expression: "LOWER(model)"},
+		"status":      {expression: "status"},
+		"progress":    {expression: "progress", defaultDirection: repository.SortDescending},
+		"spec":        {expression: "LOWER(size) || ' ' || LOWER(quality)"},
+		"account":     {expression: "LOWER(account_name)"},
+		"createdAt":   {expression: "created_at", defaultDirection: repository.SortDescending},
+		"completedAt": {expression: "completed_at", nullsLast: true, defaultDirection: repository.SortDescending},
+	}, sortSpec{expression: "created_at", defaultDirection: repository.SortDescending}, "id")
+	if err := query.Select(
+		"id", "client_key_name", "account_name", "model", "prompt", "seconds", "size", "quality",
+		"status", "progress", "error_message", "created_at", "completed_at",
+	).Offset(input.Page.Offset).Limit(input.Page.Limit).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	values := make([]media.Job, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, mediaJobToDomain(row))
+	}
+	return values, total, nil
+}
+
+// SummarizeMediaJobs 通过单次条件聚合查询统计全部任务状态。
+func (r *MediaJobRepository) SummarizeMediaJobs(ctx context.Context) (repository.MediaJobStats, error) {
+	var stats repository.MediaJobStats
+	err := r.db.db.WithContext(ctx).Model(&mediaJobModel{}).Select(`
+		COUNT(*) AS total_jobs,
+		COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS completed,
+		COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS failed,
+		COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS in_progress,
+		COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS queued`,
+		media.StatusCompleted, media.StatusFailed, media.StatusInProgress, media.StatusQueued,
+	).Scan(&stats).Error
+	return stats, err
 }
 
 func (r *MediaJobRepository) ListUnrecordedCompletedMediaJobs(ctx context.Context, limit int) ([]media.Job, error) {
