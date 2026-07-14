@@ -33,10 +33,11 @@ export function VideoGalleryPage() {
   const [statusFilter, setStatusFilter] = useState<VideoStatusFilter>("");
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const debouncedSearch = useDebouncedValue(search);
+  const normalizedSearch = debouncedSearch.trim();
 
   const videosQuery = useQuery({
-    queryKey: ["media", "videos", page, pageSize, statusFilter, debouncedSearch, sort.field, sort.order],
-    queryFn: () => listVideos({ page, pageSize, status: statusFilter, search: debouncedSearch, sortBy: sort.field, sortOrder: sort.order }),
+    queryKey: ["media", "videos", page, pageSize, statusFilter, normalizedSearch, sort.field, sort.order],
+    queryFn: () => listVideos({ page, pageSize, status: statusFilter, search: normalizedSearch || undefined, sortBy: sort.field, sortOrder: sort.order }),
   });
   const statsQuery = useQuery({
     queryKey: ["media", "videos", "stats"],

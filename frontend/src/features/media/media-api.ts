@@ -7,7 +7,6 @@ import {
   isNumber,
   isString,
   isOneOf,
-  isOptional,
 } from "@/shared/api/decoder";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
@@ -48,7 +47,7 @@ const mediaJobShape = {
   accountName: isString,
   clientKeyName: isString,
   createdAt: isString,
-  completedAt: isOptional(isString),
+  completedAt: (value: unknown) => value === null || isString(value),
   errorMessage: isString,
 };
 

@@ -23,6 +23,7 @@ import (
 var (
 	ErrAssetNotFound        = errors.New("媒体资源不存在")
 	ErrInvalidImage         = errors.New("图片内容无效")
+	ErrInvalidFilter        = errors.New("媒体筛选条件无效")
 	ErrMediaJobsUnavailable = errors.New("视频任务仓储未配置")
 )
 
@@ -152,29 +153,32 @@ func (s *Service) OpenImage(ctx context.Context, id string) (mediadomain.Asset, 
 }
 
 // AdminListImages 分页返回图片资源列表。
-func (s *Service) AdminListImages(ctx context.Context, page, pageSize int) ([]mediadomain.Asset, int64, error) {
-	return s.assets.ListMediaAssets(ctx, page, pageSize)
+func (s *Service) AdminListImages(ctx context.Context, page, pageSize int, search string) ([]mediadomain.Asset, int64, error) {
+	return s.assets.ListMediaAssets(ctx, repository.MediaAssetListQuery{Page: mediaPageQuery(page, pageSize, search, repository.SortQuery{})})
 }
 
 // AdminListVideoJobs 分页返回视频任务列表。
-func (s *Service) AdminListVideoJobs(ctx context.Context, page, pageSize int, status string) ([]mediadomain.Job, int64, error) {
+func (s *Service) AdminListVideoJobs(ctx context.Context, page, pageSize int, search, status string, sort repository.SortQuery) ([]mediadomain.Job, int64, error) {
 	if s.jobs == nil {
 		return nil, 0, ErrMediaJobsUnavailable
 	}
-	return s.jobs.ListMediaJobs(ctx, page, pageSize, strings.TrimSpace(status))
+	status = strings.TrimSpace(status)
+	if !validMediaStatus(status) || !repository.IsValidSort(sort, "prompt", "model", "status", "progress", "spec", "account", "createdAt", "completedAt") {
+		return nil, 0, ErrInvalidFilter
+	}
+	return s.jobs.ListMediaJobs(ctx, repository.MediaJobListQuery{
+		Page:   mediaPageQuery(page, pageSize, search, sort),
+		Filter: repository.MediaJobListFilter{Status: status},
+	})
 }
 
 // AdminImageStats 返回图片统计信息。
 func (s *Service) AdminImageStats(ctx context.Context) (ImageStats, error) {
-	totalImages, err := s.assets.CountMediaAssets(ctx)
+	stats, err := s.assets.SummarizeMediaAssets(ctx)
 	if err != nil {
 		return ImageStats{}, err
 	}
-	totalBytes, err := s.assets.TotalMediaAssetBytes(ctx)
-	if err != nil {
-		return ImageStats{}, err
-	}
-	return ImageStats{TotalImages: totalImages, TotalBytes: totalBytes}, nil
+	return ImageStats{TotalImages: stats.TotalImages, TotalBytes: stats.TotalBytes}, nil
 }
 
 // AdminVideoStats 返回视频任务统计信息。
@@ -182,29 +186,36 @@ func (s *Service) AdminVideoStats(ctx context.Context) (VideoStats, error) {
 	if s.jobs == nil {
 		return VideoStats{}, ErrMediaJobsUnavailable
 	}
-	var stats VideoStats
-	var err error
-	_, stats.TotalJobs, err = s.jobs.ListMediaJobs(ctx, 1, 1, "")
+	stats, err := s.jobs.SummarizeMediaJobs(ctx)
 	if err != nil {
 		return VideoStats{}, err
 	}
-	_, stats.Completed, err = s.jobs.ListMediaJobs(ctx, 1, 1, string(mediadomain.StatusCompleted))
-	if err != nil {
-		return VideoStats{}, err
+	return VideoStats{
+		TotalJobs: stats.TotalJobs, Completed: stats.Completed, Failed: stats.Failed,
+		InProgress: stats.InProgress, Queued: stats.Queued,
+	}, nil
+}
+
+func mediaPageQuery(page, pageSize int, search string, sort repository.SortQuery) repository.PageQuery {
+	if page < 1 {
+		page = 1
 	}
-	_, stats.Failed, err = s.jobs.ListMediaJobs(ctx, 1, 1, string(mediadomain.StatusFailed))
-	if err != nil {
-		return VideoStats{}, err
+	if pageSize < 1 {
+		pageSize = 20
 	}
-	_, stats.InProgress, err = s.jobs.ListMediaJobs(ctx, 1, 1, string(mediadomain.StatusInProgress))
-	if err != nil {
-		return VideoStats{}, err
+	if pageSize > 100 {
+		pageSize = 100
 	}
-	_, stats.Queued, err = s.jobs.ListMediaJobs(ctx, 1, 1, string(mediadomain.StatusQueued))
-	if err != nil {
-		return VideoStats{}, err
+	return repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: strings.TrimSpace(search), Sort: sort}
+}
+
+func validMediaStatus(status string) bool {
+	switch mediadomain.Status(status) {
+	case "", mediadomain.StatusQueued, mediadomain.StatusInProgress, mediadomain.StatusCompleted, mediadomain.StatusFailed:
+		return true
+	default:
+		return false
 	}
-	return stats, nil
 }
 
 // RunCleanup 响应容量阈值并按周期清理最旧媒体资源。

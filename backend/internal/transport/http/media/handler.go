@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 )
@@ -62,50 +63,9 @@ func (h *Handler) getImage(c *gin.Context) {
 	_, _ = io.Copy(c.Writer, body)
 }
 
-// --- Admin endpoints ---
-
-type mediaAssetDTO struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	MimeType  string `json:"mimeType"`
-	SizeBytes int64  `json:"sizeBytes"`
-	SHA256    string `json:"sha256"`
-	CreatedAt string `json:"createdAt"`
-	URL       string `json:"url"`
-}
-
-type imageStatsDTO struct {
-	TotalImages int64 `json:"totalImages"`
-	TotalBytes  int64 `json:"totalBytes"`
-}
-
-type mediaJobDTO struct {
-	ID            string `json:"id"`
-	Model         string `json:"model"`
-	Prompt        string `json:"prompt"`
-	Status        string `json:"status"`
-	Progress      int    `json:"progress"`
-	Seconds       int    `json:"seconds"`
-	Size          string `json:"size"`
-	Quality       string `json:"quality"`
-	AccountName   string `json:"accountName"`
-	ClientKeyName string `json:"clientKeyName"`
-	CreatedAt     string `json:"createdAt"`
-	CompletedAt   string `json:"completedAt"`
-	ErrorMessage  string `json:"errorMessage"`
-}
-
-type videoStatsDTO struct {
-	TotalJobs  int64 `json:"totalJobs"`
-	Completed  int64 `json:"completed"`
-	Failed     int64 `json:"failed"`
-	InProgress int64 `json:"inProgress"`
-	Queued     int64 `json:"queued"`
-}
-
 func (h *Handler) listImages(c *gin.Context) {
 	page, pageSize := parsePagination(c)
-	assets, total, err := h.service.AdminListImages(c.Request.Context(), page, pageSize)
+	assets, total, err := h.service.AdminListImages(c.Request.Context(), page, pageSize, c.Query("search"))
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "mediaListImagesFailed", "读取图片列表失败")
 		return
@@ -132,23 +92,27 @@ func (h *Handler) imageStats(c *gin.Context) {
 
 func (h *Handler) listVideos(c *gin.Context) {
 	page, pageSize := parsePagination(c)
-	status := c.Query("status")
-	jobs, total, err := h.service.AdminListVideoJobs(c.Request.Context(), page, pageSize, status)
+	jobs, total, err := h.service.AdminListVideoJobs(c.Request.Context(), page, pageSize, c.Query("search"), c.Query("status"), repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))})
+	if errors.Is(err, mediaapp.ErrInvalidFilter) {
+		response.Error(c, http.StatusBadRequest, "invalidFilter", err.Error())
+		return
+	}
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "mediaListVideosFailed", "读取视频任务列表失败")
 		return
 	}
 	items := make([]mediaJobDTO, 0, len(jobs))
 	for _, j := range jobs {
-		completedAt := ""
+		var completedAt *string
 		if j.CompletedAt != nil {
-			completedAt = j.CompletedAt.Format("2006-01-02T15:04:05Z")
+			formatted := j.CompletedAt.Format("2006-01-02T15:04:05Z")
+			completedAt = &formatted
 		}
 		items = append(items, mediaJobDTO{
 			ID: j.ID, Model: j.Model, Prompt: j.Prompt, Status: string(j.Status),
 			Progress: j.Progress, Seconds: j.Seconds, Size: j.Size, Quality: j.Quality,
 			AccountName: j.AccountName, ClientKeyName: j.ClientKeyName,
-			CreatedAt: j.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt:   j.CreatedAt.Format("2006-01-02T15:04:05Z"),
 			CompletedAt: completedAt, ErrorMessage: j.ErrorMessage,
 		})
 	}

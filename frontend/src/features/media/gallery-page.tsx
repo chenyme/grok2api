@@ -20,10 +20,11 @@ export function GalleryPage() {
   const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
+  const normalizedSearch = debouncedSearch.trim();
 
   const imagesQuery = useQuery({
-    queryKey: ["media", "images", page, pageSize],
-    queryFn: () => listImages({ page, pageSize }),
+    queryKey: ["media", "images", page, pageSize, normalizedSearch],
+    queryFn: () => listImages({ page, pageSize, search: normalizedSearch || undefined }),
   });
   const statsQuery = useQuery({
     queryKey: ["media", "images", "stats"],
@@ -32,7 +33,6 @@ export function GalleryPage() {
   });
 
   const result = imagesQuery.data;
-  const visibleImages = (result?.items ?? []).filter((image) => matchesImageSearch(image, debouncedSearch));
   const refreshing = imagesQuery.isFetching || statsQuery.isFetching;
 
   function refreshAll(): void {
@@ -70,17 +70,16 @@ export function GalleryPage() {
               aria-label={t("media.images.search")}
             />
           </div>
-          {result ? <span className="text-xs text-muted-foreground">{t("media.images.pageSummary", { count: visibleImages.length, total: result.total })}</span> : null}
+          {result ? <span className="text-xs text-muted-foreground">{t("media.images.pageSummary", { count: result.items.length, total: result.total })}</span> : null}
         </div>
 
         {imagesQuery.isError ? <ErrorState message={imagesQuery.error.message} onRetry={() => void imagesQuery.refetch()} /> : null}
         {imagesQuery.isPending ? <LoadingState /> : null}
-        {!imagesQuery.isPending && result && result.items.length === 0 ? <EmptyState message={t("media.images.empty")} /> : null}
-        {!imagesQuery.isPending && result && result.items.length > 0 && visibleImages.length === 0 ? <EmptyState message={t("media.images.noMatches")} /> : null}
+        {!imagesQuery.isPending && result && result.items.length === 0 ? <EmptyState message={t(normalizedSearch ? "media.images.noMatches" : "media.images.empty")} /> : null}
 
-        {!imagesQuery.isPending && visibleImages.length > 0 ? (
+        {!imagesQuery.isPending && result && result.items.length > 0 ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {visibleImages.map((image) => <ImageCard key={image.id} image={image} locale={i18n.language} />)}
+            {result.items.map((image) => <ImageCard key={image.id} image={image} locale={i18n.language} />)}
           </div>
         ) : null}
 
@@ -131,14 +130,6 @@ function MediaMetric({ icon: Icon, label, value, detail, loading }: { icon: Luci
       <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
     </div>
   );
-}
-
-function matchesImageSearch(image: MediaAssetDTO, search: string): boolean {
-  const normalized = search.trim().toLocaleLowerCase();
-  if (!normalized) return true;
-  return [image.id, image.kind, image.mimeType, image.sha256]
-    .filter(Boolean)
-    .some((value) => value.toLocaleLowerCase().includes(normalized));
 }
 
 function formatBytes(value: number, locale: string): string {
