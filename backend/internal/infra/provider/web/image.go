@@ -1097,7 +1097,7 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 		return nil, err
 	}
 	defer lease.Release()
-	downloadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	downloadCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
