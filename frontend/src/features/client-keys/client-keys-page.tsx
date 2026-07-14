@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { copyToClipboard } from "@/shared/clipboard";
+import { CopyButton } from "@/shared/components/copy-button";
 
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -127,7 +128,8 @@ export function ClientKeysPage() {
   const copyMutation = useMutation({
     mutationFn: async (id: string) => {
       const result = await getClientKeySecret(id);
-      await copyToClipboard(result.secret);
+      const ok = await copyToClipboard(result.secret);
+      if (!ok) throw new Error(t("common.copyFailed"));
       return id;
     },
     onSuccess: () => toast.success(t("common.copied")),
@@ -402,17 +404,7 @@ export function ClientKeysPage() {
             <Label>{t("keys.secretLabel")}</Label>
             <div className="flex h-8 w-full min-w-0 overflow-hidden rounded-md border border-input bg-secondary/55">
               <code className="flex min-w-0 flex-1 select-all items-center overflow-x-auto whitespace-nowrap px-3 font-mono text-xs text-muted-foreground">{createdSecret}</code>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button type="button" variant="ghost" size="icon" className="h-full w-8 shrink-0 rounded-none border-l" aria-label={t("keys.copySecret")} onClick={() => {
-                    if (createdSecret) {
-                      void copyToClipboard(createdSecret);
-                      toast.success(t("common.copied"));
-                    }
-                  }}><Copy /></Button>
-                </TooltipTrigger>
-                <TooltipContent>{t("keys.copySecret")}</TooltipContent>
-              </Tooltip>
+              <CopyButton value={createdSecret ?? ""} className="h-full w-8 shrink-0 rounded-none border-l" onCopied={() => toast.success(t("common.copied"))} />
             </div>
           </div>
           <DialogFooter><Button type="button" variant="secondary" size="sm" onClick={() => setCreatedSecret(null)}>{t("common.close")}</Button></DialogFooter>
