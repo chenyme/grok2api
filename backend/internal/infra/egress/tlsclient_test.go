@@ -76,3 +76,29 @@ func TestFromFHTTPResponsePreservesCompressedHeaders(t *testing.T) {
 		t.Fatalf("compressed response = headers=%#v contentLength=%d", response.Header, response.ContentLength)
 	}
 }
+
+func TestFromFHTTPResponseOwnsHeadersAndPreservesDeferredTrailers(t *testing.T) {
+	source := &fhttp.Response{
+		Status: "200 OK", StatusCode: http.StatusOK,
+		Header:           fhttp.Header{"X-Upstream": []string{"original"}},
+		Trailer:          fhttp.Header{"X-Usage": nil},
+		TransferEncoding: []string{"chunked"},
+		Body:             io.NopCloser(bytes.NewReader(nil)),
+	}
+	response := fromFHTTPResponse(source)
+
+	source.Header.Set("X-Upstream", "mutated")
+	source.TransferEncoding[0] = "identity"
+	// fhttp 会在读取 Body 到 EOF 时以这种方式填充已声明的 Trailer。
+	source.Trailer.Set("X-Usage", "42")
+
+	if response.Header.Get("X-Upstream") != "original" {
+		t.Fatalf("response header aliases fhttp header: %#v", response.Header)
+	}
+	if len(response.TransferEncoding) != 1 || response.TransferEncoding[0] != "chunked" {
+		t.Fatalf("response transfer encoding aliases fhttp value: %#v", response.TransferEncoding)
+	}
+	if response.Trailer.Get("X-Usage") != "42" {
+		t.Fatalf("deferred trailer was lost: %#v", response.Trailer)
+	}
+}

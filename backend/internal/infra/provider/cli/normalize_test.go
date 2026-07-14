@@ -62,7 +62,7 @@ func TestNormalizeResponsesRequestDoesNotInventPromptCacheKey(t *testing.T) {
 }
 
 func TestNormalizeResponsesRequestFlattensJSONSchema(t *testing.T) {
-	body := []byte(`{"model":"public","input":"hello","response_format":{"type":"json_schema","json_schema":{"name":"answer","strict":true,"schema":{"type":"object"}}}}`)
+	body := []byte(`{"model":"public","input":"hello","response_format":{"type":"json_schema","json_schema":{"type":"object","name":"answer","strict":true,"schema":{"type":"object"}}}}`)
 	normalized, _, err := normalizeResponsesRequest(body, "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
