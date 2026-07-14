@@ -294,7 +294,7 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 		"model": model, "input": input, "stream": request.Stream,
 		"max_output_tokens": request.MaxTokens, "store": false,
 	}
-	instructions := make([]string, 0, len(inlineInstructions)+1)
+	instructions := make([]string, 0, len(inlineInstructions))
 	if system, err := anthropicSystemText(request.System); err != nil {
 		return nil, ResponseOptions{}, err
 	} else if system != "" {
