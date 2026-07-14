@@ -38,6 +38,22 @@ var (
 	ErrConversationUnsupported    = errors.New("目标模型不支持当前对话协议")
 )
 
+// maxUpstreamContextTokens 是上游 Grok-4.5 的上下文硬上限。
+// 与 conversation 包的 maxUpstreamTools 同款风格：不设余量，避免误拦本可成功的请求，
+// 估算偏差由 provider 层上游 400 兜底改写覆盖。
+const maxUpstreamContextTokens = 500000
+
+// ContextOverLimitError 表示请求估算 token 超过上游上下文硬上限，
+// 在发上游之前主动拦截，携带估算值供上层生成 /compact 引导文案。
+type ContextOverLimitError struct {
+	EstimatedTokens int64
+	Limit           int64
+}
+
+func (e *ContextOverLimitError) Error() string {
+	return fmt.Sprintf("估算输入 %d tokens 超过上游上限 %d", e.EstimatedTokens, e.Limit)
+}
+
 const maxRetryableBodyBytes = 64 << 10
 const responseOwnershipTTL = 30 * 24 * time.Hour
 const finalizationTimeout = 5 * time.Second
@@ -53,22 +69,24 @@ type Input struct {
 	Body               []byte
 	Streaming          bool
 	PromptCacheKey     string
+	SessionID          string
 	PreviousResponseID string
 	Operation          audit.Operation
 }
 
 type Usage struct {
-	InputTokens            int64
-	CachedInputTokens      int64
-	OutputTokens           int64
-	ReasoningTokens        int64
-	TotalTokens            int64
-	CostInUSDTicks         int64
-	NumSourcesUsed         int64
-	NumServerSideToolsUsed int64
-	ContextInputTokens     int64
-	ContextOutputTokens    int64
-	ResponseModel          string
+	InputTokens              int64
+	CachedInputTokens        int64
+	CacheCreationInputTokens int64
+	OutputTokens             int64
+	ReasoningTokens          int64
+	TotalTokens              int64
+	CostInUSDTicks           int64
+	NumSourcesUsed           int64
+	NumServerSideToolsUsed   int64
+	ContextInputTokens       int64
+	ContextOutputTokens      int64
+	ResponseModel            string
 }
 
 type Result struct {
@@ -268,7 +286,16 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	}
 	routes, aliasEffort, err := s.resolvePublicModelRoutes(ctx, input.PublicModel)
 	if err != nil {
-		return nil, ErrModelNotFound
+		// 兜底:Claude Code 等 Anthropic 客户端默认发送 claude-* 模型名，本地并无对应路由。
+		// 精确匹配失败时，若请求模型是 Anthropic 系列，回退到默认上游模型，实现开箱即用。
+		if fallback := fallbackModelForClient(input.PublicModel); fallback != "" && fallback != input.PublicModel {
+			if fallbackRoutes, fallbackEffort, fallbackErr := s.resolvePublicModelRoutes(ctx, fallback); fallbackErr == nil {
+				routes, aliasEffort, err = fallbackRoutes, fallbackEffort, nil
+			}
+		}
+		if err != nil {
+			return nil, ErrModelNotFound
+		}
 	}
 	route, routeErr := s.selectConversationRoute(routes, input.ClientKey, operation, path, input.PreviousResponseID != "", nil)
 	var ownership *inferencedomain.ResponseOwnership
@@ -318,6 +345,24 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
 		}
 		return nil, clientkeyapp.ErrModelNotAllowed
+	}
+	// Claude Code / Anthropic Messages 通常不带 Grok 的 prompt_cache_key。
+	// 从显式 key / session 头 / 稳定内容前缀推导租户隔离 identity，
+	// 既驱动账号粘滞选择(下游 selector.Acquire)，也写入上游 body 以提升 prompt cache 命中。
+	promptCacheKey := resolvePromptCacheKey(input.ClientKey.ID, route.PublicID, route.UpstreamModel, input.PromptCacheKey, input.SessionID, input.Body)
+	if promptCacheKey != "" {
+		input.PromptCacheKey = promptCacheKey
+		if rewritten, cacheErr := ensurePromptCacheKeyInBody(input.Body, promptCacheKey); cacheErr == nil {
+			input.Body = rewritten
+		} else {
+			s.logger.Warn("prompt_cache_key_inject_failed", "request_id", input.RequestID, "error", cacheErr)
+		}
+	}
+	// Grok-4.5 上下文硬上限 50 万 token。超限请求发上游只会撞 400 后客户端反复重试(实测干等 6 分半)，
+	// 这里在发上游、占账号、预留计费之前主动拦截，转成秒级 400 + /compact 引导。
+	if est := audit.EstimateRequestInputTokens(input.Body); est > maxUpstreamContextTokens {
+		s.logger.Warn("context_over_limit", "request_id", input.RequestID, "estimated_tokens", est, "limit", maxUpstreamContextTokens)
+		return nil, &ContextOverLimitError{EstimatedTokens: est, Limit: maxUpstreamContextTokens}
 	}
 	adapter, ok := s.providers.Responses(route.Provider)
 	if !ok {
@@ -1053,4 +1098,18 @@ func firstError(values ...error) error {
 		}
 	}
 	return errors.New("未知上游错误")
+}
+
+// defaultClientFallbackModel 是 Anthropic 客户端(如 Claude Code)默认模型名匹配失败时的回退上游模型。
+// Claude Code 会发送 claude-sonnet-* / claude-opus-* / claude-3-5-haiku 等本地不存在的模型名，
+// 统一兜底到该模型可实现开箱即用，无需用户手动配置 ANTHROPIC_MODEL。
+const defaultClientFallbackModel = "grok-4.5"
+
+// fallbackModelForClient 在精确模型匹配失败时，判断请求模型是否属于 Anthropic 系列并返回回退模型。
+// 仅对 claude- 前缀(Claude Code / Anthropic SDK 默认模型名)生效，避免污染其他显式模型请求。
+func fallbackModelForClient(requested string) string {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(requested)), "claude") {
+		return defaultClientFallbackModel
+	}
+	return ""
 }

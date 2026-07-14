@@ -153,6 +153,12 @@ func estimateRequestInputTokens(body []byte) int64 {
 	return max(256, estimateJSONTokens(payload)+128)
 }
 
+// EstimateRequestInputTokens 对外导出请求输入 token 的保守估算，
+// 与计费预留同口径，供上游上下文超限拦截复用。
+func EstimateRequestInputTokens(body []byte) int64 {
+	return estimateRequestInputTokens(body)
+}
+
 func estimateJSONTokens(value any) int64 {
 	switch typed := value.(type) {
 	case map[string]any:

@@ -95,6 +95,22 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return invalidResponsesResponse(err), nil
 		}
 	}
+	// Free OAuth 无工具请求注入 native search tools（tool_choice=none），
+	// 帮助进入可缓存档；客户端已声明 tools/tool_choice 时不改写。
+	if injected, injectErr := injectFreeCacheToolsIfEligible(body, request.Body, request.Credential); injectErr != nil {
+		return invalidResponsesResponse(injectErr), nil
+	} else if injected != nil {
+		body = injected
+	}
+	// Messages/Chat 转换会重建 body，gateway 注入的 prompt_cache_key 可能丢失。
+	// 这里以 request.PromptCacheKey（含 gateway 推导结果）为准写回上游 body。
+	if key := strings.TrimSpace(request.PromptCacheKey); key != "" {
+		if rewritten, writeErr := writePromptCacheKey(body, key); writeErr != nil {
+			return invalidResponsesResponse(writeErr), nil
+		} else {
+			body = rewritten
+		}
+	}
 	var bodyReader io.Reader
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
@@ -124,6 +140,14 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	if err := normalizeGzipResponse(resp); err != nil {
 		return nil, err
+	}
+	// 第 2 层兜底:token 估算是启发式，可能漏过 gateway 层的主动拦截。
+	// 上游真返 400 "maximum prompt length" 时，把英文原始报错改写成 /compact 引导，
+	// 与第 1 层保持一致的用户体验。
+	if resp.StatusCode == http.StatusBadRequest {
+		if rewritten, ok := rewriteContextLimitResponse(resp); ok {
+			resp = rewritten
+		}
 	}
 	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses
 	if responsesOperation && toolCompatibility != nil {
@@ -497,4 +521,122 @@ func (a *Adapter) getBilling(ctx context.Context, credential account.Credential,
 		return account.Billing{}, fmt.Errorf("上游 Billing 接口返回 %d", resp.StatusCode)
 	}
 	return parseBilling(body)
+}
+
+// injectFreeCacheToolsIfEligible：Build OAuth 且客户端无 tools/tool_choice 时，
+// 注入 web_search/x_search + tool_choice=none，使 Free 请求走可缓存路由且不触发真实搜索。
+// intentBody 是注入前的原始意图 body，避免规范化删掉不支持工具后误注入。
+// 返回 nil 表示不需要改写。
+func injectFreeCacheToolsIfEligible(normalizedBody, intentBody []byte, credential account.Credential) ([]byte, error) {
+	if credential.Provider != account.ProviderBuild || credential.AuthType != account.AuthTypeOAuth {
+		return nil, nil
+	}
+	if hasClientToolIntent(intentBody) || hasClientToolIntent(normalizedBody) {
+		return nil, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(normalizedBody, &payload); err != nil {
+		return nil, err
+	}
+	if payload == nil {
+		payload = make(map[string]json.RawMessage)
+	}
+	payload["tools"] = json.RawMessage(`[{"type":"web_search"},{"type":"x_search"}]`)
+	payload["tool_choice"] = mustJSON("none")
+	return json.Marshal(payload)
+}
+
+// hasClientToolIntent 判断请求体是否声明了 tools 或 tool_choice(客户端工具意图)。
+func hasClientToolIntent(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var probe struct {
+		Tools      json.RawMessage `json:"tools"`
+		ToolChoice json.RawMessage `json:"tool_choice"`
+	}
+	if json.Unmarshal(body, &probe) != nil {
+		return false
+	}
+	if len(bytes.TrimSpace(probe.ToolChoice)) > 0 && !bytes.Equal(bytes.TrimSpace(probe.ToolChoice), []byte("null")) {
+		return true
+	}
+	trimmed := bytes.TrimSpace(probe.Tools)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) && !bytes.Equal(trimmed, []byte("[]"))
+}
+
+// writePromptCacheKey 以给定 key 覆盖写回 body 的 prompt_cache_key。
+// Messages/Chat 转换会重建 body，gateway 推导的 key 可能丢失，故在发请求前强制写回。
+func writePromptCacheKey(body []byte, key string) ([]byte, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return body, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	if payload == nil {
+		payload = make(map[string]json.RawMessage)
+	}
+	payload["prompt_cache_key"] = mustJSON(key)
+	return json.Marshal(payload)
+}
+
+// rewriteContextLimitResponse 检测上游 400 是否为上下文超限(maximum prompt length)，
+// 若是则把英文原始报错改写成 /compact 引导(保留上游精确 token 数)，作为第 2 层兜底。
+// 返回 (改写后的 response, true) 或 (nil, false 表示不是超限、原样透传)。
+func rewriteContextLimitResponse(resp *http.Response) (*http.Response, bool) {
+	if resp.Body == nil {
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+	if err != nil {
+		// 读失败:把已读部分包回去，交由上层原样处理。
+		resp.Body = io.NopCloser(bytes.NewReader(data))
+		return nil, false
+	}
+	if !bytes.Contains(bytes.ToLower(data), []byte("maximum prompt length")) {
+		resp.Body = io.NopCloser(bytes.NewReader(data))
+		return nil, false
+	}
+	// 提取上游精确 token 数(形如 "contains 500724 tokens")，提取失败则不带数字。
+	detail := "Run /compact to shrink the context, then retry."
+	if n := extractUpstreamTokenCount(data); n > 0 {
+		detail = fmt.Sprintf("Conversation is %d tokens, over the model limit. %s", n, detail)
+	} else {
+		detail = "Conversation exceeds the model context limit. " + detail
+	}
+	body, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": "invalid_request_error", "message": detail},
+	})
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.Header = resp.Header.Clone()
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	return resp, true
+}
+
+// extractUpstreamTokenCount 从上游报错中提取 "contains <N> tokens" 的 N，失败返回 0。
+func extractUpstreamTokenCount(data []byte) int64 {
+	lower := bytes.ToLower(data)
+	idx := bytes.Index(lower, []byte("contains "))
+	if idx < 0 {
+		return 0
+	}
+	rest := bytes.TrimSpace(lower[idx+len("contains "):])
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	n, err := strconv.ParseInt(string(rest[:end]), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }

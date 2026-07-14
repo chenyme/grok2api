@@ -51,6 +51,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/responses", h.createResponse)
 	router.POST("/chat/completions", h.createChatCompletion)
 	router.POST("/messages", h.createMessage)
+	router.POST("/messages/count_tokens", h.countMessageTokens)
 	router.POST("/images/generations", h.generateImage)
 	router.POST("/images/edits", h.editImage)
 	router.POST("/videos/generations", h.generateVideo)
@@ -190,7 +191,7 @@ func (h *Handler) createChatCompletion(c *gin.Context) {
 	requestIDValue, _ := requestID.(string)
 	result, err := h.gateway.CreateChatCompletion(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
-		Body: body, Streaming: request.Stream,
+		Body: body, Streaming: request.Stream, SessionID: extractSessionID(c, body),
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -229,13 +230,87 @@ func (h *Handler) createMessage(c *gin.Context) {
 	requestIDValue, _ := requestID.(string)
 	result, err := h.gateway.CreateMessage(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
-		Body: body, Streaming: request.Stream,
+		Body: body, Streaming: request.Stream, SessionID: extractSessionID(c, body),
 	})
 	if err != nil {
 		writeGatewayAnthropicError(c, err)
 		return
 	}
 	h.writeResult(c, result, request.Stream)
+}
+
+// countMessageTokens 实现 Anthropic 兼容的 POST /v1/messages/count_tokens。
+// Claude Code 在发送 /v1/messages 前会调用该端点估算上下文 token 数用于上下文管理与压缩决策。
+// 上游 Grok Responses API 无对应端点，故本地做保守估算，返回 {"input_tokens": N}，不占用上游账号、不计费。
+func (h *Handler) countMessageTokens(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.maxBodyBytes)
+	if !isJSONRequest(c) {
+		writeAnthropicError(c, http.StatusUnsupportedMediaType, "invalid_request_error", "count_tokens only supports application/json")
+		return
+	}
+	if strings.TrimSpace(c.GetHeader("anthropic-version")) == "" {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", "anthropic-version header is required")
+		return
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		writeAnthropicError(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body exceeds the configured limit")
+		return
+	}
+	// count_tokens 不要求 max_tokens，仅需 model + messages。
+	var request messagesRequest
+	if json.Unmarshal(body, &request) != nil || strings.TrimSpace(request.Model) == "" || len(bytes.TrimSpace(request.Messages)) == 0 {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", "model and messages are required")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"input_tokens": estimateInputTokens(body)})
+}
+
+// estimateInputTokens 对完整请求体做保守的输入 token 估算(约 4 字符/token,最小 1),
+// 供 count_tokens 端点使用。不追求与官方分词器精确一致,只需给 Claude Code 的上下文管理提供合理量级。
+func estimateInputTokens(body []byte) int64 {
+	tokens := (int64(len(body)) + 3) / 4
+	if tokens < 1 {
+		tokens = 1
+	}
+	return tokens
+}
+
+// extractSessionID 读取客户端携带的会话标识，作为 prompt cache 的 seed。
+// Claude Code 的真实会话 id 优先在 x-claude-code-session-id 头(抓包实测)，
+// 其次是通用 session 头，最后回退到请求体 metadata.user_id 内嵌 JSON 的 session_id。
+// 抓到稳定 session 才能保住上游缓存命中；抓不到会退化到内容派生，命中率下降。
+func extractSessionID(c *gin.Context, body []byte) string {
+	for _, key := range []string{"x-claude-code-session-id", "session_id", "conversation_id", "x-grok-conv-id"} {
+		if value := strings.TrimSpace(c.GetHeader(key)); value != "" {
+			return value
+		}
+	}
+	// Claude Code 的 metadata.user_id 是一个 JSON 字符串，内含 session_id。
+	return sessionIDFromMetadataUserID(body)
+}
+
+// sessionIDFromMetadataUserID 从请求体 metadata.user_id 的内嵌 JSON 中提取 session_id。
+// Claude Code 的 user_id 形如 {"device_id":"...","account_uuid":"...","session_id":"..."}。
+func sessionIDFromMetadataUserID(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var probe struct {
+		Metadata struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(body, &probe) != nil || strings.TrimSpace(probe.Metadata.UserID) == "" {
+		return ""
+	}
+	var inner struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal([]byte(probe.Metadata.UserID), &inner) != nil {
+		return ""
+	}
+	return strings.TrimSpace(inner.SessionID)
 }
 
 func (h *Handler) generateImage(c *gin.Context) {
@@ -652,7 +727,7 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 	}
 	requestID, _ := c.Get(middleware.RequestIDKey)
 	requestIDValue, _ := requestID.(string)
-	input := gateway.Input{RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model, Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey, PreviousResponseID: request.PreviousResponseID}
+	input := gateway.Input{RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model, Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey, SessionID: extractSessionID(c, body), PreviousResponseID: request.PreviousResponseID}
 	var result *gateway.Result
 	if compact {
 		result, err = h.gateway.CompactResponse(c.Request.Context(), input)
@@ -932,6 +1007,9 @@ type responseUsageDTO struct {
 	ContextDetails         responseContextDetailsDTO `json:"context_details"`
 	PromptTokens           int64                     `json:"prompt_tokens"`
 	CompletionTokens       int64                     `json:"completion_tokens"`
+	// Anthropic Messages 兼容字段：转换后的 /v1/messages 响应用 cache_read/creation_input_tokens。
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 }
 
 type responseInputDetailsDTO struct {
@@ -969,8 +1047,14 @@ func (value responseUsageDTO) toGatewayUsage(responseModel string) gateway.Usage
 	if total == 0 {
 		total = input + output
 	}
+	// Messages 转换后的 usage 使用 Anthropic 字段名(cache_read_input_tokens)，
+	// Grok 原生 usage 用 input_tokens_details.cached_tokens，两者取非零者。
+	cached := value.InputTokensDetails.CachedTokens
+	if cached == 0 {
+		cached = value.CacheReadInputTokens
+	}
 	return gateway.Usage{
-		InputTokens: input, CachedInputTokens: value.InputTokensDetails.CachedTokens,
+		InputTokens: input, CachedInputTokens: cached, CacheCreationInputTokens: value.CacheCreationInputTokens,
 		OutputTokens: output, ReasoningTokens: value.OutputTokensDetails.ReasoningTokens,
 		TotalTokens: total, CostInUSDTicks: value.CostInUSDTicks,
 		NumSourcesUsed: value.NumSourcesUsed, NumServerSideToolsUsed: value.NumServerSideToolsUsed,
@@ -1022,7 +1106,11 @@ func writeGatewayError(c *gin.Context, err error) {
 	message := "上游服务暂不可用"
 	var upstreamFailure *gateway.UpstreamFailure
 	var selectionFailure *gateway.SelectionUnavailableError
+	var contextOverLimit *gateway.ContextOverLimitError
 	switch {
+	case errors.As(err, &contextOverLimit):
+		status, code = http.StatusBadRequest, "context_length_exceeded"
+		message = fmt.Sprintf("Conversation is ~%d tokens, over the %d limit. Run /compact to shrink the context, then retry.", contextOverLimit.EstimatedTokens, contextOverLimit.Limit)
 	case errors.Is(err, clientkeyapp.ErrBillingLimit):
 		status, code = http.StatusTooManyRequests, "billing_limit_exceeded"
 		message = clientkeyapp.ErrBillingLimit.Error()
@@ -1051,7 +1139,11 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 	message := "上游服务暂不可用"
 	var upstreamFailure *gateway.UpstreamFailure
 	var selectionFailure *gateway.SelectionUnavailableError
+	var contextOverLimit *gateway.ContextOverLimitError
 	switch {
+	case errors.As(err, &contextOverLimit):
+		status, errorType = http.StatusBadRequest, "invalid_request_error"
+		message = fmt.Sprintf("Conversation is ~%d tokens, over the %d limit. Run /compact to shrink the context, then retry.", contextOverLimit.EstimatedTokens, contextOverLimit.Limit)
 	case errors.Is(err, clientkeyapp.ErrBillingLimit):
 		status, errorType = http.StatusTooManyRequests, "rate_limit_error"
 		message = clientkeyapp.ErrBillingLimit.Error()

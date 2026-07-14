@@ -165,6 +165,20 @@ func swaggerChat() {}
 // @Router /v1/messages [post]
 func swaggerMessages() {}
 
+// swaggerCountTokens godoc
+// @Summary 估算 Anthropic Message 输入 token 数
+// @Description 本地保守估算请求输入 token 数（约 4 字符/token），供客户端上下文管理使用，不请求上游、不计费。
+// @Tags Messages
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param anthropic-version header string true "Anthropic API version" default(2023-06-01)
+// @Param request body SwaggerMessagesRequest true "请求"
+// @Success 200 {object} map[string]any
+// @Failure 400 {object} map[string]any
+// @Router /v1/messages/count_tokens [post]
+func swaggerCountTokens() {}
+
 // swaggerGenerateImage godoc
 // @Summary 生成图片
 // @Tags Images

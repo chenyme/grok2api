@@ -12,6 +12,10 @@ const (
 	OperationResponses = "responses"
 	OperationChat      = "chat"
 	OperationMessages  = "messages"
+
+	// maxUpstreamTools 是上游 Grok Responses API 的工具数硬上限。
+	// Claude Code 挂多个 MCP 时工具数可达数百，超限触发上游 400 "Maximum tools limit reached"。
+	maxUpstreamTools = 250
 )
 
 // ConvertRequest 将下游对话协议转换为 Responses 请求，作为 Provider 的统一上游协议。
@@ -349,7 +353,15 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 		existing, _ := target["tools"].([]any)
 		target["tools"] = append(existing, servers...)
 	}
-	if request.ToolChoice != nil {
+	// 上游 Grok Responses API 对工具数有硬上限(maxUpstreamTools)。Claude Code 挂多个 MCP 时
+	// 工具数可达数百(内置工具在前、MCP 工具在后)，超限会触发上游 400 "Maximum tools limit reached"。
+	// 保留前 maxUpstreamTools 个即保住全部核心能力，仅丢弃溢出的 MCP 工具。
+	if existing, ok := target["tools"].([]any); ok && len(existing) > maxUpstreamTools {
+		target["tools"] = existing[:maxUpstreamTools]
+	}
+	// 仅当最终确实带上了 tools 时才转发 tool_choice。Claude Code 可能在工具被过滤成空后
+	// 仍带 tool_choice，会触发上游 400 "tool_choice was set but no tools were specified"。
+	if _, hasTools := target["tools"]; hasTools && request.ToolChoice != nil {
 		choice, parallel, err := convertAnthropicToolChoice(*request.ToolChoice)
 		if err != nil {
 			return nil, ResponseOptions{}, err
@@ -522,29 +534,38 @@ func convertAnthropicMessages(messages []anthropicMessage, declaredTools map[str
 				delete(pendingCalls, toolUseID)
 			case "thinking":
 				if role != "assistant" {
-					return nil, nil, fmt.Errorf("%s thinking 只允许出现在 assistant 消息", path)
+					// 非 assistant 的 thinking 块无意义，跳过而非报错(Claude Code 多轮历史容错)。
+					continue
 				}
 				flushMessage()
 				var thinking, signature string
 				_ = json.Unmarshal(block["thinking"], &thinking)
 				_ = json.Unmarshal(block["signature"], &signature)
 				item := map[string]any{"type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": thinking}}}
-				if signature != "" {
+				// 仅回传看起来是真加密内容的 signature；伪造/过短签名会让上游 Grok 报
+				// "Could not decrypt encrypted_content" 400，故过滤。
+				if isLikelyEncryptedContent(signature) {
 					item["encrypted_content"] = signature
 				}
 				input = append(input, item)
 			case "redacted_thinking":
 				if role != "assistant" {
-					return nil, nil, fmt.Errorf("%s redacted_thinking 只允许出现在 assistant 消息", path)
+					// 非 assistant 的 redacted_thinking 块跳过而非报错。
+					continue
 				}
 				flushMessage()
 				var data string
 				if json.Unmarshal(block["data"], &data) != nil || data == "" {
-					return nil, nil, fmt.Errorf("%s.data 无效", path)
+					// data 无效时跳过而非报错。
+					continue
 				}
 				input = append(input, map[string]any{"type": "reasoning", "encrypted_content": data})
 			default:
-				return nil, nil, fmt.Errorf("当前不支持 Anthropic content.type=%q", typeName)
+				// 宽松容错:Anthropic 服务端执行的工具块(server_tool_use / web_search_tool_result /
+				// code_execution_tool_result / mcp_tool_use / mcp_tool_result / container_upload /
+				// tool_search_tool_result)及任何未知块，上游 Grok 不识别，转发会触发 400，
+				// 故静默剥离(continue)而非 fail-closed 报错。
+				continue
 			}
 		}
 		flushMessage()
@@ -556,6 +577,13 @@ func convertAnthropicMessages(messages []anthropicMessage, declaredTools map[str
 		return nil, nil, errors.New("messages 必须为每个 tool_use 提供 tool_result")
 	}
 	return input, instructions, nil
+}
+
+// isLikelyEncryptedContent 判断 signature 是否像真的加密内容。
+// Claude Code 多轮历史里可能带伪造/占位签名(如空串或极短字符串)，
+// 回传给上游 Grok 会触发 "Could not decrypt encrypted_content" 400，故用长度粗过滤。
+func isLikelyEncryptedContent(value string) bool {
+	return len(strings.TrimSpace(value)) >= 32
 }
 
 func anthropicSystemText(raw json.RawMessage) (string, error) {
@@ -575,8 +603,14 @@ func anthropicSystemText(raw json.RawMessage) (string, error) {
 	}
 	parts := make([]string, 0, len(blocks))
 	for _, block := range blocks {
-		if block.Type != "text" {
-			return "", fmt.Errorf("system 不支持 type=%q", block.Type)
+		// 宽松容错:只提取 text 块，忽略未知/空块（Claude Code / MCP 可能带非 text 块），不 fail-closed。
+		if block.Type != "text" || block.Text == "" {
+			continue
+		}
+		// Claude Code 注入的计费归因块（x-anthropic-billing-header: ...cch=...）对上游无意义，
+		// 且其中的 cch 每轮变化，若混入 instructions 会打穿上游 prompt cache，丢弃。
+		if strings.HasPrefix(block.Text, "x-anthropic-billing-header") {
+			continue
 		}
 		parts = append(parts, block.Text)
 	}
@@ -730,14 +764,21 @@ func markAnthropicToolError(output any) any {
 
 func convertAnthropicTools(tools []map[string]json.RawMessage) ([]any, error) {
 	result := make([]any, 0, len(tools))
+	// Claude Code 挂多个 MCP 时可能出现同名工具，按 name 保留首个，
+	// 规避上游 Grok "Duplicate function definition provided: xxx" 400。
+	seen := make(map[string]struct{}, len(tools))
 	for index, tool := range tools {
 		var typeName string
 		_ = json.Unmarshal(tool["type"], &typeName)
 		if strings.HasPrefix(typeName, "web_search_") {
+			if _, ok := seen["web_search"]; ok {
+				continue
+			}
 			converted, err := convertAnthropicWebSearchTool(tool, index)
 			if err != nil {
 				return nil, err
 			}
+			seen["web_search"] = struct{}{}
 			result = append(result, converted)
 			continue
 		}
@@ -749,6 +790,9 @@ func convertAnthropicTools(tools []map[string]json.RawMessage) ([]any, error) {
 		_ = json.Unmarshal(tool["description"], &description)
 		if strings.TrimSpace(name) == "" {
 			return nil, errors.New("Anthropic tool 缺少 name")
+		}
+		if _, ok := seen[name]; ok {
+			continue
 		}
 		var schema any = map[string]any{"type": "object", "properties": map[string]any{}}
 		if raw := tool["input_schema"]; !isEmptyJSON(raw) {
@@ -764,6 +808,7 @@ func convertAnthropicTools(tools []map[string]json.RawMessage) ([]any, error) {
 			}
 			converted["strict"] = strict
 		}
+		seen[name] = struct{}{}
 		result = append(result, converted)
 	}
 	return result, nil
