@@ -1,13 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Copy, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 
-import { copyToClipboard } from "@/shared/clipboard";
+import { CopyButton } from "@/shared/components/copy-button";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -778,15 +778,7 @@ export function AccountsPage() {
                 <Label>{t("accounts.userCode")}</Label>
                 <div className="relative">
                   <code className="flex h-11 items-center rounded-md border bg-muted/40 px-3 pr-11 font-mono text-lg font-semibold tabular-nums">{deviceSession.userCode}</code>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button type="button" variant="ghost" size="icon" className="absolute right-1.5 top-1/2 size-8 -translate-y-1/2 rounded-md" aria-label={t("common.copy")} onClick={() => {
-                        void copyToClipboard(deviceSession.userCode);
-                        toast.success(t("common.copied"));
-                      }}><Copy /></Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t("common.copy")}</TooltipContent>
-                  </Tooltip>
+                  <CopyButton value={deviceSession.userCode} className="absolute right-1.5 top-1/2 size-8 -translate-y-1/2 rounded-md" onCopied={() => toast.success(t("common.copied"))} />
                 </div>
               </div>
               <Button type="button" size="sm" className="w-full" onClick={() => window.open(deviceSession.verificationUriComplete || deviceSession.verificationUri, "_blank", "noopener,noreferrer")}>

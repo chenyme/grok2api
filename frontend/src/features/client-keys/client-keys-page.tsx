@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 
-import { copyToClipboard } from "@/shared/clipboard";
+import { CopyButton } from "@/shared/components/copy-button";
 
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +36,11 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 const USD_TICKS = 10_000_000_000;
 const MAX_BILLING_LIMIT_USD = 900_000;
 
+type SecretDialogState = {
+  secret: string;
+  source: "created" | "retrieved";
+};
+
 export function ClientKeysPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -49,7 +54,7 @@ export function ClientKeysPage() {
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [editing, setEditing] = useState<ClientKeyDTO | "new" | null>(null);
   const [deleting, setDeleting] = useState<ClientKeyDTO | null>(null);
-  const [createdSecret, setCreatedSecret] = useState<string | null>(null);
+  const [secretDialog, setSecretDialog] = useState<SecretDialogState | null>(null);
   const [modelOptionsPage, setModelOptionsPage] = useState(1);
   const [modelOptionsSearch, setModelOptionsSearch] = useState("");
   const [statusReferenceTime] = useState(() => Date.now());
@@ -104,7 +109,7 @@ export function ClientKeysPage() {
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["client-keys"] });
       if ("secret" in result) {
-        setCreatedSecret(result.secret);
+        setSecretDialog({ secret: result.secret, source: "created" });
         toast.success(t("keys.created"));
       } else {
         toast.success(t("keys.updated"));
@@ -125,12 +130,8 @@ export function ClientKeysPage() {
   });
 
   const copyMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const result = await getClientKeySecret(id);
-      await copyToClipboard(result.secret);
-      return id;
-    },
-    onSuccess: () => toast.success(t("common.copied")),
+    mutationFn: getClientKeySecret,
+    onSuccess: (result) => setSecretDialog({ secret: result.secret, source: "retrieved" }),
     onError: showError,
   });
 
@@ -329,93 +330,85 @@ export function ClientKeysPage() {
       </DataTableShell>
 
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[calc(100svh-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]">
+          <DialogHeader className="shrink-0 border-b px-5 py-4 pr-12">
             <DialogTitle>{editing === "new" ? t("keys.createTitle") : t("keys.editTitle")}</DialogTitle>
             <DialogDescription>{editing === "new" ? t("keys.description") : editing?.prefix}</DialogDescription>
           </DialogHeader>
-          <form className="space-y-4" onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
-            <div className="space-y-2"><Label htmlFor="key-name">{t("keys.name")}</Label><Input id="key-name" {...form.register("name")} />{form.formState.errors.name ? <p className="text-xs text-destructive">{form.formState.errors.name.message}</p> : null}</div>
-            <div className="flex items-center justify-between border-b py-2"><Label htmlFor="key-enabled">{keyEnabled ? t("common.enabled") : t("common.disabled")}</Label><Switch id="key-enabled" checked={keyEnabled} onCheckedChange={(checked) => form.setValue("enabled", checked)} /></div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2"><Label htmlFor="key-rpm">{t("keys.rpm")}</Label><Input id="key-rpm" type="number" min="1" max="100000" {...form.register("rpmLimit", { valueAsNumber: true })} /></div>
-              <div className="space-y-2"><Label htmlFor="key-concurrency">{t("keys.maxConcurrent")}</Label><Input id="key-concurrency" type="number" min="1" max="1024" {...form.register("maxConcurrent", { valueAsNumber: true })} /></div>
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <Label htmlFor="key-billing-unlimited">{t("keys.billingLimit")}</Label>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">{t("keys.unlimited")}</span>
-                  <Switch id="key-billing-unlimited" checked={billingUnlimited} onCheckedChange={(checked) => form.setValue("billingUnlimited", checked, { shouldDirty: true })} />
+          <form className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
+            <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-4">
+              <div className="space-y-2"><Label htmlFor="key-name">{t("keys.name")}</Label><Input id="key-name" {...form.register("name")} />{form.formState.errors.name ? <p className="text-xs text-destructive">{form.formState.errors.name.message}</p> : null}</div>
+              <div className="flex items-center justify-between border-b py-2"><Label htmlFor="key-enabled">{keyEnabled ? t("common.enabled") : t("common.disabled")}</Label><Switch id="key-enabled" checked={keyEnabled} onCheckedChange={(checked) => form.setValue("enabled", checked)} /></div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2"><Label htmlFor="key-rpm">{t("keys.rpm")}</Label><Input id="key-rpm" type="number" min="1" max="100000" {...form.register("rpmLimit", { valueAsNumber: true })} /></div>
+                <div className="space-y-2"><Label htmlFor="key-concurrency">{t("keys.maxConcurrent")}</Label><Input id="key-concurrency" type="number" min="1" max="1024" {...form.register("maxConcurrent", { valueAsNumber: true })} /></div>
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <Label htmlFor="key-billing-unlimited">{t("keys.billingLimit")}</Label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">{t("keys.unlimited")}</span>
+                    <Switch id="key-billing-unlimited" checked={billingUnlimited} onCheckedChange={(checked) => form.setValue("billingUnlimited", checked, { shouldDirty: true })} />
+                  </div>
                 </div>
-              </div>
-              <div className="relative">
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
-                <Input className="pl-7" type="number" min="0.01" max={MAX_BILLING_LIMIT_USD} step="0.01" disabled={billingUnlimited} {...form.register("billingLimitUsd", { valueAsNumber: true })} />
-              </div>
-              <p className="text-xs text-muted-foreground">{t("keys.billingLimitDescription")}</p>
-            </div>
-            <div className="space-y-2">
-              <Label>{t("keys.expires")}</Label>
-              <Controller control={form.control} name="expiresAt" render={({ field }) => <DateTimePicker value={field.value} onChange={field.onChange} />} />
-            </div>
-            <fieldset className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <legend className="text-xs font-medium">{t("keys.models")}</legend>
-                <span className="text-xs text-muted-foreground">{selectedModels.length === 0 ? t("keys.allModels") : t("keys.selectedModels", { count: selectedModels.length })}</span>
-              </div>
-              <div className="overflow-hidden rounded-md border">
-                <div className="relative border-b bg-muted/25">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <Input className="rounded-none border-0 bg-transparent pl-8 shadow-none focus-visible:bg-background focus-visible:ring-0" value={modelOptionsSearch} onChange={(event) => { setModelOptionsSearch(event.target.value); setModelOptionsPage(1); }} placeholder={t("keys.modelSearch")} aria-label={t("keys.modelSearch")} />
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
+                  <Input className="pl-7" type="number" min="0.01" max={MAX_BILLING_LIMIT_USD} step="0.01" disabled={billingUnlimited} {...form.register("billingLimitUsd", { valueAsNumber: true })} />
                 </div>
-                <div className="max-h-52 divide-y overflow-y-auto overscroll-contain">
-                  {modelsQuery.isPending ? <LoadingState className="min-h-24" /> : modelsQuery.data?.items.map((model) => {
-                    const checked = selectedModels.includes(model.id);
-                    const controlId = `allowed-model-${model.id}`;
-                    return (
-                      <label key={model.id} htmlFor={controlId} className="flex h-9 cursor-pointer items-center gap-3 px-3 text-xs transition-colors hover:bg-accent/55">
-                        <Checkbox id={controlId} checked={checked} onCheckedChange={() => toggleModel(model.id)} aria-label={t("common.selectItem", { name: model.publicId })} />
-                        <span className="min-w-0 flex-1 truncate font-medium" title={model.publicId}>{model.publicId}</span>
-                        <span className="hidden max-w-[42%] shrink-0 truncate text-muted-foreground sm:block" title={model.upstreamModel}>{model.upstreamModel}</span>
-                        {!model.enabled ? <Badge variant="outline" className="shrink-0 text-muted-foreground">{t("common.disabled")}</Badge> : null}
-                      </label>
-                    );
-                  })}
-                  {modelsQuery.data?.items.length === 0 ? <p className="p-3 text-center text-xs text-muted-foreground">{t("common.noData")}</p> : null}
-                </div>
-                {modelsQuery.data && modelsQuery.data.total > modelsQuery.data.pageSize ? <ModelOptionPagination page={modelsQuery.data.page} pageSize={modelsQuery.data.pageSize} total={modelsQuery.data.total} onPageChange={setModelOptionsPage} /> : null}
+                <p className="text-xs text-muted-foreground">{t("keys.billingLimitDescription")}</p>
               </div>
-            </fieldset>
-            <DialogFooter><Button type="button" variant="secondary" size="sm" onClick={() => setEditing(null)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={saveMutation.isPending}>{saveMutation.isPending ? <Spinner /> : null}{editing === "new" ? t("common.create") : t("common.save")}</Button></DialogFooter>
+              <div className="space-y-2">
+                <Label>{t("keys.expires")}</Label>
+                <Controller control={form.control} name="expiresAt" render={({ field }) => <DateTimePicker value={field.value} onChange={field.onChange} />} />
+              </div>
+              <fieldset className="min-w-0 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <legend className="text-xs font-medium">{t("keys.models")}</legend>
+                  <span className="min-w-0 truncate text-xs text-muted-foreground">{selectedModels.length === 0 ? t("keys.allModels") : t("keys.selectedModels", { count: selectedModels.length })}</span>
+                </div>
+                <div className="min-w-0 overflow-hidden rounded-md border">
+                  <div className="relative border-b bg-muted/25">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input className="rounded-none border-0 bg-transparent pl-8 shadow-none focus-visible:bg-background focus-visible:ring-0" value={modelOptionsSearch} onChange={(event) => { setModelOptionsSearch(event.target.value); setModelOptionsPage(1); }} placeholder={t("keys.modelSearch")} aria-label={t("keys.modelSearch")} />
+                  </div>
+                  <div className="max-h-40 divide-y overflow-y-auto overscroll-contain sm:max-h-52">
+                    {modelsQuery.isPending ? <LoadingState className="min-h-24" /> : modelsQuery.data?.items.map((model) => {
+                      const checked = selectedModels.includes(model.id);
+                      const controlId = `allowed-model-${model.id}`;
+                      return (
+                        <label key={model.id} htmlFor={controlId} className="flex h-9 cursor-pointer items-center gap-3 px-3 text-xs transition-colors hover:bg-accent/55">
+                          <Checkbox id={controlId} checked={checked} onCheckedChange={() => toggleModel(model.id)} aria-label={t("common.selectItem", { name: model.publicId })} />
+                          <span className="min-w-0 flex-1 truncate font-medium" title={model.publicId}>{model.publicId}</span>
+                          <span className="hidden max-w-[42%] shrink-0 truncate text-muted-foreground sm:block" title={model.upstreamModel}>{model.upstreamModel}</span>
+                          {!model.enabled ? <Badge variant="outline" className="shrink-0 text-muted-foreground">{t("common.disabled")}</Badge> : null}
+                        </label>
+                      );
+                    })}
+                    {modelsQuery.data?.items.length === 0 ? <p className="p-3 text-center text-xs text-muted-foreground">{t("common.noData")}</p> : null}
+                  </div>
+                  {modelsQuery.data && modelsQuery.data.total > modelsQuery.data.pageSize ? <ModelOptionPagination page={modelsQuery.data.page} pageSize={modelsQuery.data.pageSize} total={modelsQuery.data.total} onPageChange={setModelOptionsPage} /> : null}
+                </div>
+              </fieldset>
+            </div>
+            <DialogFooter className="shrink-0 gap-2 border-t bg-background px-5 py-4 sm:gap-0"><Button type="button" variant="secondary" size="sm" onClick={() => setEditing(null)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={saveMutation.isPending}>{saveMutation.isPending ? <Spinner /> : null}{editing === "new" ? t("common.create") : t("common.save")}</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={createdSecret !== null} onOpenChange={(open) => !open && setCreatedSecret(null)}>
+      <Dialog open={secretDialog !== null} onOpenChange={(open) => !open && setSecretDialog(null)}>
         <DialogContent className="max-w-[440px]">
           <DialogHeader>
-            <DialogTitle>{t("keys.secretTitle")}</DialogTitle>
-            <DialogDescription>{t("keys.secretDescription")}</DialogDescription>
+            <DialogTitle>{t(secretDialog?.source === "created" ? "keys.secretTitle" : "keys.copySecretTitle")}</DialogTitle>
+            <DialogDescription>{t(secretDialog?.source === "created" ? "keys.secretDescription" : "keys.copySecretDescription")}</DialogDescription>
           </DialogHeader>
           <div className="min-w-0 space-y-1.5">
             <Label>{t("keys.secretLabel")}</Label>
             <div className="flex h-8 w-full min-w-0 overflow-hidden rounded-md border border-input bg-secondary/55">
-              <code className="flex min-w-0 flex-1 select-all items-center overflow-x-auto whitespace-nowrap px-3 font-mono text-xs text-muted-foreground">{createdSecret}</code>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button type="button" variant="ghost" size="icon" className="h-full w-8 shrink-0 rounded-none border-l" aria-label={t("keys.copySecret")} onClick={() => {
-                    if (createdSecret) {
-                      void copyToClipboard(createdSecret);
-                      toast.success(t("common.copied"));
-                    }
-                  }}><Copy /></Button>
-                </TooltipTrigger>
-                <TooltipContent>{t("keys.copySecret")}</TooltipContent>
-              </Tooltip>
+              <code className="flex min-w-0 flex-1 select-all items-center overflow-x-auto whitespace-nowrap px-3 font-mono text-xs text-muted-foreground">{secretDialog?.source === "created" ? secretDialog.secret : t("keys.secretReady")}</code>
+              <CopyButton value={secretDialog?.secret ?? ""} copyLabel={t("keys.copySecret")} disabled={!secretDialog?.secret} className="h-full w-8 shrink-0 rounded-none border-l" onCopied={() => toast.success(t("common.copied"))} />
             </div>
           </div>
-          <DialogFooter><Button type="button" variant="secondary" size="sm" onClick={() => setCreatedSecret(null)}>{t("common.close")}</Button></DialogFooter>
+          <DialogFooter><Button type="button" variant="secondary" size="sm" onClick={() => setSecretDialog(null)}>{t("common.close")}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
