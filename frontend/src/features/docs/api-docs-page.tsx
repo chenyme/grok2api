@@ -70,7 +70,7 @@ const endpoints: Record<string, EndpointDefinition> = {
       { name: "tools", descriptionKey: "docs.reference.fieldTools" },
     ],
     noteKeys: ["docs.reference.noteResponsesState", "docs.reference.noteResponsesCompact"],
-    request: (model) => ({ model, input: "Explain HTTP streaming.", store: true, stream: false }),
+    request: (model) => ({ model, input: "Explain HTTP streaming.", store: false, stream: false }),
     response: { id: "resp_example", object: "response", status: "completed", model: "grok-chat-fast", output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "HTTP streaming sends response data incrementally." }] }], usage: { input_tokens: 18, output_tokens: 12, total_tokens: 30 } },
   },
   "chat/messages": {

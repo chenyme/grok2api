@@ -43,16 +43,18 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if len(input.Prompt) > 100000 || (len(input.Prompt) == 0 && len(input.ReferenceURLs) == 0) {
 		return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
 	}
-	route, err := s.models.GetByPublicID(ctx, input.PublicModel)
-	if err != nil || route.Capability != model.CapabilityVideo {
+	routes, err := s.models.GetByPublicIDCandidates(ctx, input.PublicModel)
+	if err != nil {
 		return media.Job{}, ErrModelNotFound
 	}
-	if !s.clientKeys.CanUseModel(input.ClientKey, route.ID) {
-		return media.Job{}, fmt.Errorf("客户端密钥无权使用该模型")
+	route, err := s.selectMediaRoute(routes, input.ClientKey, model.CapabilityVideo, func(providerValue account.Provider) bool {
+		_, ok := s.providers.Videos(providerValue)
+		return ok
+	})
+	if err != nil {
+		return media.Job{}, err
 	}
-	if _, ok := s.providers.Videos(route.Provider); !ok {
-		return media.Job{}, ErrNoAvailableAccount
-	}
+	externalModel := model.ExternalPublicID(route.Provider, route.PublicID)
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
 	lease, err := s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", nil, false)
 	if err != nil {
@@ -69,12 +71,12 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		ID: "video_" + token, RequestID: input.RequestID,
 		ClientKeyID: input.ClientKey.ID, ClientKeyName: input.ClientKey.Name,
 		AccountID: accountID, AccountName: lease.Credential.Name,
-		Provider: string(route.Provider), Model: route.PublicID, ModelRouteID: route.ID, UpstreamModel: route.UpstreamModel, Prompt: input.Prompt,
+		Provider: string(route.Provider), Model: externalModel, ModelRouteID: route.ID, UpstreamModel: model.DisplayUpstreamModel(route.Provider, route.UpstreamModel), Prompt: input.Prompt,
 		Seconds: input.Duration, Size: input.AspectRatio, Quality: input.Resolution,
 		Status: media.StatusQueued, Progress: 0, InputJSON: encodeVideoInput(input.ReferenceURLs), CreatedAt: now, UpdatedAt: now,
 	}
 	reserved := false
-	if pricing, ok := audit.EstimateOfficialVideoCost(route.PublicID, input.Resolution, input.Duration); ok {
+	if pricing, ok := audit.EstimateOfficialVideoCost(externalModel, input.Resolution, input.Duration); ok {
 		reserved, err = s.clientKeys.ReserveBilling(ctx, input.ClientKey, "video_usage_"+job.ID, pricing.CostInUSDTicks, mediaBillingReservationTTL)
 		if err != nil {
 			return media.Job{}, err
@@ -191,7 +193,12 @@ func (s *Service) processVideoJob(ctx context.Context, id string) {
 	if !claimed {
 		return
 	}
-	route, err := s.models.GetByPublicID(ctx, job.Model)
+	var route model.Route
+	if job.ModelRouteID != 0 {
+		route, err = s.models.Get(ctx, job.ModelRouteID)
+	} else {
+		route, err = s.models.GetByPublicID(ctx, job.Model)
+	}
 	if err != nil {
 		now := time.Now().UTC()
 		job.Status = media.StatusFailed
@@ -280,8 +287,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			s.deferVideoJob(parent, job)
 			return
 		}
-		if errors.Is(err, provider.ErrUnauthorized) {
-			_ = s.accounts.MarkReauthRequired(context.Background(), lease.Credential.ID, "Grok Web SSO credential rejected")
+		if errors.Is(err, provider.ErrUnauthorized) && lease.Credential.AuthType == account.AuthTypeSSO {
+			_ = s.accounts.MarkReauthRequired(context.Background(), lease.Credential.ID, fmt.Sprintf("%s SSO credential rejected", lease.Credential.Provider))
 		}
 		s.selector.MarkFailure(context.Background(), lease.Credential, 0, 0)
 		s.failVideoJob(parent, job, "generation_failed", err)
@@ -298,8 +305,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if err := s.recordVideoUsage(context.Background(), job, time.Since(startedAt).Milliseconds()); err != nil {
 		s.logger.Error("video_usage_record_failed", "job_id", job.ID, "event_id", "video_usage_"+job.ID, "error", err)
 	}
-	if route.Provider == account.ProviderWeb && lease.QuotaMode == "weekly" {
-		s.accounts.QueueWebQuotaRefresh(job.AccountID, lease.QuotaMode)
+	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode == "weekly" {
+		s.accounts.QueueQuotaRefresh(job.AccountID, lease.QuotaMode)
 	}
 }
 

@@ -200,13 +200,17 @@ func TestCredentialRefreshSchedulerRefreshesOnlyDueAccounts(t *testing.T) {
 	})
 
 	deadline := time.Now().Add(2 * time.Second)
-	for adapter.refreshCount.Load() == 0 && time.Now().Before(deadline) {
+	var updated accountdomain.Credential
+	for time.Now().Before(deadline) {
+		updated, err = service.accounts.Get(ctx, credential.ID)
+		if err == nil && adapter.refreshCount.Load() == 1 && updated.LastRefreshAt != nil && updated.RefreshFailureCount == 0 {
+			break
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if adapter.refreshCount.Load() != 1 {
 		t.Fatalf("refresh count = %d", adapter.refreshCount.Load())
 	}
-	updated, err := service.accounts.Get(ctx, credential.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,6 +453,15 @@ type credentialRefreshAdapter struct {
 
 func (a *credentialRefreshAdapter) Provider() accountdomain.Provider {
 	return accountdomain.ProviderBuild
+}
+
+func (a *credentialRefreshAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: accountdomain.ProviderBuild, Quota: provider.QuotaBilling,
+		Credential: provider.CredentialSurface{
+			Refresh: true,
+		},
+	}
 }
 
 func (a *credentialRefreshAdapter) RefreshCredential(ctx context.Context, _ accountdomain.Credential) (provider.RefreshedCredential, error) {

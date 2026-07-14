@@ -52,12 +52,24 @@ func (c *browserClient) Do(request *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	return fromFHTTPResponse(fresponse), nil
+}
+
+func fromFHTTPResponse(fresponse *fhttp.Response) *http.Response {
+	header := http.Header(fresponse.Header)
+	contentLength := fresponse.ContentLength
+	if fresponse.Uncompressed {
+		header = header.Clone()
+		header.Del("Content-Encoding")
+		header.Del("Content-Length")
+		contentLength = -1
+	}
 	return &http.Response{
 		Status: fresponse.Status, StatusCode: fresponse.StatusCode, Proto: fresponse.Proto,
-		ProtoMajor: fresponse.ProtoMajor, ProtoMinor: fresponse.ProtoMinor, Header: http.Header(fresponse.Header),
-		Body: fresponse.Body, ContentLength: fresponse.ContentLength, TransferEncoding: fresponse.TransferEncoding,
+		ProtoMajor: fresponse.ProtoMajor, ProtoMinor: fresponse.ProtoMinor, Header: header,
+		Body: fresponse.Body, ContentLength: contentLength, TransferEncoding: fresponse.TransferEncoding,
 		Close: fresponse.Close, Uncompressed: fresponse.Uncompressed, Trailer: http.Header(fresponse.Trailer),
-	}, nil
+	}
 }
 
 func (c *browserClient) CloseIdleConnections() {

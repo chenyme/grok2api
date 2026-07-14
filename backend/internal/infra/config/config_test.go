@@ -78,6 +78,13 @@ func TestDefaultGrokBuildClientVersionMatchesLocalBaseline(t *testing.T) {
 	}
 }
 
+func TestDefaultConsoleProviderConfig(t *testing.T) {
+	console := defaultConfig().Provider.Console
+	if console.BaseURL != "https://console.x.ai" || console.UserAgent == "" || console.ChatTimeout.Value() != 5*time.Minute {
+		t.Fatalf("console defaults = %#v", console)
+	}
+}
+
 func TestLoadAcceptsRuntimeDefaultsAndRejectsUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	data := []byte(`secrets:
@@ -145,6 +152,11 @@ func TestValidateRejectsUnsafeRuntimeLimits(t *testing.T) {
 		"media total":  func(cfg *Config) { cfg.Media.MaxTotalBytes = 1 },
 		"batch limit":  func(cfg *Config) { cfg.Batch.SyncConcurrency = 51 },
 		"batch jitter": func(cfg *Config) { cfg.Batch.RandomDelay = Duration(6 * time.Second) },
+		"console url":  func(cfg *Config) { cfg.Provider.Console.BaseURL = "http://console.x.ai" },
+		"console ua":   func(cfg *Config) { cfg.Provider.Console.UserAgent = "" },
+		"console timeout": func(cfg *Config) {
+			cfg.Provider.Console.ChatTimeout = Duration(time.Second)
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

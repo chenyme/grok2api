@@ -20,8 +20,8 @@ const (
 )
 
 type quotaSynchronizer interface {
-	RefreshWebQuotaMode(ctx context.Context, accountID uint64, mode string) (accountdomain.QuotaWindow, error)
-	ListDueWebQuotaWindows(ctx context.Context, now time.Time, limit int) ([]accountdomain.QuotaWindow, error)
+	RefreshQuotaMode(ctx context.Context, accountID uint64, mode string) (accountdomain.QuotaWindow, error)
+	ListDueQuotaWindows(ctx context.Context, now time.Time, limit int) ([]accountdomain.QuotaWindow, error)
 }
 
 type Service struct {
@@ -91,7 +91,7 @@ func (s *Service) runDue(ctx context.Context, now time.Time) {
 
 func (s *Service) runOne(ctx context.Context, now time.Time, value accountdomain.QuotaRecoveryEvent) {
 	probeCtx, cancel := context.WithTimeout(ctx, recoveryProbeTimeout)
-	window, probeErr := s.syncer.RefreshWebQuotaMode(probeCtx, value.AccountID, value.Mode)
+	window, probeErr := s.syncer.RefreshQuotaMode(probeCtx, value.AccountID, value.Mode)
 	cancel()
 	if probeErr == nil && window.Remaining > 0 {
 		if err := s.queue.AckQuotaRecovery(ctx, value); err != nil {
@@ -114,7 +114,7 @@ func (s *Service) runOne(ctx context.Context, now time.Time, value accountdomain
 }
 
 func (s *Service) reconcileDue(ctx context.Context, now time.Time) {
-	windows, err := s.syncer.ListDueWebQuotaWindows(ctx, now, recoveryReconcileLimit)
+	windows, err := s.syncer.ListDueQuotaWindows(ctx, now, recoveryReconcileLimit)
 	if err != nil {
 		s.logger.Warn("quota_recovery_reconcile_failed", "error", err)
 		return

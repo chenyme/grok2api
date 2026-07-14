@@ -2,12 +2,13 @@ package audit
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
 const (
 	OfficialPricingSource = "https://docs.x.ai/developers/pricing"
-	OfficialPricingAsOf   = "2026-07-12"
+	OfficialPricingAsOf   = "2026-07-14"
 )
 
 type PricingResult struct {
@@ -28,6 +29,20 @@ type tokenPrice struct {
 
 var officialTokenPrices = buildOfficialTokenPrices()
 
+type tokenPriceRule struct {
+	Pattern        *regexp.Regexp
+	CanonicalModel string
+}
+
+var officialTokenPriceRules = []tokenPriceRule{
+	{Pattern: regexp.MustCompile(`^grok-(?:build-0\.1|code-fast(?:-1)?|composer-2\.5-fast)(?:-[a-z0-9.]+)*$`), CanonicalModel: "grok-build-0.1"},
+	{Pattern: regexp.MustCompile(`^grok-4\.5(?:-[a-z0-9.]+)*$`), CanonicalModel: "grok-4.5"},
+	{Pattern: regexp.MustCompile(`^grok-4\.3(?:-[a-z0-9.]+)*$`), CanonicalModel: "grok-4.3"},
+	{Pattern: regexp.MustCompile(`^grok-4\.20-multi-agent(?:-[a-z0-9.]+)*$`), CanonicalModel: "grok-4.20-multi-agent-0309"},
+	{Pattern: regexp.MustCompile(`^grok-4\.20(?:-[a-z0-9.]+)*-non-reasoning(?:-[a-z0-9.]+)*$`), CanonicalModel: "grok-4.20-0309-non-reasoning"},
+	{Pattern: regexp.MustCompile(`^grok-4\.20(?:-[a-z0-9.]+)*$`), CanonicalModel: "grok-4.20-0309-reasoning"},
+}
+
 // buildOfficialTokenPrices 使用 xAI 官方每 Token USD ticks 费率。
 // 1 USD = 10,000,000,000 ticks；官方页面展示价格均为每 1M Tokens。
 func buildOfficialTokenPrices() map[string]tokenPrice {
@@ -38,7 +53,7 @@ func buildOfficialTokenPrices() map[string]tokenPrice {
 			prices[name] = price
 		}
 	}
-	register("grok-build-0.1", tokenPrice{InputTicks: 10000, CachedInputTicks: 2000, OutputTicks: 20000},
+	register("grok-build-0.1", tokenPrice{InputTicks: 10000, CachedInputTicks: 2000, OutputTicks: 20000, LongContextTokens: 200000, LongInputTicks: 20000, LongCachedTicks: 4000, LongOutputTicks: 40000},
 		"grok-code-fast-1", "grok-code-fast", "grok-code-fast-1-0825", "grok-composer-2.5-fast")
 	register("grok-4.5", tokenPrice{InputTicks: 20000, CachedInputTicks: 5000, OutputTicks: 60000, LongContextTokens: 200000, LongInputTicks: 40000, LongCachedTicks: 10000, LongOutputTicks: 120000},
 		"grok-4.5-latest", "grok-build-latest")
@@ -53,9 +68,36 @@ func buildOfficialTokenPrices() map[string]tokenPrice {
 	return prices
 }
 
+// resolveOfficialTokenPrice 先处理内部来源前缀和官方精确别名，再使用锚定规则识别同一模型家族的版本后缀。
+func resolveOfficialTokenPrice(model string) (tokenPrice, bool) {
+	normalized := normalizePricingModel(model)
+	if price, ok := officialTokenPrices[normalized]; ok {
+		return price, true
+	}
+	for _, rule := range officialTokenPriceRules {
+		if !rule.Pattern.MatchString(normalized) {
+			continue
+		}
+		price, ok := officialTokenPrices[rule.CanonicalModel]
+		return price, ok
+	}
+	return tokenPrice{}, false
+}
+
+// normalizePricingModel 只移除系统已知的来源前缀，避免任意路径片段被误识别为可计费模型。
+func normalizePricingModel(model string) string {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	for _, prefix := range []string{"build/", "web/", "console/", "grok_build/", "grok_web/", "grok_console/"} {
+		if strings.HasPrefix(normalized, prefix) {
+			return strings.TrimSpace(normalized[len(prefix):])
+		}
+	}
+	return normalized
+}
+
 // EstimateOfficialCost 按官方模型价格计算单次请求成本；未知模型返回 false。
 func EstimateOfficialCost(model string, inputTokens, cachedInputTokens, outputTokens, contextInputTokens int64) (PricingResult, bool) {
-	price, ok := officialTokenPrices[strings.ToLower(strings.TrimSpace(model))]
+	price, ok := resolveOfficialTokenPrice(model)
 	if !ok {
 		return PricingResult{}, false
 	}
@@ -79,7 +121,7 @@ func EstimateOfficialCost(model string, inputTokens, cachedInputTokens, outputTo
 
 // EstimateOfficialTextReservation 根据请求内容和输出上限计算保守的文本费用预留。
 func EstimateOfficialTextReservation(model string, body []byte) (PricingResult, bool) {
-	if _, ok := officialTokenPrices[strings.ToLower(strings.TrimSpace(model))]; !ok {
+	if _, ok := resolveOfficialTokenPrice(model); !ok {
 		return PricingResult{}, false
 	}
 	inputTokens := estimateRequestInputTokens(body)
@@ -146,7 +188,7 @@ func EstimateOfficialImageCost(model, resolution string, count int) (PricingResu
 	if count <= 0 {
 		return PricingResult{}, false
 	}
-	model = strings.ToLower(strings.TrimSpace(model))
+	model = normalizePricingModel(model)
 	if model == "grok-imagine-image" {
 		return PricingResult{Model: "grok-imagine-image", CostInUSDTicks: int64(count) * 200_000_000}, true
 	}
@@ -174,7 +216,7 @@ func EstimateOfficialImageCost(model, resolution string, count int) (PricingResu
 
 // EstimateOfficialImageEditCost 按输出图片数量计费，并叠加每张输入图片的处理费用。
 func EstimateOfficialImageEditCost(model, resolution string, outputCount, inputCount int) (PricingResult, bool) {
-	if strings.ToLower(strings.TrimSpace(model)) != "grok-imagine-image-edit" || outputCount <= 0 || inputCount <= 0 {
+	if normalizePricingModel(model) != "grok-imagine-image-edit" || outputCount <= 0 || inputCount <= 0 {
 		return PricingResult{}, false
 	}
 	resolution = strings.ToLower(strings.TrimSpace(resolution))
@@ -198,7 +240,7 @@ func EstimateOfficialImageEditCost(model, resolution string, outputCount, inputC
 
 // EstimateOfficialVideoCost 按请求视频时长和分辨率计算费用。
 func EstimateOfficialVideoCost(model, resolution string, seconds int) (PricingResult, bool) {
-	if strings.ToLower(strings.TrimSpace(model)) != "grok-imagine-video" || seconds <= 0 {
+	if normalizePricingModel(model) != "grok-imagine-video" || seconds <= 0 {
 		return PricingResult{}, false
 	}
 	resolution = strings.ToLower(strings.TrimSpace(resolution))

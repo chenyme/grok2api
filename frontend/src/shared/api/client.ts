@@ -269,8 +269,8 @@ export async function apiDownload(path: string, retryAuth = true): Promise<Blob>
       throw new ApiError(503, "sessionRefreshUnavailable", localizedErrorMessage("sessionRefreshUnavailable", "Unable to refresh the session. Please retry."));
     }
   }
-	if (!response.ok) {
-		await parseResponse(response, decodeNever);
+  if (!response.ok) {
+    await parseResponse(response, decodeNever);
     throw new ApiError(response.status, "requestFailed", localizedErrorMessage("requestFailed", "The request failed"));
   }
   return response.blob();

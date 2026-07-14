@@ -29,10 +29,41 @@ type billingStub struct {
 	syncErr     error
 }
 
-type accountReaderStub struct{ provider accountdomain.Provider }
+type accountReaderStub struct {
+	provider accountdomain.Provider
+	quota    provider.QuotaKind
+}
 
 func (s accountReaderStub) Get(context.Context, uint64) (accountapp.View, error) {
 	return accountapp.View{Credential: accountdomain.Credential{Provider: s.provider}}, nil
+}
+
+func (s accountReaderStub) ProviderDefinition(value accountdomain.Provider) (provider.Definition, bool) {
+	quota := provider.QuotaBilling
+	if s.quota != "" {
+		quota = s.quota
+	} else if value == accountdomain.ProviderWeb {
+		quota = provider.QuotaRemoteWindow
+	} else if value == accountdomain.ProviderConsole {
+		quota = provider.QuotaLocalWindow
+	}
+	return provider.Definition{Provider: value, Quota: quota}, value.IsValid()
+}
+
+type quotaStub struct {
+	hasSnapshot bool
+	checks      int
+	syncs       int
+}
+
+func (s *quotaStub) HasQuotaWindows(context.Context, uint64) (bool, error) {
+	s.checks++
+	return s.hasSnapshot, nil
+}
+
+func (s *quotaStub) RefreshQuota(context.Context, uint64) ([]accountdomain.QuotaWindow, error) {
+	s.syncs++
+	return []accountdomain.QuotaWindow{{Mode: "console", Remaining: 20}}, nil
 }
 
 func (s *billingStub) HasBillingSnapshot(context.Context, uint64) (bool, error) {
@@ -113,6 +144,38 @@ func TestSyncAccountFetchesOnlyMissingSnapshots(t *testing.T) {
 	_, modelSyncs := models.counts()
 	if billingSyncs != 0 || modelSyncs != 1 {
 		t.Fatalf("billing syncs = %d, model syncs = %d", billingSyncs, modelSyncs)
+	}
+}
+
+func TestSyncAccountUsesQuotaForConsoleProvider(t *testing.T) {
+	billing := &billingStub{}
+	quota := &quotaStub{}
+	models := &modelStub{hasSnapshot: true}
+	service := NewService(slog.Default(), accountReaderStub{provider: accountdomain.ProviderConsole}, billing, quota, models)
+
+	if err := service.syncAccount(context.Background(), 9); err != nil {
+		t.Fatal(err)
+	}
+
+	billingChecks, billingSyncs := billing.counts()
+	if billingChecks != 0 || billingSyncs != 0 || quota.checks != 1 || quota.syncs != 1 {
+		t.Fatalf("billing = %d/%d, quota = %d/%d", billingChecks, billingSyncs, quota.checks, quota.syncs)
+	}
+}
+
+func TestSyncAccountUsesDeclaredQuotaPolicyInsteadOfProviderName(t *testing.T) {
+	billing := &billingStub{}
+	quota := &quotaStub{}
+	models := &modelStub{hasSnapshot: true}
+	reader := accountReaderStub{provider: accountdomain.ProviderBuild, quota: provider.QuotaRemoteWindow}
+	service := NewService(slog.Default(), reader, billing, quota, models)
+
+	if err := service.syncAccount(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	billingChecks, billingSyncs := billing.counts()
+	if billingChecks != 0 || billingSyncs != 0 || quota.checks != 1 || quota.syncs != 1 {
+		t.Fatalf("billing = %d/%d, quota = %d/%d", billingChecks, billingSyncs, quota.checks, quota.syncs)
 	}
 }
 
@@ -257,6 +320,13 @@ type countingAdapter struct {
 }
 
 func (a *countingAdapter) Provider() accountdomain.Provider { return accountdomain.ProviderBuild }
+
+func (a *countingAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: accountdomain.ProviderBuild, Quota: provider.QuotaBilling,
+		Credential: provider.CredentialSurface{Refresh: true},
+	}
+}
 
 func (a *countingAdapter) ListModels(context.Context, accountdomain.Credential) ([]string, error) {
 	a.mu.Lock()

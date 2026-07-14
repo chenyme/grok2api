@@ -59,8 +59,12 @@ func TestWebChatPricingUsesGrok45(t *testing.T) {
 			t.Fatalf("pricing model for %s = %q", upstreamModel, got)
 		}
 	}
-	for _, upstreamModel := range []string{"grok-imagine-image", "grok-imagine-image-quality", "imagine-image-edit", "grok-imagine-video"} {
-		if got := registry.PricingModel(account.ProviderWeb, upstreamModel); got != upstreamModel {
+	mediaModels := map[string]string{
+		"grok-imagine-image": "grok-imagine-image", "grok-imagine-image-quality": "grok-imagine-image-quality",
+		"imagine-image-edit": "grok-imagine-image-edit", "grok-imagine-video": "grok-imagine-video",
+	}
+	for upstreamModel, expected := range mediaModels {
+		if got := registry.PricingModel(account.ProviderWeb, upstreamModel); got != expected {
 			t.Fatalf("media pricing model for %s = %q", upstreamModel, got)
 		}
 	}
