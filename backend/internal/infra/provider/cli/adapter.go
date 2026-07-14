@@ -159,7 +159,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			resp.Body = conversation.ConvertResponseStreamWithOptions(resp.Body, request.Operation, conversationOptions)
 			resp.Header.Del("Content-Length")
 			resp.Header.Set("Content-Type", "text/event-stream")
-		} else {
+		} else if !request.Streaming || resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			data, readErr := io.ReadAll(io.LimitReader(resp.Body, (64<<20)+1))
 			_ = resp.Body.Close()
 			if readErr != nil {
@@ -170,11 +170,17 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			converted, convertErr := conversation.ConvertResponseJSONWithOptions(data, request.Operation, conversationOptions)
 			if convertErr != nil {
-				return nil, convertErr
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					resp.Body = io.NopCloser(bytes.NewReader(data))
+					resp.Header.Set("Content-Length", strconv.Itoa(len(data)))
+				} else {
+					return nil, convertErr
+				}
+			} else {
+				resp.Body = io.NopCloser(bytes.NewReader(converted))
+				resp.Header.Set("Content-Length", strconv.Itoa(len(converted)))
+				resp.Header.Set("Content-Type", "application/json")
 			}
-			resp.Body = io.NopCloser(bytes.NewReader(converted))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(converted)))
-			resp.Header.Set("Content-Type", "application/json")
 		}
 	}
 	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body}, nil
