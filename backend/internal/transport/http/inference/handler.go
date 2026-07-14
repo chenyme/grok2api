@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -652,7 +653,11 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 	}
 	requestID, _ := c.Get(middleware.RequestIDKey)
 	requestIDValue, _ := requestID.(string)
-	input := gateway.Input{RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model, Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey, PreviousResponseID: request.PreviousResponseID}
+	promptCacheKey := request.PromptCacheKey
+	if promptCacheKey == "" {
+		promptCacheKey = resolvePromptCacheKey(c.Request.Header, body)
+	}
+	input := gateway.Input{RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model, Body: body, Streaming: request.Stream, PromptCacheKey: promptCacheKey, PreviousResponseID: request.PreviousResponseID}
 	var result *gateway.Result
 	if compact {
 		result, err = h.gateway.CompactResponse(c.Request.Context(), input)
@@ -1118,4 +1123,24 @@ func forceJSONBoolean(body []byte, key string, value bool) ([]byte, error) {
 		payload[key] = json.RawMessage("true")
 	}
 	return json.Marshal(payload)
+}
+
+var claudeCodeSessionPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
+
+func resolvePromptCacheKey(headers http.Header, body []byte) string {
+	if sessionID := strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")); sessionID != "" {
+		return sessionID
+	}
+	var metadata struct {
+		Metadata struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(body, &metadata) == nil && metadata.Metadata.UserID != "" {
+		userID := metadata.Metadata.UserID
+		if matches := claudeCodeSessionPattern.FindStringSubmatch(userID); len(matches) >= 2 {
+			return matches[1]
+		}
+	}
+	return ""
 }

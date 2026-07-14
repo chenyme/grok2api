@@ -95,6 +95,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return invalidResponsesResponse(err), nil
 		}
 	}
+	if len(body) > 0 && request.Method == http.MethodPost {
+		body = injectPromptCacheKey(body, request.PromptCacheKey)
+	}
 	var bodyReader io.Reader
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
@@ -414,6 +417,25 @@ func (a *Adapter) clientIdentity(accountID uint64) (clientIdentity, error) {
 	value := clientIdentity{agentID: agentID, sessionID: sessionID}
 	a.identities[accountID] = value
 	return value, nil
+}
+
+func injectPromptCacheKey(body []byte, clientKey string) []byte {
+	key := strings.TrimSpace(clientKey)
+	if key == "" {
+		return body
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) != nil {
+		return body
+	}
+	if _, exists := payload["prompt_cache_key"]; exists {
+		return body
+	}
+	payload["prompt_cache_key"] = mustJSON(key)
+	if result, err := json.Marshal(payload); err == nil {
+		return result
+	}
+	return body
 }
 
 func randomHex(bytesLength int) (string, error) {
