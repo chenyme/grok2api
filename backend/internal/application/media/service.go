@@ -68,7 +68,7 @@ type VideoStats struct {
 func NewService(assets repository.MediaAssetRepository, jobs repository.MediaJobRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
 	return &Service{
 		assets: assets, jobs: jobs, objects: objects, cleanupLock: cleanupLock,
-		publicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"), maxImageBytes: cfg.MaxImageBytes,
+		publicBaseURL: strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"), maxImageBytes: cfg.MaxImageBytes,
 		maxTotalBytes: cfg.MaxTotalBytes, cleanupAt: cfg.CleanupThresholdPercent, cleanupEvery: cfg.CleanupInterval,
 		cleanupSignal: make(chan struct{}, 1), configChanged: make(chan struct{}, 1),
 	}
@@ -77,6 +77,7 @@ func NewService(assets repository.MediaAssetRepository, jobs repository.MediaJob
 // UpdateConfig 热更新媒体容量和清理策略，不重建底层存储实例。
 func (s *Service) UpdateConfig(cfg Config) {
 	s.configMu.Lock()
+	s.publicBaseURL = strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/")
 	s.maxImageBytes = cfg.MaxImageBytes
 	s.maxTotalBytes = cfg.MaxTotalBytes
 	s.cleanupAt = cfg.CleanupThresholdPercent
@@ -127,7 +128,7 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 
 // PublicImageURL 返回可直接用于图片展示的公开资源地址。
 func (s *Service) PublicImageURL(id string) string {
-	return s.publicBaseURL + "/v1/media/images/" + id
+	return s.runtimeConfig().PublicBaseURL + "/v1/media/images/" + id
 }
 
 // OpenImage 读取图片元数据和正文，不向调用方暴露实际文件路径。
@@ -306,6 +307,7 @@ func (s *Service) runtimeConfig() Config {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 	return Config{
+		PublicBaseURL: s.publicBaseURL,
 		MaxImageBytes: s.maxImageBytes, MaxTotalBytes: s.maxTotalBytes,
 		CleanupThresholdPercent: s.cleanupAt, CleanupInterval: s.cleanupEvery,
 	}

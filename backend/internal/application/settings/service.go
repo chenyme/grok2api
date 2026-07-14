@@ -71,6 +71,11 @@ type MediaConfig struct {
 	CleanupInterval         string
 }
 
+// FrontendConfig 是管理接口使用的公开 API 地址输入。
+type FrontendConfig struct {
+	PublicAPIBaseURL string
+}
+
 // RoutingConfig 是管理接口使用的路由可编辑输入。
 type RoutingConfig struct {
 	StickyTTL    string
@@ -100,6 +105,7 @@ type EditableConfig struct {
 	ProviderConsole   ProviderConsoleConfig
 	Batch             BatchConfig
 	Media             MediaConfig
+	Frontend          FrontendConfig
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
@@ -157,6 +163,13 @@ func (s *Service) Get() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.snapshotLocked()
+}
+
+// PublicAPIBaseURL 返回运行设置、配置文件或内置默认值解析后的公开 API 根地址。
+func (s *Service) PublicAPIBaseURL() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.Frontend.EffectivePublicAPIBaseURL()
 }
 
 // Update 校验并持久化运行设置，再原子替换进程内配置。
@@ -268,6 +281,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.Media.MaxTotalBytes = value.Media.MaxTotalBytes
 	base.Media.CleanupThresholdPercent = value.Media.CleanupThresholdPercent
 	base.Media.CleanupInterval = config.Duration(value.Media.CleanupInterval)
+	base.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(value.Frontend.PublicAPIBaseURL)
 	base.Routing = config.RoutingConfig{
 		StickyTTL: config.Duration(value.Routing.StickyTTL), CooldownBase: config.Duration(value.Routing.CooldownBase),
 		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts,
@@ -310,6 +324,9 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		Media: settingsdomain.MediaConfig{
 			MaxImageBytes: value.Media.MaxImageBytes, MaxTotalBytes: value.Media.MaxTotalBytes,
 			CleanupThresholdPercent: value.Media.CleanupThresholdPercent, CleanupInterval: value.Media.CleanupInterval.Value(),
+		},
+		Frontend: settingsdomain.FrontendConfig{
+			PublicAPIBaseURL: value.Frontend.PublicAPIBaseURLOverride,
 		},
 		Routing: settingsdomain.RoutingConfig{
 			StickyTTL: value.Routing.StickyTTL.Value(), CooldownBase: value.Routing.CooldownBase.Value(),
@@ -372,6 +389,7 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Media.MaxImageBytes = input.Media.MaxImageBytes
 	next.Media.MaxTotalBytes = input.Media.MaxTotalBytes
 	next.Media.CleanupThresholdPercent = input.Media.CleanupThresholdPercent
+	next.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(input.Frontend.PublicAPIBaseURL)
 	next.Routing.MaxAttempts = input.Routing.MaxAttempts
 	next.Audit.BufferSize = input.Audit.BufferSize
 	next.Audit.BatchSize = input.Audit.BatchSize
@@ -439,6 +457,9 @@ func toEditable(cfg config.Config) EditableConfig {
 		Media: MediaConfig{
 			MaxImageBytes: cfg.Media.MaxImageBytes, MaxTotalBytes: cfg.Media.MaxTotalBytes,
 			CleanupThresholdPercent: cfg.Media.CleanupThresholdPercent, CleanupInterval: cfg.Media.CleanupInterval.String(),
+		},
+		Frontend: FrontendConfig{
+			PublicAPIBaseURL: cfg.Frontend.PublicAPIBaseURLOverride,
 		},
 		Routing: RoutingConfig{
 			StickyTTL: cfg.Routing.StickyTTL.String(), CooldownBase: cfg.Routing.CooldownBase.String(),

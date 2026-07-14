@@ -261,7 +261,7 @@ func TestValidateFrontendPublicAPIBaseURL(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
 	cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-	for _, value := range []string{"", "127.0.0.1:8000", "ftp://example.com", "https://user@example.com", "https://example.com?token=value"} {
+	for _, value := range []string{"127.0.0.1:8000", "ftp://example.com", "https://user@example.com", "https://example.com?token=value"} {
 		cfg.Frontend.PublicAPIBaseURL = value
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("frontend.publicApiBaseURL %q was accepted", value)
@@ -271,5 +271,24 @@ func TestValidateFrontendPublicAPIBaseURL(t *testing.T) {
 	cfg.Auth.SecureCookies = true
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid frontend.publicApiBaseURL rejected: %v", err)
+	}
+}
+
+func TestEffectivePublicAPIBaseURLPriority(t *testing.T) {
+	cases := []struct {
+		name     string
+		frontend FrontendConfig
+		want     string
+	}{
+		{name: "runtime override", frontend: FrontendConfig{PublicAPIBaseURL: "https://yaml.example/base", PublicAPIBaseURLOverride: "https://runtime.example/api/"}, want: "https://runtime.example/api"},
+		{name: "yaml fallback", frontend: FrontendConfig{PublicAPIBaseURL: "https://yaml.example/base/"}, want: "https://yaml.example/base"},
+		{name: "local fallback", frontend: FrontendConfig{}, want: DefaultPublicAPIBaseURL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.frontend.EffectivePublicAPIBaseURL(); got != tc.want {
+				t.Fatalf("EffectivePublicAPIBaseURL() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

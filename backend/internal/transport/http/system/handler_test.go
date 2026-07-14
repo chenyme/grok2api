@@ -12,7 +12,7 @@ import (
 func TestHandlerReturnsOnlyPublicFrontendConfig(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	NewHandler("https://api.example.com/").Register(router.Group("/api/admin/v1"))
+	NewHandler(func() string { return "https://api.example.com/" }).Register(router.Group("/api/admin/v1"))
 	request := httptest.NewRequest(http.MethodGet, "/api/admin/v1/system", nil)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)

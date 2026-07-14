@@ -61,8 +61,21 @@ type ServerConfig struct {
 }
 
 type FrontendConfig struct {
-	PublicAPIBaseURL string `yaml:"publicApiBaseURL"`
-	StaticPath       string `yaml:"staticPath"`
+	PublicAPIBaseURL         string `yaml:"publicApiBaseURL"`
+	PublicAPIBaseURLOverride string `yaml:"-"`
+	StaticPath               string `yaml:"staticPath"`
+}
+
+const DefaultPublicAPIBaseURL = "http://127.0.0.1:8000"
+
+// EffectivePublicAPIBaseURL 按运行设置、配置文件、内置默认值的顺序解析公开地址。
+func (c FrontendConfig) EffectivePublicAPIBaseURL() string {
+	for _, value := range []string{c.PublicAPIBaseURLOverride, c.PublicAPIBaseURL} {
+		if value = strings.TrimRight(strings.TrimSpace(value), "/"); value != "" {
+			return value
+		}
+	}
+	return DefaultPublicAPIBaseURL
 }
 
 type DatabaseConfig struct {
@@ -287,9 +300,22 @@ func (c Config) Validate() error {
 	if c.Server.RequestTimeout.Value() <= 0 || c.Server.RequestTimeout.Value() > maxRequestTimeout {
 		return errors.New("server.requestTimeout 必须大于零且不超过 24 小时")
 	}
-	publicAPIURL, err := url.ParseRequestURI(strings.TrimSpace(c.Frontend.PublicAPIBaseURL))
-	if err != nil || (publicAPIURL.Scheme != "http" && publicAPIURL.Scheme != "https") || publicAPIURL.Host == "" || publicAPIURL.User != nil || publicAPIURL.RawQuery != "" || publicAPIURL.Fragment != "" {
-		return errors.New("frontend.publicApiBaseURL 必须是不含凭据、查询参数和片段的 HTTP(S) URL")
+	for _, item := range []struct {
+		name  string
+		value string
+	}{
+		{name: "frontend.publicApiBaseURL", value: c.Frontend.PublicAPIBaseURL},
+		{name: "frontend.publicApiBaseURL 运行设置", value: c.Frontend.PublicAPIBaseURLOverride},
+	} {
+		if publicBase := strings.TrimSpace(item.value); publicBase != "" {
+			publicAPIURL, err := url.ParseRequestURI(publicBase)
+			if err != nil || (publicAPIURL.Scheme != "http" && publicAPIURL.Scheme != "https") || publicAPIURL.Host == "" || publicAPIURL.User != nil || publicAPIURL.RawQuery != "" || publicAPIURL.Fragment != "" {
+				return fmt.Errorf("%s 必须是不含凭据、查询参数和片段的 HTTP(S) URL", item.name)
+			}
+			if publicAPIURL.Scheme == "https" && !c.Auth.SecureCookies {
+				return errors.New("HTTPS 公共地址必须启用 auth.secureCookies")
+			}
+		}
 	}
 	switch c.Database.Driver {
 	case "sqlite":
@@ -350,9 +376,6 @@ func (c Config) Validate() error {
 	}
 	if isExampleSecret(c.BootstrapAdmin.Password) {
 		return errors.New("bootstrapAdmin.password 不能使用示例占位值")
-	}
-	if publicAPIURL.Scheme == "https" && !c.Auth.SecureCookies {
-		return errors.New("HTTPS 公共地址必须启用 auth.secureCookies")
 	}
 	if c.Auth.AccessTokenTTL.Value() <= 0 || c.Auth.RefreshTokenTTL.Value() <= 0 {
 		return errors.New("JWT 有效期必须大于零")
@@ -431,7 +454,7 @@ func defaultConfig() Config {
 			ReadTimeout:    Duration(15 * time.Minute),
 			RequestTimeout: Duration(2 * time.Hour),
 		},
-		Frontend: FrontendConfig{PublicAPIBaseURL: "http://127.0.0.1:8000", StaticPath: "./frontend/dist"},
+		Frontend: FrontendConfig{PublicAPIBaseURL: DefaultPublicAPIBaseURL, StaticPath: "./frontend/dist"},
 		Database: DatabaseConfig{
 			Driver:   "sqlite",
 			SQLite:   SQLiteDatabaseConfig{Path: "./data/backend.db"},
