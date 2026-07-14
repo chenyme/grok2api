@@ -96,7 +96,14 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 	}
 	if len(body) > 0 && request.Method == http.MethodPost {
-		body = injectPromptCacheKey(body, request.PromptCacheKey)
+		body, err = injectPromptCacheKey(body, request.PromptCacheKey)
+		if err != nil {
+			err = fmt.Errorf("写入 prompt_cache_key: %w", err)
+			if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
+				return invalidConversationResponse(request.Operation, err), nil
+			}
+			return invalidResponsesResponse(err), nil
+		}
 	}
 	var bodyReader io.Reader
 	if len(body) > 0 {
@@ -434,23 +441,20 @@ func (a *Adapter) clientIdentity(accountID uint64) (clientIdentity, error) {
 	return value, nil
 }
 
-func injectPromptCacheKey(body []byte, clientKey string) []byte {
+func injectPromptCacheKey(body []byte, clientKey string) ([]byte, error) {
 	key := strings.TrimSpace(clientKey)
 	if key == "" {
-		return body
+		return body, nil
 	}
 	var payload map[string]json.RawMessage
-	if json.Unmarshal(body, &payload) != nil {
-		return body
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
 	}
-	if _, exists := payload["prompt_cache_key"]; exists {
-		return body
+	if payload == nil {
+		payload = make(map[string]json.RawMessage)
 	}
 	payload["prompt_cache_key"] = mustJSON(key)
-	if result, err := json.Marshal(payload); err == nil {
-		return result
-	}
-	return body
+	return json.Marshal(payload)
 }
 
 func randomHex(bytesLength int) (string, error) {

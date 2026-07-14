@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -69,15 +68,17 @@ type responsesRequest struct {
 }
 
 type chatCompletionRequest struct {
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
+	Model          string `json:"model"`
+	Stream         bool   `json:"stream"`
+	PromptCacheKey string `json:"prompt_cache_key"`
 }
 
 type messagesRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens *int            `json:"max_tokens"`
-	Messages  json.RawMessage `json:"messages"`
-	Stream    bool            `json:"stream"`
+	Model          string          `json:"model"`
+	MaxTokens      *int            `json:"max_tokens"`
+	Messages       json.RawMessage `json:"messages"`
+	Stream         bool            `json:"stream"`
+	PromptCacheKey string          `json:"prompt_cache_key"`
 }
 
 type imageGenerationRequest struct {
@@ -191,7 +192,8 @@ func (h *Handler) createChatCompletion(c *gin.Context) {
 	requestIDValue, _ := requestID.(string)
 	result, err := h.gateway.CreateChatCompletion(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
-		Body: body, Streaming: request.Stream,
+		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
+		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body),
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -230,7 +232,8 @@ func (h *Handler) createMessage(c *gin.Context) {
 	requestIDValue, _ := requestID.(string)
 	result, err := h.gateway.CreateMessage(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
-		Body: body, Streaming: request.Stream,
+		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
+		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body),
 	})
 	if err != nil {
 		writeGatewayAnthropicError(c, err)
@@ -653,11 +656,11 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 	}
 	requestID, _ := c.Get(middleware.RequestIDKey)
 	requestIDValue, _ := requestID.(string)
-	promptCacheKey := request.PromptCacheKey
-	if promptCacheKey == "" {
-		promptCacheKey = resolvePromptCacheKey(c.Request.Header, body)
+	input := gateway.Input{
+		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
+		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
+		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body), PreviousResponseID: request.PreviousResponseID,
 	}
-	input := gateway.Input{RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model, Body: body, Streaming: request.Stream, PromptCacheKey: promptCacheKey, PreviousResponseID: request.PreviousResponseID}
 	var result *gateway.Result
 	if compact {
 		result, err = h.gateway.CompactResponse(c.Request.Context(), input)
@@ -1123,24 +1126,4 @@ func forceJSONBoolean(body []byte, key string, value bool) ([]byte, error) {
 		payload[key] = json.RawMessage("true")
 	}
 	return json.Marshal(payload)
-}
-
-var claudeCodeSessionPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
-
-func resolvePromptCacheKey(headers http.Header, body []byte) string {
-	if sessionID := strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")); sessionID != "" {
-		return sessionID
-	}
-	var metadata struct {
-		Metadata struct {
-			UserID string `json:"user_id"`
-		} `json:"metadata"`
-	}
-	if json.Unmarshal(body, &metadata) == nil && metadata.Metadata.UserID != "" {
-		userID := metadata.Metadata.UserID
-		if matches := claudeCodeSessionPattern.FindStringSubmatch(userID); len(matches) >= 2 {
-			return matches[1]
-		}
-	}
-	return ""
 }
