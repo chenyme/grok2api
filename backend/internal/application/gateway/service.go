@@ -23,6 +23,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -258,6 +259,7 @@ func (s *Service) selectMediaRoute(routes []modeldomain.Route, key clientkey.Key
 }
 
 func (s *Service) createResponseAt(ctx context.Context, input Input, path string) (*Result, error) {
+	ctx, egressTrace := infraegress.WithTrace(ctx)
 	startedAt := time.Now()
 	eventID := newAuditEventID()
 	operation := input.Operation
@@ -311,6 +313,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		record.DurationMS = time.Since(startedAt).Milliseconds()
 		record.ErrorCode = "model_not_allowed"
 		record.CreatedAt = time.Now().UTC()
+		applyAuditEgress(&record, egressTrace, route.Provider)
 		if err := s.audits.Create(ctx, record); err != nil {
 			s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
 		}
@@ -571,6 +574,7 @@ attemptLoop:
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
 				record.CreatedAt = now
+				applyAuditEgress(&record, egressTrace, route.Provider)
 				if err := s.audits.Create(persistCtx, record); err != nil {
 					s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
 				}
@@ -611,6 +615,7 @@ attemptLoop:
 		record.DurationMS = time.Since(startedAt).Milliseconds()
 		record.ErrorCode = lastFailure.AuditCode()
 		record.CreatedAt = time.Now().UTC()
+		applyAuditEgress(&record, egressTrace, route.Provider)
 		if lastFailure.AccountID != 0 {
 			accountID := lastFailure.AccountID
 			record.AccountID = &accountID
@@ -631,6 +636,7 @@ attemptLoop:
 	record.DurationMS = time.Since(startedAt).Milliseconds()
 	record.ErrorCode = "upstream_unavailable"
 	record.CreatedAt = time.Now().UTC()
+	applyAuditEgress(&record, egressTrace, route.Provider)
 	persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
 	defer cancel()
 	if err := s.audits.Create(persistCtx, record); err != nil {
@@ -699,8 +705,8 @@ type ImageEditInput struct {
 }
 
 func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput) (*Result, error) {
-	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImage, func(adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
-		return adapter.GenerateImage(ctx, provider.ImageGenerationRequest{
+	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImage, func(executionCtx context.Context, adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
+		return adapter.GenerateImage(executionCtx, provider.ImageGenerationRequest{
 			Credential: credential, Model: upstream, Prompt: input.Prompt, Count: input.Count,
 			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: input.Resolution,
 			ResponseFormat: input.ResponseFormat, Streaming: input.Streaming,
@@ -709,15 +715,16 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 }
 
 func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result, error) {
-	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImageEdit, func(adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
-		return adapter.EditImage(ctx, provider.ImageEditRequest{
+	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImageEdit, func(executionCtx context.Context, adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
+		return adapter.EditImage(executionCtx, provider.ImageEditRequest{
 			Credential: credential, Model: upstream, Prompt: input.Prompt,
 			ImageURLs: input.ImageURLs, Count: input.Count, Resolution: input.Resolution, ResponseFormat: input.ResponseFormat,
 		})
 	}, false, input.Resolution, input.Count, len(input.ImageURLs))
 }
 
-func (s *Service) executeImage(ctx context.Context, requestID string, key clientkey.Key, publicModel string, operation audit.Operation, execute func(provider.ImageAdapter, accountdomain.Credential, string) (*provider.Response, error), streaming bool, resolution string, requestedCount, inputImageCount int) (*Result, error) {
+func (s *Service) executeImage(ctx context.Context, requestID string, key clientkey.Key, publicModel string, operation audit.Operation, execute func(context.Context, provider.ImageAdapter, accountdomain.Credential, string) (*provider.Response, error), streaming bool, resolution string, requestedCount, inputImageCount int) (*Result, error) {
+	ctx, egressTrace := infraegress.WithTrace(ctx)
 	startedAt := time.Now()
 	eventID := newAuditEventID()
 	routes, err := s.models.GetByPublicIDCandidates(ctx, publicModel)
@@ -783,7 +790,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			lease.Release()
 			return nil, err
 		}
-		response, err = execute(adapter, credential, route.UpstreamModel)
+		response, err = execute(ctx, adapter, credential, route.UpstreamModel)
 		if err != nil {
 			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
 			s.selector.MarkFailure(ctx, credential, 0, 0)
@@ -831,6 +838,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 				Streaming: streaming, ErrorCode: errorCode,
 				DurationMS: time.Since(startedAt).Milliseconds(), CreatedAt: time.Now().UTC(),
 			}
+			applyAuditEgress(&record, egressTrace, route.Provider)
 			switch operation {
 			case audit.OperationImage:
 				record.MediaOutputImages = int64(max(0, requestedCount))

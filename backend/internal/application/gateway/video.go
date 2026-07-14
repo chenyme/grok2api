@@ -14,6 +14,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/domain/model"
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
@@ -243,6 +244,7 @@ func (s *Service) claimVideoJob(ctx context.Context, id string) (media.Job, bool
 func (s *Service) runVideoJob(parent context.Context, job media.Job, route model.Route) {
 	ctx, cancel := context.WithTimeout(parent, videoJobTimeout)
 	defer cancel()
+	ctx, egressTrace := infraegress.WithTrace(ctx)
 	startedAt := time.Now()
 	job.Progress = max(job.Progress, 1)
 	job.UpdatedAt = time.Now().UTC()
@@ -296,6 +298,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	}
 	now := time.Now().UTC()
 	job.Status, job.Progress, job.UpstreamURL, job.ContentType = media.StatusCompleted, 100, result.URL, result.ContentType
+	applyMediaJobEgress(&job, egressTrace, route.Provider)
 	job.LeaseUntil, job.UpdatedAt, job.CompletedAt = nil, now, &now
 	if err := s.persistVideoJobWithRetry(parent, job); err != nil {
 		s.logger.Error("video_job_terminal_write_failed", "job_id", job.ID, "error", err)
@@ -339,6 +342,7 @@ func (s *Service) recordVideoUsage(ctx context.Context, job media.Job, durationM
 		ModelRouteID: job.ModelRouteID, ModelPublicID: job.Model, ModelUpstreamModel: job.UpstreamModel,
 		Provider: job.Provider, Operation: audit.OperationVideo, UsageSource: audit.UsageSourceNone,
 		AccountID: &accountID, AccountName: job.AccountName, StatusCode: http.StatusOK,
+		EgressNodeID: job.EgressNodeID, EgressNodeName: job.EgressNodeName, EgressScope: job.EgressScope, EgressMode: audit.EgressMode(job.EgressMode),
 		MediaInputImages: int64(len(decodeVideoInput(job.InputJSON))), MediaOutputSeconds: int64(max(0, job.Seconds)),
 		DurationMS: durationMS, CreatedAt: createdAt,
 	}

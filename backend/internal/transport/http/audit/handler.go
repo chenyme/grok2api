@@ -35,6 +35,10 @@ type auditResponse struct {
 	UsageSource             string    `json:"usageSource"`
 	AccountID               *uint64   `json:"accountId,string,omitempty"`
 	AccountName             string    `json:"accountName,omitempty"`
+	EgressNodeID            *uint64   `json:"egressNodeId,string,omitempty"`
+	EgressNodeName          string    `json:"egressNodeName,omitempty"`
+	EgressScope             string    `json:"egressScope,omitempty"`
+	EgressMode              string    `json:"egressMode,omitempty"`
 	StatusCode              int       `json:"statusCode"`
 	Streaming               bool      `json:"streaming"`
 	MediaInputImages        int64     `json:"mediaInputImages"`
@@ -195,7 +199,9 @@ func newAuditResponse(value auditdomain.Record) auditResponse {
 		ID: value.ID, RequestID: value.RequestID, ClientKeyID: value.ClientKeyID, ClientKeyName: value.ClientKeyName,
 		ModelRouteID: value.ModelRouteID, ModelPublicID: value.ModelPublicID, ModelUpstreamModel: value.ModelUpstreamModel,
 		Provider: value.Provider, Operation: string(value.Operation), UsageSource: string(value.UsageSource),
-		AccountID: value.AccountID, AccountName: value.AccountName, StatusCode: value.StatusCode, Streaming: value.Streaming,
+		AccountID: value.AccountID, AccountName: value.AccountName,
+		EgressNodeID: value.EgressNodeID, EgressNodeName: value.EgressNodeName, EgressScope: value.EgressScope, EgressMode: string(value.EgressMode),
+		StatusCode: value.StatusCode, Streaming: value.Streaming,
 		MediaInputImages: value.MediaInputImages, MediaOutputImages: value.MediaOutputImages, MediaOutputSeconds: value.MediaOutputSeconds,
 		InputTokens: value.InputTokens, CachedInputTokens: value.CachedInputTokens, OutputTokens: value.OutputTokens,
 		ReasoningTokens: value.ReasoningTokens, TotalTokens: value.TotalTokens, CostInUSDTicks: value.CostInUSDTicks,
