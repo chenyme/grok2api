@@ -25,6 +25,10 @@ var (
 	ErrInvalidImage  = errors.New("图片内容无效")
 )
 
+// defaultPublicBaseURL is the last-resort fallback used when neither the
+// explicit config nor the request-derived base URL is available.
+const defaultPublicBaseURL = "http://127.0.0.1:8000"
+
 // Service 负责图片校验、文件落盘和元数据持久化的一致性收口。
 type Service struct {
 	assets        repository.MediaAssetRepository
@@ -61,6 +65,7 @@ func NewService(assets repository.MediaAssetRepository, objects repository.Media
 // UpdateConfig 热更新媒体容量和清理策略，不重建底层存储实例。
 func (s *Service) UpdateConfig(cfg Config) {
 	s.configMu.Lock()
+	s.publicBaseURL = strings.TrimRight(cfg.PublicBaseURL, "/")
 	s.maxImageBytes = cfg.MaxImageBytes
 	s.maxTotalBytes = cfg.MaxTotalBytes
 	s.cleanupAt = cfg.CleanupThresholdPercent
@@ -110,8 +115,16 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 }
 
 // PublicImageURL 返回可直接用于图片展示的公开资源地址。
-func (s *Service) PublicImageURL(id string) string {
-	return s.publicBaseURL + "/v1/media/images/" + id
+// Priority: non-empty explicit config wins over the request-derived baseURL;
+// if both are empty, defaultPublicBaseURL is used as a last-resort fallback.
+func (s *Service) PublicImageURL(baseURL, id string) string {
+	if baseURL == "" {
+		baseURL = s.runtimeConfig().PublicBaseURL
+	}
+	if baseURL == "" {
+		baseURL = defaultPublicBaseURL
+	}
+	return strings.TrimRight(baseURL, "/") + "/v1/media/images/" + id
 }
 
 // OpenImage 读取图片元数据和正文，不向调用方暴露实际文件路径。
@@ -224,6 +237,7 @@ func (s *Service) runtimeConfig() Config {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 	return Config{
+		PublicBaseURL: s.publicBaseURL,
 		MaxImageBytes: s.maxImageBytes, MaxTotalBytes: s.maxTotalBytes,
 		CleanupThresholdPercent: s.cleanupAt, CleanupInterval: s.cleanupEvery,
 	}

@@ -45,7 +45,7 @@ func TestServicePersistsAndReopensImage(t *testing.T) {
 	if asset.MIMEType != "image/png" || asset.SizeBytes != int64(len(raw)) || len(asset.SHA256) != 64 {
 		t.Fatalf("asset = %#v", asset)
 	}
-	if got := service.PublicImageURL(asset.ID); got != "https://api.example/v1/media/images/"+asset.ID {
+	if got := service.PublicImageURL("", asset.ID); got != "https://api.example/v1/media/images/"+asset.ID {
 		t.Fatalf("public URL = %q", got)
 	}
 	stored, body, err := service.OpenImage(ctx, asset.ID)

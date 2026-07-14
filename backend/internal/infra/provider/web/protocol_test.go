@@ -546,11 +546,11 @@ func TestGeneratedImageAssetHostsRemainStrict(t *testing.T) {
 
 func TestImageStreamExtensionEventsAndPayloads(t *testing.T) {
 	adapter := &Adapter{assets: imageAssetStoreStub{}}
-	urlItem, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{URL: "https://imgen.x.ai/image.jpg", Blob: "aW1hZ2U="}, "url")
+	urlItem, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{URL: "https://imgen.x.ai/image.jpg", Blob: "aW1hZ2U="}, "url", "https://api.example")
 	if err != nil || urlItem["url"] != "https://api.example/v1/media/images/img_test" || urlItem["mime_type"] != "image/jpeg" || urlItem["revised_prompt"] != "" {
 		t.Fatalf("url item = %#v, err=%v", urlItem, err)
 	}
-	b64Item, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{Blob: "aW1hZ2U="}, "b64_json")
+	b64Item, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{Blob: "aW1hZ2U="}, "b64_json", "https://api.example")
 	if err != nil || b64Item["b64_json"] != "aW1hZ2U=" || b64Item["mime_type"] != "image/jpeg" {
 		t.Fatalf("base64 item = %#v, err=%v", b64Item, err)
 	}
@@ -568,7 +568,7 @@ func (imageAssetStoreStub) SaveImage(context.Context, []byte) (mediadomain.Asset
 	return mediadomain.Asset{ID: "img_test", MIMEType: "image/jpeg"}, nil
 }
 
-func (imageAssetStoreStub) PublicImageURL(string) string {
+func (imageAssetStoreStub) PublicImageURL(string, string) string {
 	return "https://api.example/v1/media/images/img_test"
 }
 

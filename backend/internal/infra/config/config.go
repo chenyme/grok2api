@@ -287,9 +287,14 @@ func (c Config) Validate() error {
 	if c.Server.RequestTimeout.Value() <= 0 || c.Server.RequestTimeout.Value() > maxRequestTimeout {
 		return errors.New("server.requestTimeout 必须大于零且不超过 24 小时")
 	}
-	publicAPIURL, err := url.ParseRequestURI(strings.TrimSpace(c.Frontend.PublicAPIBaseURL))
-	if err != nil || (publicAPIURL.Scheme != "http" && publicAPIURL.Scheme != "https") || publicAPIURL.Host == "" || publicAPIURL.User != nil || publicAPIURL.RawQuery != "" || publicAPIURL.Fragment != "" {
-		return errors.New("frontend.publicApiBaseURL 必须是不含凭据、查询参数和片段的 HTTP(S) URL")
+	if publicBase := strings.TrimSpace(c.Frontend.PublicAPIBaseURL); publicBase != "" {
+		publicAPIURL, err := url.ParseRequestURI(publicBase)
+		if err != nil || (publicAPIURL.Scheme != "http" && publicAPIURL.Scheme != "https") || publicAPIURL.Host == "" || publicAPIURL.User != nil || publicAPIURL.RawQuery != "" || publicAPIURL.Fragment != "" {
+			return errors.New("frontend.publicApiBaseURL 必须是不含凭据、查询参数和片段的 HTTP(S) URL")
+		}
+		if publicAPIURL.Scheme == "https" && !c.Auth.SecureCookies {
+			return errors.New("HTTPS 公共地址必须启用 auth.secureCookies")
+		}
 	}
 	switch c.Database.Driver {
 	case "sqlite":
@@ -350,9 +355,6 @@ func (c Config) Validate() error {
 	}
 	if isExampleSecret(c.BootstrapAdmin.Password) {
 		return errors.New("bootstrapAdmin.password 不能使用示例占位值")
-	}
-	if publicAPIURL.Scheme == "https" && !c.Auth.SecureCookies {
-		return errors.New("HTTPS 公共地址必须启用 auth.secureCookies")
 	}
 	if c.Auth.AccessTokenTTL.Value() <= 0 || c.Auth.RefreshTokenTTL.Value() <= 0 {
 		return errors.New("JWT 有效期必须大于零")
@@ -431,7 +433,7 @@ func defaultConfig() Config {
 			ReadTimeout:    Duration(15 * time.Minute),
 			RequestTimeout: Duration(2 * time.Hour),
 		},
-		Frontend: FrontendConfig{PublicAPIBaseURL: "http://127.0.0.1:8000", StaticPath: "./frontend/dist"},
+		Frontend: FrontendConfig{PublicAPIBaseURL: "", StaticPath: "./frontend/dist"},
 		Database: DatabaseConfig{
 			Driver:   "sqlite",
 			SQLite:   SQLiteDatabaseConfig{Path: "./data/backend.db"},

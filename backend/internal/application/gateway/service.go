@@ -54,6 +54,7 @@ type Input struct {
 	PromptCacheKey     string
 	PreviousResponseID string
 	Operation          audit.Operation
+	PublicBaseURL      string
 }
 
 type Usage struct {
@@ -347,7 +348,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	var lastFailure *UpstreamFailure
 	forwardResponse := func(credential accountdomain.Credential) (*provider.Response, error) {
 		started := time.Now()
-		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation), PublicBaseURL: input.PublicBaseURL})
 		timing.markUpstream(time.Since(started))
 		return response, err
 	}
@@ -685,6 +686,7 @@ type ImageGenerationInput struct {
 	Resolution     string
 	ResponseFormat string
 	Streaming      bool
+	PublicBaseURL  string
 }
 
 type ImageEditInput struct {
@@ -696,6 +698,7 @@ type ImageEditInput struct {
 	Count          int
 	Resolution     string
 	ResponseFormat string
+	PublicBaseURL  string
 }
 
 func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput) (*Result, error) {
@@ -704,6 +707,7 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 			Credential: credential, Model: upstream, Prompt: input.Prompt, Count: input.Count,
 			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: input.Resolution,
 			ResponseFormat: input.ResponseFormat, Streaming: input.Streaming,
+			PublicBaseURL: input.PublicBaseURL,
 		})
 	}, input.Streaming, input.Resolution, input.Count, 0)
 }
@@ -713,6 +717,7 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 		return adapter.EditImage(ctx, provider.ImageEditRequest{
 			Credential: credential, Model: upstream, Prompt: input.Prompt,
 			ImageURLs: input.ImageURLs, Count: input.Count, Resolution: input.Resolution, ResponseFormat: input.ResponseFormat,
+			PublicBaseURL: input.PublicBaseURL,
 		})
 	}, false, input.Resolution, input.Count, len(input.ImageURLs))
 }

@@ -62,6 +62,7 @@ type ResponseResourceRequest struct {
 	Streaming      bool
 	NormalizeBody  bool
 	Operation      string
+	PublicBaseURL  string
 }
 
 // Response 表示尚未写入下游的上游响应。
@@ -115,6 +116,7 @@ type ImageGenerationRequest struct {
 	Resolution     string
 	ResponseFormat string
 	Streaming      bool
+	PublicBaseURL  string
 }
 
 type ImageInput struct {
@@ -131,6 +133,7 @@ type ImageEditRequest struct {
 	Count          int
 	Resolution     string
 	ResponseFormat string
+	PublicBaseURL  string
 }
 
 type VideoRequest struct {
@@ -212,7 +215,7 @@ type ImageAdapter interface {
 // ImageAssetStore 将生成图片归档为可由后端稳定读取的本地资源。
 type ImageAssetStore interface {
 	SaveImage(ctx context.Context, data []byte) (media.Asset, error)
-	PublicImageURL(id string) string
+	PublicImageURL(baseURL, id string) string
 }
 
 type VideoAdapter interface {
