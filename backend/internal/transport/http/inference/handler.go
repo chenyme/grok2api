@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,9 +24,10 @@ import (
 )
 
 type Handler struct {
-	gateway      *gateway.Service
-	models       *modelapp.Service
-	maxBodyBytes int64
+	gateway          *gateway.Service
+	models           *modelapp.Service
+	maxBodyBytes     int64
+	publicAPIBaseURL string
 }
 
 const (
@@ -42,8 +44,12 @@ var errResponseTransferLimit = errors.New("响应超过代理安全上限")
 
 const mediaTransferErrorTrailer = "X-Grok2API-Transfer-Error"
 
-func NewHandler(gatewayService *gateway.Service, models *modelapp.Service, maxBodyBytes int64) *Handler {
-	return &Handler{gateway: gatewayService, models: models, maxBodyBytes: maxBodyBytes}
+func NewHandler(gatewayService *gateway.Service, models *modelapp.Service, maxBodyBytes int64, publicAPIBaseURL ...string) *Handler {
+	baseURL := ""
+	if len(publicAPIBaseURL) > 0 {
+		baseURL = strings.TrimRight(strings.TrimSpace(publicAPIBaseURL[0]), "/")
+	}
+	return &Handler{gateway: gatewayService, models: models, maxBodyBytes: maxBodyBytes, publicAPIBaseURL: baseURL}
 }
 
 func (h *Handler) Register(router *gin.RouterGroup) {
@@ -55,6 +61,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/images/edits", h.editImage)
 	router.POST("/videos/generations", h.generateVideo)
 	router.GET("/videos/:requestId", h.getVideo)
+	router.GET("/videos/:requestId/content", h.getVideoContent)
 	router.POST("/responses/compact", h.compactResponse)
 	router.GET("/responses/:responseId", h.getResponse)
 	router.DELETE("/responses/:responseId", h.deleteResponse)
@@ -541,7 +548,53 @@ func (h *Handler) getVideo(c *gin.Context) {
 		writeGatewayError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, videoGenerationResponse(job))
+	c.JSON(http.StatusOK, videoGenerationResponse(job, h.videoContentURL(job.ID)))
+}
+
+func (h *Handler) videoContentURL(jobID string) string {
+	path := "/v1/videos/" + url.PathEscape(jobID) + "/content"
+	if h.publicAPIBaseURL == "" {
+		return path
+	}
+	return h.publicAPIBaseURL + path
+}
+
+func (h *Handler) getVideoContent(c *gin.Context) {
+	clientKey, _, ok := requestIdentity(c)
+	if !ok {
+		return
+	}
+	body, contentType, size, err := h.gateway.OpenVideoContent(c.Request.Context(), strings.TrimSpace(c.Param("requestId")), clientKey)
+	if err != nil {
+		writeGatewayError(c, err)
+		return
+	}
+	defer body.Close()
+	writeVideoContent(c, body, contentType, size)
+}
+
+func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size int64) {
+	if size > maxMediaResponseTransferBytes {
+		writeOpenAIError(c, http.StatusBadGateway, "media_too_large", "上游媒体超过 2 GiB 安全上限")
+		return
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", "inline")
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+	if size >= 0 {
+		c.Header("Content-Length", strconv.FormatInt(size, 10))
+	} else {
+		c.Header("Trailer", mediaTransferErrorTrailer)
+	}
+	c.Status(http.StatusOK)
+	if err := copyMedia(responseDeadlineWriter{ResponseWriter: c.Writer}, body, maxMediaResponseTransferBytes); err != nil && size < 0 {
+		errorCode := "stream_interrupted"
+		if errors.Is(err, errResponseTransferLimit) {
+			errorCode = "response_too_large"
+		}
+		c.Header(mediaTransferErrorTrailer, errorCode)
+	}
 }
 
 func parseVideoDuration(durationRaw json.RawMessage) (int, error) {
@@ -592,12 +645,16 @@ func validVideoAspectRatio(value string) bool {
 	}
 }
 
-func videoGenerationResponse(job mediadomain.Job) gin.H {
+func videoGenerationResponse(job mediadomain.Job, contentURLs ...string) gin.H {
 	switch job.Status {
 	case mediadomain.StatusCompleted:
+		videoURL := job.UpstreamURL
+		if len(contentURLs) > 0 && contentURLs[0] != "" {
+			videoURL = contentURLs[0]
+		}
 		return gin.H{
 			"status": "done", "model": job.Model, "progress": 100,
-			"video": gin.H{"url": job.UpstreamURL, "duration": job.Seconds, "respect_moderation": true},
+			"video": gin.H{"url": videoURL, "duration": job.Seconds, "respect_moderation": true},
 		}
 	case mediadomain.StatusFailed:
 		return gin.H{

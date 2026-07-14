@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -103,6 +104,33 @@ func (s *Service) GetVideo(ctx context.Context, id string, key clientkey.Key) (m
 		return media.Job{}, ErrResponseNotFound
 	}
 	return job, nil
+}
+
+func (s *Service) OpenVideoContent(ctx context.Context, id string, key clientkey.Key) (io.ReadCloser, string, int64, error) {
+	job, err := s.GetVideo(ctx, id, key)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	if job.Status != media.StatusCompleted || job.UpstreamURL == "" {
+		return nil, "", 0, fmt.Errorf("视频内容尚未可用")
+	}
+	adapter, ok := s.providers.Videos(account.Provider(job.Provider))
+	if !ok {
+		return nil, "", 0, ErrResponseAccountUnavailable
+	}
+	downloader, ok := adapter.(provider.VideoContentDownloader)
+	if !ok || s.selector == nil || s.selector.accounts == nil || s.accounts == nil {
+		return nil, "", 0, ErrResponseAccountUnavailable
+	}
+	credential, err := s.selector.accounts.Get(ctx, job.AccountID)
+	if err != nil {
+		return nil, "", 0, ErrResponseAccountUnavailable
+	}
+	credential, err = s.accounts.EnsureCredential(ctx, credential, false)
+	if err != nil {
+		return nil, "", 0, ErrResponseAccountUnavailable
+	}
+	return downloader.DownloadVideo(ctx, credential, job.UpstreamURL)
 }
 
 func (s *Service) RecoverVideoJobs(ctx context.Context) error {

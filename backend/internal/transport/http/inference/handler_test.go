@@ -85,8 +85,27 @@ func TestVideoGenerationUsesOfficialXAIEndpointsAndFields(t *testing.T) {
 	}
 	contentRecorder := httptest.NewRecorder()
 	router.ServeHTTP(contentRecorder, httptest.NewRequest(http.MethodGet, "/v1/videos/request_1/content", nil))
-	if contentRecorder.Code != http.StatusNotFound {
+	if contentRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("video content endpoint status=%d", contentRecorder.Code)
+	}
+}
+
+func TestWriteVideoContentRejectsDeclaredOversizeMedia(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	writeVideoContent(context, strings.NewReader("ignored"), "video/mp4", maxMediaResponseTransferBytes+1)
+	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "media_too_large") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestVideoContentURLUsesConfiguredPublicAPIBase(t *testing.T) {
+	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
+	response := videoGenerationResponse(mediadomain.Job{ID: "video_request_1", Status: mediadomain.StatusCompleted, UpstreamURL: "https://assets.grok.com/source.mp4"}, handler.videoContentURL("video_request_1"))
+	video, ok := response["video"].(gin.H)
+	if !ok || video["url"] != "https://api.example.com/grok2api/v1/videos/video_request_1/content" {
+		t.Fatalf("response = %#v", response)
 	}
 }
 

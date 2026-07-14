@@ -220,6 +220,13 @@ type VideoAdapter interface {
 	GenerateVideo(ctx context.Context, request VideoRequest) (VideoResult, error)
 }
 
+// VideoContentDownloader streams a completed provider video using the
+// credential that created the job. Callers must enforce job ownership first.
+type VideoContentDownloader interface {
+	VideoAdapter
+	DownloadVideo(ctx context.Context, credential account.Credential, rawURL string) (io.ReadCloser, string, int64, error)
+}
+
 type RoutingMetadataAdapter interface {
 	Adapter
 	QuotaMode(upstreamModel string) string
