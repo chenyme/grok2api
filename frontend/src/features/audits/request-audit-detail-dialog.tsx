@@ -114,7 +114,7 @@ function AttemptDetail({ attempt }: { attempt: AuditAttemptDTO }) {
           <AttemptOverview attempt={attempt} />
         </TabsContent>
         <TabsContent value="body" className="min-h-0 flex-1 overflow-hidden pt-4">
-          <CodePanel value={attempt.responseBody} displayValue={formattedResponseBody(attempt)} emptyMessage={t("audits.emptyResponseBody")} encoding={attempt.responseBodyEncoding} />
+          <CodePanel value={attempt.responseBody} displayValue={formattedResponseBody(attempt)} emptyMessage={t("audits.emptyResponseBody")} encoding={attempt.responseBodyEncoding} truncated={attempt.responseBodyTruncated} />
         </TabsContent>
         <TabsContent value="headers" className="min-h-0 flex-1 overflow-hidden pt-4">
           <HeadersPanel headers={attempt.responseHeaders} copyValue={headersText} />
@@ -186,13 +186,16 @@ function DetailField({ label, value, mono, copy }: { label: string; value: strin
   );
 }
 
-function CodePanel({ value, displayValue, emptyMessage, encoding }: { value: string; displayValue: string; emptyMessage: string; encoding: string }) {
+function CodePanel({ value, displayValue, emptyMessage, encoding, truncated }: { value: string; displayValue: string; emptyMessage: string; encoding: string; truncated: boolean }) {
   const { t } = useTranslation();
   if (!value) return <EmptyPanel icon={<FileText />} message={emptyMessage} />;
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border bg-muted/20">
       <div className="flex h-10 shrink-0 items-center justify-between border-b bg-background px-3">
-        <span className="text-[11px] text-muted-foreground">{t("audits.bodyEncoding", { encoding })}</span>
+        <span className="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
+          <span>{t("audits.bodyEncoding", { encoding })}</span>
+          {truncated ? <Badge variant="outline" className="font-normal">{t("audits.bodyTruncated")}</Badge> : null}
+        </span>
         <CopyButton value={value} />
       </div>
       <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs leading-5">{displayValue}</pre>

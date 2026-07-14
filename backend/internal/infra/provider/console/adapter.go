@@ -164,8 +164,10 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		cancel()
 		return nil, err
 	}
+	responseBodyTruncated := false
 	if response.StatusCode == http.StatusTooManyRequests {
-		if err := normalizeRateLimitResponse(response); err != nil {
+		responseBodyTruncated, err = normalizeRateLimitResponse(response)
+		if err != nil {
 			_ = response.Body.Close()
 			lease.Release()
 			cancel()
@@ -186,10 +188,12 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 		var data []byte
 		var readErr error
+		var diagnosticTruncated bool
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
 			data, readErr = io.ReadAll(io.LimitReader(response.Body, (64<<20)+1))
 		} else {
-			data, readErr = io.ReadAll(response.Body)
+			data, diagnosticTruncated, readErr = provider.ReadDiagnosticBody(response.Body)
+			diagnosticTruncated = diagnosticTruncated || responseBodyTruncated
 		}
 		_ = response.Body.Close()
 		release()
@@ -200,7 +204,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return nil, fmt.Errorf("Console 对话响应超过 64 MiB")
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			diagnostic := &provider.DiagnosticResponse{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header.Clone(), Body: data}
+			diagnostic := &provider.DiagnosticResponse{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header.Clone(), Body: data, BodyTruncated: diagnosticTruncated}
 			converted := normalizeConversationError(data, request.Operation, response.StatusCode)
 			response.Header.Set("Content-Length", strconv.Itoa(len(converted)))
 			response.Header.Set("Content-Type", "application/json")
@@ -302,10 +306,10 @@ func applyHeaders(request *http.Request, token, configuredUserAgent string, leas
 	request.Header.Set("x-cluster", "https://us-east-1.api.x.ai")
 }
 
-func normalizeRateLimitResponse(response *http.Response) error {
-	data, err := io.ReadAll(response.Body)
+func normalizeRateLimitResponse(response *http.Response) (bool, error) {
+	data, truncated, err := provider.ReadDiagnosticBody(response.Body)
 	if err != nil {
-		return err
+		return truncated, err
 	}
 	_ = response.Body.Close()
 	response.Body = io.NopCloser(bytes.NewReader(data))
@@ -316,7 +320,7 @@ func normalizeRateLimitResponse(response *http.Response) error {
 			response.Header.Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))
 		}
 	}
-	return nil
+	return truncated, nil
 }
 
 func responseResult(response *http.Response, body io.ReadCloser) *provider.Response {

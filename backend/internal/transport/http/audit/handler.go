@@ -38,6 +38,10 @@ type auditResponse struct {
 	UsageSource             string    `json:"usageSource"`
 	AccountID               *uint64   `json:"accountId,string,omitempty"`
 	AccountName             string    `json:"accountName,omitempty"`
+	EgressNodeID            *uint64   `json:"egressNodeId,string,omitempty"`
+	EgressNodeName          string    `json:"egressNodeName,omitempty"`
+	EgressScope             string    `json:"egressScope,omitempty"`
+	EgressMode              string    `json:"egressMode,omitempty"`
 	StatusCode              int       `json:"statusCode"`
 	Streaming               bool      `json:"streaming"`
 	MediaInputImages        int64     `json:"mediaInputImages"`
@@ -63,24 +67,25 @@ type auditResponse struct {
 }
 
 type auditAttemptResponse struct {
-	ID                   uint64                    `json:"id,string"`
-	Number               int                       `json:"number"`
-	Source               string                    `json:"source"`
-	Stage                string                    `json:"stage"`
-	AccountID            *uint64                   `json:"accountId,string,omitempty"`
-	AccountName          string                    `json:"accountName,omitempty"`
-	Method               string                    `json:"method,omitempty"`
-	RequestPath          string                    `json:"requestPath,omitempty"`
-	UpstreamURL          string                    `json:"upstreamUrl,omitempty"`
-	StartedAt            time.Time                 `json:"startedAt"`
-	DurationMS           int64                     `json:"durationMs"`
-	UpstreamStatusCode   *int                      `json:"upstreamStatusCode,omitempty"`
-	UpstreamStatus       string                    `json:"upstreamStatus,omitempty"`
-	ResponseHeaders      map[string][]string       `json:"responseHeaders"`
-	ResponseBody         string                    `json:"responseBody"`
-	ResponseBodyEncoding string                    `json:"responseBodyEncoding"`
-	TransportError       string                    `json:"transportError,omitempty"`
-	ErrorChain           []auditErrorFrameResponse `json:"errorChain"`
+	ID                    uint64                    `json:"id,string"`
+	Number                int                       `json:"number"`
+	Source                string                    `json:"source"`
+	Stage                 string                    `json:"stage"`
+	AccountID             *uint64                   `json:"accountId,string,omitempty"`
+	AccountName           string                    `json:"accountName,omitempty"`
+	Method                string                    `json:"method,omitempty"`
+	RequestPath           string                    `json:"requestPath,omitempty"`
+	UpstreamURL           string                    `json:"upstreamUrl,omitempty"`
+	StartedAt             time.Time                 `json:"startedAt"`
+	DurationMS            int64                     `json:"durationMs"`
+	UpstreamStatusCode    *int                      `json:"upstreamStatusCode,omitempty"`
+	UpstreamStatus        string                    `json:"upstreamStatus,omitempty"`
+	ResponseHeaders       map[string][]string       `json:"responseHeaders"`
+	ResponseBody          string                    `json:"responseBody"`
+	ResponseBodyEncoding  string                    `json:"responseBodyEncoding"`
+	ResponseBodyTruncated bool                      `json:"responseBodyTruncated"`
+	TransportError        string                    `json:"transportError,omitempty"`
+	ErrorChain            []auditErrorFrameResponse `json:"errorChain"`
 }
 
 type auditErrorFrameResponse struct {
@@ -180,7 +185,8 @@ func (h *Handler) get(c *gin.Context) {
 			UpstreamURL: attempt.UpstreamURL, StartedAt: attempt.StartedAt, DurationMS: attempt.DurationMS,
 			UpstreamStatusCode: attempt.UpstreamStatusCode, UpstreamStatus: attempt.UpstreamStatus,
 			ResponseHeaders: attempt.ResponseHeaders, ResponseBody: body, ResponseBodyEncoding: encoding,
-			TransportError: attempt.TransportError, ErrorChain: errorChain,
+			ResponseBodyTruncated: attempt.ResponseBodyTruncated,
+			TransportError:        attempt.TransportError, ErrorChain: errorChain,
 		})
 	}
 	response.Success(c, http.StatusOK, auditDetailResponse{Audit: newAuditResponse(value), Attempts: attempts})
@@ -269,7 +275,9 @@ func newAuditResponse(value auditdomain.Record) auditResponse {
 		ID: value.ID, RequestID: value.RequestID, ClientKeyID: value.ClientKeyID, ClientKeyName: value.ClientKeyName,
 		ModelRouteID: value.ModelRouteID, ModelPublicID: value.ModelPublicID, ModelUpstreamModel: value.ModelUpstreamModel,
 		Provider: value.Provider, Operation: string(value.Operation), UsageSource: string(value.UsageSource),
-		AccountID: value.AccountID, AccountName: value.AccountName, StatusCode: value.StatusCode, Streaming: value.Streaming,
+		AccountID: value.AccountID, AccountName: value.AccountName,
+		EgressNodeID: value.EgressNodeID, EgressNodeName: value.EgressNodeName, EgressScope: value.EgressScope, EgressMode: string(value.EgressMode),
+		StatusCode: value.StatusCode, Streaming: value.Streaming,
 		MediaInputImages: value.MediaInputImages, MediaOutputImages: value.MediaOutputImages, MediaOutputSeconds: value.MediaOutputSeconds,
 		InputTokens: value.InputTokens, CachedInputTokens: value.CachedInputTokens, OutputTokens: value.OutputTokens,
 		ReasoningTokens: value.ReasoningTokens, TotalTokens: value.TotalTokens, CostInUSDTicks: value.CostInUSDTicks,

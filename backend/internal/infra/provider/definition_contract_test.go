@@ -2,6 +2,7 @@ package provider_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -11,6 +12,14 @@ import (
 	consoleprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/console"
 	webprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/web"
 )
+
+func TestReadDiagnosticBodyAppliesHardLimit(t *testing.T) {
+	body := strings.Repeat("x", provider.MaxDiagnosticBodyBytes+4096)
+	data, truncated, err := provider.ReadDiagnosticBody(strings.NewReader(body))
+	if err != nil || !truncated || len(data) != provider.MaxDiagnosticBodyBytes {
+		t.Fatalf("diagnostic body length = %d, truncated = %v, err = %v", len(data), truncated, err)
+	}
+}
 
 func TestProductionProviderDefinitionsMatchImplementedCapabilities(t *testing.T) {
 	registry := provider.NewRegistry(

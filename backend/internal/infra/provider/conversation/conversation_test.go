@@ -455,3 +455,23 @@ func TestConvertResponsesStreamEmitsDoneOnlyToolArguments(t *testing.T) {
 		t.Fatalf("tool block closed multiple times: %s", text)
 	}
 }
+
+func TestConvertResponsesStreamMessagesInputTokens(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.5","status":"in_progress"}}`, "",
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"hello"}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5","status":"completed","usage":{"input_tokens":194,"output_tokens":7}}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationMessages))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+
+	if !strings.Contains(text, `"input_tokens":194`) {
+		t.Fatalf("message_delta should contain input_tokens from response.completed usage:\n%s", text)
+	}
+}

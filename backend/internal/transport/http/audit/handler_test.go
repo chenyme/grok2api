@@ -34,7 +34,7 @@ func TestAuditDetailReturnsCompleteTextAndBinaryBodies(t *testing.T) {
 	if err := repository.Create(ctx, auditdomain.Record{
 		EventID: "evt_audit_handler_0001", RequestID: "request-detail", ClientKeyID: 1, ModelRouteID: 1, StatusCode: status, CreatedAt: now,
 		Attempts: []auditdomain.Attempt{
-			{Number: 1, Source: auditdomain.AttemptSourceUpstreamHTTP, Stage: "upstream_response", StartedAt: now, UpstreamStatusCode: &status, ResponseHeaders: http.Header{"Content-Type": {"application/json"}}, ResponseBody: []byte(`{"error":"complete"}`)},
+			{Number: 1, Source: auditdomain.AttemptSourceUpstreamHTTP, Stage: "upstream_response", StartedAt: now, UpstreamStatusCode: &status, ResponseHeaders: http.Header{"Content-Type": {"application/json"}}, ResponseBody: []byte(`{"error":"complete"}`), ResponseBodyTruncated: true},
 			{Number: 2, Source: auditdomain.AttemptSourceUpstreamHTTP, Stage: "upstream_response", StartedAt: now, UpstreamStatusCode: &status, ResponseHeaders: http.Header{}, ResponseBody: []byte{0x00, 0xff, 0x01}},
 		},
 	}); err != nil {
@@ -55,8 +55,9 @@ func TestAuditDetailReturnsCompleteTextAndBinaryBodies(t *testing.T) {
 				AttemptCount int `json:"attemptCount"`
 			} `json:"audit"`
 			Attempts []struct {
-				ResponseBody         string `json:"responseBody"`
-				ResponseBodyEncoding string `json:"responseBodyEncoding"`
+				ResponseBody          string `json:"responseBody"`
+				ResponseBodyEncoding  string `json:"responseBodyEncoding"`
+				ResponseBodyTruncated bool   `json:"responseBodyTruncated"`
 			} `json:"attempts"`
 		} `json:"data"`
 	}
@@ -66,7 +67,7 @@ func TestAuditDetailReturnsCompleteTextAndBinaryBodies(t *testing.T) {
 	if payload.Data.Audit.AttemptCount != 2 || len(payload.Data.Attempts) != 2 {
 		t.Fatalf("payload = %#v", payload)
 	}
-	if payload.Data.Attempts[0].ResponseBodyEncoding != "utf8" || payload.Data.Attempts[0].ResponseBody != `{"error":"complete"}` {
+	if payload.Data.Attempts[0].ResponseBodyEncoding != "utf8" || payload.Data.Attempts[0].ResponseBody != `{"error":"complete"}` || !payload.Data.Attempts[0].ResponseBodyTruncated {
 		t.Fatalf("text body = %#v", payload.Data.Attempts[0])
 	}
 	if payload.Data.Attempts[1].ResponseBodyEncoding != "base64" || payload.Data.Attempts[1].ResponseBody != base64.StdEncoding.EncodeToString([]byte{0x00, 0xff, 0x01}) {

@@ -34,29 +34,37 @@ type ErrorFrame struct {
 	Message string
 }
 
-// Attempt 保存一次失败尝试的完整管理员诊断现场。
+// Attempt 保存一次失败尝试经过裁剪和脱敏的管理员诊断快照。
 type Attempt struct {
-	ID                 uint64
-	AuditID            uint64
-	Number             int
-	Source             AttemptSource
-	Stage              string
-	AccountID          *uint64
-	AccountName        string
-	Method             string
-	RequestPath        string
-	UpstreamURL        string
-	StartedAt          time.Time
-	DurationMS         int64
-	UpstreamStatusCode *int
-	UpstreamStatus     string
-	ResponseHeaders    map[string][]string
-	ResponseBody       []byte
-	TransportError     string
-	ErrorChain         []ErrorFrame
+	ID                    uint64
+	AuditID               uint64
+	Number                int
+	Source                AttemptSource
+	Stage                 string
+	AccountID             *uint64
+	AccountName           string
+	Method                string
+	RequestPath           string
+	UpstreamURL           string
+	StartedAt             time.Time
+	DurationMS            int64
+	UpstreamStatusCode    *int
+	UpstreamStatus        string
+	ResponseHeaders       map[string][]string
+	ResponseBody          []byte
+	ResponseBodyTruncated bool
+	TransportError        string
+	ErrorChain            []ErrorFrame
 }
 
-// Record 表示推理请求审计；成功响应不保存正文，失败尝试仅保留管理员诊断现场。
+type EgressMode string
+
+const (
+	EgressModeDirect EgressMode = "direct"
+	EgressModeProxy  EgressMode = "proxy"
+)
+
+// Record 表示推理请求审计；成功请求不保存正文，失败请求仅保留受限诊断快照。
 type Record struct {
 	ID                      uint64
 	EventID                 string
@@ -71,6 +79,10 @@ type Record struct {
 	UsageSource             UsageSource
 	AccountID               *uint64
 	AccountName             string
+	EgressNodeID            *uint64
+	EgressNodeName          string
+	EgressScope             string
+	EgressMode              EgressMode
 	StatusCode              int
 	Streaming               bool
 	MediaInputImages        int64

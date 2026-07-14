@@ -99,7 +99,9 @@ func toAuditModels(value audit.Record) (requestAuditModel, []requestAuditAttempt
 		EventID: truncate(eventID, 64), RequestID: truncate(value.RequestID, 64), ClientKeyID: value.ClientKeyID, ClientKeyName: truncate(value.ClientKeyName, 160),
 		ModelRouteID: value.ModelRouteID, ModelPublicID: truncate(value.ModelPublicID, 255), ModelUpstreamModel: truncate(value.ModelUpstreamModel, 255),
 		Provider: truncate(provider, 32), Operation: string(operation), UsageSource: string(usageSource),
-		AccountID: value.AccountID, AccountName: truncate(value.AccountName, 160), StatusCode: value.StatusCode, Streaming: value.Streaming,
+		AccountID: value.AccountID, AccountName: truncate(value.AccountName, 160),
+		EgressNodeID: value.EgressNodeID, EgressNodeName: truncate(value.EgressNodeName, 160), EgressScope: truncate(value.EgressScope, 32), EgressMode: string(value.EgressMode),
+		StatusCode: value.StatusCode, Streaming: value.Streaming,
 		MediaInputImages: nonNegative(value.MediaInputImages), MediaOutputImages: nonNegative(value.MediaOutputImages), MediaOutputSeconds: nonNegative(value.MediaOutputSeconds),
 		InputTokens: nonNegative(value.InputTokens), CachedInputTokens: nonNegative(value.CachedInputTokens), OutputTokens: nonNegative(value.OutputTokens),
 		ReasoningTokens: nonNegative(value.ReasoningTokens), TotalTokens: nonNegative(value.TotalTokens), CostInUSDTicks: nonNegative(value.CostInUSDTicks),
@@ -125,25 +127,33 @@ func toAuditModels(value audit.Record) (requestAuditModel, []requestAuditAttempt
 			errorChain = []byte("[]")
 		}
 		attempts = append(attempts, requestAuditAttemptModel{
-			Number:              attempt.Number,
-			Source:              string(attempt.Source),
-			Stage:               attempt.Stage,
-			AccountID:           attempt.AccountID,
-			AccountName:         truncate(attempt.AccountName, 160),
-			Method:              truncate(attempt.Method, 16),
-			RequestPath:         attempt.RequestPath,
-			UpstreamURL:         attempt.UpstreamURL,
-			StartedAt:           attempt.StartedAt,
-			DurationMS:          nonNegative(attempt.DurationMS),
-			UpstreamStatusCode:  attempt.UpstreamStatusCode,
-			UpstreamStatus:      truncate(attempt.UpstreamStatus, 128),
-			ResponseHeadersJSON: string(responseHeaders),
-			ResponseBody:        attempt.ResponseBody,
-			TransportError:      attempt.TransportError,
-			ErrorChainJSON:      string(errorChain),
+			Number:                attempt.Number,
+			Source:                string(attempt.Source),
+			Stage:                 attempt.Stage,
+			AccountID:             attempt.AccountID,
+			AccountName:           truncate(attempt.AccountName, 160),
+			Method:                truncate(attempt.Method, 16),
+			RequestPath:           truncate(attempt.RequestPath, 2048),
+			UpstreamURL:           truncate(attempt.UpstreamURL, 4096),
+			StartedAt:             attempt.StartedAt,
+			DurationMS:            nonNegative(attempt.DurationMS),
+			UpstreamStatusCode:    attempt.UpstreamStatusCode,
+			UpstreamStatus:        truncate(attempt.UpstreamStatus, 128),
+			ResponseHeadersJSON:   string(responseHeaders),
+			ResponseBody:          truncateBytes(attempt.ResponseBody, 65536),
+			ResponseBodyTruncated: attempt.ResponseBodyTruncated || len(attempt.ResponseBody) > 65536,
+			TransportError:        truncate(attempt.TransportError, 2048),
+			ErrorChainJSON:        string(errorChain),
 		})
 	}
 	return row, attempts, nil
+}
+
+func truncateBytes(value []byte, limit int) []byte {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit]
 }
 
 func createAuditAndBill(tx *gorm.DB, row *requestAuditModel, attempts []requestAuditAttemptModel) error {
@@ -381,7 +391,7 @@ func (r *AuditRepository) Summarize(ctx context.Context, input repository.AuditS
 func applyAuditQuery(query *gorm.DB, search string, start, end time.Time, filter repository.AuditListFilter) *gorm.DB {
 	if value := strings.TrimSpace(search); value != "" {
 		pattern := "%" + strings.ToLower(value) + "%"
-		query = query.Where("LOWER(request_id) LIKE ? OR LOWER(model_public_id) LIKE ? OR LOWER(model_upstream_model) LIKE ?", pattern, pattern, pattern)
+		query = query.Where("LOWER(request_id) LIKE ? OR LOWER(model_public_id) LIKE ? OR LOWER(model_upstream_model) LIKE ? OR LOWER(egress_node_name) LIKE ?", pattern, pattern, pattern, pattern)
 	}
 	if !start.IsZero() {
 		query = query.Where("created_at >= ?", start)

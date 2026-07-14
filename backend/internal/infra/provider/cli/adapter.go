@@ -162,10 +162,11 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		} else {
 			var data []byte
 			var readErr error
+			var diagnosticTruncated bool
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				data, readErr = io.ReadAll(io.LimitReader(resp.Body, (64<<20)+1))
 			} else {
-				data, readErr = io.ReadAll(resp.Body)
+				data, diagnosticTruncated, readErr = provider.ReadDiagnosticBody(resp.Body)
 			}
 			_ = resp.Body.Close()
 			if readErr != nil {
@@ -176,7 +177,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			var diagnostic *provider.DiagnosticResponse
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				diagnostic = &provider.DiagnosticResponse{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: data}
+				diagnostic = &provider.DiagnosticResponse{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: data, BodyTruncated: diagnosticTruncated}
 			}
 			converted, convertErr := conversation.ConvertResponseJSONWithOptions(data, request.Operation, conversationOptions)
 			if convertErr != nil {

@@ -18,6 +18,10 @@ export type AuditDTO = {
   usageSource: "upstream" | "estimated" | "none";
   accountId?: string;
   accountName?: string;
+  egressNodeId?: string;
+  egressNodeName?: string;
+  egressScope?: "grok_build" | "grok_web" | "grok_console" | "grok_web_asset";
+  egressMode?: "direct" | "proxy";
   statusCode: number;
   streaming: boolean;
   mediaInputImages: number;
@@ -59,6 +63,7 @@ export type AuditAttemptDTO = {
   responseHeaders: Record<string, string[]>;
   responseBody: string;
   responseBodyEncoding: "utf8" | "base64";
+  responseBodyTruncated: boolean;
   transportError?: string;
   errorChain: Array<{ type: string; message: string }>;
 };
@@ -106,7 +111,10 @@ const auditValidator = hasShape({
   id: isString, requestId: isString, clientKeyId: isString, clientKeyName: isOptional(isString), modelRouteId: isString,
   modelPublicId: isOptional(isString), modelUpstreamModel: isOptional(isString), provider: isOneOf("grok_build", "grok_web", "grok_console"),
   operation: isOneOf("responses", "chat", "messages", "image", "image_edit", "video"), usageSource: isOneOf("upstream", "estimated", "none"),
-  accountId: isOptional(isString), accountName: isOptional(isString), statusCode: isNumber, streaming: isBoolean,
+  accountId: isOptional(isString), accountName: isOptional(isString),
+  egressNodeId: isOptional(isString), egressNodeName: isOptional(isString),
+  egressScope: isOptional(isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset")), egressMode: isOptional(isOneOf("direct", "proxy")),
+  statusCode: isNumber, streaming: isBoolean,
   mediaInputImages: isNumber, mediaOutputImages: isNumber, mediaOutputSeconds: isNumber, inputTokens: isNumber,
   cachedInputTokens: isNumber, outputTokens: isNumber, reasoningTokens: isNumber, totalTokens: isNumber,
   costInUsdTicks: isNumber, estimatedCostInUsdTicks: isNumber, pricingModel: isOptional(isString), pricingVersion: isOptional(isString),
@@ -117,7 +125,7 @@ const auditAttemptValidator = hasShape({
   id: isString, number: isNumber, source: isOneOf("upstream_http", "gateway_transport", "credential"), stage: isString,
   accountId: isOptional(isString), accountName: isOptional(isString), method: isOptional(isString), requestPath: isOptional(isString), upstreamUrl: isOptional(isString),
   startedAt: isString, durationMs: isNumber, upstreamStatusCode: isOptional(isNumber), upstreamStatus: isOptional(isString),
-  responseHeaders: isRecordOf(isArrayOf(isString)), responseBody: isString, responseBodyEncoding: isOneOf("utf8", "base64"),
+  responseHeaders: isRecordOf(isArrayOf(isString)), responseBody: isString, responseBodyEncoding: isOneOf("utf8", "base64"), responseBodyTruncated: isBoolean,
   transportError: isOptional(isString), errorChain: isArrayOf(hasShape({ type: isString, message: isString })),
 });
 const decodeAuditPage = createObjectDecoder<AuditCursorPageDTO>("audit page", {

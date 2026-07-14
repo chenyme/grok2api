@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { listModels } from "@/entities/model/model-api";
 import { RequestAuditDetailDialog } from "@/features/audits/request-audit-detail-dialog";
@@ -155,21 +155,23 @@ export function RequestAuditsPage() {
         {auditsQuery.isError ? <ErrorState message={auditsQuery.error.message} onRetry={() => void auditsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {auditsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="min-w-[1160px] table-fixed text-xs">
+          <Table className="min-w-[1280px] table-fixed text-xs">
             <colgroup>
-              <col className="w-[14%]" />
-              <col className="w-[14%]" />
+              <col className="w-[12%]" />
+              <col className="w-[13%]" />
               <col className="w-[10%]" />
+              <col className="w-[9%]" />
               <col className="w-[24%]" />
-              <col className="w-[10%]" />
-              <col className="w-[10%]" />
               <col className="w-[7%]" />
-              <col className="w-[11%]" />
+              <col className="w-[9%]" />
+              <col className="w-[7%]" />
+              <col className="w-[9%]" />
             </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <SortableTableHead field="request" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("audits.request")}</SortableTableHead>
                 <SortableTableHead field="model" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("audits.model")}</SortableTableHead>
+                <TableHead>{t("audits.egress")}</TableHead>
                 <SortableTableHead field="billing" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.billing")}</SortableTableHead>
                 <SortableTableHead field="tokens" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.tokens")}</SortableTableHead>
                 <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("audits.status")}</SortableTableHead>
@@ -179,7 +181,7 @@ export function RequestAuditsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {auditsQuery.isPending ? <TableLoadingRow colSpan={8} /> : result?.items.map((audit) => (
+              {auditsQuery.isPending ? <TableLoadingRow colSpan={9} /> : result?.items.map((audit) => (
                 <TableRow key={audit.id}>
                   <TableCell className="py-3">
                     <span className="block truncate text-xs" title={audit.requestId}>{audit.requestId}</span>
@@ -192,6 +194,7 @@ export function RequestAuditsPage() {
                       clientKey={audit.clientKeyName || `#${audit.clientKeyId}`}
                     />
                   </TableCell>
+                  <TableCell className="py-3"><EgressValue audit={audit} /></TableCell>
                   <TableCell className="py-3"><BillingValue audit={audit} /></TableCell>
                   <TableCell className="py-3"><UsageDetails audit={audit} locale={i18n.language} /></TableCell>
                   <TableCell className="py-3 text-center"><AuditStatus audit={audit} onOpen={() => setSelectedAudit(audit)} /></TableCell>
@@ -206,6 +209,32 @@ export function RequestAuditsPage() {
       </DataTableShell>
       <RequestAuditDetailDialog key={selectedAudit?.id ?? "closed"} audit={selectedAudit} open={selectedAudit !== null} onOpenChange={(open) => !open && setSelectedAudit(null)} />
     </div>
+  );
+}
+
+function EgressValue({ audit }: { audit: AuditDTO }) {
+  const { t } = useTranslation();
+  if (!audit.egressMode) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+  const proxied = audit.egressMode === "proxy";
+  const node = audit.egressNodeName || (proxied ? t("audits.egressUnknown") : t("audits.egressDirect"));
+  const details = [audit.egressScope, audit.egressNodeId ? `#${audit.egressNodeId}` : ""].filter(Boolean).join(" · ");
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" className="block min-w-0 max-w-full cursor-help text-left" aria-label={`${proxied ? t("audits.egressProxy") : t("audits.egressDirect")}: ${node}`}>
+          <Badge variant="outline" className={cn("max-w-full font-normal", proxied ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground")}>
+            <span className="truncate">{proxied ? t("audits.egressProxy") : t("audits.egressDirect")}</span>
+          </Badge>
+          <span className="mt-1 block truncate text-[10px] text-muted-foreground">{node}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-72" side="top" align="start">
+        <div>{node}</div>
+        {details ? <div className="mt-1 text-primary-foreground/65">{details}</div> : null}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
