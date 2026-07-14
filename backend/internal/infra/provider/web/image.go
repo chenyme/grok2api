@@ -529,6 +529,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 	connection.SetReadLimit(64 << 20)
 	deadline := time.Now().Add(time.Duration(cfg.ImageTimeoutSeconds) * time.Second)
 	_ = connection.SetReadDeadline(deadline)
+	_ = connection.SetWriteDeadline(deadline)
 	if err := connection.WriteJSON(imagineResetMessage()); err != nil {
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 		return nil, err
@@ -1096,7 +1097,9 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 		return nil, err
 	}
 	defer lease.Release()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	downloadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return nil, err
 	}

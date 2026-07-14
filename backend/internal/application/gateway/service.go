@@ -781,14 +781,14 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		if err != nil {
 			s.logger.Error("image_credential_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", lease.Credential.ID, "error", err)
 			lease.Release()
-			return nil, err
+			continue
 		}
 		response, err = execute(adapter, credential, route.UpstreamModel)
 		if err != nil {
 			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
 			s.selector.MarkFailure(ctx, credential, 0, 0)
 			lease.Release()
-			return nil, err
+			continue
 		}
 		if s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden && attempt == 0 && attempt+1 < attempts {
 			_, _ = readRetryableBody(response.Body)
@@ -810,6 +810,12 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			}
 		}
 		break
+	}
+	if response == nil {
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
+		}
+		return nil, ErrNoAvailableAccount
 	}
 	if response.StatusCode == http.StatusUnauthorized && credential.AuthType == accountdomain.AuthTypeSSO {
 		_ = s.accounts.MarkReauthRequired(ctx, credential.ID, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
