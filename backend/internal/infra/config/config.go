@@ -149,8 +149,9 @@ type ConsoleProviderConfig struct {
 	ChatTimeout Duration `yaml:"chatTimeout"`
 }
 
-// BatchConfig 定义可热加载的账号批量任务并发上限。
+// BatchConfig 定义可热加载的账号批量任务边界。
 type BatchConfig struct {
+	AccountTaskBatchSize  int
 	ImportConcurrency     int
 	ConversionConcurrency int
 	SyncConcurrency       int
@@ -428,6 +429,9 @@ func (c Config) Validate() error {
 		c.Batch.RefreshConcurrency < 1 || c.Batch.RefreshConcurrency > 50 {
 		return errors.New("批量任务并发必须在 1 到 50 之间")
 	}
+	if c.Batch.AccountTaskBatchSize < 1 || c.Batch.AccountTaskBatchSize > 1000 {
+		return errors.New("全部账号任务每批数量必须在 1 到 1000 之间")
+	}
 	if c.Batch.RandomDelay.Value() < 0 || c.Batch.RandomDelay.Value() > 5*time.Second {
 		return errors.New("批量任务随机延迟必须在 0 到 5 秒之间")
 	}
@@ -488,7 +492,8 @@ func defaultConfig() Config {
 			},
 		},
 		Batch: BatchConfig{
-			ImportConcurrency: 25, ConversionConcurrency: 25, SyncConcurrency: 25,
+			AccountTaskBatchSize: 1000,
+			ImportConcurrency:    25, ConversionConcurrency: 25, SyncConcurrency: 25,
 			RefreshConcurrency: 25, RandomDelay: Duration(500 * time.Millisecond),
 		},
 		Media: MediaConfig{

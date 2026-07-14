@@ -48,8 +48,9 @@ type ProviderWebConfig struct {
 	RecoveryBackoffMax  time.Duration
 }
 
-// BatchConfig 定义账号导入、转换、同步和凭据刷新的并发上限。
+// BatchConfig 定义账号批量任务的取数与并发边界。
 type BatchConfig struct {
+	AccountTaskBatchSize  int
 	ImportConcurrency     int
 	ConversionConcurrency int
 	SyncConcurrency       int

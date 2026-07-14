@@ -27,12 +27,12 @@ func (adminSessionModel) TableName() string { return "admin_sessions" }
 type accountModel struct {
 	ID               uint64  `gorm:"primaryKey;autoIncrement"`
 	IdentityKey      string  `gorm:"size:64;uniqueIndex;not null;check:chk_accounts_identity_key,length(identity_key) = 64"`
-	Provider         string  `gorm:"size:32;not null;check:chk_accounts_provider,provider IN ('grok_build','grok_web','grok_console')"`
+	Provider         string  `gorm:"size:32;not null;check:chk_accounts_provider,provider IN ('grok_build','grok_web','grok_console');index:idx_accounts_provider_source,priority:1"`
 	Name             string  `gorm:"size:160;not null;check:chk_accounts_name,length(trim(name)) BETWEEN 1 AND 160"`
 	Email            string  `gorm:"size:255;check:chk_accounts_email,length(email) <= 255"`
 	UserID           string  `gorm:"size:255;check:chk_accounts_user_id,length(user_id) <= 255"`
 	TeamID           string  `gorm:"size:255;check:chk_accounts_team_id,length(team_id) <= 255"`
-	SourceKey        string  `gorm:"size:512;not null;check:chk_accounts_source_key,length(trim(source_key)) BETWEEN 1 AND 512"`
+	SourceKey        string  `gorm:"size:512;not null;check:chk_accounts_source_key,length(trim(source_key)) BETWEEN 1 AND 512;index:idx_accounts_provider_source,priority:2"`
 	Enabled          bool    `gorm:"not null"`
 	AuthStatus       string  `gorm:"size:32;not null;check:chk_accounts_auth_status,auth_status IN ('active','reauthRequired')"`
 	Priority         int     `gorm:"not null;default:1"`

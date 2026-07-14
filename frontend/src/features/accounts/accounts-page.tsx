@@ -44,7 +44,7 @@ import {
   listAccounts,
   pollDeviceAuthorization,
   refreshAccountBilling,
-  refreshAccountsBilling,
+  refreshAccountsQuota,
   refreshAccountToken,
   refreshAccountQuota,
   refreshAllAccountBilling,
@@ -60,6 +60,7 @@ import {
   type AccountUpdateInput,
   type AccountTaskProgressDTO,
   type BuildConversionInput,
+  type BuildConversionStrategy,
   type WebConsoleSyncInput,
   type DeviceSessionDTO,
   type QuotaDTO,
@@ -99,8 +100,10 @@ export function AccountsPage() {
   const [syncAllOpen, setSyncAllOpen] = useState(false);
   const [syncProgress, setSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [conversionTargets, setConversionTargets] = useState<string[] | "all" | null>(null);
+  const [conversionStrategy, setConversionStrategy] = useState<BuildConversionStrategy>("missing");
   const [conversionProgress, setConversionProgress] = useState<BuildConversionProgressState | null>(null);
   const [webConsoleSyncTargets, setWebConsoleSyncTargets] = useState<string[] | "all" | null>(null);
+  const [webConsoleSyncStrategy, setWebConsoleSyncStrategy] = useState<"missing" | "all">("missing");
   const [webConsoleSyncProgress, setWebConsoleSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [renewAllOpen, setRenewAllOpen] = useState(false);
   const [renewalProgress, setRenewalProgress] = useState<AccountTaskProgressDTO | null>(null);
@@ -264,7 +267,7 @@ export function AccountsPage() {
     mutationFn: (input: BuildConversionInput) => {
       const controller = new AbortController();
       conversionAbortRef.current = controller;
-      setConversionProgress(Array.isArray(conversionTargets) ? { converting: { completed: 0, total: conversionTargets.length, phase: "converting" } } : null);
+      setConversionProgress(null);
       return convertWebAccountsToBuild(input, (progress) => {
         const phase = progress.phase === "syncing" ? "syncing" : "converting";
         setConversionProgress((current) => ({ ...(current ?? {}), [phase]: progress }));
@@ -364,7 +367,7 @@ export function AccountsPage() {
   });
 
   const batchBillingMutation = useMutation({
-    mutationFn: () => refreshAccountsBilling([...selected], provider),
+    mutationFn: () => refreshAccountsQuota([...selected], provider),
     onSuccess: (result) => {
       setSelected(new Set());
       invalidateAccountData();
@@ -441,6 +444,16 @@ export function AccountsPage() {
     if (!value) return;
     const filename = provider === "grok_console" ? "grok-console-sso-tokens.txt" : "grok-web-sso-tokens.txt";
     importMutation.mutate([new File([value], filename, { type: "text/plain" })]);
+  }
+
+  function openWebConsoleSync(targets: string[] | "all"): void {
+    setWebConsoleSyncStrategy("missing");
+    setWebConsoleSyncTargets(targets);
+  }
+
+  function openBuildConversion(targets: string[] | "all"): void {
+    setConversionStrategy("missing");
+    setConversionTargets(targets);
   }
 
   async function startDeviceLogin(): Promise<void> {
@@ -594,15 +607,15 @@ export function AccountsPage() {
                 <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
                 <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
-                {provider === "grok_web" ? <Button variant="secondary" size="sm" onClick={() => setConversionTargets([...selected])}>{t("accounts.convertToBuild")}</Button> : null}
-                {provider === "grok_web" ? <Button variant="secondary" size="sm" onClick={() => setWebConsoleSyncTargets([...selected])}>{t("webConsoleSync.action")}</Button> : null}
-                {provider === "grok_build" ? <Button variant="secondary" size="sm" onClick={() => batchBillingMutation.mutate()}>{t("accounts.refreshBilling")}</Button> : null}
+                {provider === "grok_web" ? <Button variant="secondary" size="sm" onClick={() => openBuildConversion([...selected])}>{t("accounts.convertToBuild")}</Button> : null}
+                {provider === "grok_web" ? <Button variant="secondary" size="sm" onClick={() => openWebConsoleSync([...selected])}>{t("webConsoleSync.action")}</Button> : null}
+                <Button variant="secondary" size="sm" onClick={() => batchBillingMutation.mutate()}>{t("accountCredential.quotaSyncAction")}</Button>
                 <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
               </div>
             ) : (
               <div className="flex items-center gap-1.5">
-                {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" onClick={() => setConversionTargets("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
-                {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" onClick={() => setWebConsoleSyncTargets("all")}>{t("webConsoleSync.allAction")}</Button> : null}
+                {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" onClick={() => openBuildConversion("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
+                {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" onClick={() => openWebConsoleSync("all")}>{t("webConsoleSync.allAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" onClick={() => setSyncAllOpen(true)}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
                 <DropdownMenu>
@@ -696,8 +709,8 @@ export function AccountsPage() {
                         <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onClick={() => beginEdit(account)}><Pencil />{t("common.edit")}</DropdownMenuItem>
-                          {provider === "grok_web" && !account.linkedAccountId ? <DropdownMenuItem onClick={() => setConversionTargets([account.id])}><ArrowRight />{t("accounts.convertToBuild")}</DropdownMenuItem> : null}
-                          {provider === "grok_web" ? <DropdownMenuItem onClick={() => setWebConsoleSyncTargets([account.id])}><ArrowRight />{t("webConsoleSync.action")}</DropdownMenuItem> : null}
+                          {provider === "grok_web" ? <DropdownMenuItem onClick={() => openBuildConversion([account.id])}><ArrowRight />{t("accounts.convertToBuild")}</DropdownMenuItem> : null}
+                          {provider === "grok_web" ? <DropdownMenuItem onClick={() => openWebConsoleSync([account.id])}><ArrowRight />{t("webConsoleSync.action")}</DropdownMenuItem> : null}
                           {provider === "grok_build" ? <DropdownMenuItem onClick={() => tokenMutation.mutate(account.id)}><RotateCw />{t("accounts.refreshToken")}</DropdownMenuItem> : null}
                           <DropdownMenuItem onClick={() => provider === "grok_build" ? billingMutation.mutate(account.id) : quotaMutation.mutate(account.id)}><RefreshCw />{provider === "grok_build" ? t("accounts.refreshBilling") : t("accounts.refreshModeQuota")}</DropdownMenuItem>
                           <DropdownMenuSeparator />
@@ -725,12 +738,20 @@ export function AccountsPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t(webConsoleSyncTargets === "all" ? "webConsoleSync.allTitle" : "webConsoleSync.selectedTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>{webConsoleSyncTargets === "all" ? t("webConsoleSync.allDescription") : t("webConsoleSync.selectedDescription", { count: webConsoleSyncTargets?.length ?? 0 })}</AlertDialogDescription>
+            <AlertDialogDescription>{t(webConsoleSyncTargets === "all" ? "webConsoleSync.allDescription" : "webConsoleSync.selectedDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="space-y-2">
+            <p id="web-console-sync-strategy" className="text-xs font-medium">{t("webConsoleSync.strategyTitle")}</p>
+            <div role="radiogroup" aria-labelledby="web-console-sync-strategy" className="grid grid-cols-2 rounded-md bg-muted p-1">
+              <Button type="button" role="radio" aria-checked={webConsoleSyncStrategy === "missing"} variant={webConsoleSyncStrategy === "missing" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-3 text-xs font-normal shadow-none" onClick={() => setWebConsoleSyncStrategy("missing")}>{t("webConsoleSync.missingStrategy")}</Button>
+              <Button type="button" role="radio" aria-checked={webConsoleSyncStrategy === "all"} variant={webConsoleSyncStrategy === "all" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-3 text-xs font-normal shadow-none" onClick={() => setWebConsoleSyncStrategy("all")}>{t("webConsoleSync.allStrategy")}</Button>
+            </div>
+            <p className="min-h-8 text-xs text-muted-foreground">{t(webConsoleSyncStrategy === "missing" ? "webConsoleSync.missingStrategyDescription" : "webConsoleSync.allStrategyDescription")}</p>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction disabled={webConsoleSyncMutation.isPending || webConsoleSyncTargets === null || (Array.isArray(webConsoleSyncTargets) && webConsoleSyncTargets.length === 0)} onClick={(event) => { event.preventDefault(); if (webConsoleSyncTargets === "all") webConsoleSyncMutation.mutate({ all: true }); else if (webConsoleSyncTargets) webConsoleSyncMutation.mutate({ ids: webConsoleSyncTargets }); }}>
-              {webConsoleSyncMutation.isPending ? <><Spinner />{webConsoleSyncProgress ? <span className="tabular-nums">{webConsoleSyncProgress.completed} / {webConsoleSyncProgress.total}</span> : t("common.loading")}</> : t(webConsoleSyncTargets === "all" ? "webConsoleSync.allAction" : "webConsoleSync.action")}
+            <AlertDialogAction disabled={webConsoleSyncMutation.isPending || webConsoleSyncTargets === null || (Array.isArray(webConsoleSyncTargets) && webConsoleSyncTargets.length === 0)} onClick={(event) => { event.preventDefault(); if (webConsoleSyncTargets === "all") webConsoleSyncMutation.mutate({ all: true, strategy: webConsoleSyncStrategy }); else if (webConsoleSyncTargets) webConsoleSyncMutation.mutate({ ids: webConsoleSyncTargets, strategy: webConsoleSyncStrategy }); }}>
+              {webConsoleSyncMutation.isPending ? <><Spinner />{webConsoleSyncProgress ? <span className="tabular-nums">{webConsoleSyncProgress.completed} / {webConsoleSyncProgress.total}</span> : t("common.loading")}</> : t(webConsoleSyncStrategy === "missing" ? "webConsoleSync.syncMissing" : "webConsoleSync.syncAll")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -740,12 +761,20 @@ export function AccountsPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t(conversionTargets === "all" ? "accountBulk.convertAllToBuildTitle" : "accounts.convertToBuildTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>{conversionTargets === "all" ? t("accountBulk.convertAllToBuildDescription") : t("accounts.convertToBuildDescription", { count: conversionTargets?.length ?? 0 })}</AlertDialogDescription>
+            <AlertDialogDescription>{t(conversionTargets === "all" ? "accountBulk.convertAllToBuildDescription" : "accountBulk.selectedDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="space-y-2">
+            <p id="web-build-conversion-strategy" className="text-xs font-medium">{t("accountBulk.strategyTitle")}</p>
+            <div role="radiogroup" aria-labelledby="web-build-conversion-strategy" className="grid grid-cols-2 rounded-md bg-muted p-1">
+              <Button type="button" role="radio" aria-checked={conversionStrategy === "missing"} variant={conversionStrategy === "missing" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-3 text-xs font-normal shadow-none" onClick={() => setConversionStrategy("missing")}>{t("accountBulk.missingStrategy")}</Button>
+              <Button type="button" role="radio" aria-checked={conversionStrategy === "all"} variant={conversionStrategy === "all" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-3 text-xs font-normal shadow-none" onClick={() => setConversionStrategy("all")}>{t("accountBulk.allStrategy")}</Button>
+            </div>
+            <p className="min-h-8 text-xs text-muted-foreground">{t(conversionStrategy === "missing" ? "accountBulk.missingStrategyDescription" : "accountBulk.allStrategyDescription")}</p>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction disabled={conversionMutation.isPending || conversionTargets === null || (Array.isArray(conversionTargets) && conversionTargets.length === 0)} onClick={(event) => { event.preventDefault(); if (conversionTargets === "all") conversionMutation.mutate({ all: true }); else if (conversionTargets) conversionMutation.mutate({ ids: conversionTargets }); }}>
-              {conversionMutation.isPending ? <><Spinner />{activeConversionProgress ? <span className="whitespace-nowrap tabular-nums">{t(activeConversionProgress.phase === "syncing" ? "accounts.syncingProgress" : "accounts.convertingProgress", activeConversionProgress)}</span> : t("common.loading")}</> : t(conversionTargets === "all" ? "accountBulk.convertAllToBuild" : "accounts.convertToBuild")}
+            <AlertDialogAction disabled={conversionMutation.isPending || conversionTargets === null || (Array.isArray(conversionTargets) && conversionTargets.length === 0)} onClick={(event) => { event.preventDefault(); if (conversionTargets === "all") conversionMutation.mutate({ all: true, strategy: conversionStrategy }); else if (conversionTargets) conversionMutation.mutate({ ids: conversionTargets, strategy: conversionStrategy }); }}>
+              {conversionMutation.isPending ? <><Spinner />{activeConversionProgress ? <span className="whitespace-nowrap tabular-nums">{t(activeConversionProgress.phase === "syncing" ? "accounts.syncingProgress" : "accounts.convertingProgress", activeConversionProgress)}</span> : t("common.loading")}</> : t(conversionStrategy === "missing" ? "accountBulk.convertMissing" : "accountBulk.convertAll")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

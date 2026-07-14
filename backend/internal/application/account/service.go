@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -50,6 +51,8 @@ const (
 	credentialImportChunkSize                 = 100
 	maxBuildConversionAccounts                = 1000
 	maxWebConsoleSyncAccounts                 = 1000
+	defaultAccountTaskBatchSize               = 1000
+	maxAccountTaskBatchSize                   = 1000
 )
 
 type webQuotaRefreshState struct {
@@ -122,8 +125,23 @@ type DeviceStartResult struct {
 type ImportResult struct {
 	Created    int
 	Updated    int
+	Skipped    int
 	AccountIDs []uint64
 }
+
+type BuildConversionStrategy string
+
+const (
+	BuildConversionAll     BuildConversionStrategy = "all"
+	BuildConversionMissing BuildConversionStrategy = "missing"
+)
+
+type WebConsoleSyncStrategy string
+
+const (
+	WebConsoleSyncAll     WebConsoleSyncStrategy = "all"
+	WebConsoleSyncMissing WebConsoleSyncStrategy = "missing"
+)
 
 type ImportedAccountObserver func(accountID uint64) error
 
@@ -222,6 +240,7 @@ type Service struct {
 	conversionPool        *batch.Pool
 	syncPool              *batch.Pool
 	refreshPool           *batch.Pool
+	accountTaskBatchSize  atomic.Int64
 	credentialRefreshWake chan struct{}
 	logger                *slog.Logger
 	now                   func() time.Time
@@ -232,7 +251,7 @@ func (s *Service) SetQuotaRecoveryQueue(queue repository.QuotaRecoveryQueue) {
 }
 
 func NewService(accounts repository.AccountRepository, audits repository.AuditRepository, deviceSessions repository.DeviceSessionRepository, sticky repository.StickySessionRepository, providers *provider.Registry, cipher *security.Cipher, refreshLock repository.DistributedLock) *Service {
-	return &Service{
+	service := &Service{
 		accounts: accounts, audits: audits, deviceSessions: deviceSessions, sticky: sticky,
 		providers: providers, cipher: cipher, refreshLock: refreshLock,
 		lastRefreshAt: make(map[uint64]time.Time), quotaRefreshes: make(map[string]*webQuotaRefreshState),
@@ -241,6 +260,8 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), logger: slog.Default(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
+	service.accountTaskBatchSize.Store(defaultAccountTaskBatchSize)
+	return service
 }
 
 func (s *Service) SetBulkPool(pool *batch.Pool) {
@@ -260,6 +281,23 @@ func (s *Service) SetTaskPools(conversion, syncPool, refresh *batch.Pool) {
 	if refresh != nil {
 		s.refreshPool = refresh
 	}
+}
+
+// UpdateAccountTaskBatchSize 热更新“全部”账号任务每次从仓储获取的账号数量。
+func (s *Service) UpdateAccountTaskBatchSize(value int) {
+	if value < 1 {
+		value = defaultAccountTaskBatchSize
+	}
+	value = min(value, maxAccountTaskBatchSize)
+	s.accountTaskBatchSize.Store(int64(value))
+}
+
+func (s *Service) currentAccountTaskBatchSize() int {
+	value := s.accountTaskBatchSize.Load()
+	if value < 1 {
+		return defaultAccountTaskBatchSize
+	}
+	return int(value)
 }
 
 func (s *Service) SetLogger(logger *slog.Logger) {
@@ -731,9 +769,25 @@ func (s *Service) persistImportedSeeds(ctx context.Context, seeds []provider.Cre
 
 // SyncWebAccountsToConsoleWithProgress 使用 Web 账号的同一份 SSO 创建或更新 Console 账号。
 func (s *Service) SyncWebAccountsToConsoleWithProgress(ctx context.Context, ids []uint64, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	return s.SyncWebAccountsToConsoleWithStrategy(ctx, ids, WebConsoleSyncAll, observer, progress)
+}
+
+func (s *Service) SyncWebAccountsToConsoleWithStrategy(ctx context.Context, ids []uint64, strategy WebConsoleSyncStrategy, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	if strategy != WebConsoleSyncAll && strategy != WebConsoleSyncMissing {
+		return ImportResult{}, invalidInput("Grok Web 到 Console 同步策略无效")
+	}
 	ids, err := normalizeIDs(ids, maxWebConsoleSyncAccounts)
 	if err != nil {
 		return ImportResult{}, err
+	}
+	if strategy == WebConsoleSyncMissing {
+		values, err := s.accounts.ListMissingConsoleSyncAccounts(ctx, ids)
+		if err != nil {
+			return ImportResult{}, mapRepositoryError(err)
+		}
+		result, err := s.syncWebCredentialsToConsole(ctx, values, observer, progress)
+		result.Skipped = len(ids) - len(values)
+		return result, err
 	}
 	values := make([]accountdomain.Credential, 0, len(ids))
 	for _, id := range ids {
@@ -748,17 +802,60 @@ func (s *Service) SyncWebAccountsToConsoleWithProgress(ctx context.Context, ids 
 
 // SyncAllWebAccountsToConsoleWithProgress 同步完整 Web 号池，避免前端分页遗漏账号。
 func (s *Service) SyncAllWebAccountsToConsoleWithProgress(ctx context.Context, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
-	values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
-		Page:   repository.PageQuery{Limit: maxWebConsoleSyncAccounts + 1},
-		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderWeb)},
-	})
-	if err != nil {
-		return ImportResult{}, err
+	return s.SyncAllWebAccountsToConsoleWithStrategy(ctx, WebConsoleSyncAll, observer, progress)
+}
+
+func (s *Service) SyncAllWebAccountsToConsoleWithStrategy(ctx context.Context, strategy WebConsoleSyncStrategy, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	if strategy != WebConsoleSyncAll && strategy != WebConsoleSyncMissing {
+		return ImportResult{}, invalidInput("Grok Web 到 Console 同步策略无效")
 	}
-	if total > maxWebConsoleSyncAccounts || len(values) > maxWebConsoleSyncAccounts {
-		return ImportResult{}, invalidInput("Grok Web 账号超过 1000 个，请分批勾选同步")
+	batchSize := s.currentAccountTaskBatchSize()
+	result := ImportResult{AccountIDs: make([]uint64, 0)}
+	var afterID uint64
+	completed := 0
+	total := 0
+	initialized := false
+	for {
+		var (
+			values  []accountdomain.Credential
+			count   int64
+			skipped int64
+			err     error
+		)
+		if strategy == WebConsoleSyncMissing {
+			values, count, skipped, err = s.accounts.ListMissingConsoleSyncBatch(ctx, afterID, batchSize)
+		} else {
+			values, count, err = s.accounts.ListProviderAccountBatch(ctx, accountdomain.ProviderWeb, afterID, batchSize)
+		}
+		if err != nil {
+			return result, err
+		}
+		if !initialized {
+			total = int(count)
+			result.Skipped = int(skipped)
+			initialized = true
+			if progress != nil {
+				if err := progress(0, total); err != nil {
+					return result, err
+				}
+			}
+		}
+		if len(values) == 0 {
+			return result, nil
+		}
+		current, err := s.syncWebCredentialsToConsole(ctx, values, observer, offsetBatchProgress(progress, completed, total))
+		result.Created += current.Created
+		result.Updated += current.Updated
+		result.AccountIDs = append(result.AccountIDs, current.AccountIDs...)
+		if err != nil {
+			return result, err
+		}
+		completed += len(values)
+		afterID = values[len(values)-1].ID
+		if len(values) < batchSize {
+			return result, nil
+		}
 	}
-	return s.syncWebCredentialsToConsole(ctx, values, observer, progress)
 }
 
 func (s *Service) syncWebCredentialsToConsole(ctx context.Context, values []accountdomain.Credential, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
@@ -804,52 +901,142 @@ func webConsoleAccountName(webName, fallback string) string {
 
 // ConvertWebAccountsToBuild 使用 Web SSO 自动完成 xAI Device Flow，并建立唯一的 Web/Build 账号关联。
 func (s *Service) ConvertWebAccountsToBuild(ctx context.Context, ids []uint64) (BuildConversionResult, error) {
-	return s.ConvertWebAccountsToBuildWithObserver(ctx, ids, nil)
+	return s.ConvertWebAccountsToBuildWithStrategy(ctx, ids, BuildConversionMissing, nil, nil)
 }
 
 func (s *Service) ConvertWebAccountsToBuildWithObserver(ctx context.Context, ids []uint64, observer ImportedAccountObserver) (BuildConversionResult, error) {
-	return s.ConvertWebAccountsToBuildWithProgress(ctx, ids, observer, nil)
+	return s.ConvertWebAccountsToBuildWithStrategy(ctx, ids, BuildConversionMissing, observer, nil)
 }
 
 // ConvertWebAccountsToBuildWithProgress 转换指定账号，并向调用方报告真实完成数。
 func (s *Service) ConvertWebAccountsToBuildWithProgress(ctx context.Context, ids []uint64, observer ImportedAccountObserver, progress BatchProgressObserver) (BuildConversionResult, error) {
+	return s.ConvertWebAccountsToBuildWithStrategy(ctx, ids, BuildConversionMissing, observer, progress)
+}
+
+func (s *Service) ConvertWebAccountsToBuildWithStrategy(ctx context.Context, ids []uint64, strategy BuildConversionStrategy, observer ImportedAccountObserver, progress BatchProgressObserver) (BuildConversionResult, error) {
+	if strategy != BuildConversionAll && strategy != BuildConversionMissing {
+		return BuildConversionResult{}, invalidInput("Grok Web 到 Build 转换策略无效")
+	}
 	ids, err := normalizeIDs(ids, maxBuildConversionAccounts)
 	if err != nil {
 		return BuildConversionResult{}, err
 	}
-	return s.convertWebAccountsToBuild(ctx, ids, observer, progress)
+	prefilteredSkipped := 0
+	if strategy == BuildConversionMissing {
+		candidates, err := s.accounts.FilterMissingBuildConversionIDs(ctx, ids)
+		if err != nil {
+			return BuildConversionResult{}, mapRepositoryError(err)
+		}
+		prefilteredSkipped = len(ids) - len(candidates)
+		ids = candidates
+	}
+	result, err := s.convertWebAccountsToBuild(ctx, ids, strategy, observer, progress)
+	result.Skipped += prefilteredSkipped
+	return result, err
 }
 
 // ConvertAllWebAccountsToBuild 转换全部尚未建立 Build 关联的 Grok Web 账号。
 func (s *Service) ConvertAllWebAccountsToBuild(ctx context.Context) (BuildConversionResult, error) {
-	return s.ConvertAllWebAccountsToBuildWithObserver(ctx, nil)
+	return s.ConvertAllWebAccountsToBuildWithStrategy(ctx, BuildConversionMissing, nil, nil)
 }
 
 func (s *Service) ConvertAllWebAccountsToBuildWithObserver(ctx context.Context, observer ImportedAccountObserver) (BuildConversionResult, error) {
-	return s.ConvertAllWebAccountsToBuildWithProgress(ctx, observer, nil)
+	return s.ConvertAllWebAccountsToBuildWithStrategy(ctx, BuildConversionMissing, observer, nil)
 }
 
 // ConvertAllWebAccountsToBuildWithProgress 转换完整未关联号池，并向调用方报告真实完成数。
 func (s *Service) ConvertAllWebAccountsToBuildWithProgress(ctx context.Context, observer ImportedAccountObserver, progress BatchProgressObserver) (BuildConversionResult, error) {
-	ids, err := s.accounts.ListUnlinkedWebAccountIDs(ctx, maxBuildConversionAccounts+1)
-	if err != nil {
-		return BuildConversionResult{}, err
-	}
-	if len(ids) > maxBuildConversionAccounts {
-		return BuildConversionResult{}, invalidInput("未关联账号超过 1000 个，请分批勾选转换")
-	}
-	if len(ids) == 0 {
-		if progress != nil {
-			if err := progress(0, 0); err != nil {
-				return BuildConversionResult{}, err
-			}
-		}
-		return BuildConversionResult{}, nil
-	}
-	return s.convertWebAccountsToBuild(ctx, ids, observer, progress)
+	return s.ConvertAllWebAccountsToBuildWithStrategy(ctx, BuildConversionMissing, observer, progress)
 }
 
-func (s *Service) convertWebAccountsToBuild(ctx context.Context, ids []uint64, observer ImportedAccountObserver, progress BatchProgressObserver) (BuildConversionResult, error) {
+func (s *Service) ConvertAllWebAccountsToBuildWithStrategy(ctx context.Context, strategy BuildConversionStrategy, observer ImportedAccountObserver, progress BatchProgressObserver) (BuildConversionResult, error) {
+	if strategy != BuildConversionAll && strategy != BuildConversionMissing {
+		return BuildConversionResult{}, invalidInput("Grok Web 到 Build 转换策略无效")
+	}
+	batchSize := s.currentAccountTaskBatchSize()
+	result := BuildConversionResult{BuildAccountIDs: make([]uint64, 0)}
+	seenBuildIDs := make(map[uint64]struct{})
+	var observed sync.Map
+	batchObserver := observer
+	if observer != nil {
+		batchObserver = func(accountID uint64) error {
+			if _, loaded := observed.LoadOrStore(accountID, struct{}{}); loaded {
+				return nil
+			}
+			return observer(accountID)
+		}
+	}
+	var afterID uint64
+	completed := 0
+	total := 0
+	initialized := false
+	for {
+		var (
+			ids   []uint64
+			count int64
+			err   error
+		)
+		if strategy == BuildConversionMissing {
+			ids, count, err = s.accounts.ListUnlinkedWebAccountIDs(ctx, afterID, batchSize)
+		} else {
+			var values []accountdomain.Credential
+			values, count, err = s.accounts.ListProviderAccountBatch(ctx, accountdomain.ProviderWeb, afterID, batchSize)
+			ids = make([]uint64, 0, len(values))
+			for _, value := range values {
+				ids = append(ids, value.ID)
+			}
+		}
+		if err != nil {
+			return result, err
+		}
+		if !initialized {
+			total = int(count)
+			initialized = true
+			if progress != nil {
+				if err := progress(0, total); err != nil {
+					return result, err
+				}
+			}
+		}
+		if len(ids) == 0 {
+			return result, nil
+		}
+		current, err := s.convertWebAccountsToBuild(ctx, ids, strategy, batchObserver, offsetBatchProgress(progress, completed, total))
+		result.Created += current.Created
+		result.Linked += current.Linked
+		result.Skipped += current.Skipped
+		result.Failed += current.Failed
+		for _, buildID := range current.BuildAccountIDs {
+			if _, exists := seenBuildIDs[buildID]; exists {
+				continue
+			}
+			seenBuildIDs[buildID] = struct{}{}
+			result.BuildAccountIDs = append(result.BuildAccountIDs, buildID)
+		}
+		if err != nil {
+			return result, err
+		}
+		completed += len(ids)
+		afterID = ids[len(ids)-1]
+		if len(ids) < batchSize {
+			return result, nil
+		}
+	}
+}
+
+func offsetBatchProgress(progress BatchProgressObserver, offset, total int) BatchProgressObserver {
+	if progress == nil {
+		return nil
+	}
+	return func(completed, _ int) error {
+		if completed == 0 {
+			return nil
+		}
+		return progress(offset+completed, total)
+	}
+}
+
+func (s *Service) convertWebAccountsToBuild(ctx context.Context, ids []uint64, strategy BuildConversionStrategy, observer ImportedAccountObserver, progress BatchProgressObserver) (BuildConversionResult, error) {
 	if progress != nil {
 		if err := progress(0, len(ids)); err != nil {
 			return BuildConversionResult{}, err
@@ -869,7 +1056,7 @@ func (s *Service) convertWebAccountsToBuild(ctx context.Context, ids []uint64, o
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results, summary, runErr := batch.MapObserved(runCtx, ids, batch.Options{Workers: s.conversionPool.Limit(), Pool: s.conversionPool}, func(workCtx context.Context, id uint64) (outcome, error) {
-		buildID, created, skipped, convertErr := s.convertWebAccountToBuild(workCtx, id)
+		buildID, created, skipped, convertErr := s.convertWebAccountToBuild(workCtx, id, strategy)
 		return outcome{accountID: id, buildID: buildID, created: created, skipped: skipped, err: convertErr}, nil
 	}, func(_ int, execution batch.Result[outcome]) {
 		observerMu.Lock()
@@ -934,7 +1121,7 @@ func (s *Service) convertWebAccountsToBuild(ctx context.Context, ids []uint64, o
 	return result, nil
 }
 
-func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64) (uint64, bool, bool, error) {
+func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64, strategy BuildConversionStrategy) (uint64, bool, bool, error) {
 	value, err := s.accounts.Get(ctx, id)
 	if err != nil {
 		return 0, false, false, mapRepositoryError(err)
@@ -942,7 +1129,7 @@ func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64) (uint
 	if value.Provider != accountdomain.ProviderWeb || value.AuthType != accountdomain.AuthTypeSSO {
 		return 0, false, false, ErrUnsupported
 	}
-	if value.LinkedAccountID != 0 {
+	if value.LinkedAccountID != 0 && strategy == BuildConversionMissing {
 		return value.LinkedAccountID, false, true, nil
 	}
 	release, acquired, err := s.refreshLock.Acquire(ctx, "web-build-conversion:"+strconv.FormatUint(id, 10), 2*time.Minute)
@@ -957,8 +1144,19 @@ func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64) (uint
 	if err != nil {
 		return 0, false, false, mapRepositoryError(err)
 	}
-	if value.LinkedAccountID != 0 {
+	if value.LinkedAccountID != 0 && strategy == BuildConversionMissing {
 		return value.LinkedAccountID, false, true, nil
+	}
+	linkedBuildSourceKey := ""
+	if value.LinkedAccountID != 0 {
+		linkedBuild, getErr := s.accounts.Get(ctx, value.LinkedAccountID)
+		if getErr != nil {
+			return 0, false, false, mapRepositoryError(getErr)
+		}
+		if linkedBuild.Provider != accountdomain.ProviderBuild || strings.TrimSpace(linkedBuild.SourceKey) == "" {
+			return 0, false, false, fmt.Errorf("已关联 Grok Build 账号身份无效")
+		}
+		linkedBuildSourceKey = linkedBuild.SourceKey
 	}
 	converter, ok := s.providers.BuildConverter(accountdomain.ProviderWeb)
 	if !ok {
@@ -973,9 +1171,15 @@ func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64) (uint
 	}
 	seed.Provider = accountdomain.ProviderBuild
 	seed.AuthType = accountdomain.AuthTypeOAuth
+	if linkedBuildSourceKey != "" {
+		seed.SourceKey = linkedBuildSourceKey
+	}
 	buildAccount, created, err := s.persistSeed(ctx, seed)
 	if err != nil {
 		return 0, false, false, err
+	}
+	if value.LinkedAccountID != 0 && buildAccount.ID != value.LinkedAccountID {
+		return 0, false, false, fmt.Errorf("重新转换后的 Grok Build 账号身份不一致")
 	}
 	if err := s.accounts.LinkWebToBuild(ctx, id, buildAccount.ID); err != nil {
 		return 0, false, false, mapRepositoryError(err)
@@ -1865,6 +2069,18 @@ func (s *Service) BatchRefreshBilling(ctx context.Context, ids []uint64) (int, i
 		return 0, 0, err
 	}
 	return s.refreshBillings(ctx, values, nil)
+}
+
+// BatchRefreshQuota 使用有限并发同步选中 Web 或 Console 账号的额度窗口。
+func (s *Service) BatchRefreshQuota(ctx context.Context, ids []uint64) (int, int, error) {
+	values, err := normalizeBatchIDs(ids)
+	if err != nil {
+		return 0, 0, err
+	}
+	return s.runAccountBatch(ctx, "quota_sync", values, s.syncPool, nil, func(workCtx context.Context, id uint64) error {
+		_, err := s.RefreshQuota(workCtx, id)
+		return err
+	})
 }
 
 func (s *Service) refreshBillings(ctx context.Context, ids []uint64, progress BatchProgressObserver) (int, int, error) {
