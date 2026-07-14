@@ -71,10 +71,8 @@ func (s *LocalStore) SaveImage(ctx context.Context, id, mimeType string, data []
 	if err := os.Link(temporaryPath, path); err != nil {
 		return "", fmt.Errorf("提交图片文件: %w", err)
 	}
-	if err := os.Remove(temporaryPath); err != nil {
-		_ = os.Remove(path)
-		return "", fmt.Errorf("清理图片临时文件: %w", err)
-	}
+	// 临时文件清理失败不影响已提交的永久文件，忽略该错误。
+	_ = os.Remove(temporaryPath)
 	committed = true
 	return storageKey, nil
 }
