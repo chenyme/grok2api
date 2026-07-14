@@ -56,19 +56,19 @@ func (c *browserClient) Do(request *http.Request) (*http.Response, error) {
 }
 
 func fromFHTTPResponse(fresponse *fhttp.Response) *http.Response {
-	header := http.Header(fresponse.Header)
+	header := http.Header(fresponse.Header).Clone()
 	contentLength := fresponse.ContentLength
 	if fresponse.Uncompressed {
-		header = header.Clone()
 		header.Del("Content-Encoding")
 		header.Del("Content-Length")
 		contentLength = -1
 	}
+	transferEncoding := append([]string(nil), fresponse.TransferEncoding...)
 	return &http.Response{
 		Status: fresponse.Status, StatusCode: fresponse.StatusCode, Proto: fresponse.Proto,
 		ProtoMajor: fresponse.ProtoMajor, ProtoMinor: fresponse.ProtoMinor, Header: header,
-		Body: fresponse.Body, ContentLength: contentLength, TransferEncoding: fresponse.TransferEncoding,
-		Close: fresponse.Close, Uncompressed: fresponse.Uncompressed, Trailer: http.Header(fresponse.Trailer),
+		Body: fresponse.Body, ContentLength: contentLength, TransferEncoding: transferEncoding,
+		Close: fresponse.Close, Uncompressed: fresponse.Uncompressed, Trailer: http.Header(fresponse.Trailer).Clone(),
 	}
 }
 
