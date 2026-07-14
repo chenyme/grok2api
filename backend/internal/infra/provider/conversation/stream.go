@@ -413,7 +413,7 @@ func (c *streamConverter) done(status string) error {
 	}
 	if err := c.writeEvent("message_delta", map[string]any{
 		"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nullableAnthropicString(c.stopSequence)},
-		"usage": map[string]any{"output_tokens": c.usage.OutputTokens},
+		"usage": map[string]any{"input_tokens": c.usage.InputTokens, "output_tokens": c.usage.OutputTokens},
 	}); err != nil {
 		return err
 	}

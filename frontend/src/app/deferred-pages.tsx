@@ -8,6 +8,8 @@ const RequestAuditsPage = lazyNamed(() => import("@/features/audits/request-audi
 const ClientKeysPage = lazyNamed(() => import("@/features/client-keys/client-keys-page"), "ClientKeysPage");
 const DashboardPage = lazyNamed(() => import("@/features/dashboard/dashboard-page"), "DashboardPage");
 const ApiDocsPage = lazyNamed(() => import("@/features/docs/api-docs-page"), "ApiDocsPage");
+const GalleryPage = lazyNamed(() => import("@/features/media/gallery-page"), "GalleryPage");
+const VideoGalleryPage = lazyNamed(() => import("@/features/media/video-gallery-page"), "VideoGalleryPage");
 const ModelsPage = lazyNamed(() => import("@/features/models/models-page"), "ModelsPage");
 const SettingsPage = lazyNamed(() => import("@/features/settings/settings-page"), "SettingsPage");
 
@@ -41,6 +43,14 @@ export function DeferredClientKeysPage() {
 
 export function DeferredRequestAuditsPage() {
   return <DeferredPage page={RequestAuditsPage} />;
+}
+
+export function DeferredGalleryPage() {
+  return <DeferredPage page={GalleryPage} />;
+}
+
+export function DeferredVideoGalleryPage() {
+  return <DeferredPage page={VideoGalleryPage} />;
 }
 
 export function DeferredApiDocsPage() {

@@ -21,6 +21,49 @@ var (
 	ErrUnauthorized         = errors.New("upstream credential unauthorized")
 )
 
+// MediaPostProcessingStage 标识媒体已经生成后失败的本地处理阶段。
+type MediaPostProcessingStage string
+
+const (
+	MediaPostProcessingDownload MediaPostProcessingStage = "download"
+	MediaPostProcessingStorage  MediaPostProcessingStage = "storage"
+)
+
+// MediaPostProcessingError 表示上游媒体已经产生，后续下载或保存失败。
+// 此类错误不得触发换号重新生成，也不应降低生成账号的健康度。
+type MediaPostProcessingError struct {
+	Stage MediaPostProcessingStage
+	Cause error
+}
+
+func (e *MediaPostProcessingError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "media post-processing failed"
+	}
+	return fmt.Sprintf("media post-processing %s failed: %v", e.Stage, e.Cause)
+}
+
+func (e *MediaPostProcessingError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// NewMediaPostProcessingError 将下载或保存错误标记为不可跨账号重试。
+func NewMediaPostProcessingError(stage MediaPostProcessingStage, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return &MediaPostProcessingError{Stage: stage, Cause: cause}
+}
+
+// IsMediaPostProcessingError 判断错误是否发生在媒体生成后的本地处理阶段。
+func IsMediaPostProcessingError(err error) bool {
+	var target *MediaPostProcessingError
+	return errors.As(err, &target)
+}
+
 // CredentialRefreshError 区分需要重新认证的永久 OAuth 错误与可后台退避重试的临时错误。
 type CredentialRefreshError struct {
 	Status     int

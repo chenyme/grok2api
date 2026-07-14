@@ -85,6 +85,21 @@ func TestResolveWebTierUsesFreshWebQuotaOverStoredTier(t *testing.T) {
 	if tier != account.WebTierAuto || useWeekly {
 		t.Fatalf("unknown snapshot resolved to %q, weekly=%v", tier, useWeekly)
 	}
+
+	tier, useWeekly = resolveWebTierFromQuota(account.WebTierSuper, nil, true)
+	if tier != account.WebTierSuper || !useWeekly {
+		t.Fatalf("super weekly fallback resolved to %q, weekly=%v", tier, useWeekly)
+	}
+
+	tier, useWeekly = resolveWebTierFromQuota(account.WebTierBasic, nil, true)
+	if tier != account.WebTierBasic || useWeekly {
+		t.Fatalf("basic should not be promoted when modes unavailable: got %q, weekly=%v", tier, useWeekly)
+	}
+
+	tier, useWeekly = resolveWebTierFromQuota(account.WebTierAuto, nil, true)
+	if tier != account.WebTierAuto || useWeekly {
+		t.Fatalf("auto should not be promoted when modes unavailable: got %q, weekly=%v", tier, useWeekly)
+	}
 }
 
 func TestSyncQuotaCorrectsStoredSuperFromFreshWebQuota(t *testing.T) {
