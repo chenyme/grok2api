@@ -21,6 +21,13 @@ const (
 	UsageSourceNone      UsageSource = "none"
 )
 
+type EgressMode string
+
+const (
+	EgressModeDirect EgressMode = "direct"
+	EgressModeProxy  EgressMode = "proxy"
+)
+
 // Record 表示不包含提示词和响应正文的推理请求审计记录。
 type Record struct {
 	ID                      uint64
@@ -36,6 +43,10 @@ type Record struct {
 	UsageSource             UsageSource
 	AccountID               *uint64
 	AccountName             string
+	EgressNodeID            *uint64
+	EgressNodeName          string
+	EgressScope             string
+	EgressMode              EgressMode
 	StatusCode              int
 	Streaming               bool
 	MediaInputImages        int64
