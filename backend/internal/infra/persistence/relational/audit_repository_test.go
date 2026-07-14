@@ -2,6 +2,8 @@ package relational
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -187,6 +189,64 @@ func TestAuditRepositoryAllowsRepeatedExternalRequestIDs(t *testing.T) {
 	_, total, err := repository.List(ctx, 0, 10)
 	if err != nil || total != 2 {
 		t.Fatalf("total = %d, err = %v", total, err)
+	}
+}
+
+func TestAuditRepositoryRoundTripsFailureAttempts(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-attempts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAuditRepository(database)
+	now := time.Now().UTC()
+	status := http.StatusBadGateway
+	record := audit.Record{
+		EventID: "evt_failure_attempts_0001", RequestID: "failure-attempts", ClientKeyID: 1, ModelRouteID: 1,
+		StatusCode: http.StatusBadGateway, CreatedAt: now,
+		Attempts: []audit.Attempt{
+			{
+				Number: 1, Source: audit.AttemptSourceTransport, Stage: "dns_lookup", AccountID: uint64Pointer(7), AccountName: "primary",
+				Method: http.MethodPost, RequestPath: "/responses", UpstreamURL: "https://api.example.test/v1/responses", StartedAt: now.Add(-2 * time.Second), DurationMS: 125,
+				TransportError: "lookup api.example.test: no such host", ErrorChain: []audit.ErrorFrame{{Type: "*url.Error", Message: "Post request failed"}, {Type: "*net.DNSError", Message: "no such host"}},
+			},
+			{
+				Number: 2, Source: audit.AttemptSourceUpstreamHTTP, Stage: "upstream_response", AccountID: uint64Pointer(8), AccountName: "secondary",
+				Method: http.MethodPost, RequestPath: "/responses", UpstreamURL: "https://api.example.test/v1/responses", StartedAt: now.Add(-time.Second), DurationMS: 250,
+				UpstreamStatusCode: &status, UpstreamStatus: "502 Bad Gateway", ResponseHeaders: http.Header{"Content-Type": {"application/json"}, "X-Upstream": {"edge-a", "edge-b"}},
+				ResponseBody: []byte{'{', '"', 'e', 'r', 'r', 'o', 'r', '"', ':', ' ', '"', 'f', 'a', 'i', 'l', 'e', 'd', '"', '}', 0xff},
+			},
+		},
+	}
+	if err := repository.Create(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.Get(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AttemptCount != 2 || len(stored.Attempts) != 2 {
+		t.Fatalf("attempt count = %d, attempts = %#v", stored.AttemptCount, stored.Attempts)
+	}
+	if stored.Attempts[0].Number != 1 || stored.Attempts[0].Stage != "dns_lookup" || len(stored.Attempts[0].ErrorChain) != 2 {
+		t.Fatalf("transport attempt = %#v", stored.Attempts[0])
+	}
+	httpAttempt := stored.Attempts[1]
+	if httpAttempt.Number != 2 || httpAttempt.UpstreamStatusCode == nil || *httpAttempt.UpstreamStatusCode != status || string(httpAttempt.ResponseBody) != string(record.Attempts[1].ResponseBody) || len(httpAttempt.ResponseHeaders["X-Upstream"]) != 2 {
+		t.Fatalf("HTTP attempt = %#v", httpAttempt)
+	}
+	if err := repository.Create(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if count := tableRowCount(t, database, "request_audit_attempts"); count != 2 {
+		t.Fatalf("idempotent attempts = %d", count)
+	}
+	if _, err := repository.Get(ctx, 999); !errors.Is(err, repositorypkg.ErrNotFound) {
+		t.Fatalf("missing audit error = %v", err)
 	}
 }
 

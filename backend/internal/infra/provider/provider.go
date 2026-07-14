@@ -66,11 +66,21 @@ type ResponseResourceRequest struct {
 
 // Response 表示尚未写入下游的上游响应。
 type Response struct {
+	StatusCode  int
+	Status      string
+	Header      http.Header
+	Body        io.ReadCloser
+	QuotaUnits  int
+	UpstreamURL string
+	Diagnostic  *DiagnosticResponse
+}
+
+// DiagnosticResponse 保留 Provider 转换前的原始失败响应。
+type DiagnosticResponse struct {
 	StatusCode int
 	Status     string
 	Header     http.Header
-	Body       io.ReadCloser
-	QuotaUnits int
+	Body       []byte
 }
 
 // DeviceAuthorization 表示 Device OAuth 启动结果。

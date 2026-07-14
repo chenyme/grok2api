@@ -37,7 +37,6 @@ var (
 	ErrConversationUnsupported    = errors.New("目标模型不支持当前对话协议")
 )
 
-const maxRetryableBodyBytes = 64 << 10
 const responseOwnershipTTL = 30 * 24 * time.Hour
 const finalizationTimeout = 5 * time.Second
 const textBillingReservationTTL = 2 * time.Hour
@@ -345,15 +344,18 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	quotaProbeAttempted := false
 	var lastErr error
 	var lastFailure *UpstreamFailure
+	failureAttempts := newFailureAttemptRecorder(http.MethodPost, path)
 	forwardResponse := func(credential accountdomain.Credential) (*provider.Response, error) {
 		started := time.Now()
 		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+		err = failureAttempts.captureResponse(credential, started, response, err)
 		timing.markUpstream(time.Since(started))
 		return response, err
 	}
 	ensureCredential := func(credential accountdomain.Credential, force bool) (accountdomain.Credential, error) {
 		started := time.Now()
 		result, err := s.accounts.EnsureCredential(ctx, credential, force)
+		failureAttempts.captureCredentialFailure(credential, started, force, err)
 		timing.markCredential(time.Since(started))
 		return result, err
 	}
@@ -570,6 +572,7 @@ attemptLoop:
 				record.ContextOutputTokens = usage.ContextOutputTokens
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
+				record.Attempts = failureAttempts.snapshot()
 				record.CreatedAt = now
 				if err := s.audits.Create(persistCtx, record); err != nil {
 					s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
@@ -610,6 +613,7 @@ attemptLoop:
 		record.StatusCode = lastFailure.HTTPStatus
 		record.DurationMS = time.Since(startedAt).Milliseconds()
 		record.ErrorCode = lastFailure.AuditCode()
+		record.Attempts = failureAttempts.snapshot()
 		record.CreatedAt = time.Now().UTC()
 		if lastFailure.AccountID != 0 {
 			accountID := lastFailure.AccountID
@@ -630,6 +634,7 @@ attemptLoop:
 	record.StatusCode = http.StatusServiceUnavailable
 	record.DurationMS = time.Since(startedAt).Milliseconds()
 	record.ErrorCode = "upstream_unavailable"
+	record.Attempts = failureAttempts.snapshot()
 	record.CreatedAt = time.Now().UTC()
 	persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
 	defer cancel()
@@ -959,11 +964,7 @@ func (s *Service) forwardOwnedResponse(ctx context.Context, input ResourceInput,
 }
 
 func readRetryableBody(body io.ReadCloser) ([]byte, error) {
-	if body == nil {
-		return nil, nil
-	}
-	defer body.Close()
-	return io.ReadAll(io.LimitReader(body, maxRetryableBodyBytes))
+	return readResponseBody(body)
 }
 
 func parseFreeQuotaExhaustion(body []byte) (int64, int64, bool) {
