@@ -17,6 +17,7 @@ var schemaModels = []any{
 	&billingModel{},
 	&quotaRecoveryModel{},
 	&modelRouteModel{},
+	&modelRouteAliasModel{},
 	&modelRouteAccountModel{},
 	&accountModelCapabilityModel{},
 	&accountModelSyncStateModel{},
@@ -47,6 +48,7 @@ var schemaIndexes = []string{
 	"CREATE UNIQUE INDEX IF NOT EXISTS uidx_provider_upstream ON model_routes(provider, upstream_model)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_created_id ON model_routes(created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_enabled ON model_routes(enabled, public_id, id)",
+	"CREATE INDEX IF NOT EXISTS idx_model_route_aliases_route ON model_route_aliases(model_route_id, alias)",
 	"CREATE INDEX IF NOT EXISTS idx_model_route_accounts_account_route ON model_route_accounts(account_id, model_route_id)",
 	"CREATE INDEX IF NOT EXISTS idx_account_model_quota_blocks_due ON account_model_quota_blocks(cooldown_until, account_id)",
 	"CREATE INDEX IF NOT EXISTS idx_client_keys_created_id ON client_keys(created_at DESC, id DESC)",
@@ -89,6 +91,9 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("初始化数据库索引: %w", err)
 		}
+	}
+	if err := d.ensureCanonicalModelPublicIDs(ctx); err != nil {
+		return fmt.Errorf("迁移模型 Provider 命名空间: %w", err)
 	}
 	return nil
 }

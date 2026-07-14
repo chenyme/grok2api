@@ -85,6 +85,57 @@ func TestModelCapabilitiesAggregateAndGateEnabledRoutes(t *testing.T) {
 	}
 }
 
+func TestPublicModelNameResolvesAcrossAvailableProviders(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	models := NewModelRepository(database)
+	accounts := NewAccountRepository(database)
+
+	build, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "build", SourceKey: "shared-build",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	console, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderConsole, Name: "console", SourceKey: "shared-console",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, providerValue := range []account.Provider{account.ProviderBuild, account.ProviderConsole} {
+		if err := models.UpsertDiscovered(ctx, providerValue, []string{"grok-shared"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	if err := models.ReplaceAccountCapabilities(ctx, build.ID, []string{"grok-shared"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.ReplaceAccountCapabilities(ctx, console.ID, []string{"grok-shared"}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	routes, err := models.GetByPublicIDCandidates(ctx, "grok-shared")
+	if err != nil || len(routes) != 2 || routes[0].Provider != account.ProviderBuild || routes[1].Provider != account.ProviderConsole {
+		t.Fatalf("shared routes = %#v, err = %v", routes, err)
+	}
+	explicit, err := models.GetByPublicIDCandidates(ctx, "Console/grok-shared")
+	if err != nil || len(explicit) != 1 || explicit[0].Provider != account.ProviderConsole {
+		t.Fatalf("explicit Console route = %#v, err = %v", explicit, err)
+	}
+	build.Enabled = false
+	if _, err := accounts.Update(ctx, build); err != nil {
+		t.Fatal(err)
+	}
+	route, err := models.GetByPublicID(ctx, "grok-shared")
+	if err != nil || route.Provider != account.ProviderConsole {
+		t.Fatalf("fallback route = %#v, err = %v", route, err)
+	}
+}
+
 func TestReplaceProviderRoutesReconcilesStaticCatalog(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
@@ -130,7 +181,7 @@ func TestReplaceProviderRoutesReconcilesStaticCatalog(t *testing.T) {
 	if len(routes) != 2 || routes[0].UpstreamModel != "grok-chat-auto" || routes[1].UpstreamModel != "grok-chat-fast" {
 		t.Fatalf("web routes = %#v", routes)
 	}
-	if routes[1].ID != fastBefore.ID || routes[1].PublicID != "grok-chat-fast" || routes[1].Enabled {
+	if routes[1].ID != fastBefore.ID || routes[1].PublicID != "Web/grok-chat-fast" || routes[1].Enabled {
 		t.Fatalf("reconciled fast route = %#v", routes[1])
 	}
 	var capability accountModelCapabilityModel
@@ -173,7 +224,7 @@ func TestReplaceProviderRoutesCanRenameUpstreamModels(t *testing.T) {
 	if err := database.db.WithContext(ctx).Where("provider = ?", account.ProviderWeb).Order("upstream_model ASC").Find(&after).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(after) != 2 || after[0].UpstreamModel != "grok-imagine-image" || after[0].PublicID != "grok-imagine-image" || after[1].UpstreamModel != "grok-imagine-image-quality" || after[1].PublicID != "grok-imagine-image-quality" {
+	if len(after) != 2 || after[0].UpstreamModel != "grok-imagine-image" || after[0].PublicID != "Web/grok-imagine-image" || after[1].UpstreamModel != "grok-imagine-image-quality" || after[1].PublicID != "Web/grok-imagine-image-quality" {
 		t.Fatalf("swapped routes = %#v", after)
 	}
 	beforeIDs := make(map[string]uint64, len(before))
@@ -241,7 +292,7 @@ func TestManualModelRouteBindingsAndRediscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deleted route was not rediscovered: %v", err)
 	}
-	if recreated.ID == created.ID || recreated.PublicID != created.UpstreamModel || recreated.Origin != model.OriginDiscovered || len(recreated.BoundAccountIDs) != 0 {
+	if recreated.ID == created.ID || recreated.PublicID != "Build/"+created.UpstreamModel || recreated.Origin != model.OriginDiscovered || len(recreated.BoundAccountIDs) != 0 {
 		t.Fatalf("recreated route = %#v", recreated)
 	}
 }

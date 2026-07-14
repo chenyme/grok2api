@@ -121,7 +121,7 @@ func (s *Service) refreshDueCredentials(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if !credential.Enabled || credential.AuthStatus != accountdomain.AuthStatusActive || credential.Provider != accountdomain.ProviderBuild || credential.EncryptedRefreshToken == "" {
+			if !credential.Enabled || credential.AuthStatus != accountdomain.AuthStatusActive || s.providers == nil || !s.providers.SupportsCredentialRefresh(credential.Provider) || credential.EncryptedRefreshToken == "" {
 				return nil
 			}
 			if credential.RefreshDueAt != nil && credential.RefreshDueAt.After(s.now()) {

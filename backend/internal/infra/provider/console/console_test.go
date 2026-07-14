@@ -25,12 +25,12 @@ import (
 
 func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 	expected := map[string]string{
-		"grok-4.3":                     "grok-4.3",
-		"grok-4.20-0309":               "grok-4.20-0309",
-		"grok-4.20-0309-reasoning":     "grok-4.20-0309-reasoning",
-		"grok-4.20-0309-non-reasoning": "grok-4.20-0309-non-reasoning",
-		"grok-4.20-multi-agent-0309":   "grok-4.20-multi-agent-0309",
-		"grok-build-0.1":               "grok-build-0.1",
+		"Console/grok-4.3":                     "grok-4.3",
+		"Console/grok-4.20-0309":               "grok-4.20-0309",
+		"Console/grok-4.20-0309-reasoning":     "grok-4.20-0309-reasoning",
+		"Console/grok-4.20-0309-non-reasoning": "grok-4.20-0309-non-reasoning",
+		"Console/grok-4.20-multi-agent-0309":   "grok-4.20-multi-agent-0309",
+		"Console/grok-build-0.1":               "grok-build-0.1",
 	}
 	routes := Routes()
 	if len(routes) != len(expected) {
@@ -58,8 +58,12 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 		"grok-4.3-low", "grok-4.3-medium", "grok-4.3-high",
 		"grok-4.20-multi-agent-low", "grok-4.20-multi-agent-medium", "grok-4.20-multi-agent-high", "grok-4.20-multi-agent-xhigh",
 	} {
-		if _, ok := registry.ResolveModelAlias(name); !ok {
+		alias, ok := registry.ResolveModelAlias(name)
+		if !ok {
 			t.Fatalf("alias %q missing", name)
+		}
+		if !strings.HasPrefix(alias.PublicModel, "Console/") {
+			t.Fatalf("alias %q targets non-canonical model %q", name, alias.PublicModel)
 		}
 	}
 }

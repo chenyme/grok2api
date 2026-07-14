@@ -29,10 +29,25 @@ type billingStub struct {
 	syncErr     error
 }
 
-type accountReaderStub struct{ provider accountdomain.Provider }
+type accountReaderStub struct {
+	provider accountdomain.Provider
+	quota    provider.QuotaKind
+}
 
 func (s accountReaderStub) Get(context.Context, uint64) (accountapp.View, error) {
 	return accountapp.View{Credential: accountdomain.Credential{Provider: s.provider}}, nil
+}
+
+func (s accountReaderStub) ProviderDefinition(value accountdomain.Provider) (provider.Definition, bool) {
+	quota := provider.QuotaBilling
+	if s.quota != "" {
+		quota = s.quota
+	} else if value == accountdomain.ProviderWeb {
+		quota = provider.QuotaRemoteWindow
+	} else if value == accountdomain.ProviderConsole {
+		quota = provider.QuotaLocalWindow
+	}
+	return provider.Definition{Provider: value, Quota: quota}, value.IsValid()
 }
 
 type quotaStub struct {
@@ -142,6 +157,22 @@ func TestSyncAccountUsesQuotaForConsoleProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	billingChecks, billingSyncs := billing.counts()
+	if billingChecks != 0 || billingSyncs != 0 || quota.checks != 1 || quota.syncs != 1 {
+		t.Fatalf("billing = %d/%d, quota = %d/%d", billingChecks, billingSyncs, quota.checks, quota.syncs)
+	}
+}
+
+func TestSyncAccountUsesDeclaredQuotaPolicyInsteadOfProviderName(t *testing.T) {
+	billing := &billingStub{}
+	quota := &quotaStub{}
+	models := &modelStub{hasSnapshot: true}
+	reader := accountReaderStub{provider: accountdomain.ProviderBuild, quota: provider.QuotaRemoteWindow}
+	service := NewService(slog.Default(), reader, billing, quota, models)
+
+	if err := service.syncAccount(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
 	billingChecks, billingSyncs := billing.counts()
 	if billingChecks != 0 || billingSyncs != 0 || quota.checks != 1 || quota.syncs != 1 {
 		t.Fatalf("billing = %d/%d, quota = %d/%d", billingChecks, billingSyncs, quota.checks, quota.syncs)
@@ -289,6 +320,13 @@ type countingAdapter struct {
 }
 
 func (a *countingAdapter) Provider() accountdomain.Provider { return accountdomain.ProviderBuild }
+
+func (a *countingAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: accountdomain.ProviderBuild, Quota: provider.QuotaBilling,
+		Credential: provider.CredentialSurface{Refresh: true},
+	}
+}
 
 func (a *countingAdapter) ListModels(context.Context, accountdomain.Credential) ([]string, error) {
 	a.mu.Lock()

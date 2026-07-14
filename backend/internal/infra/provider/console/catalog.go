@@ -14,7 +14,6 @@ const (
 
 type ModelSpec struct {
 	PublicID               string
-	ConflictPublicID       string
 	UpstreamModel          string
 	SupportsReasoning      bool
 	DefaultReasoningEffort string
@@ -23,12 +22,12 @@ type ModelSpec struct {
 }
 
 var catalog = []ModelSpec{
-	{PublicID: "grok-4.3", ConflictPublicID: "grok-4.3-console", UpstreamModel: "grok-4.3", SupportsReasoning: true, DefaultReasoningEffort: "high", MaxOutputTokens: 1_000_000, SearchTools: true},
-	{PublicID: "grok-4.20-0309", ConflictPublicID: "grok-4.20-0309-console", UpstreamModel: "grok-4.20-0309", MaxOutputTokens: 1_000_000, SearchTools: true},
-	{PublicID: "grok-4.20-0309-reasoning", ConflictPublicID: "grok-4.20-0309-reasoning-console", UpstreamModel: "grok-4.20-0309-reasoning", MaxOutputTokens: 1_000_000, SearchTools: true},
-	{PublicID: "grok-4.20-0309-non-reasoning", ConflictPublicID: "grok-4.20-0309-non-reasoning-console", UpstreamModel: "grok-4.20-0309-non-reasoning", MaxOutputTokens: 1_000_000, SearchTools: true},
-	{PublicID: "grok-4.20-multi-agent-0309", ConflictPublicID: "grok-4.20-multi-agent-console", UpstreamModel: "grok-4.20-multi-agent-0309", SupportsReasoning: true, DefaultReasoningEffort: "medium", MaxOutputTokens: 2_000_000, SearchTools: true},
-	{PublicID: "grok-build-0.1", ConflictPublicID: "grok-build-console", UpstreamModel: "grok-build-0.1", MaxOutputTokens: 256_000, SearchTools: true},
+	{PublicID: "grok-4.3", UpstreamModel: "grok-4.3", SupportsReasoning: true, DefaultReasoningEffort: "high", MaxOutputTokens: 1_000_000, SearchTools: true},
+	{PublicID: "grok-4.20-0309", UpstreamModel: "grok-4.20-0309", MaxOutputTokens: 1_000_000, SearchTools: true},
+	{PublicID: "grok-4.20-0309-reasoning", UpstreamModel: "grok-4.20-0309-reasoning", MaxOutputTokens: 1_000_000, SearchTools: true},
+	{PublicID: "grok-4.20-0309-non-reasoning", UpstreamModel: "grok-4.20-0309-non-reasoning", MaxOutputTokens: 1_000_000, SearchTools: true},
+	{PublicID: "grok-4.20-multi-agent-0309", UpstreamModel: "grok-4.20-multi-agent-0309", SupportsReasoning: true, DefaultReasoningEffort: "medium", MaxOutputTokens: 2_000_000, SearchTools: true},
+	{PublicID: "grok-build-0.1", UpstreamModel: "grok-build-0.1", MaxOutputTokens: 256_000, SearchTools: true},
 }
 
 var aliases = []provider.ModelAlias{
@@ -48,8 +47,9 @@ var aliases = []provider.ModelAlias{
 }
 
 func consoleAlias(alias, publicModel, upstreamModel, effort string) provider.ModelAlias {
+	canonical, _ := modeldomain.NormalizePublicID(account.ProviderConsole, publicModel)
 	return provider.ModelAlias{
-		Alias: alias, PublicModel: publicModel, Provider: account.ProviderConsole,
+		Alias: alias, PublicModel: canonical, Provider: account.ProviderConsole,
 		UpstreamModel: upstreamModel, ReasoningEffort: effort,
 	}
 }
@@ -59,8 +59,9 @@ func Catalog() []ModelSpec { return append([]ModelSpec(nil), catalog...) }
 func Routes() []modeldomain.Route {
 	values := make([]modeldomain.Route, 0, len(catalog))
 	for _, spec := range catalog {
+		publicID, _ := modeldomain.NormalizePublicID(account.ProviderConsole, spec.PublicID)
 		values = append(values, modeldomain.Route{
-			PublicID: spec.PublicID, Provider: account.ProviderConsole, UpstreamModel: spec.UpstreamModel,
+			PublicID: publicID, Provider: account.ProviderConsole, UpstreamModel: spec.UpstreamModel,
 			Capability: modeldomain.CapabilityResponses, Enabled: true,
 		})
 	}
@@ -74,14 +75,6 @@ func Resolve(upstreamModel string) (ModelSpec, bool) {
 		}
 	}
 	return ModelSpec{}, false
-}
-
-func ConflictPublicID(upstreamModel string) string {
-	spec, ok := Resolve(upstreamModel)
-	if !ok {
-		return ""
-	}
-	return spec.ConflictPublicID
 }
 
 func Aliases() []provider.ModelAlias { return append([]provider.ModelAlias(nil), aliases...) }

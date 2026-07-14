@@ -158,6 +158,16 @@ type modelRouteModel struct {
 
 func (modelRouteModel) TableName() string { return "model_routes" }
 
+// modelRouteAliasModel 保留升级或人工重命名前的公开模型 ID，使外部客户端可以平滑迁移。
+type modelRouteAliasModel struct {
+	Alias        string           `gorm:"size:255;primaryKey;check:chk_model_route_aliases_alias,length(trim(alias)) BETWEEN 1 AND 255"`
+	ModelRouteID uint64           `gorm:"not null;index"`
+	CreatedAt    time.Time        `gorm:"not null"`
+	ModelRoute   *modelRouteModel `gorm:"foreignKey:ModelRouteID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (modelRouteAliasModel) TableName() string { return "model_route_aliases" }
+
 type modelRouteAccountModel struct {
 	ModelRouteID uint64           `gorm:"primaryKey"`
 	AccountID    uint64           `gorm:"primaryKey"`

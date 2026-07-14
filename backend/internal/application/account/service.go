@@ -182,11 +182,10 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	result := Summary{Providers: map[string]ProviderSummary{
-		string(accountdomain.ProviderBuild):   {},
-		string(accountdomain.ProviderWeb):     {},
-		string(accountdomain.ProviderConsole): {},
-	}}
+	result := Summary{Providers: make(map[string]ProviderSummary, len(accountdomain.Providers()))}
+	for _, providerValue := range accountdomain.Providers() {
+		result.Providers[string(providerValue)] = ProviderSummary{}
+	}
 	for _, row := range rows {
 		result.Total += row.Total
 		result.Available += row.Available
@@ -269,9 +268,17 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 	}
 }
 
+// ProviderDefinition 向账号同步编排层暴露只读生命周期策略，不泄露具体 Adapter。
+func (s *Service) ProviderDefinition(value accountdomain.Provider) (provider.Definition, bool) {
+	if s.providers == nil {
+		return provider.Definition{}, false
+	}
+	return s.providers.Definition(value)
+}
+
 func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]View, int64, error) {
 	page, pageSize = normalizePage(page, pageSize)
-	if !oneOf(filter.Provider, "", string(accountdomain.ProviderBuild), string(accountdomain.ProviderWeb), string(accountdomain.ProviderConsole)) || !oneOf(filter.QuotaType, "", "free", "paid", "unknown", "auto", "basic", "super", "heavy") || !oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") || !oneOf(filter.Renewal, "", "refreshable", "unrefreshable") || !repository.IsValidSort(filter.Sort, "name", "type", "status", "createdAt") {
+	if (filter.Provider != "" && !accountdomain.Provider(filter.Provider).IsValid()) || !oneOf(filter.QuotaType, "", "free", "paid", "unknown", "auto", "basic", "super", "heavy") || !oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") || !oneOf(filter.Renewal, "", "refreshable", "unrefreshable") || !repository.IsValidSort(filter.Sort, "name", "type", "status", "createdAt") {
 		return nil, 0, ErrInvalidFilter
 	}
 	var refreshable *bool
@@ -1055,7 +1062,7 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 	}
 	if !updated.Enabled && s.sticky != nil {
 		_ = s.sticky.DeleteByAccount(ctx, updated.ID)
-	} else if updated.Enabled && updated.Provider == accountdomain.ProviderBuild {
+	} else if updated.Enabled && s.providers != nil && s.providers.SupportsCredentialRefresh(updated.Provider) {
 		s.WakeCredentialRefresh()
 	}
 	return s.Get(ctx, updated.ID)
@@ -1094,7 +1101,7 @@ func (s *Service) EnsureCredential(ctx context.Context, value accountdomain.Cred
 }
 
 func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Credential, force, bypassCooldown, respectSchedule bool) (accountdomain.Credential, error) {
-	if value.AuthType == accountdomain.AuthTypeSSO || value.Provider == accountdomain.ProviderWeb {
+	if s.providers == nil || !s.providers.SupportsCredentialRefresh(value.Provider) {
 		if force {
 			return accountdomain.Credential{}, ErrUnsupported
 		}
@@ -1491,7 +1498,8 @@ func (s *Service) refreshQuota(ctx context.Context, id uint64) ([]accountdomain.
 		}
 		return nil, err
 	}
-	if value.Provider == accountdomain.ProviderConsole {
+	quotaKind, _ := s.providers.QuotaKind(value.Provider)
+	if quotaKind == provider.QuotaLocalWindow {
 		existing, loadErr := s.accounts.GetQuotaWindows(ctx, []uint64{id})
 		if loadErr != nil {
 			return nil, loadErr
@@ -1587,7 +1595,8 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 		return accountdomain.QuotaWindow{}, err
 	}
 	var tier accountdomain.WebTier
-	if value.Provider == accountdomain.ProviderWeb {
+	quotaKind, _ := s.providers.QuotaKind(value.Provider)
+	if quotaKind == provider.QuotaRemoteWindow {
 		tier = value.WebTier
 		if tier == "" || tier == accountdomain.WebTierAuto {
 			if snapshot, syncErr := adapter.SyncQuota(ctx, value); syncErr == nil {
@@ -1610,8 +1619,8 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	return window, nil
 }
 
-// QueueWebQuotaRefresh 在成功调用后异步同步周额度；Free 账号继续同步当前 Chat 模式。
-func (s *Service) QueueWebQuotaRefresh(id uint64, mode string) {
+// QueueQuotaRefresh 在成功调用后异步同步远端窗口额度；当前 Web Free 账号同步 Chat 模式。
+func (s *Service) QueueQuotaRefresh(id uint64, mode string) {
 	mode = strings.TrimSpace(mode)
 	if id == 0 || (mode != "" && mode != "weekly" && !isWebChatQuotaMode(mode)) {
 		return
@@ -1633,6 +1642,11 @@ func (s *Service) QueueWebQuotaRefresh(id uint64, mode string) {
 		s.quotaRefreshMu.Unlock()
 		s.logger.Warn("web_quota_refresh_queue_full", "account_id", id, "mode", mode)
 	}
+}
+
+// QueueWebQuotaRefresh 保留给现有内部调用方，统一实现由 QueueQuotaRefresh 承担。
+func (s *Service) QueueWebQuotaRefresh(id uint64, mode string) {
+	s.QueueQuotaRefresh(id, mode)
 }
 
 // RunWebQuotaRefresh 使用固定 Worker 数处理成功请求后的额度同步，避免按账号无界创建 goroutine。
@@ -1749,9 +1763,20 @@ func (s *Service) SyncAllBilling(ctx context.Context) (int, int, error) {
 }
 
 func (s *Service) SyncAllBillingWithProgress(ctx context.Context, progress BatchProgressObserver) (int, int, error) {
-	ids, err := s.accounts.ListEnabledAccountIDs(ctx, accountdomain.ProviderBuild, false)
-	if err != nil {
-		return 0, 0, err
+	if s.providers == nil {
+		return 0, 0, fmt.Errorf("Provider 注册表未初始化")
+	}
+	ids := make([]uint64, 0)
+	for _, providerValue := range s.providers.Providers() {
+		quotaKind, ok := s.providers.QuotaKind(providerValue)
+		if !ok || quotaKind != provider.QuotaBilling {
+			continue
+		}
+		providerIDs, err := s.accounts.ListEnabledAccountIDs(ctx, providerValue, false)
+		if err != nil {
+			return 0, 0, err
+		}
+		ids = append(ids, providerIDs...)
 	}
 	return s.refreshBillings(ctx, ids, progress)
 }
@@ -1792,19 +1817,31 @@ func (s *Service) SyncWebQuotaAccounts(ctx context.Context, ids []uint64) (int, 
 	})
 }
 
-// RefreshAllTokens 续期全部可刷新的 Grok Build 凭据，不可续期账号会被跳过。
+// RefreshAllTokens 续期所有声明支持刷新的 Provider 凭据，不可续期账号会被跳过。
 func (s *Service) RefreshAllTokens(ctx context.Context) (int, int, int, error) {
 	return s.RefreshAllTokensWithProgress(ctx, nil)
 }
 
 func (s *Service) RefreshAllTokensWithProgress(ctx context.Context, progress BatchProgressObserver) (int, int, int, error) {
-	allIDs, err := s.accounts.ListEnabledAccountIDs(ctx, accountdomain.ProviderBuild, false)
-	if err != nil {
-		return 0, 0, 0, err
+	if s.providers == nil {
+		return 0, 0, 0, fmt.Errorf("Provider 注册表未初始化")
 	}
-	ids, err := s.accounts.ListEnabledAccountIDs(ctx, accountdomain.ProviderBuild, true)
-	if err != nil {
-		return 0, 0, 0, err
+	allIDs := make([]uint64, 0)
+	ids := make([]uint64, 0)
+	for _, providerValue := range s.providers.Providers() {
+		if !s.providers.SupportsCredentialRefresh(providerValue) {
+			continue
+		}
+		providerIDs, err := s.accounts.ListEnabledAccountIDs(ctx, providerValue, false)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		refreshableIDs, err := s.accounts.ListEnabledAccountIDs(ctx, providerValue, true)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		allIDs = append(allIDs, providerIDs...)
+		ids = append(ids, refreshableIDs...)
 	}
 	skipped := max(0, len(allIDs)-len(ids))
 	succeeded, failed, err := s.refreshTokens(ctx, ids, progress)
@@ -1907,11 +1944,14 @@ func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomai
 	}
 	authType := seed.AuthType
 	if authType == "" {
-		if providerValue == accountdomain.ProviderWeb || providerValue == accountdomain.ProviderConsole {
-			authType = accountdomain.AuthTypeSSO
-		} else {
-			authType = accountdomain.AuthTypeOAuth
+		if s.providers == nil {
+			return accountdomain.Credential{}, fmt.Errorf("Provider 注册表未初始化")
 		}
+		definition, ok := s.providers.Definition(providerValue)
+		if !ok {
+			return accountdomain.Credential{}, fmt.Errorf("Provider %s 未注册", providerValue)
+		}
+		authType = definition.Credential.AuthType
 	}
 	value := accountdomain.Credential{Provider: providerValue, AuthType: authType, WebTier: seed.WebTier, Name: seed.Name, Email: seed.Email, UserID: seed.UserID, TeamID: seed.TeamID, SourceKey: sourceKey, OIDCClientID: seed.OIDCClientID, EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, ExpiresAt: seed.ExpiresAt, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: accountdomain.DefaultPriority, MaxConcurrent: accountdomain.DefaultMaxConcurrent, MinimumRemaining: accountdomain.DefaultMinimumRemaining}
 	return value, nil

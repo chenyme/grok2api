@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, CircleCheck, ClipboardPaste, Clock3, Copy, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, RefreshCw, RotateCw, Search, Trash2, TriangleAlert, Users } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Copy, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -509,10 +509,9 @@ export function AccountsPage() {
   }
 
   const summary = summaryQuery.data;
-  const totalAccounts = summary?.total ?? 0;
-  const activeAccounts = summary?.available ?? 0;
   const recoveringAccounts = summary?.recovering ?? 0;
   const attentionAccounts = summary?.attention ?? 0;
+  const abnormalAccounts = recoveringAccounts + attentionAccounts;
   const buildSummary = summary?.providers.grok_build ?? { total: 0, available: 0 };
   const webSummary = summary?.providers.grok_web ?? { total: 0, available: 0 };
   const consoleSummary = summary?.providers.grok_console ?? { total: 0, available: 0 };
@@ -526,13 +525,13 @@ export function AccountsPage() {
     <div className="space-y-8">
       <header>
         <h1 className="text-xl font-medium">{t("accounts.title")}</h1>
-        <p className="sr-only">{t("accounts.description")}</p>
+        <p className="sr-only">{t("console.accountsDescription")}</p>
       </header>
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <AccountMetricPanel icon={<Users />} loading={summaryLoading} label={t("accounts.totalAccounts")} value={summaryUnavailable ? "-" : formatNumber(totalAccounts, i18n.language, 0)} detail={t("console.accountBreakdown", { build: formatNumber(buildSummary.total, i18n.language, 0), web: formatNumber(webSummary.total, i18n.language, 0), console: formatNumber(consoleSummary.total, i18n.language, 0) })} />
-        <AccountMetricPanel icon={<CircleCheck />} loading={summaryLoading} label={t("accounts.availableAccounts")} value={summaryUnavailable ? "-" : formatNumber(activeAccounts, i18n.language, 0)} detail={t("console.availableBreakdown", { build: formatNumber(buildSummary.available, i18n.language, 0), web: formatNumber(webSummary.available, i18n.language, 0), console: formatNumber(consoleSummary.available, i18n.language, 0) })} />
-        <AccountMetricPanel icon={<Clock3 />} loading={summaryLoading} label={t("accounts.recoveringAccounts")} value={summaryUnavailable ? "-" : formatNumber(recoveringAccounts, i18n.language, 0)} detail={t("accounts.recoveryBreakdown", { cooldown: formatNumber(summary?.recovery.cooldown ?? 0, i18n.language, 0), reset: formatNumber(summary?.recovery.waitingReset ?? 0, i18n.language, 0), probing: formatNumber(summary?.recovery.probing ?? 0, i18n.language, 0) })} />
-        <AccountMetricPanel icon={<TriangleAlert />} loading={summaryLoading} label={t("accounts.attentionAccounts")} value={summaryUnavailable ? "-" : formatNumber(attentionAccounts, i18n.language, 0)} detail={t("accounts.issueBreakdown", { disabled: formatNumber(summary?.issues.disabled ?? 0, i18n.language, 0), reauth: formatNumber(summary?.issues.reauthRequired ?? 0, i18n.language, 0) })} />
+        <AccountMetricPanel icon={<SquareTerminal />} loading={summaryLoading} label={t("accounts.buildAccountCount")} value={summaryUnavailable ? "-" : formatNumber(buildSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(buildSummary.available, i18n.language, 0) })} />
+        <AccountMetricPanel icon={<Compass />} loading={summaryLoading} label={t("accounts.webAccountCount")} value={summaryUnavailable ? "-" : formatNumber(webSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(webSummary.available, i18n.language, 0) })} />
+        <AccountMetricPanel icon={<Webhook />} loading={summaryLoading} label={t("accounts.consoleAccountCount")} value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(consoleSummary.available, i18n.language, 0) })} />
+        <AccountMetricPanel icon={<TriangleAlert />} loading={summaryLoading} label={t("accounts.abnormalAccountCount")} value={summaryUnavailable ? "-" : formatNumber(abnormalAccounts, i18n.language, 0)} detail={t("accounts.abnormalAccountBreakdown", { recovering: formatNumber(recoveringAccounts, i18n.language, 0), attention: formatNumber(attentionAccounts, i18n.language, 0) })} />
       </section>
       <div className="space-y-6">
         <Tabs value={provider} onValueChange={(value) => changeProvider(value as AccountProvider)}>
@@ -604,8 +603,8 @@ export function AccountsPage() {
               <div className="flex items-center gap-1.5">
                 {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" onClick={() => setConversionTargets("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
                 {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" onClick={() => setWebConsoleSyncTargets("all")}>{t("webConsoleSync.allAction")}</Button> : null}
-                {hasProviderAccounts ? <Button variant="secondary" size="sm" onClick={() => setSyncAllOpen(true)}>{t("accounts.syncAll")}</Button> : null}
-                {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" onClick={() => setRenewAllOpen(true)}>{t("accounts.renewAll")}</Button> : null}
+                {hasProviderAccounts ? <Button variant="secondary" size="sm" onClick={() => setSyncAllOpen(true)}>{t("accountCredential.quotaSyncAction")}</Button> : null}
+                {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild><Button size="sm">{t("accounts.connectAccount")}</Button></DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
@@ -648,7 +647,7 @@ export function AccountsPage() {
                 <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accounts.status")}</SortableTableHead>
                 <TableHead className="whitespace-nowrap">{t("accounts.quota")}</TableHead>
                 {provider === "grok_build" ? <TableHead className="whitespace-nowrap pl-4">{t("accountCredential.label")}</TableHead> : null}
-				<SortableTableHead field="createdAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort} className="whitespace-nowrap">{t("accounts.createdAt")}</SortableTableHead>
+                <SortableTableHead field="createdAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort} className="whitespace-nowrap">{t("accounts.createdAt")}</SortableTableHead>
                 <TableActionHead />
               </TableRow>
             </TableHeader>
@@ -656,7 +655,7 @@ export function AccountsPage() {
               {accountsQuery.isPending ? <TableLoadingRow colSpan={provider === "grok_build" ? 8 : 7} /> : result?.items.map((account) => {
                 const accountDetail = account.email ?? account.userId ?? account.teamId;
                 const showAccountDetail = accountDetail?.trim().toLocaleLowerCase() !== account.name.trim().toLocaleLowerCase();
-                const linkedProviderLabel = account.linkedProvider === "grok_build" ? "Grok Build" : "Grok Web";
+                const linkedProviderLabel = account.linkedProvider === "grok_build" ? t("models.providerGrokBuild") : account.linkedProvider === "grok_web" ? t("models.providerGrokWeb") : t("console.name");
                 return (
                   <TableRow className="group" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
                     <TableCell className="px-2"><Checkbox checked={selected.has(account.id)} onCheckedChange={(checked) => toggleAccount(account.id, checked === true)} aria-label={t("common.selectItem", { name: account.name })} /></TableCell>
@@ -680,18 +679,18 @@ export function AccountsPage() {
                         </div>
                       ) : null}
                     </TableCell>
-                    <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label="Console" variant="default" /> : <AccountType quota={account.quota} />}</TableCell>
+                    <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("console.type")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
                     <TableCell className="text-center whitespace-nowrap"><AccountStatus account={account} /></TableCell>
                     <TableCell>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}</TableCell>
-					{provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
-					  {account.refreshable ? (
-						<Tooltip>
-						  <TooltipTrigger asChild><span tabIndex={0} className="cursor-help font-medium text-emerald-700 dark:text-emerald-300">{t("accountCredential.autoRefresh")}</span></TooltipTrigger>
-						  <TooltipContent>{account.expiresAt ? t("accountCredential.expiresAt", { time: formatDateTime(account.expiresAt, i18n.language) }) : t("accountCredential.expiryUnknown")}</TooltipContent>
-						</Tooltip>
-					  ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}
-					</TableCell> : null}
-					<TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(account.createdAt, i18n.language)}</TableCell>
+                    {provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
+                      {account.refreshable ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild><span tabIndex={0} className="cursor-help font-medium text-emerald-700 dark:text-emerald-300">{t("accountCredential.autoRefresh")}</span></TooltipTrigger>
+                          <TooltipContent>{account.expiresAt ? t("accountCredential.expiresAt", { time: formatDateTime(account.expiresAt, i18n.language) }) : t("accountCredential.expiryUnknown")}</TooltipContent>
+                        </Tooltip>
+                      ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}
+                    </TableCell> : null}
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(account.createdAt, i18n.language)}</TableCell>
                     <TableActionCell>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger>

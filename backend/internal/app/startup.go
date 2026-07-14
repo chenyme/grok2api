@@ -168,7 +168,7 @@ func readinessSnapshot(
 			continue
 		}
 		for _, candidate := range candidates {
-			if startupCandidateUsable(candidate, now) {
+			if startupCandidateUsable(candidate, now, providers) {
 				usable[route.Provider] = true
 				break
 			}
@@ -177,7 +177,7 @@ func readinessSnapshot(
 
 	readyProviders := 0
 	unavailableProviders := 0
-	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderWeb, accountdomain.ProviderConsole} {
+	for _, providerValue := range accountdomain.Providers() {
 		name := string(providerValue)
 		if !required[providerValue] {
 			snapshot.Components[name] = httpserver.ReadinessComponent{State: "disabled"}
@@ -242,12 +242,16 @@ func newReadinessStartupReport(report startupReport) *httpserver.ReadinessStartu
 	}
 }
 
-func startupCandidateUsable(candidate accountdomain.RoutingCandidate, now time.Time) bool {
+func startupCandidateUsable(candidate accountdomain.RoutingCandidate, now time.Time, providers *provider.Registry) bool {
 	credential := candidate.Credential
 	if credential.EncryptedAccessToken == "" || credential.AuthStatus != accountdomain.AuthStatusActive {
 		return false
 	}
-	if credential.Provider == accountdomain.ProviderBuild && !credential.ExpiresAt.IsZero() && !now.Before(credential.ExpiresAt) {
+	refreshable := credential.AuthType == accountdomain.AuthTypeOAuth
+	if providers != nil {
+		refreshable = providers.SupportsCredentialRefresh(credential.Provider)
+	}
+	if refreshable && !credential.ExpiresAt.IsZero() && !now.Before(credential.ExpiresAt) {
 		return false
 	}
 	if credential.CooldownUntil != nil && now.Before(*credential.CooldownUntil) {
@@ -285,7 +289,7 @@ func (a *Application) reconcileStartup(ctx context.Context) {
 		a.logger.Warn("model_cooldown_cleanup_failed", "error", err)
 		a.startup.recordError(err)
 	}
-	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderWeb, accountdomain.ProviderConsole} {
+	for _, providerValue := range accountdomain.Providers() {
 		values, err := a.accountRepo.ListEnabled(recoveryCtx, providerValue)
 		if err != nil {
 			a.startup.recordError(err)

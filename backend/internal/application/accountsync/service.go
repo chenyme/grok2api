@@ -12,6 +12,7 @@ import (
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
 	"golang.org/x/sync/singleflight"
 )
@@ -33,6 +34,10 @@ type modelSynchronizer interface {
 
 type accountReader interface {
 	Get(ctx context.Context, id uint64) (accountapp.View, error)
+}
+
+type providerPolicy interface {
+	ProviderDefinition(value accountdomain.Provider) (provider.Definition, bool)
 }
 
 type quotaSynchronizer interface {
@@ -172,7 +177,15 @@ func (s *Service) syncAccount(ctx context.Context, accountID uint64) error {
 	if err != nil {
 		return fmt.Errorf("读取账号: %w", err)
 	}
-	if view.Credential.Provider == accountdomain.ProviderWeb || view.Credential.Provider == accountdomain.ProviderConsole {
+	policy, ok := s.accounts.(providerPolicy)
+	if !ok {
+		return fmt.Errorf("账号读取器未提供 Provider 生命周期策略")
+	}
+	definition, ok := policy.ProviderDefinition(view.Credential.Provider)
+	if !ok {
+		return fmt.Errorf("Provider %s 未注册生命周期策略", view.Credential.Provider)
+	}
+	if definition.Quota == provider.QuotaRemoteWindow || definition.Quota == provider.QuotaLocalWindow {
 		hasQuota, quotaErr := s.quota.HasQuotaWindows(ctx, accountID)
 		if quotaErr != nil {
 			syncErr = errors.Join(syncErr, fmt.Errorf("检查 Provider 额度快照: %w", quotaErr))

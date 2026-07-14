@@ -17,6 +17,7 @@ import (
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
@@ -93,7 +94,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("observed account = %#v, err = %v", observedAccount, err)
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "grok-test" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 {
+	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "Build/grok-test" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 {
 		t.Fatalf("audit = %#v, %d, %v", logs, total, err)
 	}
 	ownership, err := responseRepo.Get(ctx, "resp-test", clientKey.ID, time.Now().UTC())
@@ -145,6 +146,41 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	missing.Finalize(Usage{}, "", "")
 	if _, err := responseRepo.Get(ctx, "resp-next", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("stale ownership err = %v", err)
+	}
+}
+
+func TestSelectConversationRouteRespectsClientKeyAcrossSharedPublicModel(t *testing.T) {
+	registry := provider.NewRegistry(&failoverAdapter{}, statelessConsoleAdapter{})
+	service := &Service{
+		clientKeys: clientkeyapp.NewService(nil, nil, nil, 60, 4, nil),
+		providers:  registry,
+	}
+	routes := []modeldomain.Route{
+		{ID: 10, PublicID: "Build/grok-shared", Provider: account.ProviderBuild, UpstreamModel: "grok-shared"},
+		{ID: 20, PublicID: "Console/grok-shared", Provider: account.ProviderConsole, UpstreamModel: "grok-shared"},
+	}
+	selected, err := service.selectConversationRoute(routes, clientkey.Key{AllowedModels: []uint64{20}}, audit.OperationResponses, "/responses", false, nil)
+	if err != nil || selected.ID != 20 {
+		t.Fatalf("selected route = %#v, err = %v", selected, err)
+	}
+}
+
+func TestSelectMediaRouteSkipsSameNamedConversationRoute(t *testing.T) {
+	registry := provider.NewRegistry(&failoverAdapter{}, &webImageStreamAdapter{})
+	service := &Service{
+		clientKeys: clientkeyapp.NewService(nil, nil, nil, 60, 4, nil),
+		providers:  registry,
+	}
+	routes := []modeldomain.Route{
+		{ID: 10, PublicID: "Build/grok-shared", Provider: account.ProviderBuild, UpstreamModel: "grok-shared", Capability: modeldomain.CapabilityResponses},
+		{ID: 20, PublicID: "Web/grok-shared", Provider: account.ProviderWeb, UpstreamModel: "grok-shared", Capability: modeldomain.CapabilityImage},
+	}
+	selected, err := service.selectMediaRoute(routes, clientkey.Key{}, modeldomain.CapabilityImage, func(providerValue account.Provider) bool {
+		_, ok := registry.Images(providerValue)
+		return ok
+	})
+	if err != nil || selected.ID != 20 {
+		t.Fatalf("selected route = %#v, err = %v", selected, err)
 	}
 }
 
@@ -203,6 +239,9 @@ func TestGatewayDoesNotPersistStatelessConsoleResponses(t *testing.T) {
 	}
 	if _, err := service.CreateResponse(ctx, Input{RequestID: "req-console-next", ClientKey: key, PublicModel: model, PreviousResponseID: "resp-console", Body: []byte(`{"model":"grok-console-stateless","previous_response_id":"resp-console"}`)}); !errors.Is(err, ErrResponseStateUnsupported) {
 		t.Fatalf("previous response error = %v", err)
+	}
+	if _, err := service.CompactResponse(ctx, Input{RequestID: "req-console-compact", ClientKey: key, PublicModel: model, Body: []byte(`{"model":"grok-console-stateless","input":"hello"}`)}); !errors.Is(err, ErrConversationUnsupported) {
+		t.Fatalf("compact response error = %v", err)
 	}
 
 	now := time.Now().UTC()
@@ -734,8 +773,15 @@ type failoverAdapter struct {
 
 type statelessConsoleAdapter struct{}
 
-func (statelessConsoleAdapter) Provider() account.Provider    { return account.ProviderConsole }
-func (statelessConsoleAdapter) SupportsStoredResponses() bool { return false }
+func (statelessConsoleAdapter) Provider() account.Provider { return account.ProviderConsole }
+func (statelessConsoleAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: account.ProviderConsole,
+		Conversation: provider.ConversationSurface{
+			Responses: true,
+		},
+	}
+}
 func (statelessConsoleAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
 	return &provider.Response{
 		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"application/json"}},
@@ -754,6 +800,9 @@ type authRescueAdapter struct {
 }
 
 func (a *authRescueAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (a *authRescueAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderBuild)
+}
 func (a *authRescueAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.attempts.Add(1)
 	if request.Credential.EncryptedAccessToken == "access-old" {
@@ -770,6 +819,9 @@ func (a *authRescueAdapter) RefreshCredential(context.Context, account.Credentia
 }
 
 func (a *systemicForbiddenAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (a *systemicForbiddenAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderBuild)
+}
 func (a *systemicForbiddenAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.mu.Lock()
 	a.attempts = append(a.attempts, request.Credential.ID)
@@ -799,7 +851,10 @@ type webChatQuotaAdapter struct {
 }
 
 func (webRateLimitAdapter) Provider() account.Provider { return account.ProviderWeb }
-func (webRateLimitAdapter) QuotaMode(string) string    { return "fast" }
+func (webRateLimitAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderWeb)
+}
+func (webRateLimitAdapter) QuotaMode(string) string { return "fast" }
 func (webRateLimitAdapter) TierOrder(string) []account.WebTier {
 	return []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}
 }
@@ -810,6 +865,9 @@ func (webRateLimitAdapter) ForwardResponse(context.Context, provider.ResponseRes
 }
 
 func (a *webImageStreamAdapter) Provider() account.Provider { return account.ProviderWeb }
+func (a *webImageStreamAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderWeb)
+}
 func (a *webImageStreamAdapter) QuotaMode(model string) string {
 	if model == "grok-imagine-image" {
 		return "fast"
@@ -864,7 +922,10 @@ func (a *webImageStreamAdapter) SyncQuotaMode(_ context.Context, credential acco
 }
 
 func (a *webChatQuotaAdapter) Provider() account.Provider { return account.ProviderWeb }
-func (a *webChatQuotaAdapter) QuotaMode(string) string    { return "fast" }
+func (a *webChatQuotaAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderWeb)
+}
+func (a *webChatQuotaAdapter) QuotaMode(string) string { return "fast" }
 func (a *webChatQuotaAdapter) TierOrder(string) []account.WebTier {
 	return []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}
 }
@@ -884,6 +945,14 @@ func (a *webChatQuotaAdapter) SyncQuotaMode(_ context.Context, credential accoun
 }
 
 func (a *failoverAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (a *failoverAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: account.ProviderBuild,
+		Conversation: provider.ConversationSurface{
+			Responses: true, StoredResponses: true,
+		},
+	}
+}
 func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.mu.Lock()
 	a.attempts = append(a.attempts, request.Credential.ID)
@@ -915,6 +984,24 @@ func (a *failoverAdapter) resetAttempts() {
 }
 func (a *failoverAdapter) ListModels(context.Context, account.Credential) ([]string, error) {
 	return nil, nil
+}
+
+func testConversationDefinition(providerValue account.Provider) provider.Definition {
+	definition := provider.Definition{
+		Provider: providerValue,
+		Conversation: provider.ConversationSurface{
+			Responses: true, ChatCompletions: true, Messages: true,
+		},
+		Inference: provider.InferencePolicy{Usage: provider.UsageUpstream},
+	}
+	if providerValue == account.ProviderBuild {
+		definition.Credential.Refresh = true
+	}
+	if providerValue == account.ProviderWeb {
+		definition.Quota = provider.QuotaRemoteWindow
+		definition.Inference = provider.InferencePolicy{Usage: provider.UsageEstimated, RetryForbiddenAsEgress: true}
+	}
+	return definition
 }
 func (a *failoverAdapter) GetBilling(context.Context, account.Credential) (account.Billing, error) {
 	return account.Billing{}, nil

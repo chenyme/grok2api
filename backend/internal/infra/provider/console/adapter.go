@@ -66,8 +66,6 @@ func (a *Adapter) config() Config {
 
 func (a *Adapter) ModelAliases() []provider.ModelAlias { return Aliases() }
 
-func (a *Adapter) SupportsStoredResponses() bool { return false }
-
 func (a *Adapter) QuotaMode(upstreamModel string) string {
 	if _, ok := Resolve(upstreamModel); ok {
 		return QuotaMode

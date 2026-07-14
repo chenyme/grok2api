@@ -153,7 +153,9 @@ Grok Console 固定使用 `store: false`，不支持 `previous_response_id`、Re
 
 ## 模型
 
-Grok Build 模型根据账号能力动态同步，请以管理端模型页或 `GET /v1/models` 为准。
+对外模型名称不带 Provider 前缀，例如 `grok-4.5`。内部上游路由使用 `Build/`、`Web/`、`Console/` 前缀区分实际来源；Grok Build 模型根据账号能力动态同步，请以管理端模型页或 `GET /v1/models` 为准。
+
+升级时会原位迁移内部路由并保留路由主键、客户端密钥权限和旧名称别名。多个来源可以提供同一个对外模型名称；网关会按客户端权限、协议能力和账号可用性选择来源。带 Provider 前缀的名称仍可作为兼容入口，用于显式指定渠道。
 
 Grok Web 内置模型：
 
@@ -181,9 +183,9 @@ Grok Console 内置模型：
 
 `grok-4.5` 不由 Grok Console Provider 注册；即使由 Web SSO 同步创建 Console 账号，该模型在 Console 中仍不可用。
 
-Console 模型默认保留上游模型 ID；只有公开名称冲突时才使用 `-console` 后缀。兼容别名不会出现在 `GET /v1/models`。
+Console 上游路由始终使用 `Console/` 内部前缀，不再根据启动顺序生成 `-console` 冲突后缀。升级产生的兼容别名不会出现在 `GET /v1/models`。
 
-三个 Provider 不会自动跨来源降级。请求只会进入目标模型所属 Provider 的可用账号池。
+同名模型会在当前可用来源中自动选路；来源选定后，账号故障切换只发生在该 Provider 的账号池内。
 
 ## API
 
@@ -290,4 +292,5 @@ pnpm build
 
 - [后端说明](./backend/README.md)
 - [前端说明](./frontend/README.md)
+- [Provider 架构与维护边界](./backend/docs/PROVIDER_ARCHITECTURE.md)
 - [API 与协议兼容范围](./backend/docs/RESPONSES_COMPATIBILITY.md)
