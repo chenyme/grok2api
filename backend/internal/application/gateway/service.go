@@ -52,6 +52,7 @@ type Input struct {
 	Body               []byte
 	Streaming          bool
 	PromptCacheKey     string
+	PromptCacheSeed    string
 	PreviousResponseID string
 	Operation          audit.Operation
 }
@@ -317,6 +318,16 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
 		}
 		return nil, clientkeyapp.ErrModelNotAllowed
+	}
+	if route.Provider == accountdomain.ProviderBuild {
+		input.PromptCacheKey = resolvePromptCacheIdentity(
+			input.ClientKey.ID,
+			route.Provider,
+			route.UpstreamModel,
+			operation,
+			input.PromptCacheKey,
+			input.PromptCacheSeed,
+		)
 	}
 	adapter, ok := s.providers.Responses(route.Provider)
 	if !ok {

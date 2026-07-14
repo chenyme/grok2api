@@ -68,15 +68,17 @@ type responsesRequest struct {
 }
 
 type chatCompletionRequest struct {
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
+	Model          string `json:"model"`
+	Stream         bool   `json:"stream"`
+	PromptCacheKey string `json:"prompt_cache_key"`
 }
 
 type messagesRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens *int            `json:"max_tokens"`
-	Messages  json.RawMessage `json:"messages"`
-	Stream    bool            `json:"stream"`
+	Model          string          `json:"model"`
+	MaxTokens      *int            `json:"max_tokens"`
+	Messages       json.RawMessage `json:"messages"`
+	Stream         bool            `json:"stream"`
+	PromptCacheKey string          `json:"prompt_cache_key"`
 }
 
 type imageGenerationRequest struct {
@@ -190,7 +192,8 @@ func (h *Handler) createChatCompletion(c *gin.Context) {
 	requestIDValue, _ := requestID.(string)
 	result, err := h.gateway.CreateChatCompletion(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
-		Body: body, Streaming: request.Stream,
+		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
+		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body),
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -229,7 +232,8 @@ func (h *Handler) createMessage(c *gin.Context) {
 	requestIDValue, _ := requestID.(string)
 	result, err := h.gateway.CreateMessage(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
-		Body: body, Streaming: request.Stream,
+		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
+		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body),
 	})
 	if err != nil {
 		writeGatewayAnthropicError(c, err)
@@ -652,7 +656,11 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 	}
 	requestID, _ := c.Get(middleware.RequestIDKey)
 	requestIDValue, _ := requestID.(string)
-	input := gateway.Input{RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model, Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey, PreviousResponseID: request.PreviousResponseID}
+	input := gateway.Input{
+		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
+		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
+		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body), PreviousResponseID: request.PreviousResponseID,
+	}
 	var result *gateway.Result
 	if compact {
 		result, err = h.gateway.CompactResponse(c.Request.Context(), input)

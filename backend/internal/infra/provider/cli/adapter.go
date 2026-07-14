@@ -95,6 +95,16 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return invalidResponsesResponse(err), nil
 		}
 	}
+	if len(body) > 0 && request.Method == http.MethodPost {
+		body, err = injectPromptCacheKey(body, request.PromptCacheKey)
+		if err != nil {
+			err = fmt.Errorf("写入 prompt_cache_key: %w", err)
+			if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
+				return invalidConversationResponse(request.Operation, err), nil
+			}
+			return invalidResponsesResponse(err), nil
+		}
+	}
 	var bodyReader io.Reader
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
@@ -429,6 +439,22 @@ func (a *Adapter) clientIdentity(accountID uint64) (clientIdentity, error) {
 	value := clientIdentity{agentID: agentID, sessionID: sessionID}
 	a.identities[accountID] = value
 	return value, nil
+}
+
+func injectPromptCacheKey(body []byte, clientKey string) ([]byte, error) {
+	key := strings.TrimSpace(clientKey)
+	if key == "" {
+		return body, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	if payload == nil {
+		payload = make(map[string]json.RawMessage)
+	}
+	payload["prompt_cache_key"] = mustJSON(key)
+	return json.Marshal(payload)
 }
 
 func randomHex(bytesLength int) (string, error) {
