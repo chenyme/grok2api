@@ -49,6 +49,7 @@ const (
 	maxCredentialImportAccounts               = 10000
 	credentialImportChunkSize                 = 100
 	maxBuildConversionAccounts                = 1000
+	maxWebConsoleSyncAccounts                 = 1000
 )
 
 type webQuotaRefreshState struct {
@@ -181,10 +182,10 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	result := Summary{Providers: map[string]ProviderSummary{
-		string(accountdomain.ProviderBuild): {},
-		string(accountdomain.ProviderWeb):   {},
-	}}
+	result := Summary{Providers: make(map[string]ProviderSummary, len(accountdomain.Providers()))}
+	for _, providerValue := range accountdomain.Providers() {
+		result.Providers[string(providerValue)] = ProviderSummary{}
+	}
 	for _, row := range rows {
 		result.Total += row.Total
 		result.Available += row.Available
@@ -267,9 +268,17 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 	}
 }
 
+// ProviderDefinition 向账号同步编排层暴露只读生命周期策略，不泄露具体 Adapter。
+func (s *Service) ProviderDefinition(value accountdomain.Provider) (provider.Definition, bool) {
+	if s.providers == nil {
+		return provider.Definition{}, false
+	}
+	return s.providers.Definition(value)
+}
+
 func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]View, int64, error) {
 	page, pageSize = normalizePage(page, pageSize)
-	if !oneOf(filter.Provider, "", string(accountdomain.ProviderBuild), string(accountdomain.ProviderWeb)) || !oneOf(filter.QuotaType, "", "free", "paid", "unknown", "auto", "basic", "super", "heavy") || !oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") || !oneOf(filter.Renewal, "", "refreshable", "unrefreshable") || !repository.IsValidSort(filter.Sort, "name", "type", "status", "createdAt") {
+	if (filter.Provider != "" && !accountdomain.Provider(filter.Provider).IsValid()) || !oneOf(filter.QuotaType, "", "free", "paid", "unknown", "auto", "basic", "super", "heavy") || !oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") || !oneOf(filter.Renewal, "", "refreshable", "unrefreshable") || !repository.IsValidSort(filter.Sort, "name", "type", "status", "createdAt") {
 		return nil, 0, ErrInvalidFilter
 	}
 	var refreshable *bool
@@ -621,6 +630,26 @@ func (s *Service) ImportWebCredentialDocumentsWithProgress(ctx context.Context, 
 	return s.importCredentialDocumentsWithProgress(ctx, adapter, documents, observer, progress)
 }
 
+func (s *Service) ImportConsoleCredentials(ctx context.Context, data []byte) (ImportResult, error) {
+	return s.ImportConsoleCredentialsWithObserver(ctx, data, nil)
+}
+
+func (s *Service) ImportConsoleCredentialsWithObserver(ctx context.Context, data []byte, observer ImportedAccountObserver) (ImportResult, error) {
+	return s.ImportConsoleCredentialsWithProgress(ctx, data, observer, nil)
+}
+
+func (s *Service) ImportConsoleCredentialsWithProgress(ctx context.Context, data []byte, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	return s.ImportConsoleCredentialDocumentsWithProgress(ctx, [][]byte{data}, observer, progress)
+}
+
+func (s *Service) ImportConsoleCredentialDocumentsWithProgress(ctx context.Context, documents [][]byte, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	adapter, ok := s.providers.CredentialCodec(accountdomain.ProviderConsole)
+	if !ok {
+		return ImportResult{}, fmt.Errorf("Grok Console Provider 未注册")
+	}
+	return s.importCredentialDocumentsWithProgress(ctx, adapter, documents, observer, progress)
+}
+
 func (s *Service) importCredentialDocumentsWithProgress(ctx context.Context, adapter provider.CredentialCodecAdapter, documents [][]byte, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
 	if len(documents) == 0 {
 		return ImportResult{}, fmt.Errorf("%w: 没有可导入的账号文件", ErrInvalidImport)
@@ -698,6 +727,79 @@ func (s *Service) persistImportedSeeds(ctx context.Context, seeds []provider.Cre
 	}
 	s.WakeCredentialRefresh()
 	return result, nil
+}
+
+// SyncWebAccountsToConsoleWithProgress 使用 Web 账号的同一份 SSO 创建或更新 Console 账号。
+func (s *Service) SyncWebAccountsToConsoleWithProgress(ctx context.Context, ids []uint64, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	ids, err := normalizeIDs(ids, maxWebConsoleSyncAccounts)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	values := make([]accountdomain.Credential, 0, len(ids))
+	for _, id := range ids {
+		value, getErr := s.accounts.Get(ctx, id)
+		if getErr != nil {
+			return ImportResult{}, mapRepositoryError(getErr)
+		}
+		values = append(values, value)
+	}
+	return s.syncWebCredentialsToConsole(ctx, values, observer, progress)
+}
+
+// SyncAllWebAccountsToConsoleWithProgress 同步完整 Web 号池，避免前端分页遗漏账号。
+func (s *Service) SyncAllWebAccountsToConsoleWithProgress(ctx context.Context, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
+		Page:   repository.PageQuery{Limit: maxWebConsoleSyncAccounts + 1},
+		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderWeb)},
+	})
+	if err != nil {
+		return ImportResult{}, err
+	}
+	if total > maxWebConsoleSyncAccounts || len(values) > maxWebConsoleSyncAccounts {
+		return ImportResult{}, invalidInput("Grok Web 账号超过 1000 个，请分批勾选同步")
+	}
+	return s.syncWebCredentialsToConsole(ctx, values, observer, progress)
+}
+
+func (s *Service) syncWebCredentialsToConsole(ctx context.Context, values []accountdomain.Credential, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	adapter, ok := s.providers.CredentialCodec(accountdomain.ProviderConsole)
+	if !ok {
+		return ImportResult{}, fmt.Errorf("Grok Console Provider 未注册")
+	}
+	seeds := make([]provider.CredentialSeed, 0, len(values))
+	for _, value := range values {
+		if value.Provider != accountdomain.ProviderWeb || value.AuthType != accountdomain.AuthTypeSSO {
+			return ImportResult{}, fmt.Errorf("%w: 仅 Grok Web SSO 账号支持同步到 Console", ErrUnsupported)
+		}
+		token, err := s.cipher.Decrypt(value.EncryptedAccessToken)
+		if err != nil {
+			return ImportResult{}, fmt.Errorf("解密 Grok Web SSO: %w", err)
+		}
+		parsed, err := adapter.ParseImportedCredentials([]byte(token))
+		if err != nil {
+			return ImportResult{}, fmt.Errorf("生成 Grok Console SSO 凭据: %w", err)
+		}
+		if len(parsed) != 1 {
+			return ImportResult{}, fmt.Errorf("生成 Grok Console SSO 凭据: 预期 1 个账号，实际 %d 个", len(parsed))
+		}
+		seed := parsed[0]
+		seed.Provider = accountdomain.ProviderConsole
+		seed.AuthType = accountdomain.AuthTypeSSO
+		seed.Name = webConsoleAccountName(value.Name, seed.Name)
+		seeds = append(seeds, seed)
+	}
+	return s.persistImportedSeeds(ctx, seeds, observer, progress)
+}
+
+func webConsoleAccountName(webName, fallback string) string {
+	name := strings.TrimSpace(webName)
+	if name == "" {
+		return fallback
+	}
+	if suffix, ok := strings.CutPrefix(name, "Grok Web "); ok {
+		return "Grok Console " + suffix
+	}
+	return name
 }
 
 // ConvertWebAccountsToBuild 使用 Web SSO 自动完成 xAI Device Flow，并建立唯一的 Web/Build 账号关联。
@@ -960,7 +1062,7 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 	}
 	if !updated.Enabled && s.sticky != nil {
 		_ = s.sticky.DeleteByAccount(ctx, updated.ID)
-	} else if updated.Enabled && updated.Provider == accountdomain.ProviderBuild {
+	} else if updated.Enabled && s.providers != nil && s.providers.SupportsCredentialRefresh(updated.Provider) {
 		s.WakeCredentialRefresh()
 	}
 	return s.Get(ctx, updated.ID)
@@ -999,7 +1101,7 @@ func (s *Service) EnsureCredential(ctx context.Context, value accountdomain.Cred
 }
 
 func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Credential, force, bypassCooldown, respectSchedule bool) (accountdomain.Credential, error) {
-	if value.AuthType == accountdomain.AuthTypeSSO || value.Provider == accountdomain.ProviderWeb {
+	if s.providers == nil || !s.providers.SupportsCredentialRefresh(value.Provider) {
 		if force {
 			return accountdomain.Credential{}, ErrUnsupported
 		}
@@ -1303,7 +1405,7 @@ func (s *Service) HasQuotaWindows(ctx context.Context, id uint64) (bool, error) 
 	return s.accounts.HasQuotaWindows(ctx, id)
 }
 
-func (s *Service) DecrementWebQuota(ctx context.Context, id uint64, mode string, amount int) (bool, error) {
+func (s *Service) DecrementQuota(ctx context.Context, id uint64, mode string, amount int) (bool, error) {
 	if amount <= 0 {
 		amount = 1
 	}
@@ -1326,7 +1428,11 @@ func (s *Service) DecrementWebQuota(ctx context.Context, id uint64, mode string,
 	return updated, nil
 }
 
-func (s *Service) ExhaustWebQuota(ctx context.Context, id uint64, mode string, resetAt *time.Time) error {
+func (s *Service) DecrementWebQuota(ctx context.Context, id uint64, mode string, amount int) (bool, error) {
+	return s.DecrementQuota(ctx, id, mode, amount)
+}
+
+func (s *Service) ExhaustQuota(ctx context.Context, id uint64, mode string, resetAt *time.Time) error {
 	if resetAt == nil {
 		windows, err := s.accounts.GetQuotaWindows(ctx, []uint64{id})
 		if err == nil {
@@ -1354,38 +1460,51 @@ func (s *Service) ExhaustWebQuota(ctx context.Context, id uint64, mode string, r
 	return nil
 }
 
-func (s *Service) RefreshWebQuota(ctx context.Context, id uint64) ([]accountdomain.QuotaWindow, error) {
+func (s *Service) ExhaustWebQuota(ctx context.Context, id uint64, mode string, resetAt *time.Time) error {
+	return s.ExhaustQuota(ctx, id, mode, resetAt)
+}
+
+func (s *Service) RefreshQuota(ctx context.Context, id uint64) ([]accountdomain.QuotaWindow, error) {
 	result, err, _ := s.quotaSyncs.Do("all:"+strconv.FormatUint(id, 10), func() (any, error) {
-		return s.refreshWebQuota(ctx, id)
+		return s.refreshQuota(ctx, id)
 	})
 	if err != nil {
 		return nil, err
 	}
 	windows, ok := result.([]accountdomain.QuotaWindow)
 	if !ok {
-		return nil, fmt.Errorf("Web 额度同步返回类型无效")
+		return nil, fmt.Errorf("Provider 额度同步返回类型无效")
 	}
 	return windows, nil
 }
 
-func (s *Service) refreshWebQuota(ctx context.Context, id uint64) ([]accountdomain.QuotaWindow, error) {
+func (s *Service) RefreshWebQuota(ctx context.Context, id uint64) ([]accountdomain.QuotaWindow, error) {
+	return s.RefreshQuota(ctx, id)
+}
+
+func (s *Service) refreshQuota(ctx context.Context, id uint64) ([]accountdomain.QuotaWindow, error) {
 	value, err := s.accounts.Get(ctx, id)
 	if err != nil {
 		return nil, mapRepositoryError(err)
 	}
-	if value.Provider != accountdomain.ProviderWeb {
-		return nil, ErrUnsupported
-	}
-	adapter, ok := s.providers.Quota(accountdomain.ProviderWeb)
+	adapter, ok := s.providers.Quota(value.Provider)
 	if !ok {
-		return nil, fmt.Errorf("Grok Web Quota Provider 未注册")
+		return nil, fmt.Errorf("%s Quota Provider 未注册", value.Provider)
 	}
 	snapshot, err := adapter.SyncQuota(ctx, value)
 	if err != nil {
 		if errors.Is(err, provider.ErrUnauthorized) {
-			_ = s.MarkReauthRequired(ctx, id, "Grok Web SSO credential rejected")
+			_ = s.MarkReauthRequired(ctx, id, fmt.Sprintf("%s SSO credential rejected", value.Provider))
 		}
 		return nil, err
+	}
+	quotaKind, _ := s.providers.QuotaKind(value.Provider)
+	if quotaKind == provider.QuotaLocalWindow {
+		existing, loadErr := s.accounts.GetQuotaWindows(ctx, []uint64{id})
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		snapshot.Windows = preserveActiveQuotaWindows(existing[id], snapshot.Windows, s.now())
 	}
 	if err := s.accounts.ReplaceQuotaWindows(ctx, id, snapshot.Tier, snapshot.SyncedAt, snapshot.Windows); err != nil {
 		return nil, err
@@ -1400,10 +1519,26 @@ func (s *Service) refreshWebQuota(ctx context.Context, id uint64) ([]accountdoma
 	return snapshot.Windows, nil
 }
 
-// ReconcileWebRateLimit 根据账号额度类型核实 429，避免把付费周池的临时限流误判为额度耗尽。
-func (s *Service) ReconcileWebRateLimit(ctx context.Context, id uint64, mode string, retryAfter time.Duration) (bool, error) {
+func preserveActiveQuotaWindows(existing, incoming []accountdomain.QuotaWindow, now time.Time) []accountdomain.QuotaWindow {
+	byMode := make(map[string]accountdomain.QuotaWindow, len(existing))
+	for _, window := range existing {
+		byMode[window.Mode] = window
+	}
+	result := append([]accountdomain.QuotaWindow(nil), incoming...)
+	for index, window := range result {
+		current, ok := byMode[window.Mode]
+		if !ok || current.ResetAt == nil || !current.ResetAt.After(now) {
+			continue
+		}
+		result[index] = current
+	}
+	return result
+}
+
+// ReconcileRateLimit 根据额度模式核实 429；Web 周池继续以上游快照为准。
+func (s *Service) ReconcileRateLimit(ctx context.Context, id uint64, mode string, retryAfter time.Duration) (bool, error) {
 	if mode == "weekly" {
-		window, err := s.RefreshWebQuotaMode(ctx, id, mode)
+		window, err := s.RefreshQuotaMode(ctx, id, mode)
 		if err != nil {
 			return false, err
 		}
@@ -1414,53 +1549,62 @@ func (s *Service) ReconcileWebRateLimit(ctx context.Context, id uint64, mode str
 		value := s.now().Add(retryAfter)
 		resetAt = &value
 	}
-	if err := s.ExhaustWebQuota(ctx, id, mode, resetAt); err != nil {
+	if err := s.ExhaustQuota(ctx, id, mode, resetAt); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (s *Service) RefreshWebQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
+func (s *Service) ReconcileWebRateLimit(ctx context.Context, id uint64, mode string, retryAfter time.Duration) (bool, error) {
+	return s.ReconcileRateLimit(ctx, id, mode, retryAfter)
+}
+
+func (s *Service) RefreshQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
 	key := strings.TrimSpace(mode) + ":" + strconv.FormatUint(id, 10)
 	result, err, _ := s.quotaSyncs.Do(key, func() (any, error) {
-		return s.refreshWebQuotaMode(ctx, id, mode)
+		return s.refreshQuotaMode(ctx, id, mode)
 	})
 	if err != nil {
 		return accountdomain.QuotaWindow{}, err
 	}
 	window, ok := result.(accountdomain.QuotaWindow)
 	if !ok {
-		return accountdomain.QuotaWindow{}, fmt.Errorf("Web 模式额度同步返回类型无效")
+		return accountdomain.QuotaWindow{}, fmt.Errorf("Provider 模式额度同步返回类型无效")
 	}
 	return window, nil
 }
 
-func (s *Service) refreshWebQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
+func (s *Service) RefreshWebQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
+	return s.RefreshQuotaMode(ctx, id, mode)
+}
+
+func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
 	value, err := s.accounts.Get(ctx, id)
 	if err != nil {
 		return accountdomain.QuotaWindow{}, mapRepositoryError(err)
 	}
-	if value.Provider != accountdomain.ProviderWeb {
-		return accountdomain.QuotaWindow{}, ErrUnsupported
-	}
-	adapter, ok := s.providers.Quota(accountdomain.ProviderWeb)
+	adapter, ok := s.providers.Quota(value.Provider)
 	if !ok {
-		return accountdomain.QuotaWindow{}, fmt.Errorf("Grok Web Quota Provider 未注册")
+		return accountdomain.QuotaWindow{}, fmt.Errorf("%s Quota Provider 未注册", value.Provider)
 	}
 	window, err := adapter.SyncQuotaMode(ctx, value, mode)
 	if err != nil {
 		if errors.Is(err, provider.ErrUnauthorized) {
-			_ = s.MarkReauthRequired(ctx, id, "Grok Web SSO credential rejected")
+			_ = s.MarkReauthRequired(ctx, id, fmt.Sprintf("%s SSO credential rejected", value.Provider))
 		}
 		return accountdomain.QuotaWindow{}, err
 	}
-	tier := value.WebTier
-	if tier == "" || tier == accountdomain.WebTierAuto {
-		if snapshot, syncErr := adapter.SyncQuota(ctx, value); syncErr == nil {
-			tier = snapshot.Tier
-			_ = s.accounts.ReplaceQuotaWindows(ctx, id, snapshot.Tier, snapshot.SyncedAt, snapshot.Windows)
-		} else {
-			tier = accountdomain.WebTierBasic
+	var tier accountdomain.WebTier
+	quotaKind, _ := s.providers.QuotaKind(value.Provider)
+	if quotaKind == provider.QuotaRemoteWindow {
+		tier = value.WebTier
+		if tier == "" || tier == accountdomain.WebTierAuto {
+			if snapshot, syncErr := adapter.SyncQuota(ctx, value); syncErr == nil {
+				tier = snapshot.Tier
+				_ = s.accounts.ReplaceQuotaWindows(ctx, id, snapshot.Tier, snapshot.SyncedAt, snapshot.Windows)
+			} else {
+				tier = accountdomain.WebTierBasic
+			}
 		}
 	}
 	now := time.Now().UTC()
@@ -1475,8 +1619,8 @@ func (s *Service) refreshWebQuotaMode(ctx context.Context, id uint64, mode strin
 	return window, nil
 }
 
-// QueueWebQuotaRefresh 在成功调用后异步同步周额度；Free 账号继续同步当前 Chat 模式。
-func (s *Service) QueueWebQuotaRefresh(id uint64, mode string) {
+// QueueQuotaRefresh 在成功调用后异步同步远端窗口额度；当前 Web Free 账号同步 Chat 模式。
+func (s *Service) QueueQuotaRefresh(id uint64, mode string) {
 	mode = strings.TrimSpace(mode)
 	if id == 0 || (mode != "" && mode != "weekly" && !isWebChatQuotaMode(mode)) {
 		return
@@ -1498,6 +1642,11 @@ func (s *Service) QueueWebQuotaRefresh(id uint64, mode string) {
 		s.quotaRefreshMu.Unlock()
 		s.logger.Warn("web_quota_refresh_queue_full", "account_id", id, "mode", mode)
 	}
+}
+
+// QueueWebQuotaRefresh 保留给现有内部调用方，统一实现由 QueueQuotaRefresh 承担。
+func (s *Service) QueueWebQuotaRefresh(id uint64, mode string) {
+	s.QueueQuotaRefresh(id, mode)
 }
 
 // RunWebQuotaRefresh 使用固定 Worker 数处理成功请求后的额度同步，避免按账号无界创建 goroutine。
@@ -1575,6 +1724,27 @@ func (s *Service) runWebQuotaRefresh(parent context.Context, request webQuotaRef
 }
 
 func (s *Service) ListDueWebQuotaWindows(ctx context.Context, now time.Time, limit int) ([]accountdomain.QuotaWindow, error) {
+	windows, err := s.ListDueQuotaWindows(ctx, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]accountdomain.QuotaWindow, 0, len(windows))
+	for _, window := range windows {
+		credential, getErr := s.accounts.Get(ctx, window.AccountID)
+		if errors.Is(getErr, repository.ErrNotFound) {
+			continue
+		}
+		if getErr != nil {
+			return nil, getErr
+		}
+		if credential.Provider == accountdomain.ProviderWeb {
+			result = append(result, window)
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) ListDueQuotaWindows(ctx context.Context, now time.Time, limit int) ([]accountdomain.QuotaWindow, error) {
 	return s.accounts.ListDueQuotaWindows(ctx, now, limit)
 }
 
@@ -1593,9 +1763,20 @@ func (s *Service) SyncAllBilling(ctx context.Context) (int, int, error) {
 }
 
 func (s *Service) SyncAllBillingWithProgress(ctx context.Context, progress BatchProgressObserver) (int, int, error) {
-	ids, err := s.accounts.ListEnabledAccountIDs(ctx, accountdomain.ProviderBuild, false)
-	if err != nil {
-		return 0, 0, err
+	if s.providers == nil {
+		return 0, 0, fmt.Errorf("Provider 注册表未初始化")
+	}
+	ids := make([]uint64, 0)
+	for _, providerValue := range s.providers.Providers() {
+		quotaKind, ok := s.providers.QuotaKind(providerValue)
+		if !ok || quotaKind != provider.QuotaBilling {
+			continue
+		}
+		providerIDs, err := s.accounts.ListEnabledAccountIDs(ctx, providerValue, false)
+		if err != nil {
+			return 0, 0, err
+		}
+		ids = append(ids, providerIDs...)
 	}
 	return s.refreshBillings(ctx, ids, progress)
 }
@@ -1606,12 +1787,24 @@ func (s *Service) SyncAllWebQuotas(ctx context.Context) (int, int, error) {
 }
 
 func (s *Service) SyncAllWebQuotasWithProgress(ctx context.Context, progress BatchProgressObserver) (int, int, error) {
-	ids, err := s.accounts.ListEnabledAccountIDs(ctx, accountdomain.ProviderWeb, false)
+	return s.syncAllQuotasWithProgress(ctx, accountdomain.ProviderWeb, "web_quota_sync", progress)
+}
+
+func (s *Service) SyncAllConsoleQuotas(ctx context.Context) (int, int, error) {
+	return s.SyncAllConsoleQuotasWithProgress(ctx, nil)
+}
+
+func (s *Service) SyncAllConsoleQuotasWithProgress(ctx context.Context, progress BatchProgressObserver) (int, int, error) {
+	return s.syncAllQuotasWithProgress(ctx, accountdomain.ProviderConsole, "console_quota_sync", progress)
+}
+
+func (s *Service) syncAllQuotasWithProgress(ctx context.Context, providerValue accountdomain.Provider, operation string, progress BatchProgressObserver) (int, int, error) {
+	ids, err := s.accounts.ListEnabledAccountIDs(ctx, providerValue, false)
 	if err != nil {
 		return 0, 0, err
 	}
-	return s.runAccountBatch(ctx, "web_quota_sync", ids, s.syncPool, progress, func(workCtx context.Context, id uint64) error {
-		_, err := s.RefreshWebQuota(workCtx, id)
+	return s.runAccountBatch(ctx, operation, ids, s.syncPool, progress, func(workCtx context.Context, id uint64) error {
+		_, err := s.RefreshQuota(workCtx, id)
 		return err
 	})
 }
@@ -1624,19 +1817,31 @@ func (s *Service) SyncWebQuotaAccounts(ctx context.Context, ids []uint64) (int, 
 	})
 }
 
-// RefreshAllTokens 续期全部可刷新的 Grok Build 凭据，不可续期账号会被跳过。
+// RefreshAllTokens 续期所有声明支持刷新的 Provider 凭据，不可续期账号会被跳过。
 func (s *Service) RefreshAllTokens(ctx context.Context) (int, int, int, error) {
 	return s.RefreshAllTokensWithProgress(ctx, nil)
 }
 
 func (s *Service) RefreshAllTokensWithProgress(ctx context.Context, progress BatchProgressObserver) (int, int, int, error) {
-	allIDs, err := s.accounts.ListEnabledAccountIDs(ctx, accountdomain.ProviderBuild, false)
-	if err != nil {
-		return 0, 0, 0, err
+	if s.providers == nil {
+		return 0, 0, 0, fmt.Errorf("Provider 注册表未初始化")
 	}
-	ids, err := s.accounts.ListEnabledAccountIDs(ctx, accountdomain.ProviderBuild, true)
-	if err != nil {
-		return 0, 0, 0, err
+	allIDs := make([]uint64, 0)
+	ids := make([]uint64, 0)
+	for _, providerValue := range s.providers.Providers() {
+		if !s.providers.SupportsCredentialRefresh(providerValue) {
+			continue
+		}
+		providerIDs, err := s.accounts.ListEnabledAccountIDs(ctx, providerValue, false)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		refreshableIDs, err := s.accounts.ListEnabledAccountIDs(ctx, providerValue, true)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		allIDs = append(allIDs, providerIDs...)
+		ids = append(ids, refreshableIDs...)
 	}
 	skipped := max(0, len(allIDs)-len(ids))
 	succeeded, failed, err := s.refreshTokens(ctx, ids, progress)
@@ -1739,11 +1944,14 @@ func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomai
 	}
 	authType := seed.AuthType
 	if authType == "" {
-		if providerValue == accountdomain.ProviderWeb {
-			authType = accountdomain.AuthTypeSSO
-		} else {
-			authType = accountdomain.AuthTypeOAuth
+		if s.providers == nil {
+			return accountdomain.Credential{}, fmt.Errorf("Provider 注册表未初始化")
 		}
+		definition, ok := s.providers.Definition(providerValue)
+		if !ok {
+			return accountdomain.Credential{}, fmt.Errorf("Provider %s 未注册", providerValue)
+		}
+		authType = definition.Credential.AuthType
 	}
 	value := accountdomain.Credential{Provider: providerValue, AuthType: authType, WebTier: seed.WebTier, Name: seed.Name, Email: seed.Email, UserID: seed.UserID, TeamID: seed.TeamID, SourceKey: sourceKey, OIDCClientID: seed.OIDCClientID, EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, ExpiresAt: seed.ExpiresAt, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: accountdomain.DefaultPriority, MaxConcurrent: accountdomain.DefaultMaxConcurrent, MinimumRemaining: accountdomain.DefaultMinimumRemaining}
 	return value, nil

@@ -457,7 +457,7 @@ func (s *Selector) MarkQuotaStateChanged(provider account.Provider) { s.invalida
 
 // ConsumeQuota 将成功请求的本地额度变化应用到候选快照，避免为单账号变化清空整个 Provider 缓存。
 func (s *Selector) ConsumeQuota(provider account.Provider, accountID uint64, mode string, amount int) {
-	if provider != account.ProviderWeb || accountID == 0 || mode == "" || mode == "weekly" || amount <= 0 {
+	if accountID == 0 || mode == "" || mode == "weekly" || amount <= 0 {
 		return
 	}
 	s.mu.Lock()

@@ -6,11 +6,18 @@ import "time"
 type Config struct {
 	ProviderBuild     ProviderBuildConfig
 	ProviderWeb       ProviderWebConfig
+	ProviderConsole   ProviderConsoleConfig
 	Batch             BatchConfig
 	Media             MediaConfig
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+}
+
+type ProviderConsoleConfig struct {
+	BaseURL     string
+	UserAgent   string
+	ChatTimeout time.Duration
 }
 
 type MediaConfig struct {

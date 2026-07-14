@@ -53,7 +53,7 @@ type ListFilter struct {
 	Sort     repository.SortQuery
 }
 
-// Service 负责上游模型发现与公开模型别名维护。
+// Service 负责上游模型发现、内部来源路由与对外模型名称维护。
 type Service struct {
 	models    repository.ModelRepository
 	accounts  repository.AccountRepository
@@ -82,7 +82,7 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 
 func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]modeldomain.Route, int64, error) {
 	page, pageSize = normalizePage(page, pageSize)
-	if !validModelFilter(filter.Provider, "", string(account.ProviderBuild), string(account.ProviderWeb)) || !validModelFilter(filter.Status, "", "enabled", "disabled") || !repository.IsValidSort(filter.Sort, "publicId", "upstreamModel", "status", "provider", "accountSupport", "lastSyncedAt") {
+	if !validProviderFilter(filter.Provider) || !validModelFilter(filter.Status, "", "enabled", "disabled") || !repository.IsValidSort(filter.Sort, "publicId", "upstreamModel", "status", "provider", "accountSupport", "lastSyncedAt") {
 		return nil, 0, ErrInvalidFilter
 	}
 	var enabled *bool
@@ -91,6 +91,10 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		enabled = &value
 	}
 	return s.models.List(ctx, repository.ModelListQuery{Page: repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: search, Sort: filter.Sort}, Filter: repository.ModelListFilter{Provider: filter.Provider, Enabled: enabled}})
+}
+
+func validProviderFilter(value string) bool {
+	return value == "" || account.Provider(value).IsValid()
 }
 
 func validModelFilter(value string, allowed ...string) bool {
@@ -106,25 +110,38 @@ func (s *Service) ListEnabled(ctx context.Context) ([]modeldomain.Route, error) 
 	return s.models.ListEnabled(ctx)
 }
 
+func (s *Service) Get(ctx context.Context, id uint64) (modeldomain.Route, error) {
+	return s.models.Get(ctx, id)
+}
+
 // GetByPublicID 每次读取共享主数据库，保证多实例下的路由禁用立即生效。
 func (s *Service) GetByPublicID(ctx context.Context, publicID string) (modeldomain.Route, error) {
 	return s.models.GetByPublicID(ctx, publicID)
 }
 
+func (s *Service) GetByPublicIDCandidates(ctx context.Context, publicID string) ([]modeldomain.Route, error) {
+	return s.models.GetByPublicIDCandidates(ctx, publicID)
+}
+
+func (s *Service) GetByProviderUpstream(ctx context.Context, providerValue account.Provider, upstreamModel string) (modeldomain.Route, error) {
+	return s.models.GetByProviderUpstream(ctx, providerValue, upstreamModel)
+}
+
 func (s *Service) Create(ctx context.Context, input CreateInput) (modeldomain.Route, error) {
-	publicID := strings.TrimSpace(input.PublicID)
-	upstreamModel := strings.TrimSpace(input.UpstreamModel)
-	if publicID == "" || len([]rune(publicID)) > 255 {
-		return modeldomain.Route{}, invalidInput("publicId 长度必须为 1-255 个字符")
+	publicID, validPublicID := modeldomain.NormalizePublicID(input.Provider, input.PublicID)
+	if !validPublicID {
+		return modeldomain.Route{}, invalidInput("publicId 不能为空、不能携带其他 Provider 前缀，且长度不能超过 255 个字符")
 	}
-	if upstreamModel == "" || len([]rune(upstreamModel)) > 255 {
-		return modeldomain.Route{}, invalidInput("upstreamModel 长度必须为 1-255 个字符")
+	upstreamModel, validUpstreamModel := modeldomain.NormalizeUpstreamModel(input.Provider, input.UpstreamModel)
+	if !validUpstreamModel {
+		return modeldomain.Route{}, invalidInput("upstreamModel 必须属于所选 Provider 且长度为 1-255 个字符")
 	}
-	if err := validateProviderCapability(input.Provider, input.Capability); err != nil {
+	definition, err := s.validateProviderCapability(input.Provider, input.Capability)
+	if err != nil {
 		return modeldomain.Route{}, err
 	}
-	if input.Provider == account.ProviderWeb && (s.providers == nil || len(s.providers.TierOrder(input.Provider, upstreamModel)) == 0) {
-		return modeldomain.Route{}, invalidInput("Grok Web 仅支持内置模型目录中的上游模型")
+	if definition.ModelCatalog == provider.ModelCatalogStatic && s.providers.QuotaMode(input.Provider, upstreamModel) == "" {
+		return modeldomain.Route{}, invalidInput(fmt.Sprintf("%s 仅支持内置模型目录中的上游模型", definition.ModelNamespace))
 	}
 	accountIDs, err := s.validateBoundAccounts(ctx, input.Provider, input.AccountIDs)
 	if err != nil {
@@ -144,9 +161,9 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (mod
 		return modeldomain.Route{}, mapRepositoryError(err)
 	}
 	if input.PublicID != nil {
-		publicID := strings.TrimSpace(*input.PublicID)
-		if publicID == "" || len([]rune(publicID)) > 255 {
-			return modeldomain.Route{}, invalidInput("publicId 长度必须为 1-255 个字符")
+		publicID, ok := modeldomain.NormalizePublicID(value.Provider, *input.PublicID)
+		if !ok {
+			return modeldomain.Route{}, invalidInput("publicId 不能为空、不能携带其他 Provider 前缀，且长度不能超过 255 个字符")
 		}
 		value.PublicID = publicID
 	}
@@ -181,7 +198,7 @@ func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) 
 }
 
 func (s *Service) ListBindableAccounts(ctx context.Context, providerValue account.Provider) ([]AccountOption, error) {
-	if providerValue != account.ProviderBuild && providerValue != account.ProviderWeb {
+	if !providerValue.IsValid() {
 		return nil, invalidInput("账号来源无效")
 	}
 	values, _, err := s.accounts.List(ctx, repository.AccountListQuery{
@@ -198,21 +215,18 @@ func (s *Service) ListBindableAccounts(ctx context.Context, providerValue accoun
 	return result, nil
 }
 
-func validateProviderCapability(providerValue account.Provider, capability modeldomain.Capability) error {
-	if providerValue != account.ProviderBuild && providerValue != account.ProviderWeb {
-		return invalidInput("provider 无效")
+func (s *Service) validateProviderCapability(providerValue account.Provider, capability modeldomain.Capability) (provider.Definition, error) {
+	if !providerValue.IsValid() || s.providers == nil {
+		return provider.Definition{}, invalidInput("provider 无效")
 	}
-	valid := capability == modeldomain.CapabilityResponses || capability == modeldomain.CapabilityChat || capability == modeldomain.CapabilityImage || capability == modeldomain.CapabilityImageEdit || capability == modeldomain.CapabilityVideo
-	if !valid {
-		return invalidInput("capability 无效")
+	definition, ok := s.providers.Definition(providerValue)
+	if !ok {
+		return provider.Definition{}, invalidInput("provider 未注册能力定义")
 	}
-	if providerValue == account.ProviderBuild && capability != modeldomain.CapabilityResponses {
-		return invalidInput("Grok Build 仅支持 responses 能力")
+	if !definition.SupportsModelCapability(capability) {
+		return provider.Definition{}, invalidInput(fmt.Sprintf("%s 不支持 %s 能力", definition.ModelNamespace, capability))
 	}
-	if providerValue == account.ProviderWeb && capability == modeldomain.CapabilityResponses {
-		return invalidInput("Grok Web 不支持 responses 能力")
-	}
-	return nil
+	return definition, nil
 }
 
 func (s *Service) validateBoundAccounts(ctx context.Context, providerValue account.Provider, ids []uint64) ([]uint64, error) {
@@ -263,7 +277,7 @@ func (s *Service) BatchSetEnabled(ctx context.Context, ids []uint64, enabled boo
 	return updated, err
 }
 
-// Sync 从全部启用的 Build 与 Web 账号同步模型能力，并按 Provider 幂等更新公开路由表。
+// Sync 从全部启用账号同步模型能力，并按 Provider 幂等更新公开路由表。
 func (s *Service) Sync(ctx context.Context) (int, error) {
 	result := s.syncAll.DoChan("all", func() (any, error) {
 		return s.syncAllAccounts(ctx)
@@ -280,7 +294,13 @@ func (s *Service) Sync(ctx context.Context) (int, error) {
 }
 
 func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
-	providerValues := []account.Provider{account.ProviderBuild, account.ProviderWeb}
+	if s.providers == nil {
+		return 0, fmt.Errorf("Provider 注册表未初始化")
+	}
+	providerValues := s.providers.Providers()
+	if len(providerValues) == 0 {
+		return 0, fmt.Errorf("没有已注册的 Provider")
+	}
 	credentials := make([]account.Credential, 0)
 	for _, providerValue := range providerValues {
 		values, err := s.accounts.ListEnabled(ctx, providerValue)

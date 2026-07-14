@@ -15,6 +15,8 @@ type ModelRepository interface {
 	ListConfiguredEnabled(ctx context.Context) ([]model.Route, error)
 	Get(ctx context.Context, id uint64) (model.Route, error)
 	GetByPublicID(ctx context.Context, publicID string) (model.Route, error)
+	GetByPublicIDCandidates(ctx context.Context, publicID string) ([]model.Route, error)
+	GetByProviderUpstream(ctx context.Context, provider account.Provider, upstreamModel string) (model.Route, error)
 	UpsertDiscovered(ctx context.Context, provider account.Provider, upstreamModels []string) error
 	UpsertRoutes(ctx context.Context, values []model.Route) error
 	ReplaceProviderRoutes(ctx context.Context, provider account.Provider, values []model.Route) error

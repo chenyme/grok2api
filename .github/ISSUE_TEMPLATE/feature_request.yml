@@ -1,0 +1,114 @@
+name: 功能建议
+description: 提议新的功能、兼容能力或工程改进。
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请围绕一个明确的问题或使用场景提出建议，并说明预期行为、兼容性和部署影响。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 功能模块
+      description: 请选择建议主要影响的模块。
+      options:
+        - OpenAI API 兼容层（Responses / Chat Completions）
+        - 模型同步、映射、路由与定价
+        - 账号、Provider、OAuth 与凭据
+        - 额度、计费与请求审计
+        - 图片、视频与媒体处理
+        - 管理端前端界面
+        - SQLite / PostgreSQL 数据库
+        - Docker、配置、部署与网络出口
+        - 开发体验与工程质量
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: 相关 Provider
+      options:
+        - Grok Build
+        - Grok Web
+        - Grok Console
+        - 多个 Provider
+        - 新 Provider
+        - 与 Provider 无关
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题与使用场景
+      description: 当前存在什么限制？谁会受到影响？为什么需要解决？
+      placeholder: 请描述实际使用场景，而不仅是功能名称。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 请描述期望的交互、API、配置或运行行为。
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 满足哪些可验证条件时，可以认为该功能已经完成？
+      placeholder: |
+        - 当……时，系统应……
+        - API 应返回……
+        - 现有配置和客户端应继续兼容……
+    validations:
+      required: true
+
+  - type: textarea
+    id: api_example
+    attributes:
+      label: API、配置或界面示例
+      description: 如适用，请提供期望的请求响应、配置片段或界面流程。
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案
+      description: 请描述目前的解决办法、绕过方式或考虑过的其他设计。
+    validations:
+      required: false
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: 兼容性、部署与迁移影响
+      description: 请说明是否影响 API 协议、模型命名、配置、数据库、Docker 部署或现有客户端。
+      placeholder: |
+        API 兼容性：
+        配置变更：
+        数据库迁移：
+        Docker / 网络变更：
+        向后兼容性：
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已经搜索现有 Issue 和 Pull Request，确认没有相同建议。
+          required: true
+        - label: 该 Issue 只聚焦一个功能或改进方向。
+          required: true
+        - label: 我已经说明用户价值和可验证的验收标准。
+          required: true

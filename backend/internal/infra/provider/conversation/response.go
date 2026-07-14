@@ -276,6 +276,8 @@ func anthropicErrorJSON(value any) []byte {
 			message = text
 		}
 		errorType = normalizeAnthropicErrorType(object)
+	} else if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+		message = text
 	}
 	data, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{"type": errorType, "message": message}})
 	return data

@@ -10,9 +10,41 @@ import (
 type Provider string
 
 const (
-	ProviderBuild Provider = "grok_build"
-	ProviderWeb   Provider = "grok_web"
+	ProviderBuild   Provider = "grok_build"
+	ProviderWeb     Provider = "grok_web"
+	ProviderConsole Provider = "grok_console"
 )
+
+var providers = [...]Provider{ProviderBuild, ProviderWeb, ProviderConsole}
+
+// Providers 返回按产品展示和后台维护顺序排列的稳定 Provider 集合。
+func Providers() []Provider {
+	return append([]Provider(nil), providers[:]...)
+}
+
+// IsValid 判断 Provider 是否属于当前系统固定支持的渠道。
+func (p Provider) IsValid() bool {
+	switch p {
+	case ProviderBuild, ProviderWeb, ProviderConsole:
+		return true
+	default:
+		return false
+	}
+}
+
+// ModelNamespace 返回内部模型路由使用的稳定渠道命名空间。
+func (p Provider) ModelNamespace() string {
+	switch p {
+	case ProviderBuild:
+		return "Build"
+	case ProviderWeb:
+		return "Web"
+	case ProviderConsole:
+		return "Console"
+	default:
+		return ""
+	}
+}
 
 type AuthType string
 

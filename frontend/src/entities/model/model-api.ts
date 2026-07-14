@@ -8,7 +8,7 @@ type ListModelsInput = {
   pageSize: number;
   search?: string;
   status?: string;
-  provider?: "grok_build" | "grok_web" | "";
+  provider?: "grok_build" | "grok_web" | "grok_console" | "";
   sortBy?: string;
   sortOrder?: SortOrder;
 };
@@ -16,7 +16,7 @@ type ListModelsInput = {
 const modelRouteValidator = hasShape({
   id: isString,
   publicId: isString,
-  provider: isOneOf("grok_build", "grok_web"),
+  provider: isOneOf("grok_build", "grok_web", "grok_console"),
   upstreamModel: isString,
   capability: isOneOf("responses", "chat", "image", "image_edit", "video"),
   origin: isOneOf("catalog", "discovered", "manual"),
@@ -31,7 +31,7 @@ const modelRouteValidator = hasShape({
   lastSyncedAt: isOptional(isString),
 });
 const decodeModelRoute = createObjectDecoder<ModelRouteDTO>("model route", {
-  id: isString, publicId: isString, provider: isOneOf("grok_build", "grok_web"), upstreamModel: isString,
+  id: isString, publicId: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), upstreamModel: isString,
   capability: isOneOf("responses", "chat", "image", "image_edit", "video"), origin: isOneOf("catalog", "discovered", "manual"),
   enabled: isBoolean, accountIds: isArrayOf(isString), bindingMode: isBoolean, supportedAccounts: isNumber,
   syncedAccounts: isNumber, totalAccounts: isNumber, capabilityKnown: isBoolean, available: isBoolean, lastSyncedAt: isOptional(isString),
@@ -60,14 +60,14 @@ export type ModelAccountOptionDTO = { id: string; name: string };
 
 export type CreateModelInput = {
   publicId: string;
-  provider: "grok_build" | "grok_web";
+  provider: ModelRouteDTO["provider"];
   upstreamModel: string;
   capability: ModelRouteDTO["capability"];
   enabled: boolean;
   accountIds: string[];
 };
 
-export function listModelAccountOptions(provider: "grok_build" | "grok_web"): Promise<{ items: ModelAccountOptionDTO[] }> {
+export function listModelAccountOptions(provider: ModelRouteDTO["provider"]): Promise<{ items: ModelAccountOptionDTO[] }> {
   return apiRequest(`/api/admin/v1/models/accounts?provider=${provider}`, {}, decodeModelAccounts);
 }
 

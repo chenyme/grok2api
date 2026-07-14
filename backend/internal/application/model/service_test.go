@@ -20,12 +20,12 @@ import (
 )
 
 func TestModelProviderFilterAcceptsOnlyKnownProviders(t *testing.T) {
-	for _, value := range []string{"", string(account.ProviderBuild), string(account.ProviderWeb)} {
-		if !validModelFilter(value, "", string(account.ProviderBuild), string(account.ProviderWeb)) {
+	for _, value := range []string{"", string(account.ProviderBuild), string(account.ProviderWeb), string(account.ProviderConsole)} {
+		if !validProviderFilter(value) {
 			t.Fatalf("known provider rejected: %q", value)
 		}
 	}
-	if validModelFilter("cli", "", string(account.ProviderBuild), string(account.ProviderWeb)) {
+	if validProviderFilter("cli") {
 		t.Fatal("unsupported provider filter was accepted")
 	}
 }
@@ -197,6 +197,9 @@ func (a *modelCapabilityAdapter) Provider() account.Provider {
 		return account.ProviderBuild
 	}
 	return a.provider
+}
+func (a *modelCapabilityAdapter) Definition() provider.Definition {
+	return provider.Definition{Provider: a.Provider()}
 }
 func (a *modelCapabilityAdapter) ListModels(ctx context.Context, credential account.Credential) ([]string, error) {
 	a.mu.Lock()

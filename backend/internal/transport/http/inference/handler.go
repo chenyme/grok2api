@@ -17,6 +17,7 @@ import (
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -124,17 +125,35 @@ type videoGenerationRequest struct {
 	StorageOptions  json.RawMessage        `json:"storage_options"`
 }
 
+type modelListItem struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
 func (h *Handler) listModels(c *gin.Context) {
 	values, err := h.models.ListEnabled(c.Request.Context())
 	if err != nil {
 		writeOpenAIError(c, http.StatusInternalServerError, "model_list_failed", "读取模型列表失败")
 		return
 	}
-	data := make([]gin.H, 0, len(values))
+	c.JSON(http.StatusOK, gin.H{"object": "list", "data": newModelListItems(values)})
+}
+
+// newModelListItems 按下游公开名称去重，隐藏仅用于内部选路的 Provider 前缀。
+func newModelListItems(values []modeldomain.Route) []modelListItem {
+	data := make([]modelListItem, 0, len(values))
+	seen := make(map[string]bool, len(values))
 	for _, value := range values {
-		data = append(data, gin.H{"id": value.PublicID, "object": "model", "created": value.CreatedAt.Unix(), "owned_by": "grok2api"})
+		publicID := modeldomain.ExternalPublicID(value.Provider, value.PublicID)
+		if seen[publicID] {
+			continue
+		}
+		seen[publicID] = true
+		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api"})
 	}
-	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
+	return data
 }
 
 func (h *Handler) createResponse(c *gin.Context) {
@@ -1013,6 +1032,9 @@ func writeGatewayError(c *gin.Context, err error) {
 	case errors.Is(err, gateway.ErrResponseNotFound):
 		status, code = http.StatusNotFound, "response_not_found"
 		message = "Response 不存在或已过期"
+	case errors.Is(err, gateway.ErrResponseStateUnsupported), errors.Is(err, gateway.ErrConversationUnsupported):
+		status, code = http.StatusBadRequest, "unsupported_parameter"
+		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
 	case errors.As(err, &selectionFailure):
@@ -1036,6 +1058,9 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 	case errors.Is(err, gateway.ErrModelNotFound):
 		status, errorType = http.StatusNotFound, "not_found_error"
 		message = "模型不存在"
+	case errors.Is(err, gateway.ErrResponseStateUnsupported), errors.Is(err, gateway.ErrConversationUnsupported):
+		status, errorType = http.StatusBadRequest, "invalid_request_error"
+		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
 		if status == http.StatusTooManyRequests {

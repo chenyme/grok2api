@@ -102,8 +102,9 @@ type AuthConfig struct {
 }
 
 type ProviderConfig struct {
-	Build BuildProviderConfig `yaml:"build"`
-	Web   WebProviderConfig   `yaml:"web"`
+	Build   BuildProviderConfig   `yaml:"build"`
+	Web     WebProviderConfig     `yaml:"web"`
+	Console ConsoleProviderConfig `yaml:"console"`
 }
 
 type BuildProviderConfig struct {
@@ -127,6 +128,12 @@ type WebProviderConfig struct {
 	AllowNSFW           bool     `yaml:"allowNSFW"`
 	RecoveryBackoffBase Duration `yaml:"recoveryBackoffBase"`
 	RecoveryBackoffMax  Duration `yaml:"recoveryBackoffMax"`
+}
+
+type ConsoleProviderConfig struct {
+	BaseURL     string   `yaml:"baseURL"`
+	UserAgent   string   `yaml:"userAgent"`
+	ChatTimeout Duration `yaml:"chatTimeout"`
 }
 
 // BatchConfig 定义可热加载的账号批量任务并发上限。
@@ -382,6 +389,16 @@ func (c Config) Validate() error {
 	if c.Provider.Web.MediaConcurrency < 1 || c.Provider.Web.MediaConcurrency > 64 {
 		return errors.New("provider.web 媒体并发必须在 1 到 64 之间")
 	}
+	consoleURL, err := url.ParseRequestURI(strings.TrimSpace(c.Provider.Console.BaseURL))
+	if err != nil || consoleURL.Scheme != "https" || consoleURL.Host == "" || consoleURL.User != nil {
+		return errors.New("provider.console.baseURL 必须是无凭据的 HTTPS URL")
+	}
+	if userAgent := strings.TrimSpace(c.Provider.Console.UserAgent); len(userAgent) < 1 || len(userAgent) > 512 {
+		return errors.New("provider.console.userAgent 长度必须在 1 到 512 个字符之间")
+	}
+	if c.Provider.Console.ChatTimeout.Value() < 5*time.Second || c.Provider.Console.ChatTimeout.Value() > 30*time.Minute {
+		return errors.New("provider.console.chatTimeout 必须在 5 秒到 30 分钟之间")
+	}
 	if c.Batch.ImportConcurrency < 1 || c.Batch.ImportConcurrency > 50 ||
 		c.Batch.ConversionConcurrency < 1 || c.Batch.ConversionConcurrency > 50 ||
 		c.Batch.SyncConcurrency < 1 || c.Batch.SyncConcurrency > 50 ||
@@ -441,6 +458,10 @@ func defaultConfig() Config {
 				VideoTimeout:     Duration(15 * time.Minute),
 				MediaConcurrency: 4, RecoveryBackoffBase: Duration(30 * time.Second),
 				RecoveryBackoffMax: Duration(30 * time.Minute),
+			},
+			Console: ConsoleProviderConfig{
+				BaseURL: "https://console.x.ai", UserAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+				ChatTimeout: Duration(5 * time.Minute),
 			},
 		},
 		Batch: BatchConfig{

@@ -3,12 +3,14 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 )
 
 var (
@@ -224,6 +226,20 @@ type RoutingMetadataAdapter interface {
 	TierOrder(upstreamModel string) []account.WebTier
 }
 
+// ModelAlias 将隐藏兼容模型名解析到唯一公开路由，并可固定推理强度。
+type ModelAlias struct {
+	Alias           string
+	PublicModel     string
+	Provider        account.Provider
+	UpstreamModel   string
+	ReasoningEffort string
+}
+
+type ModelAliasAdapter interface {
+	Adapter
+	ModelAliases() []ModelAlias
+}
+
 // PricingMetadataAdapter 将 Provider 私有模型标识映射到公开计费模型。
 type PricingMetadataAdapter interface {
 	Adapter
@@ -232,13 +248,58 @@ type PricingMetadataAdapter interface {
 
 // Registry 保存已启用 Provider Adapter，不创建未实现来源的占位对象。
 type Registry struct {
-	adapters map[account.Provider]Adapter
+	adapters    map[account.Provider]Adapter
+	definitions map[account.Provider]Definition
+	aliases     map[string]ModelAlias
+	issues      []error
 }
 
 func NewRegistry(adapters ...Adapter) *Registry {
-	registry := &Registry{adapters: make(map[account.Provider]Adapter, len(adapters))}
+	registry := &Registry{
+		adapters:    make(map[account.Provider]Adapter, len(adapters)),
+		definitions: make(map[account.Provider]Definition, len(adapters)),
+		aliases:     make(map[string]ModelAlias),
+	}
 	for _, adapter := range adapters {
-		registry.adapters[adapter.Provider()] = adapter
+		if adapter == nil {
+			registry.issues = append(registry.issues, errors.New("Provider Adapter 不能为空"))
+			continue
+		}
+		providerValue := adapter.Provider()
+		if !providerValue.IsValid() {
+			registry.issues = append(registry.issues, fmt.Errorf("Provider Adapter 身份 %q 无效", providerValue))
+			continue
+		}
+		if _, exists := registry.adapters[providerValue]; exists {
+			registry.issues = append(registry.issues, fmt.Errorf("Provider %s 重复注册", providerValue))
+			continue
+		}
+		registry.adapters[providerValue] = adapter
+		if source, ok := adapter.(DefinitionAdapter); ok {
+			registry.definitions[providerValue] = source.Definition().Clone()
+		}
+		if source, ok := adapter.(ModelAliasAdapter); ok {
+			for _, value := range source.ModelAliases() {
+				if value.Alias == "" || value.PublicModel == "" {
+					continue
+				}
+				if value.Provider != providerValue {
+					registry.issues = append(registry.issues, fmt.Errorf("Provider %s 的模型别名 %q 指向了 %s", providerValue, value.Alias, value.Provider))
+					continue
+				}
+				if !modeldomain.IsCanonicalPublicID(value.Provider, value.PublicModel) {
+					registry.issues = append(registry.issues, fmt.Errorf("Provider %s 的模型别名 %q 目标 %q 不是规范内部路由 ID", providerValue, value.Alias, value.PublicModel))
+					continue
+				}
+				if existing, exists := registry.aliases[value.Alias]; exists {
+					if existing != value {
+						registry.issues = append(registry.issues, fmt.Errorf("模型别名 %q 重复注册", value.Alias))
+					}
+					continue
+				}
+				registry.aliases[value.Alias] = value
+			}
+		}
 	}
 	return registry
 }
@@ -247,6 +308,137 @@ func NewRegistry(adapters ...Adapter) *Registry {
 func (r *Registry) Get(value account.Provider) (Adapter, bool) {
 	adapter, ok := r.adapters[value]
 	return adapter, ok
+}
+
+// ResolveModelAlias 返回隐藏兼容模型名对应的规范内部路由。
+func (r *Registry) ResolveModelAlias(value string) (ModelAlias, bool) {
+	result, ok := r.aliases[value]
+	return result, ok
+}
+
+// Definition 返回生产 Adapter 声明的稳定能力描述。
+func (r *Registry) Definition(value account.Provider) (Definition, bool) {
+	definition, ok := r.definitions[value]
+	return definition.Clone(), ok
+}
+
+// Providers 返回按固定渠道顺序注册且具备能力描述的 Provider。
+func (r *Registry) Providers() []account.Provider {
+	values := make([]account.Provider, 0, len(r.definitions))
+	for _, value := range account.Providers() {
+		if _, ok := r.definitions[value]; ok {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+// Validate 检查生产注册表的定义与实际小接口实现是否一致。
+func (r *Registry) Validate() error {
+	if r == nil {
+		return errors.New("Provider Registry 不能为空")
+	}
+	if len(r.issues) > 0 {
+		return errors.Join(r.issues...)
+	}
+	for _, value := range account.Providers() {
+		adapter, registered := r.adapters[value]
+		definition, described := r.definitions[value]
+		if !registered || !described {
+			return fmt.Errorf("Provider %s 未完整注册 Adapter 与 Definition", value)
+		}
+		if definition.Provider != value {
+			return fmt.Errorf("Provider %s 的 Definition 身份不一致", value)
+		}
+		if err := definition.Validate(); err != nil {
+			return err
+		}
+		if definition.Conversation.Responses || definition.Conversation.ChatCompletions || definition.Conversation.Messages {
+			if _, ok := adapter.(ResponseAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明对话能力但未实现适配器", value)
+			}
+		}
+		if _, ok := adapter.(ModelCatalogAdapter); !ok {
+			return fmt.Errorf("Provider %s 未实现模型目录适配器", value)
+		}
+		switch definition.Quota {
+		case QuotaBilling:
+			if _, ok := adapter.(BillingAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明 Billing 额度但未实现适配器", value)
+			}
+		case QuotaRemoteWindow, QuotaLocalWindow:
+			if _, ok := adapter.(QuotaAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明窗口额度但未实现适配器", value)
+			}
+		}
+		if definition.Credential.Import {
+			if _, ok := adapter.(CredentialCodecAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明凭据导入但未实现适配器", value)
+			}
+		}
+		if definition.Credential.Refresh {
+			if _, ok := adapter.(CredentialRefreshAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明凭据刷新但未实现适配器", value)
+			}
+		}
+		if definition.Credential.DeviceOAuth {
+			if _, ok := adapter.(DeviceOAuthAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明 Device OAuth 但未实现适配器", value)
+			}
+		}
+		if definition.Media.ImageGeneration || definition.Media.ImageEdit {
+			if _, ok := adapter.(ImageAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明图像能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.VideoGeneration {
+			if _, ok := adapter.(VideoAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明视频能力但未实现适配器", value)
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Registry) SupportsStoredResponses(value account.Provider) bool {
+	definition, ok := r.Definition(value)
+	return ok && definition.Conversation.StoredResponses
+}
+
+func (r *Registry) SupportsConversation(value account.Provider, operation string) bool {
+	definition, ok := r.Definition(value)
+	return ok && definition.Conversation.Supports(operation)
+}
+
+func (r *Registry) SupportsResponseCompaction(value account.Provider) bool {
+	definition, ok := r.Definition(value)
+	return ok && definition.Conversation.Compact
+}
+
+func (r *Registry) SupportsCredentialRefresh(value account.Provider) bool {
+	definition, ok := r.Definition(value)
+	return ok && definition.Credential.Refresh
+}
+
+func (r *Registry) QuotaKind(value account.Provider) (QuotaKind, bool) {
+	definition, ok := r.Definition(value)
+	if !ok {
+		return "", false
+	}
+	return definition.Quota, true
+}
+
+func (r *Registry) UsageKind(value account.Provider) (UsageKind, bool) {
+	definition, ok := r.Definition(value)
+	if !ok {
+		return "", false
+	}
+	return definition.Inference.Usage, true
+}
+
+func (r *Registry) RetryForbiddenAsEgress(value account.Provider) bool {
+	definition, ok := r.Definition(value)
+	return ok && definition.Inference.RetryForbiddenAsEgress
 }
 
 func (r *Registry) Responses(value account.Provider) (ResponseAdapter, bool) {

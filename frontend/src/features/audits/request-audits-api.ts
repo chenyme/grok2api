@@ -13,7 +13,7 @@ export type AuditDTO = {
   modelRouteId: string;
   modelPublicId?: string;
   modelUpstreamModel?: string;
-  provider: "grok_build" | "grok_web";
+  provider: "grok_build" | "grok_web" | "grok_console";
   operation: "responses" | "chat" | "messages" | "image" | "image_edit" | "video";
   usageSource: "upstream" | "estimated" | "none";
   accountId?: string;
@@ -77,7 +77,7 @@ export type AuditSummaryDTO = {
 
 const auditValidator = hasShape({
   id: isString, requestId: isString, clientKeyId: isString, clientKeyName: isOptional(isString), modelRouteId: isString,
-  modelPublicId: isOptional(isString), modelUpstreamModel: isOptional(isString), provider: isOneOf("grok_build", "grok_web"),
+  modelPublicId: isOptional(isString), modelUpstreamModel: isOptional(isString), provider: isOneOf("grok_build", "grok_web", "grok_console"),
   operation: isOneOf("responses", "chat", "messages", "image", "image_edit", "video"), usageSource: isOneOf("upstream", "estimated", "none"),
   accountId: isOptional(isString), accountName: isOptional(isString), statusCode: isNumber, streaming: isBoolean,
   mediaInputImages: isNumber, mediaOutputImages: isNumber, mediaOutputSeconds: isNumber, inputTokens: isNumber,

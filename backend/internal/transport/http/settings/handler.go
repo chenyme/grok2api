@@ -23,11 +23,18 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 type settingsConfigDTO struct {
 	ProviderBuild     providerBuildConfigDTO     `json:"providerBuild"`
 	ProviderWeb       providerWebConfigDTO       `json:"providerWeb"`
+	ProviderConsole   providerConsoleConfigDTO   `json:"providerConsole"`
 	Batch             batchConfigDTO             `json:"batch"`
 	Media             mediaConfigDTO             `json:"media"`
 	Routing           routingConfigDTO           `json:"routing"`
 	Audit             auditConfigDTO             `json:"audit"`
 	ClientKeyDefaults clientKeyDefaultsConfigDTO `json:"clientKeyDefaults"`
+}
+
+type providerConsoleConfigDTO struct {
+	BaseURL     string `json:"baseURL"`
+	UserAgent   string `json:"userAgent"`
+	ChatTimeout string `json:"chatTimeout"`
 }
 
 type mediaConfigDTO struct {
@@ -149,6 +156,10 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			MediaConcurrency: value.ProviderWeb.MediaConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
 			RecoveryBackoffBase: value.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: value.ProviderWeb.RecoveryBackoffMax,
 		},
+		ProviderConsole: settingsapp.ProviderConsoleConfig{
+			BaseURL: value.ProviderConsole.BaseURL, UserAgent: value.ProviderConsole.UserAgent,
+			ChatTimeout: value.ProviderConsole.ChatTimeout,
+		},
 		Batch: settingsapp.BatchConfig{
 			ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
 			SyncConcurrency: value.Batch.SyncConcurrency, RefreshConcurrency: value.Batch.RefreshConcurrency,
@@ -188,6 +199,10 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				VideoTimeout:     config.ProviderWeb.VideoTimeout,
 				MediaConcurrency: config.ProviderWeb.MediaConcurrency, AllowNSFW: config.ProviderWeb.AllowNSFW,
 				RecoveryBackoffBase: config.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: config.ProviderWeb.RecoveryBackoffMax,
+			},
+			ProviderConsole: providerConsoleConfigDTO{
+				BaseURL: config.ProviderConsole.BaseURL, UserAgent: config.ProviderConsole.UserAgent,
+				ChatTimeout: config.ProviderConsole.ChatTimeout,
 			},
 			Batch: batchConfigDTO{
 				ImportConcurrency: config.Batch.ImportConcurrency, ConversionConcurrency: config.Batch.ConversionConcurrency,

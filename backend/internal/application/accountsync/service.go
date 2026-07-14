@@ -12,6 +12,7 @@ import (
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
 	"golang.org/x/sync/singleflight"
 )
@@ -35,9 +36,13 @@ type accountReader interface {
 	Get(ctx context.Context, id uint64) (accountapp.View, error)
 }
 
-type webQuotaSynchronizer interface {
+type providerPolicy interface {
+	ProviderDefinition(value accountdomain.Provider) (provider.Definition, bool)
+}
+
+type quotaSynchronizer interface {
 	HasQuotaWindows(ctx context.Context, accountID uint64) (bool, error)
-	RefreshWebQuota(ctx context.Context, accountID uint64) ([]accountdomain.QuotaWindow, error)
+	RefreshQuota(ctx context.Context, accountID uint64) ([]accountdomain.QuotaWindow, error)
 }
 
 // Service 对新接入账号执行一次性额度与模型补齐，并限制批量同步并发。
@@ -45,15 +50,15 @@ type Service struct {
 	logger   *slog.Logger
 	accounts accountReader
 	billing  billingSynchronizer
-	webQuota webQuotaSynchronizer
+	quota    quotaSynchronizer
 	models   modelSynchronizer
 	syncs    singleflight.Group
 	workers  atomic.Int64
 	bulkPool *batch.Pool
 }
 
-func NewService(logger *slog.Logger, accounts accountReader, billing billingSynchronizer, webQuota webQuotaSynchronizer, models modelSynchronizer) *Service {
-	service := &Service{logger: logger, accounts: accounts, billing: billing, webQuota: webQuota, models: models, bulkPool: batch.NewPool(defaultWorkerCount)}
+func NewService(logger *slog.Logger, accounts accountReader, billing billingSynchronizer, quota quotaSynchronizer, models modelSynchronizer) *Service {
+	service := &Service{logger: logger, accounts: accounts, billing: billing, quota: quota, models: models, bulkPool: batch.NewPool(defaultWorkerCount)}
 	service.workers.Store(defaultWorkerCount)
 	return service
 }
@@ -172,16 +177,24 @@ func (s *Service) syncAccount(ctx context.Context, accountID uint64) error {
 	if err != nil {
 		return fmt.Errorf("读取账号: %w", err)
 	}
-	if view.Credential.Provider == accountdomain.ProviderWeb {
-		hasQuota, quotaErr := s.webQuota.HasQuotaWindows(ctx, accountID)
+	policy, ok := s.accounts.(providerPolicy)
+	if !ok {
+		return fmt.Errorf("账号读取器未提供 Provider 生命周期策略")
+	}
+	definition, ok := policy.ProviderDefinition(view.Credential.Provider)
+	if !ok {
+		return fmt.Errorf("Provider %s 未注册生命周期策略", view.Credential.Provider)
+	}
+	if definition.Quota == provider.QuotaRemoteWindow || definition.Quota == provider.QuotaLocalWindow {
+		hasQuota, quotaErr := s.quota.HasQuotaWindows(ctx, accountID)
 		if quotaErr != nil {
-			syncErr = errors.Join(syncErr, fmt.Errorf("检查 Web 额度快照: %w", quotaErr))
+			syncErr = errors.Join(syncErr, fmt.Errorf("检查 Provider 额度快照: %w", quotaErr))
 		} else if !hasQuota {
 			operationCtx, cancel := context.WithTimeout(ctx, operationTimeout)
-			_, quotaErr = s.webQuota.RefreshWebQuota(operationCtx, accountID)
+			_, quotaErr = s.quota.RefreshQuota(operationCtx, accountID)
 			cancel()
 			if quotaErr != nil {
-				syncErr = errors.Join(syncErr, fmt.Errorf("同步 Web 额度: %w", quotaErr))
+				syncErr = errors.Join(syncErr, fmt.Errorf("同步 Provider 额度: %w", quotaErr))
 			}
 		}
 	} else {

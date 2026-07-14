@@ -342,14 +342,16 @@ func TestConvertResponsesJSONToMessagesStopSequence(t *testing.T) {
 
 func TestConvertResponsesJSONToMessagesNormalizesErrorType(t *testing.T) {
 	tests := []struct {
-		name string
-		body string
-		want string
+		name        string
+		body        string
+		want        string
+		wantMessage string
 	}{
 		{name: "preserve anthropic type", body: `{"error":{"message":"auth","type":"authentication_error"}}`, want: "authentication_error"},
 		{name: "map openai type", body: `{"error":{"message":"invalid","type":"unsupported_parameter"}}`, want: "invalid_request_error"},
 		{name: "map upstream code", body: `{"error":{"message":"limited","code":"rate_limit_exceeded"}}`, want: "rate_limit_error"},
 		{name: "hide private type", body: `{"error":{"message":"failed","type":"private_internal"}}`, want: "api_error"},
+		{name: "preserve string message", body: `{"error":"plain upstream failure"}`, want: "api_error", wantMessage: "plain upstream failure"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -364,6 +366,9 @@ func TestConvertResponsesJSONToMessagesNormalizesErrorType(t *testing.T) {
 			errorObject := response["error"].(map[string]any)
 			if errorObject["type"] != test.want {
 				t.Fatalf("error = %#v", response)
+			}
+			if test.wantMessage != "" && errorObject["message"] != test.wantMessage {
+				t.Fatalf("error message = %#v", response)
 			}
 		})
 	}
