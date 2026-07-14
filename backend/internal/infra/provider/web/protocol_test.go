@@ -25,7 +25,7 @@ import (
 
 func TestCatalogMatchesSupportedSurface(t *testing.T) {
 	values := Catalog()
-	if len(values) != 14 {
+	if len(values) != 8 {
 		t.Fatalf("catalog size = %d", len(values))
 	}
 	publicIDs := make(map[string]struct{}, len(values))
@@ -40,12 +40,12 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 		publicIDs[value.PublicID] = struct{}{}
 		upstreamIDs[value.UpstreamModel] = struct{}{}
 	}
-	for _, required := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-4.20-multi-agent-console", "grok-4.20-multi-agent-low", "grok-4.20-multi-agent-medium", "grok-4.20-multi-agent-high", "grok-4.20-multi-agent-xhigh", "grok-imagine-image", "grok-imagine-image-lite", "grok-imagine-image-quality", "grok-imagine-image-edit", "grok-imagine-video"} {
+	for _, required := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-edit", "grok-imagine-video"} {
 		if _, exists := publicIDs[required]; !exists {
 			t.Fatalf("missing supported model: %s", required)
 		}
 	}
-	for _, removed := range []string{"grok-imagine-image-speed", "grok-imagine-image-pro"} {
+	for _, removed := range []string{"grok-imagine-image-lite", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
 		if _, exists := publicIDs[removed]; exists {
 			t.Fatalf("obsolete image model remains: %s", removed)
 		}
@@ -59,13 +59,12 @@ func TestWebChatPricingUsesGrok45(t *testing.T) {
 			t.Fatalf("pricing model for %s = %q", upstreamModel, got)
 		}
 	}
-	for _, upstreamModel := range []string{"grok-imagine-image", "grok-imagine-image-lite"} {
-		if got := registry.PricingModel(account.ProviderWeb, upstreamModel); got != "grok-imagine-image" {
-			t.Fatalf("Lite media pricing model for %s = %q", upstreamModel, got)
-		}
+	mediaModels := map[string]string{
+		"grok-imagine-image": "grok-imagine-image", "grok-imagine-image-quality": "grok-imagine-image-quality",
+		"imagine-image-edit": "grok-imagine-image-edit", "grok-imagine-video": "grok-imagine-video",
 	}
-	for _, upstreamModel := range []string{"grok-imagine-image-quality", "imagine-image-edit", "grok-imagine-video"} {
-		if got := registry.PricingModel(account.ProviderWeb, upstreamModel); got != upstreamModel {
+	for upstreamModel, expected := range mediaModels {
+		if got := registry.PricingModel(account.ProviderWeb, upstreamModel); got != expected {
 			t.Fatalf("media pricing model for %s = %q", upstreamModel, got)
 		}
 	}
@@ -282,23 +281,6 @@ func TestLiteChatRejectsInvalidImageConfigBeforeUpstream(t *testing.T) {
 	}
 }
 
-func TestLegacyLiteAliasUsesCurrentChatImageProtocol(t *testing.T) {
-	current, ok := Resolve("grok-imagine-image")
-	if !ok {
-		t.Fatal("current Lite image model is missing")
-	}
-	legacy, ok := Resolve("grok-imagine-image-lite")
-	if !ok {
-		t.Fatal("legacy Lite image alias is missing")
-	}
-	if legacy.ProtocolModel != current.ProtocolModel || legacy.Mode != current.Mode || legacy.MinimumTier != current.MinimumTier || legacy.Capability != current.Capability {
-		t.Fatalf("legacy alias = %#v, current = %#v", legacy, current)
-	}
-	if legacy.UpstreamModel != legacy.PublicID {
-		t.Fatalf("legacy route must preserve its public upstream key: %#v", legacy)
-	}
-}
-
 func TestParseLiteImageCardAttachment(t *testing.T) {
 	parsed := &parsedChat{}
 	frame := map[string]any{"result": map[string]any{"response": map[string]any{
@@ -316,36 +298,6 @@ func TestParseLiteNestedUsageLimit(t *testing.T) {
 	frame := []byte(`{"result":{"response":{"error":{"message":"You've reached your usage limit. Please try again later."},"cardAttachment":{"jsonData":"{\"image_chunk\":{\"progress\":100,\"systemErrCode\":\"rate_limit\"}}"}}}}`)
 	if _, _, err := parseUpstreamFrame(frame, parsed); !errors.Is(err, errWebUsageLimit) {
 		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestParseLiteCompletedCardWithSystemErrorReturnsUpstreamError(t *testing.T) {
-	parsed := &parsedChat{}
-	frame := []byte(`{"result":{"response":{"cardAttachment":{"jsonData":"{\"id\":\"card_1\",\"image_chunk\":{\"imageUuid\":\"image_1\",\"progress\":100,\"systemErrCode\":1010}}"}}}}`)
-	_, _, err := parseUpstreamFrame(frame, parsed)
-	if !errors.Is(err, errWebImageGeneration) {
-		t.Fatalf("error = %v", err)
-	}
-	if !strings.Contains(err.Error(), "1010") {
-		t.Fatalf("error does not preserve systemErrCode: %v", err)
-	}
-}
-
-func TestParseLiteSystemErrorDoesNotOverrideCompletedImageURL(t *testing.T) {
-	parsed := &parsedChat{}
-	frame := []byte(`{"result":{"response":{"cardAttachment":{"jsonData":"{\"id\":\"card_1\",\"image_chunk\":{\"progress\":100,\"imageUrl\":\"generated/image.jpg\",\"systemErrCode\":1010}}"}}}}`)
-	kind, delta, err := parseUpstreamFrame(frame, parsed)
-	if err != nil || kind != "image" || delta != "https://assets.grok.com/generated/image.jpg" {
-		t.Fatalf("kind=%q delta=%q error=%v", kind, delta, err)
-	}
-}
-
-func TestParseLiteSystemErrorBeforeCompletionIsNotTerminal(t *testing.T) {
-	parsed := &parsedChat{}
-	frame := []byte(`{"result":{"response":{"cardAttachment":{"jsonData":"{\"id\":\"card_1\",\"image_chunk\":{\"progress\":50,\"systemErrCode\":1010}}"}}}}`)
-	kind, delta, err := parseUpstreamFrame(frame, parsed)
-	if err != nil || kind != "" || delta != "" {
-		t.Fatalf("kind=%q delta=%q error=%v", kind, delta, err)
 	}
 }
 
@@ -458,9 +410,6 @@ func TestChatModelsUseLowestSufficientTierFirst(t *testing.T) {
 
 func TestOnlyChatModelsExposeRateLimitModes(t *testing.T) {
 	for _, spec := range Catalog() {
-		if spec.Transport == consoleResponsesTransport {
-			continue
-		}
 		if spec.Capability == modeldomain.CapabilityChat {
 			if !slices.Contains([]string{"auto", "fast", "expert", "heavy"}, spec.Mode) {
 				t.Fatalf("chat model %s has invalid quota mode %q", spec.PublicID, spec.Mode)
