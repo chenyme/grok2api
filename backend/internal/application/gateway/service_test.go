@@ -658,12 +658,29 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	backupCredential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+		Name: "web-image-backup", SourceKey: "web-image-backup", EncryptedAccessToken: "encrypted-backup", Enabled: true,
+		AuthStatus: account.AuthStatusActive, MaxConcurrent: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, backupCredential.ID, []string{"grok-imagine-image-quality"}, now); err != nil {
+		t.Fatal(err)
+	}
+	selector.MarkQuotaStateChanged(account.ProviderWeb)
+	service.UpdateMaxAttempts(3)
+	attemptsBeforeFailure := len(adapter.Attempts())
 	adapter.FailWithEgress(infraegress.NewManager(relational.NewEgressRepository(database), testCipher(t)))
 	if _, err := service.GenerateImage(ctx, ImageGenerationInput{
 		RequestID: "req-image-failed", ClientKey: key, PublicModel: "grok-imagine-image-quality",
 		Prompt: "test", Count: 1, Resolution: "1k", ResponseFormat: "url",
 	}); err == nil {
 		t.Fatal("expected image transport failure")
+	}
+	if attempts := adapter.Attempts(); len(attempts) != attemptsBeforeFailure+1 {
+		t.Fatalf("image failure switched accounts after generation started: %#v", attempts)
 	}
 	logs, total, err = auditRepo.List(ctx, 0, 10)
 	if err != nil || total != 5 || len(logs) != 5 {
@@ -871,6 +888,7 @@ type webImageStreamAdapter struct {
 	editResolution string
 	synced         chan string
 	failureEgress  *infraegress.Manager
+	attempts       []uint64
 }
 
 type webChatQuotaAdapter struct {
@@ -908,6 +926,7 @@ func (a *webImageStreamAdapter) GenerateImage(ctx context.Context, request provi
 	a.mu.Lock()
 	a.streaming = request.Streaming
 	failureEgress := a.failureEgress
+	a.attempts = append(a.attempts, request.Credential.ID)
 	a.mu.Unlock()
 	if failureEgress != nil {
 		lease, err := failureEgress.Acquire(ctx, egressdomain.ScopeWeb, "image-failure")
@@ -949,6 +968,11 @@ func (a *webImageStreamAdapter) FailWithEgress(manager *infraegress.Manager) {
 	a.mu.Lock()
 	a.failureEgress = manager
 	a.mu.Unlock()
+}
+func (a *webImageStreamAdapter) Attempts() []uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]uint64(nil), a.attempts...)
 }
 func (a *webImageStreamAdapter) SyncQuota(context.Context, account.Credential) (provider.QuotaSnapshot, error) {
 	return provider.QuotaSnapshot{}, errors.New("unexpected full quota sync")

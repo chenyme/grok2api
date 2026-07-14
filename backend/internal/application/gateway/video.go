@@ -242,6 +242,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if err := s.mediaJobs.UpdateMediaJob(ctx, job); err != nil {
 		s.logger.Warn("video_job_progress_write_failed", "job_id", job.ID, "error", err)
 	}
+	// 视频任务创建时已持久化账号归属；恢复只能重新获取原账号，禁止因后续
+	// 轮询或结果处理失败切换到其他账号。
 	lease, err := s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.UpstreamModel, "", true)
 	if err != nil {
 		if parent.Err() != nil {

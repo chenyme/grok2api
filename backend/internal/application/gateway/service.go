@@ -804,26 +804,34 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	var lease *accountLease
 	var credential accountdomain.Credential
 	var response *provider.Response
+	var lastCredentialFailure *accountdomain.Credential
 	for attempt := 0; attempt < attempts; attempt++ {
 		lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false)
 		if err != nil {
-			writeFailureAudit(http.StatusServiceUnavailable, "upstream_unavailable", nil)
+			writeFailureAudit(http.StatusServiceUnavailable, "upstream_unavailable", lastCredentialFailure)
 			return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 		}
 		excluded[lease.Credential.ID] = true
 		credential, err = s.accounts.EnsureCredential(ctx, lease.Credential, false)
 		if err != nil {
 			s.logger.Error("image_credential_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", lease.Credential.ID, "error", err)
+			failedCredential := lease.Credential
+			lastCredentialFailure = &failedCredential
 			lease.Release()
-			writeFailureAudit(http.StatusBadGateway, "upstream_unavailable", &lease.Credential)
-			return nil, err
+			continue
 		}
 		response, err = execute(ctx, adapter, credential, route.UpstreamModel)
 		if err != nil {
 			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
-			s.selector.MarkFailure(ctx, credential, 0, 0)
+			if !provider.IsMediaPostProcessingError(err) {
+				s.selector.MarkFailure(ctx, credential, 0, 0)
+			}
 			lease.Release()
-			writeFailureAudit(http.StatusBadGateway, "upstream_unavailable", &credential)
+			errorCode := "upstream_unavailable"
+			if provider.IsMediaPostProcessingError(err) {
+				errorCode = "media_postprocessing_failed"
+			}
+			writeFailureAudit(http.StatusBadGateway, errorCode, &credential)
 			return nil, err
 		}
 		if s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden && attempt == 0 && attempt+1 < attempts {
