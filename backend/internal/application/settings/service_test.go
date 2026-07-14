@@ -49,6 +49,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	input.Media.MaxTotalBytes = 2 << 30
 	input.Media.CleanupThresholdPercent = 75
 	input.Media.CleanupInterval = "5m"
+	input.Frontend.PublicAPIBaseURL = "http://public.example.com"
 	input.ProviderConsole.BaseURL = "https://console.example.com"
 	input.ProviderConsole.UserAgent = "console-test-agent"
 	input.ProviderConsole.ChatTimeout = "6m"
@@ -63,6 +64,9 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	}
 	if applied.Media.MaxTotalBytes != 2<<30 || applied.Media.CleanupThresholdPercent != 75 || applied.Media.CleanupInterval.Value() != 5*time.Minute {
 		t.Fatalf("media configuration was not applied: %#v", applied.Media)
+	}
+	if applied.Frontend.PublicAPIBaseURLOverride != "http://public.example.com" || applied.Frontend.EffectivePublicAPIBaseURL() != "http://public.example.com" {
+		t.Fatalf("frontend configuration was not applied: %#v", applied.Frontend)
 	}
 	if applied.Batch.ImportConcurrency != 26 || applied.Batch.ConversionConcurrency != 27 || applied.Batch.SyncConcurrency != 28 || applied.Batch.RefreshConcurrency != 29 || applied.Batch.RandomDelay.Value() != 750*time.Millisecond {
 		t.Fatalf("batch configuration was not applied: %#v", applied.Batch)
@@ -261,4 +265,42 @@ func testConfig(t *testing.T) config.Config {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func TestLoadPersistedKeepsYAMLFrontendWhenUnset(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Frontend.PublicAPIBaseURL = "http://yaml.example.com"
+	value := toDomainConfig(cfg)
+	value.Frontend = settingsdomain.FrontendConfig{}
+	repository := &runtimeSettingsRepositoryStub{
+		value: value,
+		found: true, revision: 1, updatedAt: time.Now().UTC(),
+	}
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Frontend.PublicAPIBaseURL != "http://yaml.example.com" || loaded.Frontend.PublicAPIBaseURLOverride != "" || loaded.Frontend.EffectivePublicAPIBaseURL() != "http://yaml.example.com" {
+		t.Fatalf("frontend = %#v", loaded.Frontend)
+	}
+}
+
+func TestUpdateEmptyFrontendOverrideFallsBackToYAML(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Frontend.PublicAPIBaseURL = "http://yaml.example.com"
+	cfg.Frontend.PublicAPIBaseURLOverride = "http://runtime.example.com"
+	repository := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Frontend.PublicAPIBaseURL = ""
+	if _, err := service.Update(context.Background(), 0, input); err != nil {
+		t.Fatal(err)
+	}
+	if applied.Frontend.PublicAPIBaseURLOverride != "" || applied.Frontend.EffectivePublicAPIBaseURL() != "http://yaml.example.com" {
+		t.Fatalf("frontend fallback = %#v", applied.Frontend)
+	}
+	if repository.value.Frontend.PublicAPIBaseURL != "" {
+		t.Fatalf("persisted override = %q", repository.value.Frontend.PublicAPIBaseURL)
+	}
 }

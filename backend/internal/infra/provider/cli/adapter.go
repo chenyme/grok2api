@@ -163,24 +163,39 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			resp.Header.Del("Content-Length")
 			resp.Header.Set("Content-Type", "text/event-stream")
 		} else {
-			data, readErr := io.ReadAll(io.LimitReader(resp.Body, (64<<20)+1))
+			var data []byte
+			var readErr error
+			var diagnosticTruncated bool
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				data, readErr = io.ReadAll(io.LimitReader(resp.Body, (64<<20)+1))
+			} else {
+				data, diagnosticTruncated, readErr = provider.ReadDiagnosticBody(resp.Body)
+			}
 			_ = resp.Body.Close()
 			if readErr != nil {
 				return nil, readErr
 			}
-			if len(data) > 64<<20 {
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 && len(data) > 64<<20 {
 				return nil, fmt.Errorf("上游对话响应超过 64 MiB")
+			}
+			var diagnostic *provider.DiagnosticResponse
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				diagnostic = &provider.DiagnosticResponse{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: data, BodyTruncated: diagnosticTruncated}
 			}
 			converted, convertErr := conversation.ConvertResponseJSONWithOptions(data, request.Operation, conversationOptions)
 			if convertErr != nil {
-				return nil, convertErr
+				if diagnostic == nil {
+					return nil, convertErr
+				}
+				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: req.URL.String(), Diagnostic: diagnostic}, nil
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(converted))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(converted)))
 			resp.Header.Set("Content-Type", "application/json")
+			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: req.URL.String(), Diagnostic: diagnostic}, nil
 		}
 	}
-	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body}, nil
+	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: req.URL.String()}, nil
 }
 
 // invalidResponsesResponse 将本地协议校验错误转换为标准 OpenAI 错误响应，避免触发上游账号重试。

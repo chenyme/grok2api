@@ -73,6 +73,9 @@ func newStreamConverter(writer io.Writer, operation string, options ResponseOpti
 }
 
 func (c *streamConverter) handle(event string, data []byte) error {
+	if c.finished {
+		return nil
+	}
 	if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
 		return nil
 	}
@@ -413,7 +416,7 @@ func (c *streamConverter) done(status string) error {
 	}
 	if err := c.writeEvent("message_delta", map[string]any{
 		"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nullableAnthropicString(c.stopSequence)},
-		"usage": map[string]any{"output_tokens": c.usage.OutputTokens},
+		"usage": map[string]any{"input_tokens": c.usage.InputTokens, "output_tokens": c.usage.OutputTokens},
 	}); err != nil {
 		return err
 	}
@@ -437,8 +440,8 @@ func (c *streamConverter) textDeltaWithoutFilter(delta string) error {
 }
 
 func (c *streamConverter) streamError(data []byte) error {
+	c.finished = true
 	if c.operation == OperationMessages {
-		c.finished = true
 		return c.writeEvent("error", map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": string(data)}})
 	}
 	if err := c.writeData(json.RawMessage(data)); err != nil {

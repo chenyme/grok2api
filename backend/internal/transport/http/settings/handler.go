@@ -26,6 +26,7 @@ type settingsConfigDTO struct {
 	ProviderConsole   providerConsoleConfigDTO   `json:"providerConsole"`
 	Batch             batchConfigDTO             `json:"batch"`
 	Media             mediaConfigDTO             `json:"media"`
+	Frontend          frontendConfigDTO          `json:"frontend"`
 	Routing           routingConfigDTO           `json:"routing"`
 	Audit             auditConfigDTO             `json:"audit"`
 	ClientKeyDefaults clientKeyDefaultsConfigDTO `json:"clientKeyDefaults"`
@@ -42,6 +43,10 @@ type mediaConfigDTO struct {
 	MaxTotalBytes           int64  `json:"maxTotalBytes"`
 	CleanupThresholdPercent int    `json:"cleanupThresholdPercent"`
 	CleanupInterval         string `json:"cleanupInterval"`
+}
+
+type frontendConfigDTO struct {
+	PublicAPIBaseURL string `json:"publicApiBaseURL"`
 }
 
 type providerBuildConfigDTO struct {
@@ -169,6 +174,9 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			MaxImageBytes: value.Media.MaxImageBytes, MaxTotalBytes: value.Media.MaxTotalBytes,
 			CleanupThresholdPercent: value.Media.CleanupThresholdPercent, CleanupInterval: value.Media.CleanupInterval,
 		},
+		Frontend: settingsapp.FrontendConfig{
+			PublicAPIBaseURL: value.Frontend.PublicAPIBaseURL,
+		},
 		Routing: settingsapp.RoutingConfig{
 			StickyTTL: value.Routing.StickyTTL, CooldownBase: value.Routing.CooldownBase,
 			CooldownMax: value.Routing.CooldownMax, CapacityWait: value.Routing.CapacityWait, MaxAttempts: value.Routing.MaxAttempts,
@@ -212,6 +220,9 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			Media: mediaConfigDTO{
 				MaxImageBytes: config.Media.MaxImageBytes, MaxTotalBytes: config.Media.MaxTotalBytes,
 				CleanupThresholdPercent: config.Media.CleanupThresholdPercent, CleanupInterval: config.Media.CleanupInterval,
+			},
+			Frontend: frontendConfigDTO{
+				PublicAPIBaseURL: config.Frontend.PublicAPIBaseURL,
 			},
 			Routing: routingConfigDTO{
 				StickyTTL: config.Routing.StickyTTL, CooldownBase: config.Routing.CooldownBase,

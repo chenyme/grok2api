@@ -29,7 +29,8 @@ bootstrapAdmin:
   password: "replace-with-a-strong-password"
 
 frontend:
-  # [按需修改] 生产环境改为外部 HTTPS 地址，例如 https://api.example.com。
+  # [按需修改] 管理端公共 API 地址留空时使用此值；本项也留空则回退到 http://127.0.0.1:8000。
+  # 生产环境建议填写外部 HTTPS 地址，例如 https://api.example.com。
   publicApiBaseURL: "http://127.0.0.1:8000"
   # [通常不要修改] Go 服务同源托管的前端构建目录。
   staticPath: "./frontend/dist"

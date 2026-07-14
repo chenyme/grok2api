@@ -58,9 +58,38 @@ func TestAcquireIfConfiguredDoesNotChangeBuildDirectTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := NewManager(egressRepositoryTestStub{}, cipher)
-	lease, configured, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
+	ctx, trace := WithTrace(context.Background())
+	lease, configured, err := manager.AcquireIfConfigured(ctx, domain.ScopeBuild, "")
 	if err != nil || configured || lease != nil {
 		t.Fatalf("lease=%#v configured=%v err=%v", lease, configured, err)
+	}
+	selection, ok := trace.Selection(domain.ScopeBuild)
+	if !ok || selection.NodeID != 0 || selection.NodeName != "direct" || selection.Proxied {
+		t.Fatalf("direct selection = %#v, ok=%v", selection, ok)
+	}
+}
+
+func TestTraceRecordsConfiguredProxyWithoutCredentials(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("socks5h://secret:password@127.0.0.1:1080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{
+		ID: 42, Name: "primary-proxy", Scope: domain.ScopeBuild, Enabled: true, Health: 1, EncryptedProxyURL: encryptedProxy,
+	}}}, cipher)
+	ctx, trace := WithTrace(context.Background())
+	lease, configured, err := manager.AcquireIfConfigured(ctx, domain.ScopeBuild, "")
+	if err != nil || !configured || lease == nil {
+		t.Fatalf("lease=%#v configured=%v err=%v", lease, configured, err)
+	}
+	defer lease.Release()
+	selection, ok := trace.Selection(domain.ScopeBuild)
+	if !ok || selection.NodeID != 42 || selection.NodeName != "primary-proxy" || !selection.Proxied {
+		t.Fatalf("proxy selection = %#v, ok=%v", selection, ok)
 	}
 }
 

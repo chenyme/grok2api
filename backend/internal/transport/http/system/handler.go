@@ -8,10 +8,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type Handler struct{ publicAPIBaseURL string }
+type Handler struct {
+	publicAPIBaseURL func() string
+}
 
-func NewHandler(publicAPIBaseURL string) *Handler {
-	return &Handler{publicAPIBaseURL: strings.TrimRight(publicAPIBaseURL, "/")}
+func NewHandler(publicAPIBaseURL func() string) *Handler {
+	if publicAPIBaseURL == nil {
+		publicAPIBaseURL = func() string { return "" }
+	}
+	return &Handler{publicAPIBaseURL: publicAPIBaseURL}
 }
 
 func (h *Handler) Register(router *gin.RouterGroup) {
@@ -19,5 +24,5 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 }
 
 func (h *Handler) get(c *gin.Context) {
-	response.Success(c, http.StatusOK, gin.H{"publicApiBaseURL": h.publicAPIBaseURL})
+	response.Success(c, http.StatusOK, gin.H{"publicApiBaseURL": strings.TrimRight(strings.TrimSpace(h.publicAPIBaseURL()), "/")})
 }

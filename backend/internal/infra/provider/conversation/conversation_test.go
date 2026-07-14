@@ -398,6 +398,36 @@ func TestConvertResponsesStream(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesStreamChatErrorIsTerminal(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.5","status":"in_progress"}}`, "",
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"message":"upstream failed"}}}`, "",
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"late delta"}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := string(converted)
+	if !strings.Contains(value, `"type":"response.failed"`) {
+		t.Fatalf("missing upstream failure: %s", value)
+	}
+	if strings.Contains(value, `"finish_reason":"stop"`) {
+		t.Fatalf("error stream must not end successfully: %s", value)
+	}
+	if strings.Contains(value, "late delta") {
+		t.Fatalf("events after an error must be ignored: %s", value)
+	}
+	if strings.Count(value, "data: [DONE]") != 1 {
+		t.Fatalf("error stream must send one terminator: %s", value)
+	}
+}
+
 func TestConvertResponsesStreamToMessagesThinkingToolsAndStop(t *testing.T) {
 	stream := strings.Join([]string{
 		`event: response.created`,
@@ -453,5 +483,25 @@ func TestConvertResponsesStreamEmitsDoneOnlyToolArguments(t *testing.T) {
 	}
 	if strings.Count(text, `"type":"content_block_stop"`) != 1 {
 		t.Fatalf("tool block closed multiple times: %s", text)
+	}
+}
+
+func TestConvertResponsesStreamMessagesInputTokens(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.5","status":"in_progress"}}`, "",
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"hello"}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5","status":"completed","usage":{"input_tokens":194,"output_tokens":7}}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationMessages))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+
+	if !strings.Contains(text, `"input_tokens":194`) {
+		t.Fatalf("message_delta should contain input_tokens from response.completed usage:\n%s", text)
 	}
 }

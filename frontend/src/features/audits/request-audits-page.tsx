@@ -7,9 +7,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { listModels } from "@/entities/model/model-api";
+import { RequestAuditDetailDialog } from "@/features/audits/request-audit-detail-dialog";
 import { getRequestAudits, getRequestAuditSummary, type AuditDTO, type AuditPeriod } from "@/features/audits/request-audits-api";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
@@ -36,6 +37,7 @@ export function RequestAuditsPage() {
   const [periodDays, setPeriodDays] = useState<PeriodDays>(1);
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [selectedAudit, setSelectedAudit] = useState<AuditDTO | null>(null);
   const forceSummaryRefresh = useRef(false);
   const debouncedSearch = useDebouncedValue(search);
   const debouncedKeyFilter = useDebouncedValue(keyFilter);
@@ -153,21 +155,23 @@ export function RequestAuditsPage() {
         {auditsQuery.isError ? <ErrorState message={auditsQuery.error.message} onRetry={() => void auditsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {auditsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="min-w-[1160px] table-fixed text-xs">
+          <Table className="min-w-[1280px] table-fixed text-xs">
             <colgroup>
-              <col className="w-[14%]" />
-              <col className="w-[14%]" />
+              <col className="w-[12%]" />
+              <col className="w-[13%]" />
               <col className="w-[10%]" />
-              <col className="w-[26%]" />
-              <col className="w-[8%]" />
-              <col className="w-[10%]" />
+              <col className="w-[9%]" />
+              <col className="w-[24%]" />
               <col className="w-[7%]" />
-              <col className="w-[11%]" />
+              <col className="w-[9%]" />
+              <col className="w-[7%]" />
+              <col className="w-[9%]" />
             </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <SortableTableHead field="request" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("audits.request")}</SortableTableHead>
                 <SortableTableHead field="model" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("audits.model")}</SortableTableHead>
+                <TableHead>{t("audits.egress")}</TableHead>
                 <SortableTableHead field="billing" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.billing")}</SortableTableHead>
                 <SortableTableHead field="tokens" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.tokens")}</SortableTableHead>
                 <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("audits.status")}</SortableTableHead>
@@ -177,7 +181,7 @@ export function RequestAuditsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {auditsQuery.isPending ? <TableLoadingRow colSpan={8} /> : result?.items.map((audit) => (
+              {auditsQuery.isPending ? <TableLoadingRow colSpan={9} /> : result?.items.map((audit) => (
                 <TableRow key={audit.id}>
                   <TableCell className="py-3">
                     <span className="block truncate text-xs" title={audit.requestId}>{audit.requestId}</span>
@@ -190,9 +194,10 @@ export function RequestAuditsPage() {
                       clientKey={audit.clientKeyName || `#${audit.clientKeyId}`}
                     />
                   </TableCell>
+                  <TableCell className="py-3"><EgressValue audit={audit} /></TableCell>
                   <TableCell className="py-3"><BillingValue audit={audit} /></TableCell>
                   <TableCell className="py-3"><UsageDetails audit={audit} locale={i18n.language} /></TableCell>
-                  <TableCell className="py-3 text-center"><AuditStatus statusCode={audit.statusCode} errorCode={audit.errorCode} /></TableCell>
+                  <TableCell className="py-3 text-center"><AuditStatus audit={audit} onOpen={() => setSelectedAudit(audit)} /></TableCell>
                   <TableCell className="py-3 text-center"><Badge variant="outline" className="whitespace-nowrap font-normal">{audit.streaming ? "Stream" : "Non-Stream"}</Badge></TableCell>
                   <TableCell className="whitespace-nowrap py-3 text-xs tabular-nums">{formatNumber(audit.durationMs, i18n.language)} ms</TableCell>
                   <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(audit.createdAt, i18n.language)}</TableCell>
@@ -202,7 +207,34 @@ export function RequestAuditsPage() {
           </Table>
         ) : null}
       </DataTableShell>
+      <RequestAuditDetailDialog key={selectedAudit?.id ?? "closed"} audit={selectedAudit} open={selectedAudit !== null} onOpenChange={(open) => !open && setSelectedAudit(null)} />
     </div>
+  );
+}
+
+function EgressValue({ audit }: { audit: AuditDTO }) {
+  const { t } = useTranslation();
+  if (!audit.egressMode) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+  const proxied = audit.egressMode === "proxy";
+  const node = audit.egressNodeName || (proxied ? t("audits.egressUnknown") : t("audits.egressDirect"));
+  const details = [audit.egressScope, audit.egressNodeId ? `#${audit.egressNodeId}` : ""].filter(Boolean).join(" · ");
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" className="block min-w-0 max-w-full cursor-help text-left" aria-label={`${proxied ? t("audits.egressProxy") : t("audits.egressDirect")}: ${node}`}>
+          <Badge variant="outline" className={cn("max-w-full font-normal", proxied ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground")}>
+            <span className="truncate">{proxied ? t("audits.egressProxy") : t("audits.egressDirect")}</span>
+          </Badge>
+          <span className="mt-1 block truncate text-[10px] text-muted-foreground">{node}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-72" side="top" align="start">
+        <div>{node}</div>
+        {details ? <div className="mt-1 text-primary-foreground/65">{details}</div> : null}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -350,17 +382,19 @@ function StatusBadge({ statusCode }: { statusCode: number }) {
   return <Badge variant="secondary" className={cn(compactClassName, "bg-muted text-muted-foreground")}>{statusCode || "-"}</Badge>;
 }
 
-function AuditStatus({ statusCode, errorCode }: { statusCode: number; errorCode?: string }) {
-  if (!errorCode) return <StatusBadge statusCode={statusCode} />;
+function AuditStatus({ audit, onOpen }: { audit: AuditDTO; onOpen: () => void }) {
+  const { t } = useTranslation();
+  if (!audit.errorCode && audit.attemptCount === 0) return <StatusBadge statusCode={audit.statusCode} />;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" className="cursor-help" aria-label={errorCode}>
-          <StatusBadge statusCode={statusCode} />
+        <button type="button" className="group inline-flex flex-col items-center gap-1 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50" aria-label={t("audits.openDiagnostics")} onClick={onOpen}>
+          <StatusBadge statusCode={audit.statusCode} />
+          <span className="whitespace-nowrap text-[10px] text-muted-foreground underline-offset-2 group-hover:text-foreground group-hover:underline">{audit.attemptCount > 0 ? t("audits.failedAttemptCount", { count: audit.attemptCount }) : t("audits.viewDetails")}</span>
         </button>
       </TooltipTrigger>
       <TooltipContent className="max-w-80 whitespace-normal break-words text-left leading-5" side="top">
-        {errorCode}
+        {audit.errorCode || t("audits.openDiagnostics")}
       </TooltipContent>
     </Tooltip>
   );

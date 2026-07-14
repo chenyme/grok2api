@@ -19,11 +19,16 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
-const maxGeneratedImages = 10
+const (
+	maxGeneratedImages   = 10
+	mediaOutputAttempts  = 3
+	imageDownloadTimeout = 60 * time.Second
+)
 
 var errLiteImageReady = errors.New("Lite 图片已完成")
 
@@ -529,6 +534,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 	connection.SetReadLimit(64 << 20)
 	deadline := time.Now().Add(time.Duration(cfg.ImageTimeoutSeconds) * time.Second)
 	_ = connection.SetReadDeadline(deadline)
+	_ = connection.SetWriteDeadline(deadline)
 	if err := connection.WriteJSON(imagineResetMessage()); err != nil {
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 		return nil, err
@@ -955,20 +961,39 @@ func (a *Adapter) imageResponse(ctx context.Context, credential account.Credenti
 
 func (a *Adapter) imageDataItem(ctx context.Context, credential account.Credential, image imagineImageValue, format string) (map[string]any, error) {
 	if a.assets == nil {
-		return nil, fmt.Errorf("图片媒体存储未配置")
+		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, fmt.Errorf("图片媒体存储未配置"))
 	}
 	raw, err := a.imageBytes(ctx, credential, image)
 	if err != nil {
-		return nil, err
+		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingDownload, err)
 	}
-	asset, err := a.assets.SaveImage(ctx, raw)
+	asset, err := a.saveImageWithRetry(ctx, raw)
 	if err != nil {
-		return nil, err
+		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, err)
 	}
 	if format != "b64_json" {
 		return map[string]any{"url": a.assets.PublicImageURL(asset.ID), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil
 	}
 	return map[string]any{"b64_json": base64.StdEncoding.EncodeToString(raw), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil
+}
+
+// saveImageWithRetry 只重试当前生成结果的本地持久化，不重新请求上游生成。
+func (a *Adapter) saveImageWithRetry(ctx context.Context, raw []byte) (mediadomain.Asset, error) {
+	var lastErr error
+	for attempt := 0; attempt < mediaOutputAttempts; attempt++ {
+		asset, err := a.assets.SaveImage(ctx, raw)
+		if err == nil {
+			return asset, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || attempt+1 >= mediaOutputAttempts {
+			break
+		}
+		if err := waitMediaOutputRetry(ctx, attempt); err != nil {
+			return mediadomain.Asset{}, err
+		}
+	}
+	return mediadomain.Asset{}, lastErr
 }
 
 func (a *Adapter) imageBytes(ctx context.Context, credential account.Credential, image imagineImageValue) ([]byte, error) {
@@ -1091,34 +1116,76 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 	if err != nil {
 		return nil, err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWebAsset, fmt.Sprintf("%d", credential.ID))
+	downloadCtx, cancel := context.WithTimeout(ctx, imageDownloadTimeout)
+	defer cancel()
+	var lastErr error
+	for attempt := 0; attempt < mediaOutputAttempts; attempt++ {
+		raw, retryable, attemptErr := a.downloadImageAttempt(downloadCtx, credential.ID, token, parsed.String())
+		if attemptErr == nil {
+			return raw, nil
+		}
+		lastErr = attemptErr
+		if !retryable || downloadCtx.Err() != nil || attempt+1 >= mediaOutputAttempts {
+			break
+		}
+		if err := waitMediaOutputRetry(downloadCtx, attempt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+// downloadImageAttempt 每次沿用同一账号，只允许出口管理器重新选择资源节点。
+func (a *Adapter) downloadImageAttempt(ctx context.Context, accountID uint64, token, rawURL string) ([]byte, bool, error) {
+	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWebAsset, fmt.Sprintf("%d", accountID))
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	defer lease.Release()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	request.Header = buildHeaders(token, lease, "")
 	request.Header.Del("Content-Type")
 	response, err := lease.Do(request)
 	if err != nil {
-		return nil, err
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		return nil, ctx.Err() == nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("下载图片返回 %d", response.StatusCode)
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+		retryable := response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooEarly || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500
+		return nil, retryable, fmt.Errorf("下载图片返回 %d", response.StatusCode)
 	}
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
 	if contentType != "" && !strings.HasPrefix(contentType, "image/") {
-		return nil, fmt.Errorf("上游图片 Content-Type 无效")
+		return nil, false, fmt.Errorf("上游图片 Content-Type 无效")
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, (32<<20)+1))
-	if err != nil || len(raw) > 32<<20 {
-		return nil, fmt.Errorf("图片下载失败或超过 32 MiB")
+	if err != nil {
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		return nil, ctx.Err() == nil, fmt.Errorf("读取图片内容: %w", err)
 	}
-	return raw, nil
+	if len(raw) > 32<<20 {
+		return nil, false, fmt.Errorf("图片下载超过 32 MiB")
+	}
+	a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+	return raw, false, nil
+}
+
+func waitMediaOutputRetry(ctx context.Context, attempt int) error {
+	delays := [...]time.Duration{200 * time.Millisecond, 750 * time.Millisecond}
+	delay := delays[min(attempt, len(delays)-1)]
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func decodeImageBlob(value string) ([]byte, error) {

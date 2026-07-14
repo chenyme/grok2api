@@ -3,6 +3,7 @@ package relational
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -20,9 +21,12 @@ type AuditRepository struct{ db *Database }
 func NewAuditRepository(db *Database) *AuditRepository { return &AuditRepository{db: db} }
 
 func (r *AuditRepository) Create(ctx context.Context, value audit.Record) error {
-	row := toAuditModel(value)
+	row, attempts, err := toAuditModels(value)
+	if err != nil {
+		return err
+	}
 	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return createAuditAndBill(tx, row)
+		return createAuditAndBill(tx, &row, attempts)
 	})
 }
 
@@ -33,12 +37,18 @@ func (r *AuditRepository) CreateBatch(ctx context.Context, values []audit.Record
 	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		insertedRows := make([]requestAuditModel, 0, len(values))
 		for _, value := range values {
-			row := toAuditModel(value)
-			inserted, err := insertAudit(tx, row)
+			row, attempts, err := toAuditModels(value)
+			if err != nil {
+				return err
+			}
+			inserted, err := insertAudit(tx, &row)
 			if err != nil {
 				return err
 			}
 			if inserted {
+				if err := insertAuditAttempts(tx, row.ID, attempts); err != nil {
+					return err
+				}
 				insertedRows = append(insertedRows, row)
 			}
 		}
@@ -67,7 +77,7 @@ func (r *AuditRepository) CreateBatch(ctx context.Context, values []audit.Record
 	})
 }
 
-func toAuditModel(value audit.Record) requestAuditModel {
+func toAuditModels(value audit.Record) (requestAuditModel, []requestAuditAttemptModel, error) {
 	provider := value.Provider
 	if provider == "" {
 		provider = "grok_build"
@@ -85,24 +95,73 @@ func toAuditModel(value audit.Record) requestAuditModel {
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%d", value.RequestID, value.ClientKeyID, value.ModelRouteID, value.CreatedAt.UnixNano())))
 		eventID = fmt.Sprintf("evt_%x", digest[:18])
 	}
-	return requestAuditModel{
+	row := requestAuditModel{
 		EventID: truncate(eventID, 64), RequestID: truncate(value.RequestID, 64), ClientKeyID: value.ClientKeyID, ClientKeyName: truncate(value.ClientKeyName, 160),
 		ModelRouteID: value.ModelRouteID, ModelPublicID: truncate(value.ModelPublicID, 255), ModelUpstreamModel: truncate(value.ModelUpstreamModel, 255),
 		Provider: truncate(provider, 32), Operation: string(operation), UsageSource: string(usageSource),
-		AccountID: value.AccountID, AccountName: truncate(value.AccountName, 160), StatusCode: value.StatusCode, Streaming: value.Streaming,
+		AccountID: value.AccountID, AccountName: truncate(value.AccountName, 160),
+		EgressNodeID: value.EgressNodeID, EgressNodeName: truncate(value.EgressNodeName, 160), EgressScope: truncate(value.EgressScope, 32), EgressMode: string(value.EgressMode),
+		StatusCode: value.StatusCode, Streaming: value.Streaming,
 		MediaInputImages: nonNegative(value.MediaInputImages), MediaOutputImages: nonNegative(value.MediaOutputImages), MediaOutputSeconds: nonNegative(value.MediaOutputSeconds),
 		InputTokens: nonNegative(value.InputTokens), CachedInputTokens: nonNegative(value.CachedInputTokens), OutputTokens: nonNegative(value.OutputTokens),
 		ReasoningTokens: nonNegative(value.ReasoningTokens), TotalTokens: nonNegative(value.TotalTokens), CostInUSDTicks: nonNegative(value.CostInUSDTicks),
 		EstimatedCostInUSDTicks: nonNegative(value.EstimatedCostInUSDTicks), PricingModel: truncate(value.PricingModel, 100), PricingVersion: truncate(value.PricingVersion, 20),
 		NumSourcesUsed: nonNegative(value.NumSourcesUsed), NumServerSideToolsUsed: nonNegative(value.NumServerSideToolsUsed),
 		ContextInputTokens: nonNegative(value.ContextInputTokens), ContextOutputTokens: nonNegative(value.ContextOutputTokens), DurationMS: nonNegative(value.DurationMS),
-		ErrorCode: truncate(value.ErrorCode, 100), CreatedAt: value.CreatedAt,
+		ErrorCode: truncate(value.ErrorCode, 100), AttemptCount: len(value.Attempts), CreatedAt: value.CreatedAt,
 	}
+	attempts := make([]requestAuditAttemptModel, 0, len(value.Attempts))
+	for _, attempt := range value.Attempts {
+		responseHeaders, err := json.Marshal(attempt.ResponseHeaders)
+		if err != nil {
+			return requestAuditModel{}, nil, fmt.Errorf("序列化审计响应头: %w", err)
+		}
+		if attempt.ResponseHeaders == nil {
+			responseHeaders = []byte("{}")
+		}
+		errorChain, err := json.Marshal(attempt.ErrorChain)
+		if err != nil {
+			return requestAuditModel{}, nil, fmt.Errorf("序列化审计错误链: %w", err)
+		}
+		if attempt.ErrorChain == nil {
+			errorChain = []byte("[]")
+		}
+		attempts = append(attempts, requestAuditAttemptModel{
+			Number:                attempt.Number,
+			Source:                string(attempt.Source),
+			Stage:                 attempt.Stage,
+			AccountID:             attempt.AccountID,
+			AccountName:           truncate(attempt.AccountName, 160),
+			Method:                truncate(attempt.Method, 16),
+			RequestPath:           truncate(attempt.RequestPath, 2048),
+			UpstreamURL:           truncate(attempt.UpstreamURL, 4096),
+			StartedAt:             attempt.StartedAt,
+			DurationMS:            nonNegative(attempt.DurationMS),
+			UpstreamStatusCode:    attempt.UpstreamStatusCode,
+			UpstreamStatus:        truncate(attempt.UpstreamStatus, 128),
+			ResponseHeadersJSON:   string(responseHeaders),
+			ResponseBody:          truncateBytes(attempt.ResponseBody, 65536),
+			ResponseBodyTruncated: attempt.ResponseBodyTruncated || len(attempt.ResponseBody) > 65536,
+			TransportError:        truncate(attempt.TransportError, 2048),
+			ErrorChainJSON:        string(errorChain),
+		})
+	}
+	return row, attempts, nil
 }
 
-func createAuditAndBill(tx *gorm.DB, row requestAuditModel) error {
+func truncateBytes(value []byte, limit int) []byte {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit]
+}
+
+func createAuditAndBill(tx *gorm.DB, row *requestAuditModel, attempts []requestAuditAttemptModel) error {
 	inserted, err := insertAudit(tx, row)
 	if err != nil || !inserted {
+		return err
+	}
+	if err := insertAuditAttempts(tx, row.ID, attempts); err != nil {
 		return err
 	}
 	var reservation billingReservationModel
@@ -110,12 +169,22 @@ func createAuditAndBill(tx *gorm.DB, row requestAuditModel) error {
 	if reservationErr != nil && !errors.Is(reservationErr, gorm.ErrRecordNotFound) {
 		return reservationErr
 	}
-	return billInsertedAudit(tx, row, reservation, reservationErr == nil)
+	return billInsertedAudit(tx, *row, reservation, reservationErr == nil)
 }
 
-func insertAudit(tx *gorm.DB, row requestAuditModel) (bool, error) {
-	result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
+func insertAudit(tx *gorm.DB, row *requestAuditModel) (bool, error) {
+	result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(row)
 	return result.RowsAffected == 1, result.Error
+}
+
+func insertAuditAttempts(tx *gorm.DB, auditID uint64, attempts []requestAuditAttemptModel) error {
+	if len(attempts) == 0 {
+		return nil
+	}
+	for index := range attempts {
+		attempts[index].AuditID = auditID
+	}
+	return tx.Create(&attempts).Error
 }
 
 func billInsertedAudit(tx *gorm.DB, row requestAuditModel, reservation billingReservationModel, hasReservation bool) error {
@@ -214,6 +283,27 @@ func (r *AuditRepository) List(ctx context.Context, offset, limit int) ([]audit.
 	return out, total, nil
 }
 
+func (r *AuditRepository) Get(ctx context.Context, id uint64) (audit.Record, error) {
+	var row requestAuditModel
+	if err := r.db.db.WithContext(ctx).First(&row, id).Error; err != nil {
+		return audit.Record{}, mapError(err)
+	}
+	var attemptRows []requestAuditAttemptModel
+	if err := r.db.db.WithContext(ctx).Where("audit_id = ?", id).Order("number ASC").Find(&attemptRows).Error; err != nil {
+		return audit.Record{}, err
+	}
+	value := toAuditDomain(row)
+	value.Attempts = make([]audit.Attempt, 0, len(attemptRows))
+	for _, attemptRow := range attemptRows {
+		attempt, err := toAuditAttemptDomain(attemptRow)
+		if err != nil {
+			return audit.Record{}, err
+		}
+		value.Attempts = append(value.Attempts, attempt)
+	}
+	return value, nil
+}
+
 // ListCursor 使用“排序值 + ID”复合游标读取审计，避免深分页和同值记录漏读。
 func (r *AuditRepository) ListCursor(ctx context.Context, input repository.AuditCursorQuery) ([]audit.Record, bool, error) {
 	query := r.db.db.WithContext(ctx).Model(&requestAuditModel{})
@@ -301,7 +391,7 @@ func (r *AuditRepository) Summarize(ctx context.Context, input repository.AuditS
 func applyAuditQuery(query *gorm.DB, search string, start, end time.Time, filter repository.AuditListFilter) *gorm.DB {
 	if value := strings.TrimSpace(search); value != "" {
 		pattern := "%" + strings.ToLower(value) + "%"
-		query = query.Where("LOWER(request_id) LIKE ? OR LOWER(model_public_id) LIKE ? OR LOWER(model_upstream_model) LIKE ?", pattern, pattern, pattern)
+		query = query.Where("LOWER(request_id) LIKE ? OR LOWER(model_public_id) LIKE ? OR LOWER(model_upstream_model) LIKE ? OR LOWER(egress_node_name) LIKE ?", pattern, pattern, pattern, pattern)
 	}
 	if !start.IsZero() {
 		query = query.Where("created_at >= ?", start)

@@ -19,6 +19,10 @@ type Job struct {
 	ClientKeyName   string
 	AccountID       uint64
 	AccountName     string
+	EgressNodeID    *uint64
+	EgressNodeName  string
+	EgressScope     string
+	EgressMode      string
 	Provider        string
 	Model           string
 	ModelRouteID    uint64
