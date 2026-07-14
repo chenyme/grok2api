@@ -19,8 +19,10 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
@@ -651,6 +653,30 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	if adapter.EditResolution() != "2k" {
 		t.Fatalf("image edit resolution = %q", adapter.EditResolution())
 	}
+
+	billingBeforeFailure, err := keyRepo.Get(ctx, key.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.FailWithEgress(infraegress.NewManager(relational.NewEgressRepository(database), testCipher(t)))
+	if _, err := service.GenerateImage(ctx, ImageGenerationInput{
+		RequestID: "req-image-failed", ClientKey: key, PublicModel: "grok-imagine-image-quality",
+		Prompt: "test", Count: 1, Resolution: "1k", ResponseFormat: "url",
+	}); err == nil {
+		t.Fatal("expected image transport failure")
+	}
+	logs, total, err = auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 5 || len(logs) != 5 {
+		t.Fatalf("failure audit logs=%#v total=%d err=%v", logs, total, err)
+	}
+	failureAudit := logs[0]
+	if failureAudit.RequestID != "req-image-failed" || failureAudit.StatusCode != http.StatusBadGateway || failureAudit.ErrorCode != "upstream_unavailable" || failureAudit.MediaOutputImages != 0 || failureAudit.EstimatedCostInUSDTicks != 0 || failureAudit.EgressMode != audit.EgressModeDirect || failureAudit.EgressScope != string(egressdomain.ScopeWeb) || failureAudit.EgressNodeName != "direct" {
+		t.Fatalf("failure audit = %#v", failureAudit)
+	}
+	updatedKey, err := keyRepo.Get(ctx, key.ID)
+	if err != nil || updatedKey.ReservedUsageUSDTicks != 0 || updatedKey.BilledUsageUSDTicks != billingBeforeFailure.BilledUsageUSDTicks {
+		t.Fatalf("failed image billing key = %#v, err = %v", updatedKey, err)
+	}
 }
 
 func TestSuccessfulWebChatRefreshesCurrentModeQuota(t *testing.T) {
@@ -844,6 +870,7 @@ type webImageStreamAdapter struct {
 	streaming      bool
 	editResolution string
 	synced         chan string
+	failureEgress  *infraegress.Manager
 }
 
 type webChatQuotaAdapter struct {
@@ -877,10 +904,19 @@ func (a *webImageStreamAdapter) QuotaMode(model string) string {
 func (a *webImageStreamAdapter) TierOrder(string) []account.WebTier {
 	return []account.WebTier{account.WebTierSuper, account.WebTierHeavy}
 }
-func (a *webImageStreamAdapter) GenerateImage(_ context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
+func (a *webImageStreamAdapter) GenerateImage(ctx context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
 	a.mu.Lock()
 	a.streaming = request.Streaming
+	failureEgress := a.failureEgress
 	a.mu.Unlock()
+	if failureEgress != nil {
+		lease, err := failureEgress.Acquire(ctx, egressdomain.ScopeWeb, "image-failure")
+		if err != nil {
+			return nil, err
+		}
+		lease.Release()
+		return nil, errors.New("simulated image transport failure")
+	}
 	body := "event: image_generation.completed\ndata: {}\n\ndata: [DONE]\n\n"
 	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body)), QuotaUnits: 1}, nil
 }
@@ -908,6 +944,11 @@ func (a *webImageStreamAdapter) EditResolution() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.editResolution
+}
+func (a *webImageStreamAdapter) FailWithEgress(manager *infraegress.Manager) {
+	a.mu.Lock()
+	a.failureEgress = manager
+	a.mu.Unlock()
 }
 func (a *webImageStreamAdapter) SyncQuota(context.Context, account.Credential) (provider.QuotaSnapshot, error) {
 	return provider.QuotaSnapshot{}, errors.New("unexpected full quota sync")
