@@ -305,8 +305,19 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if err := s.recordVideoUsage(context.Background(), job, time.Since(startedAt).Milliseconds()); err != nil {
 		s.logger.Error("video_usage_record_failed", "job_id", job.ID, "event_id", "video_usage_"+job.ID, "error", err)
 	}
-	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode == "weekly" {
-		s.accounts.QueueQuotaRefresh(job.AccountID, lease.QuotaMode)
+	if lease.QuotaMode != "" {
+		if lease.QuotaMode != "weekly" {
+			units := 1
+			updated, decrementErr := s.accounts.DecrementQuota(context.Background(), job.AccountID, lease.QuotaMode, units)
+			if decrementErr != nil {
+				s.logger.Warn("video_quota_decrement_failed", "provider", route.Provider, "account_id", job.AccountID, "mode", lease.QuotaMode, "units", units, "error", decrementErr)
+			} else if updated {
+				s.selector.ConsumeQuota(route.Provider, job.AccountID, lease.QuotaMode, units)
+			}
+		}
+		if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow {
+			s.accounts.QueueQuotaRefresh(job.AccountID, lease.QuotaMode)
+		}
 	}
 }
 
