@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
@@ -12,23 +12,34 @@ export function CopyButton({
   value,
   className,
   disabled,
+  copyLabel,
   onCopied,
   onError,
 }: {
   value: string;
   className?: string;
   disabled?: boolean;
+  copyLabel?: string;
   onCopied?: () => void;
   onError?: (error: unknown) => void;
 }) {
   const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
+  const [copiedValue, setCopiedValue] = useState<string | null>(null);
+  const resetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
+  }, []);
 
   async function handleClick() {
     const ok = await copyToClipboard(value);
     if (ok) {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
+      setCopiedValue(value);
+      resetTimerRef.current = window.setTimeout(() => {
+        setCopiedValue(null);
+        resetTimerRef.current = null;
+      }, 1500);
       onCopied?.();
     } else {
       const message = t("common.copyFailed");
@@ -37,7 +48,8 @@ export function CopyButton({
     }
   }
 
-  const label = copied ? t("common.copied") : t("common.copy");
+  const copied = copiedValue === value;
+  const label = copied ? t("common.copied") : copyLabel ?? t("common.copy");
   return (
     <Tooltip>
       <TooltipTrigger asChild>
