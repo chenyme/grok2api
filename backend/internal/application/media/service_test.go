@@ -154,3 +154,16 @@ func TestCleanupPreservesMetadataWhenLocalObjectIsMissing(t *testing.T) {
 		t.Fatalf("shared metadata was deleted: %v", err)
 	}
 }
+
+func TestPublicImageURLUsesHotReloadedBase(t *testing.T) {
+	service := NewService(nil, nil, nil, nil, Config{PublicBaseURL: "https://config.example/base/"})
+	if got := service.PublicImageURL("img_demo"); got != "https://config.example/base/v1/media/images/img_demo" {
+		t.Fatalf("configured URL = %q", got)
+	}
+	updated := service.runtimeConfig()
+	updated.PublicBaseURL = "https://runtime.example/api/"
+	service.UpdateConfig(updated)
+	if got := service.PublicImageURL("img_demo"); got != "https://runtime.example/api/v1/media/images/img_demo" {
+		t.Fatalf("hot-reloaded URL = %q", got)
+	}
+}

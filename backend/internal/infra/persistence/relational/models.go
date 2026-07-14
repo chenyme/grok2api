@@ -284,10 +284,36 @@ type requestAuditModel struct {
 	ContextOutputTokens     int64     `gorm:"not null;default:0"`
 	DurationMS              int64     `gorm:"not null;default:0"`
 	ErrorCode               string    `gorm:"size:100;check:chk_request_audits_error_code,length(error_code) <= 100"`
+	AttemptCount            int       `gorm:"not null;default:0;check:chk_request_audits_attempt_count,attempt_count >= 0"`
 	CreatedAt               time.Time `gorm:"not null"`
 }
 
 func (requestAuditModel) TableName() string { return "request_audits" }
+
+type requestAuditAttemptModel struct {
+	ID                    uint64             `gorm:"primaryKey;autoIncrement"`
+	AuditID               uint64             `gorm:"not null;uniqueIndex:uidx_audit_attempt_number;check:chk_request_audit_attempts_audit_id,audit_id > 0"`
+	Number                int                `gorm:"not null;uniqueIndex:uidx_audit_attempt_number;check:chk_request_audit_attempts_number,number > 0"`
+	Source                string             `gorm:"size:32;not null;check:chk_request_audit_attempts_source,source IN ('upstream_http','gateway_transport','credential')"`
+	Stage                 string             `gorm:"size:64;not null;check:chk_request_audit_attempts_stage,length(trim(stage)) BETWEEN 1 AND 64"`
+	AccountID             *uint64            `gorm:"check:chk_request_audit_attempts_account_id,account_id IS NULL OR account_id > 0"`
+	AccountName           string             `gorm:"size:160;not null;default:'';check:chk_request_audit_attempts_account_name,length(account_name) <= 160"`
+	Method                string             `gorm:"size:16;not null;default:'';check:chk_request_audit_attempts_method,length(method) <= 16"`
+	RequestPath           string             `gorm:"type:text;not null;default:'';check:chk_request_audit_attempts_request_path,length(request_path) <= 2048"`
+	UpstreamURL           string             `gorm:"type:text;not null;default:'';check:chk_request_audit_attempts_upstream_url,length(upstream_url) <= 4096"`
+	StartedAt             time.Time          `gorm:"not null"`
+	DurationMS            int64              `gorm:"not null;default:0;check:chk_request_audit_attempts_duration,duration_ms >= 0"`
+	UpstreamStatusCode    *int               `gorm:"check:chk_request_audit_attempts_status,upstream_status_code IS NULL OR upstream_status_code BETWEEN 100 AND 599"`
+	UpstreamStatus        string             `gorm:"size:128;not null;default:'';check:chk_request_audit_attempts_status_text,length(upstream_status) <= 128"`
+	ResponseHeadersJSON   string             `gorm:"type:text;not null;default:'{}';check:chk_request_audit_attempts_headers,length(response_headers_json) <= 32768"`
+	ResponseBody          []byte             `gorm:"check:chk_request_audit_attempts_body,length(response_body) <= 65536"`
+	ResponseBodyTruncated bool               `gorm:"not null;default:false"`
+	TransportError        string             `gorm:"type:text;not null;default:'';check:chk_request_audit_attempts_transport_error,length(transport_error) <= 2048"`
+	ErrorChainJSON        string             `gorm:"type:text;not null;default:'[]';check:chk_request_audit_attempts_error_chain,length(error_chain_json) <= 32768"`
+	Audit                 *requestAuditModel `gorm:"foreignKey:AuditID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (requestAuditAttemptModel) TableName() string { return "request_audit_attempts" }
 
 type responseOwnershipModel struct {
 	ResponseID  string          `gorm:"size:255;primaryKey;check:chk_response_ownership_id,length(response_id) BETWEEN 1 AND 255"`

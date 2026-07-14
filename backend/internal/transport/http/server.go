@@ -143,7 +143,12 @@ func New(deps Dependencies) *gin.Engine {
 	mediaHandler.RegisterAdmin(adminProtected)
 	settingshttp.NewHandler(deps.Settings).Register(adminProtected)
 	egresshttp.NewHandler(deps.Egress).Register(adminProtected)
-	systemhttp.NewHandler(deps.PublicAPIBaseURL).Register(adminProtected)
+	systemhttp.NewHandler(func() string {
+		if deps.Settings != nil {
+			return deps.Settings.PublicAPIBaseURL()
+		}
+		return deps.PublicAPIBaseURL
+	}).Register(adminProtected)
 
 	v1 := router.Group("/v1")
 	if deps.TrafficReady != nil {

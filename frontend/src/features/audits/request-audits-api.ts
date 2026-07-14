@@ -1,5 +1,5 @@
 import { apiRequest } from "@/shared/api/client";
-import { createObjectDecoder, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isString } from "@/shared/api/decoder";
+import { createObjectDecoder, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isRecordOf, isString } from "@/shared/api/decoder";
 import type { PeriodValue } from "@/shared/lib/period";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
@@ -42,7 +42,35 @@ export type AuditDTO = {
   contextOutputTokens: number;
   durationMs: number;
   errorCode?: string;
+  attemptCount: number;
   createdAt: string;
+};
+
+export type AuditAttemptDTO = {
+  id: string;
+  number: number;
+  source: "upstream_http" | "gateway_transport" | "credential";
+  stage: string;
+  accountId?: string;
+  accountName?: string;
+  method?: string;
+  requestPath?: string;
+  upstreamUrl?: string;
+  startedAt: string;
+  durationMs: number;
+  upstreamStatusCode?: number;
+  upstreamStatus?: string;
+  responseHeaders: Record<string, string[]>;
+  responseBody: string;
+  responseBodyEncoding: "utf8" | "base64";
+  responseBodyTruncated: boolean;
+  transportError?: string;
+  errorChain: Array<{ type: string; message: string }>;
+};
+
+export type AuditDetailDTO = {
+  audit: AuditDTO;
+  attempts: AuditAttemptDTO[];
 };
 
 export type AuditCursorPageDTO = {
@@ -91,7 +119,14 @@ const auditValidator = hasShape({
   cachedInputTokens: isNumber, outputTokens: isNumber, reasoningTokens: isNumber, totalTokens: isNumber,
   costInUsdTicks: isNumber, estimatedCostInUsdTicks: isNumber, pricingModel: isOptional(isString), pricingVersion: isOptional(isString),
   numSourcesUsed: isNumber, numServerSideToolsUsed: isNumber, contextInputTokens: isNumber, contextOutputTokens: isNumber,
-  durationMs: isNumber, errorCode: isOptional(isString), createdAt: isString,
+  durationMs: isNumber, errorCode: isOptional(isString), attemptCount: isNumber, createdAt: isString,
+});
+const auditAttemptValidator = hasShape({
+  id: isString, number: isNumber, source: isOneOf("upstream_http", "gateway_transport", "credential"), stage: isString,
+  accountId: isOptional(isString), accountName: isOptional(isString), method: isOptional(isString), requestPath: isOptional(isString), upstreamUrl: isOptional(isString),
+  startedAt: isString, durationMs: isNumber, upstreamStatusCode: isOptional(isNumber), upstreamStatus: isOptional(isString),
+  responseHeaders: isRecordOf(isArrayOf(isString)), responseBody: isString, responseBodyEncoding: isOneOf("utf8", "base64"), responseBodyTruncated: isBoolean,
+  transportError: isOptional(isString), errorChain: isArrayOf(hasShape({ type: isString, message: isString })),
 });
 const decodeAuditPage = createObjectDecoder<AuditCursorPageDTO>("audit page", {
   items: isArrayOf(auditValidator), pageSize: isNumber, nextCursor: isString, hasMore: isBoolean,
@@ -106,6 +141,10 @@ const decodeAuditSummary = createObjectDecoder<AuditSummaryDTO>("audit summary",
   pricing: hasShape({
     source: isString, asOf: isString, pricedRequests: isNumber, unpricedRequests: isNumber, pricedTokens: isNumber, unpricedTokens: isNumber,
   }),
+});
+const decodeAuditDetail = createObjectDecoder<AuditDetailDTO>("audit detail", {
+  audit: auditValidator,
+  attempts: isArrayOf(auditAttemptValidator),
 });
 
 type AuditQuery = {
@@ -148,4 +187,8 @@ export function getRequestAuditSummary(input: Omit<AuditQuery, "cursor" | "pageS
   if (input.account) query.set("account", input.account);
   if (refresh) query.set("refresh", "1");
   return apiRequest(`/api/admin/v1/request-audits/summary?${query}`, {}, decodeAuditSummary);
+}
+
+export function getRequestAudit(id: string): Promise<AuditDetailDTO> {
+  return apiRequest(`/api/admin/v1/request-audits/${id}`, {}, decodeAuditDetail);
 }

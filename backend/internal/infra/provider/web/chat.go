@@ -165,6 +165,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			return &provider.Response{
 				StatusCode: upstream.StatusCode, Status: upstream.Status, Header: http.Header(upstream.Header),
+				UpstreamURL: upstream.Request.URL.String(),
 				Body: &releaseBody{ReadCloser: upstream.Body, release: func() {
 					a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, upstream.StatusCode, nil)
 					lease.Release()
