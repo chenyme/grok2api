@@ -398,6 +398,29 @@ func TestConvertResponsesStream(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesStreamChatErrorIsTerminal(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.5","status":"in_progress"}}`, "",
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"message":"upstream failed"}}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := string(converted)
+	if !strings.Contains(value, `"type":"response.failed"`) {
+		t.Fatalf("missing upstream failure: %s", value)
+	}
+	if strings.Contains(value, `"finish_reason":"stop"`) {
+		t.Fatalf("error stream must not end successfully: %s", value)
+	}
+	if strings.Count(value, "data: [DONE]") != 1 {
+		t.Fatalf("error stream must send one terminator: %s", value)
+	}
+}
+
 func TestConvertResponsesStreamToMessagesThinkingToolsAndStop(t *testing.T) {
 	stream := strings.Join([]string{
 		`event: response.created`,

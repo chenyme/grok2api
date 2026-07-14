@@ -437,8 +437,8 @@ func (c *streamConverter) textDeltaWithoutFilter(delta string) error {
 }
 
 func (c *streamConverter) streamError(data []byte) error {
+	c.finished = true
 	if c.operation == OperationMessages {
-		c.finished = true
 		return c.writeEvent("error", map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": string(data)}})
 	}
 	if err := c.writeData(json.RawMessage(data)); err != nil {
