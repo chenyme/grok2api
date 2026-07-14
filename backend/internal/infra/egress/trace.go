@@ -25,6 +25,7 @@ type Trace struct {
 
 type traceContextKey struct{}
 
+// WithTrace 为一次网关请求创建或复用并发安全的出口选择轨迹。
 func WithTrace(ctx context.Context) (context.Context, *Trace) {
 	if existing := TraceFromContext(ctx); existing != nil {
 		return ctx, existing
@@ -33,6 +34,7 @@ func WithTrace(ctx context.Context) (context.Context, *Trace) {
 	return context.WithValue(ctx, traceContextKey{}, trace), trace
 }
 
+// TraceFromContext 返回上下文中的出口轨迹；未配置时返回 nil。
 func TraceFromContext(ctx context.Context) *Trace {
 	if ctx == nil {
 		return nil
@@ -41,6 +43,7 @@ func TraceFromContext(ctx context.Context) *Trace {
 	return trace
 }
 
+// Selection 返回指定作用域最后一次实际出口选择的安全快照。
 func (t *Trace) Selection(scope domain.Scope) (Selection, bool) {
 	if t == nil {
 		return Selection{}, false

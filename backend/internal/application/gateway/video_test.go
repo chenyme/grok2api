@@ -39,6 +39,33 @@ func TestRecoverVideoJobsRetriesUsageWithoutRegeneratingVideo(t *testing.T) {
 	}
 }
 
+func TestRecoverVideoJobsRecordsFailedAuditWithEgress(t *testing.T) {
+	completedAt := time.Now().UTC()
+	nodeID := uint64(42)
+	repository := &videoUsageRepository{job: media.Job{
+		ID: "video_failed_recovery", RequestID: "request-failed-recovery",
+		ClientKeyID: 1, ClientKeyName: "client", AccountID: 2, AccountName: "account",
+		Provider: "grok_web", Model: "grok-imagine-video", ModelRouteID: 3, UpstreamModel: "video",
+		Seconds: 8, Quality: "720p", Status: media.StatusFailed, ErrorCode: "generation_failed", ErrorMessage: "upstream disconnected",
+		EgressNodeID: &nodeID, EgressNodeName: "warp", EgressScope: "grok_web", EgressMode: "proxy",
+		InputJSON: `{}`, CreatedAt: completedAt.Add(-time.Minute), CompletedAt: &completedAt,
+	}}
+	recorder := &durableVideoAuditRecorder{}
+	service := &Service{mediaJobs: repository, audits: recorder}
+	if err := service.RecoverVideoJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.job.UsageRecordedAt == nil || recorder.calls != 1 {
+		t.Fatalf("recordedAt = %v, audit calls = %d", repository.job.UsageRecordedAt, recorder.calls)
+	}
+	if recorder.last.StatusCode != 502 || recorder.last.ErrorCode != "generation_failed" || recorder.last.EgressNodeID == nil || *recorder.last.EgressNodeID != nodeID || recorder.last.EgressNodeName != "warp" || recorder.last.EgressMode != audit.EgressModeProxy {
+		t.Fatalf("audit = %#v", recorder.last)
+	}
+	if recorder.last.EstimatedCostInUSDTicks != 0 || recorder.last.MediaOutputSeconds != 0 {
+		t.Fatalf("failed job was billed: %#v", recorder.last)
+	}
+}
+
 func TestVideoQueueIsBoundedAndDeduplicated(t *testing.T) {
 	service := &Service{}
 	service.ConfigureMedia(&videoUsageRepository{}, 1)
@@ -95,8 +122,8 @@ func (r *videoUsageRepository) ListRecoverableMediaJobs(context.Context, int) ([
 	return nil, nil
 }
 
-func (r *videoUsageRepository) ListUnrecordedCompletedMediaJobs(context.Context, int) ([]media.Job, error) {
-	if r.job.UsageRecordedAt != nil {
+func (r *videoUsageRepository) ListUnrecordedTerminalMediaJobs(context.Context, int) ([]media.Job, error) {
+	if r.job.UsageRecordedAt != nil || (r.job.Status != media.StatusCompleted && r.job.Status != media.StatusFailed) {
 		return nil, nil
 	}
 	return []media.Job{r.job}, nil

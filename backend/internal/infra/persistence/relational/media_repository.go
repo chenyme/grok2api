@@ -187,12 +187,13 @@ func (r *MediaJobRepository) SummarizeMediaJobs(ctx context.Context) (repository
 	return stats, err
 }
 
-func (r *MediaJobRepository) ListUnrecordedCompletedMediaJobs(ctx context.Context, limit int) ([]media.Job, error) {
+// ListUnrecordedTerminalMediaJobs 返回尚未完成审计写入的成功或失败任务。
+func (r *MediaJobRepository) ListUnrecordedTerminalMediaJobs(ctx context.Context, limit int) ([]media.Job, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
 	var rows []mediaJobModel
-	if err := r.db.db.WithContext(ctx).Where("status = ? AND usage_recorded_at IS NULL", media.StatusCompleted).Order("completed_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := r.db.db.WithContext(ctx).Where("status IN ? AND usage_recorded_at IS NULL", []media.Status{media.StatusCompleted, media.StatusFailed}).Order("completed_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	values := make([]media.Job, 0, len(rows))
@@ -203,13 +204,14 @@ func (r *MediaJobRepository) ListUnrecordedCompletedMediaJobs(ctx context.Contex
 }
 
 func (r *MediaJobRepository) MarkMediaJobUsageRecorded(ctx context.Context, id string, recordedAt time.Time) error {
-	result := r.db.db.WithContext(ctx).Model(&mediaJobModel{}).Where("id = ? AND status = ? AND usage_recorded_at IS NULL", id, media.StatusCompleted).Update("usage_recorded_at", recordedAt)
+	terminalStatuses := []media.Status{media.StatusCompleted, media.StatusFailed}
+	result := r.db.db.WithContext(ctx).Model(&mediaJobModel{}).Where("id = ? AND status IN ? AND usage_recorded_at IS NULL", id, terminalStatuses).Update("usage_recorded_at", recordedAt)
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
 		var count int64
-		if err := r.db.db.WithContext(ctx).Model(&mediaJobModel{}).Where("id = ? AND status = ? AND usage_recorded_at IS NOT NULL", id, media.StatusCompleted).Count(&count).Error; err != nil {
+		if err := r.db.db.WithContext(ctx).Model(&mediaJobModel{}).Where("id = ? AND status IN ? AND usage_recorded_at IS NOT NULL", id, terminalStatuses).Count(&count).Error; err != nil {
 			return err
 		}
 		if count == 0 {

@@ -201,16 +201,7 @@ func (s *Service) processVideoJob(ctx context.Context, id string) {
 		route, err = s.models.GetByPublicID(ctx, job.Model)
 	}
 	if err != nil {
-		now := time.Now().UTC()
-		job.Status = media.StatusFailed
-		job.ErrorCode = "model_not_found"
-		job.ErrorMessage = "模型路由不存在"
-		job.LeaseUntil, job.UpdatedAt, job.CompletedAt = nil, now, &now
-		if err := s.mediaJobs.UpdateMediaJob(ctx, job); err != nil {
-			s.logger.Warn("video_job_terminal_write_failed", "job_id", job.ID, "error", err)
-		} else {
-			s.cancelBillingReservation("video_usage_" + job.ID)
-		}
+		s.failVideoJob(ctx, job, "model_not_found", errors.New("模型路由不存在"))
 		return
 	}
 	s.runVideoJob(ctx, job, route)
@@ -293,6 +284,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			_ = s.accounts.MarkReauthRequired(context.Background(), lease.Credential.ID, fmt.Sprintf("%s SSO credential rejected", lease.Credential.Provider))
 		}
 		s.selector.MarkFailure(context.Background(), lease.Credential, 0, 0)
+		applyMediaJobEgress(&job, egressTrace, route.Provider)
 		s.failVideoJob(parent, job, "generation_failed", err)
 		return
 	}
@@ -305,7 +297,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		return
 	}
 	s.selector.MarkSuccess(context.Background(), lease.Credential)
-	if err := s.recordVideoUsage(context.Background(), job, time.Since(startedAt).Milliseconds()); err != nil {
+	if err := s.recordVideoAudit(context.Background(), job, time.Since(startedAt).Milliseconds()); err != nil {
 		s.logger.Error("video_usage_record_failed", "job_id", job.ID, "event_id", "video_usage_"+job.ID, "error", err)
 	}
 	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode == "weekly" {
@@ -314,7 +306,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 }
 
 func (s *Service) reconcileVideoUsage(ctx context.Context) error {
-	jobs, err := s.mediaJobs.ListUnrecordedCompletedMediaJobs(ctx, 200)
+	jobs, err := s.mediaJobs.ListUnrecordedTerminalMediaJobs(ctx, 200)
 	if err != nil {
 		return err
 	}
@@ -324,29 +316,42 @@ func (s *Service) reconcileVideoUsage(ctx context.Context) error {
 		if job.CompletedAt != nil {
 			durationMS = max(int64(0), job.CompletedAt.Sub(job.CreatedAt).Milliseconds())
 		}
-		if err := s.recordVideoUsage(ctx, job, durationMS); err != nil {
+		if err := s.recordVideoAudit(ctx, job, durationMS); err != nil {
 			result = firstError(result, fmt.Errorf("任务 %s: %w", job.ID, err))
 		}
 	}
 	return result
 }
 
-func (s *Service) recordVideoUsage(ctx context.Context, job media.Job, durationMS int64) error {
+func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationMS int64) error {
 	accountID := job.AccountID
 	createdAt := time.Now().UTC()
 	if job.CompletedAt != nil && !job.CompletedAt.IsZero() {
 		createdAt = job.CompletedAt.UTC()
 	}
+	statusCode := http.StatusOK
+	if job.Status == media.StatusFailed {
+		statusCode = http.StatusBadGateway
+		switch job.ErrorCode {
+		case "account_unavailable", "provider_unavailable":
+			statusCode = http.StatusServiceUnavailable
+		case "model_not_found":
+			statusCode = http.StatusNotFound
+		}
+	}
 	record := audit.Record{
 		EventID: "video_usage_" + job.ID, RequestID: job.RequestID, ClientKeyID: job.ClientKeyID, ClientKeyName: job.ClientKeyName,
 		ModelRouteID: job.ModelRouteID, ModelPublicID: job.Model, ModelUpstreamModel: job.UpstreamModel,
 		Provider: job.Provider, Operation: audit.OperationVideo, UsageSource: audit.UsageSourceNone,
-		AccountID: &accountID, AccountName: job.AccountName, StatusCode: http.StatusOK,
+		AccountID: &accountID, AccountName: job.AccountName, StatusCode: statusCode, ErrorCode: job.ErrorCode,
 		EgressNodeID: job.EgressNodeID, EgressNodeName: job.EgressNodeName, EgressScope: job.EgressScope, EgressMode: audit.EgressMode(job.EgressMode),
-		MediaInputImages: int64(len(decodeVideoInput(job.InputJSON))), MediaOutputSeconds: int64(max(0, job.Seconds)),
-		DurationMS: durationMS, CreatedAt: createdAt,
+		MediaInputImages: int64(len(decodeVideoInput(job.InputJSON))),
+		DurationMS:       durationMS, CreatedAt: createdAt,
 	}
-	if pricing, ok := audit.EstimateOfficialVideoCost(job.Model, job.Quality, job.Seconds); ok {
+	if job.Status == media.StatusCompleted {
+		record.MediaOutputSeconds = int64(max(0, job.Seconds))
+	}
+	if pricing, ok := audit.EstimateOfficialVideoCost(job.Model, job.Quality, job.Seconds); ok && job.Status == media.StatusCompleted {
 		record.EstimatedCostInUSDTicks = pricing.CostInUSDTicks
 		record.PricingModel = pricing.Model
 		record.PricingVersion = audit.OfficialPricingAsOf
@@ -386,6 +391,9 @@ func (s *Service) failVideoJob(ctx context.Context, job media.Job, code string, 
 	if updateErr := s.persistVideoJobWithRetry(ctx, job); updateErr != nil {
 		s.logger.Error("video_job_terminal_write_failed", "job_id", job.ID, "error", updateErr)
 		return
+	}
+	if auditErr := s.recordVideoAudit(context.Background(), job, max(int64(0), now.Sub(job.CreatedAt).Milliseconds())); auditErr != nil {
+		s.logger.Error("video_usage_record_failed", "job_id", job.ID, "event_id", "video_usage_"+job.ID, "error", auditErr)
 	}
 	s.cancelBillingReservation("video_usage_" + job.ID)
 }

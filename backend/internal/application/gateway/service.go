@@ -747,6 +747,32 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	if !ok {
 		return nil, ErrNoAvailableAccount
 	}
+	auditBase := audit.Record{
+		EventID: eventID, RequestID: requestID, ClientKeyID: key.ID, ClientKeyName: key.Name,
+		ModelRouteID: route.ID, ModelPublicID: externalModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
+		Provider: string(route.Provider), Operation: operation, UsageSource: audit.UsageSourceNone, Streaming: streaming,
+	}
+	if operation == audit.OperationImageEdit {
+		auditBase.MediaInputImages = int64(max(0, inputImageCount))
+	}
+	writeFailureAudit := func(statusCode int, errorCode string, credential *accountdomain.Credential) {
+		record := auditBase
+		record.StatusCode = statusCode
+		record.ErrorCode = errorCode
+		record.DurationMS = time.Since(startedAt).Milliseconds()
+		record.CreatedAt = time.Now().UTC()
+		if credential != nil {
+			accountID := credential.ID
+			record.AccountID = &accountID
+			record.AccountName = credential.Name
+		}
+		applyAuditEgress(&record, egressTrace, route.Provider)
+		persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
+		defer cancel()
+		if auditErr := s.audits.Create(persistCtx, record); auditErr != nil {
+			s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", requestID, "error", auditErr)
+		}
+	}
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
 	var reservation audit.PricingResult
 	var priced bool
@@ -781,6 +807,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	for attempt := 0; attempt < attempts; attempt++ {
 		lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false)
 		if err != nil {
+			writeFailureAudit(http.StatusServiceUnavailable, "upstream_unavailable", nil)
 			return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 		}
 		excluded[lease.Credential.ID] = true
@@ -788,6 +815,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		if err != nil {
 			s.logger.Error("image_credential_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", lease.Credential.ID, "error", err)
 			lease.Release()
+			writeFailureAudit(http.StatusBadGateway, "upstream_unavailable", &lease.Credential)
 			return nil, err
 		}
 		response, err = execute(ctx, adapter, credential, route.UpstreamModel)
@@ -795,6 +823,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
 			s.selector.MarkFailure(ctx, credential, 0, 0)
 			lease.Release()
+			writeFailureAudit(http.StatusBadGateway, "upstream_unavailable", &credential)
 			return nil, err
 		}
 		if s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden && attempt == 0 && attempt+1 < attempts {
@@ -830,23 +859,13 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			lease.Release()
 			persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
 			defer cancel()
-			record := audit.Record{
-				EventID: eventID, RequestID: requestID, ClientKeyID: key.ID, ClientKeyName: key.Name,
-				ModelRouteID: route.ID, ModelPublicID: externalModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
-				Provider: string(route.Provider), Operation: operation, UsageSource: audit.UsageSourceNone,
-				AccountID: &accountID, AccountName: credential.Name, StatusCode: response.StatusCode,
-				Streaming: streaming, ErrorCode: errorCode,
-				DurationMS: time.Since(startedAt).Milliseconds(), CreatedAt: time.Now().UTC(),
-			}
+			record := auditBase
+			record.AccountID, record.AccountName, record.StatusCode = &accountID, credential.Name, response.StatusCode
+			record.ErrorCode = errorCode
+			record.DurationMS, record.CreatedAt = time.Since(startedAt).Milliseconds(), time.Now().UTC()
 			applyAuditEgress(&record, egressTrace, route.Provider)
-			switch operation {
-			case audit.OperationImage:
-				record.MediaOutputImages = int64(max(0, requestedCount))
-			case audit.OperationImageEdit:
-				record.MediaInputImages = int64(max(0, inputImageCount))
-				record.MediaOutputImages = int64(max(0, requestedCount))
-			}
 			if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" {
+				record.MediaOutputImages = int64(max(0, requestedCount))
 				var pricing audit.PricingResult
 				var priced bool
 				switch operation {
