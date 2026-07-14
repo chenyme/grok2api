@@ -22,7 +22,6 @@ const consoleChatDuration = durationSchema.refine((value) => {
   return seconds >= 5 && seconds <= 30 * 60;
 });
 
-
 function validPublicAPIBaseURL(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed.length === 0) return true;
@@ -93,7 +92,6 @@ export const settingsSchema = z.object({
   }).refine((value) => byteSizeBytes(value.maxTotalSize) >= byteSizeBytes(value.maxImageSize), { path: ["maxTotalSize"] }),
   frontend: z.object({
     publicApiBaseURL: z.string().trim().max(2048).refine((value) => validPublicAPIBaseURL(value), { message: "invalid" }),
-    preferRequestBaseURL: z.boolean(),
   }),
   routing: z.object({
     stickyTTL: routingTTLDuration,
@@ -127,8 +125,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       cleanupInterval: parseDuration(config.media.cleanupInterval),
     },
     frontend: {
-      publicApiBaseURL: config.frontend?.publicApiBaseURL ?? "",
-      preferRequestBaseURL: config.frontend?.preferRequestBaseURL ?? true,
+      publicApiBaseURL: config.frontend.publicApiBaseURL,
     },
     routing: {
       stickyTTL: parseDuration(config.routing.stickyTTL), cooldownBase: parseDuration(config.routing.cooldownBase),
@@ -157,7 +154,6 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
     },
     frontend: {
       publicApiBaseURL: config.frontend.publicApiBaseURL.trim(),
-      preferRequestBaseURL: config.frontend.preferRequestBaseURL,
     },
     routing: {
       stickyTTL: formatDuration(config.routing.stickyTTL), cooldownBase: formatDuration(config.routing.cooldownBase),

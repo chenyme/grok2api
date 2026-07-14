@@ -1,17 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
-import { Braces, Check, Code2, Copy, Info, Link2 } from "lucide-react";
+import { Braces, Code2, Info, Link2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
-import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { listModels } from "@/entities/model/model-api";
 import type { ModelRouteDTO } from "@/entities/model/types";
 import { getSystemInfo } from "@/entities/system/system-api";
 import { runtimeConfig } from "@/shared/config/runtime-config";
-import { copyToClipboard } from "@/shared/clipboard";
+import { CopyButton } from "@/shared/components/copy-button";
 import { cn } from "@/shared/lib/cn";
 
 type ExampleLanguage = "curl" | "python" | "javascript";
@@ -360,15 +359,5 @@ function ExamplePanel({
 
       <pre className="max-h-[480px] overflow-auto bg-secondary/45 p-4 text-xs leading-5 text-foreground"><code>{code}</code></pre>
     </div>
-  );
-}
-
-function CopyButton({ value, className }: { value: string; className?: string }) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button type="button" variant="ghost" size="icon" className={cn("size-7 shrink-0 text-muted-foreground", className)} aria-label={copied ? t("common.copied") : t("common.copy")} title={copied ? t("common.copied") : t("common.copy")} onClick={() => { void copyToClipboard(value); setCopied(true); window.setTimeout(() => setCopied(false), 1500); }}>
-      {copied ? <Check /> : <Copy />}
-    </Button>
   );
 }

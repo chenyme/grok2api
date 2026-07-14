@@ -155,9 +155,6 @@ export function SettingsPage() {
               <SettingsField controlId="frontend-public-api-base-url" label={t("settings.media.publicApiBaseURL")} description={t("settings.media.publicApiBaseURLHelp")} error={form.formState.errors.frontend?.publicApiBaseURL?.message} className="sm:col-span-2">
                 <Input id="frontend-public-api-base-url" placeholder="https://api.example.com" {...form.register("frontend.publicApiBaseURL")} />
               </SettingsField>
-              <SettingsField controlId="frontend-prefer-request-base-url" label={t("settings.media.preferRequestBaseURL")} description={t("settings.media.preferRequestBaseURLHelp")}>
-                <Controller control={form.control} name="frontend.preferRequestBaseURL" render={({ field }) => <div className="flex h-8 items-center"><Switch id="frontend-prefer-request-base-url" checked={field.value} onCheckedChange={field.onChange} /></div>} />
-              </SettingsField>
             </div>
           </SettingsSection>
 

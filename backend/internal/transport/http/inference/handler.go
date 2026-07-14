@@ -190,7 +190,7 @@ func (h *Handler) createChatCompletion(c *gin.Context) {
 	requestIDValue, _ := requestID.(string)
 	result, err := h.gateway.CreateChatCompletion(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
-		Body: body, Streaming: request.Stream, PublicBaseURL: requestBaseURL(c.Request),
+		Body: body, Streaming: request.Stream,
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -229,7 +229,7 @@ func (h *Handler) createMessage(c *gin.Context) {
 	requestIDValue, _ := requestID.(string)
 	result, err := h.gateway.CreateMessage(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
-		Body: body, Streaming: request.Stream, PublicBaseURL: requestBaseURL(c.Request),
+		Body: body, Streaming: request.Stream,
 	})
 	if err != nil {
 		writeGatewayAnthropicError(c, err)
@@ -269,7 +269,6 @@ func (h *Handler) generateImage(c *gin.Context) {
 		RequestID: requestID, ClientKey: clientKey, PublicModel: request.Model, Prompt: request.Prompt,
 		Count: count, Size: request.Size, AspectRatio: request.AspectRatio,
 		Resolution: request.Resolution, ResponseFormat: request.ResponseFormat, Streaming: request.Stream,
-		PublicBaseURL: requestBaseURL(c.Request),
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -425,7 +424,6 @@ func (h *Handler) editImage(c *gin.Context) {
 	result, err := h.gateway.EditImage(c.Request.Context(), gateway.ImageEditInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model, Prompt: prompt,
 		ImageURLs: imageURLs, Count: count, Resolution: resolution, ResponseFormat: request.ResponseFormat,
-		PublicBaseURL: requestBaseURL(c.Request),
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -654,7 +652,7 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 	}
 	requestID, _ := c.Get(middleware.RequestIDKey)
 	requestIDValue, _ := requestID.(string)
-	input := gateway.Input{RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model, Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey, PreviousResponseID: request.PreviousResponseID, PublicBaseURL: requestBaseURL(c.Request)}
+	input := gateway.Input{RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model, Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey, PreviousResponseID: request.PreviousResponseID}
 	var result *gateway.Result
 	if compact {
 		result, err = h.gateway.CompactResponse(c.Request.Context(), input)
@@ -671,28 +669,6 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 func isJSONRequest(c *gin.Context) bool {
 	mediaType, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
 	return err == nil && strings.EqualFold(mediaType, "application/json")
-}
-
-// requestBaseURL derives the public base URL from the incoming HTTP request,
-// respecting X-Forwarded-Proto and X-Forwarded-Host headers set by reverse
-// proxies. Returns an empty string when the request has no usable host.
-func requestBaseURL(r *http.Request) string {
-	scheme := r.Header.Get("X-Forwarded-Proto")
-	if scheme == "" {
-		if r.TLS != nil {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
-	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
-	if host == "" {
-		return ""
-	}
-	return scheme + "://" + strings.TrimRight(host, "/")
 }
 
 func decodeSingleJSON(reader io.Reader, target any, disallowUnknown bool) error {

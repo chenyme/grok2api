@@ -57,12 +57,12 @@ func resolveWebTierFromQuota(current account.WebTier, windows []account.QuotaWin
 		}
 		return tier, weeklyAvailable && tier != account.WebTierBasic
 	}
-	// 周额度是付费账号信号，但无法区分 Super/Heavy。只有已确认的 Heavy
-	// 可以在模式额度暂时不可用时保留，其余账号只授予最低付费等级。
-	if current == account.WebTierHeavy {
-		return account.WebTierHeavy, weeklyAvailable
+	// 周额度是付费账号信号，但无法区分 Super/Heavy。已确认的等级在模式
+	// 额度暂时不可用时保留；未确认（Auto/Basic）的不能凭周额度提权。
+	if current == account.WebTierHeavy || current == account.WebTierSuper {
+		return current, weeklyAvailable
 	}
-	return account.WebTierSuper, weeklyAvailable
+	return current, false
 }
 
 // inferWebTierFromQuota 使用 Grok Web /rest/rate-limits 的真实额度形态判级。

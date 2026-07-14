@@ -50,7 +50,6 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	input.Media.CleanupThresholdPercent = 75
 	input.Media.CleanupInterval = "5m"
 	input.Frontend.PublicAPIBaseURL = "http://public.example.com"
-	input.Frontend.PreferRequestBaseURL = false
 	input.ProviderConsole.BaseURL = "https://console.example.com"
 	input.ProviderConsole.UserAgent = "console-test-agent"
 	input.ProviderConsole.ChatTimeout = "6m"
@@ -66,7 +65,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if applied.Media.MaxTotalBytes != 2<<30 || applied.Media.CleanupThresholdPercent != 75 || applied.Media.CleanupInterval.Value() != 5*time.Minute {
 		t.Fatalf("media configuration was not applied: %#v", applied.Media)
 	}
-	if applied.Frontend.PublicAPIBaseURL != "http://public.example.com" || applied.Frontend.PreferRequestBaseURL {
+	if applied.Frontend.PublicAPIBaseURLOverride != "http://public.example.com" || applied.Frontend.EffectivePublicAPIBaseURL() != "http://public.example.com" {
 		t.Fatalf("frontend configuration was not applied: %#v", applied.Frontend)
 	}
 	if applied.Batch.ImportConcurrency != 26 || applied.Batch.ConversionConcurrency != 27 || applied.Batch.SyncConcurrency != 28 || applied.Batch.RefreshConcurrency != 29 || applied.Batch.RandomDelay.Value() != 750*time.Millisecond {
@@ -271,51 +270,37 @@ func testConfig(t *testing.T) config.Config {
 func TestLoadPersistedKeepsYAMLFrontendWhenUnset(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Frontend.PublicAPIBaseURL = "http://yaml.example.com"
-	cfg.Frontend.PreferRequestBaseURL = true
-	randomDelay := cfg.Batch.RandomDelay.Value()
+	value := toDomainConfig(cfg)
+	value.Frontend = settingsdomain.FrontendConfig{}
 	repository := &runtimeSettingsRepositoryStub{
-		value: settingsdomain.Config{
-			ProviderBuild: settingsdomain.ProviderBuildConfig{
-				BaseURL: cfg.Provider.Build.BaseURL, ClientVersion: cfg.Provider.Build.ClientVersion,
-				ClientIdentifier: cfg.Provider.Build.ClientIdentifier, TokenAuth: cfg.Provider.Build.TokenAuth,
-				UserAgent: cfg.Provider.Build.UserAgent,
-			},
-			ProviderWeb: settingsdomain.ProviderWebConfig{
-				BaseURL: cfg.Provider.Web.BaseURL, StatsigMode: cfg.Provider.Web.StatsigMode, StatsigSignerURL: cfg.Provider.Web.StatsigSignerURL,
-				QuotaTimeout: cfg.Provider.Web.QuotaTimeout.Value(), ChatTimeout: cfg.Provider.Web.ChatTimeout.Value(),
-				ImageTimeout: cfg.Provider.Web.ImageTimeout.Value(), VideoTimeout: cfg.Provider.Web.VideoTimeout.Value(),
-				MediaConcurrency: cfg.Provider.Web.MediaConcurrency, AllowNSFW: cfg.Provider.Web.AllowNSFW,
-				RecoveryBackoffBase: cfg.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: cfg.Provider.Web.RecoveryBackoffMax.Value(),
-			},
-			ProviderConsole: settingsdomain.ProviderConsoleConfig{
-				BaseURL: cfg.Provider.Console.BaseURL, UserAgent: cfg.Provider.Console.UserAgent, ChatTimeout: cfg.Provider.Console.ChatTimeout.Value(),
-			},
-			Batch: settingsdomain.BatchConfig{
-				ImportConcurrency: cfg.Batch.ImportConcurrency, ConversionConcurrency: cfg.Batch.ConversionConcurrency,
-				SyncConcurrency: cfg.Batch.SyncConcurrency, RefreshConcurrency: cfg.Batch.RefreshConcurrency, RandomDelay: &randomDelay,
-			},
-			Media: settingsdomain.MediaConfig{
-				MaxImageBytes: cfg.Media.MaxImageBytes, MaxTotalBytes: cfg.Media.MaxTotalBytes,
-				CleanupThresholdPercent: cfg.Media.CleanupThresholdPercent, CleanupInterval: cfg.Media.CleanupInterval.Value(),
-			},
-			Routing: settingsdomain.RoutingConfig{
-				StickyTTL: cfg.Routing.StickyTTL.Value(), CooldownBase: cfg.Routing.CooldownBase.Value(),
-				CooldownMax: cfg.Routing.CooldownMax.Value(), CapacityWait: cfg.Routing.CapacityWait.Value(), MaxAttempts: cfg.Routing.MaxAttempts,
-			},
-			Audit: settingsdomain.AuditConfig{
-				BufferSize: cfg.Audit.BufferSize, BatchSize: cfg.Audit.BatchSize, FlushInterval: cfg.Audit.FlushInterval.Value(),
-			},
-			ClientKeyDefaults: settingsdomain.ClientKeyDefaultsConfig{
-				RPMLimit: cfg.ClientKeyDefaults.RPMLimit, MaxConcurrent: cfg.ClientKeyDefaults.MaxConcurrent,
-			},
-		},
+		value: value,
 		found: true, revision: 1, updatedAt: time.Now().UTC(),
 	}
 	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Frontend.PublicAPIBaseURL != "http://yaml.example.com" || !loaded.Frontend.PreferRequestBaseURL {
+	if loaded.Frontend.PublicAPIBaseURL != "http://yaml.example.com" || loaded.Frontend.PublicAPIBaseURLOverride != "" || loaded.Frontend.EffectivePublicAPIBaseURL() != "http://yaml.example.com" {
 		t.Fatalf("frontend = %#v", loaded.Frontend)
+	}
+}
+
+func TestUpdateEmptyFrontendOverrideFallsBackToYAML(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Frontend.PublicAPIBaseURL = "http://yaml.example.com"
+	cfg.Frontend.PublicAPIBaseURLOverride = "http://runtime.example.com"
+	repository := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Frontend.PublicAPIBaseURL = ""
+	if _, err := service.Update(context.Background(), 0, input); err != nil {
+		t.Fatal(err)
+	}
+	if applied.Frontend.PublicAPIBaseURLOverride != "" || applied.Frontend.EffectivePublicAPIBaseURL() != "http://yaml.example.com" {
+		t.Fatalf("frontend fallback = %#v", applied.Frontend)
+	}
+	if repository.value.Frontend.PublicAPIBaseURL != "" {
+		t.Fatalf("persisted override = %q", repository.value.Frontend.PublicAPIBaseURL)
 	}
 }

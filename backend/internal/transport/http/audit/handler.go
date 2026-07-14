@@ -1,10 +1,12 @@
 package audit
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	auditapp "github.com/chenyme/grok2api/backend/internal/application/audit"
 	auditdomain "github.com/chenyme/grok2api/backend/internal/domain/audit"
@@ -20,6 +22,7 @@ func NewHandler(service *auditapp.Service) *Handler { return &Handler{service: s
 func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/request-audits", h.list)
 	router.GET("/request-audits/summary", h.summary)
+	router.GET("/request-audits/:id", h.get)
 }
 
 type auditResponse struct {
@@ -35,6 +38,10 @@ type auditResponse struct {
 	UsageSource             string    `json:"usageSource"`
 	AccountID               *uint64   `json:"accountId,string,omitempty"`
 	AccountName             string    `json:"accountName,omitempty"`
+	EgressNodeID            *uint64   `json:"egressNodeId,string,omitempty"`
+	EgressNodeName          string    `json:"egressNodeName,omitempty"`
+	EgressScope             string    `json:"egressScope,omitempty"`
+	EgressMode              string    `json:"egressMode,omitempty"`
 	StatusCode              int       `json:"statusCode"`
 	Streaming               bool      `json:"streaming"`
 	MediaInputImages        int64     `json:"mediaInputImages"`
@@ -55,7 +62,40 @@ type auditResponse struct {
 	ContextOutputTokens     int64     `json:"contextOutputTokens"`
 	DurationMS              int64     `json:"durationMs"`
 	ErrorCode               string    `json:"errorCode,omitempty"`
+	AttemptCount            int       `json:"attemptCount"`
 	CreatedAt               time.Time `json:"createdAt"`
+}
+
+type auditAttemptResponse struct {
+	ID                    uint64                    `json:"id,string"`
+	Number                int                       `json:"number"`
+	Source                string                    `json:"source"`
+	Stage                 string                    `json:"stage"`
+	AccountID             *uint64                   `json:"accountId,string,omitempty"`
+	AccountName           string                    `json:"accountName,omitempty"`
+	Method                string                    `json:"method,omitempty"`
+	RequestPath           string                    `json:"requestPath,omitempty"`
+	UpstreamURL           string                    `json:"upstreamUrl,omitempty"`
+	StartedAt             time.Time                 `json:"startedAt"`
+	DurationMS            int64                     `json:"durationMs"`
+	UpstreamStatusCode    *int                      `json:"upstreamStatusCode,omitempty"`
+	UpstreamStatus        string                    `json:"upstreamStatus,omitempty"`
+	ResponseHeaders       map[string][]string       `json:"responseHeaders"`
+	ResponseBody          string                    `json:"responseBody"`
+	ResponseBodyEncoding  string                    `json:"responseBodyEncoding"`
+	ResponseBodyTruncated bool                      `json:"responseBodyTruncated"`
+	TransportError        string                    `json:"transportError,omitempty"`
+	ErrorChain            []auditErrorFrameResponse `json:"errorChain"`
+}
+
+type auditErrorFrameResponse struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+type auditDetailResponse struct {
+	Audit    auditResponse          `json:"audit"`
+	Attempts []auditAttemptResponse `json:"attempts"`
 }
 
 func (h *Handler) list(c *gin.Context) {
@@ -110,6 +150,46 @@ func (h *Handler) listCursor(c *gin.Context) {
 		items = append(items, newAuditResponse(value))
 	}
 	response.Success(c, http.StatusOK, gin.H{"items": items, "pageSize": pageSize, "nextCursor": result.NextCursor, "hasMore": result.HasMore})
+}
+
+func (h *Handler) get(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.Error(c, http.StatusBadRequest, "invalidId", "审计 ID 无效")
+		return
+	}
+	value, err := h.service.Get(c.Request.Context(), id)
+	if errors.Is(err, repository.ErrNotFound) {
+		response.Error(c, http.StatusNotFound, "auditNotFound", "审计记录不存在")
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "auditDetailFailed", "读取审计详情失败")
+		return
+	}
+	attempts := make([]auditAttemptResponse, 0, len(value.Attempts))
+	for _, attempt := range value.Attempts {
+		body := string(attempt.ResponseBody)
+		encoding := "utf8"
+		if !utf8.Valid(attempt.ResponseBody) {
+			body = base64.StdEncoding.EncodeToString(attempt.ResponseBody)
+			encoding = "base64"
+		}
+		errorChain := make([]auditErrorFrameResponse, 0, len(attempt.ErrorChain))
+		for _, frame := range attempt.ErrorChain {
+			errorChain = append(errorChain, auditErrorFrameResponse{Type: frame.Type, Message: frame.Message})
+		}
+		attempts = append(attempts, auditAttemptResponse{
+			ID: attempt.ID, Number: attempt.Number, Source: string(attempt.Source), Stage: attempt.Stage,
+			AccountID: attempt.AccountID, AccountName: attempt.AccountName, Method: attempt.Method, RequestPath: attempt.RequestPath,
+			UpstreamURL: attempt.UpstreamURL, StartedAt: attempt.StartedAt, DurationMS: attempt.DurationMS,
+			UpstreamStatusCode: attempt.UpstreamStatusCode, UpstreamStatus: attempt.UpstreamStatus,
+			ResponseHeaders: attempt.ResponseHeaders, ResponseBody: body, ResponseBodyEncoding: encoding,
+			ResponseBodyTruncated: attempt.ResponseBodyTruncated,
+			TransportError:        attempt.TransportError, ErrorChain: errorChain,
+		})
+	}
+	response.Success(c, http.StatusOK, auditDetailResponse{Audit: newAuditResponse(value), Attempts: attempts})
 }
 
 type summaryResponse struct {
@@ -195,13 +275,15 @@ func newAuditResponse(value auditdomain.Record) auditResponse {
 		ID: value.ID, RequestID: value.RequestID, ClientKeyID: value.ClientKeyID, ClientKeyName: value.ClientKeyName,
 		ModelRouteID: value.ModelRouteID, ModelPublicID: value.ModelPublicID, ModelUpstreamModel: value.ModelUpstreamModel,
 		Provider: value.Provider, Operation: string(value.Operation), UsageSource: string(value.UsageSource),
-		AccountID: value.AccountID, AccountName: value.AccountName, StatusCode: value.StatusCode, Streaming: value.Streaming,
+		AccountID: value.AccountID, AccountName: value.AccountName,
+		EgressNodeID: value.EgressNodeID, EgressNodeName: value.EgressNodeName, EgressScope: value.EgressScope, EgressMode: string(value.EgressMode),
+		StatusCode: value.StatusCode, Streaming: value.Streaming,
 		MediaInputImages: value.MediaInputImages, MediaOutputImages: value.MediaOutputImages, MediaOutputSeconds: value.MediaOutputSeconds,
 		InputTokens: value.InputTokens, CachedInputTokens: value.CachedInputTokens, OutputTokens: value.OutputTokens,
 		ReasoningTokens: value.ReasoningTokens, TotalTokens: value.TotalTokens, CostInUSDTicks: value.CostInUSDTicks,
 		EstimatedCostInUSDTicks: value.EstimatedCostInUSDTicks, PricingModel: value.PricingModel, PricingVersion: value.PricingVersion,
 		NumSourcesUsed: value.NumSourcesUsed, NumServerSideToolsUsed: value.NumServerSideToolsUsed,
 		ContextInputTokens: value.ContextInputTokens, ContextOutputTokens: value.ContextOutputTokens, DurationMS: value.DurationMS,
-		ErrorCode: value.ErrorCode, CreatedAt: value.CreatedAt,
+		ErrorCode: value.ErrorCode, AttemptCount: value.AttemptCount, CreatedAt: value.CreatedAt,
 	}
 }

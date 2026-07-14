@@ -1,0 +1,95 @@
+name: 文档改进
+description: 报告缺失、错误、过时或难以理解的文档内容。
+title: "[Docs]: "
+labels:
+  - documentation
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请指出具体文档位置，并说明当前内容的问题和建议修改方向。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 文档范围
+      options:
+        - README
+        - 配置文件与 config.example.yaml
+        - Docker 与部署说明
+        - Grok Build / Web / Console 账号接入
+        - OpenAI API 兼容与 Swagger 契约
+        - 模型同步、映射、路由与定价
+        - 故障排查与常见问题
+        - 开发规范与项目架构
+        - 管理端界面文案
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issue_type
+    attributes:
+      label: 问题类型
+      options:
+        - 文档缺失
+        - 内容错误
+        - 内容已过时
+        - 描述不清晰
+        - 缺少示例
+        - 链接失效
+        - 格式或用词不统一
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: 文档位置
+      description: 请提供文件路径、页面链接、章节名称或 API 路径。
+      placeholder: "README.md#docker、config.example.yaml、/v1/responses"
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue
+    attributes:
+      label: 当前问题
+      description: 当前文档缺少什么、哪里错误或为什么难以理解？
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 建议修改
+      description: 请描述建议补充、修正或重写的内容；如有条件可提供示例文本。
+    validations:
+      required: false
+
+  - type: dropdown
+    id: audience
+    attributes:
+      label: 主要受众
+      options:
+        - 新用户
+        - API 调用方
+        - Docker 部署者
+        - 系统管理员
+        - 前端开发者
+        - 后端开发者
+        - 项目贡献者
+        - 其他
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已经搜索现有 Issue 和 Pull Request，确认没有相同文档问题。
+          required: true
+        - label: 我已经提供尽可能具体的文档位置。
+          required: true

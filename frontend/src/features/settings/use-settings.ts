@@ -17,6 +17,7 @@ export function useSettings() {
     mutationFn: (config: SettingsForm) => updateSettings(settingsQuery.data?.revision ?? "0", toSettingsDTO(config)),
     onSuccess: (snapshot) => {
       queryClient.setQueryData(["settings"], snapshot);
+      void queryClient.invalidateQueries({ queryKey: ["system-info"] });
       form.reset(toSettingsForm(snapshot.config));
       toast.success(t("settings.saved"));
     },

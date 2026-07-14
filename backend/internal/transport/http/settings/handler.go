@@ -46,8 +46,7 @@ type mediaConfigDTO struct {
 }
 
 type frontendConfigDTO struct {
-	PublicAPIBaseURL     string `json:"publicApiBaseURL"`
-	PreferRequestBaseURL bool   `json:"preferRequestBaseURL"`
+	PublicAPIBaseURL string `json:"publicApiBaseURL"`
 }
 
 type providerBuildConfigDTO struct {
@@ -176,7 +175,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			CleanupThresholdPercent: value.Media.CleanupThresholdPercent, CleanupInterval: value.Media.CleanupInterval,
 		},
 		Frontend: settingsapp.FrontendConfig{
-			PublicAPIBaseURL: value.Frontend.PublicAPIBaseURL, PreferRequestBaseURL: value.Frontend.PreferRequestBaseURL,
+			PublicAPIBaseURL: value.Frontend.PublicAPIBaseURL,
 		},
 		Routing: settingsapp.RoutingConfig{
 			StickyTTL: value.Routing.StickyTTL, CooldownBase: value.Routing.CooldownBase,
@@ -223,7 +222,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				CleanupThresholdPercent: config.Media.CleanupThresholdPercent, CleanupInterval: config.Media.CleanupInterval,
 			},
 			Frontend: frontendConfigDTO{
-				PublicAPIBaseURL: config.Frontend.PublicAPIBaseURL, PreferRequestBaseURL: config.Frontend.PreferRequestBaseURL,
+				PublicAPIBaseURL: config.Frontend.PublicAPIBaseURL,
 			},
 			Routing: routingConfigDTO{
 				StickyTTL: config.Routing.StickyTTL, CooldownBase: config.Routing.CooldownBase,

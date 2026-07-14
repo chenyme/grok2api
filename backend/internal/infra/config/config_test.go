@@ -273,3 +273,22 @@ func TestValidateFrontendPublicAPIBaseURL(t *testing.T) {
 		t.Fatalf("valid frontend.publicApiBaseURL rejected: %v", err)
 	}
 }
+
+func TestEffectivePublicAPIBaseURLPriority(t *testing.T) {
+	cases := []struct {
+		name     string
+		frontend FrontendConfig
+		want     string
+	}{
+		{name: "runtime override", frontend: FrontendConfig{PublicAPIBaseURL: "https://yaml.example/base", PublicAPIBaseURLOverride: "https://runtime.example/api/"}, want: "https://runtime.example/api"},
+		{name: "yaml fallback", frontend: FrontendConfig{PublicAPIBaseURL: "https://yaml.example/base/"}, want: "https://yaml.example/base"},
+		{name: "local fallback", frontend: FrontendConfig{}, want: DefaultPublicAPIBaseURL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.frontend.EffectivePublicAPIBaseURL(); got != tc.want {
+				t.Fatalf("EffectivePublicAPIBaseURL() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

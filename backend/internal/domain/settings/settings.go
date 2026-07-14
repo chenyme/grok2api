@@ -15,11 +15,9 @@ type Config struct {
 	ClientKeyDefaults ClientKeyDefaultsConfig
 }
 
-// FrontendConfig 定义公开 API 地址与图片 URL 解析策略。
-// PreferRequestBaseURL 使用指针，便于旧持久化数据缺省时保留默认 true。
+// FrontendConfig 定义公开 API 地址的运行时覆盖值；留空时使用配置文件值。
 type FrontendConfig struct {
-	PublicAPIBaseURL     string
-	PreferRequestBaseURL *bool
+	PublicAPIBaseURL string
 }
 
 type ProviderConsoleConfig struct {

@@ -24,6 +24,8 @@ const navigation = [
   { href: "/accounts", label: "nav.accounts", icon: Users },
   { href: "/client-keys", label: "nav.clientKeys", icon: KeyRound },
   { href: "/models", label: "nav.models", icon: Box },
+  { href: "/gallery", label: "nav.gallery", icon: Image },
+  { href: "/video-gallery", label: "nav.videoGallery", icon: Video },
   { href: "/request-audits", label: "nav.audits", icon: Eye },
 ] as const;
 

@@ -546,11 +546,11 @@ func TestGeneratedImageAssetHostsRemainStrict(t *testing.T) {
 
 func TestImageStreamExtensionEventsAndPayloads(t *testing.T) {
 	adapter := &Adapter{assets: imageAssetStoreStub{}}
-	urlItem, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{URL: "https://imgen.x.ai/image.jpg", Blob: "aW1hZ2U="}, "url", "https://api.example")
+	urlItem, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{URL: "https://imgen.x.ai/image.jpg", Blob: "aW1hZ2U="}, "url")
 	if err != nil || urlItem["url"] != "https://api.example/v1/media/images/img_test" || urlItem["mime_type"] != "image/jpeg" || urlItem["revised_prompt"] != "" {
 		t.Fatalf("url item = %#v, err=%v", urlItem, err)
 	}
-	b64Item, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{Blob: "aW1hZ2U="}, "b64_json", "https://api.example")
+	b64Item, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{Blob: "aW1hZ2U="}, "b64_json")
 	if err != nil || b64Item["b64_json"] != "aW1hZ2U=" || b64Item["mime_type"] != "image/jpeg" {
 		t.Fatalf("base64 item = %#v, err=%v", b64Item, err)
 	}
@@ -562,14 +562,56 @@ func TestImageStreamExtensionEventsAndPayloads(t *testing.T) {
 	}
 }
 
+func TestImageDataItemRetriesStorageWithoutRegenerating(t *testing.T) {
+	store := &imageAssetStoreRetryStub{failures: 2}
+	adapter := &Adapter{assets: store}
+	item, err := adapter.imageDataItem(context.Background(), account.Credential{ID: 42}, imagineImageValue{Blob: "aW1hZ2U="}, "url")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != mediaOutputAttempts || item["url"] != "https://api.example/v1/media/images/img_retry" {
+		t.Fatalf("storage retry calls=%d item=%#v", store.calls, item)
+	}
+}
+
+func TestImageDataItemClassifiesExhaustedStorageFailure(t *testing.T) {
+	store := &imageAssetStoreRetryStub{failures: mediaOutputAttempts}
+	adapter := &Adapter{assets: store}
+	_, err := adapter.imageDataItem(context.Background(), account.Credential{ID: 42}, imagineImageValue{Blob: "aW1hZ2U="}, "url")
+	if err == nil || !provider.IsMediaPostProcessingError(err) || store.calls != mediaOutputAttempts {
+		t.Fatalf("storage failure err=%v calls=%d", err, store.calls)
+	}
+	var processingErr *provider.MediaPostProcessingError
+	if !errors.As(err, &processingErr) || processingErr.Stage != provider.MediaPostProcessingStorage {
+		t.Fatalf("storage failure classification = %#v", processingErr)
+	}
+}
+
 type imageAssetStoreStub struct{}
 
 func (imageAssetStoreStub) SaveImage(context.Context, []byte) (mediadomain.Asset, error) {
 	return mediadomain.Asset{ID: "img_test", MIMEType: "image/jpeg"}, nil
 }
 
-func (imageAssetStoreStub) PublicImageURL(string, string) string {
+func (imageAssetStoreStub) PublicImageURL(string) string {
 	return "https://api.example/v1/media/images/img_test"
+}
+
+type imageAssetStoreRetryStub struct {
+	failures int
+	calls    int
+}
+
+func (s *imageAssetStoreRetryStub) SaveImage(context.Context, []byte) (mediadomain.Asset, error) {
+	s.calls++
+	if s.calls <= s.failures {
+		return mediadomain.Asset{}, errors.New("temporary storage failure")
+	}
+	return mediadomain.Asset{ID: "img_retry", MIMEType: "image/jpeg"}, nil
+}
+
+func (*imageAssetStoreRetryStub) PublicImageURL(string) string {
+	return "https://api.example/v1/media/images/img_retry"
 }
 
 func TestParseVideoStreamFixture(t *testing.T) {

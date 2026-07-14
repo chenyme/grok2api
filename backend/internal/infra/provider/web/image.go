@@ -19,11 +19,16 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
-const maxGeneratedImages = 10
+const (
+	maxGeneratedImages   = 10
+	mediaOutputAttempts  = 3
+	imageDownloadTimeout = 60 * time.Second
+)
 
 var errLiteImageReady = errors.New("Lite 图片已完成")
 
@@ -271,7 +276,7 @@ func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageG
 		}
 		urls = append(urls, value)
 	}
-	response, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format, request.PublicBaseURL)
+	response, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format)
 	if response != nil {
 		response.QuotaUnits = count
 	}
@@ -411,7 +416,7 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 	if streaming {
 		reader, writer := io.Pipe()
 		streamCtx, cancel := context.WithCancel(ctx)
-		go a.streamLiteChatImages(streamCtx, writer, request.Credential, spec, responseID, input.Model, normalized.Prompt, count, format, request.PublicBaseURL)
+		go a.streamLiteChatImages(streamCtx, writer, request.Credential, spec, responseID, input.Model, normalized.Prompt, count, format)
 		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: &cancelBody{ReadCloser: reader, cancel: cancel}, QuotaUnits: count}, nil
 	}
 	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(normalized.Prompt)}
@@ -424,7 +429,7 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 			}
 			return nil, err
 		}
-		item, err := a.imageDataItem(ctx, request.Credential, imagineImageValue{URL: rawURL}, format, request.PublicBaseURL)
+		item, err := a.imageDataItem(ctx, request.Credential, imagineImageValue{URL: rawURL}, format)
 		if err != nil {
 			return nil, err
 		}
@@ -441,7 +446,7 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(data)), QuotaUnits: count}, nil
 }
 
-func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWriter, credential account.Credential, spec ModelSpec, responseID, model, prompt string, count int, format string, publicBaseURL string) {
+func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWriter, credential account.Credential, spec ModelSpec, responseID, model, prompt string, count int, format string) {
 	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(prompt)}
 	writeStreamStart(writer, "chat", responseID, model, parsed.InputTokens)
 	for range count {
@@ -450,7 +455,7 @@ func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWrite
 			_ = writer.CloseWithError(err)
 			return
 		}
-		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, format, publicBaseURL)
+		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, format)
 		if err != nil {
 			_ = writer.CloseWithError(err)
 			return
@@ -529,6 +534,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 	connection.SetReadLimit(64 << 20)
 	deadline := time.Now().Add(time.Duration(cfg.ImageTimeoutSeconds) * time.Second)
 	_ = connection.SetReadDeadline(deadline)
+	_ = connection.SetWriteDeadline(deadline)
 	if err := connection.WriteJSON(imagineResetMessage()); err != nil {
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 		return nil, err
@@ -543,7 +549,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 		leaseOwned = false
 		connectionOwned = false
 		streamID := newWebID("imggen")
-		go a.streamImagineImages(streamCtx, writer, connection, lease, request.Credential, streamID, count, format, ratio, resolution, modelConfig, request.PublicBaseURL)
+		go a.streamImagineImages(streamCtx, writer, connection, lease, request.Credential, streamID, count, format, ratio, resolution, modelConfig)
 		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: &cancelBody{ReadCloser: reader, cancel: cancel}, QuotaUnits: count}, nil
 	}
 
@@ -585,7 +591,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 		urls = append(urls, image.URL)
 		blobs = append(blobs, image.Blob)
 	}
-	result, err := a.imageResponse(ctx, request.Credential, urls, blobs, count, format, request.PublicBaseURL)
+	result, err := a.imageResponse(ctx, request.Credential, urls, blobs, count, format)
 	if result != nil {
 		result.QuotaUnits = count
 	}
@@ -676,7 +682,7 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("图片编辑完成但没有返回图片")
 	}
-	result, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format, request.PublicBaseURL)
+	result, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format)
 	if result != nil {
 		result.QuotaUnits = count
 	}
@@ -937,14 +943,14 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 	return nil, fmt.Errorf("Grok Web Statsig 刷新失败")
 }
 
-func (a *Adapter) imageResponse(ctx context.Context, credential account.Credential, urls, blobs []string, count int, format string, publicBaseURL string) (*provider.Response, error) {
+func (a *Adapter) imageResponse(ctx context.Context, credential account.Credential, urls, blobs []string, count int, format string) (*provider.Response, error) {
 	data := make([]any, 0, min(count, len(urls)))
 	for index := 0; index < count && index < len(urls); index++ {
 		blob := ""
 		if index < len(blobs) {
 			blob = blobs[index]
 		}
-		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: urls[index], Blob: blob}, format, publicBaseURL)
+		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: urls[index], Blob: blob}, format)
 		if err != nil {
 			return nil, err
 		}
@@ -953,22 +959,41 @@ func (a *Adapter) imageResponse(ctx context.Context, credential account.Credenti
 	return jsonProviderResponse(http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data}), nil
 }
 
-func (a *Adapter) imageDataItem(ctx context.Context, credential account.Credential, image imagineImageValue, format string, publicBaseURL string) (map[string]any, error) {
+func (a *Adapter) imageDataItem(ctx context.Context, credential account.Credential, image imagineImageValue, format string) (map[string]any, error) {
 	if a.assets == nil {
-		return nil, fmt.Errorf("图片媒体存储未配置")
+		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, fmt.Errorf("图片媒体存储未配置"))
 	}
 	raw, err := a.imageBytes(ctx, credential, image)
 	if err != nil {
-		return nil, err
+		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingDownload, err)
 	}
-	asset, err := a.assets.SaveImage(ctx, raw)
+	asset, err := a.saveImageWithRetry(ctx, raw)
 	if err != nil {
-		return nil, err
+		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, err)
 	}
 	if format != "b64_json" {
-		return map[string]any{"url": a.assets.PublicImageURL(publicBaseURL, asset.ID), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil
+		return map[string]any{"url": a.assets.PublicImageURL(asset.ID), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil
 	}
 	return map[string]any{"b64_json": base64.StdEncoding.EncodeToString(raw), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil
+}
+
+// saveImageWithRetry 只重试当前生成结果的本地持久化，不重新请求上游生成。
+func (a *Adapter) saveImageWithRetry(ctx context.Context, raw []byte) (mediadomain.Asset, error) {
+	var lastErr error
+	for attempt := 0; attempt < mediaOutputAttempts; attempt++ {
+		asset, err := a.assets.SaveImage(ctx, raw)
+		if err == nil {
+			return asset, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || attempt+1 >= mediaOutputAttempts {
+			break
+		}
+		if err := waitMediaOutputRetry(ctx, attempt); err != nil {
+			return mediadomain.Asset{}, err
+		}
+	}
+	return mediadomain.Asset{}, lastErr
 }
 
 func (a *Adapter) imageBytes(ctx context.Context, credential account.Credential, image imagineImageValue) ([]byte, error) {
@@ -984,7 +1009,7 @@ func (a *Adapter) imageBytes(ctx context.Context, credential account.Credential,
 	return a.downloadImage(ctx, credential, image.URL)
 }
 
-func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter, connection *websocket.Conn, lease *egress.Lease, credential account.Credential, streamID string, count int, format, ratio, resolution string, modelConfig imagineModelConfig, publicBaseURL string) {
+func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter, connection *websocket.Conn, lease *egress.Lease, credential account.Credential, streamID string, count int, format, ratio, resolution string, modelConfig imagineModelConfig) {
 	defer lease.Release()
 	defer connection.Close()
 	done := make(chan struct{})
@@ -1038,7 +1063,7 @@ func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter
 			if emitted >= count {
 				break
 			}
-			item, err := a.imageDataItem(ctx, credential, image, format, publicBaseURL)
+			item, err := a.imageDataItem(ctx, credential, image, format)
 			if err != nil {
 				writeImagineStreamFailure(writer, streamID, "image_output_error", "图片结果处理失败")
 				_ = writer.CloseWithError(err)
@@ -1091,34 +1116,76 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 	if err != nil {
 		return nil, err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWebAsset, fmt.Sprintf("%d", credential.ID))
+	downloadCtx, cancel := context.WithTimeout(ctx, imageDownloadTimeout)
+	defer cancel()
+	var lastErr error
+	for attempt := 0; attempt < mediaOutputAttempts; attempt++ {
+		raw, retryable, attemptErr := a.downloadImageAttempt(downloadCtx, credential.ID, token, parsed.String())
+		if attemptErr == nil {
+			return raw, nil
+		}
+		lastErr = attemptErr
+		if !retryable || downloadCtx.Err() != nil || attempt+1 >= mediaOutputAttempts {
+			break
+		}
+		if err := waitMediaOutputRetry(downloadCtx, attempt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+// downloadImageAttempt 每次沿用同一账号，只允许出口管理器重新选择资源节点。
+func (a *Adapter) downloadImageAttempt(ctx context.Context, accountID uint64, token, rawURL string) ([]byte, bool, error) {
+	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWebAsset, fmt.Sprintf("%d", accountID))
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	defer lease.Release()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	request.Header = buildHeaders(token, lease, "")
 	request.Header.Del("Content-Type")
 	response, err := lease.Do(request)
 	if err != nil {
-		return nil, err
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		return nil, ctx.Err() == nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("下载图片返回 %d", response.StatusCode)
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+		retryable := response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooEarly || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500
+		return nil, retryable, fmt.Errorf("下载图片返回 %d", response.StatusCode)
 	}
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
 	if contentType != "" && !strings.HasPrefix(contentType, "image/") {
-		return nil, fmt.Errorf("上游图片 Content-Type 无效")
+		return nil, false, fmt.Errorf("上游图片 Content-Type 无效")
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, (32<<20)+1))
-	if err != nil || len(raw) > 32<<20 {
-		return nil, fmt.Errorf("图片下载失败或超过 32 MiB")
+	if err != nil {
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		return nil, ctx.Err() == nil, fmt.Errorf("读取图片内容: %w", err)
 	}
-	return raw, nil
+	if len(raw) > 32<<20 {
+		return nil, false, fmt.Errorf("图片下载超过 32 MiB")
+	}
+	a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+	return raw, false, nil
+}
+
+func waitMediaOutputRetry(ctx context.Context, attempt int) error {
+	delays := [...]time.Duration{200 * time.Millisecond, 750 * time.Millisecond}
+	delay := delays[min(attempt, len(delays)-1)]
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func decodeImageBlob(value string) ([]byte, error) {

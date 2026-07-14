@@ -21,6 +21,49 @@ var (
 	ErrUnauthorized         = errors.New("upstream credential unauthorized")
 )
 
+// MediaPostProcessingStage 标识媒体已经生成后失败的本地处理阶段。
+type MediaPostProcessingStage string
+
+const (
+	MediaPostProcessingDownload MediaPostProcessingStage = "download"
+	MediaPostProcessingStorage  MediaPostProcessingStage = "storage"
+)
+
+// MediaPostProcessingError 表示上游媒体已经产生，后续下载或保存失败。
+// 此类错误不得触发换号重新生成，也不应降低生成账号的健康度。
+type MediaPostProcessingError struct {
+	Stage MediaPostProcessingStage
+	Cause error
+}
+
+func (e *MediaPostProcessingError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "media post-processing failed"
+	}
+	return fmt.Sprintf("media post-processing %s failed: %v", e.Stage, e.Cause)
+}
+
+func (e *MediaPostProcessingError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// NewMediaPostProcessingError 将下载或保存错误标记为不可跨账号重试。
+func NewMediaPostProcessingError(stage MediaPostProcessingStage, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return &MediaPostProcessingError{Stage: stage, Cause: cause}
+}
+
+// IsMediaPostProcessingError 判断错误是否发生在媒体生成后的本地处理阶段。
+func IsMediaPostProcessingError(err error) bool {
+	var target *MediaPostProcessingError
+	return errors.As(err, &target)
+}
+
 // CredentialRefreshError 区分需要重新认证的永久 OAuth 错误与可后台退避重试的临时错误。
 type CredentialRefreshError struct {
 	Status     int
@@ -62,16 +105,40 @@ type ResponseResourceRequest struct {
 	Streaming      bool
 	NormalizeBody  bool
 	Operation      string
-	PublicBaseURL  string
 }
 
 // Response 表示尚未写入下游的上游响应。
 type Response struct {
-	StatusCode int
-	Status     string
-	Header     http.Header
-	Body       io.ReadCloser
-	QuotaUnits int
+	StatusCode  int
+	Status      string
+	Header      http.Header
+	Body        io.ReadCloser
+	QuotaUnits  int
+	UpstreamURL string
+	Diagnostic  *DiagnosticResponse
+}
+
+const MaxDiagnosticBodyBytes = 64 << 10
+
+// DiagnosticResponse 保留 Provider 转换前经过容量限制的失败响应。
+type DiagnosticResponse struct {
+	StatusCode    int
+	Status        string
+	Header        http.Header
+	Body          []byte
+	BodyTruncated bool
+}
+
+// ReadDiagnosticBody 最多读取诊断正文上限，并报告上游是否还有未保留内容。
+func ReadDiagnosticBody(body io.Reader) ([]byte, bool, error) {
+	if body == nil {
+		return nil, false, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(body, MaxDiagnosticBodyBytes+1))
+	if len(data) <= MaxDiagnosticBodyBytes {
+		return data, false, err
+	}
+	return data[:MaxDiagnosticBodyBytes], true, err
 }
 
 // DeviceAuthorization 表示 Device OAuth 启动结果。
@@ -116,7 +183,6 @@ type ImageGenerationRequest struct {
 	Resolution     string
 	ResponseFormat string
 	Streaming      bool
-	PublicBaseURL  string
 }
 
 type ImageInput struct {
@@ -133,7 +199,6 @@ type ImageEditRequest struct {
 	Count          int
 	Resolution     string
 	ResponseFormat string
-	PublicBaseURL  string
 }
 
 type VideoRequest struct {
@@ -215,7 +280,7 @@ type ImageAdapter interface {
 // ImageAssetStore 将生成图片归档为可由后端稳定读取的本地资源。
 type ImageAssetStore interface {
 	SaveImage(ctx context.Context, data []byte) (media.Asset, error)
-	PublicImageURL(baseURL, id string) string
+	PublicImageURL(id string) string
 }
 
 type VideoAdapter interface {

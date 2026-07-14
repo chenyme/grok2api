@@ -165,6 +165,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			return &provider.Response{
 				StatusCode: upstream.StatusCode, Status: upstream.Status, Header: http.Header(upstream.Header),
+				UpstreamURL: upstream.Request.URL.String(),
 				Body: &releaseBody{ReadCloser: upstream.Body, release: func() {
 					a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, upstream.StatusCode, nil)
 					lease.Release()
@@ -175,7 +176,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		if streaming {
 			prepared, preflightErr := preflightUpstream(upstream.Body)
 			if preflightErr == nil {
-				body := a.streamOpenAIResponse(ctx, prepared, lease, request.Credential, responseID, input.Model, request.Operation, normalized.Prompt, previous, tools, parallelTools, conversationOptions, request.PublicBaseURL)
+				body := a.streamOpenAIResponse(ctx, prepared, lease, request.Credential, responseID, input.Model, request.Operation, normalized.Prompt, previous, tools, parallelTools, conversationOptions)
 				return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: body}, nil
 			}
 			if errors.Is(preflightErr, errWebAntiBot) && attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
@@ -215,7 +216,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	parsed.ToolChoice = tools.ResponseChoice
 	parsed.ParallelTools = parallelTools
 	applyParsedToolCalls(&parsed, tools)
-	if err := a.archiveChatImages(ctx, request.Credential, &parsed, request.PublicBaseURL); err != nil {
+	if err := a.archiveChatImages(ctx, request.Credential, &parsed); err != nil {
 		return nil, err
 	}
 	payload := buildOpenAIResult(request.Operation, responseID, input.Model, parsed, false, conversationOptions)
@@ -351,7 +352,7 @@ func (a *Adapter) handleResponseResource(ctx context.Context, request provider.R
 	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: jsonHeaders(), Body: io.NopCloser(strings.NewReader(state.ResponseJSON))}, nil
 }
 
-func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser, lease *infraegress.Lease, credential account.Credential, responseID, model, operation, prompt string, previous *inferencedomain.WebResponseState, tools toolConfiguration, parallelTools bool, options conversation.ResponseOptions, publicBaseURL string) io.ReadCloser {
+func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser, lease *infraegress.Lease, credential account.Credential, responseID, model, operation, prompt string, previous *inferencedomain.WebResponseState, tools toolConfiguration, parallelTools bool, options conversation.ResponseOptions) io.ReadCloser {
 	reader, writer := io.Pipe()
 	go func() {
 		defer source.Close()
@@ -379,7 +380,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 			}
 			if kind == "image" {
 				rawURL := delta
-				item, imageErr := a.imageDataItem(ctx, credential, imagineImageValue{URL: delta}, "url", publicBaseURL)
+				item, imageErr := a.imageDataItem(ctx, credential, imagineImageValue{URL: delta}, "url")
 				if imageErr != nil {
 					return imageErr
 				}
@@ -441,7 +442,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 				if _, exists := archivedImages[rawURL]; exists {
 					continue
 				}
-				item, imageErr := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, "url", publicBaseURL)
+				item, imageErr := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, "url")
 				if imageErr != nil {
 					_ = writer.CloseWithError(imageErr)
 					return
@@ -950,9 +951,9 @@ func applyParsedToolCalls(parsed *parsedChat, configuration toolConfiguration) {
 	parsed.ToolCalls = result.Calls
 }
 
-func (a *Adapter) archiveChatImages(ctx context.Context, credential account.Credential, parsed *parsedChat, publicBaseURL string) error {
+func (a *Adapter) archiveChatImages(ctx context.Context, credential account.Credential, parsed *parsedChat) error {
 	for _, rawURL := range parsed.Images {
-		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, "url", publicBaseURL)
+		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, "url")
 		if err != nil {
 			return err
 		}
