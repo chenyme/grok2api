@@ -298,6 +298,126 @@ func normalizeLegacyLocalShellOutputInput(item map[string]any, param string) (ma
 	return converted, nil
 }
 
+func normalizeShellCallOutputInput(item map[string]any, param string) (map[string]any, error) {
+	callID := strings.TrimSpace(stringField(item, "call_id"))
+	if callID == "" {
+		return nil, &responsesRequestError{Message: param + ".call_id 不能为空", Param: param + ".call_id", Code: "invalid_parameter"}
+	}
+	output, err := normalizeShellOutputBlocks(item["output"], item["status"], param+".output")
+	if err != nil {
+		return nil, err
+	}
+	converted := map[string]any{"type": "shell_call_output", "call_id": callID, "output": output}
+	if value, exists := item["max_output_length"]; exists {
+		converted["max_output_length"] = cloneJSONValue(value)
+	}
+	return converted, nil
+}
+
+func normalizeFunctionCallOutputInput(item map[string]any, param string) (map[string]any, error) {
+	callID := strings.TrimSpace(stringField(item, "call_id"))
+	if callID == "" {
+		return nil, &responsesRequestError{Message: param + ".call_id 不能为空", Param: param + ".call_id", Code: "invalid_parameter"}
+	}
+	output, err := encodeToolOutput(item["output"], param+".output")
+	if err != nil {
+		return nil, err
+	}
+	converted := map[string]any{"type": "function_call_output", "call_id": callID, "output": output}
+	for _, key := range []string{"id", "status"} {
+		if value, exists := item[key]; exists {
+			converted[key] = cloneJSONValue(value)
+		}
+	}
+	return converted, nil
+}
+
+func encodeToolOutput(value any, param string) (string, error) {
+	switch typed := value.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return typed, nil
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return "", &responsesRequestError{Message: param + " 无法编码", Param: param, Code: "invalid_parameter"}
+		}
+		return string(encoded), nil
+	}
+}
+
+func normalizeShellOutputBlocks(value, status any, param string) ([]any, error) {
+	switch typed := value.(type) {
+	case []any:
+		output := make([]any, 0, len(typed))
+		for index, raw := range typed {
+			block, ok := raw.(map[string]any)
+			if !ok {
+				return nil, &responsesRequestError{Message: fmt.Sprintf("%s[%d] 必须是对象", param, index), Param: fmt.Sprintf("%s[%d]", param, index), Code: "invalid_parameter"}
+			}
+			normalized, err := normalizeShellOutputBlock(block, fmt.Sprintf("%s[%d]", param, index))
+			if err != nil {
+				return nil, err
+			}
+			output = append(output, normalized)
+		}
+		return output, nil
+	case string:
+		exitCode := 0
+		if strings.EqualFold(fmt.Sprint(status), "failed") {
+			exitCode = 1
+		}
+		return []any{map[string]any{
+			"stdout": typed, "stderr": "",
+			"outcome": map[string]any{"type": "exit", "exit_code": exitCode},
+		}}, nil
+	default:
+		return nil, &responsesRequestError{Message: param + " 必须是字符串或数组", Param: param, Code: "invalid_parameter"}
+	}
+}
+
+func normalizeShellOutputBlock(block map[string]any, param string) (map[string]any, error) {
+	stdout, _ := block["stdout"].(string)
+	stderr, _ := block["stderr"].(string)
+	outcome, ok := block["outcome"].(map[string]any)
+	if !ok {
+		return nil, &responsesRequestError{Message: param + ".outcome 必须是对象", Param: param + ".outcome", Code: "invalid_parameter"}
+	}
+	normalizedOutcome := map[string]any{"type": strings.TrimSpace(stringField(outcome, "type"))}
+	switch normalizedOutcome["type"] {
+	case "exit":
+		exitCode, ok := shellExitCode(outcome["exit_code"])
+		if !ok {
+			exitCode, ok = shellExitCode(outcome["exitCode"])
+		}
+		if !ok {
+			return nil, &responsesRequestError{Message: param + ".outcome.exit_code 必须是数字", Param: param + ".outcome.exit_code", Code: "invalid_parameter"}
+		}
+		normalizedOutcome["exit_code"] = exitCode
+	case "timeout":
+	default:
+		return nil, &responsesRequestError{Message: param + ".outcome.type 无效", Param: param + ".outcome.type", Code: "invalid_parameter"}
+	}
+	return map[string]any{"stdout": stdout, "stderr": stderr, "outcome": normalizedOutcome}, nil
+}
+
+func shellExitCode(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed), true
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case json.Number:
+		parsed, err := typed.Int64()
+		return int(parsed), err == nil
+	default:
+		return 0, false
+	}
+}
+
 func rewriteLegacyShellAction(value any) map[string]any {
 	action, _ := value.(map[string]any)
 	commands, _ := action["commands"].([]any)

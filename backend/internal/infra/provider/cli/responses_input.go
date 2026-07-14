@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -55,6 +56,46 @@ func normalizeMCPOutputInput(item map[string]any, param string) (map[string]any,
 		"type": "message", "role": "developer",
 		"content": []any{map[string]any{"type": "input_text", "text": "MCP tool output for call " + callID + ": " + string(output)}},
 	}, nil
+}
+
+func normalizeMessageInput(item map[string]any, param string) (map[string]any, error) {
+	role := strings.TrimSpace(stringField(item, "role"))
+	if role == "" {
+		role = "assistant"
+	}
+	content, err := normalizeMessageContent(item["content"], param+".content")
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"type": "message", "role": role, "content": content}, nil
+}
+
+func normalizeMessageContent(value any, param string) (any, error) {
+	if text, ok := value.(string); ok {
+		return text, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, &responsesRequestError{Message: param + " 必须是字符串或数组", Param: param, Code: "invalid_parameter"}
+	}
+	normalized := make([]any, 0, len(items))
+	for index, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return nil, &responsesRequestError{Message: param + "[] 必须是对象", Param: fmt.Sprintf("%s[%d]", param, index), Code: "invalid_parameter"}
+		}
+		switch stringField(item, "type") {
+		case "text", "input_text", "output_text":
+			normalized = append(normalized, map[string]any{"type": "input_text", "text": stringField(item, "text")})
+		case "refusal":
+			normalized = append(normalized, map[string]any{"type": "input_text", "text": stringField(item, "refusal")})
+		case "input_image", "input_file":
+			normalized = append(normalized, cloneJSONObject(item))
+		default:
+			return nil, &responsesRequestError{Message: "Grok Build 0.2.99 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
+		}
+	}
+	return normalized, nil
 }
 
 func textInputContent(raw any) (string, bool) {
