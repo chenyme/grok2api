@@ -21,13 +21,15 @@ import (
 )
 
 var (
-	ErrAssetNotFound = errors.New("媒体资源不存在")
-	ErrInvalidImage  = errors.New("图片内容无效")
+	ErrAssetNotFound        = errors.New("媒体资源不存在")
+	ErrInvalidImage         = errors.New("图片内容无效")
+	ErrMediaJobsUnavailable = errors.New("视频任务仓储未配置")
 )
 
 // Service 负责图片校验、文件落盘和元数据持久化的一致性收口。
 type Service struct {
 	assets        repository.MediaAssetRepository
+	jobs          repository.MediaJobRepository
 	objects       repository.MediaObjectStorage
 	cleanupLock   repository.DistributedLock
 	publicBaseURL string
@@ -49,9 +51,22 @@ type Config struct {
 	CleanupInterval         time.Duration
 }
 
-func NewService(assets repository.MediaAssetRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
+type ImageStats struct {
+	TotalImages int64
+	TotalBytes  int64
+}
+
+type VideoStats struct {
+	TotalJobs  int64
+	Completed  int64
+	Failed     int64
+	InProgress int64
+	Queued     int64
+}
+
+func NewService(assets repository.MediaAssetRepository, jobs repository.MediaJobRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
 	return &Service{
-		assets: assets, objects: objects, cleanupLock: cleanupLock,
+		assets: assets, jobs: jobs, objects: objects, cleanupLock: cleanupLock,
 		publicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"), maxImageBytes: cfg.MaxImageBytes,
 		maxTotalBytes: cfg.MaxTotalBytes, cleanupAt: cfg.CleanupThresholdPercent, cleanupEvery: cfg.CleanupInterval,
 		cleanupSignal: make(chan struct{}, 1), configChanged: make(chan struct{}, 1),
@@ -134,6 +149,62 @@ func (s *Service) OpenImage(ctx context.Context, id string) (mediadomain.Asset, 
 		return mediadomain.Asset{}, nil, err
 	}
 	return asset, body, nil
+}
+
+// AdminListImages 分页返回图片资源列表。
+func (s *Service) AdminListImages(ctx context.Context, page, pageSize int) ([]mediadomain.Asset, int64, error) {
+	return s.assets.ListMediaAssets(ctx, page, pageSize)
+}
+
+// AdminListVideoJobs 分页返回视频任务列表。
+func (s *Service) AdminListVideoJobs(ctx context.Context, page, pageSize int, status string) ([]mediadomain.Job, int64, error) {
+	if s.jobs == nil {
+		return nil, 0, ErrMediaJobsUnavailable
+	}
+	return s.jobs.ListMediaJobs(ctx, page, pageSize, strings.TrimSpace(status))
+}
+
+// AdminImageStats 返回图片统计信息。
+func (s *Service) AdminImageStats(ctx context.Context) (ImageStats, error) {
+	totalImages, err := s.assets.CountMediaAssets(ctx)
+	if err != nil {
+		return ImageStats{}, err
+	}
+	totalBytes, err := s.assets.TotalMediaAssetBytes(ctx)
+	if err != nil {
+		return ImageStats{}, err
+	}
+	return ImageStats{TotalImages: totalImages, TotalBytes: totalBytes}, nil
+}
+
+// AdminVideoStats 返回视频任务统计信息。
+func (s *Service) AdminVideoStats(ctx context.Context) (VideoStats, error) {
+	if s.jobs == nil {
+		return VideoStats{}, ErrMediaJobsUnavailable
+	}
+	var stats VideoStats
+	var err error
+	_, stats.TotalJobs, err = s.jobs.ListMediaJobs(ctx, 1, 1, "")
+	if err != nil {
+		return VideoStats{}, err
+	}
+	_, stats.Completed, err = s.jobs.ListMediaJobs(ctx, 1, 1, string(mediadomain.StatusCompleted))
+	if err != nil {
+		return VideoStats{}, err
+	}
+	_, stats.Failed, err = s.jobs.ListMediaJobs(ctx, 1, 1, string(mediadomain.StatusFailed))
+	if err != nil {
+		return VideoStats{}, err
+	}
+	_, stats.InProgress, err = s.jobs.ListMediaJobs(ctx, 1, 1, string(mediadomain.StatusInProgress))
+	if err != nil {
+		return VideoStats{}, err
+	}
+	_, stats.Queued, err = s.jobs.ListMediaJobs(ctx, 1, 1, string(mediadomain.StatusQueued))
+	if err != nil {
+		return VideoStats{}, err
+	}
+	return stats, nil
 }
 
 // RunCleanup 响应容量阈值并按周期清理最旧媒体资源。

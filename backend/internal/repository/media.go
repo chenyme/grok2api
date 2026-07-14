@@ -12,6 +12,7 @@ type MediaJobRepository interface {
 	CreateMediaJob(ctx context.Context, value media.Job) error
 	GetMediaJob(ctx context.Context, id string, clientKeyID uint64) (media.Job, error)
 	UpdateMediaJob(ctx context.Context, value media.Job) error
+	ListMediaJobs(ctx context.Context, page, pageSize int, status string) ([]media.Job, int64, error)
 	ListRecoverableMediaJobs(ctx context.Context, limit int) ([]media.Job, error)
 	ListUnrecordedCompletedMediaJobs(ctx context.Context, limit int) ([]media.Job, error)
 	TryClaimMediaJob(ctx context.Context, id string, now, leaseUntil time.Time, claimToken string) (media.Job, bool, error)
@@ -22,6 +23,8 @@ type MediaJobRepository interface {
 type MediaAssetRepository interface {
 	CreateMediaAsset(ctx context.Context, value media.Asset) error
 	GetMediaAsset(ctx context.Context, id string) (media.Asset, error)
+	ListMediaAssets(ctx context.Context, page, pageSize int) ([]media.Asset, int64, error)
+	CountMediaAssets(ctx context.Context) (int64, error)
 	TotalMediaAssetBytes(ctx context.Context) (int64, error)
 	ListOldestMediaAssets(ctx context.Context, limit int) ([]media.Asset, error)
 	DeleteMediaAsset(ctx context.Context, id string) error

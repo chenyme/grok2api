@@ -37,6 +37,33 @@ func (r *MediaAssetRepository) GetMediaAsset(ctx context.Context, id string) (me
 	}, nil
 }
 
+func (r *MediaAssetRepository) ListMediaAssets(ctx context.Context, page, pageSize int) ([]media.Asset, int64, error) {
+	page, pageSize = normalizeMediaPagination(page, pageSize)
+	query := r.db.db.WithContext(ctx).Model(&mediaAssetModel{})
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []mediaAssetModel
+	if err := query.Order("created_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	values := make([]media.Asset, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, media.Asset{
+			ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
+			SizeBytes: row.SizeBytes, SHA256: row.SHA256, CreatedAt: row.CreatedAt,
+		})
+	}
+	return values, total, nil
+}
+
+func (r *MediaAssetRepository) CountMediaAssets(ctx context.Context) (int64, error) {
+	var count int64
+	err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Count(&count).Error
+	return count, err
+}
+
 func (r *MediaAssetRepository) TotalMediaAssetBytes(ctx context.Context) (int64, error) {
 	var total int64
 	err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Select("COALESCE(SUM(size_bytes), 0)").Scan(&total).Error
@@ -98,6 +125,27 @@ func (r *MediaJobRepository) UpdateMediaJob(ctx context.Context, value media.Job
 		return repository.ErrNotFound
 	}
 	return nil
+}
+
+func (r *MediaJobRepository) ListMediaJobs(ctx context.Context, page, pageSize int, status string) ([]media.Job, int64, error) {
+	page, pageSize = normalizeMediaPagination(page, pageSize)
+	query := r.db.db.WithContext(ctx).Model(&mediaJobModel{})
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []mediaJobModel
+	if err := query.Order("created_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	values := make([]media.Job, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, mediaJobToDomain(row))
+	}
+	return values, total, nil
 }
 
 func (r *MediaJobRepository) ListUnrecordedCompletedMediaJobs(ctx context.Context, limit int) ([]media.Job, error) {
@@ -190,4 +238,17 @@ func mediaJobToDomain(row mediaJobModel) media.Job {
 		LeaseUntil: row.LeaseUntil, ClaimToken: row.ClaimToken, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		CompletedAt: row.CompletedAt, UsageRecordedAt: row.UsageRecordedAt,
 	}
+}
+
+func normalizeMediaPagination(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
 }

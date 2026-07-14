@@ -30,7 +30,7 @@ func TestPublicImageSupportsGetHeadAndETag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := mediaapp.NewService(relational.NewMediaAssetRepository(database), objects, nil, mediaapp.Config{
+	service := mediaapp.NewService(relational.NewMediaAssetRepository(database), relational.NewMediaJobRepository(database), objects, nil, mediaapp.Config{
 		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
 		CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute,
 	})

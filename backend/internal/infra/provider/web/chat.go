@@ -29,8 +29,9 @@ import (
 const webResponseTTL = 30 * 24 * time.Hour
 
 var (
-	errWebAntiBot    = errors.New("Grok Web anti-bot rejection")
-	errWebUsageLimit = errors.New("Grok Web usage limit reached")
+	errWebAntiBot         = errors.New("Grok Web anti-bot rejection")
+	errWebUsageLimit      = errors.New("Grok Web usage limit reached")
+	errWebImageGeneration = errors.New("Grok Web image generation failed")
 )
 
 var grokRenderPattern = regexp.MustCompile(`(?s)<grok:render\s+card_id="([^"]+)"\s+card_type="([^"]+)"\s+type="([^"]+)"[^>]*>.*?</grok:render>`)
@@ -91,6 +92,12 @@ type parsedChat struct {
 }
 
 func (a *Adapter) ForwardResponse(ctx context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	if spec, ok := Resolve(request.Model); ok && spec.Transport == consoleResponsesTransport {
+		if request.Method != http.MethodPost || request.Path != "/responses" {
+			return jsonProviderResponse(http.StatusMethodNotAllowed, map[string]any{"error": map[string]any{"message": "Console 模型仅支持创建 Response", "type": "invalid_request_error"}}), nil
+		}
+		return a.forwardConsoleResponse(ctx, request, spec)
+	}
 	if request.Method == http.MethodGet || request.Method == http.MethodDelete {
 		return a.handleResponseResource(ctx, request)
 	}
@@ -767,7 +774,11 @@ func parseUpstreamFrame(data []byte, parsed *parsedChat) (string, string, error)
 		return "", "", webResponseError(errorValue)
 	}
 	for _, key := range []string{"cardAttachment", "cardAttachments"} {
-		if rawURL := collectCardAttachment(parsed, response[key]); rawURL != "" {
+		rawURL, cardErr := collectCardAttachment(parsed, response[key])
+		if cardErr != nil {
+			return "", "", cardErr
+		}
+		if rawURL != "" {
 			rawURL = absoluteAssetURL(rawURL)
 			parsed.Images = appendUniqueString(parsed.Images, rawURL)
 			return "image", rawURL, nil
@@ -980,19 +991,23 @@ func containsString(values []string, value string) bool {
 	return false
 }
 
-func collectCardAttachment(parsed *parsedChat, value any) string {
+func collectCardAttachment(parsed *parsedChat, value any) (string, error) {
 	if values, ok := value.([]any); ok {
 		first := ""
 		for _, item := range values {
-			if rawURL := collectCardAttachment(parsed, item); first == "" && rawURL != "" {
+			rawURL, err := collectCardAttachment(parsed, item)
+			if err != nil {
+				return "", err
+			}
+			if first == "" && rawURL != "" {
 				first = rawURL
 			}
 		}
-		return first
+		return first, nil
 	}
 	data := cardAttachmentData(value)
 	if data == nil {
-		return ""
+		return "", nil
 	}
 	if id, _ := data["id"].(string); id != "" {
 		if parsed.cardCache == nil {
@@ -1000,7 +1015,10 @@ func collectCardAttachment(parsed *parsedChat, value any) string {
 		}
 		parsed.cardCache[id] = data
 	}
-	return imageURLFromCardData(data)
+	if err := imageErrorFromCardData(data); err != nil {
+		return "", err
+	}
+	return imageURLFromCardData(data), nil
 }
 
 func cardAttachmentData(value any) map[string]any {
@@ -1023,11 +1041,32 @@ func cardAttachmentData(value any) map[string]any {
 	return nil
 }
 
-func imageURLFromCardData(data map[string]any) string {
+func imageChunkFromCardData(data map[string]any) map[string]any {
 	chunk, _ := data["image_chunk"].(map[string]any)
 	if chunk == nil {
 		chunk, _ = data["imageChunk"].(map[string]any)
 	}
+	return chunk
+}
+
+func imageErrorFromCardData(data map[string]any) error {
+	chunk := imageChunkFromCardData(data)
+	if chunk == nil {
+		return nil
+	}
+	progress, _ := numberAsInt(chunk["progress"])
+	if progress < 100 || firstString(chunk, "imageUrl", "image_url", "url") != "" {
+		return nil
+	}
+	code := strings.TrimSpace(fmt.Sprint(chunk["systemErrCode"]))
+	if code == "" || code == "<nil>" || code == "0" {
+		return nil
+	}
+	return fmt.Errorf("%w: systemErrCode=%s", errWebImageGeneration, code)
+}
+
+func imageURLFromCardData(data map[string]any) string {
+	chunk := imageChunkFromCardData(data)
 	if chunk == nil {
 		return ""
 	}
@@ -1036,11 +1075,7 @@ func imageURLFromCardData(data map[string]any) string {
 	if moderated || progress < 100 {
 		return ""
 	}
-	imageURL, _ := chunk["imageUrl"].(string)
-	if imageURL == "" {
-		imageURL, _ = chunk["image_url"].(string)
-	}
-	return imageURL
+	return firstString(chunk, "imageUrl", "image_url", "url")
 }
 
 func cleanChatToken(parsed *parsedChat, token string) string {
