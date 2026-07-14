@@ -15,7 +15,6 @@ import (
 
 type Config struct {
 	BaseURL             string
-	ConsoleBaseURL      string
 	StatsigMode         string
 	StatsigManualValue  string
 	StatsigSignerURL    string
@@ -59,9 +58,6 @@ func (a *Adapter) log() *slog.Logger {
 func normalizedConfig(cfg Config) Config {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://grok.com"
-	}
-	if cfg.ConsoleBaseURL == "" {
-		cfg.ConsoleBaseURL = "https://console.x.ai"
 	}
 	if cfg.StatsigMode == "" {
 		cfg.StatsigMode = "url"
@@ -130,11 +126,11 @@ func (a *Adapter) TierOrder(upstreamModel string) []account.WebTier {
 
 func (a *Adapter) PricingModel(upstreamModel string) string {
 	spec, ok := Resolve(upstreamModel)
-	if ok && spec.Capability == modeldomain.CapabilityChat {
-		return "grok-4.5"
-	}
-	if ok && spec.ProtocolModel == "imagine-lite" {
-		return "grok-imagine-image"
+	if ok {
+		if spec.Capability == modeldomain.CapabilityChat {
+			return "grok-4.5"
+		}
+		return spec.PublicID
 	}
 	return upstreamModel
 }
