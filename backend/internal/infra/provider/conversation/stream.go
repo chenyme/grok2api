@@ -34,25 +34,27 @@ func ConvertResponseStreamWithOptions(source io.ReadCloser, operation string, op
 }
 
 type streamConverter struct {
-	writer          io.Writer
-	operation       string
-	id              string
-	model           string
-	created         int64
-	started         bool
-	finished        bool
-	textStarted     bool
-	textIndex       int
-	thinkingStarted bool
-	thinkingClosed  bool
-	thinkingIndex   int
-	thinkingItemID  string
-	nextIndex       int
-	tools           map[string]streamTool
-	usage           responseUsage
-	options         ResponseOptions
-	stopFilter      *anthropicStreamStopFilter
-	stopSequence    string
+	writer           io.Writer
+	operation        string
+	id               string
+	model            string
+	created          int64
+	started          bool
+	finished         bool
+	textStarted      bool
+	textIndex        int
+	thinkingStarted  bool
+	thinkingClosed   bool
+	thinkingIndex    int
+	thinkingItemID   string
+	nextIndex        int
+	tools            map[string]streamTool
+	webSearch        []webSearchCall
+	webSearchEmitted map[string]bool
+	usage            responseUsage
+	options          ResponseOptions
+	stopFilter       *anthropicStreamStopFilter
+	stopSequence     string
 }
 
 type streamTool struct {
@@ -67,8 +69,112 @@ type streamTool struct {
 func newStreamConverter(writer io.Writer, operation string, options ResponseOptions) *streamConverter {
 	return &streamConverter{
 		writer: writer, operation: operation, created: time.Now().Unix(), tools: make(map[string]streamTool),
-		options: options, stopFilter: newAnthropicStreamStopFilter(options.StopSequences),
+		webSearchEmitted: make(map[string]bool),
+		options:          options, stopFilter: newAnthropicStreamStopFilter(options.StopSequences),
 	}
+}
+
+// noteWebSearch records a Build web_search_call. Emission is deferred to doneMessages
+// so we always use the completed action.sources payload from the final envelope when available.
+// For progressive UI we still emit server_tool_use as soon as we see the call.
+func (c *streamConverter) noteWebSearch(call webSearchCall, final bool) error {
+	replaced := false
+	for i, existing := range c.webSearch {
+		if existing.ID == call.ID {
+			// Prefer richer final payload.
+			if final || len(call.Hits) >= len(existing.Hits) {
+				c.webSearch[i] = call
+			}
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		c.webSearch = append(c.webSearch, call)
+	}
+	// Emit server_tool_use promptly so Claude Code can show "Searching: …".
+	return c.emitWebSearchUse(call)
+}
+
+func (c *streamConverter) emitWebSearchUse(call webSearchCall) error {
+	if err := c.start(); err != nil {
+		return err
+	}
+	if c.webSearchEmitted[call.ID+"#use"] {
+		return nil
+	}
+	index := c.nextIndex
+	c.nextIndex++
+	c.webSearchEmitted[call.ID+"#use"] = true
+	c.webSearchEmitted[call.ID+"#useIndex"] = true
+	// stash index in a side map via tools-like pattern: reuse tools map with special name
+	c.tools[call.ID+"#ws"] = streamTool{Index: index, ID: call.ID, Name: "web_search", Closed: false}
+	if err := c.writeEvent("content_block_start", map[string]any{
+		"type": "content_block_start", "index": index,
+		"content_block": map[string]any{"type": "server_tool_use", "id": call.ID, "name": "web_search", "input": map[string]any{}},
+	}); err != nil {
+		return err
+	}
+	if call.Query != "" {
+		if err := c.writeEvent("content_block_delta", map[string]any{
+			"type": "content_block_delta", "index": index,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": queryJSONPartial(call.Query)},
+		}); err != nil {
+			return err
+		}
+	}
+	if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": index}); err != nil {
+		return err
+	}
+	tool := c.tools[call.ID+"#ws"]
+	tool.Closed = true
+	c.tools[call.ID+"#ws"] = tool
+	return nil
+}
+
+func (c *streamConverter) emitPendingWebSearchResults() error {
+	for _, call := range c.webSearch {
+		if c.webSearchEmitted[call.ID+"#result"] {
+			continue
+		}
+		if !c.webSearchEmitted[call.ID+"#use"] {
+			if err := c.emitWebSearchUse(call); err != nil {
+				return err
+			}
+		}
+		if err := c.start(); err != nil {
+			return err
+		}
+		index := c.nextIndex
+		c.nextIndex++
+		c.webSearchEmitted[call.ID+"#result"] = true
+		var content any
+		if call.Failed {
+			code := call.Code
+			if code == "" {
+				code = "unavailable"
+			}
+			content = map[string]any{"type": "web_search_tool_result_error", "error_code": code}
+		} else {
+			hits := make([]any, 0, len(call.Hits))
+			for _, hit := range call.Hits {
+				hits = append(hits, map[string]any{"type": "web_search_result", "title": hit.Title, "url": hit.URL})
+			}
+			content = hits
+		}
+		if err := c.writeEvent("content_block_start", map[string]any{
+			"type": "content_block_start", "index": index,
+			"content_block": map[string]any{
+				"type": "web_search_tool_result", "tool_use_id": call.ID, "content": content,
+			},
+		}); err != nil {
+			return err
+		}
+		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": index}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *streamConverter) handle(event string, data []byte) error {
@@ -122,6 +228,12 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		if item.Type == "reasoning" && c.operation == OperationMessages && c.options.AnthropicThinking {
 			return c.thinkingStart(item.ID)
 		}
+		if item.Type == "web_search_call" && c.operation == OperationMessages {
+			if call, ok := parseWebSearchCallItem(item); ok {
+				return c.noteWebSearch(call, false)
+			}
+			return nil
+		}
 		if item.Type != "function_call" {
 			return nil
 		}
@@ -147,10 +259,21 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		if item.Type == "reasoning" {
 			return c.thinkingDone(item)
 		}
+		if item.Type == "web_search_call" && c.operation == OperationMessages {
+			if call, ok := parseWebSearchCallItem(item); ok {
+				return c.noteWebSearch(call, true)
+			}
+		}
 	case "response.completed", "response.incomplete":
 		var response responseEnvelope
 		_ = json.Unmarshal(root["response"], &response)
 		c.setResponse(response)
+		if c.operation == OperationMessages {
+			parsed := parseResponse(response)
+			if len(parsed.WebSearch) > 0 {
+				c.webSearch = parsed.WebSearch
+			}
+		}
 		status := response.Status
 		if status == "" && typeName == "response.incomplete" {
 			status = "incomplete"

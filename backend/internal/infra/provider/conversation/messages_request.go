@@ -605,6 +605,11 @@ func convertAnthropicToolChoice(choice anthropicToolChoice) (any, bool, error) {
 		if strings.TrimSpace(choice.Name) == "" {
 			return nil, false, errors.New("tool_choice.tool 缺少 name")
 		}
+		// Claude Code secondary search forces name=web_search (hosted). Build accepts
+		// hosted tool_choice only as "required" when a single hosted tool remains.
+		if strings.EqualFold(strings.TrimSpace(choice.Name), "web_search") {
+			return "required", parallel, nil
+		}
 		return map[string]any{"type": "function", "name": choice.Name}, parallel, nil
 	default:
 		return nil, false, fmt.Errorf("不支持 tool_choice.type=%q", choice.Type)

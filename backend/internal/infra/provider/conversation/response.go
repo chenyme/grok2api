@@ -33,12 +33,15 @@ type responseItem struct {
 	Name      string            `json:"name"`
 	Arguments string            `json:"arguments"`
 	Encrypted string            `json:"encrypted_content"`
+	// Action is populated for Build hosted tool items such as web_search_call.
+	Action map[string]any `json:"action"`
 }
 
 type responseContent struct {
-	Type    string `json:"type"`
-	Text    string `json:"text"`
-	Refusal string `json:"refusal"`
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	Refusal     string `json:"refusal"`
+	Annotations []any  `json:"annotations"`
 }
 
 type responseUsage struct {
@@ -62,6 +65,7 @@ type parsedResponse struct {
 	Signature    string
 	Refusal      string
 	Calls        []responseItem
+	WebSearch    []webSearchCall
 	Usage        responseUsage
 	Status       string
 	StopSequence string
@@ -105,9 +109,11 @@ func parseResponse(value responseEnvelope) parsedResponse {
 	if parsed.CreatedAt == 0 {
 		parsed.CreatedAt = time.Now().Unix()
 	}
+	var annotations []map[string]any
 	for _, item := range value.Output {
 		switch item.Type {
 		case "message":
+			annotations = append(annotations, extractMessageAnnotations(item)...)
 			for _, content := range item.Content {
 				switch content.Type {
 				case "output_text":
@@ -125,7 +131,15 @@ func parseResponse(value responseEnvelope) parsedResponse {
 			}
 		case "function_call":
 			parsed.Calls = append(parsed.Calls, item)
+		case "web_search_call":
+			if call, ok := parseWebSearchCallItem(item); ok {
+				parsed.WebSearch = append(parsed.WebSearch, call)
+			}
 		}
+	}
+	if len(parsed.WebSearch) > 0 {
+		parsed.WebSearch = dedupeWebSearchCalls(parsed.WebSearch)
+		parsed.WebSearch = mergeAnnotationTitles(parsed.WebSearch, annotations)
 	}
 	return parsed
 }

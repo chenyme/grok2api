@@ -10,7 +10,7 @@ func (c *streamConverter) startMessages() error {
 		"type": "message_start", "message": map[string]any{
 			"id": anthropicMessageID(c.id), "type": "message", "role": "assistant",
 			"model": c.model, "content": []any{}, "stop_reason": nil, "stop_sequence": nil,
-			"usage": anthropicUsage(c.usage),
+			"usage": anthropicUsage(c.usage, 0),
 		},
 	})
 }
@@ -222,6 +222,12 @@ func (c *streamConverter) doneMessages(status string) error {
 			return err
 		}
 	}
+	// Emit web_search_tool_result before closing text so order matches non-stream:
+	// server_tool_use → web_search_tool_result → text. If text already started, close it first then re-open is worse;
+	// CC secondary path mainly needs result blocks present before message_delta.
+	if err := c.emitPendingWebSearchResults(); err != nil {
+		return err
+	}
 	if c.textStarted {
 		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.textIndex}); err != nil {
 			return err
@@ -229,6 +235,9 @@ func (c *streamConverter) doneMessages(status string) error {
 	}
 	openTools := make([]streamTool, 0)
 	for itemID, tool := range c.tools {
+		if strings.HasSuffix(itemID, "#ws") {
+			continue
+		}
 		if !tool.Closed {
 			tool.Closed = true
 			c.tools[itemID] = tool
@@ -242,16 +251,27 @@ func (c *streamConverter) doneMessages(status string) error {
 		}
 	}
 	stopReason := "end_turn"
-	if len(c.tools) > 0 {
+	// Only client function tools force tool_use stop. Hosted web_search is end_turn.
+	clientToolCount := 0
+	for itemID := range c.tools {
+		if !strings.HasSuffix(itemID, "#ws") {
+			clientToolCount++
+		}
+	}
+	if clientToolCount > 0 {
 		stopReason = "tool_use"
 	} else if c.stopSequence != "" {
 		stopReason = "stop_sequence"
 	} else if status == "incomplete" {
 		stopReason = "max_tokens"
 	}
+	usage := map[string]any{"input_tokens": c.usage.InputTokens, "output_tokens": c.usage.OutputTokens}
+	if n := webSearchRequestCount(c.webSearch); n > 0 {
+		usage["server_tool_use"] = map[string]any{"web_search_requests": n}
+	}
 	if err := c.writeEvent("message_delta", map[string]any{
 		"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nullableAnthropicString(c.stopSequence)},
-		"usage": map[string]any{"input_tokens": c.usage.InputTokens, "output_tokens": c.usage.OutputTokens},
+		"usage": usage,
 	}); err != nil {
 		return err
 	}
