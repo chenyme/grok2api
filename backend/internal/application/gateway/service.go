@@ -439,6 +439,12 @@ attemptLoop:
 				lastFailure = newHTTPUpstreamFailure(http.StatusUnauthorized, nil, credential.ID, credential.Name)
 				continue
 			}
+			if s.markPermanentlyUnrefreshableCredentialRejected(ctx, credential) {
+				lease.Release()
+				lastErr = accountapp.ErrCredentialRefreshPermanent
+				lastFailure = newHTTPUpstreamFailure(http.StatusUnauthorized, nil, credential.ID, credential.Name)
+				continue
+			}
 			authRecoveryAttempted[credential.ID] = true
 			refreshed, refreshErr := ensureCredential(credential, true)
 			if refreshErr == nil {
@@ -446,6 +452,9 @@ attemptLoop:
 				credential = refreshed
 			}
 			if refreshErr != nil || err != nil {
+				if errors.Is(refreshErr, accountapp.ErrCredentialRefreshPermanent) {
+					s.markCredentialRejectedAfterPermanentRefresh(ctx, credential)
+				}
 				lease.Release()
 				lastErr = firstError(refreshErr, err)
 				if refreshErr != nil {
@@ -755,8 +764,15 @@ func (s *Service) forwardOwnedResponse(ctx context.Context, input ResourceInput,
 	}
 	if response.StatusCode == http.StatusUnauthorized {
 		response.Body.Close()
+		if s.markPermanentlyUnrefreshableCredentialRejected(ctx, credential) {
+			lease.Release()
+			return nil, fmt.Errorf("%w: %w", ErrResponseAccountUnavailable, accountapp.ErrCredentialRefreshPermanent)
+		}
 		refreshed, refreshErr := s.accounts.EnsureCredential(ctx, credential, true)
 		if refreshErr != nil {
+			if errors.Is(refreshErr, accountapp.ErrCredentialRefreshPermanent) {
+				s.markCredentialRejectedAfterPermanentRefresh(ctx, credential)
+			}
 			lease.Release()
 			return nil, refreshErr
 		}
@@ -779,6 +795,20 @@ func (s *Service) forwardOwnedResponse(ctx context.Context, input ResourceInput,
 	release := func() { once.Do(lease.Release) }
 	finalize := func(Usage, string, string) { release() }
 	return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: release}, Finalize: finalize}, nil
+}
+
+// markPermanentlyUnrefreshableCredentialRejected 在真实上游请求确认 access token 失效后立即移出账号池。
+func (s *Service) markPermanentlyUnrefreshableCredentialRejected(ctx context.Context, credential accountdomain.Credential) bool {
+	if !credential.RefreshPermanent {
+		return false
+	}
+	s.markCredentialRejectedAfterPermanentRefresh(ctx, credential)
+	return true
+}
+
+func (s *Service) markCredentialRejectedAfterPermanentRefresh(ctx context.Context, credential accountdomain.Credential) {
+	_ = s.accounts.MarkReauthRequired(ctx, credential.ID, fmt.Sprintf("%s OAuth access token rejected after permanent refresh failure", credential.Provider))
+	s.selector.MarkQuotaStateChanged(credential.Provider)
 }
 
 func readRetryableBody(body io.ReadCloser) ([]byte, error) {

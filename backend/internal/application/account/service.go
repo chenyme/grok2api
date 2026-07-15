@@ -32,6 +32,8 @@ var (
 	ErrConversionBusy = errors.New("账号正在转换为 Grok Build")
 )
 
+var ErrCredentialRefreshPermanent = errors.New("OAuth refresh token 已永久失效")
+
 const (
 	estimatedFreeTokenLimit     int64         = 1_000_000
 	freeUsageWindow             time.Duration = 24 * time.Hour
@@ -52,6 +54,8 @@ const (
 	maxWebConsoleSyncAccounts                 = 1000
 	accountTaskBatchSize                      = 1000
 )
+
+const permanentRefreshExpiredReason = "OAuth refresh token 已永久失效且 access token 已过期"
 
 type webQuotaRefreshState struct {
 	pending bool
@@ -1290,6 +1294,9 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 		return value, nil
 	}
 	now := s.now()
+	if credential, err, handled := s.resolvePermanentRefreshFailure(ctx, value, now, force); handled {
+		return credential, err
+	}
 	if !force && value.ExpiresAt.IsZero() && value.EncryptedAccessToken != "" {
 		return value, nil
 	}
@@ -1306,6 +1313,12 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 			return nil, err
 		}
 		currentTime := s.now()
+		if credential, err, handled := s.resolvePermanentRefreshFailure(ctx, latest, currentTime, force); handled {
+			if err != nil {
+				return nil, err
+			}
+			return credential, nil
+		}
 		if respectSchedule && latest.RefreshDueAt != nil && latest.RefreshDueAt.After(currentTime) {
 			return latest, nil
 		}
@@ -1329,6 +1342,12 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 				return nil, err
 			}
 			currentTime = s.now()
+			if credential, err, handled := s.resolvePermanentRefreshFailure(ctx, latest, currentTime, force); handled {
+				if err != nil {
+					return nil, err
+				}
+				return credential, nil
+			}
 			if respectSchedule && latest.RefreshDueAt != nil && latest.RefreshDueAt.After(currentTime) {
 				return latest, nil
 			}
@@ -1454,13 +1473,24 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 	} else if errors.Is(refreshErr, context.DeadlineExceeded) {
 		errorCode = "oauth_timeout"
 	}
+	// 永久失败只能由成功换取新 token 清除，后续偶发传输错误不能把状态降级为可重试。
+	permanent = permanent || credential.RefreshPermanent
 	now := s.now()
 	retryAt := now.Add(credentialRefreshBackoff(credential.ID, failureCount, retryAfter))
-	if permanent {
+	accessTokenAlive := credential.EncryptedAccessToken != "" && !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(now)
+	if permanent && accessTokenAlive {
+		// refresh token 已永久失效时，提前重试没有意义；到 access token 到期时再完成失效收敛。
+		retryAt = credential.ExpiresAt
+	} else if permanent {
 		retryAt = now
 	}
-	if err := s.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, failureCount, retryAt, errorCode); err != nil {
+	if err := s.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, failureCount, retryAt, errorCode, permanent); err != nil {
 		s.logger.Warn("credential_refresh_state_write_failed", "account_id", credential.ID, "error", err)
+	}
+	if permanent && accessTokenAlive {
+		s.logger.Warn("credential_refresh_permanent_but_token_alive", "account_id", credential.ID, "error_code", errorCode, "expires_at", credential.ExpiresAt, "retry_at", retryAt)
+		s.WakeCredentialRefresh()
+		return
 	}
 	if permanent {
 		if err := s.MarkReauthRequired(ctx, credential.ID, "OAuth refresh failed: "+errorCode); err != nil {
@@ -1470,6 +1500,26 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 	}
 	s.logger.Warn("credential_refresh_deferred", "account_id", credential.ID, "failure_count", failureCount, "retry_at", retryAt, "error_code", errorCode)
 	s.WakeCredentialRefresh()
+}
+
+// resolvePermanentRefreshFailure 阻止再次请求已确认失效的 refresh token，并在 access token 到期后收敛账号状态。
+func (s *Service) resolvePermanentRefreshFailure(ctx context.Context, credential accountdomain.Credential, now time.Time, force bool) (accountdomain.Credential, error, bool) {
+	if !credential.RefreshPermanent {
+		return accountdomain.Credential{}, nil, false
+	}
+	accessTokenAlive := credential.EncryptedAccessToken != "" && !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(now)
+	if accessTokenAlive && !force {
+		return credential, nil, true
+	}
+	if !accessTokenAlive {
+		if err := s.MarkReauthRequired(ctx, credential.ID, permanentRefreshExpiredReason); err != nil {
+			return accountdomain.Credential{}, err, true
+		}
+	}
+	if credential.LastRefreshErrorCode == "" {
+		return accountdomain.Credential{}, ErrCredentialRefreshPermanent, true
+	}
+	return accountdomain.Credential{}, fmt.Errorf("%w: %s", ErrCredentialRefreshPermanent, credential.LastRefreshErrorCode), true
 }
 
 func credentialRefreshBackoff(accountID uint64, failureCount int, retryAfter time.Duration) time.Duration {
