@@ -164,6 +164,14 @@ export function SettingsPage() {
           </SettingsPane>
 
           <SettingsPane value="policies">
+          <SettingsSection title={t("settings.server.title")}>
+            <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+              <SettingsField controlId="server-max-concurrent-requests" label={t("settings.server.maxConcurrentRequests")} description={t("settings.server.maxConcurrentRequestsHelp")} error={form.formState.errors.server?.maxConcurrentRequests?.message}>
+                <Input id="server-max-concurrent-requests" type="number" min={1} max={100_000} {...form.register("server.maxConcurrentRequests", { valueAsNumber: true })} />
+              </SettingsField>
+            </div>
+          </SettingsSection>
+
           <SettingsSection title={t("settings.batch.title")}>
             <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
               <SettingsField controlId="batch-import-concurrency" label={t("settings.batch.importConcurrency")} error={form.formState.errors.batch?.importConcurrency?.message}><Input id="batch-import-concurrency" type="number" min={1} max={50} {...form.register("batch.importConcurrency", { valueAsNumber: true })} /></SettingsField>

@@ -21,6 +21,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 }
 
 type settingsConfigDTO struct {
+	Server            serverConfigDTO            `json:"server"`
 	ProviderBuild     providerBuildConfigDTO     `json:"providerBuild"`
 	ProviderWeb       providerWebConfigDTO       `json:"providerWeb"`
 	ProviderConsole   providerConsoleConfigDTO   `json:"providerConsole"`
@@ -30,6 +31,10 @@ type settingsConfigDTO struct {
 	Routing           routingConfigDTO           `json:"routing"`
 	Audit             auditConfigDTO             `json:"audit"`
 	ClientKeyDefaults clientKeyDefaultsConfigDTO `json:"clientKeyDefaults"`
+}
+
+type serverConfigDTO struct {
+	MaxConcurrentRequests int `json:"maxConcurrentRequests"`
 }
 
 type providerConsoleConfigDTO struct {
@@ -147,6 +152,7 @@ func (h *Handler) update(c *gin.Context) {
 
 func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 	return settingsapp.EditableConfig{
+		Server: settingsapp.ServerConfig{MaxConcurrentRequests: value.Server.MaxConcurrentRequests},
 		ProviderBuild: settingsapp.ProviderBuildConfig{
 			BaseURL: value.ProviderBuild.BaseURL, ClientVersion: value.ProviderBuild.ClientVersion,
 			ClientIdentifier: value.ProviderBuild.ClientIdentifier, TokenAuth: value.ProviderBuild.TokenAuth,
@@ -194,6 +200,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 	config := value.Config
 	return settingsResponse{
 		Config: settingsConfigDTO{
+			Server: serverConfigDTO{MaxConcurrentRequests: config.Server.MaxConcurrentRequests},
 			ProviderBuild: providerBuildConfigDTO{
 				BaseURL: config.ProviderBuild.BaseURL, ClientVersion: config.ProviderBuild.ClientVersion,
 				ClientIdentifier: config.ProviderBuild.ClientIdentifier, TokenAuthConfigured: strings.TrimSpace(config.ProviderBuild.TokenAuth) != "",

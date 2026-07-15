@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -206,10 +205,11 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 		return nil, &SelectionUnavailableError{Reason: reason, RetryAfter: retryDelay(now, earliestRetry)}
 	}
 	if len(probeCandidates) > 0 {
-		if err := s.sortCandidates(ctx, probeCandidates, now, s.resolveTierOrder(provider, upstreamModel)); err != nil {
+		plan, err := s.planCandidates(ctx, probeCandidates, now, s.resolveTierOrder(provider, upstreamModel))
+		if err != nil {
 			return nil, err
 		}
-		for _, candidate := range probeCandidates {
+		for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
 			lease, err := s.claimAccountSlot(ctx, candidate.Credential)
 			if err != nil {
 				return nil, err
@@ -256,10 +256,11 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 	waitDeadline := time.Now().Add(capacityWait)
 	for {
 		currentTime := time.Now().UTC()
-		if err := s.sortCandidates(ctx, normalCandidates, currentTime, s.resolveTierOrder(provider, upstreamModel)); err != nil {
+		plan, err := s.planCandidates(ctx, normalCandidates, currentTime, s.resolveTierOrder(provider, upstreamModel))
+		if err != nil {
 			return nil, err
 		}
-		for _, candidate := range normalCandidates {
+		for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
 			lease, err := s.claimAccountSlot(ctx, candidate.Credential)
 			if err != nil {
 				return nil, err
@@ -550,7 +551,7 @@ func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credentia
 	if limit <= 0 {
 		limit = account.DefaultMaxConcurrent
 	}
-	release, acquired, err := s.concurrency.Acquire(ctx, fmt.Sprintf("account:%d", value.ID), limit)
+	release, acquired, err := s.concurrency.Acquire(ctx, accountConcurrencyKey(value.ID), limit)
 	if err != nil {
 		return nil, fmt.Errorf("获取账号并发租约: %w", err)
 	}
@@ -639,81 +640,6 @@ func retryDelay(now, retryAt time.Time) time.Duration {
 		return 0
 	}
 	return retryAt.Sub(now)
-}
-
-func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingCandidate, now time.Time, tierOrder []account.WebTier) error {
-	s.mu.Lock()
-	lastSelected := make(map[uint64]time.Time, len(s.lastSelectedAt))
-	for id, value := range s.lastSelectedAt {
-		lastSelected[id] = value
-	}
-	s.mu.Unlock()
-	remaining := make(map[uint64]float64, len(values))
-	fresh := make(map[uint64]bool, len(values))
-	inFlight := make(map[uint64]int, len(values))
-	concurrencyKeys := make([]string, 0, len(values))
-	for _, candidate := range values {
-		concurrencyKeys = append(concurrencyKeys, fmt.Sprintf("account:%d", candidate.Credential.ID))
-	}
-	concurrencySnapshot := make(map[string]int, len(values))
-	batchReader, batched := s.concurrency.(repository.ConcurrencySnapshotReader)
-	if batched {
-		var err error
-		concurrencySnapshot, err = batchReader.CurrentMany(ctx, concurrencyKeys)
-		if err != nil {
-			return fmt.Errorf("批量读取账号并发租约: %w", err)
-		}
-	}
-	for _, candidate := range values {
-		value := candidate.Credential
-		key := fmt.Sprintf("account:%d", value.ID)
-		current, found := concurrencySnapshot[key]
-		if !batched {
-			var err error
-			current, err = s.concurrency.Current(ctx, key)
-			if err != nil {
-				return fmt.Errorf("读取账号并发租约: %w", err)
-			}
-		} else if !found {
-			current = 0
-		}
-		inFlight[value.ID] = current
-		if candidate.Billing != nil {
-			remaining[value.ID] = candidate.Billing.Remaining()
-			fresh[value.ID] = now.Sub(candidate.Billing.SyncedAt) <= 30*time.Minute
-		}
-	}
-	sort.SliceStable(values, func(i, j int) bool {
-		leftCandidate, rightCandidate := values[i], values[j]
-		left, right := leftCandidate.Credential, rightCandidate.Credential
-		if leftCandidate.SupportsModel != rightCandidate.SupportsModel {
-			return leftCandidate.SupportsModel
-		}
-		if leftCandidate.ModelCapabilityKnown != rightCandidate.ModelCapabilityKnown {
-			return leftCandidate.ModelCapabilityKnown
-		}
-		leftTier, rightTier := tierOrderRank(tierOrder, left.WebTier), tierOrderRank(tierOrder, right.WebTier)
-		if leftTier != rightTier {
-			return leftTier < rightTier
-		}
-		if left.Priority != right.Priority {
-			return left.Priority > right.Priority
-		}
-		if fresh[left.ID] != fresh[right.ID] {
-			return fresh[left.ID]
-		}
-		if inFlight[left.ID] != inFlight[right.ID] {
-			return inFlight[left.ID] < inFlight[right.ID]
-		}
-		if remaining[left.ID] != remaining[right.ID] {
-			return remaining[left.ID] > remaining[right.ID]
-		}
-		if !lastSelected[left.ID].Equal(lastSelected[right.ID]) {
-			return lastSelected[left.ID].Before(lastSelected[right.ID])
-		}
-		return left.ID < right.ID
-	})
-	return nil
 }
 
 func (s *Selector) resolveTierOrder(provider account.Provider, upstreamModel string) []account.WebTier {

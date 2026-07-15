@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -21,30 +22,45 @@ import (
 const weeklyQuotaMode = "weekly"
 
 func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) (provider.QuotaSnapshot, error) {
-	weekly, weeklyErr := a.syncWeeklyCredits(ctx, credential)
 	windows := make([]account.QuotaWindow, 0, 2)
-	if autoWindow, autoErr := a.SyncQuotaMode(ctx, credential, "auto"); autoErr == nil {
+	autoWindow, autoErr := a.SyncQuotaMode(ctx, credential, "auto")
+	if errors.Is(autoErr, provider.ErrUnauthorized) {
+		return provider.QuotaSnapshot{}, autoErr
+	}
+	if autoErr == nil {
 		windows = append(windows, autoWindow)
 	}
 	fastWindow, fastErr := a.SyncQuotaMode(ctx, credential, "fast")
+	if errors.Is(fastErr, provider.ErrUnauthorized) {
+		return provider.QuotaSnapshot{}, fastErr
+	}
 	if fastErr == nil {
 		windows = append(windows, fastWindow)
 	}
 	if len(windows) > 0 {
-		tier, useWeekly := resolveWebTierFromQuota(credential.WebTier, windows, weeklyErr == nil)
-		if useWeekly {
-			windows = []account.QuotaWindow{weekly}
+		tier, _ := resolveWebTierFromQuota(credential.WebTier, windows, false)
+		// Basic/未知账号没有付费周池，避免为每次完整同步额外访问付费端点。
+		// 只有模式额度已经确认付费等级时才读取 weekly 作为权威额度。
+		if tier == account.WebTierSuper || tier == account.WebTierHeavy {
+			if weekly, weeklyErr := a.syncWeeklyCredits(ctx, credential); weeklyErr == nil {
+				windows = []account.QuotaWindow{weekly}
+			}
 		}
 		return provider.QuotaSnapshot{Tier: tier, Windows: windows, SyncedAt: time.Now().UTC()}, nil
 	}
-	if weeklyErr == nil {
-		tier, _ := resolveWebTierFromQuota(credential.WebTier, nil, true)
-		return provider.QuotaSnapshot{Tier: tier, Windows: []account.QuotaWindow{weekly}, SyncedAt: time.Now().UTC()}, nil
+	// 模式端点暂不可用时，仅已确认的付费账号允许用 weekly 兜底；
+	// Basic/Auto 不能凭周额度探测提权，也不应制造无意义的付费端点流量。
+	if credential.WebTier == account.WebTierSuper || credential.WebTier == account.WebTierHeavy {
+		if weekly, weeklyErr := a.syncWeeklyCredits(ctx, credential); weeklyErr == nil {
+			return provider.QuotaSnapshot{Tier: credential.WebTier, Windows: []account.QuotaWindow{weekly}, SyncedAt: time.Now().UTC()}, nil
+		} else {
+			return provider.QuotaSnapshot{}, weeklyErr
+		}
 	}
 	if fastErr != nil {
 		return provider.QuotaSnapshot{}, fastErr
 	}
-	return provider.QuotaSnapshot{}, weeklyErr
+	return provider.QuotaSnapshot{}, autoErr
 }
 
 func resolveWebTierFromQuota(current account.WebTier, windows []account.QuotaWindow, weeklyAvailable bool) (account.WebTier, bool) {

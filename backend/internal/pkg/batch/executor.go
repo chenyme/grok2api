@@ -30,6 +30,7 @@ type Pool struct {
 	shared  LeaseLimiter
 	key     string
 	active  atomic.Int64
+	queued  atomic.Int64
 	peak    atomic.Int64
 	jitter  atomic.Int64
 }
@@ -41,6 +42,7 @@ type LeaseLimiter interface {
 type PoolSnapshot struct {
 	Limit  int
 	Active int
+	Queued int
 	Peak   int
 }
 
@@ -109,6 +111,13 @@ func (p *Pool) Do(ctx context.Context, work func(context.Context) error) (err er
 	if err := p.waitJitter(ctx); err != nil {
 		return err
 	}
+	p.queued.Add(1)
+	started := false
+	defer func() {
+		if !started {
+			p.queued.Add(-1)
+		}
+	}()
 	if err := p.acquireSlot(ctx); err != nil {
 		return err
 	}
@@ -133,17 +142,22 @@ func (p *Pool) Do(ctx context.Context, work func(context.Context) error) (err er
 			}
 		}
 	}
-	p.begin()
-	defer p.end()
 	defer func() {
 		if releaseShared != nil {
 			releaseShared()
 		}
 	}()
-	if p.parent != nil {
-		return p.parent.Do(ctx, work)
+	run := func(workCtx context.Context) error {
+		started = true
+		p.queued.Add(-1)
+		p.begin()
+		defer p.end()
+		return invoke(workCtx, work)
 	}
-	return invoke(ctx, work)
+	if p.parent != nil {
+		return p.parent.Do(ctx, run)
+	}
+	return run(ctx)
 }
 
 func (p *Pool) waitJitter(ctx context.Context) error {
@@ -223,7 +237,7 @@ func (p *Pool) Snapshot() PoolSnapshot {
 	if p == nil {
 		return PoolSnapshot{}
 	}
-	return PoolSnapshot{Limit: p.Limit(), Active: int(p.active.Load()), Peak: int(p.peak.Load())}
+	return PoolSnapshot{Limit: p.Limit(), Active: int(p.active.Load()), Queued: int(p.queued.Load()), Peak: int(p.peak.Load())}
 }
 
 // Do 隔离单个任务 panic，适用于长驻 Worker 和后台任务监督器。

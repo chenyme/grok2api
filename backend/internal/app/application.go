@@ -37,6 +37,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	httpserver "github.com/chenyme/grok2api/backend/internal/transport/http"
+	httpmiddleware "github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 )
 
 // Application 管理后端进程生命周期和本地后台任务。
@@ -237,6 +238,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)
 	quotaRecoveryService := quotarecoveryapp.NewService(logger, quotaQueue, accountService, cfg.Provider.Web.RecoveryBackoffBase.Value(), cfg.Provider.Web.RecoveryBackoffMax.Value())
 	quotaRecoveryService.SetBulkPool(syncPool)
+	inferenceConcurrency := httpmiddleware.NewConcurrencyGate(cfg.Server.MaxConcurrentRequests)
 	var notifySettings func(context.Context)
 	if settingsBus != nil {
 		notifySettings = func(notifyCtx context.Context) {
@@ -248,6 +250,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		}
 	}
 	settingsService := settingsapp.NewService(cfg, settingsUpdatedAt, settingsRevision, runtimeSettingsRepo, notifySettings, func(next config.Config) {
+		inferenceConcurrency.UpdateLimit(next.Server.MaxConcurrentRequests)
 		bulkPool.UpdateLimit(maxBatchConcurrency(next.Batch))
 		importPool.UpdateLimit(next.Batch.ImportConcurrency)
 		conversionPool.UpdateLimit(next.Batch.ConversionConcurrency)
@@ -277,7 +280,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	readiness := func(readyCtx context.Context) httpserver.ReadinessSnapshot {
 		return readinessSnapshot(readyCtx, startup, runtimeHealth, modelRepo, accountRepo, providers)
 	}
-	router := httpserver.New(httpserver.Dependencies{Logger: logger, RequestTimeout: cfg.Server.RequestTimeout.Value(), MaxBodyBytes: cfg.Server.MaxBodyBytes, SecureCookies: cfg.Auth.SecureCookies, SwaggerEnabled: cfg.Server.SwaggerEnabled, PublicAPIBaseURL: cfg.Frontend.EffectivePublicAPIBaseURL(), FrontendStaticPath: cfg.Frontend.StaticPath, Readiness: readiness, TrafficReady: startup.acceptsTraffic, AdminAuth: adminService, Accounts: accountService, AccountSync: accountSyncService, Models: modelService, ClientKeys: clientKeyService, Audits: auditService, Dashboard: dashboardService, Gateway: gatewayService, Media: mediaService, Settings: settingsService, Egress: egressService})
+	router := httpserver.New(httpserver.Dependencies{Logger: logger, RequestTimeout: cfg.Server.RequestTimeout.Value(), MaxBodyBytes: cfg.Server.MaxBodyBytes, ConcurrencyGate: inferenceConcurrency, SecureCookies: cfg.Auth.SecureCookies, SwaggerEnabled: cfg.Server.SwaggerEnabled, PublicAPIBaseURL: cfg.Frontend.EffectivePublicAPIBaseURL(), FrontendStaticPath: cfg.Frontend.StaticPath, Readiness: readiness, TrafficReady: startup.acceptsTraffic, AdminAuth: adminService, Accounts: accountService, AccountSync: accountSyncService, Models: modelService, ClientKeys: clientKeyService, Audits: auditService, Dashboard: dashboardService, Gateway: gatewayService, Media: mediaService, Settings: settingsService, Egress: egressService})
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: router, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: cfg.Server.ReadTimeout.Value(), IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10}
 	return &Application{
 		logger: logger, database: database, server: server,

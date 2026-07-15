@@ -34,7 +34,7 @@ go run ./cmd/grok2api --config /path/to/config.yaml --listen 0.0.0.0:8000
 
 ## 配置与存储
 
-启动配置统一由根目录 `config.yaml` 管理，启动阶段字段见 [`config.example.yaml`](../config.example.yaml)。Provider、批量任务、路由、媒体容量、审计和客户端密钥默认限制由管理端设置页持久化并热加载。
+启动配置统一由根目录 `config.yaml` 管理，启动阶段字段见 [`config.example.yaml`](../config.example.yaml)。Provider、服务容量、批量任务、路由、媒体、审计和客户端密钥默认限制由管理端设置页持久化；除页面明确标记“重启生效”的字段外均会热加载。
 
 | 场景 | 数据库 | 运行态存储 |
 | --- | --- | --- |
@@ -43,7 +43,7 @@ go run ./cmd/grok2api --config /path/to/config.yaml --listen 0.0.0.0:8000
 
 关系型数据库保存账号、凭据、模型、额度、客户端密钥、审计和媒体任务；Redis 仅承载限流、并发租约、粘滞路由、分布式锁和事件通知。敏感凭据使用 `credentialEncryptionKey` 加密，该密钥必须长期保留且不得提交到版本库。
 
-可热加载的 Provider、批量任务并发、路由、审计、媒体和代理参数由管理端设置页维护；数据库驱动、监听地址、Redis、JWT 与加密密钥仍通过 YAML 配置并在启动时生效。
+运行设置与代理参数由管理端设置页维护；数据库驱动、监听地址、Redis、JWT 与加密密钥仍通过 YAML 配置并在启动时生效。
 
 ## 服务入口
 

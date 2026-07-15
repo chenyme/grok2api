@@ -1597,15 +1597,9 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	var tier accountdomain.WebTier
 	quotaKind, _ := s.providers.QuotaKind(value.Provider)
 	if quotaKind == provider.QuotaRemoteWindow {
+		// 单模式核实只负责更新本次 429 对应的窗口。套餐判级由完整额度同步负责；
+		// 这里再次调用 SyncQuota 会重复请求当前模式，并额外访问其他额度端点。
 		tier = value.WebTier
-		if tier == "" || tier == accountdomain.WebTierAuto {
-			if snapshot, syncErr := adapter.SyncQuota(ctx, value); syncErr == nil {
-				tier = snapshot.Tier
-				_ = s.accounts.ReplaceQuotaWindows(ctx, id, snapshot.Tier, snapshot.SyncedAt, snapshot.Windows)
-			} else {
-				tier = accountdomain.WebTierBasic
-			}
-		}
 	}
 	now := time.Now().UTC()
 	if err := s.accounts.SaveQuotaWindows(ctx, id, tier, now, []accountdomain.QuotaWindow{window}); err != nil {
@@ -1686,6 +1680,17 @@ func (s *Service) RunWebQuotaRefresh(ctx context.Context) {
 
 func (s *Service) runWebQuotaRefresh(parent context.Context, request webQuotaRefreshRequest) {
 	for {
+		// Worker 开始前已经合并的重复请求由本轮远端快照覆盖。只有网络请求
+		// 进行期间再次到达的调用才需要尾随刷新，避免每个突发批次固定请求两次。
+		s.quotaRefreshMu.Lock()
+		state := s.quotaRefreshes[request.key]
+		if state == nil {
+			s.quotaRefreshMu.Unlock()
+			return
+		}
+		state.pending = false
+		s.quotaRefreshMu.Unlock()
+
 		ctx, cancel := context.WithTimeout(parent, webQuotaRefreshTimeout)
 		refreshMode := request.mode
 		if windows, err := s.accounts.GetQuotaWindows(ctx, []uint64{request.accountID}); err == nil {
@@ -1698,11 +1703,21 @@ func (s *Service) runWebQuotaRefresh(parent context.Context, request webQuotaRef
 		}
 		if refreshMode != "" {
 			var refreshErr error
-			if err := s.syncPool.Do(ctx, func(workCtx context.Context) error {
-				_, refreshErr = s.RefreshWebQuotaMode(workCtx, request.accountID, refreshMode)
-				return refreshErr
-			}); err != nil {
-				refreshErr = err
+			acquired := true
+			var release func()
+			if s.refreshLock != nil {
+				release, acquired, refreshErr = s.refreshLock.Acquire(ctx, "quota-refresh:"+request.key, webQuotaRefreshTimeout)
+			}
+			if refreshErr == nil && acquired {
+				if err := s.syncPool.Do(ctx, func(workCtx context.Context) error {
+					_, refreshErr = s.RefreshWebQuotaMode(workCtx, request.accountID, refreshMode)
+					return refreshErr
+				}); err != nil {
+					refreshErr = err
+				}
+			}
+			if release != nil {
+				release()
 			}
 			if refreshErr != nil && !errors.Is(refreshErr, context.Canceled) {
 				s.logger.Warn("web_quota_refresh_failed", "account_id", request.accountID, "mode", refreshMode, "error", refreshErr)
@@ -1711,7 +1726,7 @@ func (s *Service) runWebQuotaRefresh(parent context.Context, request webQuotaRef
 		cancel()
 
 		s.quotaRefreshMu.Lock()
-		state := s.quotaRefreshes[request.key]
+		state = s.quotaRefreshes[request.key]
 		if state != nil && state.pending {
 			state.pending = false
 			s.quotaRefreshMu.Unlock()
@@ -1910,7 +1925,7 @@ func (s *Service) runAccountBatch(ctx context.Context, operation string, ids []u
 
 func (s *Service) logBatchSummary(operation string, pool *batch.Pool, summary batch.Summary, err error) {
 	snapshot := pool.Snapshot()
-	s.logger.Info("account_bulk_completed", "operation", operation, "total", summary.Total, "submitted", summary.Submitted, "succeeded", summary.Succeeded, "failed", summary.Failed, "panicked", summary.Panicked, "duration_ms", summary.Duration.Milliseconds(), "canceled", summary.Canceled, "pool_limit", snapshot.Limit, "pool_active", snapshot.Active, "pool_peak", snapshot.Peak, "error", err)
+	s.logger.Info("account_bulk_completed", "operation", operation, "total", summary.Total, "submitted", summary.Submitted, "succeeded", summary.Succeeded, "failed", summary.Failed, "panicked", summary.Panicked, "duration_ms", summary.Duration.Milliseconds(), "canceled", summary.Canceled, "pool_limit", snapshot.Limit, "pool_active", snapshot.Active, "pool_queued", snapshot.Queued, "pool_peak", snapshot.Peak, "error", err)
 }
 
 func (s *Service) persistSeed(ctx context.Context, seed provider.CredentialSeed) (accountdomain.Credential, bool, error) {
