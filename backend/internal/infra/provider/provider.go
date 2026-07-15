@@ -287,11 +287,13 @@ type QuotaAdapter interface {
 	SyncQuotaMode(ctx context.Context, credential account.Credential, mode string) (account.QuotaWindow, error)
 }
 
+// ImageGenerationAdapter 定义 Provider 可选的图片生成能力。
 type ImageGenerationAdapter interface {
 	Adapter
 	GenerateImage(ctx context.Context, request ImageGenerationRequest) (*Response, error)
 }
 
+// ImageEditAdapter 定义 Provider 可选的图片编辑能力。
 type ImageEditAdapter interface {
 	Adapter
 	EditImage(ctx context.Context, request ImageEditRequest) (*Response, error)
@@ -645,6 +647,7 @@ func (r *Registry) PricingModel(value account.Provider, upstreamModel string) st
 	return upstreamModel
 }
 
+// ImageGeneration 返回 Provider 注册的图片生成能力。
 func (r *Registry) ImageGeneration(value account.Provider) (ImageGenerationAdapter, bool) {
 	adapter, ok := r.Get(value)
 	if !ok {
@@ -654,6 +657,7 @@ func (r *Registry) ImageGeneration(value account.Provider) (ImageGenerationAdapt
 	return result, ok
 }
 
+// ImageEdit 返回 Provider 注册的图片编辑能力。
 func (r *Registry) ImageEdit(value account.Provider) (ImageEditAdapter, bool) {
 	adapter, ok := r.Get(value)
 	if !ok {

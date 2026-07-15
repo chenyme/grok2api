@@ -15,6 +15,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
+// ImageGenerationInput 表示图片生成用例已经完成协议校验后的输入。
 type ImageGenerationInput struct {
 	RequestID      string
 	ClientKey      clientkey.Key
@@ -28,6 +29,7 @@ type ImageGenerationInput struct {
 	Streaming      bool
 }
 
+// ImageEditInput 表示图片编辑用例已经完成协议校验后的输入。
 type ImageEditInput struct {
 	RequestID      string
 	ClientKey      clientkey.Key
@@ -43,6 +45,7 @@ type imageProviderSupport func(accountdomain.Provider) bool
 
 type imageExecution func(context.Context, accountdomain.Provider, accountdomain.Credential, string) (*provider.Response, error)
 
+// GenerateImage 选择支持图片生成的路由和账号，并返回可统一审计的上游响应。
 func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput) (*Result, error) {
 	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImage, modeldomain.CapabilityImage, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.ImageGeneration(providerValue)
@@ -60,6 +63,7 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 	}, input.Streaming, input.Resolution, input.Count, 0)
 }
 
+// EditImage 选择支持图片编辑的路由和账号，并返回可统一审计的上游响应。
 func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result, error) {
 	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImageEdit, modeldomain.CapabilityImageEdit, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.ImageEdit(providerValue)
@@ -160,6 +164,7 @@ func (s *Service) executeImage(
 	var credential accountdomain.Credential
 	var response *provider.Response
 	var lastCredentialFailure *accountdomain.Credential
+	var lastCredentialError error
 	for attempt := 0; attempt < attempts; attempt++ {
 		lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false)
 		if err != nil {
@@ -172,6 +177,7 @@ func (s *Service) executeImage(
 			s.logger.Error("image_credential_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", lease.Credential.ID, "error", err)
 			failedCredential := lease.Credential
 			lastCredentialFailure = &failedCredential
+			lastCredentialError = err
 			lease.Release()
 			continue
 		}
@@ -209,6 +215,13 @@ func (s *Service) executeImage(
 			}
 		}
 		break
+	}
+	if response == nil {
+		writeFailureAudit(http.StatusServiceUnavailable, "upstream_unavailable", lastCredentialFailure)
+		if lastCredentialError == nil {
+			lastCredentialError = ErrNoAvailableAccount
+		}
+		return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, lastCredentialError)
 	}
 	if response.StatusCode == http.StatusUnauthorized && credential.AuthType == accountdomain.AuthTypeSSO {
 		_ = s.accounts.MarkReauthRequired(ctx, credential.ID, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
