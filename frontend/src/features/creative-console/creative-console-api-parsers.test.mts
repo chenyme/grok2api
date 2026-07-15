@@ -87,7 +87,18 @@ test("listAllPaginatedItems stops on a short page even when total is stale", asy
     return { items: page === 1 ? [1, 2] : [], page, pageSize, total: 100 };
   });
   assert.deepEqual(items, [1, 2]);
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
+});
+
+test("listAllPaginatedItems continues when the server caps page size below the requested size", async () => {
+  const requestedPages: number[] = [];
+  const items = await listAllPaginatedItems(async (page) => {
+    requestedPages.push(page);
+    return { items: page === 1 ? [1, 2] : [3, 4], page, pageSize: 2, total: 4 };
+  }, { pageSize: 100 });
+
+  assert.deepEqual(items, [1, 2, 3, 4]);
+  assert.deepEqual(requestedPages, [1, 2]);
 });
 
 test("listAllPaginatedItems stops on an empty page and respects its safety bound", async () => {
