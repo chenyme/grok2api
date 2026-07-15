@@ -394,7 +394,7 @@ func (r *AccountRepository) UpsertManyByIdentity(ctx context.Context, values []a
 		if err := tx.Where("identity_key IN ?", identityKeys).Find(&existingRows).Error; err != nil {
 			return err
 		}
-		existingByIdentity := make(map[string]accountModel, len(existingRows)+len(values))
+		existingByIdentity := make(map[string]accountModel, len(values))
 		for _, row := range existingRows {
 			existingByIdentity[row.IdentityKey] = row
 		}

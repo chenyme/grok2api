@@ -55,6 +55,11 @@ type ProviderConsoleConfig struct {
 	ChatTimeout string
 }
 
+// ServerConfig 是管理接口使用的推理入口容量输入。
+type ServerConfig struct {
+	MaxConcurrentRequests int
+}
+
 // BatchConfig 是管理接口使用的批量任务并发输入。
 type BatchConfig struct {
 	ImportConcurrency     int
@@ -100,6 +105,7 @@ type ClientKeyDefaultsConfig struct {
 
 // EditableConfig 聚合管理端允许修改的运行参数。
 type EditableConfig struct {
+	Server            ServerConfig
 	ProviderBuild     ProviderBuildConfig
 	ProviderWeb       ProviderWebConfig
 	ProviderConsole   ProviderConsoleConfig
@@ -245,6 +251,7 @@ func (s *Service) ReloadPersisted(ctx context.Context) error {
 }
 
 func applyDomainConfig(base config.Config, value settingsdomain.Config) config.Config {
+	base.Server.MaxConcurrentRequests = value.Server.MaxConcurrentRequests
 	capacityWait := value.Routing.CapacityWait
 	if capacityWait <= 0 {
 		capacityWait = base.Routing.CapacityWait.Value()
@@ -262,11 +269,9 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		MediaConcurrency: value.ProviderWeb.MediaConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
 		RecoveryBackoffBase: config.Duration(value.ProviderWeb.RecoveryBackoffBase), RecoveryBackoffMax: config.Duration(value.ProviderWeb.RecoveryBackoffMax),
 	}
-	if strings.TrimSpace(value.ProviderConsole.BaseURL) != "" {
-		base.Provider.Console = config.ConsoleProviderConfig{
-			BaseURL: value.ProviderConsole.BaseURL, UserAgent: value.ProviderConsole.UserAgent,
-			ChatTimeout: config.Duration(value.ProviderConsole.ChatTimeout),
-		}
+	base.Provider.Console = config.ConsoleProviderConfig{
+		BaseURL: value.ProviderConsole.BaseURL, UserAgent: value.ProviderConsole.UserAgent,
+		ChatTimeout: config.Duration(value.ProviderConsole.ChatTimeout),
 	}
 	randomDelay := time.Duration(-1)
 	if value.Batch.RandomDelay != nil {
@@ -298,6 +303,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 func toDomainConfig(value config.Config) settingsdomain.Config {
 	randomDelay := value.Batch.RandomDelay.Value()
 	return settingsdomain.Config{
+		Server: settingsdomain.ServerConfig{MaxConcurrentRequests: value.Server.MaxConcurrentRequests},
 		ProviderBuild: settingsdomain.ProviderBuildConfig{
 			BaseURL: value.Provider.Build.BaseURL, ClientVersion: value.Provider.Build.ClientVersion,
 			ClientIdentifier: value.Provider.Build.ClientIdentifier, TokenAuth: value.Provider.Build.TokenAuth,
@@ -361,6 +367,7 @@ func (s *Service) snapshotLocked() Snapshot {
 
 func mergeEditable(current config.Config, input EditableConfig) (config.Config, error) {
 	next := current
+	next.Server.MaxConcurrentRequests = input.Server.MaxConcurrentRequests
 	next.Provider.Build.BaseURL = strings.TrimSpace(input.ProviderBuild.BaseURL)
 	next.Provider.Build.ClientVersion = strings.TrimSpace(input.ProviderBuild.ClientVersion)
 	next.Provider.Build.ClientIdentifier = strings.TrimSpace(input.ProviderBuild.ClientIdentifier)
@@ -431,6 +438,7 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 
 func toEditable(cfg config.Config) EditableConfig {
 	return EditableConfig{
+		Server: ServerConfig{MaxConcurrentRequests: cfg.Server.MaxConcurrentRequests},
 		ProviderBuild: ProviderBuildConfig{
 			BaseURL: cfg.Provider.Build.BaseURL, ClientVersion: cfg.Provider.Build.ClientVersion,
 			ClientIdentifier: cfg.Provider.Build.ClientIdentifier, TokenAuth: cfg.Provider.Build.TokenAuth,

@@ -114,7 +114,7 @@ func (s *Service) get(ctx context.Context, rawPeriod, rawTimezone string, useCac
 func (s *Service) load(ctx context.Context, period Period, bucketCount, bucketDays int, location *time.Location, rawNow time.Time) (Result, error) {
 	now := rawNow.In(location)
 	series := buildSeries(now, period, bucketCount, bucketDays)
-	boundaries := make([]time.Time, 0, len(series)+1)
+	boundaries := make([]time.Time, 0, len(series))
 	for _, point := range series {
 		boundaries = append(boundaries, point.Start)
 	}

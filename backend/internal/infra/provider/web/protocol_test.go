@@ -628,6 +628,15 @@ func TestParseVideoStreamFixture(t *testing.T) {
 	}
 }
 
+func TestParseVideoStreamPreservesUpstreamStatus(t *testing.T) {
+	response := &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader("limited"))}
+	_, _, err := parseVideoStream(response, nil)
+	status, ok := provider.ErrorHTTPStatus(err)
+	if !ok || status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, ok = %v, err = %v", status, ok, err)
+	}
+}
+
 func TestParseVideoConcatenatedJSONFixture(t *testing.T) {
 	fixture := `{"result":{"conversation":{"conversationId":"conversation_1"}}}` +
 		`{"result":{"response":{"streamingVideoGenerationResponse":{"videoId":"video_1","progress":1,"videoPostId":"post_1","resolutionName":"720p"}}}}` +

@@ -154,7 +154,7 @@ func (r *DashboardRepository) Snapshot(ctx context.Context, bucketBoundaries []t
 func dashboardBucketExpression(boundaries []time.Time) (string, []any) {
 	var expression strings.Builder
 	expression.WriteString("CASE")
-	args := make([]any, 0, (len(boundaries)-1)*3)
+	args := make([]any, 0)
 	for index := 0; index < len(boundaries)-1; index++ {
 		expression.WriteString(" WHEN created_at >= ? AND created_at < ? THEN ?")
 		args = append(args, boundaries[index], boundaries[index+1], index)

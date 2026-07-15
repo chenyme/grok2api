@@ -3,6 +3,7 @@ import { createObjectDecoder, decodeBooleanResult, hasShape, isArrayOf, isBoolea
 import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type SettingsConfigDTO = {
+  server: { maxConcurrentRequests: number };
   providerBuild: { baseURL: string; clientVersion: string; clientIdentifier: string; tokenAuth: string; tokenAuthConfigured: boolean; userAgent: string };
   providerWeb: {
     baseURL: string; quotaTimeout: string; chatTimeout: string; imageTimeout: string; videoTimeout: string;
@@ -45,12 +46,14 @@ export type SettingsSnapshotDTO = {
 };
 
 const settingsConfigValidator = hasShape({
+  server: hasShape({ maxConcurrentRequests: isNumber }),
   providerBuild: hasShape({ baseURL: isString, clientVersion: isString, clientIdentifier: isString, tokenAuth: isString, tokenAuthConfigured: isBoolean, userAgent: isString }),
   providerWeb: hasShape({
     baseURL: isString, quotaTimeout: isString, chatTimeout: isString, imageTimeout: isString, videoTimeout: isString,
     statsigMode: isOneOf("manual", "url"), statsigManualValue: isOptional(isString), statsigManualConfigured: isBoolean,
     statsigSignerURL: isString, mediaConcurrency: isNumber, allowNSFW: isBoolean, recoveryBackoffBase: isString, recoveryBackoffMax: isString,
   }),
+  providerConsole: hasShape({ baseURL: isString, userAgent: isString, chatTimeout: isString }),
   batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
   media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),
   frontend: hasShape({ publicApiBaseURL: isString }),
