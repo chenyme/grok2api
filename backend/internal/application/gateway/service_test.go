@@ -159,6 +159,91 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 }
 
+func TestGatewayTeamModelRateLimitCircuitShortCircuitsConsoleModel(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "team-model-rate-limit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"console-first", "console-second"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: name, SourceKey: name,
+			EncryptedAccessToken: "encrypted-" + name, Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	models := []string{"grok-console-team-rate-limit", "grok-console-team-rate-limit-other"}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderConsole, models); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, models, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "team-model-key", Prefix: "team-model", SecretHash: strings.Repeat("d", 64), EncryptedSecret: "encrypted-key",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &teamModelRateLimitConsoleAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	assertRateLimited := func(requestID, publicModel string) *UpstreamFailure {
+		t.Helper()
+		result, err := service.CreateResponse(ctx, Input{
+			RequestID: requestID, ClientKey: key, PublicModel: publicModel,
+			Body: []byte(`{"model":"` + publicModel + `","input":"hello"}`),
+		})
+		if result != nil {
+			_ = result.Body.Close()
+		}
+		var failure *UpstreamFailure
+		if !errors.As(err, &failure) || failure.HTTPStatus != http.StatusTooManyRequests || failure.Code != "upstream_rate_limited" || failure.Fingerprint != "429:team_model_rate_limit" {
+			t.Fatalf("error = %T %#v, want team-model 429", err, err)
+		}
+		if failure.AccountScoped {
+			t.Fatalf("rate limit should be team/model scoped, got %#v", failure)
+		}
+		return failure
+	}
+
+	assertRateLimited("req-team-model-first", models[0])
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0].Model != models[0] {
+		t.Fatalf("first attempts = %#v, want one attempt for %s", attempts, models[0])
+	}
+	assertRateLimited("req-team-model-cached", models[0])
+	if attempts := adapter.Attempts(); len(attempts) != 1 {
+		t.Fatalf("same model should fail fast without adapter call, attempts = %#v", attempts)
+	}
+	assertRateLimited("req-team-model-other", models[1])
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[1].Model != models[1] {
+		t.Fatalf("different model attempts = %#v, want second attempt for %s", attempts, models[1])
+	}
+}
+
 func TestSelectConversationRouteRespectsClientKeyAcrossSharedPublicModel(t *testing.T) {
 	registry := provider.NewRegistry(&failoverAdapter{}, statelessConsoleAdapter{})
 	service := &Service{
@@ -893,6 +978,16 @@ type failoverAdapter struct {
 
 type statelessConsoleAdapter struct{}
 
+type teamModelRateLimitConsoleAttempt struct {
+	AccountID uint64
+	Model     string
+}
+
+type teamModelRateLimitConsoleAdapter struct {
+	mu       sync.Mutex
+	attempts []teamModelRateLimitConsoleAttempt
+}
+
 func (statelessConsoleAdapter) Provider() account.Provider { return account.ProviderConsole }
 func (statelessConsoleAdapter) Definition() provider.Definition {
 	return provider.Definition{
@@ -907,6 +1002,31 @@ func (statelessConsoleAdapter) ForwardResponse(context.Context, provider.Respons
 		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"application/json"}},
 		Body: io.NopCloser(strings.NewReader(`{"id":"resp-console","object":"response","status":"completed"}`)),
 	}, nil
+}
+
+func (a *teamModelRateLimitConsoleAdapter) Provider() account.Provider {
+	return account.ProviderConsole
+}
+func (a *teamModelRateLimitConsoleAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderConsole)
+}
+func (a *teamModelRateLimitConsoleAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	a.attempts = append(a.attempts, teamModelRateLimitConsoleAttempt{AccountID: request.Credential.ID, Model: request.Model})
+	a.mu.Unlock()
+	return &provider.Response{
+		StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{"error":"team model rate limited"}`)),
+		RateLimit: &provider.RateLimitMetadata{
+			Scope: provider.RateLimitScopeRPM, TeamID: "team-console-test", Model: request.Model,
+			Actual: 61, Limit: 60, RetryAfter: time.Hour,
+		},
+	}, nil
+}
+func (a *teamModelRateLimitConsoleAdapter) Attempts() []teamModelRateLimitConsoleAttempt {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]teamModelRateLimitConsoleAttempt(nil), a.attempts...)
 }
 
 type systemicForbiddenAdapter struct {

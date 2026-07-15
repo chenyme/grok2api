@@ -132,6 +132,22 @@ type Response struct {
 	QuotaUnits  int
 	UpstreamURL string
 	Diagnostic  *DiagnosticResponse
+	RateLimit   *RateLimitMetadata
+}
+
+const (
+	RateLimitScopeRPS = "rps"
+	RateLimitScopeRPM = "rpm"
+)
+
+// RateLimitMetadata 表示上游返回的可安全传播的瞬时限流元数据。
+type RateLimitMetadata struct {
+	Scope      string
+	TeamID     string
+	Model      string
+	Actual     int
+	Limit      int
+	RetryAfter time.Duration
 }
 
 const MaxDiagnosticBodyBytes = 64 << 10

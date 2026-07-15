@@ -107,6 +107,13 @@ type Service struct {
 	mediaWorker    int
 	mediaQueueFull atomic.Uint64
 	logger         *slog.Logger
+	rateLimitMu    sync.Mutex
+	rateLimits     map[string]teamModelRateLimit
+}
+
+type teamModelRateLimit struct {
+	TeamFingerprint string
+	Until           time.Time
 }
 
 func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concurrency int) {
@@ -120,9 +127,50 @@ func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concu
 }
 
 func NewService(models routeResolver, audits auditRecorder, accounts *accountapp.Service, clientKeys *clientkeyapp.Service, providers *provider.Registry, selector *Selector, responses repository.ResponseRepository, maxAttempts int) *Service {
-	service := &Service{models: models, audits: audits, accounts: accounts, clientKeys: clientKeys, providers: providers, selector: selector, responses: responses, logger: slog.Default()}
+	service := &Service{models: models, audits: audits, accounts: accounts, clientKeys: clientKeys, providers: providers, selector: selector, responses: responses, logger: slog.Default(), rateLimits: make(map[string]teamModelRateLimit)}
 	service.UpdateMaxAttempts(maxAttempts)
 	return service
+}
+
+func teamModelRateLimitKey(providerValue accountdomain.Provider, upstreamModel string) string {
+	return string(providerValue) + "\x00" + strings.TrimSpace(upstreamModel)
+}
+
+func (s *Service) activeTeamModelRateLimit(providerValue accountdomain.Provider, upstreamModel string, now time.Time) (teamModelRateLimit, bool) {
+	key := teamModelRateLimitKey(providerValue, upstreamModel)
+	s.rateLimitMu.Lock()
+	defer s.rateLimitMu.Unlock()
+	value, ok := s.rateLimits[key]
+	if !ok {
+		return teamModelRateLimit{}, false
+	}
+	if !now.Before(value.Until) {
+		delete(s.rateLimits, key)
+		return teamModelRateLimit{}, false
+	}
+	return value, true
+}
+
+func (s *Service) markTeamModelRateLimit(providerValue accountdomain.Provider, upstreamModel string, metadata provider.RateLimitMetadata, now time.Time) {
+	retryAfter := metadata.RetryAfter
+	if retryAfter <= 0 {
+		retryAfter = time.Minute
+	}
+	key := teamModelRateLimitKey(providerValue, upstreamModel)
+	until := now.Add(retryAfter)
+	s.rateLimitMu.Lock()
+	if s.rateLimits == nil {
+		s.rateLimits = make(map[string]teamModelRateLimit)
+	}
+	for existingKey, value := range s.rateLimits {
+		if !now.Before(value.Until) {
+			delete(s.rateLimits, existingKey)
+		}
+	}
+	if current, ok := s.rateLimits[key]; !ok || current.Until.Before(until) {
+		s.rateLimits[key] = teamModelRateLimit{TeamFingerprint: security.HashToken(metadata.TeamID)[:12], Until: until}
+	}
+	s.rateLimitMu.Unlock()
 }
 
 func (s *Service) SetLogger(logger *slog.Logger) {
@@ -319,6 +367,23 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		}
 		return nil, clientkeyapp.ErrModelNotAllowed
 	}
+	if limited, ok := s.activeTeamModelRateLimit(route.Provider, route.UpstreamModel, time.Now().UTC()); ok {
+		failure := &UpstreamFailure{
+			HTTPStatus: http.StatusTooManyRequests, Code: "upstream_rate_limited", PublicMessage: "上游请求频率受限",
+			Fingerprint: "429:team_model_rate_limit", RetryAfter: time.Until(limited.Until),
+		}
+		record := auditBase
+		record.StatusCode = failure.HTTPStatus
+		record.DurationMS = time.Since(startedAt).Milliseconds()
+		record.ErrorCode = failure.AuditCode()
+		record.CreatedAt = time.Now().UTC()
+		applyAuditEgress(&record, egressTrace, route.Provider)
+		if err := s.audits.Create(ctx, record); err != nil {
+			s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
+		}
+		s.logger.Warn("upstream_team_model_rate_limit_active", "request_id", input.RequestID, "provider", route.Provider, "model", route.UpstreamModel, "team_fingerprint", limited.TeamFingerprint, "retry_after", failure.RetryAfter.Round(time.Second))
+		return nil, failure
+	}
 	if route.Provider == accountdomain.ProviderBuild {
 		input.PromptCacheKey = resolvePromptCacheIdentity(
 			input.ClientKey.ID,
@@ -491,6 +556,16 @@ attemptLoop:
 				continue
 			}
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
+			if response.StatusCode == http.StatusTooManyRequests && response.RateLimit != nil && response.RateLimit.TeamID != "" && response.RateLimit.Model == route.UpstreamModel {
+				s.markTeamModelRateLimit(route.Provider, route.UpstreamModel, *response.RateLimit, time.Now().UTC())
+				lastFailure.AccountScoped = false
+				lastFailure.Fingerprint = "429:team_model_rate_limit"
+				lastFailure.RetryAfter = response.RateLimit.RetryAfter
+				lease.Release()
+				lastErr = fmt.Errorf("上游 Team 与模型请求频率受限")
+				s.logger.Warn("upstream_team_model_rate_limited", "request_id", input.RequestID, "provider", credential.Provider, "model", route.UpstreamModel, "team_fingerprint", security.HashToken(response.RateLimit.TeamID)[:12], "scope", response.RateLimit.Scope, "actual", response.RateLimit.Actual, "limit", response.RateLimit.Limit, "retry_after", response.RateLimit.RetryAfter)
+				break
+			}
 			if s.providers.SupportsCredentialRefresh(credential.Provider) && !authRecoveryAttempted[credential.ID] && credential.EncryptedRefreshToken != "" && (lastFailure.PermanentAccountDenial || lastFailure.CredentialRejected) {
 				authRecoveryAttempted[credential.ID] = true
 				refreshed, refreshErr := ensureCredential(credential, true)
