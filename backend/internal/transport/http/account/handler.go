@@ -142,6 +142,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/refresh-billing", h.refreshAllBilling)
 	router.POST("/accounts/refresh-tokens", h.refreshAllTokens)
 	router.POST("/accounts/batch/refresh-billing", h.batchRefreshBilling)
+	router.POST("/accounts/batch/refresh-quotas", h.batchRefreshQuotas)
 	router.PATCH("/accounts/batch", h.batchUpdate)
 	router.DELETE("/accounts", h.batchDelete)
 	router.PATCH("/accounts/:id", h.update)
@@ -173,9 +174,16 @@ type batchDeleteRequest struct {
 	Provider string   `json:"provider" binding:"required"`
 }
 
-type accountSelectionRequest struct {
-	IDs []string `json:"ids"`
-	All bool     `json:"all"`
+type buildConversionRequest struct {
+	IDs      []string                           `json:"ids"`
+	All      bool                               `json:"all"`
+	Strategy accountapp.BuildConversionStrategy `json:"strategy"`
+}
+
+type webConsoleSyncRequest struct {
+	IDs      []string                          `json:"ids"`
+	All      bool                              `json:"all"`
+	Strategy accountapp.WebConsoleSyncStrategy `json:"strategy"`
 }
 
 type buildConversionResponse struct {
@@ -207,6 +215,7 @@ type accountTokenRefreshResponse struct {
 type accountImportResponse struct {
 	Created    int `json:"created"`
 	Updated    int `json:"updated"`
+	Skipped    int `json:"skipped"`
 	Synced     int `json:"synced"`
 	SyncFailed int `json:"syncFailed"`
 }
@@ -408,15 +417,48 @@ func (h *Handler) batchRefreshBilling(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
 		return
 	}
-	if request.Provider != string(accountdomain.ProviderBuild) || !h.validateProviderIDs(c, ids, request.Provider) {
-		if request.Provider != string(accountdomain.ProviderBuild) {
-			response.Error(c, http.StatusBadRequest, "invalidProvider", "Grok Web 账号不支持 Billing 批量同步")
-		}
+	if request.Provider != string(accountdomain.ProviderBuild) {
+		response.Error(c, http.StatusBadRequest, "invalidProvider", "仅 Grok Build 账号支持 Billing 同步")
+		return
+	}
+	if !h.validateProviderIDs(c, ids, request.Provider) {
 		return
 	}
 	succeeded, failed, err := h.service.BatchRefreshBilling(c.Request.Context(), ids)
 	if err != nil {
-		h.writeServiceError(c, "billingBatchRefreshFailed", err, http.StatusBadGateway, "批量同步账号额度失败")
+		h.writeServiceError(c, "billingBatchRefreshFailed", err, http.StatusBadGateway, "批量同步 Billing 失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed})
+}
+
+func (h *Handler) batchRefreshQuotas(c *gin.Context) {
+	var request batchDeleteRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	ids, err := parseIDs(request.IDs)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
+		return
+	}
+	providerValue := accountdomain.Provider(request.Provider)
+	if !providerValue.IsValid() {
+		response.Error(c, http.StatusBadRequest, "invalidProvider", "账号来源无效")
+		return
+	}
+	if !h.validateProviderIDs(c, ids, request.Provider) {
+		return
+	}
+	var succeeded, failed int
+	if providerValue == accountdomain.ProviderBuild {
+		succeeded, failed, err = h.service.BatchRefreshBilling(c.Request.Context(), ids)
+	} else {
+		succeeded, failed, err = h.service.BatchRefreshQuota(c.Request.Context(), ids)
+	}
+	if err != nil {
+		h.writeServiceError(c, "quotaBatchRefreshFailed", err, http.StatusBadGateway, "批量同步账号额度失败")
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed})
@@ -486,7 +528,7 @@ func (h *Handler) importConsoleAuth(c *gin.Context) {
 }
 
 func (h *Handler) convertWebToBuild(c *gin.Context) {
-	var request accountSelectionRequest
+	var request buildConversionRequest
 	if c.ShouldBindJSON(&request) != nil {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "转换请求无效")
 		return
@@ -495,6 +537,13 @@ func (h *Handler) convertWebToBuild(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "全部转换与指定账号不能同时提交")
 		return
 	}
+	if request.Strategy == "" {
+		request.Strategy = accountapp.BuildConversionMissing
+	}
+	if request.Strategy != accountapp.BuildConversionAll && request.Strategy != accountapp.BuildConversionMissing {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "转换策略无效")
+		return
+	}
 	var ids []uint64
 	if !request.All {
 		var err error
@@ -503,12 +552,15 @@ func (h *Handler) convertWebToBuild(c *gin.Context) {
 			response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
 			return
 		}
+		if !h.validateProviderIDs(c, ids, string(accountdomain.ProviderWeb)) {
+			return
+		}
 	}
-	h.streamWebToBuildConversion(c, request.All, ids)
+	h.streamWebToBuildConversion(c, request.All, ids, request.Strategy)
 }
 
 func (h *Handler) syncWebToConsole(c *gin.Context) {
-	var request accountSelectionRequest
+	var request webConsoleSyncRequest
 	if c.ShouldBindJSON(&request) != nil {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "同步请求无效")
 		return
@@ -517,6 +569,13 @@ func (h *Handler) syncWebToConsole(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "全部同步与指定账号不能同时提交")
 		return
 	}
+	if request.Strategy == "" {
+		request.Strategy = accountapp.WebConsoleSyncAll
+	}
+	if request.Strategy != accountapp.WebConsoleSyncAll && request.Strategy != accountapp.WebConsoleSyncMissing {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "同步策略无效")
+		return
+	}
 	var ids []uint64
 	if !request.All {
 		var err error
@@ -525,57 +584,60 @@ func (h *Handler) syncWebToConsole(c *gin.Context) {
 			response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
 			return
 		}
+		if !h.validateProviderIDs(c, ids, string(accountdomain.ProviderWeb)) {
+			return
+		}
 	}
-	h.streamWebToConsoleSync(c, request.All, ids)
+	h.streamWebToConsoleSync(c, request.All, ids, request.Strategy)
 }
 
-func (h *Handler) runWebToConsoleSync(ctx context.Context, all bool, ids []uint64, progress accountapp.BatchProgressObserver, syncProgress func(completed, total int)) (accountapp.ImportResult, accountsyncapp.Result, error) {
+func (h *Handler) runWebToConsoleSync(ctx context.Context, all bool, ids []uint64, strategy accountapp.WebConsoleSyncStrategy, progress accountapp.BatchProgressObserver, syncProgress func(completed, total int)) (accountapp.ImportResult, accountsyncapp.Result, error) {
 	pipeline := h.startSyncPipeline(ctx, syncProgress)
 	var (
 		result accountapp.ImportResult
 		err    error
 	)
 	if all {
-		result, err = h.service.SyncAllWebAccountsToConsoleWithProgress(pipeline.ctx, pipeline.Observe, progress)
+		result, err = h.service.SyncAllWebAccountsToConsoleWithStrategy(pipeline.ctx, strategy, pipeline.Observe, progress)
 	} else {
-		result, err = h.service.SyncWebAccountsToConsoleWithProgress(pipeline.ctx, ids, pipeline.Observe, progress)
+		result, err = h.service.SyncWebAccountsToConsoleWithStrategy(pipeline.ctx, ids, strategy, pipeline.Observe, progress)
 	}
 	syncResult := pipeline.Finish(err != nil)
 	return result, syncResult, err
 }
 
-func (h *Handler) streamWebToConsoleSync(c *gin.Context, all bool, ids []uint64) {
+func (h *Handler) streamWebToConsoleSync(c *gin.Context, all bool, ids []uint64, strategy accountapp.WebConsoleSyncStrategy) {
 	stream := newAccountEventStream(c)
 	defer stream.Close()
 	var total atomic.Int64
-	result, syncResult, err := h.runWebToConsoleSync(c.Request.Context(), all, ids, stream.PhaseProgressObserver("importing", &total), stream.SyncProgressObserver())
+	result, syncResult, err := h.runWebToConsoleSync(c.Request.Context(), all, ids, strategy, stream.PhaseProgressObserver("importing", &total), stream.SyncProgressObserver())
 	if err != nil {
 		stream.WriteError("accountConsoleSyncFailed", "Grok Web 账号同步到 Console 失败")
 		return
 	}
-	_ = stream.Write("complete", accountImportResponse{Created: result.Created, Updated: result.Updated, Synced: syncResult.Succeeded, SyncFailed: syncResult.Failed})
+	_ = stream.Write("complete", accountImportResponse{Created: result.Created, Updated: result.Updated, Skipped: result.Skipped, Synced: syncResult.Succeeded, SyncFailed: syncResult.Failed})
 }
 
-func (h *Handler) runWebToBuildConversion(ctx context.Context, all bool, ids []uint64, progress accountapp.BatchProgressObserver, syncProgress func(completed, total int)) (accountapp.BuildConversionResult, accountsyncapp.Result, error) {
+func (h *Handler) runWebToBuildConversion(ctx context.Context, all bool, ids []uint64, strategy accountapp.BuildConversionStrategy, progress accountapp.BatchProgressObserver, syncProgress func(completed, total int)) (accountapp.BuildConversionResult, accountsyncapp.Result, error) {
 	pipeline := h.startSyncPipeline(ctx, syncProgress)
 	var (
 		result accountapp.BuildConversionResult
 		err    error
 	)
 	if all {
-		result, err = h.service.ConvertAllWebAccountsToBuildWithProgress(pipeline.ctx, pipeline.Observe, progress)
+		result, err = h.service.ConvertAllWebAccountsToBuildWithStrategy(pipeline.ctx, strategy, pipeline.Observe, progress)
 	} else {
-		result, err = h.service.ConvertWebAccountsToBuildWithProgress(pipeline.ctx, ids, pipeline.Observe, progress)
+		result, err = h.service.ConvertWebAccountsToBuildWithStrategy(pipeline.ctx, ids, strategy, pipeline.Observe, progress)
 	}
 	syncResult := pipeline.Finish(err != nil)
 	return result, syncResult, err
 }
 
-func (h *Handler) streamWebToBuildConversion(c *gin.Context, all bool, ids []uint64) {
+func (h *Handler) streamWebToBuildConversion(c *gin.Context, all bool, ids []uint64, strategy accountapp.BuildConversionStrategy) {
 	stream := newAccountEventStream(c)
 	defer stream.Close()
 	var total atomic.Int64
-	result, syncResult, err := h.runWebToBuildConversion(c.Request.Context(), all, ids, stream.PhaseProgressObserver("converting", &total), stream.SyncProgressObserver())
+	result, syncResult, err := h.runWebToBuildConversion(c.Request.Context(), all, ids, strategy, stream.PhaseProgressObserver("converting", &total), stream.SyncProgressObserver())
 	if err != nil {
 		stream.WriteError("accountConversionFailed", "Grok Web 账号转换失败")
 		return
