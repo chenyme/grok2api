@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/searchresult"
 )
 
 func TestParseToolConfigurationSupportsChatAndResponsesSchemas(t *testing.T) {
@@ -362,6 +363,15 @@ func TestWebMessagesStreamAppliesStopSequenceAfterServerWebSearch(t *testing.T) 
 	}
 }
 
+func TestWebMessagesStreamRejectsOversizedDeferredText(t *testing.T) {
+	var output bytes.Buffer
+	stream := newWebMessagesStream(&output, "resp_test", "grok-chat-fast", 3, conversation.ResponseOptions{AnthropicWebSearch: true})
+	err := stream.Delta("text", strings.Repeat("x", (8<<20)+1))
+	if err == nil || !strings.Contains(err.Error(), "缓冲") {
+		t.Fatalf("oversized deferred text error = %v", err)
+	}
+}
+
 func webSearchResponseOptions(t *testing.T) conversation.ResponseOptions {
 	t.Helper()
 	_, options, err := conversation.ConvertRequestWithOptions([]byte(`{
@@ -420,6 +430,103 @@ func TestSearchSourcesAndServerToolsAreDeduplicated(t *testing.T) {
 	}
 }
 
+func TestWebMessagesUsageDoesNotCountNonSearchServerTools(t *testing.T) {
+	parsed := parsedChat{
+		ServerTools:   3,
+		SearchSources: []map[string]any{{"url": "https://example.com", "title": "Example"}},
+	}
+	if got := webMessagesSearchRequests(parsed); got != 1 {
+		t.Fatalf("web_search_requests = %d, want 1", got)
+	}
+}
+
+func TestCollectServerToolCountsOnlyNamedWebSearchForAnthropicUsage(t *testing.T) {
+	parsed := &parsedChat{}
+	webCard := map[string]any{
+		"rolloutId": "web-1", "messageTag": "tool_usage_card",
+		"token": `<xai:tool_usage_card><xai:tool_name>web_search</xai:tool_name><xai:tool_args>{"query":"x"}</xai:tool_args></xai:tool_usage_card>`,
+	}
+	collectServerTool(parsed, webCard)
+	collectServerTool(parsed, webCard)
+	collectServerTool(parsed, map[string]any{
+		"rolloutId": "image-1", "messageTag": "tool_usage_card",
+		"token": `<xai:tool_usage_card><xai:tool_name>search_images</xai:tool_name></xai:tool_usage_card>`,
+	})
+	collectServerTool(parsed, map[string]any{
+		"rolloutId": "web-2", "messageTag": "tool_usage_card", "toolName": "web_search",
+	})
+	if parsed.ServerTools != 3 || parsed.WebSearchTools != 2 || webMessagesSearchRequests(*parsed) != 2 {
+		t.Fatalf("server=%d web=%d usage=%d", parsed.ServerTools, parsed.WebSearchTools, webMessagesSearchRequests(*parsed))
+	}
+}
+
+func TestCollectServerToolEnrichesEarlierUnknownCard(t *testing.T) {
+	parsed := &parsedChat{}
+	collectServerTool(parsed, map[string]any{
+		"rolloutId": "web-late", "messageTag": "tool_usage_card",
+	})
+	collectServerTool(parsed, map[string]any{
+		"rolloutId": "web-late", "messageTag": "tool_usage_card",
+		"token": `<xai:tool_usage_card><xai:tool_name>web_search</xai:tool_name></xai:tool_usage_card>`,
+	})
+	if parsed.ServerTools != 1 || parsed.WebSearchTools != 1 || webMessagesSearchRequests(*parsed) != 1 {
+		t.Fatalf("server=%d web=%d usage=%d", parsed.ServerTools, parsed.WebSearchTools, webMessagesSearchRequests(*parsed))
+	}
+}
+
+func TestCollectServerToolDistinguishesTokenCardsWithoutRolloutID(t *testing.T) {
+	parsed := &parsedChat{}
+	for _, name := range []string{"web_search", "search_images"} {
+		collectServerTool(parsed, map[string]any{
+			"messageStepId": 1.0, "messageTag": "tool_usage_card",
+			"token": `<xai:tool_usage_card><xai:tool_name>` + name + `</xai:tool_name></xai:tool_usage_card>`,
+		})
+	}
+	if parsed.ServerTools != 2 || parsed.WebSearchTools != 1 {
+		t.Fatalf("server=%d web=%d", parsed.ServerTools, parsed.WebSearchTools)
+	}
+}
+
+func TestCollectServerToolBoundsTrackingState(t *testing.T) {
+	parsed := &parsedChat{}
+	for index := 0; index < maxTrackedServerTools+10; index++ {
+		collectServerTool(parsed, map[string]any{
+			"rolloutId": "web-" + strconv.Itoa(index), "messageTag": "tool_usage_card", "toolName": "web_search",
+		})
+	}
+	if len(parsed.serverToolKeys) != maxTrackedServerTools || len(parsed.webSearchKeys) != maxTrackedServerTools || parsed.ServerTools != maxTrackedServerTools || parsed.WebSearchTools != maxTrackedServerTools {
+		t.Fatalf("server keys=%d web keys=%d server=%d web=%d", len(parsed.serverToolKeys), len(parsed.webSearchKeys), parsed.ServerTools, parsed.WebSearchTools)
+	}
+}
+
+func TestCollectSearchSourcesNormalizesFiltersAndBoundsInput(t *testing.T) {
+	results := make([]any, 0, searchresult.MaxResults+12)
+	results = append(results,
+		map[string]any{"url": "javascript:alert(1)", "title": "Script"},
+		map[string]any{"url": "https://user:secret@example.com/private", "title": "Credential"},
+	)
+	for index := 0; index < searchresult.MaxResults+10; index++ {
+		results = append(results, map[string]any{
+			"url":   "HTTPS://Example.COM/" + strconv.Itoa(index),
+			"title": strings.Repeat("界", searchresult.MaxTitleRunes+10),
+		})
+	}
+	parsed := &parsedChat{}
+	collectSearchSources(parsed, map[string]any{"webSearchResults": map[string]any{"results": results}})
+	if len(parsed.SearchSources) != searchresult.MaxResults || len(parsed.sourceKeys) != searchresult.MaxResults {
+		t.Fatalf("sources=%d keys=%d, want %d", len(parsed.SearchSources), len(parsed.sourceKeys), searchresult.MaxResults)
+	}
+	first := parsed.SearchSources[0]
+	if first["url"] != "https://example.com/0" || utf8.RuneCountInString(first["title"].(string)) != searchresult.MaxTitleRunes {
+		t.Fatalf("first normalized source = %#v", first)
+	}
+	for _, source := range parsed.SearchSources {
+		if strings.Contains(source["url"].(string), "@") || strings.HasPrefix(source["url"].(string), "javascript:") {
+			t.Fatalf("unsafe source retained: %#v", source)
+		}
+	}
+}
+
 func TestGeneratedImageURLsCollectAllCandidates(t *testing.T) {
 	parsed := &parsedChat{}
 	frame := map[string]any{"result": map[string]any{"response": map[string]any{
@@ -463,5 +570,22 @@ func TestGrokRenderCitationBecomesMarkdownAndAnnotation(t *testing.T) {
 	annotation := parsed.Annotations[0]
 	if annotation["title"] != "Example" || annotation["start_index"] != 6 || annotation["end_index"] != len(delta) {
 		t.Fatalf("annotation = %#v", annotation)
+	}
+}
+
+func TestGrokRenderCitationRejectsUnsafeURLs(t *testing.T) {
+	for _, rawURL := range []string{
+		"javascript:alert(1)",
+		"file:///etc/passwd",
+		"https://user:secret@example.com/private",
+		"/relative/path",
+	} {
+		parsed := &parsedChat{cardCache: map[string]map[string]any{
+			"cite_unsafe": {"id": "cite_unsafe", "url": rawURL},
+		}}
+		replacement, annotation := renderChatCard(parsed, "cite_unsafe", "render_inline_citation")
+		if replacement != "" || annotation != nil {
+			t.Fatalf("unsafe citation %q rendered as %q, %#v", rawURL, replacement, annotation)
+		}
 	}
 }

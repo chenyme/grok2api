@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,12 +30,19 @@ import (
 
 const webResponseTTL = 30 * 24 * time.Hour
 
+const maxDeferredSearchTextBytes = 8 << 20
+
+const maxTrackedServerTools = 1024
+
 var (
 	errWebAntiBot    = errors.New("Grok Web anti-bot rejection")
 	errWebUsageLimit = errors.New("Grok Web usage limit reached")
 )
 
-var grokRenderPattern = regexp.MustCompile(`(?s)<grok:render\s+card_id="([^"]+)"\s+card_type="([^"]+)"\s+type="([^"]+)"[^>]*>.*?</grok:render>`)
+var (
+	grokRenderPattern   = regexp.MustCompile(`(?s)<grok:render\s+card_id="([^"]+)"\s+card_type="([^"]+)"\s+type="([^"]+)"[^>]*>.*?</grok:render>`)
+	grokToolNamePattern = regexp.MustCompile(`(?is)<xai:tool_name>\s*(.*?)\s*</xai:tool_name>`)
+)
 
 type openAIRequest struct {
 	Model              string          `json:"model"`
@@ -80,10 +88,12 @@ type parsedChat struct {
 	Annotations    []map[string]any
 	sourceKeys     map[string]struct{}
 	serverToolKeys map[string]struct{}
+	webSearchKeys  map[string]struct{}
 	cardCache      map[string]map[string]any
 	citationIndex  map[string]int
 	lastCitation   int
 	ServerTools    int64
+	WebSearchTools int64
 	InputTokens    int64
 	ToolCalls      []parsedToolCall
 	Tools          []any
@@ -910,13 +920,21 @@ func collectSearchSources(parsed *parsedChat, response map[string]any) {
 }
 
 func appendSearchSource(parsed *parsedChat, value, title, sourceType string) {
+	value, valid := searchresult.NormalizeURL(value)
+	if !valid {
+		return
+	}
+	if parsed.sourceKeys == nil {
+		parsed.sourceKeys = make(map[string]struct{})
+	}
 	if _, exists := parsed.sourceKeys[value]; exists {
 		return
 	}
-	parsed.sourceKeys[value] = struct{}{}
-	if strings.TrimSpace(title) == "" {
-		title = value
+	if len(parsed.SearchSources) >= searchresult.MaxResults {
+		return
 	}
+	parsed.sourceKeys[value] = struct{}{}
+	title = searchresult.NormalizeTitle(title, value)
 	parsed.SearchSources = append(parsed.SearchSources, map[string]any{"url": value, "title": title, "type": sourceType})
 }
 
@@ -924,18 +942,59 @@ func collectServerTool(parsed *parsedChat, response map[string]any) {
 	if parsed.serverToolKeys == nil {
 		parsed.serverToolKeys = make(map[string]struct{})
 	}
-	key := firstString(response, "rolloutId", "responseId", "toolUsageCardId", "messageTag")
-	if step, ok := numberAsInt(response["messageStepId"]); ok {
-		key += fmt.Sprintf(":%d", step)
+	key := serverToolKey(response)
+	if _, exists := parsed.serverToolKeys[key]; !exists {
+		if len(parsed.serverToolKeys) >= maxTrackedServerTools {
+			return
+		}
+		parsed.serverToolKeys[key] = struct{}{}
+		parsed.ServerTools++
 	}
-	if key == "" {
-		key = firstString(response, "token", "messageTag")
-	}
-	if _, exists := parsed.serverToolKeys[key]; exists {
+	if webServerToolName(response) != "web_search" {
 		return
 	}
-	parsed.serverToolKeys[key] = struct{}{}
-	parsed.ServerTools++
+	if parsed.webSearchKeys == nil {
+		parsed.webSearchKeys = make(map[string]struct{})
+	}
+	if _, exists := parsed.webSearchKeys[key]; exists || len(parsed.webSearchKeys) >= maxTrackedServerTools {
+		return
+	}
+	parsed.webSearchKeys[key] = struct{}{}
+	parsed.WebSearchTools++
+}
+
+func serverToolKey(response map[string]any) string {
+	key := firstString(response, "rolloutId", "responseId", "toolUsageCardId")
+	step, hasStep := numberAsInt(response["messageStepId"])
+	if key != "" {
+		if hasStep {
+			key += fmt.Sprintf(":%d", step)
+		}
+		return key
+	}
+	if token, _ := response["token"].(string); token != "" {
+		sum := sha256.Sum256([]byte(token))
+		return "token:" + hex.EncodeToString(sum[:8])
+	}
+	if hasStep {
+		return fmt.Sprintf("step:%d", step)
+	}
+	return firstString(response, "messageTag")
+}
+
+func webServerToolName(response map[string]any) string {
+	if name := strings.ToLower(strings.TrimSpace(firstString(response, "toolName", "tool_name"))); name != "" {
+		return name
+	}
+	token, _ := response["token"].(string)
+	match := grokToolNamePattern.FindStringSubmatch(token)
+	if len(match) < 2 {
+		return ""
+	}
+	name := strings.TrimSpace(match[1])
+	name = strings.TrimPrefix(name, "<![CDATA[")
+	name = strings.TrimSuffix(name, "]]>")
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 func applyParsedToolCalls(parsed *parsedChat, configuration toolConfiguration) {
@@ -1104,7 +1163,8 @@ func renderChatCard(parsed *parsedChat, cardID, renderType string) (string, map[
 		return fmt.Sprintf("![%s](%s)", title, thumbnail), nil
 	case "render_inline_citation":
 		value, _ := card["url"].(string)
-		if value == "" {
+		value, valid := searchresult.NormalizeURL(value)
+		if !valid {
 			return "", nil
 		}
 		if parsed.citationIndex == nil {
@@ -1129,6 +1189,9 @@ func renderChatCard(parsed *parsedChat, cardID, renderType string) (string, map[
 }
 
 func searchSourceTitle(sources []map[string]any, rawURL string) string {
+	if normalized, valid := searchresult.NormalizeURL(rawURL); valid {
+		rawURL = normalized
+	}
 	for _, source := range sources {
 		if value, _ := source["url"].(string); value == rawURL {
 			if title, _ := source["title"].(string); title != "" {
@@ -1316,8 +1379,8 @@ func shouldEmitWebMessagesSearch(parsed parsedChat, options conversation.Respons
 }
 
 func webMessagesSearchRequests(parsed parsedChat) int64 {
-	if parsed.ServerTools > 0 {
-		return parsed.ServerTools
+	if parsed.WebSearchTools > 0 {
+		return parsed.WebSearchTools
 	}
 	return 1
 }
@@ -1443,8 +1506,7 @@ func (s *webMessagesStream) Delta(kind, delta string) error {
 				return err
 			}
 		}
-		s.pendingText.WriteString(delta)
-		return nil
+		return s.bufferSearchText(delta)
 	}
 	if err := s.startText(); err != nil {
 		return err
@@ -1457,6 +1519,14 @@ func (s *webMessagesStream) Delta(kind, delta string) error {
 		return nil
 	}
 	return s.writeTextDelta(emit)
+}
+
+func (s *webMessagesStream) bufferSearchText(delta string) error {
+	if len(delta) > maxDeferredSearchTextBytes-s.pendingText.Len() {
+		return fmt.Errorf("WebSearch 延迟文本缓冲超过 %d MiB", maxDeferredSearchTextBytes>>20)
+	}
+	s.pendingText.WriteString(delta)
+	return nil
 }
 
 func (s *webMessagesStream) startText() error {
