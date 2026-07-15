@@ -21,13 +21,16 @@ import (
 )
 
 var (
-	ErrAssetNotFound = errors.New("媒体资源不存在")
-	ErrInvalidImage  = errors.New("图片内容无效")
+	ErrAssetNotFound        = errors.New("媒体资源不存在")
+	ErrInvalidImage         = errors.New("图片内容无效")
+	ErrInvalidFilter        = errors.New("媒体筛选条件无效")
+	ErrMediaJobsUnavailable = errors.New("视频任务仓储未配置")
 )
 
 // Service 负责图片校验、文件落盘和元数据持久化的一致性收口。
 type Service struct {
 	assets        repository.MediaAssetRepository
+	jobs          repository.MediaJobRepository
 	objects       repository.MediaObjectStorage
 	cleanupLock   repository.DistributedLock
 	publicBaseURL string
@@ -49,10 +52,23 @@ type Config struct {
 	CleanupInterval         time.Duration
 }
 
-func NewService(assets repository.MediaAssetRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
+type ImageStats struct {
+	TotalImages int64
+	TotalBytes  int64
+}
+
+type VideoStats struct {
+	TotalJobs  int64
+	Completed  int64
+	Failed     int64
+	InProgress int64
+	Queued     int64
+}
+
+func NewService(assets repository.MediaAssetRepository, jobs repository.MediaJobRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
 	return &Service{
-		assets: assets, objects: objects, cleanupLock: cleanupLock,
-		publicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"), maxImageBytes: cfg.MaxImageBytes,
+		assets: assets, jobs: jobs, objects: objects, cleanupLock: cleanupLock,
+		publicBaseURL: strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"), maxImageBytes: cfg.MaxImageBytes,
 		maxTotalBytes: cfg.MaxTotalBytes, cleanupAt: cfg.CleanupThresholdPercent, cleanupEvery: cfg.CleanupInterval,
 		cleanupSignal: make(chan struct{}, 1), configChanged: make(chan struct{}, 1),
 	}
@@ -61,6 +77,7 @@ func NewService(assets repository.MediaAssetRepository, objects repository.Media
 // UpdateConfig 热更新媒体容量和清理策略，不重建底层存储实例。
 func (s *Service) UpdateConfig(cfg Config) {
 	s.configMu.Lock()
+	s.publicBaseURL = strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/")
 	s.maxImageBytes = cfg.MaxImageBytes
 	s.maxTotalBytes = cfg.MaxTotalBytes
 	s.cleanupAt = cfg.CleanupThresholdPercent
@@ -111,7 +128,7 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 
 // PublicImageURL 返回可直接用于图片展示的公开资源地址。
 func (s *Service) PublicImageURL(id string) string {
-	return s.publicBaseURL + "/v1/media/images/" + id
+	return s.runtimeConfig().PublicBaseURL + "/v1/media/images/" + id
 }
 
 // OpenImage 读取图片元数据和正文，不向调用方暴露实际文件路径。
@@ -134,6 +151,72 @@ func (s *Service) OpenImage(ctx context.Context, id string) (mediadomain.Asset, 
 		return mediadomain.Asset{}, nil, err
 	}
 	return asset, body, nil
+}
+
+// AdminListImages 分页返回图片资源列表。
+func (s *Service) AdminListImages(ctx context.Context, page, pageSize int, search string) ([]mediadomain.Asset, int64, error) {
+	return s.assets.ListMediaAssets(ctx, repository.MediaAssetListQuery{Page: mediaPageQuery(page, pageSize, search, repository.SortQuery{})})
+}
+
+// AdminListVideoJobs 分页返回视频任务列表。
+func (s *Service) AdminListVideoJobs(ctx context.Context, page, pageSize int, search, status string, sort repository.SortQuery) ([]mediadomain.Job, int64, error) {
+	if s.jobs == nil {
+		return nil, 0, ErrMediaJobsUnavailable
+	}
+	status = strings.TrimSpace(status)
+	if !validMediaStatus(status) || !repository.IsValidSort(sort, "prompt", "model", "status", "progress", "spec", "account", "createdAt", "completedAt") {
+		return nil, 0, ErrInvalidFilter
+	}
+	return s.jobs.ListMediaJobs(ctx, repository.MediaJobListQuery{
+		Page:   mediaPageQuery(page, pageSize, search, sort),
+		Filter: repository.MediaJobListFilter{Status: status},
+	})
+}
+
+// AdminImageStats 返回图片统计信息。
+func (s *Service) AdminImageStats(ctx context.Context) (ImageStats, error) {
+	stats, err := s.assets.SummarizeMediaAssets(ctx)
+	if err != nil {
+		return ImageStats{}, err
+	}
+	return ImageStats{TotalImages: stats.TotalImages, TotalBytes: stats.TotalBytes}, nil
+}
+
+// AdminVideoStats 返回视频任务统计信息。
+func (s *Service) AdminVideoStats(ctx context.Context) (VideoStats, error) {
+	if s.jobs == nil {
+		return VideoStats{}, ErrMediaJobsUnavailable
+	}
+	stats, err := s.jobs.SummarizeMediaJobs(ctx)
+	if err != nil {
+		return VideoStats{}, err
+	}
+	return VideoStats{
+		TotalJobs: stats.TotalJobs, Completed: stats.Completed, Failed: stats.Failed,
+		InProgress: stats.InProgress, Queued: stats.Queued,
+	}, nil
+}
+
+func mediaPageQuery(page, pageSize int, search string, sort repository.SortQuery) repository.PageQuery {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: strings.TrimSpace(search), Sort: sort}
+}
+
+func validMediaStatus(status string) bool {
+	switch mediadomain.Status(status) {
+	case "", mediadomain.StatusQueued, mediadomain.StatusInProgress, mediadomain.StatusCompleted, mediadomain.StatusFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 // RunCleanup 响应容量阈值并按周期清理最旧媒体资源。
@@ -224,6 +307,7 @@ func (s *Service) runtimeConfig() Config {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 	return Config{
+		PublicBaseURL: s.publicBaseURL,
 		MaxImageBytes: s.maxImageBytes, MaxTotalBytes: s.maxTotalBytes,
 		CleanupThresholdPercent: s.cleanupAt, CleanupInterval: s.cleanupEvery,
 	}

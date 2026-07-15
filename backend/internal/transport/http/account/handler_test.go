@@ -92,6 +92,20 @@ func TestWriteBuildConversionEventUsesSSEFormat(t *testing.T) {
 	}
 }
 
+func TestConvertWebToBuildRejectsInvalidStrategy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest("POST", "/api/admin/v1/accounts/web/convert-to-build", strings.NewReader(`{"ids":["1"],"strategy":"invalid"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	new(Handler).convertWebToBuild(ctx)
+
+	if recorder.Code != 400 || !strings.Contains(recorder.Body.String(), `"code":"invalidRequest"`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAccountProgressEventIncludesOptionalPhase(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

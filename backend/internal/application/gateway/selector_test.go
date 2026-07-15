@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -72,6 +73,42 @@ func TestSelectorPrioritizesDueQuotaProbeOnce(t *testing.T) {
 	if _, err := accounts.GetQuotaRecovery(ctx, probe.ID); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("quota recovery should be cleared, err = %v", err)
 	}
+}
+
+func BenchmarkSelectorCandidatePlanning(b *testing.B) {
+	ctx := context.Background()
+	limiter := memory.NewConcurrencyLimiter()
+	selector := NewSelector(nil, limiter, nil, nil, time.Hour, time.Second, time.Minute)
+	now := time.Now().UTC()
+	candidates := make([]account.RoutingCandidate, 3000)
+	for index := range candidates {
+		id := uint64(index + 1)
+		billing := account.Billing{
+			AccountID: id, MonthlyLimit: 1_000_000, Used: float64(index % 1000), SyncedAt: now.Add(-time.Duration(index%60) * time.Minute),
+		}
+		candidates[index] = account.RoutingCandidate{
+			Credential: account.Credential{
+				ID: id, Provider: account.ProviderBuild, AuthStatus: account.AuthStatusActive,
+				Priority: index % 10, MaxConcurrent: account.DefaultMaxConcurrent,
+			},
+			Billing: &billing, ModelCapabilityKnown: true, SupportsModel: true,
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(parallel *testing.PB) {
+		for parallel.Next() {
+			values := append([]account.RoutingCandidate(nil), candidates...)
+			plan, err := selector.planCandidates(ctx, values, now, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, ok := plan.Next(); !ok {
+				b.Fatal("候选计划为空")
+			}
+		}
+	})
 }
 
 func TestSelectorSkipsQuotaProbeBeforeDue(t *testing.T) {
@@ -348,11 +385,47 @@ func TestSelectorUsesBatchConcurrencySnapshot(t *testing.T) {
 		{Credential: account.Credential{ID: 1, Priority: 1}},
 		{Credential: account.Credential{ID: 2, Priority: 1}},
 	}
-	if err := selector.sortCandidates(context.Background(), values, time.Now().UTC(), nil); err != nil {
+	plan, err := selector.planCandidates(context.Background(), values, time.Now().UTC(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if limiter.batchCalls != 1 || limiter.currentCalls != 0 || values[0].Credential.ID != 2 {
+	first, ok := plan.Next()
+	if limiter.batchCalls != 1 || limiter.currentCalls != 0 || !ok || first.Credential.ID != 2 {
 		t.Fatalf("batchCalls=%d currentCalls=%d values=%#v", limiter.batchCalls, limiter.currentCalls, values)
+	}
+}
+
+func TestCandidatePlanPreservesSelectorOrdering(t *testing.T) {
+	now := time.Now().UTC()
+	limiter := &batchConcurrencyLimiter{values: map[string]int{"account:2": 1}}
+	selector := &Selector{concurrency: limiter, lastSelectedAt: map[uint64]time.Time{6: now}}
+	newCandidate := func(id uint64, tier account.WebTier, priority int, known, supported bool) account.RoutingCandidate {
+		return account.RoutingCandidate{
+			Credential: account.Credential{ID: id, WebTier: tier, Priority: priority},
+			Billing: &account.Billing{
+				AccountID: id, MonthlyLimit: 100, SyncedAt: now,
+			},
+			ModelCapabilityKnown: known, SupportsModel: supported,
+		}
+	}
+	values := []account.RoutingCandidate{
+		newCandidate(5, account.WebTierHeavy, 100, false, false),
+		newCandidate(4, account.WebTierSuper, 100, true, true),
+		newCandidate(3, account.WebTierHeavy, 9, true, true),
+		newCandidate(2, account.WebTierHeavy, 10, true, true),
+		newCandidate(6, account.WebTierHeavy, 10, true, true),
+		newCandidate(1, account.WebTierHeavy, 10, true, true),
+	}
+	plan, err := selector.planCandidates(context.Background(), values, now, []account.WebTier{account.WebTierHeavy, account.WebTierSuper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered := make([]uint64, 0, len(values))
+	for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
+		ordered = append(ordered, candidate.Credential.ID)
+	}
+	if expected := []uint64{1, 6, 2, 3, 4, 5}; !slices.Equal(ordered, expected) {
+		t.Fatalf("候选顺序 = %v, want %v", ordered, expected)
 	}
 }
 

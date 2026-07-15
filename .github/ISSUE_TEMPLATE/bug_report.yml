@@ -1,0 +1,118 @@
+name: Bug 报告
+description: 报告可稳定复现的功能、兼容性或部署问题。
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈问题。请尽量提供最小复现步骤和经过脱敏的日志、请求或响应。
+
+        请勿提交 Access Token、Refresh Token、Cookie、API Key、账号密码或其他敏感信息。安全漏洞请不要通过公开 Issue 披露。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题模块
+      description: 请选择问题主要出现在哪个模块。
+      options:
+        - OpenAI API 兼容层（Responses / Chat Completions）
+        - 模型同步、映射、路由与定价
+        - 账号、Provider、OAuth 与凭据
+        - 额度、计费与请求审计
+        - 图片、视频与媒体处理
+        - 管理端前端界面
+        - SQLite / PostgreSQL 数据库
+        - Docker、配置、部署与网络出口
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: 相关 Provider
+      description: 请选择受影响的上游渠道。
+      options:
+        - Grok Build
+        - Grok Web
+        - Grok Console
+        - 多个 Provider
+        - 与 Provider 无关
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本信息
+      description: 请提供版本号、Docker 镜像标签或 Commit SHA。
+      placeholder: "v0.2.99、ghcr.io/chenyme/grok2api:latest、main@abcdef1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 部署与运行环境
+      description: 请填写与问题相关的部署方式、系统、架构、数据库和网络环境。
+      placeholder: |
+        部署方式：Docker Compose / Docker Run / 源码运行
+        操作系统：Debian 13 / Ubuntu 24.04 / macOS ...
+        CPU 架构：amd64 / arm64
+        数据库：SQLite / PostgreSQL
+        反向代理：Nginx / Nginx Proxy Manager / 无
+        出口网络：直连 / HTTP Proxy / SOCKS5 / WARP
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请提供能够稳定复现问题的最小操作步骤。
+      placeholder: |
+        1. 使用配置……启动服务
+        2. 导入或选择……账号
+        3. 请求……接口
+        4. 出现……错误
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 正常情况下应该发生什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么？请包含完整错误信息。
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 请求、响应、日志与截图
+      description: 请提供脱敏后的最小请求、状态码、响应体、容器日志、请求 ID 或截图。长日志请仅保留问题前后的关键部分。
+      placeholder: 可粘贴内容或直接拖放截图、日志文件；提交前请再次确认内容已经脱敏。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已经搜索现有 Issue 和 Pull Request，确认没有相同问题。
+          required: true
+        - label: 我已经删除 Token、Cookie、API Key、账号凭据和个人信息。
+          required: true
+        - label: 这不是需要私下披露的安全漏洞。
+          required: true

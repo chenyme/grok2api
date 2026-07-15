@@ -15,6 +15,13 @@ server:
   # [按需修改] 仅在本地或受信任环境开启，生产环境保持 false。
   swaggerEnabled: false
 
+auth:
+  # [通常不要修改] 管理端访问与刷新令牌有效期。
+  accessTokenTTL: 15m
+  refreshTokenTTL: 720h
+  # [按需修改] 外部地址使用 HTTPS 时必须设为 true。
+  secureCookies: false
+
 secrets:
   # [必须修改] 至少 32 个字符。快速生成：openssl rand -hex 32
   jwtSecret: "replace-with-at-least-32-characters"
@@ -29,8 +36,6 @@ bootstrapAdmin:
   password: "replace-with-a-strong-password"
 
 frontend:
-  # [按需修改] 生产环境改为外部 HTTPS 地址，例如 https://api.example.com。
-  publicApiBaseURL: "http://127.0.0.1:8000"
   # [通常不要修改] Go 服务同源托管的前端构建目录。
   staticPath: "./frontend/dist"
 
@@ -60,22 +65,6 @@ runtimeStore:
     keyPrefix: "grok2api:"
     # [按需修改] Redis 使用 TLS 时设为 true。
     tls: false
-
-auth:
-  # [通常不要修改] 管理端访问与刷新令牌有效期。
-  accessTokenTTL: 15m
-  refreshTokenTTL: 720h
-  # [按需修改] 外部地址使用 HTTPS 时必须设为 true。
-  secureCookies: false
-
-provider:
-  console:
-    # [通常不要修改] Grok Console Responses API 地址。
-    baseURL: "https://console.x.ai"
-    # [通常不要修改] 必须与 Console 出口节点的浏览器指纹保持一致。
-    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
-    # [按需修改] Console 单次对话超时。
-    chatTimeout: 5m
 
 media:
   # [通常不要修改] 当前仅支持 local；容量和清理策略在管理端设置。

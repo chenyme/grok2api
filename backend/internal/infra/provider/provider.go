@@ -21,6 +21,65 @@ var (
 	ErrUnauthorized         = errors.New("upstream credential unauthorized")
 )
 
+// HTTPStatusError 允许流式或异步 Provider 在无法返回 Response 时保留上游状态码。
+type HTTPStatusError interface {
+	error
+	HTTPStatusCode() int
+}
+
+// ErrorHTTPStatus 从 Provider 错误链中提取上游 HTTP 状态。
+func ErrorHTTPStatus(err error) (int, bool) {
+	var statusError HTTPStatusError
+	if !errors.As(err, &statusError) {
+		return 0, false
+	}
+	status := statusError.HTTPStatusCode()
+	return status, status > 0
+}
+
+// MediaPostProcessingStage 标识媒体已经生成后失败的本地处理阶段。
+type MediaPostProcessingStage string
+
+const (
+	MediaPostProcessingDownload MediaPostProcessingStage = "download"
+	MediaPostProcessingStorage  MediaPostProcessingStage = "storage"
+)
+
+// MediaPostProcessingError 表示上游媒体已经产生，后续下载或保存失败。
+// 此类错误不得触发换号重新生成，也不应降低生成账号的健康度。
+type MediaPostProcessingError struct {
+	Stage MediaPostProcessingStage
+	Cause error
+}
+
+func (e *MediaPostProcessingError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "media post-processing failed"
+	}
+	return fmt.Sprintf("media post-processing %s failed: %v", e.Stage, e.Cause)
+}
+
+func (e *MediaPostProcessingError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// NewMediaPostProcessingError 将下载或保存错误标记为不可跨账号重试。
+func NewMediaPostProcessingError(stage MediaPostProcessingStage, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return &MediaPostProcessingError{Stage: stage, Cause: cause}
+}
+
+// IsMediaPostProcessingError 判断错误是否发生在媒体生成后的本地处理阶段。
+func IsMediaPostProcessingError(err error) bool {
+	var target *MediaPostProcessingError
+	return errors.As(err, &target)
+}
+
 // CredentialRefreshError 区分需要重新认证的永久 OAuth 错误与可后台退避重试的临时错误。
 type CredentialRefreshError struct {
 	Status     int
@@ -66,11 +125,36 @@ type ResponseResourceRequest struct {
 
 // Response 表示尚未写入下游的上游响应。
 type Response struct {
-	StatusCode int
-	Status     string
-	Header     http.Header
-	Body       io.ReadCloser
-	QuotaUnits int
+	StatusCode  int
+	Status      string
+	Header      http.Header
+	Body        io.ReadCloser
+	QuotaUnits  int
+	UpstreamURL string
+	Diagnostic  *DiagnosticResponse
+}
+
+const MaxDiagnosticBodyBytes = 64 << 10
+
+// DiagnosticResponse 保留 Provider 转换前经过容量限制的失败响应。
+type DiagnosticResponse struct {
+	StatusCode    int
+	Status        string
+	Header        http.Header
+	Body          []byte
+	BodyTruncated bool
+}
+
+// ReadDiagnosticBody 最多读取诊断正文上限，并报告上游是否还有未保留内容。
+func ReadDiagnosticBody(body io.Reader) ([]byte, bool, error) {
+	if body == nil {
+		return nil, false, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(body, MaxDiagnosticBodyBytes+1))
+	if len(data) <= MaxDiagnosticBodyBytes {
+		return data, false, err
+	}
+	return data[:MaxDiagnosticBodyBytes], true, err
 }
 
 // DeviceAuthorization 表示 Device OAuth 启动结果。
@@ -203,9 +287,15 @@ type QuotaAdapter interface {
 	SyncQuotaMode(ctx context.Context, credential account.Credential, mode string) (account.QuotaWindow, error)
 }
 
-type ImageAdapter interface {
+// ImageGenerationAdapter 定义 Provider 可选的图片生成能力。
+type ImageGenerationAdapter interface {
 	Adapter
 	GenerateImage(ctx context.Context, request ImageGenerationRequest) (*Response, error)
+}
+
+// ImageEditAdapter 定义 Provider 可选的图片编辑能力。
+type ImageEditAdapter interface {
+	Adapter
 	EditImage(ctx context.Context, request ImageEditRequest) (*Response, error)
 }
 
@@ -393,9 +483,14 @@ func (r *Registry) Validate() error {
 				return fmt.Errorf("Provider %s 声明 Device OAuth 但未实现适配器", value)
 			}
 		}
-		if definition.Media.ImageGeneration || definition.Media.ImageEdit {
-			if _, ok := adapter.(ImageAdapter); !ok {
-				return fmt.Errorf("Provider %s 声明图像能力但未实现适配器", value)
+		if definition.Media.ImageGeneration {
+			if _, ok := adapter.(ImageGenerationAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明图像生成能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.ImageEdit {
+			if _, ok := adapter.(ImageEditAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明图像编辑能力但未实现适配器", value)
 			}
 		}
 		if definition.Media.VideoGeneration {
@@ -559,12 +654,23 @@ func (r *Registry) PricingModel(value account.Provider, upstreamModel string) st
 	return upstreamModel
 }
 
-func (r *Registry) Images(value account.Provider) (ImageAdapter, bool) {
+// ImageGeneration 返回 Provider 注册的图片生成能力。
+func (r *Registry) ImageGeneration(value account.Provider) (ImageGenerationAdapter, bool) {
 	adapter, ok := r.Get(value)
 	if !ok {
 		return nil, false
 	}
-	result, ok := adapter.(ImageAdapter)
+	result, ok := adapter.(ImageGenerationAdapter)
+	return result, ok
+}
+
+// ImageEdit 返回 Provider 注册的图片编辑能力。
+func (r *Registry) ImageEdit(value account.Provider) (ImageEditAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(ImageEditAdapter)
 	return result, ok
 }
 

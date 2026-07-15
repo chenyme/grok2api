@@ -171,7 +171,7 @@ func TestValidateRejectsUnsafeRuntimeLimits(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsExampleSecretsAndUnsafeCookies(t *testing.T) {
+func TestValidateRejectsExampleSecrets(t *testing.T) {
 	base := defaultConfig()
 	base.Secrets.JWTSecret = "12345678901234567890123456789012"
 	base.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
@@ -180,10 +180,6 @@ func TestValidateRejectsExampleSecretsAndUnsafeCookies(t *testing.T) {
 		"example jwt":            func(cfg *Config) { cfg.Secrets.JWTSecret = "replace-with-at-least-32-characters" },
 		"invalid encryption key": func(cfg *Config) { cfg.Secrets.CredentialEncryptionKey = "not-a-32-byte-base64-key" },
 		"example admin password": func(cfg *Config) { cfg.BootstrapAdmin.Password = "replace-with-a-strong-password" },
-		"https insecure cookie": func(cfg *Config) {
-			cfg.Frontend.PublicAPIBaseURL = "https://api.example.com"
-			cfg.Auth.SecureCookies = false
-		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -193,13 +189,6 @@ func TestValidateRejectsExampleSecretsAndUnsafeCookies(t *testing.T) {
 				t.Fatal("unsafe configuration was accepted")
 			}
 		})
-	}
-
-	secure := base
-	secure.Frontend.PublicAPIBaseURL = "https://api.example.com"
-	secure.Auth.SecureCookies = true
-	if err := secure.Validate(); err != nil {
-		t.Fatalf("secure HTTPS configuration rejected: %v", err)
 	}
 }
 
@@ -261,15 +250,34 @@ func TestValidateFrontendPublicAPIBaseURL(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
 	cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-	for _, value := range []string{"", "127.0.0.1:8000", "ftp://example.com", "https://user@example.com", "https://example.com?token=value"} {
+	for _, value := range []string{"127.0.0.1:8000", "ftp://example.com", "https://user@example.com", "https://example.com?token=value"} {
 		cfg.Frontend.PublicAPIBaseURL = value
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("frontend.publicApiBaseURL %q was accepted", value)
 		}
 	}
 	cfg.Frontend.PublicAPIBaseURL = "https://api.example.com/grok2api"
-	cfg.Auth.SecureCookies = true
+	cfg.Auth.SecureCookies = false
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid frontend.publicApiBaseURL rejected: %v", err)
+	}
+}
+
+func TestEffectivePublicAPIBaseURLPriority(t *testing.T) {
+	cases := []struct {
+		name     string
+		frontend FrontendConfig
+		want     string
+	}{
+		{name: "runtime override", frontend: FrontendConfig{PublicAPIBaseURL: "https://yaml.example/base", PublicAPIBaseURLOverride: "https://runtime.example/api/"}, want: "https://runtime.example/api"},
+		{name: "yaml fallback", frontend: FrontendConfig{PublicAPIBaseURL: "https://yaml.example/base/"}, want: "https://yaml.example/base"},
+		{name: "local fallback", frontend: FrontendConfig{}, want: DefaultPublicAPIBaseURL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.frontend.EffectivePublicAPIBaseURL(); got != tc.want {
+				t.Fatalf("EffectivePublicAPIBaseURL() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

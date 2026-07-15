@@ -2,6 +2,8 @@ package relational
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -58,7 +60,7 @@ func TestAuditRepositoryBatchAndCursor(t *testing.T) {
 		{RequestID: "cursor-old", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: now.Add(-48 * time.Hour)},
 		{RequestID: "cursor-1", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: now.Add(-3 * time.Minute)},
 		{RequestID: "cursor-2", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: now.Add(-2 * time.Minute)},
-		{RequestID: "cursor-3", ClientKeyID: 1, ClientKeyName: "production", ModelRouteID: 1, ModelPublicID: "grok-test", ModelUpstreamModel: "grok-test-upstream", AccountName: "primary", StatusCode: 200, CreatedAt: now.Add(-time.Minute)},
+		{RequestID: "cursor-3", ClientKeyID: 1, ClientKeyName: "production", ModelRouteID: 1, ModelPublicID: "grok-test", ModelUpstreamModel: "grok-test-upstream", AccountName: "primary", EgressNodeID: uint64Pointer(42), EgressNodeName: "proxy-shanghai", EgressScope: "grok_web", EgressMode: audit.EgressModeProxy, StatusCode: 200, CreatedAt: now.Add(-time.Minute)},
 	}
 	if err := repository.CreateBatch(ctx, values); err != nil {
 		t.Fatal(err)
@@ -71,8 +73,12 @@ func TestAuditRepositoryBatchAndCursor(t *testing.T) {
 	if len(first) != 2 || !hasMore || first[0].ID <= first[1].ID {
 		t.Fatalf("first page = %#v, hasMore = %v", first, hasMore)
 	}
-	if first[0].ClientKeyName != "production" || first[0].ModelPublicID != "grok-test" || first[0].ModelUpstreamModel != "grok-test-upstream" || first[0].AccountName != "primary" {
+	if first[0].ClientKeyName != "production" || first[0].ModelPublicID != "grok-test" || first[0].ModelUpstreamModel != "grok-test-upstream" || first[0].AccountName != "primary" || first[0].EgressNodeID == nil || *first[0].EgressNodeID != 42 || first[0].EgressNodeName != "proxy-shanghai" || first[0].EgressMode != audit.EgressModeProxy {
 		t.Fatalf("audit snapshots = %#v", first[0])
+	}
+	matched, _, err := repository.ListCursor(ctx, repositorypkg.AuditCursorQuery{Limit: 10, Search: "proxy-shanghai", Sort: sort})
+	if err != nil || len(matched) != 1 || matched[0].RequestID != "cursor-3" {
+		t.Fatalf("egress search = %#v, err = %v", matched, err)
 	}
 	second, _, err := repository.ListCursor(ctx, repositorypkg.AuditCursorQuery{Cursor: &repositorypkg.SortCursor{ID: first[len(first)-1].ID, Value: first[len(first)-1].CreatedAt}, Limit: 2, Sort: sort})
 	if err != nil {
@@ -187,6 +193,64 @@ func TestAuditRepositoryAllowsRepeatedExternalRequestIDs(t *testing.T) {
 	_, total, err := repository.List(ctx, 0, 10)
 	if err != nil || total != 2 {
 		t.Fatalf("total = %d, err = %v", total, err)
+	}
+}
+
+func TestAuditRepositoryRoundTripsFailureAttempts(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-attempts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAuditRepository(database)
+	now := time.Now().UTC()
+	status := http.StatusBadGateway
+	record := audit.Record{
+		EventID: "evt_failure_attempts_0001", RequestID: "failure-attempts", ClientKeyID: 1, ModelRouteID: 1,
+		StatusCode: http.StatusBadGateway, CreatedAt: now,
+		Attempts: []audit.Attempt{
+			{
+				Number: 1, Source: audit.AttemptSourceTransport, Stage: "dns_lookup", AccountID: uint64Pointer(7), AccountName: "primary",
+				Method: http.MethodPost, RequestPath: "/responses", UpstreamURL: "https://api.example.test/v1/responses", StartedAt: now.Add(-2 * time.Second), DurationMS: 125,
+				TransportError: "lookup api.example.test: no such host", ErrorChain: []audit.ErrorFrame{{Type: "*url.Error", Message: "Post request failed"}, {Type: "*net.DNSError", Message: "no such host"}},
+			},
+			{
+				Number: 2, Source: audit.AttemptSourceUpstreamHTTP, Stage: "upstream_response", AccountID: uint64Pointer(8), AccountName: "secondary",
+				Method: http.MethodPost, RequestPath: "/responses", UpstreamURL: "https://api.example.test/v1/responses", StartedAt: now.Add(-time.Second), DurationMS: 250,
+				UpstreamStatusCode: &status, UpstreamStatus: "502 Bad Gateway", ResponseHeaders: http.Header{"Content-Type": {"application/json"}, "X-Upstream": {"edge-a", "edge-b"}},
+				ResponseBody: []byte{'{', '"', 'e', 'r', 'r', 'o', 'r', '"', ':', ' ', '"', 'f', 'a', 'i', 'l', 'e', 'd', '"', '}', 0xff}, ResponseBodyTruncated: true,
+			},
+		},
+	}
+	if err := repository.Create(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.Get(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AttemptCount != 2 || len(stored.Attempts) != 2 {
+		t.Fatalf("attempt count = %d, attempts = %#v", stored.AttemptCount, stored.Attempts)
+	}
+	if stored.Attempts[0].Number != 1 || stored.Attempts[0].Stage != "dns_lookup" || len(stored.Attempts[0].ErrorChain) != 2 {
+		t.Fatalf("transport attempt = %#v", stored.Attempts[0])
+	}
+	httpAttempt := stored.Attempts[1]
+	if httpAttempt.Number != 2 || httpAttempt.UpstreamStatusCode == nil || *httpAttempt.UpstreamStatusCode != status || string(httpAttempt.ResponseBody) != string(record.Attempts[1].ResponseBody) || !httpAttempt.ResponseBodyTruncated || len(httpAttempt.ResponseHeaders["X-Upstream"]) != 2 {
+		t.Fatalf("HTTP attempt = %#v", httpAttempt)
+	}
+	if err := repository.Create(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if count := tableRowCount(t, database, "request_audit_attempts"); count != 2 {
+		t.Fatalf("idempotent attempts = %d", count)
+	}
+	if _, err := repository.Get(ctx, 999); !errors.Is(err, repositorypkg.ErrNotFound) {
+		t.Fatalf("missing audit error = %v", err)
 	}
 }
 

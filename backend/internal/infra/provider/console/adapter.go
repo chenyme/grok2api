@@ -34,27 +34,14 @@ type Adapter struct {
 }
 
 func NewAdapter(cfg Config, egress *infraegress.Manager, cipher *security.Cipher) *Adapter {
-	return &Adapter{cfg: normalizedConfig(cfg), egress: egress, cipher: cipher}
-}
-
-func normalizedConfig(cfg Config) Config {
-	if strings.TrimSpace(cfg.BaseURL) == "" {
-		cfg.BaseURL = "https://console.x.ai"
-	}
-	if strings.TrimSpace(cfg.UserAgent) == "" {
-		cfg.UserAgent = infraegress.DefaultUserAgent
-	}
-	if cfg.TimeoutSeconds <= 0 {
-		cfg.TimeoutSeconds = 300
-	}
-	return cfg
+	return &Adapter{cfg: cfg, egress: egress, cipher: cipher}
 }
 
 func (a *Adapter) Provider() account.Provider { return account.ProviderConsole }
 
 func (a *Adapter) UpdateConfig(cfg Config) {
 	a.mu.Lock()
-	a.cfg = normalizedConfig(cfg)
+	a.cfg = cfg
 	a.mu.Unlock()
 }
 
@@ -159,13 +146,15 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	response, err := lease.Do(upstream)
 	if err != nil {
-		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, 0, err)
 		lease.Release()
 		cancel()
 		return nil, err
 	}
+	responseBodyTruncated := false
 	if response.StatusCode == http.StatusTooManyRequests {
-		if err := normalizeRateLimitResponse(response); err != nil {
+		responseBodyTruncated, err = normalizeRateLimitResponse(response)
+		if err != nil {
 			_ = response.Body.Close()
 			lease.Release()
 			cancel()
@@ -173,7 +162,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 	}
 	release := func() {
-		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
 		lease.Release()
 		cancel()
 	}
@@ -184,20 +173,31 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			response.Header.Set("Content-Type", "text/event-stream")
 			return responseResult(response, &releaseBody{ReadCloser: response.Body, release: release}), nil
 		}
-		data, readErr := io.ReadAll(io.LimitReader(response.Body, (64<<20)+1))
+		var data []byte
+		var readErr error
+		var diagnosticTruncated bool
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			data, readErr = io.ReadAll(io.LimitReader(response.Body, (64<<20)+1))
+		} else {
+			data, diagnosticTruncated, readErr = provider.ReadDiagnosticBody(response.Body)
+			diagnosticTruncated = diagnosticTruncated || responseBodyTruncated
+		}
 		_ = response.Body.Close()
 		release()
 		if readErr != nil {
 			return nil, readErr
 		}
-		if len(data) > 64<<20 {
+		if response.StatusCode >= 200 && response.StatusCode < 300 && len(data) > 64<<20 {
 			return nil, fmt.Errorf("Console 对话响应超过 64 MiB")
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			diagnostic := &provider.DiagnosticResponse{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header.Clone(), Body: data, BodyTruncated: diagnosticTruncated}
 			converted := normalizeConversationError(data, request.Operation, response.StatusCode)
 			response.Header.Set("Content-Length", strconv.Itoa(len(converted)))
 			response.Header.Set("Content-Type", "application/json")
-			return responseResult(response, io.NopCloser(bytes.NewReader(converted))), nil
+			result := responseResult(response, io.NopCloser(bytes.NewReader(converted)))
+			result.Diagnostic = diagnostic
+			return result, nil
 		}
 		converted, convertErr := conversation.ConvertResponseJSONWithOptions(data, request.Operation, conversationOptions)
 		if convertErr != nil {
@@ -293,13 +293,10 @@ func applyHeaders(request *http.Request, token, configuredUserAgent string, leas
 	request.Header.Set("x-cluster", "https://us-east-1.api.x.ai")
 }
 
-func normalizeRateLimitResponse(response *http.Response) error {
-	data, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+func normalizeRateLimitResponse(response *http.Response) (bool, error) {
+	data, truncated, err := provider.ReadDiagnosticBody(response.Body)
 	if err != nil {
-		return err
-	}
-	if len(data) > 1<<20 {
-		return fmt.Errorf("Console 错误响应超过 1 MiB")
+		return truncated, err
 	}
 	_ = response.Body.Close()
 	response.Body = io.NopCloser(bytes.NewReader(data))
@@ -310,12 +307,16 @@ func normalizeRateLimitResponse(response *http.Response) error {
 			response.Header.Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))
 		}
 	}
-	return nil
+	return truncated, nil
 }
 
 func responseResult(response *http.Response, body io.ReadCloser) *provider.Response {
+	upstreamURL := ""
+	if response.Request != nil && response.Request.URL != nil {
+		upstreamURL = response.Request.URL.String()
+	}
 	return &provider.Response{
-		StatusCode: response.StatusCode, Status: response.Status, Header: response.Header.Clone(), Body: body, QuotaUnits: 1,
+		StatusCode: response.StatusCode, Status: response.Status, Header: response.Header.Clone(), Body: body, QuotaUnits: 1, UpstreamURL: upstreamURL,
 	}
 }
 

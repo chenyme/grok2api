@@ -320,7 +320,7 @@ func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
 		return s.syncAccountCapabilities(workCtx, value, adapter)
 	})
 	pool := s.bulkPool.Snapshot()
-	s.logger.Info("model_bulk_sync_completed", "total", summary.Total, "submitted", summary.Submitted, "succeeded", summary.Succeeded, "failed", summary.Failed, "panicked", summary.Panicked, "duration_ms", summary.Duration.Milliseconds(), "canceled", summary.Canceled, "pool_limit", pool.Limit, "pool_active", pool.Active, "pool_peak", pool.Peak, "error", runErr)
+	s.logger.Info("model_bulk_sync_completed", "total", summary.Total, "submitted", summary.Submitted, "succeeded", summary.Succeeded, "failed", summary.Failed, "panicked", summary.Panicked, "duration_ms", summary.Duration.Milliseconds(), "canceled", summary.Canceled, "pool_limit", pool.Limit, "pool_active", pool.Active, "pool_queued", pool.Queued, "pool_peak", pool.Peak, "error", runErr)
 	if runErr != nil {
 		return 0, runErr
 	}

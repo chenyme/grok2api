@@ -32,6 +32,7 @@ func TestRuntimeSettingsRepositoryRoundTrip(t *testing.T) {
 		t.Fatalf("initial get found = %v, err = %v", found, err)
 	}
 	settings := settingsdomain.Config{
+		Server:      settingsdomain.ServerConfig{MaxConcurrentRequests: 2048},
 		ProviderWeb: settingsdomain.ProviderWebConfig{StatsigManualValue: "sensitive-statsig-value"},
 		Media: settingsdomain.MediaConfig{
 			MaxImageBytes: 16 << 20, MaxTotalBytes: 1 << 30, CleanupThresholdPercent: 80,
@@ -47,7 +48,7 @@ func TestRuntimeSettingsRepositoryRoundTrip(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("saved get found = %v, err = %v", found, err)
 	}
-	if value.Routing != settings.Routing || value.Media != settings.Media || !storedUpdatedAt.Equal(updatedAt) || revision != 1 || storedRevision != revision {
+	if value.Server != settings.Server || value.Routing != settings.Routing || value.Media != settings.Media || !storedUpdatedAt.Equal(updatedAt) || revision != 1 || storedRevision != revision {
 		t.Fatalf("saved value = %#v", value)
 	}
 	if value.ProviderWeb.StatsigManualValue != settings.ProviderWeb.StatsigManualValue {

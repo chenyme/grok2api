@@ -151,7 +151,7 @@ func (r *ModelRepository) GetByPublicIDIncludingDisabled(ctx context.Context, pu
 
 func findModelRoutesByPublicID(db *gorm.DB, publicID string) ([]modelRouteModel, error) {
 	candidates := model.PublicIDCandidates(publicID)
-	rows := make([]modelRouteModel, 0, len(candidates)+1)
+	rows := make([]modelRouteModel, 0, len(candidates))
 	if len(candidates) > 0 {
 		if err := db.Session(&gorm.Session{}).Where("model_routes.public_id IN ?", candidates).
 			Order(modelProviderPriorityExpression + ", model_routes.id ASC").Find(&rows).Error; err != nil {
@@ -164,8 +164,8 @@ func findModelRoutesByPublicID(db *gorm.DB, publicID string) ([]modelRouteModel,
 		Order(modelProviderPriorityExpression + ", model_routes.id ASC").Find(&aliases).Error; err != nil {
 		return nil, err
 	}
-	seen := make(map[uint64]bool, len(rows)+len(aliases))
-	result := make([]modelRouteModel, 0, len(rows)+len(aliases))
+	seen := make(map[uint64]bool)
+	result := make([]modelRouteModel, 0, len(rows))
 	for _, values := range [][]modelRouteModel{rows, aliases} {
 		for _, row := range values {
 			if seen[row.ID] {

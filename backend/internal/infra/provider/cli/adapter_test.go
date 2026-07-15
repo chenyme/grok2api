@@ -29,7 +29,7 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer access-token" || r.Header.Get("x-grok-client-version") != "0.2.99" || r.Header.Get("x-grok-client-identifier") != "grok-shell" || r.Header.Get("User-Agent") != "grok-shell/0.2.99 (linux; x86_64)" || r.Header.Get("x-grok-conv-id") != "official-key" {
+		if r.Header.Get("Authorization") != "Bearer access-token" || r.Header.Get("x-grok-client-version") != "0.2.99" || r.Header.Get("x-grok-client-identifier") != "grok-shell" || r.Header.Get("User-Agent") != "grok-shell/0.2.99 (linux; x86_64)" || r.Header.Get("x-grok-conv-id") != "isolated-key" {
 			t.Fatalf("headers = %#v", r.Header)
 		}
 		requestID := r.Header.Get("x-grok-req-id")
@@ -37,7 +37,7 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 		if r.Header.Get("x-grok-client-surface") != "tui" || r.Header.Get("x-grok-client-name") != "grok-shell" || len(r.Header.Get("x-grok-agent-id")) != 32 || len(sessionID) != 36 {
 			t.Fatalf("client identity headers = %#v", r.Header)
 		}
-		if r.Header.Get("x-grok-conversation-id") != "official-key" || len(requestID) != 32 || r.Header.Get("x-grok-request-id") != requestID || r.Header.Get("x-grok-session-id-legacy") != sessionID {
+		if r.Header.Get("x-grok-conversation-id") != "isolated-key" || len(requestID) != 32 || r.Header.Get("x-grok-request-id") != requestID || r.Header.Get("x-grok-session-id-legacy") != sessionID {
 			t.Fatalf("request identity headers = %#v", r.Header)
 		}
 		if r.Header.Get("x-userid") != "user-123" || r.Header.Get("Accept-Encoding") != "gzip" || len(r.Header.Get("traceparent")) != 55 {
@@ -71,15 +71,15 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 	adapter.http.Transport = transport
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: account.Credential{ID: 7, UserID: "user-123", EncryptedAccessToken: encrypted}, Method: http.MethodPost, Path: "/responses",
-		Model: "grok-4.5", PromptCacheKey: "official-key", NormalizeBody: true,
-		Body: []byte(`{"model":"public","prompt_cache_key":"official-key","input":[{"type":"reasoning","id":"rs_1","encrypted_content":"cipher"}]}`),
+		Model: "grok-4.5", PromptCacheKey: "isolated-key", NormalizeBody: true,
+		Body: []byte(`{"model":"public","prompt_cache_key":"client-key","input":[{"type":"reasoning","id":"rs_1","encrypted_content":"cipher"}]}`),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
 	input := captured["input"].([]any)
-	if captured["model"] != "grok-4.5" || captured["prompt_cache_key"] != "official-key" || len(input) != 1 || input[0].(map[string]any)["encrypted_content"] != "cipher" {
+	if captured["model"] != "grok-4.5" || captured["prompt_cache_key"] != "isolated-key" || len(input) != 1 || input[0].(map[string]any)["encrypted_content"] != "cipher" {
 		t.Fatalf("captured = %#v", captured)
 	}
 }
@@ -103,15 +103,19 @@ func TestForwardResponseSupportsResourceMethodsAndQuery(t *testing.T) {
 		if request.Header.Get("Accept") != "application/json" || request.Header.Get("Content-Type") != "" {
 			t.Fatalf("headers = %#v", request.Header)
 		}
+		if request.Body != nil {
+			t.Fatal("resource request unexpectedly gained a body")
+		}
 		next++
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"resp_1"}`)), Request: request}, nil
 	})
 
 	for _, method := range methods {
 		response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-			Credential: account.Credential{EncryptedAccessToken: encrypted},
-			Method:     method,
-			Path:       "/responses/resp_1?include=reasoning.encrypted_content",
+			Credential:     account.Credential{Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, EncryptedAccessToken: encrypted},
+			Method:         method,
+			Path:           "/responses/resp_1?include=reasoning.encrypted_content",
+			PromptCacheKey: "resource-cache-key",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -286,8 +290,11 @@ func TestForwardResponsePreservesClaudeCodeMessagesOptions(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload["instructions"] != "legacy system" || payload["store"] != false || payload["reasoning"].(map[string]any)["effort"] != "high" {
+		if payload["instructions"] != "legacy system" || payload["store"] != false || payload["reasoning"].(map[string]any)["effort"] != "high" || payload["prompt_cache_key"] != "messages-cache-key" {
 			t.Fatalf("upstream payload = %#v", payload)
+		}
+		if request.Header.Get("x-grok-conv-id") != "messages-cache-key" {
+			t.Fatalf("prompt cache headers = %#v", request.Header)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}},
@@ -304,7 +311,7 @@ func TestForwardResponsePreservesClaudeCodeMessagesOptions(t *testing.T) {
 
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: account.Credential{EncryptedAccessToken: encrypted},
-		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", NormalizeBody: true,
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", NormalizeBody: true, PromptCacheKey: "messages-cache-key",
 		Operation: conversation.OperationMessages,
 		Body: []byte(`{
 			"model":"public","max_tokens":256,"stop_sequences":["STOP"],
@@ -323,5 +330,45 @@ func TestForwardResponsePreservesClaudeCodeMessagesOptions(t *testing.T) {
 	content := payload["content"].([]any)
 	if payload["stop_reason"] != "stop_sequence" || payload["stop_sequence"] != "STOP" || content[0].(map[string]any)["type"] != "thinking" || content[1].(map[string]any)["text"] != "ABC" {
 		t.Fatalf("messages response = %#v", payload)
+	}
+}
+
+func TestForwardResponseInjectsPromptCacheKeyAfterChatConversion(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, cipher)
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["prompt_cache_key"] != "chat-cache-key" || request.Header.Get("x-grok-conv-id") != "chat-cache-key" {
+			t.Fatalf("prompt cache request: payload=%#v headers=%#v", payload, request.Header)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body:    io.NopCloser(strings.NewReader(`{"id":"resp_1","model":"grok-4.5","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`)),
+			Request: request,
+		}, nil
+	})
+
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", NormalizeBody: true,
+		Operation: conversation.OperationChat, PromptCacheKey: "chat-cache-key",
+		Body: []byte(`{"model":"public","messages":[{"role":"user","content":"hello"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
 	}
 }

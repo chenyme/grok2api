@@ -24,6 +24,7 @@ const nodeSnapshotTTL = time.Second
 
 type Lease struct {
 	NodeID    uint64
+	NodeName  string
 	Scope     domain.Scope
 	ProxyURL  string
 	UserAgent string
@@ -55,16 +56,21 @@ type Manager struct {
 	repository repository.EgressRepository
 	cipher     *security.Cipher
 	mu         sync.Mutex
-	clients    map[uint64]cachedClient
+	clients    map[clientCacheKey]cachedClient
 	inflight   map[uint64]int
 	nodes      map[domain.Scope]cachedNodeSnapshot
 	nodeLoads  singleflight.Group
 }
 
 type cachedClient struct {
+	client  requestClient
+	browser *browserClient
+}
+
+type clientCacheKey struct {
+	nodeID      uint64
+	scope       domain.Scope
 	fingerprint string
-	client      requestClient
-	browser     *browserClient
 }
 
 type cachedNodeSnapshot struct {
@@ -73,7 +79,7 @@ type cachedNodeSnapshot struct {
 }
 
 func NewManager(repository repository.EgressRepository, cipher *security.Cipher) *Manager {
-	return &Manager{repository: repository, cipher: cipher, clients: make(map[uint64]cachedClient), inflight: make(map[uint64]int), nodes: make(map[domain.Scope]cachedNodeSnapshot)}
+	return &Manager{repository: repository, cipher: cipher, clients: make(map[clientCacheKey]cachedClient), inflight: make(map[uint64]int), nodes: make(map[domain.Scope]cachedNodeSnapshot)}
 }
 
 func (m *Manager) Acquire(ctx context.Context, scope domain.Scope, affinity string) (*Lease, error) {
@@ -111,6 +117,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 			return nil, false, fmt.Errorf("当前没有可用的 %s 出口节点", scope)
 		}
 		if !allowDirect {
+			recordSelection(ctx, Selection{NodeName: "direct", Scope: scope})
 			return nil, false, nil
 		}
 		available = []domain.Node{{ID: 0, Name: "direct", Scope: scope, Enabled: true, Health: 1}}
@@ -147,8 +154,9 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	m.mu.Lock()
 	m.inflight[selected.ID]++
 	m.mu.Unlock()
+	recordSelection(ctx, Selection{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, Proxied: proxyURL != ""})
 	var once sync.Once
-	return &Lease{NodeID: selected.ID, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, release: func() {
+	return &Lease{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, release: func() {
 		once.Do(func() {
 			m.mu.Lock()
 			m.inflight[selected.ID]--
@@ -236,13 +244,17 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		clientKind = "build"
 	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(clientKind+"\x00"+proxyURL+"\x00"+userAgent+"\x00"+cookies)))
+	cacheScope := scope
+	if cacheScope == domain.ScopeWebAsset {
+		cacheScope = domain.ScopeWeb
+	}
+	key := clientCacheKey{nodeID: id, scope: cacheScope, fingerprint: fingerprint}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cached, ok := m.clients[id]; ok && cached.fingerprint == fingerprint {
+	if cached, ok := m.clients[key]; ok {
 		return cached, nil
 	}
 	var value cachedClient
-	value.fingerprint = fingerprint
 	if scope == domain.ScopeBuild {
 		client, err := newBuildClient(proxyURL)
 		if err != nil {
@@ -257,10 +269,20 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		value.client = client
 		value.browser = client
 	}
-	if previous, exists := m.clients[id]; exists && previous.client != nil {
-		previous.client.CloseIdleConnections()
+	// 持久化节点只属于一个 Scope；同节点出现新指纹说明配置已更新，旧连接池应淘汰。
+	// 直连节点统一使用 ID 0，不同 Provider 的传输必须并存，避免 Build 与 Web 互相重建客户端。
+	if id != 0 {
+		for previousKey, previous := range m.clients {
+			if previousKey.nodeID != id {
+				continue
+			}
+			if previous.client != nil {
+				previous.client.CloseIdleConnections()
+			}
+			delete(m.clients, previousKey)
+		}
 	}
-	m.clients[id] = value
+	m.clients[key] = value
 	return value, nil
 }
 
@@ -272,7 +294,7 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 	if nodeID == 0 {
 		if transportErr != nil || status >= 500 || (scope != domain.ScopeBuild && status == http.StatusForbidden) {
 			m.mu.Lock()
-			m.invalidateClientLocked(0)
+			m.invalidateClientForScopeLocked(0, scope)
 			m.mu.Unlock()
 		}
 		return
@@ -323,10 +345,30 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 }
 
 func (m *Manager) invalidateClientLocked(nodeID uint64) {
-	if cached, exists := m.clients[nodeID]; exists && cached.client != nil {
-		cached.client.CloseIdleConnections()
+	for key, cached := range m.clients {
+		if key.nodeID != nodeID {
+			continue
+		}
+		if cached.client != nil {
+			cached.client.CloseIdleConnections()
+		}
+		delete(m.clients, key)
 	}
-	delete(m.clients, nodeID)
+}
+
+func (m *Manager) invalidateClientForScopeLocked(nodeID uint64, scope domain.Scope) {
+	if scope == domain.ScopeWebAsset {
+		scope = domain.ScopeWeb
+	}
+	for key, cached := range m.clients {
+		if key.nodeID != nodeID || key.scope != scope {
+			continue
+		}
+		if cached.client != nil {
+			cached.client.CloseIdleConnections()
+		}
+		delete(m.clients, key)
+	}
 }
 
 func BuildSSOCookie(token, cloudflareCookies string) string {
