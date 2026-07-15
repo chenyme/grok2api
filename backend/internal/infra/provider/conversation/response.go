@@ -8,8 +8,11 @@ import (
 
 // ResponseOptions 保留无法直接交给 Responses 上游执行的下游协议语义。
 type ResponseOptions struct {
-	AnthropicThinking bool
-	StopSequences     []string
+	AnthropicThinking          bool
+	AnthropicWebSearch         bool
+	AnthropicWebSearchRequired bool
+	AnthropicWebSearchQuery    string
+	StopSequences              []string
 }
 
 type responseEnvelope struct {
@@ -94,6 +97,9 @@ func ConvertResponseJSONWithOptions(body []byte, operation string, options Respo
 	parsed := parseResponse(envelope)
 	if operation == OperationMessages {
 		parsed.Text, parsed.StopSequence = applyAnthropicStopSequences(parsed.Text, options.StopSequences)
+		if !options.AnthropicWebSearch {
+			parsed.WebSearch = nil
+		}
 	}
 	var result any
 	if operation == OperationMessages {

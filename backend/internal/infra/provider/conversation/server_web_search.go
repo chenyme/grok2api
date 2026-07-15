@@ -1,12 +1,14 @@
 package conversation
 
 import (
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/searchresult"
 )
 
 // webSearchHit is the minimal Claude Code WebSearchTool success payload.
@@ -24,14 +26,26 @@ type webSearchCall struct {
 	Code   string
 }
 
-func anthropicServerToolUseID(raw string, fallback any) string {
-	if strings.HasPrefix(raw, "srvtoolu_") {
-		return raw
+const maxWebSearchCalls = 32
+
+func unavailableWebSearchCall(query string) webSearchCall {
+	fallback := map[string]string{"type": "web_search", "query": query, "error": "unavailable"}
+	return webSearchCall{
+		ID: anthropicServerToolUseID("", fallback), Query: query,
+		Failed: true, Code: "unavailable",
 	}
+}
+
+func anthropicServerToolUseID(raw string, fallback any) string {
+	original := raw
+	raw = strings.TrimPrefix(raw, "srvtoolu_")
 	if raw == "" {
-		encoded, _ := json.Marshal(fallback)
-		sum := sha1.Sum(encoded)
-		return "srvtoolu_" + hex.EncodeToString(sum[:8])
+		encoded := []byte(original)
+		if original == "" {
+			encoded, _ = json.Marshal(fallback)
+		}
+		sum := sha256.Sum256(encoded)
+		return "srvtoolu_" + hex.EncodeToString(sum[:16])
 	}
 	// Build ids are long; keep stable prefix for multi-block pairing.
 	cleaned := strings.Map(func(r rune) rune {
@@ -40,8 +54,12 @@ func anthropicServerToolUseID(raw string, fallback any) string {
 		}
 		return '_'
 	}, raw)
-	if len(cleaned) > 48 {
-		cleaned = cleaned[len(cleaned)-48:]
+	if len(cleaned) > 48 || cleaned != raw {
+		sum := sha256.Sum256([]byte(original))
+		if len(cleaned) > 31 {
+			cleaned = cleaned[:31]
+		}
+		cleaned += "_" + hex.EncodeToString(sum[:8])
 	}
 	return "srvtoolu_" + cleaned
 }
@@ -62,21 +80,26 @@ func parseWebSearchCallItem(item responseItem) (webSearchCall, bool) {
 	}
 	// Prefer action.sources[].url
 	if rawSources, ok := action["sources"].([]any); ok {
+		seen := make(map[string]struct{}, len(rawSources))
 		for _, raw := range rawSources {
+			if len(call.Hits) >= searchresult.MaxResults {
+				break
+			}
 			source, _ := raw.(map[string]any)
 			if source == nil {
 				continue
 			}
 			link, _ := source["url"].(string)
-			link = strings.TrimSpace(link)
-			if link == "" {
+			link, valid := searchresult.NormalizeURL(link)
+			if !valid {
 				continue
 			}
-			title, _ := source["title"].(string)
-			title = strings.TrimSpace(title)
-			if title == "" {
-				title = titleFromURL(link)
+			if _, exists := seen[link]; exists {
+				continue
 			}
+			seen[link] = struct{}{}
+			title, _ := source["title"].(string)
+			title = searchresult.NormalizeTitle(title, titleFromURL(link))
 			call.Hits = append(call.Hits, webSearchHit{Title: title, URL: link})
 		}
 	}
@@ -113,25 +136,15 @@ func mergeAnnotationTitles(calls []webSearchCall, annotations []map[string]any) 
 		}
 		link, _ := ann["url"].(string)
 		title, _ := ann["title"].(string)
-		link = strings.TrimSpace(link)
+		link, valid := searchresult.NormalizeURL(link)
 		title = strings.TrimSpace(title)
-		if link == "" || title == "" {
+		if !valid || title == "" {
 			continue
 		}
-		// Skip numeric-only titles like "1","2" from Build
-		if len(title) <= 2 {
-			allDigit := true
-			for _, r := range title {
-				if r < '0' || r > '9' {
-					allDigit = false
-					break
-				}
-			}
-			if allDigit {
-				continue
-			}
+		if unhelpfulCitationTitle(title) {
+			continue
 		}
-		titles[link] = title
+		titles[link] = searchresult.NormalizeTitle(title, link)
 	}
 	for i := range calls {
 		for j := range calls[i].Hits {
@@ -141,6 +154,33 @@ func mergeAnnotationTitles(calls []webSearchCall, annotations []map[string]any) 
 		}
 	}
 	return calls
+}
+
+func unhelpfulCitationTitle(title string) bool {
+	value := strings.ToLower(strings.TrimSpace(title))
+	if value == "" {
+		return true
+	}
+	isDigits := func(candidate string) bool {
+		if candidate == "" {
+			return false
+		}
+		for _, r := range candidate {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	if isDigits(value) {
+		return true
+	}
+	for _, prefix := range []string{"source", "citation"} {
+		if strings.HasPrefix(value, prefix) && isDigits(strings.Trim(strings.TrimPrefix(value, prefix), " #:-")) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractMessageAnnotations(item responseItem) []map[string]any {
@@ -179,12 +219,18 @@ func dedupeWebSearchCalls(calls []webSearchCall) []webSearchCall {
 		}
 		id := call.ID
 		if id == "" {
+			if len(order) >= maxWebSearchCalls {
+				continue
+			}
 			order = append(order, fmt.Sprintf("__anon_%d", len(order)))
 			best[order[len(order)-1]] = call
 			continue
 		}
 		prev, exists := best[id]
 		if !exists {
+			if len(order) >= maxWebSearchCalls {
+				continue
+			}
 			order = append(order, id)
 			best[id] = call
 			continue

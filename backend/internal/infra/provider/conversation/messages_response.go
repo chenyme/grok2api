@@ -8,7 +8,11 @@ import (
 )
 
 func messagesResponse(value parsedResponse, options ResponseOptions) map[string]any {
-	content := make([]any, 0, len(value.Calls)+len(value.WebSearch)*2+2)
+	webSearch := value.WebSearch
+	if options.AnthropicWebSearchRequired && len(webSearch) == 0 {
+		webSearch = []webSearchCall{unavailableWebSearchCall(options.AnthropicWebSearchQuery)}
+	}
+	content := make([]any, 0, len(value.Calls)+len(webSearch)*2+2)
 	if options.AnthropicThinking && (value.Reasoning != "" || value.Signature != "") {
 		if value.Reasoning == "" {
 			content = append(content, map[string]any{"type": "redacted_thinking", "data": value.Signature})
@@ -21,8 +25,8 @@ func messagesResponse(value parsedResponse, options ResponseOptions) map[string]
 		}
 	}
 	// Hosted web search completes in-process; emit Anthropic server tool blocks first.
-	content = appendServerWebSearchContent(content, value.WebSearch)
-	if value.Text != "" || (len(value.Calls) == 0 && len(value.WebSearch) == 0) {
+	content = appendServerWebSearchContent(content, webSearch)
+	if value.Text != "" || (len(value.Calls) == 0 && len(webSearch) == 0) {
 		content = append(content, map[string]any{"type": "text", "text": value.Text})
 	}
 	for _, call := range value.Calls {
@@ -46,7 +50,7 @@ func messagesResponse(value parsedResponse, options ResponseOptions) map[string]
 	return map[string]any{
 		"id": anthropicMessageID(value.ID), "type": "message", "role": "assistant",
 		"model": value.Model, "content": content, "stop_reason": stopReason, "stop_sequence": nullableAnthropicString(value.StopSequence),
-		"usage": anthropicUsage(value.Usage, webSearchRequestCount(value.WebSearch)),
+		"usage": anthropicUsage(value.Usage, webSearchRequestCount(webSearch)),
 	}
 }
 

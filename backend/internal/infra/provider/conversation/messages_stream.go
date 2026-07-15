@@ -215,6 +215,9 @@ func (c *streamConverter) doneMessages(status string) error {
 			return err
 		}
 	}
+	if c.options.AnthropicWebSearchRequired && len(c.webSearch) == 0 {
+		c.webSearch = []webSearchCall{unavailableWebSearchCall(c.options.AnthropicWebSearchQuery)}
+	}
 	if c.deferSearchText {
 		// Hosted search was observed before text, so preserve Anthropic's block order:
 		// server_tool_use → web_search_tool_result → text.
@@ -248,9 +251,6 @@ func (c *streamConverter) doneMessages(status string) error {
 	}
 	openTools := make([]streamTool, 0)
 	for itemID, tool := range c.tools {
-		if strings.HasSuffix(itemID, "#ws") {
-			continue
-		}
 		if !tool.Closed {
 			tool.Closed = true
 			c.tools[itemID] = tool
@@ -265,13 +265,7 @@ func (c *streamConverter) doneMessages(status string) error {
 	}
 	stopReason := "end_turn"
 	// Only client function tools force tool_use stop. Hosted web_search is end_turn.
-	clientToolCount := 0
-	for itemID := range c.tools {
-		if !strings.HasSuffix(itemID, "#ws") {
-			clientToolCount++
-		}
-	}
-	if clientToolCount > 0 {
+	if len(c.tools) > 0 {
 		stopReason = "tool_use"
 	} else if c.stopSequence != "" {
 		stopReason = "stop_sequence"

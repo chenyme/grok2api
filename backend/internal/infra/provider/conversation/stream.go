@@ -72,6 +72,7 @@ func newStreamConverter(writer io.Writer, operation string, options ResponseOpti
 	return &streamConverter{
 		writer: writer, operation: operation, created: time.Now().Unix(), tools: make(map[string]streamTool),
 		webSearchEmitted: make(map[string]bool),
+		deferSearchText:  operation == OperationMessages && options.AnthropicWebSearch,
 		options:          options, stopFilter: newAnthropicStreamStopFilter(options.StopSequences),
 	}
 }
@@ -119,9 +120,6 @@ func (c *streamConverter) emitWebSearchUse(call webSearchCall) error {
 	index := c.nextIndex
 	c.nextIndex++
 	c.webSearchEmitted[call.ID+"#use"] = true
-	c.webSearchEmitted[call.ID+"#useIndex"] = true
-	// stash index in a side map via tools-like pattern: reuse tools map with special name
-	c.tools[call.ID+"#ws"] = streamTool{Index: index, ID: call.ID, Name: "web_search", Closed: false}
 	if err := c.writeEvent("content_block_start", map[string]any{
 		"type": "content_block_start", "index": index,
 		"content_block": map[string]any{"type": "server_tool_use", "id": call.ID, "name": "web_search", "input": map[string]any{}},
@@ -139,9 +137,6 @@ func (c *streamConverter) emitWebSearchUse(call webSearchCall) error {
 	if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": index}); err != nil {
 		return err
 	}
-	tool := c.tools[call.ID+"#ws"]
-	tool.Closed = true
-	c.tools[call.ID+"#ws"] = tool
 	return nil
 }
 
@@ -246,7 +241,7 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		if item.Type == "reasoning" && c.operation == OperationMessages && c.options.AnthropicThinking {
 			return c.thinkingStart(item.ID)
 		}
-		if item.Type == "web_search_call" && c.operation == OperationMessages {
+		if item.Type == "web_search_call" && c.operation == OperationMessages && c.options.AnthropicWebSearch {
 			if call, ok := parseWebSearchCallItem(item); ok {
 				return c.noteWebSearch(call, false)
 			}
@@ -277,7 +272,7 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		if item.Type == "reasoning" {
 			return c.thinkingDone(item)
 		}
-		if item.Type == "web_search_call" && c.operation == OperationMessages {
+		if item.Type == "web_search_call" && c.operation == OperationMessages && c.options.AnthropicWebSearch {
 			if call, ok := parseWebSearchCallItem(item); ok {
 				return c.noteWebSearch(call, true)
 			}
@@ -286,7 +281,7 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		var response responseEnvelope
 		_ = json.Unmarshal(root["response"], &response)
 		c.setResponse(response)
-		if c.operation == OperationMessages {
+		if c.operation == OperationMessages && c.options.AnthropicWebSearch {
 			parsed := parseResponse(response)
 			if len(parsed.WebSearch) > 0 {
 				c.webSearch = parsed.WebSearch

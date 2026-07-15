@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestParseAndMapBuildWebSearchCall(t *testing.T) {
@@ -24,13 +26,13 @@ func TestParseAndMapBuildWebSearchCall(t *testing.T) {
 			{"type":"web_search_call","id":"ws_abc","status":"completed","action":{"type":"search","query":""}},
 			{"type":"message","role":"assistant","content":[
 				{"type":"output_text","text":"Fable 5 is public.","annotations":[
-					{"type":"url_citation","url":"https://example.com/a","title":"Alpha Title","start_index":0,"end_index":5}
+					{"type":"url_citation","url":"https://EXAMPLE.com/a","title":"Alpha Title","start_index":0,"end_index":5}
 				]}
 			]}
 		],
 		"usage":{"input_tokens":10,"output_tokens":5}
 	}`)
-	data, err := ConvertResponseJSON(body, OperationMessages)
+	data, err := ConvertResponseJSONWithOptions(body, OperationMessages, ResponseOptions{AnthropicWebSearch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,8 +88,177 @@ func TestParseAndMapBuildWebSearchCall(t *testing.T) {
 	}
 }
 
+func TestMergeAnnotationTitlesSkipsFootnoteLabels(t *testing.T) {
+	for _, title := range []string{"123", "Source 1", "citation 2"} {
+		calls := []webSearchCall{{Hits: []webSearchHit{{Title: "example.com", URL: "https://example.com/a"}}}}
+		merged := mergeAnnotationTitles(calls, []map[string]any{{
+			"type": "url_citation", "url": "https://example.com/a", "title": title,
+		}})
+		if got := merged[0].Hits[0].Title; got != "example.com" {
+			t.Fatalf("footnote title %q replaced fallback with %q", title, got)
+		}
+	}
+}
+
+func TestUnrequestedWebSearchItemsAreNotExposed(t *testing.T) {
+	body := []byte(`{
+		"id":"resp_ws_unrequested","model":"grok-4.5","status":"completed",
+		"output":[
+			{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"private internal search","sources":[{"url":"https://example.com"}]}},
+			{"type":"message","content":[{"type":"output_text","text":"Plain answer."}]}
+		],
+		"usage":{"input_tokens":3,"output_tokens":2}
+	}`)
+	data, err := ConvertResponseJSONWithOptions(body, OperationMessages, ResponseOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatal(err)
+	}
+	content := msg["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["type"] != "text" {
+		t.Fatalf("unrequested server search was exposed: %#v", content)
+	}
+	if _, exists := msg["usage"].(map[string]any)["server_tool_use"]; exists {
+		t.Fatalf("unrequested search usage was exposed: %#v", msg["usage"])
+	}
+}
+
+func TestUnrequestedWebSearchStreamItemsAreNotExposed(t *testing.T) {
+	source := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.5"}}`,
+		``,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"private internal search","sources":[{"url":"https://example.com"}]}}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"Plain answer."}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5","status":"completed","output":[{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"private internal search","sources":[{"url":"https://example.com"}]}},{"type":"message","content":[{"type":"output_text","text":"Plain answer."}]}],"usage":{"input_tokens":3,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	raw, err := io.ReadAll(ConvertResponseStreamWithOptions(io.NopCloser(strings.NewReader(source)), OperationMessages, ResponseOptions{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "server_tool_use") || strings.Contains(text, "web_search_tool_result") || !strings.Contains(text, "Plain answer.") {
+		t.Fatalf("unrequested stream search was exposed:\n%s", text)
+	}
+}
+
+func TestRequestedBuildSearchWithoutCallEmitsUnavailableResult(t *testing.T) {
+	_, options, err := ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,
+		"messages":[{"role":"user","content":"Perform a web search for the query: rust tutorials"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search"}],
+		"tool_choice":{"type":"tool","name":"web_search"}
+	}`), "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{
+		"id":"resp_no_call","model":"grok-4.5","status":"completed",
+		"output":[{"type":"message","content":[{"type":"output_text","text":"Search was unavailable."}]}],
+		"usage":{"input_tokens":3,"output_tokens":2}
+	}`)
+	data, err := ConvertResponseJSONWithOptions(body, OperationMessages, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var message map[string]any
+	if err := json.Unmarshal(data, &message); err != nil {
+		t.Fatal(err)
+	}
+	content := message["content"].([]any)
+	if len(content) != 3 || content[0].(map[string]any)["type"] != "server_tool_use" || content[1].(map[string]any)["type"] != "web_search_tool_result" || content[2].(map[string]any)["text"] != "Search was unavailable." {
+		t.Fatalf("content = %#v", content)
+	}
+	use := content[0].(map[string]any)
+	if use["input"].(map[string]any)["query"] != "rust tutorials" || content[1].(map[string]any)["tool_use_id"] != use["id"] {
+		t.Fatalf("fallback linkage = %#v", content)
+	}
+	errorContent := content[1].(map[string]any)["content"].(map[string]any)
+	if errorContent["type"] != "web_search_tool_result_error" || errorContent["error_code"] != "unavailable" {
+		t.Fatalf("fallback error = %#v", errorContent)
+	}
+	usage := message["usage"].(map[string]any)["server_tool_use"].(map[string]any)
+	if usage["web_search_requests"] != float64(1) {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestOptionalBuildSearchWithoutCallRemainsPlainText(t *testing.T) {
+	_, options, err := ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,
+		"messages":[{"role":"user","content":"answer with or without search"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search"}]
+	}`), "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{
+		"id":"resp_optional","model":"grok-4.5","status":"completed",
+		"output":[{"type":"message","content":[{"type":"output_text","text":"Plain answer."}]}],
+		"usage":{"input_tokens":3,"output_tokens":2}
+	}`)
+	data, err := ConvertResponseJSONWithOptions(body, OperationMessages, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var message map[string]any
+	if err := json.Unmarshal(data, &message); err != nil {
+		t.Fatal(err)
+	}
+	content := message["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["type"] != "text" || content[0].(map[string]any)["text"] != "Plain answer." {
+		t.Fatalf("optional search fabricated server blocks: %#v", content)
+	}
+	if _, exists := message["usage"].(map[string]any)["server_tool_use"]; exists {
+		t.Fatalf("optional search fabricated usage: %#v", message["usage"])
+	}
+}
+
+func TestRequestedBuildSearchStreamWithoutCallEmitsUnavailableBeforeText(t *testing.T) {
+	_, options, err := ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,"stream":true,
+		"messages":[{"role":"user","content":"Perform a web search for the query: rust tutorials"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search"}],
+		"tool_choice":{"type":"tool","name":"web_search"}
+	}`), "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_no_call","model":"grok-4.5"}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"Search was unavailable."}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_no_call","model":"grok-4.5","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Search was unavailable."}]}],"usage":{"input_tokens":3,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	raw, err := io.ReadAll(ConvertResponseStreamWithOptions(io.NopCloser(strings.NewReader(source)), OperationMessages, options))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if got, want := contentBlockStartTypes(t, text), []string{"server_tool_use", "web_search_tool_result", "text"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("content block order = %v, want %v\n%s", got, want, text)
+	}
+	if !strings.Contains(text, `"error_code":"unavailable"`) || !strings.Contains(text, `"web_search_requests":1`) || !strings.Contains(text, "rust tutorials") {
+		t.Fatalf("missing unavailable fallback: %s", text)
+	}
+}
+
 func TestConvertAnthropicWebSearchToolChoiceRequired(t *testing.T) {
-	converted, _, err := ConvertRequestWithOptions([]byte(`{
+	converted, options, err := ConvertRequestWithOptions([]byte(`{
 		"model":"public","max_tokens":64,
 		"messages":[{"role":"user","content":"Perform a web search for the query: x"}],
 		"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}],
@@ -104,6 +275,9 @@ func TestConvertAnthropicWebSearchToolChoiceRequired(t *testing.T) {
 	}
 	if payload["tool_choice"] != "required" {
 		t.Fatalf("tool_choice = %#v", payload["tool_choice"])
+	}
+	if !options.AnthropicWebSearchRequired {
+		t.Fatalf("forced hosted search was not retained in response options: %#v", options)
 	}
 }
 
@@ -148,6 +322,46 @@ func TestClientLowercaseWebSearchToolChoiceRemainsFunction(t *testing.T) {
 	}
 }
 
+func TestResponseOptionsRetainOnlyExplicitWebSearchQuery(t *testing.T) {
+	_, searchOptions, err := ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,
+		"messages":[{"role":"user","content":[{"type":"text","text":"Perform a web search for the query: rust tutorials"}]}],
+		"tools":[{"type":"web_search_20250305","name":"web_search"}]
+	}`), "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !searchOptions.AnthropicWebSearch || searchOptions.AnthropicWebSearchRequired || searchOptions.AnthropicWebSearchQuery != "rust tutorials" {
+		t.Fatalf("search options = %#v", searchOptions)
+	}
+
+	_, regularOptions, err := ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,
+		"messages":[{"role":"user","content":"private user prompt"}]
+	}`), "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regularOptions.AnthropicWebSearch || regularOptions.AnthropicWebSearchQuery != "" {
+		t.Fatalf("regular request retained prompt data: %#v", regularOptions)
+	}
+}
+
+func TestWebSearchToolChoiceNoneDisablesResponseMapping(t *testing.T) {
+	_, options, err := ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,
+		"messages":[{"role":"user","content":"Perform a web search for the query: private query"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search"}],
+		"tool_choice":{"type":"none"}
+	}`), "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.AnthropicWebSearch || options.AnthropicWebSearchQuery != "" {
+		t.Fatalf("tool_choice none retained web search state: %#v", options)
+	}
+}
+
 func TestMapBuildWebSearchFiltersEmptyDistinctCalls(t *testing.T) {
 	body := []byte(`{
 		"id":"resp_ws_empty","model":"grok-4.5","status":"completed",
@@ -162,7 +376,7 @@ func TestMapBuildWebSearchFiltersEmptyDistinctCalls(t *testing.T) {
 		],
 		"usage":{"input_tokens":3,"output_tokens":2}
 	}`)
-	data, err := ConvertResponseJSON(body, OperationMessages)
+	data, err := ConvertResponseJSONWithOptions(body, OperationMessages, ResponseOptions{AnthropicWebSearch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +414,7 @@ func TestMapBuildWebSearchDerivesDistinctMissingIDs(t *testing.T) {
 		],
 		"usage":{"input_tokens":3,"output_tokens":2}
 	}`)
-	data, err := ConvertResponseJSON(body, OperationMessages)
+	data, err := ConvertResponseJSONWithOptions(body, OperationMessages, ResponseOptions{AnthropicWebSearch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +439,103 @@ func TestMapBuildWebSearchDerivesDistinctMissingIDs(t *testing.T) {
 	}
 }
 
+func TestAnthropicServerToolUseIDDoesNotCollideOnLongCommonSuffix(t *testing.T) {
+	suffix := strings.Repeat("z", 48)
+	first := anthropicServerToolUseID("first-prefix-"+suffix, nil)
+	second := anthropicServerToolUseID("second-prefix-"+suffix, nil)
+	if first == second {
+		t.Fatalf("long upstream IDs collided: %q", first)
+	}
+}
+
+func TestAnthropicServerToolUseIDNormalizesPrefixedUntrustedID(t *testing.T) {
+	raw := "srvtoolu_" + strings.Repeat("a", 80) + " bad\n"
+	got := anthropicServerToolUseID(raw, nil)
+	if !strings.HasPrefix(got, "srvtoolu_") || len(got) > 64 {
+		t.Fatalf("normalized id = %q (len=%d)", got, len(got))
+	}
+	if strings.IndexFunc(got, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-')
+	}) >= 0 {
+		t.Fatalf("normalized id retained unsafe characters: %q", got)
+	}
+	if again := anthropicServerToolUseID(raw, nil); again != got {
+		t.Fatalf("normalization is unstable: first=%q second=%q", got, again)
+	}
+}
+
+func TestMapBuildWebSearchFiltersUnsafeAndDuplicateSources(t *testing.T) {
+	body := []byte(`{
+		"id":"resp_ws_sources","model":"grok-4.5","status":"completed",
+		"output":[{"type":"web_search_call","id":"ws_1","status":"completed","action":{
+			"type":"search","query":"security",
+			"sources":[
+				{"url":"https://example.com/a","title":"Example"},
+				{"url":"https://example.com/a","title":"Duplicate"},
+				{"url":"javascript:alert(1)","title":"Script"},
+				{"url":"file:///etc/passwd","title":"File"},
+				{"url":"/relative/path","title":"Relative"},
+				{"url":"https://user:secret@example.com/private","title":"Credential URL"}
+			]
+		}}],
+		"usage":{"input_tokens":3,"output_tokens":2}
+	}`)
+	data, err := ConvertResponseJSONWithOptions(body, OperationMessages, ResponseOptions{AnthropicWebSearch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatal(err)
+	}
+	content := msg["content"].([]any)
+	hits := content[1].(map[string]any)["content"].([]any)
+	if len(hits) != 1 {
+		t.Fatalf("unsafe or duplicate sources leaked into hits: %#v", hits)
+	}
+	hit := hits[0].(map[string]any)
+	if hit["url"] != "https://example.com/a" || hit["title"] != "Example" {
+		t.Fatalf("hit = %#v", hit)
+	}
+}
+
+func TestParseBuildWebSearchBoundsResultsAndTitles(t *testing.T) {
+	sources := make([]any, 0, 60)
+	for index := 0; index < 60; index++ {
+		sources = append(sources, map[string]any{
+			"url":   "https://example.com/" + strconv.Itoa(index),
+			"title": strings.Repeat("界", 600),
+		})
+	}
+	call, ok := parseWebSearchCallItem(responseItem{
+		ID: "ws_bounds", Type: "web_search_call", Status: "completed",
+		Action: map[string]any{"query": "bounds", "sources": sources},
+	})
+	if !ok {
+		t.Fatal("web search call was not parsed")
+	}
+	if len(call.Hits) != 50 {
+		t.Fatalf("hits = %d, want 50", len(call.Hits))
+	}
+	if got := utf8.RuneCountInString(call.Hits[0].Title); got != 512 {
+		t.Fatalf("title runes = %d, want 512", got)
+	}
+}
+
+func TestDedupeWebSearchCallsBoundsCallCount(t *testing.T) {
+	calls := make([]webSearchCall, 0, 40)
+	for index := 0; index < 40; index++ {
+		calls = append(calls, webSearchCall{
+			ID:    "srvtoolu_" + strconv.Itoa(index),
+			Query: "query " + strconv.Itoa(index),
+			Hits:  []webSearchHit{{Title: "Example", URL: "https://example.com/" + strconv.Itoa(index)}},
+		})
+	}
+	if got := len(dedupeWebSearchCalls(calls)); got != 32 {
+		t.Fatalf("deduped calls = %d, want 32", got)
+	}
+}
+
 func TestStreamEmitsServerWebSearchBlocks(t *testing.T) {
 	source := strings.Join([]string{
 		`event: response.created`,
@@ -240,7 +551,7 @@ func TestStreamEmitsServerWebSearchBlocks(t *testing.T) {
 		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5","status":"completed","output":[{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"rust tutorials","sources":[{"type":"url","url":"https://doc.rust-lang.org"}]}},{"type":"message","content":[{"type":"output_text","text":"Here you go."}]}],"usage":{"input_tokens":3,"output_tokens":2}}}`,
 		``,
 	}, "\n")
-	stream := ConvertResponseStream(io.NopCloser(strings.NewReader(source)), OperationMessages)
+	stream := ConvertResponseStreamWithOptions(io.NopCloser(strings.NewReader(source)), OperationMessages, ResponseOptions{AnthropicWebSearch: true})
 	raw, err := io.ReadAll(stream)
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +603,7 @@ func TestStreamFiltersEmptyDistinctWebSearchCalls(t *testing.T) {
 		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5","status":"completed","output":[{"type":"web_search_call","id":"ws_real","status":"completed","action":{"type":"search","query":"rust tutorials","sources":[{"type":"url","url":"https://doc.rust-lang.org"}]}},{"type":"web_search_call","id":"ws_empty_1","status":"completed","action":{"type":"search"}},{"type":"web_search_call","id":"ws_empty_2","status":"completed","action":{"type":"search","query":""}},{"type":"message","content":[{"type":"output_text","text":"Here you go."}]}],"usage":{"input_tokens":3,"output_tokens":2}}}`,
 		``,
 	}, "\n")
-	stream := ConvertResponseStream(io.NopCloser(strings.NewReader(source)), OperationMessages)
+	stream := ConvertResponseStreamWithOptions(io.NopCloser(strings.NewReader(source)), OperationMessages, ResponseOptions{AnthropicWebSearch: true})
 	raw, err := io.ReadAll(stream)
 	if err != nil {
 		t.Fatal(err)
@@ -334,7 +645,7 @@ func TestStreamDefersTextWhenWebSearchArrivesDuringThinking(t *testing.T) {
 		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5","status":"completed","output":[{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"rust tutorials","sources":[{"type":"url","url":"https://doc.rust-lang.org"}]}},{"type":"message","content":[{"type":"output_text","text":"Here you go."}]}],"usage":{"input_tokens":3,"output_tokens":2}}}`,
 		``,
 	}, "\n")
-	stream := ConvertResponseStreamWithOptions(io.NopCloser(strings.NewReader(source)), OperationMessages, ResponseOptions{AnthropicThinking: true})
+	stream := ConvertResponseStreamWithOptions(io.NopCloser(strings.NewReader(source)), OperationMessages, ResponseOptions{AnthropicThinking: true, AnthropicWebSearch: true})
 	raw, err := io.ReadAll(stream)
 	if err != nil {
 		t.Fatal(err)
@@ -342,6 +653,43 @@ func TestStreamDefersTextWhenWebSearchArrivesDuringThinking(t *testing.T) {
 	text := string(raw)
 	assertSequentialContentBlocks(t, text)
 	wantOrder := []string{"thinking", "server_tool_use", "web_search_tool_result", "text"}
+	if got := contentBlockStartTypes(t, text); !reflect.DeepEqual(got, wantOrder) {
+		t.Fatalf("content block order = %v, want %v\n%s", got, wantOrder, text)
+	}
+}
+
+func TestStreamUsesRequestContextWhenTextArrivesBeforeWebSearchItem(t *testing.T) {
+	_, options, err := ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,"stream":true,
+		"messages":[{"role":"user","content":"Perform a web search for the query: rust tutorials"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}],
+		"tool_choice":{"type":"tool","name":"web_search"}
+	}`), "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.5"}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"Here you go."}`,
+		``,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"rust tutorials","sources":[{"type":"url","url":"https://doc.rust-lang.org"}]}}}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5","status":"completed","output":[{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"rust tutorials","sources":[{"type":"url","url":"https://doc.rust-lang.org"}]}},{"type":"message","content":[{"type":"output_text","text":"Here you go."}]}],"usage":{"input_tokens":3,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	stream := ConvertResponseStreamWithOptions(io.NopCloser(strings.NewReader(source)), OperationMessages, options)
+	raw, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	assertSequentialContentBlocks(t, text)
+	wantOrder := []string{"server_tool_use", "web_search_tool_result", "text"}
 	if got := contentBlockStartTypes(t, text); !reflect.DeepEqual(got, wantOrder) {
 		t.Fatalf("content block order = %v, want %v\n%s", got, wantOrder, text)
 	}
