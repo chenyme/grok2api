@@ -84,7 +84,8 @@ func cleanupRateShard(shard *rateShard, now time.Time) {
 
 // ConcurrencyLimiter 提供单实例并发租约。
 type ConcurrencyLimiter struct {
-	shards [shardCount]concurrencyShard
+	shards       [shardCount]concurrencyShard
+	indicesCache sync.Pool
 }
 
 type concurrencyShard struct {
@@ -97,6 +98,7 @@ func NewConcurrencyLimiter() *ConcurrencyLimiter {
 	for index := range limiter.shards {
 		limiter.shards[index].counts = make(map[string]int)
 	}
+	limiter.indicesCache.New = func() any { return make([]int, 0, 256) }
 	return limiter
 }
 
@@ -135,10 +137,48 @@ func (l *ConcurrencyLimiter) Current(_ context.Context, key string) (int, error)
 
 func (l *ConcurrencyLimiter) CurrentMany(_ context.Context, keys []string) (map[string]int, error) {
 	values := make(map[string]int, len(keys))
+	if len(keys) == 0 {
+		return values, nil
+	}
+
+	// 选号会一次读取整个候选池。先按分片聚合下标，避免同一分片在一次快照中
+	// 被反复加锁数千次，并缩短高并发请求之间的锁竞争窗口。
+	var counts [shardCount]int
 	for _, key := range keys {
-		shard := &l.shards[shardIndex(key)]
+		counts[shardIndex(key)]++
+	}
+	var offsets [shardCount + 1]int
+	for index := range shardCount {
+		offsets[index+1] = offsets[index] + counts[index]
+	}
+	cursors := offsets
+	grouped := l.indicesCache.Get().([]int)
+	if cap(grouped) < len(keys) {
+		grouped = make([]int, len(keys))
+	} else {
+		grouped = grouped[:len(keys)]
+	}
+	defer func() {
+		// 不保留异常大的候选池缓冲，避免一次峰值长期占用进程内存。
+		if cap(grouped) <= maxEntries {
+			l.indicesCache.Put(grouped[:0])
+		}
+	}()
+	for keyIndex, key := range keys {
+		shard := int(shardIndex(key))
+		grouped[cursors[shard]] = keyIndex
+		cursors[shard]++
+	}
+	for shardIndex := range shardCount {
+		if offsets[shardIndex] == offsets[shardIndex+1] {
+			continue
+		}
+		shard := &l.shards[shardIndex]
 		shard.mu.Lock()
-		values[key] = shard.counts[key]
+		for _, keyIndex := range grouped[offsets[shardIndex]:offsets[shardIndex+1]] {
+			key := keys[keyIndex]
+			values[key] = shard.counts[key]
+		}
 		shard.mu.Unlock()
 	}
 	return values, nil

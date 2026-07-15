@@ -186,7 +186,7 @@ func TestSelectMediaRouteSkipsSameNamedConversationRoute(t *testing.T) {
 		{ID: 20, PublicID: "Web/grok-shared", Provider: account.ProviderWeb, UpstreamModel: "grok-shared", Capability: modeldomain.CapabilityImage},
 	}
 	selected, err := service.selectMediaRoute(routes, clientkey.Key{}, modeldomain.CapabilityImage, func(providerValue account.Provider) bool {
-		_, ok := registry.Images(providerValue)
+		_, ok := registry.ImageGeneration(providerValue)
 		return ok
 	})
 	if err != nil || selected.ID != 20 {

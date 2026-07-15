@@ -34,27 +34,14 @@ type Adapter struct {
 }
 
 func NewAdapter(cfg Config, egress *infraegress.Manager, cipher *security.Cipher) *Adapter {
-	return &Adapter{cfg: normalizedConfig(cfg), egress: egress, cipher: cipher}
-}
-
-func normalizedConfig(cfg Config) Config {
-	if strings.TrimSpace(cfg.BaseURL) == "" {
-		cfg.BaseURL = "https://console.x.ai"
-	}
-	if strings.TrimSpace(cfg.UserAgent) == "" {
-		cfg.UserAgent = infraegress.DefaultUserAgent
-	}
-	if cfg.TimeoutSeconds <= 0 {
-		cfg.TimeoutSeconds = 300
-	}
-	return cfg
+	return &Adapter{cfg: cfg, egress: egress, cipher: cipher}
 }
 
 func (a *Adapter) Provider() account.Provider { return account.ProviderConsole }
 
 func (a *Adapter) UpdateConfig(cfg Config) {
 	a.mu.Lock()
-	a.cfg = normalizedConfig(cfg)
+	a.cfg = cfg
 	a.mu.Unlock()
 }
 

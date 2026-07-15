@@ -4,6 +4,7 @@ import "time"
 
 // Config 表示可跨重启持久化并支持热加载的网关运行参数。
 type Config struct {
+	Server            ServerConfig
 	ProviderBuild     ProviderBuildConfig
 	ProviderWeb       ProviderWebConfig
 	ProviderConsole   ProviderConsoleConfig
@@ -13,6 +14,11 @@ type Config struct {
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+}
+
+// ServerConfig 定义可热更新的推理入口容量参数。
+type ServerConfig struct {
+	MaxConcurrentRequests int
 }
 
 // FrontendConfig 定义公开 API 地址的运行时覆盖值；留空时使用配置文件值。
