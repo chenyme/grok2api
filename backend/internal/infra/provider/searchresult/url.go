@@ -3,6 +3,7 @@ package searchresult
 import (
 	"net/url"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -15,7 +16,7 @@ const (
 // URLs so upstream search data cannot introduce active or privacy-sensitive links.
 func NormalizeURL(raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
-	if raw == "" || len(raw) > maxURLBytes || strings.IndexAny(raw, "\r\n\t") >= 0 {
+	if raw == "" || len(raw) > maxURLBytes || strings.IndexFunc(raw, unsafeTextRune) >= 0 {
 		return "", false
 	}
 	parsed, err := url.Parse(raw)
@@ -35,13 +36,31 @@ func NormalizeURL(raw string) (string, bool) {
 }
 
 func NormalizeTitle(raw, fallback string) string {
-	value := strings.TrimSpace(raw)
+	value := sanitizeTitle(raw)
 	if value == "" {
-		value = strings.TrimSpace(fallback)
+		value = sanitizeTitle(fallback)
 	}
 	runes := []rune(value)
 	if len(runes) > MaxTitleRunes {
 		value = string(runes[:MaxTitleRunes])
 	}
 	return value
+}
+
+func unsafeTextRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf)
+}
+
+func sanitizeTitle(value string) string {
+	value = strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\n', '\t':
+			return ' '
+		}
+		if unsafeTextRune(r) {
+			return -1
+		}
+		return r
+	}, value)
+	return strings.Join(strings.Fields(value), " ")
 }

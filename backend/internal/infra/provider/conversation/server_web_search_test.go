@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/searchresult"
 )
 
 func TestParseAndMapBuildWebSearchCall(t *testing.T) {
@@ -536,6 +538,68 @@ func TestDedupeWebSearchCallsBoundsCallCount(t *testing.T) {
 	}
 }
 
+func TestDedupeWebSearchCallsBoundsMergedHits(t *testing.T) {
+	first := webSearchCall{ID: "srvtoolu_merge", Query: "query"}
+	second := webSearchCall{ID: "srvtoolu_merge", Query: "query"}
+	for index := 0; index < searchresult.MaxResults; index++ {
+		first.Hits = append(first.Hits, webSearchHit{Title: "First", URL: "https://example.com/a/" + strconv.Itoa(index)})
+		second.Hits = append(second.Hits, webSearchHit{Title: "Second", URL: "https://example.com/b/" + strconv.Itoa(index)})
+	}
+	merged := dedupeWebSearchCalls([]webSearchCall{first, second})
+	if len(merged) != 1 || len(merged[0].Hits) != searchresult.MaxResults {
+		t.Fatalf("merged calls = %#v", merged)
+	}
+}
+
+func TestParseWebSearchCallBoundsUpstreamQuery(t *testing.T) {
+	call, ok := parseWebSearchCallItem(responseItem{
+		ID: "ws_long_query", Type: "web_search_call", Status: "completed",
+		Action: map[string]any{"type": "search", "query": strings.Repeat("界", 5000)},
+	})
+	if !ok {
+		t.Fatal("web search call was not parsed")
+	}
+	if got := utf8.RuneCountInString(call.Query); got != 4096 {
+		t.Fatalf("query runes = %d, want 4096", got)
+	}
+}
+
+func TestStreamCapsWebSearchCallsBeforeEmission(t *testing.T) {
+	var output strings.Builder
+	converter := newStreamConverter(&output, OperationMessages, ResponseOptions{AnthropicWebSearch: true})
+	for index := 0; index < maxWebSearchCalls+10; index++ {
+		call := webSearchCall{
+			ID:    "srvtoolu_stream_" + strconv.Itoa(index),
+			Query: "query " + strconv.Itoa(index),
+			Hits:  []webSearchHit{{Title: "Example", URL: "https://example.com/" + strconv.Itoa(index)}},
+		}
+		if err := converter.noteWebSearch(call, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(converter.webSearch) != maxWebSearchCalls {
+		t.Fatalf("tracked web search calls = %d, want %d", len(converter.webSearch), maxWebSearchCalls)
+	}
+	if got := strings.Count(output.String(), `"type":"server_tool_use"`); got != maxWebSearchCalls {
+		t.Fatalf("emitted server tool uses = %d, want %d", got, maxWebSearchCalls)
+	}
+}
+
+func TestStreamRejectsOversizedDeferredSearchText(t *testing.T) {
+	converter := newStreamConverter(io.Discard, OperationMessages, ResponseOptions{AnthropicWebSearch: true})
+	data, err := json.Marshal(map[string]any{
+		"type":  "response.output_text.delta",
+		"delta": strings.Repeat("x", (8<<20)+1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = converter.handle("response.output_text.delta", data)
+	if err == nil || !strings.Contains(err.Error(), "缓冲") {
+		t.Fatalf("oversized deferred text error = %v", err)
+	}
+}
+
 func TestStreamEmitsServerWebSearchBlocks(t *testing.T) {
 	source := strings.Join([]string{
 		`event: response.created`,
@@ -692,6 +756,36 @@ func TestStreamUsesRequestContextWhenTextArrivesBeforeWebSearchItem(t *testing.T
 	wantOrder := []string{"server_tool_use", "web_search_tool_result", "text"}
 	if got := contentBlockStartTypes(t, text); !reflect.DeepEqual(got, wantOrder) {
 		t.Fatalf("content block order = %v, want %v\n%s", got, wantOrder, text)
+	}
+}
+
+func TestStreamFinalEnvelopeDoesNotOrphanEarlierWebSearchUse(t *testing.T) {
+	source := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.5"}}`,
+		``,
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","item":{"id":"ws_early","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"early query"}}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"Answer."}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5","status":"completed","output":[{"type":"web_search_call","id":"ws_final","status":"completed","action":{"type":"search","query":"final query","sources":[{"url":"https://example.com/final"}]}},{"type":"message","content":[{"type":"output_text","text":"Answer."}]}],"usage":{"input_tokens":3,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	raw, err := io.ReadAll(ConvertResponseStreamWithOptions(io.NopCloser(strings.NewReader(source)), OperationMessages, ResponseOptions{AnthropicWebSearch: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	uses := strings.Count(text, `"type":"server_tool_use"`)
+	results := strings.Count(text, `"type":"web_search_tool_result"`)
+	if uses != 2 || results != uses {
+		t.Fatalf("uses=%d results=%d; earlier use was orphaned\n%s", uses, results, text)
+	}
+	if !strings.Contains(text, "early query") || !strings.Contains(text, "final query") || !strings.Contains(text, `"web_search_requests":2`) {
+		t.Fatalf("merged stream lost a search call\n%s", text)
 	}
 }
 

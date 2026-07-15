@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -21,6 +22,7 @@ func TestNormalizeURL(t *testing.T) {
 		{name: "relative", raw: "/relative/path"},
 		{name: "credentials", raw: "https://user:secret@example.com/private"},
 		{name: "control", raw: "https://example.com/\nprivate"},
+		{name: "bidi control", raw: "https://example.com/\u202Ehidden"},
 		{name: "oversized", raw: "https://example.com/" + strings.Repeat("a", maxURLBytes)},
 		{name: "encoding expansion", raw: "https://example.com/#" + strings.Repeat("´", maxURLBytes/2)},
 	}
@@ -41,6 +43,12 @@ func TestNormalizeTitle(t *testing.T) {
 	}
 	if got := NormalizeTitle("  ", " fallback "); got != "fallback" {
 		t.Fatalf("fallback title = %q", got)
+	}
+	if got := NormalizeTitle("Safe\x1b[31m\nTitle\u202E", "fallback"); got != "Safe[31m Title" {
+		t.Fatalf("control-safe title = %q", got)
+	}
+	if got := NormalizeTitle("\x1b\u202E", "Clean fallback"); got != "Clean fallback" {
+		t.Fatalf("sanitized-empty fallback title = %q", got)
 	}
 }
 
@@ -63,7 +71,9 @@ func FuzzNormalizeURL(f *testing.F) {
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
 			t.Fatalf("unsafe normalized URL %q from %q", normalized, raw)
 		}
-		if len(normalized) > maxURLBytes || strings.IndexAny(normalized, "\r\n\t") >= 0 {
+		if len(normalized) > maxURLBytes || strings.IndexFunc(normalized, func(r rune) bool {
+			return unicode.IsControl(r) || unicode.In(r, unicode.Cf)
+		}) >= 0 {
 			t.Fatalf("unbounded normalized URL %q", normalized)
 		}
 	})

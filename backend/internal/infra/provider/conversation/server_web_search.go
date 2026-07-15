@@ -76,7 +76,7 @@ func parseWebSearchCallItem(item responseItem) (webSearchCall, bool) {
 		return call, true
 	}
 	if q, _ := action["query"].(string); strings.TrimSpace(q) != "" {
-		call.Query = strings.TrimSpace(q)
+		call.Query = truncateRunes(strings.TrimSpace(q), 4096)
 	}
 	// Prefer action.sources[].url
 	if rawSources, ok := action["sources"].([]any); ok {
@@ -214,6 +214,7 @@ func dedupeWebSearchCalls(calls []webSearchCall) []webSearchCall {
 	order := make([]string, 0, len(calls))
 	best := make(map[string]webSearchCall, len(calls))
 	for _, call := range calls {
+		call.Hits = boundedWebSearchHits(call.Hits)
 		if !call.Failed && strings.TrimSpace(call.Query) == "" && len(call.Hits) == 0 {
 			continue
 		}
@@ -253,23 +254,7 @@ func dedupeWebSearchCalls(calls []webSearchCall) []webSearchCall {
 			}
 			// Union hits by URL if both have sources.
 			if len(prev.Hits) > 0 && len(call.Hits) > 0 {
-				seen := make(map[string]struct{}, len(call.Hits)+len(prev.Hits))
-				merged := make([]webSearchHit, 0, len(call.Hits)+len(prev.Hits))
-				for _, hit := range call.Hits {
-					if _, ok := seen[hit.URL]; ok {
-						continue
-					}
-					seen[hit.URL] = struct{}{}
-					merged = append(merged, hit)
-				}
-				for _, hit := range prev.Hits {
-					if _, ok := seen[hit.URL]; ok {
-						continue
-					}
-					seen[hit.URL] = struct{}{}
-					merged = append(merged, hit)
-				}
-				call.Hits = merged
+				call.Hits = boundedWebSearchHits(call.Hits, prev.Hits)
 			} else if len(call.Hits) == 0 {
 				call.Hits = prev.Hits
 			}
@@ -284,6 +269,24 @@ func dedupeWebSearchCalls(calls []webSearchCall) []webSearchCall {
 		out = append(out, best[id])
 	}
 	return out
+}
+
+func boundedWebSearchHits(groups ...[]webSearchHit) []webSearchHit {
+	seen := make(map[string]struct{}, searchresult.MaxResults)
+	bounded := make([]webSearchHit, 0, searchresult.MaxResults)
+	for _, hits := range groups {
+		for _, hit := range hits {
+			if len(bounded) >= searchresult.MaxResults {
+				return bounded
+			}
+			if _, exists := seen[hit.URL]; exists {
+				continue
+			}
+			seen[hit.URL] = struct{}{}
+			bounded = append(bounded, hit)
+		}
+	}
+	return bounded
 }
 
 func appendServerWebSearchContent(content []any, calls []webSearchCall) []any {

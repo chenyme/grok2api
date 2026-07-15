@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const maxDeferredSearchTextBytes = 8 << 20
+
 // ConvertResponseStream 将 Responses SSE 转换为 Chat Completions 或 Anthropic Messages SSE。
 func ConvertResponseStream(source io.ReadCloser, operation string) io.ReadCloser {
 	return ConvertResponseStreamWithOptions(source, operation, ResponseOptions{})
@@ -98,6 +100,9 @@ func (c *streamConverter) noteWebSearch(call webSearchCall, final bool) error {
 		}
 	}
 	if !replaced {
+		if len(c.webSearch) >= maxWebSearchCalls {
+			return nil
+		}
 		c.webSearch = append(c.webSearch, call)
 	}
 	if !c.textStarted {
@@ -217,8 +222,7 @@ func (c *streamConverter) handle(event string, data []byte) error {
 			return err
 		}
 		if c.operation == OperationMessages && c.deferSearchText {
-			c.pendingSearchText.WriteString(delta)
-			return nil
+			return c.bufferSearchText(delta)
 		}
 		return c.textDelta(delta)
 	case "response.reasoning_summary_text.delta":
@@ -283,8 +287,10 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		c.setResponse(response)
 		if c.operation == OperationMessages && c.options.AnthropicWebSearch {
 			parsed := parseResponse(response)
-			if len(parsed.WebSearch) > 0 {
-				c.webSearch = parsed.WebSearch
+			for _, call := range parsed.WebSearch {
+				if err := c.noteWebSearch(call, true); err != nil {
+					return err
+				}
 			}
 		}
 		status := response.Status
@@ -295,6 +301,14 @@ func (c *streamConverter) handle(event string, data []byte) error {
 	case "error", "response.failed":
 		return c.streamError(data)
 	}
+	return nil
+}
+
+func (c *streamConverter) bufferSearchText(delta string) error {
+	if len(delta) > maxDeferredSearchTextBytes-c.pendingSearchText.Len() {
+		return fmt.Errorf("WebSearch 延迟文本缓冲超过 %d MiB", maxDeferredSearchTextBytes>>20)
+	}
+	c.pendingSearchText.WriteString(delta)
 	return nil
 }
 
