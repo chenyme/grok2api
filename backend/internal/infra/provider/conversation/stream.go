@@ -34,27 +34,29 @@ func ConvertResponseStreamWithOptions(source io.ReadCloser, operation string, op
 }
 
 type streamConverter struct {
-	writer           io.Writer
-	operation        string
-	id               string
-	model            string
-	created          int64
-	started          bool
-	finished         bool
-	textStarted      bool
-	textIndex        int
-	thinkingStarted  bool
-	thinkingClosed   bool
-	thinkingIndex    int
-	thinkingItemID   string
-	nextIndex        int
-	tools            map[string]streamTool
-	webSearch        []webSearchCall
-	webSearchEmitted map[string]bool
-	usage            responseUsage
-	options          ResponseOptions
-	stopFilter       *anthropicStreamStopFilter
-	stopSequence     string
+	writer            io.Writer
+	operation         string
+	id                string
+	model             string
+	created           int64
+	started           bool
+	finished          bool
+	textStarted       bool
+	textIndex         int
+	thinkingStarted   bool
+	thinkingClosed    bool
+	thinkingIndex     int
+	thinkingItemID    string
+	nextIndex         int
+	tools             map[string]streamTool
+	webSearch         []webSearchCall
+	webSearchEmitted  map[string]bool
+	deferSearchText   bool
+	pendingSearchText strings.Builder
+	usage             responseUsage
+	options           ResponseOptions
+	stopFilter        *anthropicStreamStopFilter
+	stopSequence      string
 }
 
 type streamTool struct {
@@ -78,6 +80,11 @@ func newStreamConverter(writer io.Writer, operation string, options ResponseOpti
 // so we always use the completed action.sources payload from the final envelope when available.
 // For progressive UI we still emit server_tool_use as soon as we see the call.
 func (c *streamConverter) noteWebSearch(call webSearchCall, final bool) error {
+	filtered := dedupeWebSearchCalls([]webSearchCall{call})
+	if len(filtered) == 0 {
+		return nil
+	}
+	call = filtered[0]
 	replaced := false
 	for i, existing := range c.webSearch {
 		if existing.ID == call.ID {
@@ -91,6 +98,12 @@ func (c *streamConverter) noteWebSearch(call webSearchCall, final bool) error {
 	}
 	if !replaced {
 		c.webSearch = append(c.webSearch, call)
+	}
+	if !c.textStarted {
+		c.deferSearchText = true
+	}
+	if c.textStarted || (c.thinkingStarted && !c.thinkingClosed) {
+		return nil
 	}
 	// Emit server_tool_use promptly so Claude Code can show "Searching: …".
 	return c.emitWebSearchUse(call)
@@ -133,6 +146,7 @@ func (c *streamConverter) emitWebSearchUse(call webSearchCall) error {
 }
 
 func (c *streamConverter) emitPendingWebSearchResults() error {
+	c.webSearch = dedupeWebSearchCalls(c.webSearch)
 	for _, call := range c.webSearch {
 		if c.webSearchEmitted[call.ID+"#result"] {
 			continue
@@ -206,6 +220,10 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		_ = json.Unmarshal(root["delta"], &delta)
 		if err := c.start(); err != nil {
 			return err
+		}
+		if c.operation == OperationMessages && c.deferSearchText {
+			c.pendingSearchText.WriteString(delta)
+			return nil
 		}
 		return c.textDelta(delta)
 	case "response.reasoning_summary_text.delta":

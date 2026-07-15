@@ -24,12 +24,13 @@ type webSearchCall struct {
 	Code   string
 }
 
-func anthropicServerToolUseID(raw string) string {
+func anthropicServerToolUseID(raw string, fallback any) string {
 	if strings.HasPrefix(raw, "srvtoolu_") {
 		return raw
 	}
 	if raw == "" {
-		sum := sha1.Sum([]byte(fmt.Sprintf("ws-%d", len(raw))))
+		encoded, _ := json.Marshal(fallback)
+		sum := sha1.Sum(encoded)
 		return "srvtoolu_" + hex.EncodeToString(sum[:8])
 	}
 	// Build ids are long; keep stable prefix for multi-block pairing.
@@ -49,8 +50,8 @@ func parseWebSearchCallItem(item responseItem) (webSearchCall, bool) {
 	if item.Type != "web_search_call" {
 		return webSearchCall{}, false
 	}
-	call := webSearchCall{ID: anthropicServerToolUseID(item.ID)}
 	action := item.Action
+	call := webSearchCall{ID: anthropicServerToolUseID(item.ID, action)}
 	if action == nil {
 		call.Failed = true
 		call.Code = "unavailable"
@@ -80,7 +81,8 @@ func parseWebSearchCallItem(item responseItem) (webSearchCall, bool) {
 		}
 	}
 	// Fallback: message annotations often have better titles; filled later by merge.
-	if item.Status != "" && item.Status != "completed" && len(call.Hits) == 0 {
+	status := strings.ToLower(strings.TrimSpace(item.Status))
+	if (status == "failed" || status == "incomplete") && len(call.Hits) == 0 {
 		call.Failed = true
 		call.Code = "unavailable"
 	}
@@ -166,12 +168,15 @@ func extractMessageAnnotations(item responseItem) []map[string]any {
 // dedupeWebSearchCalls keeps one entry per call id, preferring the payload with
 // more hits / a non-empty query. Build sometimes repeats web_search_call items.
 func dedupeWebSearchCalls(calls []webSearchCall) []webSearchCall {
-	if len(calls) <= 1 {
-		return calls
+	if len(calls) == 0 {
+		return nil
 	}
 	order := make([]string, 0, len(calls))
 	best := make(map[string]webSearchCall, len(calls))
 	for _, call := range calls {
+		if !call.Failed && strings.TrimSpace(call.Query) == "" && len(call.Hits) == 0 {
+			continue
+		}
 		id := call.ID
 		if id == "" {
 			order = append(order, fmt.Sprintf("__anon_%d", len(order)))
@@ -277,7 +282,7 @@ func appendServerWebSearchContent(content []any, calls []webSearchCall) []any {
 }
 
 func webSearchRequestCount(calls []webSearchCall) int {
-	return len(calls)
+	return len(dedupeWebSearchCalls(calls))
 }
 
 func queryJSONPartial(query string) string {

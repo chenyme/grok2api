@@ -209,6 +209,24 @@ func (c *streamConverter) toolArgumentsDoneMessages(itemID, arguments string) er
 }
 
 func (c *streamConverter) doneMessages(status string) error {
+	if c.thinkingStarted && !c.thinkingClosed {
+		c.thinkingClosed = true
+		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.thinkingIndex}); err != nil {
+			return err
+		}
+	}
+	if c.deferSearchText {
+		// Hosted search was observed before text, so preserve Anthropic's block order:
+		// server_tool_use → web_search_tool_result → text.
+		if err := c.emitPendingWebSearchResults(); err != nil {
+			return err
+		}
+		if pending := c.pendingSearchText.String(); pending != "" {
+			if err := c.textDeltaMessages(pending); err != nil {
+				return err
+			}
+		}
+	}
 	if c.stopSequence == "" {
 		if pending := c.stopFilter.Flush(); pending != "" {
 			if err := c.textDeltaWithoutFilter(pending); err != nil {
@@ -216,20 +234,15 @@ func (c *streamConverter) doneMessages(status string) error {
 			}
 		}
 	}
-	if c.thinkingStarted && !c.thinkingClosed {
-		c.thinkingClosed = true
-		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.thinkingIndex}); err != nil {
+	if c.textStarted {
+		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.textIndex}); err != nil {
 			return err
 		}
 	}
-	// Emit web_search_tool_result before closing text so order matches non-stream:
-	// server_tool_use → web_search_tool_result → text. If text already started, close it first then re-open is worse;
-	// CC secondary path mainly needs result blocks present before message_delta.
-	if err := c.emitPendingWebSearchResults(); err != nil {
-		return err
-	}
-	if c.textStarted {
-		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.textIndex}); err != nil {
+	if !c.deferSearchText {
+		// If text arrived before the search item, close it before starting any server
+		// tool blocks so content blocks never overlap.
+		if err := c.emitPendingWebSearchResults(); err != nil {
 			return err
 		}
 	}

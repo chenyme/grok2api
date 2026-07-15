@@ -108,7 +108,7 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 		target["tools"] = append(existing, servers...)
 	}
 	if request.ToolChoice != nil {
-		choice, parallel, err := convertAnthropicToolChoice(*request.ToolChoice)
+		choice, parallel, err := convertAnthropicToolChoice(*request.ToolChoice, hasAnthropicWebSearchTool(request.Tools))
 		if err != nil {
 			return nil, ResponseOptions{}, err
 		}
@@ -527,6 +527,17 @@ func convertAnthropicTools(tools []map[string]json.RawMessage) ([]any, error) {
 	return result, nil
 }
 
+func hasAnthropicWebSearchTool(tools []map[string]json.RawMessage) bool {
+	for _, tool := range tools {
+		var typeName string
+		_ = json.Unmarshal(tool["type"], &typeName)
+		if strings.HasPrefix(typeName, "web_search_") {
+			return true
+		}
+	}
+	return false
+}
+
 func convertAnthropicWebSearchTool(tool map[string]json.RawMessage, index int) (map[string]any, error) {
 	converted := map[string]any{"type": "web_search"}
 	for key, raw := range tool {
@@ -594,7 +605,7 @@ func anthropicThinkingEffort(budget int) string {
 	}
 }
 
-func convertAnthropicToolChoice(choice anthropicToolChoice) (any, bool, error) {
+func convertAnthropicToolChoice(choice anthropicToolChoice, hasHostedWebSearch bool) (any, bool, error) {
 	parallel := !choice.DisableParallelToolUse
 	switch choice.Type {
 	case "auto", "none":
@@ -607,7 +618,7 @@ func convertAnthropicToolChoice(choice anthropicToolChoice) (any, bool, error) {
 		}
 		// Claude Code secondary search forces name=web_search (hosted). Build accepts
 		// hosted tool_choice only as "required" when a single hosted tool remains.
-		if strings.EqualFold(strings.TrimSpace(choice.Name), "web_search") {
+		if hasHostedWebSearch && strings.EqualFold(strings.TrimSpace(choice.Name), "web_search") {
 			return "required", parallel, nil
 		}
 		return map[string]any{"type": "function", "name": choice.Name}, parallel, nil
