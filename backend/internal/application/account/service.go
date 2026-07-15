@@ -1281,10 +1281,15 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 		s.logger.Warn("credential_refresh_state_write_failed", "account_id", credential.ID, "error", err)
 	}
 	if permanent {
-		if err := s.MarkReauthRequired(ctx, credential.ID, "OAuth refresh failed: "+errorCode); err != nil {
-			s.logger.Warn("credential_refresh_reauth_mark_failed", "account_id", credential.ID, "error", err)
+		accessTokenAlive := credential.EncryptedAccessToken != "" && !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(now)
+		if accessTokenAlive {
+			s.logger.Warn("credential_refresh_permanent_but_token_alive", "account_id", credential.ID, "error_code", errorCode, "expires_at", credential.ExpiresAt)
+		} else {
+			if err := s.MarkReauthRequired(ctx, credential.ID, "OAuth refresh failed: "+errorCode); err != nil {
+				s.logger.Warn("credential_refresh_reauth_mark_failed", "account_id", credential.ID, "error", err)
+			}
+			return
 		}
-		return
 	}
 	s.logger.Warn("credential_refresh_deferred", "account_id", credential.ID, "failure_count", failureCount, "retry_at", retryAt, "error_code", errorCode)
 	s.WakeCredentialRefresh()

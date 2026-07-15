@@ -345,8 +345,27 @@ func TestCredentialRefreshFailureDistinguishesTransientAndPermanent(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if permanent.AuthStatus != accountdomain.AuthStatusReauthRequired || permanent.RefreshFailureCount != 2 || permanent.LastRefreshErrorCode != "invalid_grant" {
-		t.Fatalf("permanent state = %#v", permanent)
+	if permanent.AuthStatus != accountdomain.AuthStatusActive || permanent.RefreshFailureCount != 2 || permanent.LastRefreshErrorCode != "invalid_grant" {
+		t.Fatalf("permanent with valid token should stay active: %#v", permanent)
+	}
+
+	service.clearRefreshState(credential.ID)
+	expiredCredential := permanent
+	expiredCredential.ExpiresAt = now.Add(-time.Minute)
+	if _, err := service.accounts.UpdateTokens(ctx, permanent.ID, permanent.EncryptedAccessToken, permanent.EncryptedRefreshToken, expiredCredential.ExpiresAt); err != nil {
+		t.Fatal(err)
+	}
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 400, Code: "invalid_grant", Permanent: true}
+	expiredState, _ := service.accounts.Get(ctx, credential.ID)
+	if _, err := service.EnsureCredential(ctx, expiredState, true); err == nil {
+		t.Fatal("permanent refresh with expired token unexpectedly succeeded")
+	}
+	finalState, err := service.accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalState.AuthStatus != accountdomain.AuthStatusReauthRequired {
+		t.Fatalf("permanent with expired token should be reauthRequired: %#v", finalState)
 	}
 }
 
