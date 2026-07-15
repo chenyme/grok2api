@@ -251,7 +251,11 @@ func (s *Service) ReloadPersisted(ctx context.Context) error {
 }
 
 func applyDomainConfig(base config.Config, value settingsdomain.Config) config.Config {
-	base.Server.MaxConcurrentRequests = value.Server.MaxConcurrentRequests
+	// Older persisted settings do not have the server section. Preserve the YAML
+	// value until the next settings save writes the new field.
+	if value.Server.MaxConcurrentRequests > 0 {
+		base.Server.MaxConcurrentRequests = value.Server.MaxConcurrentRequests
+	}
 	capacityWait := value.Routing.CapacityWait
 	if capacityWait <= 0 {
 		capacityWait = base.Routing.CapacityWait.Value()
