@@ -231,11 +231,17 @@ export type BuildConversionResultDTO = {
   syncFailed: number;
 };
 
-export type BuildConversionInput =
-  | { all: true; ids?: never }
-  | { all?: false; ids: string[] };
+export type AccountSyncStrategy = "missing" | "all";
+export type BuildConversionStrategy = AccountSyncStrategy;
+export type WebConsoleSyncStrategy = AccountSyncStrategy;
 
-export type WebConsoleSyncInput = BuildConversionInput;
+export type BuildConversionInput =
+  | { all: true; ids?: never; strategy?: BuildConversionStrategy }
+  | { all?: false; ids: string[]; strategy?: BuildConversionStrategy };
+
+export type WebConsoleSyncInput =
+  | { all: true; ids?: never; strategy: WebConsoleSyncStrategy }
+  | { all?: false; ids: string[]; strategy: WebConsoleSyncStrategy };
 
 export type AccountTaskProgressDTO = {
   completed: number;
@@ -249,6 +255,8 @@ export type AccountImportResultDTO = {
   synced: number;
   syncFailed: number;
 };
+
+export type WebConsoleSyncResultDTO = AccountImportResultDTO & { skipped: number };
 
 type AccountTaskStreamPayload = Partial<BuildConversionResultDTO & AccountTaskProgressDTO & AccountTokenRefreshResultDTO & AccountImportResultDTO> & {
   code?: string;
@@ -352,8 +360,8 @@ export function convertWebAccountsToBuild(input: BuildConversionInput, onProgres
   return runAccountTask("/api/admin/v1/accounts/web/convert-to-build", input, ["created", "linked", "skipped", "failed", "synced", "syncFailed"], onProgress, signal);
 }
 
-export function syncWebAccountsToConsole(input: WebConsoleSyncInput, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
-  return runAccountTask("/api/admin/v1/accounts/web/sync-to-console", input, ["created", "updated", "synced", "syncFailed"], onProgress, signal);
+export function syncWebAccountsToConsole(input: WebConsoleSyncInput, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<WebConsoleSyncResultDTO> {
+  return runAccountTask("/api/admin/v1/accounts/web/sync-to-console", input, ["created", "updated", "skipped", "synced", "syncFailed"], onProgress, signal);
 }
 
 export function importAccounts(files: readonly File[], onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
@@ -386,8 +394,8 @@ export function updateAccountsEnabled(ids: string[], enabled: boolean, provider:
   return apiRequest("/api/admin/v1/accounts/batch", { method: "PATCH", body: { ids, enabled, provider } }, decodeCountResult<{ updated: number }>("updated"));
 }
 
-export function refreshAccountsBilling(ids: string[], provider: AccountProvider): Promise<{ succeeded: number; failed: number }> {
-  return apiRequest("/api/admin/v1/accounts/batch/refresh-billing", { method: "POST", body: { ids, provider } }, createObjectDecoder("account batch", { succeeded: isNumber, failed: isNumber }));
+export function refreshAccountsQuota(ids: string[], provider: AccountProvider): Promise<{ succeeded: number; failed: number }> {
+  return apiRequest("/api/admin/v1/accounts/batch/refresh-quotas", { method: "POST", body: { ids, provider } }, createObjectDecoder("account batch", { succeeded: isNumber, failed: isNumber }));
 }
 
 export function deleteAccounts(ids: string[], provider: AccountProvider): Promise<{ deleted: number }> {
