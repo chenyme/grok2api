@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "node --test --experimental-strip-types src/features/creative-console/*.test.mts",
     "preview": "vite preview"
   },
   "dependencies": {
