@@ -3,8 +3,10 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 )
@@ -27,6 +29,65 @@ func TestParseToolConfigurationSupportsChatAndResponsesSchemas(t *testing.T) {
 	}
 	if len(responses.Functions) != 1 || responses.Functions[0].Name != "lookup" || len(responses.ResponseTools) != 2 {
 		t.Fatalf("responses tool config = %#v", responses)
+	}
+}
+
+func TestParseToolConfigurationAllowsRequiredHostedWebSearch(t *testing.T) {
+	configuration, err := parseToolConfiguration(
+		json.RawMessage(`[{"type":"web_search","max_uses":8}]`),
+		json.RawMessage(`"required"`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Choice != "required" || len(configuration.Functions) != 0 || len(configuration.ResponseTools) != 1 {
+		t.Fatalf("configuration = %#v", configuration)
+	}
+}
+
+func TestInjectToolPromptDoesNotForceClientFunctionWhenHostedSearchIsRequired(t *testing.T) {
+	configuration, err := parseToolConfiguration(
+		json.RawMessage(`[
+			{"type":"web_search"},
+			{"type":"function","name":"lookup","description":"Look up local data","parameters":{"type":"object"}}
+		]`),
+		json.RawMessage(`"required"`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := injectToolPrompt("find the latest release", configuration)
+	if !strings.Contains(prompt, "Tool: lookup") {
+		t.Fatalf("client function definition missing from prompt: %s", prompt)
+	}
+	if strings.Contains(prompt, "You MUST call at least one available tool") {
+		t.Fatalf("hosted-search required incorrectly forced a client function: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Call a tool when it is clearly needed") {
+		t.Fatalf("mixed hosted/client tool guidance is not optional: %s", prompt)
+	}
+}
+
+func TestAnthropicWebSearchRequestConvertsForWebProvider(t *testing.T) {
+	converted, options, err := conversation.ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,"stream":true,
+		"messages":[{"role":"user","content":"Perform a web search for the query: rust tutorials"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}],
+		"tool_choice":{"type":"tool","name":"web_search"}
+	}`), "grok-chat-fast", conversation.OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input openAIRequest
+	if err := json.Unmarshal(converted, &input); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := parseToolConfiguration(input.Tools, input.ToolChoice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.AnthropicWebSearch || !options.AnthropicWebSearchRequired || options.AnthropicWebSearchQuery != "rust tutorials" || !configuration.HostedWebSearch || configuration.Choice != "required" {
+		t.Fatalf("options=%#v configuration=%#v", options, configuration)
 	}
 }
 
@@ -105,6 +166,101 @@ func TestBuildMessagesResultPreservesThinkingAndStopSequence(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesResultEmitsServerWebSearchBlocks(t *testing.T) {
+	options := webSearchResponseOptions(t)
+	parsed := parsedChat{ServerTools: 1, SearchSources: []map[string]any{
+		{"url": "https://doc.rust-lang.org", "title": "The Rust Book", "type": "web"},
+	}}
+	parsed.Text.WriteString("Here you go.")
+	result := buildOpenAIResult("messages", "resp_test", "grok-chat-fast", parsed, false, options)
+	content := result["content"].([]any)
+	if len(content) != 3 {
+		t.Fatalf("content = %#v", content)
+	}
+	use := content[0].(map[string]any)
+	if use["type"] != "server_tool_use" || use["name"] != "web_search" || use["input"].(map[string]any)["query"] != "rust tutorials" {
+		t.Fatalf("server_tool_use = %#v", use)
+	}
+	searchResult := content[1].(map[string]any)
+	if searchResult["type"] != "web_search_tool_result" || searchResult["tool_use_id"] != use["id"] {
+		t.Fatalf("web_search_tool_result = %#v", searchResult)
+	}
+	hits := searchResult["content"].([]any)
+	if len(hits) != 1 || hits[0].(map[string]any)["url"] != "https://doc.rust-lang.org" {
+		t.Fatalf("hits = %#v", hits)
+	}
+	if content[2].(map[string]any)["type"] != "text" || result["stop_reason"] != "end_turn" {
+		t.Fatalf("result = %#v", result)
+	}
+	usage := result["usage"].(map[string]any)["server_tool_use"].(map[string]any)
+	if usage["web_search_requests"] != int64(1) {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestBuildMessagesResultEmitsUnavailableWebSearchError(t *testing.T) {
+	result := buildOpenAIResult("messages", "resp_test", "grok-chat-fast", parsedChat{}, false, webSearchResponseOptions(t))
+	content := result["content"].([]any)
+	errorContent := content[1].(map[string]any)["content"].(map[string]any)
+	if errorContent["type"] != "web_search_tool_result_error" || errorContent["error_code"] != "unavailable" {
+		t.Fatalf("error content = %#v", errorContent)
+	}
+}
+
+func TestBuildMessagesResultDoesNotFabricateOptionalWebSearch(t *testing.T) {
+	parsed := parsedChat{}
+	parsed.Text.WriteString("Plain answer.")
+	result := buildOpenAIResult("messages", "resp_test", "grok-chat-fast", parsed, false, conversation.ResponseOptions{
+		AnthropicWebSearch: true, AnthropicWebSearchQuery: "optional query",
+	})
+	content := result["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["type"] != "text" || content[0].(map[string]any)["text"] != "Plain answer." {
+		t.Fatalf("optional search fabricated server blocks: %#v", content)
+	}
+	if _, exists := result["usage"].(map[string]any)["server_tool_use"]; exists {
+		t.Fatalf("optional search fabricated usage: %#v", result["usage"])
+	}
+}
+
+func TestBuildMessagesResultFiltersUnsafeAndDuplicateSearchSources(t *testing.T) {
+	options := webSearchResponseOptions(t)
+	parsed := parsedChat{ServerTools: 1, SearchSources: []map[string]any{
+		{"url": "https://example.com/a", "title": "Example"},
+		{"url": "https://example.com/a", "title": "Duplicate"},
+		{"url": "javascript:alert(1)", "title": "Script"},
+		{"url": "file:///etc/passwd", "title": "File"},
+		{"url": "/relative/path", "title": "Relative"},
+		{"url": "https://user:secret@example.com/private", "title": "Credential URL"},
+	}}
+	result := buildOpenAIResult("messages", "resp_test", "grok-chat-fast", parsed, false, options)
+	content := result["content"].([]any)
+	hits := content[1].(map[string]any)["content"].([]any)
+	if len(hits) != 1 {
+		t.Fatalf("unsafe or duplicate sources leaked into hits: %#v", hits)
+	}
+	if hits[0].(map[string]any)["url"] != "https://example.com/a" {
+		t.Fatalf("hits = %#v", hits)
+	}
+}
+
+func TestBuildMessagesResultBoundsSearchSourcesAndTitles(t *testing.T) {
+	parsed := parsedChat{ServerTools: 1, SearchSources: make([]map[string]any, 0, 60)}
+	for index := 0; index < 60; index++ {
+		parsed.SearchSources = append(parsed.SearchSources, map[string]any{
+			"url":   "https://example.com/" + strconv.Itoa(index),
+			"title": strings.Repeat("界", 600),
+		})
+	}
+	blocks := webMessagesSearchBlocks("srvtoolu_test", parsed, webSearchResponseOptions(t))
+	hits := blocks[1].(map[string]any)["content"].([]any)
+	if len(hits) != 50 {
+		t.Fatalf("hits = %d, want 50", len(hits))
+	}
+	if got := utf8.RuneCountInString(hits[0].(map[string]any)["title"].(string)); got != 512 {
+		t.Fatalf("title runes = %d, want 512", got)
+	}
+}
+
 func TestWebMessagesStreamPreservesThinkingAndSplitStopSequence(t *testing.T) {
 	var output bytes.Buffer
 	stream := newWebMessagesStream(&output, "resp_test", "grok-chat-fast", 3, conversation.ResponseOptions{
@@ -126,6 +282,98 @@ func TestWebMessagesStreamPreservesThinkingAndSplitStopSequence(t *testing.T) {
 	if strings.Contains(text, "XYZ") || !strings.Contains(text, `"thinking":"thought"`) || !strings.Contains(text, `"text":"ABC"`) || !strings.Contains(text, `"stop_reason":"stop_sequence"`) {
 		t.Fatalf("stream = %s", text)
 	}
+}
+
+func TestWebMessagesStreamEmitsServerWebSearchBeforeBufferedText(t *testing.T) {
+	var output bytes.Buffer
+	stream := newWebMessagesStream(&output, "resp_test", "grok-chat-fast", 3, webSearchResponseOptions(t))
+	if err := stream.Delta("text", "Here you go."); err != nil {
+		t.Fatal(err)
+	}
+	parsed := parsedChat{ServerTools: 1, SearchSources: []map[string]any{
+		{"url": "https://doc.rust-lang.org", "title": "The Rust Book", "type": "web"},
+	}}
+	if err := stream.Finish(parsed, map[string]any{"usage": map[string]any{"output_tokens": int64(2)}}); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	useAt := strings.Index(text, `"type":"server_tool_use"`)
+	resultAt := strings.Index(text, `"type":"web_search_tool_result"`)
+	textAt := strings.Index(text, `"content_block":{"text":"","type":"text"}`)
+	if useAt < 0 || resultAt < 0 || textAt < 0 || !(useAt < resultAt && resultAt < textAt) {
+		t.Fatalf("expected server_tool_use -> result -> text, got:\n%s", text)
+	}
+	if !strings.Contains(text, "rust tutorials") || !strings.Contains(text, `"web_search_requests":1`) {
+		t.Fatalf("missing query or usage:\n%s", text)
+	}
+}
+
+func TestWebMessagesStreamKeepsThinkingBeforeServerWebSearch(t *testing.T) {
+	options := webSearchResponseOptions(t)
+	options.AnthropicThinking = true
+	var output bytes.Buffer
+	stream := newWebMessagesStream(&output, "resp_test", "grok-chat-fast", 3, options)
+	if err := stream.Delta("reasoning", "Need sources."); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Delta("text", "Here you go."); err != nil {
+		t.Fatal(err)
+	}
+	parsed := parsedChat{ServerTools: 1, SearchSources: []map[string]any{
+		{"url": "https://doc.rust-lang.org", "title": "The Rust Book"},
+	}}
+	if err := stream.Finish(parsed, map[string]any{"usage": map[string]any{"output_tokens": int64(2)}}); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	thinkingAt := strings.Index(text, `"type":"thinking"`)
+	useAt := strings.Index(text, `"type":"server_tool_use"`)
+	resultAt := strings.Index(text, `"type":"web_search_tool_result"`)
+	textAt := strings.Index(text, `"content_block":{"text":"","type":"text"}`)
+	if thinkingAt < 0 || useAt < 0 || resultAt < 0 || textAt < 0 || !(thinkingAt < useAt && useAt < resultAt && resultAt < textAt) {
+		t.Fatalf("expected thinking -> server_tool_use -> result -> text, got:\n%s", text)
+	}
+}
+
+func TestWebMessagesStreamAppliesStopSequenceAfterServerWebSearch(t *testing.T) {
+	options := webSearchResponseOptions(t)
+	options.StopSequences = []string{"STOP"}
+	var output bytes.Buffer
+	stream := newWebMessagesStream(&output, "resp_test", "grok-chat-fast", 3, options)
+	if err := stream.Delta("text", "ABCST"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Delta("text", "OPXYZ"); err != nil {
+		t.Fatal(err)
+	}
+	parsed := parsedChat{ServerTools: 1, SearchSources: []map[string]any{{"url": "https://example.com", "title": "Example"}}}
+	if err := stream.Finish(parsed, map[string]any{"usage": map[string]any{"output_tokens": int64(2)}}); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	if strings.Contains(text, "XYZ") || !strings.Contains(text, `"text":"ABC"`) || !strings.Contains(text, `"stop_reason":"stop_sequence"`) || !strings.Contains(text, `"stop_sequence":"STOP"`) {
+		t.Fatalf("stream stop sequence = %s", text)
+	}
+	useAt := strings.Index(text, `"type":"server_tool_use"`)
+	resultAt := strings.Index(text, `"type":"web_search_tool_result"`)
+	textAt := strings.Index(text, `"content_block":{"text":"","type":"text"}`)
+	if useAt < 0 || resultAt < 0 || textAt < 0 || !(useAt < resultAt && resultAt < textAt) {
+		t.Fatalf("web search blocks are out of order: %s", text)
+	}
+}
+
+func webSearchResponseOptions(t *testing.T) conversation.ResponseOptions {
+	t.Helper()
+	_, options, err := conversation.ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,"stream":true,
+		"messages":[{"role":"user","content":"Perform a web search for the query: rust tutorials"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}],
+		"tool_choice":{"type":"tool","name":"web_search"}
+	}`), "grok-chat-fast", conversation.OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return options
 }
 
 func TestToolStreamSieveHandlesSplitXML(t *testing.T) {
