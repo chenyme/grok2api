@@ -8,7 +8,7 @@ import (
 )
 
 func messagesResponse(value parsedResponse, options ResponseOptions) map[string]any {
-	content := make([]any, 0, len(value.Calls)+2)
+	content := make([]any, 0, len(value.Calls))
 	if options.AnthropicThinking && (value.Reasoning != "" || value.Signature != "") {
 		if value.Reasoning == "" {
 			content = append(content, map[string]any{"type": "redacted_thinking", "data": value.Signature})
