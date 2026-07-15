@@ -21,6 +21,22 @@ var (
 	ErrUnauthorized         = errors.New("upstream credential unauthorized")
 )
 
+// HTTPStatusError 允许流式或异步 Provider 在无法返回 Response 时保留上游状态码。
+type HTTPStatusError interface {
+	error
+	HTTPStatusCode() int
+}
+
+// ErrorHTTPStatus 从 Provider 错误链中提取上游 HTTP 状态。
+func ErrorHTTPStatus(err error) (int, bool) {
+	var statusError HTTPStatusError
+	if !errors.As(err, &statusError) {
+		return 0, false
+	}
+	status := statusError.HTTPStatusCode()
+	return status, status > 0
+}
+
 // MediaPostProcessingStage 标识媒体已经生成后失败的本地处理阶段。
 type MediaPostProcessingStage string
 
@@ -271,9 +287,15 @@ type QuotaAdapter interface {
 	SyncQuotaMode(ctx context.Context, credential account.Credential, mode string) (account.QuotaWindow, error)
 }
 
-type ImageAdapter interface {
+// ImageGenerationAdapter 定义 Provider 可选的图片生成能力。
+type ImageGenerationAdapter interface {
 	Adapter
 	GenerateImage(ctx context.Context, request ImageGenerationRequest) (*Response, error)
+}
+
+// ImageEditAdapter 定义 Provider 可选的图片编辑能力。
+type ImageEditAdapter interface {
+	Adapter
 	EditImage(ctx context.Context, request ImageEditRequest) (*Response, error)
 }
 
@@ -454,9 +476,14 @@ func (r *Registry) Validate() error {
 				return fmt.Errorf("Provider %s 声明 Device OAuth 但未实现适配器", value)
 			}
 		}
-		if definition.Media.ImageGeneration || definition.Media.ImageEdit {
-			if _, ok := adapter.(ImageAdapter); !ok {
-				return fmt.Errorf("Provider %s 声明图像能力但未实现适配器", value)
+		if definition.Media.ImageGeneration {
+			if _, ok := adapter.(ImageGenerationAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明图像生成能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.ImageEdit {
+			if _, ok := adapter.(ImageEditAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明图像编辑能力但未实现适配器", value)
 			}
 		}
 		if definition.Media.VideoGeneration {
@@ -620,12 +647,23 @@ func (r *Registry) PricingModel(value account.Provider, upstreamModel string) st
 	return upstreamModel
 }
 
-func (r *Registry) Images(value account.Provider) (ImageAdapter, bool) {
+// ImageGeneration 返回 Provider 注册的图片生成能力。
+func (r *Registry) ImageGeneration(value account.Provider) (ImageGenerationAdapter, bool) {
 	adapter, ok := r.Get(value)
 	if !ok {
 		return nil, false
 	}
-	result, ok := adapter.(ImageAdapter)
+	result, ok := adapter.(ImageGenerationAdapter)
+	return result, ok
+}
+
+// ImageEdit 返回 Provider 注册的图片编辑能力。
+func (r *Registry) ImageEdit(value account.Provider) (ImageEditAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(ImageEditAdapter)
 	return result, ok
 }
 

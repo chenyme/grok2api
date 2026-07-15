@@ -142,6 +142,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/refresh-billing", h.refreshAllBilling)
 	router.POST("/accounts/refresh-tokens", h.refreshAllTokens)
 	router.POST("/accounts/batch/refresh-billing", h.batchRefreshBilling)
+	router.POST("/accounts/batch/refresh-quotas", h.batchRefreshQuotas)
 	router.PATCH("/accounts/batch", h.batchUpdate)
 	router.DELETE("/accounts", h.batchDelete)
 	router.PATCH("/accounts/:id", h.update)
@@ -416,6 +417,32 @@ func (h *Handler) batchRefreshBilling(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
 		return
 	}
+	if request.Provider != string(accountdomain.ProviderBuild) {
+		response.Error(c, http.StatusBadRequest, "invalidProvider", "仅 Grok Build 账号支持 Billing 同步")
+		return
+	}
+	if !h.validateProviderIDs(c, ids, request.Provider) {
+		return
+	}
+	succeeded, failed, err := h.service.BatchRefreshBilling(c.Request.Context(), ids)
+	if err != nil {
+		h.writeServiceError(c, "billingBatchRefreshFailed", err, http.StatusBadGateway, "批量同步 Billing 失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed})
+}
+
+func (h *Handler) batchRefreshQuotas(c *gin.Context) {
+	var request batchDeleteRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	ids, err := parseIDs(request.IDs)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
+		return
+	}
 	providerValue := accountdomain.Provider(request.Provider)
 	if !providerValue.IsValid() {
 		response.Error(c, http.StatusBadRequest, "invalidProvider", "账号来源无效")
@@ -431,7 +458,7 @@ func (h *Handler) batchRefreshBilling(c *gin.Context) {
 		succeeded, failed, err = h.service.BatchRefreshQuota(c.Request.Context(), ids)
 	}
 	if err != nil {
-		h.writeServiceError(c, "billingBatchRefreshFailed", err, http.StatusBadGateway, "批量同步账号额度失败")
+		h.writeServiceError(c, "quotaBatchRefreshFailed", err, http.StatusBadGateway, "批量同步账号额度失败")
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed})
@@ -525,6 +552,9 @@ func (h *Handler) convertWebToBuild(c *gin.Context) {
 			response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
 			return
 		}
+		if !h.validateProviderIDs(c, ids, string(accountdomain.ProviderWeb)) {
+			return
+		}
 	}
 	h.streamWebToBuildConversion(c, request.All, ids, request.Strategy)
 }
@@ -552,6 +582,9 @@ func (h *Handler) syncWebToConsole(c *gin.Context) {
 		ids, err = parseIDs(request.IDs)
 		if err != nil {
 			response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
+			return
+		}
+		if !h.validateProviderIDs(c, ids, string(accountdomain.ProviderWeb)) {
 			return
 		}
 	}

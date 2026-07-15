@@ -35,6 +35,9 @@ function validPublicAPIBaseURL(value: string): boolean {
 }
 
 export const settingsSchema = z.object({
+  server: z.object({
+    maxConcurrentRequests: positiveInteger.max(100_000),
+  }),
   providerBuild: z.object({
     baseURL: z.url(),
     clientVersion: z.string().trim().min(1),
@@ -78,7 +81,6 @@ export const settingsSchema = z.object({
     chatTimeout: consoleChatDuration,
   }),
   batch: z.object({
-    accountTaskBatchSize: positiveInteger.max(1_000),
     importConcurrency: positiveInteger.max(50),
     conversionConcurrency: positiveInteger.max(50),
     syncConcurrency: positiveInteger.max(50),
@@ -110,6 +112,7 @@ export type SettingsForm = z.infer<typeof settingsSchema>;
 
 export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
   return {
+    server: config.server,
     providerBuild: { ...config.providerBuild, tokenAuth: "" },
     providerWeb: {
       ...config.providerWeb,
@@ -139,6 +142,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
 
 export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
   return {
+    server: config.server,
     providerBuild: config.providerBuild,
     providerWeb: {
       ...config.providerWeb,

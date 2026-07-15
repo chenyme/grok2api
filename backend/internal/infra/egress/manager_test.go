@@ -15,10 +15,49 @@ import (
 )
 
 func TestDirectFallbackRebuildsClientAfterAntiBotRejection(t *testing.T) {
-	manager := &Manager{clients: map[uint64]cachedClient{0: {}}}
+	manager := &Manager{clients: map[clientCacheKey]cachedClient{{nodeID: 0, scope: domain.ScopeWeb, fingerprint: "web"}: {}}}
 	manager.Feedback(context.Background(), 0, http.StatusForbidden, nil)
-	if _, exists := manager.clients[0]; exists {
+	if len(manager.clients) != 0 {
 		t.Fatal("direct fallback client was not invalidated after anti-bot rejection")
+	}
+}
+
+func TestDirectBuildAndWebClientsDoNotEvictEachOther(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{}, cipher)
+	buildFirst, err := manager.Acquire(context.Background(), domain.ScopeBuild, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer buildFirst.Release()
+	web, err := manager.Acquire(context.Background(), domain.ScopeWeb, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer web.Release()
+	buildSecond, err := manager.Acquire(context.Background(), domain.ScopeBuild, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer buildSecond.Release()
+
+	if buildFirst.client != buildSecond.client {
+		t.Fatal("Web direct traffic evicted the reusable Build connection pool")
+	}
+	if buildFirst.client == web.client || len(manager.clients) != 2 {
+		t.Fatalf("direct clients were not isolated: build=%T web=%T cached=%d", buildFirst.client, web.client, len(manager.clients))
+	}
+	manager.FeedbackForScope(context.Background(), domain.ScopeWeb, 0, http.StatusForbidden, nil)
+	buildAfterWebFailure, err := manager.Acquire(context.Background(), domain.ScopeBuild, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer buildAfterWebFailure.Release()
+	if buildAfterWebFailure.client != buildFirst.client || len(manager.clients) != 1 {
+		t.Fatalf("Web failure evicted Build direct client: reused=%v cached=%d", buildAfterWebFailure.client == buildFirst.client, len(manager.clients))
 	}
 }
 
@@ -158,7 +197,7 @@ func TestBuildForbiddenDoesNotPoisonEgressNode(t *testing.T) {
 	if repository.updates != 0 || repository.node.Health != 1 || repository.node.LastError != "" {
 		t.Fatalf("build 403 poisoned node: updates=%d node=%#v", repository.updates, repository.node)
 	}
-	if _, exists := manager.clients[1]; !exists {
+	if !managerHasClientForNode(manager, 1) {
 		t.Fatal("build client was invalidated by an ambiguous 403")
 	}
 }
@@ -179,7 +218,7 @@ func TestWebForbiddenStillRebuildsBrowserSession(t *testing.T) {
 	if repository.updates != 1 || repository.node.Health >= 1 || repository.node.LastError != "anti-bot rejection" {
 		t.Fatalf("web 403 feedback = updates=%d node=%#v", repository.updates, repository.node)
 	}
-	if _, exists := manager.clients[1]; exists {
+	if managerHasClientForNode(manager, 1) {
 		t.Fatal("web browser session was not invalidated after 403")
 	}
 }
@@ -226,6 +265,17 @@ func TestEgressNodeSnapshotAvoidsRepeatedRepositoryReads(t *testing.T) {
 }
 
 type egressRepositoryTestStub struct{ nodes []domain.Node }
+
+func managerHasClientForNode(manager *Manager, nodeID uint64) bool {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for key := range manager.clients {
+		if key.nodeID == nodeID {
+			return true
+		}
+	}
+	return false
+}
 
 type countingEgressRepository struct {
 	egressRepositoryTestStub

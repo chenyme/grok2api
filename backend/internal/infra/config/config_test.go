@@ -45,7 +45,7 @@ bootstrapAdmin:
 	if cfg.BootstrapAdmin.Username != "admin" || cfg.BootstrapAdmin.Password != "password123" {
 		t.Fatalf("bootstrapAdmin = %#v", cfg.BootstrapAdmin)
 	}
-	if cfg.Batch.AccountTaskBatchSize != 1000 || cfg.Batch.ImportConcurrency != 25 || cfg.Batch.ConversionConcurrency != 25 || cfg.Batch.SyncConcurrency != 25 || cfg.Batch.RefreshConcurrency != 25 || cfg.Batch.RandomDelay.Value() != 500*time.Millisecond {
+	if cfg.Batch.ImportConcurrency != 25 || cfg.Batch.ConversionConcurrency != 25 || cfg.Batch.SyncConcurrency != 25 || cfg.Batch.RefreshConcurrency != 25 || cfg.Batch.RandomDelay.Value() != 500*time.Millisecond {
 		t.Fatalf("batch defaults = %#v", cfg.Batch)
 	}
 	expectedDatabasePath := filepath.Join(dir, "data", "backend.db")
@@ -151,7 +151,6 @@ func TestValidateRejectsUnsafeRuntimeLimits(t *testing.T) {
 		"image size":   func(cfg *Config) { cfg.Media.MaxImageBytes = 33 << 20 },
 		"media total":  func(cfg *Config) { cfg.Media.MaxTotalBytes = 1 },
 		"batch limit":  func(cfg *Config) { cfg.Batch.SyncConcurrency = 51 },
-		"batch size":   func(cfg *Config) { cfg.Batch.AccountTaskBatchSize = 1001 },
 		"batch jitter": func(cfg *Config) { cfg.Batch.RandomDelay = Duration(6 * time.Second) },
 		"console url":  func(cfg *Config) { cfg.Provider.Console.BaseURL = "http://console.x.ai" },
 		"console ua":   func(cfg *Config) { cfg.Provider.Console.UserAgent = "" },
@@ -172,7 +171,7 @@ func TestValidateRejectsUnsafeRuntimeLimits(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsExampleSecretsAndUnsafeCookies(t *testing.T) {
+func TestValidateRejectsExampleSecrets(t *testing.T) {
 	base := defaultConfig()
 	base.Secrets.JWTSecret = "12345678901234567890123456789012"
 	base.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
@@ -181,10 +180,6 @@ func TestValidateRejectsExampleSecretsAndUnsafeCookies(t *testing.T) {
 		"example jwt":            func(cfg *Config) { cfg.Secrets.JWTSecret = "replace-with-at-least-32-characters" },
 		"invalid encryption key": func(cfg *Config) { cfg.Secrets.CredentialEncryptionKey = "not-a-32-byte-base64-key" },
 		"example admin password": func(cfg *Config) { cfg.BootstrapAdmin.Password = "replace-with-a-strong-password" },
-		"https insecure cookie": func(cfg *Config) {
-			cfg.Frontend.PublicAPIBaseURL = "https://api.example.com"
-			cfg.Auth.SecureCookies = false
-		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -194,13 +189,6 @@ func TestValidateRejectsExampleSecretsAndUnsafeCookies(t *testing.T) {
 				t.Fatal("unsafe configuration was accepted")
 			}
 		})
-	}
-
-	secure := base
-	secure.Frontend.PublicAPIBaseURL = "https://api.example.com"
-	secure.Auth.SecureCookies = true
-	if err := secure.Validate(); err != nil {
-		t.Fatalf("secure HTTPS configuration rejected: %v", err)
 	}
 }
 
@@ -269,7 +257,7 @@ func TestValidateFrontendPublicAPIBaseURL(t *testing.T) {
 		}
 	}
 	cfg.Frontend.PublicAPIBaseURL = "https://api.example.com/grok2api"
-	cfg.Auth.SecureCookies = true
+	cfg.Auth.SecureCookies = false
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid frontend.publicApiBaseURL rejected: %v", err)
 	}

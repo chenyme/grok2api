@@ -1171,7 +1171,7 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 	}
 	if operation == conversation.OperationMessages {
 		visibleText, stopSequence := applyWebStopSequences(parsed.Text.String(), options.StopSequences)
-		content := make([]any, 0, len(parsed.ToolCalls)+2)
+		content := make([]any, 0, len(parsed.ToolCalls))
 		if options.AnthropicThinking && parsed.Reasoning.Len() > 0 {
 			content = append(content, map[string]any{"type": "thinking", "thinking": parsed.Reasoning.String()})
 		}

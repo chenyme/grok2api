@@ -197,12 +197,15 @@ func TestAccountRepositoryLinksWebAndBuildAccountsOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	consoleCandidates, err := repo.ListMissingConsoleSyncAccounts(ctx, []uint64{web.ID, build.ID, unlinkedWeb.ID})
+	consoleCandidates, err := repo.ListMissingConsoleSyncAccounts(ctx, []uint64{web.ID, unlinkedWeb.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(consoleCandidates) != 2 || consoleCandidates[0].ID != build.ID || consoleCandidates[1].ID != unlinkedWeb.ID {
+	if len(consoleCandidates) != 1 || consoleCandidates[0].ID != unlinkedWeb.ID {
 		t.Fatalf("console sync candidates = %#v", consoleCandidates)
+	}
+	if _, err := repo.ListMissingConsoleSyncAccounts(ctx, []uint64{build.ID}); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("non-web console candidate error = %v", err)
 	}
 	if _, err := repo.ListMissingConsoleSyncAccounts(ctx, []uint64{web.ID, 999_999}); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("missing console candidate error = %v", err)
@@ -213,13 +216,6 @@ func TestAccountRepositoryLinksWebAndBuildAccountsOnce(t *testing.T) {
 	}
 	if consoleTotal != 1 || consoleSkipped != 1 || len(consoleBatch) != 1 || consoleBatch[0].ID != unlinkedWeb.ID {
 		t.Fatalf("console sync batch = %#v, total = %d, skipped = %d", consoleBatch, consoleTotal, consoleSkipped)
-	}
-	webSourceKeys, err := repo.ListAccountSourceKeys(ctx, account.ProviderWeb)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(webSourceKeys) != 2 || webSourceKeys[0] != "web" || webSourceKeys[1] != "web-2" {
-		t.Fatalf("web source keys = %#v", webSourceKeys)
 	}
 	otherBuild, _, err := repo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "build-2", SourceKey: "build-2", EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive})
 	if err != nil {

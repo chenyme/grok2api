@@ -38,7 +38,7 @@ type DeviceSessionRepository interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// DistributedLock 定义跨实例的短期互斥租约，用于避免同一凭据被并发刷新。
+// DistributedLock 定义跨实例的短期互斥租约，用于避免同一账号维护任务被并发执行。
 type DistributedLock interface {
 	Acquire(ctx context.Context, key string, ttl time.Duration) (release func(), acquired bool, err error)
 }

@@ -395,7 +395,7 @@ export function updateAccountsEnabled(ids: string[], enabled: boolean, provider:
 }
 
 export function refreshAccountsQuota(ids: string[], provider: AccountProvider): Promise<{ succeeded: number; failed: number }> {
-  return apiRequest("/api/admin/v1/accounts/batch/refresh-billing", { method: "POST", body: { ids, provider } }, createObjectDecoder("account batch", { succeeded: isNumber, failed: isNumber }));
+  return apiRequest("/api/admin/v1/accounts/batch/refresh-quotas", { method: "POST", body: { ids, provider } }, createObjectDecoder("account batch", { succeeded: isNumber, failed: isNumber }));
 }
 
 export function deleteAccounts(ids: string[], provider: AccountProvider): Promise<{ deleted: number }> {

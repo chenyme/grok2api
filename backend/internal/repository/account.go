@@ -25,7 +25,6 @@ type AccountRepository interface {
 	List(ctx context.Context, query AccountListQuery) ([]account.Credential, int64, error)
 	// ListProviderAccountBatch 以 ID 游标取一批账号；total 仅在 afterID 为 0 时返回。
 	ListProviderAccountBatch(ctx context.Context, provider account.Provider, afterID uint64, limit int) ([]account.Credential, int64, error)
-	ListAccountSourceKeys(ctx context.Context, provider account.Provider) ([]string, error)
 	Summarize(ctx context.Context, now time.Time) ([]AccountSummary, error)
 	ListEnabled(ctx context.Context, provider account.Provider) ([]account.Credential, error)
 	ListEnabledAccountIDs(ctx context.Context, provider account.Provider, refreshableOnly bool) ([]uint64, error)

@@ -53,11 +53,12 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Listen         string   `yaml:"listen"`
-	MaxBodyBytes   int64    `yaml:"maxBodyBytes"`
-	ReadTimeout    Duration `yaml:"readTimeout"`
-	RequestTimeout Duration `yaml:"requestTimeout"`
-	SwaggerEnabled bool     `yaml:"swaggerEnabled"`
+	Listen                string   `yaml:"listen"`
+	MaxBodyBytes          int64    `yaml:"maxBodyBytes"`
+	MaxConcurrentRequests int      `yaml:"maxConcurrentRequests"`
+	ReadTimeout           Duration `yaml:"readTimeout"`
+	RequestTimeout        Duration `yaml:"requestTimeout"`
+	SwaggerEnabled        bool     `yaml:"swaggerEnabled"`
 }
 
 type FrontendConfig struct {
@@ -149,9 +150,8 @@ type ConsoleProviderConfig struct {
 	ChatTimeout Duration `yaml:"chatTimeout"`
 }
 
-// BatchConfig 定义可热加载的账号批量任务边界。
+// BatchConfig 定义可热加载的账号批量任务并发上限。
 type BatchConfig struct {
-	AccountTaskBatchSize  int
 	ImportConcurrency     int
 	ConversionConcurrency int
 	SyncConcurrency       int
@@ -301,6 +301,9 @@ func (c Config) Validate() error {
 	if c.Server.RequestTimeout.Value() <= 0 || c.Server.RequestTimeout.Value() > maxRequestTimeout {
 		return errors.New("server.requestTimeout 必须大于零且不超过 24 小时")
 	}
+	if c.Server.MaxConcurrentRequests < 1 || c.Server.MaxConcurrentRequests > 100000 {
+		return errors.New("server.maxConcurrentRequests 必须在 1 到 100000 之间")
+	}
 	for _, item := range []struct {
 		name  string
 		value string
@@ -312,9 +315,6 @@ func (c Config) Validate() error {
 			publicAPIURL, err := url.ParseRequestURI(publicBase)
 			if err != nil || (publicAPIURL.Scheme != "http" && publicAPIURL.Scheme != "https") || publicAPIURL.Host == "" || publicAPIURL.User != nil || publicAPIURL.RawQuery != "" || publicAPIURL.Fragment != "" {
 				return fmt.Errorf("%s 必须是不含凭据、查询参数和片段的 HTTP(S) URL", item.name)
-			}
-			if publicAPIURL.Scheme == "https" && !c.Auth.SecureCookies {
-				return errors.New("HTTPS 公共地址必须启用 auth.secureCookies")
 			}
 		}
 	}
@@ -429,9 +429,6 @@ func (c Config) Validate() error {
 		c.Batch.RefreshConcurrency < 1 || c.Batch.RefreshConcurrency > 50 {
 		return errors.New("批量任务并发必须在 1 到 50 之间")
 	}
-	if c.Batch.AccountTaskBatchSize < 1 || c.Batch.AccountTaskBatchSize > 1000 {
-		return errors.New("全部账号任务每批数量必须在 1 到 1000 之间")
-	}
 	if c.Batch.RandomDelay.Value() < 0 || c.Batch.RandomDelay.Value() > 5*time.Second {
 		return errors.New("批量任务随机延迟必须在 0 到 5 秒之间")
 	}
@@ -453,10 +450,11 @@ func (c Config) Validate() error {
 func defaultConfig() Config {
 	return Config{
 		Server: ServerConfig{
-			Listen:         "127.0.0.1:8000",
-			MaxBodyBytes:   32 << 20,
-			ReadTimeout:    Duration(15 * time.Minute),
-			RequestTimeout: Duration(2 * time.Hour),
+			Listen:                "127.0.0.1:8000",
+			MaxBodyBytes:          32 << 20,
+			MaxConcurrentRequests: 1024,
+			ReadTimeout:           Duration(15 * time.Minute),
+			RequestTimeout:        Duration(2 * time.Hour),
 		},
 		Frontend: FrontendConfig{PublicAPIBaseURL: DefaultPublicAPIBaseURL, StaticPath: "./frontend/dist"},
 		Database: DatabaseConfig{
@@ -492,8 +490,7 @@ func defaultConfig() Config {
 			},
 		},
 		Batch: BatchConfig{
-			AccountTaskBatchSize: 1000,
-			ImportConcurrency:    25, ConversionConcurrency: 25, SyncConcurrency: 25,
+			ImportConcurrency: 25, ConversionConcurrency: 25, SyncConcurrency: 25,
 			RefreshConcurrency: 25, RandomDelay: Duration(500 * time.Millisecond),
 		},
 		Media: MediaConfig{

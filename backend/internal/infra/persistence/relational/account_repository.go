@@ -123,15 +123,6 @@ func (r *AccountRepository) ListProviderAccountBatch(ctx context.Context, provid
 	return out, total, nil
 }
 
-func (r *AccountRepository) ListAccountSourceKeys(ctx context.Context, providerValue account.Provider) ([]string, error) {
-	var values []string
-	err := r.db.db.WithContext(ctx).Model(&accountModel{}).
-		Where("provider = ?", providerValue).
-		Order("id ASC").
-		Pluck("source_key", &values).Error
-	return values, err
-}
-
 func (r *AccountRepository) Summarize(ctx context.Context, now time.Time) ([]repository.AccountSummary, error) {
 	var rows []repository.AccountSummary
 	selectFields := `
@@ -347,7 +338,8 @@ func (r *AccountRepository) ListMissingConsoleSyncAccounts(ctx context.Context, 
 		return []account.Credential{}, nil
 	}
 	var existing int64
-	if err := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id IN ?", ids).Count(&existing).Error; err != nil {
+	if err := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("id IN ? AND provider = ?", ids, account.ProviderWeb).Count(&existing).Error; err != nil {
 		return nil, err
 	}
 	if existing != int64(len(ids)) {
@@ -356,8 +348,8 @@ func (r *AccountRepository) ListMissingConsoleSyncAccounts(ctx context.Context, 
 	var rows []accountModel
 	if err := r.db.db.WithContext(ctx).
 		Preload("Credential").Preload("WebProfile").
-		Where("id IN ?", ids).
-		Where("(provider <> ? OR "+missingConsoleAccountPredicate+")", account.ProviderWeb, account.ProviderConsole).
+		Where("id IN ? AND provider = ?", ids, account.ProviderWeb).
+		Where(missingConsoleAccountPredicate, account.ProviderConsole).
 		Order("id ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -521,7 +513,7 @@ func (r *AccountRepository) UpsertManyByIdentity(ctx context.Context, values []a
 		if err := tx.Where("identity_key IN ?", identityKeys).Find(&existingRows).Error; err != nil {
 			return err
 		}
-		existingByIdentity := make(map[string]accountModel, len(existingRows)+len(values))
+		existingByIdentity := make(map[string]accountModel, len(values))
 		for _, row := range existingRows {
 			existingByIdentity[row.IdentityKey] = row
 		}

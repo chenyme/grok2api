@@ -213,7 +213,6 @@ func TestConvertAllWebAccountsToBuildProcessesMoreThanLegacyLimitInBatches(t *te
 	repository := &conversionBatchRepository{total: totalAccounts, encryptedSSO: encryptedSSO}
 	adapter := &buildConversionAdapter{}
 	service := NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), cipher, memory.NewLockStore())
-	service.UpdateAccountTaskBatchSize(400)
 	progress := make([][2]int, 0, totalAccounts+1)
 	result, err := service.ConvertAllWebAccountsToBuildWithProgress(context.Background(), nil, func(completed, total int) error {
 		progress = append(progress, [2]int{completed, total})
@@ -225,7 +224,7 @@ func TestConvertAllWebAccountsToBuildProcessesMoreThanLegacyLimitInBatches(t *te
 	if result.Created != totalAccounts || result.Linked != 0 || result.Skipped != 0 || result.Failed != 0 || len(result.BuildAccountIDs) != totalAccounts {
 		t.Fatalf("conversion result = %#v", result)
 	}
-	if adapter.calls.Load() != totalAccounts || repository.listCalls != 3 {
+	if adapter.calls.Load() != totalAccounts || repository.listCalls != 2 {
 		t.Fatalf("adapter calls = %d, repository batches = %d", adapter.calls.Load(), repository.listCalls)
 	}
 	if len(progress) != totalAccounts+1 || progress[0] != [2]int{0, totalAccounts} || progress[len(progress)-1] != [2]int{totalAccounts, totalAccounts} {

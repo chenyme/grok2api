@@ -164,9 +164,16 @@ export function SettingsPage() {
           </SettingsPane>
 
           <SettingsPane value="policies">
+          <SettingsSection title={t("settings.server.title")}>
+            <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+              <SettingsField controlId="server-max-concurrent-requests" label={t("settings.server.maxConcurrentRequests")} description={t("settings.server.maxConcurrentRequestsHelp")} error={form.formState.errors.server?.maxConcurrentRequests?.message}>
+                <Input id="server-max-concurrent-requests" type="number" min={1} max={100_000} {...form.register("server.maxConcurrentRequests", { valueAsNumber: true })} />
+              </SettingsField>
+            </div>
+          </SettingsSection>
+
           <SettingsSection title={t("settings.batch.title")}>
             <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
-              <SettingsField controlId="batch-account-task-size" label={t("settings.batch.accountTaskBatchSize")} error={form.formState.errors.batch?.accountTaskBatchSize?.message}><Input id="batch-account-task-size" type="number" min={1} max={1_000} {...form.register("batch.accountTaskBatchSize", { valueAsNumber: true })} /></SettingsField>
               <SettingsField controlId="batch-import-concurrency" label={t("settings.batch.importConcurrency")} error={form.formState.errors.batch?.importConcurrency?.message}><Input id="batch-import-concurrency" type="number" min={1} max={50} {...form.register("batch.importConcurrency", { valueAsNumber: true })} /></SettingsField>
               <SettingsField controlId="batch-conversion-concurrency" label={t("settings.batch.conversionConcurrency")} error={form.formState.errors.batch?.conversionConcurrency?.message}><Input id="batch-conversion-concurrency" type="number" min={1} max={50} {...form.register("batch.conversionConcurrency", { valueAsNumber: true })} /></SettingsField>
               <SettingsField controlId="batch-sync-concurrency" label={t("settings.batch.syncConcurrency")} error={form.formState.errors.batch?.syncConcurrency?.message}><Input id="batch-sync-concurrency" type="number" min={1} max={50} {...form.register("batch.syncConcurrency", { valueAsNumber: true })} /></SettingsField>

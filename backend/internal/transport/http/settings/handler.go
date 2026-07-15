@@ -21,6 +21,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 }
 
 type settingsConfigDTO struct {
+	Server            serverConfigDTO            `json:"server"`
 	ProviderBuild     providerBuildConfigDTO     `json:"providerBuild"`
 	ProviderWeb       providerWebConfigDTO       `json:"providerWeb"`
 	ProviderConsole   providerConsoleConfigDTO   `json:"providerConsole"`
@@ -30,6 +31,10 @@ type settingsConfigDTO struct {
 	Routing           routingConfigDTO           `json:"routing"`
 	Audit             auditConfigDTO             `json:"audit"`
 	ClientKeyDefaults clientKeyDefaultsConfigDTO `json:"clientKeyDefaults"`
+}
+
+type serverConfigDTO struct {
+	MaxConcurrentRequests int `json:"maxConcurrentRequests"`
 }
 
 type providerConsoleConfigDTO struct {
@@ -75,7 +80,6 @@ type providerWebConfigDTO struct {
 }
 
 type batchConfigDTO struct {
-	AccountTaskBatchSize  int    `json:"accountTaskBatchSize"`
 	ImportConcurrency     int    `json:"importConcurrency"`
 	ConversionConcurrency int    `json:"conversionConcurrency"`
 	SyncConcurrency       int    `json:"syncConcurrency"`
@@ -148,6 +152,7 @@ func (h *Handler) update(c *gin.Context) {
 
 func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 	return settingsapp.EditableConfig{
+		Server: settingsapp.ServerConfig{MaxConcurrentRequests: value.Server.MaxConcurrentRequests},
 		ProviderBuild: settingsapp.ProviderBuildConfig{
 			BaseURL: value.ProviderBuild.BaseURL, ClientVersion: value.ProviderBuild.ClientVersion,
 			ClientIdentifier: value.ProviderBuild.ClientIdentifier, TokenAuth: value.ProviderBuild.TokenAuth,
@@ -167,8 +172,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			ChatTimeout: value.ProviderConsole.ChatTimeout,
 		},
 		Batch: settingsapp.BatchConfig{
-			AccountTaskBatchSize: value.Batch.AccountTaskBatchSize,
-			ImportConcurrency:    value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
+			ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
 			SyncConcurrency: value.Batch.SyncConcurrency, RefreshConcurrency: value.Batch.RefreshConcurrency,
 			RandomDelay: value.Batch.RandomDelay,
 		},
@@ -196,6 +200,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 	config := value.Config
 	return settingsResponse{
 		Config: settingsConfigDTO{
+			Server: serverConfigDTO{MaxConcurrentRequests: config.Server.MaxConcurrentRequests},
 			ProviderBuild: providerBuildConfigDTO{
 				BaseURL: config.ProviderBuild.BaseURL, ClientVersion: config.ProviderBuild.ClientVersion,
 				ClientIdentifier: config.ProviderBuild.ClientIdentifier, TokenAuthConfigured: strings.TrimSpace(config.ProviderBuild.TokenAuth) != "",
@@ -215,8 +220,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				ChatTimeout: config.ProviderConsole.ChatTimeout,
 			},
 			Batch: batchConfigDTO{
-				AccountTaskBatchSize: config.Batch.AccountTaskBatchSize,
-				ImportConcurrency:    config.Batch.ImportConcurrency, ConversionConcurrency: config.Batch.ConversionConcurrency,
+				ImportConcurrency: config.Batch.ImportConcurrency, ConversionConcurrency: config.Batch.ConversionConcurrency,
 				SyncConcurrency: config.Batch.SyncConcurrency, RefreshConcurrency: config.Batch.RefreshConcurrency,
 				RandomDelay: config.Batch.RandomDelay,
 			},

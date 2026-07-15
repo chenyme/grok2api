@@ -168,7 +168,6 @@ func TestSyncAllWebAccountsToConsoleProcessesMoreThanLegacyLimitInBatches(t *tes
 	}
 	repository := &webConsoleBatchRepository{values: values}
 	service := NewService(repository, nil, nil, nil, provider.NewRegistry(consoleSSOCodecAdapter{}), cipher, memory.NewLockStore())
-	service.UpdateAccountTaskBatchSize(400)
 	progress := make([][2]int, 0, totalAccounts+1)
 	result, err := service.SyncAllWebAccountsToConsoleWithProgress(context.Background(), nil, func(completed, total int) error {
 		progress = append(progress, [2]int{completed, total})
@@ -180,7 +179,7 @@ func TestSyncAllWebAccountsToConsoleProcessesMoreThanLegacyLimitInBatches(t *tes
 	if result.Created != totalAccounts || result.Updated != 0 || len(result.AccountIDs) != totalAccounts {
 		t.Fatalf("sync result = %#v", result)
 	}
-	if repository.listCalls != 3 {
+	if repository.listCalls != 2 {
 		t.Fatalf("repository batches = %d", repository.listCalls)
 	}
 	if len(progress) != totalAccounts+1 || progress[0] != [2]int{0, totalAccounts} || progress[len(progress)-1] != [2]int{totalAccounts, totalAccounts} {

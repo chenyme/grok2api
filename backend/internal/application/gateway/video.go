@@ -282,10 +282,39 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			s.deferVideoJob(parent, job)
 			return
 		}
-		if errors.Is(err, provider.ErrUnauthorized) && lease.Credential.AuthType == account.AuthTypeSSO {
-			_ = s.accounts.MarkReauthRequired(context.Background(), lease.Credential.ID, fmt.Sprintf("%s SSO credential rejected", lease.Credential.Provider))
+		failureCtx, failureCancel := context.WithTimeout(context.Background(), finalizationTimeout)
+		failureHandled := false
+		if errors.Is(err, provider.ErrUnauthorized) {
+			if lease.Credential.AuthType == account.AuthTypeSSO {
+				_ = s.accounts.MarkReauthRequired(failureCtx, lease.Credential.ID, fmt.Sprintf("%s SSO credential rejected", lease.Credential.Provider))
+			}
+			s.selector.MarkFailure(failureCtx, lease.Credential, http.StatusUnauthorized, 0)
+			failureHandled = true
+		} else if status, ok := provider.ErrorHTTPStatus(err); ok {
+			switch {
+			case status == http.StatusForbidden && s.providers.RetryForbiddenAsEgress(lease.Credential.Provider):
+				// Web Provider 已对 anti-bot 403 降低出口健康并重建浏览器会话；
+				// 视频请求已提交，不能换号重试，也不能误伤账号池。
+				failureHandled = true
+			case (status == http.StatusPaymentRequired || status == http.StatusTooManyRequests) && lease.QuotaMode != "":
+				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(failureCtx, lease.Credential.ID, lease.QuotaMode, 0)
+				s.selector.MarkQuotaStateChanged(lease.Credential.Provider)
+				if reconcileErr != nil || !exhausted {
+					s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
+				}
+				failureHandled = true
+			case status >= http.StatusInternalServerError:
+				// 5xx 是 Provider 服务级故障，不应让某个账号退出号池。
+				failureHandled = true
+			default:
+				s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
+				failureHandled = true
+			}
 		}
-		s.selector.MarkFailure(context.Background(), lease.Credential, 0, 0)
+		if !failureHandled && !provider.IsMediaPostProcessingError(err) {
+			s.selector.MarkFailure(failureCtx, lease.Credential, 0, 0)
+		}
+		failureCancel()
 		applyMediaJobEgress(&job, egressTrace, route.Provider)
 		s.failVideoJob(parent, job, "generation_failed", err)
 		return

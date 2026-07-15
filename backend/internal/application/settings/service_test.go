@@ -44,16 +44,17 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	var applied config.Config
 	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
 	input := service.Get().Config
+	input.Server.MaxConcurrentRequests = 2048
 	input.Routing.MaxAttempts = 5
 	input.Audit.BufferSize = cfg.Audit.BufferSize + 1
 	input.Media.MaxTotalBytes = 2 << 30
 	input.Media.CleanupThresholdPercent = 75
 	input.Media.CleanupInterval = "5m"
-	input.Frontend.PublicAPIBaseURL = "http://public.example.com"
+	input.Frontend.PublicAPIBaseURL = "https://public.example.com"
 	input.ProviderConsole.BaseURL = "https://console.example.com"
 	input.ProviderConsole.UserAgent = "console-test-agent"
 	input.ProviderConsole.ChatTimeout = "6m"
-	input.Batch = BatchConfig{AccountTaskBatchSize: 777, ImportConcurrency: 26, ConversionConcurrency: 27, SyncConcurrency: 28, RefreshConcurrency: 29, RandomDelay: "750ms"}
+	input.Batch = BatchConfig{ImportConcurrency: 26, ConversionConcurrency: 27, SyncConcurrency: 28, RefreshConcurrency: 29, RandomDelay: "750ms"}
 
 	snapshot, err := service.Update(context.Background(), service.Get().Revision, input)
 	if err != nil {
@@ -62,13 +63,16 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if applied.Routing.MaxAttempts != 5 {
 		t.Fatalf("runtime configuration was not applied: %#v", applied.Routing)
 	}
+	if applied.Server.MaxConcurrentRequests != 2048 {
+		t.Fatalf("server configuration was not applied: %#v", applied.Server)
+	}
 	if applied.Media.MaxTotalBytes != 2<<30 || applied.Media.CleanupThresholdPercent != 75 || applied.Media.CleanupInterval.Value() != 5*time.Minute {
 		t.Fatalf("media configuration was not applied: %#v", applied.Media)
 	}
-	if applied.Frontend.PublicAPIBaseURLOverride != "http://public.example.com" || applied.Frontend.EffectivePublicAPIBaseURL() != "http://public.example.com" {
+	if applied.Frontend.PublicAPIBaseURLOverride != "https://public.example.com" || applied.Frontend.EffectivePublicAPIBaseURL() != "https://public.example.com" {
 		t.Fatalf("frontend configuration was not applied: %#v", applied.Frontend)
 	}
-	if applied.Batch.AccountTaskBatchSize != 777 || applied.Batch.ImportConcurrency != 26 || applied.Batch.ConversionConcurrency != 27 || applied.Batch.SyncConcurrency != 28 || applied.Batch.RefreshConcurrency != 29 || applied.Batch.RandomDelay.Value() != 750*time.Millisecond {
+	if applied.Batch.ImportConcurrency != 26 || applied.Batch.ConversionConcurrency != 27 || applied.Batch.SyncConcurrency != 28 || applied.Batch.RefreshConcurrency != 29 || applied.Batch.RandomDelay.Value() != 750*time.Millisecond {
 		t.Fatalf("batch configuration was not applied: %#v", applied.Batch)
 	}
 	if applied.Provider.Console.BaseURL != "https://console.example.com" || applied.Provider.Console.UserAgent != "console-test-agent" || applied.Provider.Console.ChatTimeout.Value() != 6*time.Minute {
@@ -81,36 +85,8 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.Routing.MaxAttempts != 5 || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.AccountTaskBatchSize != 777 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" {
+	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Routing.MaxAttempts != 5 || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" {
 		t.Fatalf("configuration was not persisted")
-	}
-}
-
-func TestLoadPersistedKeepsConsoleDefaultsWhenFieldIsMissing(t *testing.T) {
-	cfg := testConfig(t)
-	value := toDomainConfig(cfg)
-	value.ProviderConsole = settingsdomain.ProviderConsoleConfig{}
-	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
-	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Provider.Console != cfg.Provider.Console {
-		t.Fatalf("console config = %#v, want %#v", loaded.Provider.Console, cfg.Provider.Console)
-	}
-}
-
-func TestLoadPersistedKeepsAccountTaskBatchSizeWhenFieldIsMissing(t *testing.T) {
-	cfg := testConfig(t)
-	value := toDomainConfig(cfg)
-	value.Batch.AccountTaskBatchSize = 0
-	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
-	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Batch.AccountTaskBatchSize != cfg.Batch.AccountTaskBatchSize {
-		t.Fatalf("account task batch size = %d, want %d", loaded.Batch.AccountTaskBatchSize, cfg.Batch.AccountTaskBatchSize)
 	}
 }
 
@@ -133,20 +109,6 @@ func TestUpdateRejectsBatchConcurrencyOutsideSafeRange(t *testing.T) {
 	}
 	if repository.found {
 		t.Fatal("invalid batch settings were persisted")
-	}
-}
-
-func TestUpdateRejectsAccountTaskBatchSizeOutsideSafeRange(t *testing.T) {
-	cfg := testConfig(t)
-	repository := &runtimeSettingsRepositoryStub{}
-	service := NewService(cfg, time.Time{}, 0, repository, nil, nil)
-	input := service.Get().Config
-	input.Batch.AccountTaskBatchSize = 1001
-	if _, err := service.Update(context.Background(), 0, input); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("error = %v", err)
-	}
-	if repository.found {
-		t.Fatal("invalid account task batch size was persisted")
 	}
 }
 

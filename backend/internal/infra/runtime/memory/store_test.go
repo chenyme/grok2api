@@ -38,6 +38,38 @@ func TestRateAndConcurrencyLimits(t *testing.T) {
 	}
 }
 
+func BenchmarkConcurrencyLimiterCurrentMany(b *testing.B) {
+	ctx := context.Background()
+	limiter := NewConcurrencyLimiter()
+	keys := make([]string, 3000)
+	releases := make([]func(), 0, len(keys))
+	for index := range keys {
+		key := fmt.Sprintf("account:%d", index+1)
+		keys[index] = key
+		release, acquired, err := limiter.Acquire(ctx, key, 8)
+		if err != nil || !acquired {
+			b.Fatalf("预置并发租约失败: acquired=%v err=%v", acquired, err)
+		}
+		releases = append(releases, release)
+	}
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+	}()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(parallel *testing.PB) {
+		for parallel.Next() {
+			values, err := limiter.CurrentMany(ctx, keys)
+			if err != nil || len(values) != len(keys) {
+				b.Fatalf("并发快照数量 = %d, err = %v", len(values), err)
+			}
+		}
+	})
+}
+
 func TestStickyStoreExpires(t *testing.T) {
 	ctx := context.Background()
 	store := NewStickyStore()
