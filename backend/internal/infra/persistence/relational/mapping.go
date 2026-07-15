@@ -27,6 +27,7 @@ func toAccountDomain(value accountModel) account.Credential {
 	var refreshDueAt, lastRefreshAt *time.Time
 	var refreshFailures int
 	var lastRefreshError string
+	var refreshPermanent bool
 	var authType account.AuthType
 	var clientID, encryptedPrimary, encryptedRefresh string
 	if value.Credential != nil {
@@ -41,6 +42,7 @@ func toAccountDomain(value accountModel) account.Credential {
 		lastRefreshAt = value.Credential.LastRefreshAt
 		refreshFailures = value.Credential.RefreshFailures
 		lastRefreshError = value.Credential.LastRefreshError
+		refreshPermanent = value.Credential.RefreshPermanent
 	}
 	var webTier account.WebTier
 	var webTierSyncedAt *time.Time
@@ -53,7 +55,7 @@ func toAccountDomain(value accountModel) account.Credential {
 		UserID: value.UserID, TeamID: value.TeamID, SourceKey: value.SourceKey, OIDCClientID: clientID,
 		EncryptedAccessToken: encryptedPrimary, EncryptedRefreshToken: encryptedRefresh,
 		ExpiresAt: expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: lastRefreshAt,
-		RefreshFailureCount: refreshFailures, LastRefreshErrorCode: lastRefreshError,
+		RefreshFailureCount: refreshFailures, LastRefreshErrorCode: lastRefreshError, RefreshPermanent: refreshPermanent,
 		Enabled: value.Enabled, AuthStatus: account.AuthStatus(value.AuthStatus), Priority: value.Priority,
 		MaxConcurrent: value.MaxConcurrent, MinimumRemaining: value.MinimumRemaining, FailureCount: value.FailureCount,
 		CooldownUntil: value.CooldownUntil, LastError: value.LastError, LastUsedAt: value.LastUsedAt,
@@ -97,7 +99,7 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 		AccountID: value.ID, AuthType: string(authType), ClientID: value.OIDCClientID,
 		EncryptedPrimary: value.EncryptedAccessToken, EncryptedRefresh: value.EncryptedRefreshToken,
 		ExpiresAt: expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: value.LastRefreshAt,
-		RefreshFailures: value.RefreshFailureCount, LastRefreshError: value.LastRefreshErrorCode,
+		RefreshFailures: value.RefreshFailureCount, LastRefreshError: value.LastRefreshErrorCode, RefreshPermanent: value.RefreshPermanent,
 		UpdatedAt: time.Now().UTC(),
 	}
 }

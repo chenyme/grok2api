@@ -43,7 +43,7 @@ type AccountRepository interface {
 	ListCriticalCredentialRefreshIDs(ctx context.Context, now, expiresBefore time.Time, limit int) ([]uint64, error)
 	ListDueCredentialRefreshIDs(ctx context.Context, now time.Time, limit int) ([]uint64, error)
 	NextCredentialRefreshDueAt(ctx context.Context) (*time.Time, error)
-	UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string) error
+	UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string, permanent bool) error
 	UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error
 	UpdateHealth(ctx context.Context, id uint64, failureCount int, cooldownUntil *time.Time, lastError string, success bool) error
 	UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error

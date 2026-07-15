@@ -550,7 +550,7 @@ func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessT
 	refreshDueAt := account.CredentialRefreshDueAt(id, expiresAt)
 	updates := map[string]any{
 		"encrypted_primary": accessToken, "expires_at": expiresAt, "refresh_due_at": refreshDueAt,
-		"last_refresh_at": now, "refresh_failures": 0, "last_refresh_error": "", "updated_at": now,
+		"last_refresh_at": now, "refresh_failures": 0, "last_refresh_error": "", "refresh_permanent": false, "updated_at": now,
 	}
 	if refreshToken != "" {
 		updates["encrypted_refresh"] = refreshToken
@@ -652,10 +652,10 @@ func (r *AccountRepository) NextCredentialRefreshDueAt(ctx context.Context) (*ti
 	return &value, nil
 }
 
-func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string) error {
+func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string, permanent bool) error {
 	return r.db.db.WithContext(ctx).Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(map[string]any{
 		"refresh_due_at": retryAt.UTC(), "refresh_failures": max(0, failureCount),
-		"last_refresh_error": truncate(errorCode, 100), "updated_at": time.Now().UTC(),
+		"last_refresh_error": truncate(errorCode, 100), "refresh_permanent": permanent, "updated_at": time.Now().UTC(),
 	}).Error
 }
 

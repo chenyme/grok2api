@@ -63,6 +63,7 @@ type accountCredentialModel struct {
 	LastRefreshAt    *time.Time
 	RefreshFailures  int           `gorm:"not null;default:0;check:chk_account_credentials_refresh_failures,refresh_failures >= 0"`
 	LastRefreshError string        `gorm:"size:100;not null;default:'';check:chk_account_credentials_refresh_error,length(last_refresh_error) <= 100"`
+	RefreshPermanent bool          `gorm:"not null;default:false"`
 	UpdatedAt        time.Time     `gorm:"not null"`
 	Account          *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
