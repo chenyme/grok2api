@@ -29,6 +29,7 @@ import { runtimeConfig } from "@/shared/config/runtime-config";
 import { cn } from "@/shared/lib/cn";
 
 import { listAllPaginatedItems } from "./creative-console-pagination";
+import { createCreativeMessageId } from "./creative-console-id";
 
 type CreativeMode = "chat" | "image" | "video";
 type ConversationMessage = ChatMessage & { id: string };
@@ -200,7 +201,7 @@ function ChatPanel({ publicApiBaseURL, apiKey, model, modelOptions, onModelChang
     }),
     onSuccess: (content, request) => setMessages([
       ...messagesFromRequest(request.requestMessages),
-      { id: crypto.randomUUID(), role: "assistant", content },
+      { id: createCreativeMessageId(), role: "assistant", content },
     ]),
   });
 
@@ -212,7 +213,7 @@ function ChatPanel({ publicApiBaseURL, apiKey, model, modelOptions, onModelChang
     event?.preventDefault();
     const userText = prompt.trim();
     if (!apiKey || !model || !userText || mutation.isPending) return;
-    const userMessage: ConversationMessage = { id: crypto.randomUUID(), role: "user", content: userText };
+    const userMessage: ConversationMessage = { id: createCreativeMessageId(), role: "user", content: userText };
     const requestMessages: ChatMessage[] = [
       ...(systemPrompt.trim() ? [{ role: "system" as const, content: systemPrompt.trim() }] : []),
       ...messages.map(({ role, content }) => ({ role, content })),
@@ -479,7 +480,7 @@ function Field({ label, htmlFor, className, children }: { label: string; htmlFor
 function messagesFromRequest(messages: ChatMessage[]): ConversationMessage[] {
   return messages
     .filter((message) => message.role !== "system")
-    .map((message) => ({ ...message, id: crypto.randomUUID() }));
+    .map((message) => ({ ...message, id: createCreativeMessageId() }));
 }
 
 function ChatBubble({ message, loading = false }: { message: ConversationMessage; loading?: boolean }) {
