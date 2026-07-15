@@ -41,6 +41,19 @@ test("createPublicApiBaseURL does not duplicate a case-insensitive v1 suffix", (
   assert.equal(createPublicApiBaseURL("https://api.example.com/V1/"), "https://api.example.com/V1");
 });
 
+test("createPublicApiBaseURL falls back to the browser origin for an empty configured value", () => {
+  const previousWindow = globalThis.window;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { origin: "https://panel.example.com" } },
+  });
+  try {
+    assert.equal(createPublicApiBaseURL(""), "https://panel.example.com/v1");
+  } finally {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
+  }
+});
+
 test("createChatCompletion uses the OpenAI endpoint, bearer key, and non-streaming body", async () => {
   const calls: FetchCall[] = [];
   const text = await withFetchMock((input, init) => {

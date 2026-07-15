@@ -22,7 +22,7 @@ type RequestOptions = {
 };
 
 export function createPublicApiBaseURL(publicApiBaseURL = browserPublicApiBaseURL()): string {
-  return createPublicApiBaseURLFromString(publicApiBaseURL);
+  return createPublicApiBaseURLFromString(publicApiBaseURL.trim() || browserPublicApiBaseURL());
 }
 
 function browserPublicApiBaseURL(): string {
@@ -169,7 +169,9 @@ function resolveMediaURL(publicApiBaseURL: string, value: string): string {
   const url = value.trim();
   if (!url || url.startsWith("data:") || url.startsWith("blob:")) return url;
   try {
-    const baseURL = publicApiBaseURL.replace(/\/+$/, "");
+    const browserOrigin = typeof window === "undefined" ? undefined : window.location.origin;
+    const configuredBaseURL = publicApiBaseURL.trim() || browserPublicApiBaseURL();
+    const baseURL = new URL(configuredBaseURL, browserOrigin).toString().replace(/\/+$/, "");
     const relativeBaseURL = url.startsWith("/")
       ? `${new URL(baseURL).origin}/`
       : `${baseURL}/`;

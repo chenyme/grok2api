@@ -98,6 +98,7 @@ export function CreativeConsolePage() {
   const secretMutation = useMutation({
     mutationFn: (id: string) => getClientKeySecret(id),
     onSuccess: ({ secret }, id) => {
+      if (id !== effectiveKeyId) return;
       setSecretState({ keyId: id, secret });
       setKeyError("");
     },
@@ -277,7 +278,7 @@ function ImagePanel({ publicApiBaseURL, apiKey, model, modelOptions, onModelChan
   const [images, setImages] = useState<ImageResult[]>([]);
 
   const mutation = useMutation({
-    mutationFn: () => generateImage({ publicApiBaseURL, apiKey, model, prompt: prompt.trim(), count: Number(count), aspectRatio, resolution }),
+    mutationFn: (request: Parameters<typeof generateImage>[0]) => generateImage(request),
     onSuccess: setImages,
   });
 
@@ -285,7 +286,7 @@ function ImagePanel({ publicApiBaseURL, apiKey, model, modelOptions, onModelChan
     event.preventDefault();
     if (!apiKey || !model || !prompt.trim() || mutation.isPending) return;
     mutation.reset();
-    mutation.mutate();
+    mutation.mutate({ publicApiBaseURL, apiKey, model, prompt: prompt.trim(), count: Number(count), aspectRatio, resolution });
   }
 
   return (
@@ -342,17 +343,8 @@ function VideoPanel({ publicApiBaseURL, apiKey, model, modelOptions, onModelChan
   const [job, setJob] = useState<{ requestId: string; apiKey: string; publicApiBaseURL: string } | null>(null);
 
   const createMutation = useMutation({
-    mutationFn: () => createVideo({
-      publicApiBaseURL,
-      apiKey,
-      model,
-      prompt: prompt.trim(),
-      imageURL: imageURL.trim() || undefined,
-      duration: Number(duration),
-      aspectRatio,
-      resolution,
-    }),
-    onSuccess: (requestId) => setJob({ requestId, apiKey, publicApiBaseURL }),
+    mutationFn: (request: Parameters<typeof createVideo>[0]) => createVideo(request),
+    onSuccess: (requestId, request) => setJob({ requestId, apiKey: request.apiKey, publicApiBaseURL: request.publicApiBaseURL }),
   });
 
   const statusQuery = useQuery({
@@ -365,10 +357,19 @@ function VideoPanel({ publicApiBaseURL, apiKey, model, modelOptions, onModelChan
 
   function submit(event: FormEvent): void {
     event.preventDefault();
-    if (!apiKey || !model || (!prompt.trim() && !imageURL.trim()) || createMutation.isPending) return;
+    if (!apiKey || !model || (!prompt.trim() && !imageURL.trim()) || !validDuration(duration) || createMutation.isPending) return;
     setJob(null);
     createMutation.reset();
-    createMutation.mutate();
+    createMutation.mutate({
+      publicApiBaseURL,
+      apiKey,
+      model,
+      prompt: prompt.trim(),
+      imageURL: imageURL.trim() || undefined,
+      duration: Number(duration),
+      aspectRatio,
+      resolution,
+    });
   }
 
   return (

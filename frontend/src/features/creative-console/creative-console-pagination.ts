@@ -28,7 +28,8 @@ export async function listAllPaginatedItems<T>(
     items.push(...result.items);
 
     if (items.length >= expectedTotal) return items.slice(0, expectedTotal);
-    if (result.items.length < pageSize) return items;
+    if (result.items.length === 0) return items;
+    if (!Number.isFinite(expectedTotal) && result.items.length < pageSize) return items;
   }
 
   return Number.isFinite(expectedTotal) ? items.slice(0, expectedTotal) : items;
