@@ -1367,7 +1367,7 @@ func webMessagesSearchBlocks(id string, parsed parsedChat, options conversation.
 		hits = append(hits, map[string]any{"type": "web_search_result", "title": title, "url": rawURL})
 	}
 	var content any = hits
-	if parsed.ServerTools == 0 && len(hits) == 0 {
+	if parsed.WebSearchTools == 0 && len(hits) == 0 {
 		content = map[string]any{"type": "web_search_tool_result_error", "error_code": "unavailable"}
 	}
 	result := map[string]any{"type": "web_search_tool_result", "tool_use_id": id, "content": content}
@@ -1375,7 +1375,7 @@ func webMessagesSearchBlocks(id string, parsed parsedChat, options conversation.
 }
 
 func shouldEmitWebMessagesSearch(parsed parsedChat, options conversation.ResponseOptions) bool {
-	return options.AnthropicWebSearch && (options.AnthropicWebSearchRequired || parsed.ServerTools > 0 || len(parsed.SearchSources) > 0)
+	return options.AnthropicWebSearch && (options.AnthropicWebSearchRequired || parsed.WebSearchTools > 0 || len(parsed.SearchSources) > 0)
 }
 
 func webMessagesSearchRequests(parsed parsedChat) int64 {

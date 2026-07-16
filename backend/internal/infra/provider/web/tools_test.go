@@ -223,6 +223,28 @@ func TestBuildMessagesResultDoesNotFabricateOptionalWebSearch(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesResultDoesNotTreatOtherServerToolsAsWebSearch(t *testing.T) {
+	parsed := parsedChat{ServerTools: 1}
+	parsed.Text.WriteString("Generated an image instead.")
+	result := buildOpenAIResult("messages", "resp_test", "grok-chat-fast", parsed, false, conversation.ResponseOptions{
+		AnthropicWebSearch: true, AnthropicWebSearchQuery: "optional query",
+	})
+	content := result["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["type"] != "text" {
+		t.Fatalf("non-search server tool fabricated web search blocks: %#v", content)
+	}
+	if _, exists := result["usage"].(map[string]any)["server_tool_use"]; exists {
+		t.Fatalf("non-search server tool fabricated web search usage: %#v", result["usage"])
+	}
+
+	required := buildOpenAIResult("messages", "resp_test", "grok-chat-fast", parsed, false, webSearchResponseOptions(t))
+	requiredContent := required["content"].([]any)
+	errorContent, ok := requiredContent[1].(map[string]any)["content"].(map[string]any)
+	if !ok || errorContent["type"] != "web_search_tool_result_error" || errorContent["error_code"] != "unavailable" {
+		t.Fatalf("forced search with only a non-search server tool = %#v", requiredContent)
+	}
+}
+
 func TestBuildMessagesResultFiltersUnsafeAndDuplicateSearchSources(t *testing.T) {
 	options := webSearchResponseOptions(t)
 	parsed := parsedChat{ServerTools: 1, SearchSources: []map[string]any{
