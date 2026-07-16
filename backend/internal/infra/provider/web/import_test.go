@@ -36,9 +36,12 @@ func TestParseImportedCredentialsRejectsOversizedPlainToken(t *testing.T) {
 
 func TestWebCredentialJSONUsesCurrentDocumentShape(t *testing.T) {
 	adapter := &Adapter{}
-	values, err := adapter.ParseImportedCredentials([]byte(`{"provider":"grok_web","accounts":[{"name":"primary","sso_token":"token-one","tier":"super"}]}`))
+	values, err := adapter.ParseImportedCredentials([]byte(`{"provider":"grok_web","accounts":[{"name":"primary","sso_token":"token-one","tier":"super","cloudflare_cookies":"cf_clearance=abc; sso=drop"}]}`))
 	if err != nil || len(values) != 1 || values[0].WebTier != account.WebTierSuper {
 		t.Fatalf("credentials = %#v, err = %v", values, err)
+	}
+	if values[0].CloudflareCookies != "cf_clearance=abc; sso=drop" {
+		t.Fatalf("cloudflare cookies = %q", values[0].CloudflareCookies)
 	}
 	data, err := adapter.MarshalCredentials(values)
 	if err != nil {

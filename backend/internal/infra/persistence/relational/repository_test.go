@@ -32,7 +32,7 @@ func TestSchemaAndRepositoryConstraints(t *testing.T) {
 	}
 
 	accountRepo := NewAccountRepository(database)
-	value := account.Credential{Provider: account.ProviderBuild, Name: "first", UserID: "user-1", SourceKey: "source", EncryptedAccessToken: "encrypted-a", EncryptedRefreshToken: "encrypted-r", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 4}
+	value := account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "first", UserID: "user-1", SourceKey: "source", EncryptedAccessToken: "encrypted-a", EncryptedCloudflareCookie: "encrypted-cf", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 4}
 	created, wasCreated, err := accountRepo.UpsertByIdentity(context.Background(), value)
 	if err != nil || !wasCreated {
 		t.Fatalf("首次 upsert = %#v, %v, %v", created, wasCreated, err)
@@ -46,8 +46,9 @@ func TestSchemaAndRepositoryConstraints(t *testing.T) {
 	}
 	value.Name = "updated"
 	value.EncryptedAccessToken = "encrypted-new"
+	value.EncryptedCloudflareCookie = ""
 	updated, wasCreated, err := accountRepo.UpsertByIdentity(context.Background(), value)
-	if err != nil || wasCreated || updated.ID != created.ID || updated.Name != "updated" || updated.LastUsedAt == nil || updated.ObservedModel != "grok-observed" || updated.ObservedModelAt == nil {
+	if err != nil || wasCreated || updated.ID != created.ID || updated.Name != "updated" || updated.LastUsedAt == nil || updated.ObservedModel != "grok-observed" || updated.ObservedModelAt == nil || updated.EncryptedCloudflareCookie != "encrypted-cf" {
 		t.Fatalf("幂等 upsert = %#v, %v, %v", updated, wasCreated, err)
 	}
 }

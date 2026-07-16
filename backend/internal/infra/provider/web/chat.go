@@ -290,7 +290,7 @@ func (a *Adapter) openChat(ctx context.Context, credential account.Credential, p
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", credential.ID))
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, credential)
 	if err != nil {
 		return nil, nil, nil, "", err
 	}

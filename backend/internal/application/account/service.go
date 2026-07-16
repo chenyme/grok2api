@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
@@ -108,11 +109,13 @@ type View struct {
 }
 
 type UpdateInput struct {
-	Name             *string
-	Enabled          *bool
-	Priority         *int
-	MaxConcurrent    *int
-	MinimumRemaining *float64
+	Name                   *string
+	Enabled                *bool
+	Priority               *int
+	MaxConcurrent          *int
+	MinimumRemaining       *float64
+	CloudflareCookies      *string
+	ClearCloudflareCookies bool
 }
 
 type DeviceStartResult struct {
@@ -1242,6 +1245,27 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 		}
 		value.MinimumRemaining = *input.MinimumRemaining
 	}
+	if input.ClearCloudflareCookies {
+		value.EncryptedCloudflareCookie = ""
+	} else if input.CloudflareCookies != nil {
+		if value.Provider == accountdomain.ProviderBuild {
+			return View{}, invalidInput("Grok Build 账号不使用 Cloudflare Cookie")
+		}
+		if len(*input.CloudflareCookies) > 16<<10 {
+			return View{}, invalidInput("Cloudflare Cookie 不能超过 16 KiB")
+		}
+		if strings.TrimSpace(*input.CloudflareCookies) != "" {
+			cookies := egressapp.SanitizeCloudflareCookies(*input.CloudflareCookies)
+			if cookies == "" {
+				return View{}, invalidInput("Cloudflare Cookie 中没有有效字段")
+			}
+			encrypted, encryptErr := s.cipher.Encrypt(cookies)
+			if encryptErr != nil {
+				return View{}, encryptErr
+			}
+			value.EncryptedCloudflareCookie = encrypted
+		}
+	}
 	updated, err := s.accounts.Update(ctx, value)
 	if err != nil {
 		return View{}, mapRepositoryError(err)
@@ -2193,6 +2217,17 @@ func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomai
 	if err != nil {
 		return accountdomain.Credential{}, err
 	}
+	cloudflareEncrypted := ""
+	if strings.TrimSpace(seed.CloudflareCookies) != "" {
+		cookies := egressapp.SanitizeCloudflareCookies(seed.CloudflareCookies)
+		if cookies == "" {
+			return accountdomain.Credential{}, invalidInput("Cloudflare Cookie 中没有有效字段")
+		}
+		cloudflareEncrypted, err = s.cipher.Encrypt(cookies)
+		if err != nil {
+			return accountdomain.Credential{}, err
+		}
+	}
 	sourceKey := seed.SourceKey
 	if sourceKey == "" {
 		sourceKey = "device:" + security.HashToken(seed.AccessToken)
@@ -2212,7 +2247,7 @@ func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomai
 		}
 		authType = definition.Credential.AuthType
 	}
-	value := accountdomain.Credential{Provider: providerValue, AuthType: authType, WebTier: seed.WebTier, Name: seed.Name, Email: seed.Email, UserID: seed.UserID, TeamID: seed.TeamID, SourceKey: sourceKey, OIDCClientID: seed.OIDCClientID, EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, ExpiresAt: seed.ExpiresAt, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: accountdomain.DefaultPriority, MaxConcurrent: accountdomain.DefaultMaxConcurrent, MinimumRemaining: accountdomain.DefaultMinimumRemaining}
+	value := accountdomain.Credential{Provider: providerValue, AuthType: authType, WebTier: seed.WebTier, Name: seed.Name, Email: seed.Email, UserID: seed.UserID, TeamID: seed.TeamID, SourceKey: sourceKey, OIDCClientID: seed.OIDCClientID, EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, EncryptedCloudflareCookie: cloudflareEncrypted, ExpiresAt: seed.ExpiresAt, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: accountdomain.DefaultPriority, MaxConcurrent: accountdomain.DefaultMaxConcurrent, MinimumRemaining: accountdomain.DefaultMinimumRemaining}
 	return value, nil
 }
 

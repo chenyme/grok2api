@@ -129,7 +129,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	cfg := a.config()
 	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutSeconds)*time.Second)
-	lease, err := a.egress.Acquire(requestCtx, egressdomain.ScopeConsole, strconv.FormatUint(request.Credential.ID, 10))
+	lease, err := a.egress.AcquireCredential(requestCtx, egressdomain.ScopeConsole, request.Credential)
 	if err != nil {
 		cancel()
 		return nil, err

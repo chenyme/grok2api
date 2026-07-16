@@ -21,10 +21,11 @@ type importDocument struct {
 }
 
 type importEntry struct {
-	Name     string `json:"name"`
-	SSOToken string `json:"sso_token"`
-	Token    string `json:"token"`
-	Tier     string `json:"tier"`
+	Name              string `json:"name"`
+	SSOToken          string `json:"sso_token"`
+	Token             string `json:"token"`
+	Tier              string `json:"tier"`
+	CloudflareCookies string `json:"cloudflare_cookies"`
 }
 
 func (a *Adapter) ParseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
@@ -76,7 +77,7 @@ func (a *Adapter) ParseImportedCredentials(data []byte) ([]provider.CredentialSe
 		}
 		result = append(result, provider.CredentialSeed{
 			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: tier,
-			Name: name, SourceKey: "sso:" + security.HashToken(token), AccessToken: token,
+			Name: name, SourceKey: "sso:" + security.HashToken(token), AccessToken: token, CloudflareCookies: entry.CloudflareCookies,
 		})
 	}
 	return result, nil

@@ -118,12 +118,15 @@ func TestConsoleImportAcceptsJSONPlainTextAndCookieFormat(t *testing.T) {
 	if len(values) != 2 || values[0].AccessToken != "token-one" || values[1].AccessToken != "token-two" {
 		t.Fatalf("plain values = %#v", values)
 	}
-	values, err = parseImportedCredentials([]byte(`{"provider":"grok_console","accounts":[{"name":"console-a","sso_token":"token-a"}]}`))
+	values, err = parseImportedCredentials([]byte(`{"provider":"grok_console","accounts":[{"name":"console-a","sso_token":"token-a","cloudflare_cookies":"cf_clearance=abc"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(values) != 1 || values[0].Provider != account.ProviderConsole || values[0].AuthType != account.AuthTypeSSO || values[0].Name != "console-a" || values[0].AccessToken != "token-a" {
 		t.Fatalf("json values = %#v", values)
+	}
+	if values[0].CloudflareCookies != "cf_clearance=abc" {
+		t.Fatalf("cloudflare cookies = %q", values[0].CloudflareCookies)
 	}
 }
 

@@ -153,11 +153,13 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 }
 
 type updateRequest struct {
-	Name             *string  `json:"name"`
-	Enabled          *bool    `json:"enabled"`
-	Priority         *int     `json:"priority"`
-	MaxConcurrent    *int     `json:"maxConcurrent"`
-	MinimumRemaining *float64 `json:"minimumRemaining"`
+	Name                   *string  `json:"name"`
+	Enabled                *bool    `json:"enabled"`
+	Priority               *int     `json:"priority"`
+	MaxConcurrent          *int     `json:"maxConcurrent"`
+	MinimumRemaining       *float64 `json:"minimumRemaining"`
+	CloudflareCookies      *string  `json:"cloudflareCookies"`
+	ClearCloudflareCookies bool     `json:"clearCloudflareCookies"`
 }
 
 type batchUpdateRequest struct {
@@ -221,39 +223,40 @@ type accountImportResponse struct {
 }
 
 type accountResponse struct {
-	ID               uint64                `json:"id,string"`
-	Provider         string                `json:"provider"`
-	AuthType         string                `json:"authType"`
-	WebTier          string                `json:"webTier,omitempty"`
-	WebTierSyncedAt  *time.Time            `json:"webTierSyncedAt,omitempty"`
-	Name             string                `json:"name"`
-	Email            string                `json:"email,omitempty"`
-	UserID           string                `json:"userId,omitempty"`
-	TeamID           string                `json:"teamId,omitempty"`
-	Enabled          bool                  `json:"enabled"`
-	AuthStatus       string                `json:"authStatus"`
-	ExpiresAt        *time.Time            `json:"expiresAt,omitempty"`
-	Refreshable      bool                  `json:"refreshable"`
-	RefreshDueAt     *time.Time            `json:"refreshDueAt,omitempty"`
-	LastRefreshAt    *time.Time            `json:"lastRefreshAt,omitempty"`
-	RefreshFailures  int                   `json:"refreshFailureCount"`
-	LastRefreshError string                `json:"lastRefreshErrorCode,omitempty"`
-	Priority         int                   `json:"priority"`
-	MaxConcurrent    int                   `json:"maxConcurrent"`
-	MinimumRemaining float64               `json:"minimumRemaining"`
-	FailureCount     int                   `json:"failureCount"`
-	CooldownUntil    *time.Time            `json:"cooldownUntil,omitempty"`
-	LastError        string                `json:"lastError,omitempty"`
-	LastUsedAt       *time.Time            `json:"lastUsedAt,omitempty"`
-	LinkedAccountID  uint64                `json:"linkedAccountId,omitempty,string"`
-	LinkedName       string                `json:"linkedAccountName,omitempty"`
-	LinkedProvider   string                `json:"linkedProvider,omitempty"`
-	CreatedAt        time.Time             `json:"createdAt"`
-	ObservedModel    string                `json:"observedModel,omitempty"`
-	ObservedModelAt  *time.Time            `json:"observedModelAt,omitempty"`
-	Billing          *billingResponse      `json:"billing,omitempty"`
-	Quota            quotaResponse         `json:"quota"`
-	QuotaWindows     []quotaWindowResponse `json:"quotaWindows,omitempty"`
+	ID                         uint64                `json:"id,string"`
+	Provider                   string                `json:"provider"`
+	AuthType                   string                `json:"authType"`
+	WebTier                    string                `json:"webTier,omitempty"`
+	WebTierSyncedAt            *time.Time            `json:"webTierSyncedAt,omitempty"`
+	Name                       string                `json:"name"`
+	Email                      string                `json:"email,omitempty"`
+	UserID                     string                `json:"userId,omitempty"`
+	TeamID                     string                `json:"teamId,omitempty"`
+	Enabled                    bool                  `json:"enabled"`
+	AuthStatus                 string                `json:"authStatus"`
+	ExpiresAt                  *time.Time            `json:"expiresAt,omitempty"`
+	Refreshable                bool                  `json:"refreshable"`
+	RefreshDueAt               *time.Time            `json:"refreshDueAt,omitempty"`
+	LastRefreshAt              *time.Time            `json:"lastRefreshAt,omitempty"`
+	RefreshFailures            int                   `json:"refreshFailureCount"`
+	LastRefreshError           string                `json:"lastRefreshErrorCode,omitempty"`
+	Priority                   int                   `json:"priority"`
+	MaxConcurrent              int                   `json:"maxConcurrent"`
+	MinimumRemaining           float64               `json:"minimumRemaining"`
+	FailureCount               int                   `json:"failureCount"`
+	CooldownUntil              *time.Time            `json:"cooldownUntil,omitempty"`
+	LastError                  string                `json:"lastError,omitempty"`
+	LastUsedAt                 *time.Time            `json:"lastUsedAt,omitempty"`
+	LinkedAccountID            uint64                `json:"linkedAccountId,omitempty,string"`
+	LinkedName                 string                `json:"linkedAccountName,omitempty"`
+	LinkedProvider             string                `json:"linkedProvider,omitempty"`
+	CreatedAt                  time.Time             `json:"createdAt"`
+	ObservedModel              string                `json:"observedModel,omitempty"`
+	ObservedModelAt            *time.Time            `json:"observedModelAt,omitempty"`
+	CloudflareCookieConfigured bool                  `json:"cloudflareCookieConfigured"`
+	Billing                    *billingResponse      `json:"billing,omitempty"`
+	Quota                      quotaResponse         `json:"quota"`
+	QuotaWindows               []quotaWindowResponse `json:"quotaWindows,omitempty"`
 }
 
 type quotaWindowResponse struct {
@@ -897,7 +900,7 @@ func (h *Handler) update(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	value, err := h.service.Update(c.Request.Context(), id, accountapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining})
+	value, err := h.service.Update(c.Request.Context(), id, accountapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining, CloudflareCookies: request.CloudflareCookies, ClearCloudflareCookies: request.ClearCloudflareCookies})
 	if err != nil {
 		h.writeServiceError(c, "accountUpdateFailed", err, http.StatusInternalServerError, "更新账号失败")
 		return
@@ -1019,7 +1022,8 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		FailureCount: c.FailureCount, CooldownUntil: c.CooldownUntil, LastError: c.LastError,
 		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),
 		CreatedAt: c.CreatedAt, ObservedModel: c.ObservedModel, ObservedModelAt: c.ObservedModelAt,
-		Quota: newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
+		CloudflareCookieConfigured: c.EncryptedCloudflareCookie != "",
+		Quota:                      newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
 	}
 	for _, window := range value.QuotaWindows {
 		breakdown := make([]quotaBreakdownResponse, 0, len(window.Breakdown))
