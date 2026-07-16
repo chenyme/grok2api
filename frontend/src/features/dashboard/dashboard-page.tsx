@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { Spinner } from "@/components/ui/spinner";
 import { getDashboard, type DashboardPeriod, type DashboardDTO } from "@/features/dashboard/dashboard-api";
+import { VersionUpdateBanner } from "@/features/system/version-update";
 import { useAuth } from "@/shared/auth/use-auth";
 import { ErrorState } from "@/shared/components/data-state";
 import { PeriodSelector } from "@/shared/components/period-selector";
@@ -81,32 +82,36 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      <header>
-        <div>
-          <h1 className="text-xl font-medium">{t("dashboard.title")}</h1>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("dashboard.subtitle", { name: displayName })}
-            {dashboard?.generatedAt ? <span> · {t("dashboard.lastUpdated", { time: formatDateTime(dashboard.generatedAt, i18n.language) })}</span> : null}
-          </p>
-        </div>
-      </header>
-
-      <section className="space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="shrink-0 text-sm font-medium">{t("dashboard.usage")}</h2>
-          <div className="flex min-w-0 shrink-0 items-center gap-2">
-            <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" onClick={refreshAll} disabled={dashboardQuery.isFetching || manualRefreshing} aria-label={t("common.refresh")}><RefreshCw className={manualRefreshing ? "animate-spin" : undefined} /></Button>
-            <PeriodSelector value={periodDays} onChange={(value) => setPreferences((current) => ({ ...current, periodDays: value }))} ariaLabel={t("dashboard.usage")} />
+      <div className="space-y-5">
+        <header>
+          <div>
+            <h1 className="text-xl font-medium">{t("dashboard.title")}</h1>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("dashboard.subtitle", { name: displayName })}
+              {dashboard?.generatedAt ? <span> · {t("dashboard.lastUpdated", { time: formatDateTime(dashboard.generatedAt, i18n.language) })}</span> : null}
+            </p>
           </div>
-        </div>
+        </header>
 
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard icon={<Users />} label={t("dashboard.activeAccounts")} value={formatNumber(activeAccounts, i18n.language)} detail={t("dashboard.availableSummary", { active: activeAccounts, total: resources?.totalAccounts ?? 0 })} loading={loading} />
-          <MetricCard icon={<Activity />} label={t("dashboard.requests")} value={formatNumber(usage?.requests ?? 0, i18n.language)} detail={t("dashboard.requestQualitySummary", { success: formatNumber(usage?.successRate ?? 0, i18n.language, 1), failed: usage?.failedRequests ?? 0 })} loading={loading} />
-          <MetricCard icon={<Box />} label={t("dashboard.tokens")} value={formatNumber(usage?.tokens ?? 0, i18n.language)} detail={t("dashboard.tokenEfficiency", { rate: formatNumber(cacheHitRate, i18n.language, 1) })} loading={loading} />
-          <MetricCard icon={<CircleDollarSign />} label={t("dashboard.billing")} value={formatUSD(usage?.billedCostUsdTicks ?? 0, i18n.language)} detail={t("dashboard.billingSummary", { period })} loading={loading} />
-        </div>
-      </section>
+        <VersionUpdateBanner />
+
+        <section className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="shrink-0 text-sm font-medium">{t("dashboard.usage")}</h2>
+            <div className="flex min-w-0 shrink-0 items-center gap-2">
+              <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" onClick={refreshAll} disabled={dashboardQuery.isFetching || manualRefreshing} aria-label={t("common.refresh")}><RefreshCw className={manualRefreshing ? "animate-spin" : undefined} /></Button>
+              <PeriodSelector value={periodDays} onChange={(value) => setPreferences((current) => ({ ...current, periodDays: value }))} ariaLabel={t("dashboard.usage")} />
+            </div>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard icon={<Users />} label={t("dashboard.activeAccounts")} value={formatNumber(activeAccounts, i18n.language)} detail={t("dashboard.availableSummary", { active: activeAccounts, total: resources?.totalAccounts ?? 0 })} loading={loading} />
+            <MetricCard icon={<Activity />} label={t("dashboard.requests")} value={formatNumber(usage?.requests ?? 0, i18n.language)} detail={t("dashboard.requestQualitySummary", { success: formatNumber(usage?.successRate ?? 0, i18n.language, 1), failed: usage?.failedRequests ?? 0 })} loading={loading} />
+            <MetricCard icon={<Box />} label={t("dashboard.tokens")} value={formatNumber(usage?.tokens ?? 0, i18n.language)} detail={t("dashboard.tokenEfficiency", { rate: formatNumber(cacheHitRate, i18n.language, 1) })} loading={loading} />
+            <MetricCard icon={<CircleDollarSign />} label={t("dashboard.billing")} value={formatUSD(usage?.billedCostUsdTicks ?? 0, i18n.language)} detail={t("dashboard.billingSummary", { period })} loading={loading} />
+          </div>
+        </section>
+      </div>
 
       <TrendPanel dashboard={dashboard} metric={trendMetric} onMetricChange={(value) => setPreferences((current) => ({ ...current, trendMetric: value }))} locale={i18n.language} loading={loading} />
 

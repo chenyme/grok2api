@@ -11,6 +11,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EgressNodes } from "@/features/settings/egress-nodes";
+import { VersionUpdateSection } from "@/features/system/version-update";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isByteSizeUnit, isDurationUnit, type ByteSizeValue, type DurationValue } from "@/features/settings/settings-model";
 import { useSettings } from "@/features/settings/use-settings";
@@ -69,6 +70,7 @@ export function SettingsPage() {
             <TabsTrigger value="providers">{t("settings.groups.providers")}</TabsTrigger>
             <TabsTrigger value="delivery">{t("settings.groups.delivery")}</TabsTrigger>
             <TabsTrigger value="policies">{t("settings.groups.policies")}</TabsTrigger>
+            <TabsTrigger value="about">{t("settings.groups.about")}</TabsTrigger>
           </TabsList>
 
           <SettingsPane value="providers">
@@ -206,6 +208,10 @@ export function SettingsPage() {
               <SettingsField controlId="client-key-default-concurrency" label={t("settings.clientKeys.maxConcurrent")} error={form.formState.errors.clientKeyDefaults?.maxConcurrent?.message}><Input id="client-key-default-concurrency" type="number" min={1} max={1_024} {...form.register("clientKeyDefaults.maxConcurrent", { valueAsNumber: true })} /></SettingsField>
             </div>
           </SettingsSection>
+          </SettingsPane>
+
+          <SettingsPane value="about">
+            <VersionUpdateSection />
           </SettingsPane>
         </Tabs>
       ) : null}
