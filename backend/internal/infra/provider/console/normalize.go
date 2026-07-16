@@ -178,8 +178,8 @@ func normalizeEffort(value string) string {
 
 func ensureReasoningInclude(payload map[string]any) {
 	value, _ := payload["include"].([]any)
-	seen := make(map[string]struct{}, len(value)+1)
-	result := make([]any, 0, len(value)+1)
+	seen := make(map[string]struct{})
+	result := make([]any, 0)
 	for _, item := range value {
 		name, ok := item.(string)
 		if !ok || strings.TrimSpace(name) == "" {
