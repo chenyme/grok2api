@@ -123,11 +123,15 @@ type ProviderConfig struct {
 
 type BuildProviderConfig struct {
 	BaseURL          string `yaml:"baseURL"`
+	FallbackBaseURL  string `yaml:"fallbackBaseURL"`
 	ClientVersion    string `yaml:"clientVersion"`
 	ClientIdentifier string `yaml:"clientIdentifier"`
 	TokenAuth        string `yaml:"tokenAuth"`
 	UserAgent        string `yaml:"userAgent"`
 }
+
+// DefaultBuildFallbackBaseURL 是主 Build API 对可回退推理操作 403 时探测的 XAI API 根地址。
+const DefaultBuildFallbackBaseURL = "https://api.x.ai/v1"
 
 type WebProviderConfig struct {
 	BaseURL             string   `yaml:"baseURL"`
@@ -381,9 +385,15 @@ func (c Config) Validate() error {
 	if c.Auth.AccessTokenTTL.Value() <= 0 || c.Auth.RefreshTokenTTL.Value() <= 0 {
 		return errors.New("JWT 有效期必须大于零")
 	}
-	providerURL, err := url.ParseRequestURI(strings.TrimSpace(c.Provider.Build.BaseURL))
-	if err != nil || providerURL.Scheme == "" || providerURL.Host == "" {
-		return errors.New("provider.build.baseURL 必须是有效 URL")
+	if err := validateAPIBaseURL("provider.build.baseURL", c.Provider.Build.BaseURL, false); err != nil {
+		return err
+	}
+	fallbackBase := strings.TrimSpace(c.Provider.Build.FallbackBaseURL)
+	if fallbackBase == "" {
+		fallbackBase = DefaultBuildFallbackBaseURL
+	}
+	if err := validateAPIBaseURL("provider.build.fallbackBaseURL", fallbackBase, true); err != nil {
+		return err
 	}
 	if strings.TrimSpace(c.Provider.Build.ClientVersion) == "" || strings.TrimSpace(c.Provider.Build.ClientIdentifier) == "" || strings.TrimSpace(c.Provider.Build.TokenAuth) == "" || strings.TrimSpace(c.Provider.Build.UserAgent) == "" {
 		return errors.New("provider.build 客户端标识不能为空")
@@ -447,6 +457,34 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// validateAPIBaseURL 仅允许无凭据、query、fragment 的 HTTP(S) API 根地址。
+// requireHTTPS 为 true 时强制 HTTPS（用于生产默认 XAI 备用地址）。
+func validateAPIBaseURL(name, raw string, requireHTTPS bool) error {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%s 必须是不含凭据、查询参数和片段的 HTTP(S) URL", name)
+	}
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if requireHTTPS {
+			return fmt.Errorf("%s 必须是 HTTPS URL", name)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%s 必须是不含凭据、查询参数和片段的 HTTP(S) URL", name)
+	}
+}
+
+// NormalizeBuildFallbackBaseURL 在旧配置缺字段时填入默认 XAI 备用地址。
+func NormalizeBuildFallbackBaseURL(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return DefaultBuildFallbackBaseURL
+	}
+	return strings.TrimSpace(value)
+}
+
 func defaultConfig() Config {
 	return Config{
 		Server: ServerConfig{
@@ -472,8 +510,8 @@ func defaultConfig() Config {
 		},
 		Provider: ProviderConfig{
 			Build: BuildProviderConfig{
-				BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: RecommendedBuildClientVersion,
-				ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli",
+				BaseURL: "https://cli-chat-proxy.grok.com/v1", FallbackBaseURL: DefaultBuildFallbackBaseURL,
+				ClientVersion: RecommendedBuildClientVersion, ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli",
 				UserAgent: RecommendedBuildUserAgent,
 			},
 			Web: WebProviderConfig{

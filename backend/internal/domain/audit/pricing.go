@@ -239,8 +239,13 @@ func EstimateOfficialImageEditCost(model, resolution string, outputCount, inputC
 }
 
 // EstimateOfficialVideoCost 按请求视频时长和分辨率计算费用。
+// 仅精确支持 grok-imagine-video 与 grok-imagine-video-1.5（可带来源前缀）；未知后缀拒绝。
 func EstimateOfficialVideoCost(model, resolution string, seconds int) (PricingResult, bool) {
-	if normalizePricingModel(model) != "grok-imagine-video" || seconds <= 0 {
+	if seconds <= 0 {
+		return PricingResult{}, false
+	}
+	baseModel, ok := officialVideoPricingModel(model)
+	if !ok {
 		return PricingResult{}, false
 	}
 	resolution = strings.ToLower(strings.TrimSpace(resolution))
@@ -254,7 +259,18 @@ func EstimateOfficialVideoCost(model, resolution string, seconds int) (PricingRe
 		return PricingResult{}, false
 	}
 	return PricingResult{
-		Model:          "grok-imagine-video-" + resolution,
+		Model:          baseModel + "-" + resolution,
 		CostInUSDTicks: int64(seconds) * ticksPerSecond,
 	}, true
+}
+
+func officialVideoPricingModel(model string) (string, bool) {
+	switch normalizePricingModel(model) {
+	case "grok-imagine-video":
+		return "grok-imagine-video", true
+	case "grok-imagine-video-1.5":
+		return "grok-imagine-video-1.5", true
+	default:
+		return "", false
+	}
 }

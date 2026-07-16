@@ -113,6 +113,8 @@ type UpdateInput struct {
 	Priority         *int
 	MaxConcurrent    *int
 	MinimumRemaining *float64
+	// BuildAPIFallback 仅对 grok_build 有效（XAI 推理回退）；nil 表示不修改。
+	BuildAPIFallback *bool
 }
 
 type DeviceStartResult struct {
@@ -1242,6 +1244,12 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 		}
 		value.MinimumRemaining = *input.MinimumRemaining
 	}
+	if input.BuildAPIFallback != nil {
+		if value.Provider != accountdomain.ProviderBuild {
+			return View{}, invalidInput("仅 grok_build 账号支持 Build API 降级标记")
+		}
+		value.BuildAPIFallback = *input.BuildAPIFallback
+	}
 	updated, err := s.accounts.Update(ctx, value)
 	if err != nil {
 		return View{}, mapRepositoryError(err)
@@ -1252,6 +1260,11 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 		s.WakeCredentialRefresh()
 	}
 	return s.Get(ctx, updated.ID)
+}
+
+// MarkBuildAPIFallback 幂等写入 Build 账号 XAI 推理回退标记；失败不吞掉，调用方可重试。
+func (s *Service) MarkBuildAPIFallback(ctx context.Context, id uint64, enabled bool) error {
+	return mapRepositoryError(s.accounts.MarkBuildAPIFallback(ctx, id, enabled))
 }
 
 func (s *Service) Delete(ctx context.Context, id uint64) error {

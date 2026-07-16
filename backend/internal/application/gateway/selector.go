@@ -27,6 +27,8 @@ const quotaProbeLease = 5 * time.Minute
 const successPersistInterval = 30 * time.Second
 const candidateCacheTTL = time.Second
 
+const modelAccessDeniedCooldown = 5 * time.Minute
+
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
 	expiresAt time.Time
@@ -430,6 +432,25 @@ func (s *Selector) MarkModelQuotaExhausted(ctx context.Context, credential accou
 	until := time.Now().UTC().Add(retryAfter)
 	_ = s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
 		AccountID: credential.ID, UpstreamModel: upstreamModel, Reason: "model_quota_depleted", CooldownUntil: until, UpdatedAt: time.Now().UTC(),
+	})
+	s.invalidateCandidates(credential.Provider)
+}
+
+// MarkModelAccessDenied isolates a permission failure to the rejected model.
+// Build OAuth accounts may still have valid video access when a chat endpoint
+// returns 403, so a model denial must not invalidate the whole credential.
+func (s *Selector) MarkModelAccessDenied(ctx context.Context, credential account.Credential, upstreamModel string, retryAfter time.Duration) {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		return
+	}
+	if retryAfter <= 0 {
+		retryAfter = modelAccessDeniedCooldown
+	}
+	now := time.Now().UTC()
+	_ = s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
+		AccountID: credential.ID, UpstreamModel: upstreamModel, Reason: "model_access_denied",
+		CooldownUntil: now.Add(retryAfter), UpdatedAt: now,
 	})
 	s.invalidateCandidates(credential.Provider)
 }

@@ -112,8 +112,13 @@ type Credential struct {
 	LinkedAccountID       uint64
 	LinkedAccountName     string
 	LinkedProvider        Provider
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// BuildAPIFallback 仅对 grok_build 有效：账号级 XAI **推理** 回退标记。
+	// 已标记时 models / responses create|compact / video 走 FallbackBaseURL；
+	// Billing、stored GET/DELETE /responses/{id}、OAuth 与未知路径仍走主地址。
+	// token refresh / SSO 转换 / 普通 upsert / 重启不得清除。
+	BuildAPIFallback bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // CredentialRefreshDueAt 将账号稳定地分散到到期前 5~8 分钟，避免同批导入账号同时刷新。

@@ -25,6 +25,7 @@ import (
 
 type Config struct {
 	BaseURL          string
+	FallbackBaseURL  string
 	ClientVersion    string
 	ClientIdentifier string
 	TokenAuth        string
@@ -33,14 +34,16 @@ type Config struct {
 
 // Adapter 实现 Grok Build CLI Responses、模型、Billing 与 OAuth 协议。
 type Adapter struct {
-	cfgMu      sync.RWMutex
-	cfg        Config
-	http       *http.Client
-	oauth      *oauthClient
-	cipher     *security.Cipher
-	base       http.RoundTripper
-	identityMu sync.Mutex
-	identities map[uint64]clientIdentity
+	cfgMu          sync.RWMutex
+	cfg            Config
+	http           *http.Client
+	oauth          *oauthClient
+	cipher         *security.Cipher
+	base           http.RoundTripper
+	identityMu     sync.Mutex
+	identities     map[uint64]clientIdentity
+	fallbackMarker FallbackMarker
+	uploadIssuer   VideoUploadIssuer
 }
 
 type clientIdentity struct {
@@ -105,33 +108,39 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return invalidResponsesResponse(err), nil
 		}
 	}
-	var bodyReader io.Reader
-	if len(body) > 0 {
-		bodyReader = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, request.Method, a.url(request.Path), bodyReader)
+	// 推理回退：create/compact 可走 XAI；stored GET/DELETE 与未知路径始终主地址。
+	base := a.apiBaseForOperation(request.Credential, request.Method, request.Path)
+	resp, reqURL, err := a.doResponseRequest(ctx, request, accessToken, body, base)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.applyHeaders(req, request.Credential, accessToken, request.Model, request.PromptCacheKey, true); err != nil {
-		return nil, err
+	// 未标记账号：仅可回退操作在主地址明确 403 时用等价请求探测 XAI。
+	if shouldProbeXAIInferenceFallback(request.Credential, request.Method, request.Path, resp.StatusCode) {
+		// 缓冲主 403 正文，备用失败时原样回放，避免二次 primary POST。
+		primaryBody, primaryTruncated, readErr := provider.ReadDiagnosticBody(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		primaryResp := cloneBufferedResponse(resp, primaryBody, primaryTruncated)
+		fallbackBase := a.fallbackBaseURL()
+		if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
+			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(ctx, request, accessToken, body, fallbackBase)
+			if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
+				a.activateBuildAPIFallback(ctx, &request.Credential)
+				resp, reqURL = fallbackResp, fallbackURL
+			} else {
+				if fallbackErr == nil {
+					_ = fallbackResp.Body.Close()
+				}
+				// 保留原 primary 403 的 URL 与缓冲正文，不再次请求主地址。
+				resp = primaryResp
+			}
+		} else {
+			resp = primaryResp
+		}
 	}
-	if len(body) > 0 {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if request.Streaming {
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("Accept-Encoding", "identity")
-	} else {
-		req.Header.Set("Accept", "application/json")
-	}
-	if request.IdempotencyID != "" {
-		req.Header.Set("Idempotency-Key", request.IdempotencyID)
-	}
-	resp, err := a.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
+
 	if err := normalizeGzipResponse(resp); err != nil {
 		return nil, err
 	}
@@ -194,15 +203,46 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				if diagnostic == nil {
 					return nil, convertErr
 				}
-				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: req.URL.String(), Diagnostic: diagnostic}, nil
+				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: reqURL, Diagnostic: diagnostic}, nil
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(converted))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(converted)))
 			resp.Header.Set("Content-Type", "application/json")
-			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: req.URL.String(), Diagnostic: diagnostic}, nil
+			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: diagnostic}, nil
 		}
 	}
-	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: req.URL.String()}, nil
+	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL}, nil
+}
+
+func (a *Adapter) doResponseRequest(ctx context.Context, request provider.ResponseResourceRequest, accessToken string, body []byte, base string) (*http.Response, string, error) {
+	var bodyReader io.Reader
+	if len(body) > 0 {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, request.Method, a.urlWithBase(base, request.Path), bodyReader)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := a.applyHeaders(req, request.Credential, accessToken, request.Model, request.PromptCacheKey, true); err != nil {
+		return nil, "", err
+	}
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if request.Streaming {
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Accept-Encoding", "identity")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+	if request.IdempotencyID != "" {
+		req.Header.Set("Idempotency-Key", request.IdempotencyID)
+	}
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	return resp, req.URL.String(), nil
 }
 
 // invalidResponsesResponse 将本地协议校验错误转换为标准 OpenAI 错误响应，避免触发上游账号重试。
@@ -246,27 +286,47 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.url("/models"), nil)
+	// 模型目录为 XAI 推理回退能力面：已标记直连 XAI，未标记主 403 可探测。
+	base := a.apiBaseForOperation(credential, http.MethodGet, "/models")
+	models, status, err := a.listModelsAt(ctx, credential, accessToken, base)
 	if err != nil {
 		return nil, err
 	}
+	if models != nil {
+		return models, nil
+	}
+	if shouldProbeXAIInferenceFallback(credential, http.MethodGet, "/models", status) {
+		fallbackModels, fallbackStatus, fallbackErr := a.listModelsAt(ctx, credential, accessToken, a.fallbackBaseURL())
+		if fallbackErr == nil && fallbackModels != nil && isHTTPSuccess(fallbackStatus) {
+			a.activateBuildAPIFallback(ctx, &credential)
+			return fallbackModels, nil
+		}
+	}
+	return nil, fmt.Errorf("上游模型接口返回 %d", status)
+}
+
+func (a *Adapter) listModelsAt(ctx context.Context, credential account.Credential, accessToken, base string) ([]string, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.urlWithBase(base, "/models"), nil)
+	if err != nil {
+		return nil, 0, err
+	}
 	if err := a.applyHeaders(req, credential, accessToken, "", "", false); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if err := normalizeGzipResponse(resp); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("上游模型接口返回 %d", resp.StatusCode)
+		return nil, resp.StatusCode, nil
 	}
 	var payload struct {
 		Data []struct {
@@ -274,7 +334,7 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, err
+		return nil, resp.StatusCode, err
 	}
 	models := make([]string, 0, len(payload.Data))
 	for _, item := range payload.Data {
@@ -282,24 +342,31 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 			models = append(models, item.ID)
 		}
 	}
-	return models, nil
+	return models, resp.StatusCode, nil
 }
 
+// GetBilling 始终使用主 Build API。XAI /billing 生产返回 404，无法恢复额度；
+// 主地址 403 也不得探测 XAI 或激活 BuildAPIFallback，以免把可诊断的 403 改写成误导性 404。
 func (a *Adapter) GetBilling(ctx context.Context, credential account.Credential) (account.Billing, error) {
 	accessToken, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
 		return account.Billing{}, err
 	}
-	monthly, err := a.getBilling(ctx, credential, accessToken, "")
+	base := a.primaryBaseURL()
+	monthly, status, err := a.getBillingAt(ctx, credential, accessToken, "", base)
 	if err != nil {
 		return account.Billing{}, err
 	}
-	monthly.AccountID = credential.ID
-	if credits, creditsErr := a.getBilling(ctx, credential, accessToken, "format=credits"); creditsErr == nil {
-		monthly = mergeBillingSnapshots(monthly, credits)
+	if monthly == nil {
+		return account.Billing{}, fmt.Errorf("上游 Billing 接口返回 %d", status)
 	}
-	monthly.SyncedAt = time.Now().UTC()
-	return monthly, nil
+	result := *monthly
+	result.AccountID = credential.ID
+	if credits, _, creditsErr := a.getBillingAt(ctx, credential, accessToken, "format=credits", base); creditsErr == nil && credits != nil {
+		result = mergeBillingSnapshots(result, *credits)
+	}
+	result.SyncedAt = time.Now().UTC()
+	return result, nil
 }
 
 // mergeBillingSnapshots 合并套餐 credits 与 /usage 使用的当前限额周期，周周期优先作为恢复时间。
@@ -506,36 +573,36 @@ func (b *gzipResponseBody) Close() error {
 	return sourceErr
 }
 
-func (a *Adapter) url(path string) string {
-	return strings.TrimRight(a.config().BaseURL, "/") + "/" + strings.TrimLeft(path, "/")
-}
-
-func (a *Adapter) getBilling(ctx context.Context, credential account.Credential, accessToken, query string) (account.Billing, error) {
-	endpoint := a.url("/billing")
+func (a *Adapter) getBillingAt(ctx context.Context, credential account.Credential, accessToken, query, base string) (*account.Billing, int, error) {
+	endpoint := a.urlWithBase(base, "/billing")
 	if query != "" {
 		endpoint += "?" + query
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return account.Billing{}, err
+		return nil, 0, err
 	}
 	if err := a.applyHeaders(req, credential, accessToken, "", "", false); err != nil {
-		return account.Billing{}, err
+		return nil, 0, err
 	}
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return account.Billing{}, err
+		return nil, 0, err
 	}
 	if err := normalizeGzipResponse(resp); err != nil {
-		return account.Billing{}, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return account.Billing{}, err
+		return nil, 0, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return account.Billing{}, fmt.Errorf("上游 Billing 接口返回 %d", resp.StatusCode)
+		return nil, resp.StatusCode, nil
 	}
-	return parseBilling(body)
+	parsed, err := parseBilling(body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return &parsed, resp.StatusCode, nil
 }

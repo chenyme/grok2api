@@ -35,6 +35,8 @@ type Job struct {
 	Progress        int
 	InputJSON       string
 	UpstreamURL     string
+	// ResultAssetID 指向本地媒体资产；XAI ZDR 上传完成后优先从此读取。
+	ResultAssetID   string
 	ContentType     string
 	ErrorCode       string
 	ErrorMessage    string

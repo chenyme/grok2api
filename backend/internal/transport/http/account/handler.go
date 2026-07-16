@@ -158,6 +158,7 @@ type updateRequest struct {
 	Priority         *int     `json:"priority"`
 	MaxConcurrent    *int     `json:"maxConcurrent"`
 	MinimumRemaining *float64 `json:"minimumRemaining"`
+	BuildAPIFallback *bool    `json:"buildApiFallback"`
 }
 
 type batchUpdateRequest struct {
@@ -221,33 +222,35 @@ type accountImportResponse struct {
 }
 
 type accountResponse struct {
-	ID               uint64                `json:"id,string"`
-	Provider         string                `json:"provider"`
-	AuthType         string                `json:"authType"`
-	WebTier          string                `json:"webTier,omitempty"`
-	WebTierSyncedAt  *time.Time            `json:"webTierSyncedAt,omitempty"`
-	Name             string                `json:"name"`
-	Email            string                `json:"email,omitempty"`
-	UserID           string                `json:"userId,omitempty"`
-	TeamID           string                `json:"teamId,omitempty"`
-	Enabled          bool                  `json:"enabled"`
-	AuthStatus       string                `json:"authStatus"`
-	ExpiresAt        *time.Time            `json:"expiresAt,omitempty"`
-	Refreshable      bool                  `json:"refreshable"`
-	RefreshDueAt     *time.Time            `json:"refreshDueAt,omitempty"`
-	LastRefreshAt    *time.Time            `json:"lastRefreshAt,omitempty"`
-	RefreshFailures  int                   `json:"refreshFailureCount"`
-	LastRefreshError string                `json:"lastRefreshErrorCode,omitempty"`
-	Priority         int                   `json:"priority"`
-	MaxConcurrent    int                   `json:"maxConcurrent"`
-	MinimumRemaining float64               `json:"minimumRemaining"`
-	FailureCount     int                   `json:"failureCount"`
-	CooldownUntil    *time.Time            `json:"cooldownUntil,omitempty"`
-	LastError        string                `json:"lastError,omitempty"`
-	LastUsedAt       *time.Time            `json:"lastUsedAt,omitempty"`
-	LinkedAccountID  uint64                `json:"linkedAccountId,omitempty,string"`
-	LinkedName       string                `json:"linkedAccountName,omitempty"`
-	LinkedProvider   string                `json:"linkedProvider,omitempty"`
+	ID               uint64     `json:"id,string"`
+	Provider         string     `json:"provider"`
+	AuthType         string     `json:"authType"`
+	WebTier          string     `json:"webTier,omitempty"`
+	WebTierSyncedAt  *time.Time `json:"webTierSyncedAt,omitempty"`
+	Name             string     `json:"name"`
+	Email            string     `json:"email,omitempty"`
+	UserID           string     `json:"userId,omitempty"`
+	TeamID           string     `json:"teamId,omitempty"`
+	Enabled          bool       `json:"enabled"`
+	AuthStatus       string     `json:"authStatus"`
+	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
+	Refreshable      bool       `json:"refreshable"`
+	RefreshDueAt     *time.Time `json:"refreshDueAt,omitempty"`
+	LastRefreshAt    *time.Time `json:"lastRefreshAt,omitempty"`
+	RefreshFailures  int        `json:"refreshFailureCount"`
+	LastRefreshError string     `json:"lastRefreshErrorCode,omitempty"`
+	Priority         int        `json:"priority"`
+	MaxConcurrent    int        `json:"maxConcurrent"`
+	MinimumRemaining float64    `json:"minimumRemaining"`
+	FailureCount     int        `json:"failureCount"`
+	CooldownUntil    *time.Time `json:"cooldownUntil,omitempty"`
+	LastError        string     `json:"lastError,omitempty"`
+	LastUsedAt       *time.Time `json:"lastUsedAt,omitempty"`
+	LinkedAccountID  uint64     `json:"linkedAccountId,omitempty,string"`
+	LinkedName       string     `json:"linkedAccountName,omitempty"`
+	LinkedProvider   string     `json:"linkedProvider,omitempty"`
+	// BuildAPIFallback 仅 grok_build 有意义；true 表示 XAI 推理回退（models/responses create|compact/video）。
+	BuildAPIFallback bool                  `json:"buildApiFallback,omitempty"`
 	CreatedAt        time.Time             `json:"createdAt"`
 	ObservedModel    string                `json:"observedModel,omitempty"`
 	ObservedModelAt  *time.Time            `json:"observedModelAt,omitempty"`
@@ -893,7 +896,7 @@ func (h *Handler) update(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	value, err := h.service.Update(c.Request.Context(), id, accountapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining})
+	value, err := h.service.Update(c.Request.Context(), id, accountapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining, BuildAPIFallback: request.BuildAPIFallback})
 	if err != nil {
 		h.writeServiceError(c, "accountUpdateFailed", err, http.StatusInternalServerError, "更新账号失败")
 		return
@@ -1014,7 +1017,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		Priority: c.Priority, MaxConcurrent: c.MaxConcurrent, MinimumRemaining: c.MinimumRemaining,
 		FailureCount: c.FailureCount, CooldownUntil: c.CooldownUntil, LastError: c.LastError,
 		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),
-		CreatedAt: c.CreatedAt, ObservedModel: c.ObservedModel, ObservedModelAt: c.ObservedModelAt,
+		BuildAPIFallback: c.BuildAPIFallback, CreatedAt: c.CreatedAt, ObservedModel: c.ObservedModel, ObservedModelAt: c.ObservedModelAt,
 		Quota: newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
 	}
 	for _, window := range value.QuotaWindows {

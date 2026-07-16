@@ -83,6 +83,8 @@ export type AccountDTO = {
   linkedAccountId?: string;
   linkedAccountName?: string;
   linkedProvider?: "grok_build" | "grok_web";
+  /** Build 账号是否启用 XAI 推理回退（models / responses create|compact / video） */
+  buildApiFallback?: boolean;
   createdAt: string;
   billing?: BillingDTO;
   quota: QuotaDTO;
@@ -95,6 +97,7 @@ export type AccountUpdateInput = {
   priority: number;
   maxConcurrent: number;
   minimumRemaining: number;
+  buildApiFallback?: boolean;
 };
 
 export type AccountSummaryDTO = {
@@ -154,6 +157,7 @@ const accountValidator = hasShape({
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")),
+  buildApiFallback: isOptional(isBoolean),
   createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
 });
 const decodeBilling = createValidatedDecoder<BillingDTO>("billing", billingValidator);

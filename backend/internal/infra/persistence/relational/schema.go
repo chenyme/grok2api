@@ -31,6 +31,7 @@ var schemaModels = []any{
 	&webResponseStateModel{},
 	&mediaJobModel{},
 	&mediaAssetModel{},
+	&mediaUploadTicketModel{},
 	&runtimeSettingsModel{},
 	&egressNodeModel{},
 }
@@ -72,6 +73,9 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_recovery ON media_jobs(status, lease_until, created_at, id)",
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_usage_recovery ON media_jobs(status, usage_recorded_at, completed_at, id)",
 	"CREATE INDEX IF NOT EXISTS idx_media_assets_created ON media_assets(created_at DESC, id)",
+	"CREATE INDEX IF NOT EXISTS idx_media_assets_kind_created ON media_assets(kind, created_at DESC, id)",
+	"CREATE INDEX IF NOT EXISTS idx_media_upload_tickets_expires ON media_upload_tickets(expires_at, consumed_at)",
+	"CREATE INDEX IF NOT EXISTS idx_media_jobs_result_asset ON media_jobs(result_asset_id) WHERE result_asset_id <> ''",
 }
 
 // InitializeSchema 以当前持久化模型作为首版数据库结构基线。
@@ -88,6 +92,12 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	}
 	if err := d.ensureConsoleConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 Console 数据库约束: %w", err)
+	}
+	if err := d.ensureMediaJobConstraints(ctx); err != nil {
+		return fmt.Errorf("迁移 media job 数据库约束: %w", err)
+	}
+	if err := d.ensureMediaAssetConstraints(ctx); err != nil {
+		return fmt.Errorf("迁移 media asset 数据库约束: %w", err)
 	}
 	for _, statement := range schemaIndexes {
 		if err := db.Exec(statement).Error; err != nil {
@@ -107,13 +117,43 @@ type consoleConstraint struct {
 }
 
 func (d *Database) ensureConsoleConstraints(ctx context.Context) error {
-	constraints := []consoleConstraint{
+	return d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &accountModel{}, table: "provider_accounts", name: "chk_accounts_provider"},
 		{model: &modelRouteModel{}, table: "model_routes", name: "chk_model_routes_provider"},
 		{model: &requestAuditModel{}, table: "request_audits", name: "chk_request_audits_provider"},
 		{model: &responseOwnershipModel{}, table: "response_ownership", name: "chk_response_ownership_provider"},
 		{model: &egressNodeModel{}, table: "egress_nodes", name: "chk_egress_nodes_specific_scope"},
+	}, "grok_console")
+}
+
+// ensureMediaJobConstraints 将历史仅允许 grok_web 的 media job CHECK 升级到支持 Build 视频。
+// AutoMigrate 不会可靠替换已有 PostgreSQL CHECK，因此启动时幂等检测并重建。
+func (d *Database) ensureMediaJobConstraints(ctx context.Context) error {
+	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_provider"},
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_egress_scope"},
+	}, "grok_build")
+}
+
+// ensureMediaAssetConstraints 升级历史仅允许 image 的媒体资产 CHECK，以支持 video 与更大体积。
+func (d *Database) ensureMediaAssetConstraints(ctx context.Context) error {
+	if err := d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &mediaAssetModel{}, table: "media_assets", name: "chk_media_assets_kind"},
+	}, "video"); err != nil {
+		return err
 	}
+	if err := d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &mediaAssetModel{}, table: "media_assets", name: "chk_media_assets_mime"},
+	}, "video/mp4"); err != nil {
+		return err
+	}
+	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &mediaAssetModel{}, table: "media_assets", name: "chk_media_assets_size"},
+	}, "268435456")
+}
+
+// ensureNamedConstraints 在约束定义尚未包含 marker 时 drop/recreate；已升级则跳过。
+func (d *Database) ensureNamedConstraints(ctx context.Context, constraints []consoleConstraint, marker string) error {
 	migrate := func() error {
 		db := d.db.WithContext(ctx)
 		for _, value := range constraints {
@@ -121,7 +161,7 @@ func (d *Database) ensureConsoleConstraints(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if strings.Contains(definition, "grok_console") {
+			if strings.Contains(definition, marker) {
 				continue
 			}
 			if definition != "" {

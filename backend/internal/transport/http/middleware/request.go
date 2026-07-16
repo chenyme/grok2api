@@ -61,10 +61,19 @@ func Timeout(duration time.Duration) gin.HandlerFunc {
 }
 
 // MaxBodyBytes 对所有请求体应用统一硬上限，避免管理端绑定无界读取。
+// XAI 视频 PUT（/v1/media/uploads/）使用更高的视频安全上限，由票据再次限长。
 func MaxBodyBytes(limit int64) gin.HandlerFunc {
+	const mediaUploadPathPrefix = "/v1/media/uploads/"
+	const mediaUploadMaxBytes = 256 << 20
 	return func(c *gin.Context) {
 		if c.Request.Body != nil && limit > 0 {
-			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+			effective := limit
+			if strings.HasPrefix(c.Request.URL.Path, mediaUploadPathPrefix) && c.Request.Method == http.MethodPut {
+				if mediaUploadMaxBytes > effective {
+					effective = mediaUploadMaxBytes
+				}
+			}
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, effective)
 		}
 		c.Next()
 	}

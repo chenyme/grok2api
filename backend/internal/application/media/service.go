@@ -27,10 +27,11 @@ var (
 	ErrMediaJobsUnavailable = errors.New("视频任务仓储未配置")
 )
 
-// Service 负责图片校验、文件落盘和元数据持久化的一致性收口。
+// Service 负责图片/视频校验、文件落盘和元数据持久化的一致性收口。
 type Service struct {
 	assets        repository.MediaAssetRepository
 	jobs          repository.MediaJobRepository
+	tickets       repository.MediaUploadTicketRepository
 	objects       repository.MediaObjectStorage
 	cleanupLock   repository.DistributedLock
 	publicBaseURL string
@@ -66,8 +67,13 @@ type VideoStats struct {
 }
 
 func NewService(assets repository.MediaAssetRepository, jobs repository.MediaJobRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
+	return NewServiceWithTickets(assets, jobs, nil, objects, cleanupLock, cfg)
+}
+
+// NewServiceWithTickets 构造包含视频上传票据能力的媒体服务。
+func NewServiceWithTickets(assets repository.MediaAssetRepository, jobs repository.MediaJobRepository, tickets repository.MediaUploadTicketRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
 	return &Service{
-		assets: assets, jobs: jobs, objects: objects, cleanupLock: cleanupLock,
+		assets: assets, jobs: jobs, tickets: tickets, objects: objects, cleanupLock: cleanupLock,
 		publicBaseURL: strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"), maxImageBytes: cfg.MaxImageBytes,
 		maxTotalBytes: cfg.MaxTotalBytes, cleanupAt: cfg.CleanupThresholdPercent, cleanupEvery: cfg.CleanupInterval,
 		cleanupSignal: make(chan struct{}, 1), configChanged: make(chan struct{}, 1),
@@ -254,7 +260,16 @@ func (s *Service) RunCleanup(ctx context.Context, onError func(error)) {
 	}
 }
 
-// Cleanup 在跨实例锁保护下删除最旧图片，直到回落到自动清理阈值。
+const (
+	cleanupAssetBatchSize  = 200
+	cleanupTicketBatchSize = 200
+	// cleanupTicketMaxBatchesPerRun 限制单次 Cleanup 调用中过期票据的删除批次数。
+	// 超出部分留给后续直接/后台清理继续回收，避免一次调用无界垄断。
+	cleanupTicketMaxBatchesPerRun = 1
+)
+
+// Cleanup 在跨实例锁保护下删除最旧媒体资产，直到回落到自动清理阈值。
+// 同时有界清理过期上传票据。受保护资产被跳过；通过 offset 前进避免整页受保护时死循环。
 func (s *Service) Cleanup(ctx context.Context) (int, error) {
 	cfg := s.runtimeConfig()
 	if s.cleanupLock != nil {
@@ -263,6 +278,18 @@ func (s *Service) Cleanup(ctx context.Context) (int, error) {
 			return 0, err
 		}
 		defer release()
+	}
+	// 过期票据回收：不触碰未过期票据与已登记媒体资产；单次调用有批次数上限。
+	if s.tickets != nil {
+		for batch := 0; batch < cleanupTicketMaxBatchesPerRun; batch++ {
+			n, err := s.tickets.DeleteExpiredUploadTickets(ctx, time.Now().UTC(), cleanupTicketBatchSize)
+			if err != nil {
+				return 0, err
+			}
+			if n < int64(cleanupTicketBatchSize) {
+				break
+			}
+		}
 	}
 	total, err := s.assets.TotalMediaAssetBytes(ctx)
 	if err != nil {
@@ -274,17 +301,26 @@ func (s *Service) Cleanup(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	deleted := 0
+	offset := 0
 	for total > threshold {
-		values, err := s.assets.ListOldestMediaAssets(ctx, 200)
+		values, err := s.assets.ListOldestMediaAssets(ctx, offset, cleanupAssetBatchSize)
 		if err != nil {
 			return deleted, err
 		}
 		if len(values) == 0 {
 			break
 		}
+		protected, protErr := s.assets.ListProtectedMediaAssetIDs(ctx)
+		if protErr != nil {
+			return deleted, protErr
+		}
+		deletedInBatch := 0
 		for _, asset := range values {
 			if total <= threshold {
 				break
+			}
+			if _, skip := protected[asset.ID]; skip {
+				continue
 			}
 			if err := s.objects.Delete(ctx, asset.StorageKey); err != nil {
 				if errors.Is(err, os.ErrNotExist) {
@@ -297,7 +333,18 @@ func (s *Service) Cleanup(ctx context.Context) (int, error) {
 			}
 			total = max(0, total-asset.SizeBytes)
 			deleted++
+			deletedInBatch++
 		}
+		if deletedInBatch == 0 {
+			// 本页无可删资产：前进 offset 以越过受保护前缀，避免无限循环。
+			if len(values) < cleanupAssetBatchSize {
+				break
+			}
+			offset += len(values)
+			continue
+		}
+		// 删除后最旧顺序变化，从头部重新扫描。
+		offset = 0
 	}
 	s.totalBytes.Store(total)
 	return deleted, nil

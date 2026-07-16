@@ -19,10 +19,12 @@ type Handler struct {
 
 func NewHandler(service *mediaapp.Service) *Handler { return &Handler{service: service} }
 
-// RegisterPublic 注册使用不可猜测资源 ID 的公开图片读取端点。
+// RegisterPublic 注册使用不可猜测资源 ID 的公开图片读取与视频上传接收端点。
+// 上传 PUT 不使用客户端 API key：xAI 无法携带，票据本身即授权。
 func (h *Handler) RegisterPublic(router *gin.Engine) {
 	router.GET("/v1/media/images/:assetId", h.getImage)
 	router.HEAD("/v1/media/images/:assetId", h.getImage)
+	router.PUT("/v1/media/uploads/:token", h.putVideoUpload)
 }
 
 // RegisterAdmin 注册管理端媒体列表和统计端点。
@@ -61,6 +63,30 @@ func (h *Handler) getImage(c *gin.Context) {
 	}
 	c.Status(http.StatusOK)
 	_, _ = io.Copy(c.Writer, body)
+}
+
+// putVideoUpload 接收 XAI ZDR 视频 PUT。响应与错误不得回显完整票据。
+func (h *Handler) putVideoUpload(c *gin.Context) {
+	_, err := h.service.ReceiveVideoUpload(c.Request.Context(), c.Param("token"), c.GetHeader("Content-Type"), c.Request.Body)
+	switch {
+	case err == nil:
+		c.Status(http.StatusNoContent)
+	case errors.Is(err, mediaapp.ErrUploadTicketNotFound):
+		c.Status(http.StatusNotFound)
+	case errors.Is(err, mediaapp.ErrUploadTicketExpired):
+		c.Status(http.StatusGone)
+	case errors.Is(err, mediaapp.ErrUploadTicketConsumed):
+		c.Status(http.StatusConflict)
+	case errors.Is(err, mediaapp.ErrVideoUploadTooLarge):
+		// 体积超限优先于通用无效上传，返回 413。
+		c.Status(http.StatusRequestEntityTooLarge)
+	case errors.Is(err, mediaapp.ErrInvalidVideoUpload):
+		c.Status(http.StatusBadRequest)
+	case errors.Is(err, mediaapp.ErrUploadTicketsUnavailable):
+		c.Status(http.StatusServiceUnavailable)
+	default:
+		c.Status(http.StatusInternalServerError)
+	}
 }
 
 func (h *Handler) listImages(c *gin.Context) {

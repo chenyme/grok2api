@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -569,6 +570,8 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.LastUsedAt = existing.LastUsedAt
 		row.ObservedModel = existing.ObservedModel
 		row.ObservedModelAt = existing.ObservedModelAt
+		// 账号级 Build XAI 降级标记在 upsert/转换/刷新路径中保留；仅管理端可显式清除。
+		row.BuildAPIFallback = existing.BuildAPIFallback
 		if err := tx.Save(&row).Error; err != nil {
 			return repository.AccountUpsertResult{}, accountModel{}, err
 		}
@@ -634,6 +637,9 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, update
 	}
 	if updates.MaxConcurrent != nil {
 		values["max_concurrent"] = *updates.MaxConcurrent
+	}
+	if updates.BuildAPIFallback != nil {
+		values["build_api_fallback"] = *updates.BuildAPIFallback
 	}
 	if updates.MinimumRemaining != nil {
 		values["minimum_remaining"] = *updates.MinimumRemaining
@@ -780,6 +786,27 @@ func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, 
 
 func (r *AccountRepository) UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error {
 	return r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Updates(map[string]any{"observed_model": truncate(model, 255), "observed_model_at": observedAt}).Error
+}
+
+// MarkBuildAPIFallback 仅对 grok_build 账号幂等设置/清除 XAI 推理回退标记。
+func (r *AccountRepository) MarkBuildAPIFallback(ctx context.Context, id uint64, enabled bool) error {
+	result := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("id = ? AND provider = ?", id, account.ProviderBuild).
+		Update("build_api_fallback", enabled)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		var count int64
+		if err := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			return repository.ErrNotFound
+		}
+		return fmt.Errorf("仅 grok_build 账号支持 Build API 降级标记")
+	}
+	return nil
 }
 
 func (r *AccountRepository) UpdateHealth(ctx context.Context, id uint64, failureCount int, cooldownUntil *time.Time, lastError string, success bool) error {

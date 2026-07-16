@@ -12,7 +12,7 @@ func (a *Adapter) Definition() provider.Definition {
 		Provider:          account.ProviderBuild,
 		ModelNamespace:    account.ProviderBuild.ModelNamespace(),
 		ModelCatalog:      provider.ModelCatalogRemote,
-		ModelCapabilities: []modeldomain.Capability{modeldomain.CapabilityResponses},
+		ModelCapabilities: []modeldomain.Capability{modeldomain.CapabilityResponses, modeldomain.CapabilityVideo},
 		Quota:             provider.QuotaBilling,
 		Credential: provider.CredentialSurface{
 			AuthType: account.AuthTypeOAuth, Import: true, Refresh: true, DeviceOAuth: true,
@@ -20,6 +20,7 @@ func (a *Adapter) Definition() provider.Definition {
 		Conversation: provider.ConversationSurface{
 			Responses: true, ChatCompletions: true, Messages: true, Compact: true, StoredResponses: true,
 		},
+		Media:     provider.MediaSurface{VideoGeneration: true},
 		Inference: provider.InferencePolicy{Usage: provider.UsageUpstream},
 	}
 }

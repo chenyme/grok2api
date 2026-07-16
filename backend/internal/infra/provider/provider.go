@@ -219,6 +219,8 @@ type ImageEditRequest struct {
 
 type VideoRequest struct {
 	Credential    account.Credential
+	// JobID 绑定本地视频任务，供 XAI ZDR 上传票据与结果资产关联。
+	JobID         string
 	Prompt        string
 	Duration      int
 	AspectRatio   string
@@ -230,6 +232,8 @@ type VideoRequest struct {
 type VideoResult struct {
 	URL         string
 	ContentType string
+	// AssetID 非空时表示结果已写入本地媒体资产，内容读取应走 MediaObjectStorage。
+	AssetID string
 }
 
 // RefreshedCredential 表示 OAuth 刷新后的旋转凭据。

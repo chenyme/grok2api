@@ -2,6 +2,7 @@ package relational
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -213,6 +214,45 @@ func testMediaJob(id string, accountID, clientKeyID uint64, status mediadomain.S
 		job.CompletedAt = &completedAt
 	}
 	return job
+}
+
+func TestMediaUploadTicketRepositoryDeleteUploadTicketByHash(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewMediaUploadTicketRepository(database)
+	now := time.Now().UTC()
+	hash := strings.Repeat("ab", 32)
+	otherHash := strings.Repeat("cd", 32)
+	if err := repo.CreateUploadTicket(ctx, repository.MediaUploadTicket{
+		TokenHash: hash, AssetID: "vid_delete_by_hash_1", JobID: "job_delete_by_hash",
+		MaxBytes: 1024, AllowedMIME: "video/mp4", ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateUploadTicket(ctx, repository.MediaUploadTicket{
+		TokenHash: otherHash, AssetID: "vid_delete_by_hash_2", JobID: "job_delete_keep",
+		MaxBytes: 1024, AllowedMIME: "video/mp4", ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.DeleteUploadTicketByHash(ctx, hash); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := repo.GetUploadTicketByHash(ctx, hash); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("deleted ticket still readable: %v", err)
+	}
+	// 精确删除不得影响其他票据。
+	if _, err := repo.GetUploadTicketByHash(ctx, otherHash); err != nil {
+		t.Fatalf("other ticket removed: %v", err)
+	}
+	// 幂等：再次删除缺失行成功。
+	if err := repo.DeleteUploadTicketByHash(ctx, hash); err != nil {
+		t.Fatalf("idempotent delete: %v", err)
+	}
+	if err := repo.DeleteUploadTicketByHash(ctx, ""); err != nil {
+		t.Fatalf("empty hash delete: %v", err)
+	}
 }
 
 func testMediaAsset(id, storageKey string, createdAt time.Time) mediadomain.Asset {

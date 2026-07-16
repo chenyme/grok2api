@@ -131,13 +131,15 @@ export function AccountsPage() {
     priority: z.number().int(),
     maxConcurrent: z.number().int().min(1, t("errors.positive")).max(256),
     minimumRemaining: z.number().min(0),
+    buildApiFallback: z.boolean(),
   });
   type AccountForm = z.infer<typeof accountSchema>;
   const form = useForm<AccountForm>({
     resolver: zodResolver(accountSchema),
-    defaultValues: { name: "", enabled: true, priority: 1, maxConcurrent: 8, minimumRemaining: 0 },
+    defaultValues: { name: "", enabled: true, priority: 1, maxConcurrent: 8, minimumRemaining: 0, buildApiFallback: false },
   });
   const accountEnabled = useWatch({ control: form.control, name: "enabled" });
+  const accountBuildFallback = useWatch({ control: form.control, name: "buildApiFallback" });
 
   const accountsQuery = useQuery({
     queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, renewalFilter, sort.field, sort.order],
@@ -450,6 +452,7 @@ export function AccountsPage() {
       priority: account.priority,
       maxConcurrent: account.maxConcurrent,
       minimumRemaining: account.minimumRemaining,
+      buildApiFallback: Boolean(account.buildApiFallback),
     });
   }
 
@@ -836,6 +839,15 @@ export function AccountsPage() {
           <form className="space-y-4" onSubmit={form.handleSubmit((values) => updateMutation.mutate(values))}>
             <div className="space-y-2"><Label htmlFor="account-name">{t("accounts.name")}</Label><Input id="account-name" {...form.register("name")} />{form.formState.errors.name ? <p className="text-xs text-destructive">{form.formState.errors.name.message}</p> : null}</div>
             <div className="flex items-center justify-between border-b py-2"><Label htmlFor="account-enabled">{accountEnabled ? t("common.enabled") : t("common.disabled")}</Label><Switch id="account-enabled" checked={accountEnabled} onCheckedChange={(checked) => form.setValue("enabled", checked)} /></div>
+            {editing?.provider === "grok_build" ? (
+              <div className="flex items-center justify-between border-b py-2">
+                <div className="space-y-1">
+                  <Label htmlFor="account-build-fallback">{t("accounts.buildApiFallback")}</Label>
+                  <p className="text-xs text-muted-foreground">{t("accounts.buildApiFallbackHelp")}</p>
+                </div>
+                <Switch id="account-build-fallback" checked={accountBuildFallback} onCheckedChange={(checked) => form.setValue("buildApiFallback", checked, { shouldDirty: true })} />
+              </div>
+            ) : null}
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2"><Label htmlFor="account-priority">{t("accounts.priority")}</Label><Input id="account-priority" type="number" {...form.register("priority", { valueAsNumber: true })} /></div>
               <div className="space-y-2"><Label htmlFor="account-concurrency">{t("accounts.maxConcurrent")}</Label><Input id="account-concurrency" type="number" min="1" max="256" {...form.register("maxConcurrent", { valueAsNumber: true })} /></div>

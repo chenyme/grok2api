@@ -40,6 +40,7 @@ export const settingsSchema = z.object({
   }),
   providerBuild: z.object({
     baseURL: z.url(),
+    fallbackBaseURL: z.url().refine((value) => value.startsWith("https://")),
     clientVersion: z.string().trim().min(1),
     clientIdentifier: z.string().trim().min(1),
     tokenAuth: z.string().trim(),
