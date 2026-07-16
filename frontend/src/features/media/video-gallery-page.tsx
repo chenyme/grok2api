@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, CheckCircle2, Clock, ListVideo, Loader2, RefreshCw, Search, type LucideIcon } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock, ListVideo, Loader2, RefreshCw, Search } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -7,9 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { getVideoStats, listVideos } from "@/features/media/media-api";
+import { MediaMetric } from "@/features/media/media-metric";
 import type { MediaJobDTO } from "@/features/media/types";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
@@ -71,12 +71,12 @@ export function VideoGalleryPage() {
         )}
       />
 
-      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-        <VideoMetric icon={ListVideo} loading={statsQuery.isPending} label={t("media.videos.totalJobs")} value={formatNumber(statsQuery.data?.totalJobs ?? 0, i18n.language, 0)} />
-        <VideoMetric icon={Clock} loading={statsQuery.isPending} label={t("media.videos.queued")} value={formatNumber(statsQuery.data?.queued ?? 0, i18n.language, 0)} />
-        <VideoMetric icon={Loader2} loading={statsQuery.isPending} label={t("media.videos.inProgress")} value={formatNumber(statsQuery.data?.inProgress ?? 0, i18n.language, 0)} />
-        <VideoMetric icon={CheckCircle2} loading={statsQuery.isPending} label={t("media.videos.completed")} value={formatNumber(statsQuery.data?.completed ?? 0, i18n.language, 0)} />
-        <VideoMetric icon={AlertCircle} loading={statsQuery.isPending} label={t("media.videos.failed")} value={formatNumber(statsQuery.data?.failed ?? 0, i18n.language, 0)} />
+      <section className="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-2">
+        <MediaMetric icon={ListVideo} loading={statsQuery.isPending} label={t("media.videos.totalJobs")} value={formatNumber(statsQuery.data?.totalJobs ?? 0, i18n.language, 0)} />
+        <MediaMetric icon={Clock} loading={statsQuery.isPending} label={t("media.videos.queued")} value={formatNumber(statsQuery.data?.queued ?? 0, i18n.language, 0)} />
+        <MediaMetric icon={Loader2} loading={statsQuery.isPending} label={t("media.videos.inProgress")} value={formatNumber(statsQuery.data?.inProgress ?? 0, i18n.language, 0)} />
+        <MediaMetric icon={CheckCircle2} loading={statsQuery.isPending} label={t("media.videos.completed")} value={formatNumber(statsQuery.data?.completed ?? 0, i18n.language, 0)} />
+        <MediaMetric icon={AlertCircle} loading={statsQuery.isPending} label={t("media.videos.failed")} value={formatNumber(statsQuery.data?.failed ?? 0, i18n.language, 0)} />
       </section>
 
       <DataTableShell
@@ -176,18 +176,6 @@ export function VideoGalleryPage() {
           </Table>
         ) : null}
       </DataTableShell>
-    </div>
-  );
-}
-
-function VideoMetric({ icon: Icon, label, value, loading }: { icon: LucideIcon; label: string; value: string; loading: boolean }) {
-  return (
-    <div className="min-h-24 rounded-lg bg-card p-4">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-xs text-muted-foreground">{label}</span>
-        <Icon className="size-4 shrink-0 text-muted-foreground" />
-      </div>
-      <div className="mt-3 flex min-h-7 items-center text-xl font-medium tabular-nums">{loading ? <Spinner /> : value}</div>
     </div>
   );
 }
