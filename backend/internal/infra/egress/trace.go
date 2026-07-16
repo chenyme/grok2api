@@ -34,8 +34,19 @@ func WithAccount(ctx context.Context, provider string, accountID uint64) context
 	if ctx == nil || strings.TrimSpace(provider) == "" || accountID == 0 {
 		return ctx
 	}
-	value := strings.TrimSpace(provider) + "_" + fmt.Sprintf("%d", accountID)
-	return context.WithValue(ctx, accountContextKey{}, value)
+	return WithAccountIdentity(ctx, strings.TrimSpace(provider)+"_"+fmt.Sprintf("%d", accountID))
+}
+
+// WithAccountIdentity attaches the stable, non-sensitive identity used by
+// account-bound proxy templates such as Resin.  Providers that represent the
+// same upstream login (for example Web and Console sharing one SSO token) can
+// deliberately pass the same identity so their proxy and clearance lease is
+// not split by the internal provider name.
+func WithAccountIdentity(ctx context.Context, identity string) context.Context {
+	if ctx == nil || strings.TrimSpace(identity) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, accountContextKey{}, strings.TrimSpace(identity))
 }
 
 func accountFromContext(ctx context.Context) string {

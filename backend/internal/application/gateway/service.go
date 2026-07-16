@@ -362,15 +362,27 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	if err != nil {
 		return nil, ErrModelNotFound
 	}
-	route, routeErr := s.selectConversationRoute(routes, input.ClientKey, operation, path, input.PreviousResponseID != "", nil)
+	// Select the route first without requiring stored-response support. Console
+	// is intentionally stateless but can still accept a complete input replay;
+	// rejecting it here would prevent the Provider compatibility boundary from
+	// normalizing the request.
+	route, routeErr := s.selectConversationRoute(routes, input.ClientKey, operation, path, false, nil)
 	var ownership *inferencedomain.ResponseOwnership
 	if input.PreviousResponseID != "" && routeErr == nil {
-		value, ownershipErr := s.responses.Get(ctx, input.PreviousResponseID, input.ClientKey.ID, time.Now().UTC())
-		if ownershipErr != nil {
-			return nil, ErrResponseNotFound
+		if s.providers.SupportsStoredResponses(route.Provider) {
+			value, ownershipErr := s.responses.Get(ctx, input.PreviousResponseID, input.ClientKey.ID, time.Now().UTC())
+			if ownershipErr != nil {
+				return nil, ErrResponseNotFound
+			}
+			ownership = &value
+			route, routeErr = s.selectConversationRoute(routes, input.ClientKey, operation, path, true, ownership)
+		} else if route.Provider == accountdomain.ProviderConsole {
+			// Console has no response store. It receives the current request as a
+			// stateless replay; the Provider normalizer removes the stale ID.
+			input.PreviousResponseID = ""
+		} else {
+			return nil, ErrResponseStateUnsupported
 		}
-		ownership = &value
-		route, routeErr = s.selectConversationRoute(routes, input.ClientKey, operation, path, true, ownership)
 	}
 	publicModel := modeldomain.ExternalPublicID(route.Provider, route.PublicID)
 	input.PublicModel = publicModel

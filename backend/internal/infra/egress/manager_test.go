@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,6 +235,49 @@ func TestAcquireCredentialRendersResinAccountAndOverridesNodeCookie(t *testing.T
 	}
 	if len(manager.clients) != 2 {
 		t.Fatalf("cached Resin account pools = %d, want 2", len(manager.clients))
+	}
+}
+
+func TestConsoleFallsBackToWebAndSharesSSOResinIdentity(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL, err := cipher.Encrypt("socks5h://Default.{account}:token@resin:2260")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "shared-web-console-sso"
+	encryptedToken, err := cipher.Encrypt(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{
+		ID: 7, Name: "shared-web", Scope: domain.ScopeWeb, Enabled: true, Health: 1,
+		EncryptedProxyURL: proxyURL,
+	}}}, cipher)
+	web, err := manager.AcquireCredential(context.Background(), domain.ScopeWeb, accountdomain.Credential{
+		ID: 11, Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		EncryptedAccessToken: encryptedToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer web.Release()
+	console, err := manager.AcquireCredential(context.Background(), domain.ScopeConsole, accountdomain.Credential{
+		ID: 22, Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		EncryptedAccessToken: encryptedToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer console.Release()
+	wantAccount := "sso_" + security.HashToken(token)[:32]
+	if web.NodeID != 7 || console.NodeID != 7 {
+		t.Fatalf("nodes web=%d console=%d, want shared Web node", web.NodeID, console.NodeID)
+	}
+	if !strings.Contains(web.ProxyURL, "Default."+wantAccount+":") || web.ProxyURL != console.ProxyURL {
+		t.Fatalf("proxy identities web=%q console=%q", web.ProxyURL, console.ProxyURL)
 	}
 }
 

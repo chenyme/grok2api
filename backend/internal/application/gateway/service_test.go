@@ -429,9 +429,13 @@ func TestGatewayDoesNotPersistStatelessConsoleResponses(t *testing.T) {
 	if _, err := responseRepo.Get(ctx, "resp-console", key.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("stateless response ownership err = %v", err)
 	}
-	if _, err := service.CreateResponse(ctx, Input{RequestID: "req-console-next", ClientKey: key, PublicModel: model, PreviousResponseID: "resp-console", Body: []byte(`{"model":"grok-console-stateless","previous_response_id":"resp-console"}`)}); !errors.Is(err, ErrResponseStateUnsupported) {
-		t.Fatalf("previous response error = %v", err)
+	continued, err := service.CreateResponse(ctx, Input{RequestID: "req-console-next", ClientKey: key, PublicModel: model, PreviousResponseID: "resp-console", Body: []byte(`{"model":"grok-console-stateless","previous_response_id":"resp-console","input":"hello again"}`)})
+	if err != nil {
+		t.Fatalf("Console stateless previous response fallback = %v", err)
 	}
+	_, _ = io.ReadAll(continued.Body)
+	continued.Finalize(Usage{}, "resp-console-next", "")
+	_ = continued.Body.Close()
 	if _, err := service.CompactResponse(ctx, Input{RequestID: "req-console-compact", ClientKey: key, PublicModel: model, Body: []byte(`{"model":"grok-console-stateless","input":"hello"}`)}); !errors.Is(err, ErrConversationUnsupported) {
 		t.Fatalf("compact response error = %v", err)
 	}

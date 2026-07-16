@@ -41,10 +41,12 @@ func TestSyncWebAccountsToConsoleIsIdempotentAndPreservesBuildLink(t *testing.T)
 
 	accounts := relational.NewAccountRepository(database)
 	token := "shared-sso-token"
+	cloudflareCookie := "cf_clearance=shared-clearance; __cf_bm=shared-bm"
 	webAccount, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
 		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
 		Name: "Grok Web primary", SourceKey: "sso:" + security.HashToken(token),
-		EncryptedAccessToken: encrypt(token), Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+		EncryptedAccessToken: encrypt(token), EncryptedCloudflareCookie: encrypt(cloudflareCookie),
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +92,13 @@ func TestSyncWebAccountsToConsoleIsIdempotentAndPreservesBuildLink(t *testing.T)
 	}
 	if consoleAccount.Provider != accountdomain.ProviderConsole || consoleAccount.Name != "Grok Console primary" || decrypted != token {
 		t.Fatalf("console account = %#v, token = %q", consoleAccount, decrypted)
+	}
+	consoleCookie, err := cipher.Decrypt(consoleAccount.EncryptedCloudflareCookie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consoleCookie != cloudflareCookie {
+		t.Fatalf("console Cloudflare cookie = %q, want %q", consoleCookie, cloudflareCookie)
 	}
 
 	second, err := service.SyncAllWebAccountsToConsoleWithProgress(ctx, nil, nil)
