@@ -95,6 +95,7 @@ type Credential struct {
 	LastRefreshAt         *time.Time
 	RefreshFailureCount   int
 	LastRefreshErrorCode  string
+	RefreshPermanent      bool
 	Enabled               bool
 	AuthStatus            AuthStatus
 	Priority              int

@@ -206,6 +206,47 @@ func TestLoadPersistedRejectsIncompleteBatchPayload(t *testing.T) {
 	}
 }
 
+func TestLoadPersistedBackfillsMissingServerConcurrency(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.Server = settingsdomain.ServerConfig{}
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Server.MaxConcurrentRequests != cfg.Server.MaxConcurrentRequests {
+		t.Fatalf("maxConcurrentRequests = %d, want %d", loaded.Server.MaxConcurrentRequests, cfg.Server.MaxConcurrentRequests)
+	}
+}
+
+func TestLoadPersistedBackfillsMissingConsoleSection(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.ProviderConsole = settingsdomain.ProviderConsoleConfig{}
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provider.Console != cfg.Provider.Console {
+		t.Fatalf("console = %#v, want %#v", loaded.Provider.Console, cfg.Provider.Console)
+	}
+}
+
+func TestLoadPersistedRejectsPartiallyInvalidConsoleSection(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.ProviderConsole.BaseURL = ""
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	if _, _, _, err := LoadPersisted(context.Background(), cfg, repository); err == nil {
+		t.Fatal("partially invalid Console settings were accepted")
+	}
+}
+
 func TestReloadPersistedAppliesOnlyNewerVersion(t *testing.T) {
 	cfg := testConfig(t)
 	updatedAt := time.Now().UTC()
