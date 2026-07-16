@@ -103,10 +103,12 @@ export function GalleryPage() {
 
 function ImageCard({ image, locale }: { image: MediaAssetDTO; locale: string }) {
   const { t } = useTranslation();
+  // 管理端图库与 API 同源，使用相对路径避免依赖未配置或仅对外可用的公共地址。
+  const imageURL = `/v1/media/images/${encodeURIComponent(image.id)}`;
   return (
-    <a href={image.url} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-lg bg-card transition-colors hover:bg-secondary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
+    <a href={imageURL} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-lg bg-card transition-colors hover:bg-secondary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
       <div className="aspect-square overflow-hidden bg-muted">
-        <img src={image.url} alt={image.id} loading="lazy" className="size-full object-cover transition-transform duration-200 group-hover:scale-[1.02]" />
+        <img src={imageURL} alt={image.id} loading="lazy" className="size-full object-cover transition-transform duration-200 group-hover:scale-[1.02]" />
       </div>
       <div className="space-y-2 p-3 text-xs">
         <div className="flex min-w-0 items-center justify-between gap-2">

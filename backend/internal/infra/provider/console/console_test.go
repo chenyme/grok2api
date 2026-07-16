@@ -136,6 +136,87 @@ func TestConsoleRetryAfterParsesCompoundDuration(t *testing.T) {
 	}
 }
 
+func TestNormalizeRateLimitResponsePrefersRetryAfterHeader(t *testing.T) {
+	response := &http.Response{
+		Header: http.Header{"Retry-After": {"17"}},
+		Body:   io.NopCloser(strings.NewReader("Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 2/2")),
+	}
+	_, metadata, err := normalizeRateLimitResponse(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata == nil || metadata.RetryAfter != 17*time.Second {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestParseConsoleRateLimitMetadataRPS(t *testing.T) {
+	metadata := parseConsoleRateLimitMetadata([]byte(`Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 2/2`))
+	if metadata == nil {
+		t.Fatal("metadata is nil")
+	}
+	if metadata.Scope != provider.RateLimitScopeRPS || metadata.Actual != 2 || metadata.Limit != 2 || metadata.RetryAfter != 2*time.Second {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestParseConsoleRateLimitMetadataRPM(t *testing.T) {
+	body := []byte(`{"error":{"message":"Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Minute (actual/limit): 101/60. Resets in: 3m 4s"}}`)
+	metadata := parseConsoleRateLimitMetadata(body)
+	if metadata == nil {
+		t.Fatal("metadata is nil")
+	}
+	if metadata.Scope != provider.RateLimitScopeRPM || metadata.Actual != 101 || metadata.Limit != 60 || metadata.RetryAfter != 3*time.Minute+4*time.Second {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestParseConsoleRateLimitMetadataOrdinary429(t *testing.T) {
+	if metadata := parseConsoleRateLimitMetadata([]byte(`Rate limit reached. Resets in: 1h`)); metadata != nil {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestParseConsoleRateLimitMetadataExtractsTeamAndModel(t *testing.T) {
+	metadata := parseConsoleRateLimitMetadata([]byte(`{"message":"Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 3/2. Resets in: 1s"}`))
+	if metadata == nil {
+		t.Fatal("metadata is nil")
+	}
+	if metadata.TeamID != "00000000-0000-0000-0000-000000000013" || metadata.Model != "grok-4.20-multi-agent-0309" {
+		t.Fatalf("team/model = %q/%q", metadata.TeamID, metadata.Model)
+	}
+	if metadata.RetryAfter != 2*time.Second {
+		t.Fatalf("retry after = %s", metadata.RetryAfter)
+	}
+}
+
+func TestAdapterAttachesConsoleRateLimitMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/plain")
+		writer.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(writer, "Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 2/2")
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.20-multi-agent-0309",
+		Operation: "responses", NormalizeBody: true, Body: []byte(`{"model":"grok-4.20-multi-agent-0309","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.RateLimit == nil {
+		t.Fatal("rate limit metadata is nil")
+	}
+	if response.RateLimit.Scope != provider.RateLimitScopeRPS || response.RateLimit.TeamID != "00000000-0000-0000-0000-000000000013" || response.RateLimit.Model != "grok-4.20-multi-agent-0309" {
+		t.Fatalf("rate limit metadata = %#v", response.RateLimit)
+	}
+	if response.Header.Get("Retry-After") != "2" {
+		t.Fatalf("retry-after = %q", response.Header.Get("Retry-After"))
+	}
+}
+
 func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	var received map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

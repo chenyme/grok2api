@@ -159,7 +159,7 @@ func TestRemoteChatImageURLBlocksPrivateNetworks(t *testing.T) {
 			t.Fatalf("unsafe image URL accepted: %s", value)
 		}
 	}
-	if value, err := validateRemoteImageURL(context.Background(), "https://8.8.8.8/image.png"); err != nil || value.Hostname() != "8.8.8.8" {
+	if value, err := validateRemoteImageURL(context.Background(), "https://8.8.8.8/image.png"); err != nil || value.originalURL.Hostname() != "8.8.8.8" || value.fetchURL.Hostname() != "8.8.8.8" {
 		t.Fatalf("public image URL rejected: value=%v err=%v", value, err)
 	}
 }
