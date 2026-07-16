@@ -28,9 +28,6 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 			return nil, ResponseOptions{}, fmt.Errorf("stop_sequences[%d] 不能为空", index)
 		}
 	}
-	if !isEmptyJSON(request.TopK) {
-		return nil, ResponseOptions{}, errors.New("Messages top_k 无法等价映射到 Responses API")
-	}
 	thinkingEnabled := false
 	if request.Thinking != nil {
 		switch request.Thinking.Type {
@@ -175,6 +172,7 @@ func convertAnthropicMessages(messages []anthropicMessage, declaredTools map[str
 	instructions := make([]string, 0)
 	pendingCalls := make(map[string]struct{})
 	usedCalls := make(map[string]struct{})
+	serverSearches := make(map[string]map[string]any)
 	for messageIndex, message := range messages {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 		if role == "system" || role == "developer" {
@@ -311,6 +309,38 @@ func convertAnthropicMessages(messages []anthropicMessage, declaredTools map[str
 					return nil, nil, fmt.Errorf("%s.data 无效", path)
 				}
 				input = append(input, map[string]any{"type": "reasoning", "encrypted_content": data})
+			case "server_tool_use":
+				if role != "assistant" {
+					continue
+				}
+				var value struct {
+					ID    string         `json:"id"`
+					Name  string         `json:"name"`
+					Input map[string]any `json:"input"`
+				}
+				encoded, _ := json.Marshal(block)
+				if json.Unmarshal(encoded, &value) != nil || value.Name != "web_search" || strings.TrimSpace(value.ID) == "" {
+					continue
+				}
+				flushMessage()
+				query, _ := value.Input["query"].(string)
+				call := map[string]any{
+					"type": "web_search_call", "id": value.ID, "status": "completed",
+					"action": map[string]any{"type": "search", "query": query},
+				}
+				serverSearches[value.ID] = call
+				input = append(input, call)
+			case "web_search_tool_result":
+				if role != "assistant" {
+					continue
+				}
+				var toolUseID string
+				_ = json.Unmarshal(block["tool_use_id"], &toolUseID)
+				call := serverSearches[strings.TrimSpace(toolUseID)]
+				if call == nil {
+					continue
+				}
+				applyAnthropicWebSearchResult(call, block["content"])
 			default:
 				return nil, nil, fmt.Errorf("当前不支持 Anthropic content.type=%q", typeName)
 			}
@@ -324,6 +354,30 @@ func convertAnthropicMessages(messages []anthropicMessage, declaredTools map[str
 		return nil, nil, errors.New("messages 必须为每个 tool_use 提供 tool_result")
 	}
 	return input, instructions, nil
+}
+
+func applyAnthropicWebSearchResult(call map[string]any, raw json.RawMessage) {
+	var results []map[string]any
+	if json.Unmarshal(raw, &results) == nil {
+		sources := make([]any, 0, len(results))
+		for _, result := range results {
+			if result["type"] != "web_search_result" {
+				continue
+			}
+			url, _ := result["url"].(string)
+			if strings.TrimSpace(url) != "" {
+				sources = append(sources, map[string]any{"type": "url", "url": strings.TrimSpace(url)})
+			}
+		}
+		if action, ok := call["action"].(map[string]any); ok && len(sources) > 0 {
+			action["sources"] = sources
+		}
+		return
+	}
+	var result map[string]any
+	if json.Unmarshal(raw, &result) == nil && result["type"] == "web_search_tool_result_error" {
+		call["status"] = "failed"
+	}
 }
 
 func anthropicSystemText(raw json.RawMessage) (string, error) {
@@ -618,28 +672,31 @@ func convertAnthropicWebSearchTool(tool map[string]json.RawMessage, index int) (
 		switch key {
 		case "type", "name", "cache_control":
 			continue
-		case "max_uses", "allowed_domains", "blocked_domains", "user_location":
+		case "allowed_domains":
 			var value any
 			if json.Unmarshal(raw, &value) != nil {
 				return nil, fmt.Errorf("tools[%d].%s 无效", index, key)
 			}
-			if key == "allowed_domains" || key == "blocked_domains" {
-				domains, ok := value.([]any)
-				if !ok {
-					return nil, fmt.Errorf("tools[%d].%s 必须是字符串数组", index, key)
-				}
-				if len(domains) > 5 {
-					return nil, fmt.Errorf("tools[%d].%s 不能超过 5 个域名", index, key)
-				}
-				for domainIndex, domain := range domains {
-					if text, ok := domain.(string); !ok || strings.TrimSpace(text) == "" {
-						return nil, fmt.Errorf("tools[%d].%s[%d] 必须是非空字符串", index, key, domainIndex)
-					}
+			domains, ok := value.([]any)
+			if !ok {
+				return nil, fmt.Errorf("tools[%d].%s 必须是字符串数组", index, key)
+			}
+			if len(domains) > 5 {
+				return nil, fmt.Errorf("tools[%d].%s 不能超过 5 个域名", index, key)
+			}
+			for domainIndex, domain := range domains {
+				if text, ok := domain.(string); !ok || strings.TrimSpace(text) == "" {
+					return nil, fmt.Errorf("tools[%d].%s[%d] 必须是非空字符串", index, key, domainIndex)
 				}
 			}
-			converted[key] = value
+			converted["filters"] = map[string]any{"allowed_domains": value}
+		case "max_uses", "blocked_domains", "user_location", "search_context_size":
+			// Build 0.2.101 只支持 allowed_domains；其余 Anthropic
+			// 可选控制字段不转发，避免上游因未知参数拒绝整个请求。
+			continue
 		default:
-			return nil, fmt.Errorf("Grok Build 0.2.99 不支持 Anthropic web search 字段 tools[%d].%s", index, key)
+			// 对未来新增的 hosted-tool 可选字段保持向前兼容。
+			continue
 		}
 	}
 	return converted, nil

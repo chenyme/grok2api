@@ -10,13 +10,13 @@ import (
 func TestLegacyLocalShellUsesNativeLocalShellAndRestoresJSON(t *testing.T) {
 	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"show cwd",
-		"tools":[{"type":"local_shell"}],
+		"tools":[{"type":"local_shell","timeout_ms":30000}],
 		"tool_choice":{"type":"local_shell"}
 	}`), "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if compatibility == nil || !compatibility.legacyLocalShell {
+	if compatibility == nil || !compatibility.legacyLocalShell || !strings.Contains(compatibility.warningHeader(), "legacy_local_shell_controls_ignored") {
 		t.Fatal("legacy local_shell 未启用兼容层")
 	}
 	var request map[string]any
@@ -92,13 +92,13 @@ func TestRequestRejectsAmbiguousShellDeclarations(t *testing.T) {
 func TestApplyPatchToolRequestHistoryAndJSONResponse(t *testing.T) {
 	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"edit file",
-		"tools":[{"type":"apply_patch"}],
+		"tools":[{"type":"apply_patch","strict":false}],
 		"tool_choice":{"type":"apply_patch"}
 	}`), "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if compatibility == nil {
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "apply_patch_controls_ignored") {
 		t.Fatal("apply_patch 未启用兼容层")
 	}
 	var request map[string]any
@@ -194,16 +194,19 @@ func TestApplyPatchStreamBuffersFunctionProtocolAndRestoresItems(t *testing.T) {
 }
 
 func TestAdditionalToolsAndCompactionBoundaryRemainVisible(t *testing.T) {
-	normalized, _, err := normalizeResponsesRequest([]byte(`{
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","tools":[{"type":"function","name":"lookup","description":"old","parameters":{"type":"object"}}],
 		"input":[
 			{"type":"compaction_trigger"},
-			{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"lookup","description":"new","parameters":{"type":"object"}},{"type":"apply_patch"}]},
+			{"type":"additional_tools","role":"user","tools":[{"type":"function","name":"lookup","description":"new","parameters":{"type":"object"}},{"type":"apply_patch"}]},
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
 		]
 	}`), "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "additional_tools_role_approximated") {
+		t.Fatalf("compatibility = %#v", compatibility)
 	}
 	var request map[string]any
 	if err := json.Unmarshal(normalized, &request); err != nil {

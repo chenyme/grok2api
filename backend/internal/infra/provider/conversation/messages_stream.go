@@ -269,13 +269,12 @@ func (c *streamConverter) doneMessages(status string) error {
 		stopReason = "tool_use"
 	} else if c.stopSequence != "" {
 		stopReason = "stop_sequence"
+	} else if c.refused {
+		stopReason = "refusal"
 	} else if status == "incomplete" {
 		stopReason = "max_tokens"
 	}
-	usage := map[string]any{"input_tokens": c.usage.InputTokens, "output_tokens": c.usage.OutputTokens}
-	if n := webSearchRequestCount(c.webSearch); n > 0 {
-		usage["server_tool_use"] = map[string]any{"web_search_requests": n}
-	}
+	usage := anthropicUsage(c.usage, webSearchRequestCount(c.webSearch))
 	if err := c.writeEvent("message_delta", map[string]any{
 		"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nullableAnthropicString(c.stopSequence)},
 		"usage": usage,
@@ -287,5 +286,5 @@ func (c *streamConverter) doneMessages(status string) error {
 }
 
 func (c *streamConverter) streamErrorMessages(data []byte) error {
-	return c.writeEvent("error", map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": string(data)}})
+	return c.writeEvent("error", map[string]any{"type": "error", "error": normalizeAnthropicError(streamErrorValue(data))})
 }

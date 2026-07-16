@@ -125,6 +125,27 @@ func TestResponsesCustomToolStreamUsesCustomEvents(t *testing.T) {
 	}
 }
 
+func TestResponsesCustomGrammarDowngradesWithoutRejectingRequest(t *testing.T) {
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"run",
+		"tools":[{"type":"custom","name":"code","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tool := request["tools"].([]any)[0].(map[string]any)
+	if tool["type"] != "function" || tool["name"] != "code" {
+		t.Fatalf("tool = %#v", tool)
+	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "custom_tool_format_downgraded") {
+		t.Fatalf("compatibility = %#v", compatibility)
+	}
+}
+
 func TestResponsesWebSearchAliasesAndOptions(t *testing.T) {
 	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"search",
@@ -167,17 +188,47 @@ func TestResponsesWebSearchAliasesAndOptions(t *testing.T) {
 		t.Fatalf("compatibility warnings = %q", compatibility.warningHeader())
 	}
 
-	for _, restricted := range []string{
-		`{"filters":{"allowed_domains":["example.com"]}}`,
-		`{"allowed_domains":["example.com"]}`,
-		`{"search_content_types":["image"]}`,
+	for _, supported := range []string{
+		`"filters":{"allowed_domains":["example.com"]}`,
+		`"allowed_domains":["example.com"]`,
 	} {
-		_, _, err = normalizeResponsesRequest([]byte(`{
-			"model":"public","input":"search","tools":[{"type":"web_search",`+strings.TrimPrefix(strings.TrimSuffix(restricted, "}"), "{")+`}]
+		normalized, compatibility, err = normalizeResponsesRequest([]byte(`{
+			"model":"public","input":"search","tools":[{"type":"web_search",`+supported+`}]
 		}`), "grok-4.5")
-		requestErr, ok := err.(*responsesRequestError)
-		if !ok || requestErr.Code != "unsupported_parameter" {
-			t.Fatalf("restricted web search error = %#v", err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request = nil
+		if err := json.Unmarshal(normalized, &request); err != nil {
+			t.Fatal(err)
+		}
+		tool = request["tools"].([]any)[0].(map[string]any)
+		domains := tool["filters"].(map[string]any)["allowed_domains"].([]any)
+		if len(domains) != 1 || domains[0] != "example.com" {
+			t.Fatalf("allowed_domains 未保留: %#v", tool)
+		}
+		if strings.Contains(supported, `"allowed_domains"`) && !strings.Contains(supported, `"filters"`) && (compatibility == nil || !strings.Contains(compatibility.warningHeader(), "web_search_allowed_domains_normalized")) {
+			t.Fatalf("top-level allowed_domains warning = %#v", compatibility)
+		}
+	}
+
+	for _, restricted := range []string{
+		`"search_content_types":["image"]`,
+		`"filters":{"blocked_domains":["example.com"]}`,
+	} {
+		normalized, compatibility, err = normalizeResponsesRequest([]byte(`{
+			"model":"public","input":"search","tools":[{"type":"web_search",`+restricted+`}]
+		}`), "grok-4.5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		request = nil
+		if err := json.Unmarshal(normalized, &request); err != nil {
+			t.Fatal(err)
+		}
+		tool = request["tools"].([]any)[0].(map[string]any)
+		if len(tool) != 1 || tool["type"] != "web_search" || compatibility == nil || compatibility.warningHeader() == "" {
+			t.Fatalf("restricted web search should downgrade: tool=%#v compatibility=%#v", tool, compatibility)
 		}
 	}
 
@@ -193,11 +244,14 @@ func TestResponsesWebSearchAliasesAndOptions(t *testing.T) {
 	if err := json.Unmarshal(normalized, &request); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := request["tools"]; exists || request["tool_choice"] != "none" {
+	if _, exists := request["tools"]; exists {
 		t.Fatalf("disabled web search request = %#v", request)
 	}
+	if _, exists := request["tool_choice"]; exists {
+		t.Fatalf("disabled web search tool_choice = %#v", request["tool_choice"])
+	}
 	warnings := compatibility.warningHeader()
-	if !strings.Contains(warnings, "web_search_disabled_no_external_access") || !strings.Contains(warnings, "web_search_tool_choice_disabled") {
+	if !strings.Contains(warnings, "web_search_disabled_no_external_access") || !strings.Contains(warnings, "tool_choice_without_tools_ignored") {
 		t.Fatalf("compatibility warnings = %q", warnings)
 	}
 
@@ -235,21 +289,31 @@ func TestResponsesWebSearchAliasesAndOptions(t *testing.T) {
 	if err := json.Unmarshal(normalized, &request); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := request["tools"]; exists || request["tool_choice"] != "none" {
+	if _, exists := request["tools"]; exists {
 		t.Fatalf("disabled automatic web search request = %#v", request)
 	}
+	if _, exists := request["tool_choice"]; exists {
+		t.Fatalf("disabled automatic web search tool_choice = %#v", request["tool_choice"])
+	}
 
-	_, _, err = normalizeResponsesRequest([]byte(`{
+	normalized, compatibility, err = normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"search",
 		"tools":[{"type":"web_search","unknown_control":true}]
 	}`), "grok-4.5")
-	requestErr, ok := err.(*responsesRequestError)
-	if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].unknown_control" {
-		t.Fatalf("unknown web search option error = %#v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = nil
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tool = request["tools"].([]any)[0].(map[string]any)
+	if len(tool) != 1 || tool["type"] != "web_search" || compatibility == nil || !strings.Contains(compatibility.warningHeader(), "web_search_unknown_controls_ignored") {
+		t.Fatalf("unknown web search option should downgrade: tool=%#v compatibility=%#v", tool, compatibility)
 	}
 }
 
-func TestResponsesBuild0299NativeAndUnsupportedToolMatrix(t *testing.T) {
+func TestResponsesBuild02101NativeAndUnsupportedToolMatrix(t *testing.T) {
 	native := []string{"x_search", "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter", "mcp", "shell"}
 	for _, kind := range native {
 		t.Run("native_"+kind, func(t *testing.T) {
@@ -285,22 +349,32 @@ func TestResponsesBuild0299NativeAndUnsupportedToolMatrix(t *testing.T) {
 			body := []byte(`{"model":"public","input":"hello","tools":[{"type":"` + kind + `"}]}`)
 			_, _, err := normalizeResponsesRequest(body, "grok-4.5")
 			requestErr, ok := err.(*responsesRequestError)
-			if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].type" || !strings.Contains(requestErr.Message, "0.2.99") {
+			if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].type" || !strings.Contains(requestErr.Message, "0.2.101") {
 				t.Fatalf("error = %#v", err)
 			}
 		})
 	}
 }
 
-func TestResponsesHostedToolChoiceRequiresSingleMatchingTool(t *testing.T) {
-	_, _, err := normalizeResponsesRequest([]byte(`{
+func TestResponsesHostedToolChoiceNarrowsToMatchingTool(t *testing.T) {
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"draw",
 		"tools":[{"type":"image_generation"},{"type":"web_search"}],
 		"tool_choice":{"type":"image_generation"}
 	}`), "grok-4.5")
-	requestErr, ok := err.(*responsesRequestError)
-	if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tool_choice" {
-		t.Fatalf("error = %#v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tools := request["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["type"] != "image_generation" || request["tool_choice"] != "required" {
+		t.Fatalf("request = %#v", request)
+	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "hosted_tool_choice_tools_narrowed") {
+		t.Fatalf("compatibility = %#v", compatibility)
 	}
 }
 

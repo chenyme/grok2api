@@ -283,6 +283,37 @@ func TestConvertAnthropicWebSearchToolChoiceRequired(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicWebSearchHistoryBackToResponses(t *testing.T) {
+	converted, _, err := ConvertRequestWithOptions([]byte(`{
+		"model":"public","max_tokens":64,
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"ws_1","name":"web_search","input":{"query":"rust docs"}},
+				{"type":"web_search_tool_result","tool_use_id":"ws_1","content":[{"type":"web_search_result","title":"Rust","url":"https://doc.rust-lang.org"}]},
+				{"type":"text","text":"Use the Rust docs."}
+			]},
+			{"role":"user","content":"continue"}
+		]
+	}`), "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatal(err)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 3 {
+		t.Fatalf("input = %#v", input)
+	}
+	call := input[0].(map[string]any)
+	action := call["action"].(map[string]any)
+	sources := action["sources"].([]any)
+	if call["type"] != "web_search_call" || call["id"] != "ws_1" || action["query"] != "rust docs" || sources[0].(map[string]any)["url"] != "https://doc.rust-lang.org" {
+		t.Fatalf("web search history = %#v", call)
+	}
+}
+
 func TestClientWebSearchFunctionNotPromoted(t *testing.T) {
 	converted, _, err := ConvertRequestWithOptions([]byte(`{
 		"model":"public","max_tokens":64,

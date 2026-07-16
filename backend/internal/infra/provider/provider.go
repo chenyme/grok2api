@@ -133,6 +133,9 @@ type Response struct {
 	UpstreamURL string
 	Diagnostic  *DiagnosticResponse
 	RateLimit   *RateLimitMetadata
+	// ModelCatalogChanged 表示上游推理响应中的模型目录 ETag 与该账号
+	// 最近一次成功 /models 同步的 ETag 不一致。
+	ModelCatalogChanged bool
 }
 
 const (

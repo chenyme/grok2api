@@ -11,6 +11,15 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 	if isEmptyJSON(raw) {
 		return nil
 	}
+	if len(normalizedTools) == 0 {
+		delete(payload, "tool_choice")
+		c.changed = true
+		c.addWarning("tool_choice_without_tools_ignored")
+		if c.serverSearchEager {
+			c.addWarning("server_tool_search_choice_downgraded")
+		}
+		return nil
+	}
 	var choice any
 	if err := json.Unmarshal(raw, &choice); err != nil {
 		return &responsesRequestError{Message: "tool_choice 格式无效", Param: "tool_choice", Code: "invalid_parameter"}
@@ -33,6 +42,12 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 	}
 	if kind == "tool_search" {
 		if c.clientSearchTool == nil {
+			if c.serverSearchEager {
+				payload["tool_choice"] = mustJSON("auto")
+				c.changed = true
+				c.addWarning("server_tool_search_choice_downgraded")
+				return nil
+			}
 			return &responsesRequestError{Message: "tool_choice 引用了未声明的 tool_search", Param: "tool_choice", Code: "invalid_parameter"}
 		}
 		object = map[string]any{
@@ -72,11 +87,14 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 		return nil
 	}
 	if normalizedKind := normalizeHostedToolChoiceKind(kind); normalizedKind != "" {
-		if !hasSingleToolType(normalizedTools, normalizedKind) {
-			return &responsesRequestError{
-				Message: "Grok Build 仅能在请求中只有一个匹配工具时兼容 hosted tool_choice",
-				Param:   "tool_choice", Code: "unsupported_parameter",
-			}
+		matching := toolsOfType(normalizedTools, normalizedKind)
+		if len(matching) == 0 {
+			return &responsesRequestError{Message: "tool_choice 引用了未声明的 hosted tool", Param: "tool_choice", Code: "invalid_parameter"}
+		}
+		if len(matching) != len(normalizedTools) {
+			// 上游只支持 required，收窄本轮可见工具即可保持“指定该类工具”的语义。
+			payload["tools"] = mustJSON(matching)
+			c.addWarning("hosted_tool_choice_tools_narrowed")
 		}
 		payload["tool_choice"] = mustJSON("required")
 		c.changed = true
@@ -116,4 +134,15 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 	c.changed = true
 	payload["tool_choice"] = mustJSON(object)
 	return nil
+}
+
+func toolsOfType(tools []any, kind string) []any {
+	matching := make([]any, 0)
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if ok && stringField(tool, "type") == kind {
+			matching = append(matching, rawTool)
+		}
+	}
+	return matching
 }

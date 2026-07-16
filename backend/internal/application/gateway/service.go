@@ -42,6 +42,7 @@ const responseOwnershipTTL = 30 * 24 * time.Hour
 const finalizationTimeout = 5 * time.Second
 const textBillingReservationTTL = 2 * time.Hour
 const mediaBillingReservationTTL = 24 * time.Hour
+const modelCatalogRefreshTimeout = 30 * time.Second
 
 var freeQuotaUsagePattern = regexp.MustCompile(`(?i)tokens\s*\(actual/limit\)\s*:\s*([0-9]+)\s*/\s*([0-9]+)`)
 
@@ -90,6 +91,10 @@ type routeResolver interface {
 	GetByProviderUpstream(ctx context.Context, providerValue accountdomain.Provider, upstreamModel string) (modeldomain.Route, error)
 }
 
+type accountModelSyncer interface {
+	SyncAccount(ctx context.Context, accountID uint64) (int, error)
+}
+
 // Service 负责模型路由、账号选择、故障切换与审计收口。
 type Service struct {
 	models         routeResolver
@@ -110,6 +115,8 @@ type Service struct {
 	rateLimitMu    sync.Mutex
 	rateLimits     map[string]teamModelRateLimit
 	rateLimitTeams map[uint64]string
+	modelSyncMu    sync.Mutex
+	modelSyncing   map[uint64]struct{}
 }
 
 type teamModelRateLimit struct {
@@ -132,6 +139,7 @@ func NewService(models routeResolver, audits auditRecorder, accounts *accountapp
 		models: models, audits: audits, accounts: accounts, clientKeys: clientKeys, providers: providers,
 		selector: selector, responses: responses, logger: slog.Default(),
 		rateLimits: make(map[string]teamModelRateLimit), rateLimitTeams: make(map[uint64]string),
+		modelSyncing: make(map[uint64]struct{}),
 	}
 	service.UpdateMaxAttempts(maxAttempts)
 	return service
@@ -524,6 +532,9 @@ attemptLoop:
 			continue
 		}
 	handleResponse:
+		if response.ModelCatalogChanged {
+			s.queueAccountModelSync(credential.ID)
+		}
 		if response.StatusCode == http.StatusUnauthorized {
 			response.Body.Close()
 			if credential.AuthType == accountdomain.AuthTypeSSO {
@@ -574,7 +585,7 @@ attemptLoop:
 		}
 		egressForbidden := s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden
 		finalEgressForbidden := egressForbidden && (attempt > 0 || attempt+1 >= attempts)
-		if isRetryable(response.StatusCode) && !finalEgressForbidden {
+		if isRetryableResponse(response) && !finalEgressForbidden {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
 			body, _ := readRetryableBody(response.Body)
 			if egressForbidden {
@@ -777,6 +788,43 @@ attemptLoop:
 	return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, lastErr)
 }
 
+func (s *Service) queueAccountModelSync(accountID uint64) {
+	syncer, ok := s.models.(accountModelSyncer)
+	if !ok || accountID == 0 {
+		return
+	}
+	s.modelSyncMu.Lock()
+	if s.modelSyncing == nil {
+		s.modelSyncing = make(map[uint64]struct{})
+	}
+	if _, exists := s.modelSyncing[accountID]; exists {
+		s.modelSyncMu.Unlock()
+		return
+	}
+	s.modelSyncing[accountID] = struct{}{}
+	s.modelSyncMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.modelSyncMu.Lock()
+			delete(s.modelSyncing, accountID)
+			s.modelSyncMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), modelCatalogRefreshTimeout)
+		defer cancel()
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		count, err := syncer.SyncAccount(ctx, accountID)
+		if err != nil {
+			logger.Warn("model_etag_refresh_failed", "account_id", accountID, "error", err)
+			return
+		}
+		logger.Info("model_etag_refresh_completed", "account_id", accountID, "models", count)
+	}()
+}
+
 func rewriteAliasedModel(body []byte, publicModel, reasoningEffort string, operation audit.Operation) ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -957,6 +1005,13 @@ func (b *finalizingBody) Close() error {
 
 func isRetryable(status int) bool {
 	return status == 402 || status == 403 || status == 429 || status >= 500
+}
+
+func isRetryableResponse(response *provider.Response) bool {
+	if response == nil || !isRetryable(response.StatusCode) {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-Should-Retry")), "false")
 }
 
 func parseRetryAfter(value string, now time.Time) time.Duration {

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,54 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
+
+func TestQueueAccountModelSyncDeduplicatesConcurrentETagRefresh(t *testing.T) {
+	resolver := &etagSyncResolver{started: make(chan uint64, 2), release: make(chan struct{})}
+	service := &Service{models: resolver, logger: slog.Default(), modelSyncing: make(map[uint64]struct{})}
+	service.queueAccountModelSync(42)
+	service.queueAccountModelSync(42)
+	select {
+	case accountID := <-resolver.started:
+		if accountID != 42 {
+			t.Fatalf("account id = %d", accountID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("模型 ETag 刷新未启动")
+	}
+	if calls := resolver.calls.Load(); calls != 1 {
+		t.Fatalf("concurrent sync calls = %d", calls)
+	}
+	close(resolver.release)
+}
+
+type etagSyncResolver struct {
+	calls   atomic.Int64
+	started chan uint64
+	release chan struct{}
+}
+
+func (r *etagSyncResolver) SyncAccount(_ context.Context, accountID uint64) (int, error) {
+	r.calls.Add(1)
+	r.started <- accountID
+	<-r.release
+	return 1, nil
+}
+
+func (r *etagSyncResolver) Get(context.Context, uint64) (modeldomain.Route, error) {
+	return modeldomain.Route{}, repository.ErrNotFound
+}
+
+func (r *etagSyncResolver) GetByPublicID(context.Context, string) (modeldomain.Route, error) {
+	return modeldomain.Route{}, repository.ErrNotFound
+}
+
+func (r *etagSyncResolver) GetByPublicIDCandidates(context.Context, string) ([]modeldomain.Route, error) {
+	return nil, repository.ErrNotFound
+}
+
+func (r *etagSyncResolver) GetByProviderUpstream(context.Context, account.Provider, string) (modeldomain.Route, error) {
+	return modeldomain.Route{}, repository.ErrNotFound
+}
 
 func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	ctx := context.Background()

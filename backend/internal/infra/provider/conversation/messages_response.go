@@ -44,10 +44,10 @@ func messagesResponse(value parsedResponse, options ResponseOptions) map[string]
 		stopReason = "tool_use"
 	} else if value.StopSequence != "" {
 		stopReason = "stop_sequence"
-	} else if value.Status == "incomplete" {
-		stopReason = "max_tokens"
 	} else if value.Refusal != "" {
 		stopReason = "refusal"
+	} else if value.Status == "incomplete" {
+		stopReason = "max_tokens"
 	}
 	return map[string]any{
 		"id": anthropicMessageID(value.ID), "type": "message", "role": "assistant",
@@ -56,7 +56,7 @@ func messagesResponse(value parsedResponse, options ResponseOptions) map[string]
 	}
 }
 
-func applyAnthropicStopSequences(text string, sequences []string) (string, string) {
+func applyStopSequences(text string, sequences []string) (string, string) {
 	matchAt := -1
 	matched := ""
 	for _, sequence := range sequences {
@@ -108,6 +108,12 @@ func anthropicUsage(value responseUsage, webSearchRequests int) map[string]any {
 	usage := map[string]any{
 		"input_tokens": value.InputTokens, "output_tokens": value.OutputTokens,
 		"cache_creation_input_tokens": 0, "cache_read_input_tokens": value.InputTokensDetails.CachedTokens,
+		"cost_in_usd_ticks":          value.CostInUSDTicks,
+		"num_sources_used":           value.NumSourcesUsed,
+		"num_server_side_tools_used": value.NumServerSideToolsUsed,
+		"context_details": map[string]any{
+			"input_tokens": value.ContextDetails.InputTokens, "output_tokens": value.ContextDetails.OutputTokens,
+		},
 	}
 	if webSearchRequests > 0 {
 		usage["server_tool_use"] = map[string]any{"web_search_requests": webSearchRequests}
@@ -116,6 +122,11 @@ func anthropicUsage(value responseUsage, webSearchRequests int) map[string]any {
 }
 
 func anthropicErrorJSON(value any) []byte {
+	data, _ := json.Marshal(map[string]any{"type": "error", "error": normalizeAnthropicError(value)})
+	return data
+}
+
+func normalizeAnthropicError(value any) map[string]any {
 	message := "Upstream request failed"
 	errorType := "api_error"
 	if object, ok := value.(map[string]any); ok {
@@ -126,8 +137,7 @@ func anthropicErrorJSON(value any) []byte {
 	} else if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
 		message = text
 	}
-	data, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{"type": errorType, "message": message}})
-	return data
+	return map[string]any{"type": errorType, "message": message}
 }
 
 func normalizeAnthropicErrorType(object map[string]any) string {

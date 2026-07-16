@@ -40,6 +40,17 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			if callID == "" {
 				return nil, nil, nil, &responsesRequestError{Message: param + ".call_id 不能为空", Param: param + ".call_id", Code: "invalid_parameter"}
 			}
+			execution := strings.ToLower(strings.TrimSpace(stringField(item, "execution")))
+			if execution == "" || execution == "server" {
+				c.serverSearchEager = true
+				c.changed = true
+				c.addWarning("server_tool_search_history_approximated")
+				rewritten = append(rewritten, compatibilityBoundaryMessage("A server-side tool search occurred here; selected tools are made available directly."))
+				continue
+			}
+			if execution != "client" {
+				return nil, nil, nil, &responsesRequestError{Message: "tool_search_call.execution 必须是 client 或 server", Param: param + ".execution", Code: "invalid_parameter"}
+			}
 			arguments, err := encodeFunctionArguments(item["arguments"])
 			if err != nil {
 				return nil, nil, nil, &responsesRequestError{Message: param + ".arguments 无法编码", Param: param + ".arguments", Code: "invalid_parameter"}
@@ -51,8 +62,8 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			c.changed = true
 		case "tool_search_output":
 			execution := strings.ToLower(strings.TrimSpace(stringField(item, "execution")))
-			if execution != "client" {
-				return nil, nil, nil, &responsesRequestError{Message: "Grok Build 只兼容客户端 tool_search_output", Param: param + ".execution", Code: "unsupported_parameter"}
+			if execution != "" && execution != "client" && execution != "server" {
+				return nil, nil, nil, &responsesRequestError{Message: "tool_search_output.execution 必须是 client 或 server", Param: param + ".execution", Code: "invalid_parameter"}
 			}
 			callID := strings.TrimSpace(stringField(item, "call_id"))
 			if callID == "" {
@@ -71,10 +82,14 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			}
 			visibleTools = append(visibleTools, cloneJSONArray(tools)...)
 			c.changed = true
-			rewritten = append(rewritten, map[string]any{
-				"type": "function_call_output", "call_id": callID,
-				"output": fmt.Sprintf("Tool search completed; %d selected tool definitions are now available.", len(tools)),
-			})
+			message := fmt.Sprintf("Tool search completed; %d selected tool definitions are now available.", len(tools))
+			if execution == "client" {
+				rewritten = append(rewritten, map[string]any{"type": "function_call_output", "call_id": callID, "output": message})
+			} else {
+				c.serverSearchEager = true
+				c.addWarning("server_tool_search_history_approximated")
+				rewritten = append(rewritten, compatibilityBoundaryMessage(message))
+			}
 		case "custom_tool_call":
 			name := strings.TrimSpace(stringField(item, "name"))
 			if name == "" {

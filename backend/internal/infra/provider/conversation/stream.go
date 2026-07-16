@@ -17,7 +17,7 @@ func ConvertResponseStream(source io.ReadCloser, operation string) io.ReadCloser
 	return ConvertResponseStreamWithOptions(source, operation, ResponseOptions{})
 }
 
-// ConvertResponseStreamWithOptions 按原始 Messages 请求选项生成有序 Anthropic SSE。
+// ConvertResponseStreamWithOptions 按下游协议选项生成 Chat 或 Anthropic SSE。
 func ConvertResponseStreamWithOptions(source io.ReadCloser, operation string, options ResponseOptions) io.ReadCloser {
 	if operation == OperationResponses {
 		return source
@@ -59,6 +59,7 @@ type streamConverter struct {
 	options           ResponseOptions
 	stopFilter        *anthropicStreamStopFilter
 	stopSequence      string
+	refused           bool
 }
 
 type streamTool struct {
@@ -225,6 +226,23 @@ func (c *streamConverter) handle(event string, data []byte) error {
 			return c.bufferSearchText(delta)
 		}
 		return c.textDelta(delta)
+	case "response.refusal.delta":
+		var delta string
+		_ = json.Unmarshal(root["delta"], &delta)
+		c.refused = true
+		if c.operation == OperationChat {
+			return c.chatDelta(map[string]any{"refusal": delta})
+		}
+		return c.textDeltaMessages(delta)
+	case "response.output_text.annotation.added":
+		if c.operation != OperationChat {
+			return nil
+		}
+		var annotation any
+		if json.Unmarshal(root["annotation"], &annotation) != nil || annotation == nil {
+			return nil
+		}
+		return c.chatDelta(map[string]any{"annotations": []any{annotation}})
 	case "response.reasoning_summary_text.delta":
 		var delta string
 		_ = json.Unmarshal(root["delta"], &delta)
@@ -235,6 +253,9 @@ func (c *streamConverter) handle(event string, data []byte) error {
 	case "response.reasoning_text.delta":
 		var delta string
 		_ = json.Unmarshal(root["delta"], &delta)
+		if c.operation == OperationChat {
+			return c.chatDelta(map[string]any{"reasoning_content": delta})
+		}
 		if c.operation == OperationMessages {
 			return c.thinkingDelta(delta)
 		}
@@ -396,6 +417,25 @@ func (c *streamConverter) finish() error {
 		return nil
 	}
 	return c.done("")
+}
+
+func streamErrorValue(data []byte) any {
+	var root map[string]any
+	if json.Unmarshal(data, &root) != nil {
+		return strings.TrimSpace(string(data))
+	}
+	if response, ok := root["response"].(map[string]any); ok {
+		if value, exists := response["error"]; exists && value != nil {
+			return value
+		}
+	}
+	if value, exists := root["error"]; exists && value != nil {
+		return value
+	}
+	if message, ok := root["message"].(string); ok {
+		return message
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func (c *streamConverter) writeData(value any) error {

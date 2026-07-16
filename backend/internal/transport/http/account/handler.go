@@ -284,6 +284,7 @@ type billingResponse struct {
 	PrepaidBalance       float64                  `json:"prepaidBalance"`
 	CreditUsagePercent   float64                  `json:"creditUsagePercent"`
 	IsUnifiedBillingUser bool                     `json:"isUnifiedBillingUser"`
+	OnDemandEnabled      *bool                    `json:"onDemandEnabled,omitempty"`
 	TopUpMethod          string                   `json:"topUpMethod,omitempty"`
 	UsagePeriodType      string                   `json:"usagePeriodType,omitempty"`
 	UsagePeriodStart     string                   `json:"usagePeriodStart,omitempty"`
@@ -297,6 +298,9 @@ type billingResponse struct {
 type billingHistoryResponse struct {
 	Year         int     `json:"year"`
 	Month        int     `json:"month"`
+	PeriodType   string  `json:"periodType,omitempty"`
+	PeriodStart  string  `json:"periodStart,omitempty"`
+	PeriodEnd    string  `json:"periodEnd,omitempty"`
 	IncludedUsed float64 `json:"includedUsed"`
 	OnDemandUsed float64 `json:"onDemandUsed"`
 	TotalUsed    float64 `json:"totalUsed"`
@@ -1047,9 +1051,13 @@ func newQuotaResponse(value accountapp.QuotaView) quotaResponse {
 func newBillingResponse(value accountdomain.Billing) billingResponse {
 	history := make([]billingHistoryResponse, 0, len(value.History))
 	for _, entry := range value.History {
-		history = append(history, billingHistoryResponse{Year: entry.Year, Month: entry.Month, IncludedUsed: entry.IncludedUsed, OnDemandUsed: entry.OnDemandUsed, TotalUsed: entry.TotalUsed})
+		history = append(history, billingHistoryResponse{
+			Year: entry.Year, Month: entry.Month,
+			PeriodType: entry.PeriodType, PeriodStart: entry.PeriodStart, PeriodEnd: entry.PeriodEnd,
+			IncludedUsed: entry.IncludedUsed, OnDemandUsed: entry.OnDemandUsed, TotalUsed: entry.TotalUsed,
+		})
 	}
-	return billingResponse{PlanCode: value.PlanCode, PlanName: value.PlanName, MonthlyLimit: value.MonthlyLimit, Used: value.Used, Remaining: value.Remaining(), OnDemandCap: value.OnDemandCap, OnDemandUsed: value.OnDemandUsed, PrepaidBalance: value.PrepaidBalance, CreditUsagePercent: value.CreditUsagePercent, IsUnifiedBillingUser: value.IsUnifiedBillingUser, TopUpMethod: value.TopUpMethod, UsagePeriodType: value.UsagePeriodType, UsagePeriodStart: value.UsagePeriodStart, UsagePeriodEnd: value.UsagePeriodEnd, BillingPeriodStart: value.BillingPeriodStart, BillingPeriodEnd: value.BillingPeriodEnd, History: history, SyncedAt: value.SyncedAt}
+	return billingResponse{PlanCode: value.PlanCode, PlanName: value.PlanName, MonthlyLimit: value.MonthlyLimit, Used: value.Used, Remaining: value.Remaining(), OnDemandCap: value.OnDemandCap, OnDemandUsed: value.OnDemandUsed, PrepaidBalance: value.PrepaidBalance, CreditUsagePercent: value.CreditUsagePercent, IsUnifiedBillingUser: value.IsUnifiedBillingUser, OnDemandEnabled: value.OnDemandEnabled, TopUpMethod: value.TopUpMethod, UsagePeriodType: value.UsagePeriodType, UsagePeriodStart: value.UsagePeriodStart, UsagePeriodEnd: value.UsagePeriodEnd, BillingPeriodStart: value.BillingPeriodStart, BillingPeriodEnd: value.BillingPeriodEnd, History: history, SyncedAt: value.SyncedAt}
 }
 
 func pagination(c *gin.Context) (int, int) {

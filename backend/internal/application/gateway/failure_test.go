@@ -1,8 +1,12 @@
 package gateway
 
 import (
+	"io"
 	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
 func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
@@ -39,5 +43,24 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 				t.Fatalf("failure = %#v", failure)
 			}
 		})
+	}
+}
+
+func TestRetryableResponseHonorsUpstreamRetryVeto(t *testing.T) {
+	response := &provider.Response{
+		StatusCode: http.StatusInternalServerError,
+		Header:     http.Header{"X-Should-Retry": {"false"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":"invalid request history"}`)),
+	}
+	if isRetryableResponse(response) {
+		t.Fatal("x-should-retry:false 必须禁止换账号重试")
+	}
+	response.Header.Set("X-Should-Retry", "true")
+	if !isRetryableResponse(response) {
+		t.Fatal("x-should-retry:true 不应覆盖现有状态码重试策略")
+	}
+	response.Header.Set("X-Should-Retry", "unknown")
+	if !isRetryableResponse(response) {
+		t.Fatal("未知 x-should-retry 值应按未提供处理")
 	}
 }
