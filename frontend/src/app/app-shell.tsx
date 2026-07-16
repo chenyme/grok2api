@@ -18,6 +18,7 @@ import { useAuth } from "@/shared/auth/use-auth";
 import { GitHubMark } from "@/shared/components/github-mark";
 import { SiteFooter } from "@/shared/components/site-footer";
 import { cn } from "@/shared/lib/cn";
+import { CurrentVersionLabel } from "@/features/system/version-update";
 
 const navigation = [
   { href: "/dashboard", label: "nav.dashboard", icon: LayoutDashboard },
@@ -217,8 +218,9 @@ export function AppShell() {
     <div className="min-h-screen bg-background">
         <aside className="fixed inset-y-0 left-0 z-30 hidden h-screen w-[288px] flex-col overflow-hidden bg-sidebar px-4 py-6 lg:flex">
           <div className="flex h-7 shrink-0 items-center justify-between px-2.5">
-            <Link to="/dashboard" className="flex h-7 items-center text-base font-semibold text-foreground">
-              {t("appName")}
+            <Link to="/dashboard" className="flex h-7 items-baseline gap-2 text-base font-semibold text-foreground">
+              <span>{t("appName")}</span>
+              <CurrentVersionLabel />
             </Link>
             <Button variant="ghost" size="icon" className="size-7 text-muted-foreground [&_svg]:size-[15px]" asChild>
               <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
@@ -243,7 +245,7 @@ export function AppShell() {
                 <div className="relative z-10 mt-3 shrink-0 bg-sidebar pt-3">{accountControl}</div>
               </SheetContent>
             </Sheet>
-            <span className="text-sm font-semibold">{t("appName")}</span>
+            <span className="flex items-baseline gap-2 text-sm font-semibold"><span>{t("appName")}</span><CurrentVersionLabel /></span>
             <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-foreground" asChild>
               <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
                 <GitHubMark />

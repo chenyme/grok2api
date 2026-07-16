@@ -1,5 +1,7 @@
 **
 
+!VERSION
+
 !backend/
 !backend/go.mod
 !backend/go.sum

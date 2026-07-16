@@ -72,15 +72,24 @@ func TestInferenceTrafficIsRejectedWhileReconciling(t *testing.T) {
 	}
 }
 
-func TestSystemInfoRequiresAdminAuthentication(t *testing.T) {
+func TestSystemEndpointsRequireAdminAuthentication(t *testing.T) {
 	deps := testDependencies()
 	deps.PublicAPIBaseURL = "https://api.example.com"
 	router := New(deps)
-	request := httptest.NewRequest(http.MethodGet, "/api/admin/v1/system", nil)
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	for _, route := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/api/admin/v1/system"},
+		{method: http.MethodGet, path: "/api/admin/v1/system/version"},
+		{method: http.MethodPost, path: "/api/admin/v1/system/update/check"},
+	} {
+		request := httptest.NewRequest(route.method, route.path, nil)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s status = %d, want %d", route.method, route.path, recorder.Code, http.StatusUnauthorized)
+		}
 	}
 }
 
