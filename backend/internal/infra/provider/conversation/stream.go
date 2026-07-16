@@ -305,7 +305,8 @@ func (c *streamConverter) handle(event string, data []byte) error {
 }
 
 func (c *streamConverter) bufferSearchText(delta string) error {
-	if len(delta) > maxDeferredSearchTextBytes-c.pendingSearchText.Len() {
+	pending := c.pendingSearchText.Len()
+	if pending >= maxDeferredSearchTextBytes || len(delta) > maxDeferredSearchTextBytes-pending {
 		return fmt.Errorf("WebSearch 延迟文本缓冲超过 %d MiB", maxDeferredSearchTextBytes>>20)
 	}
 	c.pendingSearchText.WriteString(delta)

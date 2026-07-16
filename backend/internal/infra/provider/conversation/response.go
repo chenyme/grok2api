@@ -138,6 +138,11 @@ func parseResponse(value responseEnvelope) parsedResponse {
 		case "function_call":
 			parsed.Calls = append(parsed.Calls, item)
 		case "web_search_call":
+			// Cap candidates early so pathological upstream envelopes cannot
+			// retain unbounded intermediate search state before dedupe.
+			if len(parsed.WebSearch) >= maxWebSearchCalls {
+				continue
+			}
 			if call, ok := parseWebSearchCallItem(item); ok {
 				parsed.WebSearch = append(parsed.WebSearch, call)
 			}

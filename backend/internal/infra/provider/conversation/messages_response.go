@@ -12,7 +12,9 @@ func messagesResponse(value parsedResponse, options ResponseOptions) map[string]
 	if options.AnthropicWebSearchRequired && len(webSearch) == 0 {
 		webSearch = []webSearchCall{unavailableWebSearchCall(options.AnthropicWebSearchQuery)}
 	}
-	content := make([]any, 0, len(value.Calls)+len(webSearch)*2+2)
+	// Avoid capacity arithmetic on untrusted upstream lengths (CodeQL size overflow).
+	// appendServerWebSearchContent already hard-caps search blocks.
+	content := make([]any, 0)
 	if options.AnthropicThinking && (value.Reasoning != "" || value.Signature != "") {
 		if value.Reasoning == "" {
 			content = append(content, map[string]any{"type": "redacted_thinking", "data": value.Signature})

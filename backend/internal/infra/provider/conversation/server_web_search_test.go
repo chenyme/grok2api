@@ -524,6 +524,45 @@ func TestParseBuildWebSearchBoundsResultsAndTitles(t *testing.T) {
 	}
 }
 
+func TestParseResponseCapsWebSearchCandidatesBeforeDedupe(t *testing.T) {
+	output := make([]any, 0, maxWebSearchCalls+20)
+	for index := 0; index < maxWebSearchCalls+20; index++ {
+		output = append(output, map[string]any{
+			"type": "web_search_call", "id": "ws_" + strconv.Itoa(index), "status": "completed",
+			"action": map[string]any{
+				"type": "search", "query": "q" + strconv.Itoa(index),
+				"sources": []any{map[string]any{"type": "url", "url": "https://example.com/" + strconv.Itoa(index)}},
+			},
+		})
+	}
+	body, err := json.Marshal(map[string]any{
+		"id": "resp_cap", "model": "grok-4.5", "status": "completed", "created_at": 1,
+		"output": output, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := ConvertResponseJSONWithOptions(body, OperationMessages, ResponseOptions{AnthropicWebSearch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := msg["content"].([]any)
+	uses := 0
+	for _, block := range content {
+		m, _ := block.(map[string]any)
+		if m["type"] == "server_tool_use" {
+			uses++
+		}
+	}
+	if uses != maxWebSearchCalls {
+		t.Fatalf("server_tool_use count = %d, want %d", uses, maxWebSearchCalls)
+	}
+}
+
 func TestDedupeWebSearchCallsBoundsCallCount(t *testing.T) {
 	calls := make([]webSearchCall, 0, 40)
 	for index := 0; index < 40; index++ {

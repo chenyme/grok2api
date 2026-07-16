@@ -1236,7 +1236,8 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 	if operation == conversation.OperationMessages {
 		visibleText, stopSequence := applyWebStopSequences(parsed.Text.String(), options.StopSequences)
 		emitWebSearch := shouldEmitWebMessagesSearch(parsed, options)
-		content := make([]any, 0, len(parsed.ToolCalls)+3)
+		// Zero initial capacity: tool/search counts come from untrusted upstream.
+		content := make([]any, 0)
 		if options.AnthropicThinking && parsed.Reasoning.Len() > 0 {
 			content = append(content, map[string]any{"type": "thinking", "thinking": parsed.Reasoning.String()})
 		}
@@ -1347,8 +1348,8 @@ func webMessagesSearchBlocks(id string, parsed parsedChat, options conversation.
 		"type": "server_tool_use", "id": id, "name": "web_search",
 		"input": map[string]any{"query": options.AnthropicWebSearchQuery},
 	}
-	hits := make([]any, 0, len(parsed.SearchSources))
-	seen := make(map[string]struct{}, len(parsed.SearchSources))
+	hits := make([]any, 0, searchresult.MaxResults)
+	seen := make(map[string]struct{}, searchresult.MaxResults)
 	for _, source := range parsed.SearchSources {
 		if len(hits) >= searchresult.MaxResults {
 			break
@@ -1522,7 +1523,8 @@ func (s *webMessagesStream) Delta(kind, delta string) error {
 }
 
 func (s *webMessagesStream) bufferSearchText(delta string) error {
-	if len(delta) > maxDeferredSearchTextBytes-s.pendingText.Len() {
+	pending := s.pendingText.Len()
+	if pending >= maxDeferredSearchTextBytes || len(delta) > maxDeferredSearchTextBytes-pending {
 		return fmt.Errorf("WebSearch 延迟文本缓冲超过 %d MiB", maxDeferredSearchTextBytes>>20)
 	}
 	s.pendingText.WriteString(delta)
