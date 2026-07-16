@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -25,6 +26,7 @@ type UpstreamFailure struct {
 	ModelQuotaExhausted    bool
 	CredentialRejected     bool
 	Fingerprint            string
+	RetryAfter             time.Duration
 	Cause                  error
 }
 
