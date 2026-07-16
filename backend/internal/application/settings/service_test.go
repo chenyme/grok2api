@@ -206,7 +206,7 @@ func TestLoadPersistedRejectsIncompleteBatchPayload(t *testing.T) {
 	}
 }
 
-func TestLoadPersistedKeepsServerLimitForLegacyPayload(t *testing.T) {
+func TestLoadPersistedBackfillsMissingServerConcurrency(t *testing.T) {
 	cfg := testConfig(t)
 	value := toDomainConfig(cfg)
 	value.Server = settingsdomain.ServerConfig{}
@@ -217,7 +217,7 @@ func TestLoadPersistedKeepsServerLimitForLegacyPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	if loaded.Server.MaxConcurrentRequests != cfg.Server.MaxConcurrentRequests {
-		t.Fatalf("server concurrency = %d, want %d", loaded.Server.MaxConcurrentRequests, cfg.Server.MaxConcurrentRequests)
+		t.Fatalf("maxConcurrentRequests = %d, want %d", loaded.Server.MaxConcurrentRequests, cfg.Server.MaxConcurrentRequests)
 	}
 }
 

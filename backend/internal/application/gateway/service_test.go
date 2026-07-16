@@ -477,6 +477,23 @@ func TestGatewayRefreshesAndRetriesBuildPermissionDenialOnce(t *testing.T) {
 	if updated.EncryptedAccessToken != "access-new" || updated.AuthStatus != account.AuthStatusActive || updated.RefreshFailureCount != 0 {
 		t.Fatalf("updated credential = %#v", updated)
 	}
+	if err := accountRepo.UpdateCredentialRefreshFailure(ctx, credential.ID, 1, updated.ExpiresAt, "invalid_grant", true); err != nil {
+		t.Fatal(err)
+	}
+	adapter.rejectAll.Store(true)
+	if _, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-rejected", ClientKey: clientKey, PublicModel: "grok-rescue",
+		Body: []byte(`{"model":"grok-rescue","input":"hello again"}`),
+	}); err == nil {
+		t.Fatal("rejected access token unexpectedly succeeded")
+	}
+	rejected, err := accountRepo.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected.AuthStatus != account.AuthStatusReauthRequired || adapter.refreshes.Load() != 1 {
+		t.Fatalf("rejected credential = %#v, refreshes = %d", rejected, adapter.refreshes.Load())
+	}
 }
 
 func TestWebRateLimitExhaustsOnlyRequestedQuotaMode(t *testing.T) {
@@ -900,6 +917,7 @@ type systemicForbiddenAdapter struct {
 type authRescueAdapter struct {
 	attempts  atomic.Int64
 	refreshes atomic.Int64
+	rejectAll atomic.Bool
 }
 
 func (a *authRescueAdapter) Provider() account.Provider { return account.ProviderBuild }
@@ -908,6 +926,12 @@ func (a *authRescueAdapter) Definition() provider.Definition {
 }
 func (a *authRescueAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.attempts.Add(1)
+	if a.rejectAll.Load() {
+		return &provider.Response{
+			StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"error":{"code":"unauthorized","message":"access token rejected"}}`)),
+		}, nil
+	}
 	if request.Credential.EncryptedAccessToken == "access-old" {
 		return &provider.Response{
 			StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
