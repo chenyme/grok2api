@@ -557,6 +557,13 @@ func upsertAccountByIdentity(tx *gorm.DB, value account.Credential) (repository.
 func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existing *accountModel) (repository.AccountUpsertResult, accountModel, error) {
 	row := fromAccountDomain(value)
 	if existing != nil {
+		if value.EncryptedCloudflareCookie == "" {
+			var storedCredential accountCredentialModel
+			if err := tx.Where("account_id = ?", existing.ID).First(&storedCredential).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return repository.AccountUpsertResult{}, accountModel{}, err
+			}
+			value.EncryptedCloudflareCookie = storedCredential.EncryptedCloudflareCookie
+		}
 		row.ID = existing.ID
 		row.CreatedAt = existing.CreatedAt
 		row.Enabled = existing.Enabled

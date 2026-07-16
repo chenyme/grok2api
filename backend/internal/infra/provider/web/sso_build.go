@@ -54,7 +54,7 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 	if token == "" {
 		return provider.CredentialSeed{}, provider.ErrUnauthorized
 	}
-	lease, err := a.egress.Acquire(ctx, egressdomain.ScopeWeb, "sso-build:"+credential.SourceKey)
+	lease, err := a.egress.AcquireCredential(ctx, egressdomain.ScopeWeb, credential)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}

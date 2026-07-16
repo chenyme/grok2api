@@ -495,7 +495,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 	if err != nil {
 		return nil, err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", request.Credential.ID))
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, request.Credential)
 	if err != nil {
 		return nil, err
 	}
@@ -618,7 +618,7 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 	if err != nil {
 		return nil, err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", request.Credential.ID))
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, request.Credential)
 	if err != nil {
 		return nil, err
 	}
@@ -1120,7 +1120,7 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 	defer cancel()
 	var lastErr error
 	for attempt := 0; attempt < mediaOutputAttempts; attempt++ {
-		raw, retryable, attemptErr := a.downloadImageAttempt(downloadCtx, credential.ID, token, parsed.String())
+		raw, retryable, attemptErr := a.downloadImageAttempt(downloadCtx, credential, token, parsed.String())
 		if attemptErr == nil {
 			return raw, nil
 		}
@@ -1136,8 +1136,8 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 }
 
 // downloadImageAttempt 每次沿用同一账号，只允许出口管理器重新选择资源节点。
-func (a *Adapter) downloadImageAttempt(ctx context.Context, accountID uint64, token, rawURL string) ([]byte, bool, error) {
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWebAsset, fmt.Sprintf("%d", accountID))
+func (a *Adapter) downloadImageAttempt(ctx context.Context, credential account.Credential, token, rawURL string) ([]byte, bool, error) {
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWebAsset, credential)
 	if err != nil {
 		return nil, true, err
 	}

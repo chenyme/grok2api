@@ -21,9 +21,10 @@ type importDocument struct {
 }
 
 type importEntry struct {
-	Name     string `json:"name"`
-	SSOToken string `json:"sso_token"`
-	Token    string `json:"token"`
+	Name              string `json:"name"`
+	SSOToken          string `json:"sso_token"`
+	Token             string `json:"token"`
+	CloudflareCookies string `json:"cloudflare_cookies"`
 }
 
 func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
@@ -65,7 +66,9 @@ func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
 		if name == "" {
 			name = "Grok Console " + security.HashToken(token)[:8]
 		}
-		result = append(result, credentialSeed(name, token))
+		seed := credentialSeed(name, token)
+		seed.CloudflareCookies = entry.CloudflareCookies
+		result = append(result, seed)
 	}
 	return result, nil
 }

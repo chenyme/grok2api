@@ -15,7 +15,11 @@ type egressTransport struct {
 }
 
 func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	lease, configured, err := t.manager.AcquireIfConfigured(request.Context(), domainegress.ScopeBuild, "")
+	affinity := infraegress.AccountFromContext(request.Context())
+	if affinity == "" {
+		affinity = "bootstrap"
+	}
+	lease, configured, err := t.manager.AcquireIfConfigured(request.Context(), domainegress.ScopeBuild, affinity)
 	if err != nil {
 		return nil, err
 	}
