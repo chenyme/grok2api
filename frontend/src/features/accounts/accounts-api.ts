@@ -16,6 +16,7 @@ export type BillingDTO = {
   prepaidBalance: number;
   creditUsagePercent: number;
   isUnifiedBillingUser: boolean;
+  onDemandEnabled?: boolean;
   topUpMethod?: string;
   usagePeriodType?: string;
   usagePeriodStart?: string;
@@ -29,6 +30,9 @@ export type BillingDTO = {
 export type BillingHistoryDTO = {
   year: number;
   month: number;
+  periodType?: string;
+  periodStart?: string;
+  periodEnd?: string;
   includedUsed: number;
   onDemandUsed: number;
   totalUsed: number;
@@ -124,12 +128,13 @@ export type DevicePollDTO = {
 };
 
 const billingHistoryValidator = hasShape({
-  year: isNumber, month: isNumber, includedUsed: isNumber, onDemandUsed: isNumber, totalUsed: isNumber,
+  year: isNumber, month: isNumber, periodType: isOptional(isString), periodStart: isOptional(isString), periodEnd: isOptional(isString),
+  includedUsed: isNumber, onDemandUsed: isNumber, totalUsed: isNumber,
 });
 const billingValidator = hasShape({
   planCode: isOptional(isString), planName: isOptional(isString), monthlyLimit: isNumber, used: isNumber, remaining: isNumber,
   onDemandCap: isNumber, onDemandUsed: isNumber, prepaidBalance: isNumber, creditUsagePercent: isNumber,
-  isUnifiedBillingUser: isBoolean, topUpMethod: isOptional(isString), usagePeriodType: isOptional(isString),
+  isUnifiedBillingUser: isBoolean, onDemandEnabled: isOptional(isBoolean), topUpMethod: isOptional(isString), usagePeriodType: isOptional(isString),
   usagePeriodStart: isOptional(isString), usagePeriodEnd: isOptional(isString), billingPeriodStart: isOptional(isString),
   billingPeriodEnd: isOptional(isString), history: isOptional(isArrayOf(billingHistoryValidator)), syncedAt: isString,
 });

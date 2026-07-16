@@ -58,8 +58,12 @@ func normalizeResponsesTools(payload map[string]json.RawMessage) (*responsesTool
 	normalizedTools = dedupeNormalizedTools(normalizedTools)
 	if len(normalizedTools) > 0 {
 		payload["tools"] = mustJSON(normalizedTools)
-	} else if hasTools && compatibility.webSearchDisabled {
+	} else if hasTools {
 		delete(payload, "tools")
+		if _, exists := payload["parallel_tool_calls"]; exists {
+			delete(payload, "parallel_tool_calls")
+			compatibility.addWarning("parallel_tool_calls_without_tools_ignored")
+		}
 		compatibility.changed = true
 	}
 	if err := compatibility.normalizeToolChoice(payload, normalizedTools); err != nil {
@@ -90,10 +94,9 @@ func (c *responsesToolCompatibility) normalizeClientToolSearchParallel(payload m
 		}
 	}
 	if parallel {
-		return &responsesRequestError{
-			Message: "客户端 tool_search 暂不支持并行工具调用",
-			Param:   "parallel_tool_calls", Code: "unsupported_parameter",
-		}
+		payload["parallel_tool_calls"] = mustJSON(false)
+		c.changed = true
+		c.addWarning("client_tool_search_forced_serial")
 	}
 	return nil
 }
@@ -111,6 +114,7 @@ func decodeOptionalArray(raw json.RawMessage, param string) ([]any, bool, error)
 
 func inspectToolSearch(tools []any) (bool, error) {
 	clientSearch := false
+	serverSearch := false
 	for index, rawTool := range tools {
 		tool, ok := rawTool.(map[string]any)
 		if !ok {
@@ -122,16 +126,20 @@ func inspectToolSearch(tools []any) (bool, error) {
 		param := fmt.Sprintf("tools[%d]", index)
 		execution := strings.ToLower(strings.TrimSpace(stringField(tool, "execution")))
 		if execution == "" || execution == "server" {
-			return false, &responsesRequestError{
-				Message: "Grok Build 上游不支持服务端 tool_search；请使用 execution: \"client\"",
-				Param:   param + ".execution", Code: "unsupported_parameter",
+			if clientSearch {
+				return false, &responsesRequestError{Message: "单次请求不能混用 client 与 server tool_search", Param: param + ".execution", Code: "invalid_parameter"}
 			}
+			serverSearch = true
+			continue
 		}
 		if execution != "client" {
-			return false, &responsesRequestError{Message: "tool_search.execution 只支持 client", Param: param + ".execution", Code: "unsupported_parameter"}
+			return false, &responsesRequestError{Message: "tool_search.execution 必须是 client 或 server", Param: param + ".execution", Code: "invalid_parameter"}
 		}
 		if clientSearch {
 			return false, &responsesRequestError{Message: "单次请求只能声明一个客户端 tool_search", Param: param, Code: "invalid_parameter"}
+		}
+		if serverSearch {
+			return false, &responsesRequestError{Message: "单次请求不能混用 client 与 server tool_search", Param: param + ".execution", Code: "invalid_parameter"}
 		}
 		clientSearch = true
 	}
@@ -152,10 +160,8 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 		}
 		deferred, _ := tool["defer_loading"].(bool)
 		if deferred && !clientSearch && !force {
-			return nil, &responsesRequestError{
-				Message: "defer_loading: true 需要 execution: \"client\" 的 tool_search",
-				Param:   param + ".defer_loading", Code: "invalid_parameter",
-			}
+			c.changed = true
+			c.addWarning("orphan_deferred_tool_loaded")
 		}
 		if deferred && clientSearch && !force {
 			c.changed = true
@@ -198,7 +204,7 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 				return nil, &responsesRequestError{Message: childParam + " 必须是对象", Param: childParam, Code: "invalid_parameter"}
 			}
 			if stringField(child, "type") != "function" {
-				return nil, &responsesRequestError{Message: "namespace 内只支持 function 工具", Param: childParam + ".type", Code: "unsupported_parameter"}
+				return nil, &responsesRequestError{Message: "namespace.tools 只能包含 function 工具", Param: childParam + ".type", Code: "invalid_parameter"}
 			}
 			items, err := c.normalizeTool(child, name, clientSearch, force, childParam)
 			if err != nil {
@@ -209,7 +215,18 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 		return converted, nil
 	case "tool_search":
 		if force {
-			return nil, &responsesRequestError{Message: "tool_search_output.tools 不能再次声明 tool_search", Param: param, Code: "unsupported_parameter"}
+			c.changed = true
+			c.addWarning("nested_tool_search_ignored")
+			return nil, nil
+		}
+		execution := strings.ToLower(strings.TrimSpace(stringField(tool, "execution")))
+		if execution == "" || execution == "server" {
+			// Build 上游没有服务端 Tool Search。将已声明的延迟工具提前展开，
+			// 比让 Codex 因一个可选优化能力整次失败更符合兼容层语义。
+			c.serverSearchEager = true
+			c.changed = true
+			c.addWarning("server_tool_search_eager_loaded")
+			return nil, nil
 		}
 		c.changed = true
 		c.addWarning("client_tool_search_emulated")
@@ -227,7 +244,7 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 	case "local_shell":
 		return c.normalizeLegacyLocalShellTool(tool, param)
 	case "apply_patch":
-		return c.normalizeApplyPatchTool(tool, namespace, param)
+		return c.normalizeApplyPatchTool(tool, param)
 	case "x_search", "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter":
 		return c.normalizeNativeTool(tool, param)
 	case "computer_use_preview":

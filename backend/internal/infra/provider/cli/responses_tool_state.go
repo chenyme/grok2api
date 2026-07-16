@@ -40,6 +40,7 @@ type responsesToolCompatibility struct {
 	deferredSurfaces  []string
 	clientSearchTool  map[string]any
 	clientSearchParam string
+	serverSearchEager bool
 	streamCalls       map[string]*responsesStreamCall
 	legacyLocalShell  bool
 	nativeShell       bool

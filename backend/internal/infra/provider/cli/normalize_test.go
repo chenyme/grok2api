@@ -11,7 +11,7 @@ import (
 )
 
 func TestNormalizeResponsesRequest(t *testing.T) {
-	body := []byte(`{"model":"public-model","input":[{"type":"reasoning","id":"old","encrypted_content":"cipher"},{"role":"user","content":"hello"}],"prompt_cache_key":"official-key","response_format":{"type":"json_object"}}`)
+	body := []byte(`{"model":"public-model","input":[{"type":"reasoning","id":"old","encrypted_content":"cipher","content":[{"text":"thought"}]},{"role":"user","content":"hello"}],"prompt_cache_key":"official-key","response_format":{"type":"json_object"}}`)
 	normalized, _, err := normalizeResponsesRequest(body, "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +26,10 @@ func TestNormalizeResponsesRequest(t *testing.T) {
 	input := payload["input"].([]any)
 	if len(input) != 2 || input[0].(map[string]any)["encrypted_content"] != "cipher" {
 		t.Fatalf("reasoning 回放项未保留: %#v", input)
+	}
+	reasoningContent := input[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if reasoningContent["type"] != "reasoning_text" || reasoningContent["text"] != "thought" {
+		t.Fatalf("reasoning content discriminator 未修补: %#v", reasoningContent)
 	}
 	text := payload["text"].(map[string]any)
 	if text["format"] == nil || payload["response_format"] != nil {

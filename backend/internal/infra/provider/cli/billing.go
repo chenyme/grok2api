@@ -27,6 +27,10 @@ func parseBilling(data []byte) (account.Billing, error) {
 			planName = outerName
 		}
 	}
+	onDemandEnabled := optionalBool(firstValue(root, "onDemandEnabled", "on_demand_enabled"))
+	if onDemandEnabled == nil {
+		onDemandEnabled = optionalBool(firstValue(original, "onDemandEnabled", "on_demand_enabled"))
+	}
 	result := account.Billing{
 		PlanCode:             planCode,
 		PlanName:             planName,
@@ -37,6 +41,7 @@ func parseBilling(data []byte) (account.Billing, error) {
 		PrepaidBalance:       numberValue(firstValue(root, "prepaidBalance", "prepaid_balance")),
 		CreditUsagePercent:   numberValue(firstValue(root, "creditUsagePercent", "credit_usage_percent")),
 		IsUnifiedBillingUser: boolValue(firstValue(root, "isUnifiedBillingUser", "is_unified_billing_user")),
+		OnDemandEnabled:      onDemandEnabled,
 		TopUpMethod:          stringValue(firstValue(root, "topUpMethod", "top_up_method")),
 		BillingPeriodStart:   stringValue(firstValue(root, "billingPeriodStart", "billing_period_start")),
 		BillingPeriodEnd:     stringValue(firstValue(root, "billingPeriodEnd", "billing_period_end")),
@@ -54,9 +59,16 @@ func parseBilling(data []byte) (account.Billing, error) {
 				continue
 			}
 			cycle, _ := entry["billingCycle"].(map[string]any)
+			period, _ := entry["period"].(map[string]any)
 			result.History = append(result.History, account.BillingHistoryEntry{
-				Year: int(numberValue(cycle["year"])), Month: int(numberValue(cycle["month"])),
-				IncludedUsed: numberValue(entry["includedUsed"]), OnDemandUsed: numberValue(entry["onDemandUsed"]), TotalUsed: numberValue(entry["totalUsed"]),
+				Year:         int(numberValue(cycle["year"])),
+				Month:        int(numberValue(cycle["month"])),
+				PeriodType:   stringValue(period["type"]),
+				PeriodStart:  stringValue(period["start"]),
+				PeriodEnd:    stringValue(period["end"]),
+				IncludedUsed: numberValue(entry["includedUsed"]),
+				OnDemandUsed: numberValue(entry["onDemandUsed"]),
+				TotalUsed:    numberValue(entry["totalUsed"]),
 			})
 		}
 	}
@@ -76,9 +88,17 @@ func boolValue(value any) bool {
 	return result
 }
 
+func optionalBool(value any) *bool {
+	result, ok := value.(bool)
+	if !ok {
+		return nil
+	}
+	return &result
+}
+
 func planValues(values map[string]any) (string, string) {
-	code := stringValue(firstValue(values, "planCode", "plan_code", "subscriptionTier", "subscription_tier", "tier"))
-	name := stringValue(firstValue(values, "planName", "plan_name", "subscriptionName", "subscription_name"))
+	code := stringValue(firstValue(values, "planCode", "plan_code", "tier"))
+	name := stringValue(firstValue(values, "planName", "plan_name", "subscriptionName", "subscription_name", "subscriptionTier", "subscription_tier"))
 	for _, key := range []string{"plan", "subscription", "membership"} {
 		value, ok := values[key]
 		if !ok {

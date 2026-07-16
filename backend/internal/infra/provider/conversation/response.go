@@ -48,15 +48,22 @@ type responseContent struct {
 }
 
 type responseUsage struct {
-	InputTokens        int64 `json:"input_tokens"`
-	OutputTokens       int64 `json:"output_tokens"`
-	TotalTokens        int64 `json:"total_tokens"`
-	InputTokensDetails struct {
+	InputTokens            int64 `json:"input_tokens"`
+	OutputTokens           int64 `json:"output_tokens"`
+	TotalTokens            int64 `json:"total_tokens"`
+	CostInUSDTicks         int64 `json:"cost_in_usd_ticks"`
+	NumSourcesUsed         int64 `json:"num_sources_used"`
+	NumServerSideToolsUsed int64 `json:"num_server_side_tools_used"`
+	InputTokensDetails     struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
 	OutputTokensDetails struct {
 		ReasoningTokens int64 `json:"reasoning_tokens"`
 	} `json:"output_tokens_details"`
+	ContextDetails struct {
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+	} `json:"context_details"`
 }
 
 type parsedResponse struct {
@@ -69,6 +76,7 @@ type parsedResponse struct {
 	Refusal      string
 	Calls        []responseItem
 	WebSearch    []webSearchCall
+	Annotations  []any
 	Usage        responseUsage
 	Status       string
 	StopSequence string
@@ -79,7 +87,7 @@ func ConvertResponseJSON(body []byte, operation string) ([]byte, error) {
 	return ConvertResponseJSONWithOptions(body, operation, ResponseOptions{})
 }
 
-// ConvertResponseJSONWithOptions 按原始 Messages 请求选项恢复 thinking 与 stop sequence。
+// ConvertResponseJSONWithOptions 按下游协议选项恢复 thinking、搜索与 stop sequence。
 func ConvertResponseJSONWithOptions(body []byte, operation string, options ResponseOptions) ([]byte, error) {
 	if operation == OperationResponses {
 		return body, nil
@@ -95,8 +103,10 @@ func ConvertResponseJSONWithOptions(body []byte, operation string, options Respo
 		return body, nil
 	}
 	parsed := parseResponse(envelope)
+	if operation == OperationMessages || operation == OperationChat {
+		parsed.Text, parsed.StopSequence = applyStopSequences(parsed.Text, options.StopSequences)
+	}
 	if operation == OperationMessages {
-		parsed.Text, parsed.StopSequence = applyAnthropicStopSequences(parsed.Text, options.StopSequences)
 		if !options.AnthropicWebSearch {
 			parsed.WebSearch = nil
 		}
@@ -121,6 +131,7 @@ func parseResponse(value responseEnvelope) parsedResponse {
 		case "message":
 			annotations = append(annotations, extractMessageAnnotations(item)...)
 			for _, content := range item.Content {
+				parsed.Annotations = append(parsed.Annotations, content.Annotations...)
 				switch content.Type {
 				case "output_text":
 					parsed.Text += content.Text
@@ -129,9 +140,18 @@ func parseResponse(value responseEnvelope) parsedResponse {
 				}
 			}
 		case "reasoning":
-			for _, summary := range item.Summary {
-				parsed.Reasoning += summary.Text
+			reasoning := ""
+			for _, content := range item.Content {
+				if content.Type == "reasoning_text" {
+					reasoning += content.Text
+				}
 			}
+			if reasoning == "" {
+				for _, summary := range item.Summary {
+					reasoning += summary.Text
+				}
+			}
+			parsed.Reasoning += reasoning
 			if item.Encrypted != "" {
 				parsed.Signature = item.Encrypted
 			}

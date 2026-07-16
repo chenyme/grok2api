@@ -330,10 +330,11 @@ func TestAccountRepositoryPersistsObservedBuildBillingFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
+	onDemandEnabled := false
 	if err := repo.UpdateObservedModel(context.Background(), credential.ID, "grok-4.5-build-free", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveBilling(context.Background(), account.Billing{AccountID: credential.ID, IsUnifiedBillingUser: true, TopUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD", UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", UsagePeriodStart: "2026-07-12T00:00:00Z", UsagePeriodEnd: "2026-07-19T00:00:00Z", History: []account.BillingHistoryEntry{{Year: 2026, Month: 6}}, SyncedAt: now}); err != nil {
+	if err := repo.SaveBilling(context.Background(), account.Billing{AccountID: credential.ID, IsUnifiedBillingUser: true, OnDemandEnabled: &onDemandEnabled, TopUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD", UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", UsagePeriodStart: "2026-07-12T00:00:00Z", UsagePeriodEnd: "2026-07-19T00:00:00Z", History: []account.BillingHistoryEntry{{Year: 2026, Month: 6}}, SyncedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	storedCredential, err := repo.Get(context.Background(), credential.ID)
@@ -341,7 +342,7 @@ func TestAccountRepositoryPersistsObservedBuildBillingFields(t *testing.T) {
 		t.Fatalf("credential = %#v, err = %v", storedCredential, err)
 	}
 	billing, err := repo.GetBilling(context.Background(), credential.ID)
-	if err != nil || !billing.IsUnifiedBillingUser || billing.TopUpMethod != "TOP_UP_METHOD_SAVED_PAYMENT_METHOD" || billing.UsagePeriodType != "USAGE_PERIOD_TYPE_WEEKLY" || billing.UsagePeriodEnd != "2026-07-19T00:00:00Z" || len(billing.History) != 1 {
+	if err != nil || !billing.IsUnifiedBillingUser || billing.OnDemandEnabled == nil || *billing.OnDemandEnabled || billing.TopUpMethod != "TOP_UP_METHOD_SAVED_PAYMENT_METHOD" || billing.UsagePeriodType != "USAGE_PERIOD_TYPE_WEEKLY" || billing.UsagePeriodEnd != "2026-07-19T00:00:00Z" || len(billing.History) != 1 {
 		t.Fatalf("billing = %#v, err = %v", billing, err)
 	}
 }

@@ -107,16 +107,17 @@ type quotaWindowModel struct {
 func (quotaWindowModel) TableName() string { return "account_quota_windows" }
 
 type billingModel struct {
-	AccountID            uint64        `gorm:"primaryKey"`
-	PlanCode             string        `gorm:"size:100;check:chk_billing_plan_code,length(plan_code) <= 100"`
-	PlanName             string        `gorm:"size:160;check:chk_billing_plan_name,length(plan_name) <= 160"`
-	MonthlyLimit         float64       `gorm:"not null;default:0;check:chk_billing_monthly_limit,monthly_limit >= 0"`
-	Used                 float64       `gorm:"not null;default:0;check:chk_billing_used,used >= 0"`
-	OnDemandCap          float64       `gorm:"not null;default:0;check:chk_billing_on_demand_cap,on_demand_cap >= 0"`
-	OnDemandUsed         float64       `gorm:"not null;default:0;check:chk_billing_on_demand_used,on_demand_used >= 0"`
-	PrepaidBalance       float64       `gorm:"not null;default:0;check:chk_billing_prepaid_balance,prepaid_balance >= 0"`
-	CreditUsagePercent   float64       `gorm:"not null;default:0;check:chk_billing_credit_usage_percent,credit_usage_percent >= 0"`
-	IsUnifiedBillingUser bool          `gorm:"not null;default:false"`
+	AccountID            uint64  `gorm:"primaryKey"`
+	PlanCode             string  `gorm:"size:100;check:chk_billing_plan_code,length(plan_code) <= 100"`
+	PlanName             string  `gorm:"size:160;check:chk_billing_plan_name,length(plan_name) <= 160"`
+	MonthlyLimit         float64 `gorm:"not null;default:0;check:chk_billing_monthly_limit,monthly_limit >= 0"`
+	Used                 float64 `gorm:"not null;default:0;check:chk_billing_used,used >= 0"`
+	OnDemandCap          float64 `gorm:"not null;default:0;check:chk_billing_on_demand_cap,on_demand_cap >= 0"`
+	OnDemandUsed         float64 `gorm:"not null;default:0;check:chk_billing_on_demand_used,on_demand_used >= 0"`
+	PrepaidBalance       float64 `gorm:"not null;default:0;check:chk_billing_prepaid_balance,prepaid_balance >= 0"`
+	CreditUsagePercent   float64 `gorm:"not null;default:0;check:chk_billing_credit_usage_percent,credit_usage_percent >= 0"`
+	IsUnifiedBillingUser bool    `gorm:"not null;default:false"`
+	OnDemandEnabled      *bool
 	TopUpMethod          string        `gorm:"size:100;check:chk_billing_top_up_method,length(top_up_method) <= 100"`
 	UsagePeriodType      string        `gorm:"size:100;check:chk_billing_usage_period_type,length(usage_period_type) <= 100"`
 	UsagePeriodStart     string        `gorm:"size:64;check:chk_billing_usage_period_start,length(usage_period_start) <= 64"`

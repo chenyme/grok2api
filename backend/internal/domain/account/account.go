@@ -178,6 +178,9 @@ type QuotaRecoveryEvent struct {
 type BillingHistoryEntry struct {
 	Year         int
 	Month        int
+	PeriodType   string
+	PeriodStart  string
+	PeriodEnd    string
 	IncludedUsed float64
 	OnDemandUsed float64
 	TotalUsed    float64
@@ -195,6 +198,7 @@ type Billing struct {
 	PrepaidBalance       float64
 	CreditUsagePercent   float64
 	IsUnifiedBillingUser bool
+	OnDemandEnabled      *bool
 	TopUpMethod          string
 	UsagePeriodType      string
 	UsagePeriodStart     string

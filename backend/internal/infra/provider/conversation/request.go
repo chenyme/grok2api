@@ -23,8 +23,7 @@ func ConvertRequest(body []byte, model, operation string) ([]byte, error) {
 func ConvertRequestWithOptions(body []byte, model, operation string) ([]byte, ResponseOptions, error) {
 	switch operation {
 	case OperationChat:
-		converted, err := convertChatRequest(body, model)
-		return converted, ResponseOptions{}, err
+		return convertChatRequest(body, model)
 	case OperationMessages:
 		return convertMessagesRequest(body, model)
 	default:
