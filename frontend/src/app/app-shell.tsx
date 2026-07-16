@@ -4,7 +4,7 @@ import { useTheme } from "next-themes";
 import { useState, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
-import { Link, NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -61,10 +61,12 @@ const documentation = [
 export function AppShell() {
   const { t, i18n } = useTranslation();
   const { admin, logout, changePassword } = useAuth();
+  const location = useLocation();
   const { setTheme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [documentationOpen, setDocumentationOpen] = useState<Record<string, boolean>>({});
+  const isCreativeConsole = location.pathname === "/creative-console";
 
   const passwordSchema = z.object({
     currentPassword: z.string().min(1, t("errors.required")),
@@ -249,10 +251,10 @@ export function AppShell() {
             </Button>
           </header>
 
-          <main className="mx-auto w-full max-w-[1280px] flex-1 px-5 py-8 sm:px-8 lg:py-20">
+          <main className={cn("mx-auto w-full max-w-[1280px] flex-1 px-5 sm:px-8", isCreativeConsole ? "pt-8 pb-0 lg:pt-20" : "py-8 lg:py-20")}>
             <Outlet />
           </main>
-          <SiteFooter />
+          {!isCreativeConsole ? <SiteFooter /> : null}
         </div>
 
       <Dialog open={passwordOpen} onOpenChange={setPasswordOpen}>

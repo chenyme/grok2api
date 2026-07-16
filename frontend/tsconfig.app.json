@@ -14,7 +14,6 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
-    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "incremental": true,
     "tsBuildInfoFile": "./.cache/tsconfig.app.tsbuildinfo",
@@ -24,6 +23,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.mts"]
+  "include": ["src"]
 }

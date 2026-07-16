@@ -1,19 +1,32 @@
-import {
-  CreativeApiError,
-  createPublicApiBaseURL as createPublicApiBaseURLFromString,
-  creativeApiInternals,
-  readChatText,
-  readError,
-  readImages,
-  readVideoRequestID,
-  readVideoStatus,
-  type ChatMessage,
-  type ImageResult,
-  type VideoStatus,
-} from "./creative-console-api-parsers.ts";
+export type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
 
-export { CreativeApiError, creativeApiInternals };
-export type { ChatMessage, ImageResult, VideoStatus };
+export type ImageResult = {
+  url: string;
+  revisedPrompt?: string;
+};
+
+export type VideoStatus = {
+  status: "pending" | "done" | "failed";
+  model?: string;
+  progress: number;
+  video?: { url: string; duration?: number; respectModeration?: boolean };
+  error?: { code?: string; message: string };
+};
+
+class CreativeApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.name = "CreativeApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
 
 type RequestOptions = {
   method?: "GET" | "POST";
@@ -21,27 +34,13 @@ type RequestOptions = {
   signal?: AbortSignal;
 };
 
-export function createPublicApiBaseURL(publicApiBaseURL = browserPublicApiBaseURL()): string {
-  return createPublicApiBaseURLFromString(publicApiBaseURL.trim() || browserPublicApiBaseURL());
-}
-
-function browserPublicApiBaseURL(): string {
-  if (typeof window === "undefined") return "";
-  const apiBaseURL = window.__GROK2API_RUNTIME_CONFIG__?.apiBaseUrl?.replace(/\/$/, "") ?? "";
-  const publicApiBaseURL = window.__GROK2API_RUNTIME_CONFIG__?.publicApiBaseUrl?.replace(/\/$/, "") ?? "";
-  const developmentApiBaseURL = typeof __GROK2API_DEV_API_TARGET__ === "string" ? __GROK2API_DEV_API_TARGET__.replace(/\/$/, "") : "";
-  return publicApiBaseURL || apiBaseURL || developmentApiBaseURL || window.location.origin;
-}
-
 export async function createChatCompletion(input: {
-  publicApiBaseURL: string;
   apiKey: string;
   model: string;
   messages: ChatMessage[];
   signal?: AbortSignal;
 }): Promise<string> {
   const payload = await publicApiRequest(
-    input.publicApiBaseURL,
     input.apiKey,
     "/chat/completions",
     { method: "POST", body: { model: input.model, messages: input.messages, stream: false }, signal: input.signal },
@@ -52,7 +51,6 @@ export async function createChatCompletion(input: {
 }
 
 export async function generateImage(input: {
-  publicApiBaseURL: string;
   apiKey: string;
   model: string;
   prompt: string;
@@ -62,7 +60,6 @@ export async function generateImage(input: {
   signal?: AbortSignal;
 }): Promise<ImageResult[]> {
   const payload = await publicApiRequest(
-    input.publicApiBaseURL,
     input.apiKey,
     "/images/generations",
     {
@@ -81,11 +78,10 @@ export async function generateImage(input: {
   );
   const images = readImages(payload);
   if (images.length === 0) throw new CreativeApiError(200, "The image response did not contain any images", "invalid_response");
-  return images.map((image) => ({ ...image, url: resolveMediaURL(input.publicApiBaseURL, image.url) }));
+  return images.map((image) => ({ ...image, url: resolveMediaURL(image.url) }));
 }
 
 export async function createVideo(input: {
-  publicApiBaseURL: string;
   apiKey: string;
   model: string;
   prompt: string;
@@ -104,7 +100,6 @@ export async function createVideo(input: {
   };
   if (input.imageURL) body.image = { url: input.imageURL };
   const payload = await publicApiRequest(
-    input.publicApiBaseURL,
     input.apiKey,
     "/videos/generations",
     { method: "POST", body, signal: input.signal },
@@ -117,31 +112,27 @@ export async function createVideo(input: {
 }
 
 export async function getVideo(input: {
-  publicApiBaseURL: string;
   apiKey: string;
   requestId: string;
   signal?: AbortSignal;
 }): Promise<VideoStatus> {
   const payload = await publicApiRequest(
-    input.publicApiBaseURL,
     input.apiKey,
     `/videos/${encodeURIComponent(input.requestId)}`,
     { method: "GET", signal: input.signal },
   );
   const status = readVideoStatus(payload);
-  return status.video ? { ...status, video: { ...status.video, url: resolveMediaURL(input.publicApiBaseURL, status.video.url) } } : status;
+  return status.video ? { ...status, video: { ...status.video, url: resolveMediaURL(status.video.url) } } : status;
 }
 
-async function publicApiRequest(publicApiBaseURL: string, apiKey: string, path: string, options: RequestOptions): Promise<unknown> {
-  const baseURL = createPublicApiBaseURL(publicApiBaseURL);
-  if (!baseURL) throw new CreativeApiError(0, "The public API base URL is not configured", "invalid_base_url");
+async function publicApiRequest(apiKey: string, path: string, options: RequestOptions): Promise<unknown> {
   const headers = new Headers({ Accept: "application/json", Authorization: `Bearer ${apiKey}` });
   let body: string | undefined;
   if (options.body) {
     headers.set("Content-Type", "application/json");
     body = JSON.stringify(options.body);
   }
-  const response = await fetch(`${baseURL}${path}`, {
+  const response = await fetch(`/v1${path}`, {
     method: options.method ?? "GET",
     headers,
     body,
@@ -165,18 +156,98 @@ async function publicApiRequest(publicApiBaseURL: string, apiKey: string, path: 
   return payload;
 }
 
-function resolveMediaURL(publicApiBaseURL: string, value: string): string {
+function resolveMediaURL(value: string): string {
   const url = value.trim();
   if (!url || url.startsWith("data:") || url.startsWith("blob:")) return url;
   try {
-    const browserOrigin = typeof window === "undefined" ? undefined : window.location.origin;
-    const configuredBaseURL = publicApiBaseURL.trim() || browserPublicApiBaseURL();
-    const baseURL = new URL(configuredBaseURL, browserOrigin).toString().replace(/\/+$/, "");
-    const relativeBaseURL = url.startsWith("/")
-      ? `${new URL(baseURL).origin}/`
-      : `${baseURL}/`;
-    return new URL(url, relativeBaseURL).toString();
+    const browserOrigin = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+    const resolved = new URL(url, `${browserOrigin}/`);
+    if (resolved.pathname.startsWith("/v1/media/images/")) {
+      return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    }
+    return resolved.origin === browserOrigin ? `${resolved.pathname}${resolved.search}${resolved.hash}` : resolved.toString();
   } catch {
     return url;
   }
+}
+
+function readVideoRequestID(payload: unknown): string {
+  return isRecord(payload) && typeof payload.request_id === "string" ? payload.request_id.trim() : "";
+}
+
+function readChatText(payload: unknown): string {
+  if (!isRecord(payload) || !Array.isArray(payload.choices)) return "";
+  for (const choice of payload.choices) {
+    if (!isRecord(choice) || !isRecord(choice.message)) continue;
+    const text = readContentText(choice.message.content);
+    if (text) return text;
+  }
+  return "";
+}
+
+function readContentText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content.map((item) => {
+    if (typeof item === "string") return item;
+    if (!isRecord(item)) return "";
+    return typeof item.text === "string" ? item.text : typeof item.content === "string" ? item.content : "";
+  }).filter(Boolean).join("\n").trim();
+}
+
+function readImages(payload: unknown): ImageResult[] {
+  if (!isRecord(payload) || !Array.isArray(payload.data)) return [];
+  return payload.data.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const url = typeof item.url === "string" && item.url.trim()
+      ? item.url
+      : typeof item.b64_json === "string" && item.b64_json.trim()
+        ? `data:image/png;base64,${item.b64_json}`
+        : "";
+    return url ? [{ url, revisedPrompt: typeof item.revised_prompt === "string" ? item.revised_prompt : undefined }] : [];
+  });
+}
+
+function readVideoStatus(payload: unknown): VideoStatus {
+  if (!isRecord(payload) || !isVideoStatus(payload.status)) {
+    throw new CreativeApiError(200, "The video status response was invalid", "invalid_response");
+  }
+  const result: VideoStatus = {
+    status: payload.status,
+    model: typeof payload.model === "string" ? payload.model : undefined,
+    progress: typeof payload.progress === "number" && Number.isFinite(payload.progress)
+      ? Math.max(0, Math.min(100, payload.progress))
+      : payload.status === "done" ? 100 : 0,
+  };
+  if (isRecord(payload.video) && typeof payload.video.url === "string") {
+    result.video = {
+      url: payload.video.url,
+      duration: typeof payload.video.duration === "number" ? payload.video.duration : undefined,
+      respectModeration: typeof payload.video.respect_moderation === "boolean" ? payload.video.respect_moderation : undefined,
+    };
+  }
+  if (isRecord(payload.error) && typeof payload.error.message === "string") {
+    result.error = {
+      code: typeof payload.error.code === "string" ? payload.error.code : undefined,
+      message: payload.error.message,
+    };
+  }
+  return result;
+}
+
+function readError(payload: unknown): { code?: string; message?: string } {
+  if (!isRecord(payload)) return {};
+  const error = isRecord(payload.error) ? payload.error : payload;
+  return {
+    code: typeof error.code === "string" ? error.code : undefined,
+    message: typeof error.message === "string" ? error.message : undefined,
+  };
+}
+
+function isVideoStatus(value: unknown): value is VideoStatus["status"] {
+  return value === "pending" || value === "done" || value === "failed";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
