@@ -1,5 +1,5 @@
 import type { MediaAssetDTO, ImageStatsDTO, MediaJobDTO, VideoStatsDTO } from "@/features/media/types";
-import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
+import { apiDownloadWithFilename, apiRequest, type ApiDownload, type PaginatedDTO } from "@/shared/api/client";
 import {
   createObjectDecoder,
   createPaginatedDecoder,
@@ -86,4 +86,9 @@ export function listVideos(input: ListVideosInput): Promise<PaginatedDTO<MediaJo
 
 export function getVideoStats(): Promise<VideoStatsDTO> {
   return apiRequest("/api/admin/v1/media/videos/stats", {}, decodeVideoStats);
+}
+
+/** 通过管理端代理下载视频，避免直连 Grok 上游鉴权地址导致 403。 */
+export function downloadVideo(jobId: string): Promise<ApiDownload> {
+  return apiDownloadWithFilename(`/api/admin/v1/media/videos/${encodeURIComponent(jobId)}/download`);
 }

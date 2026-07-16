@@ -119,6 +119,14 @@ func (r *MediaJobRepository) GetMediaJob(ctx context.Context, id string, clientK
 	return mediaJobToDomain(row), nil
 }
 
+func (r *MediaJobRepository) GetMediaJobByID(ctx context.Context, id string) (media.Job, error) {
+	var row mediaJobModel
+	if err := r.db.db.WithContext(ctx).Where("id = ?", id).First(&row).Error; err != nil {
+		return media.Job{}, mapError(err)
+	}
+	return mediaJobToDomain(row), nil
+}
+
 func (r *MediaJobRepository) UpdateMediaJob(ctx context.Context, value media.Job) error {
 	updates := mediaJobFromDomain(value)
 	query := r.db.db.WithContext(ctx).Model(&mediaJobModel{}).Where("id = ?", value.ID)

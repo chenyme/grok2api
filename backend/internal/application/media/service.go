@@ -16,32 +16,45 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 var (
-	ErrAssetNotFound        = errors.New("媒体资源不存在")
-	ErrInvalidImage         = errors.New("图片内容无效")
-	ErrInvalidFilter        = errors.New("媒体筛选条件无效")
-	ErrMediaJobsUnavailable = errors.New("视频任务仓储未配置")
+	ErrAssetNotFound            = errors.New("媒体资源不存在")
+	ErrInvalidImage             = errors.New("图片内容无效")
+	ErrInvalidFilter            = errors.New("媒体筛选条件无效")
+	ErrMediaJobsUnavailable     = errors.New("视频任务仓储未配置")
+	ErrVideoJobNotFound         = errors.New("视频任务不存在")
+	ErrVideoNotDownloadable     = errors.New("视频尚未生成完成或缺少上游地址")
+	ErrVideoDownloadUnavailable = errors.New("视频下载能力未配置")
+	ErrVideoAccountUnavailable  = errors.New("视频所属账号不可用")
 )
+
+// AccountSource 提供视频下载所需的上游账号凭据。
+type AccountSource interface {
+	Get(ctx context.Context, id uint64) (account.Credential, error)
+}
 
 // Service 负责图片校验、文件落盘和元数据持久化的一致性收口。
 type Service struct {
-	assets        repository.MediaAssetRepository
-	jobs          repository.MediaJobRepository
-	objects       repository.MediaObjectStorage
-	cleanupLock   repository.DistributedLock
-	publicBaseURL string
-	configMu      sync.RWMutex
-	maxImageBytes int64
-	maxTotalBytes int64
-	cleanupAt     int
-	cleanupEvery  time.Duration
-	cleanupSignal chan struct{}
-	configChanged chan struct{}
-	totalBytes    atomic.Int64
+	assets          repository.MediaAssetRepository
+	jobs            repository.MediaJobRepository
+	objects         repository.MediaObjectStorage
+	cleanupLock     repository.DistributedLock
+	accounts        AccountSource
+	videoDownloader provider.VideoAssetDownloader
+	publicBaseURL   string
+	configMu        sync.RWMutex
+	maxImageBytes   int64
+	maxTotalBytes   int64
+	cleanupAt       int
+	cleanupEvery    time.Duration
+	cleanupSignal   chan struct{}
+	configChanged   chan struct{}
+	totalBytes      atomic.Int64
 }
 
 type Config struct {
@@ -72,6 +85,12 @@ func NewService(assets repository.MediaAssetRepository, jobs repository.MediaJob
 		maxTotalBytes: cfg.MaxTotalBytes, cleanupAt: cfg.CleanupThresholdPercent, cleanupEvery: cfg.CleanupInterval,
 		cleanupSignal: make(chan struct{}, 1), configChanged: make(chan struct{}, 1),
 	}
+}
+
+// ConfigureVideoDownload 注入账号与上游视频打开能力，供管理端代理下载使用。
+func (s *Service) ConfigureVideoDownload(accounts AccountSource, downloader provider.VideoAssetDownloader) {
+	s.accounts = accounts
+	s.videoDownloader = downloader
 }
 
 // UpdateConfig 热更新媒体容量和清理策略，不重建底层存储实例。
@@ -195,6 +214,78 @@ func (s *Service) AdminVideoStats(ctx context.Context) (VideoStats, error) {
 		TotalJobs: stats.TotalJobs, Completed: stats.Completed, Failed: stats.Failed,
 		InProgress: stats.InProgress, Queued: stats.Queued,
 	}, nil
+}
+
+// VideoDownload 表示管理端可代理下载的上游视频流。
+type VideoDownload struct {
+	JobID         string
+	Filename      string
+	ContentType   string
+	ContentLength int64
+	Body          io.ReadCloser
+}
+
+// OpenVideoDownload 使用任务所属账号打开上游视频，供管理端保存到本地。
+func (s *Service) OpenVideoDownload(ctx context.Context, jobID string) (VideoDownload, error) {
+	if s.jobs == nil {
+		return VideoDownload{}, ErrMediaJobsUnavailable
+	}
+	if s.accounts == nil || s.videoDownloader == nil {
+		return VideoDownload{}, ErrVideoDownloadUnavailable
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return VideoDownload{}, ErrVideoJobNotFound
+	}
+	job, err := s.jobs.GetMediaJobByID(ctx, jobID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return VideoDownload{}, ErrVideoJobNotFound
+	}
+	if err != nil {
+		return VideoDownload{}, err
+	}
+	if job.Status != mediadomain.StatusCompleted || strings.TrimSpace(job.UpstreamURL) == "" {
+		return VideoDownload{}, ErrVideoNotDownloadable
+	}
+	credential, err := s.accounts.Get(ctx, job.AccountID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return VideoDownload{}, ErrVideoAccountUnavailable
+	}
+	if err != nil {
+		return VideoDownload{}, err
+	}
+	open, err := s.videoDownloader.OpenVideoAsset(ctx, credential, job.UpstreamURL)
+	if err != nil {
+		return VideoDownload{}, err
+	}
+	contentType := strings.TrimSpace(open.ContentType)
+	if contentType == "" {
+		contentType = strings.TrimSpace(job.ContentType)
+	}
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	return VideoDownload{
+		JobID: job.ID, Filename: videoDownloadFilename(job.ID, contentType),
+		ContentType: contentType, ContentLength: open.ContentLength, Body: open.Body,
+	}, nil
+}
+
+func videoDownloadFilename(jobID, contentType string) string {
+	extension := ".mp4"
+	switch strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0])) {
+	case "video/webm":
+		extension = ".webm"
+	case "video/quicktime":
+		extension = ".mov"
+	case "video/x-matroska":
+		extension = ".mkv"
+	}
+	name := strings.TrimSpace(jobID)
+	if name == "" {
+		name = "video"
+	}
+	return name + extension
 }
 
 func mediaPageQuery(page, pageSize int, search string, sort repository.SortQuery) repository.PageQuery {

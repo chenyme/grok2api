@@ -42,6 +42,8 @@ type MediaJobStats struct {
 type MediaJobRepository interface {
 	CreateMediaJob(ctx context.Context, value media.Job) error
 	GetMediaJob(ctx context.Context, id string, clientKeyID uint64) (media.Job, error)
+	// GetMediaJobByID 按任务 ID 读取媒体任务，供管理端下载等不绑定客户端密钥的操作使用。
+	GetMediaJobByID(ctx context.Context, id string) (media.Job, error)
 	UpdateMediaJob(ctx context.Context, value media.Job) error
 	ListMediaJobs(ctx context.Context, query MediaJobListQuery) ([]media.Job, int64, error)
 	SummarizeMediaJobs(ctx context.Context) (MediaJobStats, error)

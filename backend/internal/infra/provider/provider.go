@@ -310,6 +310,18 @@ type VideoAdapter interface {
 	GenerateVideo(ctx context.Context, request VideoRequest) (VideoResult, error)
 }
 
+// VideoAssetOpen 表示已通过账号鉴权打开的上游视频资源流。
+type VideoAssetOpen struct {
+	Body          io.ReadCloser
+	ContentType   string
+	ContentLength int64
+}
+
+// VideoAssetDownloader 使用生成账号凭据打开上游视频资源，避免客户端直连 403。
+type VideoAssetDownloader interface {
+	OpenVideoAsset(ctx context.Context, credential account.Credential, rawURL string) (VideoAssetOpen, error)
+}
+
 type RoutingMetadataAdapter interface {
 	Adapter
 	QuotaMode(upstreamModel string) string

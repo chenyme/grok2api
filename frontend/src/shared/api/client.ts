@@ -255,7 +255,7 @@ async function readEventStreamChunk(reader: ReadableStreamDefaultReader<Uint8Arr
   }
 }
 
-export async function apiDownload(path: string, retryAuth = true): Promise<Blob> {
+async function fetchDownload(path: string, retryAuth = true): Promise<Response> {
   const headers = new Headers();
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
   const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
@@ -264,7 +264,7 @@ export async function apiDownload(path: string, retryAuth = true): Promise<Blob>
   });
   if (response.status === 401 && retryAuth) {
     const refreshResult = await refreshAccessToken();
-    if (refreshResult === "refreshed") return apiDownload(path, false);
+    if (refreshResult === "refreshed") return fetchDownload(path, false);
     if (refreshResult === "unavailable") {
       throw new ApiError(503, "sessionRefreshUnavailable", localizedErrorMessage("sessionRefreshUnavailable", "Unable to refresh the session. Please retry."));
     }
@@ -273,7 +273,41 @@ export async function apiDownload(path: string, retryAuth = true): Promise<Blob>
     await parseResponse(response, decodeNever);
     throw new ApiError(response.status, "requestFailed", localizedErrorMessage("requestFailed", "The request failed"));
   }
-  return response.blob();
+  return response;
+}
+
+export async function apiDownload(path: string): Promise<Blob> {
+  return (await fetchDownload(path)).blob();
+}
+
+export type ApiDownload = {
+  blob: Blob;
+  filename?: string;
+};
+
+export async function apiDownloadWithFilename(path: string): Promise<ApiDownload> {
+  const response = await fetchDownload(path);
+  return {
+    blob: await response.blob(),
+    filename: downloadFilename(response.headers.get("Content-Disposition")),
+  };
+}
+
+function downloadFilename(contentDisposition: string | null): string | undefined {
+  if (!contentDisposition) return undefined;
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition)?.[1];
+  const quoted = /filename="([^"]+)"/i.exec(contentDisposition)?.[1];
+  const plain = /filename=([^;]+)/i.exec(contentDisposition)?.[1]?.trim();
+  let value = quoted ?? plain;
+  if (encoded) {
+    try {
+      value = decodeURIComponent(encoded);
+    } catch {
+      value = undefined;
+    }
+  }
+  if (!value) return undefined;
+  return value.split(/[\\/]/).at(-1) || undefined;
 }
 
 export type AdminDTO = {

@@ -7,13 +7,24 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
+
+const (
+	videoDownloadTimeout  = 5 * time.Minute
+	maxVideoDownloadBytes = 512 << 20
+)
+
+var errVideoDownloadTooLarge = fmt.Errorf("视频下载超过 %d MiB", maxVideoDownloadBytes>>20)
 
 type videoUpstreamError struct {
 	status int
@@ -77,6 +88,145 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, fmt.Errorf("视频生成完成但没有返回内容 URL")
 	}
 	return result, nil
+}
+
+// OpenVideoAsset 使用生成账号与 Web 资源出口打开上游视频流，供管理端代理下载。
+func (a *Adapter) OpenVideoAsset(ctx context.Context, credential account.Credential, rawURL string) (provider.VideoAssetOpen, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme != "https" || !trustedImageAssetHost(parsed.Hostname()) || parsed.User != nil {
+		return provider.VideoAssetOpen{}, fmt.Errorf("视频内容 URL 不受信任")
+	}
+	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
+	if err != nil {
+		return provider.VideoAssetOpen{}, err
+	}
+	downloadCtx, cancel := context.WithTimeout(ctx, videoDownloadTimeout)
+	var lastErr error
+	for attempt := 0; attempt < mediaOutputAttempts; attempt++ {
+		open, retryable, attemptErr := a.openVideoAssetAttempt(downloadCtx, credential.ID, token, parsed.String())
+		if attemptErr == nil {
+			// 响应体关闭时同时释放出口租约和下载超时上下文。
+			body := &videoAssetBody{ReadCloser: open.Body, onClose: cancel}
+			open.Body = body
+			return open, nil
+		}
+		lastErr = attemptErr
+		if !retryable || downloadCtx.Err() != nil || attempt+1 >= mediaOutputAttempts {
+			break
+		}
+		if err := waitMediaOutputRetry(downloadCtx, attempt); err != nil {
+			cancel()
+			return provider.VideoAssetOpen{}, err
+		}
+	}
+	cancel()
+	if lastErr == nil {
+		lastErr = fmt.Errorf("下载视频失败")
+	}
+	return provider.VideoAssetOpen{}, lastErr
+}
+
+func (a *Adapter) openVideoAssetAttempt(ctx context.Context, accountID uint64, token, rawURL string) (provider.VideoAssetOpen, bool, error) {
+	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWebAsset, fmt.Sprintf("%d", accountID))
+	if err != nil {
+		return provider.VideoAssetOpen{}, true, err
+	}
+	releaseOnce := sync.Once{}
+	release := func() {
+		releaseOnce.Do(func() { lease.Release() })
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		release()
+		return provider.VideoAssetOpen{}, false, err
+	}
+	request.Header = buildHeaders(token, lease, "")
+	request.Header.Del("Content-Type")
+	response, err := lease.Do(request)
+	if err != nil {
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		release()
+		return provider.VideoAssetOpen{}, ctx.Err() == nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_ = response.Body.Close()
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+		release()
+		retryable := response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooEarly || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500
+		return provider.VideoAssetOpen{}, retryable, fmt.Errorf("下载视频返回 %d", response.StatusCode)
+	}
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
+	if contentType != "" && !strings.HasPrefix(contentType, "video/") && contentType != "application/octet-stream" {
+		_ = response.Body.Close()
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+		release()
+		return provider.VideoAssetOpen{}, false, fmt.Errorf("上游视频 Content-Type 无效")
+	}
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = "video/mp4"
+	}
+	contentLength := int64(-1)
+	if raw := strings.TrimSpace(response.Header.Get("Content-Length")); raw != "" {
+		if parsed, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
+			if parsed > maxVideoDownloadBytes {
+				_ = response.Body.Close()
+				release()
+				return provider.VideoAssetOpen{}, false, errVideoDownloadTooLarge
+			}
+			if parsed >= 0 {
+				contentLength = parsed
+			}
+		}
+	}
+	a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+	body := &videoAssetBody{
+		ReadCloser: newLimitedVideoBody(response.Body, maxVideoDownloadBytes),
+		onClose:    release,
+	}
+	return provider.VideoAssetOpen{Body: body, ContentType: contentType, ContentLength: contentLength}, false, nil
+}
+
+type limitedVideoBody struct {
+	io.ReadCloser
+	remaining int64
+}
+
+func newLimitedVideoBody(body io.ReadCloser, maxBytes int64) io.ReadCloser {
+	return &limitedVideoBody{ReadCloser: body, remaining: maxBytes}
+}
+
+func (b *limitedVideoBody) Read(value []byte) (int, error) {
+	if len(value) == 0 {
+		return 0, nil
+	}
+	limit := int64(len(value))
+	if limit > b.remaining+1 {
+		limit = b.remaining + 1
+	}
+	read, err := b.ReadCloser.Read(value[:limit])
+	if int64(read) > b.remaining {
+		allowed := int(b.remaining)
+		b.remaining = 0
+		return allowed, errVideoDownloadTooLarge
+	}
+	b.remaining -= int64(read)
+	return read, err
+}
+
+type videoAssetBody struct {
+	io.ReadCloser
+	onClose func()
+	once    sync.Once
+}
+
+func (b *videoAssetBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(func() {
+		if b.onClose != nil {
+			b.onClose()
+		}
+	})
+	return err
 }
 
 func (a *Adapter) prepareVideoReference(ctx context.Context, cfg Config, lease *egress.Lease, token, value string) (string, error) {

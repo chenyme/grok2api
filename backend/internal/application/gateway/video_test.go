@@ -108,6 +108,10 @@ func (r *videoUsageRepository) GetMediaJob(context.Context, string, uint64) (med
 	return r.job, nil
 }
 
+func (r *videoUsageRepository) GetMediaJobByID(context.Context, string) (media.Job, error) {
+	return r.job, nil
+}
+
 func (r *videoUsageRepository) UpdateMediaJob(context.Context, media.Job) error { return nil }
 
 func (r *videoUsageRepository) ListMediaJobs(context.Context, repository.MediaJobListQuery) ([]media.Job, int64, error) {

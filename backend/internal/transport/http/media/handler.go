@@ -3,6 +3,7 @@ package media
 import (
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ func (h *Handler) RegisterAdmin(router *gin.RouterGroup) {
 	router.GET("/media/images/stats", h.imageStats)
 	router.GET("/media/videos", h.listVideos)
 	router.GET("/media/videos/stats", h.videoStats)
+	router.GET("/media/videos/:jobId/download", h.downloadVideo)
 }
 
 func (h *Handler) getImage(c *gin.Context) {
@@ -129,6 +131,40 @@ func (h *Handler) videoStats(c *gin.Context) {
 		TotalJobs: stats.TotalJobs, Completed: stats.Completed, Failed: stats.Failed,
 		InProgress: stats.InProgress, Queued: stats.Queued,
 	})
+}
+
+func (h *Handler) downloadVideo(c *gin.Context) {
+	download, err := h.service.OpenVideoDownload(c.Request.Context(), c.Param("jobId"))
+	if err != nil {
+		switch {
+		case errors.Is(err, mediaapp.ErrVideoJobNotFound):
+			response.Error(c, http.StatusNotFound, "videoJobNotFound", "视频任务不存在")
+		case errors.Is(err, mediaapp.ErrVideoNotDownloadable):
+			response.Error(c, http.StatusConflict, "videoNotDownloadable", "视频尚未生成完成，无法下载")
+		case errors.Is(err, mediaapp.ErrVideoAccountUnavailable):
+			response.Error(c, http.StatusFailedDependency, "videoAccountUnavailable", "视频所属账号不可用，无法代下载")
+		case errors.Is(err, mediaapp.ErrVideoDownloadUnavailable):
+			response.Error(c, http.StatusServiceUnavailable, "videoDownloadUnavailable", "视频下载服务未配置")
+		case errors.Is(err, mediaapp.ErrMediaJobsUnavailable):
+			response.Error(c, http.StatusServiceUnavailable, "mediaJobsUnavailable", "视频任务服务不可用")
+		default:
+			response.Error(c, http.StatusBadGateway, "videoDownloadFailed", "下载视频失败: "+err.Error())
+		}
+		return
+	}
+	defer download.Body.Close()
+	c.Header("Content-Type", download.ContentType)
+	c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": download.Filename}))
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "private, no-store")
+	if download.ContentLength >= 0 {
+		c.Header("Content-Length", strconv.FormatInt(download.ContentLength, 10))
+	}
+	c.Status(http.StatusOK)
+	if _, err := io.Copy(c.Writer, download.Body); err != nil {
+		// 响应头已写出，只能中断传输；客户端会得到不完整文件。
+		return
+	}
 }
 
 func parsePagination(c *gin.Context) (int, int) {

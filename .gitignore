@@ -2,7 +2,12 @@
 .DS_Store
 Thumbs.db
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+!.vscode/scripts/
+!.vscode/scripts/**
 *.swp
 *.swo
 *~
@@ -12,6 +17,7 @@ Thumbs.db
 .env.*
 !.env.example
 /config.yaml
+/config.debug.yaml
 /config.local.yaml
 /config.*.local.yaml
 /docs/rules/
@@ -23,6 +29,7 @@ Thumbs.db
 
 # Runtime data
 /data/
+/.docker-data/
 /backend/data/
 *.log
 
@@ -30,6 +37,7 @@ Thumbs.db
 /.gocache/
 /.gocache-*/
 /backend/grok2api
+/backend/cmd/grok2api/__debug_bin*
 /backend/coverage.out
 *.coverprofile
 *.test
@@ -45,3 +53,6 @@ Thumbs.db
 /release/
 /.tmp/
 /tmp/
+.admin_credentials.txt
+.vscode/
+docker-compose.warp.yml

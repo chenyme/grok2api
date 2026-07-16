@@ -1,14 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, CheckCircle2, Clock, ListVideo, Loader2, RefreshCw, Search } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { AlertCircle, CheckCircle2, Clock, Download, ListVideo, Loader2, RefreshCw, Search } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { getVideoStats, listVideos } from "@/features/media/media-api";
+import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { downloadVideo, getVideoStats, listVideos } from "@/features/media/media-api";
 import { MediaMetric } from "@/features/media/media-metric";
 import type { MediaJobDTO } from "@/features/media/types";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
@@ -43,6 +44,16 @@ export function VideoGalleryPage() {
     queryKey: ["media", "videos", "stats"],
     queryFn: getVideoStats,
     staleTime: 30_000,
+  });
+  const downloadMutation = useMutation({
+    mutationFn: (jobId: string) => downloadVideo(jobId),
+    onSuccess: (download, jobId) => {
+      saveVideoBlob(download.blob, download.filename ?? videoFilename(jobId, download.blob.type));
+      toast.success(t("media.videos.downloadStarted"));
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : t("media.videos.downloadFailed"));
+    },
   });
 
   const result = videosQuery.data;
@@ -120,16 +131,17 @@ export function VideoGalleryPage() {
         {videosQuery.isError ? <ErrorState message={videosQuery.error.message} onRetry={() => void videosQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState message={t("media.videos.empty")} /> : null}
         {videosQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="min-w-[1180px] table-fixed text-xs">
+          <Table className="min-w-[1260px] table-fixed text-xs">
             <colgroup>
-              <col className="w-[25%]" />
-              <col className="w-[13%]" />
-              <col className="w-[10%]" />
+              <col className="w-[23%]" />
+              <col className="w-[12%]" />
               <col className="w-[9%]" />
+              <col className="w-[8%]" />
               <col className="w-[10%]" />
               <col className="w-[12%]" />
               <col className="w-[10%]" />
-              <col className="w-[11%]" />
+              <col className="w-[10%]" />
+              <col className="w-[6%]" />
             </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
@@ -141,10 +153,11 @@ export function VideoGalleryPage() {
                 <SortableTableHead field="account" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("media.videos.owner")}</SortableTableHead>
                 <SortableTableHead field="createdAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("media.videos.createdAt")}</SortableTableHead>
                 <SortableTableHead field="completedAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("media.videos.completedAt")}</SortableTableHead>
+                <TableActionHead>{t("common.actions")}</TableActionHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {videosQuery.isPending ? <TableLoadingRow colSpan={8} /> : result?.items.map((job) => (
+              {videosQuery.isPending ? <TableLoadingRow colSpan={9} /> : result?.items.map((job) => (
                 <TableRow key={job.id}>
                   <TableCell className="min-w-0 py-3">
                     <div className="min-w-0">
@@ -170,6 +183,19 @@ export function VideoGalleryPage() {
                   </TableCell>
                   <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(job.createdAt, i18n.language)}</TableCell>
                   <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(job.completedAt, i18n.language)}</TableCell>
+                  <TableActionCell>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8"
+                      disabled={job.status !== "completed" || downloadMutation.isPending}
+                      onClick={() => downloadMutation.mutate(job.id)}
+                      aria-label={t("media.videos.download")}
+                      title={job.status === "completed" ? t("media.videos.download") : t("media.videos.downloadUnavailable")}
+                    >
+                      {downloadMutation.isPending && downloadMutation.variables === job.id ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                    </Button>
+                  </TableActionCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -178,6 +204,23 @@ export function VideoGalleryPage() {
       </DataTableShell>
     </div>
   );
+}
+
+function saveVideoBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function videoFilename(jobId: string, contentType: string): string {
+  const extension = contentType === "video/webm" ? ".webm"
+    : contentType === "video/quicktime" ? ".mov"
+      : contentType === "video/x-matroska" ? ".mkv"
+        : ".mp4";
+  return `${jobId}${extension}`;
 }
 
 function VideoStatusBadge({ status }: { status: MediaJobDTO["status"] }) {
