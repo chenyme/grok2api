@@ -39,6 +39,17 @@ type uploadedFile struct {
 	URI string
 }
 
+type remoteImageTarget struct {
+	originalURL *url.URL
+	fetchURL    *url.URL
+	serverName  string
+	hostHeader  string
+}
+
+type remoteImageResolver interface {
+	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
+}
+
 // prepareChatAttachments 在同一账号和出口租约内解析、下载并上传对话图片。
 func (a *Adapter) prepareChatAttachments(ctx context.Context, cfg Config, lease *egress.Lease, token string, inputs []string) ([]string, error) {
 	if len(inputs) == 0 {
@@ -80,19 +91,20 @@ func (a *Adapter) loadChatImage(ctx context.Context, lease *egress.Lease, input 
 	if strings.HasPrefix(strings.ToLower(input), "data:") {
 		return parseChatImageDataURI(input, maxBytes)
 	}
-	parsed, err := validateRemoteImageURL(ctx, input)
+	target, err := validateRemoteImageURL(ctx, input)
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, parsed.String(), nil)
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
+	request.Host = target.hostHeader
 	// 外部图片地址不接收 SSO 或 Cloudflare Cookie，避免把上游凭据泄漏给第三方。
 	request.Header = remoteImageHeaders(lease.UserAgent)
-	response, err := lease.Do(request)
+	response, err := lease.DoPinnedHTTPS(request, target.serverName)
 	if err != nil {
 		return provider.ImageInput{}, fmt.Errorf("下载对话图片: %w", err)
 	}
@@ -111,7 +123,7 @@ func (a *Adapter) loadChatImage(ctx context.Context, lease *egress.Lease, input 
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
-	return provider.ImageInput{Filename: imageFilename(parsed, mimeType), MIMEType: mimeType, Data: raw}, nil
+	return provider.ImageInput{Filename: imageFilename(target.originalURL, mimeType), MIMEType: mimeType, Data: raw}, nil
 }
 
 func remoteImageHeaders(userAgent string) http.Header {
@@ -166,7 +178,11 @@ func supportedChatImageMIME(value string) bool {
 	}
 }
 
-func validateRemoteImageURL(ctx context.Context, raw string) (*url.URL, error) {
+func validateRemoteImageURL(ctx context.Context, raw string) (*remoteImageTarget, error) {
+	return validateRemoteImageURLWithResolver(ctx, raw, net.DefaultResolver)
+}
+
+func validateRemoteImageURLWithResolver(ctx context.Context, raw string, resolver remoteImageResolver) (*remoteImageTarget, error) {
 	if len(raw) == 0 || len(raw) > maxRemoteImageURLBytes {
 		return nil, fmt.Errorf("%w: URL 为空或过长", errInvalidChatImage)
 	}
@@ -183,21 +199,27 @@ func validateRemoteImageURL(ctx context.Context, raw string) (*url.URL, error) {
 		if !publicRemoteImageAddress(address) {
 			return nil, fmt.Errorf("%w: URL 指向非公网地址", errInvalidChatImage)
 		}
-		return parsed, nil
+		return newRemoteImageTarget(parsed, host, address), nil
 	}
 	resolveCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	addresses, err := net.DefaultResolver.LookupIPAddr(resolveCtx, host)
+	addresses, err := resolver.LookupNetIP(resolveCtx, "ip", host)
 	if err != nil || len(addresses) == 0 {
 		return nil, fmt.Errorf("%w: 无法解析图片主机", errInvalidChatImage)
 	}
-	for _, value := range addresses {
-		address, ok := netip.AddrFromSlice(value.IP)
-		if !ok || !publicRemoteImageAddress(address.Unmap()) {
+	for _, address := range addresses {
+		if !publicRemoteImageAddress(address.Unmap()) {
 			return nil, fmt.Errorf("%w: URL 解析到非公网地址", errInvalidChatImage)
 		}
 	}
-	return parsed, nil
+	return newRemoteImageTarget(parsed, host, addresses[0].Unmap()), nil
+}
+
+func newRemoteImageTarget(original *url.URL, serverName string, address netip.Addr) *remoteImageTarget {
+	fetchURL := *original
+	fetchURL.Host = net.JoinHostPort(address.String(), "443")
+	fetchURL.Fragment = ""
+	return &remoteImageTarget{originalURL: original, fetchURL: &fetchURL, serverName: serverName, hostHeader: original.Host}
 }
 
 func publicRemoteImageAddress(address netip.Addr) bool {
