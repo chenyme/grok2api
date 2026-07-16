@@ -64,7 +64,7 @@ func TestProductionProviderDefinitionsMatchImplementedCapabilities(t *testing.T)
 			capabilities: []modeldomain.Capability{modeldomain.CapabilityResponses},
 			credential:   provider.CredentialSurface{AuthType: account.AuthTypeSSO, Import: true},
 			conversation: provider.ConversationSurface{Responses: true, ChatCompletions: true, Messages: true},
-			inference:    provider.InferencePolicy{Usage: provider.UsageUpstream},
+			inference:    provider.InferencePolicy{Usage: provider.UsageUpstream, RetryForbiddenAsEgress: true},
 		},
 	}
 	for _, test := range tests {

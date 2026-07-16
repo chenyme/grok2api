@@ -868,6 +868,13 @@ func (s *Service) syncWebCredentialsToConsole(ctx context.Context, values []acco
 		seed.Provider = accountdomain.ProviderConsole
 		seed.AuthType = accountdomain.AuthTypeSSO
 		seed.Name = webConsoleAccountName(value.Name, seed.Name)
+		if strings.TrimSpace(value.EncryptedCloudflareCookie) != "" {
+			cookies, decryptErr := s.cipher.Decrypt(value.EncryptedCloudflareCookie)
+			if decryptErr != nil {
+				return ImportResult{}, fmt.Errorf("解密 Grok Web Cloudflare Cookie: %w", decryptErr)
+			}
+			seed.CloudflareCookies = cookies
+		}
 		seeds = append(seeds, seed)
 	}
 	return s.persistImportedSeeds(ctx, seeds, observer, progress)

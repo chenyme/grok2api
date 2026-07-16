@@ -286,7 +286,7 @@ func applyHeaders(request *http.Request, token, configuredUserAgent string, leas
 	if userAgent == "" {
 		userAgent = strings.TrimSpace(configuredUserAgent)
 	}
-	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Accept", "*/*")
 	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	request.Header.Set("Authorization", "Bearer anonymous")
@@ -297,6 +297,7 @@ func applyHeaders(request *http.Request, token, configuredUserAgent string, leas
 	request.Header.Set("Sec-Fetch-Dest", "empty")
 	request.Header.Set("Sec-Fetch-Mode", "cors")
 	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	request.Header.Set("Priority", "u=1, i")
 	request.Header.Set("User-Agent", userAgent)
 	request.Header.Set("x-cluster", "https://us-east-1.api.x.ai")
 }

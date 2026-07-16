@@ -94,7 +94,7 @@ func (m *Manager) Acquire(ctx context.Context, scope domain.Scope, affinity stri
 // AcquireCredential binds the outbound proxy identity to one persisted
 // Provider credential. Resin templates use this identity as their Account.
 func (m *Manager) AcquireCredential(ctx context.Context, scope domain.Scope, credential accountdomain.Credential) (*Lease, error) {
-	ctx = WithAccount(ctx, string(credential.Provider), credential.ID)
+	identity := string(credential.Provider) + "_" + strconv.FormatUint(credential.ID, 10)
 	credentialCookies := ""
 	if scope != domain.ScopeBuild && strings.TrimSpace(credential.EncryptedCloudflareCookie) != "" {
 		cookies, decryptErr := m.cipher.Decrypt(credential.EncryptedCloudflareCookie)
@@ -103,6 +103,19 @@ func (m *Manager) AcquireCredential(ctx context.Context, scope domain.Scope, cre
 		}
 		credentialCookies = application.SanitizeCloudflareCookies(cookies)
 	}
+	// Web and Console accounts can be two database projections of the same SSO
+	// login.  Resin must see one stable account identity across both channels;
+	// otherwise the proxy rotates the IP while the clearance remains bound to
+	// the other lease.  The digest is non-reversible and is only used as a proxy
+	// template account label.
+	if credential.AuthType == accountdomain.AuthTypeSSO && strings.TrimSpace(credential.EncryptedAccessToken) != "" {
+		token, decryptErr := m.cipher.Decrypt(credential.EncryptedAccessToken)
+		if decryptErr != nil {
+			return nil, decryptErr
+		}
+		identity = "sso_" + security.HashToken(token)[:32]
+	}
+	ctx = WithAccountIdentity(ctx, identity)
 	lease, _, err := m.acquire(ctx, scope, strconv.FormatUint(credential.ID, 10), true, credentialCookies)
 	return lease, err
 }
@@ -273,6 +286,12 @@ func (m *Manager) invalidateNodes(scope domain.Scope) {
 func fallbackScopes(scope domain.Scope) []domain.Scope {
 	if scope == domain.ScopeWebAsset {
 		return []domain.Scope{domain.ScopeWebAsset, domain.ScopeWeb}
+	}
+	if scope == domain.ScopeConsole {
+		// Console uses the same browser/clearance surface as Grok Web.  A
+		// dedicated Console node is preferred, but a Web node is a safe and
+		// expected fallback for deployments that configure one shared pool.
+		return []domain.Scope{domain.ScopeConsole, domain.ScopeWeb}
 	}
 	return []domain.Scope{scope}
 }

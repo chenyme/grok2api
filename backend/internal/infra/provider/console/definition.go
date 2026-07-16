@@ -20,6 +20,10 @@ func (a *Adapter) Definition() provider.Definition {
 		Conversation: provider.ConversationSurface{
 			Responses: true, ChatCompletions: true, Messages: true,
 		},
-		Inference: provider.InferencePolicy{Usage: provider.UsageUpstream},
+		// Console shares the browser/clearance surface with Web.  A 403 is
+		// therefore normally an egress challenge, not proof that the SSO
+		// credential is invalid; the gateway must retry after rebuilding the
+		// browser session instead of cooling the account.
+		Inference: provider.InferencePolicy{Usage: provider.UsageUpstream, RetryForbiddenAsEgress: true},
 	}
 }
