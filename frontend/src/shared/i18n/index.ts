@@ -5,6 +5,7 @@ const resources = {
   "zh-CN": {
     translation: {
       appName: "Grok2API",
+      accountType: { label: "账号类型", free: "Free", paid: "Super", pending: "待识别", pendingDescription: "账号状态正常，但额度类型尚未识别", auto: "Auto", super: "Super", heavy: "Heavy", console: "Console" },
       accountBulk: {
         convertAllToBuild: "转换为 Build",
         convertAllToBuildTitle: "转换所有 Grok Web 账号？",
@@ -838,6 +839,7 @@ const resources = {
   en: {
     translation: {
       appName: "Grok2API",
+      accountType: { label: "Account type", free: "Free", paid: "Super", pending: "Pending", pendingDescription: "The account is healthy, but its quota type has not been identified yet.", auto: "Auto", super: "Super", heavy: "Heavy", console: "Console" },
       accountBulk: {
         convertAllToBuild: "Convert to Build",
         convertAllToBuildTitle: "Convert all Grok Web accounts?",

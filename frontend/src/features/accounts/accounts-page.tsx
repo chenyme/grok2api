@@ -573,15 +573,15 @@ export function AccountsPage() {
                 <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={t("accounts.search")} aria-label={t("accounts.search")} />
               </div>
               <DataTableFilters filters={[
-                ...(provider === "grok_console" ? [] : [{ id: "type", label: t("accounts.type"), value: typeFilter, onChange: (value: string) => { setTypeFilter(value); setPage(1); }, options: provider === "grok_web" ? [
-                  { value: "auto", label: "Auto" },
-                  { value: "basic", label: "Basic" },
-                  { value: "super", label: "Super" },
-                  { value: "heavy", label: "Heavy" },
+                ...(provider === "grok_console" ? [] : [{ id: "type", label: t("accountType.label"), value: typeFilter, onChange: (value: string) => { setTypeFilter(value); setPage(1); }, options: provider === "grok_web" ? [
+                  { value: "auto", label: t("accountType.auto") },
+                  { value: "basic", label: t("accountType.free") },
+                  { value: "super", label: t("accountType.super") },
+                  { value: "heavy", label: t("accountType.heavy") },
                 ] : [
-                  { value: "free", label: t("accounts.quotaFree") },
-                  { value: "paid", label: t("accounts.quotaSuper") },
-                  { value: "unknown", label: t("dashboard.unknown") },
+                  { value: "free", label: t("accountType.free") },
+                  { value: "paid", label: t("accountType.paid") },
+                  { value: "unknown", label: t("accountType.pending") },
                 ] }]),
                 { id: "status", label: t("accounts.status"), value: statusFilter, onChange: (value) => { setStatusFilter(value); setPage(1); }, options: [
                   { value: "active", label: t("accounts.statusActive") },
@@ -651,7 +651,7 @@ export function AccountsPage() {
               <TableRow className="hover:bg-transparent">
                 <TableHead className="px-2"><Checkbox checked={allPageSelected ? true : selectedOnPage.length > 0 ? "indeterminate" : false} onCheckedChange={(checked) => togglePage(checked === true)} aria-label={t("common.selectPage")} /></TableHead>
                 <SortableTableHead field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("accounts.account")}</SortableTableHead>
-                <SortableTableHead field="type" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accounts.type")}</SortableTableHead>
+                <SortableTableHead field="type" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accountType.label")}</SortableTableHead>
                 <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accounts.status")}</SortableTableHead>
                 <TableHead className="whitespace-nowrap">{t("accounts.quota")}</TableHead>
                 {provider === "grok_build" ? <TableHead className="whitespace-nowrap pl-4">{t("accountCredential.label")}</TableHead> : null}
@@ -687,7 +687,7 @@ export function AccountsPage() {
                         </div>
                       ) : null}
                     </TableCell>
-                    <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("console.type")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
+                    <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("accountType.console")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
                     <TableCell className="text-center whitespace-nowrap"><AccountStatus account={account} /></TableCell>
                     <TableCell>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}</TableCell>
                     {provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
@@ -922,34 +922,28 @@ function AccountMetricPanel({ icon, label, value, detail, loading }: { icon: Rea
   );
 }
 
-function webTierLabel(tier: AccountDTO["webTier"]) {
-  if (tier === "basic") return "Free";
-  if (tier === "super") return "Super";
-  if (tier === "heavy") return "Heavy";
-  return "Auto";
-}
-
 function WebAccountType({ tier }: { tier?: AccountDTO["webTier"] }) {
-  const label = webTierLabel(tier);
+  const { t } = useTranslation();
+  const label = tier === "basic" ? t("accountType.free") : tier === "super" ? t("accountType.super") : tier === "heavy" ? t("accountType.heavy") : t("accountType.auto");
   return <AccountTypeText label={label} variant={tier === "basic" ? "free" : "default"} />;
 }
 
 function AccountType({ quota }: { quota: QuotaDTO }) {
   const { t } = useTranslation();
   if (quota.type === "unknown") {
-    return <AccountTypeText label={t("dashboard.unknown")} variant="muted" />;
+    return <AccountTypeText label={t("accountType.pending")} title={t("accountType.pendingDescription")} variant="muted" />;
   }
 
   const isFree = quota.type === "free";
-  const label = isFree ? t("accounts.quotaFree") : t("accounts.quotaSuper");
+  const label = isFree ? t("accountType.free") : t("accountType.paid");
   return <AccountTypeText label={label} variant={isFree ? "free" : "default"} />;
 }
 
-function AccountTypeText({ label, variant }: { label: string; variant: "default" | "free" | "muted" }) {
+function AccountTypeText({ label, title, variant }: { label: string; title?: string; variant: "default" | "free" | "muted" }) {
   if (variant === "muted") {
-    return <span className="text-xs text-muted-foreground">{label}</span>;
+    return <span title={title ?? label} className="text-xs text-muted-foreground">{label}</span>;
   }
-  return <span title={label} className={cn("max-w-32 truncate text-xs font-medium", variant === "free" ? "text-emerald-700 dark:text-emerald-300" : "text-primary")}>{label}</span>;
+  return <span title={title ?? label} className={cn("max-w-32 truncate text-xs font-medium", variant === "free" ? "text-emerald-700 dark:text-emerald-300" : "text-primary")}>{label}</span>;
 }
 
 function AccountStatus({ account }: { account: AccountDTO }) {
