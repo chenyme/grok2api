@@ -1045,6 +1045,9 @@ func writeGatewayError(c *gin.Context, err error) {
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
+		if upstreamFailure.RetryAfter > 0 {
+			c.Header("Retry-After", strconv.FormatInt(max(1, int64(upstreamFailure.RetryAfter.Round(time.Second)/time.Second)), 10))
+		}
 	case errors.As(err, &selectionFailure):
 		status, code, message = selectionErrorResponse(c, selectionFailure)
 	case errors.Is(err, gateway.ErrResponseAccountUnavailable), errors.Is(err, gateway.ErrNoAvailableAccount):
@@ -1071,6 +1074,9 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
+		if upstreamFailure.RetryAfter > 0 {
+			c.Header("Retry-After", strconv.FormatInt(max(1, int64(upstreamFailure.RetryAfter.Round(time.Second)/time.Second)), 10))
+		}
 		if status == http.StatusTooManyRequests {
 			errorType = "rate_limit_error"
 		}

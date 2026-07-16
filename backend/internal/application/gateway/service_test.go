@@ -159,6 +159,88 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 }
 
+func TestGatewayTeamModelRateLimitOnlySkipsMatchingTeam(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "team-model-rate-limit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credentials := make([]account.Credential, 0, 3)
+	for index, seed := range []struct {
+		name   string
+		teamID string
+	}{{"console-team-a-first", "team-a"}, {"console-team-a-second", "team-a"}, {"console-team-b", "team-b"}} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: seed.name, SourceKey: seed.name, TeamID: seed.teamID,
+			EncryptedAccessToken: "encrypted-" + seed.name, Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	models := []string{"grok-console-team-rate-limit", "grok-console-team-rate-limit-other"}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderConsole, models); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, models, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "team-model-key", Prefix: "team-model", SecretHash: strings.Repeat("d", 64), EncryptedSecret: "encrypted-key",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &teamModelRateLimitConsoleAdapter{rateLimitedTeam: "team-a"}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	assertSuccess := func(requestID, publicModel string) {
+		t.Helper()
+		result, err := service.CreateResponse(ctx, Input{
+			RequestID: requestID, ClientKey: key, PublicModel: publicModel,
+			Body: []byte(`{"model":"` + publicModel + `","input":"hello"}`),
+		})
+		if err != nil || result == nil || result.StatusCode != http.StatusOK {
+			t.Fatalf("result = %#v, err = %v", result, err)
+		}
+		_ = result.Body.Close()
+		result.Finalize(Usage{}, "", "")
+	}
+
+	assertSuccess("req-team-model-first", models[0])
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0].AccountID != credentials[0].ID || attempts[1].AccountID != credentials[2].ID {
+		t.Fatalf("first attempts = %#v, want first Team A account then Team B account", attempts)
+	}
+	assertSuccess("req-team-model-cached", models[0])
+	if attempts := adapter.Attempts(); len(attempts) != 3 || attempts[2].AccountID != credentials[2].ID {
+		t.Fatalf("cached Team A accounts should be skipped in favor of Team B, attempts = %#v", attempts)
+	}
+	assertSuccess("req-team-model-other", models[1])
+	if attempts := adapter.Attempts(); len(attempts) != 5 || attempts[3].AccountID != credentials[0].ID || attempts[3].Model != models[1] || attempts[4].AccountID != credentials[2].ID {
+		t.Fatalf("different model should have an independent Team limit, attempts = %#v", attempts)
+	}
+}
+
 func TestSelectConversationRouteRespectsClientKeyAcrossSharedPublicModel(t *testing.T) {
 	registry := provider.NewRegistry(&failoverAdapter{}, statelessConsoleAdapter{})
 	service := &Service{
@@ -893,6 +975,17 @@ type failoverAdapter struct {
 
 type statelessConsoleAdapter struct{}
 
+type teamModelRateLimitConsoleAttempt struct {
+	AccountID uint64
+	Model     string
+}
+
+type teamModelRateLimitConsoleAdapter struct {
+	mu              sync.Mutex
+	attempts        []teamModelRateLimitConsoleAttempt
+	rateLimitedTeam string
+}
+
 func (statelessConsoleAdapter) Provider() account.Provider { return account.ProviderConsole }
 func (statelessConsoleAdapter) Definition() provider.Definition {
 	return provider.Definition{
@@ -907,6 +1000,37 @@ func (statelessConsoleAdapter) ForwardResponse(context.Context, provider.Respons
 		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"application/json"}},
 		Body: io.NopCloser(strings.NewReader(`{"id":"resp-console","object":"response","status":"completed"}`)),
 	}, nil
+}
+
+func (a *teamModelRateLimitConsoleAdapter) Provider() account.Provider {
+	return account.ProviderConsole
+}
+func (a *teamModelRateLimitConsoleAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderConsole)
+}
+func (a *teamModelRateLimitConsoleAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	a.attempts = append(a.attempts, teamModelRateLimitConsoleAttempt{AccountID: request.Credential.ID, Model: request.Model})
+	a.mu.Unlock()
+	if request.Credential.TeamID != a.rateLimitedTeam {
+		return &provider.Response{
+			StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"id":"resp-team-success","object":"response","status":"completed"}`)),
+		}, nil
+	}
+	return &provider.Response{
+		StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{"error":"team model rate limited"}`)),
+		RateLimit: &provider.RateLimitMetadata{
+			Scope: provider.RateLimitScopeRPM, TeamID: request.Credential.TeamID, Model: request.Model,
+			Actual: 61, Limit: 60, RetryAfter: time.Hour,
+		},
+	}, nil
+}
+func (a *teamModelRateLimitConsoleAdapter) Attempts() []teamModelRateLimitConsoleAttempt {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]teamModelRateLimitConsoleAttempt(nil), a.attempts...)
 }
 
 type systemicForbiddenAdapter struct {

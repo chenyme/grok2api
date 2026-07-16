@@ -3,13 +3,22 @@ package console
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
-var resetDurationPattern = regexp.MustCompile(`(?i)(\d+)\s*([dhms])`)
+var (
+	resetDurationPattern           = regexp.MustCompile(`(?i)(\d+)\s*([dhms])`)
+	consoleRateLimitUsagePattern   = regexp.MustCompile(`(?i)\bRequests?\s+per\s+(Second|Minute)\s*\(\s*actual\s*/\s*limit\s*\)\s*:\s*(\d+)\s*/\s*(\d+)`)
+	consoleRateLimitTeamPattern    = regexp.MustCompile(`(?i)\bteam\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b`)
+	consoleRateLimitModelPattern   = regexp.MustCompile(`(?i)\bmodel\s+["']?([A-Za-z0-9][A-Za-z0-9._:/-]*)`)
+	consoleRateLimitModelTrimChars = ".,;"
+)
 
 func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
 	var payload map[string]any
@@ -149,4 +158,108 @@ func consoleRetryAfter(body []byte) time.Duration {
 		}
 	}
 	return total
+}
+
+func parseConsoleRetryAfterHeader(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil && at.After(now) {
+		return at.Sub(now)
+	}
+	return 0
+}
+
+func parseConsoleRateLimitMetadata(body []byte) *provider.RateLimitMetadata {
+	for _, text := range consoleRateLimitTexts(body) {
+		metadata := parseConsoleRateLimitText(text)
+		if metadata != nil {
+			return metadata
+		}
+	}
+	return nil
+}
+
+func consoleRateLimitTexts(body []byte) []string {
+	texts := []string{string(body)}
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return texts
+	}
+	collectConsoleRateLimitTexts(value, &texts)
+	return texts
+}
+
+func collectConsoleRateLimitTexts(value any, texts *[]string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if message, ok := typed["message"].(string); ok {
+			appendConsoleRateLimitText(message, texts)
+		}
+		for _, nested := range typed {
+			collectConsoleRateLimitTexts(nested, texts)
+		}
+	case []any:
+		for _, nested := range typed {
+			collectConsoleRateLimitTexts(nested, texts)
+		}
+	case string:
+		appendConsoleRateLimitText(typed, texts)
+	}
+}
+
+func appendConsoleRateLimitText(text string, texts *[]string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	*texts = append(*texts, text)
+}
+
+func parseConsoleRateLimitText(text string) *provider.RateLimitMetadata {
+	match := consoleRateLimitUsagePattern.FindStringSubmatch(text)
+	if match == nil {
+		return nil
+	}
+	actual, actualErr := strconv.Atoi(match[2])
+	limit, limitErr := strconv.Atoi(match[3])
+	if actualErr != nil || limitErr != nil {
+		return nil
+	}
+	scope := provider.RateLimitScopeRPM
+	retryAfter := time.Minute
+	if strings.EqualFold(match[1], "second") {
+		scope = provider.RateLimitScopeRPS
+		retryAfter = 2 * time.Second
+	}
+	if parsed := consoleRetryAfter([]byte(text)); parsed > 0 {
+		retryAfter = parsed
+		if scope == provider.RateLimitScopeRPS && retryAfter < 2*time.Second {
+			retryAfter = 2 * time.Second
+		}
+	}
+	return &provider.RateLimitMetadata{
+		Scope:      scope,
+		TeamID:     consoleRateLimitTeamID(text),
+		Model:      consoleRateLimitModel(text),
+		Actual:     actual,
+		Limit:      limit,
+		RetryAfter: retryAfter,
+	}
+}
+
+func consoleRateLimitTeamID(text string) string {
+	match := consoleRateLimitTeamPattern.FindStringSubmatch(text)
+	if match == nil {
+		return ""
+	}
+	return match[1]
+}
+
+func consoleRateLimitModel(text string) string {
+	match := consoleRateLimitModelPattern.FindStringSubmatch(text)
+	if match == nil {
+		return ""
+	}
+	return strings.TrimRight(match[1], consoleRateLimitModelTrimChars)
 }
