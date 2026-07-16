@@ -10,7 +10,7 @@ func (c *streamConverter) startMessages() error {
 		"type": "message_start", "message": map[string]any{
 			"id": anthropicMessageID(c.id), "type": "message", "role": "assistant",
 			"model": c.model, "content": []any{}, "stop_reason": nil, "stop_sequence": nil,
-			"usage": anthropicUsage(c.usage),
+			"usage": anthropicUsage(c.usage, 0),
 		},
 	})
 }
@@ -209,6 +209,27 @@ func (c *streamConverter) toolArgumentsDoneMessages(itemID, arguments string) er
 }
 
 func (c *streamConverter) doneMessages(status string) error {
+	if c.thinkingStarted && !c.thinkingClosed {
+		c.thinkingClosed = true
+		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.thinkingIndex}); err != nil {
+			return err
+		}
+	}
+	if c.options.AnthropicWebSearchRequired && len(c.webSearch) == 0 {
+		c.webSearch = []webSearchCall{unavailableWebSearchCall(c.options.AnthropicWebSearchQuery)}
+	}
+	if c.deferSearchText {
+		// Hosted search was observed before text, so preserve Anthropic's block order:
+		// server_tool_use → web_search_tool_result → text.
+		if err := c.emitPendingWebSearchResults(); err != nil {
+			return err
+		}
+		if pending := c.pendingSearchText.String(); pending != "" {
+			if err := c.textDeltaMessages(pending); err != nil {
+				return err
+			}
+		}
+	}
 	if c.stopSequence == "" {
 		if pending := c.stopFilter.Flush(); pending != "" {
 			if err := c.textDeltaWithoutFilter(pending); err != nil {
@@ -216,14 +237,15 @@ func (c *streamConverter) doneMessages(status string) error {
 			}
 		}
 	}
-	if c.thinkingStarted && !c.thinkingClosed {
-		c.thinkingClosed = true
-		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.thinkingIndex}); err != nil {
+	if c.textStarted {
+		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.textIndex}); err != nil {
 			return err
 		}
 	}
-	if c.textStarted {
-		if err := c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.textIndex}); err != nil {
+	if !c.deferSearchText {
+		// If text arrived before the search item, close it before starting any server
+		// tool blocks so content blocks never overlap.
+		if err := c.emitPendingWebSearchResults(); err != nil {
 			return err
 		}
 	}
@@ -242,16 +264,20 @@ func (c *streamConverter) doneMessages(status string) error {
 		}
 	}
 	stopReason := "end_turn"
+	// Only client function tools force tool_use stop. Hosted web_search is end_turn.
 	if len(c.tools) > 0 {
 		stopReason = "tool_use"
 	} else if c.stopSequence != "" {
 		stopReason = "stop_sequence"
+	} else if c.refused {
+		stopReason = "refusal"
 	} else if status == "incomplete" {
 		stopReason = "max_tokens"
 	}
+	usage := anthropicUsage(c.usage, webSearchRequestCount(c.webSearch))
 	if err := c.writeEvent("message_delta", map[string]any{
 		"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nullableAnthropicString(c.stopSequence)},
-		"usage": map[string]any{"input_tokens": c.usage.InputTokens, "output_tokens": c.usage.OutputTokens},
+		"usage": usage,
 	}); err != nil {
 		return err
 	}
@@ -260,5 +286,5 @@ func (c *streamConverter) doneMessages(status string) error {
 }
 
 func (c *streamConverter) streamErrorMessages(data []byte) error {
-	return c.writeEvent("error", map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": string(data)}})
+	return c.writeEvent("error", map[string]any{"type": "error", "error": normalizeAnthropicError(streamErrorValue(data))})
 }

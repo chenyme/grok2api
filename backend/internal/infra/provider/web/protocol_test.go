@@ -19,6 +19,7 @@ import (
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -159,7 +160,7 @@ func TestRemoteChatImageURLBlocksPrivateNetworks(t *testing.T) {
 			t.Fatalf("unsafe image URL accepted: %s", value)
 		}
 	}
-	if value, err := validateRemoteImageURL(context.Background(), "https://8.8.8.8/image.png"); err != nil || value.Hostname() != "8.8.8.8" {
+	if value, err := validateRemoteImageURL(context.Background(), "https://8.8.8.8/image.png"); err != nil || value.originalURL.Hostname() != "8.8.8.8" || value.fetchURL.Hostname() != "8.8.8.8" {
 		t.Fatalf("public image URL rejected: value=%v err=%v", value, err)
 	}
 }
@@ -241,6 +242,104 @@ func TestChatImageUploadFeedsFileMetadataIntoConversation(t *testing.T) {
 	result, err := io.ReadAll(response.Body)
 	if err != nil || response.StatusCode != http.StatusOK || !bytes.Contains(result, []byte(`"content":"seen"`)) {
 		t.Fatalf("status=%d body=%s err=%v", response.StatusCode, result, err)
+	}
+}
+
+func TestForwardMessagesWebSearchEndToEnd(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		name := "non_stream"
+		if streaming {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			var upstreamMessage string
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != "/rest/app-chat/conversations/new" {
+					http.NotFound(writer, request)
+					return
+				}
+				var payload map[string]any
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Errorf("upstream payload: %v", err)
+					writer.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				upstreamMessage, _ = payload["message"].(string)
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(writer, "data: {\"result\":{\"conversation\":{\"conversationId\":\"conv_1\"}}}\n")
+				_, _ = io.WriteString(writer, "data: {\"result\":{\"response\":{\"rolloutId\":\"search_1\",\"messageStepId\":1,\"messageTag\":\"tool_usage_card\"}}}\n")
+				_, _ = io.WriteString(writer, "data: {\"result\":{\"response\":{\"token\":\"Here you go.\",\"isThinking\":false,\"messageTag\":\"final\",\"webSearchResults\":{\"results\":[{\"url\":\"https://doc.rust-lang.org\",\"title\":\"The Rust Book\"}]}}}}\n")
+				_, _ = io.WriteString(writer, "data: [DONE]\n")
+			}))
+			defer server.Close()
+
+			cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			encrypted, err := cipher.Encrypt("test-sso")
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual"}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+			body, _ := json.Marshal(map[string]any{
+				"model": "public", "max_tokens": 256, "stream": streaming,
+				"messages":    []any{map[string]any{"role": "user", "content": "Perform a web search for the query: rust tutorials"}},
+				"tools":       []any{map[string]any{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}},
+				"tool_choice": map[string]any{"type": "tool", "name": "web_search"},
+			})
+			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+				Credential: account.Credential{ID: 1, EncryptedAccessToken: encrypted}, Method: http.MethodPost,
+				Path: "/responses", Body: body, Model: "grok-chat-fast", Operation: conversation.OperationMessages,
+				Streaming: streaming,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			result, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(upstreamMessage, "rust tutorials") || strings.Contains(upstreamMessage, "You MUST call at least one available tool") {
+				t.Fatalf("upstream message = %q", upstreamMessage)
+			}
+
+			if streaming {
+				text := string(result)
+				useAt := strings.Index(text, `"type":"server_tool_use"`)
+				resultAt := strings.Index(text, `"type":"web_search_tool_result"`)
+				textAt := strings.Index(text, `"content_block":{"text":"","type":"text"}`)
+				if response.StatusCode != http.StatusOK || useAt < 0 || resultAt < 0 || textAt < 0 || !(useAt < resultAt && resultAt < textAt) {
+					t.Fatalf("stream status=%d body=%s", response.StatusCode, text)
+				}
+				if !strings.Contains(text, "rust tutorials") || !strings.Contains(text, `"web_search_requests":1`) || !strings.Contains(text, "The Rust Book") {
+					t.Fatalf("stream missing query, usage, or hit: %s", text)
+				}
+				return
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(result, &payload); err != nil {
+				t.Fatal(err)
+			}
+			content := payload["content"].([]any)
+			if response.StatusCode != http.StatusOK || len(content) != 3 || content[0].(map[string]any)["type"] != "server_tool_use" || content[1].(map[string]any)["type"] != "web_search_tool_result" || content[2].(map[string]any)["text"] != "Here you go." {
+				t.Fatalf("non-stream status=%d payload=%#v", response.StatusCode, payload)
+			}
+			use := content[0].(map[string]any)
+			if use["input"].(map[string]any)["query"] != "rust tutorials" || content[1].(map[string]any)["tool_use_id"] != use["id"] {
+				t.Fatalf("web search linkage = %#v", content)
+			}
+			hits := content[1].(map[string]any)["content"].([]any)
+			if len(hits) != 1 || hits[0].(map[string]any)["title"] != "The Rust Book" || payload["stop_reason"] != "end_turn" {
+				t.Fatalf("web search result = %#v", payload)
+			}
+			usage := payload["usage"].(map[string]any)["server_tool_use"].(map[string]any)
+			if usage["web_search_requests"] != float64(1) {
+				t.Fatalf("web search usage = %#v", usage)
+			}
+		})
 	}
 }
 

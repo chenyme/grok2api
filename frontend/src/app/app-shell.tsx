@@ -1,10 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Box, ChevronDown, Eye, Image, KeyRound, Languages, LayoutDashboard, LogOut, Menu, MessageSquareText, Monitor, Moon, MoreHorizontal, Settings, Sun, Users, Video } from "lucide-react";
+import { Box, ChevronDown, Eye, Image, KeyRound, Languages, LayoutDashboard, LogOut, Menu, MessageSquareText, Monitor, Moon, MoreHorizontal, Settings, Sparkles, Sun, Users, Video } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useState, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
-import { Link, NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -18,12 +18,14 @@ import { useAuth } from "@/shared/auth/use-auth";
 import { GitHubMark } from "@/shared/components/github-mark";
 import { SiteFooter } from "@/shared/components/site-footer";
 import { cn } from "@/shared/lib/cn";
+import { CurrentVersionLabel } from "@/features/system/version-update";
 
 const navigation = [
   { href: "/dashboard", label: "nav.dashboard", icon: LayoutDashboard },
   { href: "/accounts", label: "nav.accounts", icon: Users },
   { href: "/client-keys", label: "nav.clientKeys", icon: KeyRound },
   { href: "/models", label: "nav.models", icon: Box },
+  { href: "/creative-console", label: "nav.creativeConsole", icon: Sparkles },
   { href: "/gallery", label: "nav.gallery", icon: Image },
   { href: "/video-gallery", label: "nav.videoGallery", icon: Video },
   { href: "/request-audits", label: "nav.audits", icon: Eye },
@@ -60,10 +62,12 @@ const documentation = [
 export function AppShell() {
   const { t, i18n } = useTranslation();
   const { admin, logout, changePassword } = useAuth();
+  const location = useLocation();
   const { setTheme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [documentationOpen, setDocumentationOpen] = useState<Record<string, boolean>>({});
+  const isMediaWorkspace = ["/creative-console", "/gallery", "/video-gallery"].includes(location.pathname);
 
   const passwordSchema = z.object({
     currentPassword: z.string().min(1, t("errors.required")),
@@ -214,8 +218,9 @@ export function AppShell() {
     <div className="min-h-screen bg-background">
         <aside className="fixed inset-y-0 left-0 z-30 hidden h-screen w-[288px] flex-col overflow-hidden bg-sidebar px-4 py-6 lg:flex">
           <div className="flex h-7 shrink-0 items-center justify-between px-2.5">
-            <Link to="/dashboard" className="flex h-7 items-center text-base font-semibold text-foreground">
-              {t("appName")}
+            <Link to="/dashboard" className="flex h-7 items-baseline gap-2 text-base font-semibold text-foreground">
+              <span>{t("appName")}</span>
+              <CurrentVersionLabel />
             </Link>
             <Button variant="ghost" size="icon" className="size-7 text-muted-foreground [&_svg]:size-[15px]" asChild>
               <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
@@ -240,7 +245,7 @@ export function AppShell() {
                 <div className="relative z-10 mt-3 shrink-0 bg-sidebar pt-3">{accountControl}</div>
               </SheetContent>
             </Sheet>
-            <span className="text-sm font-semibold">{t("appName")}</span>
+            <span className="flex items-baseline gap-2 text-sm font-semibold"><span>{t("appName")}</span><CurrentVersionLabel /></span>
             <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-foreground" asChild>
               <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
                 <GitHubMark />
@@ -248,10 +253,10 @@ export function AppShell() {
             </Button>
           </header>
 
-          <main className="mx-auto w-full max-w-[1280px] flex-1 px-5 py-8 sm:px-8 lg:py-20">
+          <main className={cn("mx-auto w-full max-w-[1280px] flex-1 px-5 sm:px-8", isMediaWorkspace ? "pt-8 pb-0 lg:pt-20" : "py-8 lg:py-20")}>
             <Outlet />
           </main>
-          <SiteFooter />
+          {!isMediaWorkspace ? <SiteFooter /> : null}
         </div>
 
       <Dialog open={passwordOpen} onOpenChange={setPasswordOpen}>

@@ -35,12 +35,13 @@ type functionTool struct {
 }
 
 type toolConfiguration struct {
-	Functions      []functionTool
-	available      map[string]struct{}
-	Choice         string
-	ForcedName     string
-	ResponseTools  []any
-	ResponseChoice any
+	Functions       []functionTool
+	HostedWebSearch bool
+	available       map[string]struct{}
+	Choice          string
+	ForcedName      string
+	ResponseTools   []any
+	ResponseChoice  any
 }
 
 type parsedToolCall struct {
@@ -97,6 +98,7 @@ func parseToolConfiguration(rawTools, rawChoice json.RawMessage) (toolConfigurat
 			switch strings.ToLower(strings.TrimSpace(typeName)) {
 			case "web_search", "web_search_preview":
 				// Grok Web 原生搜索始终由上游执行，这两个标准声明无需注入函数提示词。
+				configuration.HostedWebSearch = true
 			default:
 				return toolConfiguration{}, fmt.Errorf("Grok Web 暂不支持 tools.type=%q", typeName)
 			}
@@ -122,7 +124,7 @@ func parseToolConfiguration(rawTools, rawChoice json.RawMessage) (toolConfigurat
 			return toolConfiguration{}, fmt.Errorf("tool_choice 指定的函数 %q 不存在", forcedName)
 		}
 	}
-	if (choice == "required" || forcedName != "") && len(configuration.Functions) == 0 {
+	if (choice == "required" || forcedName != "") && len(configuration.Functions) == 0 && !configuration.HostedWebSearch {
 		return toolConfiguration{}, errors.New("tool_choice 要求调用函数，但 tools 中没有可用函数")
 	}
 	return configuration, nil
@@ -218,7 +220,7 @@ func injectToolPrompt(prompt string, configuration toolConfiguration) string {
 	choiceInstruction := "Call a tool when it is clearly needed. Otherwise respond in plain text."
 	if configuration.ForcedName != "" {
 		choiceInstruction = fmt.Sprintf("You MUST call the tool named %q and must not write a plain-text reply.", configuration.ForcedName)
-	} else if configuration.Choice == "required" {
+	} else if configuration.Choice == "required" && !configuration.HostedWebSearch {
 		choiceInstruction = "You MUST call at least one available tool and must not write a plain-text reply."
 	}
 	system := fmt.Sprintf(`You have access to the following tools.

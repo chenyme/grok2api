@@ -153,12 +153,14 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 }
 
 type updateRequest struct {
-	Name             *string  `json:"name"`
-	Enabled          *bool    `json:"enabled"`
-	Priority         *int     `json:"priority"`
-	MaxConcurrent    *int     `json:"maxConcurrent"`
-	MinimumRemaining *float64 `json:"minimumRemaining"`
-	BuildAPIFallback *bool    `json:"buildApiFallback"`
+	Name                   *string  `json:"name"`
+	Enabled                *bool    `json:"enabled"`
+	Priority               *int     `json:"priority"`
+	MaxConcurrent          *int     `json:"maxConcurrent"`
+	MinimumRemaining       *float64 `json:"minimumRemaining"`
+	BuildAPIFallback       *bool    `json:"buildApiFallback"`
+	CloudflareCookies      *string  `json:"cloudflareCookies"`
+	ClearCloudflareCookies bool     `json:"clearCloudflareCookies"`
 }
 
 type batchUpdateRequest struct {
@@ -250,13 +252,14 @@ type accountResponse struct {
 	LinkedName       string     `json:"linkedAccountName,omitempty"`
 	LinkedProvider   string     `json:"linkedProvider,omitempty"`
 	// BuildAPIFallback 仅 grok_build 有意义；true 表示 XAI 推理回退（models/responses create|compact/video）。
-	BuildAPIFallback bool                  `json:"buildApiFallback,omitempty"`
-	CreatedAt        time.Time             `json:"createdAt"`
-	ObservedModel    string                `json:"observedModel,omitempty"`
-	ObservedModelAt  *time.Time            `json:"observedModelAt,omitempty"`
-	Billing          *billingResponse      `json:"billing,omitempty"`
-	Quota            quotaResponse         `json:"quota"`
-	QuotaWindows     []quotaWindowResponse `json:"quotaWindows,omitempty"`
+	BuildAPIFallback           bool                  `json:"buildApiFallback,omitempty"`
+	CreatedAt                  time.Time             `json:"createdAt"`
+	ObservedModel              string                `json:"observedModel,omitempty"`
+	ObservedModelAt            *time.Time            `json:"observedModelAt,omitempty"`
+	CloudflareCookieConfigured bool                  `json:"cloudflareCookieConfigured"`
+	Billing                    *billingResponse      `json:"billing,omitempty"`
+	Quota                      quotaResponse         `json:"quota"`
+	QuotaWindows               []quotaWindowResponse `json:"quotaWindows,omitempty"`
 }
 
 type quotaWindowResponse struct {
@@ -287,6 +290,7 @@ type billingResponse struct {
 	PrepaidBalance       float64                  `json:"prepaidBalance"`
 	CreditUsagePercent   float64                  `json:"creditUsagePercent"`
 	IsUnifiedBillingUser bool                     `json:"isUnifiedBillingUser"`
+	OnDemandEnabled      *bool                    `json:"onDemandEnabled,omitempty"`
 	TopUpMethod          string                   `json:"topUpMethod,omitempty"`
 	UsagePeriodType      string                   `json:"usagePeriodType,omitempty"`
 	UsagePeriodStart     string                   `json:"usagePeriodStart,omitempty"`
@@ -300,6 +304,9 @@ type billingResponse struct {
 type billingHistoryResponse struct {
 	Year         int     `json:"year"`
 	Month        int     `json:"month"`
+	PeriodType   string  `json:"periodType,omitempty"`
+	PeriodStart  string  `json:"periodStart,omitempty"`
+	PeriodEnd    string  `json:"periodEnd,omitempty"`
 	IncludedUsed float64 `json:"includedUsed"`
 	OnDemandUsed float64 `json:"onDemandUsed"`
 	TotalUsed    float64 `json:"totalUsed"`
@@ -896,7 +903,12 @@ func (h *Handler) update(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	value, err := h.service.Update(c.Request.Context(), id, accountapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining, BuildAPIFallback: request.BuildAPIFallback})
+	value, err := h.service.Update(c.Request.Context(), id, accountapp.UpdateInput{
+		Name: request.Name, Enabled: request.Enabled, Priority: request.Priority,
+		MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining,
+		BuildAPIFallback:  request.BuildAPIFallback,
+		CloudflareCookies: request.CloudflareCookies, ClearCloudflareCookies: request.ClearCloudflareCookies,
+	})
 	if err != nil {
 		h.writeServiceError(c, "accountUpdateFailed", err, http.StatusInternalServerError, "更新账号失败")
 		return
@@ -1018,7 +1030,8 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		FailureCount: c.FailureCount, CooldownUntil: c.CooldownUntil, LastError: c.LastError,
 		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),
 		BuildAPIFallback: c.BuildAPIFallback, CreatedAt: c.CreatedAt, ObservedModel: c.ObservedModel, ObservedModelAt: c.ObservedModelAt,
-		Quota: newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
+		CloudflareCookieConfigured: c.EncryptedCloudflareCookie != "",
+		Quota:                      newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
 	}
 	for _, window := range value.QuotaWindows {
 		breakdown := make([]quotaBreakdownResponse, 0, len(window.Breakdown))
@@ -1050,9 +1063,13 @@ func newQuotaResponse(value accountapp.QuotaView) quotaResponse {
 func newBillingResponse(value accountdomain.Billing) billingResponse {
 	history := make([]billingHistoryResponse, 0, len(value.History))
 	for _, entry := range value.History {
-		history = append(history, billingHistoryResponse{Year: entry.Year, Month: entry.Month, IncludedUsed: entry.IncludedUsed, OnDemandUsed: entry.OnDemandUsed, TotalUsed: entry.TotalUsed})
+		history = append(history, billingHistoryResponse{
+			Year: entry.Year, Month: entry.Month,
+			PeriodType: entry.PeriodType, PeriodStart: entry.PeriodStart, PeriodEnd: entry.PeriodEnd,
+			IncludedUsed: entry.IncludedUsed, OnDemandUsed: entry.OnDemandUsed, TotalUsed: entry.TotalUsed,
+		})
 	}
-	return billingResponse{PlanCode: value.PlanCode, PlanName: value.PlanName, MonthlyLimit: value.MonthlyLimit, Used: value.Used, Remaining: value.Remaining(), OnDemandCap: value.OnDemandCap, OnDemandUsed: value.OnDemandUsed, PrepaidBalance: value.PrepaidBalance, CreditUsagePercent: value.CreditUsagePercent, IsUnifiedBillingUser: value.IsUnifiedBillingUser, TopUpMethod: value.TopUpMethod, UsagePeriodType: value.UsagePeriodType, UsagePeriodStart: value.UsagePeriodStart, UsagePeriodEnd: value.UsagePeriodEnd, BillingPeriodStart: value.BillingPeriodStart, BillingPeriodEnd: value.BillingPeriodEnd, History: history, SyncedAt: value.SyncedAt}
+	return billingResponse{PlanCode: value.PlanCode, PlanName: value.PlanName, MonthlyLimit: value.MonthlyLimit, Used: value.Used, Remaining: value.Remaining(), OnDemandCap: value.OnDemandCap, OnDemandUsed: value.OnDemandUsed, PrepaidBalance: value.PrepaidBalance, CreditUsagePercent: value.CreditUsagePercent, IsUnifiedBillingUser: value.IsUnifiedBillingUser, OnDemandEnabled: value.OnDemandEnabled, TopUpMethod: value.TopUpMethod, UsagePeriodType: value.UsagePeriodType, UsagePeriodStart: value.UsagePeriodStart, UsagePeriodEnd: value.UsagePeriodEnd, BillingPeriodStart: value.BillingPeriodStart, BillingPeriodEnd: value.BillingPeriodEnd, History: history, SyncedAt: value.SyncedAt}
 }
 
 func pagination(c *gin.Context) (int, int) {

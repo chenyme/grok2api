@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	application "github.com/chenyme/grok2api/backend/internal/application/egress"
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -21,6 +23,7 @@ import (
 
 const DefaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 const nodeSnapshotTTL = time.Second
+const stickyProxyRetryLimit = 2
 
 type Lease struct {
 	NodeID    uint64
@@ -31,6 +34,7 @@ type Lease struct {
 	CFCookies string
 	client    requestClient
 	browser   *browserClient
+	sticky    bool
 	release   func()
 }
 
@@ -43,7 +47,7 @@ func (l *Lease) Do(request *http.Request) (*http.Response, error) {
 	if l == nil || l.client == nil {
 		return nil, errors.New("出口客户端未初始化")
 	}
-	return l.client.Do(request)
+	return l.do(request)
 }
 func (l *Lease) Release() {
 	if l != nil && l.release != nil {
@@ -83,15 +87,44 @@ func NewManager(repository repository.EgressRepository, cipher *security.Cipher)
 }
 
 func (m *Manager) Acquire(ctx context.Context, scope domain.Scope, affinity string) (*Lease, error) {
-	lease, _, err := m.acquire(ctx, scope, affinity, true)
+	lease, _, err := m.acquire(ctx, scope, affinity, true, "")
+	return lease, err
+}
+
+// AcquireCredential binds the outbound proxy identity to one persisted
+// Provider credential. Resin templates use this identity as their Account.
+func (m *Manager) AcquireCredential(ctx context.Context, scope domain.Scope, credential accountdomain.Credential) (*Lease, error) {
+	identity := string(credential.Provider) + "_" + strconv.FormatUint(credential.ID, 10)
+	credentialCookies := ""
+	if scope != domain.ScopeBuild && strings.TrimSpace(credential.EncryptedCloudflareCookie) != "" {
+		cookies, decryptErr := m.cipher.Decrypt(credential.EncryptedCloudflareCookie)
+		if decryptErr != nil {
+			return nil, decryptErr
+		}
+		credentialCookies = application.SanitizeCloudflareCookies(cookies)
+	}
+	// Web and Console accounts can be two database projections of the same SSO
+	// login.  Resin must see one stable account identity across both channels;
+	// otherwise the proxy rotates the IP while the clearance remains bound to
+	// the other lease.  The digest is non-reversible and is only used as a proxy
+	// template account label.
+	if credential.AuthType == accountdomain.AuthTypeSSO && strings.TrimSpace(credential.EncryptedAccessToken) != "" {
+		token, decryptErr := m.cipher.Decrypt(credential.EncryptedAccessToken)
+		if decryptErr != nil {
+			return nil, decryptErr
+		}
+		identity = "sso_" + security.HashToken(token)[:32]
+	}
+	ctx = WithAccountIdentity(ctx, identity)
+	lease, _, err := m.acquire(ctx, scope, strconv.FormatUint(credential.ID, 10), true, credentialCookies)
 	return lease, err
 }
 
 func (m *Manager) AcquireIfConfigured(ctx context.Context, scope domain.Scope, affinity string) (*Lease, bool, error) {
-	return m.acquire(ctx, scope, affinity, false)
+	return m.acquire(ctx, scope, affinity, false, "")
 }
 
-func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool) (*Lease, bool, error) {
+func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, credentialCookies string) (*Lease, bool, error) {
 	now := time.Now().UTC()
 	configured := false
 	var available []domain.Node
@@ -132,6 +165,17 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	if err != nil {
 		return nil, false, err
 	}
+	sticky := strings.Contains(proxyURL, application.ProxyAccountPlaceholder)
+	if sticky {
+		accountKey := accountFromContext(ctx)
+		if accountKey == "" && strings.TrimSpace(affinity) != "" {
+			accountKey = string(scope) + "_" + strings.TrimSpace(affinity)
+		}
+		proxyURL, err = renderAccountProxyURL(proxyURL, accountKey)
+		if err != nil {
+			return nil, false, err
+		}
+	}
 	cookies := ""
 	if scope != domain.ScopeBuild {
 		cookies, err = m.cipher.Decrypt(selected.EncryptedCloudflareCookie)
@@ -139,6 +183,9 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 			return nil, false, err
 		}
 		cookies = application.SanitizeCloudflareCookies(cookies)
+		if credentialCookies != "" {
+			cookies = credentialCookies
+		}
 	}
 	userAgent := ""
 	if scope != domain.ScopeBuild {
@@ -147,7 +194,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	if scope != domain.ScopeBuild && userAgent == "" {
 		userAgent = DefaultUserAgent
 	}
-	client, err := m.clientFor(selected.ID, scope, proxyURL, userAgent, cookies)
+	client, err := m.clientFor(selected.ID, scope, proxyURL, userAgent, cookies, sticky)
 	if err != nil {
 		return nil, false, err
 	}
@@ -156,7 +203,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	m.mu.Unlock()
 	recordSelection(ctx, Selection{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, Proxied: proxyURL != ""})
 	var once sync.Once
-	return &Lease{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, release: func() {
+	return &Lease{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, sticky: sticky, release: func() {
 		once.Do(func() {
 			m.mu.Lock()
 			m.inflight[selected.ID]--
@@ -166,6 +213,36 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 			m.mu.Unlock()
 		})
 	}}, true, nil
+}
+
+func renderAccountProxyURL(template, accountKey string) (string, error) {
+	if !strings.Contains(template, application.ProxyAccountPlaceholder) {
+		return template, nil
+	}
+	accountKey = normalizeProxyAccount(accountKey)
+	if accountKey == "" {
+		return "", errors.New("粘性代理需要有效的账号身份")
+	}
+	return strings.ReplaceAll(template, application.ProxyAccountPlaceholder, accountKey), nil
+}
+
+func normalizeProxyAccount(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.Map(func(character rune) rune {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '_' || character == '-' {
+			return character
+		}
+		return '_'
+	}, value)
+	if len(value) <= 128 {
+		return value
+	}
+	digest := sha256.Sum256([]byte(value))
+	return value[:95] + "_" + fmt.Sprintf("%x", digest[:16])
 }
 
 func (m *Manager) listNodes(ctx context.Context, scope domain.Scope, now time.Time) ([]domain.Node, error) {
@@ -210,6 +287,12 @@ func fallbackScopes(scope domain.Scope) []domain.Scope {
 	if scope == domain.ScopeWebAsset {
 		return []domain.Scope{domain.ScopeWebAsset, domain.ScopeWeb}
 	}
+	if scope == domain.ScopeConsole {
+		// Console uses the same browser/clearance surface as Grok Web.  A
+		// dedicated Console node is preferred, but a Web node is a safe and
+		// expected fallback for deployments that configure one shared pool.
+		return []domain.Scope{domain.ScopeConsole, domain.ScopeWeb}
+	}
 	return []domain.Scope{scope}
 }
 
@@ -238,7 +321,7 @@ func (m *Manager) selectNode(nodes []domain.Node, affinity string) domain.Node {
 	return best
 }
 
-func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, cookies string) (cachedClient, error) {
+func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, cookies string, sticky bool) (cachedClient, error) {
 	clientKind := "browser"
 	if scope == domain.ScopeBuild {
 		clientKind = "build"
@@ -269,9 +352,10 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		value.client = client
 		value.browser = client
 	}
-	// 持久化节点只属于一个 Scope；同节点出现新指纹说明配置已更新，旧连接池应淘汰。
+	// 固定代理同节点出现新指纹说明配置已更新，旧连接池应淘汰。
+	// 账号模板代理的指纹会随 Resin Account 变化，必须并存才能维持各账号的粘性连接池。
 	// 直连节点统一使用 ID 0，不同 Provider 的传输必须并存，避免 Build 与 Web 互相重建客户端。
-	if id != 0 {
+	if id != 0 && !sticky {
 		for previousKey, previous := range m.clients {
 			if previousKey.nodeID != id {
 				continue
@@ -317,6 +401,12 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		// 分类；仅凭状态码不能把标准 CLI 出口误判为 Web anti-bot。
 		return
 	case status == http.StatusForbidden:
+		if m.isStickyProxyNode(value) {
+			// A 403 on an account-bound Resin lease usually means that account's
+			// clearance is stale. Do not cool or invalidate the shared node for
+			// unrelated accounts.
+			return
+		}
 		value.FailureCount++
 		value.Health = max(0.05, value.Health*0.7)
 		value.CooldownUntil = nil
@@ -342,6 +432,14 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 	if _, err := m.repository.UpdateEgressNode(ctx, value); err == nil {
 		m.invalidateNodes(value.Scope)
 	}
+}
+
+func (m *Manager) isStickyProxyNode(value domain.Node) bool {
+	if m == nil || m.cipher == nil || strings.TrimSpace(value.EncryptedProxyURL) == "" {
+		return false
+	}
+	proxyURL, err := m.cipher.Decrypt(value.EncryptedProxyURL)
+	return err == nil && strings.Contains(proxyURL, application.ProxyAccountPlaceholder)
 }
 
 func (m *Manager) invalidateClientLocked(nodeID uint64) {

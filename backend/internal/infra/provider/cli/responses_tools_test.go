@@ -130,36 +130,118 @@ func TestNormalizeResponsesRequestLoadsClientToolSearchOutput(t *testing.T) {
 	}
 }
 
-func TestNormalizeResponsesRequestRejectsHostedToolSearch(t *testing.T) {
-	_, _, err := normalizeResponsesRequest([]byte(`{
-		"model":"public","input":"hello",
-		"tools":[{"type":"tool_search"}]
+func TestNormalizeResponsesRequestLoadsServerToolSearchHistory(t *testing.T) {
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
+		"model":"public",
+		"input":[
+			{"type":"tool_search_call","execution":"server","call_id":"search_1","arguments":{"goal":"shipping"}},
+			{"type":"tool_search_output","execution":"server","call_id":"search_1","status":"completed","tools":[
+				{"type":"function","name":"get_eta","defer_loading":true,"parameters":{"type":"object"}}
+			]}
+		]
 	}`), "grok-4.5")
-	requestErr, ok := err.(*responsesRequestError)
-	if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].execution" {
-		t.Fatalf("error = %#v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tools := request["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "get_eta" || tools[0].(map[string]any)["defer_loading"] != nil {
+		t.Fatalf("tools = %#v", tools)
+	}
+	items := request["input"].([]any)
+	if len(items) != 2 || items[0].(map[string]any)["role"] != "developer" || items[1].(map[string]any)["role"] != "developer" {
+		t.Fatalf("history = %#v", items)
+	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "server_tool_search_history_approximated") {
+		t.Fatalf("compatibility = %#v", compatibility)
 	}
 }
 
-func TestNormalizeResponsesRequestRejectsParallelClientToolSearch(t *testing.T) {
-	_, _, err := normalizeResponsesRequest([]byte(`{
+func TestNormalizeResponsesRequestEagerLoadsServerToolSearch(t *testing.T) {
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"hello",
+		"tools":[
+			{"type":"function","name":"lookup","defer_loading":true,"parameters":{"type":"object"}},
+			{"type":"tool_search"}
+		],
+		"tool_choice":{"type":"tool_search"}
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(normalized, &payload); err != nil {
+		t.Fatal(err)
+	}
+	tools := payload["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "lookup" || tools[0].(map[string]any)["defer_loading"] != nil || payload["tool_choice"] != "auto" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "server_tool_search_eager_loaded") || !strings.Contains(compatibility.warningHeader(), "server_tool_search_choice_downgraded") {
+		t.Fatalf("compatibility = %#v", compatibility)
+	}
+}
+
+func TestNormalizeResponsesRequestDropsEmptyServerToolSearchChoice(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"hello",
+		"tools":[{"type":"tool_search"}],
+		"tool_choice":{"type":"tool_search"},
+		"parallel_tool_calls":true
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(normalized, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := payload["tools"]; exists {
+		t.Fatalf("tools = %#v", payload["tools"])
+	}
+	if _, exists := payload["tool_choice"]; exists {
+		t.Fatalf("tool_choice = %#v", payload["tool_choice"])
+	}
+	if _, exists := payload["parallel_tool_calls"]; exists {
+		t.Fatalf("parallel_tool_calls = %#v", payload["parallel_tool_calls"])
+	}
+}
+
+func TestNormalizeResponsesRequestSerializesParallelClientToolSearch(t *testing.T) {
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"hello","parallel_tool_calls":true,
 		"tools":[{"type":"tool_search","execution":"client"}]
 	}`), "grok-4.5")
-	requestErr, ok := err.(*responsesRequestError)
-	if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "parallel_tool_calls" {
-		t.Fatalf("error = %#v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(normalized, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["parallel_tool_calls"] != false || compatibility == nil || !strings.Contains(compatibility.warningHeader(), "client_tool_search_forced_serial") {
+		t.Fatalf("payload=%#v compatibility=%#v", payload, compatibility)
 	}
 }
 
-func TestNormalizeResponsesRequestRejectsDeferredToolWithoutSearch(t *testing.T) {
-	_, _, err := normalizeResponsesRequest([]byte(`{
+func TestNormalizeResponsesRequestLoadsDeferredToolWithoutSearch(t *testing.T) {
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"hello",
 		"tools":[{"type":"function","name":"lookup","defer_loading":true,"parameters":{"type":"object"}}]
 	}`), "grok-4.5")
-	requestErr, ok := err.(*responsesRequestError)
-	if !ok || requestErr.Code != "invalid_parameter" || requestErr.Param != "tools[0].defer_loading" {
-		t.Fatalf("error = %#v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(normalized, &payload); err != nil {
+		t.Fatal(err)
+	}
+	tool := payload["tools"].([]any)[0].(map[string]any)
+	if tool["name"] != "lookup" || tool["defer_loading"] != nil || compatibility == nil || !strings.Contains(compatibility.warningHeader(), "orphan_deferred_tool_loaded") {
+		t.Fatalf("tool=%#v compatibility=%#v", tool, compatibility)
 	}
 }
 

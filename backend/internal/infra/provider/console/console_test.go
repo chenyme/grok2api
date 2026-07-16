@@ -93,19 +93,96 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 		t.Fatalf("max_output_tokens = %#v", payload["max_output_tokens"])
 	}
 	reasoning, _ := payload["reasoning"].(map[string]any)
-	if reasoning["effort"] != "high" {
+	if reasoning["effort"] != "xhigh" {
 		t.Fatalf("reasoning = %#v", reasoning)
+	}
+	include, _ := payload["include"].([]any)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %#v", include)
 	}
 	tools, _ := payload["tools"].([]any)
 	if len(tools) != 3 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "function:lookup" {
 		t.Fatalf("tools = %#v", tools)
 	}
-	for _, body := range []string{
-		`{"model":"grok-4.3","store":true,"input":"hello"}`,
-		`{"model":"grok-4.3","previous_response_id":"resp_1","input":"hello"}`,
+	webSearch, _ := tools[0].(map[string]any)
+	if webSearch["custom"] != nil || webSearch["enable_image_understanding"] != true {
+		t.Fatalf("web_search = %#v", webSearch)
+	}
+	stateless, err := normalizeRequest([]byte(`{"model":"grok-4.3","store":true,"previous_response_id":"resp_1","service_tier":"priority","input":"hello"}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statelessPayload map[string]any
+	if json.Unmarshal(stateless, &statelessPayload) != nil || statelessPayload["store"] != false || statelessPayload["previous_response_id"] != nil || statelessPayload["service_tier"] != nil {
+		t.Fatalf("stateless payload = %#v", statelessPayload)
+	}
+}
+
+func TestNormalizeRequestAppliesConsoleCompatibilityBoundary(t *testing.T) {
+	spec, ok := Resolve("grok-4.20-0309")
+	if !ok {
+		t.Fatal("grok-4.20-0309 missing")
+	}
+	body, err := normalizeRequest([]byte(`{
+		"model":"public",
+		"response_format":{"type":"json_schema","json_schema":{"name":"answer","strict":true,"schema":{"type":"object"}}},
+		"input":[
+			{"type":"reasoning","content":[{"text":"prior thought"}]},
+			{"type":"message","role":"user","content":[
+				{"type":"output_text","text":"hello"},
+				{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}
+			]}
+		],
+		"tools":[
+			{"type":"namespace","name":"crm","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]},
+			{"type":"web_search","external_web_access":true}
+		],
+		"tool_choice":"required"
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["response_format"] != nil || payload["reasoning"] != nil || payload["tool_choice"] != "auto" {
+		t.Fatalf("payload boundary = %#v", payload)
+	}
+	include, _ := payload["include"].([]any)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %#v", include)
+	}
+	text, _ := payload["text"].(map[string]any)
+	format, _ := text["format"].(map[string]any)
+	if format["type"] != "json_schema" || format["name"] != "answer" || format["json_schema"] != nil {
+		t.Fatalf("text.format = %#v", format)
+	}
+	input, _ := payload["input"].([]any)
+	reasoning := input[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if reasoning["type"] != "reasoning_text" {
+		t.Fatalf("reasoning content = %#v", reasoning)
+	}
+	parts := input[1].(map[string]any)["content"].([]any)
+	if parts[0].(map[string]any)["type"] != "input_text" || parts[1].(map[string]any)["type"] != "input_image" || parts[1].(map[string]any)["image_url"] != "https://example.com/image.png" {
+		t.Fatalf("message parts = %#v", parts)
+	}
+	tools, _ := payload["tools"].([]any)
+	if len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" {
+		t.Fatalf("sanitized tools = %#v", tools)
+	}
+	if tools[0].(map[string]any)["external_web_access"] != nil {
+		t.Fatalf("unsupported web search controls leaked: %#v", tools[0])
+	}
+}
+
+func TestNormalizeReasoningPreservesReferenceEfforts(t *testing.T) {
+	for input, want := range map[string]string{
+		"none": "none", "minimal": "low", "low": "low", "medium": "medium",
+		"high": "high", "xhigh": "xhigh", "max": "xhigh",
 	} {
-		if _, err := normalizeRequest([]byte(body), spec); err == nil {
-			t.Fatalf("expected stateless validation error for %s", body)
+		if got := normalizeEffort(input); got != want {
+			t.Fatalf("normalizeEffort(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
@@ -118,12 +195,15 @@ func TestConsoleImportAcceptsJSONPlainTextAndCookieFormat(t *testing.T) {
 	if len(values) != 2 || values[0].AccessToken != "token-one" || values[1].AccessToken != "token-two" {
 		t.Fatalf("plain values = %#v", values)
 	}
-	values, err = parseImportedCredentials([]byte(`{"provider":"grok_console","accounts":[{"name":"console-a","sso_token":"token-a"}]}`))
+	values, err = parseImportedCredentials([]byte(`{"provider":"grok_console","accounts":[{"name":"console-a","sso_token":"token-a","cloudflare_cookies":"cf_clearance=abc"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(values) != 1 || values[0].Provider != account.ProviderConsole || values[0].AuthType != account.AuthTypeSSO || values[0].Name != "console-a" || values[0].AccessToken != "token-a" {
 		t.Fatalf("json values = %#v", values)
+	}
+	if values[0].CloudflareCookies != "cf_clearance=abc" {
+		t.Fatalf("cloudflare cookies = %q", values[0].CloudflareCookies)
 	}
 }
 
@@ -136,13 +216,94 @@ func TestConsoleRetryAfterParsesCompoundDuration(t *testing.T) {
 	}
 }
 
+func TestNormalizeRateLimitResponsePrefersRetryAfterHeader(t *testing.T) {
+	response := &http.Response{
+		Header: http.Header{"Retry-After": {"17"}},
+		Body:   io.NopCloser(strings.NewReader("Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 2/2")),
+	}
+	_, metadata, err := normalizeRateLimitResponse(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata == nil || metadata.RetryAfter != 17*time.Second {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestParseConsoleRateLimitMetadataRPS(t *testing.T) {
+	metadata := parseConsoleRateLimitMetadata([]byte(`Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 2/2`))
+	if metadata == nil {
+		t.Fatal("metadata is nil")
+	}
+	if metadata.Scope != provider.RateLimitScopeRPS || metadata.Actual != 2 || metadata.Limit != 2 || metadata.RetryAfter != 2*time.Second {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestParseConsoleRateLimitMetadataRPM(t *testing.T) {
+	body := []byte(`{"error":{"message":"Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Minute (actual/limit): 101/60. Resets in: 3m 4s"}}`)
+	metadata := parseConsoleRateLimitMetadata(body)
+	if metadata == nil {
+		t.Fatal("metadata is nil")
+	}
+	if metadata.Scope != provider.RateLimitScopeRPM || metadata.Actual != 101 || metadata.Limit != 60 || metadata.RetryAfter != 3*time.Minute+4*time.Second {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestParseConsoleRateLimitMetadataOrdinary429(t *testing.T) {
+	if metadata := parseConsoleRateLimitMetadata([]byte(`Rate limit reached. Resets in: 1h`)); metadata != nil {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestParseConsoleRateLimitMetadataExtractsTeamAndModel(t *testing.T) {
+	metadata := parseConsoleRateLimitMetadata([]byte(`{"message":"Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 3/2. Resets in: 1s"}`))
+	if metadata == nil {
+		t.Fatal("metadata is nil")
+	}
+	if metadata.TeamID != "00000000-0000-0000-0000-000000000013" || metadata.Model != "grok-4.20-multi-agent-0309" {
+		t.Fatalf("team/model = %q/%q", metadata.TeamID, metadata.Model)
+	}
+	if metadata.RetryAfter != 2*time.Second {
+		t.Fatalf("retry after = %s", metadata.RetryAfter)
+	}
+}
+
+func TestAdapterAttachesConsoleRateLimitMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/plain")
+		writer.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(writer, "Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 2/2")
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.20-multi-agent-0309",
+		Operation: "responses", NormalizeBody: true, Body: []byte(`{"model":"grok-4.20-multi-agent-0309","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.RateLimit == nil {
+		t.Fatal("rate limit metadata is nil")
+	}
+	if response.RateLimit.Scope != provider.RateLimitScopeRPS || response.RateLimit.TeamID != "00000000-0000-0000-0000-000000000013" || response.RateLimit.Model != "grok-4.20-multi-agent-0309" {
+		t.Fatalf("rate limit metadata = %#v", response.RateLimit)
+	}
+	if response.Header.Get("Retry-After") != "2" {
+		t.Fatalf("retry-after = %q", response.Header.Get("Retry-After"))
+	}
+}
+
 func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	var received map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/responses" || request.Method != http.MethodPost {
 			t.Errorf("request = %s %s", request.Method, request.URL.Path)
 		}
-		if request.Header.Get("Authorization") != "Bearer anonymous" || request.Header.Get("x-cluster") != "https://us-east-1.api.x.ai" {
+		if request.Header.Get("Authorization") != "Bearer anonymous" || request.Header.Get("x-cluster") != "https://us-east-1.api.x.ai" || request.Header.Get("Accept") != "*/*" || request.Header.Get("Priority") != "u=1, i" {
 			t.Errorf("headers = %#v", request.Header)
 		}
 		cookie := request.Header.Get("Cookie")

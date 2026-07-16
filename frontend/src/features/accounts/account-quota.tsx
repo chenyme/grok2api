@@ -10,7 +10,7 @@ import { formatDateTime, formatNumber } from "@/shared/lib/format";
 export function AccountQuota({ quota, billing, locale }: { quota: QuotaDTO; billing?: BillingDTO; locale: string }) {
   const { t } = useTranslation();
   if (quota.type === "unknown") {
-    return <span className="text-xs text-muted-foreground">{t("accounts.quotaUnknown")}</span>;
+    return <span className="text-xs text-muted-foreground">{t("accountType.pending")}</span>;
   }
   if (quota.type !== "free") {
     return <BuildQuota quota={quota} billing={billing} locale={locale} />;

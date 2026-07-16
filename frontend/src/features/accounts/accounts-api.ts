@@ -16,6 +16,7 @@ export type BillingDTO = {
   prepaidBalance: number;
   creditUsagePercent: number;
   isUnifiedBillingUser: boolean;
+  onDemandEnabled?: boolean;
   topUpMethod?: string;
   usagePeriodType?: string;
   usagePeriodStart?: string;
@@ -29,6 +30,9 @@ export type BillingDTO = {
 export type BillingHistoryDTO = {
   year: number;
   month: number;
+  periodType?: string;
+  periodStart?: string;
+  periodEnd?: string;
   includedUsed: number;
   onDemandUsed: number;
   totalUsed: number;
@@ -69,6 +73,7 @@ export type AccountDTO = {
   authStatus: "active" | "reauthRequired";
   expiresAt?: string;
   refreshable: boolean;
+  cloudflareCookieConfigured: boolean;
   refreshDueAt?: string;
   lastRefreshAt?: string;
   refreshFailureCount: number;
@@ -98,6 +103,8 @@ export type AccountUpdateInput = {
   maxConcurrent: number;
   minimumRemaining: number;
   buildApiFallback?: boolean;
+  cloudflareCookies?: string;
+  clearCloudflareCookies?: boolean;
 };
 
 export type AccountSummaryDTO = {
@@ -127,12 +134,13 @@ export type DevicePollDTO = {
 };
 
 const billingHistoryValidator = hasShape({
-  year: isNumber, month: isNumber, includedUsed: isNumber, onDemandUsed: isNumber, totalUsed: isNumber,
+  year: isNumber, month: isNumber, periodType: isOptional(isString), periodStart: isOptional(isString), periodEnd: isOptional(isString),
+  includedUsed: isNumber, onDemandUsed: isNumber, totalUsed: isNumber,
 });
 const billingValidator = hasShape({
   planCode: isOptional(isString), planName: isOptional(isString), monthlyLimit: isNumber, used: isNumber, remaining: isNumber,
   onDemandCap: isNumber, onDemandUsed: isNumber, prepaidBalance: isNumber, creditUsagePercent: isNumber,
-  isUnifiedBillingUser: isBoolean, topUpMethod: isOptional(isString), usagePeriodType: isOptional(isString),
+  isUnifiedBillingUser: isBoolean, onDemandEnabled: isOptional(isBoolean), topUpMethod: isOptional(isString), usagePeriodType: isOptional(isString),
   usagePeriodStart: isOptional(isString), usagePeriodEnd: isOptional(isString), billingPeriodStart: isOptional(isString),
   billingPeriodEnd: isOptional(isString), history: isOptional(isArrayOf(billingHistoryValidator)), syncedAt: isString,
 });
@@ -152,7 +160,7 @@ const quotaWindowValidator = hasShape({
 const accountValidator = hasShape({
   id: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), authType: isOneOf("oauth", "sso"), webTier: isOptional(isOneOf("auto", "basic", "super", "heavy")),
   webTierSyncedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
-  enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean,
+  enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean, cloudflareCookieConfigured: isBoolean,
   refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),

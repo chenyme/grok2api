@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,17 +24,25 @@ import (
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/searchresult"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 const webResponseTTL = 30 * 24 * time.Hour
+
+const maxDeferredSearchTextBytes = 8 << 20
+
+const maxTrackedServerTools = 1024
 
 var (
 	errWebAntiBot    = errors.New("Grok Web anti-bot rejection")
 	errWebUsageLimit = errors.New("Grok Web usage limit reached")
 )
 
-var grokRenderPattern = regexp.MustCompile(`(?s)<grok:render\s+card_id="([^"]+)"\s+card_type="([^"]+)"\s+type="([^"]+)"[^>]*>.*?</grok:render>`)
+var (
+	grokRenderPattern   = regexp.MustCompile(`(?s)<grok:render\s+card_id="([^"]+)"\s+card_type="([^"]+)"\s+type="([^"]+)"[^>]*>.*?</grok:render>`)
+	grokToolNamePattern = regexp.MustCompile(`(?is)<xai:tool_name>\s*(.*?)\s*</xai:tool_name>`)
+)
 
 type openAIRequest struct {
 	Model              string          `json:"model"`
@@ -79,10 +88,12 @@ type parsedChat struct {
 	Annotations    []map[string]any
 	sourceKeys     map[string]struct{}
 	serverToolKeys map[string]struct{}
+	webSearchKeys  map[string]struct{}
 	cardCache      map[string]map[string]any
 	citationIndex  map[string]int
 	lastCitation   int
 	ServerTools    int64
+	WebSearchTools int64
 	InputTokens    int64
 	ToolCalls      []parsedToolCall
 	Tools          []any
@@ -165,7 +176,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			return &provider.Response{
 				StatusCode: upstream.StatusCode, Status: upstream.Status, Header: http.Header(upstream.Header),
-				UpstreamURL: upstream.Request.URL.String(),
+				UpstreamURL: responseUpstreamURL(upstream),
 				Body: &releaseBody{ReadCloser: upstream.Body, release: func() {
 					a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, upstream.StatusCode, nil)
 					lease.Release()
@@ -279,7 +290,7 @@ func (a *Adapter) openChat(ctx context.Context, credential account.Credential, p
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", credential.ID))
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, credential)
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
@@ -909,13 +920,21 @@ func collectSearchSources(parsed *parsedChat, response map[string]any) {
 }
 
 func appendSearchSource(parsed *parsedChat, value, title, sourceType string) {
+	value, valid := searchresult.NormalizeURL(value)
+	if !valid {
+		return
+	}
+	if parsed.sourceKeys == nil {
+		parsed.sourceKeys = make(map[string]struct{})
+	}
 	if _, exists := parsed.sourceKeys[value]; exists {
 		return
 	}
-	parsed.sourceKeys[value] = struct{}{}
-	if strings.TrimSpace(title) == "" {
-		title = value
+	if len(parsed.SearchSources) >= searchresult.MaxResults {
+		return
 	}
+	parsed.sourceKeys[value] = struct{}{}
+	title = searchresult.NormalizeTitle(title, value)
 	parsed.SearchSources = append(parsed.SearchSources, map[string]any{"url": value, "title": title, "type": sourceType})
 }
 
@@ -923,18 +942,59 @@ func collectServerTool(parsed *parsedChat, response map[string]any) {
 	if parsed.serverToolKeys == nil {
 		parsed.serverToolKeys = make(map[string]struct{})
 	}
-	key := firstString(response, "rolloutId", "responseId", "toolUsageCardId", "messageTag")
-	if step, ok := numberAsInt(response["messageStepId"]); ok {
-		key += fmt.Sprintf(":%d", step)
+	key := serverToolKey(response)
+	if _, exists := parsed.serverToolKeys[key]; !exists {
+		if len(parsed.serverToolKeys) >= maxTrackedServerTools {
+			return
+		}
+		parsed.serverToolKeys[key] = struct{}{}
+		parsed.ServerTools++
 	}
-	if key == "" {
-		key = firstString(response, "token", "messageTag")
-	}
-	if _, exists := parsed.serverToolKeys[key]; exists {
+	if webServerToolName(response) != "web_search" {
 		return
 	}
-	parsed.serverToolKeys[key] = struct{}{}
-	parsed.ServerTools++
+	if parsed.webSearchKeys == nil {
+		parsed.webSearchKeys = make(map[string]struct{})
+	}
+	if _, exists := parsed.webSearchKeys[key]; exists || len(parsed.webSearchKeys) >= maxTrackedServerTools {
+		return
+	}
+	parsed.webSearchKeys[key] = struct{}{}
+	parsed.WebSearchTools++
+}
+
+func serverToolKey(response map[string]any) string {
+	key := firstString(response, "rolloutId", "responseId", "toolUsageCardId")
+	step, hasStep := numberAsInt(response["messageStepId"])
+	if key != "" {
+		if hasStep {
+			key += fmt.Sprintf(":%d", step)
+		}
+		return key
+	}
+	if token, _ := response["token"].(string); token != "" {
+		sum := sha256.Sum256([]byte(token))
+		return "token:" + hex.EncodeToString(sum[:8])
+	}
+	if hasStep {
+		return fmt.Sprintf("step:%d", step)
+	}
+	return firstString(response, "messageTag")
+}
+
+func webServerToolName(response map[string]any) string {
+	if name := strings.ToLower(strings.TrimSpace(firstString(response, "toolName", "tool_name"))); name != "" {
+		return name
+	}
+	token, _ := response["token"].(string)
+	match := grokToolNamePattern.FindStringSubmatch(token)
+	if len(match) < 2 {
+		return ""
+	}
+	name := strings.TrimSpace(match[1])
+	name = strings.TrimPrefix(name, "<![CDATA[")
+	name = strings.TrimSuffix(name, "]]>")
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 func applyParsedToolCalls(parsed *parsedChat, configuration toolConfiguration) {
@@ -1103,7 +1163,8 @@ func renderChatCard(parsed *parsedChat, cardID, renderType string) (string, map[
 		return fmt.Sprintf("![%s](%s)", title, thumbnail), nil
 	case "render_inline_citation":
 		value, _ := card["url"].(string)
-		if value == "" {
+		value, valid := searchresult.NormalizeURL(value)
+		if !valid {
 			return "", nil
 		}
 		if parsed.citationIndex == nil {
@@ -1128,6 +1189,9 @@ func renderChatCard(parsed *parsedChat, cardID, renderType string) (string, map[
 }
 
 func searchSourceTitle(sources []map[string]any, rawURL string) string {
+	if normalized, valid := searchresult.NormalizeURL(rawURL); valid {
+		rawURL = normalized
+	}
 	for _, source := range sources {
 		if value, _ := source["url"].(string); value == rawURL {
 			if title, _ := source["title"].(string); title != "" {
@@ -1171,9 +1235,14 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 	}
 	if operation == conversation.OperationMessages {
 		visibleText, stopSequence := applyWebStopSequences(parsed.Text.String(), options.StopSequences)
-		content := make([]any, 0, len(parsed.ToolCalls))
+		emitWebSearch := shouldEmitWebMessagesSearch(parsed, options)
+		// Zero initial capacity: tool/search counts come from untrusted upstream.
+		content := make([]any, 0)
 		if options.AnthropicThinking && parsed.Reasoning.Len() > 0 {
 			content = append(content, map[string]any{"type": "thinking", "thinking": parsed.Reasoning.String()})
+		}
+		if emitWebSearch {
+			content = append(content, webMessagesSearchBlocks(newWebID("srvtoolu"), parsed, options)...)
 		}
 		if visibleText != "" || len(parsed.ToolCalls) == 0 {
 			content = append(content, map[string]any{"type": "text", "text": visibleText})
@@ -1191,10 +1260,14 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 		} else if stopSequence != "" {
 			stopReason = "stop_sequence"
 		}
+		usage := map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+		if emitWebSearch {
+			usage["server_tool_use"] = map[string]any{"web_search_requests": webMessagesSearchRequests(parsed)}
+		}
 		return map[string]any{
 			"id": strings.Replace(responseID, "resp_", "msg_", 1), "type": "message", "role": "assistant", "model": model,
 			"content": content, "stop_reason": stopReason, "stop_sequence": nullableWebString(stopSequence),
-			"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+			"usage": usage,
 		}
 	}
 	output := make([]any, 0, 2)
@@ -1270,6 +1343,49 @@ func webAnthropicToolID(value string) string {
 	return "toolu_" + value
 }
 
+func webMessagesSearchBlocks(id string, parsed parsedChat, options conversation.ResponseOptions) []any {
+	use := map[string]any{
+		"type": "server_tool_use", "id": id, "name": "web_search",
+		"input": map[string]any{"query": options.AnthropicWebSearchQuery},
+	}
+	hits := make([]any, 0, searchresult.MaxResults)
+	seen := make(map[string]struct{}, searchresult.MaxResults)
+	for _, source := range parsed.SearchSources {
+		if len(hits) >= searchresult.MaxResults {
+			break
+		}
+		rawURL, _ := source["url"].(string)
+		rawURL, valid := searchresult.NormalizeURL(rawURL)
+		if !valid {
+			continue
+		}
+		if _, exists := seen[rawURL]; exists {
+			continue
+		}
+		seen[rawURL] = struct{}{}
+		title, _ := source["title"].(string)
+		title = searchresult.NormalizeTitle(title, rawURL)
+		hits = append(hits, map[string]any{"type": "web_search_result", "title": title, "url": rawURL})
+	}
+	var content any = hits
+	if parsed.WebSearchTools == 0 && len(hits) == 0 {
+		content = map[string]any{"type": "web_search_tool_result_error", "error_code": "unavailable"}
+	}
+	result := map[string]any{"type": "web_search_tool_result", "tool_use_id": id, "content": content}
+	return []any{use, result}
+}
+
+func shouldEmitWebMessagesSearch(parsed parsedChat, options conversation.ResponseOptions) bool {
+	return options.AnthropicWebSearch && (options.AnthropicWebSearchRequired || parsed.WebSearchTools > 0 || len(parsed.SearchSources) > 0)
+}
+
+func webMessagesSearchRequests(parsed parsedChat) int64 {
+	if parsed.WebSearchTools > 0 {
+		return parsed.WebSearchTools
+	}
+	return 1
+}
+
 func chatToolCalls(calls []parsedToolCall) []any {
 	values := make([]any, 0, len(calls))
 	for _, call := range calls {
@@ -1318,6 +1434,9 @@ type webMessagesStream struct {
 	textIndex       int
 	nextIndex       int
 	hasTools        bool
+	webSearchID     string
+	webSearchUse    bool
+	pendingText     strings.Builder
 	stopSequence    string
 	stopFilter      *webStopFilter
 }
@@ -1334,13 +1453,19 @@ func (s *webMessagesStream) Start() error {
 		return nil
 	}
 	s.started = true
-	return writeSSE(s.writer, "message_start", map[string]any{
+	if err := writeSSE(s.writer, "message_start", map[string]any{
 		"type": "message_start", "message": map[string]any{
 			"id": strings.Replace(s.responseID, "resp_", "msg_", 1), "type": "message", "role": "assistant", "model": s.model,
 			"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
 			"usage": map[string]any{"input_tokens": s.inputTokens, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
 		},
-	})
+	}); err != nil {
+		return err
+	}
+	if s.options.AnthropicWebSearchRequired && !s.options.AnthropicThinking {
+		return s.startWebSearch()
+	}
+	return nil
 }
 
 func (s *webMessagesStream) Delta(kind, delta string) error {
@@ -1373,6 +1498,17 @@ func (s *webMessagesStream) Delta(kind, delta string) error {
 	if kind != "text" {
 		return nil
 	}
+	if s.options.AnthropicWebSearch {
+		if err := s.closeThinking(); err != nil {
+			return err
+		}
+		if s.options.AnthropicWebSearchRequired {
+			if err := s.startWebSearch(); err != nil {
+				return err
+			}
+		}
+		return s.bufferSearchText(delta)
+	}
 	if err := s.startText(); err != nil {
 		return err
 	}
@@ -1384,6 +1520,15 @@ func (s *webMessagesStream) Delta(kind, delta string) error {
 		return nil
 	}
 	return s.writeTextDelta(emit)
+}
+
+func (s *webMessagesStream) bufferSearchText(delta string) error {
+	pending := s.pendingText.Len()
+	if pending >= maxDeferredSearchTextBytes || len(delta) > maxDeferredSearchTextBytes-pending {
+		return fmt.Errorf("WebSearch 延迟文本缓冲超过 %d MiB", maxDeferredSearchTextBytes>>20)
+	}
+	s.pendingText.WriteString(delta)
+	return nil
 }
 
 func (s *webMessagesStream) startText() error {
@@ -1447,9 +1592,74 @@ func (s *webMessagesStream) Tools(calls []parsedToolCall) error {
 	return nil
 }
 
+func (s *webMessagesStream) startWebSearch() error {
+	if s.webSearchUse {
+		return nil
+	}
+	s.webSearchUse = true
+	if s.webSearchID == "" {
+		s.webSearchID = newWebID("srvtoolu")
+	}
+	index := s.nextIndex
+	s.nextIndex++
+	if err := writeSSE(s.writer, "content_block_start", map[string]any{
+		"type": "content_block_start", "index": index,
+		"content_block": map[string]any{"type": "server_tool_use", "id": s.webSearchID, "name": "web_search", "input": map[string]any{}},
+	}); err != nil {
+		return err
+	}
+	if query := s.options.AnthropicWebSearchQuery; query != "" {
+		encoded, _ := json.Marshal(map[string]string{"query": query})
+		if err := writeSSE(s.writer, "content_block_delta", map[string]any{
+			"type": "content_block_delta", "index": index,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": string(encoded)},
+		}); err != nil {
+			return err
+		}
+	}
+	return writeSSE(s.writer, "content_block_stop", map[string]any{"type": "content_block_stop", "index": index})
+}
+
+func (s *webMessagesStream) finishWebSearch(parsed parsedChat) error {
+	if !shouldEmitWebMessagesSearch(parsed, s.options) {
+		return nil
+	}
+	if err := s.startWebSearch(); err != nil {
+		return err
+	}
+	blocks := webMessagesSearchBlocks(s.webSearchID, parsed, s.options)
+	result := blocks[1]
+	index := s.nextIndex
+	s.nextIndex++
+	if err := writeSSE(s.writer, "content_block_start", map[string]any{
+		"type": "content_block_start", "index": index, "content_block": result,
+	}); err != nil {
+		return err
+	}
+	return writeSSE(s.writer, "content_block_stop", map[string]any{"type": "content_block_stop", "index": index})
+}
+
 func (s *webMessagesStream) Finish(parsed parsedChat, payload map[string]any) error {
 	if err := s.Start(); err != nil {
 		return err
+	}
+	if err := s.closeThinking(); err != nil {
+		return err
+	}
+	if err := s.finishWebSearch(parsed); err != nil {
+		return err
+	}
+	if s.options.AnthropicWebSearch && s.pendingText.Len() > 0 {
+		if err := s.startText(); err != nil {
+			return err
+		}
+		emit, matched := s.stopFilter.Push(s.pendingText.String())
+		if matched != "" {
+			s.stopSequence = matched
+		}
+		if err := s.writeTextDelta(emit); err != nil {
+			return err
+		}
 	}
 	if s.stopSequence == "" {
 		if pending := s.stopFilter.Flush(); pending != "" {
@@ -1461,9 +1671,6 @@ func (s *webMessagesStream) Finish(parsed parsedChat, payload map[string]any) er
 			}
 		}
 	}
-	if err := s.closeThinking(); err != nil {
-		return err
-	}
 	if err := s.closeText(); err != nil {
 		return err
 	}
@@ -1474,9 +1681,13 @@ func (s *webMessagesStream) Finish(parsed parsedChat, payload map[string]any) er
 		stopReason = "stop_sequence"
 	}
 	usage, _ := payload["usage"].(map[string]any)
+	finalUsage := map[string]any{"output_tokens": usage["output_tokens"]}
+	if shouldEmitWebMessagesSearch(parsed, s.options) {
+		finalUsage["server_tool_use"] = map[string]any{"web_search_requests": webMessagesSearchRequests(parsed)}
+	}
 	if err := writeSSE(s.writer, "message_delta", map[string]any{
 		"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nullableWebString(s.stopSequence)},
-		"usage": map[string]any{"output_tokens": usage["output_tokens"]},
+		"usage": finalUsage,
 	}); err != nil {
 		return err
 	}

@@ -21,8 +21,8 @@ const (
 	StatsigModeManual             = "manual"
 	StatsigModeURL                = "url"
 	DefaultStatsigSignerURL       = "https://grok.wodf.de/sign"
-	RecommendedBuildClientVersion = "0.2.99"
-	RecommendedBuildUserAgent     = "grok-shell/0.2.99 (linux; x86_64)"
+	RecommendedBuildClientVersion = "0.2.101"
+	RecommendedBuildUserAgent     = "grok-shell/0.2.101 (linux; x86_64)"
 
 	maxServerBodyBytes    = 256 << 20
 	maxRequestTimeout     = 24 * time.Hour

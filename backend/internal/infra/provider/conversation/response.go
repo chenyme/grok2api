@@ -8,8 +8,11 @@ import (
 
 // ResponseOptions 保留无法直接交给 Responses 上游执行的下游协议语义。
 type ResponseOptions struct {
-	AnthropicThinking bool
-	StopSequences     []string
+	AnthropicThinking          bool
+	AnthropicWebSearch         bool
+	AnthropicWebSearchRequired bool
+	AnthropicWebSearchQuery    string
+	StopSequences              []string
 }
 
 type responseEnvelope struct {
@@ -33,24 +36,34 @@ type responseItem struct {
 	Name      string            `json:"name"`
 	Arguments string            `json:"arguments"`
 	Encrypted string            `json:"encrypted_content"`
+	// Action is populated for Build hosted tool items such as web_search_call.
+	Action map[string]any `json:"action"`
 }
 
 type responseContent struct {
-	Type    string `json:"type"`
-	Text    string `json:"text"`
-	Refusal string `json:"refusal"`
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	Refusal     string `json:"refusal"`
+	Annotations []any  `json:"annotations"`
 }
 
 type responseUsage struct {
-	InputTokens        int64 `json:"input_tokens"`
-	OutputTokens       int64 `json:"output_tokens"`
-	TotalTokens        int64 `json:"total_tokens"`
-	InputTokensDetails struct {
+	InputTokens            int64 `json:"input_tokens"`
+	OutputTokens           int64 `json:"output_tokens"`
+	TotalTokens            int64 `json:"total_tokens"`
+	CostInUSDTicks         int64 `json:"cost_in_usd_ticks"`
+	NumSourcesUsed         int64 `json:"num_sources_used"`
+	NumServerSideToolsUsed int64 `json:"num_server_side_tools_used"`
+	InputTokensDetails     struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
 	OutputTokensDetails struct {
 		ReasoningTokens int64 `json:"reasoning_tokens"`
 	} `json:"output_tokens_details"`
+	ContextDetails struct {
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+	} `json:"context_details"`
 }
 
 type parsedResponse struct {
@@ -62,6 +75,8 @@ type parsedResponse struct {
 	Signature    string
 	Refusal      string
 	Calls        []responseItem
+	WebSearch    []webSearchCall
+	Annotations  []any
 	Usage        responseUsage
 	Status       string
 	StopSequence string
@@ -72,7 +87,7 @@ func ConvertResponseJSON(body []byte, operation string) ([]byte, error) {
 	return ConvertResponseJSONWithOptions(body, operation, ResponseOptions{})
 }
 
-// ConvertResponseJSONWithOptions 按原始 Messages 请求选项恢复 thinking 与 stop sequence。
+// ConvertResponseJSONWithOptions 按下游协议选项恢复 thinking、搜索与 stop sequence。
 func ConvertResponseJSONWithOptions(body []byte, operation string, options ResponseOptions) ([]byte, error) {
 	if operation == OperationResponses {
 		return body, nil
@@ -88,8 +103,13 @@ func ConvertResponseJSONWithOptions(body []byte, operation string, options Respo
 		return body, nil
 	}
 	parsed := parseResponse(envelope)
+	if operation == OperationMessages || operation == OperationChat {
+		parsed.Text, parsed.StopSequence = applyStopSequences(parsed.Text, options.StopSequences)
+	}
 	if operation == OperationMessages {
-		parsed.Text, parsed.StopSequence = applyAnthropicStopSequences(parsed.Text, options.StopSequences)
+		if !options.AnthropicWebSearch {
+			parsed.WebSearch = nil
+		}
 	}
 	var result any
 	if operation == OperationMessages {
@@ -105,10 +125,13 @@ func parseResponse(value responseEnvelope) parsedResponse {
 	if parsed.CreatedAt == 0 {
 		parsed.CreatedAt = time.Now().Unix()
 	}
+	var annotations []map[string]any
 	for _, item := range value.Output {
 		switch item.Type {
 		case "message":
+			annotations = append(annotations, extractMessageAnnotations(item)...)
 			for _, content := range item.Content {
+				parsed.Annotations = append(parsed.Annotations, content.Annotations...)
 				switch content.Type {
 				case "output_text":
 					parsed.Text += content.Text
@@ -117,15 +140,37 @@ func parseResponse(value responseEnvelope) parsedResponse {
 				}
 			}
 		case "reasoning":
-			for _, summary := range item.Summary {
-				parsed.Reasoning += summary.Text
+			reasoning := ""
+			for _, content := range item.Content {
+				if content.Type == "reasoning_text" {
+					reasoning += content.Text
+				}
 			}
+			if reasoning == "" {
+				for _, summary := range item.Summary {
+					reasoning += summary.Text
+				}
+			}
+			parsed.Reasoning += reasoning
 			if item.Encrypted != "" {
 				parsed.Signature = item.Encrypted
 			}
 		case "function_call":
 			parsed.Calls = append(parsed.Calls, item)
+		case "web_search_call":
+			// Cap candidates early so pathological upstream envelopes cannot
+			// retain unbounded intermediate search state before dedupe.
+			if len(parsed.WebSearch) >= maxWebSearchCalls {
+				continue
+			}
+			if call, ok := parseWebSearchCallItem(item); ok {
+				parsed.WebSearch = append(parsed.WebSearch, call)
+			}
 		}
+	}
+	if len(parsed.WebSearch) > 0 {
+		parsed.WebSearch = dedupeWebSearchCalls(parsed.WebSearch)
+		parsed.WebSearch = mergeAnnotationTitles(parsed.WebSearch, annotations)
 	}
 	return parsed
 }

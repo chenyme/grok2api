@@ -14,6 +14,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
@@ -109,6 +110,9 @@ func TestGenerateVideoPostsSingleImageAndPollsUntilReady(t *testing.T) {
 	var createBody map[string]any
 	var pollCount atomic.Int32
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if identity := infraegress.AccountFromContext(request.Context()); identity != "grok_build_9" {
+			t.Fatalf("egress account identity = %q", identity)
+		}
 		switch {
 		case request.Method == http.MethodPost && request.URL.Path == "/v1/videos/generations":
 			if request.Header.Get("Authorization") != "Bearer access-token" {
@@ -344,6 +348,9 @@ func TestGenerateVideoFailedStatusAndDownloadTrustedURL(t *testing.T) {
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.Method != http.MethodGet || request.URL.String() != assetURL {
 			t.Fatalf("download request = %s %s", request.Method, request.URL)
+		}
+		if identity := infraegress.AccountFromContext(request.Context()); identity != "grok_build_99" {
+			t.Fatalf("download egress account identity = %q", identity)
 		}
 		for _, key := range []string{
 			"Authorization", "X-XAI-Token-Auth", "x-userid",

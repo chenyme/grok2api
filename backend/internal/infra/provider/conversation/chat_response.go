@@ -21,11 +21,16 @@ func chatResponse(value parsedResponse) map[string]any {
 			})
 		}
 		message["tool_calls"] = calls
+	} else if value.Refusal != "" {
+		finishReason = "content_filter"
 	} else if value.Status == "incomplete" {
 		finishReason = "length"
 	}
 	if value.Refusal != "" {
 		message["refusal"] = value.Refusal
+	}
+	if len(value.Annotations) > 0 {
+		message["annotations"] = value.Annotations
 	}
 	id := strings.Replace(value.ID, "resp_", "chatcmpl_", 1)
 	return map[string]any{
@@ -36,10 +41,20 @@ func chatResponse(value parsedResponse) map[string]any {
 }
 
 func chatUsage(value responseUsage) map[string]any {
+	total := value.TotalTokens
+	if total == 0 {
+		total = value.InputTokens + value.OutputTokens
+	}
 	return map[string]any{
 		"prompt_tokens": value.InputTokens, "completion_tokens": value.OutputTokens,
-		"total_tokens":              value.InputTokens + value.OutputTokens,
-		"prompt_tokens_details":     map[string]any{"cached_tokens": value.InputTokensDetails.CachedTokens},
-		"completion_tokens_details": map[string]any{"reasoning_tokens": value.OutputTokensDetails.ReasoningTokens},
+		"total_tokens":               total,
+		"prompt_tokens_details":      map[string]any{"cached_tokens": value.InputTokensDetails.CachedTokens},
+		"completion_tokens_details":  map[string]any{"reasoning_tokens": value.OutputTokensDetails.ReasoningTokens},
+		"cost_in_usd_ticks":          value.CostInUSDTicks,
+		"num_sources_used":           value.NumSourcesUsed,
+		"num_server_side_tools_used": value.NumServerSideToolsUsed,
+		"context_details": map[string]any{
+			"input_tokens": value.ContextDetails.InputTokens, "output_tokens": value.ContextDetails.OutputTokens,
+		},
 	}
 }

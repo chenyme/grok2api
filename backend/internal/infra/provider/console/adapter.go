@@ -129,7 +129,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	cfg := a.config()
 	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutSeconds)*time.Second)
-	lease, err := a.egress.Acquire(requestCtx, egressdomain.ScopeConsole, strconv.FormatUint(request.Credential.ID, 10))
+	lease, err := a.egress.AcquireCredential(requestCtx, egressdomain.ScopeConsole, request.Credential)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -152,8 +152,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		return nil, err
 	}
 	responseBodyTruncated := false
+	var rateLimit *provider.RateLimitMetadata
 	if response.StatusCode == http.StatusTooManyRequests {
-		responseBodyTruncated, err = normalizeRateLimitResponse(response)
+		responseBodyTruncated, rateLimit, err = normalizeRateLimitResponse(response)
 		if err != nil {
 			_ = response.Body.Close()
 			lease.Release()
@@ -171,7 +172,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			response.Body = conversation.ConvertResponseStreamWithOptions(response.Body, request.Operation, conversationOptions)
 			response.Header.Del("Content-Length")
 			response.Header.Set("Content-Type", "text/event-stream")
-			return responseResult(response, &releaseBody{ReadCloser: response.Body, release: release}), nil
+			result := responseResult(response, &releaseBody{ReadCloser: response.Body, release: release})
+			result.RateLimit = rateLimit
+			return result, nil
 		}
 		var data []byte
 		var readErr error
@@ -197,6 +200,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			response.Header.Set("Content-Type", "application/json")
 			result := responseResult(response, io.NopCloser(bytes.NewReader(converted)))
 			result.Diagnostic = diagnostic
+			result.RateLimit = rateLimit
 			return result, nil
 		}
 		converted, convertErr := conversation.ConvertResponseJSONWithOptions(data, request.Operation, conversationOptions)
@@ -205,9 +209,13 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 		response.Header.Set("Content-Length", strconv.Itoa(len(converted)))
 		response.Header.Set("Content-Type", "application/json")
-		return responseResult(response, io.NopCloser(bytes.NewReader(converted))), nil
+		result := responseResult(response, io.NopCloser(bytes.NewReader(converted)))
+		result.RateLimit = rateLimit
+		return result, nil
 	}
-	return responseResult(response, &releaseBody{ReadCloser: response.Body, release: release}), nil
+	result := responseResult(response, &releaseBody{ReadCloser: response.Body, release: release})
+	result.RateLimit = rateLimit
+	return result, nil
 }
 
 func normalizeConversationError(data []byte, operation string, status int) []byte {
@@ -278,7 +286,7 @@ func applyHeaders(request *http.Request, token, configuredUserAgent string, leas
 	if userAgent == "" {
 		userAgent = strings.TrimSpace(configuredUserAgent)
 	}
-	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Accept", "*/*")
 	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	request.Header.Set("Authorization", "Bearer anonymous")
@@ -289,25 +297,37 @@ func applyHeaders(request *http.Request, token, configuredUserAgent string, leas
 	request.Header.Set("Sec-Fetch-Dest", "empty")
 	request.Header.Set("Sec-Fetch-Mode", "cors")
 	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	request.Header.Set("Priority", "u=1, i")
 	request.Header.Set("User-Agent", userAgent)
 	request.Header.Set("x-cluster", "https://us-east-1.api.x.ai")
 }
 
-func normalizeRateLimitResponse(response *http.Response) (bool, error) {
+func normalizeRateLimitResponse(response *http.Response) (bool, *provider.RateLimitMetadata, error) {
 	data, truncated, err := provider.ReadDiagnosticBody(response.Body)
 	if err != nil {
-		return truncated, err
+		return truncated, nil, err
 	}
 	_ = response.Body.Close()
 	response.Body = io.NopCloser(bytes.NewReader(data))
 	response.ContentLength = int64(len(data))
 	response.Header.Set("Content-Length", strconv.Itoa(len(data)))
-	if response.Header.Get("Retry-After") == "" {
-		if retryAfter := consoleRetryAfter(data); retryAfter > 0 {
+	metadata := parseConsoleRateLimitMetadata(data)
+	if headerValue := response.Header.Get("Retry-After"); headerValue != "" {
+		if metadata != nil {
+			if retryAfter := parseConsoleRetryAfterHeader(headerValue, time.Now().UTC()); retryAfter > 0 {
+				metadata.RetryAfter = retryAfter
+			}
+		}
+	} else {
+		retryAfter := consoleRetryAfter(data)
+		if metadata != nil {
+			retryAfter = metadata.RetryAfter
+		}
+		if retryAfter > 0 {
 			response.Header.Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))
 		}
 	}
-	return truncated, nil
+	return truncated, metadata, nil
 }
 
 func responseResult(response *http.Response, body io.ReadCloser) *provider.Response {

@@ -32,7 +32,7 @@ func TestSchemaAndRepositoryConstraints(t *testing.T) {
 	}
 
 	accountRepo := NewAccountRepository(database)
-	value := account.Credential{Provider: account.ProviderBuild, Name: "first", UserID: "user-1", SourceKey: "source", EncryptedAccessToken: "encrypted-a", EncryptedRefreshToken: "encrypted-r", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 4}
+	value := account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "first", UserID: "user-1", SourceKey: "source", EncryptedAccessToken: "encrypted-a", EncryptedCloudflareCookie: "encrypted-cf", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 4}
 	created, wasCreated, err := accountRepo.UpsertByIdentity(context.Background(), value)
 	if err != nil || !wasCreated {
 		t.Fatalf("首次 upsert = %#v, %v, %v", created, wasCreated, err)
@@ -46,8 +46,9 @@ func TestSchemaAndRepositoryConstraints(t *testing.T) {
 	}
 	value.Name = "updated"
 	value.EncryptedAccessToken = "encrypted-new"
+	value.EncryptedCloudflareCookie = ""
 	updated, wasCreated, err := accountRepo.UpsertByIdentity(context.Background(), value)
-	if err != nil || wasCreated || updated.ID != created.ID || updated.Name != "updated" || updated.LastUsedAt == nil || updated.ObservedModel != "grok-observed" || updated.ObservedModelAt == nil {
+	if err != nil || wasCreated || updated.ID != created.ID || updated.Name != "updated" || updated.LastUsedAt == nil || updated.ObservedModel != "grok-observed" || updated.ObservedModelAt == nil || updated.EncryptedCloudflareCookie != "encrypted-cf" {
 		t.Fatalf("幂等 upsert = %#v, %v, %v", updated, wasCreated, err)
 	}
 }
@@ -330,10 +331,11 @@ func TestAccountRepositoryPersistsObservedBuildBillingFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
+	onDemandEnabled := false
 	if err := repo.UpdateObservedModel(context.Background(), credential.ID, "grok-4.5-build-free", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveBilling(context.Background(), account.Billing{AccountID: credential.ID, IsUnifiedBillingUser: true, TopUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD", UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", UsagePeriodStart: "2026-07-12T00:00:00Z", UsagePeriodEnd: "2026-07-19T00:00:00Z", History: []account.BillingHistoryEntry{{Year: 2026, Month: 6}}, SyncedAt: now}); err != nil {
+	if err := repo.SaveBilling(context.Background(), account.Billing{AccountID: credential.ID, IsUnifiedBillingUser: true, OnDemandEnabled: &onDemandEnabled, TopUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD", UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", UsagePeriodStart: "2026-07-12T00:00:00Z", UsagePeriodEnd: "2026-07-19T00:00:00Z", History: []account.BillingHistoryEntry{{Year: 2026, Month: 6}}, SyncedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	storedCredential, err := repo.Get(context.Background(), credential.ID)
@@ -341,7 +343,7 @@ func TestAccountRepositoryPersistsObservedBuildBillingFields(t *testing.T) {
 		t.Fatalf("credential = %#v, err = %v", storedCredential, err)
 	}
 	billing, err := repo.GetBilling(context.Background(), credential.ID)
-	if err != nil || !billing.IsUnifiedBillingUser || billing.TopUpMethod != "TOP_UP_METHOD_SAVED_PAYMENT_METHOD" || billing.UsagePeriodType != "USAGE_PERIOD_TYPE_WEEKLY" || billing.UsagePeriodEnd != "2026-07-19T00:00:00Z" || len(billing.History) != 1 {
+	if err != nil || !billing.IsUnifiedBillingUser || billing.OnDemandEnabled == nil || *billing.OnDemandEnabled || billing.TopUpMethod != "TOP_UP_METHOD_SAVED_PAYMENT_METHOD" || billing.UsagePeriodType != "USAGE_PERIOD_TYPE_WEEKLY" || billing.UsagePeriodEnd != "2026-07-19T00:00:00Z" || len(billing.History) != 1 {
 		t.Fatalf("billing = %#v, err = %v", billing, err)
 	}
 }

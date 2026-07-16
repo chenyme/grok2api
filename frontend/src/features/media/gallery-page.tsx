@@ -1,14 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
-import { Database, Image as ImageIcon, RefreshCw, Search, type LucideIcon } from "lucide-react";
+import { Database, Image as ImageIcon, RefreshCw, Search } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Spinner } from "@/components/ui/spinner";
 import { getImageStats, listImages } from "@/features/media/media-api";
+import { MediaMetric } from "@/features/media/media-metric";
 import type { MediaAssetDTO } from "@/features/media/types";
 import { EmptyState, ErrorState, LoadingState } from "@/shared/components/data-state";
+import { DataTableShell } from "@/shared/components/data-table-shell";
 import { PageHeader } from "@/shared/components/page-header";
 import { Pagination } from "@/shared/components/pagination";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
@@ -53,13 +54,14 @@ export function GalleryPage() {
         )}
       />
 
-      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-2">
         <MediaMetric icon={ImageIcon} loading={statsQuery.isPending} label={t("media.images.totalImages")} value={formatNumber(statsQuery.data?.totalImages ?? 0, i18n.language, 0)} detail={t("media.images.totalImagesDetail")} />
         <MediaMetric icon={Database} loading={statsQuery.isPending} label={t("media.images.totalBytes")} value={formatBytes(statsQuery.data?.totalBytes ?? 0, i18n.language)} detail={t("media.images.totalBytesDetail")} />
       </section>
 
-      <section className="space-y-4">
-        <div className="flex min-h-12 flex-wrap items-center justify-between gap-3 py-2">
+      <DataTableShell
+        toolbar={(
+          <>
           <div className="relative w-full sm:w-80">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -71,7 +73,18 @@ export function GalleryPage() {
             />
           </div>
           {result ? <span className="text-xs text-muted-foreground">{t("media.images.pageSummary", { count: result.items.length, total: result.total })}</span> : null}
-        </div>
+          </>
+        )}
+        footer={result && result.total > 0 ? (
+          <Pagination
+            page={result.page}
+            pageSize={result.pageSize}
+            total={result.total}
+            onPageChange={setPage}
+            onPageSizeChange={(value) => { setPageSize(value); setPage(1); }}
+          />
+        ) : undefined}
+      >
 
         {imagesQuery.isError ? <ErrorState message={imagesQuery.error.message} onRetry={() => void imagesQuery.refetch()} /> : null}
         {imagesQuery.isPending ? <LoadingState /> : null}
@@ -83,26 +96,19 @@ export function GalleryPage() {
           </div>
         ) : null}
 
-        {result && result.total > 0 ? (
-          <Pagination
-            page={result.page}
-            pageSize={result.pageSize}
-            total={result.total}
-            onPageChange={setPage}
-            onPageSizeChange={(value) => { setPageSize(value); setPage(1); }}
-          />
-        ) : null}
-      </section>
+      </DataTableShell>
     </div>
   );
 }
 
 function ImageCard({ image, locale }: { image: MediaAssetDTO; locale: string }) {
   const { t } = useTranslation();
+  // 管理端图库与 API 同源，使用相对路径避免依赖未配置或仅对外可用的公共地址。
+  const imageURL = `/v1/media/images/${encodeURIComponent(image.id)}`;
   return (
-    <a href={image.url} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-lg bg-card transition-colors hover:bg-secondary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
+    <a href={imageURL} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-lg bg-card transition-colors hover:bg-secondary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
       <div className="aspect-square overflow-hidden bg-muted">
-        <img src={image.url} alt={image.id} loading="lazy" className="size-full object-cover transition-transform duration-200 group-hover:scale-[1.02]" />
+        <img src={imageURL} alt={image.id} loading="lazy" className="size-full object-cover transition-transform duration-200 group-hover:scale-[1.02]" />
       </div>
       <div className="space-y-2 p-3 text-xs">
         <div className="flex min-w-0 items-center justify-between gap-2">
@@ -116,19 +122,6 @@ function ImageCard({ image, locale }: { image: MediaAssetDTO; locale: string }) 
         <div className="truncate font-mono text-[10px] text-muted-foreground/75" title={image.sha256}>{t("media.images.sha256")}: {image.sha256}</div>
       </div>
     </a>
-  );
-}
-
-function MediaMetric({ icon: Icon, label, value, detail, loading }: { icon: LucideIcon; label: string; value: string; detail: string; loading: boolean }) {
-  return (
-    <div className="min-h-28 rounded-lg bg-card p-4">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-xs text-muted-foreground">{label}</span>
-        <Icon className="size-4 shrink-0 text-muted-foreground" />
-      </div>
-      <div className="mt-3 flex min-h-7 items-center text-xl font-medium tabular-nums">{loading ? <Spinner /> : value}</div>
-      <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
-    </div>
   );
 }
 

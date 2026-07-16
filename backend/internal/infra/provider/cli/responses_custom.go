@@ -5,7 +5,8 @@ import (
 	"strings"
 )
 
-// normalizeCustomTool 将任意字符串输入包装为普通函数；grammar 约束无法等价表达时明确拒绝。
+// normalizeCustomTool 将任意字符串输入包装为普通函数；无法等价表达的 format
+// 仅降级为纯文本输入，避免客户端因可选约束整次请求失败。
 func (c *responsesToolCompatibility) normalizeCustomTool(tool map[string]any, namespace, param string) ([]any, error) {
 	name := strings.TrimSpace(stringField(tool, "name"))
 	if name == "" {
@@ -13,11 +14,12 @@ func (c *responsesToolCompatibility) normalizeCustomTool(tool map[string]any, na
 	}
 	if format, exists := tool["format"]; exists {
 		formatObject, ok := format.(map[string]any)
-		if !ok || (stringField(formatObject, "type") != "" && stringField(formatObject, "type") != "text") {
-			return nil, &responsesRequestError{
-				Message: "Grok Build 无法等价模拟 custom tool grammar",
-				Param:   param + ".format", Code: "unsupported_parameter",
-			}
+		if !ok {
+			return nil, &responsesRequestError{Message: "custom tool format 必须是对象", Param: param + ".format", Code: "invalid_parameter"}
+		}
+		if kind := stringField(formatObject, "type"); kind != "" && kind != "text" {
+			c.changed = true
+			c.addWarning("custom_tool_format_downgraded")
 		}
 	}
 	identity := responsesToolIdentity{Kind: responsesCustomTool, Namespace: namespace, Name: name}

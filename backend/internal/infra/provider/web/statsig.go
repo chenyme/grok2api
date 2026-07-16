@@ -407,7 +407,7 @@ func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential
 	if err != nil {
 		return 0, err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", credential.ID))
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, credential)
 	if err != nil {
 		return 0, err
 	}

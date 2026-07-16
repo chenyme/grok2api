@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
@@ -222,12 +223,13 @@ func (a *Adapter) generateVideoOnBase(ctx context.Context, request provider.Vide
 
 // DownloadVideo 通过 Build egress 拉取已完成任务的公开 CDN URL。
 // 资源域不需要 OAuth；不得解密或转发 token 与客户端身份头。
-func (a *Adapter) DownloadVideo(ctx context.Context, _ account.Credential, rawURL string) (io.ReadCloser, string, int64, error) {
+func (a *Adapter) DownloadVideo(ctx context.Context, credential account.Credential, rawURL string) (io.ReadCloser, string, int64, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || parsed.Scheme != "https" || parsed.User != nil || !trustedBuildVideoAssetHost(parsed.Hostname()) {
 		return nil, "", 0, fmt.Errorf("视频内容 URL 不受信任")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return nil, "", 0, err
 	}
@@ -335,7 +337,8 @@ func (a *Adapter) doVideoJSON(ctx context.Context, credential account.Credential
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, a.urlWithBase(base, path), bodyReader)
+	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID)
+	req, err := http.NewRequestWithContext(requestCtx, method, a.urlWithBase(base, path), bodyReader)
 	if err != nil {
 		return nil, err
 	}

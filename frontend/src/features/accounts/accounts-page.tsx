@@ -132,14 +132,20 @@ export function AccountsPage() {
     maxConcurrent: z.number().int().min(1, t("errors.positive")).max(256),
     minimumRemaining: z.number().min(0),
     buildApiFallback: z.boolean(),
+    cloudflareCookies: z.string().max(16 << 10, t("settings.invalidValue")),
+    clearCloudflareCookies: z.boolean(),
   });
   type AccountForm = z.infer<typeof accountSchema>;
   const form = useForm<AccountForm>({
     resolver: zodResolver(accountSchema),
-    defaultValues: { name: "", enabled: true, priority: 1, maxConcurrent: 8, minimumRemaining: 0, buildApiFallback: false },
+    defaultValues: {
+      name: "", enabled: true, priority: 1, maxConcurrent: 8, minimumRemaining: 0,
+      buildApiFallback: false, cloudflareCookies: "", clearCloudflareCookies: false,
+    },
   });
   const accountEnabled = useWatch({ control: form.control, name: "enabled" });
   const accountBuildFallback = useWatch({ control: form.control, name: "buildApiFallback" });
+  const clearCloudflareCookies = useWatch({ control: form.control, name: "clearCloudflareCookies" });
 
   const accountsQuery = useQuery({
     queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, renewalFilter, sort.field, sort.order],
@@ -159,7 +165,20 @@ export function AccountsPage() {
   const updateMutation = useMutation({
     mutationFn: (values: AccountForm) => {
       if (!editing) throw new Error(t("errors.generic"));
-      return updateAccount(editing.id, values satisfies AccountUpdateInput);
+      const input: AccountUpdateInput = {
+        name: values.name,
+        enabled: values.enabled,
+        priority: values.priority,
+        maxConcurrent: values.maxConcurrent,
+        minimumRemaining: values.minimumRemaining,
+      };
+      if (editing.provider === "grok_build") {
+        input.buildApiFallback = values.buildApiFallback;
+      } else {
+        if (values.clearCloudflareCookies) input.clearCloudflareCookies = true;
+        else if (values.cloudflareCookies.trim()) input.cloudflareCookies = values.cloudflareCookies;
+      }
+      return updateAccount(editing.id, input);
     },
     onSuccess: () => {
       invalidateAccountData();
@@ -453,6 +472,8 @@ export function AccountsPage() {
       maxConcurrent: account.maxConcurrent,
       minimumRemaining: account.minimumRemaining,
       buildApiFallback: Boolean(account.buildApiFallback),
+      cloudflareCookies: "",
+      clearCloudflareCookies: false,
     });
   }
 
@@ -560,15 +581,15 @@ export function AccountsPage() {
                 <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={t("accounts.search")} aria-label={t("accounts.search")} />
               </div>
               <DataTableFilters filters={[
-                ...(provider === "grok_console" ? [] : [{ id: "type", label: t("accounts.type"), value: typeFilter, onChange: (value: string) => { setTypeFilter(value); setPage(1); }, options: provider === "grok_web" ? [
-                  { value: "auto", label: "Auto" },
-                  { value: "basic", label: "Basic" },
-                  { value: "super", label: "Super" },
-                  { value: "heavy", label: "Heavy" },
+                ...(provider === "grok_console" ? [] : [{ id: "type", label: t("accountType.label"), value: typeFilter, onChange: (value: string) => { setTypeFilter(value); setPage(1); }, options: provider === "grok_web" ? [
+                  { value: "auto", label: t("accountType.auto") },
+                  { value: "basic", label: t("accountType.free") },
+                  { value: "super", label: t("accountType.super") },
+                  { value: "heavy", label: t("accountType.heavy") },
                 ] : [
-                  { value: "free", label: t("accounts.quotaFree") },
-                  { value: "paid", label: t("accounts.quotaSuper") },
-                  { value: "unknown", label: t("dashboard.unknown") },
+                  { value: "free", label: t("accountType.free") },
+                  { value: "paid", label: t("accountType.paid") },
+                  { value: "unknown", label: t("accountType.pending") },
                 ] }]),
                 { id: "status", label: t("accounts.status"), value: statusFilter, onChange: (value) => { setStatusFilter(value); setPage(1); }, options: [
                   { value: "active", label: t("accounts.statusActive") },
@@ -638,7 +659,7 @@ export function AccountsPage() {
               <TableRow className="hover:bg-transparent">
                 <TableHead className="px-2"><Checkbox checked={allPageSelected ? true : selectedOnPage.length > 0 ? "indeterminate" : false} onCheckedChange={(checked) => togglePage(checked === true)} aria-label={t("common.selectPage")} /></TableHead>
                 <SortableTableHead field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("accounts.account")}</SortableTableHead>
-                <SortableTableHead field="type" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accounts.type")}</SortableTableHead>
+                <SortableTableHead field="type" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accountType.label")}</SortableTableHead>
                 <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accounts.status")}</SortableTableHead>
                 <TableHead className="whitespace-nowrap">{t("accounts.quota")}</TableHead>
                 {provider === "grok_build" ? <TableHead className="whitespace-nowrap pl-4">{t("accountCredential.label")}</TableHead> : null}
@@ -674,7 +695,7 @@ export function AccountsPage() {
                         </div>
                       ) : null}
                     </TableCell>
-                    <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("console.type")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
+                    <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("accountType.console")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
                     <TableCell className="text-center whitespace-nowrap"><AccountStatus account={account} /></TableCell>
                     <TableCell>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}</TableCell>
                     {provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
@@ -853,6 +874,27 @@ export function AccountsPage() {
               <div className="space-y-2"><Label htmlFor="account-concurrency">{t("accounts.maxConcurrent")}</Label><Input id="account-concurrency" type="number" min="1" max="256" {...form.register("maxConcurrent", { valueAsNumber: true })} /></div>
             </div>
             <div className="space-y-2"><Label htmlFor="account-minimum">{t("accounts.minimumRemaining")}</Label><Input id="account-minimum" type="number" min="0" step="0.01" {...form.register("minimumRemaining", { valueAsNumber: true })} /></div>
+            {editing && editing.provider !== "grok_build" ? (
+              <div className="space-y-2">
+                <Label htmlFor="account-cloudflare-cookie">{t("settings.egress.cloudflareCookie")}</Label>
+                <Textarea
+                  id="account-cloudflare-cookie"
+                  className="min-h-20 font-mono text-xs"
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  disabled={clearCloudflareCookies}
+                  placeholder={editing?.cloudflareCookieConfigured ? t("settings.egress.keepConfigured") : "cf_clearance=..."}
+                  {...form.register("cloudflareCookies")}
+                />
+                {editing?.cloudflareCookieConfigured ? (
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Checkbox checked={clearCloudflareCookies} onCheckedChange={(checked) => form.setValue("clearCloudflareCookies", checked === true)} />
+                    {t("common.clear")}
+                  </label>
+                ) : null}
+                {form.formState.errors.cloudflareCookies ? <p className="text-xs text-destructive">{form.formState.errors.cloudflareCookies.message}</p> : null}
+              </div>
+            ) : null}
             <DialogFooter><Button type="button" variant="secondary" size="sm" onClick={() => setEditing(null)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={updateMutation.isPending}>{updateMutation.isPending ? <Spinner /> : null}{t("common.save")}</Button></DialogFooter>
           </form>
         </DialogContent>
@@ -897,34 +939,28 @@ function AccountMetricPanel({ icon, label, value, detail, loading }: { icon: Rea
   );
 }
 
-function webTierLabel(tier: AccountDTO["webTier"]) {
-  if (tier === "basic") return "Free";
-  if (tier === "super") return "Super";
-  if (tier === "heavy") return "Heavy";
-  return "Auto";
-}
-
 function WebAccountType({ tier }: { tier?: AccountDTO["webTier"] }) {
-  const label = webTierLabel(tier);
+  const { t } = useTranslation();
+  const label = tier === "basic" ? t("accountType.free") : tier === "super" ? t("accountType.super") : tier === "heavy" ? t("accountType.heavy") : t("accountType.auto");
   return <AccountTypeText label={label} variant={tier === "basic" ? "free" : "default"} />;
 }
 
 function AccountType({ quota }: { quota: QuotaDTO }) {
   const { t } = useTranslation();
   if (quota.type === "unknown") {
-    return <AccountTypeText label={t("dashboard.unknown")} variant="muted" />;
+    return <AccountTypeText label={t("accountType.pending")} title={t("accountType.pendingDescription")} variant="muted" />;
   }
 
   const isFree = quota.type === "free";
-  const label = isFree ? t("accounts.quotaFree") : t("accounts.quotaSuper");
+  const label = isFree ? t("accountType.free") : t("accountType.paid");
   return <AccountTypeText label={label} variant={isFree ? "free" : "default"} />;
 }
 
-function AccountTypeText({ label, variant }: { label: string; variant: "default" | "free" | "muted" }) {
+function AccountTypeText({ label, title, variant }: { label: string; title?: string; variant: "default" | "free" | "muted" }) {
   if (variant === "muted") {
-    return <span className="text-xs text-muted-foreground">{label}</span>;
+    return <span title={title ?? label} className="text-xs text-muted-foreground">{label}</span>;
   }
-  return <span title={label} className={cn("max-w-32 truncate text-xs font-medium", variant === "free" ? "text-emerald-700 dark:text-emerald-300" : "text-primary")}>{label}</span>;
+  return <span title={title ?? label} className={cn("max-w-32 truncate text-xs font-medium", variant === "free" ? "text-emerald-700 dark:text-emerald-300" : "text-primary")}>{label}</span>;
 }
 
 function AccountStatus({ account }: { account: AccountDTO }) {

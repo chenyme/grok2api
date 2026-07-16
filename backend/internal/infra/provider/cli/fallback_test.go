@@ -321,10 +321,11 @@ func TestGetBillingAlwaysPrimaryEvenWhenMarked(t *testing.T) {
 			if !strings.Contains(request.URL.Path, "/billing") {
 				t.Fatalf("path = %s", request.URL.Path)
 			}
-			if request.URL.RawQuery == "format=credits" {
-				return jsonResponse(http.StatusOK, `{"config":{"onDemandCap":{"val":10},"onDemandUsed":{"val":1}}}`, request), nil
+			// 上游 v3.0.2 Billing 仅请求 format=credits，且始终主地址。
+			if request.URL.RawQuery != "format=credits" {
+				t.Fatalf("query = %q, want format=credits", request.URL.RawQuery)
 			}
-			return jsonResponse(http.StatusOK, `{"config":{"monthlyLimit":{"val":100},"used":{"val":5}}}`, request), nil
+			return jsonResponse(http.StatusOK, `{"config":{"onDemandCap":{"val":10},"onDemandUsed":{"val":1},"monthlyLimit":{"val":100},"used":{"val":5}}}`, request), nil
 		case strings.Contains(request.URL.Host, "xai.test"):
 			fallbackHits.Add(1)
 			t.Fatalf("billing must never hit XAI")
@@ -340,11 +341,10 @@ func TestGetBillingAlwaysPrimaryEvenWhenMarked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if billing.MonthlyLimit != 100 || billing.Used != 5 {
+	if billing.OnDemandCap != 10 || billing.OnDemandUsed != 1 {
 		t.Fatalf("billing = %+v", billing)
 	}
-	// monthly + credits，均只打主地址。
-	if primaryHits.Load() != 2 || fallbackHits.Load() != 0 {
+	if primaryHits.Load() != 1 || fallbackHits.Load() != 0 {
 		t.Fatalf("primary=%d fallback=%d", primaryHits.Load(), fallbackHits.Load())
 	}
 	if marker.calls.Load() != 0 {

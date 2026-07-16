@@ -43,6 +43,7 @@ const responseOwnershipTTL = 30 * 24 * time.Hour
 const finalizationTimeout = 5 * time.Second
 const textBillingReservationTTL = 2 * time.Hour
 const mediaBillingReservationTTL = 24 * time.Hour
+const modelCatalogRefreshTimeout = 30 * time.Second
 
 var freeQuotaUsagePattern = regexp.MustCompile(`(?i)tokens\s*\(actual/limit\)\s*:\s*([0-9]+)\s*/\s*([0-9]+)`)
 
@@ -96,6 +97,10 @@ type videoAssetReader interface {
 	OpenVideo(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error)
 }
 
+type accountModelSyncer interface {
+	SyncAccount(ctx context.Context, accountID uint64) (int, error)
+}
+
 // Service 负责模型路由、账号选择、故障切换与审计收口。
 type Service struct {
 	models         routeResolver
@@ -114,6 +119,16 @@ type Service struct {
 	mediaWorker    int
 	mediaQueueFull atomic.Uint64
 	logger         *slog.Logger
+	rateLimitMu    sync.Mutex
+	rateLimits     map[string]teamModelRateLimit
+	rateLimitTeams map[uint64]string
+	modelSyncMu    sync.Mutex
+	modelSyncing   map[uint64]struct{}
+}
+
+type teamModelRateLimit struct {
+	TeamFingerprint string
+	Until           time.Time
 }
 
 func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concurrency int) {
@@ -132,9 +147,86 @@ func (s *Service) ConfigureMediaAssets(reader videoAssetReader) {
 }
 
 func NewService(models routeResolver, audits auditRecorder, accounts *accountapp.Service, clientKeys *clientkeyapp.Service, providers *provider.Registry, selector *Selector, responses repository.ResponseRepository, maxAttempts int) *Service {
-	service := &Service{models: models, audits: audits, accounts: accounts, clientKeys: clientKeys, providers: providers, selector: selector, responses: responses, logger: slog.Default()}
+	service := &Service{
+		models: models, audits: audits, accounts: accounts, clientKeys: clientKeys, providers: providers,
+		selector: selector, responses: responses, logger: slog.Default(),
+		rateLimits: make(map[string]teamModelRateLimit), rateLimitTeams: make(map[uint64]string),
+		modelSyncing: make(map[uint64]struct{}),
+	}
 	service.UpdateMaxAttempts(maxAttempts)
 	return service
+}
+
+func teamModelRateLimitKey(providerValue accountdomain.Provider, teamFingerprint, upstreamModel string) string {
+	return string(providerValue) + "\x00" + teamFingerprint + "\x00" + strings.TrimSpace(upstreamModel)
+}
+
+func rateLimitTeamFingerprint(teamID string) string {
+	teamID = strings.TrimSpace(teamID)
+	if teamID == "" {
+		return ""
+	}
+	return security.HashToken(teamID)
+}
+
+func shortTeamFingerprint(value string) string {
+	if len(value) <= 12 {
+		return value
+	}
+	return value[:12]
+}
+
+func (s *Service) activeTeamModelRateLimit(credential accountdomain.Credential, upstreamModel string, now time.Time) (teamModelRateLimit, bool) {
+	teamFingerprint := rateLimitTeamFingerprint(credential.TeamID)
+	s.rateLimitMu.Lock()
+	defer s.rateLimitMu.Unlock()
+	if teamFingerprint == "" {
+		teamFingerprint = s.rateLimitTeams[credential.ID]
+	}
+	if teamFingerprint == "" {
+		return teamModelRateLimit{}, false
+	}
+	key := teamModelRateLimitKey(credential.Provider, teamFingerprint, upstreamModel)
+	value, ok := s.rateLimits[key]
+	if !ok {
+		return teamModelRateLimit{}, false
+	}
+	if !now.Before(value.Until) {
+		delete(s.rateLimits, key)
+		return teamModelRateLimit{}, false
+	}
+	return value, true
+}
+
+func (s *Service) markTeamModelRateLimit(credential accountdomain.Credential, upstreamModel string, metadata provider.RateLimitMetadata, now time.Time) teamModelRateLimit {
+	retryAfter := metadata.RetryAfter
+	if retryAfter <= 0 {
+		retryAfter = time.Minute
+	}
+	teamFingerprint := rateLimitTeamFingerprint(metadata.TeamID)
+	value := teamModelRateLimit{TeamFingerprint: shortTeamFingerprint(teamFingerprint), Until: now.Add(retryAfter)}
+	key := teamModelRateLimitKey(credential.Provider, teamFingerprint, upstreamModel)
+	until := now.Add(retryAfter)
+	s.rateLimitMu.Lock()
+	if s.rateLimits == nil {
+		s.rateLimits = make(map[string]teamModelRateLimit)
+	}
+	if s.rateLimitTeams == nil {
+		s.rateLimitTeams = make(map[uint64]string)
+	}
+	s.rateLimitTeams[credential.ID] = teamFingerprint
+	for existingKey, value := range s.rateLimits {
+		if !now.Before(value.Until) {
+			delete(s.rateLimits, existingKey)
+		}
+	}
+	if current, ok := s.rateLimits[key]; ok && !current.Until.Before(until) {
+		value = current
+	} else {
+		s.rateLimits[key] = value
+	}
+	s.rateLimitMu.Unlock()
+	return value
 }
 
 func (s *Service) SetLogger(logger *slog.Logger) {
@@ -282,15 +374,27 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	if err != nil {
 		return nil, ErrModelNotFound
 	}
-	route, routeErr := s.selectConversationRoute(routes, input.ClientKey, operation, path, input.PreviousResponseID != "", nil)
+	// Select the route first without requiring stored-response support. Console
+	// is intentionally stateless but can still accept a complete input replay;
+	// rejecting it here would prevent the Provider compatibility boundary from
+	// normalizing the request.
+	route, routeErr := s.selectConversationRoute(routes, input.ClientKey, operation, path, false, nil)
 	var ownership *inferencedomain.ResponseOwnership
 	if input.PreviousResponseID != "" && routeErr == nil {
-		value, ownershipErr := s.responses.Get(ctx, input.PreviousResponseID, input.ClientKey.ID, time.Now().UTC())
-		if ownershipErr != nil {
-			return nil, ErrResponseNotFound
+		if s.providers.SupportsStoredResponses(route.Provider) {
+			value, ownershipErr := s.responses.Get(ctx, input.PreviousResponseID, input.ClientKey.ID, time.Now().UTC())
+			if ownershipErr != nil {
+				return nil, ErrResponseNotFound
+			}
+			ownership = &value
+			route, routeErr = s.selectConversationRoute(routes, input.ClientKey, operation, path, true, ownership)
+		} else if route.Provider == accountdomain.ProviderConsole {
+			// Console has no response store. It receives the current request as a
+			// stateless replay; the Provider normalizer removes the stale ID.
+			input.PreviousResponseID = ""
+		} else {
+			return nil, ErrResponseStateUnsupported
 		}
-		ownership = &value
-		route, routeErr = s.selectConversationRoute(routes, input.ClientKey, operation, path, true, ownership)
 	}
 	publicModel := modeldomain.ExternalPublicID(route.Provider, route.PublicID)
 	input.PublicModel = publicModel
@@ -402,10 +506,21 @@ attemptLoop:
 			}
 			break
 		}
+		excluded[lease.Credential.ID] = true
+		if limited, ok := s.activeTeamModelRateLimit(lease.Credential, route.UpstreamModel, time.Now().UTC()); ok {
+			lease.Release()
+			lastFailure = &UpstreamFailure{
+				HTTPStatus: http.StatusTooManyRequests, Code: "upstream_rate_limited", PublicMessage: "上游请求频率受限",
+				Fingerprint: "429:team_model_rate_limit", RetryAfter: time.Until(limited.Until),
+			}
+			lastErr = fmt.Errorf("上游 Team 与模型请求频率受限")
+			s.logger.Warn("upstream_team_model_rate_limit_active", "request_id", input.RequestID, "provider", route.Provider, "model", route.UpstreamModel, "team_fingerprint", limited.TeamFingerprint, "retry_after", lastFailure.RetryAfter.Round(time.Second))
+			attempt--
+			continue
+		}
 		if lease.QuotaProbe {
 			quotaProbeAttempted = true
 		}
-		excluded[lease.Credential.ID] = true
 		if lease.QuotaProbeKind == accountdomain.QuotaRecoveryKindPaid {
 			recovered, probeErr := s.accounts.ProbePaidQuota(ctx, lease.Credential)
 			s.selector.MarkQuotaStateChanged(lease.Credential.Provider)
@@ -441,6 +556,9 @@ attemptLoop:
 			continue
 		}
 	handleResponse:
+		if response.ModelCatalogChanged {
+			s.queueAccountModelSync(credential.ID)
+		}
 		if response.StatusCode == http.StatusUnauthorized {
 			response.Body.Close()
 			if credential.AuthType == accountdomain.AuthTypeSSO {
@@ -491,7 +609,7 @@ attemptLoop:
 		}
 		egressForbidden := s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden
 		finalEgressForbidden := egressForbidden && (attempt > 0 || attempt+1 >= attempts)
-		if isRetryable(response.StatusCode) && !finalEgressForbidden {
+		if isRetryableResponse(response) && !finalEgressForbidden {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
 			body, _ := readRetryableBody(response.Body)
 			if egressForbidden {
@@ -503,6 +621,16 @@ attemptLoop:
 				continue
 			}
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
+			if response.StatusCode == http.StatusTooManyRequests && response.RateLimit != nil && response.RateLimit.TeamID != "" && response.RateLimit.Model == route.UpstreamModel {
+				limited := s.markTeamModelRateLimit(credential, route.UpstreamModel, *response.RateLimit, time.Now().UTC())
+				lastFailure.AccountScoped = false
+				lastFailure.Fingerprint = "429:team_model_rate_limit"
+				lastFailure.RetryAfter = time.Until(limited.Until)
+				lease.Release()
+				lastErr = fmt.Errorf("上游 Team 与模型请求频率受限")
+				s.logger.Warn("upstream_team_model_rate_limited", "request_id", input.RequestID, "provider", credential.Provider, "model", route.UpstreamModel, "team_fingerprint", limited.TeamFingerprint, "scope", response.RateLimit.Scope, "actual", response.RateLimit.Actual, "limit", response.RateLimit.Limit, "retry_after", lastFailure.RetryAfter)
+				continue
+			}
 			if s.providers.SupportsCredentialRefresh(credential.Provider) && !authRecoveryAttempted[credential.ID] && credential.EncryptedRefreshToken != "" && (lastFailure.PermanentAccountDenial || lastFailure.CredentialRejected) {
 				authRecoveryAttempted[credential.ID] = true
 				refreshed, refreshErr := ensureCredential(credential, true)
@@ -691,6 +819,43 @@ attemptLoop:
 	return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, lastErr)
 }
 
+func (s *Service) queueAccountModelSync(accountID uint64) {
+	syncer, ok := s.models.(accountModelSyncer)
+	if !ok || accountID == 0 {
+		return
+	}
+	s.modelSyncMu.Lock()
+	if s.modelSyncing == nil {
+		s.modelSyncing = make(map[uint64]struct{})
+	}
+	if _, exists := s.modelSyncing[accountID]; exists {
+		s.modelSyncMu.Unlock()
+		return
+	}
+	s.modelSyncing[accountID] = struct{}{}
+	s.modelSyncMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.modelSyncMu.Lock()
+			delete(s.modelSyncing, accountID)
+			s.modelSyncMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), modelCatalogRefreshTimeout)
+		defer cancel()
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		count, err := syncer.SyncAccount(ctx, accountID)
+		if err != nil {
+			logger.Warn("model_etag_refresh_failed", "account_id", accountID, "error", err)
+			return
+		}
+		logger.Info("model_etag_refresh_completed", "account_id", accountID, "models", count)
+	}()
+}
+
 func rewriteAliasedModel(body []byte, publicModel, reasoningEffort string, operation audit.Operation) ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -871,6 +1036,13 @@ func (b *finalizingBody) Close() error {
 
 func isRetryable(status int) bool {
 	return status == 402 || status == 403 || status == 429 || status >= 500
+}
+
+func isRetryableResponse(response *provider.Response) bool {
+	if response == nil || !isRetryable(response.StatusCode) {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-Should-Retry")), "false")
 }
 
 func parseRetryAfter(value string, now time.Time) time.Duration {

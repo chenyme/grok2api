@@ -54,7 +54,7 @@ func TestNewBuildClientRejectsUnsupportedProxyScheme(t *testing.T) {
 
 func TestBuildClientRoutesThroughSOCKS5HWithRemoteDNS(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("User-Agent") != "grok-shell/0.2.99 (linux; x86_64)" {
+		if request.Header.Get("User-Agent") != "grok-shell/0.2.101 (linux; x86_64)" {
 			t.Errorf("User-Agent = %q", request.Header.Get("User-Agent"))
 		}
 		writer.Header().Set("Connection", "close")
@@ -84,7 +84,7 @@ func TestBuildClientRoutesThroughSOCKS5HWithRemoteDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Close = true
-	request.Header.Set("User-Agent", "grok-shell/0.2.99 (linux; x86_64)")
+	request.Header.Set("User-Agent", "grok-shell/0.2.101 (linux; x86_64)")
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
