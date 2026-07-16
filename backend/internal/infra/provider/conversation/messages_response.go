@@ -8,7 +8,13 @@ import (
 )
 
 func messagesResponse(value parsedResponse, options ResponseOptions) map[string]any {
-	content := make([]any, 0, len(value.Calls))
+	webSearch := value.WebSearch
+	if options.AnthropicWebSearchRequired && len(webSearch) == 0 {
+		webSearch = []webSearchCall{unavailableWebSearchCall(options.AnthropicWebSearchQuery)}
+	}
+	// Avoid capacity arithmetic on untrusted upstream lengths (CodeQL size overflow).
+	// appendServerWebSearchContent already hard-caps search blocks.
+	content := make([]any, 0)
 	if options.AnthropicThinking && (value.Reasoning != "" || value.Signature != "") {
 		if value.Reasoning == "" {
 			content = append(content, map[string]any{"type": "redacted_thinking", "data": value.Signature})
@@ -20,7 +26,9 @@ func messagesResponse(value parsedResponse, options ResponseOptions) map[string]
 			content = append(content, thinking)
 		}
 	}
-	if value.Text != "" || len(value.Calls) == 0 {
+	// Hosted web search completes in-process; emit Anthropic server tool blocks first.
+	content = appendServerWebSearchContent(content, webSearch)
+	if value.Text != "" || (len(value.Calls) == 0 && len(webSearch) == 0) {
 		content = append(content, map[string]any{"type": "text", "text": value.Text})
 	}
 	for _, call := range value.Calls {
@@ -32,6 +40,7 @@ func messagesResponse(value parsedResponse, options ResponseOptions) map[string]
 	}
 	stopReason := "end_turn"
 	if len(value.Calls) > 0 {
+		// Client tools still pause the turn. Hosted web_search does not.
 		stopReason = "tool_use"
 	} else if value.StopSequence != "" {
 		stopReason = "stop_sequence"
@@ -43,7 +52,7 @@ func messagesResponse(value parsedResponse, options ResponseOptions) map[string]
 	return map[string]any{
 		"id": anthropicMessageID(value.ID), "type": "message", "role": "assistant",
 		"model": value.Model, "content": content, "stop_reason": stopReason, "stop_sequence": nullableAnthropicString(value.StopSequence),
-		"usage": anthropicUsage(value.Usage),
+		"usage": anthropicUsage(value.Usage, webSearchRequestCount(webSearch)),
 	}
 }
 
@@ -95,11 +104,15 @@ func nullableAnthropicString(value string) any {
 	return value
 }
 
-func anthropicUsage(value responseUsage) map[string]any {
-	return map[string]any{
+func anthropicUsage(value responseUsage, webSearchRequests int) map[string]any {
+	usage := map[string]any{
 		"input_tokens": value.InputTokens, "output_tokens": value.OutputTokens,
 		"cache_creation_input_tokens": 0, "cache_read_input_tokens": value.InputTokensDetails.CachedTokens,
 	}
+	if webSearchRequests > 0 {
+		usage["server_tool_use"] = map[string]any{"web_search_requests": webSearchRequests}
+	}
+	return usage
 }
 
 func anthropicErrorJSON(value any) []byte {

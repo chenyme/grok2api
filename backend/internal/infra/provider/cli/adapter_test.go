@@ -333,6 +333,76 @@ func TestForwardResponsePreservesClaudeCodeMessagesOptions(t *testing.T) {
 	}
 }
 
+func TestForwardResponseMapsClaudeCodeWebSearchEndToEnd(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, cipher)
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		tools, _ := payload["tools"].([]any)
+		if len(tools) != 1 || tools[0].(map[string]any)["type"] != "web_search" || payload["tool_choice"] != "required" {
+			t.Fatalf("upstream web search payload = %#v", payload)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"id":"resp_search","model":"grok-4.5","status":"completed",
+				"output":[
+					{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"rust tutorials","sources":[{"url":"https://doc.rust-lang.org"}]}},
+					{"type":"message","content":[{"type":"output_text","text":"Here you go.","annotations":[{"type":"url_citation","url":"https://doc.rust-lang.org","title":"The Rust Book"}]}]}
+				],
+				"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}
+			}`)),
+			Request: request,
+		}, nil
+	})
+
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", NormalizeBody: true,
+		Operation: conversation.OperationMessages,
+		Body: []byte(`{
+			"model":"public","max_tokens":256,
+			"messages":[{"role":"user","content":"Perform a web search for the query: rust tutorials"}],
+			"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}],
+			"tool_choice":{"type":"tool","name":"web_search"}
+		}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	content := payload["content"].([]any)
+	if len(content) != 3 || content[0].(map[string]any)["type"] != "server_tool_use" || content[1].(map[string]any)["type"] != "web_search_tool_result" || content[2].(map[string]any)["text"] != "Here you go." {
+		t.Fatalf("messages web search response = %#v", payload)
+	}
+	use := content[0].(map[string]any)
+	if use["input"].(map[string]any)["query"] != "rust tutorials" || content[1].(map[string]any)["tool_use_id"] != use["id"] {
+		t.Fatalf("web search block linkage = %#v", content)
+	}
+	hits := content[1].(map[string]any)["content"].([]any)
+	if len(hits) != 1 || hits[0].(map[string]any)["title"] != "The Rust Book" {
+		t.Fatalf("web search hits = %#v", hits)
+	}
+	serverUsage := payload["usage"].(map[string]any)["server_tool_use"].(map[string]any)
+	if serverUsage["web_search_requests"] != float64(1) || payload["stop_reason"] != "end_turn" {
+		t.Fatalf("messages web search usage = %#v", payload)
+	}
+}
+
 func TestForwardResponseInjectsPromptCacheKeyAfterChatConversion(t *testing.T) {
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {

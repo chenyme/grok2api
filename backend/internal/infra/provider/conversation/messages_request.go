@@ -75,6 +75,13 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 		}
 		target["text"] = map[string]any{"format": map[string]any{"type": "json_schema", "name": "anthropic_output", "schema": request.OutputConfig.Format.Schema}}
 	}
+	hasWebSearchTool := hasAnthropicWebSearchTool(request.Tools)
+	webSearchEnabled := hasWebSearchTool && (request.ToolChoice == nil || !strings.EqualFold(strings.TrimSpace(request.ToolChoice.Type), "none"))
+	webSearchRequired := webSearchEnabled && anthropicWebSearchRequired(request.Tools, request.ToolChoice)
+	webSearchQuery := ""
+	if webSearchEnabled {
+		webSearchQuery = anthropicWebSearchQuery(request.Messages)
+	}
 	if thinkingEnabled {
 		effort := anthropicThinkingEffort(request.Thinking.BudgetTokens)
 		if request.OutputConfig != nil && request.OutputConfig.Effort != "" {
@@ -108,7 +115,7 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 		target["tools"] = append(existing, servers...)
 	}
 	if request.ToolChoice != nil {
-		choice, parallel, err := convertAnthropicToolChoice(*request.ToolChoice)
+		choice, parallel, err := convertAnthropicToolChoice(*request.ToolChoice, hasWebSearchTool)
 		if err != nil {
 			return nil, ResponseOptions{}, err
 		}
@@ -117,8 +124,11 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 	}
 	converted, err := json.Marshal(target)
 	return converted, ResponseOptions{
-		AnthropicThinking: thinkingEnabled,
-		StopSequences:     append([]string(nil), request.StopSequences...),
+		AnthropicThinking:          thinkingEnabled,
+		AnthropicWebSearch:         webSearchEnabled,
+		AnthropicWebSearchRequired: webSearchRequired,
+		AnthropicWebSearchQuery:    webSearchQuery,
+		StopSequences:              append([]string(nil), request.StopSequences...),
 	}, err
 }
 
@@ -527,6 +537,81 @@ func convertAnthropicTools(tools []map[string]json.RawMessage) ([]any, error) {
 	return result, nil
 }
 
+func hasAnthropicWebSearchTool(tools []map[string]json.RawMessage) bool {
+	for _, tool := range tools {
+		var typeName string
+		_ = json.Unmarshal(tool["type"], &typeName)
+		if strings.HasPrefix(typeName, "web_search_") {
+			return true
+		}
+	}
+	return false
+}
+
+func anthropicWebSearchRequired(tools []map[string]json.RawMessage, choice *anthropicToolChoice) bool {
+	if choice == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(choice.Type)) {
+	case "tool":
+		return strings.EqualFold(strings.TrimSpace(choice.Name), "web_search")
+	case "any":
+		return len(tools) == 1 && hasAnthropicWebSearchTool(tools)
+	default:
+		return false
+	}
+}
+
+func anthropicWebSearchQuery(messages []anthropicMessage) string {
+	const prefix = "perform a web search for the query:"
+	for index := len(messages) - 1; index >= 0; index-- {
+		if !strings.EqualFold(strings.TrimSpace(messages[index].Role), "user") {
+			continue
+		}
+		text := anthropicMessageText(messages[index].Content)
+		if text == "" {
+			continue
+		}
+		if offset := strings.Index(strings.ToLower(text), prefix); offset >= 0 {
+			text = strings.TrimSpace(text[offset+len(prefix):])
+		}
+		return truncateRunes(strings.TrimSpace(text), 4096)
+	}
+	return ""
+}
+
+func anthropicMessageText(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return strings.TrimSpace(text)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			parts = append(parts, strings.TrimSpace(block.Text))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func truncateRunes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
+
 func convertAnthropicWebSearchTool(tool map[string]json.RawMessage, index int) (map[string]any, error) {
 	converted := map[string]any{"type": "web_search"}
 	for key, raw := range tool {
@@ -594,7 +679,7 @@ func anthropicThinkingEffort(budget int) string {
 	}
 }
 
-func convertAnthropicToolChoice(choice anthropicToolChoice) (any, bool, error) {
+func convertAnthropicToolChoice(choice anthropicToolChoice, hasHostedWebSearch bool) (any, bool, error) {
 	parallel := !choice.DisableParallelToolUse
 	switch choice.Type {
 	case "auto", "none":
@@ -604,6 +689,11 @@ func convertAnthropicToolChoice(choice anthropicToolChoice) (any, bool, error) {
 	case "tool":
 		if strings.TrimSpace(choice.Name) == "" {
 			return nil, false, errors.New("tool_choice.tool 缺少 name")
+		}
+		// Claude Code secondary search forces name=web_search (hosted). Build accepts
+		// hosted tool_choice only as "required" when a single hosted tool remains.
+		if hasHostedWebSearch && strings.EqualFold(strings.TrimSpace(choice.Name), "web_search") {
+			return "required", parallel, nil
 		}
 		return map[string]any{"type": "function", "name": choice.Name}, parallel, nil
 	default:

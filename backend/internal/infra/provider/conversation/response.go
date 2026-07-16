@@ -8,8 +8,11 @@ import (
 
 // ResponseOptions 保留无法直接交给 Responses 上游执行的下游协议语义。
 type ResponseOptions struct {
-	AnthropicThinking bool
-	StopSequences     []string
+	AnthropicThinking          bool
+	AnthropicWebSearch         bool
+	AnthropicWebSearchRequired bool
+	AnthropicWebSearchQuery    string
+	StopSequences              []string
 }
 
 type responseEnvelope struct {
@@ -33,12 +36,15 @@ type responseItem struct {
 	Name      string            `json:"name"`
 	Arguments string            `json:"arguments"`
 	Encrypted string            `json:"encrypted_content"`
+	// Action is populated for Build hosted tool items such as web_search_call.
+	Action map[string]any `json:"action"`
 }
 
 type responseContent struct {
-	Type    string `json:"type"`
-	Text    string `json:"text"`
-	Refusal string `json:"refusal"`
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	Refusal     string `json:"refusal"`
+	Annotations []any  `json:"annotations"`
 }
 
 type responseUsage struct {
@@ -62,6 +68,7 @@ type parsedResponse struct {
 	Signature    string
 	Refusal      string
 	Calls        []responseItem
+	WebSearch    []webSearchCall
 	Usage        responseUsage
 	Status       string
 	StopSequence string
@@ -90,6 +97,9 @@ func ConvertResponseJSONWithOptions(body []byte, operation string, options Respo
 	parsed := parseResponse(envelope)
 	if operation == OperationMessages {
 		parsed.Text, parsed.StopSequence = applyAnthropicStopSequences(parsed.Text, options.StopSequences)
+		if !options.AnthropicWebSearch {
+			parsed.WebSearch = nil
+		}
 	}
 	var result any
 	if operation == OperationMessages {
@@ -105,9 +115,11 @@ func parseResponse(value responseEnvelope) parsedResponse {
 	if parsed.CreatedAt == 0 {
 		parsed.CreatedAt = time.Now().Unix()
 	}
+	var annotations []map[string]any
 	for _, item := range value.Output {
 		switch item.Type {
 		case "message":
+			annotations = append(annotations, extractMessageAnnotations(item)...)
 			for _, content := range item.Content {
 				switch content.Type {
 				case "output_text":
@@ -125,7 +137,20 @@ func parseResponse(value responseEnvelope) parsedResponse {
 			}
 		case "function_call":
 			parsed.Calls = append(parsed.Calls, item)
+		case "web_search_call":
+			// Cap candidates early so pathological upstream envelopes cannot
+			// retain unbounded intermediate search state before dedupe.
+			if len(parsed.WebSearch) >= maxWebSearchCalls {
+				continue
+			}
+			if call, ok := parseWebSearchCallItem(item); ok {
+				parsed.WebSearch = append(parsed.WebSearch, call)
+			}
 		}
+	}
+	if len(parsed.WebSearch) > 0 {
+		parsed.WebSearch = dedupeWebSearchCalls(parsed.WebSearch)
+		parsed.WebSearch = mergeAnnotationTitles(parsed.WebSearch, annotations)
 	}
 	return parsed
 }
