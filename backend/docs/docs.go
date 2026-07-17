@@ -650,6 +650,10 @@ const docTemplate = `{
                     "type": "integer",
                     "example": 1
                 },
+                "partial_images": {
+                    "type": "integer",
+                    "example": 0
+                },
                 "prompt": {
                     "type": "string",
                     "example": "A cinematic city at night"
@@ -661,6 +665,10 @@ const docTemplate = `{
                 "response_format": {
                     "type": "string",
                     "example": "url"
+                },
+                "stream": {
+                    "type": "boolean",
+                    "example": false
                 }
             }
         },

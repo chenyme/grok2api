@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -590,6 +591,32 @@ func TestImagineResolutionAndBatchMapping(t *testing.T) {
 			t.Fatalf("resolution=%s count=%d config=%#v", test.resolution, test.count, config)
 		}
 	}
+	config, _ := resolveImagineModel("imagine", "1k", 1)
+	if got := imagineUpstreamGenerationCount(true, 1, config); got != 1 {
+		t.Fatalf("streaming upstream count = %d, want 1", got)
+	}
+	if got := imagineUpstreamGenerationCount(false, 1, config); got != 4 {
+		t.Fatalf("non-streaming upstream count = %d, want 4", got)
+	}
+}
+
+func TestImageStreamingRejectsMultipleOutputs(t *testing.T) {
+	response, err := (&Adapter{}).GenerateImage(context.Background(), provider.ImageGenerationRequest{
+		Model: "grok-imagine-image-quality", Prompt: "cat", Count: 2, Streaming: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		t.Fatalf("body=%s", body)
+	}
+	errorValue, _ := payload["error"].(map[string]any)
+	if response.StatusCode != http.StatusBadRequest || errorValue["message"] != "Streaming is only supported with n=1." || errorValue["type"] != "image_generation_user_error" || errorValue["param"] != "input" || errorValue["code"] != "unsupported_parameter" {
+		t.Fatalf("status=%d error=%#v", response.StatusCode, errorValue)
+	}
 }
 
 func TestImageAspectRatioFollowsXAIContractAndSizeAlias(t *testing.T) {
@@ -629,6 +656,91 @@ func TestImagineCollectorHandlesOutOfOrderFrames(t *testing.T) {
 	}
 }
 
+func TestImagineCollectorIgnoresWebSocketPreviewFrames(t *testing.T) {
+	collector := newImagineCollector()
+	collector.Accept(map[string]any{
+		"type": "image", "id": "image-a", "order": 0.0,
+		"percentage_complete": 50.0,
+		"url":                 "https://imagine-public.x.ai/imagine-public/images/image-a.png",
+		"blob":                "preview",
+	})
+	previews := collector.ReadyPreviews()
+	if len(previews) != 1 || previews[0].ID != "image-a" || previews[0].Blob != "preview" || len(collector.ReadyPreviews()) != 0 {
+		t.Fatalf("previews = %#v", previews)
+	}
+	collector.Accept(map[string]any{
+		"type": "json", "current_status": "completed", "image_id": "image-a",
+		"order": 0.0, "moderated": false,
+	})
+	if collector.Done(1) || collector.UsableCount() != 0 || len(collector.Images()) != 0 {
+		t.Fatalf("preview became final: %#v", collector)
+	}
+	collector.Accept(map[string]any{
+		"type": "image", "id": "image-a", "order": 0.0,
+		"percentage_complete": 100.0,
+		"url":                 "https://imagine-public.x.ai/imagine-public/images/image-a.jpg",
+		"blob":                "final",
+	})
+	if !collector.Done(1) || collector.UsableCount() != 1 {
+		t.Fatalf("final image not recognized: %#v", collector)
+	}
+	images := collector.Images()
+	if len(images) != 1 || images[0].URL != "https://imagine-public.x.ai/imagine-public/images/image-a.jpg" || images[0].Blob != "final" {
+		t.Fatalf("images = %#v", images)
+	}
+}
+
+func TestImagineCollectorKeepsInterleavedJobsIsolated(t *testing.T) {
+	collector := newImagineCollector()
+	collector.Accept(map[string]any{
+		"type": "image", "id": "image-a", "order": 0.0, "percentage_complete": 50.0, "blob": "a-preview",
+	})
+	collector.Accept(map[string]any{
+		"type": "image", "id": "image-b", "order": 1.0, "percentage_complete": 50.0, "blob": "b-preview",
+	})
+	previews := collector.ReadyPreviews()
+	if len(previews) != 2 || previews[0].ID != "image-a" || previews[0].Blob != "a-preview" || previews[1].ID != "image-b" || previews[1].Blob != "b-preview" {
+		t.Fatalf("previews = %#v", previews)
+	}
+	collector.Accept(map[string]any{
+		"type": "image", "id": "image-b", "order": 1.0, "percentage_complete": 100.0, "blob": "b-final",
+	})
+	collector.Accept(map[string]any{"type": "json", "current_status": "completed", "image_id": "image-b", "order": 1.0, "moderated": false})
+	ready := collector.ReadyImages()
+	if len(ready) != 1 || ready[0].ID != "image-b" || ready[0].Blob != "b-final" {
+		t.Fatalf("first ready = %#v", ready)
+	}
+	collector.Accept(map[string]any{
+		"type": "image", "id": "image-a", "order": 0.0, "percentage_complete": 100.0, "blob": "a-final",
+	})
+	collector.Accept(map[string]any{"type": "json", "current_status": "completed", "image_id": "image-a", "order": 0.0, "moderated": false})
+	ready = collector.ReadyImages()
+	if len(ready) != 1 || ready[0].ID != "image-a" || ready[0].Blob != "a-final" {
+		t.Fatalf("second ready = %#v", ready)
+	}
+}
+
+func TestImagineCollectorCanReturnRequestedSubsetBeforeNativeBatchCompletes(t *testing.T) {
+	collector := newImagineCollector()
+	for index := 0; index < 3; index++ {
+		id := fmt.Sprintf("image-%d", index)
+		collector.Accept(map[string]any{
+			"type": "image", "id": id, "order": float64(index), "percentage_complete": 100.0,
+			"url": "https://imagine-public.x.ai/imagine-public/images/" + id + ".jpg",
+		})
+		collector.Accept(map[string]any{
+			"type": "json", "current_status": "completed", "image_id": id,
+			"order": float64(index), "moderated": false,
+		})
+	}
+	if collector.Done(4) || collector.UsableCount() != 3 {
+		t.Fatalf("collector=%#v usable=%d", collector, collector.UsableCount())
+	}
+	if collector.UsableCount() < 2 {
+		t.Fatal("a request for two images should already be satisfiable")
+	}
+}
+
 func TestImagineCollectorSettlesModeratedSlots(t *testing.T) {
 	collector := newImagineCollector()
 	collector.Accept(map[string]any{"type": "json", "current_status": "completed", "image_id": "blocked", "moderated": true})
@@ -643,7 +755,7 @@ func TestGeneratedImageAssetHostsRemainStrict(t *testing.T) {
 	}
 }
 
-func TestImageStreamExtensionEventsAndPayloads(t *testing.T) {
+func TestImageStreamUsesOfficialOpenAIEventsWithoutTokenUsage(t *testing.T) {
 	adapter := &Adapter{assets: imageAssetStoreStub{}}
 	urlItem, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{URL: "https://imgen.x.ai/image.jpg", Blob: "aW1hZ2U="}, "url")
 	if err != nil || urlItem["url"] != "https://api.example/v1/media/images/img_test" || urlItem["mime_type"] != "image/jpeg" || urlItem["revised_prompt"] != "" {
@@ -653,11 +765,22 @@ func TestImageStreamExtensionEventsAndPayloads(t *testing.T) {
 	if err != nil || b64Item["b64_json"] != "aW1hZ2U=" || b64Item["mime_type"] != "image/jpeg" {
 		t.Fatalf("base64 item = %#v, err=%v", b64Item, err)
 	}
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0, 'I', 'H', 'D', 'R'}
+	partial := openAIImageStreamEvent("image_generation.partial_image", imagineImageValue{ID: "image-a", Width: 960, Height: 960}, png, 0)
+	if partial["type"] != "image_generation.partial_image" || partial["partial_image_index"] != 0 || partial["size"] != "960x960" || partial["output_format"] != "png" || partial["usage"] != nil {
+		t.Fatalf("partial event = %#v", partial)
+	}
+	completed := openAIImageStreamEvent("image_generation.completed", imagineImageValue{ID: "image-a", Width: 960, Height: 960}, []byte("jpeg"), 0)
+	if completed["type"] != "image_generation.completed" || completed["partial_image_index"] != nil || completed["quality"] != "auto" || completed["usage"] != nil {
+		t.Fatalf("completed event = %#v", completed)
+	}
 	var output bytes.Buffer
-	writeImagineStreamFailure(&output, "imggen_test", "upstream_error", "generation failed")
+	if err := writeSSE(&output, "image_generation.partial_image", partial); err != nil {
+		t.Fatal(err)
+	}
 	value := output.String()
-	if !strings.Contains(value, "event: image_generation.failed") || !strings.Contains(value, `"id":"imggen_test"`) || !strings.Contains(value, `"code":"upstream_error"`) {
-		t.Fatalf("failure event = %q", value)
+	if !strings.Contains(value, "event: image_generation.partial_image") || strings.Contains(value, "image_generation.started") || strings.Contains(value, "image_generation.image.completed") || strings.Contains(value, `"usage"`) {
+		t.Fatalf("stream event = %q", value)
 	}
 }
 
