@@ -39,3 +39,7 @@ type videoStatsDTO struct {
 	InProgress int64 `json:"inProgress"`
 	Queued     int64 `json:"queued"`
 }
+
+type videoPreviewDTO struct {
+	URL string `json:"url"`
+}

@@ -1,5 +1,5 @@
 import type { MediaAssetDTO, ImageStatsDTO, MediaJobDTO, VideoStatsDTO } from "@/features/media/types";
-import { apiDownload, apiRequest, type PaginatedDTO } from "@/shared/api/client";
+import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import {
   createObjectDecoder,
   createPaginatedDecoder,
@@ -10,6 +10,7 @@ import {
   isOneOf,
 } from "@/shared/api/decoder";
 import type { SortOrder } from "@/shared/lib/table-sort";
+import { runtimeConfig } from "@/shared/config/runtime-config";
 
 export type ListImagesInput = {
   page: number;
@@ -25,6 +26,8 @@ export type ListVideosInput = {
   sortBy?: string;
   sortOrder?: SortOrder;
 };
+
+type VideoPreviewDTO = { url: string };
 
 const mediaAssetShape = {
   id: isString,
@@ -64,6 +67,9 @@ const decodeVideoStats = createObjectDecoder<VideoStatsDTO>("video stats", {
   inProgress: isNumber,
   queued: isNumber,
 });
+const decodeVideoPreview = createObjectDecoder<VideoPreviewDTO>("video preview", {
+  url: isString,
+});
 
 export function listImages(input: ListImagesInput): Promise<PaginatedDTO<MediaAssetDTO>> {
   const query = new URLSearchParams({ page: String(input.page), pageSize: String(input.pageSize) });
@@ -90,7 +96,12 @@ export function getVideoStats(): Promise<VideoStatsDTO> {
   return apiRequest("/api/admin/v1/media/videos/stats", {}, decodeVideoStats);
 }
 
-/** 以管理员凭据下载本地缓存视频二进制，供预览弹窗使用。 */
-export function downloadVideoContent(jobId: string): Promise<Blob> {
-  return apiDownload(`/api/admin/v1/media/videos/${encodeURIComponent(jobId)}/content`);
+/** 使用管理员凭据换取短时、单任务范围的原生媒体流地址。 */
+export async function createVideoPreview(jobId: string): Promise<VideoPreviewDTO> {
+  const preview = await apiRequest(
+    `/api/admin/v1/media/videos/${encodeURIComponent(jobId)}/preview`,
+    { method: "POST" },
+    decodeVideoPreview,
+  );
+  return { ...preview, url: `${runtimeConfig.apiBaseUrl}${preview.url}` };
 }

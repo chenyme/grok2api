@@ -1,6 +1,9 @@
 package security
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestClientKeyFormat(t *testing.T) {
 	raw := FormatClientKey("abc123", "secret_value")
@@ -15,5 +18,38 @@ func TestClientKeyFormat(t *testing.T) {
 		if _, ok := SplitClientKey(value); ok {
 			t.Fatalf("SplitClientKey(%q) unexpectedly succeeded", value)
 		}
+	}
+}
+
+func TestVideoPreviewTokenIsShortLivedAndJobScoped(t *testing.T) {
+	service := NewTokenService("12345678901234567890123456789012")
+	ticket, err := service.CreateVideoPreviewToken("job_123", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ParseVideoPreviewToken(ticket, "job_123"); err != nil {
+		t.Fatalf("valid ticket rejected: %v", err)
+	}
+	if err := service.ParseVideoPreviewToken(ticket, "job_other"); err == nil {
+		t.Fatal("ticket was accepted for another job")
+	}
+	if _, err := service.ParseAccessToken(ticket); err == nil {
+		t.Fatal("preview ticket was accepted as an admin access token")
+	}
+
+	accessToken, _, err := service.CreateAccessToken(1, 2, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ParseVideoPreviewToken(accessToken, "job_123"); err == nil {
+		t.Fatal("admin access token was accepted as a preview ticket")
+	}
+
+	expired, err := service.CreateVideoPreviewToken("job_123", -time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ParseVideoPreviewToken(expired, "job_123"); err == nil {
+		t.Fatal("expired preview ticket was accepted")
 	}
 }

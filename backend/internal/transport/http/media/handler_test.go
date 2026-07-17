@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	localmedia "github.com/chenyme/grok2api/backend/internal/infra/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/gin-gonic/gin"
 )
@@ -48,7 +50,7 @@ func TestPublicImageSupportsGetHeadAndETag(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := gin.New()
-	NewHandler(service).RegisterPublic(router)
+	NewHandler(service, nil).RegisterPublic(router)
 	path := "/v1/media/images/" + asset.ID
 
 	get := httptest.NewRecorder()
@@ -107,7 +109,7 @@ func TestPutVideoUploadReturns413WhenBodyTooLarge(t *testing.T) {
 	}
 	payload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x0a}, 64)...)
 	router := gin.New()
-	NewHandler(service).RegisterPublic(router)
+	NewHandler(service, nil).RegisterPublic(router)
 	req := httptest.NewRequest(http.MethodPut, "/v1/media/uploads/"+token, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "video/mp4")
 	recorder := httptest.NewRecorder()
@@ -144,7 +146,7 @@ func TestPutVideoUploadReturns400ForInvalidMIME(t *testing.T) {
 	}
 	token := uploadURL[len("https://api.example/v1/media/uploads/"):]
 	router := gin.New()
-	NewHandler(service).RegisterPublic(router)
+	NewHandler(service, nil).RegisterPublic(router)
 	payload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p'}, bytes.Repeat([]byte{1}, 16)...)
 	req := httptest.NewRequest(http.MethodPut, "/v1/media/uploads/"+token, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "video/webm")
@@ -174,7 +176,7 @@ func TestAdminVideoListRejectsInvalidFilters(t *testing.T) {
 		mediaapp.Config{},
 	)
 	router := gin.New()
-	NewHandler(service).RegisterAdmin(router.Group("/api/admin/v1"))
+	NewHandler(service, nil).RegisterAdmin(router.Group("/api/admin/v1"))
 
 	for _, path := range []string{
 		"/api/admin/v1/media/videos?status=unknown",
@@ -231,7 +233,7 @@ func TestAdminVideoListHidesCompletedErrorsAndExposesPreview(t *testing.T) {
 	}
 
 	router := gin.New()
-	NewHandler(service).RegisterAdmin(router.Group("/api/admin/v1"))
+	NewHandler(service, nil).RegisterAdmin(router.Group("/api/admin/v1"))
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/videos?page=1&pageSize=20", nil))
 	if recorder.Code != http.StatusOK {
@@ -253,7 +255,7 @@ func TestAdminVideoListHidesCompletedErrorsAndExposesPreview(t *testing.T) {
 	}
 }
 
-func TestAdminVideoContentEndpoint(t *testing.T) {
+func TestAdminVideoPreviewTicketStreamsRanges(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-admin-content.db"))
@@ -311,43 +313,71 @@ func TestAdminVideoContentEndpoint(t *testing.T) {
 	}
 
 	router := gin.New()
-	NewHandler(service).RegisterAdmin(router.Group("/api/admin/v1"))
+	tokens := security.NewTokenService("12345678901234567890123456789012")
+	handler := NewHandler(service, tokens)
+	handler.RegisterPublic(router)
+	handler.RegisterAdmin(router.Group("/api/admin/v1"))
 
-	ok := httptest.NewRecorder()
-	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/videos/job_content_ok/content", nil))
-	if ok.Code != http.StatusOK || ok.Header().Get("Content-Type") != "video/mp4" ||
-		ok.Header().Get("Content-Disposition") != "inline" ||
-		ok.Header().Get("Cache-Control") != "private, no-store" ||
-		ok.Header().Get("X-Content-Type-Options") != "nosniff" ||
-		ok.Body.Len() != len(videoPayload) {
-		t.Fatalf("ok response status=%d headers=%#v size=%d", ok.Code, ok.Header(), ok.Body.Len())
+	issued := httptest.NewRecorder()
+	router.ServeHTTP(issued, httptest.NewRequest(http.MethodPost, "/api/admin/v1/media/videos/job_content_ok/preview", nil))
+	if issued.Code != http.StatusOK || issued.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("issue response status=%d headers=%#v body=%s", issued.Code, issued.Header(), issued.Body.String())
 	}
-	if ok.Header().Get("Content-Length") != strconv.Itoa(len(videoPayload)) {
-		t.Fatalf("content-length = %q", ok.Header().Get("Content-Length"))
+	var preview struct {
+		Data videoPreviewDTO `json:"data"`
+	}
+	if err := json.Unmarshal(issued.Body.Bytes(), &preview); err != nil || preview.Data.URL == "" {
+		t.Fatalf("decode preview response: err=%v body=%s", err, issued.Body.String())
+	}
+
+	partialRequest := httptest.NewRequest(http.MethodGet, preview.Data.URL, nil)
+	partialRequest.Header.Set("Range", "bytes=4-11")
+	partial := httptest.NewRecorder()
+	router.ServeHTTP(partial, partialRequest)
+	if partial.Code != http.StatusPartialContent || partial.Header().Get("Content-Type") != "video/mp4" ||
+		partial.Header().Get("Content-Disposition") != "inline" ||
+		partial.Header().Get("Cache-Control") != "private, no-store" ||
+		partial.Header().Get("Accept-Ranges") != "bytes" ||
+		partial.Header().Get("Content-Range") != "bytes 4-11/"+strconv.Itoa(len(videoPayload)) ||
+		!bytes.Equal(partial.Body.Bytes(), videoPayload[4:12]) {
+		t.Fatalf("range response status=%d headers=%#v body=%x", partial.Code, partial.Header(), partial.Body.Bytes())
+	}
+
+	head := httptest.NewRecorder()
+	router.ServeHTTP(head, httptest.NewRequest(http.MethodHead, preview.Data.URL, nil))
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Accept-Ranges") != "bytes" ||
+		head.Header().Get("Content-Length") != strconv.Itoa(len(videoPayload)) {
+		t.Fatalf("HEAD response status=%d headers=%#v size=%d", head.Code, head.Header(), head.Body.Len())
+	}
+
+	unauthorized := httptest.NewRecorder()
+	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/media/video-previews/job_content_ok", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("ticketless stream status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
 	}
 
 	for _, path := range []string{
-		"/api/admin/v1/media/videos/job_missing/content",
-		"/api/admin/v1/media/videos/job_content_missing_asset/content",
-		"/api/admin/v1/media/videos/job_content_failed/content",
-		"/api/admin/v1/media/videos/job_content_image_asset/content",
+		"/api/admin/v1/media/videos/job_missing/preview",
+		"/api/admin/v1/media/videos/job_content_missing_asset/preview",
+		"/api/admin/v1/media/videos/job_content_failed/preview",
+		"/api/admin/v1/media/videos/job_content_image_asset/preview",
 	} {
 		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, nil))
 		if recorder.Code != http.StatusNotFound {
-			t.Fatalf("GET %s status = %d body=%s", path, recorder.Code, recorder.Body.String())
+			t.Fatalf("POST %s status = %d body=%s", path, recorder.Code, recorder.Body.String())
 		}
 		if bytes.Contains(recorder.Body.Bytes(), []byte("videos/")) || bytes.Contains(recorder.Body.Bytes(), []byte("http")) {
 			t.Fatalf("404 body leaked path/url: %s", recorder.Body.String())
 		}
 	}
 
-	// 底层对象缺失：元数据仍在时内容端点也必须 404。
+	// 票据签发后底层对象被清理，流端点仍必须返回 404。
 	if err := objects.Delete(ctx, storageKey); err != nil {
 		t.Fatal(err)
 	}
 	missingObject := httptest.NewRecorder()
-	router.ServeHTTP(missingObject, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/videos/job_content_ok/content", nil))
+	router.ServeHTTP(missingObject, httptest.NewRequest(http.MethodGet, preview.Data.URL, nil))
 	if missingObject.Code != http.StatusNotFound {
 		t.Fatalf("missing object status = %d body=%s", missingObject.Code, missingObject.Body.String())
 	}

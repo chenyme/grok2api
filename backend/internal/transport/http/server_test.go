@@ -72,6 +72,16 @@ func TestInferenceTrafficIsRejectedWhileReconciling(t *testing.T) {
 	}
 }
 
+func TestVideoPreviewRejectsMissingTicketWithoutAuthDependencies(t *testing.T) {
+	router := New(testDependencies())
+	request := httptest.NewRequest(http.MethodGet, "/v1/media/video-previews/job_123", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestSystemEndpointsRequireAdminAuthentication(t *testing.T) {
 	deps := testDependencies()
 	deps.PublicAPIBaseURL = "https://api.example.com"
