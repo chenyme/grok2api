@@ -400,6 +400,10 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		// Build 403 可能是账号权限、额度、Token 或出口策略，响应体由网关层
 		// 分类；仅凭状态码不能把标准 CLI 出口误判为 Web anti-bot。
 		return
+	case scope == domain.ScopeBuild && status == http.StatusBadRequest:
+		// Device OAuth 在用户确认前会以 400 + authorization_pending 轮询，
+		// 这是协议正常状态，不能当作出口节点故障进入冷却。
+		return
 	case status == http.StatusForbidden:
 		if m.isStickyProxyNode(value) {
 			// A 403 on an account-bound Resin lease usually means that account's
