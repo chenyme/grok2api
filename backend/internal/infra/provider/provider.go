@@ -219,6 +219,7 @@ type ImageGenerationRequest struct {
 	Resolution     string
 	ResponseFormat string
 	Streaming      bool
+	PartialImages  int
 }
 
 type ImageInput struct {

@@ -754,7 +754,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 
 	result, err := service.GenerateImage(ctx, ImageGenerationInput{
 		RequestID: "req-image-stream", ClientKey: key, PublicModel: "grok-imagine-image-quality",
-		Prompt: "test", Count: 2, Resolution: "1k", ResponseFormat: "url", Streaming: true,
+		Prompt: "test", Count: 1, Resolution: "1k", ResponseFormat: "url", Streaming: true, PartialImages: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -766,8 +766,8 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	if string(body) != "event: image_generation.completed\ndata: {}\n\ndata: [DONE]\n\n" {
 		t.Fatalf("stream body = %q", body)
 	}
-	if !adapter.Streaming() {
-		t.Fatal("stream flag was not propagated to the Web image adapter")
+	if !adapter.Streaming() || adapter.PartialImages() != 1 {
+		t.Fatalf("image stream options were not propagated: streaming=%t partial_images=%d", adapter.Streaming(), adapter.PartialImages())
 	}
 	if logs, total, err := auditRepo.List(ctx, 0, 10); err != nil || total != 0 || len(logs) != 0 {
 		t.Fatalf("audit persisted before finalization: logs=%#v total=%d err=%v", logs, total, err)
@@ -780,8 +780,8 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 		t.Fatalf("audit logs=%#v total=%d err=%v", logs, total, err)
 	}
 	if !logs[0].Streaming || logs[0].Operation != "image" || logs[0].Provider != string(account.ProviderWeb) || logs[0].ErrorCode != "" ||
-		logs[0].MediaInputImages != 0 || logs[0].MediaOutputImages != 2 ||
-		logs[0].PricingModel != "grok-imagine-image-quality-1k" || logs[0].EstimatedCostInUSDTicks != 1_000_000_000 {
+		logs[0].MediaInputImages != 0 || logs[0].MediaOutputImages != 1 ||
+		logs[0].PricingModel != "grok-imagine-image-quality-1k" || logs[0].EstimatedCostInUSDTicks != 500_000_000 {
 		t.Fatalf("audit = %#v", logs[0])
 	}
 	windows, err := accountRepo.GetQuotaWindows(ctx, []uint64{credential.ID})
@@ -1146,6 +1146,7 @@ type webRateLimitAdapter struct{}
 type webImageStreamAdapter struct {
 	mu             sync.Mutex
 	streaming      bool
+	partialImages  int
 	editResolution string
 	synced         chan string
 	failureEgress  *infraegress.Manager
@@ -1209,6 +1210,7 @@ func (a *webImageStreamAdapter) TierOrder(string) []account.WebTier {
 func (a *webImageStreamAdapter) GenerateImage(ctx context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
 	a.mu.Lock()
 	a.streaming = request.Streaming
+	a.partialImages = request.PartialImages
 	failureEgress := a.failureEgress
 	a.attempts = append(a.attempts, request.Credential.ID)
 	a.mu.Unlock()
@@ -1242,6 +1244,11 @@ func (a *webImageStreamAdapter) Streaming() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.streaming
+}
+func (a *webImageStreamAdapter) PartialImages() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.partialImages
 }
 func (a *webImageStreamAdapter) EditResolution() string {
 	a.mu.Lock()
