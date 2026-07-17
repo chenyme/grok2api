@@ -20,8 +20,8 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 		}
 		param := fmt.Sprintf("input[%d]", index)
 		itemType := strings.TrimSpace(stringField(item, "type"))
-		// Codex/OpenAI may omit type on role-bearing message items. Force a
-		// known type before rewrite so untyped objects never reach ModelInput.
+		// Codex/OpenAI 可能省略带 role 消息的 type；在重建前补成明确消息，
+		// 避免无类型对象直接进入 ModelInput。
 		if itemType == "" && strings.TrimSpace(stringField(item, "role")) != "" {
 			itemType = "message"
 		}
@@ -48,10 +48,15 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			c.changed = true
 			rewritten = append(rewritten, converted)
 		case "reasoning":
-			converted, changed := sanitizeReasoningInput(item)
-			if changed {
-				c.changed = true
-			}
+			converted := sanitizeReasoningInput(item)
+			c.changed = true
+			rewritten = append(rewritten, converted)
+		case "file_search_call", "web_search_call", "image_generation_call", "code_interpreter_call",
+			"shell_call", "mcp_list_tools", "mcp_approval_request", "mcp_approval_response", "mcp_call", "compaction":
+			// 这些类型已进入 Grok Build 0.2.101 的 Responses InputItem 契约。
+			// 仅清理 Codex 私有字段和 null，不能把原生调用降级成文本边界。
+			converted := sanitizeNativeHistoryInput(item, itemType)
+			c.changed = true
 			rewritten = append(rewritten, converted)
 		case "tool_search_call":
 			callID := strings.TrimSpace(stringField(item, "call_id"))
@@ -189,10 +194,6 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			rewritten = append(rewritten, marker)
 		default:
 			if kind := strings.TrimSpace(stringField(item, "type")); kind != "" {
-				if c.stripExternal {
-					rewritten = append(rewritten, c.externalHistoryBoundary(item, kind))
-					continue
-				}
 				c.changed = true
 				c.addWarning("unsupported_input_history_omitted")
 				rewritten = append(rewritten, unsupportedInputHistoryBoundary(item, kind))
@@ -221,8 +222,8 @@ func (c *responsesToolCompatibility) normalizeFunctionCallInput(item map[string]
 	if namespace != "" {
 		name = c.alias(responsesToolIdentity{Kind: responsesFunctionTool, Namespace: namespace, Name: name})
 	}
-	// CLIProxyAPI constructs function_call with only type/call_id/name/arguments.
-	// Extra fields (id/status/namespace/metadata) break Grok's untagged ModelInput.
+	// 按官方 Build 回放结构仅保留四个输入字段，避免输出态字段和私有元数据
+	// 干扰 Grok 的 untagged ModelInput 反序列化。
 	return map[string]any{"type": "function_call", "call_id": callID, "name": name, "arguments": arguments}, nil
 }
 
@@ -251,65 +252,96 @@ func (c *responsesToolCompatibility) normalizeCustomToolCallInput(item map[strin
 	}, nil
 }
 
-func sanitizeReasoningInput(item map[string]any) (map[string]any, bool) {
-	// Grok Build's untagged ModelInput rejects null-valued fields and Codex
-	// private metadata. Only keep portable non-null reasoning fields.
-	//
-	// Codex may emit reasoning items with summary text but null
-	// encrypted_content (common when the model returns a summary-only item).
-	// Replaying that shape 422s, so fall back to a developer boundary that
-	// preserves the visible summary without claiming encrypted state.
-	encrypted, hasEncrypted := nonNullJSONValue(item["encrypted_content"])
-	if !hasEncrypted || strings.TrimSpace(fmt.Sprint(encrypted)) == "" {
-		summary := reasoningSummaryText(item["summary"])
-		text := "A prior model reasoning item was omitted because it has no portable encrypted_content for Grok Build."
-		if summary != "" {
-			text += "\nSummary:\n" + summary
-		}
-		return compatibilityBoundaryMessage(text), true
+func sanitizeReasoningInput(item map[string]any) map[string]any {
+	// 官方 Grok Build 回放 reasoning 时会删除 output-only status，但会保留
+	// id、summary、content 和可选 encrypted_content。密文不是回放的前置条件。
+	converted := copyNonNullHistoryFields(item, "id", "summary", "content", "encrypted_content")
+	converted["type"] = "reasoning"
+	if !hasPortableReasoningContent(converted) {
+		return compatibilityBoundaryMessage("A prior model reasoning item was omitted because it has no portable content for Grok Build.")
 	}
-
-	converted := map[string]any{"type": "reasoning", "encrypted_content": cloneJSONValue(encrypted)}
-	for _, key := range []string{"id", "summary", "content", "status"} {
-		if value, ok := nonNullJSONValue(item[key]); ok {
-			converted[key] = cloneJSONValue(value)
-		}
-	}
-	return converted, true
+	return converted
 }
 
-func nonNullJSONValue(value any) (any, bool) {
-	if value == nil {
-		return nil, false
+func hasPortableReasoningContent(item map[string]any) bool {
+	if encrypted, ok := item["encrypted_content"].(string); ok && strings.TrimSpace(encrypted) != "" {
+		return true
 	}
-	return value, true
-}
-
-func reasoningSummaryText(raw any) string {
-	items, ok := raw.([]any)
-	if !ok {
-		return ""
-	}
-	parts := make([]string, 0, len(items))
-	for _, rawItem := range items {
-		item, ok := rawItem.(map[string]any)
-		if !ok {
-			continue
-		}
-		if text := strings.TrimSpace(stringField(item, "text")); text != "" {
-			parts = append(parts, text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func hasPrivateInputFields(item map[string]any) bool {
-	for _, key := range []string{"internal_chat_message_metadata_passthrough", "phase"} {
-		if _, exists := item[key]; exists {
+	for _, key := range []string{"summary", "content"} {
+		if values, ok := item[key].([]any); ok && len(values) > 0 {
 			return true
 		}
 	}
 	return false
+}
+
+// sanitizeNativeHistoryInput 按 Grok Build 0.2.101 的原生 InputItem 字段重建历史，
+// 避免 Codex 扩展元数据干扰 Rust untagged enum 的反序列化。
+func sanitizeNativeHistoryInput(item map[string]any, itemType string) map[string]any {
+	var fields []string
+	switch itemType {
+	case "file_search_call":
+		fields = []string{"id", "queries", "status", "results"}
+	case "web_search_call":
+		fields = []string{"action", "id", "status"}
+	case "image_generation_call":
+		fields = []string{"id", "result", "status"}
+	case "code_interpreter_call":
+		fields = []string{"code", "container_id", "id", "outputs", "status"}
+	case "shell_call":
+		fields = []string{"id", "call_id", "action", "status", "environment"}
+	case "mcp_list_tools":
+		fields = []string{"id", "server_label", "tools", "error"}
+	case "mcp_approval_request":
+		fields = []string{"arguments", "id", "name", "server_label"}
+	case "mcp_approval_response":
+		fields = []string{"approval_request_id", "approve", "id", "reason"}
+	case "mcp_call":
+		fields = []string{"arguments", "id", "name", "server_label", "approval_request_id", "error", "output", "status"}
+	case "compaction":
+		fields = []string{"id", "encrypted_content"}
+	}
+	converted := copyNonNullHistoryFields(item, fields...)
+	converted["type"] = itemType
+	return converted
+}
+
+func copyNonNullHistoryFields(item map[string]any, fields ...string) map[string]any {
+	converted := make(map[string]any, len(fields)+1)
+	for _, key := range fields {
+		if value, ok := sanitizeHistoryJSONValue(item[key]); ok {
+			converted[key] = value
+		}
+	}
+	return converted
+}
+
+func sanitizeHistoryJSONValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, false
+	case map[string]any:
+		cleaned := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			if key == "phase" || key == "internal_chat_message_metadata_passthrough" {
+				continue
+			}
+			if normalized, ok := sanitizeHistoryJSONValue(nested); ok {
+				cleaned[key] = normalized
+			}
+		}
+		return cleaned, true
+	case []any:
+		cleaned := make([]any, 0, len(typed))
+		for _, nested := range typed {
+			if normalized, ok := sanitizeHistoryJSONValue(nested); ok {
+				cleaned = append(cleaned, normalized)
+			}
+		}
+		return cleaned, true
+	default:
+		return cloneJSONValue(value), true
+	}
 }
 
 func unsupportedInputHistoryBoundary(item map[string]any, kind string) map[string]any {

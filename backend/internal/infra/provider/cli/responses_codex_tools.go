@@ -19,7 +19,7 @@ func (c *responsesToolCompatibility) normalizeShellTool(tool map[string]any, par
 	return c.normalizeNativeTool(tool, param)
 }
 
-// normalizeLegacyLocalShellTool 将旧 Codex local_shell 升级为 0.2.99 原生 local shell 环境。
+// normalizeLegacyLocalShellTool 将旧 Codex local_shell 升级为 0.2.101 原生 local shell 环境。
 func (c *responsesToolCompatibility) normalizeLegacyLocalShellTool(tool map[string]any, param string) ([]any, error) {
 	if c.nativeShell || c.legacyLocalShell {
 		return nil, &responsesRequestError{
@@ -27,13 +27,8 @@ func (c *responsesToolCompatibility) normalizeLegacyLocalShellTool(tool map[stri
 			Param:   param + ".type", Code: "invalid_parameter",
 		}
 	}
-	for key := range tool {
-		if key != "type" {
-			return nil, &responsesRequestError{
-				Message: "旧版 local_shell 不支持额外配置字段",
-				Param:   param + "." + key, Code: "unsupported_parameter",
-			}
-		}
+	if len(tool) > 1 {
+		c.addWarning("legacy_local_shell_controls_ignored")
 	}
 	c.legacyLocalShell = true
 	c.changed = true
@@ -45,20 +40,9 @@ func (c *responsesToolCompatibility) normalizeLegacyLocalShellTool(tool map[stri
 }
 
 // normalizeApplyPatchTool 将客户端执行的 apply_patch 包装为严格 function。
-func (c *responsesToolCompatibility) normalizeApplyPatchTool(tool map[string]any, namespace, param string) ([]any, error) {
-	if namespace != "" {
-		return nil, &responsesRequestError{
-			Message: "namespace 内暂不支持 apply_patch",
-			Param:   param + ".type", Code: "unsupported_parameter",
-		}
-	}
-	for key := range tool {
-		if key != "type" {
-			return nil, &responsesRequestError{
-				Message: "apply_patch 不接受自定义字段",
-				Param:   param + "." + key, Code: "unsupported_parameter",
-			}
-		}
+func (c *responsesToolCompatibility) normalizeApplyPatchTool(tool map[string]any, param string) ([]any, error) {
+	if len(tool) > 1 {
+		c.addWarning("apply_patch_controls_ignored")
 	}
 	identity := responsesToolIdentity{Kind: responsesApplyPatchTool, Name: "apply_patch"}
 	c.changed = true
@@ -100,17 +84,11 @@ func (c *responsesToolCompatibility) normalizeApplyPatchCallInput(item map[strin
 	if err != nil {
 		return nil, err
 	}
-	converted := map[string]any{
+	return map[string]any{
 		"type": "function_call", "call_id": callID,
 		"name":      c.alias(responsesToolIdentity{Kind: responsesApplyPatchTool, Name: "apply_patch"}),
 		"arguments": string(arguments),
-	}
-	for _, key := range []string{"id", "status"} {
-		if value, exists := item[key]; exists {
-			converted[key] = cloneJSONValue(value)
-		}
-	}
-	return converted, nil
+	}, nil
 }
 
 func normalizeApplyPatchOutputInput(item map[string]any, param string) (map[string]any, error) {
@@ -202,7 +180,7 @@ func legacyShellAction(value any, param string) (map[string]any, error) {
 		return nil, &responsesRequestError{Message: "local_shell_call.action 必须是对象", Param: param, Code: "invalid_parameter"}
 	}
 	if kind := strings.TrimSpace(stringField(action, "type")); kind != "" && kind != "exec" {
-		return nil, &responsesRequestError{Message: "local_shell_call.action.type 只支持 exec", Param: param + ".type", Code: "unsupported_parameter"}
+		return nil, &responsesRequestError{Message: "local_shell_call.action.type 必须是 exec", Param: param + ".type", Code: "invalid_parameter"}
 	}
 	command, err := legacyShellCommand(action, param)
 	if err != nil {
@@ -292,7 +270,7 @@ func normalizeLegacyLocalShellOutputInput(item map[string]any, param string) (ma
 		return nil, &responsesRequestError{Message: "local_shell_call_output.output 必须是字符串或数组", Param: param + ".output", Code: "invalid_parameter"}
 	}
 	converted := map[string]any{"type": "shell_call_output", "call_id": callID, "output": output}
-	if value, exists := item["max_output_length"]; exists {
+	if value, exists := item["max_output_length"]; exists && value != nil {
 		converted["max_output_length"] = cloneJSONValue(value)
 	}
 	return converted, nil
@@ -308,7 +286,7 @@ func normalizeShellCallOutputInput(item map[string]any, param string) (map[strin
 		return nil, err
 	}
 	converted := map[string]any{"type": "shell_call_output", "call_id": callID, "output": output}
-	if value, exists := item["max_output_length"]; exists {
+	if value, exists := item["max_output_length"]; exists && value != nil {
 		converted["max_output_length"] = cloneJSONValue(value)
 	}
 	return converted, nil
@@ -323,7 +301,7 @@ func normalizeFunctionCallOutputInput(item map[string]any, param string) (map[st
 	if err != nil {
 		return nil, err
 	}
-	// Allowlist only. CLIProxyAPI builds function_call_output without id/status.
+	// 按官方 Build 回放结构重建，不携带输出态 id/status。
 	return map[string]any{"type": "function_call_output", "call_id": callID, "output": output}, nil
 }
 
@@ -458,7 +436,7 @@ func validEnvironmentName(value string) bool {
 
 func (c *responsesToolCompatibility) normalizeAdditionalToolsInput(item map[string]any, param string) (map[string]any, []any, []any, error) {
 	if role := strings.TrimSpace(stringField(item, "role")); role != "" && role != "developer" {
-		return nil, nil, nil, &responsesRequestError{Message: "additional_tools.role 只支持 developer", Param: param + ".role", Code: "unsupported_parameter"}
+		c.addWarning("additional_tools_role_approximated")
 	}
 	tools, ok := item["tools"].([]any)
 	if !ok {

@@ -69,9 +69,6 @@ func normalizeResponsesTools(payload map[string]json.RawMessage) (*responsesTool
 	if err := compatibility.normalizeToolChoice(payload, normalizedTools); err != nil {
 		return nil, err
 	}
-	if err := compatibility.addDroppedToolsBoundary(payload); err != nil {
-		return nil, err
-	}
 	if !compatibility.changed {
 		return nil, nil
 	}
@@ -155,10 +152,6 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 		return nil, &responsesRequestError{Message: param + " 必须是对象", Param: param, Code: "invalid_parameter"}
 	}
 	kind := strings.TrimSpace(stringField(tool, "type"))
-	if c.stripExternal && isExternalClientToolKind(kind) {
-		c.dropExternalTool(tool, namespace)
-		return nil, nil
-	}
 	switch kind {
 	case "function":
 		name := strings.TrimSpace(stringField(tool, "name"))
@@ -251,7 +244,7 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 	case "local_shell":
 		return c.normalizeLegacyLocalShellTool(tool, param)
 	case "apply_patch":
-		return c.normalizeApplyPatchTool(tool, namespace, param)
+		return c.normalizeApplyPatchTool(tool, param)
 	case "x_search", "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter":
 		return c.normalizeNativeTool(tool, param)
 	case "computer_use_preview":
@@ -311,4 +304,3 @@ func (c *responsesToolCompatibility) buildClientSearchFunction() (map[string]any
 		"parameters": cloneJSONValue(parameters),
 	}, nil
 }
-

@@ -63,37 +63,56 @@ func normalizeMessageInput(item map[string]any, param string) (map[string]any, e
 	if role == "" {
 		role = "assistant"
 	}
-	if role == "system" {
-		role = "developer"
+	if role == "model" {
+		role = "assistant"
 	}
 	content, err := normalizeMessageContent(item["content"], role, param+".content")
 	if err != nil {
 		return nil, err
 	}
-	// Rebuild with an allowlist only. Codex private fields (phase, metadata
-	// passthrough, status/id) are intentionally dropped for Grok ModelInput.
+	// 仅按白名单重建，避免 Codex 的 phase、metadata、status、id 等
+	// 非输入字段进入 Grok ModelInput。
 	return map[string]any{"type": "message", "role": role, "content": content}, nil
 }
 
-func messageTextPartType(role string) string {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "assistant", "model":
-		// Match CLIProxyAPI / OpenAI Responses construction: assistant history
-		// uses output_text; user/developer use input_text.
-		return "output_text"
-	default:
-		return "input_text"
-	}
-}
-
 func normalizeMessageContent(value any, role, param string) (any, error) {
-	textPartType := messageTextPartType(role)
 	if text, ok := value.(string); ok {
-		return []any{map[string]any{"type": textPartType, "text": text}}, nil
+		return text, nil
 	}
 	items, ok := value.([]any)
 	if !ok {
 		return nil, &responsesRequestError{Message: param + " 必须是字符串或数组", Param: param, Code: "invalid_parameter"}
+	}
+	// 官方 Grok CLI 会把 assistant 的多个输出文本合并为 EasyInputMessage
+	// 字符串，既保留语义，也绕开 OutputMessage 对 id/status 的输入限制。
+	if role == "assistant" {
+		texts := make([]string, 0, len(items))
+		for _, raw := range items {
+			item, isObject := raw.(map[string]any)
+			if !isObject {
+				texts = nil
+				break
+			}
+			switch stringField(item, "type") {
+			case "text", "input_text", "output_text":
+				texts = append(texts, stringField(item, "text"))
+			case "refusal":
+				texts = append(texts, stringField(item, "refusal"))
+			default:
+				texts = nil
+			}
+			if texts == nil {
+				break
+			}
+		}
+		if texts != nil {
+			return strings.Join(texts, "\n"), nil
+		}
+	}
+
+	textPartType := "input_text"
+	if role == "assistant" {
+		textPartType = "output_text"
 	}
 	normalized := make([]any, 0, len(items))
 	for index, raw := range items {
@@ -103,7 +122,7 @@ func normalizeMessageContent(value any, role, param string) (any, error) {
 		}
 		switch stringField(item, "type") {
 		case "text", "input_text", "output_text":
-			// Role-aware typing: do not coerce assistant output_text into input_text.
+			// 按角色重建文本类型，不能把 assistant 的 output_text 改成 input_text。
 			normalized = append(normalized, map[string]any{"type": textPartType, "text": stringField(item, "text")})
 		case "refusal":
 			normalized = append(normalized, map[string]any{"type": textPartType, "text": stringField(item, "refusal")})
@@ -112,7 +131,7 @@ func normalizeMessageContent(value any, role, param string) (any, error) {
 		case "input_file":
 			normalized = append(normalized, normalizeInputFilePart(item))
 		default:
-			return nil, &responsesRequestError{Message: "Grok Build 0.2.99 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
+			return nil, &responsesRequestError{Message: "Grok Build 0.2.101 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
 		}
 	}
 	return normalized, nil
@@ -120,13 +139,13 @@ func normalizeMessageContent(value any, role, param string) (any, error) {
 
 func normalizeInputImagePart(item map[string]any) map[string]any {
 	converted := map[string]any{"type": "input_image"}
-	if value, exists := item["image_url"]; exists {
+	if value, exists := item["image_url"]; exists && value != nil {
 		converted["image_url"] = cloneJSONValue(value)
-	} else if value, exists := item["url"]; exists {
+	} else if value, exists := item["url"]; exists && value != nil {
 		converted["image_url"] = cloneJSONValue(value)
 	}
 	for _, key := range []string{"detail", "file_id"} {
-		if value, exists := item[key]; exists {
+		if value, exists := item[key]; exists && value != nil {
 			converted[key] = cloneJSONValue(value)
 		}
 	}
@@ -136,7 +155,7 @@ func normalizeInputImagePart(item map[string]any) map[string]any {
 func normalizeInputFilePart(item map[string]any) map[string]any {
 	converted := map[string]any{"type": "input_file"}
 	for _, key := range []string{"file_data", "file_id", "filename", "file_url"} {
-		if value, exists := item[key]; exists {
+		if value, exists := item[key]; exists && value != nil {
 			converted[key] = cloneJSONValue(value)
 		}
 	}

@@ -11,11 +11,6 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 	if isEmptyJSON(raw) {
 		return nil
 	}
-	if c.stripExternal && len(normalizedTools) == 0 {
-		delete(payload, "tool_choice")
-		c.changed = true
-		return nil
-	}
 	if len(normalizedTools) == 0 {
 		delete(payload, "tool_choice")
 		c.changed = true
@@ -39,12 +34,6 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 		return nil
 	}
 	kind := stringField(object, "type")
-	if c.stripExternal && isExternalClientToolKind(kind) {
-		delete(payload, "tool_choice")
-		c.changed = true
-		c.addWarning("external_tool_choice_omitted")
-		return nil
-	}
 	if c.webSearchDisabled && normalizeHostedToolChoiceKind(kind) == "web_search" && !hasToolType(normalizedTools, "web_search") {
 		payload["tool_choice"] = mustJSON("none")
 		c.changed = true
