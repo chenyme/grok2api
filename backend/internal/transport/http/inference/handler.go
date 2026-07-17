@@ -120,9 +120,13 @@ type imageEditJSONRequest struct {
 	Image          *imageEditJSONImage  `json:"image"`
 	Images         []imageEditJSONImage `json:"images"`
 	Count          *int                 `json:"n"`
+	Size           string               `json:"size"`
+	AspectRatio    string               `json:"aspect_ratio"`
 	Resolution     string               `json:"resolution"`
 	ResponseFormat string               `json:"response_format"`
 	StorageOptions json.RawMessage      `json:"storage_options"`
+	Stream         bool                 `json:"stream"`
+	PartialImages  *int                 `json:"partial_images"`
 }
 
 type videoGenerationImage struct {
@@ -447,16 +451,38 @@ func (h *Handler) editImage(c *gin.Context) {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片编辑缺少有效 model 或 prompt")
 		return
 	}
-	if count < 1 || count > 10 {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "n 必须在 1 到 10 之间")
+	if count != 1 {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "Grok Web 图片编辑当前仅支持 n=1")
+		return
+	}
+	partialImages := 0
+	if request.PartialImages != nil {
+		if *request.PartialImages < 0 || *request.PartialImages > 3 {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "partial_images 必须在 0 到 3 之间")
+			return
+		}
+		partialImages = *request.PartialImages
+		if partialImages > 0 && !request.Stream {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "partial_images 仅可在 stream=true 时使用")
+			return
+		}
+	}
+	aspectRatio := strings.ToLower(strings.TrimSpace(request.AspectRatio))
+	size := strings.ToLower(strings.TrimSpace(request.Size))
+	if aspectRatio != "" && !validImageAspectRatio(aspectRatio) {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "aspect_ratio 不受支持")
+		return
+	}
+	if size != "" && !validImageEditSize(size) {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "size 必须是 auto、1024x1024、1024x1536 或 1536x1024")
 		return
 	}
 	resolution := strings.ToLower(strings.TrimSpace(request.Resolution))
 	if resolution == "" {
 		resolution = "1k"
 	}
-	if resolution != "1k" && resolution != "2k" {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "resolution 必须是 1k 或 2k")
+	if resolution != "1k" {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "Grok Web 图片编辑当前仅支持 resolution=1k")
 		return
 	}
 	clientKey, requestID, ok := requestIdentity(c)
@@ -465,13 +491,15 @@ func (h *Handler) editImage(c *gin.Context) {
 	}
 	result, err := h.gateway.EditImage(c.Request.Context(), gateway.ImageEditInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model, Prompt: prompt,
-		ImageURLs: imageURLs, Count: count, Resolution: resolution, ResponseFormat: request.ResponseFormat,
+		ImageURLs: imageURLs, Count: count, Size: size, AspectRatio: aspectRatio,
+		Resolution: resolution, ResponseFormat: request.ResponseFormat,
+		Streaming: request.Stream, PartialImages: partialImages,
 	})
 	if err != nil {
 		writeGatewayError(c, err)
 		return
 	}
-	h.writeResult(c, result, false)
+	h.writeResult(c, result, request.Stream)
 }
 
 func requestIdentity(c *gin.Context) (clientkeydomain.Key, string, bool) {
@@ -678,6 +706,24 @@ func hasJSONValue(value json.RawMessage) bool {
 func validVideoAspectRatio(value string) bool {
 	switch value {
 	case "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3":
+		return true
+	default:
+		return false
+	}
+}
+
+func validImageAspectRatio(value string) bool {
+	switch value {
+	case "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20":
+		return true
+	default:
+		return false
+	}
+}
+
+func validImageEditSize(value string) bool {
+	switch value {
+	case "auto", "1024x1024", "1024x1536", "1536x1024":
 		return true
 	default:
 		return false

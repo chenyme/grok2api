@@ -15,6 +15,9 @@ definitions:
     type: object
   httpserver.SwaggerImageEditRequest:
     properties:
+      aspect_ratio:
+        example: "1:1"
+        type: string
       image:
         $ref: '#/definitions/httpserver.SwaggerImageReference'
       model:
@@ -22,6 +25,9 @@ definitions:
         type: string
       "n":
         example: 1
+        type: integer
+      partial_images:
+        example: 0
         type: integer
       prompt:
         example: Change the background to black
@@ -32,6 +38,12 @@ definitions:
       response_format:
         example: url
         type: string
+      size:
+        example: 1024x1024
+        type: string
+      stream:
+        example: false
+        type: boolean
     type: object
   httpserver.SwaggerImageGenerationRequest:
     properties:

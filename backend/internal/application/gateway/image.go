@@ -38,8 +38,12 @@ type ImageEditInput struct {
 	Prompt         string
 	ImageURLs      []string
 	Count          int
+	Size           string
+	AspectRatio    string
 	Resolution     string
 	ResponseFormat string
+	Streaming      bool
+	PartialImages  int
 }
 
 type imageProviderSupport func(accountdomain.Provider) bool
@@ -76,9 +80,11 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 		}
 		return adapter.EditImage(executionCtx, provider.ImageEditRequest{
 			Credential: credential, Model: upstream, Prompt: input.Prompt,
-			ImageURLs: input.ImageURLs, Count: input.Count, Resolution: input.Resolution, ResponseFormat: input.ResponseFormat,
+			ImageURLs: input.ImageURLs, Count: input.Count, Size: input.Size, AspectRatio: input.AspectRatio,
+			Resolution: input.Resolution, ResponseFormat: input.ResponseFormat,
+			Streaming: input.Streaming, PartialImages: input.PartialImages,
 		})
-	}, false, input.Resolution, input.Count, len(input.ImageURLs))
+	}, input.Streaming, input.Resolution, input.Count, len(input.ImageURLs))
 }
 
 func (s *Service) executeImage(

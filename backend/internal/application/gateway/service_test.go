@@ -918,7 +918,8 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	editResult, err := service.EditImage(ctx, ImageEditInput{
 		RequestID: "req-image-edit", ClientKey: key, PublicModel: "grok-imagine-image-edit",
 		Prompt: "edit", ImageURLs: []string{"data:image/png;base64,a", "data:image/png;base64,b"},
-		Count: 3, Resolution: "2k", ResponseFormat: "url",
+		Count: 3, Size: "1024x1024", AspectRatio: "1:1", Resolution: "2k", ResponseFormat: "url",
+		Streaming: true, PartialImages: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -930,8 +931,9 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	if err != nil || total != 4 || logs[0].RequestID != "req-image-edit" || logs[0].MediaInputImages != 2 || logs[0].MediaOutputImages != 3 || logs[0].PricingModel != "grok-imagine-image-edit-2k" || logs[0].EstimatedCostInUSDTicks != 2_300_000_000 {
 		t.Fatalf("image edit pricing audit = %#v, total=%d, err=%v", logs, total, err)
 	}
-	if adapter.EditResolution() != "2k" {
-		t.Fatalf("image edit resolution = %q", adapter.EditResolution())
+	editRequest := adapter.EditRequest()
+	if editRequest.Resolution != "2k" || editRequest.Size != "1024x1024" || editRequest.AspectRatio != "1:1" || !editRequest.Streaming || editRequest.PartialImages != 2 {
+		t.Fatalf("image edit request = %#v", editRequest)
 	}
 
 	billingBeforeFailure, err := keyRepo.Get(ctx, key.ID)
@@ -1220,13 +1222,13 @@ func (a *systemicForbiddenAdapter) Attempts() []uint64 {
 type webRateLimitAdapter struct{}
 
 type webImageStreamAdapter struct {
-	mu             sync.Mutex
-	streaming      bool
-	partialImages  int
-	editResolution string
-	synced         chan string
-	failureEgress  *infraegress.Manager
-	attempts       []uint64
+	mu            sync.Mutex
+	streaming     bool
+	partialImages int
+	editRequest   provider.ImageEditRequest
+	synced        chan string
+	failureEgress *infraegress.Manager
+	attempts      []uint64
 }
 
 type webChatQuotaAdapter struct {
@@ -1309,7 +1311,7 @@ func (a *webImageStreamAdapter) ForwardResponse(context.Context, provider.Respon
 }
 func (a *webImageStreamAdapter) EditImage(_ context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
 	a.mu.Lock()
-	a.editResolution = request.Resolution
+	a.editRequest = request
 	a.mu.Unlock()
 	return &provider.Response{
 		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"application/json"}},
@@ -1326,10 +1328,10 @@ func (a *webImageStreamAdapter) PartialImages() int {
 	defer a.mu.Unlock()
 	return a.partialImages
 }
-func (a *webImageStreamAdapter) EditResolution() string {
+func (a *webImageStreamAdapter) EditRequest() provider.ImageEditRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.editResolution
+	return a.editRequest
 }
 func (a *webImageStreamAdapter) FailWithEgress(manager *infraegress.Manager) {
 	a.mu.Lock()
