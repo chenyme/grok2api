@@ -300,6 +300,59 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	}
 }
 
+func TestImageGenerationValidatesOpenAIPartialImages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	NewHandler(nil, nil, 1<<20).Register(router.Group("/v1"))
+
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "negative", body: `{"model":"grok-imagine-image-quality","prompt":"cat","stream":true,"partial_images":-1}`},
+		{name: "too many", body: `{"model":"grok-imagine-image-quality","prompt":"cat","stream":true,"partial_images":4}`},
+		{name: "requires stream", body: `{"model":"grok-imagine-image-quality","prompt":"cat","partial_images":1}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "partial_images") {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	invalidStreamingCount := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"grok-imagine-image-quality","prompt":"cat","n":2,"stream":true
+	}`))
+	invalidStreamingCount.Header.Set("Content-Type", "application/json")
+	invalidStreamingCountRecorder := httptest.NewRecorder()
+	router.ServeHTTP(invalidStreamingCountRecorder, invalidStreamingCount)
+	if invalidStreamingCountRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("stream n status=%d body=%s", invalidStreamingCountRecorder.Code, invalidStreamingCountRecorder.Body.String())
+	}
+	var payload map[string]any
+	if json.Unmarshal(invalidStreamingCountRecorder.Body.Bytes(), &payload) != nil {
+		t.Fatalf("stream n body=%s", invalidStreamingCountRecorder.Body.String())
+	}
+	errorValue, _ := payload["error"].(map[string]any)
+	if errorValue["message"] != "Streaming is only supported with n=1." || errorValue["type"] != "image_generation_user_error" || errorValue["param"] != "input" || errorValue["code"] != "unsupported_parameter" {
+		t.Fatalf("stream n error=%#v", errorValue)
+	}
+
+	valid := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"grok-imagine-image-quality","prompt":"cat","n":1,"stream":true,"partial_images":1
+	}`))
+	valid.Header.Set("Content-Type", "application/json")
+	validRecorder := httptest.NewRecorder()
+	router.ServeHTTP(validRecorder, valid)
+	if validRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("valid status=%d body=%s", validRecorder.Code, validRecorder.Body.String())
+	}
+}
+
 func TestExtractUsageFromCompletedEvent(t *testing.T) {
 	metadata := extractMetadata([]byte(`{"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5-build-free","usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":4},"output_tokens":5,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":15,"cost_in_usd_ticks":158500,"num_sources_used":1,"num_server_side_tools_used":2,"context_details":{"input_tokens":9,"output_tokens":4}}}}`))
 	usage := metadata.Usage

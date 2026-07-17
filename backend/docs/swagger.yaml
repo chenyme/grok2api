@@ -44,6 +44,9 @@ definitions:
       "n":
         example: 1
         type: integer
+      partial_images:
+        example: 0
+        type: integer
       prompt:
         example: A cinematic city at night
         type: string
@@ -53,6 +56,9 @@ definitions:
       response_format:
         example: url
         type: string
+      stream:
+        example: false
+        type: boolean
     type: object
   httpserver.SwaggerImageReference:
     properties:

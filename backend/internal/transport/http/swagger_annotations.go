@@ -39,6 +39,8 @@ type SwaggerImageGenerationRequest struct {
 	AspectRatio    string `json:"aspect_ratio,omitempty" example:"16:9"`
 	Resolution     string `json:"resolution,omitempty" example:"2k"`
 	ResponseFormat string `json:"response_format,omitempty" example:"url"`
+	Stream         bool   `json:"stream,omitempty" example:"false"`
+	PartialImages  int    `json:"partial_images,omitempty" example:"0"`
 }
 
 // SwaggerImageReference 表示图片 URL 输入。

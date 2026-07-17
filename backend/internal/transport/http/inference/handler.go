@@ -85,6 +85,7 @@ type imageGenerationRequest struct {
 	Model          string          `json:"model"`
 	Prompt         string          `json:"prompt"`
 	Count          *int            `json:"n"`
+	PartialImages  *int            `json:"partial_images"`
 	Size           string          `json:"size"`
 	AspectRatio    string          `json:"aspect_ratio"`
 	Resolution     string          `json:"resolution"`
@@ -265,6 +266,22 @@ func (h *Handler) generateImage(c *gin.Context) {
 		}
 		count = *request.Count
 	}
+	if request.Stream && count != 1 {
+		writeImageGenerationUserError(c, "unsupported_parameter", "input", "Streaming is only supported with n=1.")
+		return
+	}
+	partialImages := 0
+	if request.PartialImages != nil {
+		if *request.PartialImages < 0 || *request.PartialImages > 3 {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "partial_images 必须在 0 到 3 之间")
+			return
+		}
+		partialImages = *request.PartialImages
+		if partialImages > 0 && !request.Stream {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "partial_images 仅可在 stream=true 时使用")
+			return
+		}
+	}
 	clientKey, requestID, ok := requestIdentity(c)
 	if !ok {
 		return
@@ -272,7 +289,8 @@ func (h *Handler) generateImage(c *gin.Context) {
 	result, err := h.gateway.GenerateImage(c.Request.Context(), gateway.ImageGenerationInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: request.Model, Prompt: request.Prompt,
 		Count: count, Size: request.Size, AspectRatio: request.AspectRatio,
-		Resolution: request.Resolution, ResponseFormat: request.ResponseFormat, Streaming: request.Stream,
+		Resolution: request.Resolution, ResponseFormat: request.ResponseFormat,
+		Streaming: request.Stream, PartialImages: partialImages,
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -1023,6 +1041,12 @@ func writeOpenAIError(c *gin.Context, status int, code, message string) {
 		errorType = "server_error"
 	}
 	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"message": message, "type": errorType, "code": code, "param": nil}})
+}
+
+func writeImageGenerationUserError(c *gin.Context, code, param, message string) {
+	c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{
+		"message": message, "type": "image_generation_user_error", "param": param, "code": code,
+	}})
 }
 
 func writeGatewayError(c *gin.Context, err error) {
