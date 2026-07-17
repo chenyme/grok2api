@@ -28,7 +28,6 @@ type FrontendConfig struct {
 
 type ProviderConsoleConfig struct {
 	BaseURL     string
-	UserAgent   string
 	ChatTimeout time.Duration
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -373,15 +374,15 @@ func TestSelectorPropagatesConcurrencyStoreFailure(t *testing.T) {
 	}
 }
 
-func TestPromptCacheStickyKeyIsFixedLengthAndStable(t *testing.T) {
-	first := promptCacheStickyKey("cache-key")
-	if len(first) != 64 || first != promptCacheStickyKey("cache-key") {
+func TestStickySessionKeyIsFixedLengthAndStable(t *testing.T) {
+	first := stickySessionKey("affinity-key")
+	if len(first) != 64 || first != stickySessionKey("affinity-key") {
 		t.Fatalf("sticky key = %q", first)
 	}
-	if first == promptCacheStickyKey("another-key") {
+	if first == stickySessionKey("another-key") {
 		t.Fatal("different prompt cache keys produced the same sticky key")
 	}
-	if promptCacheStickyKey("") != "" {
+	if stickySessionKey("") != "" {
 		t.Fatal("empty prompt cache key should remain empty")
 	}
 }
@@ -571,6 +572,117 @@ func TestSelectorWaitsBrieflyForAccountCapacity(t *testing.T) {
 	}
 }
 
+func TestSelectorStickySessionWaitsForBoundAccountCapacity(t *testing.T) {
+	ctx := context.Background()
+	sticky := memory.NewStickyStore()
+	selector, primary, _ := newStickySelectorFixture(t, sticky, 300*time.Millisecond, true)
+	first, err := selector.Acquire(ctx, account.ProviderBuild, "model", "", "stable-affinity", nil, false)
+	if err != nil || first.Credential.ID != primary.ID {
+		t.Fatalf("first lease = %#v, err = %v", first, err)
+	}
+	type result struct {
+		lease *accountLease
+		err   error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		lease, acquireErr := selector.Acquire(ctx, account.ProviderBuild, "model", "", "stable-affinity", nil, false)
+		resultCh <- result{lease: lease, err: acquireErr}
+	}()
+	select {
+	case value := <-resultCh:
+		t.Fatalf("sticky request bypassed the bound account before capacity returned: %#v", value)
+	case <-time.After(30 * time.Millisecond):
+	}
+	first.Release()
+	select {
+	case value := <-resultCh:
+		if value.err != nil || value.lease == nil || value.lease.Credential.ID != primary.ID {
+			t.Fatalf("sticky lease = %#v, err = %v", value.lease, value.err)
+		}
+		value.lease.Release()
+	case <-time.After(time.Second):
+		t.Fatal("sticky request did not wake after bound capacity returned")
+	}
+}
+
+func TestSelectorStickySessionTemporaryFallbackDoesNotRebind(t *testing.T) {
+	ctx := context.Background()
+	sticky := memory.NewStickyStore()
+	selector, primary, fallback := newStickySelectorFixture(t, sticky, 20*time.Millisecond, true)
+	first, err := selector.Acquire(ctx, account.ProviderBuild, "model", "", "stable-affinity", nil, false)
+	if err != nil || first.Credential.ID != primary.ID {
+		t.Fatalf("first lease = %#v, err = %v", first, err)
+	}
+	temporary, err := selector.Acquire(ctx, account.ProviderBuild, "model", "", "stable-affinity", nil, false)
+	if err != nil || temporary.Credential.ID != fallback.ID {
+		t.Fatalf("temporary lease = %#v, err = %v", temporary, err)
+	}
+	if boundID, ok, err := sticky.Get(ctx, stickySessionKey("stable-affinity"), time.Now().UTC()); err != nil || !ok || boundID != primary.ID {
+		t.Fatalf("sticky binding changed after temporary fallback: id=%d ok=%v err=%v", boundID, ok, err)
+	}
+	temporary.Release()
+	first.Release()
+	resumed, err := selector.Acquire(ctx, account.ProviderBuild, "model", "", "stable-affinity", nil, false)
+	if err != nil || resumed.Credential.ID != primary.ID {
+		t.Fatalf("resumed sticky lease = %#v, err = %v", resumed, err)
+	}
+	resumed.Release()
+}
+
+func TestSelectorStickyHitRefreshesTTL(t *testing.T) {
+	ctx := context.Background()
+	sticky := newRecordingStickyStore()
+	selector, _, _ := newStickySelectorFixture(t, sticky, 0, false)
+	first, err := selector.Acquire(ctx, account.ProviderBuild, "model", "", "stable-affinity", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	time.Sleep(time.Millisecond)
+	second, err := selector.Acquire(ctx, account.ProviderBuild, "model", "", "stable-affinity", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Release()
+	expiries := sticky.Expiries()
+	if len(expiries) < 2 || !expiries[len(expiries)-1].After(expiries[0]) {
+		t.Fatalf("sticky expiry was not refreshed: %v", expiries)
+	}
+}
+
+func newStickySelectorFixture(t *testing.T, sticky repository.StickySessionRepository, capacityWait time.Duration, withFallback bool) (*Selector, account.Credential, account.Credential) {
+	t.Helper()
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "sticky-selector.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	primary, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "primary", SourceKey: "primary", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fallback account.Credential
+	if withFallback {
+		fallback, _, err = accounts.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: "fallback", SourceKey: "fallback", EncryptedAccessToken: "encrypted",
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 1, MaxConcurrent: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return NewSelector(accounts, memory.NewConcurrencyLimiter(), sticky, nil, time.Hour, time.Second, time.Minute, capacityWait), primary, fallback
+}
+
 func TestSelectorAppliesPersistedCooldownOnlyToMatchingModel(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-cooldown.db"))
@@ -613,6 +725,29 @@ func TestSelectorAppliesPersistedCooldownOnlyToMatchingModel(t *testing.T) {
 }
 
 type failingConcurrencyLimiter struct{ err error }
+
+type recordingStickyStore struct {
+	*memory.StickyStore
+	mu       sync.Mutex
+	expiries []time.Time
+}
+
+func newRecordingStickyStore() *recordingStickyStore {
+	return &recordingStickyStore{StickyStore: memory.NewStickyStore()}
+}
+
+func (s *recordingStickyStore) Bind(ctx context.Context, key string, accountID uint64, now, expiresAt time.Time) (uint64, error) {
+	s.mu.Lock()
+	s.expiries = append(s.expiries, expiresAt)
+	s.mu.Unlock()
+	return s.StickyStore.Bind(ctx, key, accountID, now, expiresAt)
+}
+
+func (s *recordingStickyStore) Expiries() []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Time(nil), s.expiries...)
+}
 
 type batchConcurrencyLimiter struct {
 	values       map[string]int

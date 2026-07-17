@@ -39,7 +39,6 @@ type serverConfigDTO struct {
 
 type providerConsoleConfigDTO struct {
 	BaseURL     string `json:"baseURL"`
-	UserAgent   string `json:"userAgent"`
 	ChatTimeout string `json:"chatTimeout"`
 }
 
@@ -170,8 +169,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			RecoveryBackoffBase: value.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: value.ProviderWeb.RecoveryBackoffMax,
 		},
 		ProviderConsole: settingsapp.ProviderConsoleConfig{
-			BaseURL: value.ProviderConsole.BaseURL, UserAgent: value.ProviderConsole.UserAgent,
-			ChatTimeout: value.ProviderConsole.ChatTimeout,
+			BaseURL: value.ProviderConsole.BaseURL, ChatTimeout: value.ProviderConsole.ChatTimeout,
 		},
 		Batch: settingsapp.BatchConfig{
 			ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
@@ -219,8 +217,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				RecoveryBackoffBase: config.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: config.ProviderWeb.RecoveryBackoffMax,
 			},
 			ProviderConsole: providerConsoleConfigDTO{
-				BaseURL: config.ProviderConsole.BaseURL, UserAgent: config.ProviderConsole.UserAgent,
-				ChatTimeout: config.ProviderConsole.ChatTimeout,
+				BaseURL: config.ProviderConsole.BaseURL, ChatTimeout: config.ProviderConsole.ChatTimeout,
 			},
 			Batch: batchConfigDTO{
 				ImportConcurrency: config.Batch.ImportConcurrency, ConversionConcurrency: config.Batch.ConversionConcurrency,

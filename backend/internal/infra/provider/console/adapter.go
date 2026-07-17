@@ -22,7 +22,6 @@ import (
 
 type Config struct {
 	BaseURL        string
-	UserAgent      string
 	TimeoutSeconds int
 }
 
@@ -140,7 +139,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		cancel()
 		return nil, err
 	}
-	applyHeaders(upstream, token, cfg.UserAgent, lease)
+	applyHeaders(upstream, token, lease)
 	if request.Streaming {
 		upstream.Header.Set("Accept", "text/event-stream")
 	}
@@ -278,13 +277,10 @@ func consoleEndpoint(baseURL string) string {
 	return baseURL + "/v1/responses"
 }
 
-func applyHeaders(request *http.Request, token, configuredUserAgent string, lease *infraegress.Lease) {
-	userAgent := ""
-	if lease.NodeID != 0 {
-		userAgent = strings.TrimSpace(lease.UserAgent)
-	}
+func applyHeaders(request *http.Request, token string, lease *infraegress.Lease) {
+	userAgent := strings.TrimSpace(lease.UserAgent)
 	if userAgent == "" {
-		userAgent = strings.TrimSpace(configuredUserAgent)
+		userAgent = infraegress.DefaultUserAgent
 	}
 	request.Header.Set("Accept", "*/*")
 	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")

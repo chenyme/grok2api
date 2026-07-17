@@ -53,7 +53,6 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	input.Media.CleanupInterval = "5m"
 	input.Frontend.PublicAPIBaseURL = "https://public.example.com"
 	input.ProviderConsole.BaseURL = "https://console.example.com"
-	input.ProviderConsole.UserAgent = "console-test-agent"
 	input.ProviderConsole.ChatTimeout = "6m"
 	input.Batch = BatchConfig{ImportConcurrency: 26, ConversionConcurrency: 27, SyncConcurrency: 28, RefreshConcurrency: 29, RandomDelay: "750ms"}
 
@@ -76,7 +75,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if applied.Batch.ImportConcurrency != 26 || applied.Batch.ConversionConcurrency != 27 || applied.Batch.SyncConcurrency != 28 || applied.Batch.RefreshConcurrency != 29 || applied.Batch.RandomDelay.Value() != 750*time.Millisecond {
 		t.Fatalf("batch configuration was not applied: %#v", applied.Batch)
 	}
-	if applied.Provider.Console.BaseURL != "https://console.example.com" || applied.Provider.Console.UserAgent != "console-test-agent" || applied.Provider.Console.ChatTimeout.Value() != 6*time.Minute {
+	if applied.Provider.Console.BaseURL != "https://console.example.com" || applied.Provider.Console.ChatTimeout.Value() != 6*time.Minute {
 		t.Fatalf("console configuration was not applied: %#v", applied.Provider.Console)
 	}
 	if len(snapshot.RestartRequired) != 1 || snapshot.RestartRequired[0] != "audit.bufferSize" {

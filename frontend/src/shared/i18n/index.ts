@@ -48,7 +48,6 @@ const resources = {
         accountBreakdown: "Build {{build}} · Web {{web}} · Console {{console}}",
         availableBreakdown: "Build {{build}} · Web {{web}} · Console {{console}} 可用",
         baseURL: "上游地址",
-        userAgent: "User-Agent",
         chatTimeout: "聊天超时",
       },
       accountCredential: {
@@ -882,7 +881,6 @@ const resources = {
         accountBreakdown: "Build {{build}} · Web {{web}} · Console {{console}}",
         availableBreakdown: "Build {{build}} · Web {{web}} · Console {{console}} available",
         baseURL: "Upstream URL",
-        userAgent: "User-Agent",
         chatTimeout: "Chat timeout",
       },
       accountCredential: {

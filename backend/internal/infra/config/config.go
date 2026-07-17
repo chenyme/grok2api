@@ -149,9 +149,9 @@ type WebProviderConfig struct {
 }
 
 type ConsoleProviderConfig struct {
-	BaseURL     string   `yaml:"baseURL"`
-	UserAgent   string   `yaml:"userAgent"`
-	ChatTimeout Duration `yaml:"chatTimeout"`
+	BaseURL         string   `yaml:"baseURL"`
+	LegacyUserAgent string   `yaml:"userAgent"` // Deprecated: 仅用于兼容旧配置文件，不参与请求。
+	ChatTimeout     Duration `yaml:"chatTimeout"`
 }
 
 // BatchConfig 定义可热加载的账号批量任务并发上限。
@@ -428,9 +428,6 @@ func (c Config) Validate() error {
 	if err != nil || consoleURL.Scheme != "https" || consoleURL.Host == "" || consoleURL.User != nil {
 		return errors.New("provider.console.baseURL 必须是无凭据的 HTTPS URL")
 	}
-	if userAgent := strings.TrimSpace(c.Provider.Console.UserAgent); len(userAgent) < 1 || len(userAgent) > 512 {
-		return errors.New("provider.console.userAgent 长度必须在 1 到 512 个字符之间")
-	}
 	if c.Provider.Console.ChatTimeout.Value() < 5*time.Second || c.Provider.Console.ChatTimeout.Value() > 30*time.Minute {
 		return errors.New("provider.console.chatTimeout 必须在 5 秒到 30 分钟之间")
 	}
@@ -523,10 +520,7 @@ func defaultConfig() Config {
 				MediaConcurrency: 4, RecoveryBackoffBase: Duration(30 * time.Second),
 				RecoveryBackoffMax: Duration(30 * time.Minute),
 			},
-			Console: ConsoleProviderConfig{
-				BaseURL: "https://console.x.ai", UserAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-				ChatTimeout: Duration(5 * time.Minute),
-			},
+			Console: ConsoleProviderConfig{BaseURL: "https://console.x.ai", ChatTimeout: Duration(5 * time.Minute)},
 		},
 		Batch: BatchConfig{
 			ImportConcurrency: 25, ConversionConcurrency: 25, SyncConcurrency: 25,

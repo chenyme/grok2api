@@ -435,15 +435,17 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		}
 		return nil, clientkeyapp.ErrModelNotAllowed
 	}
+	affinityKey := ""
 	if route.Provider == accountdomain.ProviderBuild {
-		input.PromptCacheKey = resolvePromptCacheIdentity(
+		identity := resolveBuildSessionIdentity(
 			input.ClientKey.ID,
 			route.Provider,
 			route.UpstreamModel,
-			operation,
 			input.PromptCacheKey,
 			input.PromptCacheSeed,
 		)
+		input.PromptCacheKey = identity.upstreamID
+		affinityKey = identity.affinityKey
 	}
 	adapter, ok := s.providers.Responses(route.Provider)
 	if !ok {
@@ -497,7 +499,7 @@ attemptLoop:
 		if ownership != nil {
 			lease, err = s.selector.AcquirePinned(ctx, route.Provider, ownership.AccountID, route.UpstreamModel, quotaMode, true)
 		} else {
-			lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, input.PromptCacheKey, excluded, !quotaProbeAttempted)
+			lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, affinityKey, excluded, !quotaProbeAttempted)
 		}
 		timing.markSelection(time.Since(selectionStarted))
 		if err != nil {
