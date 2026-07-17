@@ -50,6 +50,7 @@ const mediaJobShape = {
   createdAt: isString,
   completedAt: (value: unknown) => value === null || isString(value),
   errorMessage: isString,
+  assetId: isString,
 };
 
 const decodeImageStats = createObjectDecoder<ImageStatsDTO>("image stats", {
@@ -91,4 +92,8 @@ export function listVideos(input: ListVideosInput): Promise<PaginatedDTO<MediaJo
 
 export function getVideoStats(): Promise<VideoStatsDTO> {
   return apiRequest("/api/admin/v1/media/videos/stats", {}, decodeVideoStats);
+}
+
+export function deleteVideos(ids: string[]): Promise<{ deleted: number }> {
+  return apiRequest("/api/admin/v1/media/videos", { method: "DELETE", body: { ids } }, decodeCountResult<{ deleted: number }>("deleted"));
 }

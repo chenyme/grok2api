@@ -67,6 +67,53 @@ func TestPublicImageSupportsGetHeadAndETag(t *testing.T) {
 	}
 }
 
+func TestPublicVideoAssetSupportsGetHeadAndRange(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-video-http.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "video-objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := mediaapp.NewService(relational.NewMediaAssetRepository(database), relational.NewMediaJobRepository(database), objects, nil, mediaapp.Config{
+		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
+		CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute,
+	})
+	payload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x03}, 64)...)
+	asset, err := service.SaveVideo(ctx, "", "video/mp4", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	NewHandler(service).RegisterPublic(router)
+	path := "/v1/media/videos/" + asset.ID
+
+	get := httptest.NewRecorder()
+	router.ServeHTTP(get, httptest.NewRequest(http.MethodGet, path, nil))
+	if get.Code != http.StatusOK || get.Body.Len() != len(payload) || get.Header().Get("Content-Type") != "video/mp4" || get.Header().Get("ETag") == "" {
+		t.Fatalf("GET status=%d size=%d headers=%#v", get.Code, get.Body.Len(), get.Header())
+	}
+	head := httptest.NewRecorder()
+	router.ServeHTTP(head, httptest.NewRequest(http.MethodHead, path, nil))
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Content-Length") == "" {
+		t.Fatalf("HEAD status=%d size=%d headers=%#v", head.Code, head.Body.Len(), head.Header())
+	}
+	rangeRequest := httptest.NewRequest(http.MethodGet, path, nil)
+	rangeRequest.Header.Set("Range", "bytes=0-3")
+	partial := httptest.NewRecorder()
+	router.ServeHTTP(partial, rangeRequest)
+	if partial.Code != http.StatusPartialContent || partial.Body.Len() != 4 || partial.Header().Get("Content-Range") == "" {
+		t.Fatalf("Range status=%d size=%d headers=%#v", partial.Code, partial.Body.Len(), partial.Header())
+	}
+}
+
 func TestAdminDeleteImagesRemovesObjectMetadataAndStats(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()

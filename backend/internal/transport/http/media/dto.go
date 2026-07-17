@@ -29,6 +29,7 @@ type mediaJobDTO struct {
 	CreatedAt     string  `json:"createdAt"`
 	CompletedAt   *string `json:"completedAt"`
 	ErrorMessage  string  `json:"errorMessage"`
+	AssetID       string  `json:"assetId"`
 }
 
 type videoStatsDTO struct {

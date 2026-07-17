@@ -45,6 +45,15 @@ func errVideoTooLarge() error {
 	return fmt.Errorf("%w: %w", ErrInvalidVideoUpload, ErrVideoUploadTooLarge)
 }
 
+type stagedVideo struct {
+	ID         string
+	TempPath   string
+	StorageKey string
+	MIMEType   string
+	SizeBytes  int64
+	SHA256     string
+}
+
 // IssueVideoUpload 签发一次性高熵 PUT 地址，供 XAI ZDR 视频写入。
 // 错误信息不得包含完整 URL 或 token 明文。
 func (s *Service) IssueVideoUpload(ctx context.Context, jobID string) (uploadURL, assetID string, err error) {
@@ -167,53 +176,11 @@ func (s *Service) ReceiveVideoUpload(ctx context.Context, rawToken string, conte
 		return mediadomain.Asset{}, fmt.Errorf("%w: Content-Type 与票据不允许的类型不一致", ErrInvalidVideoUpload)
 	}
 
-	// 存储扩展名以票据允许类型为准，避免声明类型与最终元数据分叉。
-	tempPath, storageKey, err := s.objects.BeginVideoUpload(ctx, existing.AssetID, allowedMIME)
+	staged, err := s.stageVideo(ctx, existing.AssetID, allowedMIME, body, existing.MaxBytes)
 	if err != nil {
 		return mediadomain.Asset{}, err
 	}
-	cleanupTemp := true
-	defer func() {
-		if cleanupTemp {
-			_ = s.objects.AbortVideoUpload(context.WithoutCancel(ctx), tempPath)
-		}
-	}()
-
-	file, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return mediadomain.Asset{}, err
-	}
-	// 流式限长：最多 MaxBytes+1，用于检测超限。
-	limited := io.LimitReader(body, existing.MaxBytes+1)
-	hasher := sha256.New()
-	writer := io.MultiWriter(file, hasher)
-	written, copyErr := io.Copy(writer, limited)
-	closeErr := file.Close()
-	if copyErr != nil {
-		if isBodyTooLargeError(copyErr) {
-			return mediadomain.Asset{}, errVideoTooLarge()
-		}
-		return mediadomain.Asset{}, copyErr
-	}
-	if closeErr != nil {
-		return mediadomain.Asset{}, closeErr
-	}
-	if written == 0 {
-		return mediadomain.Asset{}, fmt.Errorf("%w: 空内容", ErrInvalidVideoUpload)
-	}
-	if written > existing.MaxBytes {
-		return mediadomain.Asset{}, errVideoTooLarge()
-	}
-
-	// 内容嗅探：必须与票据允许 MIME 一致（XAI 当前为 video/mp4）。
-	sniffed, sniffErr := sniffVideoFile(tempPath)
-	if sniffErr != nil {
-		return mediadomain.Asset{}, sniffErr
-	}
-	if sniffed != allowedMIME {
-		return mediadomain.Asset{}, fmt.Errorf("%w: 内容类型与票据不允许的类型不一致", ErrInvalidVideoUpload)
-	}
-	finalMIME := allowedMIME
+	defer func() { _ = s.objects.AbortVideoUpload(context.WithoutCancel(ctx), staged.TempPath) }()
 
 	// 原子消费票据：并发 PUT 仅一个能消费成功。
 	ticket, consumed, err := s.tickets.ConsumeUploadTicket(ctx, tokenHash, now)
@@ -231,23 +198,114 @@ func (s *Service) ReceiveVideoUpload(ctx context.Context, rawToken string, conte
 		}
 	}()
 
-	if err := s.objects.CommitVideoUpload(ctx, tempPath, storageKey); err != nil {
-		// 提交失败：临时文件由 defer Abort 清理；票据释放后可重试。
-		return mediadomain.Asset{}, err
-	}
-	cleanupTemp = false
-
-	asset := mediadomain.Asset{
-		ID: ticket.AssetID, Kind: "video", StorageKey: storageKey, MIMEType: finalMIME,
-		SizeBytes: written, SHA256: hex.EncodeToString(hasher.Sum(nil)), CreatedAt: now,
-	}
-	if err := s.assets.CreateMediaAsset(ctx, asset); err != nil {
-		// 一致性补偿：删除已提交对象并释放票据，避免孤立文件与烧毁票据。
-		_ = s.objects.Delete(context.WithoutCancel(ctx), storageKey)
+	asset, err := s.commitStagedVideo(ctx, staged, now)
+	if err != nil {
 		return mediadomain.Asset{}, err
 	}
 	releaseTicket = false
 	_ = s.tickets.BindJobResultAsset(ctx, ticket.JobID, ticket.AssetID)
+	return asset, nil
+}
+
+// SaveVideo 将 Provider 已生成的远程视频流式归档为本地媒体资产。
+func (s *Service) SaveVideo(ctx context.Context, jobID, contentType string, body io.Reader) (mediadomain.Asset, error) {
+	mimeType := normalizeVideoMIME(contentType)
+	if mimeType == "" {
+		mimeType = "video/mp4"
+	}
+	if !supportedVideoMIME(mimeType) {
+		return mediadomain.Asset{}, fmt.Errorf("%w: Content-Type 无效", ErrInvalidVideoUpload)
+	}
+	id, err := newVideoAssetID()
+	if err != nil {
+		return mediadomain.Asset{}, err
+	}
+	jobID = strings.TrimSpace(jobID)
+	bound := false
+	if s.tickets != nil && jobID != "" {
+		bindErr := s.tickets.BindJobResultAsset(ctx, jobID, id)
+		if bindErr != nil && !errors.Is(bindErr, repository.ErrNotFound) {
+			return mediadomain.Asset{}, fmt.Errorf("绑定视频任务结果资产失败: %w", bindErr)
+		}
+		bound = bindErr == nil
+	}
+	saved := false
+	defer func() {
+		if bound && !saved {
+			_ = s.tickets.BindJobResultAsset(context.WithoutCancel(ctx), jobID, "")
+		}
+	}()
+	staged, err := s.stageVideo(ctx, id, mimeType, body, DefaultMaxVideoBytes)
+	if err != nil {
+		return mediadomain.Asset{}, err
+	}
+	defer func() { _ = s.objects.AbortVideoUpload(context.WithoutCancel(ctx), staged.TempPath) }()
+	asset, err := s.commitStagedVideo(ctx, staged, time.Now().UTC())
+	if err == nil {
+		saved = true
+	}
+	return asset, err
+}
+
+func (s *Service) stageVideo(ctx context.Context, id, mimeType string, body io.Reader, maxBytes int64) (stagedVideo, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxVideoBytes
+	}
+	tempPath, storageKey, err := s.objects.BeginVideoUpload(ctx, id, mimeType)
+	if err != nil {
+		return stagedVideo{}, err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = s.objects.AbortVideoUpload(context.WithoutCancel(ctx), tempPath)
+		}
+	}()
+	file, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return stagedVideo{}, err
+	}
+	hasher := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(file, hasher), io.LimitReader(body, maxBytes+1))
+	closeErr := file.Close()
+	if copyErr != nil {
+		if isBodyTooLargeError(copyErr) {
+			return stagedVideo{}, errVideoTooLarge()
+		}
+		return stagedVideo{}, copyErr
+	}
+	if closeErr != nil {
+		return stagedVideo{}, closeErr
+	}
+	if written == 0 {
+		return stagedVideo{}, fmt.Errorf("%w: 空内容", ErrInvalidVideoUpload)
+	}
+	if written > maxBytes {
+		return stagedVideo{}, errVideoTooLarge()
+	}
+	sniffed, err := sniffVideoFile(tempPath)
+	if err != nil {
+		return stagedVideo{}, err
+	}
+	if sniffed != mimeType {
+		return stagedVideo{}, fmt.Errorf("%w: 内容类型与声明类型不一致", ErrInvalidVideoUpload)
+	}
+	cleanup = false
+	return stagedVideo{ID: id, TempPath: tempPath, StorageKey: storageKey, MIMEType: mimeType, SizeBytes: written, SHA256: hex.EncodeToString(hasher.Sum(nil))}, nil
+}
+
+func (s *Service) commitStagedVideo(ctx context.Context, staged stagedVideo, createdAt time.Time) (mediadomain.Asset, error) {
+	if err := s.objects.CommitVideoUpload(ctx, staged.TempPath, staged.StorageKey); err != nil {
+		return mediadomain.Asset{}, err
+	}
+	asset := mediadomain.Asset{
+		ID: staged.ID, Kind: "video", StorageKey: staged.StorageKey, MIMEType: staged.MIMEType,
+		SizeBytes: staged.SizeBytes, SHA256: staged.SHA256, CreatedAt: createdAt,
+	}
+	if err := s.assets.CreateMediaAsset(ctx, asset); err != nil {
+		_ = s.objects.Delete(context.WithoutCancel(ctx), staged.StorageKey)
+		return mediadomain.Asset{}, err
+	}
 	if s.totalBytes.Add(asset.SizeBytes) > cleanupThresholdBytes(s.runtimeConfig()) {
 		select {
 		case s.cleanupSignal <- struct{}{}:
