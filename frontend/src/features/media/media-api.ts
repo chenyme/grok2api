@@ -3,6 +3,7 @@ import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import {
   createObjectDecoder,
   createPaginatedDecoder,
+  decodeCountResult,
   hasShape,
   isNumber,
   isString,
@@ -71,6 +72,10 @@ export function listImages(input: ListImagesInput): Promise<PaginatedDTO<MediaAs
 
 export function getImageStats(): Promise<ImageStatsDTO> {
   return apiRequest("/api/admin/v1/media/images/stats", {}, decodeImageStats);
+}
+
+export function deleteImages(ids: string[]): Promise<{ deleted: number }> {
+  return apiRequest("/api/admin/v1/media/images", { method: "DELETE", body: { ids } }, decodeCountResult<{ deleted: number }>("deleted"));
 }
 
 export function listVideos(input: ListVideosInput): Promise<PaginatedDTO<MediaJobDTO>> {

@@ -21,10 +21,11 @@ import (
 )
 
 var (
-	ErrAssetNotFound        = errors.New("媒体资源不存在")
-	ErrInvalidImage         = errors.New("图片内容无效")
-	ErrInvalidFilter        = errors.New("媒体筛选条件无效")
-	ErrMediaJobsUnavailable = errors.New("视频任务仓储未配置")
+	ErrAssetNotFound         = errors.New("媒体资源不存在")
+	ErrInvalidImage          = errors.New("图片内容无效")
+	ErrInvalidImageSelection = errors.New("图片选择无效")
+	ErrInvalidFilter         = errors.New("媒体筛选条件无效")
+	ErrMediaJobsUnavailable  = errors.New("视频任务仓储未配置")
 )
 
 // Service 负责图片/视频校验、文件落盘和元数据持久化的一致性收口。
@@ -186,6 +187,54 @@ func (s *Service) AdminImageStats(ctx context.Context) (ImageStats, error) {
 		return ImageStats{}, err
 	}
 	return ImageStats{TotalImages: stats.TotalImages, TotalBytes: stats.TotalBytes}, nil
+}
+
+// AdminDeleteImages 删除管理员明确选择的图片对象及其元数据。
+// 不存在或已被并发清理的图片按幂等成功处理；非图片资产不会被删除。
+func (s *Service) AdminDeleteImages(ctx context.Context, ids []string) (int, error) {
+	if len(ids) == 0 || len(ids) > 100 {
+		return 0, ErrInvalidImageSelection
+	}
+	unique := make(map[string]struct{}, len(ids))
+	assets := make([]mediadomain.Asset, 0, len(ids))
+	for _, rawID := range ids {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			return 0, ErrInvalidImageSelection
+		}
+		if _, exists := unique[id]; exists {
+			continue
+		}
+		unique[id] = struct{}{}
+		asset, err := s.assets.GetMediaAsset(ctx, id)
+		if errors.Is(err, repository.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if asset.Kind == "image" {
+			assets = append(assets, asset)
+		}
+	}
+
+	deleted := 0
+	for _, asset := range assets {
+		if err := s.objects.Delete(ctx, asset.StorageKey); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return deleted, err
+		}
+		if err := s.assets.DeleteMediaAsset(ctx, asset.ID); err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				continue
+			}
+			return deleted, err
+		}
+		deleted++
+	}
+	if total, err := s.assets.TotalMediaAssetBytes(ctx); err == nil {
+		s.totalBytes.Store(total)
+	}
+	return deleted, nil
 }
 
 // AdminVideoStats 返回视频任务统计信息。

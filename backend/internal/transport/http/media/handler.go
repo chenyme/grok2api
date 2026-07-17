@@ -30,9 +30,14 @@ func (h *Handler) RegisterPublic(router *gin.Engine) {
 // RegisterAdmin 注册管理端媒体列表和统计端点。
 func (h *Handler) RegisterAdmin(router *gin.RouterGroup) {
 	router.GET("/media/images", h.listImages)
+	router.DELETE("/media/images", h.deleteImages)
 	router.GET("/media/images/stats", h.imageStats)
 	router.GET("/media/videos", h.listVideos)
 	router.GET("/media/videos/stats", h.videoStats)
+}
+
+type deleteImagesRequest struct {
+	IDs []string `json:"ids" binding:"required"`
 }
 
 func (h *Handler) getImage(c *gin.Context) {
@@ -114,6 +119,24 @@ func (h *Handler) imageStats(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, imageStatsDTO{TotalImages: stats.TotalImages, TotalBytes: stats.TotalBytes})
+}
+
+func (h *Handler) deleteImages(c *gin.Context) {
+	var request deleteImagesRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	deleted, err := h.service.AdminDeleteImages(c.Request.Context(), request.IDs)
+	if errors.Is(err, mediaapp.ErrInvalidImageSelection) {
+		response.Error(c, http.StatusBadRequest, "invalidImageSelection", err.Error())
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "mediaDeleteImagesFailed", "删除图片失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
 }
 
 func (h *Handler) listVideos(c *gin.Context) {
