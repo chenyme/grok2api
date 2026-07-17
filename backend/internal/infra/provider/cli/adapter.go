@@ -140,15 +140,15 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			body = a.replay.Apply(ctx, request.Model, request.PromptCacheKey, body)
 		}
 	}
-	// bot_flag_source=1 的账号默认走 XAI；其他账号始终先走 Build。
+	// 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source=1 的账号默认走 XAI。
 	primaryBase := a.primaryBaseURL()
-	base := a.inferenceBaseForOperation(request.Credential, request.Method, request.Path)
+	base := a.inferenceBaseForOperation(request.Credential, request.Billing, request.Method, request.Path)
 	resp, reqURL, err := a.doResponseRequest(ctx, request, accessToken, body, base)
 	if err != nil {
 		return nil, err
 	}
 	// 仅可回退操作在当次 Build 主地址明确 403 时用等价请求探测 XAI。
-	if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Method, request.Path, resp.StatusCode) {
+	if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Billing, request.Method, request.Path, resp.StatusCode) {
 		// 缓冲主 403 正文，备用失败时原样回放，避免二次 primary POST。
 		primaryBody, primaryTruncated, readErr := provider.ReadDiagnosticBody(resp.Body)
 		_ = resp.Body.Close()

@@ -135,7 +135,8 @@ func boundDiagnosticText(value string, limit int) string {
 
 // GenerateVideo 通过 Build OAuth 固定模型 grok-imagine-video-1.5 创建并轮询视频任务。
 // 最多 1 张首图；多于 1 张在调用上游前失败，不静默截断。
-// bot_flag_source=1 默认使用 XAI；其他账号仅在当次 Build 创建返回 403 后探测 XAI。
+// 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source=1 默认使用 XAI。
+// 其他 auto Super 账号仅在当次 Build 创建返回 403 后探测 XAI。
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
 	if len(request.ReferenceURLs) > buildVideoMaxImages {
 		return provider.VideoResult{}, fmt.Errorf("Build grok-imagine-video-1.5 最多支持 1 张首图，当前为 %d 张", len(request.ReferenceURLs))
@@ -146,7 +147,8 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	credential := request.Credential
 	routeMode := normalizedBuildRouteMode(credential)
-	if routeMode == account.BuildRouteXAI || (routeMode == account.BuildRouteAuto && a.CredentialMetadata(credential).BuildBotFlagged) {
+	xaiEligible := account.IsBuildSuper(credential, request.Billing)
+	if routeMode == account.BuildRouteXAI || (routeMode == account.BuildRouteAuto && xaiEligible && a.CredentialMetadata(credential).BuildBotFlagged) {
 		return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true, false)
 	}
 	// 非 bot-flagged 账号先走 Build 主地址，不读取历史回退标记。
@@ -174,10 +176,10 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if !asVideoUpstreamError(createErr, &upstream) || !isHTTPForbidden(upstream.status) {
 		return provider.VideoResult{}, createErr
 	}
-	if routeMode == account.BuildRouteBuild {
+	if routeMode == account.BuildRouteBuild || !xaiEligible {
 		return provider.VideoResult{}, createErr
 	}
-	// 主 403：签发 upload_url 后探测 XAI；创建成功才标记降级。无 Billing/entitlement 门槛。
+	// 已确认 Super 的主地址 403：签发 upload_url 后探测 XAI；创建成功才标记降级。
 	return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true, true)
 }
 

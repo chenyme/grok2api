@@ -110,9 +110,9 @@ func normalizedBuildRouteMode(credential account.Credential) account.BuildRouteM
 	return account.BuildRouteAuto
 }
 
-// inferenceBaseForOperation 先应用管理员的显式模式，再应用 auto 的 bot flag 规则。
-// 历史 fallback 标记、Billing 和 entitlement 不参与选择。
-func (a *Adapter) inferenceBaseForOperation(credential account.Credential, method, path string) string {
+// inferenceBaseForOperation 先应用管理员的显式模式，再校验 auto 的 Super 资格与 bot flag。
+// Free 与未确认等级的账号在 auto 下始终使用 Build；历史 fallback 标记不参与选择。
+func (a *Adapter) inferenceBaseForOperation(credential account.Credential, billing *account.Billing, method, path string) string {
 	if !isXAIInferenceFallbackCapable(method, path) {
 		return a.primaryBaseURL()
 	}
@@ -122,6 +122,9 @@ func (a *Adapter) inferenceBaseForOperation(credential account.Credential, metho
 	case account.BuildRouteXAI:
 		return a.fallbackBaseURL()
 	}
+	if !account.IsBuildSuper(credential, billing) {
+		return a.primaryBaseURL()
+	}
 	if a.CredentialMetadata(credential).BuildBotFlagged {
 		return a.fallbackBaseURL()
 	}
@@ -130,8 +133,8 @@ func (a *Adapter) inferenceBaseForOperation(credential account.Credential, metho
 
 // shouldProbeXAIInferenceFallback 只由当次 Build CLI 的严格 403 触发。
 // bot-flagged 账号已直接使用 XAI，不走该探测分支。
-func shouldProbeXAIInferenceFallback(credential account.Credential, method, path string, primaryStatus int) bool {
-	return normalizedBuildRouteMode(credential) == account.BuildRouteAuto && isHTTPForbidden(primaryStatus) && isXAIInferenceFallbackCapable(method, path)
+func shouldProbeXAIInferenceFallback(credential account.Credential, billing *account.Billing, method, path string, primaryStatus int) bool {
+	return account.IsBuildSuper(credential, billing) && normalizedBuildRouteMode(credential) == account.BuildRouteAuto && isHTTPForbidden(primaryStatus) && isXAIInferenceFallbackCapable(method, path)
 }
 
 func (a *Adapter) urlWithBase(base, path string) string {

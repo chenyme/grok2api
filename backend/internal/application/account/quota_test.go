@@ -57,7 +57,7 @@ func TestNewQuotaViewTreatsZeroUsageSuperGrokAsPaid(t *testing.T) {
 	quota := newQuotaView(&accountdomain.Billing{
 		PlanName: "SuperGrok", IsUnifiedBillingUser: true,
 		UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", CreditUsagePercent: 0,
-	}, 0, nil, "")
+	}, 0, nil, "", false)
 	if quota.Type != QuotaTypePaid || quota.Unit != "percent" || quota.Limit != 100 || quota.Remaining != 100 || quota.Confidence != "observed" {
 		t.Fatalf("quota = %#v", quota)
 	}
