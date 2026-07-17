@@ -16,8 +16,19 @@ import (
 )
 
 type fallbackMarkerStub struct {
-	calls atomic.Int32
-	err   error
+	calls       atomic.Int32
+	policyCalls atomic.Int32
+	err         error
+	policyErr   error
+	denied      bool
+}
+
+func (m *fallbackMarkerStub) CanUseBuildAPIFallback(ctx context.Context, accountID uint64) (bool, error) {
+	m.policyCalls.Add(1)
+	if m.policyErr != nil {
+		return false, m.policyErr
+	}
+	return !m.denied, nil
 }
 
 func (m *fallbackMarkerStub) MarkBuildAPIFallback(ctx context.Context, accountID uint64, enabled bool) error {
@@ -95,6 +106,46 @@ func TestForwardResponsePrimary403Fallback200Activates(t *testing.T) {
 	}
 	if marker.calls.Load() != 1 {
 		t.Fatalf("marker calls = %d", marker.calls.Load())
+	}
+}
+
+func TestForwardResponseFree403NeverUsesXAI(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		marked bool
+		marker *fallbackMarkerStub
+	}{
+		{name: "unmarked free", marker: &fallbackMarkerStub{denied: true}},
+		{name: "marked free", marked: true, marker: &fallbackMarkerStub{denied: true}},
+		{name: "policy lookup failure", marker: &fallbackMarkerStub{policyErr: context.DeadlineExceeded}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter, encrypted := newFallbackTestAdapter(t)
+			adapter.SetFallbackMarker(tc.marker)
+			var primaryHits, fallbackHits atomic.Int32
+			adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if strings.Contains(request.URL.Host, "xai.test") {
+					fallbackHits.Add(1)
+					t.Fatalf("Free account must never hit XAI")
+				}
+				primaryHits.Add(1)
+				return jsonResponse(http.StatusForbidden, `{"error":{"message":"primary forbidden"}}`, request), nil
+			})
+			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+				Credential: account.Credential{ID: 111, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildAPIFallback: tc.marked},
+				Method:     http.MethodPost, Path: "/responses", Body: []byte(`{"model":"grok-4.5","input":"hi"}`), Model: "grok-4.5",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusForbidden || primaryHits.Load() != 1 || fallbackHits.Load() != 0 {
+				t.Fatalf("status=%d primary=%d fallback=%d", response.StatusCode, primaryHits.Load(), fallbackHits.Load())
+			}
+			if tc.marker.policyCalls.Load() != 1 || tc.marker.calls.Load() != 0 {
+				t.Fatalf("policy=%d mark=%d", tc.marker.policyCalls.Load(), tc.marker.calls.Load())
+			}
+		})
 	}
 }
 
@@ -185,6 +236,7 @@ func TestForwardResponseMarkedAccountCreateUsesFallbackDirectly(t *testing.T) {
 
 func TestForwardResponseMarkedAccountCompactUsesFallbackDirectly(t *testing.T) {
 	adapter, encrypted := newFallbackTestAdapter(t)
+	adapter.SetFallbackMarker(&fallbackMarkerStub{})
 	var primaryHits, fallbackHits atomic.Int32
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch {
@@ -438,6 +490,28 @@ func TestListModelsPrimary403FallbackSuccess(t *testing.T) {
 	}
 }
 
+func TestListModelsFree403NeverUsesXAI(t *testing.T) {
+	adapter, encrypted := newFallbackTestAdapter(t)
+	marker := &fallbackMarkerStub{denied: true}
+	adapter.SetFallbackMarker(marker)
+	var primaryHits, fallbackHits atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Host, "xai.test") {
+			fallbackHits.Add(1)
+			t.Fatalf("Free account models must never hit XAI")
+		}
+		primaryHits.Add(1)
+		return jsonResponse(http.StatusForbidden, `{}`, request), nil
+	})
+	_, err := adapter.ListModels(context.Background(), account.Credential{ID: 114, EncryptedAccessToken: encrypted, BuildAPIFallback: true})
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("err = %v", err)
+	}
+	if primaryHits.Load() != 1 || fallbackHits.Load() != 0 || marker.policyCalls.Load() != 1 {
+		t.Fatalf("primary=%d fallback=%d policy=%d", primaryHits.Load(), fallbackHits.Load(), marker.policyCalls.Load())
+	}
+}
+
 func TestGenerateVideoFallbackInjectsUploadURL(t *testing.T) {
 	adapter, encrypted := newFallbackTestAdapter(t)
 	marker := &fallbackMarkerStub{}
@@ -471,6 +545,35 @@ func TestGenerateVideoFallbackInjectsUploadURL(t *testing.T) {
 	}
 	if marker.calls.Load() != 1 {
 		t.Fatalf("marker = %d", marker.calls.Load())
+	}
+}
+
+func TestGenerateVideoFree403NeverUsesXAI(t *testing.T) {
+	adapter, encrypted := newFallbackTestAdapter(t)
+	marker := &fallbackMarkerStub{denied: true}
+	adapter.SetFallbackMarker(marker)
+	var primaryHits, fallbackHits atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Host, "xai.test") {
+			fallbackHits.Add(1)
+			t.Fatalf("Free account video must never hit XAI")
+		}
+		primaryHits.Add(1)
+		return jsonResponse(http.StatusForbidden, `{"error":"forbidden"}`, request), nil
+	})
+	_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: account.Credential{ID: 115, EncryptedAccessToken: encrypted, BuildAPIFallback: true},
+		JobID:      "video_free", Prompt: "waves", Duration: 6, Resolution: "720p",
+	})
+	if err == nil {
+		t.Fatal("expected primary 403")
+	}
+	status, ok := provider.ErrorHTTPStatus(err)
+	if !ok || status != http.StatusForbidden {
+		t.Fatalf("status=%d ok=%v err=%v", status, ok, err)
+	}
+	if primaryHits.Load() != 1 || fallbackHits.Load() != 0 || marker.policyCalls.Load() != 1 {
+		t.Fatalf("primary=%d fallback=%d policy=%d", primaryHits.Load(), fallbackHits.Load(), marker.policyCalls.Load())
 	}
 }
 
@@ -523,6 +626,10 @@ type trackingFallbackMarker struct {
 	calls        atomic.Int32
 	activateSeen atomic.Bool
 	err          error
+}
+
+func (m *trackingFallbackMarker) CanUseBuildAPIFallback(ctx context.Context, accountID uint64) (bool, error) {
+	return true, nil
 }
 
 func (m *trackingFallbackMarker) MarkBuildAPIFallback(ctx context.Context, accountID uint64, enabled bool) error {

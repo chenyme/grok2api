@@ -146,7 +146,9 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	credential := request.Credential
 	if credential.BuildAPIFallback {
-		return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true)
+		if a.canUseBuildAPIFallback(ctx, credential.ID) {
+			return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true)
+		}
 	}
 	// 未标记：先走主地址，不添加 upload_url。
 	primaryBase := a.primaryBaseURL()
@@ -171,6 +173,10 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	var upstream *videoUpstreamError
 	if !asVideoUpstreamError(createErr, &upstream) || !isHTTPForbidden(upstream.status) {
+		return provider.VideoResult{}, createErr
+	}
+	// Free/Unknown 的主 403 直接返回；仅 Super 可签发 upload_url 后探测 XAI。
+	if credential.BuildAPIFallback || !a.canUseBuildAPIFallback(ctx, credential.ID) {
 		return provider.VideoResult{}, createErr
 	}
 	// 主 403：签发 upload_url 后探测 XAI；创建成功才标记降级。

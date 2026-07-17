@@ -13,9 +13,10 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/config"
 )
 
-// FallbackMarker 在主 API 403 且备用 API 成功后幂等持久化账号降级标记。
-// 当前请求成功不因标记失败而丢失；失败时记录结构化日志供后续重试。
+// FallbackMarker 同时提供 Build XAI 回退资格判定与回退标记持久化。
+// XAI 仅接受 Super 账号；资格查询失败时 Adapter 必须 fail closed。
 type FallbackMarker interface {
+	CanUseBuildAPIFallback(ctx context.Context, accountID uint64) (bool, error)
 	MarkBuildAPIFallback(ctx context.Context, accountID uint64, enabled bool) error
 }
 
@@ -106,19 +107,31 @@ func normalizeBuildAPIPath(path string) string {
 	return path
 }
 
-// apiBaseForOperation 按操作选择 Build API 根地址。
-// BuildAPIFallback 是账号级 XAI **推理** 回退标记：仅对 isXAIInferenceFallbackCapable 的操作直连 XAI；
-// Billing、stored GET/DELETE 与未知路径即使已标记也始终走主地址。OAuth 不受影响。
-func (a *Adapter) apiBaseForOperation(credential account.Credential, method, path string) string {
-	if credential.BuildAPIFallback && isXAIInferenceFallbackCapable(method, path) {
+// apiBaseForOperation 按操作与实时 Billing 资格选择 Build API 根地址。
+// 旧数据即使误标 BuildAPIFallback，Free/Unknown 账号也始终走主地址。
+func (a *Adapter) apiBaseForOperation(ctx context.Context, credential account.Credential, method, path string) string {
+	if credential.BuildAPIFallback && isXAIInferenceFallbackCapable(method, path) && a.canUseBuildAPIFallback(ctx, credential.ID) {
 		return a.fallbackBaseURL()
 	}
 	return a.primaryBaseURL()
 }
 
-// shouldProbeXAIInferenceFallback 未标记账号仅在主地址明确 403 且操作可回退时探测 XAI。
-func shouldProbeXAIInferenceFallback(credential account.Credential, method, path string, primaryStatus int) bool {
-	return !credential.BuildAPIFallback && isHTTPForbidden(primaryStatus) && isXAIInferenceFallbackCapable(method, path)
+// shouldProbeXAIInferenceFallback 仅允许已确认 Super 的未标记账号在主地址 403 后探测 XAI。
+func (a *Adapter) shouldProbeXAIInferenceFallback(ctx context.Context, credential account.Credential, method, path string, primaryStatus int) bool {
+	return !credential.BuildAPIFallback && isHTTPForbidden(primaryStatus) && isXAIInferenceFallbackCapable(method, path) && a.canUseBuildAPIFallback(ctx, credential.ID)
+}
+
+func (a *Adapter) canUseBuildAPIFallback(ctx context.Context, accountID uint64) bool {
+	marker := a.fallbackMarkerRef()
+	if marker == nil || accountID == 0 {
+		return false
+	}
+	allowed, err := marker.CanUseBuildAPIFallback(ctx, accountID)
+	if err != nil {
+		slog.Warn("build_api_fallback_policy_failed", "account_id", accountID, "error", err.Error())
+		return false
+	}
+	return allowed
 }
 
 func (a *Adapter) urlWithBase(base, path string) string {

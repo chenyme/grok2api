@@ -114,13 +114,13 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 	}
 	// 推理回退：create/compact 可走 XAI；stored GET/DELETE 与未知路径始终主地址。
-	base := a.apiBaseForOperation(request.Credential, request.Method, request.Path)
+	base := a.apiBaseForOperation(ctx, request.Credential, request.Method, request.Path)
 	resp, reqURL, err := a.doResponseRequest(ctx, request, accessToken, body, base)
 	if err != nil {
 		return nil, err
 	}
 	// 未标记账号：仅可回退操作在主地址明确 403 时用等价请求探测 XAI。
-	if shouldProbeXAIInferenceFallback(request.Credential, request.Method, request.Path, resp.StatusCode) {
+	if a.shouldProbeXAIInferenceFallback(ctx, request.Credential, request.Method, request.Path, resp.StatusCode) {
 		// 缓冲主 403 正文，备用失败时原样回放，避免二次 primary POST。
 		primaryBody, primaryTruncated, readErr := provider.ReadDiagnosticBody(resp.Body)
 		_ = resp.Body.Close()
@@ -294,7 +294,7 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 		return nil, err
 	}
 	// 模型目录为 XAI 推理回退能力面：已标记直连 XAI，未标记主 403 可探测。
-	base := a.apiBaseForOperation(credential, http.MethodGet, "/models")
+	base := a.apiBaseForOperation(ctx, credential, http.MethodGet, "/models")
 	models, status, err := a.listModelsAt(ctx, credential, accessToken, base)
 	if err != nil {
 		return nil, err
@@ -302,7 +302,7 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	if models != nil {
 		return models, nil
 	}
-	if shouldProbeXAIInferenceFallback(credential, http.MethodGet, "/models", status) {
+	if a.shouldProbeXAIInferenceFallback(ctx, credential, http.MethodGet, "/models", status) {
 		fallbackModels, fallbackStatus, fallbackErr := a.listModelsAt(ctx, credential, accessToken, a.fallbackBaseURL())
 		if fallbackErr == nil && fallbackModels != nil && isHTTPSuccess(fallbackStatus) {
 			a.activateBuildAPIFallback(ctx, &credential)

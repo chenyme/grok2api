@@ -621,6 +621,11 @@ attemptLoop:
 				continue
 			}
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
+			freeBuildForbidden := response.StatusCode == http.StatusForbidden && credential.Provider == accountdomain.ProviderBuild && (lease.Billing == nil || !lease.Billing.IsPaid())
+			if freeBuildForbidden {
+				// XAI 不接受 Free 账号。主 Build 403 是该账号当前不可用，必须冷却并换号。
+				lastFailure.AccountScoped = true
+			}
 			if response.StatusCode == http.StatusTooManyRequests && response.RateLimit != nil && response.RateLimit.TeamID != "" && response.RateLimit.Model == route.UpstreamModel {
 				limited := s.markTeamModelRateLimit(credential, route.UpstreamModel, *response.RateLimit, time.Now().UTC())
 				lastFailure.AccountScoped = false
@@ -655,7 +660,10 @@ attemptLoop:
 				goto handleResponse
 			}
 			failureHandled := false
-			if lease.QuotaMode != "" && response.StatusCode == http.StatusTooManyRequests {
+			if freeBuildForbidden {
+				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
+				failureHandled = true
+			} else if lease.QuotaMode != "" && response.StatusCode == http.StatusTooManyRequests {
 				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
 				s.selector.MarkQuotaStateChanged(credential.Provider)
 				failureHandled = reconcileErr == nil && exhausted

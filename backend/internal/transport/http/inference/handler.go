@@ -246,7 +246,7 @@ func (h *Handler) createMessage(c *gin.Context) {
 		writeGatewayAnthropicError(c, err)
 		return
 	}
-	h.writeResult(c, result, request.Stream)
+	h.writeAnthropicResult(c, result, request.Stream)
 }
 
 func (h *Handler) generateImage(c *gin.Context) {
@@ -292,6 +292,11 @@ func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
 	errorCode := ""
 	defer result.Body.Close()
 	defer func() { result.Finalize(gateway.Usage{}, "", errorCode) }()
+	if isUpstreamCredentialStatus(result.StatusCode) {
+		errorCode = "upstream_unavailable"
+		writeOpenAIError(c, http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用")
+		return
+	}
 	contentLength, contentLengthErr := strconv.ParseInt(result.Header.Get("Content-Length"), 10, 64)
 	if contentLengthErr == nil && contentLength > maxMediaResponseTransferBytes {
 		errorCode = "response_too_large"
@@ -788,11 +793,28 @@ func (h *Handler) handleOwnedResource(c *gin.Context, deleteResource bool) {
 }
 
 func (h *Handler) writeResult(c *gin.Context, result *gateway.Result, stream bool) {
+	h.writeProtocolResult(c, result, stream, false)
+}
+
+func (h *Handler) writeAnthropicResult(c *gin.Context, result *gateway.Result, stream bool) {
+	h.writeProtocolResult(c, result, stream, true)
+}
+
+func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, stream, anthropic bool) {
 	usage := gateway.Usage{}
 	responseID := ""
 	errorCode := ""
 	defer result.Body.Close()
 	defer func() { result.Finalize(usage, responseID, errorCode) }()
+	if isUpstreamCredentialStatus(result.StatusCode) {
+		errorCode = "upstream_unavailable"
+		if anthropic {
+			writeAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", "上游服务暂不可用")
+		} else {
+			writeOpenAIError(c, http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用")
+		}
+		return
+	}
 	transferLimit := int64(maxJSONResponseTransferBytes)
 	if stream {
 		transferLimit = maxStreamResponseTransferBytes
@@ -1101,8 +1123,12 @@ func writeGatewayError(c *gin.Context, err error) {
 		status, code = http.StatusBadRequest, "unsupported_parameter"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
-		status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
-		if upstreamFailure.RetryAfter > 0 {
+		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
+			status, code, message = http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用"
+		} else {
+			status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
+		}
+		if !isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) && upstreamFailure.RetryAfter > 0 {
 			c.Header("Retry-After", strconv.FormatInt(max(1, int64(upstreamFailure.RetryAfter.Round(time.Second)/time.Second)), 10))
 		}
 	case errors.As(err, &selectionFailure):
@@ -1130,8 +1156,12 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		status, errorType = http.StatusBadRequest, "invalid_request_error"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
-		status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
-		if upstreamFailure.RetryAfter > 0 {
+		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
+			status, errorType, message = http.StatusServiceUnavailable, "overloaded_error", "上游服务暂不可用"
+		} else {
+			status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
+		}
+		if !isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) && upstreamFailure.RetryAfter > 0 {
 			c.Header("Retry-After", strconv.FormatInt(max(1, int64(upstreamFailure.RetryAfter.Round(time.Second)/time.Second)), 10))
 		}
 		if status == http.StatusTooManyRequests {
@@ -1149,6 +1179,10 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		message = "当前没有可用的上游账号"
 	}
 	writeAnthropicError(c, status, errorType, message)
+}
+
+func isUpstreamCredentialStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
 func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailableError) (int, string, string) {

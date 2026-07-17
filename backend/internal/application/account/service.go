@@ -1295,6 +1295,16 @@ func (s *Service) MarkBuildAPIFallback(ctx context.Context, id uint64, enabled b
 	return mapRepositoryError(s.accounts.MarkBuildAPIFallback(ctx, id, enabled))
 }
 
+// CanUseBuildAPIFallback 仅允许 Billing 已确认付费的 Build 账号访问 XAI 回退地址。
+// 缺失或读取失败的 Billing 按无资格处理，由调用方 fail closed。
+func (s *Service) CanUseBuildAPIFallback(ctx context.Context, id uint64) (bool, error) {
+	billing, err := s.accounts.GetBilling(ctx, id)
+	if err != nil {
+		return false, mapRepositoryError(err)
+	}
+	return billing.IsPaid(), nil
+}
+
 func (s *Service) Delete(ctx context.Context, id uint64) error {
 	if s.sticky != nil {
 		_ = s.sticky.DeleteByAccount(ctx, id)

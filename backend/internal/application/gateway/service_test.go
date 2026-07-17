@@ -466,7 +466,7 @@ func TestParseFreeQuotaExhaustion(t *testing.T) {
 	}
 }
 
-func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *testing.T) {
+func TestGatewayCoolsFreeBuildAccountsAfterForbidden(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "systemic-forbidden.db"))
 	if err != nil {
@@ -524,11 +524,11 @@ func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *test
 	if !errors.As(err, &upstreamFailure) || errors.Is(err, ErrNoAvailableAccount) {
 		t.Fatalf("error = %T %v", err, err)
 	}
-	if upstreamFailure.HTTPStatus != http.StatusForbidden || upstreamFailure.Code != "upstream_forbidden" || upstreamFailure.AccountScoped {
+	if upstreamFailure.HTTPStatus != http.StatusForbidden || upstreamFailure.Code != "upstream_forbidden" || !upstreamFailure.AccountScoped {
 		t.Fatalf("upstream failure = %#v", upstreamFailure)
 	}
 	attempts := adapter.Attempts()
-	if len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+	if len(attempts) != 3 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID || attempts[2] != credentials[2].ID {
 		t.Fatalf("attempts = %#v", attempts)
 	}
 	for _, credential := range credentials {
@@ -536,12 +536,12 @@ func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *test
 		if getErr != nil {
 			t.Fatal(getErr)
 		}
-		if observed.FailureCount != 0 || observed.CooldownUntil != nil || observed.AuthStatus != account.AuthStatusActive {
-			t.Fatalf("account %d was incorrectly penalized: %#v", credential.ID, observed)
+		if observed.FailureCount != 1 || observed.CooldownUntil == nil || observed.AuthStatus != account.AuthStatusActive {
+			t.Fatalf("account %d was not cooled after 403: %#v", credential.ID, observed)
 		}
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 1 || logs[0].StatusCode != http.StatusForbidden || logs[0].ErrorCode != "upstream_forbidden" || logs[0].AccountID == nil || *logs[0].AccountID != credentials[1].ID {
+	if err != nil || total != 1 || logs[0].StatusCode != http.StatusForbidden || logs[0].ErrorCode != "upstream_forbidden" || logs[0].AccountID == nil || *logs[0].AccountID != credentials[2].ID {
 		t.Fatalf("audit = %#v, total=%d, err=%v", logs, total, err)
 	}
 }
@@ -652,6 +652,9 @@ func TestBuildChatPermissionDenialDoesNotInvalidateVideoCredential(t *testing.T)
 		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := accountRepo.SaveBilling(ctx, account.Billing{AccountID: credential.ID, MonthlyLimit: 140, SyncedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-chat-denied"}); err != nil {
