@@ -80,8 +80,29 @@ func TestDefaultGrokBuildClientVersionMatchesLocalBaseline(t *testing.T) {
 
 func TestDefaultConsoleProviderConfig(t *testing.T) {
 	console := defaultConfig().Provider.Console
-	if console.BaseURL != "https://console.x.ai" || console.UserAgent == "" || console.ChatTimeout.Value() != 5*time.Minute {
+	if console.BaseURL != "https://console.x.ai" || console.LegacyUserAgent != "" || console.ChatTimeout.Value() != 5*time.Minute {
 		t.Fatalf("console defaults = %#v", console)
+	}
+}
+
+func TestLoadAcceptsLegacyConsoleUserAgent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`provider:
+  console:
+    userAgent: "legacy-console-agent"
+secrets:
+  jwtSecret: "12345678901234567890123456789012"
+  credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Console.LegacyUserAgent != "legacy-console-agent" {
+		t.Fatalf("legacy userAgent = %q", cfg.Provider.Console.LegacyUserAgent)
 	}
 }
 
@@ -154,7 +175,6 @@ func TestValidateRejectsUnsafeRuntimeLimits(t *testing.T) {
 		"batch limit":  func(cfg *Config) { cfg.Batch.SyncConcurrency = 51 },
 		"batch jitter": func(cfg *Config) { cfg.Batch.RandomDelay = Duration(6 * time.Second) },
 		"console url":  func(cfg *Config) { cfg.Provider.Console.BaseURL = "http://console.x.ai" },
-		"console ua":   func(cfg *Config) { cfg.Provider.Console.UserAgent = "" },
 		"console timeout": func(cfg *Config) {
 			cfg.Provider.Console.ChatTimeout = Duration(time.Second)
 		},

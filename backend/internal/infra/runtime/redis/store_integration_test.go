@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,7 +46,56 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 	if id, ok, err := store.Get(ctx, "sticky", time.Now().UTC()); err != nil || !ok || id != 42 {
 		t.Fatalf("sticky = %d, %v, %v", id, ok, err)
 	}
-	if err := store.DeleteByAccount(ctx, 42); err != nil {
+	if id, err := store.Bind(ctx, "sticky", 7, time.Now().UTC(), time.Now().UTC().Add(2*time.Minute)); err != nil || id != 42 {
+		t.Fatalf("atomic sticky bind = %d, err = %v", id, err)
+	}
+	if err := store.Set(ctx, "sticky", 7, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteByAccount(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.Get(ctx, "sticky", time.Now().UTC()); err != nil || ok {
+		t.Fatalf("deleted sticky remains available: ok=%v err=%v", ok, err)
+	}
+
+	const bindWorkers = 16
+	start := make(chan struct{})
+	results := make(chan uint64, bindWorkers)
+	errors := make(chan error, bindWorkers)
+	var bindGroup sync.WaitGroup
+	for index := range bindWorkers {
+		bindGroup.Add(1)
+		go func(accountID uint64) {
+			defer bindGroup.Done()
+			<-start
+			id, err := store.Bind(ctx, "sticky-race", accountID, time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+			results <- id
+			errors <- err
+		}(uint64(index + 1))
+	}
+	close(start)
+	bindGroup.Wait()
+	close(results)
+	close(errors)
+	var winner uint64
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id := range results {
+		if winner == 0 {
+			winner = id
+		}
+		if id != winner {
+			t.Fatalf("concurrent bind returned multiple accounts: first=%d current=%d", winner, id)
+		}
+	}
+	if winner == 0 {
+		t.Fatal("concurrent bind did not select an account")
+	}
+	if err := store.DeleteByAccount(ctx, winner); err != nil {
 		t.Fatal(err)
 	}
 

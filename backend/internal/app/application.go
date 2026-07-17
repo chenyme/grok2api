@@ -238,7 +238,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	accountSyncService := accountsyncapp.NewService(logger, accountService, accountService, accountService, modelService)
 	accountSyncService.SetBulkPool(importPool)
 	accountSyncService.UpdateConcurrency(cfg.Batch.ImportConcurrency)
-	egressService := egressapp.NewService(egressRepo, cipher, infraegress.DefaultUserAgent, cfg.Provider.Console.UserAgent)
+	egressService := egressapp.NewService(egressRepo, cipher, infraegress.DefaultUserAgent)
 	clientKeyService := clientkeyapp.NewService(clientKeyRepo, rateLimiter, concurrency, cfg.ClientKeyDefaults.RPMLimit, cfg.ClientKeyDefaults.MaxConcurrent, cipher)
 	auditService := auditapp.NewService(auditRepo, logger, cfg.Audit.BufferSize, cfg.Audit.BatchSize, cfg.Audit.FlushInterval.Value())
 	dashboardService := dashboardapp.NewService(dashboardRepo)
@@ -278,7 +278,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		})
 		webAdapter.UpdateConfig(webProviderConfig(next))
 		consoleAdapter.UpdateConfig(consoleProviderConfig(next))
-		egressService.UpdateDefaults(infraegress.DefaultUserAgent, next.Provider.Console.UserAgent)
 		mediaService.UpdateConfig(mediaConfig(next))
 		quotaRecoveryService.UpdateConfig(next.Provider.Web.RecoveryBackoffBase.Value(), next.Provider.Web.RecoveryBackoffMax.Value())
 		accountSyncService.UpdateConcurrency(next.Batch.ImportConcurrency)
@@ -321,8 +320,7 @@ func webProviderConfig(cfg config.Config) webprovider.Config {
 
 func consoleProviderConfig(cfg config.Config) consoleprovider.Config {
 	return consoleprovider.Config{
-		BaseURL: cfg.Provider.Console.BaseURL, UserAgent: cfg.Provider.Console.UserAgent,
-		TimeoutSeconds: int(cfg.Provider.Console.ChatTimeout.Value().Seconds()),
+		BaseURL: cfg.Provider.Console.BaseURL, TimeoutSeconds: int(cfg.Provider.Console.ChatTimeout.Value().Seconds()),
 	}
 }
 

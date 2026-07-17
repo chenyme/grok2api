@@ -4,37 +4,45 @@ import (
 	"testing"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
-	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 )
 
-func TestResolvePromptCacheIdentityIsStableAndIsolated(t *testing.T) {
-	base := resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationMessages, "", "session-1")
-	if len(base) != 36 || base != resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationMessages, "", "session-1") {
-		t.Fatalf("unstable identity = %q", base)
+func TestResolveBuildSessionIdentityIsStableAndTenantIsolated(t *testing.T) {
+	base := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "", "session-1")
+	if len(base.upstreamID) != 36 || len(base.affinityKey) != 64 || base != resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "", "session-1") {
+		t.Fatalf("unstable identity = %#v", base)
 	}
-	for name, value := range map[string]string{
-		"client":    resolvePromptCacheIdentity(8, accountdomain.ProviderBuild, "grok-4.5", audit.OperationMessages, "", "session-1"),
-		"provider":  resolvePromptCacheIdentity(7, accountdomain.ProviderConsole, "grok-4.5", audit.OperationMessages, "", "session-1"),
-		"model":     resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.3", audit.OperationMessages, "", "session-1"),
-		"operation": resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationResponses, "", "session-1"),
-		"session":   resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationMessages, "", "session-2"),
+	for name, value := range map[string]buildSessionIdentity{
+		"client":   resolveBuildSessionIdentity(8, accountdomain.ProviderBuild, "grok-4.5", "", "session-1"),
+		"provider": resolveBuildSessionIdentity(7, accountdomain.ProviderConsole, "grok-4.5", "", "session-1"),
+		"session":  resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "", "session-2"),
 	} {
 		if value == base {
-			t.Fatalf("%s was not isolated: %q", name, value)
+			t.Fatalf("%s was not isolated: %#v", name, value)
 		}
 	}
 }
 
-func TestResolvePromptCacheIdentityPrefersExplicitKey(t *testing.T) {
-	first := resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationResponses, "client-key", "session-1")
-	second := resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationResponses, "client-key", "session-2")
-	if first == "" || first != second {
-		t.Fatalf("explicit key did not take precedence: first=%q second=%q", first, second)
+func TestResolveBuildSessionIdentitySeparatesAffinityFromUpstreamSession(t *testing.T) {
+	first := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "", "session-1")
+	otherModel := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.3", "", "session-1")
+	if first.upstreamID == "" || first.upstreamID != otherModel.upstreamID {
+		t.Fatalf("upstream session changed with model: first=%#v other=%#v", first, otherModel)
 	}
-	if resolvePromptCacheIdentity(0, accountdomain.ProviderBuild, "grok-4.5", audit.OperationResponses, "client-key", "") != "" {
+	if first.affinityKey == otherModel.affinityKey {
+		t.Fatalf("model-specific account affinity was not isolated: %#v", first)
+	}
+}
+
+func TestResolveBuildSessionIdentityPrefersExplicitKey(t *testing.T) {
+	first := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "client-key", "session-1")
+	second := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "client-key", "session-2")
+	if first.upstreamID == "" || first != second {
+		t.Fatalf("explicit key did not take precedence: first=%#v second=%#v", first, second)
+	}
+	if value := resolveBuildSessionIdentity(0, accountdomain.ProviderBuild, "grok-4.5", "client-key", ""); value != (buildSessionIdentity{}) {
 		t.Fatal("identity without client ownership should be empty")
 	}
-	if resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationResponses, "", "") != "" {
+	if value := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "", ""); value != (buildSessionIdentity{}) {
 		t.Fatal("identity without an explicit key or session should be empty")
 	}
 }

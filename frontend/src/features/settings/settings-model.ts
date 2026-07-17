@@ -78,7 +78,6 @@ export const settingsSchema = z.object({
   }),
   providerConsole: z.object({
     baseURL: z.url().refine((value) => value.startsWith("https://")),
-    userAgent: z.string().trim().min(1).max(512),
     chatTimeout: consoleChatDuration,
   }),
   batch: z.object({

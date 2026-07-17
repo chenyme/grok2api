@@ -65,6 +65,25 @@ if redis.call('PTTL', KEYS[2]) < tonumber(ARGV[2]) then redis.call('PEXPIRE', KE
 return 1
 `)
 
+var bindStickyScript = redisclient.NewScript(`
+local selected = redis.call('GET', KEYS[1])
+if not selected then selected = ARGV[1] end
+local accountSetKey = ARGV[3] .. selected
+redis.call('SET', KEYS[1], selected, 'PX', ARGV[2])
+redis.call('ZREMRANGEBYSCORE', accountSetKey, '-inf', ARGV[4])
+redis.call('ZADD', accountSetKey, ARGV[5], KEYS[1])
+local excess = redis.call('ZCARD', accountSetKey) - tonumber(ARGV[6])
+if excess > 0 then
+  local stale = redis.call('ZRANGE', accountSetKey, 0, excess - 1)
+  for _, key in ipairs(stale) do
+    if redis.call('GET', key) == selected then redis.call('DEL', key) end
+    redis.call('ZREM', accountSetKey, key)
+  end
+end
+if redis.call('PTTL', accountSetKey) < tonumber(ARGV[2]) then redis.call('PEXPIRE', accountSetKey, ARGV[2]) end
+return selected
+`)
+
 var deleteStickyByAccountScript = redisclient.NewScript(`
 local members = redis.call('ZRANGE', KEYS[1], 0, -1)
 local deleted = 0
@@ -290,6 +309,32 @@ func (s *Store) Get(ctx context.Context, key string, now time.Time) (uint64, boo
 	}
 	id, err := strconv.ParseUint(value, 10, 64)
 	return id, err == nil, err
+}
+
+func (s *Store) Bind(ctx context.Context, key string, proposedAccountID uint64, now, expiresAt time.Time) (uint64, error) {
+	if key == "" || proposedAccountID == 0 {
+		return proposedAccountID, nil
+	}
+	ttl := time.Until(expiresAt)
+	if ttl <= 0 {
+		return proposedAccountID, nil
+	}
+	id := strconv.FormatUint(proposedAccountID, 10)
+	value, err := bindStickyScript.Run(
+		ctx,
+		s.client,
+		[]string{s.key("sticky", key)},
+		id,
+		ttl.Milliseconds(),
+		s.prefix+"sticky-account:",
+		now.UnixMilli(),
+		expiresAt.UnixMilli(),
+		maxStickyBindingsPerAccount,
+	).Uint64()
+	if err != nil {
+		return 0, err
+	}
+	return value, nil
 }
 
 func (s *Store) Set(ctx context.Context, key string, accountID uint64, expiresAt time.Time) error {

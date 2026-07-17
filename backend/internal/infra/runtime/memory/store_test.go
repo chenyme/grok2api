@@ -85,6 +85,26 @@ func TestStickyStoreExpires(t *testing.T) {
 	}
 }
 
+func TestStickyStoreBindPreservesExistingAccountAndRefreshesExpiry(t *testing.T) {
+	ctx := context.Background()
+	store := NewStickyStore()
+	now := time.Now().UTC()
+	bound, err := store.Bind(ctx, "session", 42, now, now.Add(time.Minute))
+	if err != nil || bound != 42 {
+		t.Fatalf("first bind = %d, err = %v", bound, err)
+	}
+	bound, err = store.Bind(ctx, "session", 99, now.Add(30*time.Second), now.Add(90*time.Second))
+	if err != nil || bound != 42 {
+		t.Fatalf("existing bind = %d, err = %v", bound, err)
+	}
+	if id, ok, err := store.Get(ctx, "session", now.Add(75*time.Second)); err != nil || !ok || id != 42 {
+		t.Fatalf("refreshed bind = %d, %v, err = %v", id, ok, err)
+	}
+	if _, ok, err := store.Get(ctx, "session", now.Add(100*time.Second)); err != nil || ok {
+		t.Fatalf("expired refreshed bind remains available: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestDeviceSessionStoreCleansExpiredAndStaysBounded(t *testing.T) {
 	ctx := context.Background()
 	store := NewDeviceSessionStore()

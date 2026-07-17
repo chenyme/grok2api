@@ -73,7 +73,7 @@ func TestBuildNodeAlwaysUsesProviderUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(nil, cipher, "web-agent", "console-agent")
+	service := NewService(nil, cipher, "browser-agent")
 	value, err := service.applyInput(domain.Node{UserAgent: "legacy-build-agent"}, Input{
 		Name: "build", Scope: domain.ScopeBuild, Enabled: true, UserAgent: "custom-build-agent",
 	}, false)
@@ -83,22 +83,22 @@ func TestBuildNodeAlwaysUsesProviderUserAgent(t *testing.T) {
 	if value.UserAgent != "" || publicNode(value).UserAgent != "" {
 		t.Fatalf("build node userAgent = %q", value.UserAgent)
 	}
-	if defaults := service.DefaultUserAgents(); defaults[string(domain.ScopeBuild)] != "" || defaults[string(domain.ScopeWeb)] != "web-agent" || defaults[string(domain.ScopeConsole)] != "console-agent" {
+	if defaults := service.DefaultUserAgents(); defaults[string(domain.ScopeBuild)] != "" || defaults[string(domain.ScopeWeb)] != "browser-agent" || defaults[string(domain.ScopeConsole)] != "browser-agent" {
 		t.Fatalf("default user agents = %#v", defaults)
 	}
 }
 
-func TestConsoleNodeUsesConsoleDefaultUserAgent(t *testing.T) {
+func TestConsoleNodeUsesBrowserDefaultUserAgent(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(nil, cipher, "web-agent", "console-agent")
+	service := NewService(nil, cipher, "browser-agent")
 	value, err := service.applyInput(domain.Node{}, Input{Name: "console", Scope: domain.ScopeConsole, Enabled: true}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.UserAgent != "console-agent" {
+	if value.UserAgent != "browser-agent" {
 		t.Fatalf("console node userAgent = %q", value.UserAgent)
 	}
 }

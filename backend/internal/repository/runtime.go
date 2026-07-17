@@ -23,10 +23,13 @@ type ConcurrencySnapshotReader interface {
 	CurrentMany(ctx context.Context, keys []string) (map[string]int, error)
 }
 
-// StickySessionRepository 定义有过期时间的 prompt_cache_key 账号粘滞状态。
+// StickySessionRepository 定义有过期时间的会话账号粘滞状态。
 type StickySessionRepository interface {
-	Get(ctx context.Context, promptCacheKey string, now time.Time) (uint64, bool, error)
-	Set(ctx context.Context, promptCacheKey string, accountID uint64, expiresAt time.Time) error
+	Get(ctx context.Context, affinityKey string, now time.Time) (uint64, bool, error)
+	// Bind 原子保留已有有效绑定并刷新有效期；仅在绑定不存在或已过期时采用 proposedAccountID。
+	Bind(ctx context.Context, affinityKey string, proposedAccountID uint64, now, expiresAt time.Time) (accountID uint64, err error)
+	// Set 强制替换绑定，仅用于原账号已经确定不再适合当前请求时重新绑定。
+	Set(ctx context.Context, affinityKey string, accountID uint64, expiresAt time.Time) error
 	DeleteByAccount(ctx context.Context, accountID uint64) error
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -140,9 +141,9 @@ func (s *Selector) routingConfig() (time.Duration, time.Duration, time.Duration,
 	return s.stickyTTL, s.cooldownBase, s.cooldownMax, s.capacityWait
 }
 
-func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstreamModel, quotaMode, promptCacheKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*accountLease, error) {
+func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*accountLease, error) {
 	now := time.Now().UTC()
-	stickyKey := promptCacheStickyKey(promptCacheKey)
+	stickyKey := stickySessionKey(affinityKey)
 	values, err := s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
 	if err != nil {
 		return nil, err
@@ -241,26 +242,62 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			return lease, nil
 		}
 	}
+	var saturatedStickyID uint64
 	if stickyKey != "" {
 		stickyID, ok, err := s.sticky.Get(ctx, stickyKey, now)
 		if err != nil {
 			return nil, fmt.Errorf("读取会话粘滞状态: %w", err)
 		}
 		if ok {
-			for _, candidate := range normalCandidates {
-				if candidate.Credential.ID == stickyID {
-					lease, acquireErr := s.claimAccountSlot(ctx, candidate.Credential)
-					if acquireErr != nil {
-						return nil, acquireErr
-					}
-					if lease != nil {
+			candidate, eligible := routingCandidateByID(normalCandidates, stickyID)
+			if eligible {
+				stickyTTL, _, _, _ := s.routingConfig()
+				boundID, bindErr := s.sticky.Bind(ctx, stickyKey, stickyID, now, now.Add(stickyTTL))
+				if bindErr != nil {
+					return nil, fmt.Errorf("刷新会话粘滞状态: %w", bindErr)
+				}
+				if boundID != stickyID {
+					candidate, eligible = routingCandidateByID(normalCandidates, boundID)
+					stickyID = boundID
+				}
+				if eligible {
+					lease, acquireErr := s.acquirePinnedCapacity(ctx, candidate.Credential)
+					if acquireErr == nil {
 						lease.Billing = candidate.Billing
 						lease.QuotaMode = effectiveQuotaMode(candidate, quotaMode)
 						return lease, nil
 					}
+					if !isSelectionUnavailable(acquireErr, SelectionSaturated) {
+						return nil, acquireErr
+					}
+					saturatedStickyID = stickyID
 				}
 			}
 		}
+	}
+	// 粘性账号仅因并发满载而暂时不可用时，先等待该账号；超时后允许本次请求临时借用
+	// 其他账号，但不覆盖原绑定，避免并行请求让活跃会话在账号池中来回抖动。
+	if saturatedStickyID != 0 {
+		plan, err := s.planCandidates(ctx, normalCandidates, time.Now().UTC(), s.resolveTierOrder(provider, upstreamModel))
+		if err != nil {
+			return nil, err
+		}
+		for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
+			if candidate.Credential.ID == saturatedStickyID {
+				continue
+			}
+			lease, claimErr := s.claimAccountSlot(ctx, candidate.Credential)
+			if claimErr != nil {
+				return nil, claimErr
+			}
+			if lease == nil {
+				continue
+			}
+			lease.Billing = candidate.Billing
+			lease.QuotaMode = effectiveQuotaMode(candidate, quotaMode)
+			return lease, nil
+		}
+		return nil, &SelectionUnavailableError{Reason: SelectionSaturated, RetryAfter: time.Second}
 	}
 	_, _, _, capacityWait := s.routingConfig()
 	waitDeadline := time.Now().Add(capacityWait)
@@ -280,9 +317,29 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			}
 			if stickyKey != "" {
 				stickyTTL, _, _, _ := s.routingConfig()
-				if err := s.sticky.Set(ctx, stickyKey, candidate.Credential.ID, currentTime.Add(stickyTTL)); err != nil {
+				boundID, bindErr := s.sticky.Bind(ctx, stickyKey, candidate.Credential.ID, currentTime, currentTime.Add(stickyTTL))
+				if bindErr != nil {
 					lease.Release()
-					return nil, fmt.Errorf("写入会话粘滞状态: %w", err)
+					return nil, fmt.Errorf("写入会话粘滞状态: %w", bindErr)
+				}
+				if boundID != candidate.Credential.ID {
+					if boundCandidate, eligible := routingCandidateByID(normalCandidates, boundID); eligible {
+						boundLease, boundErr := s.acquirePinnedCapacity(ctx, boundCandidate.Credential)
+						if boundErr == nil {
+							lease.Release()
+							boundLease.Billing = boundCandidate.Billing
+							boundLease.QuotaMode = effectiveQuotaMode(boundCandidate, quotaMode)
+							return boundLease, nil
+						}
+						if !isSelectionUnavailable(boundErr, SelectionSaturated) {
+							lease.Release()
+							return nil, boundErr
+						}
+						// 已绑定账号满载时保留原绑定，本次请求使用已获取的临时账号。
+					} else if err := s.sticky.Set(ctx, stickyKey, candidate.Credential.ID, currentTime.Add(stickyTTL)); err != nil {
+						lease.Release()
+						return nil, fmt.Errorf("重建会话粘滞状态: %w", err)
+					}
 				}
 			}
 			lease.Billing = candidate.Billing
@@ -302,13 +359,27 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 	}
 }
 
-// promptCacheStickyKey 将调用方缓存键压缩为固定长度，仅用于本地账号粘滞索引。
-func promptCacheStickyKey(value string) string {
+// stickySessionKey 将调用方粘滞 identity 压缩为固定长度，仅用于账号粘滞索引。
+func stickySessionKey(value string) string {
 	if value == "" {
 		return ""
 	}
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
+}
+
+func routingCandidateByID(values []account.RoutingCandidate, accountID uint64) (account.RoutingCandidate, bool) {
+	for _, candidate := range values {
+		if candidate.Credential.ID == accountID {
+			return candidate, true
+		}
+	}
+	return account.RoutingCandidate{}, false
+}
+
+func isSelectionUnavailable(err error, reason SelectionUnavailableReason) bool {
+	var unavailable *SelectionUnavailableError
+	return errors.As(err, &unavailable) && unavailable.Reason == reason
 }
 
 // AcquirePinned 为 previous_response_id 等账号归属请求获取指定账号租约。

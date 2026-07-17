@@ -140,9 +140,13 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	if len(adapter.attempts) != 2 || adapter.attempts[0] != first.ID || adapter.attempts[1] != second.ID {
 		t.Fatalf("attempts = %#v", adapter.attempts)
 	}
-	expectedCacheKey := resolvePromptCacheIdentity(clientKey.ID, account.ProviderBuild, "grok-test", audit.OperationResponses, "", "claude-session")
+	identity := resolveBuildSessionIdentity(clientKey.ID, account.ProviderBuild, "grok-test", "", "claude-session")
+	expectedCacheKey := identity.upstreamID
 	if adapter.lastPromptCacheKey != expectedCacheKey {
 		t.Fatalf("prompt cache key = %q, want %q", adapter.lastPromptCacheKey, expectedCacheKey)
+	}
+	if boundID, ok, err := sticky.Get(ctx, stickySessionKey(identity.affinityKey), time.Now().UTC()); err != nil || !ok || boundID != second.ID {
+		t.Fatalf("failover sticky binding = %d, %v, err = %v; want account %d", boundID, ok, err, second.ID)
 	}
 	observedAccount, err := accountRepo.Get(ctx, second.ID)
 	if err != nil || observedAccount.ObservedModel != "grok-test-build-free" {

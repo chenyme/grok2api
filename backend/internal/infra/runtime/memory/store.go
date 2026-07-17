@@ -207,32 +207,54 @@ func NewStickyStore() *StickyStore {
 	return store
 }
 
-func (s *StickyStore) Get(_ context.Context, promptCacheKey string, now time.Time) (uint64, bool, error) {
-	shard := &s.shards[shardIndex(promptCacheKey)]
+func (s *StickyStore) Get(_ context.Context, affinityKey string, now time.Time) (uint64, bool, error) {
+	shard := &s.shards[shardIndex(affinityKey)]
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	binding, ok := shard.bindings[promptCacheKey]
+	binding, ok := shard.bindings[affinityKey]
 	if !ok {
 		return 0, false, nil
 	}
 	if !now.Before(binding.expiresAt) {
-		delete(shard.bindings, promptCacheKey)
+		delete(shard.bindings, affinityKey)
 		return 0, false, nil
 	}
 	return binding.accountID, true, nil
 }
 
-func (s *StickyStore) Set(_ context.Context, promptCacheKey string, accountID uint64, expiresAt time.Time) error {
-	if promptCacheKey == "" {
-		return nil
+func (s *StickyStore) Bind(_ context.Context, affinityKey string, proposedAccountID uint64, now, expiresAt time.Time) (uint64, error) {
+	if affinityKey == "" || proposedAccountID == 0 || !now.Before(expiresAt) {
+		return proposedAccountID, nil
 	}
-	shard := &s.shards[shardIndex(promptCacheKey)]
+	shard := &s.shards[shardIndex(affinityKey)]
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	shard.bindings[promptCacheKey] = stickyBinding{accountID: accountID, expiresAt: expiresAt}
+	if binding, ok := shard.bindings[affinityKey]; ok && now.Before(binding.expiresAt) {
+		binding.expiresAt = expiresAt
+		shard.bindings[affinityKey] = binding
+		return binding.accountID, nil
+	}
+	shard.bindings[affinityKey] = stickyBinding{accountID: proposedAccountID, expiresAt: expiresAt}
+	pruneStickyBindingsLocked(shard, now)
+	return proposedAccountID, nil
+}
+
+func (s *StickyStore) Set(_ context.Context, affinityKey string, accountID uint64, expiresAt time.Time) error {
+	if affinityKey == "" {
+		return nil
+	}
+	shard := &s.shards[shardIndex(affinityKey)]
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	shard.bindings[affinityKey] = stickyBinding{accountID: accountID, expiresAt: expiresAt}
+	pruneStickyBindingsLocked(shard, time.Now())
+	return nil
+}
+
+func pruneStickyBindingsLocked(shard *stickyShard, now time.Time) {
 	if len(shard.bindings) > maxEntriesPerShard() {
 		for key, binding := range shard.bindings {
-			if time.Now().After(binding.expiresAt) {
+			if !now.Before(binding.expiresAt) {
 				delete(shard.bindings, key)
 			}
 		}
@@ -248,7 +270,6 @@ func (s *StickyStore) Set(_ context.Context, promptCacheKey string, accountID ui
 			delete(shard.bindings, oldestKey)
 		}
 	}
-	return nil
 }
 
 func (s *StickyStore) DeleteByAccount(_ context.Context, accountID uint64) error {

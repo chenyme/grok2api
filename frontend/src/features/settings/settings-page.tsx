@@ -131,7 +131,6 @@ export function SettingsPage() {
           <SettingsSection title={t("console.name")}>
             <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
               <SettingsField controlId="console-base-url" className="sm:col-span-2" label={t("console.baseURL")} error={form.formState.errors.providerConsole?.baseURL?.message}><Input id="console-base-url" type="url" {...form.register("providerConsole.baseURL")} /></SettingsField>
-              <SettingsField controlId="console-user-agent" className="sm:col-span-2" label={t("console.userAgent")} error={form.formState.errors.providerConsole?.userAgent?.message}><Input id="console-user-agent" {...form.register("providerConsole.userAgent")} /></SettingsField>
               <SettingsField controlId="console-chat-timeout" label={t("console.chatTimeout")} error={form.formState.errors.providerConsole?.chatTimeout?.message}><Controller control={form.control} name="providerConsole.chatTimeout" render={({ field }) => <DurationInput id="console-chat-timeout" value={field.value} onChange={field.onChange} />} /></SettingsField>
             </div>
           </SettingsSection>

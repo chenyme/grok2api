@@ -13,11 +13,17 @@ func TestExtractPromptCacheSeedSupportsClaudeCodeForms(t *testing.T) {
 		body    string
 		want    string
 	}{
-		{name: "header", headers: http.Header{"X-Claude-Code-Session-Id": {"header-session"}}, body: `{"metadata":{"session_id":"body-session"}}`, want: "header-session"},
+		{name: "claude header", headers: http.Header{"X-Claude-Code-Session-Id": {"claude-session"}, "X-Session-Id": {"generic-session"}}, body: `{"metadata":{"session_id":"body-session"}}`, want: "claude-session"},
+		{name: "generic header", headers: http.Header{"X-Session-Id": {"generic-session"}}, want: "generic-session"},
+		{name: "codex hyphen header", headers: http.Header{"Session-Id": {"codex-session"}}, want: "codex-session"},
+		{name: "codex underscore header", headers: http.Header{"Session_id": {"legacy-codex-session"}}, want: "legacy-codex-session"},
 		{name: "metadata snake case", body: `{"metadata":{"session_id":"snake-session"}}`, want: "snake-session"},
 		{name: "metadata camel case", body: `{"metadata":{"sessionId":"camel-session"}}`, want: "camel-session"},
 		{name: "embedded json user id", body: `{"metadata":{"user_id":"{\"device_id\":\"d1\",\"session_id\":\"embedded-session\"}"}}`, want: "embedded-session"},
 		{name: "suffix user id", body: `{"metadata":{"user_id":"user_account_session_123e4567-e89b-12d3-a456-426614174000"}}`, want: "123e4567-e89b-12d3-a456-426614174000"},
+		{name: "conversation snake case", body: `{"conversation_id":"conversation-session"}`, want: "conversation-session"},
+		{name: "conversation camel case", body: `{"conversationId":"camel-conversation"}`, want: "camel-conversation"},
+		{name: "per request id ignored", headers: http.Header{"X-Client-Request-Id": {"request-123"}}, want: ""},
 		{name: "ordinary user id", body: `{"metadata":{"user_id":"user-123"}}`, want: ""},
 	}
 	for _, test := range tests {

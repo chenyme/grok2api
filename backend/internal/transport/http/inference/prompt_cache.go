@@ -13,12 +13,19 @@ func extractPromptCacheSeed(headers http.Header, body []byte) string {
 	if seed := normalizePromptCacheSeed(headers.Get("X-Claude-Code-Session-Id")); seed != "" {
 		return seed
 	}
+	for _, name := range []string{"X-Session-ID", "Session-Id", "Session_id"} {
+		if seed := normalizePromptCacheSeed(headers.Get(name)); seed != "" {
+			return seed
+		}
+	}
 	var payload struct {
 		Metadata struct {
 			SessionID      string `json:"session_id"`
 			SessionIDCamel string `json:"sessionId"`
 			UserID         string `json:"user_id"`
 		} `json:"metadata"`
+		ConversationID      string `json:"conversation_id"`
+		ConversationIDCamel string `json:"conversationId"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
 		return ""
@@ -29,7 +36,13 @@ func extractPromptCacheSeed(headers http.Header, body []byte) string {
 	if seed := normalizePromptCacheSeed(payload.Metadata.SessionIDCamel); seed != "" {
 		return seed
 	}
-	return promptCacheSeedFromUserID(payload.Metadata.UserID)
+	if seed := promptCacheSeedFromUserID(payload.Metadata.UserID); seed != "" {
+		return seed
+	}
+	if seed := normalizePromptCacheSeed(payload.ConversationID); seed != "" {
+		return seed
+	}
+	return normalizePromptCacheSeed(payload.ConversationIDCamel)
 }
 
 func promptCacheSeedFromUserID(userID string) string {

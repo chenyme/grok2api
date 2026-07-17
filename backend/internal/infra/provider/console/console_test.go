@@ -306,6 +306,9 @@ func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 		if request.Header.Get("Authorization") != "Bearer anonymous" || request.Header.Get("x-cluster") != "https://us-east-1.api.x.ai" || request.Header.Get("Accept") != "*/*" || request.Header.Get("Priority") != "u=1, i" {
 			t.Errorf("headers = %#v", request.Header)
 		}
+		if request.Header.Get("User-Agent") != infraegress.DefaultUserAgent {
+			t.Errorf("user-agent = %q", request.Header.Get("User-Agent"))
+		}
 		cookie := request.Header.Get("Cookie")
 		if !strings.Contains(cookie, "sso=test-sso") || !strings.Contains(cookie, "sso-rw=test-sso") {
 			t.Errorf("cookie = %q", cookie)
@@ -399,7 +402,7 @@ func newConsoleTestAdapter(t *testing.T, baseURL string) (*Adapter, account.Cred
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewAdapter(Config{BaseURL: baseURL, UserAgent: "console-test", TimeoutSeconds: 5}, infraegress.NewManager(consoleEgressRepositoryStub{}, cipher), cipher)
+	adapter := NewAdapter(Config{BaseURL: baseURL, TimeoutSeconds: 5}, infraegress.NewManager(consoleEgressRepositoryStub{}, cipher), cipher)
 	credential := account.Credential{ID: 1, Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, EncryptedAccessToken: encrypted}
 	return adapter, credential
 }

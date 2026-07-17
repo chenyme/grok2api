@@ -11,7 +11,7 @@ export type SettingsConfigDTO = {
     mediaConcurrency: number; allowNSFW: boolean;
     recoveryBackoffBase: string; recoveryBackoffMax: string;
   };
-  providerConsole: { baseURL: string; userAgent: string; chatTimeout: string };
+  providerConsole: { baseURL: string; chatTimeout: string };
   batch: { importConcurrency: number; conversionConcurrency: number; syncConcurrency: number; refreshConcurrency: number; randomDelay: string };
   media: {
     maxImageBytes: number; maxTotalBytes: number; cleanupThresholdPercent: number;
@@ -53,7 +53,7 @@ const settingsConfigValidator = hasShape({
     statsigMode: isOneOf("manual", "url"), statsigManualValue: isOptional(isString), statsigManualConfigured: isBoolean,
     statsigSignerURL: isString, mediaConcurrency: isNumber, allowNSFW: isBoolean, recoveryBackoffBase: isString, recoveryBackoffMax: isString,
   }),
-  providerConsole: hasShape({ baseURL: isString, userAgent: isString, chatTimeout: isString }),
+  providerConsole: hasShape({ baseURL: isString, chatTimeout: isString }),
   batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
   media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),
   frontend: hasShape({ publicApiBaseURL: isString }),
