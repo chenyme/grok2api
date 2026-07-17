@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,10 +17,20 @@ import (
 )
 
 type Handler struct {
-	service *mediaapp.Service
+	service       *mediaapp.Service
+	previewTokens videoPreviewTokenService
 }
 
-func NewHandler(service *mediaapp.Service) *Handler { return &Handler{service: service} }
+type videoPreviewTokenService interface {
+	CreateVideoPreviewToken(jobID string, ttl time.Duration) (string, error)
+	ParseVideoPreviewToken(raw, jobID string) error
+}
+
+const videoPreviewTokenTTL = 5 * time.Minute
+
+func NewHandler(service *mediaapp.Service, previewTokens videoPreviewTokenService) *Handler {
+	return &Handler{service: service, previewTokens: previewTokens}
+}
 
 // RegisterPublic 注册使用不可猜测资源 ID 的公开图片读取与视频上传接收端点。
 // 上传 PUT 不使用客户端 API key：xAI 无法携带，票据本身即授权。
@@ -27,6 +38,8 @@ func (h *Handler) RegisterPublic(router *gin.Engine) {
 	router.GET("/v1/media/images/:assetId", h.getImage)
 	router.HEAD("/v1/media/images/:assetId", h.getImage)
 	router.PUT("/v1/media/uploads/:token", h.putVideoUpload)
+	router.GET("/v1/media/video-previews/:jobId", h.streamVideoPreview)
+	router.HEAD("/v1/media/video-previews/:jobId", h.streamVideoPreview)
 }
 
 // RegisterAdmin 注册管理端媒体列表和统计端点。
@@ -35,7 +48,7 @@ func (h *Handler) RegisterAdmin(router *gin.RouterGroup) {
 	router.GET("/media/images/stats", h.imageStats)
 	router.GET("/media/videos", h.listVideos)
 	router.GET("/media/videos/stats", h.videoStats)
-	router.GET("/media/videos/:jobId/content", h.getVideoContent)
+	router.POST("/media/videos/:jobId/preview", h.issueVideoPreview)
 }
 
 func (h *Handler) getImage(c *gin.Context) {
@@ -154,9 +167,15 @@ func (h *Handler) listVideos(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
 }
 
-// getVideoContent 流式返回管理端本地缓存视频；仅 completed 且本地 video 资产可用时成功。
-func (h *Handler) getVideoContent(c *gin.Context) {
-	asset, body, err := h.service.AdminOpenVideoJobContent(c.Request.Context(), c.Param("jobId"))
+// issueVideoPreview 为已认证管理员签发仅绑定当前任务的短时流媒体票据。
+func (h *Handler) issueVideoPreview(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	if h.previewTokens == nil {
+		response.Error(c, http.StatusServiceUnavailable, "mediaVideoPreviewUnavailable", "视频预览服务未配置")
+		return
+	}
+	jobID := strings.TrimSpace(c.Param("jobId"))
+	_, body, err := h.service.AdminOpenVideoJobContent(c.Request.Context(), jobID)
 	if errors.Is(err, mediaapp.ErrAssetNotFound) {
 		response.Error(c, http.StatusNotFound, "mediaVideoPreviewUnavailable", "本地视频缓存不可用或已清理")
 		return
@@ -169,18 +188,50 @@ func (h *Handler) getVideoContent(c *gin.Context) {
 		response.Error(c, http.StatusInternalServerError, "mediaVideoPreviewFailed", "读取本地视频缓存失败")
 		return
 	}
+	_ = body.Close()
+	ticket, err := h.previewTokens.CreateVideoPreviewToken(jobID, videoPreviewTokenTTL)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "mediaVideoPreviewFailed", "创建视频预览票据失败")
+		return
+	}
+	path := "/v1/media/video-previews/" + url.PathEscape(jobID) + "?ticket=" + url.QueryEscape(ticket)
+	response.Success(c, http.StatusOK, videoPreviewDTO{URL: path})
+}
+
+// streamVideoPreview 验证短时票据后交由 ServeContent 处理 Range、HEAD 和条件请求。
+func (h *Handler) streamVideoPreview(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("Content-Disposition", "inline")
+	jobID := strings.TrimSpace(c.Param("jobId"))
+	if h.previewTokens == nil || h.previewTokens.ParseVideoPreviewToken(strings.TrimSpace(c.Query("ticket")), jobID) != nil {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+	asset, body, err := h.service.AdminOpenVideoJobContent(c.Request.Context(), jobID)
+	if errors.Is(err, mediaapp.ErrAssetNotFound) {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, mediaapp.ErrMediaJobsUnavailable) {
+		c.Status(http.StatusServiceUnavailable)
+		return
+	}
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
 	defer body.Close()
+	content, ok := body.(io.ReadSeeker)
+	if !ok {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
 	mimeType := strings.TrimSpace(asset.MIMEType)
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
 	c.Header("Content-Type", mimeType)
-	c.Header("Content-Length", strconv.FormatInt(asset.SizeBytes, 10))
-	c.Header("Content-Disposition", "inline")
-	c.Header("Cache-Control", "private, no-store")
-	c.Header("X-Content-Type-Options", "nosniff")
-	c.Status(http.StatusOK)
-	_, _ = io.Copy(c.Writer, body)
+	http.ServeContent(c.Writer, c.Request, asset.ID, asset.CreatedAt, content)
 }
 
 func (h *Handler) videoStats(c *gin.Context) {

@@ -14,9 +14,16 @@ import (
 
 const clientKeyScheme = "g2a"
 
+const videoPreviewAudience = "grok2api:video-preview"
+
 type adminClaims struct {
 	AdminID   uint64 `json:"adminId"`
 	SessionID uint64 `json:"sessionId"`
+	jwt.RegisteredClaims
+}
+
+type videoPreviewClaims struct {
+	JobID string `json:"jobId"`
 	jwt.RegisteredClaims
 }
 
@@ -66,6 +73,44 @@ func (s *TokenService) ParseAccessToken(raw string) (AdminTokenIdentity, error) 
 		return AdminTokenIdentity{}, fmt.Errorf("管理员令牌无效")
 	}
 	return AdminTokenIdentity{AdminID: claims.AdminID, SessionID: claims.SessionID}, nil
+}
+
+// CreateVideoPreviewToken 创建仅能读取单个视频任务的短期媒体票据。
+func (s *TokenService) CreateVideoPreviewToken(jobID string, ttl time.Duration) (string, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return "", fmt.Errorf("视频预览任务 ID 不能为空")
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(ttl)
+	claims := videoPreviewClaims{
+		JobID: jobID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    s.issuer,
+			Subject:   jobID,
+			Audience:  jwt.ClaimStrings{videoPreviewAudience},
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(s.secret)
+}
+
+// ParseVideoPreviewToken 校验媒体票据用途、有效期及其绑定的任务 ID。
+func (s *TokenService) ParseVideoPreviewToken(raw, jobID string) error {
+	claims := &videoPreviewClaims{}
+	token, err := jwt.ParseWithClaims(raw, claims, func(token *jwt.Token) (any, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("不支持的 JWT 签名算法")
+		}
+		return s.secret, nil
+	}, jwt.WithIssuer(s.issuer), jwt.WithAudience(videoPreviewAudience), jwt.WithExpirationRequired())
+	jobID = strings.TrimSpace(jobID)
+	if err != nil || !token.Valid || jobID == "" || claims.JobID != jobID || claims.Subject != jobID {
+		return fmt.Errorf("视频预览票据无效")
+	}
+	return nil
 }
 
 // NewOpaqueToken 创建不可预测的 refresh token 或客户端 Key 密钥段。

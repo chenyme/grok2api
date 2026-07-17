@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Clock, ListVideo, Loader2, RefreshCw, Search } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { downloadVideoContent, getVideoStats, listVideos } from "@/features/media/media-api";
+import { createVideoPreview, getVideoStats, listVideos } from "@/features/media/media-api";
 import { MediaMetric } from "@/features/media/media-metric";
 import type { MediaJobDTO } from "@/features/media/types";
 import { EmptyState, ErrorState, LoadingState, TableLoadingRow } from "@/shared/components/data-state";
@@ -228,20 +228,17 @@ function JobIdCell({ job, onPreview }: { job: MediaJobDTO; onPreview: () => void
 
 function VideoPreviewDialog({ job, onOpenChange }: { job: MediaJobDTO; onOpenChange: (open: boolean) => void }) {
   const { t } = useTranslation();
-  const objectUrlRef = useRef<string | null>(null);
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    void downloadVideoContent(job.id)
-      .then((blob) => {
+    void createVideoPreview(job.id)
+      .then((preview) => {
         if (cancelled) return;
-        const url = URL.createObjectURL(blob);
-        objectUrlRef.current = url;
-        setObjectUrl(url);
+        setStreamUrl(preview.url);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -254,10 +251,6 @@ function VideoPreviewDialog({ job, onOpenChange }: { job: MediaJobDTO; onOpenCha
 
     return () => {
       cancelled = true;
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = null;
-      }
     };
   }, [job.id, t]);
 
@@ -283,13 +276,14 @@ function VideoPreviewDialog({ job, onOpenChange }: { job: MediaJobDTO; onOpenCha
               <p className="text-sm text-destructive">{error}</p>
             </div>
           ) : null}
-          {!loading && !error && objectUrl ? (
+          {!loading && !error && streamUrl ? (
             <video
-              key={objectUrl}
+              key={streamUrl}
               className="max-h-[min(560px,calc(100svh-12rem))] w-full rounded-md bg-black"
               controls
               preload="metadata"
-              src={objectUrl}
+              src={streamUrl}
+              onError={() => setError(t("media.videos.previewFailed"))}
             />
           ) : null}
         </div>

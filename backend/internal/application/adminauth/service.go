@@ -166,6 +166,16 @@ func (s *Service) AuthenticateAccess(ctx context.Context, rawAccessToken string)
 	return value, nil
 }
 
+// CreateVideoPreviewToken 使用管理员 JWT 的共享签名密钥签发短时视频预览票据。
+func (s *Service) CreateVideoPreviewToken(jobID string, ttl time.Duration) (string, error) {
+	return s.tokens.CreateVideoPreviewToken(jobID, ttl)
+}
+
+// ParseVideoPreviewToken 校验视频预览票据及其绑定的任务 ID。
+func (s *Service) ParseVideoPreviewToken(raw, jobID string) error {
+	return s.tokens.ParseVideoPreviewToken(raw, jobID)
+}
+
 // ChangePassword 修改密码并撤销管理员的全部 refresh session。
 func (s *Service) ChangePassword(ctx context.Context, adminID uint64, currentPassword, newPassword string) error {
 	if len(newPassword) < 8 {
