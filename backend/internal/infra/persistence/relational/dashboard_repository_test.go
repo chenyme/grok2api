@@ -2,9 +2,12 @@ package relational
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 func TestDashboardRepositorySnapshot(t *testing.T) {
@@ -52,7 +55,7 @@ func TestDashboardRepositorySnapshot(t *testing.T) {
 	}
 	audits := []requestAuditModel{
 		{RequestID: "success-1", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-primary", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 100, CreatedAt: now.Add(-23 * time.Hour)},
-		{RequestID: "success-2", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-secondary", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 201, TotalTokens: 50, CreatedAt: now.Add(-time.Hour)},
+		{RequestID: "success-2", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-secondary", Provider: "grok_web", Operation: "responses", UsageSource: "upstream", StatusCode: 201, TotalTokens: 50, CreatedAt: now.Add(-time.Hour)},
 		{RequestID: "failed", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-primary", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 500, TotalTokens: 10, CreatedAt: now.Add(-2 * time.Hour)},
 		{RequestID: "outside", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 999, CreatedAt: now.Add(-25 * time.Hour)},
 	}
@@ -62,11 +65,12 @@ func TestDashboardRepositorySnapshot(t *testing.T) {
 		}
 	}
 
-	snapshot, err := NewDashboardRepository(database).Snapshot(ctx, testDashboardBoundaries(now.Add(-24*time.Hour), 2*time.Hour, 12), now)
+	boundaries := testDashboardBoundaries(now.Add(-24*time.Hour), 2*time.Hour, 12)
+	snapshot, err := NewDashboardRepository(database).Snapshot(ctx, testDashboardWindow(boundaries), now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Resources.ActiveAccounts != 1 || snapshot.Resources.TotalAccounts != 3 || snapshot.Resources.EnabledModels != 1 || snapshot.Resources.TotalModels != 2 || snapshot.Resources.ActiveClientKeys != 1 || snapshot.Resources.TotalClientKeys != 2 || snapshot.Resources.AllTimeRequests != 4 {
+	if snapshot.Resources.ActiveAccounts != 1 || snapshot.Resources.TotalAccounts != 3 || snapshot.Resources.BuildAccounts != 3 || snapshot.Resources.WebAccounts != 0 || snapshot.Resources.ConsoleAccounts != 0 || snapshot.Resources.EnabledModels != 1 || snapshot.Resources.TotalModels != 2 || snapshot.Resources.ActiveClientKeys != 1 || snapshot.Resources.TotalClientKeys != 2 {
 		t.Fatalf("resources = %#v", snapshot.Resources)
 	}
 	if snapshot.Usage.Requests != 3 || snapshot.Usage.SuccessfulRequests != 2 || snapshot.Usage.FailedRequests != 1 || snapshot.Usage.Tokens != 160 {
@@ -86,8 +90,18 @@ func TestDashboardRepositorySnapshot(t *testing.T) {
 	if bucketsByIndex[0] != (dashboardBucketSummary{Requests: 1, Tokens: 100}) || bucketsByIndex[11] != (dashboardBucketSummary{Requests: 2, Tokens: 60}) {
 		t.Fatalf("bucket distribution = %#v", bucketsByIndex)
 	}
-	if len(snapshot.TopModels) != 2 || snapshot.TopModels[0].Model != "grok-primary" || snapshot.TopModels[0].Requests != 2 || snapshot.TopModels[0].Tokens != 110 {
+	if len(snapshot.TopModels) != 3 || snapshot.TopModels[0].Model != "grok-primary" || snapshot.TopModels[0].Requests != 2 || snapshot.TopModels[0].Tokens != 110 || snapshot.TopModels[2].Model != "enabled" || snapshot.TopModels[2].Requests != 0 {
 		t.Fatalf("top models = %#v", snapshot.TopModels)
+	}
+	if len(snapshot.Providers) != 2 || snapshot.Providers[0].Provider != "grok_build" || snapshot.Providers[0].Requests != 2 || snapshot.Providers[1].Provider != "grok_web" || snapshot.Providers[1].Requests != 1 {
+		t.Fatalf("providers = %#v", snapshot.Providers)
+	}
+	var activityRequests int64
+	for _, bucket := range snapshot.ActivityBuckets {
+		activityRequests += bucket.Requests
+	}
+	if activityRequests != 3 {
+		t.Fatalf("activity buckets = %#v", snapshot.ActivityBuckets)
 	}
 }
 
@@ -105,26 +119,61 @@ func TestDashboardRepositoryRanksTopModels(t *testing.T) {
 	rows := []requestAuditModel{
 		{RequestID: "primary-1", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-primary", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, InputTokens: 80, CachedInputTokens: 20, OutputTokens: 20, ReasoningTokens: 5, TotalTokens: 100, CostInUSDTicks: 1_000_000_000, EstimatedCostInUSDTicks: 9_000_000_000, CreatedAt: now.Add(-3 * time.Hour)},
 		{RequestID: "primary-2", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-primary", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, InputTokens: 30, CachedInputTokens: 5, OutputTokens: 20, ReasoningTokens: 10, TotalTokens: 50, EstimatedCostInUSDTicks: 2_000_000_000, CreatedAt: now.Add(-2 * time.Hour)},
-		{RequestID: "fallback", ClientKeyID: 1, ModelRouteID: 1, ModelUpstreamModel: "grok-fallback", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 200, CreatedAt: now.Add(-time.Hour)},
+		{RequestID: "fallback", ClientKeyID: 1, ModelRouteID: 1, ModelUpstreamModel: "grok-fallback", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 200, CostInUSDTicks: 4_000_000_000, CreatedAt: now.Add(-time.Hour)},
 	}
 	if err := database.db.WithContext(ctx).Create(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := NewDashboardRepository(database).Snapshot(ctx, testDashboardBoundaries(now.Add(-24*time.Hour), time.Hour, 24), now)
+	boundaries := testDashboardBoundaries(now.Add(-24*time.Hour), time.Hour, 24)
+	snapshot, err := NewDashboardRepository(database).Snapshot(ctx, testDashboardWindow(boundaries), now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.TopModels) != 2 || snapshot.TopModels[0].Model != "grok-primary" || snapshot.TopModels[0].Requests != 2 || snapshot.TopModels[0].InputTokens != 110 || snapshot.TopModels[0].CachedInputTokens != 25 || snapshot.TopModels[0].OutputTokens != 40 || snapshot.TopModels[0].ReasoningTokens != 15 || snapshot.TopModels[0].Tokens != 150 || snapshot.TopModels[0].BilledCostUSDTicks != 3_000_000_000 || snapshot.TopModels[1].Model != "grok-fallback" {
+	if len(snapshot.TopModels) != 2 || snapshot.TopModels[0].Model != "grok-fallback" || snapshot.TopModels[0].BilledCostUSDTicks != 4_000_000_000 || snapshot.TopModels[1].Model != "grok-primary" || snapshot.TopModels[1].Requests != 2 || snapshot.TopModels[1].InputTokens != 110 || snapshot.TopModels[1].CachedInputTokens != 25 || snapshot.TopModels[1].OutputTokens != 40 || snapshot.TopModels[1].ReasoningTokens != 15 || snapshot.TopModels[1].Tokens != 150 || snapshot.TopModels[1].BilledCostUSDTicks != 3_000_000_000 {
 		t.Fatalf("top models = %#v", snapshot.TopModels)
 	}
-	var modelBucketTokens int64
-	var modelBucketCost int64
-	for _, bucket := range snapshot.ModelBuckets {
-		modelBucketTokens += bucket.Tokens
-		modelBucketCost += bucket.BilledCostUSDTicks
+}
+
+func TestDashboardRepositoryFillsTopModelsFromEnabledRoutes(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "dashboard-enabled-models.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(snapshot.ModelBuckets) != 3 || modelBucketTokens != 350 || modelBucketCost != 3_000_000_000 {
-		t.Fatalf("model buckets = %#v", snapshot.ModelBuckets)
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	for index := 0; index < 12; index++ {
+		name := fmt.Sprintf("grok-%02d", index)
+		route := modelRouteModel{PublicID: "Build/" + name, Provider: "grok_build", UpstreamModel: name, Capability: "responses", Enabled: true}
+		if err := database.db.WithContext(ctx).Create(&route).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	duplicate := modelRouteModel{PublicID: "Web/grok-00", Provider: "grok_web", UpstreamModel: "grok-00", Capability: "responses", Enabled: true}
+	if err := database.db.WithContext(ctx).Create(&duplicate).Error; err != nil {
+		t.Fatal(err)
+	}
+	disabled := modelRouteModel{PublicID: "Build/disabled", Provider: "grok_build", UpstreamModel: "disabled", Capability: "responses", Enabled: false}
+	if err := database.db.WithContext(ctx).Create(&disabled).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	boundaries := testDashboardBoundaries(now.Add(-24*time.Hour), time.Hour, 24)
+	snapshot, err := NewDashboardRepository(database).Snapshot(ctx, testDashboardWindow(boundaries), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.TopModels) != 10 {
+		t.Fatalf("top models count = %d, want 10: %#v", len(snapshot.TopModels), snapshot.TopModels)
+	}
+	for index, item := range snapshot.TopModels {
+		want := fmt.Sprintf("grok-%02d", index)
+		if item.Model != want || item.Requests != 0 || item.Tokens != 0 || item.BilledCostUSDTicks != 0 {
+			t.Fatalf("top model %d = %#v, want zero-usage %q", index, item, want)
+		}
 	}
 }
 
@@ -141,4 +190,11 @@ func testDashboardBoundaries(start time.Time, step time.Duration, count int) []t
 		values[index] = start.Add(time.Duration(index) * step)
 	}
 	return values
+}
+
+func testDashboardWindow(boundaries []time.Time) repository.DashboardSnapshotWindow {
+	return repository.DashboardSnapshotWindow{
+		BucketBoundaries:   boundaries,
+		ActivityBoundaries: boundaries,
+	}
 }

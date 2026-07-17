@@ -17,16 +17,16 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
-type videoUpstreamError struct {
+type webMediaUpstreamError struct {
 	status int
 	body   string
 }
 
-func (e *videoUpstreamError) Error() string {
-	return fmt.Sprintf("视频上游返回 %d: %s", e.status, e.body)
+func (e *webMediaUpstreamError) Error() string {
+	return fmt.Sprintf("Grok Web 媒体上游返回 %d: %s", e.status, e.body)
 }
 
-func (e *videoUpstreamError) HTTPStatusCode() int { return e.status }
+func (e *webMediaUpstreamError) HTTPStatusCode() int { return e.status }
 
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
 	cfg := a.config()
@@ -167,7 +167,7 @@ func parseVideoStream(response *http.Response, progress func(int)) (provider.Vid
 		if response.StatusCode == http.StatusUnauthorized {
 			return provider.VideoResult{}, "", provider.ErrUnauthorized
 		}
-		return provider.VideoResult{}, "", &videoUpstreamError{status: response.StatusCode, body: strings.TrimSpace(string(body))}
+		return provider.VideoResult{}, "", &webMediaUpstreamError{status: response.StatusCode, body: strings.TrimSpace(string(body))}
 	}
 	var result provider.VideoResult
 	var postID string

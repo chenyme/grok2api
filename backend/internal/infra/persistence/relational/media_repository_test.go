@@ -43,6 +43,7 @@ func TestMediaJobRepositoryListMediaJobsPaginatesAndFilters(t *testing.T) {
 		testMediaJob("media_job_completed_new", accountValue.ID, key.ID, mediadomain.StatusCompleted, now.Add(-time.Hour)),
 	}
 	jobs[0].Prompt = "A quiet harbor"
+	jobs[0].ResultAssetID = "vid_media_list_00000001"
 	jobs[1].Prompt = "Northern lights"
 	jobs[2].Prompt = "Desert sunrise"
 	jobs[3].Prompt = "City skyline"
@@ -85,6 +86,9 @@ func TestMediaJobRepositoryListMediaJobsPaginatesAndFilters(t *testing.T) {
 		t.Fatalf("completed total = %d", total)
 	}
 	assertMediaJobIDs(t, completed, "media_job_completed_new", "media_job_completed_old")
+	if completed[1].ResultAssetID != jobs[0].ResultAssetID {
+		t.Fatalf("completed asset ID = %q", completed[1].ResultAssetID)
+	}
 
 	searched, total, err := jobRepo.ListMediaJobs(ctx, repository.MediaJobListQuery{
 		Page: repository.PageQuery{Offset: 0, Limit: 1, Search: "northern"},

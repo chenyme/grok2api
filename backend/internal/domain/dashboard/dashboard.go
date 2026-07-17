@@ -4,11 +4,13 @@ package dashboard
 type Resources struct {
 	ActiveAccounts   int64
 	TotalAccounts    int64
+	BuildAccounts    int64
+	WebAccounts      int64
+	ConsoleAccounts  int64
 	EnabledModels    int64
 	TotalModels      int64
 	ActiveClientKeys int64
 	TotalClientKeys  int64
-	AllTimeRequests  int64
 }
 
 // Usage 表示指定时间窗口内的请求聚合。
@@ -48,19 +50,26 @@ type ModelUsage struct {
 	BilledCostUSDTicks int64
 }
 
-// ModelBucket 表示单个时间桶内某个模型的用量。
-type ModelBucket struct {
-	Index              int
-	Model              string
+// ActivityBucket 表示活动热力图中的单日请求量。
+type ActivityBucket struct {
+	Index    int
+	Requests int64
+}
+
+// ProviderUsage 表示指定时间范围内单个上游渠道的调用量。
+type ProviderUsage struct {
+	Provider           string
+	Requests           int64
+	SuccessfulRequests int64
 	Tokens             int64
-	BilledCostUSDTicks int64
 }
 
 // Aggregate 表示持久化层返回的 Dashboard 聚合快照。
 type Aggregate struct {
-	Resources    Resources
-	Usage        Usage
-	Buckets      []Bucket
-	TopModels    []ModelUsage
-	ModelBuckets []ModelBucket
+	Resources       Resources
+	Usage           Usage
+	Buckets         []Bucket
+	ActivityBuckets []ActivityBucket
+	TopModels       []ModelUsage
+	Providers       []ProviderUsage
 }

@@ -56,6 +56,24 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 	}
 }
 
+func TestParseMediaPostResponsePreservesStatusAndPostID(t *testing.T) {
+	postID, err := parseMediaPostResponse(&http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"post":{"id":"post_1","videos":[{"id":"post_1"}]}}`)),
+	})
+	if err != nil || postID != "post_1" {
+		t.Fatalf("postID=%q err=%v", postID, err)
+	}
+	_, err = parseMediaPostResponse(&http.Response{
+		StatusCode: http.StatusForbidden,
+		Body:       io.NopCloser(strings.NewReader(`{"error":"challenge"}`)),
+	})
+	var upstreamErr *webMediaUpstreamError
+	if !errors.As(err, &upstreamErr) || upstreamErr.status != http.StatusForbidden || !strings.Contains(upstreamErr.body, "challenge") {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
 func TestWebChatPricingUsesGrok45(t *testing.T) {
 	registry := provider.NewRegistry(&Adapter{})
 	for _, upstreamModel := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy"} {

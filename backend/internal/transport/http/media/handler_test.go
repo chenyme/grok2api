@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -63,6 +64,111 @@ func TestPublicImageSupportsGetHeadAndETag(t *testing.T) {
 	router.ServeHTTP(notModified, notModifiedRequest)
 	if notModified.Code != http.StatusNotModified || notModified.Body.Len() != 0 {
 		t.Fatalf("conditional GET status=%d size=%d", notModified.Code, notModified.Body.Len())
+	}
+}
+
+func TestPublicVideoAssetSupportsGetHeadAndRange(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-video-http.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "video-objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := mediaapp.NewService(relational.NewMediaAssetRepository(database), relational.NewMediaJobRepository(database), objects, nil, mediaapp.Config{
+		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
+		CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute,
+	})
+	payload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x03}, 64)...)
+	asset, err := service.SaveVideo(ctx, "", "video/mp4", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	NewHandler(service).RegisterPublic(router)
+	path := "/v1/media/videos/" + asset.ID
+
+	get := httptest.NewRecorder()
+	router.ServeHTTP(get, httptest.NewRequest(http.MethodGet, path, nil))
+	if get.Code != http.StatusOK || get.Body.Len() != len(payload) || get.Header().Get("Content-Type") != "video/mp4" || get.Header().Get("ETag") == "" {
+		t.Fatalf("GET status=%d size=%d headers=%#v", get.Code, get.Body.Len(), get.Header())
+	}
+	head := httptest.NewRecorder()
+	router.ServeHTTP(head, httptest.NewRequest(http.MethodHead, path, nil))
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Content-Length") == "" {
+		t.Fatalf("HEAD status=%d size=%d headers=%#v", head.Code, head.Body.Len(), head.Header())
+	}
+	rangeRequest := httptest.NewRequest(http.MethodGet, path, nil)
+	rangeRequest.Header.Set("Range", "bytes=0-3")
+	partial := httptest.NewRecorder()
+	router.ServeHTTP(partial, rangeRequest)
+	if partial.Code != http.StatusPartialContent || partial.Body.Len() != 4 || partial.Header().Get("Content-Range") == "" {
+		t.Fatalf("Range status=%d size=%d headers=%#v", partial.Code, partial.Body.Len(), partial.Header())
+	}
+}
+
+func TestAdminDeleteImagesRemovesObjectMetadataAndStats(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-delete.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects-delete"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := mediaapp.NewService(
+		relational.NewMediaAssetRepository(database),
+		relational.NewMediaJobRepository(database),
+		objects,
+		nil,
+		mediaapp.Config{PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30, CleanupThresholdPercent: 80, CleanupInterval: time.Minute},
+	)
+	raw, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	deletedAsset, err := service.SaveImage(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keptAsset, err := service.SaveImage(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	NewHandler(service).RegisterAdmin(router.Group("/api/admin/v1"))
+	request := httptest.NewRequest(http.MethodDelete, "/api/admin/v1/media/images", bytes.NewBufferString(`{"ids":["`+deletedAsset.ID+`"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("DELETE status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, _, err := service.OpenImage(ctx, deletedAsset.ID); !errors.Is(err, mediaapp.ErrAssetNotFound) {
+		t.Fatalf("deleted image error = %v, want ErrAssetNotFound", err)
+	}
+	_, body, err := service.OpenImage(ctx, keptAsset.ID)
+	if err != nil {
+		t.Fatalf("kept image error = %v", err)
+	}
+	defer body.Close()
+	stats, err := service.AdminImageStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalImages != 1 || stats.TotalBytes != keptAsset.SizeBytes {
+		t.Fatalf("stats = %#v, want one kept image", stats)
 	}
 }
 

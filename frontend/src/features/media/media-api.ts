@@ -3,6 +3,7 @@ import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import {
   createObjectDecoder,
   createPaginatedDecoder,
+  decodeCountResult,
   hasShape,
   isNumber,
   isString,
@@ -49,6 +50,7 @@ const mediaJobShape = {
   createdAt: isString,
   completedAt: (value: unknown) => value === null || isString(value),
   errorMessage: isString,
+  assetId: isString,
 };
 
 const decodeImageStats = createObjectDecoder<ImageStatsDTO>("image stats", {
@@ -73,6 +75,10 @@ export function getImageStats(): Promise<ImageStatsDTO> {
   return apiRequest("/api/admin/v1/media/images/stats", {}, decodeImageStats);
 }
 
+export function deleteImages(ids: string[]): Promise<{ deleted: number }> {
+  return apiRequest("/api/admin/v1/media/images", { method: "DELETE", body: { ids } }, decodeCountResult<{ deleted: number }>("deleted"));
+}
+
 export function listVideos(input: ListVideosInput): Promise<PaginatedDTO<MediaJobDTO>> {
   const query = new URLSearchParams({ page: String(input.page), pageSize: String(input.pageSize) });
   if (input.status) query.set("status", input.status);
@@ -86,4 +92,8 @@ export function listVideos(input: ListVideosInput): Promise<PaginatedDTO<MediaJo
 
 export function getVideoStats(): Promise<VideoStatsDTO> {
   return apiRequest("/api/admin/v1/media/videos/stats", {}, decodeVideoStats);
+}
+
+export function deleteVideos(ids: string[]): Promise<{ deleted: number }> {
+  return apiRequest("/api/admin/v1/media/videos", { method: "DELETE", body: { ids } }, decodeCountResult<{ deleted: number }>("deleted"));
 }
