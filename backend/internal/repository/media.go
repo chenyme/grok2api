@@ -54,6 +54,8 @@ type MediaJobStats struct {
 type MediaJobRepository interface {
 	CreateMediaJob(ctx context.Context, value media.Job) error
 	GetMediaJob(ctx context.Context, id string, clientKeyID uint64) (media.Job, error)
+	// GetMediaJobByID 按任务 ID 读取（管理端预览等不受客户端密钥约束的场景）。
+	GetMediaJobByID(ctx context.Context, id string) (media.Job, error)
 	UpdateMediaJob(ctx context.Context, value media.Job) error
 	ListMediaJobs(ctx context.Context, query MediaJobListQuery) ([]media.Job, int64, error)
 	SummarizeMediaJobs(ctx context.Context) (MediaJobStats, error)
@@ -67,6 +69,8 @@ type MediaJobRepository interface {
 type MediaAssetRepository interface {
 	CreateMediaAsset(ctx context.Context, value media.Asset) error
 	GetMediaAsset(ctx context.Context, id string) (media.Asset, error)
+	// ExistingVideoAssetIDs 返回 ids 中仍存在且 kind=video 的资产 ID 集合。
+	ExistingVideoAssetIDs(ctx context.Context, ids []string) (map[string]struct{}, error)
 	ListMediaAssets(ctx context.Context, query MediaAssetListQuery) ([]media.Asset, int64, error)
 	SummarizeMediaAssets(ctx context.Context) (MediaAssetStats, error)
 	TotalMediaAssetBytes(ctx context.Context) (int64, error)

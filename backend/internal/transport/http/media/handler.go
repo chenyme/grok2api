@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
+	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
@@ -33,6 +35,7 @@ func (h *Handler) RegisterAdmin(router *gin.RouterGroup) {
 	router.GET("/media/images/stats", h.imageStats)
 	router.GET("/media/videos", h.listVideos)
 	router.GET("/media/videos/stats", h.videoStats)
+	router.GET("/media/videos/:jobId/content", h.getVideoContent)
 }
 
 func (h *Handler) getImage(c *gin.Context) {
@@ -128,21 +131,56 @@ func (h *Handler) listVideos(c *gin.Context) {
 		return
 	}
 	items := make([]mediaJobDTO, 0, len(jobs))
-	for _, j := range jobs {
+	for _, item := range jobs {
+		j := item.Job
 		var completedAt *string
 		if j.CompletedAt != nil {
-			formatted := j.CompletedAt.Format("2006-01-02T15:04:05Z")
+			formatted := j.CompletedAt.UTC().Format(time.RFC3339)
 			completedAt = &formatted
+		}
+		// 仅 failed 输出错误文案，遮蔽 completed 历史脏数据。
+		errorMessage := ""
+		if j.Status == mediadomain.StatusFailed {
+			errorMessage = j.ErrorMessage
 		}
 		items = append(items, mediaJobDTO{
 			ID: j.ID, Model: j.Model, Prompt: j.Prompt, Status: string(j.Status),
 			Progress: j.Progress, Seconds: j.Seconds, Size: j.Size, Quality: j.Quality,
 			AccountName: j.AccountName, ClientKeyName: j.ClientKeyName,
-			CreatedAt:   j.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			CompletedAt: completedAt, ErrorMessage: j.ErrorMessage,
+			CreatedAt: j.CreatedAt.UTC().Format(time.RFC3339), CompletedAt: completedAt,
+			ErrorMessage: errorMessage, PreviewAvailable: item.PreviewAvailable,
 		})
 	}
 	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
+}
+
+// getVideoContent 流式返回管理端本地缓存视频；仅 completed 且本地 video 资产可用时成功。
+func (h *Handler) getVideoContent(c *gin.Context) {
+	asset, body, err := h.service.AdminOpenVideoJobContent(c.Request.Context(), c.Param("jobId"))
+	if errors.Is(err, mediaapp.ErrAssetNotFound) {
+		response.Error(c, http.StatusNotFound, "mediaVideoPreviewUnavailable", "本地视频缓存不可用或已清理")
+		return
+	}
+	if errors.Is(err, mediaapp.ErrMediaJobsUnavailable) {
+		response.Error(c, http.StatusServiceUnavailable, "mediaVideoPreviewUnavailable", "视频任务仓储未配置")
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "mediaVideoPreviewFailed", "读取本地视频缓存失败")
+		return
+	}
+	defer body.Close()
+	mimeType := strings.TrimSpace(asset.MIMEType)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	c.Header("Content-Type", mimeType)
+	c.Header("Content-Length", strconv.FormatInt(asset.SizeBytes, 10))
+	c.Header("Content-Disposition", "inline")
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Status(http.StatusOK)
+	_, _ = io.Copy(c.Writer, body)
 }
 
 func (h *Handler) videoStats(c *gin.Context) {

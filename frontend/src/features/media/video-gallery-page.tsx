@@ -1,17 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Clock, ListVideo, Loader2, RefreshCw, Search } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { getVideoStats, listVideos } from "@/features/media/media-api";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { downloadVideoContent, getVideoStats, listVideos } from "@/features/media/media-api";
 import { MediaMetric } from "@/features/media/media-metric";
 import type { MediaJobDTO } from "@/features/media/types";
-import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
+import { EmptyState, ErrorState, LoadingState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { PageHeader } from "@/shared/components/page-header";
 import { Pagination } from "@/shared/components/pagination";
@@ -24,6 +26,7 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 type VideoStatusFilter = MediaJobDTO["status"] | "";
 
 const statusOptions: VideoStatusFilter[] = ["", "queued", "in_progress", "completed", "failed"];
+const videoGalleryTimeZone = "Asia/Shanghai";
 
 export function VideoGalleryPage() {
   const { t, i18n } = useTranslation();
@@ -32,6 +35,7 @@ export function VideoGalleryPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<VideoStatusFilter>("");
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
+  const [previewJob, setPreviewJob] = useState<MediaJobDTO | null>(null);
   const debouncedSearch = useDebouncedValue(search);
   const normalizedSearch = debouncedSearch.trim();
 
@@ -148,8 +152,8 @@ export function VideoGalleryPage() {
                 <TableRow key={job.id}>
                   <TableCell className="min-w-0 py-3">
                     <div className="min-w-0">
-                      <span className="block truncate text-xs font-medium" title={job.prompt}>{job.prompt || "-"}</span>
-                      <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground" title={job.id}>{job.id}</span>
+                      <PromptCell prompt={job.prompt} />
+                      <JobIdCell job={job} onPreview={() => setPreviewJob(job)} />
                       {job.errorMessage ? <span className="mt-1 block truncate text-[11px] text-destructive" title={job.errorMessage}>{job.errorMessage}</span> : null}
                     </div>
                   </TableCell>
@@ -168,15 +172,129 @@ export function VideoGalleryPage() {
                       <span className="block truncate text-[11px] text-muted-foreground" title={job.clientKeyName}>{job.clientKeyName || "-"}</span>
                     </div>
                   </TableCell>
-                  <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(job.createdAt, i18n.language)}</TableCell>
-                  <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(job.completedAt, i18n.language)}</TableCell>
+                  <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(job.createdAt, i18n.language, videoGalleryTimeZone)}</TableCell>
+                  <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(job.completedAt, i18n.language, videoGalleryTimeZone)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         ) : null}
       </DataTableShell>
+
+      {previewJob ? (
+        <VideoPreviewDialog key={previewJob.id} job={previewJob} onOpenChange={(open) => { if (!open) setPreviewJob(null); }} />
+      ) : null}
     </div>
+  );
+}
+
+function PromptCell({ prompt }: { prompt: string }) {
+  if (!prompt) {
+    return <span className="block truncate text-xs font-medium">-</span>;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="block cursor-default truncate text-xs font-medium">{prompt}</span>
+      </TooltipTrigger>
+      <TooltipContent
+        side="bottom"
+        align="start"
+        className="max-h-64 max-w-sm overflow-auto whitespace-pre-wrap break-words bg-popover px-3 py-2 text-left text-xs text-popover-foreground shadow-md"
+      >
+        {prompt}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function JobIdCell({ job, onPreview }: { job: MediaJobDTO; onPreview: () => void }) {
+  const { t } = useTranslation();
+  if (!job.previewAvailable) {
+    return <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground" title={job.id}>{job.id}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className="mt-0.5 block max-w-full truncate text-left font-mono text-[10px] text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      title={t("media.videos.previewAction")}
+      aria-label={t("media.videos.previewActionAria", { id: job.id })}
+      onClick={onPreview}
+    >
+      {job.id}
+    </button>
+  );
+}
+
+function VideoPreviewDialog({ job, onOpenChange }: { job: MediaJobDTO; onOpenChange: (open: boolean) => void }) {
+  const { t } = useTranslation();
+  const objectUrlRef = useRef<string | null>(null);
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void downloadVideoContent(job.id)
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        objectUrlRef.current = url;
+        setObjectUrl(url);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const message = err instanceof Error && err.message ? err.message : t("media.videos.previewFailed");
+        setError(message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
+  }, [job.id, t]);
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[min(720px,calc(100svh-2rem))] w-[calc(100%-2rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="shrink-0 border-b px-5 py-4 pr-12">
+          <DialogTitle>{t("media.videos.previewTitle")}</DialogTitle>
+          <DialogDescription className="truncate font-mono text-xs" title={job?.id}>
+            {job?.id}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex min-h-0 flex-1 flex-col bg-black/95 p-4">
+          {loading ? (
+            <div className="flex min-h-48 flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
+              <LoadingState className="min-h-0" />
+              <p className="text-sm">{t("media.videos.previewLoading")}</p>
+            </div>
+          ) : null}
+          {!loading && error ? (
+            <div className="flex min-h-48 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
+              <AlertCircle className="size-7 text-destructive" />
+              <p className="text-sm text-destructive">{error}</p>
+            </div>
+          ) : null}
+          {!loading && !error && objectUrl ? (
+            <video
+              key={objectUrl}
+              className="max-h-[min(560px,calc(100svh-12rem))] w-full rounded-md bg-black"
+              controls
+              preload="metadata"
+              src={objectUrl}
+            />
+          ) : null}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

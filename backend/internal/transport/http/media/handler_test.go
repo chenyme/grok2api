@@ -9,10 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
+	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	localmedia "github.com/chenyme/grok2api/backend/internal/infra/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -183,4 +187,215 @@ func TestAdminVideoListRejectsInvalidFilters(t *testing.T) {
 			t.Fatalf("GET %s status = %d, body = %s", path, recorder.Code, recorder.Body.String())
 		}
 	}
+}
+
+func TestAdminVideoListHidesCompletedErrorsAndExposesPreview(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-admin-list.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects-list"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := relational.NewMediaAssetRepository(database)
+	jobs := relational.NewMediaJobRepository(database)
+	accountID, clientKeyID := seedAdminMediaOwners(t, database, "list")
+	service := mediaapp.NewService(assets, jobs, objects, nil, mediaapp.Config{
+		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
+		CleanupThresholdPercent: 80, CleanupInterval: time.Minute,
+	})
+
+	videoPayload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x02}, 32)...)
+	videoID := "vid_http_list_0001"
+	storageKey, err := objects.SaveVideo(ctx, videoID, "video/mp4", videoPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 13, 4, 5, 6, 0, time.UTC)
+	if err := assets.CreateMediaAsset(ctx, mediaAssetForTest(videoID, storageKey, "video", "video/mp4", int64(len(videoPayload)), now)); err != nil {
+		t.Fatal(err)
+	}
+	completedAt := now.Add(time.Hour)
+	if err := jobs.CreateMediaJob(ctx, mediaJobForTest("job_completed_dirty", accountID, clientKeyID, "completed", videoID, "当前账号池不支持该模型", now, &completedAt)); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.CreateMediaJob(ctx, mediaJobForTest("job_failed_real", accountID, clientKeyID, "failed", "", "upstream disconnected", now.Add(time.Minute), &completedAt)); err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	NewHandler(service).RegisterAdmin(router.Group("/api/admin/v1"))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/videos?page=1&pageSize=20", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"previewAvailable":true`)) {
+		t.Fatalf("expected previewAvailable true, body=%s", body)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"errorMessage":"upstream disconnected"`)) {
+		t.Fatalf("failed job error missing, body=%s", body)
+	}
+	if bytes.Contains(recorder.Body.Bytes(), []byte("当前账号池不支持该模型")) {
+		t.Fatalf("completed dirty error leaked, body=%s", body)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"createdAt":"2026-07-13T04:05:06Z"`)) &&
+		!bytes.Contains(recorder.Body.Bytes(), []byte(`"createdAt":"2026-07-13T04:06:06Z"`)) {
+		t.Fatalf("expected RFC3339 UTC timestamps, body=%s", body)
+	}
+}
+
+func TestAdminVideoContentEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-admin-content.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects-content"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := relational.NewMediaAssetRepository(database)
+	jobs := relational.NewMediaJobRepository(database)
+	accountID, clientKeyID := seedAdminMediaOwners(t, database, "content")
+	service := mediaapp.NewService(assets, jobs, objects, nil, mediaapp.Config{
+		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
+		CleanupThresholdPercent: 80, CleanupInterval: time.Minute,
+	})
+
+	videoPayload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x03}, 48)...)
+	videoID := "vid_http_content_0001"
+	storageKey, err := objects.SaveVideo(ctx, videoID, "video/mp4", videoPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := assets.CreateMediaAsset(ctx, mediaAssetForTest(videoID, storageKey, "video", "video/mp4", int64(len(videoPayload)), now)); err != nil {
+		t.Fatal(err)
+	}
+	completedAt := now.Add(time.Minute)
+	if err := jobs.CreateMediaJob(ctx, mediaJobForTest("job_content_ok", accountID, clientKeyID, "completed", videoID, "", now, &completedAt)); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.CreateMediaJob(ctx, mediaJobForTest("job_content_missing_asset", accountID, clientKeyID, "completed", "vid_gone_asset_01", "", now, &completedAt)); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.CreateMediaJob(ctx, mediaJobForTest("job_content_failed", accountID, clientKeyID, "failed", "", "boom", now, &completedAt)); err != nil {
+		t.Fatal(err)
+	}
+	// 非视频资产绑定不得被预览。
+	imageID := "img_http_content_0001"
+	rawPNG, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	imageKey, err := objects.SaveImage(ctx, imageID, "image/png", rawPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := assets.CreateMediaAsset(ctx, mediaAssetForTest(imageID, imageKey, "image", "image/png", int64(len(rawPNG)), now)); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.CreateMediaJob(ctx, mediaJobForTest("job_content_image_asset", accountID, clientKeyID, "completed", imageID, "", now, &completedAt)); err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	NewHandler(service).RegisterAdmin(router.Group("/api/admin/v1"))
+
+	ok := httptest.NewRecorder()
+	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/videos/job_content_ok/content", nil))
+	if ok.Code != http.StatusOK || ok.Header().Get("Content-Type") != "video/mp4" ||
+		ok.Header().Get("Content-Disposition") != "inline" ||
+		ok.Header().Get("Cache-Control") != "private, no-store" ||
+		ok.Header().Get("X-Content-Type-Options") != "nosniff" ||
+		ok.Body.Len() != len(videoPayload) {
+		t.Fatalf("ok response status=%d headers=%#v size=%d", ok.Code, ok.Header(), ok.Body.Len())
+	}
+	if ok.Header().Get("Content-Length") != strconv.Itoa(len(videoPayload)) {
+		t.Fatalf("content-length = %q", ok.Header().Get("Content-Length"))
+	}
+
+	for _, path := range []string{
+		"/api/admin/v1/media/videos/job_missing/content",
+		"/api/admin/v1/media/videos/job_content_missing_asset/content",
+		"/api/admin/v1/media/videos/job_content_failed/content",
+		"/api/admin/v1/media/videos/job_content_image_asset/content",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status = %d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+		if bytes.Contains(recorder.Body.Bytes(), []byte("videos/")) || bytes.Contains(recorder.Body.Bytes(), []byte("http")) {
+			t.Fatalf("404 body leaked path/url: %s", recorder.Body.String())
+		}
+	}
+
+	// 底层对象缺失：元数据仍在时内容端点也必须 404。
+	if err := objects.Delete(ctx, storageKey); err != nil {
+		t.Fatal(err)
+	}
+	missingObject := httptest.NewRecorder()
+	router.ServeHTTP(missingObject, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/videos/job_content_ok/content", nil))
+	if missingObject.Code != http.StatusNotFound {
+		t.Fatalf("missing object status = %d body=%s", missingObject.Code, missingObject.Body.String())
+	}
+}
+
+func mediaJobForTest(id string, accountID, clientKeyID uint64, status, resultAssetID, errorMessage string, createdAt time.Time, completedAt *time.Time) mediadomain.Job {
+	job := mediadomain.Job{
+		ID: id, RequestID: "request-" + id, ClientKeyID: clientKeyID, ClientKeyName: "key",
+		AccountID: accountID, AccountName: "acct", Provider: "grok_web", Model: "grok-imagine-video",
+		ModelRouteID: 1, UpstreamModel: "video", Prompt: "prompt " + id, Seconds: 6, Size: "16:9", Quality: "720p",
+		Status: mediadomain.Status(status), Progress: 100, InputJSON: `{}`, ResultAssetID: resultAssetID,
+		ErrorMessage: errorMessage, CreatedAt: createdAt, UpdatedAt: createdAt, CompletedAt: completedAt,
+	}
+	if errorMessage != "" {
+		job.ErrorCode = "test_error"
+	}
+	return job
+}
+
+func mediaAssetForTest(id, storageKey, kind, mime string, size int64, createdAt time.Time) mediadomain.Asset {
+	return mediadomain.Asset{
+		ID: id, Kind: kind, StorageKey: storageKey, MIMEType: mime, SizeBytes: size,
+		SHA256: hex.EncodeToString(sha256.New().Sum(nil)), CreatedAt: createdAt,
+	}
+}
+
+func seedAdminMediaOwners(t *testing.T, database *relational.Database, suffix string) (accountID, clientKeyID uint64) {
+	t.Helper()
+	ctx := context.Background()
+	accountValue, _, err := relational.NewAccountRepository(database).UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider:             accountdomain.ProviderWeb,
+		AuthType:             accountdomain.AuthTypeSSO,
+		WebTier:              accountdomain.WebTierBasic,
+		Name:                 "media-admin-" + suffix,
+		SourceKey:            "media-admin-" + suffix,
+		EncryptedAccessToken: "encrypted-token",
+		AuthStatus:           accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := relational.NewClientKeyRepository(database).Create(ctx, clientkeydomain.Key{
+		Name: "media-admin-key-" + suffix, Prefix: "media-admin-key-" + suffix,
+		SecretHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		EncryptedSecret: "encrypted-secret", Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return accountValue.ID, key.ID
 }
