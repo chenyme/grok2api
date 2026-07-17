@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -48,6 +49,8 @@ type responsesToolCompatibility struct {
 	warnings          []string
 	warningSet        map[string]struct{}
 	changed           bool
+	stripExternal     bool
+	droppedTools      []string
 }
 
 // responsesRequestError 表示可直接映射为 OpenAI 错误结构的 Provider 请求错误。
@@ -65,7 +68,97 @@ func newResponsesToolCompatibility() *responsesToolCompatibility {
 		identityAliases: make(map[string]string),
 		streamCalls:     make(map[string]*responsesStreamCall),
 		warningSet:      make(map[string]struct{}),
+		stripExternal:   stripExternalClientTools(),
 	}
+}
+
+
+func stripExternalClientTools() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GROK2API_STRIP_EXTERNAL_TOOLS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func isExternalClientToolKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "computer_use_preview",
+		"web_search", "web_search_preview", "web_search_preview_2025_03_11", "web_search_2025_08_26":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *responsesToolCompatibility) dropExternalTool(tool map[string]any, namespace string) {
+	name := strings.TrimSpace(stringField(tool, "name"))
+	if name == "" {
+		name = strings.TrimSpace(stringField(tool, "server_label"))
+	}
+	if name == "" {
+		name = strings.TrimSpace(stringField(tool, "type"))
+	}
+	if namespace != "" && name != "" {
+		name = namespace + "." + name
+	}
+	if name != "" {
+		c.droppedTools = append(c.droppedTools, name)
+	}
+	c.changed = true
+	c.addWarning("external_tools_omitted")
+}
+
+func (c *responsesToolCompatibility) externalHistoryBoundary(item map[string]any, label string) map[string]any {
+	c.changed = true
+	c.addWarning("external_tool_history_omitted")
+	name := strings.TrimSpace(stringField(item, "name"))
+	if name == "" {
+		name = strings.TrimSpace(stringField(item, "type"))
+	}
+	callID := strings.TrimSpace(stringField(item, "call_id"))
+	text := "External tool history omitted for Grok Build compatibility."
+	if label != "" {
+		text += "\nKind: " + label
+	}
+	if name != "" {
+		text += "\nName: " + name
+	}
+	if callID != "" {
+		text += "\nCall ID: " + callID
+	}
+	return compatibilityBoundaryMessage(text)
+}
+
+func (c *responsesToolCompatibility) addDroppedToolsBoundary(payload map[string]json.RawMessage) error {
+	if !c.stripExternal || len(c.droppedTools) == 0 {
+		return nil
+	}
+	text := "Client-side external tools are not available through this Grok Build upstream. Continue without calling those tools."
+	boundary := compatibilityBoundaryMessage(text)
+	raw := payload["input"]
+	if isEmptyJSON(raw) {
+		payload["input"] = mustJSON([]any{boundary})
+		return nil
+	}
+	var input any
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return &responsesRequestError{Message: "input 必须是字符串或数组", Param: "input", Code: "invalid_parameter"}
+	}
+	switch typed := input.(type) {
+	case string:
+		payload["input"] = mustJSON([]any{
+			boundary,
+			map[string]any{"type": "message", "role": "user", "content": typed},
+		})
+	case []any:
+		payload["input"] = mustJSON(append([]any{boundary}, typed...))
+	default:
+		return &responsesRequestError{Message: "input 必须是字符串或数组", Param: "input", Code: "invalid_parameter"}
+	}
+	c.changed = true
+	return nil
 }
 
 func (c *responsesToolCompatibility) alias(identity responsesToolIdentity) string {

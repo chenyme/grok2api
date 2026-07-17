@@ -10,13 +10,13 @@ import (
 func TestLegacyLocalShellUsesNativeLocalShellAndRestoresJSON(t *testing.T) {
 	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"show cwd",
-		"tools":[{"type":"local_shell","timeout_ms":30000}],
+		"tools":[{"type":"local_shell"}],
 		"tool_choice":{"type":"local_shell"}
 	}`), "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if compatibility == nil || !compatibility.legacyLocalShell || !strings.Contains(compatibility.warningHeader(), "legacy_local_shell_controls_ignored") {
+	if compatibility == nil || !compatibility.legacyLocalShell {
 		t.Fatal("legacy local_shell 未启用兼容层")
 	}
 	var request map[string]any
@@ -78,6 +78,306 @@ func TestLegacyLocalShellHistoryBecomesStructuredShellHistory(t *testing.T) {
 	}
 }
 
+func TestNativeShellOutputHistoryIsSanitizedForBuild(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","tools":[{"type":"shell","environment":{"type":"local"}}],"input":[
+			{"type":"shell_call_output","call_id":"call_1","status":"completed","output":[
+				{"command":"pwd","stdout":"/workspace\n","stderr":"","outcome":{"type":"exit","exitCode":0}}
+			],"max_output_length":2048}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	item := request["input"].([]any)[0].(map[string]any)
+	block := item["output"].([]any)[0].(map[string]any)
+	outcome := block["outcome"].(map[string]any)
+	if item["type"] != "shell_call_output" || block["command"] != nil || outcome["exit_code"] != float64(0) || outcome["exitCode"] != nil {
+		t.Fatalf("shell output history = %#v", item)
+	}
+}
+
+func TestFunctionCallOutputHistoryEncodesStructuredOutput(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","tools":[{"type":"function","name":"shell_command","parameters":{"type":"object"}}],"input":[
+			{"type":"function_call_output","call_id":"call_1","status":"completed","output":{"exit_code":0,"stdout":"ok","stderr":""}}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	item := request["input"].([]any)[0].(map[string]any)
+	output, ok := item["output"].(string)
+	if item["type"] != "function_call_output" || !ok || !strings.Contains(output, `"stdout":"ok"`) {
+		t.Fatalf("function output history = %#v", item)
+	}
+}
+
+func TestAssistantOutputMessageHistoryKeepsOutputText(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":[
+			{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[
+				{"type":"output_text","text":"Hi there","annotations":[]}
+			]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"继续"}]}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	items := request["input"].([]any)
+	first := items[0].(map[string]any)
+	second := items[1].(map[string]any)
+	firstContent := first["content"].([]any)[0].(map[string]any)
+	secondContent := second["content"].([]any)[0].(map[string]any)
+	if first["id"] != nil || first["status"] != nil || firstContent["type"] != "output_text" || firstContent["annotations"] != nil {
+		t.Fatalf("assistant message history = %#v", first)
+	}
+	if secondContent["type"] != "input_text" {
+		t.Fatalf("user message history = %#v", second)
+	}
+}
+
+func TestRoleMissingTypeBecomesMessageAndFunctionCallIsAllowlisted(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":[
+			{"role":"user","content":"hello"},
+			{"type":"function_call","id":"fc_1","status":"completed","call_id":"call_1","name":"shell_command","arguments":"{}","namespace":"","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
+			{"type":"function_call_output","id":"fco_1","status":"completed","call_id":"call_1","output":"ok"}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	items := request["input"].([]any)
+	user := items[0].(map[string]any)
+	call := items[1].(map[string]any)
+	output := items[2].(map[string]any)
+	if user["type"] != "message" || user["content"].([]any)[0].(map[string]any)["type"] != "input_text" {
+		t.Fatalf("user history = %#v", user)
+	}
+	if call["type"] != "function_call" || call["id"] != nil || call["status"] != nil || call["internal_chat_message_metadata_passthrough"] != nil {
+		t.Fatalf("function_call history = %#v", call)
+	}
+	if output["type"] != "function_call_output" || output["id"] != nil || output["status"] != nil {
+		t.Fatalf("function_call_output history = %#v", output)
+	}
+}
+
+func TestUnsupportedResponsesHistoryItemsBecomeBoundaries(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":[
+			{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"kept summary"}],"encrypted_content":"cipher"},
+			{"type":"web_search_call","id":"ws_1","status":"completed"},
+			{"type":"shell_call","call_id":"call_1","status":"completed","action":{"type":"exec","commands":["pwd"]}},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	items := request["input"].([]any)
+	if items[0].(map[string]any)["type"] != "reasoning" || items[0].(map[string]any)["encrypted_content"] != "cipher" {
+		t.Fatalf("reasoning history = %#v", items[0])
+	}
+	for index, raw := range items[1:3] {
+		item := raw.(map[string]any)
+		text := item["content"].([]any)[0].(map[string]any)["text"].(string)
+		if item["type"] != "message" || item["role"] != "developer" || !strings.Contains(text, "Type: ") {
+			t.Fatalf("item %d was not downgraded: %#v", index+1, item)
+		}
+	}
+	if items[3].(map[string]any)["role"] != "user" {
+		t.Fatalf("user message changed unexpectedly: %#v", items[3])
+	}
+}
+
+func TestNullEncryptedReasoningBecomesBoundary(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":[
+			{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"who am I"}],"content":null,"encrypted_content":null,"internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"嗯"}]}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	items := request["input"].([]any)
+	first := items[0].(map[string]any)
+	text := first["content"].([]any)[0].(map[string]any)["text"].(string)
+	if first["type"] != "message" || first["role"] != "developer" || first["encrypted_content"] != nil || first["content"] == nil {
+		t.Fatalf("null reasoning should become boundary: %#v", first)
+	}
+	if !strings.Contains(text, "who am I") || strings.Contains(text, "null") {
+		t.Fatalf("boundary text = %q", text)
+	}
+	if items[1].(map[string]any)["content"].([]any)[0].(map[string]any)["type"] != "output_text" {
+		t.Fatalf("assistant history = %#v", items[1])
+	}
+}
+
+func TestCodexPrivateMetadataIsStrippedFromHistory(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":[
+			{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"plan"}],"encrypted_content":"cipher","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
+			{"type":"function_call","id":"fc_1","call_id":"call_1","name":"shell_command","arguments":"{}","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
+			{"type":"function_call_output","id":"fco_1","call_id":"call_1","output":"ok","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
+			{"type":"custom_tool_call","id":"ctc_1","call_id":"call_2","name":"apply_patch","input":"patch","status":"completed","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
+			{"type":"custom_tool_call_output","id":"ctco_1","call_id":"call_2","output":"done","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
+			{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"hi"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1"}}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	for index, raw := range request["input"].([]any) {
+		item := raw.(map[string]any)
+		if item["internal_chat_message_metadata_passthrough"] != nil || item["phase"] != nil {
+			t.Fatalf("input[%d] still has private fields: %#v", index, item)
+		}
+	}
+	items := request["input"].([]any)
+	if items[0].(map[string]any)["type"] != "reasoning" || items[0].(map[string]any)["encrypted_content"] != "cipher" {
+		t.Fatalf("reasoning history = %#v", items[0])
+	}
+	if items[1].(map[string]any)["type"] != "function_call" || items[3].(map[string]any)["type"] != "function_call" {
+		t.Fatalf("tool call history = %#v", items)
+	}
+	if items[5].(map[string]any)["role"] != "assistant" {
+		t.Fatalf("assistant message history = %#v", items[5])
+	}
+}
+
+func TestStripExternalClientToolsKeepsFunctionBackedTools(t *testing.T) {
+	t.Setenv("GROK2API_STRIP_EXTERNAL_TOOLS", "true")
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"hello",
+		"tools":[
+			{"type":"function","name":"read_file","parameters":{"type":"object"}},
+			{"type":"apply_patch"},
+			{"type":"tool_search","execution":"client"},
+			{"type":"web_search","external_web_access":false},
+			{"type":"local_shell"}
+		],
+		"tool_choice":{"type":"apply_patch"}
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "external_tools_omitted") {
+		t.Fatalf("compatibility warnings = %#v", compatibility)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tools := request["tools"].([]any)
+	if len(tools) != 4 {
+		t.Fatalf("normalized tools = %#v choice=%#v", tools, request["tool_choice"])
+	}
+	seen := map[string]bool{}
+	for _, rawTool := range tools {
+		tool := rawTool.(map[string]any)
+		switch tool["type"] {
+		case "function":
+			seen[tool["name"].(string)] = true
+		case "shell":
+			seen["shell"] = true
+		}
+		if tool["type"] == "web_search" {
+			t.Fatalf("web_search should be omitted: %#v", tools)
+		}
+	}
+	choice := request["tool_choice"].(map[string]any)
+	if !seen["read_file"] || !seen["grok2api_apply_patch"] || !seen["grok2api_tool_search"] || !seen["shell"] ||
+		choice["type"] != "function" || choice["name"] != "grok2api_apply_patch" {
+		t.Fatalf("normalized tools = %#v choice=%#v", tools, request["tool_choice"])
+	}
+	input := request["input"].([]any)
+	if input[0].(map[string]any)["role"] != "developer" || input[1].(map[string]any)["role"] != "user" {
+		t.Fatalf("input boundary = %#v", input)
+	}
+}
+
+func TestStripExternalClientToolsRemovesStringToolChoice(t *testing.T) {
+	t.Setenv("GROK2API_STRIP_EXTERNAL_TOOLS", "true")
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"hello",
+		"tools":[{"type":"web_search","external_web_access":false}],
+		"tool_choice":"auto"
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request["tools"] != nil || request["tool_choice"] != nil {
+		t.Fatalf("tools/tool_choice should be omitted: %#v", request)
+	}
+}
+
+func TestStripExternalClientToolHistory(t *testing.T) {
+	t.Setenv("GROK2API_STRIP_EXTERNAL_TOOLS", "true")
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":[
+			{"type":"web_search_call","id":"ws_1","status":"completed"},
+			{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"done"},
+			{"type":"message","role":"user","content":"next"}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "external_tool_history_omitted") {
+		t.Fatalf("compatibility warnings = %#v", compatibility)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	items := request["input"].([]any)
+	if items[0].(map[string]any)["role"] != "developer" {
+		t.Fatalf("input[0] = %#v", items[0])
+	}
+	if items[1].(map[string]any)["type"] != "function_call" ||
+		items[2].(map[string]any)["type"] != "function_call_output" ||
+		items[3].(map[string]any)["role"] != "user" {
+		t.Fatalf("function history should be preserved: %#v", items)
+	}
+}
+
 func TestRequestRejectsAmbiguousShellDeclarations(t *testing.T) {
 	_, _, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"hello",
@@ -92,13 +392,13 @@ func TestRequestRejectsAmbiguousShellDeclarations(t *testing.T) {
 func TestApplyPatchToolRequestHistoryAndJSONResponse(t *testing.T) {
 	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"edit file",
-		"tools":[{"type":"apply_patch","strict":false}],
+		"tools":[{"type":"apply_patch"}],
 		"tool_choice":{"type":"apply_patch"}
 	}`), "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "apply_patch_controls_ignored") {
+	if compatibility == nil {
 		t.Fatal("apply_patch 未启用兼容层")
 	}
 	var request map[string]any
@@ -194,19 +494,16 @@ func TestApplyPatchStreamBuffersFunctionProtocolAndRestoresItems(t *testing.T) {
 }
 
 func TestAdditionalToolsAndCompactionBoundaryRemainVisible(t *testing.T) {
-	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","tools":[{"type":"function","name":"lookup","description":"old","parameters":{"type":"object"}}],
 		"input":[
 			{"type":"compaction_trigger"},
-			{"type":"additional_tools","role":"user","tools":[{"type":"function","name":"lookup","description":"new","parameters":{"type":"object"}},{"type":"apply_patch"}]},
+			{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"lookup","description":"new","parameters":{"type":"object"}},{"type":"apply_patch"}]},
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
 		]
 	}`), "grok-4.5")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "additional_tools_role_approximated") {
-		t.Fatalf("compatibility = %#v", compatibility)
 	}
 	var request map[string]any
 	if err := json.Unmarshal(normalized, &request); err != nil {

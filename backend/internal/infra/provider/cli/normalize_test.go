@@ -24,7 +24,7 @@ func TestNormalizeResponsesRequest(t *testing.T) {
 		t.Fatalf("模型或缓存键未正确改写: %#v", payload)
 	}
 	input := payload["input"].([]any)
-	if len(input) != 2 || input[0].(map[string]any)["encrypted_content"] != "cipher" {
+	if len(input) != 2 || input[0].(map[string]any)["type"] != "reasoning" || input[0].(map[string]any)["encrypted_content"] != "cipher" {
 		t.Fatalf("reasoning 回放项未保留: %#v", input)
 	}
 	reasoningContent := input[0].(map[string]any)["content"].([]any)[0].(map[string]any)
