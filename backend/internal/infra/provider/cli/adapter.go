@@ -300,14 +300,20 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 		return nil, fmt.Errorf("查询 Build Super 资格: %w", policyErr)
 	}
 	if super {
-		models, status, listErr := a.listModelsAt(ctx, credential, accessToken, a.fallbackBaseURL())
-		if listErr != nil {
-			return nil, listErr
-		}
+		models, xaiStatus, xaiErr := a.listModelsAt(ctx, credential, accessToken, a.fallbackBaseURL())
 		if models != nil {
 			return models, nil
 		}
-		return nil, fmt.Errorf("上游模型接口返回 %d", status)
+		// Super 任一端可用即视为有效。XAI 目录失败时允许退回 Build 目录；
+		// 两端观察到的模型差异由共享 Super entitlement 在路由层统一。
+		models, buildStatus, buildErr := a.listModelsAt(ctx, credential, accessToken, a.primaryBaseURL())
+		if models != nil {
+			return models, nil
+		}
+		if xaiErr != nil || buildErr != nil {
+			return nil, fmt.Errorf("读取 Super 模型目录失败（XAI status=%d: %v；Build status=%d: %v）", xaiStatus, xaiErr, buildStatus, buildErr)
+		}
+		return nil, fmt.Errorf("上游模型接口返回 XAI %d，Build %d", xaiStatus, buildStatus)
 	}
 
 	// Free/Unknown 仅访问 Build，禁止探测 XAI。

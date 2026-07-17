@@ -24,7 +24,8 @@ type quotaBreakdownJSON struct {
 }
 
 const (
-	accountPaidBillingPredicate     = `EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND (billing.monthly_limit > 0 OR billing.on_demand_cap > 0 OR billing.on_demand_used > 0 OR billing.prepaid_balance > 0 OR billing.credit_usage_percent > 0))`
+	accountPaidBillingSignals       = `(billing.monthly_limit > 0 OR billing.on_demand_cap > 0 OR billing.on_demand_used > 0 OR billing.prepaid_balance > 0 OR billing.credit_usage_percent > 0)`
+	accountPaidBillingPredicate     = `EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND ` + accountPaidBillingSignals + `)`
 	accountFreeSignalPredicate      = `(LOWER(TRIM(provider_accounts.observed_model)) LIKE '%-build-free' OR EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = provider_accounts.id AND (billing.is_unified_billing_user = TRUE OR billing.usage_period_type <> '' OR billing.top_up_method <> '' OR billing.billing_period_start <> '' OR (billing.history_json <> '' AND billing.history_json <> '[]' AND billing.history_json <> 'null'))))`
 	accountRecoveryPredicate        = `EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status IN ('exhausted', 'probing'))`
 	providerQuotaExhaustedPredicate = `((provider_accounts.provider = 'grok_web' AND ((EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'weekly') AND NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'weekly' AND quota.remaining > 0)) OR (NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.mode = 'weekly') AND EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id) AND NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.remaining > 0)))) OR (provider_accounts.provider = 'grok_console' AND EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id) AND NOT EXISTS (SELECT 1 FROM account_quota_windows quota WHERE quota.account_id = provider_accounts.id AND quota.remaining > 0)))`
@@ -234,11 +235,24 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 			modelQuotaBlocks[row.AccountID] = account.ModelQuotaBlock{AccountID: row.AccountID, UpstreamModel: row.UpstreamModel, Reason: row.Reason, CooldownUntil: row.CooldownUntil.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
 		}
 	}
+	sharedPaidBuildModel := false
+	if provider == account.ProviderBuild && len(bound) == 0 {
+		for accountID := range supported {
+			if billing, exists := billings[accountID]; exists && billing.IsPaid() {
+				sharedPaidBuildModel = true
+				break
+			}
+		}
+	}
 	result := make([]account.RoutingCandidate, 0, len(values))
 	for _, value := range values {
 		capabilityKnown, supportsModel := known[value.ID], supported[value.ID]
 		if len(bound) > 0 {
 			capabilityKnown, supportsModel = true, true
+		} else if sharedPaidBuildModel {
+			if billing, exists := billings[value.ID]; exists && billing.IsPaid() {
+				capabilityKnown, supportsModel = true, true
+			}
 		}
 		candidate := account.RoutingCandidate{Credential: value, ModelCapabilityKnown: capabilityKnown, SupportsModel: supportsModel}
 		if billing, ok := billings[value.ID]; ok {

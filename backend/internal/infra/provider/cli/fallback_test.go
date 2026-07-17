@@ -502,6 +502,31 @@ func TestListModelsSuperUsesUnifiedXAICatalog(t *testing.T) {
 	}
 }
 
+func TestListModelsSuperAcceptsPrimaryWhenXAICatalogIsForbidden(t *testing.T) {
+	adapter, encrypted := newFallbackTestAdapter(t)
+	marker := &fallbackMarkerStub{}
+	adapter.SetFallbackMarker(marker)
+	var primaryHits, fallbackHits atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Host, "xai.test") {
+			fallbackHits.Add(1)
+			return jsonResponse(http.StatusForbidden, `{}`, request), nil
+		}
+		primaryHits.Add(1)
+		return jsonResponse(http.StatusOK, `{"data":[{"id":"grok-4.5"}]}`, request), nil
+	})
+	models, err := adapter.ListModels(context.Background(), account.Credential{ID: 15, EncryptedAccessToken: encrypted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0] != "grok-4.5" {
+		t.Fatalf("models = %#v", models)
+	}
+	if primaryHits.Load() != 1 || fallbackHits.Load() != 1 || marker.policyCalls.Load() != 1 || marker.calls.Load() != 0 {
+		t.Fatalf("primary=%d fallback=%d policy=%d marks=%d", primaryHits.Load(), fallbackHits.Load(), marker.policyCalls.Load(), marker.calls.Load())
+	}
+}
+
 func TestListModelsFree403NeverUsesXAI(t *testing.T) {
 	adapter, encrypted := newFallbackTestAdapter(t)
 	marker := &fallbackMarkerStub{denied: true}
