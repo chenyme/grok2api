@@ -82,6 +82,7 @@ type parsedChat struct {
 	ConversationID string
 	ParentID       string
 	Text           strings.Builder
+	upstreamText   strings.Builder
 	Reasoning      strings.Builder
 	Images         []string
 	SearchSources  []map[string]any
@@ -796,20 +797,21 @@ func parseUpstreamFrame(data []byte, parsed *parsedChat) (string, string, error)
 	tag, _ := response["messageTag"].(string)
 	if tag == "tool_usage_card" {
 		collectServerTool(parsed, response)
+		// tool_usage_card 的 token 是 Grok 内部 XML 协议，不属于模型 reasoning。
+		return "", "", nil
 	}
 	if token != "" && thinking {
 		parsed.Reasoning.WriteString(token)
 		return "reasoning", token, nil
 	}
 	if token != "" && !thinking && (tag == "final" || tag == "") {
+		parsed.upstreamText.WriteString(token)
 		cleaned := cleanChatToken(parsed, token)
 		parsed.Text.WriteString(cleaned)
 		return "text", cleaned, nil
 	}
 	if modelResponse, _ := response["modelResponse"].(map[string]any); modelResponse != nil {
-		if first := collectModelResponseImages(parsed, modelResponse); first != "" {
-			return "image", first, nil
-		}
+		return collectModelResponse(parsed, modelResponse)
 	}
 	if imageResponse, _ := response["streamingImageGenerationResponse"].(map[string]any); imageResponse != nil {
 		rawURL, _ := imageResponse["imageUrl"].(string)
@@ -826,6 +828,64 @@ func parseUpstreamFrame(data []byte, parsed *parsedChat) (string, string, error)
 		}
 	}
 	return "", "", nil
+}
+
+func collectModelResponse(parsed *parsedChat, modelResponse map[string]any) (string, string, error) {
+	if err := modelResponseStreamError(modelResponse); err != nil {
+		return "", "", err
+	}
+	if parsed.ParentID == "" {
+		parsed.ParentID, _ = modelResponse["parentResponseId"].(string)
+	}
+	collectSearchSources(parsed, modelResponse)
+	firstImage := collectModelResponseImages(parsed, modelResponse)
+	message, _ := modelResponse["message"].(string)
+	if delta := mergeModelResponseText(parsed, message); delta != "" {
+		return "text", delta, nil
+	}
+	if firstImage != "" {
+		return "image", firstImage, nil
+	}
+	return "", "", nil
+}
+
+func mergeModelResponseText(parsed *parsedChat, message string) string {
+	if message == "" {
+		return ""
+	}
+	raw := parsed.upstreamText.String()
+	if raw == message || strings.HasPrefix(raw, message) {
+		return ""
+	}
+	if raw != "" && !strings.HasPrefix(message, raw) {
+		// 已输出内容与最终 envelope 不同，保留已输出结果，避免重复或回滚流式内容。
+		return ""
+	}
+	delta := message[len(raw):]
+	parsed.upstreamText.WriteString(delta)
+	delta = cleanChatToken(parsed, delta)
+	parsed.Text.WriteString(delta)
+	return delta
+}
+
+func modelResponseStreamError(modelResponse map[string]any) error {
+	values, _ := modelResponse["streamErrors"].([]any)
+	for _, raw := range values {
+		switch value := raw.(type) {
+		case string:
+			if message := strings.TrimSpace(value); message != "" {
+				return errors.New(message)
+			}
+		case map[string]any:
+			if nested, _ := value["error"].(map[string]any); nested != nil {
+				return webResponseError(nested)
+			}
+			if message := firstString(value, "message", "error", "detail"); message != "" {
+				return webResponseError(map[string]any{"message": message, "code": value["code"]})
+			}
+		}
+	}
+	return nil
 }
 
 func webResponseError(value map[string]any) error {
@@ -889,33 +949,44 @@ func collectSearchSources(parsed *parsedChat, response map[string]any) {
 	if parsed.sourceKeys == nil {
 		parsed.sourceKeys = make(map[string]struct{})
 	}
-	if search, _ := response["webSearchResults"].(map[string]any); search != nil {
-		if values, ok := search["results"].([]any); ok {
-			for _, raw := range values {
-				item, _ := raw.(map[string]any)
-				value, _ := item["url"].(string)
-				if value == "" {
-					continue
-				}
-				title, _ := item["title"].(string)
-				appendSearchSource(parsed, value, title, "web")
-			}
-		}
+	collectWebSearchResults(parsed, response["webSearchResults"])
+	collectWebSearchResults(parsed, response["citedWebSearchResults"])
+	collectXSearchResults(parsed, response["xSearchResults"])
+	collectXSearchResults(parsed, response["xposts"])
+	collectXSearchResults(parsed, response["citedXposts"])
+}
+
+func collectWebSearchResults(parsed *parsedChat, value any) {
+	if wrapped, _ := value.(map[string]any); wrapped != nil {
+		value = wrapped["results"]
 	}
-	if search, _ := response["xSearchResults"].(map[string]any); search != nil {
-		if values, ok := search["results"].([]any); ok {
-			for _, raw := range values {
-				item, _ := raw.(map[string]any)
-				username, _ := item["username"].(string)
-				postID, _ := item["postId"].(string)
-				if username == "" || postID == "" {
-					continue
-				}
-				title, _ := item["text"].(string)
-				value := "https://x.com/" + url.PathEscape(username) + "/status/" + url.PathEscape(postID)
-				appendSearchSource(parsed, value, title, "x_post")
-			}
+	values, _ := value.([]any)
+	for _, raw := range values {
+		item, _ := raw.(map[string]any)
+		rawURL, _ := item["url"].(string)
+		if rawURL == "" {
+			continue
 		}
+		title, _ := item["title"].(string)
+		appendSearchSource(parsed, rawURL, title, "web")
+	}
+}
+
+func collectXSearchResults(parsed *parsedChat, value any) {
+	if wrapped, _ := value.(map[string]any); wrapped != nil {
+		value = wrapped["results"]
+	}
+	values, _ := value.([]any)
+	for _, raw := range values {
+		item, _ := raw.(map[string]any)
+		username, _ := item["username"].(string)
+		postID, _ := item["postId"].(string)
+		if username == "" || postID == "" {
+			continue
+		}
+		title, _ := item["text"].(string)
+		rawURL := "https://x.com/" + url.PathEscape(username) + "/status/" + url.PathEscape(postID)
+		appendSearchSource(parsed, rawURL, title, "x_post")
 	}
 }
 
@@ -985,6 +1056,30 @@ func serverToolKey(response map[string]any) string {
 func webServerToolName(response map[string]any) string {
 	if name := strings.ToLower(strings.TrimSpace(firstString(response, "toolName", "tool_name"))); name != "" {
 		return name
+	}
+	if card, _ := response["toolUsageCard"].(map[string]any); card != nil {
+		if name := strings.ToLower(strings.TrimSpace(firstString(card, "toolName", "tool_name", "name"))); name != "" {
+			return name
+		}
+		for _, tool := range []struct {
+			field string
+			name  string
+		}{
+			{field: "webSearch", name: "web_search"},
+			{field: "web_search", name: "web_search"},
+			{field: "xSearch", name: "x_search"},
+			{field: "x_search", name: "x_search"},
+			{field: "browsePage", name: "browse_page"},
+			{field: "browse_page", name: "browse_page"},
+			{field: "searchImages", name: "search_images"},
+			{field: "search_images", name: "search_images"},
+			{field: "chatroomSend", name: "chatroom_send"},
+			{field: "chatroom_send", name: "chatroom_send"},
+		} {
+			if card[tool.field] != nil {
+				return tool.name
+			}
+		}
 	}
 	token, _ := response["token"].(string)
 	match := grokToolNamePattern.FindStringSubmatch(token)
