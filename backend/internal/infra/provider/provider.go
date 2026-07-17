@@ -283,11 +283,12 @@ type ModelCatalogAdapter interface {
 	ListModels(ctx context.Context, credential account.Credential) ([]string, error)
 }
 
-// AccountModelCapabilityNormalizer 可选：按 Billing 快照归一化账号模型能力。
+// AccountModelCapabilityNormalizer 可选：按 Billing 与 credential entitlement 归一化账号模型能力。
 // 未实现时模型同步原样写入上游目录；billing 为 nil 表示 Unknown（无快照）。
+// credential 用于 Build Super entitlement；默认 Provider 可忽略。
 type AccountModelCapabilityNormalizer interface {
 	Adapter
-	NormalizeAccountModelCapabilities(models []string, billing *account.Billing) []string
+	NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string
 }
 
 type BillingAdapter interface {
@@ -310,6 +311,17 @@ type CredentialCodecAdapter interface {
 	Adapter
 	ParseImportedCredentials(data []byte) ([]CredentialSeed, error)
 	MarshalCredentials(values []CredentialSeed) ([]byte, error)
+}
+
+// CredentialMetadata 是从已保存凭据安全派生的非敏感展示信息。
+// 原始 token 和完整 JWT claims 不得通过该结构暴露。
+type CredentialMetadata struct {
+	BuildBotFlagged bool
+}
+
+type CredentialMetadataAdapter interface {
+	Adapter
+	CredentialMetadata(credential account.Credential) CredentialMetadata
 }
 
 type BuildCredentialConverter interface {
@@ -631,6 +643,22 @@ func (r *Registry) CredentialCodec(value account.Provider) (CredentialCodecAdapt
 	}
 	result, ok := adapter.(CredentialCodecAdapter)
 	return result, ok
+}
+
+// CredentialMetadata 返回账号凭据中可安全用于管理端展示的派生信息。
+func (r *Registry) CredentialMetadata(credential account.Credential) CredentialMetadata {
+	if r == nil {
+		return CredentialMetadata{}
+	}
+	adapter, ok := r.adapters[credential.Provider]
+	if !ok {
+		return CredentialMetadata{}
+	}
+	inspector, ok := adapter.(CredentialMetadataAdapter)
+	if !ok {
+		return CredentialMetadata{}
+	}
+	return inspector.CredentialMetadata(credential)
 }
 
 func (r *Registry) BuildConverter(value account.Provider) (BuildCredentialConverter, bool) {

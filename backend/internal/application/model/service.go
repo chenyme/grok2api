@@ -444,7 +444,7 @@ func (s *Service) syncAccountCapabilities(ctx context.Context, value account.Cre
 			s.markCapabilitySyncFailed(credential.ID, attemptedAt, billingErr)
 			return nil, billingErr
 		}
-		models = normalizeDiscoveredModels(normalizer.NormalizeAccountModelCapabilities(models, billing))
+		models = normalizeDiscoveredModels(normalizer.NormalizeAccountModelCapabilities(models, billing, credential))
 	}
 	if err := s.models.ReplaceAccountCapabilities(ctx, credential.ID, models, attemptedAt); err != nil {
 		s.markCapabilitySyncFailed(credential.ID, attemptedAt, err)

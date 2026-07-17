@@ -336,11 +336,11 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 				// Build 主地址 403 的 XAI 推理回退在 Adapter 内完成，不在此禁用账号。
 				failureHandled = true
 			case status == http.StatusForbidden && lease.Credential.Provider == account.ProviderBuild:
-				if lease.Billing == nil || !lease.Billing.IsPaid() {
-					// Free/Unknown 不具备 XAI 回退资格；主 Build 403 表示该账号当前异常。
+				if !account.IsBuildSuper(lease.Credential, lease.Billing) {
+					// Adapter 已尝试 XAI；最终 403 的非 Super 账号按账号级故障处理。
 					s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
 				}
-				// Super 的 XAI 探测在 Adapter 内完成；其 403 保持服务级处理。
+				// Super（Billing paid 或 entitlement）的 403 保持服务级处理。
 				failureHandled = true
 			case (status == http.StatusPaymentRequired || status == http.StatusTooManyRequests) && lease.QuotaMode != "":
 				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(failureCtx, lease.Credential.ID, lease.QuotaMode, 0)

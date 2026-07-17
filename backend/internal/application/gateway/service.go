@@ -621,9 +621,9 @@ attemptLoop:
 				continue
 			}
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
-			freeBuildForbidden := response.StatusCode == http.StatusForbidden && credential.Provider == accountdomain.ProviderBuild && (lease.Billing == nil || !lease.Billing.IsPaid())
+			// Adapter 已在同请求内尝试 XAI；最终仍 403 时，非 Super 账号按账号级故障冷却换号。
+			freeBuildForbidden := response.StatusCode == http.StatusForbidden && credential.Provider == accountdomain.ProviderBuild && !accountdomain.IsBuildSuper(credential, lease.Billing)
 			if freeBuildForbidden {
-				// XAI 不接受 Free 账号。主 Build 403 是该账号当前不可用，必须冷却并换号。
 				lastFailure.AccountScoped = true
 			}
 			if response.StatusCode == http.StatusTooManyRequests && response.RateLimit != nil && response.RateLimit.TeamID != "" && response.RateLimit.Model == route.UpstreamModel {
