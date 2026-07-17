@@ -177,12 +177,15 @@ type LocalMediaConfig struct {
 }
 
 type RoutingConfig struct {
-	StickyTTL       Duration `yaml:"stickyTTL"`
-	CooldownBase    Duration `yaml:"cooldownBase"`
-	CooldownMax     Duration `yaml:"cooldownMax"`
-	CapacityWait    Duration `yaml:"capacityWait"`
-	MaxAttempts     int      `yaml:"maxAttempts"`
-	PreferFreeBuild bool     `yaml:"preferFreeBuild"`
+	StickyTTL                 Duration `yaml:"stickyTTL"`
+	CooldownBase              Duration `yaml:"cooldownBase"`
+	CooldownMax               Duration `yaml:"cooldownMax"`
+	CapacityWait              Duration `yaml:"capacityWait"`
+	MaxAttempts               int      `yaml:"maxAttempts"`
+	PreferFreeBuild           bool     `yaml:"preferFreeBuild"`
+	ReasoningReplayEnabled    bool     `yaml:"reasoningReplayEnabled"`
+	ReasoningReplayTTL        Duration `yaml:"reasoningReplayTTL"`
+	ReasoningReplayMaxEntries int      `yaml:"reasoningReplayMaxEntries"`
 }
 
 type AuditConfig struct {
@@ -446,6 +449,12 @@ func (c Config) Validate() error {
 	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > 5*time.Second || c.Routing.MaxAttempts < 1 || c.Routing.MaxAttempts > 10 {
 		return errors.New("routing 配置无效")
 	}
+	if c.Routing.ReasoningReplayTTL.Value() <= 0 || c.Routing.ReasoningReplayTTL.Value() > 24*time.Hour {
+		return errors.New("routing.reasoningReplayTTL 必须在 1 纳秒到 24 小时之间")
+	}
+	if c.Routing.ReasoningReplayMaxEntries < 100 || c.Routing.ReasoningReplayMaxEntries > 1000000 {
+		return errors.New("routing.reasoningReplayMaxEntries 必须在 100 到 1000000 之间")
+	}
 	if c.Audit.BufferSize < 1 || c.Audit.BufferSize > maxAuditBufferSize || c.Audit.BatchSize < 1 || c.Audit.BatchSize > maxAuditBatchSize || c.Audit.BatchSize > c.Audit.BufferSize || c.Audit.FlushInterval.Value() < minAuditFlushInterval || c.Audit.FlushInterval.Value() > maxAuditFlushInterval {
 		return errors.New("audit 队列和批量写入配置无效")
 	}
@@ -532,12 +541,15 @@ func defaultConfig() Config {
 			Local: LocalMediaConfig{Path: "./data/media"},
 		},
 		Routing: RoutingConfig{
-			StickyTTL:       Duration(time.Hour),
-			CooldownBase:    Duration(30 * time.Second),
-			CooldownMax:     Duration(30 * time.Minute),
-			CapacityWait:    Duration(500 * time.Millisecond),
-			MaxAttempts:     3,
-			PreferFreeBuild: false,
+			StickyTTL:                 Duration(time.Hour),
+			CooldownBase:              Duration(30 * time.Second),
+			CooldownMax:               Duration(30 * time.Minute),
+			CapacityWait:              Duration(500 * time.Millisecond),
+			MaxAttempts:               3,
+			PreferFreeBuild:           false,
+			ReasoningReplayEnabled:    true,
+			ReasoningReplayTTL:        Duration(time.Hour),
+			ReasoningReplayMaxEntries: 10240,
 		},
 		Audit:             AuditConfig{BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond)},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},

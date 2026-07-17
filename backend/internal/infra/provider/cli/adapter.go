@@ -24,6 +24,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/reasoningreplay"
 )
 
 type Config struct {
@@ -48,6 +49,7 @@ type Adapter struct {
 	modelsETags    map[uint64]string
 	fallbackMarker FallbackMarker
 	uploadIssuer   VideoUploadIssuer
+	replay         *reasoningreplay.ReasoningReplay
 }
 
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
@@ -66,6 +68,11 @@ func (a *Adapter) SetEgress(manager *infraegress.Manager) {
 	if manager != nil {
 		a.http.Transport = &egressTransport{manager: manager, fallback: a.base}
 	}
+}
+
+// SetReasoningReplay 注入服务端推理回放缓存（可选）。
+func (a *Adapter) SetReasoningReplay(replay *reasoningreplay.ReasoningReplay) {
+	a.replay = replay
 }
 
 func (a *Adapter) Provider() account.Provider { return account.ProviderBuild }
@@ -112,6 +119,10 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			return invalidResponsesResponse(err), nil
 		}
+		// 服务端推理回放：在 prompt_cache_key 写入后、出站前注入上一轮 encrypted items。
+		if a.replay != nil && request.PromptCacheKey != "" && !isCompactPath(request.Path) {
+			body = a.replay.Apply(ctx, request.Model, request.PromptCacheKey, body)
+		}
 	}
 	// 推理回退：create/compact 可走 XAI；stored GET/DELETE 与未知路径始终主地址。
 	base := a.apiBaseForOperation(ctx, request.Credential, request.Method, request.Path)
@@ -150,6 +161,10 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		return nil, err
 	}
 	modelCatalogChanged := a.modelCatalogChanged(request.Credential.ID, resp.Header.Get("x-models-etag"))
+	// 在协议转换前捕获上游 Responses 形态，写入/清理推理回放缓存。
+	if a.shouldCaptureReplay(request, resp) {
+		resp.Body = a.replay.CaptureBody(resp.Body, request.Model, request.PromptCacheKey, request.Streaming, isCompactPath(request.Path))
+	}
 	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses
 	if responsesOperation && toolCompatibility != nil {
 		if warnings := toolCompatibility.warningHeader(); warnings != "" {
@@ -218,6 +233,23 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 	}
 	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, ModelCatalogChanged: modelCatalogChanged}, nil
+}
+
+func (a *Adapter) shouldCaptureReplay(request provider.ResponseResourceRequest, resp *http.Response) bool {
+	if a.replay == nil || !a.replay.Enabled() || resp == nil {
+		return false
+	}
+	if request.Method != http.MethodPost || strings.TrimSpace(request.PromptCacheKey) == "" {
+		return false
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+	return true
+}
+
+func isCompactPath(path string) bool {
+	return strings.Contains(strings.ToLower(path), "compact")
 }
 
 func (a *Adapter) doResponseRequest(ctx context.Context, request provider.ResponseResourceRequest, accessToken string, body []byte, base string) (*http.Response, string, error) {

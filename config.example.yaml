@@ -74,5 +74,7 @@ media:
     path: "./data/media"
 
 routing:
-  # [按需修改] 开启后优先使用已确认可用的 Grok Build Free 账号；也可在管理端热更新。
-  preferFreeBuild: false
+  # [按需修改] 服务端推理回放缓存：多轮时自动补回客户端未携带的 encrypted_content。
+  reasoningReplayEnabled: true
+  reasoningReplayTTL: 1h
+  reasoningReplayMaxEntries: 10240
