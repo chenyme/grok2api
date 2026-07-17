@@ -293,21 +293,30 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	if err != nil {
 		return nil, err
 	}
-	// 模型目录为 XAI 推理回退能力面：已标记直连 XAI，未标记主 403 可探测。
-	base := a.apiBaseForOperation(ctx, credential, http.MethodGet, "/models")
-	models, status, err := a.listModelsAt(ctx, credential, accessToken, base)
+	// Super 的 Build 与 XAI 模型资格一致，统一以 XAI 目录作为能力快照。
+	// BuildAPIFallback 只记录实际推理地址状态，不得把同一批 Super 拆成两套模型能力。
+	super, policyErr := a.buildXAIEntitled(ctx, credential.ID)
+	if policyErr != nil {
+		return nil, fmt.Errorf("查询 Build Super 资格: %w", policyErr)
+	}
+	if super {
+		models, status, listErr := a.listModelsAt(ctx, credential, accessToken, a.fallbackBaseURL())
+		if listErr != nil {
+			return nil, listErr
+		}
+		if models != nil {
+			return models, nil
+		}
+		return nil, fmt.Errorf("上游模型接口返回 %d", status)
+	}
+
+	// Free/Unknown 仅访问 Build，禁止探测 XAI。
+	models, status, err := a.listModelsAt(ctx, credential, accessToken, a.primaryBaseURL())
 	if err != nil {
 		return nil, err
 	}
 	if models != nil {
 		return models, nil
-	}
-	if a.shouldProbeXAIInferenceFallback(ctx, credential, http.MethodGet, "/models", status) {
-		fallbackModels, fallbackStatus, fallbackErr := a.listModelsAt(ctx, credential, accessToken, a.fallbackBaseURL())
-		if fallbackErr == nil && fallbackModels != nil && isHTTPSuccess(fallbackStatus) {
-			a.activateBuildAPIFallback(ctx, &credential)
-			return fallbackModels, nil
-		}
 	}
 	return nil, fmt.Errorf("上游模型接口返回 %d", status)
 }

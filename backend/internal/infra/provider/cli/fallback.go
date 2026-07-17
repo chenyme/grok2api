@@ -122,16 +122,26 @@ func (a *Adapter) shouldProbeXAIInferenceFallback(ctx context.Context, credentia
 }
 
 func (a *Adapter) canUseBuildAPIFallback(ctx context.Context, accountID uint64) bool {
-	marker := a.fallbackMarkerRef()
-	if marker == nil || accountID == 0 {
-		return false
-	}
-	allowed, err := marker.CanUseBuildAPIFallback(ctx, accountID)
+	allowed, err := a.buildXAIEntitled(ctx, accountID)
 	if err != nil {
 		slog.Warn("build_api_fallback_policy_failed", "account_id", accountID, "error", err.Error())
 		return false
 	}
 	return allowed
+}
+
+// buildXAIEntitled 返回账号是否具备 XAI 能力。调用方自行决定策略查询失败时
+// 是对推理 fail closed，还是让模型同步失败以保留上一份完整能力快照。
+func (a *Adapter) buildXAIEntitled(ctx context.Context, accountID uint64) (bool, error) {
+	marker := a.fallbackMarkerRef()
+	if marker == nil || accountID == 0 {
+		return false, nil
+	}
+	allowed, err := marker.CanUseBuildAPIFallback(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	return allowed, nil
 }
 
 func (a *Adapter) urlWithBase(base, path string) string {

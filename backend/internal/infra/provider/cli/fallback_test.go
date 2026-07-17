@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -468,25 +470,35 @@ func TestIsXAIInferenceFallbackCapable(t *testing.T) {
 	}
 }
 
-func TestListModelsPrimary403FallbackSuccess(t *testing.T) {
-	adapter, encrypted := newFallbackTestAdapter(t)
-	marker := &fallbackMarkerStub{}
-	adapter.SetFallbackMarker(marker)
-	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if strings.Contains(request.URL.Host, "primary.test") {
-			return jsonResponse(http.StatusForbidden, `{}`, request), nil
-		}
-		return jsonResponse(http.StatusOK, `{"data":[{"id":"grok-4.5"},{"id":"grok-imagine-video-1.5"}]}`, request), nil
-	})
-	models, err := adapter.ListModels(context.Background(), account.Credential{ID: 14, EncryptedAccessToken: encrypted})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(models) != 2 || models[0] != "grok-4.5" {
-		t.Fatalf("models = %#v", models)
-	}
-	if marker.calls.Load() != 1 {
-		t.Fatalf("marker calls = %d", marker.calls.Load())
+func TestListModelsSuperUsesUnifiedXAICatalog(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback_marked=%t", marked), func(t *testing.T) {
+			adapter, encrypted := newFallbackTestAdapter(t)
+			marker := &fallbackMarkerStub{}
+			adapter.SetFallbackMarker(marker)
+			var primaryHits, fallbackHits atomic.Int32
+			adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if strings.Contains(request.URL.Host, "primary.test") {
+					primaryHits.Add(1)
+					t.Fatalf("Super model catalog must not depend on the primary Build endpoint")
+				}
+				fallbackHits.Add(1)
+				return jsonResponse(http.StatusOK, `{"data":[{"id":"grok-4.5"},{"id":"grok-imagine-video"}]}`, request), nil
+			})
+			models, err := adapter.ListModels(context.Background(), account.Credential{ID: 14, EncryptedAccessToken: encrypted, BuildAPIFallback: marked})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(models) != 2 || models[0] != "grok-4.5" || models[1] != "grok-imagine-video" {
+				t.Fatalf("models = %#v", models)
+			}
+			if primaryHits.Load() != 0 || fallbackHits.Load() != 1 || marker.policyCalls.Load() != 1 {
+				t.Fatalf("primary=%d fallback=%d policy=%d", primaryHits.Load(), fallbackHits.Load(), marker.policyCalls.Load())
+			}
+			if marker.calls.Load() != 0 {
+				t.Fatalf("catalog sync must not change fallback state, calls=%d", marker.calls.Load())
+			}
+		})
 	}
 }
 
@@ -509,6 +521,25 @@ func TestListModelsFree403NeverUsesXAI(t *testing.T) {
 	}
 	if primaryHits.Load() != 1 || fallbackHits.Load() != 0 || marker.policyCalls.Load() != 1 {
 		t.Fatalf("primary=%d fallback=%d policy=%d", primaryHits.Load(), fallbackHits.Load(), marker.policyCalls.Load())
+	}
+}
+
+func TestListModelsPolicyFailureDoesNotUsePartialPrimaryCatalog(t *testing.T) {
+	adapter, encrypted := newFallbackTestAdapter(t)
+	marker := &fallbackMarkerStub{policyErr: context.DeadlineExceeded}
+	adapter.SetFallbackMarker(marker)
+	var hits atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		hits.Add(1)
+		t.Fatalf("policy failure must preserve the previous catalog without an upstream request")
+		return nil, nil
+	})
+	_, err := adapter.ListModels(context.Background(), account.Credential{ID: 115, EncryptedAccessToken: encrypted})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+	if hits.Load() != 0 || marker.policyCalls.Load() != 1 {
+		t.Fatalf("hits=%d policy=%d", hits.Load(), marker.policyCalls.Load())
 	}
 }
 
