@@ -40,13 +40,12 @@ type SeriesPoint struct {
 	ReasoningTokens    int64
 	Tokens             int64
 	BilledCostUSDTicks int64
-	Models             []ModelBucket
 }
 
-type ModelBucket struct {
-	Model              string
-	Tokens             int64
-	BilledCostUSDTicks int64
+type ActivityPoint struct {
+	Start    time.Time
+	End      time.Time
+	Requests int64
 }
 
 type ModelUsage struct {
@@ -66,9 +65,10 @@ type Result struct {
 	Range       Range
 	Resources   dashboarddomain.Resources
 	Usage       dashboarddomain.Usage
-	SuccessRate float64
 	Series      []SeriesPoint
+	Activity    []ActivityPoint
 	TopModels   []ModelUsage
+	Providers   []dashboarddomain.ProviderUsage
 }
 
 // Service 负责 Dashboard 时间范围校验和固定时间桶编排。
@@ -119,8 +119,17 @@ func (s *Service) load(ctx context.Context, period Period, bucketCount, bucketDa
 		boundaries = append(boundaries, point.Start)
 	}
 	boundaries = append(boundaries, series[len(series)-1].End)
+	activity := buildActivitySeries(now)
+	activityBoundaries := make([]time.Time, 0, len(activity)+1)
+	for _, point := range activity {
+		activityBoundaries = append(activityBoundaries, point.Start)
+	}
+	activityBoundaries = append(activityBoundaries, activity[len(activity)-1].End)
 	generatedAt := rawNow.UTC()
-	aggregate, err := s.dashboard.Snapshot(ctx, boundaries, generatedAt)
+	aggregate, err := s.dashboard.Snapshot(ctx, repository.DashboardSnapshotWindow{
+		BucketBoundaries:   boundaries,
+		ActivityBoundaries: activityBoundaries,
+	}, generatedAt)
 	if err != nil {
 		return Result{}, err
 	}
@@ -136,21 +145,27 @@ func (s *Service) load(ctx context.Context, period Period, bucketCount, bucketDa
 		series[bucket.Index].Tokens = bucket.Tokens
 		series[bucket.Index].BilledCostUSDTicks = bucket.BilledCostUSDTicks
 	}
-	for _, bucket := range aggregate.ModelBuckets {
-		if bucket.Index < 0 || bucket.Index >= len(series) {
+	for _, bucket := range aggregate.ActivityBuckets {
+		if bucket.Index < 0 || bucket.Index >= len(activity) {
 			continue
 		}
-		series[bucket.Index].Models = append(series[bucket.Index].Models, ModelBucket{Model: bucket.Model, Tokens: bucket.Tokens, BilledCostUSDTicks: bucket.BilledCostUSDTicks})
-	}
-	successRate := 0.0
-	if aggregate.Usage.Requests > 0 {
-		successRate = float64(aggregate.Usage.SuccessfulRequests) / float64(aggregate.Usage.Requests) * 100
+		activity[bucket.Index].Requests = bucket.Requests
 	}
 	topModels := make([]ModelUsage, 0, len(aggregate.TopModels))
 	for _, item := range aggregate.TopModels {
 		topModels = append(topModels, ModelUsage{Model: item.Model, Requests: item.Requests, InputTokens: item.InputTokens, CachedInputTokens: item.CachedInputTokens, OutputTokens: item.OutputTokens, ReasoningTokens: item.ReasoningTokens, Tokens: item.Tokens, BilledCostUSDTicks: item.BilledCostUSDTicks})
 	}
-	return Result{Period: period, GeneratedAt: generatedAt, Range: Range{Start: boundaries[0], End: boundaries[len(boundaries)-1]}, Resources: aggregate.Resources, Usage: aggregate.Usage, SuccessRate: successRate, Series: series, TopModels: topModels}, nil
+	return Result{
+		Period:      period,
+		GeneratedAt: generatedAt,
+		Range:       Range{Start: boundaries[0], End: boundaries[len(boundaries)-1]},
+		Resources:   aggregate.Resources,
+		Usage:       aggregate.Usage,
+		Series:      series,
+		Activity:    activity,
+		TopModels:   topModels,
+		Providers:   aggregate.Providers,
+	}, nil
 }
 
 func parseTimezone(value string) (*time.Location, error) {
@@ -180,7 +195,7 @@ func parsePeriod(value string) (Period, int, int, error) {
 	case Period30Days:
 		return Period30Days, 30, 1, nil
 	case Period90Days:
-		return Period90Days, 6, 15, nil
+		return Period90Days, 13, 7, nil
 	default:
 		return "", 0, 0, ErrInvalidPeriod
 	}
@@ -204,7 +219,7 @@ func alignedRange(now time.Time, period Period) (time.Time, time.Time) {
 }
 
 func buildSeries(now time.Time, period Period, bucketCount, bucketDays int) []SeriesPoint {
-	start, _ := alignedRange(now, period)
+	start, end := alignedRange(now, period)
 	series := make([]SeriesPoint, bucketCount)
 	for index := range series {
 		bucketStart := start.AddDate(0, 0, index*bucketDays)
@@ -213,7 +228,22 @@ func buildSeries(now time.Time, period Period, bucketCount, bucketDays int) []Se
 			bucketStart = start.Add(time.Duration(index) * time.Hour)
 			bucketEnd = bucketStart.Add(time.Hour)
 		}
+		if bucketEnd.After(end) {
+			bucketEnd = end
+		}
 		series[index] = SeriesPoint{Start: bucketStart.UTC(), End: bucketEnd.UTC()}
+	}
+	return series
+}
+
+func buildActivitySeries(now time.Time) []ActivityPoint {
+	location := now.Location()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location)
+	start := today.AddDate(0, 0, -179)
+	series := make([]ActivityPoint, 180)
+	for index := range series {
+		dayStart := start.AddDate(0, 0, index)
+		series[index] = ActivityPoint{Start: dayStart.UTC(), End: dayStart.AddDate(0, 0, 1).UTC()}
 	}
 	return series
 }
