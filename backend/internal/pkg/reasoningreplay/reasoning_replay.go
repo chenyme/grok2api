@@ -490,7 +490,12 @@ func insertReplayItems(body []byte, replayItems [][]byte) ([]byte, bool) {
 		return body, false
 	}
 	insertAt := replayInsertIndex(input, replayItems)
-	next := make([]json.RawMessage, 0, len(input)+len(replayItems))
+	// 防止 len(input)+len(replayItems) 在极端输入下整数溢出（CodeQL）。
+	capacity, ok := safeSliceCap(len(input), len(replayItems))
+	if !ok {
+		return body, false
+	}
+	next := make([]json.RawMessage, 0, capacity)
 	for i, item := range input {
 		if i == insertAt {
 			for _, replay := range replayItems {
@@ -514,6 +519,23 @@ func insertReplayItems(body []byte, replayItems [][]byte) ([]byte, bool) {
 		return body, false
 	}
 	return updated, true
+}
+
+// safeSliceCap 计算两段切片合并时的容量，溢出时返回 false。
+func safeSliceCap(a, b int) (int, bool) {
+	if a < 0 || b < 0 {
+		return 0, false
+	}
+	// 回放注入输入规模上限，避免异常请求拖垮内存。
+	const maxItems = 1 << 20
+	if a > maxItems || b > maxItems || a+b > maxItems {
+		return 0, false
+	}
+	sum := a + b
+	if sum < a {
+		return 0, false
+	}
+	return sum, true
 }
 
 func replayInsertIndex(input []json.RawMessage, replayItems [][]byte) int {
