@@ -126,7 +126,9 @@ func (a *Adapter) DownloadVideo(ctx context.Context, credential account.Credenti
 	if err != nil {
 		return nil, "", 0, err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWebAsset, fmt.Sprintf("%d", credential.ID))
+	// 视频生成与成品下载必须复用同一账号身份；否则 Resin 会为 WebAsset
+	// 重新分配租约，账号级 Cloudflare clearance 也不会进入下载请求。
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWebAsset, credential)
 	if err != nil {
 		return nil, "", 0, err
 	}
