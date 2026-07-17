@@ -1,17 +1,22 @@
-import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, CheckCircle2, Clock, ListVideo, Loader2, RefreshCw, Search } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertCircle, CheckCircle2, Clock, Eye, ListVideo, Loader2, RefreshCw, Search, Trash2 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { getVideoStats, listVideos } from "@/features/media/media-api";
-import { MediaMetric } from "@/features/media/media-metric";
-import type { MediaJobDTO } from "@/features/media/types";
+import { Spinner } from "@/components/ui/spinner";
+import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { deleteVideos, getVideoStats, listVideos } from "@/features/media/media-api";
+import type { MediaJobDTO, VideoStatsDTO } from "@/features/media/types";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
+import { DataTableFilters } from "@/shared/components/data-table-filters";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { PageHeader } from "@/shared/components/page-header";
 import { Pagination } from "@/shared/components/pagination";
@@ -23,14 +28,18 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 
 type VideoStatusFilter = MediaJobDTO["status"] | "";
 
-const statusOptions: VideoStatusFilter[] = ["", "queued", "in_progress", "completed", "failed"];
+const statusOptions: MediaJobDTO["status"][] = ["queued", "in_progress", "completed", "failed"];
 
 export function VideoGalleryPage() {
   const { t, i18n } = useTranslation();
+  const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<VideoStatusFilter>("");
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [previewing, setPreviewing] = useState<MediaJobDTO | null>(null);
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const debouncedSearch = useDebouncedValue(search);
   const normalizedSearch = debouncedSearch.trim();
@@ -47,6 +56,25 @@ export function VideoGalleryPage() {
 
   const result = videosQuery.data;
   const refreshing = videosQuery.isFetching || statsQuery.isFetching;
+  const pageIDs = result?.items.filter(isTerminalVideoJob).map((job) => job.id) ?? [];
+  const selectedOnPage = pageIDs.filter((id) => selected.has(id));
+  const allPageSelected = pageIDs.length > 0 && selectedOnPage.length === pageIDs.length;
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteVideos([...selected]),
+    onSuccess: (deleteResult) => {
+      if (result && selectedOnPage.length === result.items.length && page > 1) setPage(page - 1);
+      if (previewing && selected.has(previewing.id)) setPreviewing(null);
+      setSelected(new Set());
+      setDeleteOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["media", "videos"] });
+      toast.success(t("media.videos.deleted", { count: deleteResult.deleted }));
+    },
+    onError: (error) => {
+      void queryClient.invalidateQueries({ queryKey: ["media", "videos"] });
+      toast.error(error instanceof Error ? error.message : t("errors.generic"));
+    },
+  });
 
   function refreshAll(): void {
     void videosQuery.refetch();
@@ -58,8 +86,28 @@ export function VideoGalleryPage() {
     setPage(1);
   }
 
+  function togglePage(checked: boolean): void {
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const id of pageIDs) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }
+
+  function toggleVideo(id: string, checked: boolean): void {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-5">
       <PageHeader
         title={t("media.videos.title")}
         description={t("media.videos.description")}
@@ -71,18 +119,10 @@ export function VideoGalleryPage() {
         )}
       />
 
-      <section className="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-2">
-        <MediaMetric icon={ListVideo} loading={statsQuery.isPending} label={t("media.videos.totalJobs")} value={formatNumber(statsQuery.data?.totalJobs ?? 0, i18n.language, 0)} />
-        <MediaMetric icon={Clock} loading={statsQuery.isPending} label={t("media.videos.queued")} value={formatNumber(statsQuery.data?.queued ?? 0, i18n.language, 0)} />
-        <MediaMetric icon={Loader2} loading={statsQuery.isPending} label={t("media.videos.inProgress")} value={formatNumber(statsQuery.data?.inProgress ?? 0, i18n.language, 0)} />
-        <MediaMetric icon={CheckCircle2} loading={statsQuery.isPending} label={t("media.videos.completed")} value={formatNumber(statsQuery.data?.completed ?? 0, i18n.language, 0)} />
-        <MediaMetric icon={AlertCircle} loading={statsQuery.isPending} label={t("media.videos.failed")} value={formatNumber(statsQuery.data?.failed ?? 0, i18n.language, 0)} />
-      </section>
-
       <DataTableShell
         toolbar={(
           <>
-            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+            <div className="flex w-full items-center gap-2 sm:w-auto">
               <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -93,18 +133,21 @@ export function VideoGalleryPage() {
                   aria-label={t("media.videos.search")}
                 />
               </div>
-              <Select value={statusFilter || "all"} onValueChange={(value) => { setStatusFilter(value === "all" ? "" : value as VideoStatusFilter); setPage(1); }}>
-                <SelectTrigger className="w-36" aria-label={t("media.videos.statusFilter")}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="start">
-                  {statusOptions.map((status) => (
-                    <SelectItem key={status || "all"} value={status || "all"}>{status ? t(`media.videoStatus.${status}`) : t("common.all")}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <DataTableFilters filters={[{
+                id: "status",
+                label: t("media.videos.status"),
+                value: statusFilter,
+                onChange: (value) => { setStatusFilter(value as VideoStatusFilter); setPage(1); },
+                options: statusOptions.map((status) => ({ value: status, label: t(`media.videoStatus.${status}`) })),
+              }]} />
+              {(normalizedSearch || statusFilter) && result ? <span className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground md:inline">{t("media.videos.pageSummary", { count: result.items.length, total: result.total })}</span> : null}
             </div>
-            {result ? <span className="text-xs text-muted-foreground">{t("media.videos.pageSummary", { count: result.items.length, total: result.total })}</span> : null}
+            {selected.size > 0 ? (
+              <div className="flex h-8 items-center gap-2">
+                <span className="text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
+                <Button variant="secondary" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
+              </div>
+            ) : <VideoSummary stats={statsQuery.data} loading={statsQuery.isPending} unavailable={statsQuery.isError} locale={i18n.language} />}
           </>
         )}
         footer={result && result.total > 0 ? (
@@ -120,100 +163,208 @@ export function VideoGalleryPage() {
         {videosQuery.isError ? <ErrorState message={videosQuery.error.message} onRetry={() => void videosQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState message={t("media.videos.empty")} /> : null}
         {videosQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="min-w-[1180px] table-fixed text-xs">
+          <Table className="min-w-[1096px] table-fixed text-xs">
             <colgroup>
-              <col className="w-[25%]" />
-              <col className="w-[13%]" />
-              <col className="w-[10%]" />
-              <col className="w-[9%]" />
-              <col className="w-[10%]" />
-              <col className="w-[12%]" />
-              <col className="w-[10%]" />
-              <col className="w-[11%]" />
+              <col className="w-10" />
+              <col className="w-64" />
+              <col className="w-40" />
+              <col className="w-40" />
+              <col className="w-28" />
+              <col className="w-40" />
+              <col className="w-44" />
+              <col className="w-10" />
             </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
+                <TableHead><Checkbox checked={allPageSelected ? true : selectedOnPage.length > 0 ? "indeterminate" : false} disabled={pageIDs.length === 0} onCheckedChange={(checked) => togglePage(checked === true)} aria-label={t("common.selectPage")} /></TableHead>
                 <SortableTableHead field="prompt" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("media.videos.prompt")}</SortableTableHead>
                 <SortableTableHead field="model" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("media.videos.model")}</SortableTableHead>
-                <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("media.videos.status")}</SortableTableHead>
-                <SortableTableHead field="progress" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" onSort={changeSort}>{t("media.videos.progress")}</SortableTableHead>
+                <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("media.videos.statusProgress")}</SortableTableHead>
                 <SortableTableHead field="spec" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("media.videos.spec")}</SortableTableHead>
                 <SortableTableHead field="account" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("media.videos.owner")}</SortableTableHead>
-                <SortableTableHead field="createdAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("media.videos.createdAt")}</SortableTableHead>
-                <SortableTableHead field="completedAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("media.videos.completedAt")}</SortableTableHead>
+                <SortableTableHead field="createdAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("media.videos.time")}</SortableTableHead>
+                <TableActionHead />
               </TableRow>
             </TableHeader>
             <TableBody>
               {videosQuery.isPending ? <TableLoadingRow colSpan={8} /> : result?.items.map((job) => (
-                <TableRow key={job.id}>
-                  <TableCell className="min-w-0 py-3">
+                <TableRow className="group h-[72px]" data-state={selected.has(job.id) ? "selected" : undefined} key={job.id}>
+                  <TableCell>
+                    <Checkbox checked={selected.has(job.id)} disabled={!isTerminalVideoJob(job)} onCheckedChange={(checked) => toggleVideo(job.id, checked === true)} aria-label={t("common.selectItem", { name: job.id })} />
+                  </TableCell>
+                  <TableCell className="min-w-0">
                     <div className="min-w-0">
                       <span className="block truncate text-xs font-medium" title={job.prompt}>{job.prompt || "-"}</span>
                       <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground" title={job.id}>{job.id}</span>
-                      {job.errorMessage ? <span className="mt-1 block truncate text-[11px] text-destructive" title={job.errorMessage}>{job.errorMessage}</span> : null}
                     </div>
                   </TableCell>
-                  <TableCell className="min-w-0 py-3"><span className="block truncate" title={job.model}>{job.model || "-"}</span></TableCell>
-                  <TableCell className="py-3 text-center"><VideoStatusBadge status={job.status} /></TableCell>
-                  <TableCell className="py-3 text-center"><ProgressValue value={job.progress} locale={i18n.language} /></TableCell>
-                  <TableCell className="py-3">
+                  <TableCell className="min-w-0"><span className="block truncate" title={job.model}>{job.model || "-"}</span></TableCell>
+                  <TableCell><VideoProgress status={job.status} value={job.progress} errorMessage={job.errorMessage} locale={i18n.language} /></TableCell>
+                  <TableCell>
                     <div className="space-y-0.5 text-xs">
                       <span className="block truncate" title={formatSpec(job)}>{formatSpec(job)}</span>
                       <span className="block text-[11px] text-muted-foreground">{t("media.videos.seconds", { count: job.seconds })}</span>
                     </div>
                   </TableCell>
-                  <TableCell className="min-w-0 py-3">
+                  <TableCell className="min-w-0">
                     <div className="min-w-0 space-y-0.5">
                       <span className="block truncate" title={job.accountName}>{job.accountName || "-"}</span>
                       <span className="block truncate text-[11px] text-muted-foreground" title={job.clientKeyName}>{job.clientKeyName || "-"}</span>
                     </div>
                   </TableCell>
-                  <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(job.createdAt, i18n.language)}</TableCell>
-                  <TableCell className="whitespace-nowrap py-3 text-xs text-muted-foreground">{formatDateTime(job.completedAt, i18n.language)}</TableCell>
+                  <TableCell><VideoTimes job={job} locale={i18n.language} /></TableCell>
+                  <TableActionCell>
+                    {job.status === "completed" ? (
+                      <Button type="button" variant="ghost" size="icon" className="size-8" disabled={!job.assetId} title={job.assetId ? t("media.videos.preview") : t("media.videos.previewUnavailable")} onClick={() => setPreviewing(job)} aria-label={job.assetId ? t("media.videos.preview") : t("media.videos.previewUnavailable")}><Eye /></Button>
+                    ) : null}
+                  </TableActionCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         ) : null}
       </DataTableShell>
+
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("media.videos.deleteTitle", { count: selected.size })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("media.videos.deleteDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate()}>
+              {deleteMutation.isPending ? <Spinner /> : <Trash2 />}
+              {t("common.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={Boolean(previewing)} onOpenChange={(open) => !open && setPreviewing(null)}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle className="truncate">{previewing?.prompt || t("media.videos.previewTitle")}</DialogTitle>
+            <DialogDescription className="truncate font-mono">{previewing?.id}</DialogDescription>
+          </DialogHeader>
+          {previewing?.assetId ? (
+            <div className="overflow-hidden rounded-lg bg-black">
+              <video key={previewing.assetId} className="max-h-[70vh] w-full" src={videoAssetURL(previewing.assetId)} controls playsInline preload="metadata" />
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function VideoStatusBadge({ status }: { status: MediaJobDTO["status"] }) {
+function isTerminalVideoJob(job: MediaJobDTO): boolean {
+  return job.status === "completed" || job.status === "failed";
+}
+
+function VideoSummary({ stats, loading, unavailable, locale }: { stats?: VideoStatsDTO; loading: boolean; unavailable: boolean; locale: string }) {
   const { t } = useTranslation();
+  if (loading) return <div className="flex h-8 items-center"><Spinner className="size-3.5" /></div>;
+  const value = (count: number | undefined) => unavailable ? "-" : formatNumber(count ?? 0, locale, 0);
   return (
-    <Badge variant="secondary" className={cn("whitespace-nowrap", statusClassName(status))}>
-      {t(`media.videoStatus.${status}`)}
-    </Badge>
+    <div className="flex h-8 w-full items-center gap-4 overflow-x-auto whitespace-nowrap text-xs sm:w-auto">
+      <VideoSummaryItem icon={ListVideo} label={t("media.videos.totalJobs")} value={value(stats?.totalJobs)} tone="text-muted-foreground" />
+      <span className="h-3 w-px shrink-0 bg-border" aria-hidden="true" />
+      <VideoSummaryItem icon={Clock} label={t("media.videos.queued")} value={value(stats?.queued)} tone="text-amber-600 dark:text-amber-400" />
+      <VideoSummaryItem icon={Loader2} label={t("media.videos.inProgress")} value={value(stats?.inProgress)} tone="text-sky-600 dark:text-sky-400" />
+      <VideoSummaryItem icon={CheckCircle2} label={t("media.videos.completed")} value={value(stats?.completed)} tone="text-emerald-600 dark:text-emerald-400" />
+      <VideoSummaryItem icon={AlertCircle} label={t("media.videos.failed")} value={value(stats?.failed)} tone="text-red-600 dark:text-red-400" />
+    </div>
   );
 }
 
-function ProgressValue({ value, locale }: { value: number; locale: string }) {
+function VideoSummaryItem({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: string; value: string; tone: string }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5">
+      <Icon className={cn("size-3.5", tone)} />
+      <span className="text-muted-foreground">{label}</span>
+      <strong className="font-medium tabular-nums">{value}</strong>
+    </span>
+  );
+}
+
+function VideoStatus({ status, errorMessage }: { status: MediaJobDTO["status"]; errorMessage?: string }) {
+  const { t } = useTranslation();
+  const tone = statusTone(status);
+  const statusLabel = (
+    <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap text-xs", tone.text)}>
+      <span className={cn("size-1.5 rounded-full", tone.dot)} />
+      {t(`media.videoStatus.${status}`)}
+    </span>
+  );
+  if (!errorMessage) return statusLabel;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-help" tabIndex={0}>{statusLabel}</span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-80 whitespace-normal break-words text-left leading-relaxed">
+        {errorMessage}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function VideoProgress({ status, value, errorMessage, locale }: { status: MediaJobDTO["status"]; value: number; errorMessage?: string; locale: string }) {
   const normalized = Math.max(0, Math.min(100, value));
   return (
-    <div className="mx-auto flex w-20 flex-col items-center gap-1">
-      <span className="text-xs tabular-nums">{formatNumber(normalized, locale, 0)}%</span>
-      <span className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-        <span className="block h-full rounded-full bg-primary" style={{ width: `${normalized}%` }} />
+    <div className="w-28 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <VideoStatus status={status} errorMessage={errorMessage} />
+        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{formatNumber(normalized, locale, 0)}%</span>
+      </div>
+      <span className="h-1 w-full overflow-hidden rounded-full bg-muted">
+        <span className={cn("block h-full rounded-full", progressTone(status))} style={{ width: `${normalized}%` }} />
       </span>
     </div>
   );
 }
 
-function statusClassName(status: MediaJobDTO["status"]): string {
+function VideoTimes({ job, locale }: { job: MediaJobDTO; locale: string }) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-1 whitespace-nowrap text-[11px]">
+      <div className="flex items-center gap-1.5"><span className="w-7 text-muted-foreground">{t("media.videos.createdShort")}</span><span>{formatDateTime(job.createdAt, locale)}</span></div>
+      <div className="flex items-center gap-1.5"><span className="w-7 text-muted-foreground">{t("media.videos.completedShort")}</span><span className={job.completedAt ? undefined : "text-muted-foreground"}>{formatDateTime(job.completedAt, locale)}</span></div>
+    </div>
+  );
+}
+
+function progressTone(status: MediaJobDTO["status"]): string {
   switch (status) {
     case "completed":
-      return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+      return "bg-emerald-500";
     case "failed":
-      return "bg-red-500/10 text-red-700 dark:text-red-300";
+      return "bg-red-500";
     case "in_progress":
-      return "bg-sky-500/10 text-sky-700 dark:text-sky-300";
+      return "bg-sky-500";
     case "queued":
-      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
+      return "bg-amber-500";
+  }
+}
+
+function statusTone(status: MediaJobDTO["status"]): { dot: string; text: string } {
+  switch (status) {
+    case "completed":
+      return { dot: "bg-emerald-500", text: "text-emerald-700 dark:text-emerald-300" };
+    case "failed":
+      return { dot: "bg-red-500", text: "text-red-700 dark:text-red-300" };
+    case "in_progress":
+      return { dot: "bg-sky-500", text: "text-sky-700 dark:text-sky-300" };
+    case "queued":
+      return { dot: "bg-amber-500", text: "text-amber-700 dark:text-amber-300" };
   }
 }
 
 function formatSpec(job: MediaJobDTO): string {
   return [job.size, job.quality].filter(Boolean).join(" · ") || "-";
+}
+
+function videoAssetURL(assetID: string): string {
+  return `/v1/media/videos/${encodeURIComponent(assetID)}`;
 }

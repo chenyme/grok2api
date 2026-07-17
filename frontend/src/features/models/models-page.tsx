@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Pencil, Search, Trash2 } from "lucide-react";
+import { MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -27,6 +27,7 @@ import { DataTableFilters } from "@/shared/components/data-table-filters";
 import { Pagination } from "@/shared/components/pagination";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
+import { cn } from "@/shared/lib/cn";
 import { formatDateTime } from "@/shared/lib/format";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
@@ -197,8 +198,8 @@ export function ModelsPage() {
   }
 
   return (
-    <div className="space-y-8">
-      <header>
+    <div className="space-y-5">
+      <header className="flex min-h-8 items-center">
         <h1 className="text-xl font-medium">{t("models.title")}</h1>
         <p className="sr-only">{t("models.description")}</p>
       </header>
@@ -233,10 +234,10 @@ export function ModelsPage() {
                 </>
               ) : null}
               <Button variant="secondary" size="sm" disabled={syncMutation.isPending} onClick={() => syncMutation.mutate()}>
-                {syncMutation.isPending ? <Spinner /> : null}
+                {syncMutation.isPending ? <Spinner /> : <RefreshCw />}
                 {t("models.sync")}
               </Button>
-              <Button size="sm" onClick={beginCreate}>{t("models.create")}</Button>
+              <Button size="sm" onClick={beginCreate}><Plus />{t("models.create")}</Button>
             </div>
           </>
         )}
@@ -247,14 +248,14 @@ export function ModelsPage() {
         {modelsQuery.isPending || (result && result.items.length > 0) ? (
           <Table className="min-w-[1000px] table-fixed text-xs">
             <colgroup>
-              <col className="w-12" />
+              <col className="w-10" />
               <col className="w-56" />
               <col className="w-52" />
               <col className="w-24" />
               <col className="w-32" />
               <col className="w-40" />
               <col className="w-44" />
-              <col className="w-12" />
+              <col className="w-10" />
             </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
@@ -270,7 +271,7 @@ export function ModelsPage() {
             </TableHeader>
             <TableBody>
               {modelsQuery.isPending ? <TableLoadingRow colSpan={8} /> : result?.items.map((model) => (
-                <TableRow className="group" key={model.id} data-state={selected.has(model.id) ? "selected" : undefined}>
+                <TableRow className="group h-14" key={model.id} data-state={selected.has(model.id) ? "selected" : undefined}>
                   <TableCell className="px-2 text-center"><Checkbox checked={selected.has(model.id)} onCheckedChange={(checked) => toggleModel(model.id, checked === true)} aria-label={t("common.selectItem", { name: model.publicId })} /></TableCell>
                   <TableCell className="min-w-0">
                     <span className="block truncate text-xs font-medium" title={model.publicId}>{model.publicId}</span>
@@ -279,10 +280,10 @@ export function ModelsPage() {
                     <span className="block truncate text-xs text-muted-foreground" title={model.upstreamModel}>{model.upstreamModel}</span>
                   </TableCell>
                   <TableCell className="text-center">{model.enabled ? <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("common.enabled")}</Badge> : <Badge variant="outline" className="text-muted-foreground">{t("common.disabled")}</Badge>}</TableCell>
-                  <TableCell className="text-center"><Badge variant="outline">{model.provider === "grok_web" ? t("models.providerGrokWeb") : model.provider === "grok_console" ? t("console.name") : t("models.providerGrokBuild")}</Badge></TableCell>
+                  <TableCell className="text-center"><ModelProvider provider={model.provider} /></TableCell>
                   <TableCell className="text-center text-xs">
                     <div title={t("models.supportSummary", { supported: model.supportedAccounts, total: model.totalAccounts })}>
-                      <span className="inline-flex items-baseline gap-1 tabular-nums"><span className="font-medium text-foreground">{model.supportedAccounts}</span><span className="text-muted-foreground">/ {model.totalAccounts}</span></span>
+                      <span className="inline-flex items-baseline gap-1 tabular-nums"><span className={cn("font-medium", model.supportedAccounts > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>{model.supportedAccounts}</span><span className="text-muted-foreground">/ {model.totalAccounts}</span></span>
                       {model.bindingMode ? <span className="mt-0.5 block text-[10px] text-muted-foreground">{t("models.boundAccounts")}</span> : null}
                     </div>
                   </TableCell>
@@ -374,5 +375,17 @@ export function ModelsPage() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+function ModelProvider({ provider }: { provider: ModelRouteDTO["provider"] }) {
+  const { t } = useTranslation();
+  const label = provider === "grok_web" ? t("models.providerGrokWeb") : provider === "grok_console" ? t("console.name") : t("models.providerGrokBuild");
+  const color = provider === "grok_web" ? "bg-quota-product-2" : provider === "grok_console" ? "bg-quota-product-4" : "bg-quota-product-1";
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+      <span className={cn("size-2 rounded-full", color)} />
+      {label}
+    </span>
   );
 }

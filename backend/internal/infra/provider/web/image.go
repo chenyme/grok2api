@@ -1296,15 +1296,33 @@ func (a *Adapter) createMediaPost(ctx context.Context, cfg Config, lease *egress
 		return "", err
 	}
 	defer response.Body.Close()
+	return parseMediaPostResponse(response)
+}
+
+func parseMediaPostResponse(response *http.Response) (string, error) {
+	const responseLimit = 2 << 20
+	body, err := io.ReadAll(io.LimitReader(response.Body, responseLimit+1))
+	if err != nil {
+		return "", fmt.Errorf("读取媒体 Post 响应: %w", err)
+	}
+	if len(body) > responseLimit {
+		return "", fmt.Errorf("创建媒体 Post 响应超过安全上限")
+	}
+	if response.StatusCode == http.StatusUnauthorized {
+		return "", provider.ErrUnauthorized
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", &webMediaUpstreamError{status: response.StatusCode, body: strings.TrimSpace(string(body))}
+	}
 	var value struct {
 		Post struct {
 			ID string `json:"id"`
 		} `json:"post"`
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 || json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&value) != nil || value.Post.ID == "" {
-		return "", fmt.Errorf("创建媒体 Post 失败")
+	if json.Unmarshal(body, &value) != nil || strings.TrimSpace(value.Post.ID) == "" {
+		return "", fmt.Errorf("创建媒体 Post 响应无效")
 	}
-	return value.Post.ID, nil
+	return strings.TrimSpace(value.Post.ID), nil
 }
 
 func (a *Adapter) postJSON(ctx context.Context, cfg Config, lease *egress.Lease, token, endpoint string, payload any, timeout time.Duration) (*http.Response, error) {

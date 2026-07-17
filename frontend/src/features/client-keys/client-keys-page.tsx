@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Copy, MoreHorizontal, Pencil, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -218,8 +218,8 @@ export function ClientKeysPage() {
     setPage(1);
   }
   return (
-    <div className="space-y-8">
-      <header>
+    <div className="space-y-5">
+      <header className="flex min-h-8 items-center">
         <h1 className="text-xl font-medium">{t("keys.title")}</h1>
         <p className="sr-only">{t("keys.description")}</p>
       </header>
@@ -251,7 +251,7 @@ export function ClientKeysPage() {
                 <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
                 <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
               </div>
-            ) : <Button size="sm" onClick={beginCreate}>{t("keys.create")}</Button>}
+            ) : <Button size="sm" onClick={beginCreate}><Plus />{t("keys.create")}</Button>}
           </>
         )}
         footer={result && result.total > 0 ? <Pagination page={result.page} pageSize={result.pageSize} total={result.total} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} /> : undefined}
@@ -259,18 +259,18 @@ export function ClientKeysPage() {
         {keysQuery.isError ? <ErrorState message={keysQuery.error.message} onRetry={() => void keysQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {keysQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="min-w-[1240px] table-fixed text-xs">
+          <Table className="min-w-[1120px] table-fixed text-xs">
             <colgroup>
-              <col className="w-12" />
-              <col className="w-28" />
-              <col className="w-64" />
+              <col className="w-10" />
+              <col className="w-36" />
+              <col className="w-56" />
               <col className="w-20" />
-              <col className="w-[72px]" />
-              <col className="w-[72px]" />
-              <col className="w-48" />
-              <col className="w-44" />
-              <col className="w-44" />
-              <col className="w-12" />
+              <col className="w-18" />
+              <col className="w-20" />
+              <col className="w-40" />
+              <col className="w-36" />
+              <col className="w-36" />
+              <col className="w-10" />
             </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
@@ -288,10 +288,13 @@ export function ClientKeysPage() {
             </TableHeader>
             <TableBody>
               {keysQuery.isPending ? <TableLoadingRow colSpan={10} /> : result?.items.map((key) => (
-                <TableRow className="group" key={key.id} data-state={selected.has(key.id) ? "selected" : undefined}>
+                <TableRow className="group h-14" key={key.id} data-state={selected.has(key.id) ? "selected" : undefined}>
                   <TableCell><Checkbox checked={selected.has(key.id)} onCheckedChange={(checked) => toggleKey(key.id, checked === true)} aria-label={t("common.selectItem", { name: key.name })} /></TableCell>
-                  <TableCell>
-                    <span className="font-medium">{key.name}</span>
+                  <TableCell className="min-w-0">
+                    <span className="block truncate font-medium" title={key.name}>{key.name}</span>
+                    <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                      {key.allowedModelIds.length === 0 ? t("keys.allModels") : t("keys.selectedModels", { count: key.allowedModelIds.length })}
+                    </span>
                   </TableCell>
                   <TableCell className="overflow-hidden">
                     <div className="flex w-full min-w-0 items-center gap-1">
@@ -446,7 +449,7 @@ function BillingUsage({ value }: { value: ClientKeyDTO }) {
     <div className="min-w-0 space-y-1.5">
       <div className="truncate text-xs tabular-nums" title={`${formatUSD(used, i18n.language)} / ${formatUSD(limit, i18n.language)}`}>{formatUSD(used, i18n.language)} / {formatUSD(limit, i18n.language)}</div>
       <div className="h-1 overflow-hidden rounded-full bg-muted" aria-hidden="true">
-        <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${percent}%` }} />
+        <div className="h-full rounded-full bg-emerald-500 transition-[width]" style={{ width: `${percent}%` }} />
       </div>
     </div>
   );

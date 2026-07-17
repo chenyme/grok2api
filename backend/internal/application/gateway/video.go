@@ -25,6 +25,7 @@ const (
 	videoJobTimeout          = 2 * time.Hour
 	videoJobLease            = videoJobTimeout + 5*time.Minute
 	videoJobRecoveryInterval = 30 * time.Second
+	videoOutputAttempts      = 3
 )
 
 type VideoInput struct {
@@ -315,6 +316,9 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			updateCancel()
 		},
 	})
+	if err == nil && result.AssetID == "" && result.URL != "" {
+		result, err = s.persistRemoteVideo(ctx, job.ID, adapter, lease.Credential, result)
+	}
 	if err != nil {
 		if parent.Err() != nil {
 			s.deferVideoJob(parent, job)
@@ -386,6 +390,53 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	}
 	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode == "weekly" {
 		s.accounts.QueueQuotaRefresh(job.AccountID, lease.QuotaMode)
+	}
+}
+
+// persistRemoteVideo 只重试已经生成的视频结果下载与本地归档，不重新调用生成接口，
+// 且所有尝试固定使用创建任务的同一凭据。
+func (s *Service) persistRemoteVideo(ctx context.Context, jobID string, adapter provider.VideoAdapter, credential account.Credential, result provider.VideoResult) (provider.VideoResult, error) {
+	if s.mediaAssets == nil {
+		return result, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, errors.New("视频媒体存储未配置"))
+	}
+	downloader, ok := adapter.(provider.VideoContentDownloader)
+	if !ok {
+		return result, provider.NewMediaPostProcessingError(provider.MediaPostProcessingDownload, errors.New("Provider 不支持视频内容下载"))
+	}
+	var lastErr error
+	for attempt := 0; attempt < videoOutputAttempts; attempt++ {
+		body, contentType, _, downloadErr := downloader.DownloadVideo(ctx, credential, result.URL)
+		if downloadErr != nil {
+			lastErr = provider.NewMediaPostProcessingError(provider.MediaPostProcessingDownload, downloadErr)
+		} else {
+			asset, saveErr := s.mediaAssets.SaveVideo(ctx, jobID, contentType, body)
+			_ = body.Close()
+			if saveErr == nil {
+				result.AssetID = asset.ID
+				result.ContentType = asset.MIMEType
+				return result, nil
+			}
+			lastErr = provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, saveErr)
+		}
+		if ctx.Err() != nil || attempt+1 >= videoOutputAttempts {
+			break
+		}
+		if waitErr := waitVideoOutputRetry(ctx, attempt); waitErr != nil {
+			return result, waitErr
+		}
+	}
+	return result, lastErr
+}
+
+func waitVideoOutputRetry(ctx context.Context, attempt int) error {
+	delays := [...]time.Duration{200 * time.Millisecond, 750 * time.Millisecond}
+	timer := time.NewTimer(delays[min(attempt, len(delays)-1)])
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

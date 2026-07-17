@@ -65,6 +65,48 @@ func TestIssueAndReceiveVideoUploadOnce(t *testing.T) {
 	}
 }
 
+func TestSaveVideoArchivesProviderResultWithoutUploadTicket(t *testing.T) {
+	database, objects, tickets, cleanup := openUploadTestDeps(t)
+	defer cleanup()
+	ctx := context.Background()
+	binding := &bindingTicketRepository{MediaUploadTicketRepository: tickets}
+	service := NewServiceWithTickets(
+		relational.NewMediaAssetRepository(database), relational.NewMediaJobRepository(database), binding, objects, nil,
+		Config{PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30, CleanupThresholdPercent: 80, CleanupInterval: time.Minute},
+	)
+	payload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x02}, 64)...)
+	asset, err := service.SaveVideo(ctx, "video_job_direct", "video/mp4", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asset.ID == "" || asset.Kind != "video" || asset.MIMEType != "video/mp4" || asset.SizeBytes != int64(len(payload)) {
+		t.Fatalf("asset = %#v", asset)
+	}
+	stored, body, err := service.OpenVideo(ctx, asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	raw, err := io.ReadAll(body)
+	if err != nil || !bytes.Equal(raw, payload) || stored.SHA256 == "" {
+		t.Fatalf("stored = %#v size=%d err=%v", stored, len(raw), err)
+	}
+	if binding.jobID != "video_job_direct" || binding.assetID != asset.ID {
+		t.Fatalf("binding job=%q asset=%q", binding.jobID, binding.assetID)
+	}
+}
+
+type bindingTicketRepository struct {
+	repository.MediaUploadTicketRepository
+	jobID   string
+	assetID string
+}
+
+func (r *bindingTicketRepository) BindJobResultAsset(_ context.Context, jobID, assetID string) error {
+	r.jobID, r.assetID = jobID, assetID
+	return nil
+}
+
 func TestReceiveVideoUploadRejectsExpiredAndOversize(t *testing.T) {
 	service, tickets, cleanup := newUploadTestService(t)
 	defer cleanup()

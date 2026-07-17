@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	localmedia "github.com/chenyme/grok2api/backend/internal/infra/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
@@ -63,6 +65,84 @@ func TestServicePersistsAndReopensImage(t *testing.T) {
 	}
 	if _, err := service.SaveImage(ctx, []byte("not an image")); err == nil {
 		t.Fatal("invalid image content was accepted")
+	}
+}
+
+func TestAdminDeleteVideoJobsRemovesTerminalJobAssetAndTicket(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-video-delete.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountValue, _, err := relational.NewAccountRepository(database).UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO, WebTier: accountdomain.WebTierBasic,
+		Name: "video-delete-account", SourceKey: "video-delete-account", EncryptedAccessToken: "encrypted-access-token", AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := relational.NewClientKeyRepository(database).Create(ctx, clientkeydomain.Key{
+		Name: "video-delete-key", Prefix: "video-delete", SecretHash: strings.Repeat("a", 64), EncryptedSecret: "encrypted-secret",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "video-delete-objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := relational.NewMediaAssetRepository(database)
+	jobs := relational.NewMediaJobRepository(database)
+	tickets := relational.NewMediaUploadTicketRepository(database)
+	service := NewServiceWithTickets(assets, jobs, tickets, objects, nil, Config{MaxTotalBytes: 1 << 30})
+	payload := append([]byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{3}, 64)...)
+	asset, err := service.SaveVideo(ctx, "", "video/mp4", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	completedAt := now.Add(time.Minute)
+	job := mediadomain.Job{
+		ID: "video_delete_completed", RequestID: "request-video-delete", ClientKeyID: key.ID, ClientKeyName: key.Name,
+		AccountID: accountValue.ID, AccountName: accountValue.Name, Provider: string(accountdomain.ProviderWeb),
+		Model: "grok-imagine-video", ModelRouteID: 1, UpstreamModel: "grok-imagine-video", Prompt: "delete me",
+		Seconds: 6, Size: "16:9", Quality: "720p", Status: mediadomain.StatusCompleted, Progress: 100,
+		InputJSON: `{}`, ResultAssetID: asset.ID, ContentType: asset.MIMEType, CreatedAt: now, UpdatedAt: completedAt, CompletedAt: &completedAt,
+	}
+	if err := jobs.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	tokenHash := strings.Repeat("b", 64)
+	if err := tickets.CreateUploadTicket(ctx, repository.MediaUploadTicket{
+		TokenHash: tokenHash, AssetID: asset.ID, JobID: job.ID, MaxBytes: DefaultMaxVideoBytes,
+		AllowedMIME: "video/mp4", ExpiresAt: now.Add(time.Hour), ConsumedAt: &now, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := service.AdminDeleteVideoJobs(ctx, []string{job.ID})
+	if err != nil || deleted != 1 {
+		t.Fatalf("deleted=%d err=%v", deleted, err)
+	}
+	if values, err := jobs.GetMediaJobsByIDs(ctx, []string{job.ID}); err != nil || len(values) != 0 {
+		t.Fatalf("remaining jobs=%#v err=%v", values, err)
+	}
+	if _, err := assets.GetMediaAsset(ctx, asset.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("asset error=%v, want not found", err)
+	}
+	if body, err := objects.Open(ctx, asset.StorageKey); !errors.Is(err, os.ErrNotExist) {
+		if body != nil {
+			_ = body.Close()
+		}
+		t.Fatalf("object error=%v, want not exist", err)
+	}
+	if _, err := tickets.GetUploadTicketByHash(ctx, tokenHash); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("ticket error=%v, want not found", err)
 	}
 }
 
