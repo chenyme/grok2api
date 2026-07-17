@@ -299,7 +299,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	}
 	lastProgress := job.Progress
 	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
-		Credential: lease.Credential, JobID: job.ID, Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
+		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
 		ReferenceURLs: decodeVideoInput(job.InputJSON),
 		Progress: func(value int) {
 			value = min(99, max(1, value))
@@ -333,11 +333,11 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			case status == http.StatusForbidden && s.providers.RetryForbiddenAsEgress(lease.Credential.Provider):
 				// Web Provider 已对 anti-bot 403 降低出口健康并重建浏览器会话；
 				// 视频请求已提交，不能换号重试，也不能误伤账号池。
-				// Build 主地址 403 的 XAI 推理回退在 Adapter 内完成，不在此禁用账号。
+				// 符合资格的 Build 主地址 403 由 Adapter 尝试 XAI，不在此禁用账号。
 				failureHandled = true
 			case status == http.StatusForbidden && lease.Credential.Provider == account.ProviderBuild:
 				if !account.IsBuildSuper(lease.Credential, lease.Billing) {
-					// Adapter 已尝试 XAI；最终 403 的非 Super 账号按账号级故障处理。
+					// 非 Super 的 403 按账号级故障处理；auto 模式不会因此回退 XAI。
 					s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
 				}
 				// Super（Billing paid 或 entitlement）的 403 保持服务级处理。
@@ -371,6 +371,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	}
 	now := time.Now().UTC()
 	job.Status, job.Progress, job.UpstreamURL, job.ContentType = media.StatusCompleted, 100, result.URL, result.ContentType
+	// 成功终态必须清空历史错误字段，避免管理端/恢复路径把中间失败文案当成最终结果。
+	job.ErrorCode, job.ErrorMessage = "", ""
 	if result.AssetID != "" {
 		job.ResultAssetID = result.AssetID
 	}

@@ -76,9 +76,10 @@ func TestForwardResponsePrimary403Fallback200Activates(t *testing.T) {
 			return nil, nil
 		}
 	})
-	credential := account.Credential{ID: 11, EncryptedAccessToken: encrypted}
+	credential := account.Credential{ID: 11, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted}
+	paidBilling := &account.Billing{MonthlyLimit: 100}
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Credential: credential, Method: http.MethodPost, Path: "/responses",
+		Credential: credential, Billing: paidBilling, Method: http.MethodPost, Path: "/responses",
 		Body: []byte(`{"model":"grok-4.5","input":"hi"}`), Model: "grok-4.5",
 	})
 	if err != nil {
@@ -99,38 +100,44 @@ func TestForwardResponsePrimary403Fallback200Activates(t *testing.T) {
 	}
 }
 
-func TestForwardResponseUnmarked403ProbesXAIWithoutBillingGate(t *testing.T) {
-	// 零 Billing / Free 账号在主地址 403 后仍可尝试 XAI；仅 XAI 成功才写标记。
-	adapter, encrypted := newFallbackTestAdapter(t)
-	marker := &fallbackMarkerStub{}
-	adapter.SetFallbackMarker(marker)
-	var primaryHits, fallbackHits atomic.Int32
-	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		switch {
-		case strings.Contains(request.URL.Host, "primary.test"):
-			primaryHits.Add(1)
-			return jsonResponse(http.StatusForbidden, `{"error":{"message":"primary forbidden"}}`, request), nil
-		case strings.Contains(request.URL.Host, "xai.test"):
-			fallbackHits.Add(1)
-			return jsonResponse(http.StatusOK, `{"id":"resp_ok","output":[]}`, request), nil
-		default:
-			t.Fatalf("unexpected host %s", request.URL.Host)
-			return nil, nil
-		}
-	})
-	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Credential: account.Credential{ID: 111, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
-		Method:     http.MethodPost, Path: "/responses", Body: []byte(`{"model":"grok-4.5","input":"hi"}`), Model: "grok-4.5",
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestForwardResponseNonSuper403NeverProbesXAI(t *testing.T) {
+	tests := []struct {
+		name    string
+		billing *account.Billing
+	}{
+		{name: "unknown", billing: nil},
+		{name: "free", billing: &account.Billing{IsUnifiedBillingUser: true}},
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK || primaryHits.Load() != 1 || fallbackHits.Load() != 1 {
-		t.Fatalf("status=%d primary=%d fallback=%d", response.StatusCode, primaryHits.Load(), fallbackHits.Load())
-	}
-	if marker.calls.Load() != 1 {
-		t.Fatalf("mark calls = %d", marker.calls.Load())
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, encrypted := newFallbackTestAdapter(t)
+			marker := &fallbackMarkerStub{}
+			adapter.SetFallbackMarker(marker)
+			var primaryHits, fallbackHits atomic.Int32
+			adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if strings.Contains(request.URL.Host, "xai.test") {
+					fallbackHits.Add(1)
+					t.Fatalf("non-Super account must never probe XAI")
+				}
+				primaryHits.Add(1)
+				return jsonResponse(http.StatusForbidden, `{"error":{"message":"primary forbidden"}}`, request), nil
+			})
+			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+				Credential: account.Credential{ID: 111, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+				Billing:    test.billing,
+				Method:     http.MethodPost, Path: "/responses", Body: []byte(`{"model":"grok-4.5","input":"hi"}`), Model: "grok-4.5",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusForbidden || primaryHits.Load() != 1 || fallbackHits.Load() != 0 {
+				t.Fatalf("status=%d primary=%d fallback=%d", response.StatusCode, primaryHits.Load(), fallbackHits.Load())
+			}
+			if marker.calls.Load() != 0 {
+				t.Fatalf("mark calls = %d", marker.calls.Load())
+			}
+		})
 	}
 }
 
@@ -168,12 +175,19 @@ func TestForwardResponseRouteModePrecedence(t *testing.T) {
 		name       string
 		mode       account.BuildRouteMode
 		botFlagged bool
+		entitled   bool
+		billing    *account.Billing
 		wantHost   string
 	}{
-		{name: "auto bot flagged", mode: account.BuildRouteAuto, botFlagged: true, wantHost: "xai.test"},
-		{name: "auto normal", mode: account.BuildRouteAuto, wantHost: "primary.test"},
-		{name: "force build overrides bot flag", mode: account.BuildRouteBuild, botFlagged: true, wantHost: "primary.test"},
-		{name: "force xai", mode: account.BuildRouteXAI, wantHost: "xai.test"},
+		{name: "entitled auto bot flagged", mode: account.BuildRouteAuto, botFlagged: true, entitled: true, wantHost: "xai.test"},
+		{name: "entitled auto normal", mode: account.BuildRouteAuto, entitled: true, wantHost: "primary.test"},
+		{name: "entitled force build overrides bot flag", mode: account.BuildRouteBuild, botFlagged: true, entitled: true, wantHost: "primary.test"},
+		{name: "entitled force xai", mode: account.BuildRouteXAI, entitled: true, wantHost: "xai.test"},
+		{name: "paid force xai", mode: account.BuildRouteXAI, billing: &account.Billing{PrepaidBalance: 1}, wantHost: "xai.test"},
+		{name: "free auto bot flagged", mode: account.BuildRouteAuto, botFlagged: true, billing: &account.Billing{IsUnifiedBillingUser: true}, wantHost: "primary.test"},
+		{name: "free force xai", mode: account.BuildRouteXAI, billing: &account.Billing{IsUnifiedBillingUser: true}, wantHost: "xai.test"},
+		{name: "unknown auto bot flagged", mode: account.BuildRouteAuto, botFlagged: true, wantHost: "primary.test"},
+		{name: "unknown force xai", mode: account.BuildRouteXAI, wantHost: "xai.test"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -187,7 +201,8 @@ func TestForwardResponseRouteModePrecedence(t *testing.T) {
 				return jsonResponse(http.StatusOK, `{"id":"ok"}`, request), nil
 			})
 			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-				Credential: account.Credential{ID: 113, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildRouteMode: test.mode},
+				Credential: account.Credential{ID: 113, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildRouteMode: test.mode, BuildSuperEntitled: test.entitled},
+				Billing:    test.billing,
 				Method:     http.MethodPost, Path: "/responses", Body: []byte(`{"model":"grok-4.5","input":"hi"}`), Model: "grok-4.5",
 			})
 			if err != nil {
@@ -245,7 +260,7 @@ func TestForwardResponsePrimary403FallbackFailKeepsPrimaryError(t *testing.T) {
 		}
 	})
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Credential: account.Credential{ID: 12, EncryptedAccessToken: encrypted},
+		Credential: account.Credential{ID: 12, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildSuperEntitled: true},
 		Method:     http.MethodPost, Path: "/responses",
 		Body: []byte(`{"model":"grok-4.5","input":"hi"}`), Model: "grok-4.5",
 	})
@@ -329,7 +344,7 @@ func TestForwardResponseMarkedAccountStillNeedsCurrentBuild403(t *testing.T) {
 		}
 	})
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Credential: account.Credential{ID: 130, EncryptedAccessToken: encrypted, BuildAPIFallback: true},
+		Credential: account.Credential{ID: 130, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildAPIFallback: true, BuildSuperEntitled: true},
 		Method:     http.MethodPost, Path: "/responses/compact",
 		Body: []byte(`{"model":"grok-4.5","response_id":"resp_1"}`), Model: "grok-4.5",
 	})
@@ -615,7 +630,7 @@ func TestGenerateVideoFallbackInjectsUploadURL(t *testing.T) {
 		return jsonResponse(http.StatusOK, `{"status":"done"}`, request), nil
 	})
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
-		Credential: account.Credential{ID: 15, EncryptedAccessToken: encrypted},
+		Credential: account.Credential{ID: 15, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildSuperEntitled: true},
 		JobID:      "video_job_1", Prompt: "waves", Duration: 6, Resolution: "720p",
 	})
 	if err != nil {
@@ -682,7 +697,7 @@ func TestGenerateVideoAutoBotFlaggedUsesXAIDirectly(t *testing.T) {
 		return jsonResponse(http.StatusOK, `{"status":"done"}`, request), nil
 	})
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
-		Credential: account.Credential{ID: 116, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildRouteMode: account.BuildRouteAuto},
+		Credential: account.Credential{ID: 116, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildRouteMode: account.BuildRouteAuto, BuildSuperEntitled: true},
 		JobID:      "video_bot", Prompt: "waves", Duration: 6, Resolution: "720p",
 	})
 	if err != nil {
@@ -690,6 +705,86 @@ func TestGenerateVideoAutoBotFlaggedUsesXAIDirectly(t *testing.T) {
 	}
 	if result.AssetID != "vid_bot" || primaryHits.Load() != 0 || fallbackHits.Load() < 2 {
 		t.Fatalf("result=%#v primary=%d fallback=%d", result, primaryHits.Load(), fallbackHits.Load())
+	}
+}
+
+func TestGenerateVideoNonSuperAutoNeverUsesXAI(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       account.BuildRouteMode
+		botFlagged bool
+		billing    *account.Billing
+	}{
+		{name: "free auto bot flagged", mode: account.BuildRouteAuto, botFlagged: true, billing: &account.Billing{IsUnifiedBillingUser: true}},
+		{name: "unknown auto bot flagged", mode: account.BuildRouteAuto, botFlagged: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, encrypted := newFallbackTestAdapter(t)
+			if test.botFlagged {
+				encrypted = encryptFallbackTestJWT(t, adapter, map[string]any{"bot_flag_source": 1})
+			}
+			var primaryHits, fallbackHits atomic.Int32
+			adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if strings.Contains(request.URL.Host, "xai.test") {
+					fallbackHits.Add(1)
+					t.Fatalf("non-Super video must never use XAI")
+				}
+				primaryHits.Add(1)
+				return jsonResponse(http.StatusForbidden, `{"error":"forbidden"}`, request), nil
+			})
+			_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+				Credential: account.Credential{ID: 117, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildRouteMode: test.mode},
+				Billing:    test.billing,
+				JobID:      "video_non_super", Prompt: "waves", Duration: 6, Resolution: "720p",
+			})
+			status, ok := provider.ErrorHTTPStatus(err)
+			if !ok || status != http.StatusForbidden {
+				t.Fatalf("err=%v status=%d ok=%t", err, status, ok)
+			}
+			if primaryHits.Load() != 1 || fallbackHits.Load() != 0 {
+				t.Fatalf("primary=%d fallback=%d", primaryHits.Load(), fallbackHits.Load())
+			}
+		})
+	}
+}
+
+func TestGenerateVideoForceXAIOverridesNonSuper(t *testing.T) {
+	tests := []struct {
+		name    string
+		billing *account.Billing
+	}{
+		{name: "free", billing: &account.Billing{IsUnifiedBillingUser: true}},
+		{name: "unknown"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, encrypted := newFallbackTestAdapter(t)
+			adapter.SetVideoUploadIssuer(&uploadIssuerStub{url: "https://public.example/v1/media/uploads/forced", assetID: "vid_forced"})
+			var primaryHits, fallbackHits atomic.Int32
+			adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if strings.Contains(request.URL.Host, "primary.test") {
+					primaryHits.Add(1)
+					t.Fatalf("force XAI must override account tier")
+				}
+				fallbackHits.Add(1)
+				if request.Method == http.MethodPost {
+					return jsonResponse(http.StatusOK, `{"request_id":"job_forced"}`, request), nil
+				}
+				return jsonResponse(http.StatusOK, `{"status":"done"}`, request), nil
+			})
+			result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+				Credential: account.Credential{ID: 118, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildRouteMode: account.BuildRouteXAI},
+				Billing:    test.billing,
+				JobID:      "video_forced", Prompt: "waves", Duration: 6, Resolution: "720p",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.AssetID != "vid_forced" || primaryHits.Load() != 0 || fallbackHits.Load() < 2 {
+				t.Fatalf("result=%#v primary=%d fallback=%d", result, primaryHits.Load(), fallbackHits.Load())
+			}
+		})
 	}
 }
 
@@ -713,7 +808,7 @@ func TestGenerateVideoFallbackMalformedJobIDDoesNotActivate(t *testing.T) {
 		// 2xx 但缺少 request_id / id：不得激活降级。
 		return jsonResponse(http.StatusOK, `{"status":"queued","message":"accepted"}`, request), nil
 	})
-	cred := account.Credential{ID: 16, EncryptedAccessToken: encrypted, BuildAPIFallback: false}
+	cred := account.Credential{ID: 16, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildAPIFallback: false, BuildSuperEntitled: true}
 	_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
 		Credential: cred, JobID: "video_job_bad", Prompt: "waves", Duration: 6, Resolution: "720p",
 	})
@@ -813,7 +908,7 @@ func TestFallbackMarkerFailureStillReturnsSuccess(t *testing.T) {
 		return jsonResponse(http.StatusOK, `{"id":"ok"}`, request), nil
 	})
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
-		Credential: account.Credential{ID: 99, EncryptedAccessToken: encrypted},
+		Credential: account.Credential{ID: 99, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildSuperEntitled: true},
 		Method:     http.MethodPost, Path: "/responses", Body: []byte(`{"model":"x","input":"y"}`), Model: "x",
 	})
 	if err != nil {

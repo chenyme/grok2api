@@ -111,7 +111,9 @@ func (e *CredentialRefreshError) Unwrap() error {
 
 // ResponseResourceRequest 表示对 Responses 资源端点的通用上游请求。
 type ResponseResourceRequest struct {
-	Credential     account.Credential
+	Credential account.Credential
+	// Billing 仅用于 Build auto 模式的 XAI 资格判断；nil 表示账号等级尚未确认。
+	Billing        *account.Billing
 	Method         string
 	Path           string
 	Body           []byte
@@ -244,6 +246,8 @@ type ImageEditRequest struct {
 
 type VideoRequest struct {
 	Credential account.Credential
+	// Billing 仅用于 Build auto 模式的 XAI 资格判断；nil 表示账号等级尚未确认。
+	Billing *account.Billing
 	// JobID 绑定本地视频任务，供 XAI ZDR 上传票据与结果资产关联。
 	JobID         string
 	Prompt        string
