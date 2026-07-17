@@ -379,7 +379,7 @@ func TestGenerateVideoFailedStatusAndDownloadTrustedURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	data, _ := io.ReadAll(body)
 	if string(data) != "mp4-bytes" || contentType != "video/mp4" || size != 9 {
 		t.Fatalf("download = %q %s %d", data, contentType, size)

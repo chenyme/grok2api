@@ -7,6 +7,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 type MediaJobRepository struct{ db *Database }
@@ -164,20 +165,30 @@ func (r *MediaUploadTicketRepository) GetUploadTicketByHash(ctx context.Context,
 }
 
 func (r *MediaUploadTicketRepository) ConsumeUploadTicket(ctx context.Context, tokenHash string, now time.Time) (repository.MediaUploadTicket, bool, error) {
-	result := r.db.db.WithContext(ctx).Model(&mediaUploadTicketModel{}).
-		Where("token_hash = ? AND consumed_at IS NULL AND expires_at > ?", tokenHash, now).
-		Update("consumed_at", now)
-	if result.Error != nil {
-		return repository.MediaUploadTicket{}, false, result.Error
-	}
-	if result.RowsAffected == 0 {
-		return repository.MediaUploadTicket{}, false, nil
-	}
-	ticket, err := r.GetUploadTicketByHash(ctx, tokenHash)
+	var ticket repository.MediaUploadTicket
+	consumed := false
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&mediaUploadTicketModel{}).
+			Where("token_hash = ? AND consumed_at IS NULL AND expires_at > ?", tokenHash, now).
+			Update("consumed_at", now)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		var row mediaUploadTicketModel
+		if err := tx.Where("token_hash = ?", tokenHash).First(&row).Error; err != nil {
+			return err
+		}
+		ticket = ticketToDomain(row)
+		consumed = true
+		return nil
+	})
 	if err != nil {
 		return repository.MediaUploadTicket{}, false, err
 	}
-	return ticket, true, nil
+	return ticket, consumed, nil
 }
 
 // ReleaseUploadTicket 撤销一次尚未落资产的消费，使同一 token 可再次 PUT。

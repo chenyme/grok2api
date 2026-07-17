@@ -109,13 +109,11 @@ type View struct {
 }
 
 type UpdateInput struct {
-	Name             *string
-	Enabled          *bool
-	Priority         *int
-	MaxConcurrent    *int
-	MinimumRemaining *float64
-	// BuildAPIFallback 仅对 grok_build 有效（XAI 推理回退）；nil 表示不修改。
-	BuildAPIFallback       *bool
+	Name                   *string
+	Enabled                *bool
+	Priority               *int
+	MaxConcurrent          *int
+	MinimumRemaining       *float64
 	CloudflareCookies      *string
 	ClearCloudflareCookies bool
 }
@@ -1250,12 +1248,6 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 			return View{}, invalidInput("minimumRemaining 不能小于零")
 		}
 		value.MinimumRemaining = *input.MinimumRemaining
-	}
-	if input.BuildAPIFallback != nil {
-		if value.Provider != accountdomain.ProviderBuild {
-			return View{}, invalidInput("仅 grok_build 账号支持 Build API 降级标记")
-		}
-		value.BuildAPIFallback = *input.BuildAPIFallback
 	}
 	if input.ClearCloudflareCookies {
 		value.EncryptedCloudflareCookie = ""

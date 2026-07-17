@@ -13,7 +13,6 @@ type AccountUpdates struct {
 	Priority         *int
 	MaxConcurrent    *int
 	MinimumRemaining *float64
-	BuildAPIFallback *bool
 }
 
 type AccountUpsertResult struct {

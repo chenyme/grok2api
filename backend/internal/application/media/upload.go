@@ -347,7 +347,7 @@ func sniffVideoFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	header := make([]byte, 512)
 	n, err := io.ReadFull(file, header)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {

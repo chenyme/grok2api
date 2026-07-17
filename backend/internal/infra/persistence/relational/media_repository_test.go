@@ -10,6 +10,7 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 func TestMediaJobRepositoryListMediaJobsPaginatesAndFilters(t *testing.T) {
@@ -252,6 +253,50 @@ func TestMediaUploadTicketRepositoryDeleteUploadTicketByHash(t *testing.T) {
 	}
 	if err := repo.DeleteUploadTicketByHash(ctx, ""); err != nil {
 		t.Fatalf("empty hash delete: %v", err)
+	}
+}
+
+func TestMediaUploadTicketRepositoryConsumeRollsBackWhenTicketReadFails(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewMediaUploadTicketRepository(database)
+	now := time.Now().UTC()
+	hash := strings.Repeat("ef", 32)
+	if err := repo.CreateUploadTicket(ctx, repository.MediaUploadTicket{
+		TokenHash: hash, AssetID: "vid_consume_rollback_1", JobID: "job_consume_rollback",
+		MaxBytes: 1024, AllowedMIME: "video/mp4", ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	injected := errors.New("injected ticket read failure")
+	callbackName := "test:fail_consumed_ticket_read"
+	failed := false
+	if err := database.db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if !failed && tx.Statement != nil && tx.Statement.Table == "media_upload_tickets" {
+			failed = true
+			_ = tx.AddError(injected)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, consumed, err := repo.ConsumeUploadTicket(ctx, hash, now)
+	if removeErr := database.db.Callback().Query().Remove(callbackName); removeErr != nil {
+		t.Fatal(removeErr)
+	}
+	if !errors.Is(err, injected) || consumed {
+		t.Fatalf("consume = (%v, %v), want injected error and consumed=false", consumed, err)
+	}
+	if !failed {
+		t.Fatal("ticket read failure callback did not run")
+	}
+	ticket, err := repo.GetUploadTicketByHash(ctx, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ticket.ConsumedAt != nil {
+		t.Fatalf("consume transaction was not rolled back: consumed_at=%v", ticket.ConsumedAt)
 	}
 }
 

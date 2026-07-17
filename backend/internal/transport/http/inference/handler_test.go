@@ -110,6 +110,20 @@ func TestVideoContentURLUsesConfiguredPublicAPIBase(t *testing.T) {
 	}
 }
 
+func TestVideoContentURLFollowsRuntimePublicAPIBase(t *testing.T) {
+	baseURL := "https://old.example.com"
+	handler := NewHandler(nil, nil, 1<<20, "https://static.example.com").SetPublicAPIBaseURLResolver(func() string {
+		return baseURL
+	})
+	if got := handler.videoContentURL("video_request_1"); got != "https://old.example.com/v1/videos/video_request_1/content" {
+		t.Fatalf("initial URL = %q", got)
+	}
+	baseURL = "https://new.example.com/api/"
+	if got := handler.videoContentURL("video_request_2"); got != "https://new.example.com/api/v1/videos/video_request_2/content" {
+		t.Fatalf("updated URL = %q", got)
+	}
+}
+
 func TestGatewayErrorDoesNotExposeInternalDetails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

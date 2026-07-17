@@ -28,6 +28,7 @@ type Handler struct {
 	models           *modelapp.Service
 	maxBodyBytes     int64
 	publicAPIBaseURL string
+	publicBaseURL    func() string
 }
 
 const (
@@ -50,6 +51,13 @@ func NewHandler(gatewayService *gateway.Service, models *modelapp.Service, maxBo
 		baseURL = strings.TrimRight(strings.TrimSpace(publicAPIBaseURL[0]), "/")
 	}
 	return &Handler{gateway: gatewayService, models: models, maxBodyBytes: maxBodyBytes, publicAPIBaseURL: baseURL}
+}
+
+// SetPublicAPIBaseURLResolver 让视频内容 URL 跟随运行设置热更新。
+// 应在 Register 前设置；请求处理期间只读取该函数。
+func (h *Handler) SetPublicAPIBaseURLResolver(resolve func() string) *Handler {
+	h.publicBaseURL = resolve
+	return h
 }
 
 func (h *Handler) Register(router *gin.RouterGroup) {
@@ -580,10 +588,14 @@ func (h *Handler) getVideo(c *gin.Context) {
 
 func (h *Handler) videoContentURL(jobID string) string {
 	path := "/v1/videos/" + url.PathEscape(jobID) + "/content"
-	if h.publicAPIBaseURL == "" {
+	baseURL := h.publicAPIBaseURL
+	if h.publicBaseURL != nil {
+		baseURL = strings.TrimRight(strings.TrimSpace(h.publicBaseURL()), "/")
+	}
+	if baseURL == "" {
 		return path
 	}
-	return h.publicAPIBaseURL + path
+	return baseURL + path
 }
 
 func (h *Handler) getVideoContent(c *gin.Context) {
@@ -596,7 +608,7 @@ func (h *Handler) getVideoContent(c *gin.Context) {
 		writeGatewayError(c, err)
 		return
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	writeVideoContent(c, body, contentType, size)
 }
 

@@ -659,9 +659,6 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, update
 	if updates.MaxConcurrent != nil {
 		values["max_concurrent"] = *updates.MaxConcurrent
 	}
-	if updates.BuildAPIFallback != nil {
-		values["build_api_fallback"] = *updates.BuildAPIFallback
-	}
 	if updates.MinimumRemaining != nil {
 		values["minimum_remaining"] = *updates.MinimumRemaining
 	}
