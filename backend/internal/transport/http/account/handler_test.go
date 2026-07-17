@@ -12,8 +12,26 @@ import (
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/gin-gonic/gin"
 )
+
+func TestNewAccountResponseExposesBuildBotFlagOnlyForBuild(t *testing.T) {
+	build := newAccountResponse(accountapp.View{
+		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderBuild, BuildRouteMode: accountdomain.BuildRouteXAI},
+		BuildBotFlagged: true,
+	})
+	if !build.BuildBotFlagged || build.BuildRouteMode != string(accountdomain.BuildRouteXAI) {
+		t.Fatalf("Build metadata = %#v", build)
+	}
+	web := newAccountResponse(accountapp.View{
+		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderWeb},
+		BuildBotFlagged: true,
+	})
+	if web.BuildBotFlagged || web.BuildRouteMode != string(accountdomain.BuildRouteAuto) {
+		t.Fatalf("non-Build metadata = %#v", web)
+	}
+}
 
 type accountSynchronizerStub struct {
 	accountIDs []uint64

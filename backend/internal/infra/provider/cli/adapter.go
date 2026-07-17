@@ -79,6 +79,20 @@ func (a *Adapter) SetReasoningReplay(replay *reasoningreplay.ReasoningReplay) {
 
 func (a *Adapter) Provider() account.Provider { return account.ProviderBuild }
 
+// CredentialMetadata 只从 Build access token 提取非敏感风险标记。
+// bot_flag_source 必须是 JSON 数字 1；其他值、畸形 token 或解密失败均不标记。
+func (a *Adapter) CredentialMetadata(credential account.Credential) provider.CredentialMetadata {
+	if credential.Provider != account.ProviderBuild || a.cipher == nil || credential.EncryptedAccessToken == "" {
+		return provider.CredentialMetadata{}
+	}
+	accessToken, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
+	if err != nil {
+		return provider.CredentialMetadata{}
+	}
+	value, ok := decodeJWTClaims(accessToken)["bot_flag_source"].(float64)
+	return provider.CredentialMetadata{BuildBotFlagged: ok && value == 1}
+}
+
 func (a *Adapter) UpdateConfig(cfg Config) {
 	a.cfgMu.Lock()
 	a.cfg = cfg
@@ -126,14 +140,15 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			body = a.replay.Apply(ctx, request.Model, request.PromptCacheKey, body)
 		}
 	}
-	// 推理回退：create/compact 可走 XAI；stored GET/DELETE 与未知路径始终主地址。
-	base := a.apiBaseForOperation(ctx, request.Credential, request.Method, request.Path)
+	// bot_flag_source=1 的账号默认走 XAI；其他账号始终先走 Build。
+	primaryBase := a.primaryBaseURL()
+	base := a.inferenceBaseForOperation(request.Credential, request.Method, request.Path)
 	resp, reqURL, err := a.doResponseRequest(ctx, request, accessToken, body, base)
 	if err != nil {
 		return nil, err
 	}
-	// 未标记账号：仅可回退操作在主地址明确 403 时用等价请求探测 XAI。
-	if a.shouldProbeXAIInferenceFallback(ctx, request.Credential, request.Method, request.Path, resp.StatusCode) {
+	// 仅可回退操作在当次 Build 主地址明确 403 时用等价请求探测 XAI。
+	if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Method, request.Path, resp.StatusCode) {
 		// 缓冲主 403 正文，备用失败时原样回放，避免二次 primary POST。
 		primaryBody, primaryTruncated, readErr := provider.ReadDiagnosticBody(resp.Body)
 		_ = resp.Body.Close()
@@ -327,30 +342,8 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	if err != nil {
 		return nil, err
 	}
-	// Super 的 Build 与 XAI 模型资格一致，统一以 XAI 目录作为能力快照。
-	// BuildAPIFallback 只记录实际推理地址状态，不得把同一批 Super 拆成两套模型能力。
-	super, policyErr := a.buildXAIEntitled(ctx, credential.ID)
-	if policyErr != nil {
-		return nil, fmt.Errorf("查询 Build Super 资格: %w", policyErr)
-	}
-	if super {
-		models, xaiStatus, xaiErr := a.listModelsAt(ctx, credential, accessToken, a.fallbackBaseURL())
-		if models != nil {
-			return models, nil
-		}
-		// Super 任一端可用即视为有效。XAI 目录失败时允许退回 Build 目录；
-		// 两端观察到的模型差异由共享 Super entitlement 在路由层统一。
-		models, buildStatus, buildErr := a.listModelsAt(ctx, credential, accessToken, a.primaryBaseURL())
-		if models != nil {
-			return models, nil
-		}
-		if xaiErr != nil || buildErr != nil {
-			return nil, fmt.Errorf("读取 Super 模型目录失败（XAI status=%d: %v；Build status=%d: %v）", xaiStatus, xaiErr, buildStatus, buildErr)
-		}
-		return nil, fmt.Errorf("上游模型接口返回 XAI %d，Build %d", xaiStatus, buildStatus)
-	}
-
-	// Free/Unknown 仅访问 Build，禁止探测 XAI。
+	// 模型目录始终请求 Build 主地址；不得因目录缺 1.5 或 Super entitlement 预切 XAI。
+	// 1.5 能力由 NormalizeAccountModelCapabilities 按 Billing paid / BuildSuperEntitled 本地补齐。
 	models, status, err := a.listModelsAt(ctx, credential, accessToken, a.primaryBaseURL())
 	if err != nil {
 		return nil, err
@@ -361,10 +354,10 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	return nil, fmt.Errorf("上游模型接口返回 %d", status)
 }
 
-// NormalizeAccountModelCapabilities 按 Super/paid Billing 归一化 1.5 视频资格。
+// NormalizeAccountModelCapabilities 按 Super（Billing paid 或 BuildSuperEntitled）归一化 1.5 视频资格。
 // Super 确保包含 grok-imagine-video-1.5；Free/Unknown 精确移除。不读取 BuildAPIFallback。
-func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing) []string {
-	paid := billing != nil && billing.IsPaid()
+func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string {
+	super := account.IsBuildSuper(credential, billing)
 	result := make([]string, 0, len(models)+1)
 	seen := make(map[string]struct{}, len(models)+1)
 	hasVideo15 := false
@@ -377,7 +370,7 @@ func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *ac
 			continue
 		}
 		if model == buildVideoModel {
-			if !paid {
+			if !super {
 				continue
 			}
 			hasVideo15 = true
@@ -385,7 +378,7 @@ func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *ac
 		seen[model] = struct{}{}
 		result = append(result, model)
 	}
-	if paid && !hasVideo15 {
+	if super && !hasVideo15 {
 		result = append(result, buildVideoModel)
 	}
 	return result

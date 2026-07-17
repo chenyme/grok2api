@@ -41,8 +41,12 @@ const availableRoutePredicate = `
 	)
 `
 
+// Build Super 共享能力：Billing paid 或 build_super_entitled；仅 grok_build。
+const modelAccountBuildSuperPredicate = `(EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = account.id AND ` + accountPaidBillingSignals + `) OR (account.provider = 'grok_build' AND account.build_super_entitled = TRUE))`
+const modelPeerBuildSuperPredicate = `(EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = peer.id AND ` + accountPaidBillingSignals + `) OR (peer.provider = 'grok_build' AND peer.build_super_entitled = TRUE))`
+
 const modelSharedPaidBuildSupportSortExpression = `(model_routes.provider = 'grok_build'
-	AND EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = account.id AND ` + accountPaidBillingSignals + `)
+	AND ` + modelAccountBuildSuperPredicate + `
 	AND EXISTS (
 		SELECT 1
 		FROM provider_accounts peer
@@ -50,11 +54,11 @@ const modelSharedPaidBuildSupportSortExpression = `(model_routes.provider = 'gro
 		WHERE peer.provider = model_routes.provider
 			AND peer.enabled = TRUE
 			AND peer.auth_status = 'active'
-			AND EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = peer.id AND ` + accountPaidBillingSignals + `)
+			AND ` + modelPeerBuildSuperPredicate + `
 	))`
 
 const modelSharedPaidBuildSupportAvailabilityExpression = `(route.provider = 'grok_build'
-	AND EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = account.id AND ` + accountPaidBillingSignals + `)
+	AND ` + modelAccountBuildSuperPredicate + `
 	AND EXISTS (
 		SELECT 1
 		FROM provider_accounts peer
@@ -62,7 +66,7 @@ const modelSharedPaidBuildSupportAvailabilityExpression = `(route.provider = 'gr
 		WHERE peer.provider = route.provider
 			AND peer.enabled = TRUE
 			AND peer.auth_status = 'active'
-			AND EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = peer.id AND ` + accountPaidBillingSignals + `)
+			AND ` + modelPeerBuildSuperPredicate + `
 	))`
 
 const (

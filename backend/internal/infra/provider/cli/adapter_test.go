@@ -29,6 +29,54 @@ func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error)
 	return fn(request)
 }
 
+func TestCredentialMetadataMarksOnlyNumericBotFlagOne(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{}, cipher)
+	tests := []struct {
+		name     string
+		provider account.Provider
+		claims   map[string]any
+		token    string
+		want     bool
+	}{
+		{name: "numeric one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 1}, want: true},
+		{name: "numeric zero", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 0}},
+		{name: "numeric two", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 2}},
+		{name: "string one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": "1"}},
+		{name: "missing claim", provider: account.ProviderBuild, claims: map[string]any{"sub": "user"}},
+		{name: "malformed jwt", provider: account.ProviderBuild, token: "not-a-jwt"},
+		{name: "non build", provider: account.ProviderWeb, claims: map[string]any{"bot_flag_source": 1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			token := test.token
+			if test.claims != nil {
+				payload, marshalErr := json.Marshal(test.claims)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				token = "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
+			}
+			encrypted, encryptErr := cipher.Encrypt(token)
+			if encryptErr != nil {
+				t.Fatal(encryptErr)
+			}
+			metadata := adapter.CredentialMetadata(account.Credential{Provider: test.provider, EncryptedAccessToken: encrypted})
+			if metadata.BuildBotFlagged != test.want {
+				t.Fatalf("flagged = %t, want %t", metadata.BuildBotFlagged, test.want)
+			}
+		})
+	}
+
+	metadata := adapter.CredentialMetadata(account.Credential{Provider: account.ProviderBuild, EncryptedAccessToken: "invalid-ciphertext"})
+	if metadata.BuildBotFlagged {
+		t.Fatal("decrypt failure must not mark the account")
+	}
+}
+
 func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.T) {
 	var captured map[string]any
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -304,33 +352,41 @@ func TestGetBillingUsesCreditsAndLiveSubscriptionTier(t *testing.T) {
 
 func TestNormalizeAccountModelCapabilitiesSuperAddsVideo15(t *testing.T) {
 	adapter := &Adapter{}
+	build := account.Credential{Provider: account.ProviderBuild}
 	// Super / paid：主 Build 仅返回 grok-4.5 时也必须补齐 1.5。
-	got := adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5", "  ", "grok-4.5"}, &account.Billing{MonthlyLimit: 100})
+	got := adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5", "  ", "grok-4.5"}, &account.Billing{MonthlyLimit: 100}, build)
 	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != buildVideoModel {
 		t.Fatalf("super primary catalog = %#v", got)
 	}
-	// Super + fallback 目录已含 1.5：幂等去重，其它模型不变。
+	// Super + 目录已含 1.5：幂等去重，其它模型不变。
 	got = adapter.NormalizeAccountModelCapabilities(
 		[]string{"grok-4.5", buildVideoModel, "grok-code-fast-1", buildVideoModel},
 		&account.Billing{OnDemandCap: 10},
+		build,
 	)
 	if len(got) != 3 || got[0] != "grok-4.5" || got[1] != buildVideoModel || got[2] != "grok-code-fast-1" {
-		t.Fatalf("super fallback catalog = %#v", got)
+		t.Fatalf("super catalog = %#v", got)
 	}
 	// Free：即使目录暴露 1.5 也必须移除。
-	got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5", buildVideoModel}, &account.Billing{Used: 1, PlanName: "free"})
+	got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5", buildVideoModel}, &account.Billing{Used: 1, PlanName: "free"}, build)
 	if len(got) != 1 || got[0] != "grok-4.5" {
 		t.Fatalf("free catalog = %#v", got)
 	}
 	// Unknown（无 Billing）：与 Free 相同，移除 1.5。
-	got = adapter.NormalizeAccountModelCapabilities([]string{buildVideoModel, "grok-4.5"}, nil)
+	got = adapter.NormalizeAccountModelCapabilities([]string{buildVideoModel, "grok-4.5"}, nil, build)
 	if len(got) != 1 || got[0] != "grok-4.5" {
 		t.Fatalf("unknown catalog = %#v", got)
 	}
-	// 不得依赖 BuildAPIFallback；空目录 + Super 仅补 1.5。
-	got = adapter.NormalizeAccountModelCapabilities(nil, &account.Billing{PlanName: "SuperGrok", CreditUsagePercent: 1})
+	// 不得依赖 BuildAPIFallback；空目录 + Billing Super 仅补 1.5。
+	got = adapter.NormalizeAccountModelCapabilities(nil, &account.Billing{PlanName: "SuperGrok", CreditUsagePercent: 1}, build)
 	if len(got) != 1 || got[0] != buildVideoModel {
 		t.Fatalf("super empty catalog = %#v", got)
+	}
+	// 零 Billing + BuildSuperEntitled：补齐 1.5。
+	entitled := account.Credential{Provider: account.ProviderBuild, BuildSuperEntitled: true}
+	got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5"}, &account.Billing{IsUnifiedBillingUser: true}, entitled)
+	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != buildVideoModel {
+		t.Fatalf("entitled catalog = %#v", got)
 	}
 }
 

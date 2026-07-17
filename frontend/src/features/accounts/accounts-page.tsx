@@ -58,6 +58,7 @@ import {
   type AccountDTO,
   type AccountProvider,
   type AccountUpdateInput,
+  type BuildRouteMode,
   type AccountTaskProgressDTO,
   type BuildConversionInput,
   type BuildConversionStrategy,
@@ -93,6 +94,7 @@ export function AccountsPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [renewalFilter, setRenewalFilter] = useState("");
+  const [riskFilter, setRiskFilter] = useState("");
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
@@ -132,22 +134,24 @@ export function AccountsPage() {
     maxConcurrent: z.number().int().min(1, t("errors.positive")).max(256),
     minimumRemaining: z.number().min(0),
     cloudflareCookies: z.string().max(16 << 10, t("settings.invalidValue")),
-    clearCloudflareCookies: z.boolean(),
+	    clearCloudflareCookies: z.boolean(),
+	    buildRouteMode: z.enum(["auto", "build", "xai"]),
   });
   type AccountForm = z.infer<typeof accountSchema>;
   const form = useForm<AccountForm>({
     resolver: zodResolver(accountSchema),
     defaultValues: {
       name: "", enabled: true, priority: 1, maxConcurrent: 8, minimumRemaining: 0,
-      cloudflareCookies: "", clearCloudflareCookies: false,
+	      cloudflareCookies: "", clearCloudflareCookies: false, buildRouteMode: "auto",
     },
   });
   const accountEnabled = useWatch({ control: form.control, name: "enabled" });
-  const clearCloudflareCookies = useWatch({ control: form.control, name: "clearCloudflareCookies" });
+	  const clearCloudflareCookies = useWatch({ control: form.control, name: "clearCloudflareCookies" });
+	  const buildRouteMode = useWatch({ control: form.control, name: "buildRouteMode" });
 
   const accountsQuery = useQuery({
-    queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, renewalFilter, sort.field, sort.order],
-    queryFn: () => listAccounts({ provider, page, pageSize, search: debouncedSearch, type: typeFilter, status: statusFilter, renewal: provider === "grok_build" ? renewalFilter : undefined, sortBy: sort.field, sortOrder: sort.order }),
+    queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, renewalFilter, riskFilter, sort.field, sort.order],
+    queryFn: () => listAccounts({ provider, page, pageSize, search: debouncedSearch, type: typeFilter, status: statusFilter, renewal: provider === "grok_build" ? renewalFilter : undefined, risk: provider === "grok_build" ? riskFilter : undefined, sortBy: sort.field, sortOrder: sort.order }),
   });
 
   const summaryQuery = useQuery({
@@ -170,10 +174,10 @@ export function AccountsPage() {
         maxConcurrent: values.maxConcurrent,
         minimumRemaining: values.minimumRemaining,
       };
-      if (editing.provider !== "grok_build") {
+	      if (editing.provider !== "grok_build") {
         if (values.clearCloudflareCookies) input.clearCloudflareCookies = true;
         else if (values.cloudflareCookies.trim()) input.cloudflareCookies = values.cloudflareCookies;
-      }
+	      } else input.buildRouteMode = values.buildRouteMode;
       return updateAccount(editing.id, input);
     },
     onSuccess: () => {
@@ -424,6 +428,7 @@ export function AccountsPage() {
     setTypeFilter("");
     setStatusFilter("");
     setRenewalFilter("");
+    setRiskFilter("");
     setQuickImportOpen(false);
     setQuickImportTokens("");
   }
@@ -468,7 +473,8 @@ export function AccountsPage() {
       maxConcurrent: account.maxConcurrent,
       minimumRemaining: account.minimumRemaining,
       cloudflareCookies: "",
-      clearCloudflareCookies: false,
+	      clearCloudflareCookies: false,
+	      buildRouteMode: account.buildRouteMode,
     });
   }
 
@@ -516,6 +522,7 @@ export function AccountsPage() {
   const recoveringAccounts = summary?.recovering ?? 0;
   const disabledAccounts = summary?.issues.disabled ?? 0;
   const invalidAccounts = summary?.issues.reauthRequired ?? 0;
+  const riskAccounts = summary?.risk ?? 0;
   const abnormalAccounts = recoveringAccounts + disabledAccounts + invalidAccounts;
   const buildSummary = summary?.providers.grok_build ?? { total: 0, available: 0 };
   const webSummary = summary?.providers.grok_web ?? { total: 0, available: 0 };
@@ -553,6 +560,7 @@ export function AccountsPage() {
             `${t("accounts.statusCooldown")} ${formatNumber(recoveringAccounts, i18n.language, 0)}`,
             `${t("accounts.statusDisabled")} ${formatNumber(disabledAccounts, i18n.language, 0)}`,
             `${t("accounts.statusReauthRequired")} ${formatNumber(invalidAccounts, i18n.language, 0)}`,
+            `${t("accounts.riskAccountCount", { count: formatNumber(riskAccounts, i18n.language, 0) })}`,
           ].join(" · ")}
         />
       </section>
@@ -618,6 +626,10 @@ export function AccountsPage() {
                 ...(provider === "grok_build" ? [{ id: "renewal", label: t("accountCredential.label"), value: renewalFilter, onChange: (value: string) => { setRenewalFilter(value); setPage(1); }, options: [
                   { value: "refreshable", label: t("accountCredential.autoRefresh") },
                   { value: "unrefreshable", label: t("accountCredential.noAutoRefresh") },
+                ] }] : []),
+                ...(provider === "grok_build" ? [{ id: "risk", label: t("accounts.riskFilter"), value: riskFilter, onChange: (value: string) => { setRiskFilter(value); setPage(1); }, options: [
+                  { value: "flagged", label: t("accounts.botRisk") },
+                  { value: "normal", label: t("accounts.riskNormal") },
                 ] }] : []),
               ]} />
             </div>
@@ -689,10 +701,23 @@ export function AccountsPage() {
                 const showAccountDetail = accountDetail?.trim().toLocaleLowerCase() !== account.name.trim().toLocaleLowerCase();
                 const linkedProviderLabel = account.linkedProvider === "grok_build" ? t("models.providerGrokBuild") : account.linkedProvider === "grok_web" ? t("models.providerGrokWeb") : t("console.name");
                 return (
-                  <TableRow className="group" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
+	                  <TableRow className="group" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
                     <TableCell className="px-2"><Checkbox checked={selected.has(account.id)} onCheckedChange={(checked) => toggleAccount(account.id, checked === true)} aria-label={t("common.selectItem", { name: account.name })} /></TableCell>
-                    <TableCell className="min-w-0">
-                      <div className="truncate text-xs font-medium" title={account.name}>{account.name}</div>
+	                    <TableCell className="min-w-0">
+	                      <div className="flex min-w-0 items-center gap-1.5">
+	                        <Tooltip>
+	                          <TooltipTrigger asChild><div className="min-w-0 truncate text-xs font-medium">{account.name}</div></TooltipTrigger>
+	                          <TooltipContent>{account.name}</TooltipContent>
+	                        </Tooltip>
+	                        {account.buildBotFlagged ? (
+	                          <Tooltip>
+	                            <TooltipTrigger asChild>
+	                              <span tabIndex={0} className="inline-flex shrink-0 cursor-help whitespace-nowrap text-xs font-medium text-amber-700 dark:text-amber-300">{t("accounts.botRisk")}</span>
+	                            </TooltipTrigger>
+	                            <TooltipContent>{t("accounts.botRiskTooltip")}</TooltipContent>
+	                          </Tooltip>
+	                        ) : null}
+	                      </div>
                       {showAccountDetail || account.linkedAccountId ? (
                         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                           {showAccountDetail ? <span className="truncate" title={accountDetail}>{accountDetail}</span> : null}
@@ -715,13 +740,14 @@ export function AccountsPage() {
                     <TableCell className="text-center whitespace-nowrap"><AccountStatus account={account} /></TableCell>
                     <TableCell className={provider === "grok_build" ? undefined : "px-6"}>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}</TableCell>
                     {provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
-                      {account.refreshable ? (
+                      <div>{account.refreshable ? (
                         <Tooltip>
                           <TooltipTrigger asChild><span tabIndex={0} className="cursor-help font-medium text-emerald-700 dark:text-emerald-300">{t("accountCredential.autoRefresh")}</span></TooltipTrigger>
                           <TooltipContent>{account.expiresAt ? t("accountCredential.expiresAt", { time: formatDateTime(account.expiresAt, i18n.language) }) : t("accountCredential.expiryUnknown")}</TooltipContent>
                         </Tooltip>
-                      ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}
-                    </TableCell> : null}
+	                      ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}</div>
+	                      <div className="mt-0.5 text-muted-foreground">{t(`accounts.buildRouteMode.${account.buildRouteMode}`)}</div>
+	                    </TableCell> : null}
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(account.createdAt, i18n.language)}</TableCell>
                     <TableActionCell>
                       <DropdownMenu>
@@ -880,7 +906,20 @@ export function AccountsPage() {
               <div className="space-y-2"><Label htmlFor="account-priority">{t("accounts.priority")}</Label><Input id="account-priority" type="number" {...form.register("priority", { valueAsNumber: true })} /></div>
               <div className="space-y-2"><Label htmlFor="account-concurrency">{t("accounts.maxConcurrent")}</Label><Input id="account-concurrency" type="number" min="1" max="256" {...form.register("maxConcurrent", { valueAsNumber: true })} /></div>
             </div>
-            <div className="space-y-2"><Label htmlFor="account-minimum">{t("accounts.minimumRemaining")}</Label><Input id="account-minimum" type="number" min="0" step="0.01" {...form.register("minimumRemaining", { valueAsNumber: true })} /></div>
+	            <div className="space-y-2"><Label htmlFor="account-minimum">{t("accounts.minimumRemaining")}</Label><Input id="account-minimum" type="number" min="0" step="0.01" {...form.register("minimumRemaining", { valueAsNumber: true })} /></div>
+	            {editing?.provider === "grok_build" ? (
+	              <div className="space-y-2">
+	                <Label id="account-build-route-mode">{t("accounts.buildRouteMode.label")}</Label>
+	                <div role="radiogroup" aria-labelledby="account-build-route-mode" className="grid grid-cols-3 rounded-md bg-muted p-1">
+	                  {(["auto", "build", "xai"] as BuildRouteMode[]).map((mode) => (
+	                    <Button key={mode} type="button" role="radio" aria-checked={buildRouteMode === mode} variant={buildRouteMode === mode ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-2 text-xs font-normal shadow-none" onClick={() => form.setValue("buildRouteMode", mode, { shouldDirty: true })}>
+	                      {t(`accounts.buildRouteMode.${mode}`)}
+	                    </Button>
+	                  ))}
+	                </div>
+	                <p className="text-xs text-muted-foreground">{t(`accounts.buildRouteMode.${buildRouteMode}Description`)}</p>
+	              </div>
+	            ) : null}
             {editing && editing.provider !== "grok_build" ? (
               <div className="space-y-2">
                 <Label htmlFor="account-cloudflare-cookie">{t("settings.egress.cloudflareCookie")}</Label>
