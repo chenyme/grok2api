@@ -263,6 +263,48 @@ func (r *MediaJobRepository) GetMediaJob(ctx context.Context, id string, clientK
 	return mediaJobToDomain(row), nil
 }
 
+func (r *MediaJobRepository) GetMediaJobByID(ctx context.Context, id string) (media.Job, error) {
+	var row mediaJobModel
+	if err := r.db.db.WithContext(ctx).Where("id = ?", id).First(&row).Error; err != nil {
+		return media.Job{}, mapError(err)
+	}
+	return mediaJobToDomain(row), nil
+}
+
+// ExistingVideoAssetIDs 批量判断本地视频资产元数据是否仍存在。
+func (r *MediaAssetRepository) ExistingVideoAssetIDs(ctx context.Context, ids []string) (map[string]struct{}, error) {
+	result := make(map[string]struct{}, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return result, nil
+	}
+	var found []string
+	if err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).
+		Where("id IN ? AND kind = ?", unique, "video").
+		Pluck("id", &found).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range found {
+		result[id] = struct{}{}
+	}
+	return result, nil
+}
+
 func (r *MediaJobRepository) UpdateMediaJob(ctx context.Context, value media.Job) error {
 	updates := mediaJobFromDomain(value)
 	query := r.db.db.WithContext(ctx).Model(&mediaJobModel{}).Where("id = ?", value.ID)
@@ -306,7 +348,7 @@ func (r *MediaJobRepository) ListMediaJobs(ctx context.Context, input repository
 	}, sortSpec{expression: "created_at", defaultDirection: repository.SortDescending}, "id")
 	if err := query.Select(
 		"id", "client_key_name", "account_name", "model", "prompt", "seconds", "size", "quality",
-		"status", "progress", "error_message", "created_at", "completed_at",
+		"status", "progress", "error_message", "result_asset_id", "created_at", "completed_at",
 	).Offset(input.Page.Offset).Limit(input.Page.Limit).Find(&rows).Error; err != nil {
 		return nil, 0, err
 	}

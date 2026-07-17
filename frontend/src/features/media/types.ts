@@ -22,6 +22,7 @@ export type MediaJobDTO = {
   createdAt: string;
   completedAt: string | null;
   errorMessage: string;
+  previewAvailable: boolean;
 };
 
 export type ImageStatsDTO = { totalImages: number; totalBytes: number };

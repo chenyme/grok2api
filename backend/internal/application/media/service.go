@@ -66,6 +66,12 @@ type VideoStats struct {
 	Queued     int64
 }
 
+// AdminVideoJob 是管理端视频任务列表视图，附加本地缓存预览可用性。
+type AdminVideoJob struct {
+	Job              mediadomain.Job
+	PreviewAvailable bool
+}
+
 func NewService(assets repository.MediaAssetRepository, jobs repository.MediaJobRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
 	return NewServiceWithTickets(assets, jobs, nil, objects, cleanupLock, cfg)
 }
@@ -164,8 +170,8 @@ func (s *Service) AdminListImages(ctx context.Context, page, pageSize int, searc
 	return s.assets.ListMediaAssets(ctx, repository.MediaAssetListQuery{Page: mediaPageQuery(page, pageSize, search, repository.SortQuery{})})
 }
 
-// AdminListVideoJobs 分页返回视频任务列表。
-func (s *Service) AdminListVideoJobs(ctx context.Context, page, pageSize int, search, status string, sort repository.SortQuery) ([]mediadomain.Job, int64, error) {
+// AdminListVideoJobs 分页返回视频任务列表，并标注本地视频缓存是否仍可预览。
+func (s *Service) AdminListVideoJobs(ctx context.Context, page, pageSize int, search, status string, sort repository.SortQuery) ([]AdminVideoJob, int64, error) {
 	if s.jobs == nil {
 		return nil, 0, ErrMediaJobsUnavailable
 	}
@@ -173,10 +179,55 @@ func (s *Service) AdminListVideoJobs(ctx context.Context, page, pageSize int, se
 	if !validMediaStatus(status) || !repository.IsValidSort(sort, "prompt", "model", "status", "progress", "spec", "account", "createdAt", "completedAt") {
 		return nil, 0, ErrInvalidFilter
 	}
-	return s.jobs.ListMediaJobs(ctx, repository.MediaJobListQuery{
+	jobs, total, err := s.jobs.ListMediaJobs(ctx, repository.MediaJobListQuery{
 		Page:   mediaPageQuery(page, pageSize, search, sort),
 		Filter: repository.MediaJobListFilter{Status: status},
 	})
+	if err != nil {
+		return nil, 0, err
+	}
+	assetIDs := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		if job.Status == mediadomain.StatusCompleted && strings.TrimSpace(job.ResultAssetID) != "" {
+			assetIDs = append(assetIDs, job.ResultAssetID)
+		}
+	}
+	existing := map[string]struct{}{}
+	if len(assetIDs) > 0 && s.assets != nil {
+		existing, err = s.assets.ExistingVideoAssetIDs(ctx, assetIDs)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	views := make([]AdminVideoJob, 0, len(jobs))
+	for _, job := range jobs {
+		_, preview := existing[job.ResultAssetID]
+		views = append(views, AdminVideoJob{Job: job, PreviewAvailable: preview})
+	}
+	return views, total, nil
+}
+
+// AdminOpenVideoJobContent 按任务 ID 打开本地视频缓存，仅允许 completed 且关联 kind=video 资产的任务。
+// 非法/不存在/无缓存路径统一返回 ErrAssetNotFound，不泄露内部路径或上游 URL。
+func (s *Service) AdminOpenVideoJobContent(ctx context.Context, jobID string) (mediadomain.Asset, io.ReadCloser, error) {
+	if s.jobs == nil {
+		return mediadomain.Asset{}, nil, ErrMediaJobsUnavailable
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return mediadomain.Asset{}, nil, ErrAssetNotFound
+	}
+	job, err := s.jobs.GetMediaJobByID(ctx, jobID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return mediadomain.Asset{}, nil, ErrAssetNotFound
+	}
+	if err != nil {
+		return mediadomain.Asset{}, nil, err
+	}
+	if job.Status != mediadomain.StatusCompleted || strings.TrimSpace(job.ResultAssetID) == "" {
+		return mediadomain.Asset{}, nil, ErrAssetNotFound
+	}
+	return s.OpenVideo(ctx, job.ResultAssetID)
 }
 
 // AdminImageStats 返回图片统计信息。

@@ -300,6 +300,98 @@ func TestMediaUploadTicketRepositoryConsumeRollsBackWhenTicketReadFails(t *testi
 	}
 }
 
+func TestMediaJobRepositoryCompletedUpdateClearsErrorFields(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accountValue, _, err := NewAccountRepository(database).UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider:             accountdomain.ProviderWeb,
+		AuthType:             accountdomain.AuthTypeSSO,
+		WebTier:              accountdomain.WebTierBasic,
+		Name:                 "media-clear-error-account",
+		SourceKey:            "media-clear-error-account",
+		EncryptedAccessToken: testEncryptedToken,
+		AuthStatus:           accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := clientKeyModel{Name: "media-clear-error-key", Prefix: "media-clear-error-key", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	jobRepo := NewMediaJobRepository(database)
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	job := testMediaJob("media_job_clear_error", accountValue.ID, key.ID, mediadomain.StatusFailed, now)
+	job.ErrorCode = "model_not_supported"
+	job.ErrorMessage = "当前账号池不支持该模型"
+	if err := jobRepo.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	// 成功终态写入：清空错误字段并绑定本地结果资产。
+	completedAt := now.Add(2 * time.Minute)
+	job.Status = mediadomain.StatusCompleted
+	job.Progress = 100
+	job.ErrorCode = ""
+	job.ErrorMessage = ""
+	job.ResultAssetID = "vid_preview_asset_0001"
+	job.CompletedAt = &completedAt
+	job.UpdatedAt = completedAt
+	if err := jobRepo.UpdateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := jobRepo.GetMediaJobByID(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != mediadomain.StatusCompleted || stored.ErrorCode != "" || stored.ErrorMessage != "" {
+		t.Fatalf("stored completed job still has errors: %#v", stored)
+	}
+	if stored.ResultAssetID != "vid_preview_asset_0001" {
+		t.Fatalf("result_asset_id = %q", stored.ResultAssetID)
+	}
+	listed, _, err := jobRepo.ListMediaJobs(ctx, repository.MediaJobListQuery{
+		Page: repository.PageQuery{Offset: 0, Limit: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ResultAssetID != "vid_preview_asset_0001" {
+		t.Fatalf("list did not project result_asset_id: %#v", listed)
+	}
+}
+
+func TestMediaAssetRepositoryExistingVideoAssetIDs(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	assetRepo := NewMediaAssetRepository(database)
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	video := mediadomain.Asset{
+		ID: "vid_existing_0001", Kind: "video", StorageKey: "videos/vid_existing_0001.mp4",
+		MIMEType: "video/mp4", SizeBytes: 2048, SHA256: strings.Repeat("b", 64), CreatedAt: now,
+	}
+	image := testMediaAsset("img_existing_0001", "images/img_existing_0001.png", now)
+	if err := assetRepo.CreateMediaAsset(ctx, video); err != nil {
+		t.Fatal(err)
+	}
+	if err := assetRepo.CreateMediaAsset(ctx, image); err != nil {
+		t.Fatal(err)
+	}
+	found, err := assetRepo.ExistingVideoAssetIDs(ctx, []string{"vid_existing_0001", "img_existing_0001", "vid_missing_0001", "", "vid_existing_0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("found = %#v", found)
+	}
+	if _, ok := found["vid_existing_0001"]; !ok {
+		t.Fatalf("expected video asset present: %#v", found)
+	}
+	empty, err := assetRepo.ExistingVideoAssetIDs(ctx, nil)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty ids = %#v err=%v", empty, err)
+	}
+}
+
 func testMediaAsset(id, storageKey string, createdAt time.Time) mediadomain.Asset {
 	return mediadomain.Asset{
 		ID:         id,

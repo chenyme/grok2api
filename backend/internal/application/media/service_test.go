@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	localmedia "github.com/chenyme/grok2api/backend/internal/infra/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
@@ -451,4 +453,148 @@ func TestPublicImageURLUsesHotReloadedBase(t *testing.T) {
 	if got := service.PublicImageURL("img_demo"); got != "https://runtime.example/api/v1/media/images/img_demo" {
 		t.Fatalf("hot-reloaded URL = %q", got)
 	}
+}
+
+func TestAdminVideoPreviewAvailabilityAndOpen(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-admin-preview.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects-preview"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := relational.NewMediaAssetRepository(database)
+	jobs := relational.NewMediaJobRepository(database)
+	accountID, clientKeyID := seedMediaJobOwners(t, database)
+	service := NewService(assets, jobs, objects, nil, Config{
+		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
+		CleanupThresholdPercent: 80, CleanupInterval: time.Minute,
+	})
+
+	videoPayload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x01}, 64)...)
+	videoID := "vid_admin_preview_0001"
+	storageKey, err := objects.SaveVideo(ctx, videoID, "video/mp4", videoPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := assets.CreateMediaAsset(ctx, mediadomain.Asset{
+		ID: videoID, Kind: "video", StorageKey: storageKey, MIMEType: "video/mp4",
+		SizeBytes: int64(len(videoPayload)), SHA256: strings.Repeat("c", 64), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	completedAt := now.Add(time.Minute)
+	withCache := mediadomain.Job{
+		ID: "job_with_cache", RequestID: "req-with-cache", ClientKeyID: clientKeyID, ClientKeyName: "key",
+		AccountID: accountID, AccountName: "acct", Provider: "grok_web", Model: "grok-imagine-video",
+		ModelRouteID: 1, UpstreamModel: "video", Prompt: "with cache", Seconds: 6, Size: "16:9", Quality: "720p",
+		Status: mediadomain.StatusCompleted, Progress: 100, InputJSON: `{}`, ResultAssetID: videoID,
+		// 历史脏数据：completed 仍残留中间失败文案。
+		ErrorCode: "model_not_supported", ErrorMessage: "当前账号池不支持该模型",
+		CreatedAt: now, UpdatedAt: completedAt, CompletedAt: &completedAt,
+	}
+	withoutCache := withCache
+	withoutCache.ID = "job_without_cache"
+	withoutCache.RequestID = "req-without-cache"
+	withoutCache.Prompt = "without cache"
+	withoutCache.ResultAssetID = "vid_missing_asset_0001"
+	withoutCache.ErrorCode, withoutCache.ErrorMessage = "", ""
+	failed := withCache
+	failed.ID = "job_failed"
+	failed.RequestID = "req-failed"
+	failed.Prompt = "failed job"
+	failed.Status = mediadomain.StatusFailed
+	failed.ResultAssetID = ""
+	failed.ErrorCode = "generation_failed"
+	failed.ErrorMessage = "upstream disconnected"
+	for _, job := range []mediadomain.Job{withCache, withoutCache, failed} {
+		if err := jobs.CreateMediaJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	listed, total, err := service.AdminListVideoJobs(ctx, 1, 20, "", "", repository.SortQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Fatalf("total = %d", total)
+	}
+	byID := map[string]AdminVideoJob{}
+	for _, item := range listed {
+		byID[item.Job.ID] = item
+	}
+	if !byID["job_with_cache"].PreviewAvailable {
+		t.Fatal("expected previewAvailable for job with local video metadata")
+	}
+	if byID["job_without_cache"].PreviewAvailable || byID["job_failed"].PreviewAvailable {
+		t.Fatalf("unexpected preview flags: %#v", byID)
+	}
+
+	asset, body, err := service.AdminOpenVideoJobContent(ctx, "job_with_cache")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, readErr := io.ReadAll(body)
+	_ = body.Close()
+	if readErr != nil || asset.ID != videoID || !bytes.Equal(data, videoPayload) {
+		t.Fatalf("open cached video: asset=%#v size=%d err=%v", asset, len(data), readErr)
+	}
+	if _, _, err := service.AdminOpenVideoJobContent(ctx, "job_without_cache"); !errors.Is(err, ErrAssetNotFound) {
+		t.Fatalf("missing cache open err = %v", err)
+	}
+	if _, _, err := service.AdminOpenVideoJobContent(ctx, "job_failed"); !errors.Is(err, ErrAssetNotFound) {
+		t.Fatalf("failed job open err = %v", err)
+	}
+	if _, _, err := service.AdminOpenVideoJobContent(ctx, "job_missing"); !errors.Is(err, ErrAssetNotFound) {
+		t.Fatalf("missing job open err = %v", err)
+	}
+
+	// 元数据删除后列表预览不可用；内容端点 404。
+	if err := assets.DeleteMediaAsset(ctx, videoID); err != nil {
+		t.Fatal(err)
+	}
+	listed, _, err = service.AdminListVideoJobs(ctx, 1, 20, "job_with_cache", "", repository.SortQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Job.ID != "job_with_cache" || listed[0].PreviewAvailable {
+		t.Fatalf("preview should be false after asset metadata deleted: %#v", listed)
+	}
+	if _, _, err := service.AdminOpenVideoJobContent(ctx, "job_with_cache"); !errors.Is(err, ErrAssetNotFound) {
+		t.Fatalf("deleted metadata open err = %v", err)
+	}
+}
+
+func seedMediaJobOwners(t *testing.T, database *relational.Database) (accountID, clientKeyID uint64) {
+	t.Helper()
+	ctx := context.Background()
+	accountValue, _, err := relational.NewAccountRepository(database).UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider:             accountdomain.ProviderWeb,
+		AuthType:             accountdomain.AuthTypeSSO,
+		WebTier:              accountdomain.WebTierBasic,
+		Name:                 "media-preview-account",
+		SourceKey:            "media-preview-account",
+		EncryptedAccessToken: "encrypted-token",
+		AuthStatus:           accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := relational.NewClientKeyRepository(database).Create(ctx, clientkeydomain.Key{
+		Name: "media-preview-key", Prefix: "media-preview-key", SecretHash: strings.Repeat("a", 64),
+		EncryptedSecret: "encrypted-secret", Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return accountValue.ID, key.ID
 }

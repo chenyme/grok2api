@@ -1,9 +1,10 @@
 import type { MediaAssetDTO, ImageStatsDTO, MediaJobDTO, VideoStatsDTO } from "@/features/media/types";
-import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
+import { apiDownload, apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import {
   createObjectDecoder,
   createPaginatedDecoder,
   hasShape,
+  isBoolean,
   isNumber,
   isString,
   isOneOf,
@@ -49,6 +50,7 @@ const mediaJobShape = {
   createdAt: isString,
   completedAt: (value: unknown) => value === null || isString(value),
   errorMessage: isString,
+  previewAvailable: isBoolean,
 };
 
 const decodeImageStats = createObjectDecoder<ImageStatsDTO>("image stats", {
@@ -86,4 +88,9 @@ export function listVideos(input: ListVideosInput): Promise<PaginatedDTO<MediaJo
 
 export function getVideoStats(): Promise<VideoStatsDTO> {
   return apiRequest("/api/admin/v1/media/videos/stats", {}, decodeVideoStats);
+}
+
+/** 以管理员凭据下载本地缓存视频二进制，供预览弹窗使用。 */
+export function downloadVideoContent(jobId: string): Promise<Blob> {
+  return apiDownload(`/api/admin/v1/media/videos/${encodeURIComponent(jobId)}/content`);
 }
