@@ -135,7 +135,7 @@ func boundDiagnosticText(value string, limit int) string {
 
 // GenerateVideo 通过 Build OAuth 固定模型 grok-imagine-video-1.5 创建并轮询视频任务。
 // 最多 1 张首图；多于 1 张在调用上游前失败，不静默截断。
-// 主地址不注入 output.upload_url；仅在已标记 XAI 推理回退或主 403 后探测 XAI 时签发 PUT 地址。
+// bot_flag_source=1 默认使用 XAI；其他账号仅在当次 Build 创建返回 403 后探测 XAI。
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
 	if len(request.ReferenceURLs) > buildVideoMaxImages {
 		return provider.VideoResult{}, fmt.Errorf("Build grok-imagine-video-1.5 最多支持 1 张首图，当前为 %d 张", len(request.ReferenceURLs))
@@ -145,12 +145,11 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, err
 	}
 	credential := request.Credential
-	if credential.BuildAPIFallback {
-		if a.canUseBuildAPIFallback(ctx, credential.ID) {
-			return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true)
-		}
+	routeMode := normalizedBuildRouteMode(credential)
+	if routeMode == account.BuildRouteXAI || (routeMode == account.BuildRouteAuto && a.CredentialMetadata(credential).BuildBotFlagged) {
+		return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true, false)
 	}
-	// 未标记：先走主地址，不添加 upload_url。
+	// 非 bot-flagged 账号先走 Build 主地址，不读取历史回退标记。
 	primaryBase := a.primaryBaseURL()
 	payload, err := buildVideoCreatePayload(request, "")
 	if err != nil {
@@ -175,15 +174,14 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if !asVideoUpstreamError(createErr, &upstream) || !isHTTPForbidden(upstream.status) {
 		return provider.VideoResult{}, createErr
 	}
-	// Free/Unknown 的主 403 直接返回；仅 Super 可签发 upload_url 后探测 XAI。
-	if credential.BuildAPIFallback || !a.canUseBuildAPIFallback(ctx, credential.ID) {
+	if routeMode == account.BuildRouteBuild {
 		return provider.VideoResult{}, createErr
 	}
-	// 主 403：签发 upload_url 后探测 XAI；创建成功才标记降级。
-	return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true)
+	// 主 403：签发 upload_url 后探测 XAI；创建成功才标记降级。无 Billing/entitlement 门槛。
+	return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true, true)
 }
 
-func (a *Adapter) generateVideoOnBase(ctx context.Context, request provider.VideoRequest, credential account.Credential, accessToken, base string, withUploadURL bool) (provider.VideoResult, error) {
+func (a *Adapter) generateVideoOnBase(ctx context.Context, request provider.VideoRequest, credential account.Credential, accessToken, base string, withUploadURL, recordFallback bool) (provider.VideoResult, error) {
 	uploadURL, assetID := "", ""
 	var err error
 	if withUploadURL {
@@ -218,7 +216,7 @@ func (a *Adapter) generateVideoOnBase(ctx context.Context, request provider.Vide
 	if err != nil {
 		return provider.VideoResult{}, err
 	}
-	if withUploadURL && !credential.BuildAPIFallback {
+	if recordFallback {
 		a.activateBuildAPIFallback(ctx, &credential)
 	}
 	if request.Progress != nil {

@@ -45,11 +45,15 @@ type accountModel struct {
 	ObservedModel    string `gorm:"size:255;check:chk_accounts_observed_model,length(observed_model) <= 255"`
 	ObservedModelAt  *time.Time
 	// BuildAPIFallback 仅对 grok_build 有意义：XAI 推理回退标记；其他 Provider 保持 false。
-	BuildAPIFallback bool                    `gorm:"not null;default:false"`
-	CreatedAt        time.Time               `gorm:"not null"`
-	UpdatedAt        time.Time               `gorm:"not null"`
-	Credential       *accountCredentialModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	WebProfile       *webAccountProfileModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	BuildAPIFallback bool `gorm:"not null;default:false"`
+	// BuildRouteMode 仅控制 grok_build 推理地址；其它 Provider 固定 auto。
+	BuildRouteMode string `gorm:"size:16;not null;default:auto;check:chk_accounts_build_route_mode,build_route_mode IN ('auto','build','xai')"`
+	// BuildSuperEntitled 仅对 grok_build 有意义：管理员确认的 Super/1.5 entitlement；其他 Provider 保持 false。
+	BuildSuperEntitled bool                    `gorm:"not null;default:false"`
+	CreatedAt          time.Time               `gorm:"not null"`
+	UpdatedAt          time.Time               `gorm:"not null"`
+	Credential         *accountCredentialModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	WebProfile         *webAccountProfileModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (accountModel) TableName() string { return "provider_accounts" }

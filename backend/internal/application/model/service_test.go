@@ -336,10 +336,10 @@ type buildCapabilityNormalizerAdapter struct {
 	*modelCapabilityAdapter
 }
 
-func (a *buildCapabilityNormalizerAdapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing) []string {
-	// 与 cli.Adapter 规则一致：Super/paid 确保 1.5；否则精确移除。不读 BuildAPIFallback。
+func (a *buildCapabilityNormalizerAdapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string {
+	// 与 cli.Adapter 规则一致：Super（paid 或 entitlement）确保 1.5；否则精确移除。不读 BuildAPIFallback。
 	const video15 = "grok-imagine-video-1.5"
-	paid := billing != nil && billing.IsPaid()
+	super := account.IsBuildSuper(credential, billing)
 	result := make([]string, 0, len(models)+1)
 	seen := make(map[string]struct{}, len(models)+1)
 	hasVideo15 := false
@@ -351,7 +351,7 @@ func (a *buildCapabilityNormalizerAdapter) NormalizeAccountModelCapabilities(mod
 			continue
 		}
 		if modelName == video15 {
-			if !paid {
+			if !super {
 				continue
 			}
 			hasVideo15 = true
@@ -359,7 +359,7 @@ func (a *buildCapabilityNormalizerAdapter) NormalizeAccountModelCapabilities(mod
 		seen[modelName] = struct{}{}
 		result = append(result, modelName)
 	}
-	if paid && !hasVideo15 {
+	if super && !hasVideo15 {
 		result = append(result, video15)
 	}
 	return result

@@ -43,6 +43,9 @@ type AccountListFilter struct {
 	QuotaType   string
 	Status      string
 	Refreshable *bool
+	AccountIDs  []uint64
+	RestrictIDs bool
+	ExcludeIDs  []uint64
 	Now         time.Time
 }
 
