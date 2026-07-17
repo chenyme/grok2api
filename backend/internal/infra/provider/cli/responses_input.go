@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -55,6 +56,110 @@ func normalizeMCPOutputInput(item map[string]any, param string) (map[string]any,
 		"type": "message", "role": "developer",
 		"content": []any{map[string]any{"type": "input_text", "text": "MCP tool output for call " + callID + ": " + string(output)}},
 	}, nil
+}
+
+func normalizeMessageInput(item map[string]any, param string) (map[string]any, error) {
+	role := strings.TrimSpace(stringField(item, "role"))
+	if role == "" {
+		role = "assistant"
+	}
+	if role == "model" {
+		role = "assistant"
+	}
+	content, err := normalizeMessageContent(item["content"], role, param+".content")
+	if err != nil {
+		return nil, err
+	}
+	// 仅按白名单重建，避免 Codex 的 phase、metadata、status、id 等
+	// 非输入字段进入 Grok ModelInput。
+	return map[string]any{"type": "message", "role": role, "content": content}, nil
+}
+
+func normalizeMessageContent(value any, role, param string) (any, error) {
+	if text, ok := value.(string); ok {
+		return text, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, &responsesRequestError{Message: param + " 必须是字符串或数组", Param: param, Code: "invalid_parameter"}
+	}
+	// 官方 Grok CLI 会把 assistant 的多个输出文本合并为 EasyInputMessage
+	// 字符串，既保留语义，也绕开 OutputMessage 对 id/status 的输入限制。
+	if role == "assistant" {
+		texts := make([]string, 0, len(items))
+		for _, raw := range items {
+			item, isObject := raw.(map[string]any)
+			if !isObject {
+				texts = nil
+				break
+			}
+			switch stringField(item, "type") {
+			case "text", "input_text", "output_text":
+				texts = append(texts, stringField(item, "text"))
+			case "refusal":
+				texts = append(texts, stringField(item, "refusal"))
+			default:
+				texts = nil
+			}
+			if texts == nil {
+				break
+			}
+		}
+		if texts != nil {
+			return strings.Join(texts, "\n"), nil
+		}
+	}
+
+	textPartType := "input_text"
+	if role == "assistant" {
+		textPartType = "output_text"
+	}
+	normalized := make([]any, 0, len(items))
+	for index, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return nil, &responsesRequestError{Message: param + "[] 必须是对象", Param: fmt.Sprintf("%s[%d]", param, index), Code: "invalid_parameter"}
+		}
+		switch stringField(item, "type") {
+		case "text", "input_text", "output_text":
+			// 按角色重建文本类型，不能把 assistant 的 output_text 改成 input_text。
+			normalized = append(normalized, map[string]any{"type": textPartType, "text": stringField(item, "text")})
+		case "refusal":
+			normalized = append(normalized, map[string]any{"type": textPartType, "text": stringField(item, "refusal")})
+		case "input_image":
+			normalized = append(normalized, normalizeInputImagePart(item))
+		case "input_file":
+			normalized = append(normalized, normalizeInputFilePart(item))
+		default:
+			return nil, &responsesRequestError{Message: "Grok Build 0.2.101 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
+		}
+	}
+	return normalized, nil
+}
+
+func normalizeInputImagePart(item map[string]any) map[string]any {
+	converted := map[string]any{"type": "input_image"}
+	if value, exists := item["image_url"]; exists && value != nil {
+		converted["image_url"] = cloneJSONValue(value)
+	} else if value, exists := item["url"]; exists && value != nil {
+		converted["image_url"] = cloneJSONValue(value)
+	}
+	for _, key := range []string{"detail", "file_id"} {
+		if value, exists := item[key]; exists && value != nil {
+			converted[key] = cloneJSONValue(value)
+		}
+	}
+	return converted
+}
+
+func normalizeInputFilePart(item map[string]any) map[string]any {
+	converted := map[string]any{"type": "input_file"}
+	for _, key := range []string{"file_data", "file_id", "filename", "file_url"} {
+		if value, exists := item[key]; exists && value != nil {
+			converted[key] = cloneJSONValue(value)
+		}
+	}
+	return converted
 }
 
 func textInputContent(raw any) (string, bool) {

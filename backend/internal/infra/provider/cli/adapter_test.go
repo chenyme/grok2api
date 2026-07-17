@@ -90,7 +90,7 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 	}
 	_ = response.Body.Close()
 	input := captured["input"].([]any)
-	if captured["model"] != "grok-4.5" || captured["prompt_cache_key"] != "isolated-key" || len(input) != 1 || input[0].(map[string]any)["encrypted_content"] != "cipher" {
+	if captured["model"] != "grok-4.5" || captured["prompt_cache_key"] != "isolated-key" || len(input) != 1 || input[0].(map[string]any)["type"] != "reasoning" || input[0].(map[string]any)["encrypted_content"] != "cipher" {
 		t.Fatalf("captured = %#v", captured)
 	}
 }
