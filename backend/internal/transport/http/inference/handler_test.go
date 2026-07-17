@@ -359,8 +359,9 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	}
 
 	validShape := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{
-		"model":"grok-imagine-image-edit","prompt":"变成黑色 白字","n":1,"resolution":"2k",
-		"image":{"url":"https://example.com/input.png"}
+		"model":"grok-imagine-image-edit","prompt":"变成黑色 白字","n":1,"resolution":"1k",
+		"image":{"url":"https://example.com/input.png"},"aspect_ratio":"1:1",
+		"stream":true,"partial_images":1
 	}`))
 	validShape.Header.Set("Content-Type", "application/json")
 	validRecorder := httptest.NewRecorder()
@@ -370,14 +371,46 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	}
 
 	invalidResolution := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{
-		"model":"grok-imagine-image-edit","prompt":"test","resolution":"4k",
+		"model":"grok-imagine-image-edit","prompt":"test","resolution":"2k",
 		"image":{"url":"https://example.com/input.png"}
 	}`))
 	invalidResolution.Header.Set("Content-Type", "application/json")
 	invalidResolutionRecorder := httptest.NewRecorder()
 	router.ServeHTTP(invalidResolutionRecorder, invalidResolution)
-	if invalidResolutionRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidResolutionRecorder.Body.String(), "resolution 必须是 1k 或 2k") {
+	if invalidResolutionRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidResolutionRecorder.Body.String(), "仅支持 resolution=1k") {
 		t.Fatalf("invalid resolution status=%d body=%s", invalidResolutionRecorder.Code, invalidResolutionRecorder.Body.String())
+	}
+
+	invalidCount := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{
+		"model":"grok-imagine-image-edit","prompt":"test","n":2,
+		"image":{"url":"https://example.com/input.png"}
+	}`))
+	invalidCount.Header.Set("Content-Type", "application/json")
+	invalidCountRecorder := httptest.NewRecorder()
+	router.ServeHTTP(invalidCountRecorder, invalidCount)
+	if invalidCountRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidCountRecorder.Body.String(), "仅支持 n=1") {
+		t.Fatalf("invalid count status=%d body=%s", invalidCountRecorder.Code, invalidCountRecorder.Body.String())
+	}
+
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "negative partial images", body: `{"model":"grok-imagine-image-edit","prompt":"test","stream":true,"partial_images":-1,"image":{"url":"https://example.com/input.png"}}`},
+		{name: "too many partial images", body: `{"model":"grok-imagine-image-edit","prompt":"test","stream":true,"partial_images":4,"image":{"url":"https://example.com/input.png"}}`},
+		{name: "partial images require stream", body: `{"model":"grok-imagine-image-edit","prompt":"test","partial_images":1,"image":{"url":"https://example.com/input.png"}}`},
+		{name: "invalid aspect ratio", body: `{"model":"grok-imagine-image-edit","prompt":"test","aspect_ratio":"7:5","image":{"url":"https://example.com/input.png"}}`},
+		{name: "invalid size", body: `{"model":"grok-imagine-image-edit","prompt":"test","size":"512x512","image":{"url":"https://example.com/input.png"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 
 	multipartRequest := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader("ignored"))

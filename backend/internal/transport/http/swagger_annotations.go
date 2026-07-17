@@ -54,8 +54,12 @@ type SwaggerImageEditRequest struct {
 	Prompt         string                `json:"prompt" example:"Change the background to black"`
 	Image          SwaggerImageReference `json:"image"`
 	N              int                   `json:"n" example:"1"`
+	Size           string                `json:"size,omitempty" example:"1024x1024"`
+	AspectRatio    string                `json:"aspect_ratio,omitempty" example:"1:1"`
 	Resolution     string                `json:"resolution,omitempty" example:"1k"`
 	ResponseFormat string                `json:"response_format,omitempty" example:"url"`
+	Stream         bool                  `json:"stream,omitempty" example:"false"`
+	PartialImages  int                   `json:"partial_images,omitempty" example:"0"`
 }
 
 // SwaggerVideoGenerationRequest 表示视频生成请求。
