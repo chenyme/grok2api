@@ -90,6 +90,37 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	}
 }
 
+func TestLoadPersistedKeepsConsoleDefaultsWhenFieldIsMissing(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.ProviderConsole = settingsdomain.ProviderConsoleConfig{}
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provider.Console != cfg.Provider.Console {
+		t.Fatalf("console config = %#v, want %#v", loaded.Provider.Console, cfg.Provider.Console)
+	}
+}
+
+func TestLoadPersistedKeepsClearanceDefaultsForOlderPayload(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.ProviderWeb.ClearanceMode = ""
+	value.ProviderWeb.FlareSolverrURL = ""
+	value.ProviderWeb.ClearanceTimeout = 0
+	value.ProviderWeb.ClearanceRefresh = 0
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provider.Web.ClearanceMode != cfg.Provider.Web.ClearanceMode || loaded.Provider.Web.FlareSolverrURL != cfg.Provider.Web.FlareSolverrURL || loaded.Provider.Web.ClearanceTimeout != cfg.Provider.Web.ClearanceTimeout || loaded.Provider.Web.ClearanceRefresh != cfg.Provider.Web.ClearanceRefresh {
+		t.Fatalf("clearance config = %#v, want %#v", loaded.Provider.Web, cfg.Provider.Web)
+	}
+}
+
 func TestSnapshotIncludesRecommendedBuildBaseline(t *testing.T) {
 	service := NewService(testConfig(t), time.Time{}, 0, &runtimeSettingsRepositoryStub{}, nil, nil)
 	recommended := service.Get().RecommendedProviderBuild

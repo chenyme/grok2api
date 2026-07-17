@@ -42,6 +42,36 @@ func TestEgressRepositorySortsInDatabase(t *testing.T) {
 	}
 }
 
+func TestEgressStateUpdatesDoNotOverwriteClearanceOrHealth(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "egress-state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewEgressRepository(database)
+	node, err := repo.CreateEgressNode(ctx, egress.Node{Name: "web", Scope: egress.ScopeWeb, Enabled: true, Health: 1, UserAgent: "old", EncryptedCloudflareCookie: "old-cookie"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateEgressNodeHealth(ctx, node.ID, 0.4, 2, nil, "anti-bot rejection"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateEgressNodeClearance(ctx, node.ID, "new-cookie", "new-agent"); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := repo.GetEgressNode(ctx, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.Health != 0.4 || actual.FailureCount != 2 || actual.EncryptedCloudflareCookie != "new-cookie" || actual.UserAgent != "new-agent" {
+		t.Fatalf("partial updates overwrote state: %#v", actual)
+	}
+}
+
 func TestInitializeSchemaRemovesAndRejectsLegacyAllEgressNodes(t *testing.T) {
 	ctx := context.Background()
 	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "legacy-egress.db"))

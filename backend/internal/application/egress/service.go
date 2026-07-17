@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
@@ -15,7 +16,8 @@ import (
 var (
 	ErrInvalidInput = errors.New("代理节点参数无效")
 	ErrInvalidSort  = errors.New("代理节点排序条件无效")
-	ErrNotFound     = errors.New("代理节点不存在")
+	ErrNotFound             = errors.New("代理节点不存在")
+	ErrClearanceUnavailable = errors.New("Clearance 刷新不可用")
 )
 
 const (
@@ -39,14 +41,35 @@ type Input struct {
 type Service struct {
 	repository repository.EgressRepository
 	cipher     *security.Cipher
+	mu         sync.RWMutex
 	browserUA  string
+	clearance  ClearanceManager
+}
+
+type ClearanceManager interface {
+	RefreshClearance(context.Context, uint64) error
+	InvalidateClearance(uint64)
 }
 
 func NewService(repository repository.EgressRepository, cipher *security.Cipher, browserUA string) *Service {
 	return &Service{repository: repository, cipher: cipher, browserUA: strings.TrimSpace(browserUA)}
 }
 
+func (s *Service) UpdateDefaults(browserUA string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.browserUA = strings.TrimSpace(browserUA)
+}
+
+func (s *Service) SetClearanceManager(value ClearanceManager) {
+	s.mu.Lock()
+	s.clearance = value
+	s.mu.Unlock()
+}
+
 func (s *Service) DefaultUserAgents() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return map[string]string{
 		string(domain.ScopeBuild): "", string(domain.ScopeWeb): s.browserUA, string(domain.ScopeConsole): s.browserUA,
 		string(domain.ScopeWebAsset): s.browserUA,
@@ -74,6 +97,9 @@ func (s *Service) Create(ctx context.Context, input Input) (domain.PublicNode, e
 		return domain.PublicNode{}, err
 	}
 	created, err := s.repository.CreateEgressNode(ctx, value)
+	if err == nil {
+		s.invalidateClearance(created.ID)
+	}
 	return publicNode(created), err
 }
 
@@ -90,6 +116,9 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 		return domain.PublicNode{}, err
 	}
 	updated, err := s.repository.UpdateEgressNode(ctx, value)
+	if err == nil {
+		s.invalidateClearance(updated.ID)
+	}
 	return publicNode(updated), err
 }
 
@@ -98,7 +127,34 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 	if errors.Is(err, repository.ErrNotFound) {
 		return ErrNotFound
 	}
+	if err == nil {
+		s.invalidateClearance(id)
+	}
 	return err
+}
+
+func (s *Service) RefreshClearance(ctx context.Context, id uint64) error {
+	if _, err := s.repository.GetEgressNode(ctx, id); errors.Is(err, repository.ErrNotFound) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	s.mu.RLock()
+	manager := s.clearance
+	s.mu.RUnlock()
+	if manager == nil {
+		return ErrClearanceUnavailable
+	}
+	return manager.RefreshClearance(ctx, id)
+}
+
+func (s *Service) invalidateClearance(id uint64) {
+	s.mu.RLock()
+	manager := s.clearance
+	s.mu.RUnlock()
+	if manager != nil {
+		manager.InvalidateClearance(id)
+	}
 }
 
 func (s *Service) applyInput(value domain.Node, input Input, create bool) (domain.Node, error) {
@@ -117,7 +173,9 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 		value.UserAgent = strings.TrimSpace(input.UserAgent)
 	}
 	if input.Scope != domain.ScopeBuild && value.UserAgent == "" {
+		s.mu.RLock()
 		value.UserAgent = s.browserUA
+		s.mu.RUnlock()
 	}
 	if len(value.UserAgent) > 512 {
 		return domain.Node{}, fmt.Errorf("%w: User-Agent 过长", ErrInvalidInput)

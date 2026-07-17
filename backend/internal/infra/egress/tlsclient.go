@@ -3,8 +3,12 @@ package egress
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -14,6 +18,8 @@ import (
 )
 
 type browserClient struct{ inner tlsclient.HttpClient }
+
+var chromeMajorPattern = regexp.MustCompile(`(?i)Chrome/(\d+)`)
 
 func (l *Lease) DialWebSocket(ctx context.Context, endpoint string, headers fhttp.Header, handshakeTimeout time.Duration) (*websocket.Conn, *fhttp.Response, error) {
 	if l == nil || l.browser == nil {
@@ -43,10 +49,10 @@ func fhttpResponseAsHTTP(response *fhttp.Response) *http.Response {
 	return &http.Response{StatusCode: response.StatusCode, Header: http.Header(response.Header), Body: response.Body}
 }
 
-func newBrowserClient(proxyURL string) (*browserClient, error) {
+func newBrowserClient(proxyURL, userAgent string) (*browserClient, error) {
 	options := []tlsclient.HttpClientOption{
 		tlsclient.WithTimeoutSeconds(7200),
-		tlsclient.WithClientProfile(profiles.Chrome_146),
+		tlsclient.WithClientProfile(browserProfile(userAgent)),
 		tlsclient.WithNotFollowRedirects(),
 	}
 	if proxyURL != "" {
@@ -57,6 +63,32 @@ func newBrowserClient(proxyURL string) (*browserClient, error) {
 		return nil, err
 	}
 	return &browserClient{inner: client}, nil
+}
+
+func browserProfile(userAgent string) profiles.ClientProfile {
+	match := chromeMajorPattern.FindStringSubmatch(strings.TrimSpace(userAgent))
+	if len(match) == 2 {
+		if profile, ok := profiles.MappedTLSClients["chrome_"+match[1]]; ok {
+			return profile
+		}
+		major, err := strconv.Atoi(match[1])
+		if err == nil {
+			bestMajor, bestDistance := 0, int(^uint(0)>>1)
+			for _, candidate := range []int{146, 144, 133, 131, 124, 120, 117} {
+				distance := candidate - major
+				if distance < 0 {
+					distance = -distance
+				}
+				if distance < bestDistance {
+					bestMajor, bestDistance = candidate, distance
+				}
+			}
+			if profile, ok := profiles.MappedTLSClients[fmt.Sprintf("chrome_%d", bestMajor)]; ok {
+				return profile
+			}
+		}
+	}
+	return profiles.Chrome_146
 }
 
 func (c *browserClient) Do(request *http.Request) (*http.Response, error) {

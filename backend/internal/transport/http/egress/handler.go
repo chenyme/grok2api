@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
@@ -21,7 +22,20 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/egress-nodes", h.list)
 	router.POST("/egress-nodes", h.create)
 	router.PUT("/egress-nodes/:id", h.update)
+	router.POST("/egress-nodes/:id/refresh-clearance", h.refreshClearance)
 	router.DELETE("/egress-nodes/:id", h.delete)
+}
+
+func (h *Handler) refreshClearance(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := h.service.RefreshClearance(c.Request.Context(), id); err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"refreshed": true})
 }
 
 type nodeRequest struct {
@@ -137,6 +151,10 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 		response.Error(c, http.StatusBadRequest, "invalidEgressNode", err.Error())
 	case errors.Is(err, egressapp.ErrNotFound):
 		response.Error(c, http.StatusNotFound, "egressNodeNotFound", err.Error())
+	case errors.Is(err, egressapp.ErrClearanceUnavailable):
+		response.Error(c, http.StatusConflict, "clearanceRefreshUnavailable", err.Error())
+	case strings.Contains(err.Error(), "FlareSolverr") || strings.Contains(err.Error(), "Clearance"):
+		response.Error(c, http.StatusBadGateway, "clearanceRefreshFailed", err.Error())
 	default:
 		response.Error(c, http.StatusInternalServerError, "egressNodeOperationFailed", "代理节点操作失败")
 	}

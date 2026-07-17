@@ -30,6 +30,7 @@ export function SettingsPage() {
   const snapshot = settingsQuery.data;
   const loading = settingsQuery.isPending;
   const statsigMode = form.watch("providerWeb.statsigMode");
+  const clearanceMode = form.watch("providerWeb.clearanceMode");
   const statsigManualConfigured = form.watch("providerWeb.statsigManualConfigured");
   const buildClientVersion = form.watch("providerBuild.clientVersion");
   const buildUserAgent = form.watch("providerBuild.userAgent");
@@ -126,7 +127,21 @@ export function SettingsPage() {
                   <Input id="web-statsig-url" type="url" placeholder="http://grok-signer-go:8788/sign" {...form.register("providerWeb.statsigSignerURL")} />
                 </SettingsField>
               )}
-              <SettingsField controlId="web-quota-timeout" label={t("settings.web.quotaTimeout")} description={t("settings.web.quotaTimeoutHelp")} error={form.formState.errors.providerWeb?.quotaTimeout?.message}><Controller control={form.control} name="providerWeb.quotaTimeout" render={({ field }) => <DurationInput id="web-quota-timeout" value={field.value} onChange={field.onChange} />} /></SettingsField>
+              
+              <SettingsField controlId="web-clearance-mode" className="sm:col-span-2" label={t("settings.web.clearanceMode")} error={form.formState.errors.providerWeb?.clearanceMode?.message}>
+                <Controller control={form.control} name="providerWeb.clearanceMode" render={({ field }) => (
+                  <div id="web-clearance-mode" role="radiogroup" className="grid h-8 grid-cols-2 rounded-md bg-muted/55 p-0.5">
+                    <Button type="button" role="radio" size="sm" variant={field.value === "manual" ? "secondary" : "ghost"} className="h-7 text-xs shadow-none" aria-checked={field.value === "manual"} onClick={() => field.onChange("manual")}>{t("settings.web.clearanceManual")}</Button>
+                    <Button type="button" role="radio" size="sm" variant={field.value === "flaresolverr" ? "secondary" : "ghost"} className="h-7 text-xs shadow-none" aria-checked={field.value === "flaresolverr"} onClick={() => field.onChange("flaresolverr")}>FlareSolverr</Button>
+                  </div>
+                )} />
+              </SettingsField>
+              {clearanceMode === "flaresolverr" ? <>
+                <SettingsField controlId="web-flaresolverr-url" className="sm:col-span-2" label={t("settings.web.flareSolverrURL")} error={form.formState.errors.providerWeb?.flareSolverrURL?.message}><Input id="web-flaresolverr-url" type="url" placeholder="http://flaresolverr:8191" {...form.register("providerWeb.flareSolverrURL")} /></SettingsField>
+                <SettingsField controlId="web-clearance-timeout" label={t("settings.web.clearanceTimeout")} error={form.formState.errors.providerWeb?.clearanceTimeout?.message}><Controller control={form.control} name="providerWeb.clearanceTimeout" render={({ field }) => <DurationInput id="web-clearance-timeout" value={field.value} onChange={field.onChange} />} /></SettingsField>
+                <SettingsField controlId="web-clearance-refresh" label={t("settings.web.clearanceRefresh")} error={form.formState.errors.providerWeb?.clearanceRefresh?.message}><Controller control={form.control} name="providerWeb.clearanceRefresh" render={({ field }) => <DurationInput id="web-clearance-refresh" value={field.value} onChange={field.onChange} />} /></SettingsField>
+              </> : null}
+<SettingsField controlId="web-quota-timeout" label={t("settings.web.quotaTimeout")} description={t("settings.web.quotaTimeoutHelp")} error={form.formState.errors.providerWeb?.quotaTimeout?.message}><Controller control={form.control} name="providerWeb.quotaTimeout" render={({ field }) => <DurationInput id="web-quota-timeout" value={field.value} onChange={field.onChange} />} /></SettingsField>
               <SettingsField controlId="web-chat-timeout" label={t("settings.web.chatTimeout")} description={t("settings.web.chatTimeoutHelp")} error={form.formState.errors.providerWeb?.chatTimeout?.message}><Controller control={form.control} name="providerWeb.chatTimeout" render={({ field }) => <DurationInput id="web-chat-timeout" value={field.value} onChange={field.onChange} />} /></SettingsField>
               <SettingsField controlId="web-image-timeout" label={t("settings.web.imageTimeout")} description={t("settings.web.imageTimeoutHelp")} error={form.formState.errors.providerWeb?.imageTimeout?.message}><Controller control={form.control} name="providerWeb.imageTimeout" render={({ field }) => <DurationInput id="web-image-timeout" value={field.value} onChange={field.onChange} />} /></SettingsField>
               <SettingsField controlId="web-video-timeout" label={t("settings.web.videoTimeout")} description={t("settings.web.videoTimeoutHelp")} error={form.formState.errors.providerWeb?.videoTimeout?.message}><Controller control={form.control} name="providerWeb.videoTimeout" render={({ field }) => <DurationInput id="web-video-timeout" value={field.value} onChange={field.onChange} />} /></SettingsField>
@@ -172,7 +187,7 @@ export function SettingsPage() {
           </SettingsSection>
 
           <SettingsSection title={t("settings.egress.title")}>
-            <EgressNodes />
+            <EgressNodes clearanceMode={clearanceMode} />
           </SettingsSection>
           </SettingsPane>
 
