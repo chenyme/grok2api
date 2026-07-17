@@ -345,20 +345,37 @@ func TestStickyProxyForbiddenDoesNotCooldownSharedNode(t *testing.T) {
 	}
 }
 
-func TestWebAssetFallsBackToWeb(t *testing.T) {
+func TestWebAssetCredentialFallsBackToWebWithSameResinIdentity(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
 		t.Fatal(err)
 	}
+	proxyURL, err := cipher.Encrypt("socks5h://Default.{account}:token@resin:2260")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountCookie, err := cipher.Encrypt("cf_clearance=account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "shared-web-asset-sso"
+	encryptedToken, err := cipher.Encrypt(token)
+	if err != nil {
+		t.Fatal(err)
+	}
 	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
-		{ID: 2, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1},
+		{ID: 2, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1, EncryptedProxyURL: proxyURL},
 	}}, cipher)
-	webLease, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	credential := accountdomain.Credential{
+		ID: 42, Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		EncryptedAccessToken: encryptedToken, EncryptedCloudflareCookie: accountCookie,
+	}
+	webLease, err := manager.AcquireCredential(context.Background(), domain.ScopeWeb, credential)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer webLease.Release()
-	lease, err := manager.Acquire(context.Background(), domain.ScopeWebAsset, "account")
+	lease, err := manager.AcquireCredential(context.Background(), domain.ScopeWebAsset, credential)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,8 +383,15 @@ func TestWebAssetFallsBackToWeb(t *testing.T) {
 	if lease.NodeID != 2 {
 		t.Fatalf("node = %d, want web fallback node 2", lease.NodeID)
 	}
+	wantAccount := "sso_" + security.HashToken(token)[:32]
+	if lease.ProxyURL != webLease.ProxyURL || !strings.Contains(lease.ProxyURL, "Default."+wantAccount+":") {
+		t.Fatalf("proxy identities web=%q asset=%q", webLease.ProxyURL, lease.ProxyURL)
+	}
+	if lease.CFCookies != "cf_clearance=account" {
+		t.Fatalf("asset lease cookie = %q", lease.CFCookies)
+	}
 	if lease.client != webLease.client {
-		t.Fatal("Web Asset fallback did not reuse the matching Web browser session")
+		t.Fatal("Web Asset credential fallback did not reuse the matching Web browser session")
 	}
 }
 

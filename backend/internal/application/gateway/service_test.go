@@ -466,7 +466,7 @@ func TestParseFreeQuotaExhaustion(t *testing.T) {
 	}
 }
 
-func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *testing.T) {
+func TestGatewayCoolsFreeBuildAccountsAfterForbidden(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "systemic-forbidden.db"))
 	if err != nil {
@@ -524,11 +524,11 @@ func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *test
 	if !errors.As(err, &upstreamFailure) || errors.Is(err, ErrNoAvailableAccount) {
 		t.Fatalf("error = %T %v", err, err)
 	}
-	if upstreamFailure.HTTPStatus != http.StatusForbidden || upstreamFailure.Code != "upstream_forbidden" || upstreamFailure.AccountScoped {
+	if upstreamFailure.HTTPStatus != http.StatusForbidden || upstreamFailure.Code != "upstream_forbidden" || !upstreamFailure.AccountScoped {
 		t.Fatalf("upstream failure = %#v", upstreamFailure)
 	}
 	attempts := adapter.Attempts()
-	if len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+	if len(attempts) != 3 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID || attempts[2] != credentials[2].ID {
 		t.Fatalf("attempts = %#v", attempts)
 	}
 	for _, credential := range credentials {
@@ -536,12 +536,12 @@ func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *test
 		if getErr != nil {
 			t.Fatal(getErr)
 		}
-		if observed.FailureCount != 0 || observed.CooldownUntil != nil || observed.AuthStatus != account.AuthStatusActive {
-			t.Fatalf("account %d was incorrectly penalized: %#v", credential.ID, observed)
+		if observed.FailureCount != 1 || observed.CooldownUntil == nil || observed.AuthStatus != account.AuthStatusActive {
+			t.Fatalf("account %d was not cooled after 403: %#v", credential.ID, observed)
 		}
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 1 || logs[0].StatusCode != http.StatusForbidden || logs[0].ErrorCode != "upstream_forbidden" || logs[0].AccountID == nil || *logs[0].AccountID != credentials[1].ID {
+	if err != nil || total != 1 || logs[0].StatusCode != http.StatusForbidden || logs[0].ErrorCode != "upstream_forbidden" || logs[0].AccountID == nil || *logs[0].AccountID != credentials[2].ID {
 		t.Fatalf("audit = %#v, total=%d, err=%v", logs, total, err)
 	}
 }
@@ -628,6 +628,75 @@ func TestGatewayRefreshesAndRetriesBuildPermissionDenialOnce(t *testing.T) {
 	}
 	if rejected.AuthStatus != account.AuthStatusReauthRequired || adapter.refreshes.Load() != 1 {
 		t.Fatalf("rejected credential = %#v, refreshes = %d", rejected, adapter.refreshes.Load())
+	}
+}
+
+func TestBuildChatPermissionDenialDoesNotInvalidateVideoCredential(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-scoped-denial.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "chat-denied-video-valid", SourceKey: "chat-denied-video-valid",
+		EncryptedAccessToken: "access-old", EncryptedRefreshToken: "refresh-old", ExpiresAt: time.Now().Add(time.Hour),
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := accountRepo.SaveBilling(ctx, account.Billing{AccountID: credential.ID, MonthlyLimit: 140, SyncedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-chat-denied"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-chat-denied"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "chat-denied-key", Prefix: "chat-denied", SecretHash: strings.Repeat("c", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &authRescueAdapter{}
+	adapter.denyChat.Store(true)
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
+
+	if _, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-chat-denied", ClientKey: clientKey, PublicModel: "grok-chat-denied",
+		Body: []byte(`{"model":"grok-chat-denied","input":"hello"}`),
+	}); err == nil {
+		t.Fatal("chat permission denial unexpectedly succeeded")
+	}
+	updated, err := accountRepo.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AuthStatus != account.AuthStatusActive || updated.FailureCount != 0 || updated.CooldownUntil != nil {
+		t.Fatalf("chat denial invalidated the whole credential: %#v", updated)
+	}
+	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-chat-denied", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ModelQuotaBlock == nil || candidates[0].ModelQuotaBlock.Reason != "model_access_denied" {
+		t.Fatalf("model-scoped denial was not persisted: %#v", candidates)
 	}
 }
 
@@ -1095,6 +1164,7 @@ type authRescueAdapter struct {
 	attempts  atomic.Int64
 	refreshes atomic.Int64
 	rejectAll atomic.Bool
+	denyChat  atomic.Bool
 }
 
 func (a *authRescueAdapter) Provider() account.Provider { return account.ProviderBuild }
@@ -1103,6 +1173,12 @@ func (a *authRescueAdapter) Definition() provider.Definition {
 }
 func (a *authRescueAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.attempts.Add(1)
+	if a.denyChat.Load() {
+		return &provider.Response{
+			StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"error":{"code":"permission_denied","message":"Access to the chat endpoint is denied"}}`)),
+		}, nil
+	}
 	if a.rejectAll.Load() {
 		return &provider.Response{
 			StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", Header: make(http.Header),

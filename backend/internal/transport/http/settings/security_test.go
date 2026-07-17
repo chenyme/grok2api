@@ -53,3 +53,12 @@ func TestSettingsResponseIncludesRecommendedBuildBaseline(t *testing.T) {
 		t.Fatalf("recommended build = %#v", response.RecommendedProviderBuild)
 	}
 }
+
+func TestSettingsResponseIncludesPreferFreeBuild(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{
+		Routing: settingsapp.RoutingConfig{PreferFreeBuild: true},
+	}})
+	if !response.Config.Routing.PreferFreeBuild {
+		t.Fatal("preferFreeBuild was lost from settings response")
+	}
+}

@@ -42,6 +42,30 @@ func TestParseCapturedWeeklyCreditsResponse(t *testing.T) {
 	}
 }
 
+func TestParseUnusedPreciseWeeklyCreditsResponse(t *testing.T) {
+	body, err := hex.DecodeString("00000000480a4612001a00220c08c5d5d3d20610c0c7a1ee012a0c08c5caf8d20610c0c7a1ee01421e0802120c08c5d5d3d20610c0c7a1ee011a0c08c5caf8d20610c0c7a1ee01580162006801800000000f677270632d7374617475733a300d0a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := parseWeeklyCreditsResponse(body, 42, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Total != 10000 || window.Remaining != 10000 || window.UsagePercent != 0 || window.ResetAt == nil || window.ResetAt.Nanosecond() == 0 {
+		t.Fatalf("window = %#v", window)
+	}
+}
+
+func TestParseCoarseWeeklyCreditsResponseRemainsUnavailable(t *testing.T) {
+	body, err := hex.DecodeString("00000000300a2e12001a0022060880a6b6d2062a0608809bdbd2064212080212060880a6b6d2061a0608809bdbd206580162006801800000000f677270632d7374617475733a300d0a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseWeeklyCreditsResponse(body, 42, time.Now().UTC()); err == nil {
+		t.Fatal("expected coarse period without usage to be rejected")
+	}
+}
+
 func TestSyncQuotaFetchesWeeklyOnlyAfterPaidTierIsConfirmed(t *testing.T) {
 	weeklyBody, err := hex.DecodeString(capturedWeeklyCreditsHex)
 	if err != nil {

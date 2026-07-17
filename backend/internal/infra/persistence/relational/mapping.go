@@ -63,7 +63,7 @@ func toAccountDomain(value accountModel) account.Credential {
 		MaxConcurrent: value.MaxConcurrent, MinimumRemaining: value.MinimumRemaining, FailureCount: value.FailureCount,
 		CooldownUntil: value.CooldownUntil, LastError: value.LastError, LastUsedAt: value.LastUsedAt,
 		ObservedModel: value.ObservedModel, ObservedModelAt: value.ObservedModelAt, WebTier: webTier, WebTierSyncedAt: webTierSyncedAt,
-		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		BuildAPIFallback: value.BuildAPIFallback, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -75,7 +75,7 @@ func fromAccountDomain(value account.Credential) accountModel {
 		MaxConcurrent: value.MaxConcurrent, MinimumRemaining: value.MinimumRemaining, FailureCount: value.FailureCount,
 		CooldownUntil: value.CooldownUntil, LastError: value.LastError, LastUsedAt: value.LastUsedAt,
 		ObservedModel: value.ObservedModel, ObservedModelAt: value.ObservedModelAt,
-		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		BuildAPIFallback: value.BuildAPIFallback, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 

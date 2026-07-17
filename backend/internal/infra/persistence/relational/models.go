@@ -44,6 +44,8 @@ type accountModel struct {
 	LastUsedAt       *time.Time
 	ObservedModel    string `gorm:"size:255;check:chk_accounts_observed_model,length(observed_model) <= 255"`
 	ObservedModelAt  *time.Time
+	// BuildAPIFallback 仅对 grok_build 有意义：XAI 推理回退标记；其他 Provider 保持 false。
+	BuildAPIFallback bool                    `gorm:"not null;default:false"`
 	CreatedAt        time.Time               `gorm:"not null"`
 	UpdatedAt        time.Time               `gorm:"not null"`
 	Credential       *accountCredentialModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
@@ -356,9 +358,9 @@ type mediaJobModel struct {
 	AccountName     string  `gorm:"size:160;not null;default:'';check:chk_media_jobs_account_name,length(account_name) <= 160"`
 	EgressNodeID    *uint64 `gorm:"check:chk_media_jobs_egress_node_id,egress_node_id IS NULL OR egress_node_id > 0"`
 	EgressNodeName  string  `gorm:"size:160;not null;default:'';check:chk_media_jobs_egress_node_name,length(egress_node_name) <= 160"`
-	EgressScope     string  `gorm:"size:32;not null;default:'';check:chk_media_jobs_egress_scope,egress_scope IN ('','grok_web')"`
+	EgressScope     string  `gorm:"size:32;not null;default:'';check:chk_media_jobs_egress_scope,egress_scope IN ('','grok_web','grok_build')"`
 	EgressMode      string  `gorm:"size:16;not null;default:'';check:chk_media_jobs_egress_mode,egress_mode IN ('','direct','proxy')"`
-	Provider        string  `gorm:"size:32;not null;check:chk_media_jobs_provider,provider IN ('grok_web')"`
+	Provider        string  `gorm:"size:32;not null;check:chk_media_jobs_provider,provider IN ('grok_web','grok_build')"`
 	Model           string  `gorm:"size:255;not null;check:chk_media_jobs_model,length(trim(model)) BETWEEN 1 AND 255"`
 	ModelRouteID    uint64  `gorm:"not null;check:chk_media_jobs_model_route_id,model_route_id > 0"`
 	UpstreamModel   string  `gorm:"size:255;not null;check:chk_media_jobs_upstream_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
@@ -370,6 +372,7 @@ type mediaJobModel struct {
 	Progress        int     `gorm:"not null;check:chk_media_jobs_progress,progress BETWEEN 0 AND 100"`
 	InputJSON       string  `gorm:"type:text;not null;default:'{}';check:chk_media_jobs_input_json,length(input_json) <= 1048576"`
 	UpstreamURL     string  `gorm:"type:text;not null;default:'';check:chk_media_jobs_upstream_url,length(upstream_url) <= 8192"`
+	ResultAssetID   string  `gorm:"size:64;not null;default:'';check:chk_media_jobs_result_asset_id,result_asset_id = '' OR length(trim(result_asset_id)) BETWEEN 16 AND 64"`
 	ContentType     string  `gorm:"size:128;not null;default:'';check:chk_media_jobs_content_type,length(content_type) <= 128"`
 	ErrorCode       string  `gorm:"size:100;not null;default:'';check:chk_media_jobs_error_code,length(error_code) <= 100"`
 	ErrorMessage    string  `gorm:"size:512;not null;default:'';check:chk_media_jobs_error_message,length(error_message) <= 512"`
@@ -385,17 +388,35 @@ type mediaJobModel struct {
 
 func (mediaJobModel) TableName() string { return "media_jobs" }
 
+// MaxVideoAssetBytes 是本地视频对象与上传接收的安全体积上限（256 MiB）。
+const MaxVideoAssetBytes = 256 << 20
+
 type mediaAssetModel struct {
 	ID         string    `gorm:"size:64;primaryKey;check:chk_media_assets_id,length(trim(id)) BETWEEN 16 AND 64"`
-	Kind       string    `gorm:"size:16;not null;check:chk_media_assets_kind,kind IN ('image')"`
+	Kind       string    `gorm:"size:16;not null;check:chk_media_assets_kind,kind IN ('image','video')"`
 	StorageKey string    `gorm:"size:512;not null;uniqueIndex;check:chk_media_assets_storage_key,length(trim(storage_key)) BETWEEN 1 AND 512"`
-	MIMEType   string    `gorm:"size:64;not null;check:chk_media_assets_mime,mime_type IN ('image/jpeg','image/png','image/webp','image/gif')"`
-	SizeBytes  int64     `gorm:"not null;check:chk_media_assets_size,size_bytes > 0 AND size_bytes <= 33554432"`
+	MIMEType   string    `gorm:"size:64;not null;check:chk_media_assets_mime,mime_type IN ('image/jpeg','image/png','image/webp','image/gif','video/mp4','video/webm','video/quicktime')"`
+	SizeBytes  int64     `gorm:"not null;check:chk_media_assets_size,size_bytes > 0 AND size_bytes <= 268435456"`
 	SHA256     string    `gorm:"size:64;not null;check:chk_media_assets_sha,length(sha256) = 64"`
 	CreatedAt  time.Time `gorm:"not null"`
 }
 
 func (mediaAssetModel) TableName() string { return "media_assets" }
+
+// mediaUploadTicketModel 保存上游视频 PUT 票据的不可逆摘要与一次性消费状态。
+// 明文 token 永不落库；校验时对路径 token 再哈希比对。
+type mediaUploadTicketModel struct {
+	TokenHash   string    `gorm:"size:64;primaryKey;check:chk_media_upload_tickets_token_hash,length(token_hash) = 64"`
+	AssetID     string    `gorm:"size:64;not null;uniqueIndex;check:chk_media_upload_tickets_asset_id,length(trim(asset_id)) BETWEEN 16 AND 64"`
+	JobID       string    `gorm:"size:64;not null;index;check:chk_media_upload_tickets_job_id,length(trim(job_id)) BETWEEN 1 AND 64"`
+	MaxBytes    int64     `gorm:"not null;check:chk_media_upload_tickets_max_bytes,max_bytes > 0 AND max_bytes <= 268435456"`
+	AllowedMIME string    `gorm:"size:128;not null;default:'video/mp4';check:chk_media_upload_tickets_mime,length(trim(allowed_mime)) BETWEEN 1 AND 128"`
+	ExpiresAt   time.Time `gorm:"not null"`
+	ConsumedAt  *time.Time
+	CreatedAt   time.Time `gorm:"not null"`
+}
+
+func (mediaUploadTicketModel) TableName() string { return "media_upload_tickets" }
 
 type runtimeSettingsModel struct {
 	Key       string    `gorm:"size:64;primaryKey;check:chk_runtime_settings_key,length(trim(key)) BETWEEN 1 AND 64"`

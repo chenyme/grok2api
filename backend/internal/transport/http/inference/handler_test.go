@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,8 +86,41 @@ func TestVideoGenerationUsesOfficialXAIEndpointsAndFields(t *testing.T) {
 	}
 	contentRecorder := httptest.NewRecorder()
 	router.ServeHTTP(contentRecorder, httptest.NewRequest(http.MethodGet, "/v1/videos/request_1/content", nil))
-	if contentRecorder.Code != http.StatusNotFound {
+	if contentRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("video content endpoint status=%d", contentRecorder.Code)
+	}
+}
+
+func TestWriteVideoContentRejectsDeclaredOversizeMedia(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	writeVideoContent(context, strings.NewReader("ignored"), "video/mp4", maxMediaResponseTransferBytes+1)
+	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "media_too_large") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestVideoContentURLUsesConfiguredPublicAPIBase(t *testing.T) {
+	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
+	response := videoGenerationResponse(mediadomain.Job{ID: "video_request_1", Status: mediadomain.StatusCompleted, UpstreamURL: "https://assets.grok.com/source.mp4"}, handler.videoContentURL("video_request_1"))
+	video, ok := response["video"].(gin.H)
+	if !ok || video["url"] != "https://api.example.com/grok2api/v1/videos/video_request_1/content" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestVideoContentURLFollowsRuntimePublicAPIBase(t *testing.T) {
+	baseURL := "https://old.example.com"
+	handler := NewHandler(nil, nil, 1<<20, "https://static.example.com").SetPublicAPIBaseURLResolver(func() string {
+		return baseURL
+	})
+	if got := handler.videoContentURL("video_request_1"); got != "https://old.example.com/v1/videos/video_request_1/content" {
+		t.Fatalf("initial URL = %q", got)
+	}
+	baseURL = "https://new.example.com/api/"
+	if got := handler.videoContentURL("video_request_2"); got != "https://new.example.com/api/v1/videos/video_request_2/content" {
+		t.Fatalf("updated URL = %q", got)
 	}
 }
 
@@ -103,7 +137,7 @@ func TestGatewayErrorDoesNotExposeInternalDetails(t *testing.T) {
 	}
 }
 
-func TestGatewayErrorPreservesSanitizedUpstreamClassification(t *testing.T) {
+func TestGatewayErrorHidesUpstreamCredentialStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	openAIRouter := gin.New()
 	openAIRouter.GET("/", func(c *gin.Context) {
@@ -114,7 +148,7 @@ func TestGatewayErrorPreservesSanitizedUpstreamClassification(t *testing.T) {
 	})
 	openAIRecorder := httptest.NewRecorder()
 	openAIRouter.ServeHTTP(openAIRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
-	if openAIRecorder.Code != http.StatusForbidden || !strings.Contains(openAIRecorder.Body.String(), `"code":"upstream_forbidden"`) || strings.Contains(openAIRecorder.Body.String(), "secret") {
+	if openAIRecorder.Code != http.StatusServiceUnavailable || !strings.Contains(openAIRecorder.Body.String(), `"code":"upstream_unavailable"`) || strings.Contains(openAIRecorder.Body.String(), "secret") || strings.Contains(openAIRecorder.Body.String(), "拒绝") {
 		t.Fatalf("OpenAI status=%d body=%s", openAIRecorder.Code, openAIRecorder.Body.String())
 	}
 
@@ -128,6 +162,61 @@ func TestGatewayErrorPreservesSanitizedUpstreamClassification(t *testing.T) {
 	anthropicRouter.ServeHTTP(anthropicRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
 	if anthropicRecorder.Code != http.StatusTooManyRequests || !strings.Contains(anthropicRecorder.Body.String(), `"type":"rate_limit_error"`) {
 		t.Fatalf("Anthropic status=%d body=%s", anthropicRecorder.Code, anthropicRecorder.Body.String())
+	}
+
+	credentialRouter := gin.New()
+	credentialRouter.GET("/", func(c *gin.Context) {
+		writeGatewayAnthropicError(c, &gateway.UpstreamFailure{
+			HTTPStatus: http.StatusUnauthorized, Code: "upstream_unauthorized", PublicMessage: "上游账号认证失败",
+		})
+	})
+	credentialRecorder := httptest.NewRecorder()
+	credentialRouter.ServeHTTP(credentialRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if credentialRecorder.Code != http.StatusServiceUnavailable || !strings.Contains(credentialRecorder.Body.String(), `"type":"overloaded_error"`) || strings.Contains(credentialRecorder.Body.String(), "认证") {
+		t.Fatalf("Anthropic credential status=%d body=%s", credentialRecorder.Code, credentialRecorder.Body.String())
+	}
+}
+
+func TestDirectUpstreamCredentialResponsesAreRewritten(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	for _, tc := range []struct {
+		name      string
+		status    int
+		anthropic bool
+		media     bool
+	}{
+		{name: "openai unauthorized", status: http.StatusUnauthorized},
+		{name: "anthropic forbidden", status: http.StatusForbidden, anthropic: true},
+		{name: "media forbidden", status: http.StatusForbidden, media: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finalCode := ""
+			result := &gateway.Result{
+				StatusCode: tc.status,
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"secret upstream credential detail"}`)),
+				Finalize: func(_ gateway.Usage, _, code string) {
+					finalCode = code
+				},
+			}
+			router := gin.New()
+			router.GET("/", func(c *gin.Context) {
+				switch {
+				case tc.media:
+					handler.writeMediaResult(c, result)
+				case tc.anthropic:
+					handler.writeAnthropicResult(c, result, false)
+				default:
+					handler.writeResult(c, result, false)
+				}
+			})
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+			if recorder.Code != http.StatusServiceUnavailable || strings.Contains(recorder.Body.String(), "secret") || finalCode != "upstream_unavailable" {
+				t.Fatalf("status=%d body=%s finalize=%s", recorder.Code, recorder.Body.String(), finalCode)
+			}
+		})
 	}
 }
 

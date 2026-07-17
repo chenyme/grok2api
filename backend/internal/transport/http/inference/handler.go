@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,9 +24,11 @@ import (
 )
 
 type Handler struct {
-	gateway      *gateway.Service
-	models       *modelapp.Service
-	maxBodyBytes int64
+	gateway          *gateway.Service
+	models           *modelapp.Service
+	maxBodyBytes     int64
+	publicAPIBaseURL string
+	publicBaseURL    func() string
 }
 
 const (
@@ -42,8 +45,19 @@ var errResponseTransferLimit = errors.New("响应超过代理安全上限")
 
 const mediaTransferErrorTrailer = "X-Grok2API-Transfer-Error"
 
-func NewHandler(gatewayService *gateway.Service, models *modelapp.Service, maxBodyBytes int64) *Handler {
-	return &Handler{gateway: gatewayService, models: models, maxBodyBytes: maxBodyBytes}
+func NewHandler(gatewayService *gateway.Service, models *modelapp.Service, maxBodyBytes int64, publicAPIBaseURL ...string) *Handler {
+	baseURL := ""
+	if len(publicAPIBaseURL) > 0 {
+		baseURL = strings.TrimRight(strings.TrimSpace(publicAPIBaseURL[0]), "/")
+	}
+	return &Handler{gateway: gatewayService, models: models, maxBodyBytes: maxBodyBytes, publicAPIBaseURL: baseURL}
+}
+
+// SetPublicAPIBaseURLResolver 让视频内容 URL 跟随运行设置热更新。
+// 应在 Register 前设置；请求处理期间只读取该函数。
+func (h *Handler) SetPublicAPIBaseURLResolver(resolve func() string) *Handler {
+	h.publicBaseURL = resolve
+	return h
 }
 
 func (h *Handler) Register(router *gin.RouterGroup) {
@@ -55,6 +69,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/images/edits", h.editImage)
 	router.POST("/videos/generations", h.generateVideo)
 	router.GET("/videos/:requestId", h.getVideo)
+	router.GET("/videos/:requestId/content", h.getVideoContent)
 	router.POST("/responses/compact", h.compactResponse)
 	router.GET("/responses/:responseId", h.getResponse)
 	router.DELETE("/responses/:responseId", h.deleteResponse)
@@ -240,7 +255,7 @@ func (h *Handler) createMessage(c *gin.Context) {
 		writeGatewayAnthropicError(c, err)
 		return
 	}
-	h.writeResult(c, result, request.Stream)
+	h.writeAnthropicResult(c, result, request.Stream)
 }
 
 func (h *Handler) generateImage(c *gin.Context) {
@@ -303,6 +318,11 @@ func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
 	errorCode := ""
 	defer result.Body.Close()
 	defer func() { result.Finalize(gateway.Usage{}, "", errorCode) }()
+	if isUpstreamCredentialStatus(result.StatusCode) {
+		errorCode = "upstream_unavailable"
+		writeOpenAIError(c, http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用")
+		return
+	}
 	contentLength, contentLengthErr := strconv.ParseInt(result.Header.Get("Content-Length"), 10, 64)
 	if contentLengthErr == nil && contentLength > maxMediaResponseTransferBytes {
 		errorCode = "response_too_large"
@@ -563,7 +583,57 @@ func (h *Handler) getVideo(c *gin.Context) {
 		writeGatewayError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, videoGenerationResponse(job))
+	c.JSON(http.StatusOK, videoGenerationResponse(job, h.videoContentURL(job.ID)))
+}
+
+func (h *Handler) videoContentURL(jobID string) string {
+	path := "/v1/videos/" + url.PathEscape(jobID) + "/content"
+	baseURL := h.publicAPIBaseURL
+	if h.publicBaseURL != nil {
+		baseURL = strings.TrimRight(strings.TrimSpace(h.publicBaseURL()), "/")
+	}
+	if baseURL == "" {
+		return path
+	}
+	return baseURL + path
+}
+
+func (h *Handler) getVideoContent(c *gin.Context) {
+	clientKey, _, ok := requestIdentity(c)
+	if !ok {
+		return
+	}
+	body, contentType, size, err := h.gateway.OpenVideoContent(c.Request.Context(), strings.TrimSpace(c.Param("requestId")), clientKey)
+	if err != nil {
+		writeGatewayError(c, err)
+		return
+	}
+	defer func() { _ = body.Close() }()
+	writeVideoContent(c, body, contentType, size)
+}
+
+func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size int64) {
+	if size > maxMediaResponseTransferBytes {
+		writeOpenAIError(c, http.StatusBadGateway, "media_too_large", "上游媒体超过 2 GiB 安全上限")
+		return
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", "inline")
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+	if size >= 0 {
+		c.Header("Content-Length", strconv.FormatInt(size, 10))
+	} else {
+		c.Header("Trailer", mediaTransferErrorTrailer)
+	}
+	c.Status(http.StatusOK)
+	if err := copyMedia(responseDeadlineWriter{ResponseWriter: c.Writer}, body, maxMediaResponseTransferBytes); err != nil && size < 0 {
+		errorCode := "stream_interrupted"
+		if errors.Is(err, errResponseTransferLimit) {
+			errorCode = "response_too_large"
+		}
+		c.Header(mediaTransferErrorTrailer, errorCode)
+	}
 }
 
 func parseVideoDuration(durationRaw json.RawMessage) (int, error) {
@@ -614,12 +684,16 @@ func validVideoAspectRatio(value string) bool {
 	}
 }
 
-func videoGenerationResponse(job mediadomain.Job) gin.H {
+func videoGenerationResponse(job mediadomain.Job, contentURLs ...string) gin.H {
 	switch job.Status {
 	case mediadomain.StatusCompleted:
+		videoURL := job.UpstreamURL
+		if len(contentURLs) > 0 && contentURLs[0] != "" {
+			videoURL = contentURLs[0]
+		}
 		return gin.H{
 			"status": "done", "model": job.Model, "progress": 100,
-			"video": gin.H{"url": job.UpstreamURL, "duration": job.Seconds, "respect_moderation": true},
+			"video": gin.H{"url": videoURL, "duration": job.Seconds, "respect_moderation": true},
 		}
 	case mediadomain.StatusFailed:
 		return gin.H{
@@ -749,11 +823,28 @@ func (h *Handler) handleOwnedResource(c *gin.Context, deleteResource bool) {
 }
 
 func (h *Handler) writeResult(c *gin.Context, result *gateway.Result, stream bool) {
+	h.writeProtocolResult(c, result, stream, false)
+}
+
+func (h *Handler) writeAnthropicResult(c *gin.Context, result *gateway.Result, stream bool) {
+	h.writeProtocolResult(c, result, stream, true)
+}
+
+func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, stream, anthropic bool) {
 	usage := gateway.Usage{}
 	responseID := ""
 	errorCode := ""
 	defer result.Body.Close()
 	defer func() { result.Finalize(usage, responseID, errorCode) }()
+	if isUpstreamCredentialStatus(result.StatusCode) {
+		errorCode = "upstream_unavailable"
+		if anthropic {
+			writeAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", "上游服务暂不可用")
+		} else {
+			writeOpenAIError(c, http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用")
+		}
+		return
+	}
 	transferLimit := int64(maxJSONResponseTransferBytes)
 	if stream {
 		transferLimit = maxStreamResponseTransferBytes
@@ -1068,8 +1159,12 @@ func writeGatewayError(c *gin.Context, err error) {
 		status, code = http.StatusBadRequest, "unsupported_parameter"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
-		status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
-		if upstreamFailure.RetryAfter > 0 {
+		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
+			status, code, message = http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用"
+		} else {
+			status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
+		}
+		if !isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) && upstreamFailure.RetryAfter > 0 {
 			c.Header("Retry-After", strconv.FormatInt(max(1, int64(upstreamFailure.RetryAfter.Round(time.Second)/time.Second)), 10))
 		}
 	case errors.As(err, &selectionFailure):
@@ -1097,8 +1192,12 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		status, errorType = http.StatusBadRequest, "invalid_request_error"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
-		status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
-		if upstreamFailure.RetryAfter > 0 {
+		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
+			status, errorType, message = http.StatusServiceUnavailable, "overloaded_error", "上游服务暂不可用"
+		} else {
+			status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
+		}
+		if !isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) && upstreamFailure.RetryAfter > 0 {
 			c.Header("Retry-After", strconv.FormatInt(max(1, int64(upstreamFailure.RetryAfter.Round(time.Second)/time.Second)), 10))
 		}
 		if status == http.StatusTooManyRequests {
@@ -1116,6 +1215,10 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		message = "当前没有可用的上游账号"
 	}
 	writeAnthropicError(c, status, errorType, message)
+}
+
+func isUpstreamCredentialStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
 func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailableError) (int, string, string) {

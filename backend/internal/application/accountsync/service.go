@@ -173,6 +173,7 @@ sendLoop:
 
 func (s *Service) syncAccount(ctx context.Context, accountID uint64) error {
 	var syncErr error
+	billingSnapshotCreated := false
 	view, err := s.accounts.Get(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("读取账号: %w", err)
@@ -209,6 +210,8 @@ func (s *Service) syncAccount(ctx context.Context, accountID uint64) error {
 			if err != nil {
 				s.logger.Warn("account_initial_billing_sync_failed", "account_id", accountID, "error", err)
 				syncErr = errors.Join(syncErr, fmt.Errorf("同步额度: %w", err))
+			} else {
+				billingSnapshotCreated = true
 			}
 		}
 	}
@@ -218,7 +221,7 @@ func (s *Service) syncAccount(ctx context.Context, accountID uint64) error {
 		s.logger.Warn("account_initial_model_check_failed", "account_id", accountID, "error", err)
 		return errors.Join(syncErr, fmt.Errorf("检查模型快照: %w", err))
 	}
-	if hasModels {
+	if hasModels && !billingSnapshotCreated {
 		return syncErr
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, operationTimeout)

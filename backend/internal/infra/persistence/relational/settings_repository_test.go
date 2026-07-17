@@ -38,7 +38,7 @@ func TestRuntimeSettingsRepositoryRoundTrip(t *testing.T) {
 			MaxImageBytes: 16 << 20, MaxTotalBytes: 1 << 30, CleanupThresholdPercent: 80,
 			CleanupInterval: 10 * time.Minute,
 		},
-		Routing: settingsdomain.RoutingConfig{StickyTTL: time.Hour, MaxAttempts: 3},
+		Routing: settingsdomain.RoutingConfig{StickyTTL: time.Hour, MaxAttempts: 3, PreferFreeBuild: true},
 	}
 	updatedAt, revision, err := repository.Save(ctx, settings, 0)
 	if err != nil {

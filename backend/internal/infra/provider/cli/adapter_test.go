@@ -206,6 +206,38 @@ func TestGetBillingUsesCreditsEndpointOnce(t *testing.T) {
 	}
 }
 
+func TestNormalizeAccountModelCapabilitiesSuperAddsVideo15(t *testing.T) {
+	adapter := &Adapter{}
+	// Super / paid：主 Build 仅返回 grok-4.5 时也必须补齐 1.5。
+	got := adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5", "  ", "grok-4.5"}, &account.Billing{MonthlyLimit: 100})
+	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != buildVideoModel {
+		t.Fatalf("super primary catalog = %#v", got)
+	}
+	// Super + fallback 目录已含 1.5：幂等去重，其它模型不变。
+	got = adapter.NormalizeAccountModelCapabilities(
+		[]string{"grok-4.5", buildVideoModel, "grok-code-fast-1", buildVideoModel},
+		&account.Billing{OnDemandCap: 10},
+	)
+	if len(got) != 3 || got[0] != "grok-4.5" || got[1] != buildVideoModel || got[2] != "grok-code-fast-1" {
+		t.Fatalf("super fallback catalog = %#v", got)
+	}
+	// Free：即使目录暴露 1.5 也必须移除。
+	got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5", buildVideoModel}, &account.Billing{Used: 1, PlanName: "free"})
+	if len(got) != 1 || got[0] != "grok-4.5" {
+		t.Fatalf("free catalog = %#v", got)
+	}
+	// Unknown（无 Billing）：与 Free 相同，移除 1.5。
+	got = adapter.NormalizeAccountModelCapabilities([]string{buildVideoModel, "grok-4.5"}, nil)
+	if len(got) != 1 || got[0] != "grok-4.5" {
+		t.Fatalf("unknown catalog = %#v", got)
+	}
+	// 不得依赖 BuildAPIFallback；空目录 + Super 仅补 1.5。
+	got = adapter.NormalizeAccountModelCapabilities(nil, &account.Billing{CreditUsagePercent: 1})
+	if len(got) != 1 || got[0] != buildVideoModel {
+		t.Fatalf("super empty catalog = %#v", got)
+	}
+}
+
 func TestGrokSessionIDFollowsConversationIdentity(t *testing.T) {
 	explicit := "019f6b02-5bae-7cf3-b26e-73e85c861749"
 	if value, err := grokSessionID(explicit); err != nil || value != explicit {

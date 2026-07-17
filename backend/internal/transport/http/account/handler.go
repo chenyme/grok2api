@@ -900,7 +900,11 @@ func (h *Handler) update(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	value, err := h.service.Update(c.Request.Context(), id, accountapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining, CloudflareCookies: request.CloudflareCookies, ClearCloudflareCookies: request.ClearCloudflareCookies})
+	value, err := h.service.Update(c.Request.Context(), id, accountapp.UpdateInput{
+		Name: request.Name, Enabled: request.Enabled, Priority: request.Priority,
+		MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining,
+		CloudflareCookies: request.CloudflareCookies, ClearCloudflareCookies: request.ClearCloudflareCookies,
+	})
 	if err != nil {
 		h.writeServiceError(c, "accountUpdateFailed", err, http.StatusInternalServerError, "更新账号失败")
 		return

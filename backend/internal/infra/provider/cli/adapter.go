@@ -28,6 +28,7 @@ import (
 
 type Config struct {
 	BaseURL          string
+	FallbackBaseURL  string
 	ClientVersion    string
 	ClientIdentifier string
 	TokenAuth        string
@@ -36,15 +37,17 @@ type Config struct {
 
 // Adapter 实现 Grok Build CLI Responses、模型、Billing 与 OAuth 协议。
 type Adapter struct {
-	cfgMu       sync.RWMutex
-	cfg         Config
-	http        *http.Client
-	oauth       *oauthClient
-	cipher      *security.Cipher
-	base        http.RoundTripper
-	agentID     string
-	modelsMu    sync.Mutex
-	modelsETags map[uint64]string
+	cfgMu          sync.RWMutex
+	cfg            Config
+	http           *http.Client
+	oauth          *oauthClient
+	cipher         *security.Cipher
+	base           http.RoundTripper
+	agentID        string
+	modelsMu       sync.Mutex
+	modelsETags    map[uint64]string
+	fallbackMarker FallbackMarker
+	uploadIssuer   VideoUploadIssuer
 }
 
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
@@ -110,34 +113,39 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return invalidResponsesResponse(err), nil
 		}
 	}
-	var bodyReader io.Reader
-	if len(body) > 0 {
-		bodyReader = bytes.NewReader(body)
-	}
-	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), request.Credential.ID)
-	req, err := http.NewRequestWithContext(requestCtx, request.Method, a.url(request.Path), bodyReader)
+	// 推理回退：create/compact 可走 XAI；stored GET/DELETE 与未知路径始终主地址。
+	base := a.apiBaseForOperation(ctx, request.Credential, request.Method, request.Path)
+	resp, reqURL, err := a.doResponseRequest(ctx, request, accessToken, body, base)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.applyHeaders(req, request.Credential, accessToken, request.Model, request.PromptCacheKey, true); err != nil {
-		return nil, err
+	// 未标记账号：仅可回退操作在主地址明确 403 时用等价请求探测 XAI。
+	if a.shouldProbeXAIInferenceFallback(ctx, request.Credential, request.Method, request.Path, resp.StatusCode) {
+		// 缓冲主 403 正文，备用失败时原样回放，避免二次 primary POST。
+		primaryBody, primaryTruncated, readErr := provider.ReadDiagnosticBody(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		primaryResp := cloneBufferedResponse(resp, primaryBody, primaryTruncated)
+		fallbackBase := a.fallbackBaseURL()
+		if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
+			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(ctx, request, accessToken, body, fallbackBase)
+			if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
+				a.activateBuildAPIFallback(ctx, &request.Credential)
+				resp, reqURL = fallbackResp, fallbackURL
+			} else {
+				if fallbackErr == nil {
+					_ = fallbackResp.Body.Close()
+				}
+				// 保留原 primary 403 的 URL 与缓冲正文，不再次请求主地址。
+				resp = primaryResp
+			}
+		} else {
+			resp = primaryResp
+		}
 	}
-	if len(body) > 0 {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if request.Streaming {
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("Accept-Encoding", "identity")
-	} else {
-		req.Header.Set("Accept", "application/json")
-	}
-	if request.IdempotencyID != "" {
-		req.Header.Set("Idempotency-Key", request.IdempotencyID)
-	}
-	resp, err := a.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
+
 	if err := normalizeGzipResponse(resp); err != nil {
 		return nil, err
 	}
@@ -201,15 +209,47 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				if diagnostic == nil {
 					return nil, convertErr
 				}
-				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: req.URL.String(), Diagnostic: diagnostic, ModelCatalogChanged: modelCatalogChanged}, nil
+				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: reqURL, Diagnostic: diagnostic, ModelCatalogChanged: modelCatalogChanged}, nil
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(converted))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(converted)))
 			resp.Header.Set("Content-Type", "application/json")
-			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: req.URL.String(), Diagnostic: diagnostic, ModelCatalogChanged: modelCatalogChanged}, nil
+			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: diagnostic, ModelCatalogChanged: modelCatalogChanged}, nil
 		}
 	}
-	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: req.URL.String(), ModelCatalogChanged: modelCatalogChanged}, nil
+	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, ModelCatalogChanged: modelCatalogChanged}, nil
+}
+
+func (a *Adapter) doResponseRequest(ctx context.Context, request provider.ResponseResourceRequest, accessToken string, body []byte, base string) (*http.Response, string, error) {
+	var bodyReader io.Reader
+	if len(body) > 0 {
+		bodyReader = bytes.NewReader(body)
+	}
+	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), request.Credential.ID)
+	req, err := http.NewRequestWithContext(requestCtx, request.Method, a.urlWithBase(base, request.Path), bodyReader)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := a.applyHeaders(req, request.Credential, accessToken, request.Model, request.PromptCacheKey, true); err != nil {
+		return nil, "", err
+	}
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if request.Streaming {
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Accept-Encoding", "identity")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+	if request.IdempotencyID != "" {
+		req.Header.Set("Idempotency-Key", request.IdempotencyID)
+	}
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	return resp, req.URL.String(), nil
 }
 
 // invalidResponsesResponse 将本地协议校验错误转换为标准 OpenAI 错误响应，避免触发上游账号重试。
@@ -253,28 +293,93 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	if err != nil {
 		return nil, err
 	}
-	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID)
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, a.url("/models"), nil)
+	// Super 的 Build 与 XAI 模型资格一致，统一以 XAI 目录作为能力快照。
+	// BuildAPIFallback 只记录实际推理地址状态，不得把同一批 Super 拆成两套模型能力。
+	super, policyErr := a.buildXAIEntitled(ctx, credential.ID)
+	if policyErr != nil {
+		return nil, fmt.Errorf("查询 Build Super 资格: %w", policyErr)
+	}
+	if super {
+		models, xaiStatus, xaiErr := a.listModelsAt(ctx, credential, accessToken, a.fallbackBaseURL())
+		if models != nil {
+			return models, nil
+		}
+		// Super 任一端可用即视为有效。XAI 目录失败时允许退回 Build 目录；
+		// 两端观察到的模型差异由共享 Super entitlement 在路由层统一。
+		models, buildStatus, buildErr := a.listModelsAt(ctx, credential, accessToken, a.primaryBaseURL())
+		if models != nil {
+			return models, nil
+		}
+		if xaiErr != nil || buildErr != nil {
+			return nil, fmt.Errorf("读取 Super 模型目录失败（XAI status=%d: %v；Build status=%d: %v）", xaiStatus, xaiErr, buildStatus, buildErr)
+		}
+		return nil, fmt.Errorf("上游模型接口返回 XAI %d，Build %d", xaiStatus, buildStatus)
+	}
+
+	// Free/Unknown 仅访问 Build，禁止探测 XAI。
+	models, status, err := a.listModelsAt(ctx, credential, accessToken, a.primaryBaseURL())
 	if err != nil {
 		return nil, err
 	}
+	if models != nil {
+		return models, nil
+	}
+	return nil, fmt.Errorf("上游模型接口返回 %d", status)
+}
+
+// NormalizeAccountModelCapabilities 按 Super/paid Billing 归一化 1.5 视频资格。
+// Super 确保包含 grok-imagine-video-1.5；Free/Unknown 精确移除。不读取 BuildAPIFallback。
+func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing) []string {
+	paid := billing != nil && billing.IsPaid()
+	result := make([]string, 0, len(models)+1)
+	seen := make(map[string]struct{}, len(models)+1)
+	hasVideo15 := false
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		if model == buildVideoModel {
+			if !paid {
+				continue
+			}
+			hasVideo15 = true
+		}
+		seen[model] = struct{}{}
+		result = append(result, model)
+	}
+	if paid && !hasVideo15 {
+		result = append(result, buildVideoModel)
+	}
+	return result
+}
+
+func (a *Adapter) listModelsAt(ctx context.Context, credential account.Credential, accessToken, base string) ([]string, int, error) {
+	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, a.urlWithBase(base, "/models"), nil)
+	if err != nil {
+		return nil, 0, err
+	}
 	if err := a.applyHeaders(req, credential, accessToken, "", "", false); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if err := normalizeGzipResponse(resp); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("上游模型接口返回 %d", resp.StatusCode)
+		return nil, resp.StatusCode, nil
 	}
 	var payload struct {
 		Data []struct {
@@ -282,7 +387,7 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, err
+		return nil, resp.StatusCode, err
 	}
 	models := make([]string, 0, len(payload.Data))
 	for _, item := range payload.Data {
@@ -291,7 +396,7 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 		}
 	}
 	a.recordModelsETag(credential.ID, resp.Header.Get("ETag"))
-	return models, nil
+	return models, resp.StatusCode, nil
 }
 
 func (a *Adapter) recordModelsETag(accountID uint64, etag string) {

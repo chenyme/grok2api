@@ -56,6 +56,7 @@ type frontendConfigDTO struct {
 
 type providerBuildConfigDTO struct {
 	BaseURL             string `json:"baseURL"`
+	FallbackBaseURL     string `json:"fallbackBaseURL"`
 	ClientVersion       string `json:"clientVersion"`
 	ClientIdentifier    string `json:"clientIdentifier"`
 	TokenAuth           string `json:"tokenAuth"`
@@ -88,11 +89,12 @@ type batchConfigDTO struct {
 }
 
 type routingConfigDTO struct {
-	StickyTTL    string `json:"stickyTTL"`
-	CooldownBase string `json:"cooldownBase"`
-	CooldownMax  string `json:"cooldownMax"`
-	CapacityWait string `json:"capacityWait"`
-	MaxAttempts  int    `json:"maxAttempts"`
+	StickyTTL       string `json:"stickyTTL"`
+	CooldownBase    string `json:"cooldownBase"`
+	CooldownMax     string `json:"cooldownMax"`
+	CapacityWait    string `json:"capacityWait"`
+	MaxAttempts     int    `json:"maxAttempts"`
+	PreferFreeBuild bool   `json:"preferFreeBuild"`
 }
 
 type auditConfigDTO struct {
@@ -154,9 +156,9 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 	return settingsapp.EditableConfig{
 		Server: settingsapp.ServerConfig{MaxConcurrentRequests: value.Server.MaxConcurrentRequests},
 		ProviderBuild: settingsapp.ProviderBuildConfig{
-			BaseURL: value.ProviderBuild.BaseURL, ClientVersion: value.ProviderBuild.ClientVersion,
-			ClientIdentifier: value.ProviderBuild.ClientIdentifier, TokenAuth: value.ProviderBuild.TokenAuth,
-			UserAgent: value.ProviderBuild.UserAgent,
+			BaseURL: value.ProviderBuild.BaseURL, FallbackBaseURL: value.ProviderBuild.FallbackBaseURL,
+			ClientVersion: value.ProviderBuild.ClientVersion, ClientIdentifier: value.ProviderBuild.ClientIdentifier,
+			TokenAuth: value.ProviderBuild.TokenAuth, UserAgent: value.ProviderBuild.UserAgent,
 		},
 		ProviderWeb: settingsapp.ProviderWebConfig{
 			BaseURL: value.ProviderWeb.BaseURL, QuotaTimeout: value.ProviderWeb.QuotaTimeout,
@@ -186,6 +188,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		Routing: settingsapp.RoutingConfig{
 			StickyTTL: value.Routing.StickyTTL, CooldownBase: value.Routing.CooldownBase,
 			CooldownMax: value.Routing.CooldownMax, CapacityWait: value.Routing.CapacityWait, MaxAttempts: value.Routing.MaxAttempts,
+			PreferFreeBuild: value.Routing.PreferFreeBuild,
 		},
 		Audit: settingsapp.AuditConfig{
 			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval,
@@ -202,9 +205,9 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 		Config: settingsConfigDTO{
 			Server: serverConfigDTO{MaxConcurrentRequests: config.Server.MaxConcurrentRequests},
 			ProviderBuild: providerBuildConfigDTO{
-				BaseURL: config.ProviderBuild.BaseURL, ClientVersion: config.ProviderBuild.ClientVersion,
-				ClientIdentifier: config.ProviderBuild.ClientIdentifier, TokenAuthConfigured: strings.TrimSpace(config.ProviderBuild.TokenAuth) != "",
-				UserAgent: config.ProviderBuild.UserAgent,
+				BaseURL: config.ProviderBuild.BaseURL, FallbackBaseURL: config.ProviderBuild.FallbackBaseURL,
+				ClientVersion: config.ProviderBuild.ClientVersion, ClientIdentifier: config.ProviderBuild.ClientIdentifier,
+				TokenAuthConfigured: strings.TrimSpace(config.ProviderBuild.TokenAuth) != "", UserAgent: config.ProviderBuild.UserAgent,
 			},
 			ProviderWeb: providerWebConfigDTO{
 				BaseURL: config.ProviderWeb.BaseURL, QuotaTimeout: config.ProviderWeb.QuotaTimeout,
@@ -234,6 +237,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			Routing: routingConfigDTO{
 				StickyTTL: config.Routing.StickyTTL, CooldownBase: config.Routing.CooldownBase,
 				CooldownMax: config.Routing.CooldownMax, CapacityWait: config.Routing.CapacityWait, MaxAttempts: config.Routing.MaxAttempts,
+				PreferFreeBuild: config.Routing.PreferFreeBuild,
 			},
 			Audit: auditConfigDTO{
 				BufferSize: config.Audit.BufferSize, BatchSize: config.Audit.BatchSize, FlushInterval: config.Audit.FlushInterval,

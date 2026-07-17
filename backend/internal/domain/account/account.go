@@ -3,6 +3,7 @@ package account
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"strings"
 	"time"
 )
 
@@ -113,8 +114,13 @@ type Credential struct {
 	LinkedAccountID           uint64
 	LinkedAccountName         string
 	LinkedProvider            Provider
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
+	// BuildAPIFallback 仅对 grok_build 有效：账号级 XAI **推理** 回退标记。
+	// 已标记时 models / responses create|compact / video 走 FallbackBaseURL；
+	// Billing、stored GET/DELETE /responses/{id}、OAuth 与未知路径仍走主地址。
+	// token refresh / SSO 转换 / 普通 upsert / 重启不得清除。
+	BuildAPIFallback bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // CredentialRefreshDueAt 将账号稳定地分散到到期前 5~8 分钟，避免同批导入账号同时刷新。
@@ -300,6 +306,37 @@ func (b Billing) Remaining() float64 {
 		return 0
 	}
 	return remaining
+}
+
+// IsPaid 判断 Billing 快照是否呈现 Super/paid 信号。
+// 语义与 SQL accountPaidBillingPredicate 及 QuotaView paid 分支一致：
+// 任一 MonthlyLimit、OnDemandCap、OnDemandUsed、PrepaidBalance、CreditUsagePercent 为正即为 paid。
+// 无快照时应由调用方按 Unknown 处理，不得调用本方法。
+func (b Billing) IsPaid() bool {
+	return b.MonthlyLimit > 0 || b.OnDemandCap > 0 || b.OnDemandUsed > 0 || b.PrepaidBalance > 0 || b.CreditUsagePercent > 0
+}
+
+// HasFreeProfileSignal 判断零付费额度快照是否包含已知 Free 账号特征。
+func (b Billing) HasFreeProfileSignal() bool {
+	return b.IsUnifiedBillingUser || b.UsagePeriodType != "" || b.TopUpMethod != "" || b.BillingPeriodStart != "" || len(b.History) > 0
+}
+
+// IsKnownFreeBuild 判断候选是否是已确认的 Grok Build Free 账号。
+// paid 信号优先，避免旧的响应模型或恢复记录把 Super 错分为 Free。
+func (c RoutingCandidate) IsKnownFreeBuild() bool {
+	if c.Credential.Provider != ProviderBuild {
+		return false
+	}
+	if c.Billing != nil && c.Billing.IsPaid() {
+		return false
+	}
+	if c.QuotaRecovery != nil && c.QuotaRecovery.Kind == QuotaRecoveryKindFree {
+		return true
+	}
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(c.Credential.ObservedModel)), "-build-free") {
+		return true
+	}
+	return c.Billing != nil && c.Billing.HasFreeProfileSignal()
 }
 
 // IsExhausted 判断额度快照是否已达到账号保留阈值。

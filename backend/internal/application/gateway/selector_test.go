@@ -251,6 +251,12 @@ func TestSelectorOnlyUsesAccountsSupportingRequestedModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
+	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: unsupported.ID, IsUnifiedBillingUser: true, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: supported.ID, MonthlyLimit: 100, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
 	if err := models.ReplaceAccountCapabilities(ctx, unsupported.ID, []string{"grok-basic"}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -259,6 +265,7 @@ func TestSelectorOnlyUsesAccountsSupportingRequestedModel(t *testing.T) {
 	}
 
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector.UpdatePreferFreeBuild(true)
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-premium", "", "", map[uint64]bool{}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -330,6 +337,7 @@ func TestSelectorHonorsWebTierPoolOrderBeforeAccountPriority(t *testing.T) {
 		}
 	}
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierHeavy, account.WebTierSuper, account.WebTierBasic}}, time.Hour, time.Second, time.Minute)
+	selector.UpdatePreferFreeBuild(true)
 	lease, err := selector.Acquire(ctx, account.ProviderWeb, "fast-prefer-best", "fast", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -392,6 +400,78 @@ func TestSelectorUsesBatchConcurrencySnapshot(t *testing.T) {
 	first, ok := plan.Next()
 	if limiter.batchCalls != 1 || limiter.currentCalls != 0 || !ok || first.Credential.ID != 2 {
 		t.Fatalf("batchCalls=%d currentCalls=%d values=%#v", limiter.batchCalls, limiter.currentCalls, values)
+	}
+}
+
+func TestSelectorPreferFreeBuildHotReloadAndSaturationFallback(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "free-first.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	freeAccount, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "free", SourceKey: "free", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 1, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	superAccount, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "super", SourceKey: "super", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: freeAccount.ID, IsUnifiedBillingUser: true, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: superAccount.ID, MonthlyLimit: 140, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-4.5", "", "existing-session", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.Credential.ID != superAccount.ID {
+		t.Fatalf("disabled strategy selected %d, want higher-priority Super %d", lease.Credential.ID, superAccount.ID)
+	}
+	lease.Release()
+
+	selector.UpdatePreferFreeBuild(true)
+	stickyLease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-4.5", "", "existing-session", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stickyLease.Credential.ID != superAccount.ID {
+		t.Fatalf("existing sticky session moved to %d, want Super %d", stickyLease.Credential.ID, superAccount.ID)
+	}
+	stickyLease.Release()
+
+	freeLease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-4.5", "", "new-session", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freeLease.Credential.ID != freeAccount.ID {
+		t.Fatalf("enabled strategy selected %d, want Free %d", freeLease.Credential.ID, freeAccount.ID)
+	}
+
+	fallbackLease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-4.5", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fallbackLease.Release()
+	defer freeLease.Release()
+	if fallbackLease.Credential.ID != superAccount.ID {
+		t.Fatalf("saturated Free selected %d, want Super fallback %d", fallbackLease.Credential.ID, superAccount.ID)
 	}
 }
 

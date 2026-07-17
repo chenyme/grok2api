@@ -27,6 +27,8 @@ const quotaProbeLease = 5 * time.Minute
 const successPersistInterval = 30 * time.Second
 const candidateCacheTTL = time.Second
 
+const modelAccessDeniedCooldown = 5 * time.Minute
+
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
 	expiresAt time.Time
@@ -84,21 +86,22 @@ func (l *accountLease) Release() {
 
 // Selector 实现可替换的 balanced 账号选择策略。
 type Selector struct {
-	accounts       repository.AccountRepository
-	concurrency    repository.ConcurrencyLimiter
-	sticky         repository.StickySessionRepository
-	stickyTTL      time.Duration
-	cooldownBase   time.Duration
-	cooldownMax    time.Duration
-	capacityWait   time.Duration
-	mu             sync.Mutex
-	leaseWakeMu    sync.Mutex
-	leaseWake      chan struct{}
-	lastSelectedAt map[uint64]time.Time
-	lastSuccessAt  map[uint64]time.Time
-	candidates     map[candidateCacheKey]candidateSnapshot
-	candidateLoads singleflight.Group
-	tierOrders     interface {
+	accounts        repository.AccountRepository
+	concurrency     repository.ConcurrencyLimiter
+	sticky          repository.StickySessionRepository
+	stickyTTL       time.Duration
+	cooldownBase    time.Duration
+	cooldownMax     time.Duration
+	capacityWait    time.Duration
+	preferFreeBuild bool
+	mu              sync.Mutex
+	leaseWakeMu     sync.Mutex
+	leaseWake       chan struct{}
+	lastSelectedAt  map[uint64]time.Time
+	lastSuccessAt   map[uint64]time.Time
+	candidates      map[candidateCacheKey]candidateSnapshot
+	candidateLoads  singleflight.Group
+	tierOrders      interface {
 		TierOrder(account.Provider, string) []account.WebTier
 	}
 }
@@ -121,6 +124,13 @@ func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax time.Durati
 	if len(capacityWait) > 0 {
 		s.capacityWait = max(time.Duration(0), capacityWait[0])
 	}
+	s.mu.Unlock()
+}
+
+// UpdatePreferFreeBuild 热更新 Build Free 账号优先策略。
+func (s *Selector) UpdatePreferFreeBuild(value bool) {
+	s.mu.Lock()
+	s.preferFreeBuild = value
 	s.mu.Unlock()
 }
 
@@ -434,9 +444,28 @@ func (s *Selector) MarkModelQuotaExhausted(ctx context.Context, credential accou
 	s.invalidateCandidates(credential.Provider)
 }
 
+// MarkModelAccessDenied isolates a permission failure to the rejected model.
+// Build OAuth accounts may still have valid video access when a chat endpoint
+// returns 403, so a model denial must not invalidate the whole credential.
+func (s *Selector) MarkModelAccessDenied(ctx context.Context, credential account.Credential, upstreamModel string, retryAfter time.Duration) {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		return
+	}
+	if retryAfter <= 0 {
+		retryAfter = modelAccessDeniedCooldown
+	}
+	now := time.Now().UTC()
+	_ = s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
+		AccountID: credential.ID, UpstreamModel: upstreamModel, Reason: "model_access_denied",
+		CooldownUntil: now.Add(retryAfter), UpdatedAt: now,
+	})
+	s.invalidateCandidates(credential.Provider)
+}
+
 // MarkPaidQuotaExhausted 使用已知真实账期将付费账号移出号池，到期后才允许 Billing 探测。
 func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential account.Credential, billing *account.Billing) bool {
-	if billing == nil || (billing.MonthlyLimit <= 0 && billing.OnDemandCap <= 0 && billing.OnDemandUsed <= 0 && billing.PrepaidBalance <= 0 && billing.CreditUsagePercent <= 0) {
+	if billing == nil || !billing.IsPaid() {
 		return false
 	}
 	periodEnd, ok := billing.PeriodEnd()

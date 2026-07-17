@@ -72,3 +72,7 @@ media:
   local:
     # [按需修改] 图片二进制目录；数据库只保存资源元数据。
     path: "./data/media"
+
+routing:
+  # [按需修改] 开启后优先使用已确认可用的 Grok Build Free 账号；也可在管理端热更新。
+  preferFreeBuild: false

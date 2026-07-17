@@ -12,12 +12,13 @@ import (
 )
 
 type candidateScore struct {
-	index        int
-	tier         int
-	billingFresh bool
-	inFlight     int
-	remaining    float64
-	lastSelected time.Time
+	index           int
+	tier            int
+	preferFreeBuild bool
+	billingFresh    bool
+	inFlight        int
+	remaining       float64
+	lastSelected    time.Time
 }
 
 // candidatePlan 使用线性建堆保留完整路由优先级，并允许 claim 失败后按顺序取下一账号。
@@ -63,6 +64,9 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 	}
 	if leftCandidate.ModelCapabilityKnown != rightCandidate.ModelCapabilityKnown {
 		return leftCandidate.ModelCapabilityKnown
+	}
+	if leftScore.preferFreeBuild != rightScore.preferFreeBuild {
+		return leftScore.preferFreeBuild
 	}
 	if leftScore.tier != rightScore.tier {
 		return leftScore.tier < rightScore.tier
@@ -118,7 +122,8 @@ func (s *Selector) planCandidates(ctx context.Context, values []account.RoutingC
 	for index, candidate := range values {
 		score := candidateScore{
 			index: index, tier: tierOrderRank(tierOrder, candidate.Credential.WebTier),
-			inFlight: inFlight[index], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
+			preferFreeBuild: s.preferFreeBuild && candidate.IsKnownFreeBuild(),
+			inFlight:        inFlight[index], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
 		}
 		if candidate.Billing != nil {
 			score.remaining = candidate.Billing.Remaining()

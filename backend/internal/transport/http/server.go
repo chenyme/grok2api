@@ -170,7 +170,11 @@ func New(deps Dependencies) *gin.Engine {
 		})
 	}
 	v1.Use(middleware.ClientAuth(deps.ClientKeys))
-	inference.NewHandler(deps.Gateway, deps.Models, deps.MaxBodyBytes).Register(v1)
+	inferenceHandler := inference.NewHandler(deps.Gateway, deps.Models, deps.MaxBodyBytes, deps.PublicAPIBaseURL)
+	if deps.Settings != nil {
+		inferenceHandler.SetPublicAPIBaseURLResolver(deps.Settings.PublicAPIBaseURL)
+	}
+	inferenceHandler.Register(v1)
 	registerFrontend(router, deps.FrontendStaticPath)
 	return router
 }

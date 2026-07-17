@@ -66,6 +66,7 @@ type BatchConfig struct {
 // ProviderBuildConfig 定义 Grok Build CLI 上游协议标识。
 type ProviderBuildConfig struct {
 	BaseURL          string
+	FallbackBaseURL  string
 	ClientVersion    string
 	ClientIdentifier string
 	TokenAuth        string
@@ -74,11 +75,12 @@ type ProviderBuildConfig struct {
 
 // RoutingConfig 定义会话粘性、冷却和故障切换边界。
 type RoutingConfig struct {
-	StickyTTL    time.Duration
-	CooldownBase time.Duration
-	CooldownMax  time.Duration
-	CapacityWait time.Duration
-	MaxAttempts  int
+	StickyTTL       time.Duration
+	CooldownBase    time.Duration
+	CooldownMax     time.Duration
+	CapacityWait    time.Duration
+	MaxAttempts     int
+	PreferFreeBuild bool
 }
 
 // AuditConfig 定义请求审计异步写入参数。

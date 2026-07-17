@@ -468,7 +468,7 @@ func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery
 			ExhaustedAt: recovery.ExhaustedAt, NextProbeAt: recovery.NextProbeAt, LastConfirmedAt: recovery.LastConfirmedAt,
 		}
 	}
-	if billing != nil && (billing.MonthlyLimit > 0 || billing.OnDemandCap > 0 || billing.OnDemandUsed > 0 || billing.PrepaidBalance > 0 || billing.CreditUsagePercent > 0) {
+	if billing != nil && billing.IsPaid() {
 		result := QuotaView{Type: QuotaTypePaid, Source: "upstreamBilling", Confidence: "observed", Unit: "credits", UsagePercent: billing.CreditUsagePercent, Status: QuotaStatusActive, PeriodStart: billing.BillingPeriodStart, PeriodEnd: billing.BillingPeriodEnd}
 		if recovery != nil && recovery.Kind == accountdomain.QuotaRecoveryKindPaid {
 			result.Status = QuotaStatusWaitingReset
@@ -538,10 +538,7 @@ func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery
 }
 
 func isEstimatedFreeBillingProfile(billing *accountdomain.Billing) bool {
-	if billing == nil {
-		return false
-	}
-	return billing.IsUnifiedBillingUser || billing.UsagePeriodType != "" || billing.TopUpMethod != "" || billing.BillingPeriodStart != "" || len(billing.History) > 0
+	return billing != nil && billing.HasFreeProfileSignal()
 }
 
 // StartDeviceLogin 启动短期 Device OAuth，会话只保存在有界运行态存储中。
@@ -1285,6 +1282,21 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 	return s.Get(ctx, updated.ID)
 }
 
+// MarkBuildAPIFallback 幂等写入 Build 账号 XAI 推理回退标记；失败不吞掉，调用方可重试。
+func (s *Service) MarkBuildAPIFallback(ctx context.Context, id uint64, enabled bool) error {
+	return mapRepositoryError(s.accounts.MarkBuildAPIFallback(ctx, id, enabled))
+}
+
+// CanUseBuildAPIFallback 仅允许 Billing 已确认付费的 Build 账号访问 XAI 回退地址。
+// 缺失或读取失败的 Billing 按无资格处理，由调用方 fail closed。
+func (s *Service) CanUseBuildAPIFallback(ctx context.Context, id uint64) (bool, error) {
+	billing, err := s.accounts.GetBilling(ctx, id)
+	if err != nil {
+		return false, mapRepositoryError(err)
+	}
+	return billing.IsPaid(), nil
+}
+
 func (s *Service) Delete(ctx context.Context, id uint64) error {
 	if s.sticky != nil {
 		_ = s.sticky.DeleteByAccount(ctx, id)
@@ -1628,8 +1640,7 @@ func (s *Service) ProbePaidQuota(ctx context.Context, value accountdomain.Creden
 }
 
 func (s *Service) reconcilePaidQuotaRecovery(ctx context.Context, credential accountdomain.Credential, billing accountdomain.Billing, afterProbe bool) error {
-	isPaid := billing.MonthlyLimit > 0 || billing.OnDemandCap > 0 || billing.OnDemandUsed > 0 || billing.PrepaidBalance > 0 || billing.CreditUsagePercent > 0
-	if !isPaid || !billing.IsExhausted(credential.MinimumRemaining) {
+	if !billing.IsPaid() || !billing.IsExhausted(credential.MinimumRemaining) {
 		recovery, err := s.accounts.GetQuotaRecovery(ctx, credential.ID)
 		if errors.Is(err, repository.ErrNotFound) || (err == nil && recovery.Kind != accountdomain.QuotaRecoveryKindPaid) {
 			return nil

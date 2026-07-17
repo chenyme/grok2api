@@ -85,6 +85,105 @@ func TestModelCapabilitiesAggregateAndGateEnabledRoutes(t *testing.T) {
 	}
 }
 
+func TestBuildPaidCapabilitiesAreSharedAcrossActiveSuperAccounts(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	models := NewModelRepository(database)
+
+	createAccount := func(name string) account.Credential {
+		t.Helper()
+		value, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name,
+			EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: account.AuthStatusActive,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	observer := createAccount("super-observer")
+	peer := createAccount("super-peer")
+	freeObserver := createAccount("free-observer")
+	freePeer := createAccount("free-peer")
+	now := time.Now().UTC()
+	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: observer.ID, MonthlyLimit: 100, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: peer.ID, OnDemandCap: 50, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	const sharedModel = "grok-super-shared"
+	if err := models.UpsertDiscovered(ctx, account.ProviderBuild, []string{sharedModel, "grok-4.5"}); err != nil {
+		t.Fatal(err)
+	}
+	for accountID, capabilities := range map[uint64][]string{
+		observer.ID:     {sharedModel, "grok-4.5"},
+		peer.ID:         {"grok-4.5"},
+		freeObserver.ID: {sharedModel},
+		freePeer.ID:     {"grok-4.5"},
+	} {
+		if err := models.ReplaceAccountCapabilities(ctx, accountID, capabilities, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	route, err := models.GetByProviderUpstream(ctx, account.ProviderBuild, sharedModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err = models.Get(ctx, route.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.SupportedAccounts != 3 || route.TotalAccounts != 4 {
+		t.Fatalf("shared route availability = %#v", route)
+	}
+	if _, _, err := models.List(ctx, repository.ModelListQuery{
+		Page: repository.PageQuery{Limit: 20, Sort: repository.SortQuery{Field: "accountSupport", Direction: repository.SortDescending}},
+	}); err != nil {
+		t.Fatalf("sort by shared account support: %v", err)
+	}
+	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, sharedModel, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[uint64]account.RoutingCandidate, len(candidates))
+	for _, candidate := range candidates {
+		byID[candidate.Credential.ID] = candidate
+	}
+	for _, accountID := range []uint64{observer.ID, peer.ID, freeObserver.ID} {
+		if candidate := byID[accountID]; !candidate.ModelCapabilityKnown || !candidate.SupportsModel {
+			t.Fatalf("account %d should support shared model: %#v", accountID, candidate)
+		}
+	}
+	if candidate := byID[freePeer.ID]; !candidate.ModelCapabilityKnown || candidate.SupportsModel {
+		t.Fatalf("free peer must keep its own capability snapshot: %#v", candidate)
+	}
+
+	observer.Enabled = false
+	if _, err := accounts.Update(ctx, observer); err != nil {
+		t.Fatal(err)
+	}
+	route, err = models.Get(ctx, route.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.SupportedAccounts != 1 || route.TotalAccounts != 3 {
+		t.Fatalf("disabled observer must not grant shared entitlement: %#v", route)
+	}
+	candidates, err = accounts.ListRoutingCandidates(ctx, account.ProviderBuild, sharedModel, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range candidates {
+		if candidate.Credential.ID == peer.ID && candidate.SupportsModel {
+			t.Fatalf("paid peer should lose shared capability without an active paid observer: %#v", candidate)
+		}
+	}
+}
+
 func TestPublicModelNameResolvesAcrossAvailableProviders(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
@@ -379,5 +478,58 @@ func TestWebRediscoveryRestoresCatalogRouteDefaults(t *testing.T) {
 	}
 	if items[0].PublicID != value.PublicID || items[0].Capability != model.CapabilityImageEdit || items[0].Origin != model.OriginDiscovered {
 		t.Fatalf("rediscovered web route defaults = %#v", items[0])
+	}
+}
+
+func TestBuildVideo15DiscoveredAsVideoCapability(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewModelRepository(database)
+	accounts := NewAccountRepository(database)
+	buildAccount, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "build-video", SourceKey: "build-video",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webAccount, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-video", SourceKey: "web-video",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-4.5", "grok-imagine-video-1.5"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := repo.ReplaceAccountCapabilities(ctx, buildAccount.ID, []string{"grok-4.5", "grok-imagine-video-1.5"}, now); err != nil {
+		t.Fatal(err)
+	}
+	video, err := repo.GetByPublicID(ctx, "Build/grok-imagine-video-1.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if video.Capability != model.CapabilityVideo || video.UpstreamModel != "grok-imagine-video-1.5" || video.Origin != model.OriginDiscovered {
+		t.Fatalf("build video 1.5 route = %#v", video)
+	}
+	chat, err := repo.GetByPublicID(ctx, "Build/grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chat.Capability != model.CapabilityResponses {
+		t.Fatalf("build chat route capability = %s", chat.Capability)
+	}
+	// Web 既有 video 分类不受影响。
+	if err := repo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-imagine-video"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReplaceAccountCapabilities(ctx, webAccount.ID, []string{"grok-imagine-video"}, now); err != nil {
+		t.Fatal(err)
+	}
+	webVideo, err := repo.GetByPublicID(ctx, "grok-imagine-video")
+	if err != nil || webVideo.Capability != model.CapabilityVideo {
+		t.Fatalf("web video route = %#v, err = %v", webVideo, err)
 	}
 }

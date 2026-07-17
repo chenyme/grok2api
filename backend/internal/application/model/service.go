@@ -434,6 +434,18 @@ func (s *Service) syncAccountCapabilities(ctx context.Context, value account.Cre
 		return nil, err
 	}
 	models := normalizeDiscoveredModels(values)
+	if normalizer, ok := adapter.(provider.AccountModelCapabilityNormalizer); ok {
+		var billing *account.Billing
+		snapshot, billingErr := s.accounts.GetBilling(ctx, credential.ID)
+		if billingErr == nil {
+			billing = &snapshot
+		} else if !errors.Is(billingErr, repository.ErrNotFound) {
+			// Billing 不存在按 Unknown 处理；其他仓储错误保留失败语义。
+			s.markCapabilitySyncFailed(credential.ID, attemptedAt, billingErr)
+			return nil, billingErr
+		}
+		models = normalizeDiscoveredModels(normalizer.NormalizeAccountModelCapabilities(models, billing))
+	}
 	if err := s.models.ReplaceAccountCapabilities(ctx, credential.ID, models, attemptedAt); err != nil {
 		s.markCapabilitySyncFailed(credential.ID, attemptedAt, err)
 		return nil, err

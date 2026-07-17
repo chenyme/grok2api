@@ -876,6 +876,18 @@ func TestParseVideoConcatenatedJSONFixture(t *testing.T) {
 	}
 }
 
+func TestParseVideoStreamUsesModelResponseAttachment(t *testing.T) {
+	fixture := `data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post_1"},"modelResponse":{"fileAttachments":["users/user_1/generated/video_1/generated_video.mp4"]}}}}` + "\n"
+	response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(fixture))}
+	result, postID, err := parseVideoStream(response, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postID != "post_1" || result.URL != "https://assets.grok.com/users/user_1/generated/video_1/generated_video.mp4" || result.ContentType != "video/mp4" {
+		t.Fatalf("result = %#v, post = %q", result, postID)
+	}
+}
+
 func MarshalJSONBytes(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data

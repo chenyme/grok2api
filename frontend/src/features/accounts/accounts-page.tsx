@@ -137,7 +137,10 @@ export function AccountsPage() {
   type AccountForm = z.infer<typeof accountSchema>;
   const form = useForm<AccountForm>({
     resolver: zodResolver(accountSchema),
-    defaultValues: { name: "", enabled: true, priority: 1, maxConcurrent: 8, minimumRemaining: 0, cloudflareCookies: "", clearCloudflareCookies: false },
+    defaultValues: {
+      name: "", enabled: true, priority: 1, maxConcurrent: 8, minimumRemaining: 0,
+      cloudflareCookies: "", clearCloudflareCookies: false,
+    },
   });
   const accountEnabled = useWatch({ control: form.control, name: "enabled" });
   const clearCloudflareCookies = useWatch({ control: form.control, name: "clearCloudflareCookies" });

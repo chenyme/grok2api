@@ -55,6 +55,8 @@ type AccountRepository interface {
 	UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string, permanent bool) error
 	UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error
 	UpdateHealth(ctx context.Context, id uint64, failureCount int, cooldownUntil *time.Time, lastError string, success bool) error
+	// MarkBuildAPIFallback 幂等写入 Build 账号的 XAI 推理回退标记；非 Build 账号返回错误。
+	MarkBuildAPIFallback(ctx context.Context, id uint64, enabled bool) error
 	UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error
 	PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error)
 	SaveBilling(ctx context.Context, value account.Billing) error

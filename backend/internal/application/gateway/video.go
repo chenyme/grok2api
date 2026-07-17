@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -104,6 +105,43 @@ func (s *Service) GetVideo(ctx context.Context, id string, key clientkey.Key) (m
 		return media.Job{}, ErrResponseNotFound
 	}
 	return job, nil
+}
+
+func (s *Service) OpenVideoContent(ctx context.Context, id string, key clientkey.Key) (io.ReadCloser, string, int64, error) {
+	job, err := s.GetVideo(ctx, id, key)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	if job.Status != media.StatusCompleted {
+		return nil, "", 0, fmt.Errorf("视频内容尚未可用")
+	}
+	// 本地资产优先：XAI ZDR 上传完成后不经公网回环下载。
+	if job.ResultAssetID != "" && s.mediaAssets != nil {
+		asset, body, openErr := s.mediaAssets.OpenVideo(ctx, job.ResultAssetID)
+		if openErr == nil {
+			return body, asset.MIMEType, asset.SizeBytes, nil
+		}
+	}
+	if job.UpstreamURL == "" {
+		return nil, "", 0, fmt.Errorf("视频内容尚未可用")
+	}
+	adapter, ok := s.providers.Videos(account.Provider(job.Provider))
+	if !ok {
+		return nil, "", 0, ErrResponseAccountUnavailable
+	}
+	downloader, ok := adapter.(provider.VideoContentDownloader)
+	if !ok || s.selector == nil || s.selector.accounts == nil || s.accounts == nil {
+		return nil, "", 0, ErrResponseAccountUnavailable
+	}
+	credential, err := s.selector.accounts.Get(ctx, job.AccountID)
+	if err != nil {
+		return nil, "", 0, ErrResponseAccountUnavailable
+	}
+	credential, err = s.accounts.EnsureCredential(ctx, credential, false)
+	if err != nil {
+		return nil, "", 0, ErrResponseAccountUnavailable
+	}
+	return downloader.DownloadVideo(ctx, credential, job.UpstreamURL)
 }
 
 func (s *Service) RecoverVideoJobs(ctx context.Context) error {
@@ -261,7 +299,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	}
 	lastProgress := job.Progress
 	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
-		Credential: lease.Credential, Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
+		Credential: lease.Credential, JobID: job.ID, Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
 		ReferenceURLs: decodeVideoInput(job.InputJSON),
 		Progress: func(value int) {
 			value = min(99, max(1, value))
@@ -295,6 +333,14 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			case status == http.StatusForbidden && s.providers.RetryForbiddenAsEgress(lease.Credential.Provider):
 				// Web Provider 已对 anti-bot 403 降低出口健康并重建浏览器会话；
 				// 视频请求已提交，不能换号重试，也不能误伤账号池。
+				// Build 主地址 403 的 XAI 推理回退在 Adapter 内完成，不在此禁用账号。
+				failureHandled = true
+			case status == http.StatusForbidden && lease.Credential.Provider == account.ProviderBuild:
+				if lease.Billing == nil || !lease.Billing.IsPaid() {
+					// Free/Unknown 不具备 XAI 回退资格；主 Build 403 表示该账号当前异常。
+					s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
+				}
+				// Super 的 XAI 探测在 Adapter 内完成；其 403 保持服务级处理。
 				failureHandled = true
 			case (status == http.StatusPaymentRequired || status == http.StatusTooManyRequests) && lease.QuotaMode != "":
 				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(failureCtx, lease.Credential.ID, lease.QuotaMode, 0)
@@ -316,11 +362,18 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		}
 		failureCancel()
 		applyMediaJobEgress(&job, egressTrace, route.Provider)
-		s.failVideoJob(parent, job, "generation_failed", err)
+		failureCode, publicErr := "generation_failed", err
+		if status, ok := provider.ErrorHTTPStatus(err); errors.Is(err, provider.ErrUnauthorized) || (ok && (status == http.StatusUnauthorized || status == http.StatusForbidden)) {
+			failureCode, publicErr = "provider_unavailable", errors.New("上游服务暂不可用")
+		}
+		s.failVideoJob(parent, job, failureCode, publicErr)
 		return
 	}
 	now := time.Now().UTC()
 	job.Status, job.Progress, job.UpstreamURL, job.ContentType = media.StatusCompleted, 100, result.URL, result.ContentType
+	if result.AssetID != "" {
+		job.ResultAssetID = result.AssetID
+	}
 	applyMediaJobEgress(&job, egressTrace, route.Provider)
 	job.LeaseUntil, job.UpdatedAt, job.CompletedAt = nil, now, &now
 	if err := s.persistVideoJobWithRetry(parent, job); err != nil {

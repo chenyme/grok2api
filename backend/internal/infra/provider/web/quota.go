@@ -307,11 +307,17 @@ func parseWeeklyCreditsResponse(body []byte, accountID uint64, syncedAt time.Tim
 			config = config[consumed:]
 		}
 	}
-	if !usagePresent || math.IsNaN(usagePercent) || math.IsInf(usagePercent, 0) || usagePercent < 0 || usagePercent > 100 {
+	if usagePresent && (math.IsNaN(usagePercent) || math.IsInf(usagePercent, 0) || usagePercent < 0 || usagePercent > 100) {
 		return account.QuotaWindow{}, fmt.Errorf("Grok Web 周额度响应缺少有效使用率")
 	}
 	if periodStart == nil || periodEnd == nil || !periodEnd.After(*periodStart) {
 		return account.QuotaWindow{}, fmt.Errorf("Grok Web 周额度响应缺少有效周期")
+	}
+	if !usagePresent && periodStart.Nanosecond() == 0 && periodEnd.Nanosecond() == 0 {
+		// Free accounts return a coarse entitlement period without a usage rate.
+		// A paid, unused weekly pool has the same rate omitted but retains its
+		// precise period boundaries, which represents zero percent used.
+		return account.QuotaWindow{}, fmt.Errorf("Grok Web 周额度响应缺少有效使用率")
 	}
 	windowSeconds := int(periodEnd.Sub(*periodStart).Seconds())
 	if windowSeconds < 24*60*60 || windowSeconds > 31*24*60*60 {
