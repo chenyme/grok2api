@@ -280,11 +280,11 @@ socks5h://Default.{account}:RESIN_PROXY_TOKEN@resin:2260
 **始终主地址（不探测 XAI）**：`GET /billing` 与 `format=credits`、`GET/DELETE /responses/{id}` 已存储资源、OAuth device/authorization/token refresh、以及其它未知 Build 路径。生产探针显示 XAI 对 stored response 与 Billing 返回 404；将 Billing 改走 XAI 只会把主地址可诊断的 403 变成误导性 404，且无法恢复额度。
 
 - **设置**：管理端 Grok Build 的「XAI 备用地址」可编辑；旧运行设置缺字段时默认 `https://api.x.ai/v1`。
-- **账号**：账号编辑页可查看并手动开启/清除「XAI 推理回退」；token 刷新、SSO 转换与 upsert 不会清除该标记。
+- **账号**：回退标记是内部运行状态，不在账号管理接口或页面暴露手工开关；仅当 Billing 已确认付费、主地址返回 403 且 XAI 请求成功时自动写入。Free/Unknown 即使存在旧标记也始终走主地址；token 刷新、SSO 转换与 upsert 不会误改该状态。
 - **视频 ZDR**：走 XAI 时必须提供可写 `output.upload_url`。服务端签发高熵、限时、一次性 PUT 地址（`PUT /v1/media/uploads/{token}`），上传完成后写入本地 `kind=video` 媒体资产并绑定视频任务。
 - **公开地址**：`frontend.publicApiBaseURL`（或运行设置覆盖）必须是 **xAI 可访问的 HTTPS** 根地址，否则 XAI 视频回退会返回本地配置错误且不标记回退。
 - **上传限制**：默认最大 256 MiB、仅视频 MIME、一次性消费；伪造/过期/重复/超限 PUT 被拒绝且不产生资产。
-- **恢复主地址**：在账号管理中关闭「XAI 推理回退」后，新推理请求重新探测主地址；已创建视频任务的轮询 base 不受影响。
+- **资格变化**：每次使用回退地址前都会重新校验实时 Billing；账号不再呈现付费信号时立即回到主地址。已创建视频任务记录自己的轮询 base，不受后续资格变化影响。
 
 ## 生产部署
 
