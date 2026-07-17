@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 )
@@ -14,10 +15,11 @@ type reasoningReplayEntry struct {
 
 // ReasoningReplayStore 提供单实例有界推理回放缓存。
 type ReasoningReplayStore struct {
-	mu       sync.Mutex
-	maxSize  int
-	values   map[string]reasoningReplayEntry
-	ttlSlide bool
+	mu         sync.Mutex
+	maxSize    int
+	evictBatch int
+	values     map[string]reasoningReplayEntry
+	ttlSlide   bool
 }
 
 // NewReasoningReplayStore 创建内存推理回放仓储；maxSize 为全局条目上限。
@@ -25,7 +27,14 @@ func NewReasoningReplayStore(maxSize int) *ReasoningReplayStore {
 	if maxSize < 1 {
 		maxSize = 10240
 	}
-	return &ReasoningReplayStore{maxSize: maxSize, values: make(map[string]reasoningReplayEntry, maxSize), ttlSlide: true}
+	evictBatch := maxSize / 80
+	if evictBatch < 1 {
+		evictBatch = 1
+	}
+	if evictBatch > 128 {
+		evictBatch = 128
+	}
+	return &ReasoningReplayStore{maxSize: maxSize, evictBatch: evictBatch, values: make(map[string]reasoningReplayEntry, maxSize), ttlSlide: true}
 }
 
 func reasoningReplayMapKey(model, sessionKey string) string {
@@ -43,7 +52,7 @@ func cloneReplayItems(items [][]byte) [][]byte {
 	return cloned
 }
 
-func (s *ReasoningReplayStore) Get(_ context.Context, model, sessionKey string, now time.Time) ([][]byte, bool, error) {
+func (s *ReasoningReplayStore) Get(_ context.Context, model, sessionKey string, now time.Time, ttl time.Duration) ([][]byte, bool, error) {
 	if model == "" || sessionKey == "" {
 		return nil, false, nil
 	}
@@ -59,9 +68,11 @@ func (s *ReasoningReplayStore) Get(_ context.Context, model, sessionKey string, 
 		return nil, false, nil
 	}
 	if s.ttlSlide {
-		ttl := entry.expiresAt.Sub(entry.storedAt)
 		if ttl <= 0 {
-			ttl = time.Hour
+			ttl = entry.expiresAt.Sub(entry.storedAt)
+			if ttl <= 0 {
+				ttl = time.Hour
+			}
 		}
 		entry.expiresAt = now.Add(ttl)
 		entry.storedAt = now
@@ -102,18 +113,23 @@ func (s *ReasoningReplayStore) evictLocked(now time.Time) {
 			delete(s.values, key)
 		}
 	}
-	for len(s.values) >= s.maxSize {
-		var oldestKey string
-		var oldest time.Time
-		for key, entry := range s.values {
-			if oldestKey == "" || entry.storedAt.Before(oldest) {
-				oldestKey = key
-				oldest = entry.storedAt
-			}
-		}
-		if oldestKey == "" {
-			return
-		}
-		delete(s.values, oldestKey)
+	if len(s.values) < s.maxSize {
+		return
+	}
+	type candidate struct {
+		key      string
+		storedAt time.Time
+	}
+	candidates := make([]candidate, 0, len(s.values))
+	for key, entry := range s.values {
+		candidates = append(candidates, candidate{key: key, storedAt: entry.storedAt})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].storedAt.Before(candidates[j].storedAt) })
+	count := s.evictBatch
+	if count > len(candidates) {
+		count = len(candidates)
+	}
+	for index := 0; index < count; index++ {
+		delete(s.values, candidates[index].key)
 	}
 }

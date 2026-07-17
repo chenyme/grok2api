@@ -1,7 +1,10 @@
 package reasoningreplay
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -13,7 +16,12 @@ import (
 )
 
 func validEncrypted(seed byte) string {
-	return strings.Repeat(string(rune('A'+seed%26)), 40)
+	buffer := make([]byte, 0, 256)
+	for index := 0; len(buffer) < 256; index++ {
+		digest := sha256.Sum256([]byte{seed, byte(index), byte(index >> 8)})
+		buffer = append(buffer, digest[:]...)
+	}
+	return base64.RawStdEncoding.EncodeToString(buffer[:256])
 }
 
 func TestNormalizeAndStoreRoundTrip(t *testing.T) {
@@ -31,17 +39,47 @@ func TestNormalizeAndStoreRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(updated, &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Input) < 2 {
+	if len(got.Input) != 3 {
 		t.Fatalf("input len = %d, body=%s", len(got.Input), updated)
 	}
-	found := false
-	for _, item := range got.Input {
-		if item["type"] == "reasoning" && item["encrypted_content"] == enc {
-			found = true
-		}
+	if got.Input[0]["type"] != "reasoning" || got.Input[0]["encrypted_content"] != enc || got.Input[1]["role"] != "assistant" || got.Input[2]["role"] != "user" {
+		t.Fatalf("unexpected replay order: %s", updated)
 	}
-	if !found {
-		t.Fatalf("encrypted reasoning not injected: %s", updated)
+}
+
+func TestApplyInsertsReasoningBeforeMatchingAssistant(t *testing.T) {
+	store := memory.NewReasoningReplayStore(100)
+	replay := New(store, Config{Enabled: true, TTL: time.Hour}, slog.Default())
+	enc := validEncrypted(14)
+	replay.StoreFromCompleted(context.Background(), "grok-4.5", "session-order", []byte(`{"output":[{"type":"reasoning","encrypted_content":"`+enc+`"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}`))
+	body := []byte(`{"input":[{"type":"message","role":"user","content":"first"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]},{"type":"message","role":"user","content":"next"}]}`)
+	updated := replay.Apply(context.Background(), "grok-4.5", "session-order", body)
+	var got struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(updated, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Input) != 4 || got.Input[1]["type"] != "reasoning" || got.Input[2]["role"] != "assistant" || got.Input[3]["role"] != "user" {
+		t.Fatalf("unexpected replay order: %s", updated)
+	}
+}
+
+func TestApplyAlignsAnthropicVisibleToolCallID(t *testing.T) {
+	store := memory.NewReasoningReplayStore(100)
+	replay := New(store, Config{Enabled: true, TTL: time.Hour}, slog.Default())
+	enc := validEncrypted(15)
+	replay.StoreFromCompleted(context.Background(), "grok-4.5", "session-toolu", []byte(`{"output":[{"type":"reasoning","encrypted_content":"`+enc+`"},{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}]}`))
+	body := []byte(`{"input":[{"type":"function_call_output","call_id":"toolu_call_1","output":"result"}]}`)
+	updated := replay.Apply(context.Background(), "grok-4.5", "session-toolu", body)
+	var got struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(updated, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Input) != 3 || got.Input[0]["type"] != "reasoning" || got.Input[1]["type"] != "function_call" || got.Input[1]["call_id"] != "toolu_call_1" || got.Input[2]["type"] != "function_call_output" {
+		t.Fatalf("unexpected tool replay: %s", updated)
 	}
 }
 
@@ -106,6 +144,71 @@ func TestCaptureBodyStoresNonStream(t *testing.T) {
 	}
 }
 
+func TestIncompletePayloadRetainsPreviousReplay(t *testing.T) {
+	store := memory.NewReasoningReplayStore(100)
+	replay := New(store, Config{Enabled: true, TTL: time.Hour}, slog.Default())
+	enc := validEncrypted(16)
+	replay.StoreFromCompleted(context.Background(), "grok-4.5", "session-partial", []byte(`{"output":[{"type":"reasoning","encrypted_content":"`+enc+`"}]}`))
+	replay.StoreFromCompleted(context.Background(), "grok-4.5", "session-partial", []byte(`{"output":[`))
+	updated := replay.Apply(context.Background(), "grok-4.5", "session-partial", []byte(`{"input":[{"type":"message","role":"user","content":"next"}]}`))
+	if !strings.Contains(string(updated), enc) {
+		t.Fatalf("incomplete payload deleted previous replay: %s", updated)
+	}
+}
+
+func TestCaptureBodyClosedBeforeEOFRetainsPreviousReplay(t *testing.T) {
+	store := memory.NewReasoningReplayStore(100)
+	replay := New(store, Config{Enabled: true, TTL: time.Hour}, slog.Default())
+	enc := validEncrypted(17)
+	replay.StoreFromCompleted(context.Background(), "grok-4.5", "session-short-read", []byte(`{"output":[{"type":"reasoning","encrypted_content":"`+enc+`"}]}`))
+	wrapped := replay.CaptureBody(io.NopCloser(strings.NewReader(`{"output":[]}`)), "grok-4.5", "session-short-read", false, false)
+	buffer := make([]byte, 4)
+	if _, err := wrapped.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	if err := wrapped.Close(); err != nil {
+		t.Fatal(err)
+	}
+	updated := replay.Apply(context.Background(), "grok-4.5", "session-short-read", []byte(`{"input":[{"type":"message","role":"user","content":"next"}]}`))
+	if !strings.Contains(string(updated), enc) {
+		t.Fatalf("short read deleted previous replay: %s", updated)
+	}
+}
+
+func TestUpdateConfigConcurrentWithReplay(t *testing.T) {
+	store := memory.NewReasoningReplayStore(100)
+	replay := New(store, Config{Enabled: true, TTL: time.Hour}, slog.Default())
+	enc := validEncrypted(18)
+	payload := []byte(`{"output":[{"type":"reasoning","encrypted_content":"` + enc + `"}]}`)
+	body := []byte(`{"input":[{"type":"message","role":"user","content":"next"}]}`)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for index := 0; index < 1000; index++ {
+			replay.UpdateConfig(Config{Enabled: index%2 == 0, TTL: time.Hour})
+		}
+	}()
+	for index := 0; index < 1000; index++ {
+		replay.StoreFromCompleted(context.Background(), "grok-4.5", "session-config", payload)
+		_ = replay.Apply(context.Background(), "grok-4.5", "session-config", body)
+	}
+	<-done
+}
+
+func TestNormalizeReasoningRejectsForeignEncryptedContent(t *testing.T) {
+	for _, value := range []string{
+		"gAAAAABcodex-shaped-signature-with-padding==",
+		base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte("a"), 128)),
+	} {
+		if validGrokReplayEncryptedContent(value) {
+			t.Fatalf("foreign encrypted content accepted: %q", value)
+		}
+	}
+	if value := validEncrypted(19); !validGrokReplayEncryptedContent(value) {
+		t.Fatal("valid Grok-shaped encrypted content rejected")
+	}
+}
+
 func TestDisabledNoOp(t *testing.T) {
 	store := memory.NewReasoningReplayStore(100)
 	replay := New(store, Config{Enabled: false, TTL: time.Hour}, slog.Default())
@@ -124,7 +227,7 @@ func TestMemoryTTLExpire(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if _, ok, err := store.Get(context.Background(), "m", "s", time.Now().UTC()); err != nil || ok {
+	if _, ok, err := store.Get(context.Background(), "m", "s", time.Now().UTC(), time.Hour); err != nil || ok {
 		t.Fatalf("expected expired miss ok=%v err=%v", ok, err)
 	}
 }

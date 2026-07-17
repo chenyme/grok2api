@@ -36,7 +36,7 @@ type StickySessionRepository interface {
 // ReasoningReplayRepository 保存无状态多轮所需的上一轮可回放 output items。
 // key 边界为 model + sessionKey；sessionKey 应使用已隔离的 PromptCacheKey。
 type ReasoningReplayRepository interface {
-	Get(ctx context.Context, model, sessionKey string, now time.Time) (items [][]byte, ok bool, err error)
+	Get(ctx context.Context, model, sessionKey string, now time.Time, ttl time.Duration) (items [][]byte, ok bool, err error)
 	Set(ctx context.Context, model, sessionKey string, items [][]byte, expiresAt time.Time) error
 	Delete(ctx context.Context, model, sessionKey string) error
 }

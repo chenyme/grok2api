@@ -11,13 +11,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
+	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/reasoningreplay"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -92,6 +95,87 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 	input := captured["input"].([]any)
 	if captured["model"] != "grok-4.5" || captured["prompt_cache_key"] != "isolated-key" || len(input) != 1 || input[0].(map[string]any)["type"] != "reasoning" || input[0].(map[string]any)["encrypted_content"] != "cipher" {
 		t.Fatalf("captured = %#v", captured)
+	}
+}
+
+func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rawEncrypted := make([]byte, 64)
+	for index := range rawEncrypted {
+		rawEncrypted[index] = byte(index)
+	}
+	replayEncrypted := base64.RawStdEncoding.EncodeToString(rawEncrypted)
+	requestCount := 0
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, cipher)
+	adapter.SetReasoningReplay(reasoningreplay.New(
+		memory.NewReasoningReplayStore(16),
+		reasoningreplay.Config{Enabled: true, TTL: time.Hour},
+		nil,
+	))
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		var payload struct {
+			Input []map[string]any `json:"input"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if requestCount == 2 {
+			if len(payload.Input) != 4 || payload.Input[0]["role"] != "user" || payload.Input[1]["type"] != "reasoning" || payload.Input[1]["encrypted_content"] != replayEncrypted || payload.Input[2]["role"] != "assistant" || payload.Input[3]["role"] != "user" {
+				t.Fatalf("second turn replay order = %#v", payload.Input)
+			}
+		}
+		body := `{"id":"resp_2","model":"grok-4.5","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}]}]}`
+		if requestCount == 1 {
+			body = `{"id":"resp_1","model":"grok-4.5","status":"completed","output":[{"type":"reasoning","encrypted_content":"` + replayEncrypted + `"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"}]}]}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    request,
+		}, nil
+	})
+
+	credential := account.Credential{Provider: account.ProviderBuild, EncryptedAccessToken: encrypted}
+	first, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.5",
+		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-replay-key",
+		Body: []byte(`{"model":"public","max_tokens":128,"messages":[{"role":"user","content":"first"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(first.Body); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.5",
+		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-replay-key",
+		Body: []byte(`{"model":"public","max_tokens":128,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"first"},{"role":"user","content":"second"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Body.Close()
+	if _, err := io.ReadAll(second.Body); err != nil {
+		t.Fatal(err)
+	}
+	if requestCount != 2 {
+		t.Fatalf("request count = %d", requestCount)
 	}
 }
 

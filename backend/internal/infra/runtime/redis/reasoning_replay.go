@@ -31,7 +31,7 @@ func hashKeyPart(value string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-func (s *ReasoningReplayStore) Get(ctx context.Context, model, sessionKey string, now time.Time) ([][]byte, bool, error) {
+func (s *ReasoningReplayStore) Get(ctx context.Context, model, sessionKey string, now time.Time, ttl time.Duration) ([][]byte, bool, error) {
 	if s == nil || s.store == nil || model == "" || sessionKey == "" {
 		return nil, false, nil
 	}
@@ -48,8 +48,8 @@ func (s *ReasoningReplayStore) Get(ctx context.Context, model, sessionKey string
 	if err := json.Unmarshal(raw, &items); err != nil {
 		return nil, false, err
 	}
-	// 滑动续期：沿用剩余 TTL；若无 TTL 则忽略。
-	if ttl, ttlErr := s.store.client.TTL(ctx, key).Result(); ttlErr == nil && ttl > 0 {
+	// 滑动续期：命中后恢复为完整配置 TTL。
+	if ttl > 0 {
 		_ = s.store.client.Expire(ctx, key, ttl).Err()
 	}
 	return cloneItems(items), true, nil

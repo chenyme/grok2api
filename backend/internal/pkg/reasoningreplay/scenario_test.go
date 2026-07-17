@@ -23,7 +23,7 @@ func TestScenario_RealTwoTurnHit(t *testing.T) {
 	// 与 resolvePromptCacheIdentity 形态接近的隔离 key
 	session := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	model := "grok-4.5"
-	enc := "gAAAAABrealGrokEncryptedContentSampleForReplayTest0123456789ABCDEF=="
+	enc := validEncrypted(13)
 
 	// Turn1 上游成功响应（非流式）
 	turn1Upstream := fmt.Sprintf(`{
@@ -113,13 +113,16 @@ func TestScenario_SSEStreamCompletedStores(t *testing.T) {
 	enc := validEncrypted(7)
 	session, model := "sse-session", "grok-4.5"
 
-	// 真实 SSE：中间有 delta，最后 response.completed 带完整 output
+	// 真实 SSE：完整 output items 在 done 事件中，completed.output 为空。
 	sse := strings.Join([]string{
-		`event: response.output_item.added`,
-		`data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_1"}}`,
+		`event: response.output_item.done`,
+		fmt.Sprintf(`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":%q}}`, enc),
+		``,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}`,
 		``,
 		`event: response.completed`,
-		fmt.Sprintf(`data: {"type":"response.completed","response":{"id":"resp_sse","output":[{"type":"reasoning","encrypted_content":%q},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}}`, enc),
+		`data: {"type":"response.completed","response":{"id":"resp_sse","output":[]}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -203,7 +206,7 @@ func TestScenario_ToolCallInjectOnlyWithMatchingOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay.StoreFromCompleted(ctx, model, session, payload)
-	stored, ok, storeErr := store.Get(ctx, model, session, time.Now().UTC())
+	stored, ok, storeErr := store.Get(ctx, model, session, time.Now().UTC(), time.Hour)
 	if storeErr != nil || !ok || len(stored) == 0 {
 		t.Fatalf("store miss: ok=%v err=%v items=%d payload=%s", ok, storeErr, len(stored), payload)
 	}
