@@ -177,11 +177,12 @@ type LocalMediaConfig struct {
 }
 
 type RoutingConfig struct {
-	StickyTTL    Duration `yaml:"stickyTTL"`
-	CooldownBase Duration `yaml:"cooldownBase"`
-	CooldownMax  Duration `yaml:"cooldownMax"`
-	CapacityWait Duration `yaml:"capacityWait"`
-	MaxAttempts  int      `yaml:"maxAttempts"`
+	StickyTTL       Duration `yaml:"stickyTTL"`
+	CooldownBase    Duration `yaml:"cooldownBase"`
+	CooldownMax     Duration `yaml:"cooldownMax"`
+	CapacityWait    Duration `yaml:"capacityWait"`
+	MaxAttempts     int      `yaml:"maxAttempts"`
+	PreferFreeBuild bool     `yaml:"preferFreeBuild"`
 }
 
 type AuditConfig struct {
@@ -537,11 +538,12 @@ func defaultConfig() Config {
 			Local: LocalMediaConfig{Path: "./data/media"},
 		},
 		Routing: RoutingConfig{
-			StickyTTL:    Duration(time.Hour),
-			CooldownBase: Duration(30 * time.Second),
-			CooldownMax:  Duration(30 * time.Minute),
-			CapacityWait: Duration(500 * time.Millisecond),
-			MaxAttempts:  3,
+			StickyTTL:       Duration(time.Hour),
+			CooldownBase:    Duration(30 * time.Second),
+			CooldownMax:     Duration(30 * time.Minute),
+			CapacityWait:    Duration(500 * time.Millisecond),
+			MaxAttempts:     3,
+			PreferFreeBuild: false,
 		},
 		Audit:             AuditConfig{BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond)},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},

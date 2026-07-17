@@ -297,18 +297,25 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 }
 
 func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (string, model.Capability) {
-	if provider != account.ProviderWeb {
+	switch provider {
+	case account.ProviderWeb:
+		switch upstreamModel {
+		case "grok-imagine-image", "grok-imagine-image-quality":
+			return upstreamModel, model.CapabilityImage
+		case "imagine-image-edit":
+			return "grok-imagine-image-edit", model.CapabilityImageEdit
+		case "grok-imagine-video":
+			return upstreamModel, model.CapabilityVideo
+		default:
+			return upstreamModel, model.CapabilityChat
+		}
+	case account.ProviderBuild:
+		if upstreamModel == "grok-imagine-video-1.5" {
+			return upstreamModel, model.CapabilityVideo
+		}
 		return upstreamModel, model.CapabilityResponses
-	}
-	switch upstreamModel {
-	case "grok-imagine-image", "grok-imagine-image-quality":
-		return upstreamModel, model.CapabilityImage
-	case "imagine-image-edit":
-		return "grok-imagine-image-edit", model.CapabilityImageEdit
-	case "grok-imagine-video":
-		return upstreamModel, model.CapabilityVideo
 	default:
-		return upstreamModel, model.CapabilityChat
+		return upstreamModel, model.CapabilityResponses
 	}
 }
 

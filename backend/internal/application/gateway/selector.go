@@ -86,21 +86,22 @@ func (l *accountLease) Release() {
 
 // Selector 实现可替换的 balanced 账号选择策略。
 type Selector struct {
-	accounts       repository.AccountRepository
-	concurrency    repository.ConcurrencyLimiter
-	sticky         repository.StickySessionRepository
-	stickyTTL      time.Duration
-	cooldownBase   time.Duration
-	cooldownMax    time.Duration
-	capacityWait   time.Duration
-	mu             sync.Mutex
-	leaseWakeMu    sync.Mutex
-	leaseWake      chan struct{}
-	lastSelectedAt map[uint64]time.Time
-	lastSuccessAt  map[uint64]time.Time
-	candidates     map[candidateCacheKey]candidateSnapshot
-	candidateLoads singleflight.Group
-	tierOrders     interface {
+	accounts        repository.AccountRepository
+	concurrency     repository.ConcurrencyLimiter
+	sticky          repository.StickySessionRepository
+	stickyTTL       time.Duration
+	cooldownBase    time.Duration
+	cooldownMax     time.Duration
+	capacityWait    time.Duration
+	preferFreeBuild bool
+	mu              sync.Mutex
+	leaseWakeMu     sync.Mutex
+	leaseWake       chan struct{}
+	lastSelectedAt  map[uint64]time.Time
+	lastSuccessAt   map[uint64]time.Time
+	candidates      map[candidateCacheKey]candidateSnapshot
+	candidateLoads  singleflight.Group
+	tierOrders      interface {
 		TierOrder(account.Provider, string) []account.WebTier
 	}
 }
@@ -123,6 +124,13 @@ func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax time.Durati
 	if len(capacityWait) > 0 {
 		s.capacityWait = max(time.Duration(0), capacityWait[0])
 	}
+	s.mu.Unlock()
+}
+
+// UpdatePreferFreeBuild 热更新 Build Free 账号优先策略。
+func (s *Selector) UpdatePreferFreeBuild(value bool) {
+	s.mu.Lock()
+	s.preferFreeBuild = value
 	s.mu.Unlock()
 }
 
@@ -457,7 +465,7 @@ func (s *Selector) MarkModelAccessDenied(ctx context.Context, credential account
 
 // MarkPaidQuotaExhausted 使用已知真实账期将付费账号移出号池，到期后才允许 Billing 探测。
 func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential account.Credential, billing *account.Billing) bool {
-	if billing == nil || (billing.MonthlyLimit <= 0 && billing.OnDemandCap <= 0 && billing.OnDemandUsed <= 0 && billing.PrepaidBalance <= 0 && billing.CreditUsagePercent <= 0) {
+	if billing == nil || !billing.IsPaid() {
 		return false
 	}
 	periodEnd, ok := billing.PeriodEnd()

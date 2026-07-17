@@ -18,7 +18,7 @@ export type SettingsConfigDTO = {
     cleanupInterval: string;
   };
   frontend: { publicApiBaseURL: string };
-  routing: { stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number };
+  routing: { stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number; preferFreeBuild: boolean };
   audit: { bufferSize: number; batchSize: number; flushInterval: string };
   clientKeyDefaults: { rpmLimit: number; maxConcurrent: number };
 };
@@ -57,7 +57,7 @@ const settingsConfigValidator = hasShape({
   batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
   media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),
   frontend: hasShape({ publicApiBaseURL: isString }),
-  routing: hasShape({ stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber }),
+  routing: hasShape({ stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber, preferFreeBuild: isBoolean }),
   audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString }),
   clientKeyDefaults: hasShape({ rpmLimit: isNumber, maxConcurrent: isNumber }),
 });

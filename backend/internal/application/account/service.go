@@ -470,7 +470,7 @@ func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery
 			ExhaustedAt: recovery.ExhaustedAt, NextProbeAt: recovery.NextProbeAt, LastConfirmedAt: recovery.LastConfirmedAt,
 		}
 	}
-	if billing != nil && (billing.MonthlyLimit > 0 || billing.OnDemandCap > 0 || billing.OnDemandUsed > 0 || billing.PrepaidBalance > 0 || billing.CreditUsagePercent > 0) {
+	if billing != nil && billing.IsPaid() {
 		result := QuotaView{Type: QuotaTypePaid, Source: "upstreamBilling", Confidence: "observed", Unit: "credits", UsagePercent: billing.CreditUsagePercent, Status: QuotaStatusActive, PeriodStart: billing.BillingPeriodStart, PeriodEnd: billing.BillingPeriodEnd}
 		if recovery != nil && recovery.Kind == accountdomain.QuotaRecoveryKindPaid {
 			result.Status = QuotaStatusWaitingReset
@@ -540,10 +540,7 @@ func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery
 }
 
 func isEstimatedFreeBillingProfile(billing *accountdomain.Billing) bool {
-	if billing == nil {
-		return false
-	}
-	return billing.IsUnifiedBillingUser || billing.UsagePeriodType != "" || billing.TopUpMethod != "" || billing.BillingPeriodStart != "" || len(billing.History) > 0
+	return billing != nil && billing.HasFreeProfileSignal()
 }
 
 // StartDeviceLogin 启动短期 Device OAuth，会话只保存在有界运行态存储中。
@@ -1641,8 +1638,7 @@ func (s *Service) ProbePaidQuota(ctx context.Context, value accountdomain.Creden
 }
 
 func (s *Service) reconcilePaidQuotaRecovery(ctx context.Context, credential accountdomain.Credential, billing accountdomain.Billing, afterProbe bool) error {
-	isPaid := billing.MonthlyLimit > 0 || billing.OnDemandCap > 0 || billing.OnDemandUsed > 0 || billing.PrepaidBalance > 0 || billing.CreditUsagePercent > 0
-	if !isPaid || !billing.IsExhausted(credential.MinimumRemaining) {
+	if !billing.IsPaid() || !billing.IsExhausted(credential.MinimumRemaining) {
 		recovery, err := s.accounts.GetQuotaRecovery(ctx, credential.ID)
 		if errors.Is(err, repository.ErrNotFound) || (err == nil && recovery.Kind != accountdomain.QuotaRecoveryKindPaid) {
 			return nil

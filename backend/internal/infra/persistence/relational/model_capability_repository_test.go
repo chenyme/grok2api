@@ -381,3 +381,56 @@ func TestWebRediscoveryRestoresCatalogRouteDefaults(t *testing.T) {
 		t.Fatalf("rediscovered web route defaults = %#v", items[0])
 	}
 }
+
+func TestBuildVideo15DiscoveredAsVideoCapability(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewModelRepository(database)
+	accounts := NewAccountRepository(database)
+	buildAccount, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "build-video", SourceKey: "build-video",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webAccount, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-video", SourceKey: "web-video",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-4.5", "grok-imagine-video-1.5"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := repo.ReplaceAccountCapabilities(ctx, buildAccount.ID, []string{"grok-4.5", "grok-imagine-video-1.5"}, now); err != nil {
+		t.Fatal(err)
+	}
+	video, err := repo.GetByPublicID(ctx, "Build/grok-imagine-video-1.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if video.Capability != model.CapabilityVideo || video.UpstreamModel != "grok-imagine-video-1.5" || video.Origin != model.OriginDiscovered {
+		t.Fatalf("build video 1.5 route = %#v", video)
+	}
+	chat, err := repo.GetByPublicID(ctx, "Build/grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chat.Capability != model.CapabilityResponses {
+		t.Fatalf("build chat route capability = %s", chat.Capability)
+	}
+	// Web 既有 video 分类不受影响。
+	if err := repo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-imagine-video"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReplaceAccountCapabilities(ctx, webAccount.ID, []string{"grok-imagine-video"}, now); err != nil {
+		t.Fatal(err)
+	}
+	webVideo, err := repo.GetByPublicID(ctx, "grok-imagine-video")
+	if err != nil || webVideo.Capability != model.CapabilityVideo {
+		t.Fatalf("web video route = %#v, err = %v", webVideo, err)
+	}
+}

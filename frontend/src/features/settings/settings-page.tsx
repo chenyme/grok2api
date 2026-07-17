@@ -192,6 +192,7 @@ export function SettingsPage() {
               <SettingsField controlId="routing-cooldown-max" label={t("settings.routing.cooldownMax")} error={form.formState.errors.routing?.cooldownMax?.message}><Controller control={form.control} name="routing.cooldownMax" render={({ field }) => <DurationInput id="routing-cooldown-max" value={field.value} onChange={field.onChange} />} /></SettingsField>
               <SettingsField controlId="routing-capacity-wait" label={t("settings.routing.capacityWait", { defaultValue: "Saturated account wait" })} error={form.formState.errors.routing?.capacityWait?.message}><Controller control={form.control} name="routing.capacityWait" render={({ field }) => <DurationInput id="routing-capacity-wait" value={field.value} onChange={field.onChange} />} /></SettingsField>
               <SettingsField controlId="routing-max-attempts" label={t("settings.routing.maxAttempts")} error={form.formState.errors.routing?.maxAttempts?.message}><Input id="routing-max-attempts" type="number" min={1} max={10} {...form.register("routing.maxAttempts", { valueAsNumber: true })} /></SettingsField>
+              <SettingsField controlId="routing-prefer-free-build" label={t("settings.routing.preferFreeBuild")}><Controller control={form.control} name="routing.preferFreeBuild" render={({ field }) => <div className="flex h-9 items-center"><Switch id="routing-prefer-free-build" checked={field.value} onCheckedChange={field.onChange} /></div>} /></SettingsField>
             </div>
           </SettingsSection>
 

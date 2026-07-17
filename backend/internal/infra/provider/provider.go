@@ -278,6 +278,13 @@ type ModelCatalogAdapter interface {
 	ListModels(ctx context.Context, credential account.Credential) ([]string, error)
 }
 
+// AccountModelCapabilityNormalizer 可选：按 Billing 快照归一化账号模型能力。
+// 未实现时模型同步原样写入上游目录；billing 为 nil 表示 Unknown（无快照）。
+type AccountModelCapabilityNormalizer interface {
+	Adapter
+	NormalizeAccountModelCapabilities(models []string, billing *account.Billing) []string
+}
+
 type BillingAdapter interface {
 	Adapter
 	GetBilling(ctx context.Context, credential account.Credential) (account.Billing, error)

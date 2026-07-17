@@ -46,6 +46,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	input := service.Get().Config
 	input.Server.MaxConcurrentRequests = 2048
 	input.Routing.MaxAttempts = 5
+	input.Routing.PreferFreeBuild = true
 	input.Audit.BufferSize = cfg.Audit.BufferSize + 1
 	input.Media.MaxTotalBytes = 2 << 30
 	input.Media.CleanupThresholdPercent = 75
@@ -60,7 +61,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied.Routing.MaxAttempts != 5 {
+	if applied.Routing.MaxAttempts != 5 || !applied.Routing.PreferFreeBuild {
 		t.Fatalf("runtime configuration was not applied: %#v", applied.Routing)
 	}
 	if applied.Server.MaxConcurrentRequests != 2048 {
@@ -85,7 +86,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Routing.MaxAttempts != 5 || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" {
+	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Routing.MaxAttempts != 5 || !reloaded.Routing.PreferFreeBuild || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" {
 		t.Fatalf("configuration was not persisted")
 	}
 }

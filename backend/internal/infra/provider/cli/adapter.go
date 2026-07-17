@@ -312,6 +312,36 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	return nil, fmt.Errorf("上游模型接口返回 %d", status)
 }
 
+// NormalizeAccountModelCapabilities 按 Super/paid Billing 归一化 1.5 视频资格。
+// Super 确保包含 grok-imagine-video-1.5；Free/Unknown 精确移除。不读取 BuildAPIFallback。
+func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing) []string {
+	paid := billing != nil && billing.IsPaid()
+	result := make([]string, 0, len(models)+1)
+	seen := make(map[string]struct{}, len(models)+1)
+	hasVideo15 := false
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		if model == buildVideoModel {
+			if !paid {
+				continue
+			}
+			hasVideo15 = true
+		}
+		seen[model] = struct{}{}
+		result = append(result, model)
+	}
+	if paid && !hasVideo15 {
+		result = append(result, buildVideoModel)
+	}
+	return result
+}
+
 func (a *Adapter) listModelsAt(ctx context.Context, credential account.Credential, accessToken, base string) ([]string, int, error) {
 	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID)
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, a.urlWithBase(base, "/models"), nil)
