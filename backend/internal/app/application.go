@@ -330,7 +330,8 @@ func webProviderConfig(cfg config.Config) webprovider.Config {
 
 func consoleProviderConfig(cfg config.Config) consoleprovider.Config {
 	return consoleprovider.Config{
-		BaseURL: cfg.Provider.Console.BaseURL, TimeoutSeconds: int(cfg.Provider.Console.ChatTimeout.Value().Seconds()),
+		BaseURL: cfg.Provider.Console.BaseURL, SessionBaseURL: cfg.Provider.Web.BaseURL,
+		TimeoutSeconds: int(cfg.Provider.Console.ChatTimeout.Value().Seconds()),
 	}
 }
 

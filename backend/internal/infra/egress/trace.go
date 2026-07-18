@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 )
 
@@ -35,6 +36,19 @@ func WithAccount(ctx context.Context, provider string, accountID uint64) context
 		return ctx
 	}
 	return WithAccountIdentity(ctx, strings.TrimSpace(provider)+"_"+fmt.Sprintf("%d", accountID))
+}
+
+// WithCredential 将弱关联账号的稳定出口身份传给 Build 传输；未关联账号保持原有 Provider+ID 身份。
+func WithCredential(ctx context.Context, credential accountdomain.Credential) context.Context {
+	identity := strings.TrimSpace(credential.EgressIdentity)
+	if identity == "" {
+		provider := credential.Provider
+		if provider == "" {
+			provider = accountdomain.ProviderBuild
+		}
+		return WithAccount(ctx, string(provider), credential.ID)
+	}
+	return WithAccountIdentity(ctx, identity)
 }
 
 // WithAccountIdentity attaches the stable, non-sensitive identity used by

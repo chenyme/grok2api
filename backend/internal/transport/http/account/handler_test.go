@@ -20,18 +20,31 @@ import (
 func TestNewAccountResponseExposesBuildBotFlagOnlyForBuild(t *testing.T) {
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	build := newAccountResponse(accountapp.View{
-		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderBuild, BuildRouteMode: accountdomain.BuildRouteXAI, WebNSFWEnabledAt: &now},
+		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderBuild, BuildRouteMode: accountdomain.BuildRouteXAI, WebNSFWEnabledAt: &now, WebTermsAcceptedAt: &now},
 		BuildBotFlagged: true,
 	})
-	if !build.BuildBotFlagged || build.BuildRouteMode != string(accountdomain.BuildRouteXAI) || build.WebNSFWEnabledAt != nil {
+	if !build.BuildBotFlagged || build.BuildRouteMode != string(accountdomain.BuildRouteXAI) || build.WebNSFWEnabledAt == nil || !build.WebNSFWEnabledAt.Equal(now) || build.WebTermsAcceptedAt == nil || !build.WebTermsAcceptedAt.Equal(now) {
 		t.Fatalf("Build metadata = %#v", build)
 	}
 	web := newAccountResponse(accountapp.View{
-		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderWeb, WebNSFWEnabledAt: &now},
+		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderWeb, WebNSFWEnabledAt: &now, WebTermsAcceptedAt: &now},
 		BuildBotFlagged: true,
 	})
-	if web.BuildBotFlagged || web.BuildRouteMode != string(accountdomain.BuildRouteAuto) || web.WebNSFWEnabledAt == nil || !web.WebNSFWEnabledAt.Equal(now) {
+	if web.BuildBotFlagged || web.BuildRouteMode != string(accountdomain.BuildRouteAuto) || web.WebNSFWEnabledAt == nil || !web.WebNSFWEnabledAt.Equal(now) || web.WebTermsAcceptedAt == nil || !web.WebTermsAcceptedAt.Equal(now) {
 		t.Fatalf("non-Build metadata = %#v", web)
+	}
+}
+
+func TestNewAccountResponseExposesAllLinkedAccounts(t *testing.T) {
+	response := newAccountResponse(accountapp.View{Credential: accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb,
+		LinkedAccounts: []accountdomain.LinkedAccount{
+			{ID: 2, Provider: accountdomain.ProviderBuild, Name: "build", Email: "build@example.com", UserID: "build-user"},
+			{ID: 3, Provider: accountdomain.ProviderConsole, Name: "console", Email: "console@example.com", UserID: "console-user"},
+		},
+	}})
+	if len(response.LinkedAccounts) != 2 || response.LinkedAccounts[0].Provider != string(accountdomain.ProviderBuild) || response.LinkedAccounts[0].Email != "build@example.com" || response.LinkedAccounts[0].UserID != "build-user" || response.LinkedAccounts[1].Provider != string(accountdomain.ProviderConsole) || response.LinkedAccounts[1].Email != "console@example.com" || response.LinkedAccounts[1].UserID != "console-user" {
+		t.Fatalf("linked accounts = %#v", response.LinkedAccounts)
 	}
 }
 

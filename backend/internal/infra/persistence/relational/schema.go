@@ -12,6 +12,7 @@ var schemaModels = []any{
 	&accountModel{},
 	&accountCredentialModel{},
 	&accountProviderLinkModel{},
+	&webConsoleAccountLinkModel{},
 	&webAccountProfileModel{},
 	&quotaWindowModel{},
 	&billingModel{},
@@ -109,6 +110,9 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	}
 	if err := d.ensureMediaAssetConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 media asset 数据库约束: %w", err)
+	}
+	if err := d.backfillWebEgressIdentities(ctx); err != nil {
+		return fmt.Errorf("迁移 Web 出口身份: %w", err)
 	}
 	for _, statement := range schemaIndexes {
 		if err := db.Exec(statement).Error; err != nil {

@@ -94,6 +94,44 @@ func TestRefreshQuotaModeDoesNotTriggerFullProviderSyncForAutoTier(t *testing.T)
 	}
 }
 
+func TestRefreshQuotaFetchesWebIdentityOnlyUntilDataExists(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quota-identity.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "web-identity", SourceKey: "web-identity", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, WebTier: accountdomain.WebTierAuto,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &quotaCountingAdapter{}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	for range 2 {
+		if _, err := service.RefreshQuota(ctx, credential.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if adapter.fullCalls.Load() != 2 || adapter.identityCalls.Load() != 1 {
+		t.Fatalf("quota calls=%d identity calls=%d", adapter.fullCalls.Load(), adapter.identityCalls.Load())
+	}
+	stored, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Email != "identity@example.com" {
+		t.Fatalf("email = %q", stored.Email)
+	}
+}
+
 type deniedQuotaRefreshLock struct{}
 
 func (deniedQuotaRefreshLock) Acquire(context.Context, string, time.Duration) (func(), bool, error) {
@@ -101,8 +139,9 @@ func (deniedQuotaRefreshLock) Acquire(context.Context, string, time.Duration) (f
 }
 
 type quotaCountingAdapter struct {
-	modeCalls atomic.Int64
-	fullCalls atomic.Int64
+	modeCalls     atomic.Int64
+	fullCalls     atomic.Int64
+	identityCalls atomic.Int64
 }
 
 func (a *quotaCountingAdapter) Provider() accountdomain.Provider { return accountdomain.ProviderWeb }
@@ -117,6 +156,11 @@ func (a *quotaCountingAdapter) Definition() provider.Definition {
 func (a *quotaCountingAdapter) SyncQuota(context.Context, accountdomain.Credential) (provider.QuotaSnapshot, error) {
 	a.fullCalls.Add(1)
 	return provider.QuotaSnapshot{}, nil
+}
+
+func (a *quotaCountingAdapter) SyncAccountIdentity(context.Context, accountdomain.Credential) (provider.AccountIdentity, error) {
+	a.identityCalls.Add(1)
+	return provider.AccountIdentity{Email: "identity@example.com"}, nil
 }
 
 func (a *quotaCountingAdapter) SyncQuotaMode(_ context.Context, credential accountdomain.Credential, mode string) (accountdomain.QuotaWindow, error) {

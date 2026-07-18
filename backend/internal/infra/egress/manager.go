@@ -24,6 +24,9 @@ import (
 const DefaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 const nodeSnapshotTTL = time.Second
 const stickyProxyRetryLimit = 2
+const clientCacheIdleTTL = 30 * time.Minute
+const clientCacheCleanupInterval = time.Minute
+const maxCachedClients = 4096
 
 type Lease struct {
 	NodeID    uint64
@@ -57,18 +60,20 @@ func (l *Lease) Release() {
 }
 
 type Manager struct {
-	repository repository.EgressRepository
-	cipher     *security.Cipher
-	mu         sync.Mutex
-	clients    map[clientCacheKey]cachedClient
-	inflight   map[uint64]int
-	nodes      map[domain.Scope]cachedNodeSnapshot
-	nodeLoads  singleflight.Group
+	repository        repository.EgressRepository
+	cipher            *security.Cipher
+	mu                sync.Mutex
+	clients           map[clientCacheKey]cachedClient
+	inflight          map[uint64]int
+	nodes             map[domain.Scope]cachedNodeSnapshot
+	nodeLoads         singleflight.Group
+	lastClientCleanup time.Time
 }
 
 type cachedClient struct {
-	client  requestClient
-	browser *browserClient
+	client   requestClient
+	browser  *browserClient
+	lastUsed time.Time
 }
 
 type clientCacheKey struct {
@@ -94,7 +99,10 @@ func (m *Manager) Acquire(ctx context.Context, scope domain.Scope, affinity stri
 // AcquireCredential binds the outbound proxy identity to one persisted
 // Provider credential. Resin templates use this identity as their Account.
 func (m *Manager) AcquireCredential(ctx context.Context, scope domain.Scope, credential accountdomain.Credential) (*Lease, error) {
-	identity := string(credential.Provider) + "_" + strconv.FormatUint(credential.ID, 10)
+	identity := strings.TrimSpace(credential.EgressIdentity)
+	if identity == "" {
+		identity = string(credential.Provider) + "_" + strconv.FormatUint(credential.ID, 10)
+	}
 	credentialCookies := ""
 	if scope != domain.ScopeBuild && strings.TrimSpace(credential.EncryptedCloudflareCookie) != "" {
 		cookies, decryptErr := m.cipher.Decrypt(credential.EncryptedCloudflareCookie)
@@ -108,7 +116,7 @@ func (m *Manager) AcquireCredential(ctx context.Context, scope domain.Scope, cre
 	// otherwise the proxy rotates the IP while the clearance remains bound to
 	// the other lease.  The digest is non-reversible and is only used as a proxy
 	// template account label.
-	if credential.AuthType == accountdomain.AuthTypeSSO && strings.TrimSpace(credential.EncryptedAccessToken) != "" {
+	if strings.TrimSpace(credential.EgressIdentity) == "" && credential.AuthType == accountdomain.AuthTypeSSO && strings.TrimSpace(credential.EncryptedAccessToken) != "" {
 		token, decryptErr := m.cipher.Decrypt(credential.EncryptedAccessToken)
 		if decryptErr != nil {
 			return nil, decryptErr
@@ -335,9 +343,13 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		cacheScope = domain.ScopeWeb
 	}
 	key := clientCacheKey{nodeID: id, scope: cacheScope, fingerprint: fingerprint}
+	now := time.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.cleanupClientCacheLocked(now)
 	if cached, ok := m.clients[key]; ok {
+		cached.lastUsed = now
+		m.clients[key] = cached
 		return cached, nil
 	}
 	var value cachedClient
@@ -355,6 +367,7 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		value.client = client
 		value.browser = client
 	}
+	value.lastUsed = now
 	// 固定代理同节点出现新指纹说明配置已更新，旧连接池应淘汰。
 	// 账号模板代理的指纹会随 Resin Account 变化，必须并存才能维持各账号的粘性连接池。
 	// 直连节点统一使用 ID 0，不同 Provider 的传输必须并存，避免 Build 与 Web 互相重建客户端。
@@ -363,14 +376,51 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 			if previousKey.nodeID != id {
 				continue
 			}
-			if previous.client != nil {
-				previous.client.CloseIdleConnections()
-			}
-			delete(m.clients, previousKey)
+			m.evictClientLocked(previousKey, previous)
 		}
 	}
+	m.ensureClientCacheCapacityLocked()
 	m.clients[key] = value
 	return value, nil
+}
+
+func (m *Manager) cleanupClientCacheLocked(now time.Time) {
+	if m.clients == nil {
+		m.clients = make(map[clientCacheKey]cachedClient)
+	}
+	if !m.lastClientCleanup.IsZero() && now.Sub(m.lastClientCleanup) < clientCacheCleanupInterval {
+		return
+	}
+	m.lastClientCleanup = now
+	for key, value := range m.clients {
+		if !value.lastUsed.IsZero() && now.Sub(value.lastUsed) >= clientCacheIdleTTL {
+			m.evictClientLocked(key, value)
+		}
+	}
+}
+
+func (m *Manager) ensureClientCacheCapacityLocked() {
+	for len(m.clients) >= maxCachedClients {
+		var oldestKey clientCacheKey
+		var oldest cachedClient
+		found := false
+		for key, value := range m.clients {
+			if !found || value.lastUsed.Before(oldest.lastUsed) {
+				oldestKey, oldest, found = key, value, true
+			}
+		}
+		if !found {
+			break
+		}
+		m.evictClientLocked(oldestKey, oldest)
+	}
+}
+
+func (m *Manager) evictClientLocked(key clientCacheKey, value cachedClient) {
+	if value.client != nil {
+		value.client.CloseIdleConnections()
+	}
+	delete(m.clients, key)
 }
 
 func (m *Manager) Feedback(ctx context.Context, nodeID uint64, status int, transportErr error) {

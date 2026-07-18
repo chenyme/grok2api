@@ -329,6 +329,19 @@ type CredentialMetadataAdapter interface {
 	CredentialMetadata(credential account.Credential) CredentialMetadata
 }
 
+// AccountIdentity 是上游确认的非敏感账号身份元数据。
+// Email 只用于展示；跨 Provider 自动关联仅使用稳定 UserID。
+type AccountIdentity struct {
+	Email  string
+	UserID string
+	TeamID string
+}
+
+type AccountIdentityAdapter interface {
+	Adapter
+	SyncAccountIdentity(ctx context.Context, credential account.Credential) (AccountIdentity, error)
+}
+
 type BuildCredentialConverter interface {
 	Adapter
 	ConvertToBuild(ctx context.Context, credential account.Credential) (CredentialSeed, error)
@@ -673,6 +686,15 @@ func (r *Registry) CredentialMetadata(credential account.Credential) CredentialM
 		return CredentialMetadata{}
 	}
 	return inspector.CredentialMetadata(credential)
+}
+
+func (r *Registry) AccountIdentity(value account.Provider) (AccountIdentityAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(AccountIdentityAdapter)
+	return result, ok
 }
 
 func (r *Registry) BuildConverter(value account.Provider) (BuildCredentialConverter, bool) {

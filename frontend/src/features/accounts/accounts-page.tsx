@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -73,6 +73,7 @@ import {
   type QuotaDTO,
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
+import { AccountNameCell } from "@/features/accounts/account-name-cell";
 import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
 import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
 
@@ -752,10 +753,10 @@ export function AccountsPage() {
           <Table className="table-fixed border-collapse min-w-[780px] xl:min-w-[960px] 2xl:min-w-[1080px]">
             <colgroup>
               <col style={{ width: "3%" }} />
-              <col style={{ width: "15%" }} />
+              <col style={{ width: "18%" }} />
               <col style={{ width: "7%" }} />
               <col style={{ width: "7%" }} />
-              <col style={{ width: provider === "grok_build" ? "30%" : "46%" }} />
+              <col style={{ width: provider === "grok_build" ? "27%" : "43%" }} />
               {provider === "grok_build" ? <col style={{ width: "16%" }} /> : null}
               <col style={{ width: "18%" }} />
               <col style={{ width: "4%" }} />
@@ -774,64 +775,20 @@ export function AccountsPage() {
             </TableHeader>
             <TableBody>
               {accountsQuery.isPending ? <TableLoadingRow colSpan={provider === "grok_build" ? 8 : 7} /> : result?.items.map((account) => {
-                const accountDetail = account.email ?? account.userId ?? account.teamId;
-                const showAccountDetail = accountDetail?.trim().toLocaleLowerCase() !== account.name.trim().toLocaleLowerCase();
-                const linkedProviderLabel = account.linkedProvider === "grok_build" ? t("models.providerGrokBuild") : account.linkedProvider === "grok_web" ? t("models.providerGrokWeb") : t("console.name");
                 return (
-	                  <TableRow className="group" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
+	                  <TableRow className="group [&>td]:py-1.5" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
                     <TableCell className="px-2"><Checkbox checked={selected.has(account.id)} onCheckedChange={(checked) => toggleAccount(account.id, checked === true)} aria-label={t("common.selectItem", { name: account.name })} /></TableCell>
-	                    <TableCell className="min-w-0">
-	                      <div className="flex min-w-0 items-center gap-1.5">
-	                        <Tooltip>
-	                          <TooltipTrigger asChild><div className="min-w-0 truncate text-xs font-medium">{account.name}</div></TooltipTrigger>
-	                          <TooltipContent>{account.name}</TooltipContent>
-	                        </Tooltip>
-	                        {account.buildBotFlagged ? (
-	                          <Tooltip>
-	                            <TooltipTrigger asChild>
-	                              <span tabIndex={0} className="inline-flex shrink-0 cursor-help whitespace-nowrap text-xs font-medium text-amber-700 dark:text-amber-300">{t("accounts.botRisk")}</span>
-	                            </TooltipTrigger>
-	                            <TooltipContent>{t("accounts.botRiskTooltip")}</TooltipContent>
-	                          </Tooltip>
-	                        ) : null}
-	                        {account.provider === "grok_web" && account.nsfwEnabledAt ? (
-	                          <Tooltip>
-	                            <TooltipTrigger asChild>
-	                              <span tabIndex={0} className="inline-flex shrink-0 cursor-help whitespace-nowrap text-[11px] font-medium text-violet-700 dark:text-violet-300">{t("accounts.nsfwEnabledMark")}</span>
-	                            </TooltipTrigger>
-	                            <TooltipContent>{t("accounts.nsfwEnabledTooltip", { time: formatDateTime(account.nsfwEnabledAt, i18n.language) })}</TooltipContent>
-	                          </Tooltip>
-	                        ) : null}
-	                      </div>
-                      {showAccountDetail || account.linkedAccountId ? (
-                        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                          {showAccountDetail ? <span className="truncate" title={accountDetail}>{accountDetail}</span> : null}
-                          {showAccountDetail && account.linkedAccountId ? <span className="shrink-0 text-border" aria-hidden="true">·</span> : null}
-                          {account.linkedAccountId ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground/80">
-                                  <Link2 className="size-3" />
-                                  {linkedProviderLabel}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent>{t("accounts.linkedAccountTooltip", { name: account.linkedAccountName || linkedProviderLabel })}</TooltipContent>
-                            </Tooltip>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </TableCell>
+	                    <TableCell className="min-w-0"><AccountNameCell account={account} /></TableCell>
                     <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("accountType.console")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
                     <TableCell className="text-center whitespace-nowrap"><AccountStatus account={account} /></TableCell>
                     <TableCell className={provider === "grok_build" ? undefined : "px-6"}>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}</TableCell>
                     {provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
-                      <div>{account.refreshable ? (
+                      {account.refreshable ? (
                         <Tooltip>
                           <TooltipTrigger asChild><span tabIndex={0} className="cursor-help font-medium text-emerald-700 dark:text-emerald-300">{t("accountCredential.autoRefresh")}</span></TooltipTrigger>
                           <TooltipContent>{account.expiresAt ? t("accountCredential.expiresAt", { time: formatDateTime(account.expiresAt, i18n.language) }) : t("accountCredential.expiryUnknown")}</TooltipContent>
                         </Tooltip>
-	                      ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}</div>
-	                      <div className="mt-0.5 text-muted-foreground">{t(`accounts.buildRouteMode.${account.buildRouteMode}`)}</div>
+                      ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}
 	                    </TableCell> : null}
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(account.createdAt, i18n.language)}</TableCell>
                     <TableActionCell>

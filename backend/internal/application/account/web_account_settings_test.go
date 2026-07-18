@@ -47,6 +47,25 @@ func TestWebAccountSettingsAreWebOnlyAndGenerateBirthDate(t *testing.T) {
 	if adapter.terms != 1 || adapter.birthDate.Before(earliest) || adapter.birthDate.After(latest) || adapter.nsfw != 1 {
 		t.Fatalf("adapter terms=%d birth=%v nsfw=%d", adapter.terms, adapter.birthDate, adapter.nsfw)
 	}
+	updatedWeb, err := repo.Get(ctx, webAccount.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedWeb.WebTermsAcceptedAt == nil || updatedWeb.WebBirthDateSetAt == nil || updatedWeb.WebNSFWEnabledAt == nil || !updatedWeb.WebTermsAcceptedAt.Equal(service.now()) || !updatedWeb.WebBirthDateSetAt.Equal(service.now()) || !updatedWeb.WebNSFWEnabledAt.Equal(service.now()) {
+		t.Fatalf("profile markers terms=%v birth=%v nsfw=%v", updatedWeb.WebTermsAcceptedAt, updatedWeb.WebBirthDateSetAt, updatedWeb.WebNSFWEnabledAt)
+	}
+	if err := service.AcceptWebTerms(ctx, webAccount.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetWebBirthDate(ctx, webAccount.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.EnableWebNSFW(ctx, webAccount.ID); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.terms != 1 || adapter.birthCalls != 1 || adapter.nsfw != 1 {
+		t.Fatalf("recorded steps repeated: terms=%d birth=%d nsfw=%d", adapter.terms, adapter.birthCalls, adapter.nsfw)
+	}
 	if err := service.AcceptWebTerms(ctx, buildAccount.ID); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("build err = %v", err)
 	}
@@ -67,6 +86,30 @@ func TestRandomWebBirthDateUsesInclusiveAgeRange(t *testing.T) {
 	latest := time.Date(2006, 7, 18, 0, 0, 0, 0, time.UTC)
 	if value.Before(earliest) || value.After(latest) {
 		t.Fatalf("birth date %s is outside [%s, %s]", value, earliest, latest)
+	}
+}
+
+func TestPendingWebAccountScriptOptionsSkipsRecordedSteps(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	all := WebAccountScriptOptions{AcceptTerms: true, SetBirthDate: true, EnableNSFW: true}
+	tests := []struct {
+		name       string
+		credential accountdomain.Credential
+		want       WebAccountScriptOptions
+	}{
+		{name: "none recorded", want: all},
+		{name: "terms recorded", credential: accountdomain.Credential{WebTermsAcceptedAt: &now}, want: WebAccountScriptOptions{SetBirthDate: true, EnableNSFW: true}},
+		{name: "birth recorded", credential: accountdomain.Credential{WebBirthDateSetAt: &now}, want: WebAccountScriptOptions{AcceptTerms: true, EnableNSFW: true}},
+		{name: "nsfw implies birth", credential: accountdomain.Credential{WebNSFWEnabledAt: &now}, want: WebAccountScriptOptions{AcceptTerms: true}},
+		{name: "all recorded", credential: accountdomain.Credential{WebTermsAcceptedAt: &now, WebBirthDateSetAt: &now, WebNSFWEnabledAt: &now}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := pendingWebAccountScriptOptions(test.credential, all); got != test.want {
+				t.Fatalf("options = %#v, want %#v", got, test.want)
+			}
+		})
 	}
 }
 
@@ -137,14 +180,25 @@ func newWebAccountSettingsTestService(t *testing.T) (*Service, *relational.Accou
 }
 
 type webAccountSettingsAdapterStub struct {
-	mu        sync.Mutex
-	terms     int
-	birthDate time.Time
-	nsfw      int
-	err       error
-	calls     map[uint64][]string
-	failures  map[uint64]map[string]error
-	afterCall func(string)
+	mu            sync.Mutex
+	terms         int
+	birthDate     time.Time
+	birthCalls    int
+	nsfw          int
+	err           error
+	calls         map[uint64][]string
+	failures      map[uint64]map[string]error
+	afterCall     func(string)
+	identity      provider.AccountIdentity
+	identityErr   error
+	identityCalls int
+}
+
+func (a *webAccountSettingsAdapterStub) SyncAccountIdentity(context.Context, accountdomain.Credential) (provider.AccountIdentity, error) {
+	a.mu.Lock()
+	a.identityCalls++
+	a.mu.Unlock()
+	return a.identity, a.identityErr
 }
 
 func (*webAccountSettingsAdapterStub) Provider() accountdomain.Provider {
@@ -162,6 +216,7 @@ func (a *webAccountSettingsAdapterStub) SetBirthDate(_ context.Context, credenti
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.birthDate = value
+	a.birthCalls++
 	return a.recordLocked(credential.ID, "setBirthDate")
 }
 

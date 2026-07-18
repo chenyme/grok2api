@@ -100,8 +100,7 @@ func BenchmarkSelectorCandidatePlanning(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(parallel *testing.PB) {
 		for parallel.Next() {
-			values := append([]account.RoutingCandidate(nil), candidates...)
-			plan, err := selector.planCandidates(ctx, values, now, nil)
+			plan, err := selector.planCandidates(ctx, candidates, now, nil)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -389,7 +388,7 @@ func TestStickySessionKeyIsFixedLengthAndStable(t *testing.T) {
 
 func TestSelectorUsesBatchConcurrencySnapshot(t *testing.T) {
 	limiter := &batchConcurrencyLimiter{values: map[string]int{"account:1": 2, "account:2": 1}}
-	selector := &Selector{concurrency: limiter, lastSelectedAt: make(map[uint64]time.Time)}
+	selector := NewSelector(nil, limiter, nil, nil, time.Hour, time.Second, time.Minute)
 	values := []account.RoutingCandidate{
 		{Credential: account.Credential{ID: 1, Priority: 1}},
 		{Credential: account.Credential{ID: 2, Priority: 1}},
@@ -401,6 +400,19 @@ func TestSelectorUsesBatchConcurrencySnapshot(t *testing.T) {
 	first, ok := plan.Next()
 	if limiter.batchCalls != 1 || limiter.currentCalls != 0 || !ok || first.Credential.ID != 2 {
 		t.Fatalf("batchCalls=%d currentCalls=%d values=%#v", limiter.batchCalls, limiter.currentCalls, values)
+	}
+	if _, err := selector.planCandidates(context.Background(), values, time.Now().UTC(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if limiter.batchCalls != 1 {
+		t.Fatalf("short snapshot cache made %d batch reads", limiter.batchCalls)
+	}
+	time.Sleep(concurrencySnapshotTTL + 5*time.Millisecond)
+	if _, err := selector.planCandidates(context.Background(), values, time.Now().UTC(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if limiter.batchCalls != 2 {
+		t.Fatalf("expired snapshot cache made %d batch reads", limiter.batchCalls)
 	}
 }
 
@@ -517,10 +529,14 @@ func TestSelectorConsumesOnlyMatchingQuotaSnapshot(t *testing.T) {
 			Credential: account.Credential{ID: 7}, QuotaWindow: &account.QuotaWindow{AccountID: 7, Mode: "fast", Remaining: 10},
 		}}},
 	}}
+	original := selector.candidates[key].values
 	selector.ConsumeQuota(account.ProviderWeb, 7, "fast", 3)
 	window := selector.candidates[key].values[0].QuotaWindow
 	if window == nil || window.Remaining != 7 {
 		t.Fatalf("quota window = %#v", window)
+	}
+	if original[0].QuotaWindow == nil || original[0].QuotaWindow.Remaining != 10 {
+		t.Fatalf("published snapshot was mutated: %#v", original[0].QuotaWindow)
 	}
 }
 

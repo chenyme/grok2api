@@ -1,4 +1,4 @@
-import { Cake, FileCheck2, ShieldCheck } from "lucide-react";
+import { Cake, Handshake, VenusAndMars, type LucideIcon } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -41,14 +41,14 @@ export function WebAccountScriptsDialog({ targets, pending, progress, onClose, o
 
   const items: Array<{
     action: keyof WebAccountScriptActions;
-    icon: typeof FileCheck2;
+    icon: LucideIcon;
     label: string;
     description: string;
     locked?: boolean;
   }> = [
     {
       action: "acceptTerms",
-      icon: FileCheck2,
+      icon: Handshake,
       label: t("webAccountSettings.acceptTerms"),
       description: t("webAccountScripts.acceptTermsDescription"),
     },
@@ -61,7 +61,7 @@ export function WebAccountScriptsDialog({ targets, pending, progress, onClose, o
     },
     {
       action: "enableNSFW",
-      icon: ShieldCheck,
+      icon: VenusAndMars,
       label: t("webAccountSettings.enableNSFW"),
       description: t("webAccountScripts.enableNSFWDescription"),
     },

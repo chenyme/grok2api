@@ -87,12 +87,25 @@ type accountProviderLinkModel struct {
 
 func (accountProviderLinkModel) TableName() string { return "account_provider_links" }
 
+type webConsoleAccountLinkModel struct {
+	WebAccountID     uint64        `gorm:"primaryKey"`
+	ConsoleAccountID uint64        `gorm:"uniqueIndex;not null;check:chk_web_console_account_links_distinct,web_account_id <> console_account_id"`
+	CreatedAt        time.Time     `gorm:"not null"`
+	WebAccount       *accountModel `gorm:"foreignKey:WebAccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	ConsoleAccount   *accountModel `gorm:"foreignKey:ConsoleAccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (webConsoleAccountLinkModel) TableName() string { return "web_console_account_links" }
+
 type webAccountProfileModel struct {
-	AccountID     uint64 `gorm:"primaryKey"`
-	Tier          string `gorm:"size:16;not null;check:chk_web_account_profiles_tier,tier IN ('auto','basic','super','heavy')"`
-	SyncedAt      *time.Time
-	NSFWEnabledAt *time.Time
-	Account       *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	AccountID       uint64 `gorm:"primaryKey"`
+	Tier            string `gorm:"size:16;not null;check:chk_web_account_profiles_tier,tier IN ('auto','basic','super','heavy')"`
+	SyncedAt        *time.Time
+	NSFWEnabledAt   *time.Time
+	TermsAcceptedAt *time.Time
+	BirthDateSetAt  *time.Time
+	EgressIdentity  string        `gorm:"size:128;not null;default:'';check:chk_web_account_profiles_egress_identity,length(egress_identity) <= 128"`
+	Account         *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (webAccountProfileModel) TableName() string { return "web_account_profiles" }
