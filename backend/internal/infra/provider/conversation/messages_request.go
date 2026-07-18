@@ -691,7 +691,7 @@ func convertAnthropicWebSearchTool(tool map[string]json.RawMessage, index int) (
 			}
 			converted["filters"] = map[string]any{"allowed_domains": value}
 		case "max_uses", "blocked_domains", "user_location", "search_context_size":
-			// Build 0.2.101 只支持 allowed_domains；其余 Anthropic
+			// Build 0.2.102 只支持 allowed_domains；其余 Anthropic
 			// 可选控制字段不转发，避免上游因未知参数拒绝整个请求。
 			continue
 		default:
