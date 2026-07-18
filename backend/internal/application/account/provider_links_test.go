@@ -63,7 +63,7 @@ func TestSyncAccountIdentityLinksUniqueBuildWithoutSharingState(t *testing.T) {
 	}
 }
 
-func TestSyncAccountIdentityFailureDoesNotInvalidateAccount(t *testing.T) {
+func TestSyncAccountIdentityUnauthorizedInvalidatesCurrentProviderAccount(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	service, repo, adapter := newWebAccountSettingsTestService(t)
@@ -82,8 +82,8 @@ func TestSyncAccountIdentityFailureDoesNotInvalidateAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if web.AuthStatus != accountdomain.AuthStatusActive || !web.Enabled || web.FailureCount != 0 {
-		t.Fatalf("identity failure changed account state: %#v", web)
+	if web.AuthStatus != accountdomain.AuthStatusReauthRequired || !web.Enabled || web.FailureCount != 0 {
+		t.Fatalf("identity unauthorized state = %#v", web)
 	}
 }
 

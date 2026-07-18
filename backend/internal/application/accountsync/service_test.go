@@ -230,6 +230,24 @@ func TestSyncAccountIgnoresBestEffortSSOIdentityFailure(t *testing.T) {
 	}
 }
 
+func TestSyncAccountStopsAfterSSOIdentityUnauthorized(t *testing.T) {
+	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderWeb, accountdomain.ProviderConsole} {
+		t.Run(string(providerValue), func(t *testing.T) {
+			reader := &identityAccountReaderStub{accountReaderStub: accountReaderStub{provider: providerValue}, err: provider.ErrUnauthorized}
+			quota := &quotaStub{}
+			models := &modelStub{hasSnapshot: true}
+			service := NewService(slog.Default(), reader, &billingStub{}, quota, models)
+
+			if err := service.syncAccount(context.Background(), 10); !errors.Is(err, provider.ErrUnauthorized) {
+				t.Fatalf("err = %v", err)
+			}
+			if reader.calls != 1 || quota.syncs != 0 {
+				t.Fatalf("identity calls=%d quota syncs=%d", reader.calls, quota.syncs)
+			}
+		})
+	}
+}
+
 func TestSyncAccountUsesDeclaredQuotaPolicyInsteadOfProviderName(t *testing.T) {
 	billing := &billingStub{}
 	quota := &quotaStub{}
