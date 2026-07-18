@@ -332,20 +332,37 @@ func parseWeeklyCreditsResponse(body []byte, accountID uint64, syncedAt time.Tim
 }
 
 func firstGRPCWebMessage(body []byte) ([]byte, error) {
+	message, grpcStatus, err := parseGRPCWebFrames(body)
+	if err != nil {
+		return nil, err
+	}
+	if grpcStatus != "" && grpcStatus != "0" {
+		return nil, fmt.Errorf("Grok Web 周额度 gRPC 状态为 %s", grpcStatus)
+	}
+	if message == nil {
+		return nil, fmt.Errorf("Grok Web 周额度响应缺少消息帧")
+	}
+	return message, nil
+}
+
+func parseGRPCWebFrames(body []byte) ([]byte, string, error) {
 	var message []byte
 	grpcStatus := ""
-	for len(body) >= 5 {
+	for len(body) > 0 {
+		if len(body) < 5 {
+			return nil, "", fmt.Errorf("gRPC-Web 响应包含不完整帧头")
+		}
 		flag := body[0]
 		length := int(binary.BigEndian.Uint32(body[1:5]))
 		body = body[5:]
 		if length < 0 || length > len(body) {
-			return nil, fmt.Errorf("gRPC-Web 帧长度无效")
+			return nil, "", fmt.Errorf("gRPC-Web 帧长度无效")
 		}
 		payload := body[:length]
 		body = body[length:]
 		if flag&0x80 == 0 {
 			if flag != 0 {
-				return nil, fmt.Errorf("不支持压缩的 gRPC-Web 响应")
+				return nil, "", fmt.Errorf("不支持压缩的 gRPC-Web 响应")
 			}
 			if message == nil {
 				message = append([]byte(nil), payload...)
@@ -359,13 +376,7 @@ func firstGRPCWebMessage(body []byte) ([]byte, error) {
 			}
 		}
 	}
-	if grpcStatus != "" && grpcStatus != "0" {
-		return nil, fmt.Errorf("Grok Web 周额度 gRPC 状态为 %s", grpcStatus)
-	}
-	if message == nil {
-		return nil, fmt.Errorf("Grok Web 周额度响应缺少消息帧")
-	}
-	return message, nil
+	return message, grpcStatus, nil
 }
 
 func protobufMessageField(message []byte, target protowire.Number) ([]byte, error) {

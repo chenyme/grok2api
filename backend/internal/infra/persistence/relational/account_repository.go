@@ -669,9 +669,45 @@ func saveAccountRelations(tx *gorm.DB, value account.Credential, accountID uint6
 		return err
 	}
 	if profile := fromWebProfileDomain(value); profile != nil {
-		return tx.Save(profile).Error
+		updates := []string{"tier", "synced_at"}
+		if profile.NSFWEnabledAt != nil {
+			updates = append(updates, "nsfw_enabled_at")
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "account_id"}},
+			DoUpdates: clause.AssignmentColumns(updates),
+		}).Create(profile).Error
 	}
 	return tx.Where("account_id = ?", accountID).Delete(&webAccountProfileModel{}).Error
+}
+
+// MarkWebNSFWEnabled 幂等保存首次成功开启时间；重复执行不会覆盖已有标记。
+func (r *AccountRepository) MarkWebNSFWEnabled(ctx context.Context, id uint64, enabledAt time.Time) error {
+	if id == 0 || enabledAt.IsZero() {
+		return fmt.Errorf("Web NSFW 标记参数无效")
+	}
+	enabledAt = enabledAt.UTC()
+	return mapError(r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var value accountModel
+		if err := tx.Select("id", "provider").First(&value, id).Error; err != nil {
+			return err
+		}
+		if account.Provider(value.Provider) != account.ProviderWeb {
+			return fmt.Errorf("仅 Grok Web 账号支持 NSFW 标记")
+		}
+		profile := webAccountProfileModel{
+			AccountID:     id,
+			Tier:          string(account.WebTierAuto),
+			NSFWEnabledAt: &enabledAt,
+		}
+		created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&profile)
+		if created.Error != nil || created.RowsAffected > 0 {
+			return created.Error
+		}
+		return tx.Model(&webAccountProfileModel{}).
+			Where("account_id = ? AND nsfw_enabled_at IS NULL", id).
+			Update("nsfw_enabled_at", enabledAt).Error
+	}))
 }
 
 func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, updates repository.AccountUpdates) (int64, error) {

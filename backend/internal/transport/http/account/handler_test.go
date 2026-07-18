@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
@@ -17,18 +18,19 @@ import (
 )
 
 func TestNewAccountResponseExposesBuildBotFlagOnlyForBuild(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	build := newAccountResponse(accountapp.View{
-		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderBuild, BuildRouteMode: accountdomain.BuildRouteXAI},
+		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderBuild, BuildRouteMode: accountdomain.BuildRouteXAI, WebNSFWEnabledAt: &now},
 		BuildBotFlagged: true,
 	})
-	if !build.BuildBotFlagged || build.BuildRouteMode != string(accountdomain.BuildRouteXAI) {
+	if !build.BuildBotFlagged || build.BuildRouteMode != string(accountdomain.BuildRouteXAI) || build.WebNSFWEnabledAt != nil {
 		t.Fatalf("Build metadata = %#v", build)
 	}
 	web := newAccountResponse(accountapp.View{
-		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderWeb},
+		Credential:      accountdomain.Credential{Provider: accountdomain.ProviderWeb, WebNSFWEnabledAt: &now},
 		BuildBotFlagged: true,
 	})
-	if web.BuildBotFlagged || web.BuildRouteMode != string(accountdomain.BuildRouteAuto) {
+	if web.BuildBotFlagged || web.BuildRouteMode != string(accountdomain.BuildRouteAuto) || web.WebNSFWEnabledAt == nil || !web.WebNSFWEnabledAt.Equal(now) {
 		t.Fatalf("non-Build metadata = %#v", web)
 	}
 }

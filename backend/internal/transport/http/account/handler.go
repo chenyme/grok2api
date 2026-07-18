@@ -141,7 +141,11 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/console/import", h.importConsoleAuth)
 	router.POST("/accounts/web/convert-to-build", h.convertWebToBuild)
 	router.POST("/accounts/web/sync-to-console", h.syncWebToConsole)
+	router.POST("/accounts/web/run-scripts", h.runWebAccountScripts)
 	router.POST("/accounts/web/refresh-quotas", h.refreshAllWebQuotas)
+	router.POST("/accounts/web/:id/accept-terms", h.acceptWebTerms)
+	router.POST("/accounts/web/:id/birth-date", h.setWebBirthDate)
+	router.POST("/accounts/web/:id/nsfw", h.enableWebNSFW)
 	router.POST("/accounts/console/refresh-quotas", h.refreshAllConsoleQuotas)
 	router.POST("/accounts/refresh-billing", h.refreshAllBilling)
 	router.POST("/accounts/refresh-tokens", h.refreshAllTokens)
@@ -234,6 +238,7 @@ type accountResponse struct {
 	AuthType                   string                `json:"authType"`
 	WebTier                    string                `json:"webTier,omitempty"`
 	WebTierSyncedAt            *time.Time            `json:"webTierSyncedAt,omitempty"`
+	WebNSFWEnabledAt           *time.Time            `json:"nsfwEnabledAt,omitempty"`
 	Name                       string                `json:"name"`
 	Email                      string                `json:"email,omitempty"`
 	UserID                     string                `json:"userId,omitempty"`
@@ -956,6 +961,8 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error, fall
 		response.Error(c, http.StatusConflict, "accountOperationUnsupported", err.Error())
 	case errors.Is(err, accountapp.ErrConversionBusy):
 		response.Error(c, http.StatusConflict, "accountConversionBusy", err.Error())
+	case errors.Is(err, accountapp.ErrWebAccountScriptBusy):
+		response.Error(c, http.StatusConflict, "webAccountScriptBusy", err.Error())
 	default:
 		response.Error(c, fallbackStatus, code, fallbackMessage)
 	}
@@ -972,6 +979,42 @@ func (h *Handler) refreshToken(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, newAccountResponse(value))
+}
+
+func (h *Handler) acceptWebTerms(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := h.service.AcceptWebTerms(c.Request.Context(), id); err != nil {
+		h.writeServiceError(c, "webTermsAcceptanceFailed", err, http.StatusBadGateway, "接受 Grok Web 服务协议失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"completed": true})
+}
+
+func (h *Handler) setWebBirthDate(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := h.service.SetWebBirthDate(c.Request.Context(), id); err != nil {
+		h.writeServiceError(c, "webBirthDateUpdateFailed", err, http.StatusBadGateway, "设置 Grok Web 账号生日失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"completed": true})
+}
+
+func (h *Handler) enableWebNSFW(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := h.service.EnableWebNSFW(c.Request.Context(), id); err != nil {
+		h.writeServiceError(c, "webNSFWEnableFailed", err, http.StatusBadGateway, "开启 Grok Web NSFW 失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"completed": true})
 }
 
 func (h *Handler) refreshBilling(c *gin.Context) {
@@ -1037,9 +1080,13 @@ func newAccountResponse(value accountapp.View) accountResponse {
 	if c.Provider != accountdomain.ProviderBuild || !buildRouteMode.IsValid() {
 		buildRouteMode = accountdomain.BuildRouteAuto
 	}
+	var webNSFWEnabledAt *time.Time
+	if c.Provider == accountdomain.ProviderWeb {
+		webNSFWEnabledAt = c.WebNSFWEnabledAt
+	}
 	result := accountResponse{
 		ID: c.ID, Provider: string(c.Provider), AuthType: string(c.AuthType), WebTier: string(c.WebTier),
-		WebTierSyncedAt: c.WebTierSyncedAt, Name: c.Name, Email: c.Email, UserID: c.UserID, TeamID: c.TeamID,
+		WebTierSyncedAt: c.WebTierSyncedAt, WebNSFWEnabledAt: webNSFWEnabledAt, Name: c.Name, Email: c.Email, UserID: c.UserID, TeamID: c.TeamID,
 		Enabled: c.Enabled, AuthStatus: string(c.AuthStatus), Refreshable: c.EncryptedRefreshToken != "",
 		RefreshDueAt: c.RefreshDueAt, LastRefreshAt: c.LastRefreshAt,
 		RefreshFailures: c.RefreshFailureCount, LastRefreshError: c.LastRefreshErrorCode,

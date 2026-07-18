@@ -66,6 +66,7 @@ export type AccountDTO = {
   authType: "oauth" | "sso";
   webTier?: "auto" | "basic" | "super" | "heavy";
   webTierSyncedAt?: string;
+  nsfwEnabledAt?: string;
   name: string;
   email?: string;
   userId?: string;
@@ -164,7 +165,7 @@ const quotaWindowValidator = hasShape({
 });
 const accountValidator = hasShape({
   id: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), authType: isOneOf("oauth", "sso"), webTier: isOptional(isOneOf("auto", "basic", "super", "heavy")),
-  webTierSyncedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
+  webTierSyncedAt: isOptional(isString), nsfwEnabledAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
   enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean, cloudflareCookieConfigured: isBoolean,
   buildSuperEntitled: isBoolean, buildRouteMode: isOneOf("auto", "build", "xai"), buildBotFlagged: isBoolean, modelSyncFailed: isOptional(isBoolean), refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
@@ -237,6 +238,18 @@ export function refreshAccountToken(id: string): Promise<AccountDTO> {
   return apiRequest(`/api/admin/v1/accounts/${id}/refresh-token`, { method: "POST" }, decodeAccount);
 }
 
+export function acceptWebAccountTerms(id: string): Promise<{ completed: boolean }> {
+  return apiRequest(`/api/admin/v1/accounts/web/${id}/accept-terms`, { method: "POST" }, decodeBooleanResult<{ completed: boolean }>("completed"));
+}
+
+export function setWebAccountBirthDate(id: string): Promise<{ completed: boolean }> {
+  return apiRequest(`/api/admin/v1/accounts/web/${id}/birth-date`, { method: "POST" }, decodeBooleanResult<{ completed: boolean }>("completed"));
+}
+
+export function enableWebAccountNSFW(id: string): Promise<{ completed: boolean }> {
+  return apiRequest(`/api/admin/v1/accounts/web/${id}/nsfw`, { method: "POST" }, decodeBooleanResult<{ completed: boolean }>("completed"));
+}
+
 export type AccountBatchResultDTO = { succeeded: number; failed: number };
 export type AccountTokenRefreshResultDTO = AccountBatchResultDTO & { skipped: number };
 
@@ -260,6 +273,16 @@ export type BuildConversionInput =
 export type WebConsoleSyncInput =
   | { all: true; ids?: never; strategy: WebConsoleSyncStrategy }
   | { all?: false; ids: string[]; strategy: WebConsoleSyncStrategy };
+
+export type WebAccountScriptActions = {
+  acceptTerms: boolean;
+  setBirthDate: boolean;
+  enableNSFW: boolean;
+};
+
+export type WebAccountScriptsInput =
+  | { all: true; ids?: never; actions: WebAccountScriptActions }
+  | { all?: false; ids: string[]; actions: WebAccountScriptActions };
 
 export type AccountTaskProgressDTO = {
   completed: number;
@@ -380,6 +403,10 @@ export function convertWebAccountsToBuild(input: BuildConversionInput, onProgres
 
 export function syncWebAccountsToConsole(input: WebConsoleSyncInput, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<WebConsoleSyncResultDTO> {
   return runAccountTask("/api/admin/v1/accounts/web/sync-to-console", input, ["created", "updated", "skipped", "synced", "syncFailed"], onProgress, signal);
+}
+
+export function runWebAccountScripts(input: WebAccountScriptsInput, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountBatchResultDTO> {
+  return runAccountTask("/api/admin/v1/accounts/web/run-scripts", input, ["succeeded", "failed"], onProgress, signal);
 }
 
 export function importAccounts(files: readonly File[], onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
