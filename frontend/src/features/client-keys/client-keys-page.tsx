@@ -407,7 +407,7 @@ export function ClientKeysPage() {
           <div className="min-w-0 space-y-1.5">
             <Label>{t("keys.secretLabel")}</Label>
             <div className="flex h-8 w-full min-w-0 overflow-hidden rounded-md border border-input bg-secondary/55">
-              <code className="flex min-w-0 flex-1 select-all items-center overflow-x-auto whitespace-nowrap px-3 font-mono text-xs text-muted-foreground">{secretDialog?.source === "created" ? secretDialog.secret : t("keys.secretReady")}</code>
+              <code className="flex min-w-0 flex-1 select-all items-center overflow-x-auto whitespace-nowrap px-3 font-mono text-xs text-muted-foreground">{secretDialog?.secret ?? ""}</code>
               <CopyButton value={secretDialog?.secret ?? ""} copyLabel={t("keys.copySecret")} disabled={!secretDialog?.secret} className="h-full w-8 shrink-0 rounded-none border-l" onCopied={() => toast.success(t("common.copied"))} />
             </div>
           </div>
