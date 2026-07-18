@@ -14,20 +14,32 @@ func TestBillingIsPaidMatchesSQLSignals(t *testing.T) {
 		{OnDemandCap: 0.01},
 		{OnDemandUsed: 1},
 		{PrepaidBalance: 5},
-		{CreditUsagePercent: 0.1},
+		{PlanName: "SuperGrok"},
+		{PlanName: "SuperGrok Heavy"},
+		{PlanCode: "supergrok_lite"},
+		{PlanName: "X Premium+"},
 	} {
 		if !billing.IsPaid() {
 			t.Fatalf("expected paid for %#v", billing)
 		}
 	}
-	if (Billing{Used: 100, PlanName: "free"}).IsPaid() {
-		t.Fatal("usage/plan name alone must not mark paid")
+	if (Billing{Used: 100, CreditUsagePercent: 42.5, PlanName: "free"}).IsPaid() {
+		t.Fatal("usage percentage must not mark a Free account as paid")
+	}
+	if (Billing{CreditUsagePercent: 42.5}).IsPaid() {
+		t.Fatal("usage percentage without a subscription tier must remain unknown")
+	}
+	if (Billing{IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY"}).HasFreeProfileSignal() {
+		t.Fatal("generic weekly billing fields must not mark an account as free")
+	}
+	if !(Billing{PlanName: "Free"}).HasFreeProfileSignal() || !(Billing{PlanCode: "x_basic"}).HasFreeProfileSignal() {
+		t.Fatal("known restricted tiers should be recognized as free/basic")
 	}
 }
 
 func TestRoutingCandidateIsKnownFreeBuild(t *testing.T) {
-	freeBilling := Billing{IsUnifiedBillingUser: true}
-	paidBilling := Billing{MonthlyLimit: 100}
+	freeBilling := Billing{PlanName: "Free"}
+	paidBilling := Billing{PlanName: "SuperGrok"}
 	freeRecovery := QuotaRecovery{Kind: QuotaRecoveryKindFree}
 	tests := []struct {
 		name      string
@@ -35,6 +47,7 @@ func TestRoutingCandidateIsKnownFreeBuild(t *testing.T) {
 		want      bool
 	}{
 		{name: "billing profile", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, Billing: &freeBilling}, want: true},
+		{name: "ambiguous weekly profile", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, Billing: &Billing{IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY"}}},
 		{name: "observed response model", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, ObservedModel: "grok-4.5-build-free"}}, want: true},
 		{name: "quota recovery", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, QuotaRecovery: &freeRecovery}, want: true},
 		{name: "paid overrides stale free signal", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, ObservedModel: "grok-4.5-build-free"}, Billing: &paidBilling}},

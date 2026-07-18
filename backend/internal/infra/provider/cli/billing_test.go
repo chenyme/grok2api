@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/base64"
 	"testing"
 )
 
@@ -48,5 +49,19 @@ func TestParseBillingMatchesObservedBuildPayloads(t *testing.T) {
 	}
 	if len(credits.History) != 1 || credits.History[0].PeriodType != "USAGE_PERIOD_TYPE_WEEKLY" || credits.History[0].PeriodStart != "2026-07-01T00:00:00Z" || credits.History[0].PeriodEnd != "2026-07-08T00:00:00Z" || credits.History[0].OnDemandUsed != 120 {
 		t.Fatalf("credits history = %#v", credits.History)
+	}
+	if !credits.IsPaid() {
+		t.Fatal("explicit SuperGrok tier must remain paid even when numeric limits are zero")
+	}
+}
+
+func TestParseSubscriptionTierAndJWTFallback(t *testing.T) {
+	tier, err := parseSubscriptionTier([]byte(`{"user":{"subscriptionTier":"SuperGrokPro"}}`))
+	if err != nil || tier != "SuperGrokPro" {
+		t.Fatalf("tier = %q err=%v", tier, err)
+	}
+	claims := base64.RawURLEncoding.EncodeToString([]byte(`{"tier":5}`))
+	if got := subscriptionTierFromJWT("header." + claims + ".signature"); got != "supergrok_heavy" {
+		t.Fatalf("JWT tier = %q", got)
 	}
 }

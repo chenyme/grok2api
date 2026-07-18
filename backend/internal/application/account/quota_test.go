@@ -47,8 +47,18 @@ func TestNewQuotaViewUnknownWithoutBillingSnapshot(t *testing.T) {
 }
 
 func TestNewQuotaViewEstimatesFreeFromObservedZeroBillingProfile(t *testing.T) {
-	quota := newQuotaView(&accountdomain.Billing{IsUnifiedBillingUser: true, TopUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD"}, 100, nil, "")
+	quota := newQuotaView(&accountdomain.Billing{PlanName: "Free", IsUnifiedBillingUser: true, TopUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD"}, 100, nil, "")
 	if quota.Type != QuotaTypeFree || quota.Source != "billingProfile" || quota.Confidence != "estimated" || quota.Limit != 1_000_000 || quota.LimitKnown {
+		t.Fatalf("quota = %#v", quota)
+	}
+}
+
+func TestNewQuotaViewTreatsZeroUsageSuperGrokAsPaid(t *testing.T) {
+	quota := newQuotaView(&accountdomain.Billing{
+		PlanName: "SuperGrok", IsUnifiedBillingUser: true,
+		UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", CreditUsagePercent: 0,
+	}, 0, nil, "")
+	if quota.Type != QuotaTypePaid || quota.Unit != "percent" || quota.Limit != 100 || quota.Remaining != 100 || quota.Confidence != "observed" {
 		t.Fatalf("quota = %#v", quota)
 	}
 }

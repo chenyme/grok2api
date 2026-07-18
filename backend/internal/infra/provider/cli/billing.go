@@ -4,9 +4,70 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 )
+
+func parseSubscriptionTier(data []byte) (string, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return "", fmt.Errorf("解析订阅等级: %w", err)
+	}
+	if tier := stringValue(firstValue(payload, "subscriptionTier", "subscription_tier")); strings.TrimSpace(tier) != "" {
+		return strings.TrimSpace(tier), nil
+	}
+	if user, ok := payload["user"].(map[string]any); ok {
+		if tier := stringValue(firstValue(user, "subscriptionTier", "subscription_tier")); strings.TrimSpace(tier) != "" {
+			return strings.TrimSpace(tier), nil
+		}
+	}
+	return "", nil
+}
+
+func subscriptionTierFromJWT(token string) string {
+	claims := decodeJWTClaims(token)
+	value, exists := claims["tier"]
+	if !exists {
+		return ""
+	}
+	if tier, ok := value.(string); ok {
+		tier = strings.TrimSpace(tier)
+		if tier == "" {
+			return ""
+		}
+		if numeric, err := strconv.Atoi(tier); err == nil {
+			return subscriptionTierFromNumber(numeric)
+		}
+		return tier
+	}
+	number, ok := value.(float64)
+	if !ok || number < 0 || number != float64(int(number)) {
+		return ""
+	}
+	return subscriptionTierFromNumber(int(number))
+}
+
+func subscriptionTierFromNumber(tier int) string {
+	switch tier {
+	case 0:
+		return "free"
+	case 1:
+		return "supergrok"
+	case 2:
+		return "x_basic"
+	case 3:
+		return "x_premium"
+	case 4:
+		return "x_premium_plus"
+	case 5:
+		return "supergrok_heavy"
+	case 6:
+		return "supergrok_lite"
+	default:
+		return ""
+	}
+}
 
 func parseBilling(data []byte) (account.Billing, error) {
 	var root map[string]any

@@ -35,7 +35,7 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer access-token" || r.Header.Get("X-XAI-Token-Auth") != "xai-grok-cli" || r.Header.Get("x-authenticateresponse") != "authenticate-response" || r.Header.Get("x-grok-client-version") != "0.2.101" || r.Header.Get("x-grok-client-identifier") != "grok-shell" || r.Header.Get("x-grok-client-mode") != "headless" || r.Header.Get("User-Agent") != "grok-shell/0.2.101 (linux; x86_64)" {
+		if r.Header.Get("Authorization") != "Bearer access-token" || r.Header.Get("X-XAI-Token-Auth") != "xai-grok-cli" || r.Header.Get("x-authenticateresponse") != "authenticate-response" || r.Header.Get("x-grok-client-version") != "0.2.102" || r.Header.Get("x-grok-client-identifier") != "grok-shell" || r.Header.Get("x-grok-client-mode") != "headless" || r.Header.Get("User-Agent") != "grok-shell/0.2.102 (linux; x86_64)" {
 			t.Fatalf("headers = %#v", r.Header)
 		}
 		requestID := r.Header.Get("x-grok-req-id")
@@ -81,7 +81,7 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: "0.2.101", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.101 (linux; x86_64)"}, cipher)
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: "0.2.102", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.102 (linux; x86_64)"}, cipher)
 	adapter.http.Transport = transport
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: account.Credential{ID: 7, UserID: "user-123", EncryptedAccessToken: encrypted}, Method: http.MethodPost, Path: "/responses",
@@ -188,9 +188,9 @@ func TestListModelsUsesOfficialMetadataHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: "0.2.101", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.101 (linux; x86_64)"}, cipher)
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: "0.2.102", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.102 (linux; x86_64)"}, cipher)
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.Path != "/v1/models" || request.Header.Get("Authorization") != "Bearer access-token" || request.Header.Get("X-XAI-Token-Auth") != "xai-grok-cli" || request.Header.Get("x-grok-client-version") != "0.2.101" || request.Header.Get("x-grok-client-identifier") != "grok-shell" || request.Header.Get("x-grok-client-mode") != "headless" || request.Header.Get("User-Agent") != "grok-shell/0.2.101 (linux; x86_64)" {
+		if request.URL.Path != "/v1/models" || request.Header.Get("Authorization") != "Bearer access-token" || request.Header.Get("X-XAI-Token-Auth") != "xai-grok-cli" || request.Header.Get("x-grok-client-version") != "0.2.102" || request.Header.Get("x-grok-client-identifier") != "grok-shell" || request.Header.Get("x-grok-client-mode") != "headless" || request.Header.Get("User-Agent") != "grok-shell/0.2.102 (linux; x86_64)" {
 			t.Fatalf("headers = %#v", request.Header)
 		}
 		if request.Header.Get("x-userid") != "user-123" || request.Header.Get("x-email") != "user@example.com" || request.Header.Get("x-grok-user-id") != "" || request.Header.Get("x-authenticateresponse") != "" || request.Header.Get("x-grok-session-id") != "" {
@@ -263,7 +263,7 @@ func TestModelCatalogETagSignalsMissingOrChangedCatalogBaseline(t *testing.T) {
 	}
 }
 
-func TestGetBillingUsesCreditsEndpointOnce(t *testing.T) {
+func TestGetBillingUsesCreditsAndLiveSubscriptionTier(t *testing.T) {
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {
 		t.Fatal(err)
@@ -272,20 +272,32 @@ func TestGetBillingUsesCreditsEndpointOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: "0.2.101", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.101 (linux; x86_64)"}, cipher)
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: "0.2.102", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.102 (linux; x86_64)"}, cipher)
 	calls := 0
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		calls++
-		if request.URL.Path != "/v1/billing" || request.URL.Query().Get("format") != "credits" {
-			t.Fatalf("billing request = %s", request.URL.String())
+		var body string
+		switch request.URL.Path {
+		case "/v1/billing":
+			if request.URL.Query().Get("format") != "credits" {
+				t.Fatalf("billing request = %s", request.URL.String())
+			}
+			body = `{"config":{"creditUsagePercent":0,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-07-01T00:00:00Z","end":"2026-07-08T00:00:00Z"}}}`
+		case "/v1/user":
+			if request.URL.Query().Get("include") != "subscription" {
+				t.Fatalf("subscription request = %s", request.URL.String())
+			}
+			body = `{"subscriptionTier":"SuperGrokPro"}`
+		default:
+			t.Fatalf("unexpected request = %s", request.URL.String())
 		}
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"config":{"creditUsagePercent":25,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-07-01T00:00:00Z","end":"2026-07-08T00:00:00Z"}}}`)), Request: request}, nil
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 	})
 	billing, err := adapter.GetBilling(context.Background(), account.Credential{ID: 7, EncryptedAccessToken: encrypted})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || billing.AccountID != 7 || billing.CreditUsagePercent != 25 || billing.UsagePeriodType != "USAGE_PERIOD_TYPE_WEEKLY" || billing.SyncedAt.IsZero() {
+	if calls != 2 || billing.AccountID != 7 || billing.CreditUsagePercent != 0 || billing.UsagePeriodType != "USAGE_PERIOD_TYPE_WEEKLY" || billing.PlanName != "SuperGrokPro" || !billing.IsPaid() || billing.SyncedAt.IsZero() {
 		t.Fatalf("calls=%d billing=%#v", calls, billing)
 	}
 }
@@ -316,7 +328,7 @@ func TestNormalizeAccountModelCapabilitiesSuperAddsVideo15(t *testing.T) {
 		t.Fatalf("unknown catalog = %#v", got)
 	}
 	// 不得依赖 BuildAPIFallback；空目录 + Super 仅补 1.5。
-	got = adapter.NormalizeAccountModelCapabilities(nil, &account.Billing{CreditUsagePercent: 1})
+	got = adapter.NormalizeAccountModelCapabilities(nil, &account.Billing{PlanName: "SuperGrok", CreditUsagePercent: 1})
 	if len(got) != 1 || got[0] != buildVideoModel {
 		t.Fatalf("super empty catalog = %#v", got)
 	}
@@ -350,7 +362,7 @@ func TestGrokSessionIDFollowsConversationIdentity(t *testing.T) {
 }
 
 func TestInferenceIdentityIsConversationScopedNotAccountScoped(t *testing.T) {
-	adapter := NewAdapter(Config{ClientVersion: "0.2.101", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.101 (linux; x86_64)"}, nil)
+	adapter := NewAdapter(Config{ClientVersion: "0.2.102", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.102 (linux; x86_64)"}, nil)
 	build := func(accountID uint64, conversation string) http.Header {
 		request := httptest.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", nil)
 		if err := adapter.applyHeaders(request, account.Credential{ID: accountID}, "token", "grok-4.5", conversation, true); err != nil {
@@ -381,7 +393,7 @@ func TestForwardResponseSupportsResourceMethodsAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: "0.2.101", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.101 (linux; x86_64)"}, cipher)
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1", ClientVersion: "0.2.102", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.102 (linux; x86_64)"}, cipher)
 	methods := []string{http.MethodGet, http.MethodDelete}
 	next := 0
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {

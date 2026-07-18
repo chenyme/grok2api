@@ -36,6 +36,8 @@ type Config struct {
 	UserAgent        string
 }
 
+const subscriptionTierTimeout = 10 * time.Second
+
 // Adapter 实现 Grok Build CLI Responses、模型、Billing 与 OAuth 协议。
 type Adapter struct {
 	cfgMu          sync.RWMutex
@@ -472,6 +474,13 @@ func (a *Adapter) GetBilling(ctx context.Context, credential account.Credential)
 	if err != nil {
 		return account.Billing{}, err
 	}
+	// 周额度在 0% 使用时无法区分 Free 与刚开通的付费套餐。官方 CLI
+	// 使用 /user?include=subscription 获取实时订阅等级；失败时再退回 JWT tier。
+	if tier, tierErr := a.getSubscriptionTier(ctx, credential, accessToken); tierErr == nil && tier != "" {
+		billing.PlanName = tier
+	} else if billing.PlanCode == "" && billing.PlanName == "" {
+		billing.PlanName = subscriptionTierFromJWT(accessToken)
+	}
 	billing.AccountID = credential.ID
 	billing.SyncedAt = time.Now().UTC()
 	return billing, nil
@@ -676,4 +685,33 @@ func (a *Adapter) getBilling(ctx context.Context, credential account.Credential,
 		return account.Billing{}, fmt.Errorf("上游 Billing 接口返回 %d", resp.StatusCode)
 	}
 	return parseBilling(body)
+}
+
+func (a *Adapter) getSubscriptionTier(ctx context.Context, credential account.Credential, accessToken string) (string, error) {
+	endpoint := a.url("/user") + "?include=subscription"
+	requestCtx, cancel := context.WithTimeout(infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID), subscriptionTierTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	if err := a.applyHeaders(req, credential, accessToken, "", "", false); err != nil {
+		return "", err
+	}
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	if err := normalizeGzipResponse(resp); err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("上游订阅接口返回 %d", resp.StatusCode)
+	}
+	return parseSubscriptionTier(body)
 }
