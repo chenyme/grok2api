@@ -43,7 +43,7 @@ export type QuotaDTO = {
   source: "unknown" | "upstreamBilling" | "upstreamExhaustion" | "responseModel" | "billingProfile";
   confidence: "estimated" | "observed" | "confirmed" | "";
   status: "active" | "waitingReset" | "probing";
-  unit?: "tokens" | "credits";
+  unit?: "tokens" | "credits" | "percent";
   used: number;
   limit: number;
   remaining: number;
@@ -144,7 +144,7 @@ const billingValidator = hasShape({
 const quotaValidator = hasShape({
   type: isOneOf("free", "paid", "unknown"), source: isOneOf("unknown", "upstreamBilling", "upstreamExhaustion", "responseModel", "billingProfile"),
   confidence: isOneOf("estimated", "observed", "confirmed", ""), status: isOneOf("active", "waitingReset", "probing"),
-  unit: isOptional(isOneOf("tokens", "credits")), used: isNumber, limit: isNumber, remaining: isNumber, usagePercent: isNumber,
+  unit: isOptional(isOneOf("tokens", "credits", "percent")), used: isNumber, limit: isNumber, remaining: isNumber, usagePercent: isNumber,
   limitKnown: isBoolean, windowHours: isOptional(isNumber), observed: isBoolean, confirmed: isBoolean,
   periodStart: isOptional(isString), periodEnd: isOptional(isString), exhaustedAt: isOptional(isString),
   nextProbeAt: isOptional(isString), lastConfirmedAt: isOptional(isString),

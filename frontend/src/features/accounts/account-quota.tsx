@@ -57,12 +57,14 @@ export function AccountQuota({ quota, billing, locale }: { quota: QuotaDTO; bill
 
 function BuildQuota({ quota, billing, locale }: { quota: QuotaDTO; billing?: BillingDTO; locale: string }) {
   const { t } = useTranslation();
-  const hasWeekly = billing?.usagePeriodType === "USAGE_PERIOD_TYPE_WEEKLY";
-  const hasMonthly = quota.limit > 0;
+  const percentageQuota = quota.unit === "percent";
+  const hasWeekly = percentageQuota || billing?.usagePeriodType === "USAGE_PERIOD_TYPE_WEEKLY";
+  const hasMonthly = !percentageQuota && quota.limit > 0;
   if (!hasWeekly && !hasMonthly) return <span className="text-xs text-muted-foreground">{t("accounts.paidQuotaUsage")}</span>;
 
-  const weeklyPercent = Math.max(0, Math.min(100, billing?.creditUsagePercent ?? 0));
+  const weeklyPercent = Math.max(0, Math.min(100, percentageQuota ? quota.usagePercent : (billing?.creditUsagePercent ?? 0)));
   const monthlyPercent = Math.max(0, Math.min(100, quota.usagePercent));
+  const weeklyPeriodEnd = quota.periodEnd ?? billing?.usagePeriodEnd;
   const statusDescription = quota.status === "waitingReset" && quota.nextProbeAt
     ? t("accounts.paidWaitingResetUntil", { time: formatDateTime(quota.nextProbeAt, locale) })
     : quota.status === "probing" ? t("accounts.paidProbingQuota") : null;
@@ -80,7 +82,7 @@ function BuildQuota({ quota, billing, locale }: { quota: QuotaDTO; billing?: Bil
             </TooltipTrigger>
             <TooltipContent>
               <div>{t("accounts.weeklyLimit", { percent: formatNumber(100 - weeklyPercent, locale, 1) })}</div>
-              <div className="text-muted-foreground">{billing?.usagePeriodEnd ? t("accounts.quotaResetAt", { time: formatDateTime(billing.usagePeriodEnd, locale) }) : t("accounts.quotaResetUnknown")}</div>
+              <div className="text-muted-foreground">{weeklyPeriodEnd ? t("accounts.quotaResetAt", { time: formatDateTime(weeklyPeriodEnd, locale) }) : t("accounts.quotaResetUnknown")}</div>
             </TooltipContent>
           </Tooltip>
         ) : null}
