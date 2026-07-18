@@ -145,8 +145,10 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/console/refresh-quotas", h.refreshAllConsoleQuotas)
 	router.POST("/accounts/refresh-billing", h.refreshAllBilling)
 	router.POST("/accounts/refresh-tokens", h.refreshAllTokens)
+	router.POST("/accounts/probe-health", h.probeBuildHealth)
 	router.POST("/accounts/batch/refresh-billing", h.batchRefreshBilling)
 	router.POST("/accounts/batch/refresh-quotas", h.batchRefreshQuotas)
+	router.POST("/accounts/batch/delete-by-status", h.batchDeleteByStatus)
 	router.PATCH("/accounts/batch", h.batchUpdate)
 	router.DELETE("/accounts", h.batchDelete)
 	router.PATCH("/accounts/:id", h.update)
@@ -180,6 +182,11 @@ type batchUpdateRequest struct {
 type batchDeleteRequest struct {
 	IDs      []string `json:"ids" binding:"required"`
 	Provider string   `json:"provider" binding:"required"`
+}
+
+type batchDeleteByStatusRequest struct {
+	Provider string `json:"provider" binding:"required"`
+	Status   string `json:"status" binding:"required"`
 }
 
 type buildConversionRequest struct {
@@ -421,6 +428,29 @@ func (h *Handler) batchDelete(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
+}
+
+// batchDeleteByStatus 删除某一 Provider 下指定非可用状态的全部账号。
+func (h *Handler) batchDeleteByStatus(c *gin.Context) {
+	var request batchDeleteByStatusRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	if !accountdomain.Provider(request.Provider).IsValid() {
+		response.Error(c, http.StatusBadRequest, "invalidProvider", "账号来源无效")
+		return
+	}
+	if !accountapp.IsNonAvailableAccountStatus(request.Status) {
+		response.Error(c, http.StatusBadRequest, "invalidStatus", "仅支持删除非可用状态账号")
+		return
+	}
+	deleted, err := h.service.BatchDeleteByStatus(c.Request.Context(), request.Provider, request.Status)
+	if err != nil {
+		h.writeServiceError(c, "accountBatchDeleteByStatusFailed", err, http.StatusInternalServerError, "按状态批量删除账号失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": deleted, "status": request.Status, "provider": request.Provider})
 }
 
 func (h *Handler) batchRefreshBilling(c *gin.Context) {
@@ -1007,6 +1037,71 @@ func (h *Handler) refreshAllTokens(c *gin.Context) {
 		return
 	}
 	_ = stream.Write("complete", accountTokenRefreshResponse{Succeeded: succeeded, Failed: failed, Skipped: skipped})
+}
+
+func (h *Handler) probeBuildHealth(c *gin.Context) {
+	stream := newAccountEventStream(c)
+	defer stream.Close()
+	result, err := h.service.ProbeBuildHealthWithProgress(c.Request.Context(), func(item accountapp.HealthProbeItem, _, _ int) error {
+		return stream.Write("result", newHealthProbeItemResponse(item))
+	}, stream.PhaseProgressObserver("probing", nil))
+	if err != nil {
+		stream.WriteError("accountHealthProbeFailed", "测活 Grok Build 账号失败")
+		return
+	}
+	_ = stream.Write("complete", newHealthProbeSummaryResponse(result))
+}
+
+type healthProbeItemResponse struct {
+	AccountID  string `json:"accountId"`
+	Name       string `json:"name"`
+	Email      string `json:"email,omitempty"`
+	Enabled    bool   `json:"enabled"`
+	HTTPStatus int    `json:"httpStatus"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+	ElapsedMs  int64  `json:"elapsedMs"`
+	Refreshed  bool   `json:"refreshed,omitempty"`
+}
+
+type healthProbeSummaryResponse struct {
+	Total        int                       `json:"total"`
+	Healthy      int                       `json:"healthy"`
+	Unauthorized int                       `json:"unauthorized"`
+	Payment      int                       `json:"payment"`
+	Forbidden    int                       `json:"forbidden"`
+	RateLimited  int                       `json:"rateLimited"`
+	Network      int                       `json:"network"`
+	Error        int                       `json:"error"`
+	Unknown      int                       `json:"unknown"`
+	Refreshed    int                       `json:"refreshed"`
+	Items        []healthProbeItemResponse `json:"items"`
+}
+
+func newHealthProbeItemResponse(item accountapp.HealthProbeItem) healthProbeItemResponse {
+	return healthProbeItemResponse{
+		AccountID:  strconv.FormatUint(item.AccountID, 10),
+		Name:       item.Name,
+		Email:      item.Email,
+		Enabled:    item.Enabled,
+		HTTPStatus: item.HTTPStatus,
+		Status:     string(item.Status),
+		Error:      item.Error,
+		ElapsedMs:  item.ElapsedMs,
+		Refreshed:  item.Refreshed,
+	}
+}
+
+func newHealthProbeSummaryResponse(value accountapp.HealthProbeSummary) healthProbeSummaryResponse {
+	items := make([]healthProbeItemResponse, 0, len(value.Items))
+	for _, item := range value.Items {
+		items = append(items, newHealthProbeItemResponse(item))
+	}
+	return healthProbeSummaryResponse{
+		Total: value.Total, Healthy: value.Healthy, Unauthorized: value.Unauthorized,
+		Payment: value.Payment, Forbidden: value.Forbidden, RateLimited: value.RateLimited,
+		Network: value.Network, Error: value.Error, Unknown: value.Unknown, Refreshed: value.Refreshed, Items: items,
+	}
 }
 
 func (h *Handler) refreshAllWebQuotas(c *gin.Context) {

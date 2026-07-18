@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowRight, ChevronDown, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -35,6 +35,8 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 import {
   deleteAccount,
   deleteAccounts,
+  deleteAccountsByStatus,
+  NON_AVAILABLE_ACCOUNT_STATUSES,
   convertWebAccountsToBuild,
   exportAccounts,
   getAccountSummary,
@@ -60,6 +62,7 @@ import {
   type AccountUpdateInput,
   type BuildRouteMode,
   type AccountTaskProgressDTO,
+  type NonAvailableAccountStatus,
   type BuildConversionInput,
   type BuildConversionStrategy,
   type WebConsoleSyncInput,
@@ -98,6 +101,8 @@ export function AccountsPage() {
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [statusDeleteTarget, setStatusDeleteTarget] = useState<NonAvailableAccountStatus | null>(null);
+  const [statusDeleteCount, setStatusDeleteCount] = useState(0);
   const [exportOpen, setExportOpen] = useState(false);
   const [syncAllOpen, setSyncAllOpen] = useState(false);
   const [quotaSyncProgress, setQuotaSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
@@ -160,6 +165,28 @@ export function AccountsPage() {
     queryKey: ["accounts", "summary"],
     queryFn: getAccountSummary,
   });
+
+  // 当前 Provider 下各非可用状态数量，供「按状态清理」菜单展示。
+  const statusCountQueries = useQueries({
+    queries: NON_AVAILABLE_ACCOUNT_STATUSES.map((status) => ({
+      queryKey: ["accounts", "status-count", provider, status] as const,
+      queryFn: () => listAccounts({ provider, page: 1, pageSize: 1, status }),
+      staleTime: 15_000,
+    })),
+  });
+
+  const statusCounts = useMemo(() => {
+    const counts = {} as Record<NonAvailableAccountStatus, number>;
+    NON_AVAILABLE_ACCOUNT_STATUSES.forEach((status, index) => {
+      counts[status] = statusCountQueries[index]?.data?.total ?? 0;
+    });
+    return counts;
+  }, [statusCountQueries]);
+
+  const abnormalStatusTotal = useMemo(
+    () => NON_AVAILABLE_ACCOUNT_STATUSES.reduce((sum, status) => sum + (statusCounts[status] ?? 0), 0),
+    [statusCounts],
+  );
 
   const invalidateAccountData = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["accounts"] });
@@ -388,6 +415,27 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const statusDeleteMutation = useMutation({
+    mutationFn: (status: NonAvailableAccountStatus) => deleteAccountsByStatus(provider, status),
+    onSuccess: (result, status) => {
+      setStatusDeleteTarget(null);
+      setStatusDeleteCount(0);
+      setSelected(new Set());
+      invalidateAccountData();
+      toast.success(t("accounts.statusDeleteCompleted", {
+        deleted: result.deleted,
+        status: accountStatusLabel(t, status),
+      }));
+    },
+    onError: showError,
+  });
+
+  function openStatusDelete(status: NonAvailableAccountStatus): void {
+    setStatusDeleteCount(statusCounts[status] ?? 0);
+    setStatusDeleteTarget(status);
+  }
+
+
   useEffect(() => {
     if (!deviceOpen || !deviceSession || deviceStatus !== "pending") {
       return;
@@ -547,7 +595,8 @@ export function AccountsPage() {
     || importMutation.isPending
     || batchUpdateMutation.isPending
     || batchBillingMutation.isPending
-    || batchDeleteMutation.isPending;
+    || batchDeleteMutation.isPending
+    || statusDeleteMutation.isPending;
 
   return (
     <div className="space-y-5">
@@ -653,7 +702,42 @@ export function AccountsPage() {
                 <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={bulkTaskPending} onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {hasProviderAccounts ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className={abnormalStatusTotal > 0 ? "text-destructive hover:text-destructive" : undefined}
+                        disabled={bulkTaskPending}
+                      >
+                        <Trash2 />
+                        {t("accounts.statusDeleteMenu")}
+                        {abnormalStatusTotal > 0 ? (
+                          <span className="min-w-4 text-center text-[11px] tabular-nums">{abnormalStatusTotal}</span>
+                        ) : null}
+                        <ChevronDown className="size-3.5 opacity-70" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      {NON_AVAILABLE_ACCOUNT_STATUSES.map((status) => {
+                        const count = statusCounts[status] ?? 0;
+                        return (
+                          <DropdownMenuItem
+                            key={status}
+                            disabled={count <= 0 || bulkTaskPending}
+                            className={count > 0 ? "text-destructive focus:text-destructive" : undefined}
+                            onClick={() => openStatusDelete(status)}
+                          >
+                            <span className="flex-1">{accountStatusLabel(t, status)}</span>
+                            <span className="tabular-nums text-muted-foreground">{count}</span>
+                          </DropdownMenuItem>
+                        );
+                      })}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : null}
                 {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openBuildConversion("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
                 {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync("all")}>{t("webConsoleSync.allAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setSyncAllOpen(true)}>{t("accountCredential.quotaSyncAction")}</Button> : null}
@@ -992,6 +1076,37 @@ export function AccountsPage() {
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.batchDeleteTitle", { count: selected.size })}</AlertDialogTitle><AlertDialogDescription>{t("accounts.deleteDescription")}</AlertDialogDescription></AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => batchDeleteMutation.mutate()}>{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={statusDeleteTarget !== null} onOpenChange={(open) => { if (!open) { setStatusDeleteTarget(null); setStatusDeleteCount(0); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("accounts.statusDeleteTitle", {
+                count: statusDeleteCount,
+                status: statusDeleteTarget ? accountStatusLabel(t, statusDeleteTarget) : "",
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("accounts.statusDeleteDescription", {
+                status: statusDeleteTarget ? accountStatusLabel(t, statusDeleteTarget) : "",
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={statusDeleteMutation.isPending}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={statusDeleteMutation.isPending || !statusDeleteTarget || statusDeleteCount <= 0}
+              onClick={(event) => {
+                event.preventDefault();
+                if (statusDeleteTarget) statusDeleteMutation.mutate(statusDeleteTarget);
+              }}
+            >
+              {statusDeleteMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
+              {t("common.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>

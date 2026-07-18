@@ -463,7 +463,9 @@ func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) 
 		return 0, err
 	}
 	for _, id := range ids {
-		_ = s.sticky.DeleteByAccount(ctx, id)
+		if s.sticky != nil {
+			_ = s.sticky.DeleteByAccount(ctx, id)
+		}
 		s.clearRefreshState(id)
 	}
 	deleted, err := s.accounts.DeleteMany(ctx, ids)
@@ -471,6 +473,71 @@ func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) 
 		s.invalidateBuildBotFlagCache()
 	}
 	return deleted, mapRepositoryError(err)
+}
+
+// nonAvailableAccountStatuses 可被「按状态批量删除」清理的非可用状态。
+// active 明确排除，避免误删调度号池。
+var nonAvailableAccountStatuses = []string{"disabled", "reauthRequired", "cooldown", "waitingReset", "probing"}
+
+// IsNonAvailableAccountStatus 判断状态是否允许按状态整批删除。
+func IsNonAvailableAccountStatus(status string) bool {
+	return oneOf(status, nonAvailableAccountStatuses...)
+}
+
+// BatchDeleteByStatus 删除指定 Provider 下某一非可用状态的全部账号。
+// 分页收集 ID 后按批删除，单次上限与导出一致，防止误操作扫库过大。
+func (s *Service) BatchDeleteByStatus(ctx context.Context, providerValue, status string) (int64, error) {
+	providerValue = strings.TrimSpace(providerValue)
+	status = strings.TrimSpace(status)
+	if providerValue == "" || !accountdomain.Provider(providerValue).IsValid() {
+		return 0, invalidInput("provider 无效")
+	}
+	if !IsNonAvailableAccountStatus(status) {
+		return 0, invalidInput("仅支持删除非可用状态账号（disabled / reauthRequired / cooldown / waitingReset / probing）")
+	}
+
+	ids := make([]uint64, 0, 256)
+	now := s.now().UTC()
+	for offset := 0; ; offset += 100 {
+		values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
+			Page: repository.PageQuery{Offset: offset, Limit: 100},
+			Filter: repository.AccountListFilter{
+				Provider: providerValue,
+				Status:   status,
+				Now:      now,
+			},
+		})
+		if err != nil {
+			return 0, mapRepositoryError(err)
+		}
+		for _, value := range values {
+			ids = append(ids, value.ID)
+		}
+		if len(values) == 0 || int64(len(ids)) >= total {
+			break
+		}
+		if len(ids) > maxCredentialExportAccounts {
+			return 0, invalidInput(fmt.Sprintf("匹配账号超过 %d，请缩小范围后重试", maxCredentialExportAccounts))
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	var deleted int64
+	for start := 0; start < len(ids); start += 500 {
+		end := start + 500
+		if end > len(ids) {
+			end = len(ids)
+		}
+		// BatchDelete 内部仍会校验上限；分片保证不超过 500。
+		n, err := s.BatchDelete(ctx, ids[start:end])
+		if err != nil {
+			return deleted, err
+		}
+		deleted += n
+	}
+	return deleted, nil
 }
 
 func (s *Service) Get(ctx context.Context, id uint64) (View, error) {
