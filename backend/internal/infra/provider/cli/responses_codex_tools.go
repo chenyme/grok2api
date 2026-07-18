@@ -19,7 +19,7 @@ func (c *responsesToolCompatibility) normalizeShellTool(tool map[string]any, par
 	return c.normalizeNativeTool(tool, param)
 }
 
-// normalizeLegacyLocalShellTool 将旧 Codex local_shell 升级为 0.2.101 原生 local shell 环境。
+// normalizeLegacyLocalShellTool 将旧 Codex local_shell 升级为 0.2.102 原生 local shell 环境。
 func (c *responsesToolCompatibility) normalizeLegacyLocalShellTool(tool map[string]any, param string) ([]any, error) {
 	if c.nativeShell || c.legacyLocalShell {
 		return nil, &responsesRequestError{

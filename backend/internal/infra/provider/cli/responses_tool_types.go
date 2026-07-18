@@ -21,7 +21,7 @@ var nativeHostedToolChoiceTypes = map[string]string{
 	"local_shell":                   "shell",
 }
 
-// webSearchCompatibilityFields 是 Codex/OpenAI 新版声明中已知、但 0.2.101 上游会以
+// webSearchCompatibilityFields 是 Codex/OpenAI 新版声明中已知、但 0.2.102 上游会以
 // "Argument not supported" 拒绝的控制字段。Build 只能降级为其原生最小搜索工具。
 var webSearchCompatibilityFields = map[string]struct{}{
 	"external_web_access":  {},
@@ -33,7 +33,7 @@ var webSearchCompatibilityFields = map[string]struct{}{
 	"safe_search":          {},
 }
 
-// normalizeNativeTool 保留 0.2.101 已确认支持的工具，并拒绝只属于 Tool Search 的延迟字段。
+// normalizeNativeTool 保留 0.2.102 已确认支持的工具，并拒绝只属于 Tool Search 的延迟字段。
 func (c *responsesToolCompatibility) normalizeNativeTool(tool map[string]any, _ string) ([]any, error) {
 	converted := cloneJSONObject(tool)
 	if _, exists := converted["defer_loading"]; exists {
@@ -44,7 +44,7 @@ func (c *responsesToolCompatibility) normalizeNativeTool(tool map[string]any, _ 
 	return []any{converted}, nil
 }
 
-// normalizeWebSearchTool 保留 0.2.101 原生支持的 allowed_domains 约束，
+// normalizeWebSearchTool 保留 0.2.102 原生支持的 allowed_domains 约束，
 // 并将无法等价表达的新版控制字段安全降级。
 func (c *responsesToolCompatibility) normalizeWebSearchTool(tool map[string]any, kind, param string) ([]any, error) {
 	if external, exists := tool["external_web_access"]; exists {
@@ -53,7 +53,7 @@ func (c *responsesToolCompatibility) normalizeWebSearchTool(tool map[string]any,
 			return nil, &responsesRequestError{Message: "external_web_access 必须是布尔值", Param: param + ".external_web_access", Code: "invalid_parameter"}
 		}
 		if !enabled {
-			// 0.2.101 不能表达“只允许索引、禁止外网”。发送最小 web_search
+			// 0.2.102 不能表达“只允许索引、禁止外网”。发送最小 web_search
 			// 会扩大客户端授权，因此直接移除该搜索工具，形成安全的能力子集。
 			c.webSearchDisabled = true
 			c.changed = true
@@ -208,7 +208,7 @@ func (c *responsesToolCompatibility) normalizeMCPTool(tool map[string]any, clien
 
 func unsupportedBuildToolError(kind, param string) error {
 	return &responsesRequestError{
-		Message: fmt.Sprintf("Grok Build 0.2.101 不支持 tools.type=%q", kind),
+		Message: fmt.Sprintf("Grok Build 0.2.102 不支持 tools.type=%q", kind),
 		Param:   param + ".type", Code: "unsupported_parameter",
 	}
 }
