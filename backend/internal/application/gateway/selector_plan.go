@@ -3,6 +3,7 @@ package gateway
 import (
 	"container/heap"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"time"
@@ -91,51 +92,99 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 
 // planCandidates 批量读取动态并发状态，并以 O(n) 建堆生成保持原比较规则的候选计划。
 func (s *Selector) planCandidates(ctx context.Context, values []account.RoutingCandidate, now time.Time, tierOrder []account.WebTier) (*candidatePlan, error) {
-	keys := make([]string, len(values))
-	for index, candidate := range values {
-		keys[index] = accountConcurrencyKey(candidate.Credential.ID)
+	return s.planCandidateIndexes(ctx, values, nil, now, tierOrder)
+}
+
+// planCandidateIndexes 在不可变候选快照上按下标规划，避免过滤阶段复制完整账号结构。
+// indexes 为 nil 时表示使用 values 的全部元素。
+func (s *Selector) planCandidateIndexes(ctx context.Context, values []account.RoutingCandidate, indexes []int, now time.Time, tierOrder []account.WebTier) (*candidatePlan, error) {
+	length := len(indexes)
+	if indexes == nil {
+		length = len(values)
 	}
-	var concurrencySnapshot map[string]int
-	batchReader, batched := s.concurrency.(repository.ConcurrencySnapshotReader)
-	if batched {
-		var err error
-		concurrencySnapshot, err = batchReader.CurrentMany(ctx, keys)
-		if err != nil {
-			return nil, fmt.Errorf("批量读取账号并发租约: %w", err)
+	keys := make([]string, length)
+	for position := range length {
+		index := position
+		if indexes != nil {
+			index = indexes[position]
 		}
+		keys[position] = accountConcurrencyKey(values[index].Credential.ID)
 	}
-	inFlight := make([]int, len(values))
-	for index := range values {
-		if batched {
-			inFlight[index] = concurrencySnapshot[keys[index]]
-			continue
-		}
-		current, err := s.concurrency.Current(ctx, keys[index])
-		if err != nil {
-			return nil, fmt.Errorf("读取账号并发租约: %w", err)
-		}
-		inFlight[index] = current
+	concurrencySnapshot, err := s.loadConcurrencySnapshot(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	inFlight := make([]int, length)
+	for position := range length {
+		inFlight[position] = concurrencySnapshot[keys[position]]
 	}
 
 	s.mu.Lock()
-	scores := make([]candidateScore, len(values))
-	for index, candidate := range values {
+	scores := make([]candidateScore, length)
+	for position := range length {
+		index := position
+		if indexes != nil {
+			index = indexes[position]
+		}
+		candidate := values[index]
 		score := candidateScore{
 			index: index, tier: tierOrderRank(tierOrder, candidate.Credential.WebTier),
 			preferFreeBuild: s.preferFreeBuild && candidate.IsKnownFreeBuild(),
-			inFlight:        inFlight[index], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
+			inFlight:        inFlight[position], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
 		}
 		if candidate.Billing != nil {
 			score.remaining = candidate.Billing.Remaining()
 			score.billingFresh = now.Sub(candidate.Billing.SyncedAt) <= 30*time.Minute
 		}
-		scores[index] = score
+		scores[position] = score
 	}
 	s.mu.Unlock()
 
 	plan := &candidatePlan{values: values, scores: scores}
 	heap.Init(plan)
 	return plan, nil
+}
+
+// loadConcurrencySnapshot 在极短窗口内合并相同候选池的并发快照读取。
+// 快照只参与排序，最终容量仍由原子 Acquire 校验，因此陈旧快照不会突破账号并发上限。
+func (s *Selector) loadConcurrencySnapshot(ctx context.Context, keys []string) (map[string]int, error) {
+	cacheKey := concurrencySnapshotKey(keys)
+	load := func() (map[string]int, error) {
+		values := make(map[string]int, len(keys))
+		if batchReader, ok := s.concurrency.(repository.ConcurrencySnapshotReader); ok {
+			var err error
+			values, err = batchReader.CurrentMany(ctx, keys)
+			if err != nil {
+				return nil, fmt.Errorf("批量读取账号并发租约: %w", err)
+			}
+		} else {
+			for _, key := range keys {
+				current, err := s.concurrency.Current(ctx, key)
+				if err != nil {
+					return nil, fmt.Errorf("读取账号并发租约: %w", err)
+				}
+				values[key] = current
+			}
+		}
+		return values, nil
+	}
+	// 仅测试中的手工 Selector 可能没有初始化缓存，保持最小兼容回退。
+	if s.concurrencySnapshots == nil {
+		return load()
+	}
+	return s.concurrencySnapshots.Load(ctx, cacheKey, time.Now(), load)
+}
+
+func concurrencySnapshotKey(keys []string) [32]byte {
+	hash := sha256.New()
+	separator := []byte{0}
+	for _, key := range keys {
+		_, _ = hash.Write([]byte(key))
+		_, _ = hash.Write(separator)
+	}
+	var result [32]byte
+	copy(result[:], hash.Sum(nil))
+	return result
 }
 
 func accountConcurrencyKey(accountID uint64) string {

@@ -145,6 +145,9 @@ func TestSyncWebAccountsToConsoleIsIdempotentAndPreservesBuildLink(t *testing.T)
 	if updatedWeb.LinkedAccountID != buildAccount.ID || updatedWeb.LinkedProvider != accountdomain.ProviderBuild {
 		t.Fatalf("updated web account = %#v", updatedWeb)
 	}
+	if len(updatedWeb.LinkedAccounts) != 2 || updatedWeb.LinkedAccounts[0].Provider != accountdomain.ProviderBuild || updatedWeb.LinkedAccounts[1].Provider != accountdomain.ProviderConsole || updatedWeb.LinkedAccounts[1].ID != consoleAccount.ID {
+		t.Fatalf("updated Web links = %#v", updatedWeb.LinkedAccounts)
+	}
 	_, total, err := accounts.List(ctx, repository.AccountListQuery{
 		Page: repository.PageQuery{Limit: 10}, Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderConsole)},
 	})

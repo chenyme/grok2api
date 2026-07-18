@@ -68,6 +68,42 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 	}
 }
 
+func TestSyncAccountIdentityUsesWebSessionWithConsoleCredential(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/auth/session" || request.Method != http.MethodGet {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Header.Get("User-Agent") != infraegress.DefaultUserAgent {
+			t.Errorf("user agent = %q", request.Header.Get("User-Agent"))
+		}
+		if request.Header.Get("Cookie") != "sso=test-sso; sso-rw=test-sso; cf_clearance=clear" {
+			t.Errorf("cookie = %q", request.Header.Get("Cookie"))
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"user":{"sub":"console-user","email":"console@example.com","teamId":"team-1"}}`))
+	}))
+	t.Cleanup(server.Close)
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _ := cipher.Encrypt("test-sso")
+	cookies, _ := cipher.Encrypt("cf_clearance=clear")
+	adapter := NewAdapter(Config{SessionBaseURL: server.URL}, infraegress.NewManager(consoleEgressRepositoryStub{}, cipher), cipher)
+	identity, err := adapter.SyncAccountIdentity(context.Background(), account.Credential{
+		ID: 1, Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO,
+		EncryptedAccessToken: token, EncryptedCloudflareCookie: cookies,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.UserID != "console-user" || identity.Email != "console@example.com" || identity.TeamID != "team-1" {
+		t.Fatalf("identity = %#v", identity)
+	}
+}
+
 func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 	spec, ok := Resolve("grok-4.3")
 	if !ok {

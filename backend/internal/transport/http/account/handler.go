@@ -233,45 +233,55 @@ type accountImportResponse struct {
 }
 
 type accountResponse struct {
-	ID                         uint64                `json:"id,string"`
-	Provider                   string                `json:"provider"`
-	AuthType                   string                `json:"authType"`
-	WebTier                    string                `json:"webTier,omitempty"`
-	WebTierSyncedAt            *time.Time            `json:"webTierSyncedAt,omitempty"`
-	WebNSFWEnabledAt           *time.Time            `json:"nsfwEnabledAt,omitempty"`
-	Name                       string                `json:"name"`
-	Email                      string                `json:"email,omitempty"`
-	UserID                     string                `json:"userId,omitempty"`
-	TeamID                     string                `json:"teamId,omitempty"`
-	Enabled                    bool                  `json:"enabled"`
-	AuthStatus                 string                `json:"authStatus"`
-	ExpiresAt                  *time.Time            `json:"expiresAt,omitempty"`
-	Refreshable                bool                  `json:"refreshable"`
-	RefreshDueAt               *time.Time            `json:"refreshDueAt,omitempty"`
-	LastRefreshAt              *time.Time            `json:"lastRefreshAt,omitempty"`
-	RefreshFailures            int                   `json:"refreshFailureCount"`
-	LastRefreshError           string                `json:"lastRefreshErrorCode,omitempty"`
-	Priority                   int                   `json:"priority"`
-	MaxConcurrent              int                   `json:"maxConcurrent"`
-	MinimumRemaining           float64               `json:"minimumRemaining"`
-	FailureCount               int                   `json:"failureCount"`
-	CooldownUntil              *time.Time            `json:"cooldownUntil,omitempty"`
-	LastError                  string                `json:"lastError,omitempty"`
-	LastUsedAt                 *time.Time            `json:"lastUsedAt,omitempty"`
-	LinkedAccountID            uint64                `json:"linkedAccountId,omitempty,string"`
-	LinkedName                 string                `json:"linkedAccountName,omitempty"`
-	LinkedProvider             string                `json:"linkedProvider,omitempty"`
-	CreatedAt                  time.Time             `json:"createdAt"`
-	ObservedModel              string                `json:"observedModel,omitempty"`
-	ObservedModelAt            *time.Time            `json:"observedModelAt,omitempty"`
-	CloudflareCookieConfigured bool                  `json:"cloudflareCookieConfigured"`
-	BuildSuperEntitled         bool                  `json:"buildSuperEntitled"`
-	BuildRouteMode             string                `json:"buildRouteMode"`
-	BuildBotFlagged            bool                  `json:"buildBotFlagged"`
-	ModelSyncFailed            bool                  `json:"modelSyncFailed,omitempty"`
-	Billing                    *billingResponse      `json:"billing,omitempty"`
-	Quota                      quotaResponse         `json:"quota"`
-	QuotaWindows               []quotaWindowResponse `json:"quotaWindows,omitempty"`
+	ID                         uint64                  `json:"id,string"`
+	Provider                   string                  `json:"provider"`
+	AuthType                   string                  `json:"authType"`
+	WebTier                    string                  `json:"webTier,omitempty"`
+	WebTierSyncedAt            *time.Time              `json:"webTierSyncedAt,omitempty"`
+	WebNSFWEnabledAt           *time.Time              `json:"nsfwEnabledAt,omitempty"`
+	WebTermsAcceptedAt         *time.Time              `json:"termsAcceptedAt,omitempty"`
+	Name                       string                  `json:"name"`
+	Email                      string                  `json:"email,omitempty"`
+	UserID                     string                  `json:"userId,omitempty"`
+	TeamID                     string                  `json:"teamId,omitempty"`
+	Enabled                    bool                    `json:"enabled"`
+	AuthStatus                 string                  `json:"authStatus"`
+	ExpiresAt                  *time.Time              `json:"expiresAt,omitempty"`
+	Refreshable                bool                    `json:"refreshable"`
+	RefreshDueAt               *time.Time              `json:"refreshDueAt,omitempty"`
+	LastRefreshAt              *time.Time              `json:"lastRefreshAt,omitempty"`
+	RefreshFailures            int                     `json:"refreshFailureCount"`
+	LastRefreshError           string                  `json:"lastRefreshErrorCode,omitempty"`
+	Priority                   int                     `json:"priority"`
+	MaxConcurrent              int                     `json:"maxConcurrent"`
+	MinimumRemaining           float64                 `json:"minimumRemaining"`
+	FailureCount               int                     `json:"failureCount"`
+	CooldownUntil              *time.Time              `json:"cooldownUntil,omitempty"`
+	LastError                  string                  `json:"lastError,omitempty"`
+	LastUsedAt                 *time.Time              `json:"lastUsedAt,omitempty"`
+	LinkedAccountID            uint64                  `json:"linkedAccountId,omitempty,string"`
+	LinkedName                 string                  `json:"linkedAccountName,omitempty"`
+	LinkedProvider             string                  `json:"linkedProvider,omitempty"`
+	LinkedAccounts             []linkedAccountResponse `json:"linkedAccounts,omitempty"`
+	CreatedAt                  time.Time               `json:"createdAt"`
+	ObservedModel              string                  `json:"observedModel,omitempty"`
+	ObservedModelAt            *time.Time              `json:"observedModelAt,omitempty"`
+	CloudflareCookieConfigured bool                    `json:"cloudflareCookieConfigured"`
+	BuildSuperEntitled         bool                    `json:"buildSuperEntitled"`
+	BuildRouteMode             string                  `json:"buildRouteMode"`
+	BuildBotFlagged            bool                    `json:"buildBotFlagged"`
+	ModelSyncFailed            bool                    `json:"modelSyncFailed,omitempty"`
+	Billing                    *billingResponse        `json:"billing,omitempty"`
+	Quota                      quotaResponse           `json:"quota"`
+	QuotaWindows               []quotaWindowResponse   `json:"quotaWindows,omitempty"`
+}
+
+type linkedAccountResponse struct {
+	ID       uint64 `json:"id,string"`
+	Provider string `json:"provider"`
+	Name     string `json:"name"`
+	Email    string `json:"email,omitempty"`
+	UserID   string `json:"userId,omitempty"`
 }
 
 type quotaWindowResponse struct {
@@ -1080,13 +1090,9 @@ func newAccountResponse(value accountapp.View) accountResponse {
 	if c.Provider != accountdomain.ProviderBuild || !buildRouteMode.IsValid() {
 		buildRouteMode = accountdomain.BuildRouteAuto
 	}
-	var webNSFWEnabledAt *time.Time
-	if c.Provider == accountdomain.ProviderWeb {
-		webNSFWEnabledAt = c.WebNSFWEnabledAt
-	}
 	result := accountResponse{
 		ID: c.ID, Provider: string(c.Provider), AuthType: string(c.AuthType), WebTier: string(c.WebTier),
-		WebTierSyncedAt: c.WebTierSyncedAt, WebNSFWEnabledAt: webNSFWEnabledAt, Name: c.Name, Email: c.Email, UserID: c.UserID, TeamID: c.TeamID,
+		WebTierSyncedAt: c.WebTierSyncedAt, WebNSFWEnabledAt: c.WebNSFWEnabledAt, WebTermsAcceptedAt: c.WebTermsAcceptedAt, Name: c.Name, Email: c.Email, UserID: c.UserID, TeamID: c.TeamID,
 		Enabled: c.Enabled, AuthStatus: string(c.AuthStatus), Refreshable: c.EncryptedRefreshToken != "",
 		RefreshDueAt: c.RefreshDueAt, LastRefreshAt: c.LastRefreshAt,
 		RefreshFailures: c.RefreshFailureCount, LastRefreshError: c.LastRefreshErrorCode,
@@ -1099,6 +1105,9 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		BuildRouteMode:             string(buildRouteMode),
 		BuildBotFlagged:            value.BuildBotFlagged && c.Provider == accountdomain.ProviderBuild,
 		Quota:                      newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
+	}
+	for _, linked := range c.LinkedAccounts {
+		result.LinkedAccounts = append(result.LinkedAccounts, linkedAccountResponse{ID: linked.ID, Provider: string(linked.Provider), Name: linked.Name, Email: linked.Email, UserID: linked.UserID})
 	}
 	for _, window := range value.QuotaWindows {
 		breakdown := make([]quotaBreakdownResponse, 0, len(window.Breakdown))

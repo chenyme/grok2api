@@ -22,6 +22,7 @@ import (
 
 type Config struct {
 	BaseURL        string
+	SessionBaseURL string
 	TimeoutSeconds int
 }
 

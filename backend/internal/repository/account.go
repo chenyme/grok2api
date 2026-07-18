@@ -59,6 +59,10 @@ type AccountRepository interface {
 	MarkBuildAPIFallback(ctx context.Context, id uint64, enabled bool) error
 	// MarkWebNSFWEnabled 幂等记录 Web 账号首次确认 NSFW 已开启的时间。
 	MarkWebNSFWEnabled(ctx context.Context, id uint64, enabledAt time.Time) error
+	// MarkWebTermsAccepted 幂等记录 Web 账号首次确认服务协议已接受的时间。
+	MarkWebTermsAccepted(ctx context.Context, id uint64, acceptedAt time.Time) error
+	// MarkWebBirthDateSet 幂等记录 Web 账号首次确认生日已设置的时间。
+	MarkWebBirthDateSet(ctx context.Context, id uint64, setAt time.Time) error
 	UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error
 	PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error)
 	SaveBilling(ctx context.Context, value account.Billing) error

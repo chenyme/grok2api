@@ -252,6 +252,7 @@ type Service struct {
 	refreshes             singleflight.Group
 	billingSyncs          singleflight.Group
 	quotaSyncs            singleflight.Group
+	identitySyncs         singleflight.Group
 	refreshMu             sync.Mutex
 	lastRefreshAt         map[uint64]time.Time
 	quotaRefreshMu        sync.Mutex
@@ -697,6 +698,7 @@ func (s *Service) PollDeviceLogin(ctx context.Context, sessionID string) (View, 
 	if err != nil {
 		return View{}, err
 	}
+	s.reconcileProviderLinksBestEffort(ctx, value.ID)
 	_ = s.deviceSessions.Delete(ctx, sessionID)
 	return s.Get(ctx, value.ID)
 }
@@ -824,6 +826,7 @@ func (s *Service) persistImportedSeeds(ctx context.Context, seeds []provider.Cre
 		}
 		for _, value := range stored {
 			result.AccountIDs = append(result.AccountIDs, value.ID)
+			s.reconcileProviderLinksBestEffort(ctx, value.ID)
 			if observer != nil {
 				if err := observer(value.ID); err != nil {
 					return ImportResult{}, err
@@ -1897,6 +1900,16 @@ func (s *Service) refreshQuota(ctx context.Context, id uint64) ([]accountdomain.
 			}
 		}
 	}
+	// 身份补全是非关键操作：只在额度落库和恢复任务调度完成后执行，
+	// 并沿用调用方取消语义，不能反向影响额度同步结果。
+	if (value.Provider == accountdomain.ProviderWeb || value.Provider == accountdomain.ProviderConsole) && ctx.Err() == nil {
+		if strings.TrimSpace(value.UserID) == "" && strings.TrimSpace(value.Email) == "" {
+			s.syncAccountIdentityBestEffort(ctx, id)
+		} else {
+			// 已有 Session 身份时只做本地增量关联，不再访问上游。
+			s.reconcileProviderLinksBestEffort(ctx, id)
+		}
+	}
 	return snapshot.Windows, nil
 }
 
@@ -2374,6 +2387,9 @@ func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomai
 		authType = definition.Credential.AuthType
 	}
 	value := accountdomain.Credential{Provider: providerValue, AuthType: authType, WebTier: seed.WebTier, Name: seed.Name, Email: seed.Email, UserID: seed.UserID, TeamID: seed.TeamID, SourceKey: sourceKey, OIDCClientID: seed.OIDCClientID, EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, EncryptedCloudflareCookie: cloudflareEncrypted, ExpiresAt: seed.ExpiresAt, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: accountdomain.DefaultPriority, MaxConcurrent: accountdomain.DefaultMaxConcurrent, MinimumRemaining: accountdomain.DefaultMinimumRemaining}
+	if providerValue == accountdomain.ProviderWeb && strings.TrimSpace(seed.AccessToken) != "" {
+		value.EgressIdentity = "sso_" + security.HashToken(seed.AccessToken)[:32]
+	}
 	return value, nil
 }
 

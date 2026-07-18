@@ -313,7 +313,7 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
 	}
-	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), request.Credential.ID)
+	requestCtx := infraegress.WithCredential(ctx, request.Credential)
 	req, err := http.NewRequestWithContext(requestCtx, request.Method, a.urlWithBase(base, request.Path), bodyReader)
 	if err != nil {
 		return nil, "", err
@@ -424,7 +424,7 @@ func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *ac
 }
 
 func (a *Adapter) listModelsAt(ctx context.Context, credential account.Credential, accessToken, base string) ([]string, int, error) {
-	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID)
+	requestCtx := infraegress.WithCredential(ctx, credential)
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, a.urlWithBase(base, "/models"), nil)
 	if err != nil {
 		return nil, 0, err
@@ -526,7 +526,7 @@ func (a *Adapter) RefreshCredential(ctx context.Context, credential account.Cred
 	if strings.TrimSpace(refreshToken) == "" {
 		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "missing_refresh_token", Permanent: true}
 	}
-	refreshCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID)
+	refreshCtx := infraegress.WithCredential(ctx, credential)
 	tokens, err := a.oauth.refresh(refreshCtx, refreshToken)
 	if err != nil {
 		return provider.RefreshedCredential{}, err
@@ -693,7 +693,7 @@ func (a *Adapter) getBilling(ctx context.Context, credential account.Credential,
 	if query != "" {
 		endpoint += "?" + query
 	}
-	requestCtx := infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID)
+	requestCtx := infraegress.WithCredential(ctx, credential)
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return account.Billing{}, err
@@ -721,7 +721,7 @@ func (a *Adapter) getBilling(ctx context.Context, credential account.Credential,
 
 func (a *Adapter) getSubscriptionTier(ctx context.Context, credential account.Credential, accessToken string) (string, error) {
 	endpoint := a.url("/user") + "?include=subscription"
-	requestCtx, cancel := context.WithTimeout(infraegress.WithAccount(ctx, string(account.ProviderBuild), credential.ID), subscriptionTierTimeout)
+	requestCtx, cancel := context.WithTimeout(infraegress.WithCredential(ctx, credential), subscriptionTierTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
 	if err != nil {
