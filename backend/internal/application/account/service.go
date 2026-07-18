@@ -1676,6 +1676,9 @@ func (s *Service) resolvePermanentRefreshFailure(ctx context.Context, credential
 	if !credential.RefreshPermanent {
 		return accountdomain.Credential{}, nil, false
 	}
+	if force && credential.LastRefreshErrorCode == "credential_decrypt_failed" {
+		return accountdomain.Credential{}, nil, false
+	}
 	accessTokenAlive := credential.EncryptedAccessToken != "" && !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(now)
 	if accessTokenAlive && !force {
 		return credential, nil, true

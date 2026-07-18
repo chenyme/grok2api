@@ -406,6 +406,57 @@ func TestCredentialRefreshFailureDistinguishesTransientAndPermanent(t *testing.T
 	}
 }
 
+func TestRefreshTokenRetriesRecoveredCredentialDecryptFailure(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+
+	if err := service.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, 1, now, "credential_decrypt_failed", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MarkReauthRequired(ctx, credential.ID, "OAuth refresh failed: credential_decrypt_failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.ensureCredential(ctx, credential, true, true, false); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := service.accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.refreshCount.Load() != 1 || updated.AuthStatus != accountdomain.AuthStatusActive || updated.RefreshPermanent || updated.LastRefreshErrorCode != "" {
+		t.Fatalf("recovered credential state = %#v, refreshes = %d", updated, adapter.refreshCount.Load())
+	}
+}
+
+func TestRefreshAllTokensRetriesRecoveredCredentialDecryptFailures(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+
+	if err := service.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, 1, now, "credential_decrypt_failed", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MarkReauthRequired(ctx, credential.ID, "OAuth refresh failed: credential_decrypt_failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	succeeded, failed, skipped, err := service.RefreshAllTokensWithProgress(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := service.accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succeeded != 1 || failed != 0 || skipped != 0 || adapter.refreshCount.Load() != 1 || updated.AuthStatus != accountdomain.AuthStatusActive || updated.RefreshPermanent {
+		t.Fatalf("result=%d/%d/%d credential=%#v refreshes=%d", succeeded, failed, skipped, updated, adapter.refreshCount.Load())
+	}
+}
+
 func TestRefreshAllTokensSkipsUnrefreshableAccounts(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
