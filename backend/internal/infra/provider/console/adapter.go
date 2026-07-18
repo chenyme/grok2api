@@ -277,27 +277,6 @@ func consoleEndpoint(baseURL string) string {
 	return baseURL + "/v1/responses"
 }
 
-func applyHeaders(request *http.Request, token string, lease *infraegress.Lease) {
-	userAgent := strings.TrimSpace(lease.UserAgent)
-	if userAgent == "" {
-		userAgent = infraegress.DefaultUserAgent
-	}
-	request.Header.Set("Accept", "*/*")
-	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
-	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	request.Header.Set("Authorization", "Bearer anonymous")
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Cookie", infraegress.BuildSSOCookie(token, lease.CFCookies))
-	request.Header.Set("Origin", "https://console.x.ai")
-	request.Header.Set("Referer", "https://console.x.ai/")
-	request.Header.Set("Sec-Fetch-Dest", "empty")
-	request.Header.Set("Sec-Fetch-Mode", "cors")
-	request.Header.Set("Sec-Fetch-Site", "same-origin")
-	request.Header.Set("Priority", "u=1, i")
-	request.Header.Set("User-Agent", userAgent)
-	request.Header.Set("x-cluster", "https://us-east-1.api.x.ai")
-}
-
 func normalizeRateLimitResponse(response *http.Response) (bool, *provider.RateLimitMetadata, error) {
 	data, truncated, err := provider.ReadDiagnosticBody(response.Body)
 	if err != nil {

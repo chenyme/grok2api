@@ -231,12 +231,15 @@ func TestNormalizeRateLimitResponsePrefersRetryAfterHeader(t *testing.T) {
 }
 
 func TestParseConsoleRateLimitMetadataRPS(t *testing.T) {
-	metadata := parseConsoleRateLimitMetadata([]byte(`Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 2/2`))
+	metadata := parseConsoleRateLimitMetadata([]byte(`{"code":"resource-exhausted","error":"Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.3. Your team's rate limit is — Requests per Second (actual/limit): 2/2."}`))
 	if metadata == nil {
 		t.Fatal("metadata is nil")
 	}
 	if metadata.Scope != provider.RateLimitScopeRPS || metadata.Actual != 2 || metadata.Limit != 2 || metadata.RetryAfter != 2*time.Second {
 		t.Fatalf("metadata = %#v", metadata)
+	}
+	if metadata.TeamID != "00000000-0000-0000-0000-000000000013" || metadata.Model != "grok-4.3" {
+		t.Fatalf("team/model = %q/%q", metadata.TeamID, metadata.Model)
 	}
 }
 
@@ -309,6 +312,11 @@ func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 		if request.Header.Get("User-Agent") != infraegress.DefaultUserAgent {
 			t.Errorf("user-agent = %q", request.Header.Get("User-Agent"))
 		}
+		if request.Header.Get("Sec-Ch-Ua") != `"Google Chrome";v="146", "Chromium";v="146", "Not(A:Brand";v="24"` ||
+			request.Header.Get("Sec-Ch-Ua-Mobile") != "?0" || request.Header.Get("Sec-Ch-Ua-Platform") != `"macOS"` ||
+			request.Header.Get("Sec-Ch-Ua-Arch") != "x86" || request.Header.Get("Sec-Ch-Ua-Bitness") != "64" {
+			t.Errorf("client hints = %#v", request.Header)
+		}
 		cookie := request.Header.Get("Cookie")
 		if !strings.Contains(cookie, "sso=test-sso") || !strings.Contains(cookie, "sso-rw=test-sso") {
 			t.Errorf("cookie = %q", cookie)
@@ -342,6 +350,16 @@ func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	}
 	if received["model"] != "grok-4.3" || received["store"] != false || received["metadata"] != nil {
 		t.Fatalf("received = %#v", received)
+	}
+}
+
+func TestApplyChromiumClientHintsSkipsNonChromiumUserAgent(t *testing.T) {
+	header := make(http.Header)
+	applyChromiumClientHints(header, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/18.0 Safari/605.1.15")
+	for name := range header {
+		if strings.HasPrefix(http.CanonicalHeaderKey(name), "Sec-Ch-Ua") {
+			t.Fatalf("unexpected client hint %q", name)
+		}
 	}
 }
 
