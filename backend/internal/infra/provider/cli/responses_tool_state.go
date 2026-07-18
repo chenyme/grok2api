@@ -34,20 +34,21 @@ func (i responsesToolIdentity) key() string {
 
 // responsesToolCompatibility 保存一次请求内的工具别名和响应恢复状态；实例不得跨请求复用。
 type responsesToolCompatibility struct {
-	aliases           map[string]responsesToolIdentity
-	identityAliases   map[string]string
-	visibleTools      []any
-	deferredSurfaces  []string
-	clientSearchTool  map[string]any
-	clientSearchParam string
-	serverSearchEager bool
-	streamCalls       map[string]*responsesStreamCall
-	legacyLocalShell  bool
-	nativeShell       bool
-	webSearchDisabled bool
-	warnings          []string
-	warningSet        map[string]struct{}
-	changed           bool
+	aliases             map[string]responsesToolIdentity
+	identityAliases     map[string]string
+	visibleTools        []any
+	deferredSurfaces    []string
+	clientSearchTool    map[string]any
+	clientSearchParam   string
+	serverSearchEager   bool
+	streamCalls         map[string]*responsesStreamCall
+	legacyLocalShell    bool
+	nativeShell         bool
+	webSearchDisabled   bool
+	compactionRequested bool
+	warnings            []string
+	warningSet          map[string]struct{}
+	changed             bool
 }
 
 // responsesRequestError 表示可直接映射为 OpenAI 错误结构的 Provider 请求错误。

@@ -471,13 +471,13 @@ func TestApplyPatchStreamBuffersFunctionProtocolAndRestoresItems(t *testing.T) {
 	}
 }
 
-func TestAdditionalToolsAndCompactionBoundaryRemainVisible(t *testing.T) {
-	normalized, _, err := normalizeResponsesRequest([]byte(`{
+func TestAdditionalToolsAndRemoteCompactionTrigger(t *testing.T) {
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","tools":[{"type":"function","name":"lookup","description":"old","parameters":{"type":"object"}}],
 		"input":[
-			{"type":"compaction_trigger"},
 			{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"lookup","description":"new","parameters":{"type":"object"}},{"type":"apply_patch"}]},
-			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]},
+			{"type":"compaction_trigger"}
 		]
 	}`), "grok-4.5")
 	if err != nil {
@@ -492,12 +492,11 @@ func TestAdditionalToolsAndCompactionBoundaryRemainVisible(t *testing.T) {
 		t.Fatalf("normalized tools = %#v", tools)
 	}
 	items := request["input"].([]any)
-	if len(items) != 3 || items[0].(map[string]any)["role"] != "developer" || items[1].(map[string]any)["role"] != "developer" {
-		t.Fatalf("boundary items = %#v", items)
+	if len(items) != 2 || items[0].(map[string]any)["role"] != "developer" || items[1].(map[string]any)["role"] != "user" {
+		t.Fatalf("compaction items = %#v", items)
 	}
 	first := items[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
-	second := items[1].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
-	if !strings.Contains(first, "compaction boundary") || !strings.Contains(second, "lookup, apply_patch") {
-		t.Fatalf("boundary text = %q / %q", first, second)
+	if !strings.Contains(first, "lookup, apply_patch") || !compatibility.compactionRequested {
+		t.Fatalf("additional tools = %q, compaction = %t", first, compatibility.compactionRequested)
 	}
 }

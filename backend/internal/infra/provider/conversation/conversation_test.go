@@ -238,6 +238,32 @@ func TestConvertAnthropicMessagesRejectsUnknownRole(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicRedactedThinkingIncludesEmptySummary(t *testing.T) {
+	body := []byte(`{
+		"model":"public-chat","max_tokens":256,
+		"thinking":{"type":"enabled","budget_tokens":1024},
+		"messages":[
+			{"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque-reasoning"}]},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+	converted, _, err := ConvertRequestWithOptions(body, "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if json.Unmarshal(converted, &payload) != nil || len(payload.Input) != 2 {
+		t.Fatalf("converted = %s", converted)
+	}
+	reasoning := payload.Input[0]
+	summary, ok := reasoning["summary"].([]any)
+	if reasoning["type"] != "reasoning" || reasoning["encrypted_content"] != "opaque-reasoning" || !ok || len(summary) != 0 {
+		t.Fatalf("reasoning = %#v", reasoning)
+	}
+}
+
 func TestConvertAnthropicClaudeCodeRequestToResponses(t *testing.T) {
 	body := []byte(`{
 		"model":"public-chat","max_tokens":4096,"stream":true,

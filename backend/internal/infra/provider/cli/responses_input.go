@@ -131,7 +131,7 @@ func normalizeMessageContent(value any, role, param string) (any, error) {
 		case "input_file":
 			normalized = append(normalized, normalizeInputFilePart(item))
 		default:
-			return nil, &responsesRequestError{Message: "Grok Build 0.2.102 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
+			return nil, &responsesRequestError{Message: "Grok Build 0.2.103 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
 		}
 	}
 	return normalized, nil
