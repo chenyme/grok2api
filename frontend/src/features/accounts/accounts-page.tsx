@@ -1122,6 +1122,25 @@ function downloadAccountExport(blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+function accountStatusLabel(t: (key: string) => string, status: string): string {
+  switch (status) {
+    case "disabled":
+      return t("accounts.statusDisabled");
+    case "reauthRequired":
+      return t("accounts.statusReauthRequired");
+    case "cooldown":
+      return t("accounts.statusCooldown");
+    case "waitingReset":
+      return t("accounts.waitingReset");
+    case "probing":
+      return t("accounts.probing");
+    case "active":
+      return t("accounts.statusActive");
+    default:
+      return status;
+  }
+}
+
 function AccountMetricPanel({ icon, label, value, detail, loading, tone }: { icon: ReactNode; label: string; value: string; detail: string; loading: boolean; tone: string }) {
   return (
     <div className="min-h-28 rounded-lg bg-card p-4" aria-busy={loading}>
