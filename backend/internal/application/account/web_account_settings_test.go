@@ -51,8 +51,8 @@ func TestWebAccountSettingsAreWebOnlyAndGenerateBirthDate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updatedWeb.WebTermsAcceptedAt == nil || updatedWeb.WebBirthDateSetAt == nil || updatedWeb.WebNSFWEnabledAt == nil || !updatedWeb.WebTermsAcceptedAt.Equal(service.now()) || !updatedWeb.WebBirthDateSetAt.Equal(service.now()) || !updatedWeb.WebNSFWEnabledAt.Equal(service.now()) {
-		t.Fatalf("profile markers terms=%v birth=%v nsfw=%v", updatedWeb.WebTermsAcceptedAt, updatedWeb.WebBirthDateSetAt, updatedWeb.WebNSFWEnabledAt)
+	if updatedWeb.WebTermsAcceptedAt == nil || updatedWeb.WebTermsAcceptedVersion != accountdomain.CurrentWebTermsVersion || updatedWeb.WebBirthDateSetAt == nil || updatedWeb.WebNSFWEnabledAt == nil || !updatedWeb.WebTermsAcceptedAt.Equal(service.now()) || !updatedWeb.WebBirthDateSetAt.Equal(service.now()) || !updatedWeb.WebNSFWEnabledAt.Equal(service.now()) {
+		t.Fatalf("profile markers terms=%v version=%d birth=%v nsfw=%v", updatedWeb.WebTermsAcceptedAt, updatedWeb.WebTermsAcceptedVersion, updatedWeb.WebBirthDateSetAt, updatedWeb.WebNSFWEnabledAt)
 	}
 	if err := service.AcceptWebTerms(ctx, webAccount.ID); err != nil {
 		t.Fatal(err)
@@ -99,10 +99,11 @@ func TestPendingWebAccountScriptOptionsSkipsRecordedSteps(t *testing.T) {
 		want       WebAccountScriptOptions
 	}{
 		{name: "none recorded", want: all},
-		{name: "terms recorded", credential: accountdomain.Credential{WebTermsAcceptedAt: &now}, want: WebAccountScriptOptions{SetBirthDate: true, EnableNSFW: true}},
+		{name: "legacy terms marker requires current version", credential: accountdomain.Credential{WebTermsAcceptedAt: &now}, want: all},
+		{name: "current terms recorded", credential: accountdomain.Credential{WebTermsAcceptedAt: &now, WebTermsAcceptedVersion: accountdomain.CurrentWebTermsVersion}, want: WebAccountScriptOptions{SetBirthDate: true, EnableNSFW: true}},
 		{name: "birth recorded", credential: accountdomain.Credential{WebBirthDateSetAt: &now}, want: WebAccountScriptOptions{AcceptTerms: true, EnableNSFW: true}},
 		{name: "nsfw implies birth", credential: accountdomain.Credential{WebNSFWEnabledAt: &now}, want: WebAccountScriptOptions{AcceptTerms: true}},
-		{name: "all recorded", credential: accountdomain.Credential{WebTermsAcceptedAt: &now, WebBirthDateSetAt: &now, WebNSFWEnabledAt: &now}},
+		{name: "all recorded", credential: accountdomain.Credential{WebTermsAcceptedAt: &now, WebTermsAcceptedVersion: accountdomain.CurrentWebTermsVersion, WebBirthDateSetAt: &now, WebNSFWEnabledAt: &now}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

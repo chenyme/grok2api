@@ -15,6 +15,7 @@ import (
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/browserheaders"
 )
 
 const (
@@ -37,20 +38,41 @@ var (
 
 // AcceptTerms 接受当前 Grok Web SSO 账号的上游服务协议。
 func (a *Adapter) AcceptTerms(ctx context.Context, credential account.Credential) error {
-	baseURL := strings.TrimRight(a.accountsBaseURL, "/")
-	if baseURL == "" {
-		baseURL = officialAccountsBaseURL
+	accountBaseURL := strings.TrimRight(a.accountsBaseURL, "/")
+	if accountBaseURL == "" {
+		accountBaseURL = officialAccountsBaseURL
 	}
-	return a.runWebAccountSetting(ctx, credential, webAccountSettingRequest{
-		endpoint:    baseURL + "/auth_mgmt.AuthManagement/SetTosAcceptedVersion",
-		body:        acceptTermsBody,
-		contentType: "application/grpc-web+proto",
-		origin:      baseURL,
-		referer:     baseURL + "/accept-tos",
-		grpcWeb:     true,
-		connectES:   true,
-		withoutCF:   true,
-	})
+	webBaseURL := strings.TrimRight(a.config().BaseURL, "/")
+	if webBaseURL == "" {
+		return fmt.Errorf("Grok Web BaseURL 不能为空")
+	}
+	productBody, err := json.Marshal(struct {
+		TOSVersion int `json:"tosVersion"`
+	}{TOSVersion: account.CurrentWebTermsVersion})
+	if err != nil {
+		return err
+	}
+	return a.runWebAccountSettings(ctx, credential,
+		webAccountSettingRequest{
+			endpoint:    accountBaseURL + "/auth_mgmt.AuthManagement/SetTosAcceptedVersion",
+			body:        acceptTermsBody,
+			contentType: "application/grpc-web+proto",
+			origin:      accountBaseURL,
+			referer:     accountBaseURL + "/accept-tos",
+			grpcWeb:     true,
+			connectES:   true,
+			withoutCF:   true,
+		},
+		webAccountSettingRequest{
+			endpoint:    webBaseURL + "/rest/auth/set-tos-accepted",
+			body:        productBody,
+			contentType: "application/json",
+			origin:      webBaseURL,
+			referer:     webBaseURL + "/",
+			statsig:     true,
+			clientHints: true,
+		},
+	)
 }
 
 // SetBirthDate 设置 Grok Web 账号生日。上游接收 RFC3339 字符串；日期由应用层生成。
@@ -103,10 +125,15 @@ type webAccountSettingRequest struct {
 	grpcWeb     bool
 	connectES   bool
 	statsig     bool
+	clientHints bool
 	withoutCF   bool
 }
 
 func (a *Adapter) runWebAccountSetting(ctx context.Context, credential account.Credential, input webAccountSettingRequest) error {
+	return a.runWebAccountSettings(ctx, credential, input)
+}
+
+func (a *Adapter) runWebAccountSettings(ctx context.Context, credential account.Credential, inputs ...webAccountSettingRequest) error {
 	if credential.Provider != account.ProviderWeb || credential.AuthType != account.AuthTypeSSO {
 		return fmt.Errorf("仅 Grok Web SSO 账号支持资料设置")
 	}
@@ -122,7 +149,15 @@ func (a *Adapter) runWebAccountSetting(ctx context.Context, credential account.C
 		return err
 	}
 	defer lease.Release()
+	for _, input := range inputs {
+		if err := a.executeWebAccountSetting(ctx, token, lease, input); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+func (a *Adapter) executeWebAccountSetting(ctx context.Context, token string, lease *infraegress.Lease, input webAccountSettingRequest) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		requestCtx, cancel := context.WithTimeout(ctx, webAccountSettingTimeout)
 		request, requestErr := http.NewRequestWithContext(requestCtx, http.MethodPost, input.endpoint, bytes.NewReader(input.body))
@@ -135,6 +170,9 @@ func (a *Adapter) runWebAccountSetting(ctx context.Context, credential account.C
 			request.Header.Set("Cookie", infraegress.BuildSSOCookie(token, ""))
 		}
 		applyAppHeaders(request.Header, input.origin, input.referer)
+		if input.clientHints {
+			browserheaders.ApplyChromiumClientHints(request.Header, lease.UserAgent)
+		}
 		if input.grpcWeb {
 			request.Header.Set("x-grpc-web", "1")
 		}

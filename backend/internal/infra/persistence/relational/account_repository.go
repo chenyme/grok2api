@@ -501,21 +501,22 @@ func (r *AccountRepository) attachAccountLinks(ctx context.Context, values []acc
 		positions[values[index].ID] = index
 	}
 	var buildRows []struct {
-		WebAccountID       uint64
-		BuildAccountID     uint64
-		WebName            string
-		BuildName          string
-		WebEmail           string
-		BuildEmail         string
-		WebUserID          string
-		BuildUserID        string
-		WebSourceKey       string
-		EgressIdentity     string
-		WebNSFWEnabledAt   *time.Time
-		WebTermsAcceptedAt *time.Time
+		WebAccountID            uint64
+		BuildAccountID          uint64
+		WebName                 string
+		BuildName               string
+		WebEmail                string
+		BuildEmail              string
+		WebUserID               string
+		BuildUserID             string
+		WebSourceKey            string
+		EgressIdentity          string
+		WebNSFWEnabledAt        *time.Time
+		WebTermsAcceptedAt      *time.Time
+		WebTermsAcceptedVersion int
 	}
 	err := r.db.db.WithContext(ctx).Table("account_provider_links AS link").
-		Select("link.web_account_id, link.build_account_id, web.name AS web_name, build.name AS build_name, web.email AS web_email, build.email AS build_email, web.user_id AS web_user_id, build.user_id AS build_user_id, web.source_key AS web_source_key, profile.egress_identity, profile.nsfw_enabled_at AS web_nsfw_enabled_at, profile.terms_accepted_at AS web_terms_accepted_at").
+		Select("link.web_account_id, link.build_account_id, web.name AS web_name, build.name AS build_name, web.email AS web_email, build.email AS build_email, web.user_id AS web_user_id, build.user_id AS build_user_id, web.source_key AS web_source_key, profile.egress_identity, profile.nsfw_enabled_at AS web_nsfw_enabled_at, profile.terms_accepted_at AS web_terms_accepted_at, profile.terms_accepted_version AS web_terms_accepted_version").
 		Joins("JOIN provider_accounts AS web ON web.id = link.web_account_id").
 		Joins("JOIN provider_accounts AS build ON build.id = link.build_account_id").
 		Joins("LEFT JOIN web_account_profiles AS profile ON profile.account_id = web.id").
@@ -535,7 +536,8 @@ func (r *AccountRepository) attachAccountLinks(ctx context.Context, values []acc
 				values[index].EgressIdentity = egressIdentity
 			}
 			values[index].WebNSFWEnabledAt = row.WebNSFWEnabledAt
-			values[index].WebTermsAcceptedAt = row.WebTermsAcceptedAt
+			values[index].WebTermsAcceptedVersion = row.WebTermsAcceptedVersion
+			values[index].WebTermsAcceptedAt = currentWebTermsAcceptedAt(row.WebTermsAcceptedAt, row.WebTermsAcceptedVersion)
 		}
 		if index, ok := positions[row.BuildAccountID]; ok {
 			values[index].LinkedAccountID = row.WebAccountID
@@ -544,25 +546,27 @@ func (r *AccountRepository) attachAccountLinks(ctx context.Context, values []acc
 			values[index].LinkedAccounts = append(values[index].LinkedAccounts, account.LinkedAccount{ID: row.WebAccountID, Provider: account.ProviderWeb, Name: row.WebName, Email: row.WebEmail, UserID: row.WebUserID})
 			values[index].EgressIdentity = egressIdentity
 			values[index].WebNSFWEnabledAt = row.WebNSFWEnabledAt
-			values[index].WebTermsAcceptedAt = row.WebTermsAcceptedAt
+			values[index].WebTermsAcceptedVersion = row.WebTermsAcceptedVersion
+			values[index].WebTermsAcceptedAt = currentWebTermsAcceptedAt(row.WebTermsAcceptedAt, row.WebTermsAcceptedVersion)
 		}
 	}
 	var consoleRows []struct {
-		WebAccountID       uint64
-		ConsoleAccountID   uint64
-		WebName            string
-		ConsoleName        string
-		WebEmail           string
-		ConsoleEmail       string
-		WebUserID          string
-		ConsoleUserID      string
-		WebSourceKey       string
-		EgressIdentity     string
-		WebNSFWEnabledAt   *time.Time
-		WebTermsAcceptedAt *time.Time
+		WebAccountID            uint64
+		ConsoleAccountID        uint64
+		WebName                 string
+		ConsoleName             string
+		WebEmail                string
+		ConsoleEmail            string
+		WebUserID               string
+		ConsoleUserID           string
+		WebSourceKey            string
+		EgressIdentity          string
+		WebNSFWEnabledAt        *time.Time
+		WebTermsAcceptedAt      *time.Time
+		WebTermsAcceptedVersion int
 	}
 	if err := r.db.db.WithContext(ctx).Table("web_console_account_links AS link").
-		Select("link.web_account_id, link.console_account_id, web.name AS web_name, console.name AS console_name, web.email AS web_email, console.email AS console_email, web.user_id AS web_user_id, console.user_id AS console_user_id, web.source_key AS web_source_key, profile.egress_identity, profile.nsfw_enabled_at AS web_nsfw_enabled_at, profile.terms_accepted_at AS web_terms_accepted_at").
+		Select("link.web_account_id, link.console_account_id, web.name AS web_name, console.name AS console_name, web.email AS web_email, console.email AS console_email, web.user_id AS web_user_id, console.user_id AS console_user_id, web.source_key AS web_source_key, profile.egress_identity, profile.nsfw_enabled_at AS web_nsfw_enabled_at, profile.terms_accepted_at AS web_terms_accepted_at, profile.terms_accepted_version AS web_terms_accepted_version").
 		Joins("JOIN provider_accounts AS web ON web.id = link.web_account_id").
 		Joins("JOIN provider_accounts AS console ON console.id = link.console_account_id").
 		Joins("LEFT JOIN web_account_profiles AS profile ON profile.account_id = web.id").
@@ -578,16 +582,25 @@ func (r *AccountRepository) attachAccountLinks(ctx context.Context, values []acc
 				values[index].EgressIdentity = egressIdentity
 			}
 			values[index].WebNSFWEnabledAt = row.WebNSFWEnabledAt
-			values[index].WebTermsAcceptedAt = row.WebTermsAcceptedAt
+			values[index].WebTermsAcceptedVersion = row.WebTermsAcceptedVersion
+			values[index].WebTermsAcceptedAt = currentWebTermsAcceptedAt(row.WebTermsAcceptedAt, row.WebTermsAcceptedVersion)
 		}
 		if index, ok := positions[row.ConsoleAccountID]; ok {
 			values[index].LinkedAccounts = append(values[index].LinkedAccounts, account.LinkedAccount{ID: row.WebAccountID, Provider: account.ProviderWeb, Name: row.WebName, Email: row.WebEmail, UserID: row.WebUserID})
 			values[index].EgressIdentity = egressIdentity
 			values[index].WebNSFWEnabledAt = row.WebNSFWEnabledAt
-			values[index].WebTermsAcceptedAt = row.WebTermsAcceptedAt
+			values[index].WebTermsAcceptedVersion = row.WebTermsAcceptedVersion
+			values[index].WebTermsAcceptedAt = currentWebTermsAcceptedAt(row.WebTermsAcceptedAt, row.WebTermsAcceptedVersion)
 		}
 	}
 	return nil
+}
+
+func currentWebTermsAcceptedAt(value *time.Time, version int) *time.Time {
+	if version < account.CurrentWebTermsVersion {
+		return nil
+	}
+	return value
 }
 
 // attachRoutingEgressIdentities 只补充推理路由需要的稳定出口身份。
@@ -801,6 +814,9 @@ func saveAccountRelations(tx *gorm.DB, value account.Credential, accountID uint6
 		if profile.TermsAcceptedAt != nil {
 			updates = append(updates, "terms_accepted_at")
 		}
+		if profile.TermsAcceptedVersion > 0 {
+			updates = append(updates, "terms_accepted_version")
+		}
 		if profile.BirthDateSetAt != nil {
 			updates = append(updates, "birth_date_set_at")
 		}
@@ -823,12 +839,33 @@ func (r *AccountRepository) MarkWebNSFWEnabled(ctx context.Context, id uint64, e
 	return r.markWebProfileTimestamp(ctx, id, "nsfw_enabled_at", enabledAt)
 }
 
-// MarkWebTermsAccepted 幂等保存首次成功接受服务协议的时间。
-func (r *AccountRepository) MarkWebTermsAccepted(ctx context.Context, id uint64, acceptedAt time.Time) error {
-	if id == 0 || acceptedAt.IsZero() {
+// MarkWebTermsAccepted 幂等保存已完整接受的产品协议版本。
+// 协议升级时会同步更新完成时间；相同或更高版本不会被覆盖。
+func (r *AccountRepository) MarkWebTermsAccepted(ctx context.Context, id uint64, version int, acceptedAt time.Time) error {
+	if id == 0 || version <= 0 || acceptedAt.IsZero() {
 		return fmt.Errorf("Web 服务协议标记参数无效")
 	}
-	return r.markWebProfileTimestamp(ctx, id, "terms_accepted_at", acceptedAt)
+	acceptedAt = acceptedAt.UTC()
+	return mapError(r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var accountRow accountModel
+		if err := tx.Select("id", "provider").First(&accountRow, id).Error; err != nil {
+			return err
+		}
+		if account.Provider(accountRow.Provider) != account.ProviderWeb {
+			return fmt.Errorf("仅 Grok Web 账号支持资料状态标记")
+		}
+		profile := webAccountProfileModel{
+			AccountID: id, Tier: string(account.WebTierAuto),
+			TermsAcceptedAt: &acceptedAt, TermsAcceptedVersion: version,
+		}
+		created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&profile)
+		if created.Error != nil || created.RowsAffected > 0 {
+			return created.Error
+		}
+		return tx.Model(&webAccountProfileModel{}).
+			Where("account_id = ? AND (terms_accepted_version < ? OR terms_accepted_at IS NULL)", id, version).
+			Updates(map[string]any{"terms_accepted_at": acceptedAt, "terms_accepted_version": version}).Error
+	}))
 }
 
 // MarkWebBirthDateSet 幂等保存首次成功设置或确认已有生日的时间。
@@ -853,8 +890,6 @@ func (r *AccountRepository) markWebProfileTimestamp(ctx context.Context, id uint
 		switch column {
 		case "nsfw_enabled_at":
 			profile.NSFWEnabledAt = &value
-		case "terms_accepted_at":
-			profile.TermsAcceptedAt = &value
 		case "birth_date_set_at":
 			profile.BirthDateSetAt = &value
 		default:
@@ -869,10 +904,6 @@ func (r *AccountRepository) markWebProfileTimestamp(ctx context.Context, id uint
 			return tx.Model(&webAccountProfileModel{}).
 				Where("account_id = ? AND nsfw_enabled_at IS NULL", id).
 				Update("nsfw_enabled_at", value).Error
-		case "terms_accepted_at":
-			return tx.Model(&webAccountProfileModel{}).
-				Where("account_id = ? AND terms_accepted_at IS NULL", id).
-				Update("terms_accepted_at", value).Error
 		case "birth_date_set_at":
 			return tx.Model(&webAccountProfileModel{}).
 				Where("account_id = ? AND birth_date_set_at IS NULL", id).

@@ -76,6 +76,10 @@ const (
 // BuildRouteMode 控制 Build 账号的推理地址；模型、Billing 与 OAuth 不受影响。
 type BuildRouteMode string
 
+// CurrentWebTermsVersion 是 Grok Web 当前要求接受的产品服务协议版本。
+// accounts.x.ai 的账号协议使用独立版本，不与该值混用。
+const CurrentWebTermsVersion = 5
+
 const (
 	BuildRouteAuto  BuildRouteMode = "auto"
 	BuildRouteBuild BuildRouteMode = "build"
@@ -145,9 +149,12 @@ type Credential struct {
 	// WebNSFWEnabledAt 记录 Grok Web 上游首次确认 NSFW 已成功开启的时间。
 	// 普通导入、额度同步和凭据更新不得清除。
 	WebNSFWEnabledAt *time.Time
-	// WebTermsAcceptedAt 记录 Grok Web 上游首次确认服务协议已接受的时间。
+	// WebTermsAcceptedAt 记录 Grok Web 上游确认当前版本完整服务协议已接受的时间。
 	// 关联渠道只共享该展示状态，不获得修改 Web 资料的能力。
 	WebTermsAcceptedAt *time.Time
+	// WebTermsAcceptedVersion 记录已完成的 Grok Web 产品协议版本。
+	// 历史数据默认为 0，必须补执行当前版本后才视为完整接受。
+	WebTermsAcceptedVersion int
 	// WebBirthDateSetAt 记录 Grok Web 上游首次确认生日已设置的时间。
 	// 该字段用于避免批量脚本重复请求不可修改的生日接口。
 	WebBirthDateSetAt *time.Time
