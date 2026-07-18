@@ -240,6 +240,9 @@ func (s *Service) UpdateMaxAttempts(maxAttempts int) { s.maxAttempts.Store(int64
 
 func (s *Service) CreateResponse(ctx context.Context, input Input) (*Result, error) {
 	input.Operation = audit.OperationResponses
+	if isResponsesCompactionRequest(input.Body) {
+		input.Operation = audit.OperationCompaction
+	}
 	return s.createResponseAt(ctx, input, "/responses")
 }
 
@@ -256,7 +259,7 @@ func (s *Service) CreateMessage(ctx context.Context, input Input) (*Result, erro
 
 func (s *Service) CompactResponse(ctx context.Context, input Input) (*Result, error) {
 	input.Streaming = false
-	input.Operation = audit.OperationResponses
+	input.Operation = audit.OperationCompaction
 	return s.createResponseAt(ctx, input, "/responses/compact")
 }
 
@@ -726,6 +729,9 @@ attemptLoop:
 				lease.Release()
 				persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
 				defer cancel()
+				if isUpstreamStreamFailure(errorCode) {
+					s.selector.MarkFailure(persistCtx, credential, http.StatusBadGateway, 0)
+				}
 				now := time.Now().UTC()
 				record := auditBase
 				record.AccountID = &accountID
@@ -832,6 +838,15 @@ attemptLoop:
 		s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
 	}
 	return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, lastErr)
+}
+
+func isUpstreamStreamFailure(errorCode string) bool {
+	switch errorCode {
+	case "upstream_stream_incomplete", "upstream_stream_interrupted":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSSOCredentialRejected(err error, credential accountdomain.Credential) bool {

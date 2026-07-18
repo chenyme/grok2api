@@ -41,7 +41,21 @@ const (
 	responseWriteTimeout           = 30 * time.Second
 )
 
-var errResponseTransferLimit = errors.New("响应超过代理安全上限")
+var (
+	errResponseTransferLimit    = errors.New("响应超过代理安全上限")
+	errUpstreamStreamIncomplete = errors.New("上游流在终止事件前结束")
+	errUpstreamStreamFailed     = errors.New("上游流返回失败终止事件")
+	errUpstreamStreamRead       = errors.New("读取上游流失败")
+)
+
+type streamProtocol uint8
+
+const (
+	streamProtocolResponses streamProtocol = iota
+	streamProtocolChat
+	streamProtocolAnthropic
+	streamProtocolImage
+)
 
 const mediaTransferErrorTrailer = "X-Grok2API-Transfer-Error"
 
@@ -219,7 +233,7 @@ func (h *Handler) createChatCompletion(c *gin.Context) {
 		writeGatewayError(c, err)
 		return
 	}
-	h.writeResult(c, result, request.Stream)
+	h.writeResult(c, result, request.Stream, streamProtocolChat)
 }
 
 func (h *Handler) createMessage(c *gin.Context) {
@@ -315,7 +329,7 @@ func (h *Handler) generateImage(c *gin.Context) {
 		writeGatewayError(c, err)
 		return
 	}
-	h.writeResult(c, result, request.Stream)
+	h.writeResult(c, result, request.Stream, streamProtocolImage)
 }
 
 func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
@@ -499,7 +513,7 @@ func (h *Handler) editImage(c *gin.Context) {
 		writeGatewayError(c, err)
 		return
 	}
-	h.writeResult(c, result, request.Stream)
+	h.writeResult(c, result, request.Stream, streamProtocolImage)
 }
 
 func requestIdentity(c *gin.Context) (clientkeydomain.Key, string, bool) {
@@ -809,7 +823,7 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 		writeGatewayError(c, err)
 		return
 	}
-	h.writeResult(c, result, request.Stream && !compact)
+	h.writeResult(c, result, request.Stream && !compact, streamProtocolResponses)
 }
 
 func isJSONRequest(c *gin.Context) bool {
@@ -865,18 +879,18 @@ func (h *Handler) handleOwnedResource(c *gin.Context, deleteResource bool) {
 		writeGatewayError(c, err)
 		return
 	}
-	h.writeResult(c, result, false)
+	h.writeResult(c, result, false, streamProtocolResponses)
 }
 
-func (h *Handler) writeResult(c *gin.Context, result *gateway.Result, stream bool) {
-	h.writeProtocolResult(c, result, stream, false)
+func (h *Handler) writeResult(c *gin.Context, result *gateway.Result, stream bool, protocol streamProtocol) {
+	h.writeProtocolResult(c, result, stream, false, protocol)
 }
 
 func (h *Handler) writeAnthropicResult(c *gin.Context, result *gateway.Result, stream bool) {
-	h.writeProtocolResult(c, result, stream, true)
+	h.writeProtocolResult(c, result, stream, true, streamProtocolAnthropic)
 }
 
-func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, stream, anthropic bool) {
+func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, stream, anthropic bool, protocol streamProtocol) {
 	usage := gateway.Usage{}
 	responseID := ""
 	errorCode := ""
@@ -907,16 +921,23 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	}
 	var err error
 	if stream {
-		metadata, copyErr := copyStream(c.Writer, result.Body)
+		metadata, copyErr := copyStream(c.Writer, result.Body, protocol)
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
 	} else {
 		metadata, copyErr := copyJSON(c.Writer, result.Body)
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
 	}
 	if err != nil {
-		if errors.Is(err, errResponseTransferLimit) {
+		switch {
+		case errors.Is(err, errResponseTransferLimit):
 			errorCode = "response_too_large"
-		} else {
+		case errors.Is(err, errUpstreamStreamFailed):
+			errorCode = "upstream_stream_error"
+		case errors.Is(err, errUpstreamStreamIncomplete):
+			errorCode = "upstream_stream_incomplete"
+		case errors.Is(err, errUpstreamStreamRead):
+			errorCode = "upstream_stream_interrupted"
+		default:
 			errorCode = "stream_interrupted"
 		}
 	}
@@ -928,8 +949,8 @@ type responseMetadata struct {
 	Model      string
 }
 
-func copyStream(writer gin.ResponseWriter, source io.Reader) (responseMetadata, error) {
-	inspector := &responseInspector{}
+func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol) (responseMetadata, error) {
+	inspector := &responseInspector{protocol: protocol}
 	buffer := make([]byte, responseCopyBufferBytes)
 	transferred := 0
 	for {
@@ -952,9 +973,12 @@ func copyStream(writer gin.ResponseWriter, source io.Reader) (responseMetadata, 
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				inspector.Finish()
+				return inspector.Metadata(), inspector.TerminalError()
+			}
+			if inspector.terminalSuccess {
 				return inspector.Metadata(), nil
 			}
-			return inspector.Metadata(), readErr
+			return inspector.Metadata(), fmt.Errorf("%w: %v", errUpstreamStreamRead, readErr)
 		}
 	}
 }
@@ -1000,8 +1024,11 @@ func copyJSON(writer gin.ResponseWriter, source io.Reader) (responseMetadata, er
 }
 
 type responseInspector struct {
-	pending  []byte
-	metadata responseMetadata
+	protocol        streamProtocol
+	pending         []byte
+	metadata        responseMetadata
+	terminalSuccess bool
+	terminalFailure bool
 }
 
 func (i *responseInspector) Inspect(chunk []byte) {
@@ -1018,6 +1045,7 @@ func (i *responseInspector) Inspect(chunk []byte) {
 		i.pending = i.pending[index+1:]
 		if bytes.HasPrefix(line, []byte("data:")) {
 			value := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			i.observeTerminal(value)
 			if !bytes.Equal(value, []byte("[DONE]")) {
 				metadata := extractMetadata(value)
 				if metadata.Usage.TotalTokens > 0 {
@@ -1039,6 +1067,58 @@ func (i *responseInspector) Inspect(chunk []byte) {
 }
 
 func (i *responseInspector) Metadata() responseMetadata { return i.metadata }
+
+func (i *responseInspector) TerminalError() error {
+	if i.terminalFailure {
+		return errUpstreamStreamFailed
+	}
+	if !i.terminalSuccess {
+		return errUpstreamStreamIncomplete
+	}
+	return nil
+}
+
+func (i *responseInspector) observeTerminal(data []byte) {
+	if bytes.Equal(data, []byte("[DONE]")) {
+		if i.protocol == streamProtocolChat {
+			i.terminalSuccess = true
+		}
+		return
+	}
+	var payload struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(data, &payload) != nil {
+		return
+	}
+	switch i.protocol {
+	case streamProtocolResponses:
+		switch payload.Type {
+		case "response.completed":
+			i.terminalSuccess = true
+		case "response.failed", "response.incomplete", "response.error", "error":
+			i.terminalFailure = true
+		}
+	case streamProtocolChat:
+		if payload.Type == "error" {
+			i.terminalFailure = true
+		}
+	case streamProtocolAnthropic:
+		switch payload.Type {
+		case "message_stop":
+			i.terminalSuccess = true
+		case "error":
+			i.terminalFailure = true
+		}
+	case streamProtocolImage:
+		switch payload.Type {
+		case "image_generation.completed":
+			i.terminalSuccess = true
+		case "image_generation.failed", "error":
+			i.terminalFailure = true
+		}
+	}
+}
 
 func (i *responseInspector) Finish() {
 	if len(i.pending) == 0 {

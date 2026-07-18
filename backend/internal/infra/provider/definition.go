@@ -39,6 +39,8 @@ func (s ConversationSurface) Supports(operation string) bool {
 	switch operation {
 	case "responses":
 		return s.Responses
+	case "compaction":
+		return s.Compact
 	case "chat":
 		return s.ChatCompletions
 	case "messages":

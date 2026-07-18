@@ -60,6 +60,9 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 		if !strings.Contains(sql, "grok_console") {
 			t.Fatalf("table %s was not upgraded: %s", table, sql)
 		}
+		if table == "request_audits" && !strings.Contains(sql, "compaction") {
+			t.Fatalf("table %s operation constraint was not upgraded: %s", table, sql)
+		}
 	}
 	assertSQLiteUniqueIndexes(t, database, "provider_accounts", "idx_provider_accounts_identity_key")
 	assertSQLiteUniqueIndexes(t, database, "model_routes", "idx_model_routes_public_id", "uidx_provider_upstream")
@@ -102,8 +105,9 @@ type legacyModelRouteModel struct {
 func (legacyModelRouteModel) TableName() string { return "model_routes" }
 
 type legacyRequestAuditModel struct {
-	ID       uint64 `gorm:"primaryKey"`
-	Provider string `gorm:"size:32;not null;check:chk_request_audits_provider,provider IN ('grok_build','grok_web')"`
+	ID        uint64 `gorm:"primaryKey"`
+	Provider  string `gorm:"size:32;not null;check:chk_request_audits_provider,provider IN ('grok_build','grok_web')"`
+	Operation string `gorm:"size:32;not null;default:'responses';check:chk_request_audits_operation,operation IN ('responses','chat','messages','image','image_edit','video')"`
 }
 
 func (legacyRequestAuditModel) TableName() string { return "request_audits" }

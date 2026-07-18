@@ -90,6 +90,9 @@ func TestProductionProviderDefinitionsMatchImplementedCapabilities(t *testing.T)
 	if !registry.SupportsResponseCompaction(account.ProviderBuild) || registry.SupportsResponseCompaction(account.ProviderWeb) || registry.SupportsResponseCompaction(account.ProviderConsole) {
 		t.Fatal("response compaction capability boundary is inconsistent")
 	}
+	if !registry.SupportsConversation(account.ProviderBuild, "compaction") || registry.SupportsConversation(account.ProviderWeb, "compaction") || registry.SupportsConversation(account.ProviderConsole, "compaction") {
+		t.Fatal("compaction operation capability boundary is inconsistent")
+	}
 	definition, _ := registry.Definition(account.ProviderWeb)
 	definition.ModelCapabilities[0] = modeldomain.CapabilityResponses
 	stored, _ := registry.Definition(account.ProviderWeb)

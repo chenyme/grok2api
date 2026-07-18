@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -301,6 +302,7 @@ func extractCompactionSummary(response map[string]any) string {
 
 func buildGatewayCompactionResponse(response map[string]any, blob, model string, streaming bool) ([]byte, string, error) {
 	response = cloneJSONObject(response)
+	normalizeGatewayCompactionUsage(response)
 	responseID := strings.TrimSpace(stringField(response, "id"))
 	if responseID == "" {
 		responseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
@@ -343,6 +345,51 @@ func buildGatewayCompactionResponse(response map[string]any, blob, model string,
 		fmt.Fprintf(&output, "event: %s\ndata: %s\n\n", event.name, encoded)
 	}
 	return output.Bytes(), "text/event-stream", nil
+}
+
+// normalizeGatewayCompactionUsage keeps the synthetic response acceptable to
+// Codex even when Grok omits one of the required standard usage fields. If the
+// upstream omitted usage entirely, leave it absent rather than fabricating it.
+func normalizeGatewayCompactionUsage(response map[string]any) {
+	usage, ok := response["usage"].(map[string]any)
+	if !ok {
+		if response["usage"] == nil {
+			delete(response, "usage")
+		}
+		return
+	}
+	input := nonNegativeJSONInteger(usage["input_tokens"])
+	output := nonNegativeJSONInteger(usage["output_tokens"])
+	minimumTotal := int64(math.MaxInt64)
+	if input <= math.MaxInt64-output {
+		minimumTotal = input + output
+	}
+	usage["input_tokens"] = input
+	usage["output_tokens"] = output
+	if total, valid := nonNegativeJSONIntegerOK(usage["total_tokens"]); !valid || total < minimumTotal {
+		usage["total_tokens"] = minimumTotal
+	}
+}
+
+func nonNegativeJSONInteger(value any) int64 {
+	number, _ := nonNegativeJSONIntegerOK(value)
+	return number
+}
+
+func nonNegativeJSONIntegerOK(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if typed < 0 || typed != float64(int64(typed)) {
+			return 0, false
+		}
+		return int64(typed), true
+	case int64:
+		return max(int64(0), typed), typed >= 0
+	case int:
+		return int64(max(0, typed)), typed >= 0
+	default:
+		return 0, false
+	}
 }
 
 func gatewayCompactionHTTPFailure(resp *http.Response, reqURL string, modelCatalogChanged bool, warnings string) (*provider.Response, bool, error) {

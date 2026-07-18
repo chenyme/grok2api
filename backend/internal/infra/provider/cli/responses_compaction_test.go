@@ -55,8 +55,34 @@ func TestGatewayCompactionLifecycle(t *testing.T) {
 	if foreign != 0 || !strings.Contains(string(expanded), "This session is being continued") || strings.Contains(string(expanded), `"type":"compaction"`) || !strings.Contains(string(expanded), `"role":"user"`) {
 		t.Fatalf("expanded = %s, foreign = %d", expanded, foreign)
 	}
-	if _, _, err := expandGatewayCompactionHistory([]byte(`{"input":[{"type":"compaction","encrypted_content":`+mustJSONString(blob)+`}]} `), codec, "other-session"); err == nil {
-		t.Fatal("session mismatch must reject a gateway-owned blob")
+	mismatched, unusable, err := expandGatewayCompactionHistory([]byte(`{"input":[{"type":"compaction","encrypted_content":`+mustJSONString(blob)+`}]} `), codec, "other-session")
+	if err != nil || unusable != 1 || strings.Contains(string(mismatched), blob) || !strings.Contains(string(mismatched), "could not be decoded") {
+		t.Fatalf("session mismatch fallback = %s, unusable = %d, err = %v", mismatched, unusable, err)
+	}
+}
+
+func TestGatewayCompactionResponseNormalizesPartialUsage(t *testing.T) {
+	response := map[string]any{
+		"id":    "resp_usage",
+		"usage": map[string]any{"input_tokens": float64(7), "output_tokens": float64(5)},
+	}
+	encoded, _, err := buildGatewayCompactionResponse(response, "opaque", "grok-4.5", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completed map[string]any
+	for _, line := range strings.Split(string(encoded), "\n") {
+		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"type":"response.completed"`) {
+			continue
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &completed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	responseValue, _ := completed["response"].(map[string]any)
+	usage, _ := responseValue["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(7) || usage["output_tokens"] != float64(5) || usage["total_tokens"] != float64(12) {
+		t.Fatalf("usage = %#v", usage)
 	}
 }
 
