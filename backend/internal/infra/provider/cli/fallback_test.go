@@ -372,6 +372,9 @@ func TestGetBillingAlwaysPrimaryEvenWhenMarked(t *testing.T) {
 		switch {
 		case strings.Contains(request.URL.Host, "primary.test"):
 			primaryHits.Add(1)
+			if strings.HasSuffix(request.URL.Path, "/user") {
+				return jsonResponse(http.StatusNotFound, `{"error":"subscription unavailable"}`, request), nil
+			}
 			if !strings.Contains(request.URL.Path, "/billing") {
 				t.Fatalf("path = %s", request.URL.Path)
 			}
@@ -398,7 +401,7 @@ func TestGetBillingAlwaysPrimaryEvenWhenMarked(t *testing.T) {
 	if billing.OnDemandCap != 10 || billing.OnDemandUsed != 1 {
 		t.Fatalf("billing = %+v", billing)
 	}
-	if primaryHits.Load() != 1 || fallbackHits.Load() != 0 {
+	if primaryHits.Load() != 2 || fallbackHits.Load() != 0 {
 		t.Fatalf("primary=%d fallback=%d", primaryHits.Load(), fallbackHits.Load())
 	}
 	if marker.calls.Load() != 0 {

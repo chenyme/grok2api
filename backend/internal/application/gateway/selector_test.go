@@ -430,7 +430,7 @@ func TestSelectorPreferFreeBuildHotReloadAndSaturationFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: freeAccount.ID, IsUnifiedBillingUser: true, SyncedAt: now}); err != nil {
+	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: freeAccount.ID, PlanName: "free", SyncedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: superAccount.ID, MonthlyLimit: 140, SyncedAt: now}); err != nil {

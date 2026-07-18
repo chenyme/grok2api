@@ -40,7 +40,10 @@ func TestListFilters(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := database.db.WithContext(ctx).Create(&billingModel{AccountID: paid.ID, MonthlyLimit: 100, Used: 10, SyncedAt: now}).Error; err != nil {
+	if err := database.db.WithContext(ctx).Create(&billingModel{AccountID: paid.ID, PlanName: "SuperGrokPro", IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&billingModel{AccountID: disabled.ID, CreditUsagePercent: 42.5, IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
 

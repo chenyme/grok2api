@@ -469,7 +469,11 @@ func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery
 		}
 	}
 	if billing != nil && billing.IsPaid() {
-		result := QuotaView{Type: QuotaTypePaid, Source: "upstreamBilling", Confidence: "observed", Unit: "credits", UsagePercent: billing.CreditUsagePercent, Status: QuotaStatusActive, PeriodStart: billing.BillingPeriodStart, PeriodEnd: billing.BillingPeriodEnd}
+		periodStart, periodEnd := billing.BillingPeriodStart, billing.BillingPeriodEnd
+		if billing.UsagePeriodType != "" {
+			periodStart, periodEnd = billing.UsagePeriodStart, billing.UsagePeriodEnd
+		}
+		result := QuotaView{Type: QuotaTypePaid, Source: "upstreamBilling", Confidence: "observed", Unit: "credits", UsagePercent: billing.CreditUsagePercent, Status: QuotaStatusActive, PeriodStart: periodStart, PeriodEnd: periodEnd}
 		if recovery != nil && recovery.Kind == accountdomain.QuotaRecoveryKindPaid {
 			result.Status = QuotaStatusWaitingReset
 			if recovery.Status == accountdomain.QuotaRecoveryStatusProbing {
@@ -499,6 +503,12 @@ func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery
 			}
 		case billing.PrepaidBalance > 0:
 			result.Remaining = billing.PrepaidBalance
+		case billing.UsagePeriodType != "":
+			result.Unit = "percent"
+			result.Used = billing.CreditUsagePercent
+			result.Limit = 100
+			result.Remaining = max(0, 100-billing.CreditUsagePercent)
+			result.LimitKnown = true
 		}
 		return result
 	}
