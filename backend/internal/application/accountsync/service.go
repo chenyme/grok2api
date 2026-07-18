@@ -211,10 +211,14 @@ func (s *Service) syncAccount(ctx context.Context, accountID uint64) error {
 	if view.Credential.Provider == accountdomain.ProviderWeb || view.Credential.Provider == accountdomain.ProviderConsole {
 		if identity, ok := s.accounts.(identitySynchronizer); ok {
 			operationCtx, cancel := context.WithTimeout(ctx, operationTimeout)
-			if err := identity.SyncAccountIdentity(operationCtx, accountID); err != nil {
-				s.logger.Warn("account_initial_identity_sync_failed", "account_id", accountID, "error", err)
+			identityErr := identity.SyncAccountIdentity(operationCtx, accountID)
+			if identityErr != nil {
+				s.logger.Warn("account_initial_identity_sync_failed", "account_id", accountID, "error", identityErr)
 			}
 			cancel()
+			if errors.Is(identityErr, provider.ErrUnauthorized) {
+				return fmt.Errorf("同步账号身份: %w", identityErr)
+			}
 		}
 	}
 	if definition.Quota == provider.QuotaRemoteWindow || definition.Quota == provider.QuotaLocalWindow {

@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -132,6 +133,39 @@ func TestRefreshQuotaFetchesWebIdentityOnlyUntilDataExists(t *testing.T) {
 	}
 }
 
+func TestRefreshQuotaUnauthorizedMarksWebAccountInvalid(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quota-unauthorized.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "web-unauthorized", SourceKey: "web-unauthorized", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &quotaCountingAdapter{fullErr: provider.ErrUnauthorized}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	if _, err := service.RefreshQuota(ctx, credential.ID); !errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v", err)
+	}
+	stored, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AuthStatus != accountdomain.AuthStatusReauthRequired || !stored.Enabled {
+		t.Fatalf("account state = %#v", stored)
+	}
+}
+
 type deniedQuotaRefreshLock struct{}
 
 func (deniedQuotaRefreshLock) Acquire(context.Context, string, time.Duration) (func(), bool, error) {
@@ -142,6 +176,7 @@ type quotaCountingAdapter struct {
 	modeCalls     atomic.Int64
 	fullCalls     atomic.Int64
 	identityCalls atomic.Int64
+	fullErr       error
 }
 
 func (a *quotaCountingAdapter) Provider() accountdomain.Provider { return accountdomain.ProviderWeb }
@@ -155,7 +190,7 @@ func (a *quotaCountingAdapter) Definition() provider.Definition {
 
 func (a *quotaCountingAdapter) SyncQuota(context.Context, accountdomain.Credential) (provider.QuotaSnapshot, error) {
 	a.fullCalls.Add(1)
-	return provider.QuotaSnapshot{}, nil
+	return provider.QuotaSnapshot{}, a.fullErr
 }
 
 func (a *quotaCountingAdapter) SyncAccountIdentity(context.Context, accountdomain.Credential) (provider.AccountIdentity, error) {

@@ -24,20 +24,23 @@
 > Check out [DEEIX-AI / DEEIX-Chat](https://github.com/DEEIX-AI/DEEIX-Chat), a lightweight, integrated AI platform for model routing, chat, files, tools, billing, identity, and operations.
 
 > [!NOTE]
-> This project is intended for technical research and self-hosted use. Make sure your accounts, network setup, and upstream usage comply with the applicable terms and local requirements.
+> This project is for technical research and learning purposes only. Please comply with Grok's official terms of use and local laws when using it; otherwise, you will be solely responsible for all consequences!
 
-## ❤️ Sponsors
+## Sponsors
+> [Want to sponsor this project?](mailto:chenyme03@gmail.com)
 
 <table>
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://github.com/DEEIX-AI/DEEIX-Chat"><img src="frontend/public/sponner/deeix-chat_deeix-ai.png" alt="DEEIX AI / DEEIX Chat" width="160"></a></td>
-<td valign="middle">DEEIX-Chat is an open-source, deployable AI platform for individuals, teams, and organizations that need stable, long-term access to multiple models. It brings multimodal chat, model routing, files and RAG, MCP tools, usage billing, authentication, audit logs, and operational controls into one product.</td>
+<td valign="middle">DEEIX-Chat is an open-source, self-hostable AI Chat platform for individuals, teams, and enterprises that need stable, long-term, unified access to multiple models. It brings models, conversations, files, tool calling, and administration together in one deployable and extensible system. Click <a href="https://github.com/DEEIX-AI/DEEIX-Chat">here</a> to start deploying.</td>
 </tr>
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://www.right.codes/register"><img src="frontend/public/sponner/rightcode.jpg" alt="RightCode" width="160"></a></td>
-<td valign="middle">Right Code provides stable access services for Claude Code, Codex, Gemini, and other models. It supports invoicing and one-to-one assistance for businesses and teams. Part of the model capacity used to develop this project is provided by Right Code. Thanks to the Right Code team for supporting the project. <a href="https://www.right.codes/register">Register here</a> to get started.</td>
+<td valign="middle">Right Code is an enterprise-grade AI Agent distribution platform that primarily provides stable access services for Claude Code, Codex, Gemini, and other models. It supports invoicing and dedicated one-to-one assistance for enterprises and teams. Thanks to Right Code for providing token support. Click <a href="https://www.right.codes/register">here</a> to register and get started.</td>
 </tr>
 </table>
+
+<br>
 
 Grok2API is a Go-based Grok API gateway with a built-in React admin console. It organizes Grok Build OAuth, Grok Web SSO, and Grok Console SSO credentials into independent account pools, exposes OpenAI- and Anthropic-style APIs, and provides one place to manage model routes, client keys, quotas, media, audits, and egress proxies.
 

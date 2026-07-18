@@ -2,10 +2,12 @@ package account
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
 type providerLinkRepository interface {
@@ -14,7 +16,7 @@ type providerLinkRepository interface {
 }
 
 // SyncAccountIdentity 尽力补充 Web/Console 的稳定上游身份，并据此建立高可信弱关联。
-// 该操作不修改账号凭据、健康、额度或路由状态。
+// 只有明确的 401 会将当前 Provider 账号移出号池；其他同步失败不影响健康状态。
 func (s *Service) SyncAccountIdentity(ctx context.Context, id uint64) error {
 	_, err, _ := s.identitySyncs.Do(fmt.Sprintf("%d", id), func() (any, error) {
 		return nil, s.syncAccountIdentity(ctx, id)
@@ -48,6 +50,10 @@ func (s *Service) syncAccountIdentity(ctx context.Context, id uint64) error {
 	}
 	identity, err := adapter.SyncAccountIdentity(ctx, value)
 	if err != nil {
+		if errors.Is(err, provider.ErrUnauthorized) {
+			markErr := s.markSSOCredentialRejected(ctx, value, fmt.Sprintf("%s SSO credential rejected", value.Provider))
+			return errors.Join(err, markErr)
+		}
 		return err
 	}
 	if len(identity.Email) > 255 || len(identity.UserID) > 255 || len(identity.TeamID) > 255 {
@@ -69,8 +75,10 @@ func (s *Service) reconcileProviderLinksBestEffort(ctx context.Context, id uint6
 	}
 }
 
-func (s *Service) syncAccountIdentityBestEffort(ctx context.Context, id uint64) {
+func (s *Service) syncAccountIdentityBestEffort(ctx context.Context, id uint64) error {
 	if err := s.SyncAccountIdentity(ctx, id); err != nil {
 		s.logger.Warn("account_identity_sync_failed", "account_id", id, "error", err)
+		return err
 	}
+	return nil
 }

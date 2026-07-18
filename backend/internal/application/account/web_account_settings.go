@@ -192,7 +192,7 @@ func (s *Service) runWebAccountSetting(ctx context.Context, credential accountdo
 		return nil
 	}
 	if errors.Is(err, provider.ErrUnauthorized) {
-		_ = s.MarkReauthRequired(context.WithoutCancel(ctx), credential.ID, "Grok Web SSO credential rejected")
+		err = errors.Join(err, s.markSSOCredentialRejected(ctx, credential, "Grok Web SSO credential rejected"))
 	}
 	return fmt.Errorf("%s: %w", operation, err)
 }

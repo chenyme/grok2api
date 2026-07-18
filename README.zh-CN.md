@@ -24,9 +24,11 @@
 > 推荐个人新项目 [DEEIX-AI / DEEIX-Chat](https://github.com/DEEIX-AI/DEEIX-Chat)：面向多模型路由、对话、文件、工具、计费与运维的一体化轻量 AI 平台。
 
 > [!NOTE]
-> 本项目用于技术研究与个人部署。使用前请确认账号、网络和上游服务符合相应条款及所在地要求。
+> 本项目仅供技术研究与学习交流。使用时请务必遵循 Grok 官方的使用条款及当地法律法规，否则一切后果自负！
 
-## ❤️ 赞助商
+## 赞助商
+
+> [希望赞助这个项目？](mailto:chenyme03@gmail.com)
 
 <table>
 <tr>
@@ -35,9 +37,11 @@
 </tr>
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://www.right.codes/register"><img src="frontend/public/sponner/rightcode.jpg" alt="RightCode" width="160"></a></td>
-<td valign="middle">Right Code 是一个企业级 AI Agent 分发平台，主要提供稳定的 Claude Code、Codex、Gemini 等模型的中转服务。充值即可开票，企业、团队用户一对一对接。感谢 RightCode 提供的 Tokens 支持，点击 <a href="https://www.right.codes/register">此处</a> 注册并开始使用！</td>
+<td valign="middle">Right Code 是一个企业级 AI Agent 分发平台，主要提供稳定的 Claude Code、Codex、Gemini 等模型的中转服务。充值即可开票，企业、团队用户一对一对接。感谢 Right Code 提供的 Tokens 支持，点击 <a href="https://www.right.codes/register">此处</a> 注册并开始使用！</td>
 </tr>
 </table>
+
+<br>
 
 Grok2API 是一个以 Go 为核心、内置 React 管理端的 Grok API 网关。它将 Grok Build OAuth、Grok Web SSO 与 Grok Console SSO 组织成相互独立的账号池，对外提供 OpenAI 与 Anthropic 风格接口，并统一管理模型路由、客户端密钥、额度、媒体、审计和出口代理。
 
@@ -377,5 +381,6 @@ make swagger
 
 ## 进一步阅读
 
+- [English README](./README.md)
 - [后端说明](./backend/README.md)
 - [前端说明](./frontend/README.md)
