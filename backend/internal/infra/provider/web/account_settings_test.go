@@ -28,12 +28,12 @@ func TestWebAccountSettingsMatchCapturedProtocol(t *testing.T) {
 	if err != nil || !bytes.Equal(enableNSFWBody, expectedNSFW) {
 		t.Fatalf("NSFW frame = %x", enableNSFWBody)
 	}
-	var termsSeen, birthSeen, nsfwSeen atomic.Bool
+	var accountTermsSeen, productTermsSeen, birthSeen, nsfwSeen atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		body, _ := io.ReadAll(request.Body)
 		switch request.URL.Path {
 		case "/auth_mgmt.AuthManagement/SetTosAcceptedVersion":
-			termsSeen.Store(true)
+			accountTermsSeen.Store(true)
 			if !bytes.Equal(body, acceptTermsBody) || request.Header.Get("Content-Type") != "application/grpc-web+proto" {
 				t.Errorf("terms request body=%x content-type=%q", body, request.Header.Get("Content-Type"))
 			}
@@ -42,6 +42,18 @@ func TestWebAccountSettingsMatchCapturedProtocol(t *testing.T) {
 			}
 			if request.Header.Get("x-grpc-web") != "1" || request.Header.Get("x-user-agent") != "connect-es/2.1.1" {
 				t.Errorf("terms grpc headers = %#v", request.Header)
+			}
+		case "/rest/auth/set-tos-accepted":
+			productTermsSeen.Store(true)
+			var payload map[string]int
+			if json.Unmarshal(body, &payload) != nil || payload["tosVersion"] != account.CurrentWebTermsVersion {
+				t.Errorf("product terms payload = %s", body)
+			}
+			if request.Header.Get("Content-Type") != "application/json" || request.Header.Get("x-statsig-id") == "" {
+				t.Errorf("product terms headers = %#v", request.Header)
+			}
+			if request.Header.Get("Cookie") != "sso=test-sso; sso-rw=test-sso; cf_clearance=clear" || request.Header.Get("Sec-Ch-Ua") == "" {
+				t.Errorf("product terms browser identity = %#v", request.Header)
 			}
 		case "/rest/auth/set-birth-date":
 			birthSeen.Store(true)
@@ -88,8 +100,8 @@ func TestWebAccountSettingsMatchCapturedProtocol(t *testing.T) {
 	if err := adapter.EnableNSFW(context.Background(), credential); err != nil {
 		t.Fatal(err)
 	}
-	if !termsSeen.Load() || !birthSeen.Load() || !nsfwSeen.Load() {
-		t.Fatalf("seen terms=%v birth=%v nsfw=%v", termsSeen.Load(), birthSeen.Load(), nsfwSeen.Load())
+	if !accountTermsSeen.Load() || !productTermsSeen.Load() || !birthSeen.Load() || !nsfwSeen.Load() {
+		t.Fatalf("seen accountTerms=%v productTerms=%v birth=%v nsfw=%v", accountTermsSeen.Load(), productTermsSeen.Load(), birthSeen.Load(), nsfwSeen.Load())
 	}
 }
 
@@ -111,6 +123,39 @@ func TestWebAccountSettingsMapUnauthorized(t *testing.T) {
 	})
 	if !errors.Is(err, provider.ErrUnauthorized) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAcceptTermsRequiresBothUpstreamSteps(t *testing.T) {
+	t.Parallel()
+	var accountCalls, productCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/auth_mgmt.AuthManagement/SetTosAcceptedVersion":
+			accountCalls.Add(1)
+			writer.WriteHeader(http.StatusOK)
+		case "/rest/auth/set-tos-accepted":
+			productCalls.Add(1)
+			writer.WriteHeader(http.StatusBadGateway)
+			_, _ = writer.Write([]byte(`{"error":"product terms unavailable"}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, _ := cipher.Encrypt("test-sso")
+	statsig := base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'s'}, 70))
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: statsig}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	adapter.accountsBaseURL = server.URL
+	err = adapter.AcceptTerms(context.Background(), account.Credential{
+		ID: 3, Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, EncryptedAccessToken: encryptedToken,
+	})
+	if err == nil || accountCalls.Load() != 1 || productCalls.Load() != 1 {
+		t.Fatalf("err=%v accountCalls=%d productCalls=%d", err, accountCalls.Load(), productCalls.Load())
 	}
 }
 

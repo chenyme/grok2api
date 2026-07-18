@@ -32,7 +32,7 @@ func TestReconcileProviderLinksUsesOnlyHighConfidenceIdentity(t *testing.T) {
 	if err := repo.MarkWebNSFWEnabled(ctx, web.ID, nsfwEnabledAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.MarkWebTermsAccepted(ctx, web.ID, nsfwEnabledAt); err != nil {
+	if err := repo.MarkWebTermsAccepted(ctx, web.ID, account.CurrentWebTermsVersion, nsfwEnabledAt); err != nil {
 		t.Fatal(err)
 	}
 	console := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
@@ -69,6 +69,9 @@ func TestReconcileProviderLinksUsesOnlyHighConfidenceIdentity(t *testing.T) {
 	}
 	if web.WebTermsAcceptedAt == nil || build.WebTermsAcceptedAt == nil || console.WebTermsAcceptedAt == nil || !web.WebTermsAcceptedAt.Equal(nsfwEnabledAt) || !build.WebTermsAcceptedAt.Equal(nsfwEnabledAt) || !console.WebTermsAcceptedAt.Equal(nsfwEnabledAt) {
 		t.Fatalf("shared terms markers web=%v build=%v console=%v", web.WebTermsAcceptedAt, build.WebTermsAcceptedAt, console.WebTermsAcceptedAt)
+	}
+	if web.WebTermsAcceptedVersion != account.CurrentWebTermsVersion || build.WebTermsAcceptedVersion != account.CurrentWebTermsVersion || console.WebTermsAcceptedVersion != account.CurrentWebTermsVersion {
+		t.Fatalf("shared terms versions web=%d build=%d console=%d", web.WebTermsAcceptedVersion, build.WebTermsAcceptedVersion, console.WebTermsAcceptedVersion)
 	}
 	if build.LinkedAccountID != web.ID || build.LinkedProvider != account.ProviderWeb || len(console.LinkedAccounts) != 1 || console.LinkedAccounts[0].ID != web.ID {
 		t.Fatalf("reverse links build=%#v console=%#v", build.LinkedAccounts, console.LinkedAccounts)
