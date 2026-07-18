@@ -93,6 +93,16 @@ func TestConfiguredCoolingAppNodesNeverFallBackToDirect(t *testing.T) {
 	}
 }
 
+func TestDisabledConfiguredNodesAllowDirectFallback(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{
+		ID: 1, Name: "disabled-proxy", Scope: domain.ScopeBuild, Enabled: false, Health: 1,
+	}}}, nil)
+	lease, configured, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
+	if err != nil || configured || lease != nil {
+		t.Fatalf("disabled proxy fallback: lease=%#v configured=%v err=%v", lease, configured, err)
+	}
+}
+
 func TestAcquireIfConfiguredDoesNotChangeBuildDirectTransport(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {

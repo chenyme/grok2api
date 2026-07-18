@@ -133,10 +133,13 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		if err != nil {
 			return nil, false, err
 		}
-		configured = configured || len(nodes) > 0
 		candidateAvailable := make([]domain.Node, 0, len(nodes))
 		for _, node := range nodes {
-			if node.Enabled && (node.CooldownUntil == nil || !now.Before(*node.CooldownUntil)) {
+			if !node.Enabled {
+				continue
+			}
+			configured = true
+			if node.CooldownUntil == nil || !now.Before(*node.CooldownUntil) {
 				candidateAvailable = append(candidateAvailable, node)
 			}
 		}
