@@ -5,12 +5,13 @@ import "time"
 type Operation string
 
 const (
-	OperationResponses Operation = "responses"
-	OperationChat      Operation = "chat"
-	OperationMessages  Operation = "messages"
-	OperationImage     Operation = "image"
-	OperationImageEdit Operation = "image_edit"
-	OperationVideo     Operation = "video"
+	OperationResponses  Operation = "responses"
+	OperationCompaction Operation = "compaction"
+	OperationChat       Operation = "chat"
+	OperationMessages   Operation = "messages"
+	OperationImage      Operation = "image"
+	OperationImageEdit  Operation = "image_edit"
+	OperationVideo      Operation = "video"
 )
 
 type UsageSource string

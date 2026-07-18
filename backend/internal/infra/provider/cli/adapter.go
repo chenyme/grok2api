@@ -218,7 +218,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if a.shouldCaptureReplay(request, resp) {
 		resp.Body = a.replay.CaptureBody(resp.Body, request.Model, request.PromptCacheKey, request.Streaming, isCompactPath(request.Path))
 	}
-	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses
+	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses || request.Operation == conversation.OperationCompaction
 	if responsesOperation && toolCompatibility != nil {
 		if warnings := toolCompatibility.warningHeader(); warnings != "" {
 			resp.Header.Set("X-Grok2API-Compatibility-Warnings", warnings)

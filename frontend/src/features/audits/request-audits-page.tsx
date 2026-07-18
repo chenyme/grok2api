@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, ArrowDown, ArrowUp, BrainCircuit, CircleCheck, CircleDollarSign, CornerDownRight, Database, Info, RefreshCw, Search, WholeWord, type LucideIcon } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, BrainCircuit, CircleCheck, CircleDollarSign, CornerDownRight, Database, Info, Minimize2, RefreshCw, Search, WholeWord, type LucideIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -338,6 +338,17 @@ function ModelRouteValue({ model, upstreamModel, account, clientKey }: { model: 
 
 function UsageDetails({ audit, locale }: { audit: AuditDTO; locale: string }) {
   const { t } = useTranslation();
+  if (audit.operation === "compaction" && audit.totalTokens === 0) {
+    return (
+      <div className="flex h-[52px] w-full items-center gap-2 rounded-md bg-muted/45 px-2.5 text-[11px]">
+        <Minimize2 className="size-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0">
+          <p className="truncate font-medium">{t("audits.operations.compaction")}</p>
+          <p className="truncate text-muted-foreground">{t("audits.compactionUsageUnavailable")}</p>
+        </div>
+      </div>
+    );
+  }
   if (audit.operation === "video") {
     return <MediaUsage input={t("audits.imageCount", { count: audit.mediaInputImages })} output={t("audits.secondsCount", { count: audit.mediaOutputSeconds })} />;
   }
@@ -385,8 +396,8 @@ function MediaUsage({ input, output }: { input: string; output: string }) {
   );
 }
 
-function StatusCode({ statusCode }: { statusCode: number }) {
-  const tone = statusTone(statusCode);
+function StatusCode({ statusCode, hasError = false }: { statusCode: number; hasError?: boolean }) {
+  const tone = statusTone(statusCode, hasError);
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-xs tabular-nums", tone.text)}>
       <span className={cn("size-1.5 rounded-full", tone.dot)} />
@@ -397,10 +408,10 @@ function StatusCode({ statusCode }: { statusCode: number }) {
 
 function AuditStatus({ audit, onOpen }: { audit: AuditDTO; onOpen: () => void }) {
   const { t } = useTranslation();
-  const mode = audit.streaming ? t("audits.stream") : t("audits.nonStream");
+  const mode = audit.operation === "compaction" ? t("audits.operations.compaction") : audit.streaming ? t("audits.stream") : t("audits.nonStream");
   const content = (
     <>
-      <StatusCode statusCode={audit.statusCode} />
+      <StatusCode statusCode={audit.statusCode} hasError={Boolean(audit.errorCode)} />
       <span className="block whitespace-nowrap text-[10px] text-muted-foreground">{mode}</span>
     </>
   );
@@ -417,7 +428,8 @@ function AuditStatus({ audit, onOpen }: { audit: AuditDTO; onOpen: () => void })
   );
 }
 
-function statusTone(statusCode: number): { dot: string; text: string } {
+function statusTone(statusCode: number, hasError = false): { dot: string; text: string } {
+  if (hasError) return { dot: "bg-amber-500", text: "text-amber-700 dark:text-amber-300" };
   if (statusCode >= 500) return { dot: "bg-red-500", text: "text-red-700 dark:text-red-300" };
   if (statusCode >= 400) return { dot: "bg-amber-500", text: "text-amber-700 dark:text-amber-300" };
   if (statusCode >= 200 && statusCode < 300) return { dot: "bg-emerald-500", text: "text-emerald-700 dark:text-emerald-300" };

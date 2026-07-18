@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	OperationResponses = "responses"
-	OperationChat      = "chat"
-	OperationMessages  = "messages"
+	OperationResponses  = "responses"
+	OperationCompaction = "compaction"
+	OperationChat       = "chat"
+	OperationMessages   = "messages"
 )
 
 // ConvertRequest 将下游对话协议转换为 Responses 请求，作为 Provider 的统一上游协议。

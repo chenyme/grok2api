@@ -208,7 +208,7 @@ func TestDirectUpstreamCredentialResponsesAreRewritten(t *testing.T) {
 				case tc.anthropic:
 					handler.writeAnthropicResult(c, result, false)
 				default:
-					handler.writeResult(c, result, false)
+					handler.writeResult(c, result, false, streamProtocolResponses)
 				}
 			})
 			recorder := httptest.NewRecorder()
@@ -510,6 +510,53 @@ func TestUsageInspectorHandlesFinalEventWithoutNewline(t *testing.T) {
 	metadata := inspector.Metadata()
 	if metadata.ResponseID != "resp_final" || metadata.Usage.TotalTokens != 11 {
 		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestCopyStreamRequiresProtocolTerminalEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name     string
+		protocol streamProtocol
+		body     string
+		wantErr  error
+	}{
+		{
+			name: "responses completed", protocol: streamProtocolResponses,
+			body: `data: {"type":"response.completed","response":{"id":"resp_ok","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}` + "\n\n",
+		},
+		{
+			name: "responses eof before completed", protocol: streamProtocolResponses,
+			body:    `data: {"type":"response.created","response":{"id":"resp_cut"}}` + "\n\n",
+			wantErr: errUpstreamStreamIncomplete,
+		},
+		{
+			name: "responses failed", protocol: streamProtocolResponses,
+			body:    `data: {"type":"response.failed","response":{"error":{"message":"failed"}}}` + "\n\n",
+			wantErr: errUpstreamStreamFailed,
+		},
+		{name: "chat done", protocol: streamProtocolChat, body: "data: [DONE]\n\n"},
+		{name: "anthropic stop", protocol: streamProtocolAnthropic, body: `data: {"type":"message_stop"}` + "\n\n"},
+		{name: "image completed", protocol: streamProtocolImage, body: `data: {"type":"image_generation.completed"}` + "\n\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			metadata, err := copyStream(context.Writer, strings.NewReader(test.body), test.protocol)
+			if test.wantErr == nil && err != nil {
+				t.Fatal(err)
+			}
+			if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Fatalf("error = %#v, want %v", err, test.wantErr)
+			}
+			if test.name == "responses completed" && (metadata.ResponseID != "resp_ok" || metadata.Usage.TotalTokens != 5) {
+				t.Fatalf("metadata = %#v", metadata)
+			}
+			if recorder.Body.String() != test.body {
+				t.Fatalf("forwarded = %q", recorder.Body.String())
+			}
+		})
 	}
 }
 

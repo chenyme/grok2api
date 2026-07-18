@@ -104,11 +104,10 @@ func expandGatewayCompactionHistory(body []byte, codec *gatewayCompactionCodec, 
 		blob, _ := item["encrypted_content"].(string)
 		summary, owned, err := codec.decode(session, blob)
 		if err != nil {
-			return nil, 0, &responsesRequestError{
-				Message: "compaction 状态无效或不属于当前会话",
-				Param:   fmt.Sprintf("input[%d].encrypted_content", index),
-				Code:    "invalid_compaction_state",
-			}
+			foreign++
+			items[index] = compatibilityBoundaryMessage("A prior compacted context could not be decoded by this gateway instance. Continue from the retained conversation messages.")
+			changed = true
+			continue
 		}
 		if owned {
 			items[index] = gatewayCompactionSummaryMessage(summary)

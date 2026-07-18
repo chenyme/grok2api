@@ -165,6 +165,24 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("ownership = %#v, err = %v", ownership, err)
 	}
 
+	compacted, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-compact", ClientKey: clientKey, PublicModel: "grok-test", PromptCacheSeed: "claude-session",
+		Body: []byte(`{"model":"grok-test","stream":true,"input":[{"role":"user","content":"continue"},{"type":"compaction_trigger"}]}`), Streaming: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(compacted.Body)
+	compacted.Finalize(Usage{}, "resp-compact", "")
+	_ = compacted.Body.Close()
+	logs, total, err = auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 2 || logs[0].Operation != audit.OperationCompaction || !logs[0].Streaming {
+		t.Fatalf("compaction audit = %#v, total=%d, err=%v", logs, total, err)
+	}
+	if _, err := responseRepo.Get(ctx, "resp-compact", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("compaction response ownership err = %v", err)
+	}
+
 	adapter.resetAttempts()
 	continued, err := service.CreateResponse(ctx, Input{RequestID: "req-2", ClientKey: clientKey, PublicModel: "grok-test", PreviousResponseID: "resp-test", Body: []byte(`{"model":"grok-test","previous_response_id":"resp-test"}`)})
 	if err != nil {
@@ -209,6 +227,22 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	missing.Finalize(Usage{}, "", "")
 	if _, err := responseRepo.Get(ctx, "resp-next", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("stale ownership err = %v", err)
+	}
+
+	adapter.resetAttempts()
+	interrupted, err := service.CreateResponse(ctx, Input{RequestID: "req-stream-cut", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`), PromptCacheSeed: "other-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(interrupted.Body)
+	interrupted.Finalize(Usage{}, "", "upstream_stream_incomplete")
+	_ = interrupted.Body.Close()
+	if len(adapter.attempts) != 1 {
+		t.Fatalf("interrupted attempts = %#v", adapter.attempts)
+	}
+	interruptedAccount, err := accountRepo.Get(ctx, adapter.attempts[0])
+	if err != nil || interruptedAccount.FailureCount != 1 || interruptedAccount.CooldownUntil == nil {
+		t.Fatalf("interrupted account health = %#v, err=%v", interruptedAccount, err)
 	}
 }
 
@@ -1582,7 +1616,7 @@ func (a *failoverAdapter) Definition() provider.Definition {
 	return provider.Definition{
 		Provider: account.ProviderBuild,
 		Conversation: provider.ConversationSurface{
-			Responses: true, StoredResponses: true,
+			Responses: true, Compact: true, StoredResponses: true,
 		},
 	}
 }
