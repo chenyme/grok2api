@@ -163,6 +163,28 @@ func TestSyncAccountRecomputesModelsAfterCreatingBillingSnapshot(t *testing.T) {
 	}
 }
 
+func TestSyncModelsAlwaysRefreshesExistingCapabilitySnapshot(t *testing.T) {
+	models := &modelStub{hasSnapshot: true}
+	service := NewService(slog.Default(), accountReaderStub{provider: accountdomain.ProviderBuild}, &billingStub{}, nil, models)
+
+	if err := service.SyncModels(context.Background(), 8); err != nil {
+		t.Fatal(err)
+	}
+	checks, syncs := models.counts()
+	if checks != 0 || syncs != 1 {
+		t.Fatalf("model checks/syncs = %d/%d", checks, syncs)
+	}
+}
+
+func TestSyncModelsPropagatesRefreshFailure(t *testing.T) {
+	models := &modelStub{syncErr: errors.New("upstream unavailable")}
+	service := NewService(slog.Default(), accountReaderStub{provider: accountdomain.ProviderBuild}, &billingStub{}, nil, models)
+
+	if err := service.SyncModels(context.Background(), 9); err == nil {
+		t.Fatal("expected model sync error")
+	}
+}
+
 func TestSyncAccountUsesQuotaForConsoleProvider(t *testing.T) {
 	billing := &billingStub{}
 	quota := &quotaStub{}

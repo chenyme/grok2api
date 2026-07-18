@@ -29,6 +29,10 @@ type accountSyncProgressor interface {
 	SyncStreamObserved(ctx context.Context, accountIDs <-chan uint64, observer func(completed, total int)) accountsyncapp.Result
 }
 
+type accountModelSynchronizer interface {
+	SyncModels(ctx context.Context, accountID uint64) error
+}
+
 const (
 	maxAccountImportBytes         = 30 << 20
 	maxAccountImportFiles         = 1000
@@ -153,13 +157,15 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 }
 
 type updateRequest struct {
-	Name                   *string  `json:"name"`
-	Enabled                *bool    `json:"enabled"`
-	Priority               *int     `json:"priority"`
-	MaxConcurrent          *int     `json:"maxConcurrent"`
-	MinimumRemaining       *float64 `json:"minimumRemaining"`
-	CloudflareCookies      *string  `json:"cloudflareCookies"`
-	ClearCloudflareCookies bool     `json:"clearCloudflareCookies"`
+	Name                   *string                       `json:"name"`
+	Enabled                *bool                         `json:"enabled"`
+	Priority               *int                          `json:"priority"`
+	MaxConcurrent          *int                          `json:"maxConcurrent"`
+	MinimumRemaining       *float64                      `json:"minimumRemaining"`
+	CloudflareCookies      *string                       `json:"cloudflareCookies"`
+	ClearCloudflareCookies bool                          `json:"clearCloudflareCookies"`
+	BuildSuperEntitled     *bool                         `json:"buildSuperEntitled"`
+	BuildRouteMode         *accountdomain.BuildRouteMode `json:"buildRouteMode"`
 }
 
 type batchUpdateRequest struct {
@@ -254,6 +260,10 @@ type accountResponse struct {
 	ObservedModel              string                `json:"observedModel,omitempty"`
 	ObservedModelAt            *time.Time            `json:"observedModelAt,omitempty"`
 	CloudflareCookieConfigured bool                  `json:"cloudflareCookieConfigured"`
+	BuildSuperEntitled         bool                  `json:"buildSuperEntitled"`
+	BuildRouteMode             string                `json:"buildRouteMode"`
+	BuildBotFlagged            bool                  `json:"buildBotFlagged"`
+	ModelSyncFailed            bool                  `json:"modelSyncFailed,omitempty"`
 	Billing                    *billingResponse      `json:"billing,omitempty"`
 	Quota                      quotaResponse         `json:"quota"`
 	QuotaWindows               []quotaWindowResponse `json:"quotaWindows,omitempty"`
@@ -332,7 +342,7 @@ type quotaResponse struct {
 
 func (h *Handler) list(c *gin.Context) {
 	page, pageSize := pagination(c)
-	values, total, err := h.service.List(c.Request.Context(), page, pageSize, c.Query("search"), accountapp.ListFilter{Provider: c.Query("provider"), QuotaType: c.Query("type"), Status: c.Query("status"), Renewal: c.Query("renewal"), Sort: repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))}})
+	values, total, err := h.service.List(c.Request.Context(), page, pageSize, c.Query("search"), accountapp.ListFilter{Provider: c.Query("provider"), QuotaType: c.Query("type"), Status: c.Query("status"), Renewal: c.Query("renewal"), Risk: c.Query("risk"), Sort: repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))}})
 	if errors.Is(err, accountapp.ErrInvalidFilter) {
 		response.Error(c, http.StatusBadRequest, "invalidFilter", err.Error())
 		return
@@ -358,7 +368,7 @@ func (h *Handler) summary(c *gin.Context) {
 	web := value.Providers[string(accountdomain.ProviderWeb)]
 	console := value.Providers[string(accountdomain.ProviderConsole)]
 	response.Success(c, http.StatusOK, gin.H{
-		"total": value.Total, "available": value.Available, "recovering": value.Recovering, "attention": value.Attention,
+		"total": value.Total, "available": value.Available, "recovering": value.Recovering, "attention": value.Attention, "risk": value.Risk,
 		"providers": gin.H{
 			string(accountdomain.ProviderBuild):   gin.H{"total": build.Total, "available": build.Available},
 			string(accountdomain.ProviderWeb):     gin.H{"total": web.Total, "available": web.Available},
@@ -904,12 +914,19 @@ func (h *Handler) update(c *gin.Context) {
 		Name: request.Name, Enabled: request.Enabled, Priority: request.Priority,
 		MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining,
 		CloudflareCookies: request.CloudflareCookies, ClearCloudflareCookies: request.ClearCloudflareCookies,
+		BuildSuperEntitled: request.BuildSuperEntitled, BuildRouteMode: request.BuildRouteMode,
 	})
 	if err != nil {
 		h.writeServiceError(c, "accountUpdateFailed", err, http.StatusInternalServerError, "更新账号失败")
 		return
 	}
-	response.Success(c, http.StatusOK, newAccountResponse(value))
+	result := newAccountResponse(value)
+	if request.BuildSuperEntitled != nil {
+		if synchronizer, ok := h.sync.(accountModelSynchronizer); ok {
+			result.ModelSyncFailed = synchronizer.SyncModels(c.Request.Context(), id) != nil
+		}
+	}
+	response.Success(c, http.StatusOK, result)
 }
 
 func (h *Handler) delete(c *gin.Context) {
@@ -1016,6 +1033,10 @@ func (h *Handler) refreshAllConsoleQuotas(c *gin.Context) {
 
 func newAccountResponse(value accountapp.View) accountResponse {
 	c := value.Credential
+	buildRouteMode := c.BuildRouteMode
+	if c.Provider != accountdomain.ProviderBuild || !buildRouteMode.IsValid() {
+		buildRouteMode = accountdomain.BuildRouteAuto
+	}
 	result := accountResponse{
 		ID: c.ID, Provider: string(c.Provider), AuthType: string(c.AuthType), WebTier: string(c.WebTier),
 		WebTierSyncedAt: c.WebTierSyncedAt, Name: c.Name, Email: c.Email, UserID: c.UserID, TeamID: c.TeamID,
@@ -1027,6 +1048,9 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),
 		CreatedAt: c.CreatedAt, ObservedModel: c.ObservedModel, ObservedModelAt: c.ObservedModelAt,
 		CloudflareCookieConfigured: c.EncryptedCloudflareCookie != "",
+		BuildSuperEntitled:         c.BuildSuperEntitled && c.Provider == accountdomain.ProviderBuild,
+		BuildRouteMode:             string(buildRouteMode),
+		BuildBotFlagged:            value.BuildBotFlagged && c.Provider == accountdomain.ProviderBuild,
 		Quota:                      newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
 	}
 	for _, window := range value.QuotaWindows {

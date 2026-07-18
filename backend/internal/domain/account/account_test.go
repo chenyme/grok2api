@@ -37,6 +37,36 @@ func TestBillingIsPaidMatchesSQLSignals(t *testing.T) {
 	}
 }
 
+func TestBuildRouteModeValidation(t *testing.T) {
+	for _, value := range []BuildRouteMode{BuildRouteAuto, BuildRouteBuild, BuildRouteXAI} {
+		if !value.IsValid() {
+			t.Fatalf("valid route mode rejected: %q", value)
+		}
+	}
+	for _, value := range []BuildRouteMode{"", "primary", "fallback"} {
+		if value.IsValid() {
+			t.Fatalf("invalid route mode accepted: %q", value)
+		}
+	}
+}
+
+func TestIsBuildSuper(t *testing.T) {
+	paid := Billing{MonthlyLimit: 100}
+	zeroFree := Billing{IsUnifiedBillingUser: true}
+	if !IsBuildSuper(Credential{Provider: ProviderBuild, BuildSuperEntitled: true}, &zeroFree) {
+		t.Fatal("entitlement must make zero-billing Build Super")
+	}
+	if !IsBuildSuper(Credential{Provider: ProviderBuild}, &paid) {
+		t.Fatal("paid billing must make Build Super")
+	}
+	if IsBuildSuper(Credential{Provider: ProviderBuild}, &zeroFree) {
+		t.Fatal("zero billing without entitlement is not Super")
+	}
+	if IsBuildSuper(Credential{Provider: ProviderWeb, BuildSuperEntitled: true}, &paid) {
+		t.Fatal("Web must ignore BuildSuperEntitled")
+	}
+}
+
 func TestRoutingCandidateIsKnownFreeBuild(t *testing.T) {
 	freeBilling := Billing{PlanName: "Free"}
 	paidBilling := Billing{PlanName: "SuperGrok"}
@@ -51,6 +81,9 @@ func TestRoutingCandidateIsKnownFreeBuild(t *testing.T) {
 		{name: "observed response model", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, ObservedModel: "grok-4.5-build-free"}}, want: true},
 		{name: "quota recovery", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, QuotaRecovery: &freeRecovery}, want: true},
 		{name: "paid overrides stale free signal", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, ObservedModel: "grok-4.5-build-free"}, Billing: &paidBilling}},
+		{name: "entitlement overrides free profile", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, BuildSuperEntitled: true}, Billing: &freeBilling}},
+		{name: "entitlement overrides free recovery", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, BuildSuperEntitled: true}, QuotaRecovery: &freeRecovery}},
+		{name: "entitlement overrides observed free model", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, BuildSuperEntitled: true, ObservedModel: "grok-4.5-build-free"}}},
 		{name: "unknown build", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}}},
 		{name: "web is never build free", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderWeb, ObservedModel: "grok-4.5-build-free"}}},
 	}

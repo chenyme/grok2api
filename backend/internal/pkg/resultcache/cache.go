@@ -101,6 +101,13 @@ func (c *Cache[K, V]) Set(key K, value V, now time.Time) {
 	c.setLocked(key, value, now)
 }
 
+// Delete 失效指定键的已缓存结果；正在执行的加载不被中断。
+func (c *Cache[K, V]) Delete(key K) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.values, key)
+}
+
 func (c *Cache[K, V]) setLocked(key K, value V, now time.Time) {
 	if _, exists := c.values[key]; !exists && len(c.values) >= c.maxSize {
 		var oldestKey K

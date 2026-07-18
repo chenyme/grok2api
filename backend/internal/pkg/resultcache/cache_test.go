@@ -27,6 +27,17 @@ func TestCacheExpiresAndEvictsOldestEntry(t *testing.T) {
 	}
 }
 
+func TestCacheDeleteInvalidatesStoredValue(t *testing.T) {
+	now := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	cache := New[string, int](2, time.Minute)
+	cache.Set("account-risk", 1, now)
+	cache.Delete("account-risk")
+
+	if _, ok := cache.Get("account-risk", now); ok {
+		t.Fatal("deleted cache entry was returned")
+	}
+}
+
 func TestCacheCoalescesConcurrentLoads(t *testing.T) {
 	now := time.Now()
 	cache := New[string, int](2, time.Minute)

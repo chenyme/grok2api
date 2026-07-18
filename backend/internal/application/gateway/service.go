@@ -478,9 +478,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	var lastErr error
 	var lastFailure *UpstreamFailure
 	failureAttempts := newFailureAttemptRecorder(http.MethodPost, path)
-	forwardResponse := func(credential accountdomain.Credential) (*provider.Response, error) {
+	forwardResponse := func(credential accountdomain.Credential, billing *accountdomain.Billing) (*provider.Response, error) {
 		started := time.Now()
-		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Billing: billing, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
 		err = failureAttempts.captureResponse(credential, started, response, err)
 		timing.markUpstream(time.Since(started))
 		return response, err
@@ -543,7 +543,7 @@ attemptLoop:
 			lastFailure = newCredentialUpstreamFailure(err, lease.Credential.ID, lease.Credential.Name)
 			continue
 		}
-		response, err := forwardResponse(credential)
+		response, err := forwardResponse(credential, lease.Billing)
 		if err != nil {
 			lease.Release()
 			lastErr = err
@@ -581,7 +581,7 @@ attemptLoop:
 			authRecoveryAttempted[credential.ID] = true
 			refreshed, refreshErr := ensureCredential(credential, true)
 			if refreshErr == nil {
-				response, err = forwardResponse(refreshed)
+				response, err = forwardResponse(refreshed, lease.Billing)
 				credential = refreshed
 			}
 			if refreshErr != nil || err != nil {
@@ -624,9 +624,9 @@ attemptLoop:
 				continue
 			}
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
-			freeBuildForbidden := response.StatusCode == http.StatusForbidden && credential.Provider == accountdomain.ProviderBuild && (lease.Billing == nil || !lease.Billing.IsPaid())
+			// Adapter 仅允许 auto Super 在同请求内回退 XAI；非 Super 的 403 按账号级故障冷却换号。
+			freeBuildForbidden := response.StatusCode == http.StatusForbidden && credential.Provider == accountdomain.ProviderBuild && !accountdomain.IsBuildSuper(credential, lease.Billing)
 			if freeBuildForbidden {
-				// XAI 不接受 Free 账号。主 Build 403 是该账号当前不可用，必须冷却并换号。
 				lastFailure.AccountScoped = true
 			}
 			if response.StatusCode == http.StatusTooManyRequests && response.RateLimit != nil && response.RateLimit.TeamID != "" && response.RateLimit.Model == route.UpstreamModel {
@@ -648,7 +648,7 @@ attemptLoop:
 					lastFailure = newCredentialUpstreamFailure(refreshErr, credential.ID, credential.Name)
 					continue attemptLoop
 				}
-				response, err = forwardResponse(refreshed)
+				response, err = forwardResponse(refreshed, lease.Billing)
 				credential = refreshed
 				if err != nil {
 					lease.Release()

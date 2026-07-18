@@ -13,10 +13,9 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/config"
 )
 
-// FallbackMarker 同时提供 Build XAI 回退资格判定与回退标记持久化。
-// XAI 仅接受 Super 账号；资格查询失败时 Adapter 必须 fail closed。
+// FallbackMarker 记录 Build 请求因当次 403 成功回退到 XAI。
+// 该标记只用于观测，不参与后续请求路由。
 type FallbackMarker interface {
-	CanUseBuildAPIFallback(ctx context.Context, accountID uint64) (bool, error)
 	MarkBuildAPIFallback(ctx context.Context, accountID uint64, enabled bool) error
 }
 
@@ -62,18 +61,15 @@ func (a *Adapter) fallbackBaseURL() string {
 }
 
 // isXAIInferenceFallbackCapable 判断该 Build API 操作是否可走 XAI 推理回退。
-// 生产探针（账号 954 / api.x.ai/v1）已验证：
 //
-//	支持：GET /models、POST /responses、POST /responses/compact、视频 create/poll
-//	不支持：GET/DELETE /responses/{id}、GET /billing（404）；Billing 主地址 403 不得改写为 XAI 404
+//	支持：POST /responses、POST /responses/compact、视频 create/poll
+//	不支持：GET /models（始终主地址）、GET/DELETE /responses/{id}、GET /billing、未知路径
 //
 // OAuth 认证端点始终使用独立认证 host，不受此函数影响。
 func isXAIInferenceFallbackCapable(method, path string) bool {
 	method = strings.ToUpper(strings.TrimSpace(method))
 	path = normalizeBuildAPIPath(path)
 	switch {
-	case method == http.MethodGet && path == "/models":
-		return true
 	case method == http.MethodPost && path == "/responses":
 		// Responses create 与 Chat/Messages 兼容转发均走 POST /responses。
 		return true
@@ -85,7 +81,7 @@ func isXAIInferenceFallbackCapable(method, path string) bool {
 		// 视频任务轮询：GET /videos/{id}
 		return true
 	default:
-		// Billing、stored-resource GET/DELETE、未知路径：仅主地址。
+		// /models、Billing、stored-resource GET/DELETE、未知路径：仅主地址。
 		return false
 	}
 }
@@ -107,49 +103,46 @@ func normalizeBuildAPIPath(path string) string {
 	return path
 }
 
-// apiBaseForOperation 按操作与实时 Billing 资格选择 Build API 根地址。
-// 旧数据即使误标 BuildAPIFallback，Free/Unknown 账号也始终走主地址。
-func (a *Adapter) apiBaseForOperation(ctx context.Context, credential account.Credential, method, path string) string {
-	if credential.BuildAPIFallback && isXAIInferenceFallbackCapable(method, path) && a.canUseBuildAPIFallback(ctx, credential.ID) {
+func normalizedBuildRouteMode(credential account.Credential) account.BuildRouteMode {
+	if credential.Provider == account.ProviderBuild && credential.BuildRouteMode.IsValid() {
+		return credential.BuildRouteMode
+	}
+	return account.BuildRouteAuto
+}
+
+// inferenceBaseForOperation 先应用管理员的显式模式，再校验 auto 的 Super 资格与 bot flag。
+// Free 与未确认等级的账号在 auto 下始终使用 Build；历史 fallback 标记不参与选择。
+func (a *Adapter) inferenceBaseForOperation(credential account.Credential, billing *account.Billing, method, path string) string {
+	if !isXAIInferenceFallbackCapable(method, path) {
+		return a.primaryBaseURL()
+	}
+	switch normalizedBuildRouteMode(credential) {
+	case account.BuildRouteBuild:
+		return a.primaryBaseURL()
+	case account.BuildRouteXAI:
+		return a.fallbackBaseURL()
+	}
+	if !account.IsBuildSuper(credential, billing) {
+		return a.primaryBaseURL()
+	}
+	if a.CredentialMetadata(credential).BuildBotFlagged {
 		return a.fallbackBaseURL()
 	}
 	return a.primaryBaseURL()
 }
 
-// shouldProbeXAIInferenceFallback 仅允许已确认 Super 的未标记账号在主地址 403 后探测 XAI。
-func (a *Adapter) shouldProbeXAIInferenceFallback(ctx context.Context, credential account.Credential, method, path string, primaryStatus int) bool {
-	return !credential.BuildAPIFallback && isHTTPForbidden(primaryStatus) && isXAIInferenceFallbackCapable(method, path) && a.canUseBuildAPIFallback(ctx, credential.ID)
-}
-
-func (a *Adapter) canUseBuildAPIFallback(ctx context.Context, accountID uint64) bool {
-	allowed, err := a.buildXAIEntitled(ctx, accountID)
-	if err != nil {
-		slog.Warn("build_api_fallback_policy_failed", "account_id", accountID, "error", err.Error())
-		return false
-	}
-	return allowed
-}
-
-// buildXAIEntitled 返回账号是否具备 XAI 能力。调用方自行决定策略查询失败时
-// 是对推理 fail closed，还是让模型同步失败以保留上一份完整能力快照。
-func (a *Adapter) buildXAIEntitled(ctx context.Context, accountID uint64) (bool, error) {
-	marker := a.fallbackMarkerRef()
-	if marker == nil || accountID == 0 {
-		return false, nil
-	}
-	allowed, err := marker.CanUseBuildAPIFallback(ctx, accountID)
-	if err != nil {
-		return false, err
-	}
-	return allowed, nil
+// shouldProbeXAIInferenceFallback 只由当次 Build CLI 的严格 403 触发。
+// bot-flagged 账号已直接使用 XAI，不走该探测分支。
+func shouldProbeXAIInferenceFallback(credential account.Credential, billing *account.Billing, method, path string, primaryStatus int) bool {
+	return account.IsBuildSuper(credential, billing) && normalizedBuildRouteMode(credential) == account.BuildRouteAuto && isHTTPForbidden(primaryStatus) && isXAIInferenceFallbackCapable(method, path)
 }
 
 func (a *Adapter) urlWithBase(base, path string) string {
 	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
-// activateBuildAPIFallback 在 XAI 推理回退成功后幂等标记账号；标记失败不撤销当前成功结果。
-// 仅应在可回退操作（models / responses create|compact / video）成功后调用，不得由 Billing 或 stored-resource 触发。
+// activateBuildAPIFallback 在 XAI 推理回退成功后幂等记录账号；标记失败不撤销当前成功结果。
+// 仅应在可回退操作（responses create|compact / video）成功后调用，不得由 /models、Billing 或 stored-resource 触发。
 func (a *Adapter) activateBuildAPIFallback(ctx context.Context, credential *account.Credential) {
 	if credential == nil || credential.ID == 0 || credential.BuildAPIFallback {
 		return

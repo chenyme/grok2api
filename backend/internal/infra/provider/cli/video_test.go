@@ -20,9 +20,9 @@ import (
 )
 
 func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
-	noImage, err := buildVideoCreatePayload(provider.VideoRequest{
+	noImage, err := videoCreatePayload(provider.VideoRequest{
 		Prompt: "animate waves", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
-	}, "")
+	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,10 +36,10 @@ func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
 		t.Fatalf("primary payload must not include output: %#v", noImage)
 	}
 
-	withImage, err := buildVideoCreatePayload(provider.VideoRequest{
+	withImage, err := videoCreatePayload(provider.VideoRequest{
 		Prompt: "animate", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
 		ReferenceURLs: []string{"https://cdn.example.com/r2/first.png"},
-	}, "")
+	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
 		t.Fatalf("single-image payload = %#v", withImage)
 	}
 
-	withUpload, err := buildVideoCreatePayload(provider.VideoRequest{Prompt: "x", Duration: 6}, "https://api.example/v1/media/uploads/tok")
+	withUpload, err := videoCreatePayload(provider.VideoRequest{Prompt: "x", Duration: 6}, "https://api.example/v1/media/uploads/tok", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,13 +62,13 @@ func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
 }
 
 func TestBuildVideoCreatePayloadImageOnlyEmptyPrompt(t *testing.T) {
-	payload, err := buildVideoCreatePayload(provider.VideoRequest{
+	payload, err := videoCreatePayload(provider.VideoRequest{
 		Prompt:        "   ",
 		Duration:      6,
 		AspectRatio:   "16:9",
 		Resolution:    "720p",
 		ReferenceURLs: []string{"https://r2.example.com/first.png"},
-	}, "")
+	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +78,33 @@ func TestBuildVideoCreatePayloadImageOnlyEmptyPrompt(t *testing.T) {
 	image, ok := payload["image"].(map[string]any)
 	if !ok || image["image_url"] != "https://r2.example.com/first.png" || payload["model"] != buildVideoModel {
 		t.Fatalf("image-only payload = %#v", payload)
+	}
+}
+
+func TestXAIVideoCreatePayloadMatchesOfficialSchema(t *testing.T) {
+	payload, err := videoCreatePayload(provider.VideoRequest{
+		Prompt:        "animate",
+		Duration:      6,
+		AspectRatio:   "16:9",
+		Resolution:    "720p",
+		ReferenceURLs: []string{"https://cdn.example.com/r2/first.png"},
+	}, "https://api.example/v1/media/uploads/tok", xaiVideoRequestProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["model"] != xaiVideoModel {
+		t.Fatalf("XAI model = %#v", payload["model"])
+	}
+	image, ok := payload["image"].(map[string]any)
+	if !ok || image["url"] != "https://cdn.example.com/r2/first.png" {
+		t.Fatalf("XAI image payload = %#v", payload["image"])
+	}
+	if _, exists := image["image_url"]; exists {
+		t.Fatalf("XAI image payload leaked Build field: %#v", image)
+	}
+	output, ok := payload["output"].(map[string]any)
+	if !ok || output["upload_url"] != "https://api.example/v1/media/uploads/tok" {
+		t.Fatalf("XAI output payload = %#v", payload["output"])
 	}
 }
 

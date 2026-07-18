@@ -53,8 +53,27 @@ func TestListFilters(t *testing.T) {
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "unknown", Now: now}, 1)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Status: "active", Now: now}, 2)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Status: "disabled", Now: now}, 1)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{AccountIDs: []uint64{free.ID}, RestrictIDs: true, Now: now}, 1)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{RestrictIDs: true, Now: now}, 0)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{ExcludeIDs: []uint64{free.ID}, Now: now}, 2)
 	refreshable := true
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Refreshable: &refreshable, Now: now}, 1)
+
+	// 零 Billing + build_super_entitled：paid 可查到，free 查不到。
+	entitled := accountModel{IdentityKey: testIdentityKey("entitled-zero"), Provider: "grok_build", Name: "entitled-zero", SourceKey: "entitled-zero", ObservedModel: "grok-build-free", Enabled: true, AuthStatus: "active", Priority: 1, BuildSuperEntitled: true}
+	if err := database.db.WithContext(ctx).Create(&entitled).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&accountCredentialModel{AccountID: entitled.ID, AuthType: "oauth", EncryptedPrimary: testEncryptedToken, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&billingModel{AccountID: entitled.ID, IsUnifiedBillingUser: true, SyncedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "paid", Now: now}, 2)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "free", Now: now}, 1)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Status: "active", Now: now}, 3)
+
 	for _, tier := range []string{"auto", "basic", "super", "heavy"} {
 		value := accountModel{IdentityKey: testIdentityKey("web-" + tier), Provider: "grok_web", Name: "web-" + tier, SourceKey: "web-" + tier, Enabled: true, AuthStatus: "active", Priority: 1}
 		if err := database.db.WithContext(ctx).Create(&value).Error; err != nil {
@@ -66,7 +85,7 @@ func TestListFilters(t *testing.T) {
 		assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", QuotaType: tier, Now: now}, 1)
 	}
 	accountValues, _, err := accounts.List(ctx, repository.AccountListQuery{Page: repository.PageQuery{Limit: 20, Sort: repository.SortQuery{Field: "name", Direction: repository.SortAscending}}, Filter: repository.AccountListFilter{Provider: "grok_build", Now: now}})
-	if err != nil || len(accountValues) != 3 || accountValues[0].Name != "disabled" || accountValues[2].Name != "paid" {
+	if err != nil || len(accountValues) != 4 || accountValues[0].Name != "disabled" || accountValues[3].Name != "paid" {
 		t.Fatalf("account name sort = %#v, err = %v", accountValues, err)
 	}
 

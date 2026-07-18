@@ -20,11 +20,22 @@ import (
 
 const (
 	buildVideoModel             = "grok-imagine-video-1.5"
+	xaiVideoModel               = "grok-imagine-video-1.5-preview"
 	buildVideoMaxImages         = 1
 	buildVideoPollEvery         = 2 * time.Second
 	buildVideoMaxBodySize       = 2 << 20
 	buildVideoErrorSummaryLimit = 256
 	buildVideoErrorMessageLimit = 160
+)
+
+type videoRequestProfile struct {
+	model         string
+	imageURLField string
+}
+
+var (
+	buildVideoRequestProfile = videoRequestProfile{model: buildVideoModel, imageURLField: "image_url"}
+	xaiVideoRequestProfile   = videoRequestProfile{model: xaiVideoModel, imageURLField: "url"}
 )
 
 // mediaUploadSecretPattern 匹配上传路径及其中的 64-hex 一次性 token（含完整 URL 前缀）。
@@ -133,9 +144,11 @@ func boundDiagnosticText(value string, limit int) string {
 	return value[:limit]
 }
 
-// GenerateVideo 通过 Build OAuth 固定模型 grok-imagine-video-1.5 创建并轮询视频任务。
+// GenerateVideo 通过 Build OAuth 创建并轮询视频任务；对外仍使用 grok-imagine-video-1.5，
+// 发往 XAI 时仅在出站协议层转换为官方 preview 模型与 image.url 结构。
 // 最多 1 张首图；多于 1 张在调用上游前失败，不静默截断。
-// 主地址不注入 output.upload_url；仅在已标记 XAI 推理回退或主 403 后探测 XAI 时签发 PUT 地址。
+// 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source=1 默认使用 XAI。
+// 其他 auto Super 账号仅在当次 Build 创建返回 403 后探测 XAI。
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
 	if len(request.ReferenceURLs) > buildVideoMaxImages {
 		return provider.VideoResult{}, fmt.Errorf("Build grok-imagine-video-1.5 最多支持 1 张首图，当前为 %d 张", len(request.ReferenceURLs))
@@ -145,14 +158,14 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, err
 	}
 	credential := request.Credential
-	if credential.BuildAPIFallback {
-		if a.canUseBuildAPIFallback(ctx, credential.ID) {
-			return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true)
-		}
+	routeMode := normalizedBuildRouteMode(credential)
+	xaiEligible := account.IsBuildSuper(credential, request.Billing)
+	if routeMode == account.BuildRouteXAI || (routeMode == account.BuildRouteAuto && xaiEligible && a.CredentialMetadata(credential).BuildBotFlagged) {
+		return a.generateVideoOnXAI(ctx, request, credential, accessToken, false)
 	}
-	// 未标记：先走主地址，不添加 upload_url。
+	// 非 bot-flagged 账号先走 Build 主地址，不读取历史回退标记。
 	primaryBase := a.primaryBaseURL()
-	payload, err := buildVideoCreatePayload(request, "")
+	payload, err := videoCreatePayload(request, "", buildVideoRequestProfile)
 	if err != nil {
 		return provider.VideoResult{}, err
 	}
@@ -160,7 +173,7 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if err != nil {
 		return provider.VideoResult{}, err
 	}
-	createResp, createErr := a.doVideoJSON(ctx, credential, accessToken, http.MethodPost, primaryBase, "/videos/generations", body, true)
+	createResp, createErr := a.doVideoJSON(ctx, credential, accessToken, http.MethodPost, primaryBase, "/videos/generations", body, buildVideoRequestProfile, true)
 	if createErr == nil {
 		jobID, parseErr := parseVideoCreateResponse(createResp)
 		if parseErr != nil {
@@ -169,39 +182,34 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		if request.Progress != nil {
 			request.Progress(1)
 		}
-		return a.pollVideoJob(ctx, credential, accessToken, primaryBase, jobID, "", request.Progress)
+		return a.pollVideoJob(ctx, credential, accessToken, primaryBase, jobID, "", buildVideoRequestProfile, request.Progress)
 	}
 	var upstream *videoUpstreamError
 	if !asVideoUpstreamError(createErr, &upstream) || !isHTTPForbidden(upstream.status) {
 		return provider.VideoResult{}, createErr
 	}
-	// Free/Unknown 的主 403 直接返回；仅 Super 可签发 upload_url 后探测 XAI。
-	if credential.BuildAPIFallback || !a.canUseBuildAPIFallback(ctx, credential.ID) {
+	if routeMode == account.BuildRouteBuild || !xaiEligible {
 		return provider.VideoResult{}, createErr
 	}
-	// 主 403：签发 upload_url 后探测 XAI；创建成功才标记降级。
-	return a.generateVideoOnBase(ctx, request, credential, accessToken, a.fallbackBaseURL(), true)
+	// 已确认 Super 的主地址 403：签发 upload_url 后探测 XAI；创建成功才标记降级。
+	return a.generateVideoOnXAI(ctx, request, credential, accessToken, true)
 }
 
-func (a *Adapter) generateVideoOnBase(ctx context.Context, request provider.VideoRequest, credential account.Credential, accessToken, base string, withUploadURL bool) (provider.VideoResult, error) {
-	uploadURL, assetID := "", ""
-	var err error
-	if withUploadURL {
-		issuer := a.uploadIssuerRef()
-		if issuer == nil {
-			return provider.VideoResult{}, fmt.Errorf("XAI 视频回退需要媒体上传接收服务")
-		}
-		jobKey := strings.TrimSpace(request.JobID)
-		if jobKey == "" {
-			jobKey = "video-pending"
-		}
-		uploadURL, assetID, err = issuer.IssueVideoUpload(ctx, jobKey)
-		if err != nil {
-			// 配置错误（例如 PublicAPIBaseURL 不可用）不得误标降级。
-			return provider.VideoResult{}, err
-		}
+func (a *Adapter) generateVideoOnXAI(ctx context.Context, request provider.VideoRequest, credential account.Credential, accessToken string, recordFallback bool) (provider.VideoResult, error) {
+	issuer := a.uploadIssuerRef()
+	if issuer == nil {
+		return provider.VideoResult{}, fmt.Errorf("XAI 视频需要媒体上传接收服务")
 	}
-	payload, err := buildVideoCreatePayload(request, uploadURL)
+	jobKey := strings.TrimSpace(request.JobID)
+	if jobKey == "" {
+		jobKey = "video-pending"
+	}
+	uploadURL, assetID, err := issuer.IssueVideoUpload(ctx, jobKey)
+	if err != nil {
+		// 配置错误（例如 PublicAPIBaseURL 不可用）不得误标降级。
+		return provider.VideoResult{}, err
+	}
+	payload, err := videoCreatePayload(request, uploadURL, xaiVideoRequestProfile)
 	if err != nil {
 		return provider.VideoResult{}, err
 	}
@@ -209,7 +217,8 @@ func (a *Adapter) generateVideoOnBase(ctx context.Context, request provider.Vide
 	if err != nil {
 		return provider.VideoResult{}, err
 	}
-	createResp, err := a.doVideoJSON(ctx, credential, accessToken, http.MethodPost, base, "/videos/generations", body, true)
+	base := a.fallbackBaseURL()
+	createResp, err := a.doVideoJSON(ctx, credential, accessToken, http.MethodPost, base, "/videos/generations", body, xaiVideoRequestProfile, true)
 	if err != nil {
 		return provider.VideoResult{}, err
 	}
@@ -218,13 +227,13 @@ func (a *Adapter) generateVideoOnBase(ctx context.Context, request provider.Vide
 	if err != nil {
 		return provider.VideoResult{}, err
 	}
-	if withUploadURL && !credential.BuildAPIFallback {
+	if recordFallback {
 		a.activateBuildAPIFallback(ctx, &credential)
 	}
 	if request.Progress != nil {
 		request.Progress(1)
 	}
-	return a.pollVideoJob(ctx, credential, accessToken, base, jobID, assetID, request.Progress)
+	return a.pollVideoJob(ctx, credential, accessToken, base, jobID, assetID, xaiVideoRequestProfile, request.Progress)
 }
 
 // DownloadVideo 通过 Build egress 拉取已完成任务的公开 CDN URL。
@@ -263,9 +272,9 @@ func (a *Adapter) DownloadVideo(ctx context.Context, credential account.Credenti
 	return response.Body, contentType, response.ContentLength, nil
 }
 
-func buildVideoCreatePayload(request provider.VideoRequest, uploadURL string) (map[string]any, error) {
+func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile videoRequestProfile) (map[string]any, error) {
 	payload := map[string]any{
-		"model": buildVideoModel,
+		"model": profile.model,
 	}
 	if prompt := strings.TrimSpace(request.Prompt); prompt != "" {
 		payload["prompt"] = prompt
@@ -284,7 +293,7 @@ func buildVideoCreatePayload(request provider.VideoRequest, uploadURL string) (m
 		if imageURL == "" {
 			return nil, fmt.Errorf("视频首图 URL 不能为空")
 		}
-		payload["image"] = map[string]any{"image_url": imageURL}
+		payload["image"] = map[string]any{profile.imageURLField: imageURL}
 	}
 	if _, hasPrompt := payload["prompt"]; !hasPrompt {
 		if _, hasImage := payload["image"]; !hasImage {
@@ -297,11 +306,11 @@ func buildVideoCreatePayload(request provider.VideoRequest, uploadURL string) (m
 	return payload, nil
 }
 
-func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credential, accessToken, base, jobID, assetID string, progress func(int)) (provider.VideoResult, error) {
+func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credential, accessToken, base, jobID, assetID string, profile videoRequestProfile, progress func(int)) (provider.VideoResult, error) {
 	ticker := time.NewTicker(buildVideoPollEvery)
 	defer ticker.Stop()
 	for {
-		statusBody, err := a.doVideoJSON(ctx, credential, accessToken, http.MethodGet, base, "/videos/"+url.PathEscape(jobID), nil, false)
+		statusBody, err := a.doVideoJSON(ctx, credential, accessToken, http.MethodGet, base, "/videos/"+url.PathEscape(jobID), nil, profile, false)
 		if err != nil {
 			return provider.VideoResult{}, err
 		}
@@ -313,7 +322,7 @@ func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credentia
 			if assetID != "" {
 				issuer := a.uploadIssuerRef()
 				if issuer == nil {
-					return provider.VideoResult{}, fmt.Errorf("XAI 视频回退需要媒体上传接收服务")
+					return provider.VideoResult{}, fmt.Errorf("XAI 视频需要媒体上传接收服务")
 				}
 				contentType, waitErr := issuer.WaitVideoUpload(ctx, assetID)
 				if waitErr != nil {
@@ -338,7 +347,7 @@ func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credentia
 	}
 }
 
-func (a *Adapter) doVideoJSON(ctx context.Context, credential account.Credential, accessToken, method, base, path string, body []byte, withTrace bool) ([]byte, error) {
+func (a *Adapter) doVideoJSON(ctx context.Context, credential account.Credential, accessToken, method, base, path string, body []byte, profile videoRequestProfile, withTrace bool) ([]byte, error) {
 	var bodyReader io.Reader
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
@@ -348,7 +357,7 @@ func (a *Adapter) doVideoJSON(ctx context.Context, credential account.Credential
 	if err != nil {
 		return nil, err
 	}
-	if err := a.applyHeaders(req, credential, accessToken, buildVideoModel, "", withTrace); err != nil {
+	if err := a.applyHeaders(req, credential, accessToken, profile.model, "", withTrace); err != nil {
 		return nil, err
 	}
 	if len(body) > 0 {
