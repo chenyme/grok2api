@@ -319,11 +319,17 @@ func (r *AccountRepository) ListEnabledAccountIDs(ctx context.Context, provider 
 	query := r.db.db.WithContext(ctx).
 		Table("provider_accounts AS account").
 		Select("account.id").
-		Where("account.provider = ? AND account.enabled = ? AND account.auth_status = ?", provider, true, account.AuthStatusActive)
+		Where("account.provider = ? AND account.enabled = ?", provider, true)
 	if refreshableOnly {
 		query = query.
 			Joins("JOIN account_credentials AS credential ON credential.account_id = account.id").
-			Where("credential.encrypted_refresh <> ''")
+			Where("credential.encrypted_refresh <> ''").
+			Where(
+				"account.auth_status = ? OR (account.auth_status = ? AND credential.refresh_permanent = ? AND credential.last_refresh_error = ?)",
+				account.AuthStatusActive, account.AuthStatusReauthRequired, true, "credential_decrypt_failed",
+			)
+	} else {
+		query = query.Where("account.auth_status = ?", account.AuthStatusActive)
 	}
 	var ids []uint64
 	err := query.Order("account.priority DESC, account.id ASC").Scan(&ids).Error
