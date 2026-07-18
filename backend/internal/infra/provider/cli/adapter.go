@@ -52,6 +52,7 @@ type Adapter struct {
 	fallbackMarker FallbackMarker
 	uploadIssuer   VideoUploadIssuer
 	replay         *reasoningreplay.ReasoningReplay
+	compaction     *gatewayCompactionCodec
 }
 
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
@@ -62,7 +63,7 @@ func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
 	agentID := uuid.NewString()
 	return &Adapter{
 		cfg: cfg, http: httpClient, oauth: newOAuthClient(httpClient), cipher: cipher, base: transport,
-		agentID: agentID, modelsETags: make(map[uint64]string),
+		agentID: agentID, modelsETags: make(map[uint64]string), compaction: newGatewayCompactionCodec(cipher),
 	}
 }
 
@@ -113,11 +114,23 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	body := request.Body
 	var toolCompatibility *responsesToolCompatibility
 	var conversationOptions conversation.ResponseOptions
+	compactionRequested := false
 	if request.NormalizeBody {
 		if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 			body, conversationOptions, err = conversation.ConvertRequestWithOptions(body, request.Model, request.Operation)
 		} else {
+			var foreignCompactions int
+			body, foreignCompactions, err = expandGatewayCompactionHistory(body, a.compaction, request.PromptCacheKey)
+			if err != nil {
+				return invalidResponsesResponse(err), nil
+			}
 			body, toolCompatibility, err = normalizeResponsesRequest(body, request.Model)
+			if toolCompatibility != nil {
+				compactionRequested = toolCompatibility.compactionRequested
+				if foreignCompactions > 0 {
+					toolCompatibility.addWarning("foreign_compaction_omitted")
+				}
+			}
 		}
 		if err != nil {
 			if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
@@ -126,19 +139,34 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return invalidResponsesResponse(err), nil
 		}
 	}
-	if len(body) > 0 && request.Method == http.MethodPost {
-		body, err = injectPromptCacheKey(body, request.PromptCacheKey)
+	if compactionRequested {
+		body, err = prepareGatewayCompactionSample(body)
 		if err != nil {
-			err = fmt.Errorf("写入 prompt_cache_key: %w", err)
-			if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
-				return invalidConversationResponse(request.Operation, err), nil
-			}
 			return invalidResponsesResponse(err), nil
 		}
+	}
+	if len(body) > 0 && request.Method == http.MethodPost {
+		if !compactionRequested {
+			body, err = injectPromptCacheKey(body, request.PromptCacheKey)
+			if err != nil {
+				err = fmt.Errorf("写入 prompt_cache_key: %w", err)
+				if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
+					return invalidConversationResponse(request.Operation, err), nil
+				}
+				return invalidResponsesResponse(err), nil
+			}
+		}
 		// 服务端推理回放：在 prompt_cache_key 写入后、出站前注入上一轮 encrypted items。
-		if a.replay != nil && request.PromptCacheKey != "" && !isCompactPath(request.Path) {
+		if a.replay != nil && request.PromptCacheKey != "" && !isCompactPath(request.Path) && !compactionRequested {
 			body = a.replay.Apply(ctx, request.Model, request.PromptCacheKey, body)
 		}
+	}
+	if compactionRequested {
+		warnings := ""
+		if toolCompatibility != nil {
+			warnings = toolCompatibility.warningHeader()
+		}
+		return a.forwardGatewayCompaction(ctx, request, accessToken, body, warnings)
 	}
 	// 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source=1 的账号默认走 XAI。
 	primaryBase := a.primaryBaseURL()
@@ -147,6 +175,10 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if err != nil {
 		return nil, err
 	}
+	if err := normalizeGzipResponse(resp); err != nil {
+		return nil, err
+	}
+	resp, reqURL, reasoningRecovered := a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, base, resp, reqURL)
 	// 仅可回退操作在当次 Build 主地址明确 403 时用等价请求探测 XAI。
 	if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Billing, request.Method, request.Path, resp.StatusCode) {
 		// 缓冲主 403 正文，备用失败时原样回放，避免二次 primary POST。
@@ -159,9 +191,17 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		fallbackBase := a.fallbackBaseURL()
 		if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
 			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(ctx, request, accessToken, body, fallbackBase)
+			if fallbackErr == nil {
+				fallbackErr = normalizeGzipResponse(fallbackResp)
+			}
+			fallbackRecovered := false
+			if fallbackErr == nil {
+				fallbackResp, fallbackURL, fallbackRecovered = a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, fallbackBase, fallbackResp, fallbackURL)
+			}
 			if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
 				a.activateBuildAPIFallback(ctx, &request.Credential)
-				resp, reqURL = fallbackResp, fallbackURL
+				resp, reqURL, base = fallbackResp, fallbackURL, fallbackBase
+				reasoningRecovered = reasoningRecovered || fallbackRecovered
 			} else {
 				if fallbackErr == nil {
 					_ = fallbackResp.Body.Close()
@@ -173,10 +213,6 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			resp = primaryResp
 		}
 	}
-
-	if err := normalizeGzipResponse(resp); err != nil {
-		return nil, err
-	}
 	modelCatalogChanged := a.modelCatalogChanged(request.Credential.ID, resp.Header.Get("x-models-etag"))
 	// 在协议转换前捕获上游 Responses 形态，写入/清理推理回放缓存。
 	if a.shouldCaptureReplay(request, resp) {
@@ -187,6 +223,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		if warnings := toolCompatibility.warningHeader(); warnings != "" {
 			resp.Header.Set("X-Grok2API-Compatibility-Warnings", warnings)
 		}
+	}
+	if reasoningRecovered {
+		appendCompatibilityWarning(resp.Header, "reasoning_encrypted_content_downgraded")
 	}
 	if responsesOperation && toolCompatibility != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if request.Streaming {

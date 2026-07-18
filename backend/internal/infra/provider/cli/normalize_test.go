@@ -65,6 +65,23 @@ func TestNormalizeResponsesRequestDoesNotInventPromptCacheKey(t *testing.T) {
 	}
 }
 
+func TestNormalizeResponsesRequestAddsEmptySummaryToEncryptedReasoning(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{"model":"public","input":[{"type":"reasoning","encrypted_content":"opaque"},{"role":"user","content":"continue"}]}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if json.Unmarshal(normalized, &payload) != nil || len(payload.Input) != 2 {
+		t.Fatalf("normalized = %s", normalized)
+	}
+	summary, ok := payload.Input[0]["summary"].([]any)
+	if !ok || len(summary) != 0 || payload.Input[0]["encrypted_content"] != "opaque" {
+		t.Fatalf("reasoning = %#v", payload.Input[0])
+	}
+}
+
 func TestNormalizeResponsesRequestFlattensJSONSchema(t *testing.T) {
 	body := []byte(`{"model":"public","input":"hello","response_format":{"type":"json_schema","json_schema":{"type":"object","name":"answer","strict":true,"schema":{"type":"object"}}}}`)
 	normalized, _, err := normalizeResponsesRequest(body, "grok-4.5")
