@@ -1,5 +1,9 @@
 export async function copyToClipboard(text: string): Promise<boolean> {
-  if (navigator.clipboard?.writeText) {
+  // The async Clipboard API is only reliable in a secure context. Some
+  // browsers still expose navigator.clipboard over plain HTTP but reject the
+  // write asynchronously; waiting for that rejection consumes the transient
+  // user activation and makes the legacy fallback fail as well.
+  if (globalThis.isSecureContext === true && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
       return true;
@@ -15,13 +19,14 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 // execCommand("copy") is deprecated but remains the standard way to copy
 // programmatically when the async Clipboard API is unavailable.
 function legacyCopy(text: string): boolean {
-  if (typeof document === "undefined") return false;
+  if (typeof document === "undefined" || !document.body) return false;
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "");
+  textarea.setAttribute("aria-hidden", "true");
   textarea.style.position = "fixed";
   textarea.style.top = "0";
-  textarea.style.left = "0";
+  textarea.style.left = "-9999px";
   textarea.style.width = "1em";
   textarea.style.height = "1em";
   // A large font keeps iOS Safari from zooming the page and lets the
@@ -32,6 +37,8 @@ function legacyCopy(text: string): boolean {
   textarea.style.outline = "none";
   textarea.style.boxShadow = "none";
   textarea.style.background = "transparent";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
 
   const activeElement = document.activeElement as Element | null;
   const selection = document.getSelection();
@@ -39,7 +46,7 @@ function legacyCopy(text: string): boolean {
   if (selection && selection.rangeCount > 0) savedRange = selection.getRangeAt(0);
 
   document.body.appendChild(textarea);
-  textarea.focus();
+  textarea.focus({ preventScroll: true });
   textarea.select();
   textarea.setSelectionRange(0, text.length);
 
