@@ -129,9 +129,12 @@ type Credential struct {
 	ObservedModelAt           *time.Time
 	WebTier                   WebTier
 	WebTierSyncedAt           *time.Time
-	LinkedAccountID           uint64
-	LinkedAccountName         string
-	LinkedProvider            Provider
+	// WebNSFWEnabledAt 记录 Grok Web 上游首次确认 NSFW 已成功开启的时间。
+	// 普通导入、额度同步和凭据更新不得清除。
+	WebNSFWEnabledAt  *time.Time
+	LinkedAccountID   uint64
+	LinkedAccountName string
+	LinkedProvider    Provider
 	// BuildAPIFallback 仅记录 grok_build 曾因当次 Build 403 成功回退到 XAI。
 	// 它不参与路由；每个新请求仍先走 Build，只有当次严格 403 才可尝试 XAI。
 	// token refresh / SSO 转换 / 普通 upsert / 重启不得清除。

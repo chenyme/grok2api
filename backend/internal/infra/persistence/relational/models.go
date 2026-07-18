@@ -88,10 +88,11 @@ type accountProviderLinkModel struct {
 func (accountProviderLinkModel) TableName() string { return "account_provider_links" }
 
 type webAccountProfileModel struct {
-	AccountID uint64 `gorm:"primaryKey"`
-	Tier      string `gorm:"size:16;not null;check:chk_web_account_profiles_tier,tier IN ('auto','basic','super','heavy')"`
-	SyncedAt  *time.Time
-	Account   *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	AccountID     uint64 `gorm:"primaryKey"`
+	Tier          string `gorm:"size:16;not null;check:chk_web_account_profiles_tier,tier IN ('auto','basic','super','heavy')"`
+	SyncedAt      *time.Time
+	NSFWEnabledAt *time.Time
+	Account       *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (webAccountProfileModel) TableName() string { return "web_account_profiles" }

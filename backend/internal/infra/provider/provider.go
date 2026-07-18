@@ -19,6 +19,7 @@ var (
 	ErrAuthorizationDenied  = errors.New("authorization denied")
 	ErrCredentialLimit      = errors.New("credential count exceeds limit")
 	ErrUnauthorized         = errors.New("upstream credential unauthorized")
+	ErrBirthDateAlreadySet  = errors.New("upstream birth date is already set")
 )
 
 // HTTPStatusError 允许流式或异步 Provider 在无法返回 Response 时保留上游状态码。
@@ -337,6 +338,15 @@ type QuotaAdapter interface {
 	Adapter
 	SyncQuota(ctx context.Context, credential account.Credential) (QuotaSnapshot, error)
 	SyncQuotaMode(ctx context.Context, credential account.Credential, mode string) (account.QuotaWindow, error)
+}
+
+// WebAccountSettingsAdapter 定义 Grok Web SSO 账号的上游资料设置能力。
+// 该能力只属于 Web Provider；Build 与 Console 不应通过通用账号逻辑模拟实现。
+type WebAccountSettingsAdapter interface {
+	Adapter
+	AcceptTerms(ctx context.Context, credential account.Credential) error
+	SetBirthDate(ctx context.Context, credential account.Credential, birthDate time.Time) error
+	EnableNSFW(ctx context.Context, credential account.Credential) error
 }
 
 // ImageGenerationAdapter 定义 Provider 可选的图片生成能力。
@@ -680,6 +690,16 @@ func (r *Registry) Quota(value account.Provider) (QuotaAdapter, bool) {
 		return nil, false
 	}
 	result, ok := adapter.(QuotaAdapter)
+	return result, ok
+}
+
+// WebAccountSettings 返回 Grok Web 专属的账号资料设置能力。
+func (r *Registry) WebAccountSettings() (WebAccountSettingsAdapter, bool) {
+	adapter, ok := r.Get(account.ProviderWeb)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(WebAccountSettingsAdapter)
 	return result, ok
 }
 

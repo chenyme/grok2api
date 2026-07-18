@@ -33,8 +33,10 @@ import { cn } from "@/shared/lib/cn";
 import { formatDateTime, formatNumber } from "@/shared/lib/format";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 import {
+  acceptWebAccountTerms,
   deleteAccount,
   deleteAccounts,
+  enableWebAccountNSFW,
   convertWebAccountsToBuild,
   exportAccounts,
   getAccountSummary,
@@ -51,6 +53,8 @@ import {
   refreshAllAccountTokens,
   refreshAllConsoleAccountQuotas,
   refreshAllWebAccountQuotas,
+  runWebAccountScripts,
+  setWebAccountBirthDate,
   startDeviceAuthorization,
   syncWebAccountsToConsole,
   updateAccount,
@@ -63,10 +67,14 @@ import {
   type BuildConversionInput,
   type BuildConversionStrategy,
   type WebConsoleSyncInput,
+  type WebAccountScriptActions,
+  type WebAccountScriptsInput,
   type DeviceSessionDTO,
   type QuotaDTO,
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
+import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
+import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -85,6 +93,7 @@ export function AccountsPage() {
   const renewalAbortRef = useRef<AbortController | null>(null);
   const conversionAbortRef = useRef<AbortController | null>(null);
   const webConsoleSyncAbortRef = useRef<AbortController | null>(null);
+  const webAccountScriptsAbortRef = useRef<AbortController | null>(null);
   const importAbortRef = useRef<AbortController | null>(null);
   const importToastRef = useRef<string | number | null>(null);
   const [provider, setProvider] = useState<AccountProvider>("grok_build");
@@ -107,6 +116,8 @@ export function AccountsPage() {
   const [webConsoleSyncTargets, setWebConsoleSyncTargets] = useState<string[] | "all" | null>(null);
   const [webConsoleSyncStrategy, setWebConsoleSyncStrategy] = useState<"missing" | "all">("missing");
   const [webConsoleSyncProgress, setWebConsoleSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
+  const [webAccountScriptsTargets, setWebAccountScriptsTargets] = useState<string[] | "all" | null>(null);
+  const [webAccountScriptsProgress, setWebAccountScriptsProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [renewAllOpen, setRenewAllOpen] = useState(false);
   const [renewalProgress, setRenewalProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [editing, setEditing] = useState<AccountDTO | null>(null);
@@ -116,6 +127,7 @@ export function AccountsPage() {
   const [deviceStatus, setDeviceStatus] = useState<"starting" | "pending" | "failed">("starting");
   const [quickImportOpen, setQuickImportOpen] = useState(false);
   const [quickImportTokens, setQuickImportTokens] = useState("");
+  const [webConfirmationTarget, setWebConfirmationTarget] = useState<WebAccountConfirmationTarget | null>(null);
   const debouncedSearch = useDebouncedValue(search);
 
   useEffect(() => () => {
@@ -123,6 +135,7 @@ export function AccountsPage() {
     renewalAbortRef.current?.abort();
     conversionAbortRef.current?.abort();
     webConsoleSyncAbortRef.current?.abort();
+    webAccountScriptsAbortRef.current?.abort();
     importAbortRef.current?.abort();
     if (importToastRef.current !== null) toast.dismiss(importToastRef.current);
   }, []);
@@ -233,6 +246,25 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const webConfirmationMutation = useMutation({
+    mutationFn: ({ account, action }: WebAccountConfirmationTarget) => {
+      if (action === "acceptTerms") return acceptWebAccountTerms(account.id);
+      if (action === "setBirthDate") return setWebAccountBirthDate(account.id);
+      return enableWebAccountNSFW(account.id);
+    },
+    onSuccess: (_, target) => {
+      setWebConfirmationTarget(null);
+      const messageKey = target.action === "acceptTerms"
+        ? "webAccountSettings.termsAccepted"
+        : target.action === "setBirthDate"
+          ? "webAccountSettings.birthDateSaved"
+          : "webAccountSettings.nsfwEnabled";
+      toast.success(t(messageKey));
+    },
+    onError: showError,
+    onSettled: invalidateAccountData,
+  });
+
   const allTokenMutation = useMutation({
     mutationFn: () => {
       const controller = new AbortController();
@@ -307,6 +339,30 @@ export function AccountsPage() {
       setWebConsoleSyncProgress(null);
       invalidateAccountData();
       void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+  });
+
+  const webAccountScriptsMutation = useMutation({
+    mutationFn: (input: WebAccountScriptsInput) => {
+      const controller = new AbortController();
+      webAccountScriptsAbortRef.current = controller;
+      setWebAccountScriptsProgress(null);
+      return runWebAccountScripts(input, setWebAccountScriptsProgress, controller.signal);
+    },
+    onSuccess: (result) => {
+      setWebAccountScriptsTargets(null);
+      setSelected(new Set());
+      if (result.failed > 0) {
+        toast.warning(t("webAccountScripts.completedWithFailures", result));
+      } else {
+        toast.success(t("webAccountScripts.completed", result));
+      }
+    },
+    onError: (error) => { if (!isAbortError(error)) showError(error); },
+    onSettled: () => {
+      webAccountScriptsAbortRef.current = null;
+      setWebAccountScriptsProgress(null);
+      invalidateAccountData();
     },
   });
 
@@ -458,6 +514,14 @@ export function AccountsPage() {
     setConversionTargets(targets);
   }
 
+  function runSelectedWebAccountScripts(actions: WebAccountScriptActions): void {
+    if (webAccountScriptsTargets === "all") {
+      webAccountScriptsMutation.mutate({ all: true, actions });
+    } else if (webAccountScriptsTargets) {
+      webAccountScriptsMutation.mutate({ ids: webAccountScriptsTargets, actions });
+    }
+  }
+
   async function startDeviceLogin(): Promise<void> {
     setDeviceOpen(true);
     setDeviceStatus("starting");
@@ -547,7 +611,9 @@ export function AccountsPage() {
     || importMutation.isPending
     || batchUpdateMutation.isPending
     || batchBillingMutation.isPending
-    || batchDeleteMutation.isPending;
+    || batchDeleteMutation.isPending
+    || webConfirmationMutation.isPending
+    || webAccountScriptsMutation.isPending;
 
   return (
     <div className="space-y-5">
@@ -649,13 +715,15 @@ export function AccountsPage() {
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openBuildConversion([...selected])}>{t("accounts.convertToBuild")}</Button> : null}
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync([...selected])}>{t("webConsoleSync.action")}</Button> : null}
+                {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets([...selected])}>{t("webAccountScripts.action")}</Button> : null}
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchBillingMutation.mutate()}>{t("accountCredential.quotaSyncAction")}</Button>
                 <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={bulkTaskPending} onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5">
-                {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openBuildConversion("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
-                {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync("all")}>{t("webConsoleSync.allAction")}</Button> : null}
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openBuildConversion("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
+                {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync("all")}>{t("webConsoleSync.allAction")}</Button> : null}
+                {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets("all")}>{t("webAccountScripts.action")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setSyncAllOpen(true)}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
                 <DropdownMenu>
@@ -726,6 +794,14 @@ export function AccountsPage() {
 	                            <TooltipContent>{t("accounts.botRiskTooltip")}</TooltipContent>
 	                          </Tooltip>
 	                        ) : null}
+	                        {account.provider === "grok_web" && account.nsfwEnabledAt ? (
+	                          <Tooltip>
+	                            <TooltipTrigger asChild>
+	                              <span tabIndex={0} className="inline-flex shrink-0 cursor-help whitespace-nowrap text-[11px] font-medium text-violet-700 dark:text-violet-300">{t("accounts.nsfwEnabledMark")}</span>
+	                            </TooltipTrigger>
+	                            <TooltipContent>{t("accounts.nsfwEnabledTooltip", { time: formatDateTime(account.nsfwEnabledAt, i18n.language) })}</TooltipContent>
+	                          </Tooltip>
+	                        ) : null}
 	                      </div>
                       {showAccountDetail || account.linkedAccountId ? (
                         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
@@ -765,6 +841,13 @@ export function AccountsPage() {
                           <DropdownMenuItem onClick={() => beginEdit(account)}><Pencil />{t("common.edit")}</DropdownMenuItem>
                           {provider === "grok_web" ? <DropdownMenuItem onClick={() => openBuildConversion([account.id])}><ArrowRight />{t("accounts.convertToBuild")}</DropdownMenuItem> : null}
                           {provider === "grok_web" ? <DropdownMenuItem onClick={() => openWebConsoleSync([account.id])}><ArrowRight />{t("webConsoleSync.action")}</DropdownMenuItem> : null}
+                          {provider === "grok_web" ? (
+                            <WebAccountSettingsMenu
+                              account={account}
+                              disabled={bulkTaskPending}
+                              onConfirm={setWebConfirmationTarget}
+                            />
+                          ) : null}
                           {provider === "grok_build" ? <DropdownMenuItem onClick={() => tokenMutation.mutate(account.id)}><RotateCw />{t("accounts.refreshToken")}</DropdownMenuItem> : null}
                           <DropdownMenuItem onClick={() => provider === "grok_build" ? billingMutation.mutate(account.id) : quotaMutation.mutate(account.id)}><RefreshCw />{provider === "grok_build" ? t("accounts.refreshBilling") : t("accounts.refreshModeQuota")}</DropdownMenuItem>
                           <DropdownMenuSeparator />
@@ -780,6 +863,26 @@ export function AccountsPage() {
         ) : null}
         </DataTableShell>
       </div>
+
+      <WebAccountSettingsDialogs
+        confirmationTarget={webConfirmationTarget}
+        confirmationPending={webConfirmationMutation.isPending}
+        onConfirmationClose={() => setWebConfirmationTarget(null)}
+        onConfirm={(target) => webConfirmationMutation.mutate(target)}
+      />
+
+      {webAccountScriptsTargets !== null ? (
+        <WebAccountScriptsDialog
+          targets={webAccountScriptsTargets}
+          pending={webAccountScriptsMutation.isPending}
+          progress={webAccountScriptsProgress}
+          onClose={() => {
+            webAccountScriptsAbortRef.current?.abort();
+            setWebAccountScriptsTargets(null);
+          }}
+          onRun={runSelectedWebAccountScripts}
+        />
+      ) : null}
 
       <AlertDialog open={syncAllOpen} onOpenChange={(open) => { if (!open) quotaSyncAbortRef.current?.abort(); setSyncAllOpen(open); }}>
         <AlertDialogContent>
