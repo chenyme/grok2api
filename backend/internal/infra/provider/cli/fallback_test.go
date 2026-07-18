@@ -627,6 +627,9 @@ func TestGenerateVideoFallbackInjectsUploadURL(t *testing.T) {
 			if strings.Contains(request.URL.Host, "primary.test") {
 				return jsonResponse(http.StatusForbidden, `{"error":"forbidden"}`, request), nil
 			}
+			if request.Header.Get("x-grok-model-override") != xaiVideoModel {
+				t.Fatalf("XAI model override = %q", request.Header.Get("x-grok-model-override"))
+			}
 			_ = json.NewDecoder(request.Body).Decode(&createPayload)
 			return jsonResponse(http.StatusOK, `{"request_id":"job_1"}`, request), nil
 		}
@@ -634,7 +637,7 @@ func TestGenerateVideoFallbackInjectsUploadURL(t *testing.T) {
 	})
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
 		Credential: account.Credential{ID: 15, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildSuperEntitled: true},
-		JobID:      "video_job_1", Prompt: "waves", Duration: 6, Resolution: "720p",
+		JobID:      "video_job_1", Prompt: "waves", Duration: 6, Resolution: "720p", ReferenceURLs: []string{"https://cdn.example.com/first.png"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -645,6 +648,10 @@ func TestGenerateVideoFallbackInjectsUploadURL(t *testing.T) {
 	output, _ := createPayload["output"].(map[string]any)
 	if output["upload_url"] != issuer.url {
 		t.Fatalf("payload = %#v", createPayload)
+	}
+	image, _ := createPayload["image"].(map[string]any)
+	if createPayload["model"] != xaiVideoModel || image["url"] != "https://cdn.example.com/first.png" || image["image_url"] != nil {
+		t.Fatalf("XAI fallback payload = %#v", createPayload)
 	}
 	if marker.calls.Load() != 1 {
 		t.Fatalf("marker = %d", marker.calls.Load())
@@ -688,6 +695,7 @@ func TestGenerateVideoAutoBotFlaggedUsesXAIDirectly(t *testing.T) {
 	issuer := &uploadIssuerStub{url: "https://public.example/v1/media/uploads/bot1", assetID: "vid_bot"}
 	adapter.SetVideoUploadIssuer(issuer)
 	var primaryHits, fallbackHits atomic.Int32
+	var createPayload map[string]any
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Host, "primary.test") {
 			primaryHits.Add(1)
@@ -695,19 +703,29 @@ func TestGenerateVideoAutoBotFlaggedUsesXAIDirectly(t *testing.T) {
 		}
 		fallbackHits.Add(1)
 		if request.Method == http.MethodPost {
+			if request.Header.Get("x-grok-model-override") != xaiVideoModel {
+				t.Fatalf("XAI model override = %q", request.Header.Get("x-grok-model-override"))
+			}
+			if err := json.NewDecoder(request.Body).Decode(&createPayload); err != nil {
+				t.Fatal(err)
+			}
 			return jsonResponse(http.StatusOK, `{"request_id":"job_bot"}`, request), nil
 		}
 		return jsonResponse(http.StatusOK, `{"status":"done"}`, request), nil
 	})
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
 		Credential: account.Credential{ID: 116, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildRouteMode: account.BuildRouteAuto, BuildSuperEntitled: true},
-		JobID:      "video_bot", Prompt: "waves", Duration: 6, Resolution: "720p",
+		JobID:      "video_bot", Prompt: "waves", Duration: 6, Resolution: "720p", ReferenceURLs: []string{"https://cdn.example.com/bot.png"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.AssetID != "vid_bot" || primaryHits.Load() != 0 || fallbackHits.Load() < 2 {
 		t.Fatalf("result=%#v primary=%d fallback=%d", result, primaryHits.Load(), fallbackHits.Load())
+	}
+	image, _ := createPayload["image"].(map[string]any)
+	if createPayload["model"] != xaiVideoModel || image["url"] != "https://cdn.example.com/bot.png" || image["image_url"] != nil {
+		t.Fatalf("XAI direct payload = %#v", createPayload)
 	}
 }
 

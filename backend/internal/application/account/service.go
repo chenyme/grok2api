@@ -15,6 +15,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
+	"github.com/chenyme/grok2api/backend/internal/pkg/resultcache"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"golang.org/x/sync/singleflight"
 )
@@ -54,9 +55,11 @@ const (
 	maxBuildConversionAccounts                = 1000
 	maxWebConsoleSyncAccounts                 = 1000
 	accountTaskBatchSize                      = 1000
+	buildBotFlagCacheTTL        time.Duration = 30 * time.Second
 )
 
 const permanentRefreshExpiredReason = "OAuth refresh token 已永久失效且 access token 已过期"
+const buildBotFlagCacheKey = "build-bot-flagged-account-ids"
 
 type webQuotaRefreshState struct {
 	pending bool
@@ -258,6 +261,7 @@ type Service struct {
 	syncPool              *batch.Pool
 	refreshPool           *batch.Pool
 	credentialRefreshWake chan struct{}
+	buildBotFlagCache     *resultcache.Cache[string, []uint64]
 	logger                *slog.Logger
 	now                   func() time.Time
 }
@@ -273,6 +277,7 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		lastRefreshAt: make(map[uint64]time.Time), quotaRefreshes: make(map[string]*webQuotaRefreshState),
 		quotaRefreshQueue:     make(chan webQuotaRefreshRequest, webQuotaRefreshQueueSize),
 		credentialRefreshWake: make(chan struct{}, 1),
+		buildBotFlagCache:     resultcache.New[string, []uint64](1, buildBotFlagCacheTTL),
 		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), logger: slog.Default(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
@@ -380,6 +385,15 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 }
 
 func (s *Service) buildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
+	if s.buildBotFlagCache == nil {
+		return s.loadBuildBotFlaggedAccountIDs(ctx)
+	}
+	return s.buildBotFlagCache.Load(ctx, buildBotFlagCacheKey, s.now(), func() ([]uint64, error) {
+		return s.loadBuildBotFlaggedAccountIDs(ctx)
+	})
+}
+
+func (s *Service) loadBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
 	const batchSize = 500
 	result := make([]uint64, 0)
 	var afterID uint64
@@ -397,6 +411,12 @@ func (s *Service) buildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, erro
 			return result, nil
 		}
 		afterID = values[len(values)-1].ID
+	}
+}
+
+func (s *Service) invalidateBuildBotFlagCache() {
+	if s.buildBotFlagCache != nil {
+		s.buildBotFlagCache.Delete(buildBotFlagCacheKey)
 	}
 }
 
@@ -447,6 +467,9 @@ func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) 
 		s.clearRefreshState(id)
 	}
 	deleted, err := s.accounts.DeleteMany(ctx, ids)
+	if err == nil {
+		s.invalidateBuildBotFlagCache()
+	}
 	return deleted, mapRepositoryError(err)
 }
 
@@ -1381,7 +1404,11 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 		_ = s.sticky.DeleteByAccount(ctx, id)
 	}
 	s.clearRefreshState(id)
-	return mapRepositoryError(s.accounts.Delete(ctx, id))
+	err := s.accounts.Delete(ctx, id)
+	if err == nil {
+		s.invalidateBuildBotFlagCache()
+	}
+	return mapRepositoryError(err)
 }
 
 func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason string) error {
@@ -1498,6 +1525,7 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 		if err != nil {
 			return nil, err
 		}
+		s.invalidateBuildBotFlagCache()
 		s.markRefreshSuccess(latest.ID, currentTime)
 		s.WakeCredentialRefresh()
 		return updated, nil
@@ -2300,6 +2328,7 @@ func (s *Service) persistSeed(ctx context.Context, seed provider.CredentialSeed)
 	}
 	stored, created, err := s.accounts.UpsertByIdentity(ctx, value)
 	if err == nil {
+		s.invalidateBuildBotFlagCache()
 		s.WakeCredentialRefresh()
 	}
 	return stored, created, err

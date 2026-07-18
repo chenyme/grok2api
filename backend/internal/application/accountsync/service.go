@@ -77,6 +77,24 @@ func (s *Service) UpdateConcurrency(value int) {
 	s.bulkPool.UpdateLimit(value)
 }
 
+// SyncModels 强制刷新指定账号的模型能力，不受初始同步快照跳过规则影响。
+func (s *Service) SyncModels(ctx context.Context, accountID uint64) error {
+	if accountID == 0 {
+		return errors.New("账号 ID 无效")
+	}
+	if s.models == nil {
+		return errors.New("模型同步器未初始化")
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	_, err := s.models.SyncAccount(operationCtx, accountID)
+	if err != nil {
+		s.logger.Warn("account_model_sync_failed", "account_id", accountID, "error", err)
+		return fmt.Errorf("同步模型: %w", err)
+	}
+	return nil
+}
+
 // Result 汇总本次初始同步成功与失败的账号数。
 type Result struct {
 	Succeeded int

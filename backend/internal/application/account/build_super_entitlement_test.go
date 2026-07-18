@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -35,14 +36,49 @@ func openAccountService(t *testing.T) (*Service, repository.AccountRepository) {
 	return service, accounts
 }
 
-type credentialMetadataAdapterStub struct{}
+type credentialMetadataAdapterStub struct {
+	calls *atomic.Int32
+}
 
 func (credentialMetadataAdapterStub) Provider() accountdomain.Provider {
 	return accountdomain.ProviderBuild
 }
 
-func (credentialMetadataAdapterStub) CredentialMetadata(credential accountdomain.Credential) provider.CredentialMetadata {
+func (s credentialMetadataAdapterStub) CredentialMetadata(credential accountdomain.Credential) provider.CredentialMetadata {
+	if s.calls != nil {
+		s.calls.Add(1)
+	}
 	return provider.CredentialMetadata{BuildBotFlagged: credential.ID == 1}
+}
+
+func TestBuildBotFlagSummaryUsesShortLivedCache(t *testing.T) {
+	ctx := context.Background()
+	service, accounts := openAccountService(t)
+	var calls atomic.Int32
+	service.providers = provider.NewRegistry(credentialMetadataAdapterStub{calls: &calls})
+	if _, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "flagged", SourceKey: "cached-build-bot-flag",
+		EncryptedAccessToken: "enc", AuthStatus: accountdomain.AuthStatusActive, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.buildBotFlaggedAccountIDs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.buildBotFlaggedAccountIDs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("metadata inspections = %d, want 1", got)
+	}
+	service.invalidateBuildBotFlagCache()
+	if _, err := service.buildBotFlaggedAccountIDs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("metadata inspections after invalidation = %d, want 2", got)
+	}
 }
 
 func TestAccountViewsIncludeBuildBotFlagMetadata(t *testing.T) {

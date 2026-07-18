@@ -29,6 +29,10 @@ type accountSyncProgressor interface {
 	SyncStreamObserved(ctx context.Context, accountIDs <-chan uint64, observer func(completed, total int)) accountsyncapp.Result
 }
 
+type accountModelSynchronizer interface {
+	SyncModels(ctx context.Context, accountID uint64) error
+}
+
 const (
 	maxAccountImportBytes         = 30 << 20
 	maxAccountImportFiles         = 1000
@@ -259,6 +263,7 @@ type accountResponse struct {
 	BuildSuperEntitled         bool                  `json:"buildSuperEntitled"`
 	BuildRouteMode             string                `json:"buildRouteMode"`
 	BuildBotFlagged            bool                  `json:"buildBotFlagged"`
+	ModelSyncFailed            bool                  `json:"modelSyncFailed,omitempty"`
 	Billing                    *billingResponse      `json:"billing,omitempty"`
 	Quota                      quotaResponse         `json:"quota"`
 	QuotaWindows               []quotaWindowResponse `json:"quotaWindows,omitempty"`
@@ -915,7 +920,13 @@ func (h *Handler) update(c *gin.Context) {
 		h.writeServiceError(c, "accountUpdateFailed", err, http.StatusInternalServerError, "更新账号失败")
 		return
 	}
-	response.Success(c, http.StatusOK, newAccountResponse(value))
+	result := newAccountResponse(value)
+	if request.BuildSuperEntitled != nil {
+		if synchronizer, ok := h.sync.(accountModelSynchronizer); ok {
+			result.ModelSyncFailed = synchronizer.SyncModels(c.Request.Context(), id) != nil
+		}
+	}
+	response.Success(c, http.StatusOK, result)
 }
 
 func (h *Handler) delete(c *gin.Context) {

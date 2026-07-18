@@ -134,20 +134,22 @@ export function AccountsPage() {
     maxConcurrent: z.number().int().min(1, t("errors.positive")).max(256),
     minimumRemaining: z.number().min(0),
     cloudflareCookies: z.string().max(16 << 10, t("settings.invalidValue")),
-	    clearCloudflareCookies: z.boolean(),
-	    buildRouteMode: z.enum(["auto", "build", "xai"]),
+    clearCloudflareCookies: z.boolean(),
+    buildSuperEntitled: z.boolean(),
+    buildRouteMode: z.enum(["auto", "build", "xai"]),
   });
   type AccountForm = z.infer<typeof accountSchema>;
   const form = useForm<AccountForm>({
     resolver: zodResolver(accountSchema),
     defaultValues: {
       name: "", enabled: true, priority: 1, maxConcurrent: 8, minimumRemaining: 0,
-	      cloudflareCookies: "", clearCloudflareCookies: false, buildRouteMode: "auto",
+      cloudflareCookies: "", clearCloudflareCookies: false, buildSuperEntitled: false, buildRouteMode: "auto",
     },
   });
   const accountEnabled = useWatch({ control: form.control, name: "enabled" });
-	  const clearCloudflareCookies = useWatch({ control: form.control, name: "clearCloudflareCookies" });
-	  const buildRouteMode = useWatch({ control: form.control, name: "buildRouteMode" });
+  const clearCloudflareCookies = useWatch({ control: form.control, name: "clearCloudflareCookies" });
+  const buildSuperEntitled = useWatch({ control: form.control, name: "buildSuperEntitled" });
+  const buildRouteMode = useWatch({ control: form.control, name: "buildRouteMode" });
 
   const accountsQuery = useQuery({
     queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, renewalFilter, riskFilter, sort.field, sort.order],
@@ -174,16 +176,22 @@ export function AccountsPage() {
         maxConcurrent: values.maxConcurrent,
         minimumRemaining: values.minimumRemaining,
       };
-	      if (editing.provider !== "grok_build") {
+      if (editing.provider !== "grok_build") {
         if (values.clearCloudflareCookies) input.clearCloudflareCookies = true;
         else if (values.cloudflareCookies.trim()) input.cloudflareCookies = values.cloudflareCookies;
-	      } else input.buildRouteMode = values.buildRouteMode;
+      } else {
+        input.buildRouteMode = values.buildRouteMode;
+        if (values.buildSuperEntitled !== editing.buildSuperEntitled) input.buildSuperEntitled = values.buildSuperEntitled;
+      }
       return updateAccount(editing.id, input);
     },
-    onSuccess: () => {
+    onSuccess: (account, values) => {
+      const entitlementChanged = editing?.provider === "grok_build" && values.buildSuperEntitled !== editing.buildSuperEntitled;
       invalidateAccountData();
+      if (entitlementChanged) void queryClient.invalidateQueries({ queryKey: ["models"] });
       setEditing(null);
-      toast.success(t("accounts.updated"));
+      if (account.modelSyncFailed) toast.warning(t("accounts.updatedWithModelSyncFailure"));
+      else toast.success(t("accounts.updated"));
     },
     onError: showError,
   });
@@ -473,8 +481,9 @@ export function AccountsPage() {
       maxConcurrent: account.maxConcurrent,
       minimumRemaining: account.minimumRemaining,
       cloudflareCookies: "",
-	      clearCloudflareCookies: false,
-	      buildRouteMode: account.buildRouteMode,
+      clearCloudflareCookies: false,
+      buildSuperEntitled: account.buildSuperEntitled,
+      buildRouteMode: account.buildRouteMode,
     });
   }
 
@@ -558,9 +567,9 @@ export function AccountsPage() {
           value={summaryUnavailable ? "-" : formatNumber(abnormalAccounts, i18n.language, 0)}
           detail={[
             `${t("accounts.statusCooldown")} ${formatNumber(recoveringAccounts, i18n.language, 0)}`,
+            `${t("accounts.riskAccountCount", { count: formatNumber(riskAccounts, i18n.language, 0) })}`,
             `${t("accounts.statusDisabled")} ${formatNumber(disabledAccounts, i18n.language, 0)}`,
             `${t("accounts.statusReauthRequired")} ${formatNumber(invalidAccounts, i18n.language, 0)}`,
-            `${t("accounts.riskAccountCount", { count: formatNumber(riskAccounts, i18n.language, 0) })}`,
           ].join(" · ")}
         />
       </section>
@@ -906,20 +915,46 @@ export function AccountsPage() {
               <div className="space-y-2"><Label htmlFor="account-priority">{t("accounts.priority")}</Label><Input id="account-priority" type="number" {...form.register("priority", { valueAsNumber: true })} /></div>
               <div className="space-y-2"><Label htmlFor="account-concurrency">{t("accounts.maxConcurrent")}</Label><Input id="account-concurrency" type="number" min="1" max="256" {...form.register("maxConcurrent", { valueAsNumber: true })} /></div>
             </div>
-	            <div className="space-y-2"><Label htmlFor="account-minimum">{t("accounts.minimumRemaining")}</Label><Input id="account-minimum" type="number" min="0" step="0.01" {...form.register("minimumRemaining", { valueAsNumber: true })} /></div>
-	            {editing?.provider === "grok_build" ? (
-	              <div className="space-y-2">
-	                <Label id="account-build-route-mode">{t("accounts.buildRouteMode.label")}</Label>
-	                <div role="radiogroup" aria-labelledby="account-build-route-mode" className="grid grid-cols-3 rounded-md bg-muted p-1">
-	                  {(["auto", "build", "xai"] as BuildRouteMode[]).map((mode) => (
-	                    <Button key={mode} type="button" role="radio" aria-checked={buildRouteMode === mode} variant={buildRouteMode === mode ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-2 text-xs font-normal shadow-none" onClick={() => form.setValue("buildRouteMode", mode, { shouldDirty: true })}>
-	                      {t(`accounts.buildRouteMode.${mode}`)}
-	                    </Button>
-	                  ))}
-	                </div>
-	                <p className="text-xs text-muted-foreground">{t(`accounts.buildRouteMode.${buildRouteMode}Description`)}</p>
-	              </div>
-	            ) : null}
+            <div className="space-y-2"><Label htmlFor="account-minimum">{t("accounts.minimumRemaining")}</Label><Input id="account-minimum" type="number" min="0" step="0.01" {...form.register("minimumRemaining", { valueAsNumber: true })} /></div>
+            {editing?.provider === "grok_build" ? (
+              <div className="space-y-4">
+                <div className="flex items-start justify-between gap-4 rounded-md bg-muted/50 p-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="account-build-super-entitled">{t("accounts.buildSuperEntitled.label")}</Label>
+                    <p className="text-xs text-muted-foreground">{t("accounts.buildSuperEntitled.description")}</p>
+                  </div>
+                  <Switch id="account-build-super-entitled" checked={buildSuperEntitled} onCheckedChange={(checked) => form.setValue("buildSuperEntitled", checked, { shouldDirty: true })} />
+                </div>
+                <div className="space-y-2">
+                  <Label id="account-build-route-mode">{t("accounts.buildRouteMode.label")}</Label>
+                  <div role="radiogroup" aria-labelledby="account-build-route-mode" className="grid grid-cols-3 rounded-md bg-muted p-1">
+                    {(["auto", "build", "xai"] as BuildRouteMode[]).map((mode) => (
+                      <Button
+                        key={mode}
+                        type="button"
+                        role="radio"
+                        aria-checked={buildRouteMode === mode}
+                        variant="ghost"
+                        size="sm"
+                        className={cn(
+                          "h-8 rounded-sm px-2 text-xs font-normal",
+                          buildRouteMode === mode
+                            ? "bg-background font-medium text-foreground shadow-sm ring-1 ring-border/60 hover:bg-background"
+                            : "text-muted-foreground shadow-none hover:bg-background/60 hover:text-foreground",
+                        )}
+                        onClick={() => form.setValue("buildRouteMode", mode, { shouldDirty: true })}
+                      >
+                        {t(`accounts.buildRouteMode.${mode}`)}
+                      </Button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground">{t(`accounts.buildRouteMode.${buildRouteMode}Description`)}</p>
+                  {buildRouteMode === "xai" && !buildSuperEntitled && !(editing.quota.type === "paid" && editing.quota.source !== "buildSuperEntitlement") ? (
+                    <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300"><TriangleAlert className="mt-0.5 size-3.5 shrink-0" />{t("accounts.buildRouteMode.xaiUnconfirmedWarning")}</p>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             {editing && editing.provider !== "grok_build" ? (
               <div className="space-y-2">
                 <Label htmlFor="account-cloudflare-cookie">{t("settings.egress.cloudflareCookie")}</Label>
