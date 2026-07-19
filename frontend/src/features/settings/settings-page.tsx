@@ -205,7 +205,7 @@ export function SettingsPage() {
                   <div className="flex h-9 items-center">
                     <Switch
                       id="accounts-auto-clean-reauth-enabled"
-                      checked={field.value}
+                      checked={Boolean(field.value)}
                       onCheckedChange={(checked) => {
                         if (checked) {
                           setAutoCleanConfirm("enabled");
@@ -233,7 +233,7 @@ export function SettingsPage() {
                   <div className="flex h-9 items-center">
                     <Switch
                       id="accounts-auto-clean-include-disabled"
-                      checked={field.value}
+                      checked={Boolean(field.value)}
                       disabled={!autoCleanEnabled}
                       onCheckedChange={(checked) => {
                         if (checked) {
