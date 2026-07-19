@@ -78,9 +78,6 @@ func (s *Service) RunAccountAutoClean(ctx context.Context) {
 		}
 		if err := s.runAutoCleanReauth(ctx, cfg); err != nil && ctx.Err() == nil {
 			s.logger.Warn("account_auto_clean_failed", "error", err)
-			if interval < 30*time.Second {
-				interval = 30 * time.Second
-			}
 		}
 		resetCredentialRefreshTimer(timer, interval)
 	}
@@ -112,7 +109,7 @@ func (s *Service) runAutoCleanReauth(ctx context.Context, cfg AutoCleanConfig) e
 		}
 		scanned += candidates
 		deleted += len(ids)
-		skipped += candidates - len(ids)
+		skipped += candidates - len(ids) // media-blocked + status race; not split for metrics v1
 		for _, id := range ids {
 			if s.sticky != nil {
 				_ = s.sticky.DeleteByAccount(ctx, id)
