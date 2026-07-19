@@ -1120,8 +1120,6 @@ func (r *AccountRepository) DeleteAutoCleanReauthBatch(ctx context.Context, mark
 	return deletedIDs, candidateCount, nextAfterID, err
 }
 
-
-
 // excludeAccountsWithActiveMediaJobs 返回无 queued/in_progress 视频任务的账号 ID（顺序保持输入顺序）。
 func excludeAccountsWithActiveMediaJobs(db *gorm.DB, ids []uint64) ([]uint64, error) {
 	if len(ids) == 0 {
