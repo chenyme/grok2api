@@ -16,6 +16,7 @@ type AutoCleanConfig struct {
 const autoCleanReauthBatchSize = 100
 
 // UpdateAutoCleanConfig 热更新账号自动清理策略。
+// 仅唤醒调度器重排 timer；不会在唤醒时立刻硬删（等下一次 interval tick）。
 func (s *Service) UpdateAutoCleanConfig(value AutoCleanConfig) {
 	s.autoCleanMu.Lock()
 	defer s.autoCleanMu.Unlock()
@@ -44,42 +45,46 @@ func (s *Service) autoCleanConfig() AutoCleanConfig {
 	return s.autoClean
 }
 
+func autoCleanInterval(cfg AutoCleanConfig) time.Duration {
+	if !cfg.Enabled {
+		return time.Hour
+	}
+	interval := cfg.Interval
+	if interval < time.Minute {
+		return time.Minute
+	}
+	if interval > time.Hour {
+		return time.Hour
+	}
+	return interval
+}
+
 // RunAccountAutoClean 在启用时周期性删除过期的 reauthRequired 账号；默认关闭。
-// 首次执行等待一个 interval，避免进程启动立即清库；启动前写入的 config wake 会被丢弃。
-// 运行中热更新会通过 wake 立即重扫（仍受 minAge 保护）。
+// 硬删除只在 timer 到期时执行：启动首轮与热更新（含首次启用）都只排程，不立刻清库。
 func (s *Service) RunAccountAutoClean(ctx context.Context) {
-	// NewService / 启动接线可能已向 wake 写入；丢弃以免绕过首轮 interval。
+	// NewService / 启动接线可能已向 wake 写入；丢弃以免无意义空转。
 	select {
 	case <-s.autoCleanWake:
 	default:
 	}
-	cfg := s.autoCleanConfig()
-	initial := cfg.Interval
-	if !cfg.Enabled || initial < time.Minute {
-		initial = time.Hour
-	}
-	timer := time.NewTimer(initial)
+	timer := time.NewTimer(autoCleanInterval(s.autoCleanConfig()))
 	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-s.autoCleanWake:
+			// 配置变更：只重排下一次扫描时间。
+			resetCredentialRefreshTimer(timer, autoCleanInterval(s.autoCleanConfig()))
 		case <-timer.C:
+			cfg := s.autoCleanConfig()
+			if cfg.Enabled {
+				if err := s.runAutoCleanReauth(ctx, cfg); err != nil && ctx.Err() == nil {
+					s.logger.Warn("account_auto_clean_failed", "error", err)
+				}
+			}
+			resetCredentialRefreshTimer(timer, autoCleanInterval(cfg))
 		}
-		cfg = s.autoCleanConfig()
-		if !cfg.Enabled {
-			resetCredentialRefreshTimer(timer, time.Hour)
-			continue
-		}
-		interval := cfg.Interval
-		if interval < time.Minute {
-			interval = time.Minute
-		}
-		if err := s.runAutoCleanReauth(ctx, cfg); err != nil && ctx.Err() == nil {
-			s.logger.Warn("account_auto_clean_failed", "error", err)
-		}
-		resetCredentialRefreshTimer(timer, interval)
 	}
 }
 
@@ -109,7 +114,8 @@ func (s *Service) runAutoCleanReauth(ctx context.Context, cfg AutoCleanConfig) e
 		}
 		scanned += candidates
 		deleted += len(ids)
-		skipped += candidates - len(ids) // media-blocked + status race; not split for metrics v1
+		// skipped 含 media 跳过与 delete 条件竞态未删；v1 不拆分指标。
+		skipped += candidates - len(ids)
 		for _, id := range ids {
 			if s.sticky != nil {
 				_ = s.sticky.DeleteByAccount(ctx, id)

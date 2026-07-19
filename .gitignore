@@ -44,3 +44,6 @@ Thumbs.db
 /release/
 /.tmp/
 /tmp/
+
+# Local agent previews
+/tmp-ui-preview/

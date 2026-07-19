@@ -198,7 +198,7 @@ export function SettingsPage() {
             </div>
           </SettingsSection>
 
-                    <SettingsSection title={t("settings.accounts.title")}>
+          <SettingsSection title={t("settings.accounts.title")}>
             <div className="space-y-0">
               <SettingsField controlId="accounts-auto-clean-reauth-enabled" label={t("settings.accounts.autoCleanReauthEnabled")} description={t("settings.accounts.autoCleanReauthEnabledHelp")}>
                 <Controller control={form.control} name="accounts.autoCleanReauthEnabled" render={({ field }) => (
