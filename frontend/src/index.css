@@ -22,7 +22,7 @@
   --destructive: oklch(0.58 0.22 27);
   --border: oklch(0.91 0 0);
   --input: oklch(0.9 0 0);
-  --ring: oklch(0.2 0 0);
+  --ring: var(--border);
   --sidebar: oklch(0.995 0 0);
   --sidebar-foreground: oklch(0.18 0 0);
   --sidebar-primary: oklch(0.12 0 0);
@@ -57,7 +57,7 @@
   --destructive: oklch(0.65 0.2 28);
   --border: oklch(0.27 0 0);
   --input: oklch(0.3 0 0);
-  --ring: oklch(0.75 0 0);
+  --ring: var(--border);
   --sidebar: oklch(0.145 0 0);
   --sidebar-foreground: oklch(0.92 0 0);
   --sidebar-primary: oklch(0.96 0 0);
