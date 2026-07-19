@@ -26,6 +26,7 @@ import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
 import { Pagination } from "@/shared/components/pagination";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
+import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { cn } from "@/shared/lib/cn";
 import { formatDateTime } from "@/shared/lib/format";
@@ -35,7 +36,7 @@ export function ModelsPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [providerFilter, setProviderFilter] = useState<ModelRouteDTO["provider"] | "">("");
@@ -246,7 +247,7 @@ export function ModelsPage() {
         {modelsQuery.isError ? <ErrorState message={modelsQuery.error.message} onRetry={() => void modelsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {modelsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="min-w-[1000px] table-fixed text-xs">
+          <Table viewportRows={20} rowHeight={56} className="min-w-[1000px] table-fixed text-xs">
             <colgroup>
               <col className="w-10" />
               <col className="w-56" />
@@ -269,8 +270,10 @@ export function ModelsPage() {
                 <TableActionHead />
               </TableRow>
             </TableHeader>
-            <TableBody>
-              {modelsQuery.isPending ? <TableLoadingRow colSpan={8} /> : result?.items.map((model) => (
+            {modelsQuery.isPending ? (
+              <TableBody><TableLoadingRow colSpan={8} /></TableBody>
+            ) : (
+              <VirtualTableBody items={result?.items ?? []} colSpan={8} rowHeight={56} renderRow={(model) => (
                 <TableRow className="group h-14" key={model.id} data-state={selected.has(model.id) ? "selected" : undefined}>
                   <TableCell className="px-2 text-center"><Checkbox checked={selected.has(model.id)} onCheckedChange={(checked) => toggleModel(model.id, checked === true)} aria-label={t("common.selectItem", { name: model.publicId })} /></TableCell>
                   <TableCell className="min-w-0">
@@ -298,8 +301,8 @@ export function ModelsPage() {
                     </DropdownMenu>
                   </TableActionCell>
                 </TableRow>
-              ))}
-            </TableBody>
+              )} />
+            )}
           </Table>
         ) : null}
       </DataTableShell>
