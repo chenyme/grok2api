@@ -1013,6 +1013,8 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error, fall
 		response.Error(c, http.StatusBadRequest, "accountExportLimitExceeded", err.Error())
 	case errors.Is(err, accountapp.ErrInvalidInput), errors.Is(err, accountapp.ErrInvalidImport):
 		response.Error(c, http.StatusBadRequest, code, err.Error())
+	case errors.Is(err, accountapp.ErrConflict):
+		response.Error(c, http.StatusConflict, code, err.Error())
 	case errors.Is(err, accountapp.ErrNotFound):
 		response.Error(c, http.StatusNotFound, "accountNotFound", err.Error())
 	case errors.Is(err, accountapp.ErrUnsupported):
@@ -1233,16 +1235,19 @@ func parseIDs(values []string) ([]uint64, error) {
 }
 
 func (h *Handler) validateProviderIDs(c *gin.Context, ids []uint64, providerValue string) bool {
-	if providerValue != string(accountdomain.ProviderBuild) && providerValue != string(accountdomain.ProviderWeb) && providerValue != string(accountdomain.ProviderConsole) {
+	provider := accountdomain.Provider(providerValue)
+	if !provider.IsValid() {
 		response.Error(c, http.StatusBadRequest, "invalidProvider", "账号来源无效")
 		return false
 	}
-	for _, id := range ids {
-		value, err := h.service.Get(c.Request.Context(), id)
-		if err != nil || string(value.Credential.Provider) != providerValue {
-			response.Error(c, http.StatusConflict, "accountPoolMismatch", "批量操作包含不属于当前号池的账号")
-			return false
-		}
+	valid, err := h.service.AccountsBelongToProvider(c.Request.Context(), ids, provider)
+	if err != nil {
+		h.writeServiceError(c, "accountPoolValidationFailed", err, http.StatusInternalServerError, "校验账号号池失败")
+		return false
+	}
+	if !valid {
+		response.Error(c, http.StatusConflict, "accountPoolMismatch", "批量操作包含不属于当前号池的账号")
+		return false
 	}
 	return true
 }

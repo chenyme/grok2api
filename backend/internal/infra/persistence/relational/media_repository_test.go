@@ -125,6 +125,57 @@ func TestMediaJobRepositoryListMediaJobsPaginatesAndFilters(t *testing.T) {
 	}
 }
 
+func TestAccountDeleteDetachesTerminalMediaJobsAndRejectsActiveJobs(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	accountValue, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "media-delete-account", SourceKey: "media-delete-account",
+		EncryptedAccessToken: testEncryptedToken, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := clientKeyModel{Name: "media-delete-key", Prefix: "media-delete-key", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := testMediaJob("media_job_account_delete", accountValue.ID, key.ID, mediadomain.StatusCompleted, time.Now().UTC())
+	job.AccountName = accountValue.Name
+	jobs := NewMediaJobRepository(database)
+	if err := jobs.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := accounts.Delete(ctx, accountValue.ID); err != nil {
+		t.Fatalf("delete account with terminal media job: %v", err)
+	}
+	stored, err := jobs.GetMediaJobsByIDs(ctx, []string{job.ID})
+	if err != nil || len(stored) != 1 || stored[0].AccountID != 0 || stored[0].AccountName != accountValue.Name {
+		t.Fatalf("detached terminal job = %#v, error = %v", stored, err)
+	}
+
+	activeAccount, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "media-active-account", SourceKey: "media-active-account",
+		EncryptedAccessToken: testEncryptedToken, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeJob := testMediaJob("media_job_account_active", activeAccount.ID, key.ID, mediadomain.StatusInProgress, time.Now().UTC())
+	if err := jobs.CreateMediaJob(ctx, activeJob); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.Delete(ctx, activeAccount.ID); !errors.Is(err, repository.ErrConflict) || !strings.Contains(err.Error(), "进行中") {
+		t.Fatalf("delete account with active media job error = %v", err)
+	}
+	if _, err := accounts.Get(ctx, activeAccount.ID); err != nil {
+		t.Fatalf("active job conflict removed account: %v", err)
+	}
+}
+
 func TestMediaAssetRepositoryListMediaAssetsPaginatesAndCounts(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

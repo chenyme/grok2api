@@ -32,6 +32,7 @@ var (
 	ErrNotFound       = errors.New("账号不存在")
 	ErrUnsupported    = errors.New("账号来源不支持该操作")
 	ErrConversionBusy = errors.New("账号正在转换为 Grok Build")
+	ErrConflict       = errors.New("账号操作存在冲突")
 )
 
 var ErrCredentialRefreshPermanent = errors.New("OAuth refresh token 已永久失效")
@@ -481,6 +482,23 @@ func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) 
 		s.invalidateBuildBotFlagCache()
 	}
 	return deleted, mapRepositoryError(err)
+}
+
+// AccountsBelongToProvider 校验批量账号是否全部属于指定号池。
+// 该校验只读取账号主表，避免详情页的额度、审计或关联查询影响批量操作。
+func (s *Service) AccountsBelongToProvider(ctx context.Context, ids []uint64, providerValue accountdomain.Provider) (bool, error) {
+	if !providerValue.IsValid() {
+		return false, invalidInput("账号来源无效")
+	}
+	values, err := normalizeBatchIDs(ids)
+	if err != nil {
+		return false, err
+	}
+	count, err := s.accounts.CountProviderAccountsByIDs(ctx, providerValue, values)
+	if err != nil {
+		return false, err
+	}
+	return count == int64(len(values)), nil
 }
 
 // CleanupAccounts 按管理端状态清理指定 Provider 账号；正常、待重置和检测中的账号不在清理范围内。
@@ -2568,6 +2586,9 @@ func invalidInput(message string) error {
 func mapRepositoryError(err error) error {
 	if errors.Is(err, repository.ErrNotFound) {
 		return ErrNotFound
+	}
+	if errors.Is(err, repository.ErrConflict) {
+		return fmt.Errorf("%w: %s", ErrConflict, strings.TrimPrefix(err.Error(), repository.ErrConflict.Error()+": "))
 	}
 	return err
 }

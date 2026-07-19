@@ -441,7 +441,7 @@ func (r *MediaJobRepository) TryClaimMediaJob(ctx context.Context, id string, no
 func mediaJobFromDomain(value media.Job) *mediaJobModel {
 	return &mediaJobModel{
 		ID: value.ID, RequestID: value.RequestID, ClientKeyID: value.ClientKeyID, ClientKeyName: value.ClientKeyName,
-		AccountID: value.AccountID, AccountName: value.AccountName,
+		AccountID: mediaJobAccountID(value.AccountID), AccountName: value.AccountName,
 		EgressNodeID: value.EgressNodeID, EgressNodeName: value.EgressNodeName, EgressScope: value.EgressScope, EgressMode: value.EgressMode,
 		Provider: value.Provider,
 		Model:    value.Model, ModelRouteID: value.ModelRouteID, UpstreamModel: value.UpstreamModel,
@@ -454,9 +454,13 @@ func mediaJobFromDomain(value media.Job) *mediaJobModel {
 }
 
 func mediaJobToDomain(row mediaJobModel) media.Job {
+	var accountID uint64
+	if row.AccountID != nil {
+		accountID = *row.AccountID
+	}
 	return media.Job{
 		ID: row.ID, RequestID: row.RequestID, ClientKeyID: row.ClientKeyID, ClientKeyName: row.ClientKeyName,
-		AccountID: row.AccountID, AccountName: row.AccountName,
+		AccountID: accountID, AccountName: row.AccountName,
 		EgressNodeID: row.EgressNodeID, EgressNodeName: row.EgressNodeName, EgressScope: row.EgressScope, EgressMode: row.EgressMode,
 		Provider: row.Provider,
 		Model:    row.Model, ModelRouteID: row.ModelRouteID, UpstreamModel: row.UpstreamModel,
@@ -466,4 +470,11 @@ func mediaJobToDomain(row mediaJobModel) media.Job {
 		LeaseUntil: row.LeaseUntil, ClaimToken: row.ClaimToken, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		CompletedAt: row.CompletedAt, UsageRecordedAt: row.UsageRecordedAt,
 	}
+}
+
+func mediaJobAccountID(value uint64) *uint64 {
+	if value == 0 {
+		return nil
+	}
+	return &value
 }
