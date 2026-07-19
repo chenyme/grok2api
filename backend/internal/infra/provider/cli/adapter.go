@@ -575,14 +575,18 @@ func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential,
 
 	if trace {
 		requestID := uuid.NewString()
+		// 对齐 CPA：仅在存在稳定 session 时设置 x-grok-conv-id / session-id。
+		// 禁止每请求随机 UUID，否则会打散 xAI 服务器亲和，导致 cached_tokens 长期为 0。
 		sessionID, err := grokSessionID(promptCacheKey)
 		if err != nil {
 			return err
 		}
 		req.Header.Set("x-authenticateresponse", "authenticate-response")
 		req.Header.Set("x-grok-agent-id", a.agentID)
-		req.Header.Set("x-grok-session-id", sessionID)
-		req.Header.Set("x-grok-conv-id", sessionID)
+		if sessionID != "" {
+			req.Header.Set("x-grok-session-id", sessionID)
+			req.Header.Set("x-grok-conv-id", sessionID)
+		}
 		req.Header.Set("x-grok-req-id", requestID)
 		// 网关无法从无状态 API 请求可靠恢复 CLI prompt index；该字段在
 		// 官方协议中可选，因此不伪造 x-grok-turn-idx。
@@ -615,19 +619,17 @@ func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential,
 	return nil
 }
 
+// grokSessionID 将稳定会话键转为上游 x-grok-conv-id。
+// 空键返回空串（对齐 CPA grok_build_stays_stateless_without_session），绝不每请求随机生成。
 func grokSessionID(promptCacheKey string) (string, error) {
 	key := strings.TrimSpace(promptCacheKey)
-	if key != "" {
-		if parsed, err := uuid.Parse(key); err == nil {
-			return parsed.String(), nil
-		}
-		return uuid.NewHash(sha256.New(), uuid.NameSpaceURL, []byte("grok2api:session:"+key), 8).String(), nil
+	if key == "" {
+		return "", nil
 	}
-	value, err := uuid.NewV7()
-	if err != nil {
-		return "", err
+	if parsed, err := uuid.Parse(key); err == nil {
+		return parsed.String(), nil
 	}
-	return value.String(), nil
+	return uuid.NewHash(sha256.New(), uuid.NameSpaceURL, []byte("grok2api:session:"+key), 8).String(), nil
 }
 
 func injectPromptCacheKey(body []byte, clientKey string) ([]byte, error) {

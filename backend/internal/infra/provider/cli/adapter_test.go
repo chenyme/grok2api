@@ -407,13 +407,13 @@ func TestGrokSessionIDFollowsConversationIdentity(t *testing.T) {
 	if err != nil || parsed.Version() != uuid.Version(8) || first != second {
 		t.Fatalf("derived sessions = %q %q, %v", first, second, err)
 	}
+	// 对齐 CPA：无会话键时不得伪造随机 conv-id，否则会打散 xAI 服务器亲和导致 cached_tokens=0。
 	generated, err := grokSessionID("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err = uuid.Parse(generated)
-	if err != nil || parsed.Version() != uuid.Version(7) {
-		t.Fatalf("generated session = %q, %v", generated, err)
+	if generated != "" {
+		t.Fatalf("empty session key must not invent conv-id, got %q", generated)
 	}
 }
 

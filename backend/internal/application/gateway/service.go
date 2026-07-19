@@ -441,17 +441,24 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	}
 	affinityKey := ""
 	if route.Provider == accountdomain.ProviderBuild {
+		// 显式 key / session seed / 消息锚点 soft session（CPA 风格），禁止空 session 随机 conv-id。
 		identity := resolveBuildSessionIdentity(
 			input.ClientKey.ID,
 			route.Provider,
 			route.UpstreamModel,
 			input.PromptCacheKey,
 			input.PromptCacheSeed,
+			input.Body,
 		)
 		input.PromptCacheKey = identity.upstreamID
 		affinityKey = identity.affinityKey
+		if identity.upstreamID == "" {
+			s.logger.Debug("prompt_cache_session_empty", "request_id", input.RequestID, "model", route.UpstreamModel, "provider", route.Provider)
+		} else if identity.soft {
+			s.logger.Debug("prompt_cache_session_soft", "request_id", input.RequestID, "model", route.UpstreamModel)
+		}
 	}
-	adapter, ok := s.providers.Responses(route.Provider)
+adapter, ok := s.providers.Responses(route.Provider)
 	if !ok {
 		return nil, ErrNoAvailableAccount
 	}
