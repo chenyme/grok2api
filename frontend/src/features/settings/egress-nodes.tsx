@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { createEgressNode, deleteEgressNode, listEgressNodes, refreshEgressNodeClearance, updateEgressNode, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { createEgressNode, deleteEgressNode, listEgressNodes, refreshEgressClearance, updateEgressNode, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { ErrorState } from "@/shared/components/data-state";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
@@ -47,7 +47,7 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
   const refreshClearance = useMutation({
-    mutationFn: (id: number) => refreshEgressNodeClearance(id),
+    mutationFn: (id: string) => refreshEgressClearance(id),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); toast.success(t("settings.egress.clearanceRefreshed")); },
     onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
   });
