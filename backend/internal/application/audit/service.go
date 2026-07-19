@@ -166,15 +166,7 @@ func (s *Service) Close(ctx context.Context) error {
 }
 
 func (s *Service) List(ctx context.Context, page, pageSize int) ([]auditdomain.Record, int64, error) {
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 {
-		pageSize = 20
-	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
+	page, pageSize = repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
 	return s.audits.List(ctx, (page-1)*pageSize, pageSize)
 }
 
@@ -208,12 +200,7 @@ type auditCursorPayload struct {
 
 // ListCursor 使用复合游标读取审计，适合持续增长且支持多字段排序的大数据列表。
 func (s *Service) ListCursor(ctx context.Context, rawCursor string, pageSize int, search, rawPeriod string, filter ListFilter) (CursorResult, error) {
-	if pageSize < 1 {
-		pageSize = 50
-	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
+	_, pageSize = repository.NormalizePage(1, pageSize, repository.DefaultCursorPageSize)
 	if filter.Sort.Field == "" && filter.Sort.Direction == "" {
 		filter.Sort = repository.SortQuery{Field: "createdAt", Direction: repository.SortDescending}
 	}

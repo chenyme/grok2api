@@ -29,6 +29,7 @@ import { DataTableFilters } from "@/shared/components/data-table-filters";
 import { DateTimePicker } from "@/shared/components/date-time-picker";
 import { Pagination } from "@/shared/components/pagination";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
+import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { formatDateTime, toDateTimeLocal } from "@/shared/lib/format";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
@@ -259,7 +260,7 @@ export function ClientKeysPage() {
         {keysQuery.isError ? <ErrorState message={keysQuery.error.message} onRetry={() => void keysQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {keysQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="min-w-[1120px] table-fixed text-xs">
+          <Table viewportRows={20} rowHeight={56} className="min-w-[1120px] table-fixed text-xs">
             <colgroup>
               <col className="w-10" />
               <col className="w-36" />
@@ -286,8 +287,10 @@ export function ClientKeysPage() {
                 <TableActionHead />
               </TableRow>
             </TableHeader>
-            <TableBody>
-              {keysQuery.isPending ? <TableLoadingRow colSpan={10} /> : result?.items.map((key) => (
+            {keysQuery.isPending ? (
+              <TableBody><TableLoadingRow colSpan={10} /></TableBody>
+            ) : (
+              <VirtualTableBody items={result?.items ?? []} colSpan={10} rowHeight={56} renderRow={(key) => (
                 <TableRow className="group h-14" key={key.id} data-state={selected.has(key.id) ? "selected" : undefined}>
                   <TableCell><Checkbox checked={selected.has(key.id)} onCheckedChange={(checked) => toggleKey(key.id, checked === true)} aria-label={t("common.selectItem", { name: key.name })} /></TableCell>
                   <TableCell className="min-w-0">
@@ -326,8 +329,8 @@ export function ClientKeysPage() {
                     </DropdownMenu>
                   </TableActionCell>
                 </TableRow>
-              ))}
-            </TableBody>
+              )} />
+            )}
           </Table>
         ) : null}
       </DataTableShell>

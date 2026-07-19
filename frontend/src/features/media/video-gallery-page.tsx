@@ -21,6 +21,7 @@ import { DataTableShell } from "@/shared/components/data-table-shell";
 import { PageHeader } from "@/shared/components/page-header";
 import { Pagination } from "@/shared/components/pagination";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
+import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { cn } from "@/shared/lib/cn";
 import { formatDateTime, formatNumber } from "@/shared/lib/format";
@@ -163,7 +164,7 @@ export function VideoGalleryPage() {
         {videosQuery.isError ? <ErrorState message={videosQuery.error.message} onRetry={() => void videosQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState message={t("media.videos.empty")} /> : null}
         {videosQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="min-w-[1096px] table-fixed text-xs">
+          <Table viewportRows={20} rowHeight={72} className="min-w-[1096px] table-fixed text-xs">
             <colgroup>
               <col className="w-10" />
               <col className="w-64" />
@@ -186,8 +187,10 @@ export function VideoGalleryPage() {
                 <TableActionHead />
               </TableRow>
             </TableHeader>
-            <TableBody>
-              {videosQuery.isPending ? <TableLoadingRow colSpan={8} /> : result?.items.map((job) => (
+            {videosQuery.isPending ? (
+              <TableBody><TableLoadingRow colSpan={8} /></TableBody>
+            ) : (
+              <VirtualTableBody items={result?.items ?? []} colSpan={8} rowHeight={72} renderRow={(job) => (
                 <TableRow className="group h-[72px]" data-state={selected.has(job.id) ? "selected" : undefined} key={job.id}>
                   <TableCell>
                     <Checkbox checked={selected.has(job.id)} disabled={!isTerminalVideoJob(job)} onCheckedChange={(checked) => toggleVideo(job.id, checked === true)} aria-label={t("common.selectItem", { name: job.id })} />
@@ -219,8 +222,8 @@ export function VideoGalleryPage() {
                     ) : null}
                   </TableActionCell>
                 </TableRow>
-              ))}
-            </TableBody>
+              )} />
+            )}
           </Table>
         ) : null}
       </DataTableShell>

@@ -177,7 +177,7 @@ function ImageCard({ image, locale, selectionMode, selected, onSelectedChange }:
   // 管理端图库与 API 同源，使用相对路径避免依赖未配置或仅对外可用的公共地址。
   const imageURL = `/v1/media/images/${encodeURIComponent(image.id)}`;
   return (
-    <article className="group relative min-w-0">
+    <article className="group relative min-w-0 [content-visibility:auto] [contain-intrinsic-size:0_280px]">
       <Checkbox
         checked={selected}
         onCheckedChange={(checked) => onSelectedChange(checked === true)}

@@ -440,7 +440,7 @@ func oneOf(value string, allowed ...string) bool {
 	return false
 }
 
-// BatchUpdate 对一组账号应用同一组路由参数，单次最多处理 500 个账号。
+// BatchUpdate 对一组账号应用同一组路由参数，单次最多处理一个管理端最大分页。
 func (s *Service) BatchUpdate(ctx context.Context, ids []uint64, input UpdateInput) (int64, error) {
 	ids, err := normalizeBatchIDs(ids)
 	if err != nil {
@@ -2539,20 +2539,11 @@ func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomai
 }
 
 func normalizePage(page, pageSize int) (int, int) {
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 {
-		pageSize = 20
-	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
-	return page, pageSize
+	return repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
 }
 
 func normalizeBatchIDs(ids []uint64) ([]uint64, error) {
-	return normalizeIDs(ids, 500)
+	return normalizeIDs(ids, repository.MaxPageSize)
 }
 
 func normalizeIDs(ids []uint64, limit int) ([]uint64, error) {

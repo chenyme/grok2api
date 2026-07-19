@@ -336,15 +336,7 @@ func (s *Service) deleteVideoAsset(ctx context.Context, assetID string) error {
 }
 
 func mediaPageQuery(page, pageSize int, search string, sort repository.SortQuery) repository.PageQuery {
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 {
-		pageSize = 20
-	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
+	page, pageSize = repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
 	return repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: strings.TrimSpace(search), Sort: sort}
 }
 
