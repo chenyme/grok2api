@@ -60,20 +60,7 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 	case "auto", "basic", "super", "heavy":
 		query = query.Where("EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.tier = ?)", input.Filter.QuotaType)
 	}
-	switch input.Filter.Status {
-	case "active":
-		query = query.Where("enabled = ? AND auth_status = ? AND NOT "+accountRecoveryPredicate+" AND NOT "+providerQuotaExhaustedPredicate+" AND (cooldown_until IS NULL OR cooldown_until <= ?)", true, account.AuthStatusActive, input.Filter.Now)
-	case "disabled":
-		query = query.Where("enabled = ?", false)
-	case "reauthRequired":
-		query = query.Where("enabled = ? AND auth_status = ?", true, account.AuthStatusReauthRequired)
-	case "cooldown":
-		query = query.Where("enabled = ? AND auth_status = ? AND NOT "+accountRecoveryPredicate+" AND cooldown_until > ?", true, account.AuthStatusActive, input.Filter.Now)
-	case "waitingReset":
-		query = query.Where("enabled = ? AND auth_status = ? AND (EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'exhausted') OR "+providerQuotaExhaustedPredicate+")", true, account.AuthStatusActive)
-	case "probing":
-		query = query.Where("enabled = ? AND auth_status = ? AND EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'probing')", true, account.AuthStatusActive)
-	}
+	query = applyAccountStatusFilter(query, input.Filter.Status, input.Filter.Now)
 	if input.Filter.Refreshable != nil {
 		if *input.Filter.Refreshable {
 			query = query.Where("EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.encrypted_refresh <> '')")
@@ -679,8 +666,12 @@ func (r *AccountRepository) UpsertManyByIdentity(ctx context.Context, values []a
 	results := make([]repository.AccountUpsertResult, len(values))
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		identityKeys := make([]string, 0, len(values))
+		sourceKeysByProvider := make(map[account.Provider][]string)
 		for _, value := range values {
 			identityKeys = append(identityKeys, fromAccountDomain(value).IdentityKey)
+			if strings.TrimSpace(value.SourceKey) != "" {
+				sourceKeysByProvider[value.Provider] = append(sourceKeysByProvider[value.Provider], value.SourceKey)
+			}
 		}
 		var existingRows []accountModel
 		if err := tx.Where("identity_key IN ?", identityKeys).Find(&existingRows).Error; err != nil {
@@ -690,11 +681,32 @@ func (r *AccountRepository) UpsertManyByIdentity(ctx context.Context, values []a
 		for _, row := range existingRows {
 			existingByIdentity[row.IdentityKey] = row
 		}
+		existingBySource := make(map[string]accountModel, len(values))
+		for providerValue, sourceKeys := range sourceKeysByProvider {
+			var sourceRows []accountModel
+			if err := tx.Where("provider = ? AND source_key IN ?", providerValue, sourceKeys).Find(&sourceRows).Error; err != nil {
+				return err
+			}
+			for _, row := range sourceRows {
+				key := providerSourceLookupKey(row.Provider, row.SourceKey)
+				if existing, duplicate := existingBySource[key]; duplicate && existing.ID != row.ID {
+					return fmt.Errorf("Provider %s 的来源凭据匹配多个账号", row.Provider)
+				}
+				existingBySource[key] = row
+			}
+		}
 		for index, value := range values {
 			identityKey := fromAccountDomain(value).IdentityKey
-			existing, found := existingByIdentity[identityKey]
+			existing, foundByIdentity := existingByIdentity[identityKey]
+			bySource, foundBySource := existingBySource[providerSourceLookupKey(string(value.Provider), value.SourceKey)]
+			if foundByIdentity && foundBySource && existing.ID != bySource.ID {
+				return fmt.Errorf("账号身份与来源凭据指向不同账号")
+			}
+			if !foundByIdentity && foundBySource {
+				existing = bySource
+			}
 			var current *accountModel
-			if found {
+			if foundByIdentity || foundBySource {
 				current = &existing
 			}
 			result, stored, err := upsertKnownAccountByIdentity(tx, value, current)
@@ -703,6 +715,7 @@ func (r *AccountRepository) UpsertManyByIdentity(ctx context.Context, values []a
 			}
 			results[index] = result
 			existingByIdentity[stored.IdentityKey] = stored
+			existingBySource[providerSourceLookupKey(stored.Provider, stored.SourceKey)] = stored
 		}
 		return nil
 	})
@@ -714,17 +727,37 @@ func (r *AccountRepository) UpsertManyByIdentity(ctx context.Context, values []a
 
 func upsertAccountByIdentity(tx *gorm.DB, value account.Credential) (repository.AccountUpsertResult, error) {
 	row := fromAccountDomain(value)
-	var existing accountModel
-	err := tx.Where("identity_key = ?", row.IdentityKey).First(&existing).Error
-	if err == nil {
-		result, _, err := upsertKnownAccountByIdentity(tx, value, &existing)
+	var byIdentity accountModel
+	identityErr := tx.Where("identity_key = ?", row.IdentityKey).First(&byIdentity).Error
+	if identityErr != nil && !errors.Is(identityErr, gorm.ErrRecordNotFound) {
+		return repository.AccountUpsertResult{}, identityErr
+	}
+	var sourceRows []accountModel
+	if strings.TrimSpace(row.SourceKey) != "" {
+		if err := tx.Where("provider = ? AND source_key = ?", row.Provider, row.SourceKey).Limit(2).Find(&sourceRows).Error; err != nil {
+			return repository.AccountUpsertResult{}, err
+		}
+		if len(sourceRows) > 1 {
+			return repository.AccountUpsertResult{}, fmt.Errorf("Provider %s 的来源凭据匹配多个账号", row.Provider)
+		}
+	}
+	if identityErr == nil && len(sourceRows) == 1 && byIdentity.ID != sourceRows[0].ID {
+		return repository.AccountUpsertResult{}, fmt.Errorf("账号身份与来源凭据指向不同账号")
+	}
+	if identityErr == nil {
+		result, _, err := upsertKnownAccountByIdentity(tx, value, &byIdentity)
 		return result, err
 	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return repository.AccountUpsertResult{}, err
+	if len(sourceRows) == 1 {
+		result, _, err := upsertKnownAccountByIdentity(tx, value, &sourceRows[0])
+		return result, err
 	}
 	result, _, err := upsertKnownAccountByIdentity(tx, value, nil)
 	return result, err
+}
+
+func providerSourceLookupKey(providerValue, sourceKey string) string {
+	return providerValue + "\x00" + sourceKey
 }
 
 func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existing *accountModel) (repository.AccountUpsertResult, accountModel, error) {
@@ -955,6 +988,67 @@ func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64
 	}
 	result := r.db.db.WithContext(ctx).Where("id IN ?", ids).Delete(&accountModel{})
 	return result.RowsAffected, result.Error
+}
+
+func (r *AccountRepository) DeleteAccountStatusBatch(ctx context.Context, providerValue account.Provider, status string, now time.Time, limit int) ([]uint64, int, error) {
+	if limit < 1 {
+		return []uint64{}, 0, nil
+	}
+	if status != "disabled" && status != "reauthRequired" && status != "cooldown" {
+		return nil, 0, fmt.Errorf("不支持清理账号状态 %q", status)
+	}
+	deletedIDs := make([]uint64, 0, limit)
+	candidateCount := 0
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var candidates []uint64
+		selection := applyAccountStatusFilter(tx.Model(&accountModel{}).Where("provider = ?", providerValue), status, now)
+		if err := selection.Order("id ASC").Limit(limit).Pluck("id", &candidates).Error; err != nil || len(candidates) == 0 {
+			return err
+		}
+		candidateCount = len(candidates)
+		deletion := applyAccountStatusFilter(tx.Where("id IN ?", candidates), status, now).Delete(&accountModel{})
+		if deletion.Error != nil {
+			return deletion.Error
+		}
+		if deletion.RowsAffected == int64(len(candidates)) {
+			deletedIDs = append(deletedIDs, candidates...)
+			return nil
+		}
+		var remaining []uint64
+		if err := tx.Model(&accountModel{}).Where("id IN ?", candidates).Pluck("id", &remaining).Error; err != nil {
+			return err
+		}
+		remainingSet := make(map[uint64]struct{}, len(remaining))
+		for _, id := range remaining {
+			remainingSet[id] = struct{}{}
+		}
+		for _, id := range candidates {
+			if _, exists := remainingSet[id]; !exists {
+				deletedIDs = append(deletedIDs, id)
+			}
+		}
+		return nil
+	})
+	return deletedIDs, candidateCount, err
+}
+
+func applyAccountStatusFilter(query *gorm.DB, status string, now time.Time) *gorm.DB {
+	switch status {
+	case "active":
+		return query.Where("enabled = ? AND auth_status = ? AND NOT "+accountRecoveryPredicate+" AND NOT "+providerQuotaExhaustedPredicate+" AND (cooldown_until IS NULL OR cooldown_until <= ?)", true, account.AuthStatusActive, now)
+	case "disabled":
+		return query.Where("enabled = ?", false)
+	case "reauthRequired":
+		return query.Where("enabled = ? AND auth_status = ?", true, account.AuthStatusReauthRequired)
+	case "cooldown":
+		return query.Where("enabled = ? AND auth_status = ? AND NOT "+accountRecoveryPredicate+" AND cooldown_until > ?", true, account.AuthStatusActive, now)
+	case "waitingReset":
+		return query.Where("enabled = ? AND auth_status = ? AND (EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'exhausted') OR "+providerQuotaExhaustedPredicate+")", true, account.AuthStatusActive)
+	case "probing":
+		return query.Where("enabled = ? AND auth_status = ? AND EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'probing')", true, account.AuthStatusActive)
+	default:
+		return query
+	}
 }
 
 func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time) (account.Credential, error) {

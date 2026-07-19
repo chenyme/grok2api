@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -34,6 +34,7 @@ import { formatDateTime, formatNumber } from "@/shared/lib/format";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 import {
   acceptWebAccountTerms,
+  cleanupAccounts,
   deleteAccount,
   deleteAccounts,
   enableWebAccountNSFW,
@@ -47,6 +48,7 @@ import {
   pollDeviceAuthorization,
   refreshAccountBilling,
   refreshAccountsQuota,
+  refreshAccountsTokens,
   refreshAccountToken,
   refreshAccountQuota,
   refreshAllAccountBilling,
@@ -60,6 +62,7 @@ import {
   updateAccount,
   updateAccountsEnabled,
   type AccountDTO,
+  type AccountCleanupStatus,
   type AccountProvider,
   type AccountUpdateInput,
   type BuildRouteMode,
@@ -86,10 +89,13 @@ type BuildConversionProgressState = {
   syncing?: AccountTaskProgressDTO;
 };
 
+type WebConversionTarget = "build" | "console";
+
 export function AccountsPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const quickImportFileInputRef = useRef<HTMLInputElement>(null);
   const quotaSyncAbortRef = useRef<AbortController | null>(null);
   const renewalAbortRef = useRef<AbortController | null>(null);
   const conversionAbortRef = useRef<AbortController | null>(null);
@@ -108,14 +114,15 @@ export function AccountsPage() {
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupStatuses, setCleanupStatuses] = useState<Set<AccountCleanupStatus>>(() => new Set());
   const [exportOpen, setExportOpen] = useState(false);
   const [syncAllOpen, setSyncAllOpen] = useState(false);
   const [quotaSyncProgress, setQuotaSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
-  const [conversionTargets, setConversionTargets] = useState<string[] | "all" | null>(null);
-  const [conversionStrategy, setConversionStrategy] = useState<BuildConversionStrategy>("missing");
+  const [webConversionTargets, setWebConversionTargets] = useState<string[] | "all" | null>(null);
+  const [webConversionTarget, setWebConversionTarget] = useState<WebConversionTarget>("build");
+  const [webConversionStrategy, setWebConversionStrategy] = useState<BuildConversionStrategy>("missing");
   const [conversionProgress, setConversionProgress] = useState<BuildConversionProgressState | null>(null);
-  const [webConsoleSyncTargets, setWebConsoleSyncTargets] = useState<string[] | "all" | null>(null);
-  const [webConsoleSyncStrategy, setWebConsoleSyncStrategy] = useState<"missing" | "all">("missing");
   const [webConsoleSyncProgress, setWebConsoleSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [webAccountScriptsTargets, setWebAccountScriptsTargets] = useState<string[] | "all" | null>(null);
   const [webAccountScriptsProgress, setWebAccountScriptsProgress] = useState<AccountTaskProgressDTO | null>(null);
@@ -309,7 +316,7 @@ export function AccountsPage() {
     },
     onSuccess: (conversion) => {
       setConversionProgress(null);
-      setConversionTargets(null);
+      setWebConversionTargets(null);
       setSelected(new Set());
       toast.success(t("accounts.conversionCompleted", conversion));
     },
@@ -330,7 +337,7 @@ export function AccountsPage() {
       return syncWebAccountsToConsole(input, setWebConsoleSyncProgress, controller.signal);
     },
     onSuccess: (result) => {
-      setWebConsoleSyncTargets(null);
+      setWebConversionTargets(null);
       setSelected(new Set());
       toast.success(t("webConsoleSync.completed", result));
     },
@@ -405,9 +412,9 @@ export function AccountsPage() {
   });
 
   const exportMutation = useMutation({
-    mutationFn: exportAccounts,
+    mutationFn: () => exportAccounts(provider),
     onSuccess: (blob) => {
-      downloadAccountExport(blob);
+      downloadAccountExport(blob, provider);
       setExportOpen(false);
       toast.success(t("accounts.exported"));
     },
@@ -434,6 +441,16 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const batchTokenMutation = useMutation({
+    mutationFn: () => refreshAccountsTokens([...selected], provider),
+    onSuccess: (result) => {
+      setSelected(new Set());
+      invalidateAccountData();
+      toast.success(t("accounts.allTokensRefreshed", result));
+    },
+    onError: showError,
+  });
+
   const batchDeleteMutation = useMutation({
     mutationFn: () => deleteAccounts([...selected], provider),
     onSuccess: () => {
@@ -441,6 +458,17 @@ export function AccountsPage() {
       setBatchDeleteOpen(false);
       invalidateAccountData();
       toast.success(t("accounts.deleted"));
+    },
+    onError: showError,
+  });
+
+  const cleanupMutation = useMutation({
+    mutationFn: () => cleanupAccounts(provider, [...cleanupStatuses]),
+    onSuccess: (result) => {
+      setCleanupOpen(false);
+      setCleanupStatuses(new Set());
+      invalidateAccountData();
+      toast.success(t("accounts.cleanupCompleted", result));
     },
     onError: showError,
   });
@@ -505,14 +533,44 @@ export function AccountsPage() {
     importMutation.mutate([new File([value], filename, { type: "text/plain" })]);
   }
 
-  function openWebConsoleSync(targets: string[] | "all"): void {
-    setWebConsoleSyncStrategy("missing");
-    setWebConsoleSyncTargets(targets);
+  async function loadQuickImportFile(file: File | undefined): Promise<void> {
+    if (!file) return;
+    if (file.size > 30 * 1024 * 1024) {
+      toast.error(t("apiErrors.accountImportFileTooLarge"));
+      return;
+    }
+    try {
+      setQuickImportTokens(await file.text());
+    } catch {
+      toast.error(t("errors.generic"));
+    }
   }
 
-  function openBuildConversion(targets: string[] | "all"): void {
-    setConversionStrategy("missing");
-    setConversionTargets(targets);
+  function openWebConversion(targets: string[] | "all"): void {
+    setWebConversionTarget("build");
+    setWebConversionStrategy("missing");
+    setWebConversionTargets(targets);
+  }
+
+  function closeWebConversion(): void {
+    conversionAbortRef.current?.abort();
+    webConsoleSyncAbortRef.current?.abort();
+    setWebConversionTargets(null);
+  }
+
+  function runWebConversion(): void {
+    if (webConversionTargets === null) return;
+    if (webConversionTarget === "build") {
+      const input: BuildConversionInput = webConversionTargets === "all"
+        ? { all: true, strategy: webConversionStrategy }
+        : { ids: webConversionTargets, strategy: webConversionStrategy };
+      conversionMutation.mutate(input);
+      return;
+    }
+    const input: WebConsoleSyncInput = webConversionTargets === "all"
+      ? { all: true, strategy: webConversionStrategy }
+      : { ids: webConversionTargets, strategy: webConversionStrategy };
+    webConsoleSyncMutation.mutate(input);
   }
 
   function runSelectedWebAccountScripts(actions: WebAccountScriptActions): void {
@@ -557,6 +615,7 @@ export function AccountsPage() {
   const activeConversionProgress = convertingProgress?.completed === convertingProgress?.total && syncingProgress
     ? syncingProgress
     : convertingProgress ?? syncingProgress;
+  const webConversionPending = conversionMutation.isPending || webConsoleSyncMutation.isPending;
 
   function showError(error: unknown): void {
     toast.error(error instanceof Error ? error.message : t("errors.generic"));
@@ -612,7 +671,9 @@ export function AccountsPage() {
     || importMutation.isPending
     || batchUpdateMutation.isPending
     || batchBillingMutation.isPending
+    || batchTokenMutation.isPending
     || batchDeleteMutation.isPending
+    || cleanupMutation.isPending
     || webConfirmationMutation.isPending
     || webAccountScriptsMutation.isPending;
 
@@ -641,22 +702,38 @@ export function AccountsPage() {
         />
       </section>
       <div className="space-y-5">
-        <Tabs value={provider} onValueChange={(value) => changeProvider(value as AccountProvider)}>
-          <TabsList>
-            <TabsTrigger value="grok_build" className="gap-1.5">
-              <SquareTerminal className="size-3.5 text-quota-product-1" />
-              <span>Grok Build</span>
-            </TabsTrigger>
-            <TabsTrigger value="grok_web" className="gap-1.5">
-              <Compass className="size-3.5 text-quota-product-2" />
-              <span>Grok Web</span>
-            </TabsTrigger>
-            <TabsTrigger value="grok_console" className="gap-1.5">
-              <Webhook className="size-3.5 text-quota-product-4" />
-              <span>Grok Console</span>
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Tabs value={provider} onValueChange={(value) => changeProvider(value as AccountProvider)}>
+            <TabsList>
+              <TabsTrigger value="grok_build" className="gap-1.5">
+                <SquareTerminal className="size-3.5 text-quota-product-1" />
+                <span>Grok Build</span>
+              </TabsTrigger>
+              <TabsTrigger value="grok_web" className="gap-1.5">
+                <Compass className="size-3.5 text-quota-product-2" />
+                <span>Grok Web</span>
+              </TabsTrigger>
+              <TabsTrigger value="grok_console" className="gap-1.5">
+                <Webhook className="size-3.5 text-quota-product-4" />
+                <span>Grok Console</span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button size="sm"><Plus />{t("accounts.connectAccount")}</Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {provider === "grok_build" ? <DropdownMenuItem onClick={() => void startDeviceLogin()}><ExternalLink />{t("accounts.deviceLogin")}</DropdownMenuItem> : null}
+              {provider !== "grok_build" ? <DropdownMenuItem disabled={bulkTaskPending} onClick={() => setQuickImportOpen(true)}><ClipboardPaste />{t("accounts.quickImportSSO")}</DropdownMenuItem> : null}
+              <DropdownMenuItem disabled={bulkTaskPending} onClick={() => fileInputRef.current?.click()}><FileUp />{provider === "grok_build" ? t("accounts.importAuth") : provider === "grok_console" ? t("console.importFile") : t("accounts.importWebFile")}</DropdownMenuItem>
+              {hasProviderAccounts ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setExportOpen(true)}><Download />{t("accounts.exportAuth")}</DropdownMenuItem>
+                </>
+              ) : null}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -714,33 +791,19 @@ export function AccountsPage() {
                 <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
-                {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openBuildConversion([...selected])}>{t("accounts.convertToBuild")}</Button> : null}
-                {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync([...selected])}>{t("webConsoleSync.action")}</Button> : null}
+                {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion([...selected])}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets([...selected])}>{t("webAccountScripts.action")}</Button> : null}
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchBillingMutation.mutate()}>{t("accountCredential.quotaSyncAction")}</Button>
-                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={bulkTaskPending} onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
+                {provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchTokenMutation.mutate()}>{t("accountCredential.refreshAction")}</Button> : null}
+                <Button variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={bulkTaskPending} onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
               </div>
             ) : (
               <div className="flex flex-wrap items-center justify-end gap-1.5">
-                {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openBuildConversion("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
-                {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync("all")}>{t("webConsoleSync.allAction")}</Button> : null}
+                {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion("all")}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets("all")}>{t("webAccountScripts.action")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setSyncAllOpen(true)}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild><Button size="sm"><Plus />{t("accounts.connectAccount")}</Button></DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {provider === "grok_build" ? <DropdownMenuItem onClick={() => void startDeviceLogin()}><ExternalLink />{t("accounts.deviceLogin")}</DropdownMenuItem> : null}
-                    {provider !== "grok_build" ? <DropdownMenuItem disabled={bulkTaskPending} onClick={() => setQuickImportOpen(true)}><ClipboardPaste />{t("accounts.quickImportSSO")}</DropdownMenuItem> : null}
-                    <DropdownMenuItem disabled={bulkTaskPending} onClick={() => fileInputRef.current?.click()}><FileUp />{provider === "grok_build" ? t("accounts.importAuth") : provider === "grok_console" ? t("console.importFile") : t("accounts.importWebFile")}</DropdownMenuItem>
-                    {hasProviderAccounts && provider === "grok_build" ? (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => setExportOpen(true)}><Download />{t("accounts.exportAuth")}</DropdownMenuItem>
-                      </>
-                    ) : null}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                {hasProviderAccounts ? <Button variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={bulkTaskPending} onClick={() => { setCleanupStatuses(new Set()); setCleanupOpen(true); }}><Trash2 />{t("accounts.cleanupAction")}</Button> : null}
               </div>
             )}
           </>
@@ -796,8 +859,7 @@ export function AccountsPage() {
                         <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onClick={() => beginEdit(account)}><Pencil />{t("common.edit")}</DropdownMenuItem>
-                          {provider === "grok_web" ? <DropdownMenuItem onClick={() => openBuildConversion([account.id])}><ArrowRight />{t("accounts.convertToBuild")}</DropdownMenuItem> : null}
-                          {provider === "grok_web" ? <DropdownMenuItem onClick={() => openWebConsoleSync([account.id])}><ArrowRight />{t("webConsoleSync.action")}</DropdownMenuItem> : null}
+                          {provider === "grok_web" ? <DropdownMenuItem onClick={() => openWebConversion([account.id])}><ArrowRight />{t("accountConversion.action")}</DropdownMenuItem> : null}
                           {provider === "grok_web" ? (
                             <WebAccountSettingsMenu
                               account={account}
@@ -844,51 +906,41 @@ export function AccountsPage() {
       <AlertDialog open={syncAllOpen} onOpenChange={(open) => { if (!open) quotaSyncAbortRef.current?.abort(); setSyncAllOpen(open); }}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.syncAllTitle")}</AlertDialogTitle><AlertDialogDescription>{t(provider === "grok_web" ? "accounts.syncAllWebDescription" : provider === "grok_console" ? "console.syncAllDescription" : "accounts.syncAllDescription")}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction disabled={quotaSyncMutation.isPending} onClick={() => quotaSyncMutation.mutate(provider)}>{quotaSyncMutation.isPending ? <><Spinner />{quotaSyncProgress ? <span className="tabular-nums">{quotaSyncProgress.completed} / {quotaSyncProgress.total}</span> : t("common.loading")}</> : t("accounts.syncAll")}</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction disabled={quotaSyncMutation.isPending} onClick={(event) => { event.preventDefault(); quotaSyncMutation.mutate(provider); }}>{quotaSyncMutation.isPending ? <><Spinner />{quotaSyncProgress ? <span className="tabular-nums">{quotaSyncProgress.completed} / {quotaSyncProgress.total}</span> : t("common.loading")}</> : t("accounts.syncAll")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={webConsoleSyncTargets !== null} onOpenChange={(open) => { if (!open) { webConsoleSyncAbortRef.current?.abort(); setWebConsoleSyncTargets(null); } }}>
+      <AlertDialog open={webConversionTargets !== null} onOpenChange={(open) => { if (!open) closeWebConversion(); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t(webConsoleSyncTargets === "all" ? "webConsoleSync.allTitle" : "webConsoleSync.selectedTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>{t(webConsoleSyncTargets === "all" ? "webConsoleSync.allDescription" : "webConsoleSync.selectedDescription")}</AlertDialogDescription>
+            <AlertDialogTitle>{t("accountConversion.title")}</AlertDialogTitle>
+            <AlertDialogDescription>{t(webConversionTargets === "all" ? "accountConversion.allDescription" : "accountConversion.selectedDescription", { count: Array.isArray(webConversionTargets) ? webConversionTargets.length : 0 })}</AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-2">
-            <p id="web-console-sync-strategy" className="text-xs font-medium">{t("webConsoleSync.strategyTitle")}</p>
-            <div role="radiogroup" aria-labelledby="web-console-sync-strategy" className="grid grid-cols-2 rounded-md bg-muted p-1">
-              <Button type="button" role="radio" aria-checked={webConsoleSyncStrategy === "missing"} variant={webConsoleSyncStrategy === "missing" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-3 text-xs font-normal shadow-none" onClick={() => setWebConsoleSyncStrategy("missing")}>{t("webConsoleSync.missingStrategy")}</Button>
-              <Button type="button" role="radio" aria-checked={webConsoleSyncStrategy === "all"} variant={webConsoleSyncStrategy === "all" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-3 text-xs font-normal shadow-none" onClick={() => setWebConsoleSyncStrategy("all")}>{t("webConsoleSync.allStrategy")}</Button>
-            </div>
-            <p className="min-h-8 text-xs text-muted-foreground">{t(webConsoleSyncStrategy === "missing" ? "webConsoleSync.missingStrategyDescription" : "webConsoleSync.allStrategyDescription")}</p>
+            <p id="web-conversion-target" className="text-xs font-medium">{t("accountConversion.target")}</p>
+            <Tabs value={webConversionTarget} onValueChange={(value) => setWebConversionTarget(value as WebConversionTarget)}>
+              <TabsList aria-labelledby="web-conversion-target" className="grid h-10 w-full grid-cols-2 p-1">
+                <TabsTrigger value="build" className="h-8 gap-2 font-normal" disabled={webConversionPending}><SquareTerminal className="text-quota-product-1" />Grok Build</TabsTrigger>
+                <TabsTrigger value="console" className="h-8 gap-2 font-normal" disabled={webConversionPending}><Webhook className="text-quota-product-4" />Grok Console</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+          <div className="space-y-2">
+            <p id="web-conversion-strategy" className="text-xs font-medium">{t("accountConversion.strategy")}</p>
+            <Tabs value={webConversionStrategy} onValueChange={(value) => setWebConversionStrategy(value as BuildConversionStrategy)}>
+              <TabsList aria-labelledby="web-conversion-strategy" className="grid h-10 w-full grid-cols-2 p-1">
+                <TabsTrigger value="missing" className="h-8 font-normal" disabled={webConversionPending}>{t("accountConversion.missing")}</TabsTrigger>
+                <TabsTrigger value="all" className="h-8 font-normal" disabled={webConversionPending}>{t("accountConversion.all")}</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <p className="min-h-8 text-xs text-muted-foreground">{t(webConversionTarget === "build"
+              ? webConversionStrategy === "missing" ? "accountBulk.missingStrategyDescription" : "accountBulk.allStrategyDescription"
+              : webConversionStrategy === "missing" ? "webConsoleSync.missingStrategyDescription" : "webConsoleSync.allStrategyDescription")}</p>
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction disabled={webConsoleSyncMutation.isPending || webConsoleSyncTargets === null || (Array.isArray(webConsoleSyncTargets) && webConsoleSyncTargets.length === 0)} onClick={(event) => { event.preventDefault(); if (webConsoleSyncTargets === "all") webConsoleSyncMutation.mutate({ all: true, strategy: webConsoleSyncStrategy }); else if (webConsoleSyncTargets) webConsoleSyncMutation.mutate({ ids: webConsoleSyncTargets, strategy: webConsoleSyncStrategy }); }}>
-              {webConsoleSyncMutation.isPending ? <><Spinner />{webConsoleSyncProgress ? <span className="tabular-nums">{webConsoleSyncProgress.completed} / {webConsoleSyncProgress.total}</span> : t("common.loading")}</> : t(webConsoleSyncStrategy === "missing" ? "webConsoleSync.syncMissing" : "webConsoleSync.syncAll")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={conversionTargets !== null} onOpenChange={(open) => { if (!open) { conversionAbortRef.current?.abort(); setConversionTargets(null); } }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t(conversionTargets === "all" ? "accountBulk.convertAllToBuildTitle" : "accounts.convertToBuildTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>{t(conversionTargets === "all" ? "accountBulk.convertAllToBuildDescription" : "accountBulk.selectedDescription")}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="space-y-2">
-            <p id="web-build-conversion-strategy" className="text-xs font-medium">{t("accountBulk.strategyTitle")}</p>
-            <div role="radiogroup" aria-labelledby="web-build-conversion-strategy" className="grid grid-cols-2 rounded-md bg-muted p-1">
-              <Button type="button" role="radio" aria-checked={conversionStrategy === "missing"} variant={conversionStrategy === "missing" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-3 text-xs font-normal shadow-none" onClick={() => setConversionStrategy("missing")}>{t("accountBulk.missingStrategy")}</Button>
-              <Button type="button" role="radio" aria-checked={conversionStrategy === "all"} variant={conversionStrategy === "all" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-sm px-3 text-xs font-normal shadow-none" onClick={() => setConversionStrategy("all")}>{t("accountBulk.allStrategy")}</Button>
-            </div>
-            <p className="min-h-8 text-xs text-muted-foreground">{t(conversionStrategy === "missing" ? "accountBulk.missingStrategyDescription" : "accountBulk.allStrategyDescription")}</p>
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction disabled={conversionMutation.isPending || conversionTargets === null || (Array.isArray(conversionTargets) && conversionTargets.length === 0)} onClick={(event) => { event.preventDefault(); if (conversionTargets === "all") conversionMutation.mutate({ all: true, strategy: conversionStrategy }); else if (conversionTargets) conversionMutation.mutate({ ids: conversionTargets, strategy: conversionStrategy }); }}>
-              {conversionMutation.isPending ? <><Spinner />{activeConversionProgress ? <span className="whitespace-nowrap tabular-nums">{t(activeConversionProgress.phase === "syncing" ? "accounts.syncingProgress" : "accounts.convertingProgress", activeConversionProgress)}</span> : t("common.loading")}</> : t(conversionStrategy === "missing" ? "accountBulk.convertMissing" : "accountBulk.convertAll")}
+            <AlertDialogAction disabled={webConversionPending || webConversionTargets === null || (Array.isArray(webConversionTargets) && webConversionTargets.length === 0)} onClick={(event) => { event.preventDefault(); runWebConversion(); }}>
+              {webConversionPending ? <><Spinner />{webConversionTarget === "build" && activeConversionProgress ? <span className="whitespace-nowrap tabular-nums">{t(activeConversionProgress.phase === "syncing" ? "accounts.syncingProgress" : "accounts.convertingProgress", activeConversionProgress)}</span> : webConsoleSyncProgress ? <span className="tabular-nums">{webConsoleSyncProgress.completed} / {webConsoleSyncProgress.total}</span> : t("common.loading")}</> : t("accountConversion.start")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -897,54 +949,75 @@ export function AccountsPage() {
       <AlertDialog open={renewAllOpen} onOpenChange={(open) => { if (!open) renewalAbortRef.current?.abort(); setRenewAllOpen(open); }}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.renewAllTitle")}</AlertDialogTitle><AlertDialogDescription>{t("accounts.renewAllDescription")}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction disabled={allTokenMutation.isPending} onClick={() => allTokenMutation.mutate()}>{allTokenMutation.isPending ? <><Spinner />{renewalProgress ? <span className="tabular-nums">{renewalProgress.completed} / {renewalProgress.total}</span> : t("common.loading")}</> : t("accounts.renewAll")}</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction disabled={allTokenMutation.isPending} onClick={(event) => { event.preventDefault(); allTokenMutation.mutate(); }}>{allTokenMutation.isPending ? <><Spinner />{renewalProgress ? <span className="tabular-nums">{renewalProgress.completed} / {renewalProgress.total}</span> : t("common.loading")}</> : t("accounts.renewAll")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       <AlertDialog open={exportOpen} onOpenChange={setExportOpen}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>{t("accounts.exportTitle")}</AlertDialogTitle><AlertDialogDescription>{t("accounts.exportDescription")}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogHeader><AlertDialogTitle>{t("accounts.exportTitle", { provider: provider === "grok_build" ? "Grok Build" : provider === "grok_web" ? "Grok Web" : "Grok Console" })}</AlertDialogTitle><AlertDialogDescription>{t("accounts.exportDescription")}</AlertDialogDescription></AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction disabled={exportMutation.isPending} onClick={() => exportMutation.mutate()}>{t("accounts.exportAuth")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       <Dialog open={deviceOpen} onOpenChange={setDeviceOpen}>
-        <DialogContent className="max-w-[420px]">
-          <DialogHeader>
+        <DialogContent className="max-w-[460px] pb-6">
+          <DialogHeader className="pr-7">
             <DialogTitle>{t("accounts.deviceTitle")}</DialogTitle>
             <DialogDescription>{t("accounts.deviceDescription")}</DialogDescription>
           </DialogHeader>
-          {deviceStatus === "starting" ? <LoadingState className="min-h-36" /> : null}
+          {deviceStatus === "starting" ? <LoadingState className="min-h-28" /> : null}
           {deviceSession ? (
             <div className="space-y-4">
-              <div className="space-y-1.5">
-                <Label>{t("accounts.userCode")}</Label>
-                <div className="relative">
-                  <code className="flex h-11 items-center rounded-md border bg-muted/40 px-3 pr-11 font-mono text-lg font-semibold tabular-nums">{deviceSession.userCode}</code>
-                  <CopyButton value={deviceSession.userCode} className="absolute right-1.5 top-1/2 size-8 -translate-y-1/2 rounded-md" onCopied={() => toast.success(t("common.copied"))} />
+              <div className="rounded-lg bg-muted/50 px-3 py-2.5">
+                <span className="text-[11px] text-muted-foreground">{t("accounts.userCode")}</span>
+                <div className="mt-0.5 flex items-center justify-between gap-3">
+                  <code className="min-w-0 select-all font-mono text-xl font-semibold tracking-[0.08em] tabular-nums">{deviceSession.userCode}</code>
+                  <CopyButton value={deviceSession.userCode} className="-mr-1 size-7" onCopied={() => toast.success(t("common.copied"))} />
                 </div>
+                <p className="mt-2 text-[11px] leading-4 text-muted-foreground">{t("accounts.expiresAt", { time: formatDateTime(deviceSession.expiresAt, i18n.language) })}</p>
               </div>
-              <Button type="button" size="sm" className="w-full" onClick={() => window.open(deviceSession.verificationUriComplete || deviceSession.verificationUri, "_blank", "noopener,noreferrer")}>
-                <ExternalLink />{t("accounts.openVerification")}
-              </Button>
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span className="flex items-center gap-2"><Spinner className="size-3.5" />{t("accounts.waiting")}</span>
-                <span className="whitespace-nowrap">{t("accounts.expiresAt", { time: formatDateTime(deviceSession.expiresAt, i18n.language) })}</span>
-              </div>
+              {deviceStatus === "pending" ? (
+                <div className="flex min-h-10 items-center justify-between gap-4 pt-1" aria-live="polite">
+                  <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3.5" />{t("accounts.waiting")}</span>
+                  <Button type="button" size="sm" className="shrink-0" onClick={() => window.open(deviceSession.verificationUriComplete || deviceSession.verificationUri, "_blank", "noopener,noreferrer")}>
+                    <Link />{t("accounts.openVerification")}
+                  </Button>
+                </div>
+              ) : null}
+              {deviceStatus === "failed" ? (
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-muted-foreground">{t("apiErrors.deviceLoginFailed")}</p>
+                  <Button type="button" variant="secondary" size="sm" className="shrink-0" onClick={() => void startDeviceLogin()}><RefreshCw />{t("common.retry")}</Button>
+                </div>
+              ) : null}
             </div>
           ) : null}
-          {deviceStatus === "failed" ? <Button type="button" variant="secondary" size="sm" className="w-full" onClick={() => void startDeviceLogin()}>{t("common.refresh")}</Button> : null}
+          {deviceStatus === "failed" && !deviceSession ? <Button type="button" variant="secondary" size="sm" className="justify-self-end" onClick={() => void startDeviceLogin()}><RefreshCw />{t("common.retry")}</Button> : null}
         </DialogContent>
       </Dialog>
 
-      <Dialog open={quickImportOpen} onOpenChange={(open) => { setQuickImportOpen(open); if (!open) setQuickImportTokens(""); }}>
+      <Dialog open={quickImportOpen} onOpenChange={(open) => { setQuickImportOpen(open); if (!open) { setQuickImportTokens(""); if (quickImportFileInputRef.current) quickImportFileInputRef.current.value = ""; } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t(provider === "grok_console" ? "console.quickImportTitle" : "accounts.quickImportTitle")}</DialogTitle>
             <DialogDescription>{t(provider === "grok_console" ? "console.quickImportDescription" : "accounts.quickImportDescription")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label htmlFor="quick-sso-tokens">{t("accounts.ssoTokens")}</Label>
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="quick-sso-tokens">{t("accounts.ssoTokens")}</Label>
+              <Button type="button" variant="secondary" size="sm" disabled={importMutation.isPending} onClick={() => quickImportFileInputRef.current?.click()}><FileUp />{t("accounts.uploadTXT")}</Button>
+              <input
+                ref={quickImportFileInputRef}
+                type="file"
+                accept="text/plain,.txt"
+                className="hidden"
+                onChange={(event) => {
+                  void loadQuickImportFile(event.target.files?.[0]);
+                  event.target.value = "";
+                }}
+              />
+            </div>
             <Textarea
               id="quick-sso-tokens"
               className="min-h-56 font-mono"
@@ -987,27 +1060,19 @@ export function AccountsPage() {
                 </div>
                 <div className="space-y-2">
                   <Label id="account-build-route-mode">{t("accounts.buildRouteMode.label")}</Label>
-                  <div role="radiogroup" aria-labelledby="account-build-route-mode" className="grid grid-cols-3 rounded-md bg-muted p-1">
+                  <Tabs value={buildRouteMode} onValueChange={(value) => form.setValue("buildRouteMode", value as BuildRouteMode, { shouldDirty: true })}>
+                    <TabsList aria-labelledby="account-build-route-mode" className="grid h-10 w-full grid-cols-3 p-1">
                     {(["auto", "build", "xai"] as BuildRouteMode[]).map((mode) => (
-                      <Button
+                      <TabsTrigger
                         key={mode}
-                        type="button"
-                        role="radio"
-                        aria-checked={buildRouteMode === mode}
-                        variant="ghost"
-                        size="sm"
-                        className={cn(
-                          "h-8 rounded-sm px-2 text-xs font-normal",
-                          buildRouteMode === mode
-                            ? "bg-background font-medium text-foreground shadow-sm ring-1 ring-border/60 hover:bg-background"
-                            : "text-muted-foreground shadow-none hover:bg-background/60 hover:text-foreground",
-                        )}
-                        onClick={() => form.setValue("buildRouteMode", mode, { shouldDirty: true })}
+                        value={mode}
+                        className="h-8 px-2 font-normal data-[state=active]:font-medium"
                       >
                         {t(`accounts.buildRouteMode.${mode}`)}
-                      </Button>
+                      </TabsTrigger>
                     ))}
-                  </div>
+                    </TabsList>
+                  </Tabs>
                   <p className="text-xs text-muted-foreground">{t(`accounts.buildRouteMode.${buildRouteMode}Description`)}</p>
                   {buildRouteMode === "xai" && !buildSuperEntitled && !(editing.quota.type === "paid" && editing.quota.source !== "buildSuperEntitlement") ? (
                     <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300"><TriangleAlert className="mt-0.5 size-3.5 shrink-0" />{t("accounts.buildRouteMode.xaiUnconfirmedWarning")}</p>
@@ -1044,25 +1109,58 @@ export function AccountsPage() {
       <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => !open && setDeleting(null)}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.deleteTitle")}</AlertDialogTitle><AlertDialogDescription>{t("accounts.deleteDescription")}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => deleting && deleteMutation.mutate(deleting.id)}>{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => deleting && deleteMutation.mutate(deleting.id)}>{t("accounts.cleanupStart")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.batchDeleteTitle", { count: selected.size })}</AlertDialogTitle><AlertDialogDescription>{t("accounts.deleteDescription")}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => batchDeleteMutation.mutate()}>{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => batchDeleteMutation.mutate()}>{t("accounts.cleanupStart")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={cleanupOpen} onOpenChange={(open) => { if (!cleanupMutation.isPending) { setCleanupOpen(open); if (!open) setCleanupStatuses(new Set()); } }}>
+        <DialogContent className="max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>{t("accounts.cleanupTitle", { provider: provider === "grok_build" ? "Grok Build" : provider === "grok_web" ? "Grok Web" : "Grok Console" })}</DialogTitle>
+            <DialogDescription>{t("accounts.cleanupDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            {([
+              ["cooldown", t("accounts.statusCooldown")],
+              ["disabled", t("accounts.statusDisabled")],
+              ["reauthRequired", t("accounts.statusReauthRequired")],
+            ] as const).map(([status, label]) => (
+              <label key={status} className="flex cursor-pointer items-center gap-3 rounded-md bg-muted/40 px-3 py-2.5 text-xs">
+                <Checkbox
+                  checked={cleanupStatuses.has(status)}
+                  disabled={cleanupMutation.isPending}
+                  onCheckedChange={(checked) => setCleanupStatuses((current) => {
+                    const next = new Set(current);
+                    if (checked === true) next.add(status); else next.delete(status);
+                    return next;
+                  })}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="secondary" size="sm" disabled={cleanupMutation.isPending} onClick={() => setCleanupOpen(false)}>{t("common.cancel")}</Button>
+            <Button type="button" variant="destructive" size="sm" disabled={cleanupMutation.isPending || cleanupStatuses.size === 0} onClick={() => cleanupMutation.mutate()}>{cleanupMutation.isPending ? <Spinner /> : null}{t("accounts.cleanupStart")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function downloadAccountExport(blob: Blob): void {
+function downloadAccountExport(blob: Blob, provider: AccountProvider): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `grok2api-accounts-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.download = `grok2api-${provider.replaceAll("_", "-")}-accounts-${new Date().toISOString().slice(0, 10)}.json`;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
