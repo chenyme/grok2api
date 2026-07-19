@@ -102,8 +102,8 @@ type AccountsConfig struct {
 	AutoCleanReauthEnabled bool
 	// AutoCleanReauthInterval 自动清理扫描间隔。
 	AutoCleanReauthInterval time.Duration
-	// AutoCleanReauthMinAge 仅删除 updated_at 早于该时长的 reauthRequired 账号。
+	// AutoCleanReauthMinAge 仅删除 reauth_marked_at 早于该时长的 reauthRequired 账号。
 	AutoCleanReauthMinAge time.Duration
-	// AutoCleanDisabledEnabled 为 true 时，同时清理 enabled=false 且 reauthRequired 的账号。
-	AutoCleanDisabledEnabled bool
+	// AutoCleanIncludeDisabled 为 true 时，reauth 清理时包含 enabled=false 的账号。
+	AutoCleanIncludeDisabled bool
 }

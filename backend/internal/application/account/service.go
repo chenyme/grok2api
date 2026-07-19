@@ -12,7 +12,6 @@ import (
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
-	"github.com/chenyme/grok2api/backend/internal/infra/config"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
@@ -274,7 +273,7 @@ type Service struct {
 	refreshPool           *batch.Pool
 	credentialRefreshWake chan struct{}
 	autoCleanMu           sync.RWMutex
-	autoClean             config.AccountsConfig
+	autoClean             AutoCleanConfig
 	autoCleanWake         chan struct{}
 	buildBotFlagCache     *resultcache.Cache[string, []uint64]
 	logger                *slog.Logger
@@ -292,11 +291,8 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		lastRefreshAt: make(map[uint64]time.Time), quotaRefreshes: make(map[string]*webQuotaRefreshState),
 		quotaRefreshQueue:     make(chan webQuotaRefreshRequest, webQuotaRefreshQueueSize),
 		credentialRefreshWake: make(chan struct{}, 1),
-		autoClean: config.AccountsConfig{
-			AutoCleanReauthEnabled:   false,
-			AutoCleanReauthInterval:  config.Duration(10 * time.Minute),
-			AutoCleanReauthMinAge:    config.Duration(time.Hour),
-			AutoCleanDisabledEnabled: false,
+		autoClean: AutoCleanConfig{
+			Enabled: false, Interval: 10 * time.Minute, MinAge: time.Hour, IncludeDisabled: false,
 		},
 		autoCleanWake:     make(chan struct{}, 1),
 		buildBotFlagCache: resultcache.New[string, []uint64](1, buildBotFlagCacheTTL),

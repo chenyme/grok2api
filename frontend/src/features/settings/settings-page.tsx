@@ -206,8 +206,8 @@ export function SettingsPage() {
               <SettingsField controlId="accounts-auto-clean-reauth-min-age" label={t("settings.accounts.autoCleanReauthMinAge")} description={t("settings.accounts.autoCleanReauthMinAgeHelp")} error={form.formState.errors.accounts?.autoCleanReauthMinAge?.message}>
                 <Controller control={form.control} name="accounts.autoCleanReauthMinAge" render={({ field }) => <DurationInput id="accounts-auto-clean-reauth-min-age" value={field.value} onChange={field.onChange} />} />
               </SettingsField>
-              <SettingsField controlId="accounts-auto-clean-disabled-enabled" label={t("settings.accounts.autoCleanDisabledEnabled")} description={t("settings.accounts.autoCleanDisabledEnabledHelp")}>
-                <Controller control={form.control} name="accounts.autoCleanDisabledEnabled" render={({ field }) => <div className="flex h-9 items-center"><Switch id="accounts-auto-clean-disabled-enabled" checked={field.value} onCheckedChange={field.onChange} /></div>} />
+              <SettingsField controlId="accounts-auto-clean-include-disabled" label={t("settings.accounts.autoCleanIncludeDisabled")} description={t("settings.accounts.autoCleanIncludeDisabledHelp")}>
+                <Controller control={form.control} name="accounts.autoCleanIncludeDisabled" render={({ field }) => <div className="flex h-9 items-center"><Switch id="accounts-auto-clean-include-disabled" checked={field.value} onCheckedChange={field.onChange} /></div>} />
               </SettingsField>
             </div>
           </SettingsSection>

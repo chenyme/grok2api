@@ -205,7 +205,7 @@ type AccountsConfig struct {
 	AutoCleanReauthEnabled   bool
 	AutoCleanReauthInterval  Duration
 	AutoCleanReauthMinAge    Duration
-	AutoCleanDisabledEnabled bool
+	AutoCleanIncludeDisabled bool
 }
 
 type Secrets struct {
@@ -572,7 +572,7 @@ func defaultConfig() Config {
 			AutoCleanReauthEnabled:   false,
 			AutoCleanReauthInterval:  Duration(10 * time.Minute),
 			AutoCleanReauthMinAge:    Duration(time.Hour),
-			AutoCleanDisabledEnabled: false,
+			AutoCleanIncludeDisabled: false,
 		},
 	}
 }

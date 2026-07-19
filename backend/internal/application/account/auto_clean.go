@@ -3,16 +3,34 @@ package account
 import (
 	"context"
 	"time"
-
-	"github.com/chenyme/grok2api/backend/internal/infra/config"
 )
+
+// AutoCleanConfig 是账号自动清理策略；由 app 层从运行设置映射，不依赖 infra/config。
+type AutoCleanConfig struct {
+	Enabled         bool
+	Interval        time.Duration
+	MinAge          time.Duration
+	IncludeDisabled bool
+}
 
 const autoCleanReauthBatchSize = 100
 
 // UpdateAutoCleanConfig 热更新账号自动清理策略。
-func (s *Service) UpdateAutoCleanConfig(value config.AccountsConfig) {
+func (s *Service) UpdateAutoCleanConfig(value AutoCleanConfig) {
 	s.autoCleanMu.Lock()
 	defer s.autoCleanMu.Unlock()
+	if value.Interval < time.Minute {
+		value.Interval = time.Minute
+	}
+	if value.Interval > time.Hour {
+		value.Interval = time.Hour
+	}
+	if value.MinAge < time.Minute {
+		value.MinAge = time.Minute
+	}
+	if value.MinAge > 30*24*time.Hour {
+		value.MinAge = 30 * 24 * time.Hour
+	}
 	s.autoClean = value
 	select {
 	case s.autoCleanWake <- struct{}{}:
@@ -20,15 +38,21 @@ func (s *Service) UpdateAutoCleanConfig(value config.AccountsConfig) {
 	}
 }
 
-func (s *Service) autoCleanConfig() config.AccountsConfig {
+func (s *Service) autoCleanConfig() AutoCleanConfig {
 	s.autoCleanMu.RLock()
 	defer s.autoCleanMu.RUnlock()
 	return s.autoClean
 }
 
 // RunAccountAutoClean 在启用时周期性删除过期的 reauthRequired 账号；默认关闭。
+// 首次执行等待一个 interval，避免进程启动立即清库。
 func (s *Service) RunAccountAutoClean(ctx context.Context) {
-	timer := time.NewTimer(0)
+	cfg := s.autoCleanConfig()
+	initial := cfg.Interval
+	if !cfg.Enabled || initial < time.Minute {
+		initial = time.Hour
+	}
+	timer := time.NewTimer(initial)
 	defer timer.Stop()
 	for {
 		select {
@@ -37,12 +61,12 @@ func (s *Service) RunAccountAutoClean(ctx context.Context) {
 		case <-s.autoCleanWake:
 		case <-timer.C:
 		}
-		cfg := s.autoCleanConfig()
-		if !cfg.AutoCleanReauthEnabled {
+		cfg = s.autoCleanConfig()
+		if !cfg.Enabled {
 			resetCredentialRefreshTimer(timer, time.Hour)
 			continue
 		}
-		interval := cfg.AutoCleanReauthInterval.Value()
+		interval := cfg.Interval
 		if interval < time.Minute {
 			interval = time.Minute
 		}
@@ -56,60 +80,49 @@ func (s *Service) RunAccountAutoClean(ctx context.Context) {
 	}
 }
 
-func (s *Service) runAutoCleanReauth(ctx context.Context, cfg config.AccountsConfig) error {
-	if !cfg.AutoCleanReauthEnabled {
+func (s *Service) runAutoCleanReauth(ctx context.Context, cfg AutoCleanConfig) error {
+	if !cfg.Enabled {
 		return nil
 	}
-	minAge := cfg.AutoCleanReauthMinAge.Value()
+	minAge := cfg.MinAge
 	if minAge < time.Minute {
 		minAge = time.Minute
 	}
-	updatedBefore := s.now().Add(-minAge)
+	markedBefore := s.now().Add(-minAge)
+	var afterID uint64
 	scanned := 0
-	deleted := int64(0)
+	deleted := 0
+	skipped := 0
 	for {
-		ids, err := s.accounts.ListAutoCleanReauthIDs(ctx, updatedBefore, cfg.AutoCleanDisabledEnabled, autoCleanReauthBatchSize)
+		ids, candidates, nextAfter, err := s.accounts.DeleteAutoCleanReauthBatch(ctx, markedBefore, cfg.IncludeDisabled, afterID, autoCleanReauthBatchSize)
 		if err != nil {
+			if scanned > 0 || deleted > 0 || skipped > 0 {
+				s.logger.Warn("auto_clean_reauth_partial", "deleted", deleted, "scanned", scanned, "skipped", skipped, "error", err)
+			}
 			return err
 		}
-		if len(ids) == 0 {
+		if candidates == 0 {
 			break
 		}
-		scanned += len(ids)
-		n, err := s.BatchDelete(ctx, ids)
-		if err != nil {
-			s.logger.Info("auto_clean_reauth", "deleted", deleted, "scanned", scanned, "error", err.Error())
-			return err
+		scanned += candidates
+		deleted += len(ids)
+		skipped += candidates - len(ids)
+		for _, id := range ids {
+			if s.sticky != nil {
+				_ = s.sticky.DeleteByAccount(ctx, id)
+			}
+			s.clearRefreshState(id)
 		}
-		deleted += n
-		if len(ids) < autoCleanReauthBatchSize {
+		if len(ids) > 0 {
+			s.invalidateBuildBotFlagCache()
+		}
+		if nextAfter == 0 || candidates < autoCleanReauthBatchSize {
 			break
 		}
+		afterID = nextAfter
 	}
-	if scanned > 0 || deleted > 0 {
-		s.logger.Info("auto_clean_reauth", "deleted", deleted, "scanned", scanned)
+	if scanned > 0 || deleted > 0 || skipped > 0 {
+		s.logger.Info("auto_clean_reauth", "deleted", deleted, "scanned", scanned, "skipped", skipped)
 	}
 	return nil
-}
-
-// AutoCleanReauthOnce 立即执行一轮自动清理（供测试使用）。
-func (s *Service) AutoCleanReauthOnce(ctx context.Context) (deleted int64, scanned int, err error) {
-	cfg := s.autoCleanConfig()
-	if !cfg.AutoCleanReauthEnabled {
-		return 0, 0, nil
-	}
-	minAge := cfg.AutoCleanReauthMinAge.Value()
-	if minAge < time.Minute {
-		minAge = time.Minute
-	}
-	updatedBefore := s.now().Add(-minAge)
-	ids, err := s.accounts.ListAutoCleanReauthIDs(ctx, updatedBefore, cfg.AutoCleanDisabledEnabled, autoCleanReauthBatchSize)
-	if err != nil {
-		return 0, 0, err
-	}
-	if len(ids) == 0 {
-		return 0, 0, nil
-	}
-	n, err := s.BatchDelete(ctx, ids)
-	return n, len(ids), err
 }

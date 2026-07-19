@@ -799,6 +799,19 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.BuildAPIFallback = existing.BuildAPIFallback
 		row.BuildRouteMode = existing.BuildRouteMode
 		row.BuildSuperEntitled = existing.BuildSuperEntitled
+		// reauth_marked_at 仅由显式状态迁移维护；普通 upsert 保留已有锚点。
+		if row.AuthStatus == string(account.AuthStatusReauthRequired) {
+			if row.ReauthMarkedAt == nil {
+				if existing.ReauthMarkedAt != nil {
+					row.ReauthMarkedAt = existing.ReauthMarkedAt
+				} else {
+					now := time.Now().UTC()
+					row.ReauthMarkedAt = &now
+				}
+			}
+		} else {
+			row.ReauthMarkedAt = nil
+		}
 		if err := tx.Save(&row).Error; err != nil {
 			return repository.AccountUpsertResult{}, accountModel{}, err
 		}
@@ -809,6 +822,13 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 	}
 	if row.AuthStatus == "" {
 		row.AuthStatus = string(account.AuthStatusActive)
+	}
+	if row.AuthStatus == string(account.AuthStatusReauthRequired) && row.ReauthMarkedAt == nil {
+		now := time.Now().UTC()
+		row.ReauthMarkedAt = &now
+	}
+	if row.AuthStatus != string(account.AuthStatusReauthRequired) {
+		row.ReauthMarkedAt = nil
 	}
 	if row.Priority == 0 {
 		row.Priority = account.DefaultPriority
@@ -830,12 +850,13 @@ func (r *AccountRepository) Update(ctx context.Context, value account.Credential
 	row := fromAccountDomain(value)
 	if err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing accountModel
-		if err := tx.Select("identity_key", "created_at").First(&existing, row.ID).Error; err != nil {
+		if err := tx.Select("identity_key", "created_at", "auth_status", "reauth_marked_at").First(&existing, row.ID).Error; err != nil {
 			return err
 		}
 		// 身份同步补充的 user_id/email 不得让普通编辑重写持久化身份键。
 		row.IdentityKey = existing.IdentityKey
 		row.CreatedAt = existing.CreatedAt
+		applyReauthMarkedAtTransition(&row, existing)
 		if err := tx.Save(&row).Error; err != nil {
 			return err
 		}
@@ -844,6 +865,22 @@ func (r *AccountRepository) Update(ctx context.Context, value account.Credential
 		return account.Credential{}, mapError(err)
 	}
 	return r.Get(ctx, row.ID)
+}
+
+// applyReauthMarkedAtTransition 仅在状态切入 reauthRequired 时打锚点；保持 reauth 时保留原锚点；离开 reauth 时清空。
+func applyReauthMarkedAtTransition(row *accountModel, existing accountModel) {
+	if row.AuthStatus == string(account.AuthStatusReauthRequired) {
+		if existing.AuthStatus == string(account.AuthStatusReauthRequired) && existing.ReauthMarkedAt != nil {
+			row.ReauthMarkedAt = existing.ReauthMarkedAt
+			return
+		}
+		if row.ReauthMarkedAt == nil {
+			now := time.Now().UTC()
+			row.ReauthMarkedAt = &now
+		}
+		return
+	}
+	row.ReauthMarkedAt = nil
 }
 
 func saveAccountRelations(tx *gorm.DB, value account.Credential, accountID uint64) error {
@@ -1020,22 +1057,86 @@ func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64
 	return deleted, err
 }
 
-func (r *AccountRepository) ListAutoCleanReauthIDs(ctx context.Context, updatedBefore time.Time, includeDisabled bool, limit int) ([]uint64, error) {
+func (r *AccountRepository) DeleteAutoCleanReauthBatch(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, int, uint64, error) {
 	if limit < 1 {
 		limit = 100
 	}
-	query := r.db.db.WithContext(ctx).Model(&accountModel{}).
-		Select("id").
-		Where("auth_status = ? AND updated_at < ?", account.AuthStatusReauthRequired, updatedBefore)
-	if !includeDisabled {
-		query = query.Where("enabled = ?", true)
-	}
-	var ids []uint64
-	if err := query.Order("id ASC").Limit(limit).Pluck("id", &ids).Error; err != nil {
-		return nil, err
-	}
-	return ids, nil
+	deletedIDs := make([]uint64, 0, limit)
+	candidateCount := 0
+	var nextAfterID uint64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		query := tx.Model(&accountModel{}).
+			Select("id").
+			Where("auth_status = ? AND reauth_marked_at IS NOT NULL AND reauth_marked_at < ?", account.AuthStatusReauthRequired, markedBefore.UTC())
+		if afterID > 0 {
+			query = query.Where("id > ?", afterID)
+		}
+		if !includeDisabled {
+			query = query.Where("enabled = ?", true)
+		}
+		var candidates []uint64
+		if err := query.Order("id ASC").Limit(limit).Pluck("id", &candidates).Error; err != nil || len(candidates) == 0 {
+			return err
+		}
+		candidateCount = len(candidates)
+		nextAfterID = candidates[len(candidates)-1]
+
+		var blocked []uint64
+		if err := tx.Model(&mediaJobModel{}).
+			Distinct("account_id").
+			Where("account_id IN ? AND status IN ?", candidates, []string{string(media.StatusQueued), string(media.StatusInProgress)}).
+			Pluck("account_id", &blocked).Error; err != nil {
+			return err
+		}
+		blockedSet := make(map[uint64]struct{}, len(blocked))
+		for _, id := range blocked {
+			blockedSet[id] = struct{}{}
+		}
+		deletable := make([]uint64, 0, len(candidates))
+		for _, id := range candidates {
+			if _, skip := blockedSet[id]; skip {
+				continue
+			}
+			deletable = append(deletable, id)
+		}
+		if len(deletable) == 0 {
+			return nil
+		}
+
+		var lockedIDs []uint64
+		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", deletable).Pluck("id", &lockedIDs).Error; err != nil {
+			return err
+		}
+		deletion := tx.Where("id IN ? AND auth_status = ? AND reauth_marked_at IS NOT NULL AND reauth_marked_at < ?", lockedIDs, account.AuthStatusReauthRequired, markedBefore.UTC())
+		if !includeDisabled {
+			deletion = deletion.Where("enabled = ?", true)
+		}
+		result := deletion.Delete(&accountModel{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == int64(len(lockedIDs)) {
+			deletedIDs = append(deletedIDs, lockedIDs...)
+			return nil
+		}
+		var remaining []uint64
+		if err := tx.Model(&accountModel{}).Where("id IN ?", lockedIDs).Pluck("id", &remaining).Error; err != nil {
+			return err
+		}
+		remainingSet := make(map[uint64]struct{}, len(remaining))
+		for _, id := range remaining {
+			remainingSet[id] = struct{}{}
+		}
+		for _, id := range lockedIDs {
+			if _, exists := remainingSet[id]; !exists {
+				deletedIDs = append(deletedIDs, id)
+			}
+		}
+		return nil
+	})
+	return deletedIDs, candidateCount, nextAfterID, err
 }
+
 
 // rejectAccountsWithMediaJobs 仅保护仍需账号继续执行的活动视频任务。
 // completed/failed 已保存账号名称等快照，删除账号后由外键 SET NULL 保留历史。
@@ -1130,7 +1231,7 @@ func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessT
 		if err := tx.Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(updates).Error; err != nil {
 			return err
 		}
-		return tx.Model(&accountModel{}).Where("id = ?", id).Updates(map[string]any{"auth_status": string(account.AuthStatusActive), "last_error": ""}).Error
+		return tx.Model(&accountModel{}).Where("id = ?", id).Updates(map[string]any{"auth_status": string(account.AuthStatusActive), "last_error": "", "reauth_marked_at": nil}).Error
 	}); err != nil {
 		return account.Credential{}, err
 	}

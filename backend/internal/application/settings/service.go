@@ -109,7 +109,7 @@ type AccountsConfig struct {
 	AutoCleanReauthEnabled   bool
 	AutoCleanReauthInterval  string
 	AutoCleanReauthMinAge    string
-	AutoCleanDisabledEnabled bool
+	AutoCleanIncludeDisabled bool
 }
 
 // EditableConfig 聚合管理端允许修改的运行参数。
@@ -323,7 +323,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		base.Accounts.AutoCleanReauthMinAge = config.Duration(value.Accounts.AutoCleanReauthMinAge)
 	}
 	base.Accounts.AutoCleanReauthEnabled = value.Accounts.AutoCleanReauthEnabled
-	base.Accounts.AutoCleanDisabledEnabled = value.Accounts.AutoCleanDisabledEnabled
+	base.Accounts.AutoCleanIncludeDisabled = value.Accounts.AutoCleanIncludeDisabled
 	return base
 }
 
@@ -375,7 +375,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			AutoCleanReauthEnabled:   value.Accounts.AutoCleanReauthEnabled,
 			AutoCleanReauthInterval:  value.Accounts.AutoCleanReauthInterval.Value(),
 			AutoCleanReauthMinAge:    value.Accounts.AutoCleanReauthMinAge.Value(),
-			AutoCleanDisabledEnabled: value.Accounts.AutoCleanDisabledEnabled,
+			AutoCleanIncludeDisabled: value.Accounts.AutoCleanIncludeDisabled,
 		},
 	}
 }
@@ -437,7 +437,7 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.ClientKeyDefaults.RPMLimit = input.ClientKeyDefaults.RPMLimit
 	next.ClientKeyDefaults.MaxConcurrent = input.ClientKeyDefaults.MaxConcurrent
 	next.Accounts.AutoCleanReauthEnabled = input.Accounts.AutoCleanReauthEnabled
-	next.Accounts.AutoCleanDisabledEnabled = input.Accounts.AutoCleanDisabledEnabled
+	next.Accounts.AutoCleanIncludeDisabled = input.Accounts.AutoCleanIncludeDisabled
 
 	durations := []struct {
 		path  string
@@ -519,7 +519,7 @@ func toEditable(cfg config.Config) EditableConfig {
 			AutoCleanReauthEnabled:   cfg.Accounts.AutoCleanReauthEnabled,
 			AutoCleanReauthInterval:  cfg.Accounts.AutoCleanReauthInterval.String(),
 			AutoCleanReauthMinAge:    cfg.Accounts.AutoCleanReauthMinAge.String(),
-			AutoCleanDisabledEnabled: cfg.Accounts.AutoCleanDisabledEnabled,
+			AutoCleanIncludeDisabled: cfg.Accounts.AutoCleanIncludeDisabled,
 		},
 	}
 }

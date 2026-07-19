@@ -55,7 +55,7 @@ Grok2API is a Go-based Grok API gateway with a built-in React admin console. It 
 - **Account relationships**: Web-centered links to Build and Console can share a stable egress identity while runtime state stays independent
 - **Runtime infrastructure**: SQLite/PostgreSQL, Memory/Redis, and HTTP/SOCKS5/Resin egress
 - **Admin console**: dashboard, accounts, model routes, client keys, image gallery, video library, request audits, runtime settings, and update checks
-- **Optional account auto-clean**: runtime settings can enable background deletion of accounts already marked `reauthRequired` after a minimum age; off by default, and never deletes cooldown-only or still-drainable accounts
+- **Optional account auto-clean** (off by default): runtime settings can periodically hard-delete accounts already marked `reauthRequired` whose `reauth_marked_at` exceeds the configured minimum age. Cooldown-only and still-active permanent-refresh drain accounts are never selected. Accounts with active video jobs are skipped (not blocking the rest). First scan waits one interval after process start.
 
 ## Architecture
 

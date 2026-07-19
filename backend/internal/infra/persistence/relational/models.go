@@ -35,6 +35,8 @@ type accountModel struct {
 	SourceKey        string  `gorm:"size:512;not null;check:chk_accounts_source_key,length(trim(source_key)) BETWEEN 1 AND 512;index:idx_accounts_provider_source,priority:2"`
 	Enabled          bool    `gorm:"not null"`
 	AuthStatus       string  `gorm:"size:32;not null;check:chk_accounts_auth_status,auth_status IN ('active','reauthRequired')"`
+	// ReauthMarkedAt 进入 reauthRequired 的时刻；active 时为 NULL。
+	ReauthMarkedAt   *time.Time
 	Priority         int     `gorm:"not null;default:1"`
 	MaxConcurrent    int     `gorm:"not null;default:8;check:chk_accounts_max_concurrent,max_concurrent BETWEEN 1 AND 256"`
 	MinimumRemaining float64 `gorm:"not null;check:chk_accounts_minimum_remaining,minimum_remaining >= 0"`

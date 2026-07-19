@@ -117,7 +117,7 @@ export const settingsSchema = z.object({
       const seconds = durationSeconds(value);
       return seconds >= 60 && seconds <= 30 * 86_400;
     }),
-    autoCleanDisabledEnabled: z.boolean(),
+    autoCleanIncludeDisabled: z.boolean(),
   }),
 });
 
@@ -155,7 +155,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       autoCleanReauthEnabled: config.accounts.autoCleanReauthEnabled,
       autoCleanReauthInterval: parseDuration(config.accounts.autoCleanReauthInterval),
       autoCleanReauthMinAge: parseDuration(config.accounts.autoCleanReauthMinAge),
-      autoCleanDisabledEnabled: config.accounts.autoCleanDisabledEnabled,
+      autoCleanIncludeDisabled: config.accounts.autoCleanIncludeDisabled,
     },
   };
 }
@@ -191,7 +191,7 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
       autoCleanReauthEnabled: config.accounts.autoCleanReauthEnabled,
       autoCleanReauthInterval: formatDuration(config.accounts.autoCleanReauthInterval),
       autoCleanReauthMinAge: formatDuration(config.accounts.autoCleanReauthMinAge),
-      autoCleanDisabledEnabled: config.accounts.autoCleanDisabledEnabled,
+      autoCleanIncludeDisabled: config.accounts.autoCleanIncludeDisabled,
     },
   };
 }

@@ -48,8 +48,9 @@ type AccountRepository interface {
 	UpdateMany(ctx context.Context, ids []uint64, updates AccountUpdates) (int64, error)
 	Delete(ctx context.Context, id uint64) error
 	DeleteMany(ctx context.Context, ids []uint64) (int64, error)
-	// ListAutoCleanReauthIDs 返回 auth_status=reauthRequired 且 updated_at 早于阈值的账号；可选包含 disabled。
-	ListAutoCleanReauthIDs(ctx context.Context, updatedBefore time.Time, includeDisabled bool, limit int) ([]uint64, error)
+	// DeleteAutoCleanReauthBatch 删除 reauth_marked_at 早于阈值的 reauthRequired 账号；跳过仍有活动视频任务的账号。
+	// includeDisabled=true 时同时包含 enabled=false。返回实际删除 ID 与候选数（含被跳过）。
+	DeleteAutoCleanReauthBatch(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) (deletedIDs []uint64, candidates int, nextAfterID uint64, err error)
 	// DeleteAccountStatusBatch 删除当前仍匹配指定管理端状态的一批账号，并返回实际删除的 ID。
 	DeleteAccountStatusBatch(ctx context.Context, provider account.Provider, status string, now time.Time, limit int) ([]uint64, int, error)
 	UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time) (account.Credential, error)

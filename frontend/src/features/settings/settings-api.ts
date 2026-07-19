@@ -25,7 +25,7 @@ export type SettingsConfigDTO = {
     autoCleanReauthEnabled: boolean;
     autoCleanReauthInterval: string;
     autoCleanReauthMinAge: string;
-    autoCleanDisabledEnabled: boolean;
+    autoCleanIncludeDisabled: boolean;
   };
 };
 
@@ -70,7 +70,7 @@ const settingsConfigValidator = hasShape({
     autoCleanReauthEnabled: isBoolean,
     autoCleanReauthInterval: isString,
     autoCleanReauthMinAge: isString,
-    autoCleanDisabledEnabled: isBoolean,
+    autoCleanIncludeDisabled: isBoolean,
   }),
 });
 const decodeSettingsSnapshot = createObjectDecoder<SettingsSnapshotDTO>("settings", {

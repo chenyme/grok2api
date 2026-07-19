@@ -7,127 +7,156 @@ import (
 	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
-	"github.com/chenyme/grok2api/backend/internal/infra/config"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 )
 
-func TestAutoCleanReauthDeletesOnlyAgedReauth(t *testing.T) {
+func TestAutoCleanReauthRespectsMinAgeAndIncludeDisabled(t *testing.T) {
 	ctx := context.Background()
-	service, repo := newAutoCleanTestService(t)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	service, repo := newAutoCleanTestService(t, now)
 
-	create := func(name string, mutate func(*accountdomain.Credential)) accountdomain.Credential {
-		t.Helper()
-		value, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
-			Provider: accountdomain.ProviderBuild, Name: name, SourceKey: "auto-clean-" + name,
-			EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if mutate != nil {
-			mutate(&value)
-			value, err = repo.Update(ctx, value)
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-		return value
-	}
-
-	oldReauth := create("old-reauth", func(value *accountdomain.Credential) {
-		value.AuthStatus = accountdomain.AuthStatusReauthRequired
+	aged := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "aged-reauth", SourceKey: "aged-reauth",
+		EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+		ReauthMarkedAt: ptrTime(now.Add(-2 * time.Hour)),
 	})
-	freshReauth := create("fresh-reauth", func(value *accountdomain.Credential) {
-		value.AuthStatus = accountdomain.AuthStatusReauthRequired
+	fresh := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "fresh-reauth", SourceKey: "fresh-reauth",
+		EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+		ReauthMarkedAt: ptrTime(now.Add(-10 * time.Minute)),
 	})
-	activePermanent := create("active-permanent", func(value *accountdomain.Credential) {
-		value.EncryptedRefreshToken = "r"
-		value.RefreshPermanent = true
-		value.ExpiresAt = time.Now().UTC().Add(time.Hour)
+	activePermanent := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "active-permanent", SourceKey: "active-permanent",
+		EncryptedAccessToken: "x", EncryptedRefreshToken: "r", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+		RefreshPermanent: true, ExpiresAt: now.Add(time.Hour),
 	})
-	cooldown := create("cooldown", func(value *accountdomain.Credential) {
-		until := time.Now().UTC().Add(time.Hour)
-		value.CooldownUntil = &until
+	cooldownUntil := now.Add(time.Hour)
+	cooldown := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "cooldown", SourceKey: "cooldown",
+		EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+		CooldownUntil: &cooldownUntil,
 	})
-	disabledReauth := create("disabled-reauth", func(value *accountdomain.Credential) {
-		value.Enabled = false
-		value.AuthStatus = accountdomain.AuthStatusReauthRequired
+	disabledAged := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "disabled-aged", SourceKey: "disabled-aged",
+		EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+		ReauthMarkedAt: ptrTime(now.Add(-3 * time.Hour)),
 	})
-
-	// Past threshold: nothing is old enough relative to wall-clock updated_at.
-	ids, err := repo.ListAutoCleanReauthIDs(ctx, time.Now().UTC().Add(-time.Hour), false, 100)
+	disabledAged.Enabled = false
+	var err error
+	disabledAged, err = repo.Update(ctx, disabledAged)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 0 {
-		t.Fatalf("unexpected aged ids right after create: %v", ids)
-	}
 
-	// Future threshold includes all reauth rows matching the enabled filter.
-	ids, err = repo.ListAutoCleanReauthIDs(ctx, time.Now().UTC().Add(time.Hour), false, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 2 {
-		t.Fatalf("enabled reauth candidates = %v", ids)
-	}
-	ids, err = repo.ListAutoCleanReauthIDs(ctx, time.Now().UTC().Add(time.Hour), true, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 3 {
-		t.Fatalf("include disabled candidates = %v", ids)
-	}
-
-	// Flag off is a no-op even when minAge would match everything.
-	service.now = func() time.Time { return time.Now().UTC().Add(2 * time.Hour) }
-	service.UpdateAutoCleanConfig(config.AccountsConfig{
-		AutoCleanReauthEnabled: false, AutoCleanReauthInterval: config.Duration(10 * time.Minute),
-		AutoCleanReauthMinAge: config.Duration(time.Hour),
+	// Flag off is a no-op.
+	service.UpdateAutoCleanConfig(AutoCleanConfig{
+		Enabled: false, Interval: 10 * time.Minute, MinAge: time.Hour,
 	})
-	deleted, scanned, err := service.AutoCleanReauthOnce(ctx)
-	if err != nil {
+	if err := service.runAutoCleanReauth(ctx, service.autoCleanConfig()); err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 0 || scanned != 0 {
-		t.Fatalf("flag off deleted=%d scanned=%d", deleted, scanned)
-	}
+	assertPresent(t, repo, aged.ID)
+	assertPresent(t, repo, fresh.ID)
+	assertPresent(t, repo, disabledAged.ID)
 
-	service.UpdateAutoCleanConfig(config.AccountsConfig{
-		AutoCleanReauthEnabled: true, AutoCleanReauthInterval: config.Duration(10 * time.Minute),
-		AutoCleanReauthMinAge: config.Duration(time.Hour), AutoCleanDisabledEnabled: false,
+	// Enabled without include-disabled: only aged enabled reauth is deleted.
+	service.UpdateAutoCleanConfig(AutoCleanConfig{
+		Enabled: true, Interval: 10 * time.Minute, MinAge: time.Hour, IncludeDisabled: false,
 	})
-	deleted, scanned, err = service.AutoCleanReauthOnce(ctx)
-	if err != nil {
+	if err := service.runAutoCleanReauth(ctx, service.autoCleanConfig()); err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 2 || scanned != 2 {
-		t.Fatalf("enabled cleanup deleted=%d scanned=%d", deleted, scanned)
-	}
-	assertMissing(t, repo, oldReauth.ID)
-	assertMissing(t, repo, freshReauth.ID)
+	assertMissing(t, repo, aged.ID)
+	assertPresent(t, repo, fresh.ID)
 	assertPresent(t, repo, activePermanent.ID)
 	assertPresent(t, repo, cooldown.ID)
-	assertPresent(t, repo, disabledReauth.ID)
+	assertPresent(t, repo, disabledAged.ID)
 
-	service.UpdateAutoCleanConfig(config.AccountsConfig{
-		AutoCleanReauthEnabled: true, AutoCleanReauthInterval: config.Duration(10 * time.Minute),
-		AutoCleanReauthMinAge: config.Duration(time.Hour), AutoCleanDisabledEnabled: true,
+	// Include disabled: aged disabled reauth is deleted; fresh remains.
+	service.UpdateAutoCleanConfig(AutoCleanConfig{
+		Enabled: true, Interval: 10 * time.Minute, MinAge: time.Hour, IncludeDisabled: true,
 	})
-	deleted, scanned, err = service.AutoCleanReauthOnce(ctx)
-	if err != nil {
+	if err := service.runAutoCleanReauth(ctx, service.autoCleanConfig()); err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 1 || scanned != 1 {
-		t.Fatalf("disabled cleanup deleted=%d scanned=%d", deleted, scanned)
+	assertMissing(t, repo, disabledAged.ID)
+	assertPresent(t, repo, fresh.ID)
+	assertPresent(t, repo, activePermanent.ID)
+	assertPresent(t, repo, cooldown.ID)
+
+	// Advance clock past minAge for the remaining fresh reauth.
+	service.now = func() time.Time { return now.Add(2 * time.Hour) }
+	if err := service.runAutoCleanReauth(ctx, service.autoCleanConfig()); err != nil {
+		t.Fatal(err)
 	}
-	assertMissing(t, repo, disabledReauth.ID)
+	assertMissing(t, repo, fresh.ID)
 	assertPresent(t, repo, activePermanent.ID)
 	assertPresent(t, repo, cooldown.ID)
 }
 
-func newAutoCleanTestService(t *testing.T) (*Service, *relational.AccountRepository) {
+func TestMarkReauthRequiredSetsAnchorAndEditDoesNotReset(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 20, 15, 0, 0, 0, time.UTC)
+	service, repo := newAutoCleanTestService(t, now)
+
+	value := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "anchor", SourceKey: "anchor",
+		EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err := service.MarkReauthRequired(ctx, value.ID, "token rejected"); err != nil {
+		t.Fatal(err)
+	}
+	marked, err := repo.Get(ctx, value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked.AuthStatus != accountdomain.AuthStatusReauthRequired || marked.ReauthMarkedAt == nil {
+		t.Fatalf("expected reauth anchor, got %#v", marked)
+	}
+	anchor := *marked.ReauthMarkedAt
+
+	// Ordinary edit must not reset reauth_marked_at.
+	marked.Name = "anchor-renamed"
+	if _, err := repo.Update(ctx, marked); err != nil {
+		t.Fatal(err)
+	}
+	afterEdit, err := repo.Get(ctx, value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterEdit.ReauthMarkedAt == nil || !afterEdit.ReauthMarkedAt.Equal(anchor) {
+		t.Fatalf("reauth_marked_at reset by edit: before=%s after=%v", anchor, afterEdit.ReauthMarkedAt)
+	}
+}
+
+func TestAutoCleanReauthMultiBatch(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 20, 18, 0, 0, 0, time.UTC)
+	service, repo := newAutoCleanTestService(t, now)
+
+	const total = 105
+	ids := make([]uint64, 0, total)
+	for i := 0; i < total; i++ {
+		value := mustUpsert(t, repo, accountdomain.Credential{
+			Provider: accountdomain.ProviderBuild, Name: "batch-" + itoa(i), SourceKey: "batch-" + itoa(i),
+			EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+			ReauthMarkedAt: ptrTime(now.Add(-2 * time.Hour)),
+		})
+		ids = append(ids, value.ID)
+	}
+	service.UpdateAutoCleanConfig(AutoCleanConfig{
+		Enabled: true, Interval: 10 * time.Minute, MinAge: time.Hour,
+	})
+	if err := service.runAutoCleanReauth(ctx, service.autoCleanConfig()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		assertMissing(t, repo, id)
+	}
+}
+
+func newAutoCleanTestService(t *testing.T, now time.Time) (*Service, *relational.AccountRepository) {
 	t.Helper()
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "auto-clean.db"))
@@ -140,7 +169,17 @@ func newAutoCleanTestService(t *testing.T) (*Service, *relational.AccountReposit
 	}
 	repo := relational.NewAccountRepository(database)
 	service := NewService(repo, nil, nil, memory.NewStickyStore(), nil, nil, nil)
+	service.now = func() time.Time { return now }
 	return service, repo
+}
+
+func mustUpsert(t *testing.T, repo *relational.AccountRepository, value accountdomain.Credential) accountdomain.Credential {
+	t.Helper()
+	out, _, err := repo.UpsertByIdentity(context.Background(), value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func assertMissing(t *testing.T, repo *relational.AccountRepository, id uint64) {
@@ -155,4 +194,20 @@ func assertPresent(t *testing.T, repo *relational.AccountRepository, id uint64) 
 	if _, err := repo.Get(context.Background(), id); err != nil {
 		t.Fatalf("account %d missing: %v", id, err)
 	}
+}
+
+func ptrTime(value time.Time) *time.Time { return &value }
+
+func itoa(value int) string {
+	if value == 0 {
+		return "0"
+	}
+	var buf [12]byte
+	i := len(buf)
+	for value > 0 {
+		i--
+		buf[i] = byte('0' + value%10)
+		value /= 10
+	}
+	return string(buf[i:])
 }
