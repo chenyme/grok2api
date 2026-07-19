@@ -24,7 +24,7 @@ export function SettingsPage() {
   const { t } = useTranslation();
   const { form, settingsQuery, updateMutation, reset } = useSettings();
   const [autoCleanConfirm, setAutoCleanConfirm] = useState<"enabled" | "includeDisabled" | null>(null);
-  const autoCleanEnabled = form.watch("accounts.autoCleanReauthEnabled");
+  const autoCleanEnabled = form.watch("accounts.autoCleanReauthEnabled") === true;
 
   if (settingsQuery.isError) {
     return <ErrorState message={settingsQuery.error.message} onRetry={() => void settingsQuery.refetch()} />;

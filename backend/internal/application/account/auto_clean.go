@@ -131,7 +131,7 @@ func (s *Service) runAutoCleanReauth(ctx context.Context, cfg AutoCleanConfig) e
 		s.invalidateBuildBotFlagCache()
 	}
 	if scanned > 0 || deleted > 0 || skipped > 0 {
-		s.logger.Info("auto_clean_reauth", "deleted", deleted, "scanned", scanned, "skipped", skipped)
+		s.logger.Info("auto_clean_reauth", "deleted", deleted, "scanned", scanned, "skipped", skipped, "min_age", minAge.String(), "include_disabled", cfg.IncludeDisabled)
 	}
 	return nil
 }

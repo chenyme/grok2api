@@ -1070,23 +1070,9 @@ func (r *AccountRepository) DeleteAutoCleanReauthBatch(ctx context.Context, mark
 		candidateCount = len(candidates)
 		nextAfterID = candidates[len(candidates)-1]
 
-		var blocked []uint64
-		if err := tx.Model(&mediaJobModel{}).
-			Distinct("account_id").
-			Where("account_id IN ? AND status IN ?", candidates, []string{string(media.StatusQueued), string(media.StatusInProgress)}).
-			Pluck("account_id", &blocked).Error; err != nil {
+		deletable, err := excludeAccountsWithActiveMediaJobs(tx, candidates)
+		if err != nil {
 			return err
-		}
-		blockedSet := make(map[uint64]struct{}, len(blocked))
-		for _, id := range blocked {
-			blockedSet[id] = struct{}{}
-		}
-		deletable := make([]uint64, 0, len(candidates))
-		for _, id := range candidates {
-			if _, skip := blockedSet[id]; skip {
-				continue
-			}
-			deletable = append(deletable, id)
 		}
 		if len(deletable) == 0 {
 			return nil
@@ -1097,26 +1083,9 @@ func (r *AccountRepository) DeleteAutoCleanReauthBatch(ctx context.Context, mark
 			return err
 		}
 		// lock 后再过滤活动视频任务，避免 list 与 delete 之间的 TOCTOU。
-		var lockedBlocked []uint64
-		if err := tx.Model(&mediaJobModel{}).
-			Distinct("account_id").
-			Where("account_id IN ? AND status IN ?", lockedIDs, []string{string(media.StatusQueued), string(media.StatusInProgress)}).
-			Pluck("account_id", &lockedBlocked).Error; err != nil {
+		lockedIDs, err = excludeAccountsWithActiveMediaJobs(tx, lockedIDs)
+		if err != nil {
 			return err
-		}
-		if len(lockedBlocked) > 0 {
-			blockedSet := make(map[uint64]struct{}, len(lockedBlocked))
-			for _, id := range lockedBlocked {
-				blockedSet[id] = struct{}{}
-			}
-			filtered := lockedIDs[:0]
-			for _, id := range lockedIDs {
-				if _, skip := blockedSet[id]; skip {
-					continue
-				}
-				filtered = append(filtered, id)
-			}
-			lockedIDs = append([]uint64(nil), filtered...)
 		}
 		if len(lockedIDs) == 0 {
 			return nil
@@ -1151,6 +1120,38 @@ func (r *AccountRepository) DeleteAutoCleanReauthBatch(ctx context.Context, mark
 	return deletedIDs, candidateCount, nextAfterID, err
 }
 
+
+
+// excludeAccountsWithActiveMediaJobs 返回无 queued/in_progress 视频任务的账号 ID（顺序保持输入顺序）。
+func excludeAccountsWithActiveMediaJobs(db *gorm.DB, ids []uint64) ([]uint64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var blocked []uint64
+	if err := db.Model(&mediaJobModel{}).
+		Distinct("account_id").
+		Where("account_id IN ? AND status IN ?", ids, []string{string(media.StatusQueued), string(media.StatusInProgress)}).
+		Pluck("account_id", &blocked).Error; err != nil {
+		return nil, err
+	}
+	if len(blocked) == 0 {
+		out := make([]uint64, len(ids))
+		copy(out, ids)
+		return out, nil
+	}
+	blockedSet := make(map[uint64]struct{}, len(blocked))
+	for _, id := range blocked {
+		blockedSet[id] = struct{}{}
+	}
+	out := make([]uint64, 0, len(ids)-len(blocked))
+	for _, id := range ids {
+		if _, skip := blockedSet[id]; skip {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
 
 // rejectAccountsWithMediaJobs 仅保护仍需账号继续执行的活动视频任务。
 // completed/failed 已保存账号名称等快照，删除账号后由外键 SET NULL 保留历史。

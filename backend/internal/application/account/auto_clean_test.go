@@ -257,3 +257,28 @@ func itoa(value int) string {
 	}
 	return string(buf[i:])
 }
+
+func TestUpdateAutoCleanConfigClamps(t *testing.T) {
+	service, _ := newAutoCleanTestService(t, time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC))
+	service.UpdateAutoCleanConfig(AutoCleanConfig{
+		Enabled: true, Interval: 30 * time.Second, MinAge: 10 * time.Second, IncludeDisabled: true,
+	})
+	cfg := service.autoCleanConfig()
+	if cfg.Interval != time.Minute || cfg.MinAge != time.Minute || !cfg.IncludeDisabled || !cfg.Enabled {
+		t.Fatalf("low clamp = %#v", cfg)
+	}
+	service.UpdateAutoCleanConfig(AutoCleanConfig{
+		Enabled: false, Interval: 2 * time.Hour, MinAge: 40 * 24 * time.Hour,
+	})
+	cfg = service.autoCleanConfig()
+	if cfg.Interval != time.Hour || cfg.MinAge != 30*24*time.Hour || cfg.Enabled {
+		t.Fatalf("high clamp = %#v", cfg)
+	}
+	if got := autoCleanInterval(AutoCleanConfig{Enabled: false, Interval: time.Minute}); got != time.Hour {
+		t.Fatalf("disabled interval = %s", got)
+	}
+	if got := autoCleanInterval(AutoCleanConfig{Enabled: true, Interval: 5 * time.Minute}); got != 5*time.Minute {
+		t.Fatalf("enabled interval = %s", got)
+	}
+}
+
