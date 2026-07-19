@@ -55,8 +55,11 @@ export function VirtualTableBody<T>({ items, colSpan, rowHeight, renderRow, over
     window.addEventListener("scroll", scheduleUpdate, { passive: true });
     window.addEventListener("resize", scheduleUpdate);
     scrollContainer?.addEventListener("scroll", scheduleUpdate, { passive: true });
-    const observer = typeof ResizeObserver === "undefined" || !scrollContainer ? null : new ResizeObserver(scheduleUpdate);
-    observer?.observe(scrollContainer);
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined" && scrollContainer !== null) {
+      observer = new ResizeObserver(scheduleUpdate);
+      observer.observe(scrollContainer);
+    }
     return () => {
       window.removeEventListener("scroll", scheduleUpdate);
       window.removeEventListener("resize", scheduleUpdate);
