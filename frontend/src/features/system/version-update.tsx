@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, RefreshCw } from "lucide-react";
+import { ArrowUpRight, Info, RefreshCw } from "lucide-react";
+import { type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { checkForUpdates, getVersionInfo, type UpdateStatus } from "@/entities/system/system-api";
+import { checkForUpdates, getVersionInfo } from "@/entities/system/system-api";
 import { cn } from "@/shared/lib/cn";
 import { formatDateTime } from "@/shared/lib/format";
 
@@ -72,52 +73,81 @@ export function VersionUpdateSection() {
   const error = version?.error || checkError || requestError;
 
   return (
-    <section className="space-y-4">
-      <div className="flex min-h-8 items-center justify-between gap-3">
-        <h2 className="text-sm font-medium">{t("updates.title")}</h2>
-        <Button type="button" variant="secondary" size="sm" disabled={versionQuery.isPending || checkMutation.isPending} onClick={() => checkMutation.mutate()}>
-          {versionQuery.isPending || checkMutation.isPending ? <Spinner /> : <RefreshCw />}{t("updates.checkNow")}
-        </Button>
-      </div>
-
-      <div className="grid max-w-[860px] gap-x-8 gap-y-5 sm:grid-cols-2">
-        <VersionField label={t("updates.currentVersion")} value={version?.currentVersion || "-"} />
-        <VersionField label={t("updates.latestVersion")} value={version?.latestVersion || t("updates.notChecked")} />
-        <VersionField label={t("updates.statusLabel")} value={version ? t(`updates.status.${version.status}`) : t("common.loading")} status={version?.status} />
-        <VersionField label={t("updates.checkedAt")} value={version?.checkedAt ? formatDateTime(version.checkedAt, i18n.language) : t("updates.neverChecked")} />
-      </div>
-
-      {error ? <p className="max-w-[860px] text-xs leading-5 text-destructive">{error}</p> : null}
+    <div className="w-full space-y-8">
+      <section className="space-y-3">
+        <div className="flex min-h-8 items-center px-1">
+          <h2 className="text-sm font-medium tracking-tight">{t("updates.title")}</h2>
+        </div>
+        <div className="flex items-start gap-3 rounded-md bg-amber-500/10 px-4 py-3">
+          <Info className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-300" />
+          <div className="min-w-0">
+            <p className="text-xs font-medium">{t("updates.noteTitle")}</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("updates.noteDescription")}</p>
+          </div>
+        </div>
+        <div className="space-y-0">
+          <VersionField label={t("updates.currentVersion")} description={t("updates.currentVersionHelp")}>
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="min-w-0 flex-1"><VersionValue>{version?.currentVersion || "-"}</VersionValue></div>
+              <Button type="button" variant="secondary" size="sm" className="shrink-0" disabled={versionQuery.isPending || checkMutation.isPending} onClick={() => checkMutation.mutate()}>
+                {versionQuery.isPending || checkMutation.isPending ? <Spinner /> : <RefreshCw />}{t("updates.checkNow")}
+              </Button>
+            </div>
+          </VersionField>
+          <VersionField label={t("updates.latestVersion")} description={t("updates.latestVersionHelp")}>
+            <VersionValue>{version?.latestVersion || t("updates.notChecked")}</VersionValue>
+          </VersionField>
+          <VersionField label={t("updates.statusLabel")} description={t("updates.statusLabelHelp")}>
+            <VersionValue>
+              {version?.status ? <span className={cn("size-1.5 shrink-0 rounded-full bg-muted-foreground", version.status === "up_to_date" && "bg-emerald-500", version.status === "update_available" && "bg-amber-500", version.status === "check_failed" && "bg-destructive")} /> : null}
+              <span>{version ? t(`updates.status.${version.status}`) : t("common.loading")}</span>
+            </VersionValue>
+          </VersionField>
+          <VersionField label={t("updates.checkedAt")} description={t("updates.checkedAtHelp")}>
+            <VersionValue>{version?.checkedAt ? formatDateTime(version.checkedAt, i18n.language) : t("updates.neverChecked")}</VersionValue>
+          </VersionField>
+        </div>
+        {error ? <p className="text-xs leading-5 text-destructive">{error}</p> : null}
+      </section>
 
       {version?.releaseNotes || version?.releaseUrl ? (
-        <div className="max-w-[860px] rounded-lg bg-muted/40 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-xs font-medium">{t("updates.releaseNotes")}</h3>
+        <section className="space-y-3">
+          <div className="flex min-h-8 items-center justify-between gap-3 px-1">
+            <div>
+              <h3 className="text-sm font-medium tracking-tight">{t("updates.releaseNotes")}</h3>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("updates.releaseNotesHelp")}</p>
+            </div>
             {version.releaseUrl ? (
-              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" asChild>
+              <Button type="button" variant="secondary" size="sm" asChild>
                 <a href={version.releaseUrl} target="_blank" rel="noreferrer">{t("updates.openRelease")}<ArrowUpRight /></a>
               </Button>
             ) : null}
           </div>
-          <p className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
-            {version.releaseNotes || t("updates.noReleaseNotes")}
-          </p>
-        </div>
+          <div className="min-w-0 rounded-md bg-secondary/35 px-4 py-3">
+            <p className="whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+              {version.releaseNotes || t("updates.noReleaseNotes")}
+            </p>
+          </div>
+        </section>
       ) : null}
-
-      <p className="max-w-[860px] text-xs leading-5 text-muted-foreground">{t("updates.manualOnly")}</p>
-    </section>
+    </div>
   );
 }
 
-function VersionField({ label, value, status }: { label: string; value: string; status?: UpdateStatus }) {
+function VersionField({ label, description, children }: { label: string; description: string; children: ReactNode }) {
   return (
-    <div>
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <div className="mt-1.5 flex items-center gap-2 text-sm font-medium">
-        {status ? <span className={cn("size-1.5 rounded-full bg-muted-foreground", status === "up_to_date" && "bg-emerald-500", status === "update_available" && "bg-amber-500", status === "check_failed" && "bg-destructive")} /> : null}
-        <span className="break-all">{value}</span>
+    <div className="min-w-0 py-4">
+      <div className="grid min-w-0 gap-2.5 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] sm:items-center sm:gap-8">
+        <div className="min-w-0">
+          <p className="text-xs font-medium">{label}</p>
+          <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">{description}</p>
+        </div>
+        <div className="min-w-0">{children}</div>
       </div>
     </div>
   );
+}
+
+function VersionValue({ children }: { children: ReactNode }) {
+  return <div className="flex min-h-8 min-w-0 items-center gap-2 rounded-md bg-secondary/55 px-3 py-1 text-xs font-medium">{children}</div>;
 }
