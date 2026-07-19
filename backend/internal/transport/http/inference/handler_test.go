@@ -513,6 +513,30 @@ func TestExtractUsagePrefersResponsesCachedTokensOverAnthropicField(t *testing.T
 	}
 }
 
+func TestStreamInspectorMergesCachedTokensAcrossFrames(t *testing.T) {
+	// 模拟流式：先到 input/output，后到带 cache 的 usage 帧。
+	inspector := &responseInspector{protocol: streamProtocolAnthropic}
+	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}\n\n"))
+	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"cache_read_input_tokens\":80}}\n\n"))
+	inspector.Inspect([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	inspector.Finish()
+	usage := inspector.Metadata().Usage
+	if usage.InputTokens != 100 || usage.OutputTokens != 20 || usage.CachedInputTokens != 80 {
+		t.Fatalf("merged stream usage = %#v", usage)
+	}
+}
+
+func TestStreamInspectorAcceptsChatCachedOnlyFrame(t *testing.T) {
+	inspector := &responseInspector{protocol: streamProtocolChat}
+	inspector.Inspect([]byte("data: {\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":5,\"total_tokens\":45,\"prompt_tokens_details\":{\"cached_tokens\":25}}}\n\n"))
+	inspector.Inspect([]byte("data: [DONE]\n\n"))
+	inspector.Finish()
+	usage := inspector.Metadata().Usage
+	if usage.CachedInputTokens != 25 || usage.InputTokens != 40 || usage.TotalTokens != 45 {
+		t.Fatalf("chat stream cached usage = %#v", usage)
+	}
+}
+
 func TestUsageInspectorHandlesChunkedSSE(t *testing.T) {
 	inspector := &responseInspector{}
 	inspector.Inspect([]byte("data: {\"response\":{\"id\":\"resp_stream\",\"usage\":{\"input_tokens\":2,"))

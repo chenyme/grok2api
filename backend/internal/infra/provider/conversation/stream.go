@@ -344,7 +344,7 @@ func (c *streamConverter) setResponse(value responseEnvelope) {
 	if value.CreatedAt != 0 {
 		c.created = value.CreatedAt
 	}
-	if value.Usage.InputTokens != 0 || value.Usage.OutputTokens != 0 {
+	if value.Usage.InputTokens != 0 || value.Usage.OutputTokens != 0 || value.Usage.TotalTokens != 0 || value.Usage.InputTokensDetails.CachedTokens != 0 || value.Usage.OutputTokensDetails.ReasoningTokens != 0 || value.Usage.CostInUSDTicks != 0 {
 		c.usage = value.Usage
 	}
 }

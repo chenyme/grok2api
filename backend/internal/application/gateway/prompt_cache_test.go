@@ -73,3 +73,16 @@ func TestResolveBuildSessionIdentitySoftFromResponsesInput(t *testing.T) {
 		t.Fatalf("responses soft identity unstable: %#v %#v", first, second)
 	}
 }
+
+func TestResolveBuildSessionIdentityUsesInstructionsAsSystemAnchor(t *testing.T) {
+	// Responses 协议常用顶层 instructions 而不是 messages[system]
+	a := resolveBuildSessionIdentity(3, accountdomain.ProviderBuild, "grok-4.5", "", "", []byte(`{"instructions":"stable system","input":[{"role":"user","content":"hello"}]}`))
+	b := resolveBuildSessionIdentity(3, accountdomain.ProviderBuild, "grok-4.5", "", "", []byte(`{"instructions":"stable system","input":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"next"}]}`))
+	c := resolveBuildSessionIdentity(3, accountdomain.ProviderBuild, "grok-4.5", "", "", []byte(`{"instructions":"other system","input":[{"role":"user","content":"hello"}]}`))
+	if !a.soft || a.upstreamID == "" || a.upstreamID != b.upstreamID {
+		t.Fatalf("instructions soft session unstable: %#v %#v", a, b)
+	}
+	if a.upstreamID == c.upstreamID {
+		t.Fatal("different instructions should isolate soft session")
+	}
+}

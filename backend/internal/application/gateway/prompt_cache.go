@@ -92,16 +92,38 @@ func extractMessageAnchors(body []byte) (system, firstUser, firstAssistant strin
 	if json.Unmarshal(body, &root) != nil {
 		return "", "", ""
 	}
+	// 顶层 system / instructions（OpenAI Responses / Chat 常见）作为稳定前缀 system 锚点。
+	if raw, ok := root["instructions"]; ok {
+		system = flattenMessageContent(raw)
+	}
+	if system == "" {
+		if raw, ok := root["system"]; ok {
+			system = flattenMessageContent(raw)
+		}
+	}
 	if raw, ok := root["messages"]; ok {
-		system, firstUser, firstAssistant = anchorsFromRoleMessages(raw)
+		msgSystem, msgUser, msgAssistant := anchorsFromRoleMessages(raw)
+		if system == "" {
+			system = msgSystem
+		}
+		firstUser, firstAssistant = msgUser, msgAssistant
 		if firstUser != "" {
 			return system, firstUser, firstAssistant
 		}
 	}
 	if raw, ok := root["input"]; ok {
-		return anchorsFromResponsesInput(raw)
+		inSystem, inUser, inAssistant := anchorsFromResponsesInput(raw)
+		if system == "" {
+			system = inSystem
+		}
+		if firstUser == "" {
+			firstUser = inUser
+		}
+		if firstAssistant == "" {
+			firstAssistant = inAssistant
+		}
 	}
-	return "", "", ""
+	return system, firstUser, firstAssistant
 }
 
 func anchorsFromRoleMessages(raw json.RawMessage) (system, firstUser, firstAssistant string) {

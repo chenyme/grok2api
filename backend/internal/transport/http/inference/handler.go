@@ -1048,11 +1048,11 @@ func (i *responseInspector) Inspect(chunk []byte) {
 			i.observeTerminal(value)
 			if !bytes.Equal(value, []byte("[DONE]")) {
 				metadata := extractMetadata(value)
-				if metadata.Usage.TotalTokens > 0 {
+				if hasUsageSignal(metadata.Usage) {
 					if metadata.Usage.ResponseModel == "" {
 						metadata.Usage.ResponseModel = i.metadata.Model
 					}
-					i.metadata.Usage = metadata.Usage
+					i.metadata.Usage = mergeGatewayUsage(i.metadata.Usage, metadata.Usage)
 				}
 				if metadata.ResponseID != "" {
 					i.metadata.ResponseID = metadata.ResponseID
@@ -1240,6 +1240,54 @@ func (value responseUsageDTO) toGatewayUsage(responseModel string) gateway.Usage
 		ContextInputTokens: value.ContextDetails.InputTokens, ContextOutputTokens: value.ContextDetails.OutputTokens,
 		ResponseModel: responseModel,
 	}
+}
+
+func hasUsageSignal(usage gateway.Usage) bool {
+	return usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0 ||
+		usage.CachedInputTokens > 0 || usage.ReasoningTokens > 0 || usage.CostInUSDTicks > 0 ||
+		usage.NumSourcesUsed > 0 || usage.NumServerSideToolsUsed > 0 ||
+		usage.ContextInputTokens > 0 || usage.ContextOutputTokens > 0
+}
+
+// mergeGatewayUsage 合并流式多帧 usage：非零字段覆盖，避免后到半截帧抹掉已解析缓存命中。
+func mergeGatewayUsage(base, next gateway.Usage) gateway.Usage {
+	if next.InputTokens > 0 {
+		base.InputTokens = next.InputTokens
+	}
+	if next.OutputTokens > 0 {
+		base.OutputTokens = next.OutputTokens
+	}
+	if next.TotalTokens > 0 {
+		base.TotalTokens = next.TotalTokens
+	}
+	if next.CachedInputTokens > 0 {
+		base.CachedInputTokens = next.CachedInputTokens
+	}
+	if next.ReasoningTokens > 0 {
+		base.ReasoningTokens = next.ReasoningTokens
+	}
+	if next.CostInUSDTicks > 0 {
+		base.CostInUSDTicks = next.CostInUSDTicks
+	}
+	if next.NumSourcesUsed > 0 {
+		base.NumSourcesUsed = next.NumSourcesUsed
+	}
+	if next.NumServerSideToolsUsed > 0 {
+		base.NumServerSideToolsUsed = next.NumServerSideToolsUsed
+	}
+	if next.ContextInputTokens > 0 {
+		base.ContextInputTokens = next.ContextInputTokens
+	}
+	if next.ContextOutputTokens > 0 {
+		base.ContextOutputTokens = next.ContextOutputTokens
+	}
+	if next.ResponseModel != "" {
+		base.ResponseModel = next.ResponseModel
+	}
+	if base.TotalTokens == 0 && (base.InputTokens > 0 || base.OutputTokens > 0) {
+		base.TotalTokens = base.InputTokens + base.OutputTokens
+	}
+	return base
 }
 
 func copyHeaders(destination, source http.Header) {
