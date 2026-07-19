@@ -121,7 +121,7 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			c.changed = true
 			rewritten = append(rewritten, converted)
 		case "custom_tool_call_output":
-			converted, err := normalizeFunctionCallOutputInput(item, param)
+			converted, err := normalizeCustomToolCallOutputInput(item, param)
 			if err != nil {
 				return nil, nil, nil, err
 			}
