@@ -142,4 +142,3 @@ func TestDeleteAutoCleanSkipsNullAnchorAndQueuedMedia(t *testing.T) {
 		t.Fatalf("queued account missing: %v", err)
 	}
 }
-

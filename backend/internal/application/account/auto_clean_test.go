@@ -281,4 +281,3 @@ func TestUpdateAutoCleanConfigClamps(t *testing.T) {
 		t.Fatalf("enabled interval = %s", got)
 	}
 }
-
