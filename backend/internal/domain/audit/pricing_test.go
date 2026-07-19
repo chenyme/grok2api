@@ -12,7 +12,7 @@ func TestEstimateOfficialCostHandlesCacheAliasesAndLongContext(t *testing.T) {
 		t.Fatalf("composer result = %#v, ok = %v", result, ok)
 	}
 	result, ok = EstimateOfficialCost("grok-4.5", 1_000_000, 200_000, 500_000, 210_000)
-	if !ok || result.CostInUSDTicks != 94_000_000_000 {
+	if !ok || result.CostInUSDTicks != 93_200_000_000 {
 		t.Fatalf("long-context result = %#v, ok = %v", result, ok)
 	}
 	result, ok = EstimateOfficialCost("Web/grok-4.5-build-free", 100, 0, 50, 100)
@@ -53,7 +53,7 @@ func TestOfficialPricingMatchesPublishedTokenRates(t *testing.T) {
 		inputCost, cachedCost, outputCost int64
 	}{
 		{model: "grok-build-0.1", inputCost: 10_000_000_000, cachedCost: 2_000_000_000, outputCost: 20_000_000_000},
-		{model: "grok-4.5", inputCost: 20_000_000_000, cachedCost: 5_000_000_000, outputCost: 60_000_000_000},
+		{model: "grok-4.5", inputCost: 20_000_000_000, cachedCost: 3_000_000_000, outputCost: 60_000_000_000},
 		{model: "grok-4.3", inputCost: 12_500_000_000, cachedCost: 2_000_000_000, outputCost: 25_000_000_000},
 		{model: "grok-4.20-multi-agent-0309", inputCost: 12_500_000_000, cachedCost: 2_000_000_000, outputCost: 25_000_000_000},
 		{model: "grok-4.20-0309-reasoning", inputCost: 12_500_000_000, cachedCost: 2_000_000_000, outputCost: 25_000_000_000},

@@ -161,10 +161,10 @@ export function RequestAuditsPage() {
         {auditsQuery.isPending || (result && result.items.length > 0) ? (
           <Table className="min-w-[1136px] table-fixed text-xs">
             <colgroup>
-              <col className="w-40" />
+              <col className="w-36" />
               <col className="w-44" />
               <col className="w-20" />
-              <col className="w-20" />
+              <col className="w-24" />
               <col className="w-76" />
               <col className="w-20" />
               <col className="w-20" />
