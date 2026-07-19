@@ -1170,11 +1170,19 @@ type responseUsageDTO struct {
 	CostInUSDTicks         int64                     `json:"cost_in_usd_ticks"`
 	NumSourcesUsed         int64                     `json:"num_sources_used"`
 	NumServerSideToolsUsed int64                     `json:"num_server_side_tools_used"`
-	InputTokensDetails     responseInputDetailsDTO   `json:"input_tokens_details"`
-	OutputTokensDetails    responseOutputDetailsDTO  `json:"output_tokens_details"`
-	ContextDetails         responseContextDetailsDTO `json:"context_details"`
-	PromptTokens           int64                     `json:"prompt_tokens"`
-	CompletionTokens       int64                     `json:"completion_tokens"`
+	// Responses 协议：input_tokens_details.cached_tokens
+	InputTokensDetails responseInputDetailsDTO `json:"input_tokens_details"`
+	// OpenAI Chat Completions 协议：prompt_tokens_details.cached_tokens
+	PromptTokensDetails responseInputDetailsDTO `json:"prompt_tokens_details"`
+	// Anthropic Messages 协议：顶层 cache_read_input_tokens
+	CacheReadInputTokens     int64                     `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64                     `json:"cache_creation_input_tokens"`
+	OutputTokensDetails     responseOutputDetailsDTO  `json:"output_tokens_details"`
+	// OpenAI Chat Completions 协议：completion_tokens_details.reasoning_tokens
+	CompletionTokensDetails responseOutputDetailsDTO  `json:"completion_tokens_details"`
+	ContextDetails          responseContextDetailsDTO `json:"context_details"`
+	PromptTokens            int64                     `json:"prompt_tokens"`
+	CompletionTokens        int64                     `json:"completion_tokens"`
 }
 
 type responseInputDetailsDTO struct {
@@ -1212,9 +1220,21 @@ func (value responseUsageDTO) toGatewayUsage(responseModel string) gateway.Usage
 	if total == 0 {
 		total = input + output
 	}
+	// 统一缓存命中：Responses / Chat Completions / Anthropic Messages
+	cached := value.InputTokensDetails.CachedTokens
+	if cached == 0 {
+		cached = value.PromptTokensDetails.CachedTokens
+	}
+	if cached == 0 {
+		cached = value.CacheReadInputTokens
+	}
+	reasoning := value.OutputTokensDetails.ReasoningTokens
+	if reasoning == 0 {
+		reasoning = value.CompletionTokensDetails.ReasoningTokens
+	}
 	return gateway.Usage{
-		InputTokens: input, CachedInputTokens: value.InputTokensDetails.CachedTokens,
-		OutputTokens: output, ReasoningTokens: value.OutputTokensDetails.ReasoningTokens,
+		InputTokens: input, CachedInputTokens: cached,
+		OutputTokens: output, ReasoningTokens: reasoning,
 		TotalTokens: total, CostInUSDTicks: value.CostInUSDTicks,
 		NumSourcesUsed: value.NumSourcesUsed, NumServerSideToolsUsed: value.NumServerSideToolsUsed,
 		ContextInputTokens: value.ContextDetails.InputTokens, ContextOutputTokens: value.ContextDetails.OutputTokens,

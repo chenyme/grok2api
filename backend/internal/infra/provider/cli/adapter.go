@@ -521,7 +521,10 @@ func (a *Adapter) GetBilling(ctx context.Context, credential account.Credential)
 func (a *Adapter) RefreshCredential(ctx context.Context, credential account.Credential) (provider.RefreshedCredential, error) {
 	refreshToken, err := a.cipher.Decrypt(credential.EncryptedRefreshToken)
 	if err != nil {
-		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "credential_decrypt_failed", Permanent: true, Cause: err}
+		// 解密失败通常是本地 encryption key 临时/不匹配，属于可恢复故障；
+		// 不得标记为 permanent（否则密钥恢复后手动/批量刷新永远不会重试）。
+		// 真正的 OAuth 永久失败（如 invalid_grant）由 oauth.refresh 返回 Permanent=true。
+		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "credential_decrypt_failed", Permanent: false, Cause: err}
 	}
 	if strings.TrimSpace(refreshToken) == "" {
 		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "missing_refresh_token", Permanent: true}
