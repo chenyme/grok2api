@@ -91,6 +91,11 @@ type BuildConversionProgressState = {
 
 type WebConversionTarget = "build" | "console";
 
+type AccountSelection = {
+  provider: AccountProvider;
+  ids: Set<string>;
+};
+
 export function AccountsPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -112,7 +117,7 @@ export function AccountsPage() {
   const [renewalFilter, setRenewalFilter] = useState("");
   const [riskFilter, setRiskFilter] = useState("");
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [selection, setSelection] = useState<AccountSelection>(() => ({ provider: "grok_build", ids: new Set() }));
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupStatuses, setCleanupStatuses] = useState<Set<AccountCleanupStatus>>(() => new Set());
@@ -171,6 +176,7 @@ export function AccountsPage() {
   const clearCloudflareCookies = useWatch({ control: form.control, name: "clearCloudflareCookies" });
   const buildSuperEntitled = useWatch({ control: form.control, name: "buildSuperEntitled" });
   const buildRouteMode = useWatch({ control: form.control, name: "buildRouteMode" });
+  const selected = selection.provider === provider ? selection.ids : new Set<string>();
 
   const accountsQuery = useQuery({
     queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, renewalFilter, riskFilter, sort.field, sort.order],
@@ -317,7 +323,7 @@ export function AccountsPage() {
     onSuccess: (conversion) => {
       setConversionProgress(null);
       setWebConversionTargets(null);
-      setSelected(new Set());
+      clearSelection();
       toast.success(t("accounts.conversionCompleted", conversion));
     },
     onError: (error) => { if (!isAbortError(error)) showError(error); },
@@ -338,7 +344,7 @@ export function AccountsPage() {
     },
     onSuccess: (result) => {
       setWebConversionTargets(null);
-      setSelected(new Set());
+      clearSelection();
       toast.success(t("webConsoleSync.completed", result));
     },
     onError: (error) => { if (!isAbortError(error)) showError(error); },
@@ -359,7 +365,7 @@ export function AccountsPage() {
     },
     onSuccess: (result) => {
       setWebAccountScriptsTargets(null);
-      setSelected(new Set());
+      clearSelection();
       if (result.failed > 0) {
         toast.warning(t("webAccountScripts.completedWithFailures", result));
       } else {
@@ -424,7 +430,7 @@ export function AccountsPage() {
   const batchUpdateMutation = useMutation({
     mutationFn: (enabled: boolean) => updateAccountsEnabled([...selected], enabled, provider),
     onSuccess: () => {
-      setSelected(new Set());
+      clearSelection();
       invalidateAccountData();
       toast.success(t("accounts.batchUpdated"));
     },
@@ -434,7 +440,7 @@ export function AccountsPage() {
   const batchBillingMutation = useMutation({
     mutationFn: () => refreshAccountsQuota([...selected], provider),
     onSuccess: (result) => {
-      setSelected(new Set());
+      clearSelection();
       invalidateAccountData();
       toast.success(t("accounts.batchBillingRefreshed", result));
     },
@@ -444,7 +450,7 @@ export function AccountsPage() {
   const batchTokenMutation = useMutation({
     mutationFn: () => refreshAccountsTokens([...selected], provider),
     onSuccess: (result) => {
-      setSelected(new Set());
+      clearSelection();
       invalidateAccountData();
       toast.success(t("accounts.allTokensRefreshed", result));
     },
@@ -454,7 +460,7 @@ export function AccountsPage() {
   const batchDeleteMutation = useMutation({
     mutationFn: () => deleteAccounts([...selected], provider),
     onSuccess: () => {
-      setSelected(new Set());
+      clearSelection();
       setBatchDeleteOpen(false);
       invalidateAccountData();
       toast.success(t("accounts.deleted"));
@@ -517,7 +523,7 @@ export function AccountsPage() {
   function changeProvider(value: AccountProvider) {
     setProvider(value);
     setPage(1);
-    setSelected(new Set());
+    setSelection({ provider: value, ids: new Set() });
     setTypeFilter("");
     setStatusFilter("");
     setRenewalFilter("");
@@ -626,23 +632,27 @@ export function AccountsPage() {
   const selectedOnPage = pageIDs.filter((id) => selected.has(id));
   const allPageSelected = pageIDs.length > 0 && selectedOnPage.length === pageIDs.length;
 
+  function clearSelection(): void {
+    setSelection((current) => ({ provider: current.provider, ids: new Set() }));
+  }
+
   function togglePage(checked: boolean): void {
-    setSelected((current) => {
-      const next = new Set(current);
+    setSelection((current) => {
+      const next = new Set(current.provider === provider ? current.ids : []);
       for (const id of pageIDs) {
         if (checked) next.add(id);
         else next.delete(id);
       }
-      return next;
+      return { provider, ids: next };
     });
   }
 
   function toggleAccount(id: string, checked: boolean): void {
-    setSelected((current) => {
-      const next = new Set(current);
+    setSelection((current) => {
+      const next = new Set(current.provider === provider ? current.ids : []);
       if (checked) next.add(id);
       else next.delete(id);
-      return next;
+      return { provider, ids: next };
     });
   }
 

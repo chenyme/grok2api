@@ -463,7 +463,11 @@ func (s *Service) reconcileVideoUsage(ctx context.Context) error {
 }
 
 func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationMS int64) error {
-	accountID := job.AccountID
+	var accountID *uint64
+	if job.AccountID > 0 {
+		value := job.AccountID
+		accountID = &value
+	}
 	createdAt := time.Now().UTC()
 	if job.CompletedAt != nil && !job.CompletedAt.IsZero() {
 		createdAt = job.CompletedAt.UTC()
@@ -482,7 +486,7 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 		EventID: "video_usage_" + job.ID, RequestID: job.RequestID, ClientKeyID: job.ClientKeyID, ClientKeyName: job.ClientKeyName,
 		ModelRouteID: job.ModelRouteID, ModelPublicID: job.Model, ModelUpstreamModel: job.UpstreamModel,
 		Provider: job.Provider, Operation: audit.OperationVideo, UsageSource: audit.UsageSourceNone,
-		AccountID: &accountID, AccountName: job.AccountName, StatusCode: statusCode, ErrorCode: job.ErrorCode,
+		AccountID: accountID, AccountName: job.AccountName, StatusCode: statusCode, ErrorCode: job.ErrorCode,
 		EgressNodeID: job.EgressNodeID, EgressNodeName: job.EgressNodeName, EgressScope: job.EgressScope, EgressMode: audit.EgressMode(job.EgressMode),
 		MediaInputImages: int64(len(decodeVideoInput(job.InputJSON))),
 		DurationMS:       durationMS, CreatedAt: createdAt,

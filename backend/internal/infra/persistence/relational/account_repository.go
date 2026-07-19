@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -126,6 +127,18 @@ func (r *AccountRepository) ListProviderAccountBatch(ctx context.Context, provid
 		return nil, 0, err
 	}
 	return out, total, nil
+}
+
+// CountProviderAccountsByIDs 只校验账号主表归属，不加载额度、关联或审计数据。
+func (r *AccountRepository) CountProviderAccountsByIDs(ctx context.Context, providerValue account.Provider, ids []uint64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var count int64
+	err := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("provider = ? AND id IN ?", providerValue, ids).
+		Count(&count).Error
+	return count, err
 }
 
 func (r *AccountRepository) Summarize(ctx context.Context, now time.Time) ([]repository.AccountSummary, error) {
@@ -972,22 +985,54 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, update
 }
 
 func (r *AccountRepository) Delete(ctx context.Context, id uint64) error {
-	result := r.db.db.WithContext(ctx).Delete(&accountModel{}, id)
-	if result.Error != nil {
-		return mapError(result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return repository.ErrNotFound
-	}
-	return nil
+	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lockedID uint64
+		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Pluck("id", &lockedID).Error; err != nil {
+			return err
+		}
+		if lockedID == 0 {
+			return repository.ErrNotFound
+		}
+		if err := rejectAccountsWithMediaJobs(tx, []uint64{id}); err != nil {
+			return err
+		}
+		return mapError(tx.Delete(&accountModel{}, id).Error)
+	})
 }
 
 func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	result := r.db.db.WithContext(ctx).Where("id IN ?", ids).Delete(&accountModel{})
-	return result.RowsAffected, result.Error
+	var deleted int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lockedIDs []uint64
+		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", ids).Pluck("id", &lockedIDs).Error; err != nil {
+			return err
+		}
+		if err := rejectAccountsWithMediaJobs(tx, lockedIDs); err != nil {
+			return err
+		}
+		result := tx.Where("id IN ?", lockedIDs).Delete(&accountModel{})
+		deleted = result.RowsAffected
+		return result.Error
+	})
+	return deleted, err
+}
+
+// rejectAccountsWithMediaJobs 仅保护仍需账号继续执行的活动视频任务。
+// completed/failed 已保存账号名称等快照，删除账号后由外键 SET NULL 保留历史。
+func rejectAccountsWithMediaJobs(db *gorm.DB, ids []uint64) error {
+	var count int64
+	if err := db.Model(&mediaJobModel{}).
+		Where("account_id IN ? AND status IN ?", ids, []string{string(media.StatusQueued), string(media.StatusInProgress)}).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("%w: 账号仍关联 %d 条排队中或进行中的视频任务，请等待任务结束后重试", repository.ErrConflict, count)
+	}
+	return nil
 }
 
 func (r *AccountRepository) DeleteAccountStatusBatch(ctx context.Context, providerValue account.Provider, status string, now time.Time, limit int) ([]uint64, int, error) {
@@ -1006,6 +1051,9 @@ func (r *AccountRepository) DeleteAccountStatusBatch(ctx context.Context, provid
 			return err
 		}
 		candidateCount = len(candidates)
+		if err := rejectAccountsWithMediaJobs(tx, candidates); err != nil {
+			return err
+		}
 		deletion := applyAccountStatusFilter(tx.Where("id IN ?", candidates), status, now).Delete(&accountModel{})
 		if deletion.Error != nil {
 			return deletion.Error

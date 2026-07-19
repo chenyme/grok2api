@@ -70,6 +70,25 @@ func TestRecoverVideoJobsRecordsFailedAuditWithEgress(t *testing.T) {
 	}
 }
 
+func TestRecoverVideoJobsRecordsDetachedAccountSnapshot(t *testing.T) {
+	completedAt := time.Now().UTC()
+	repository := &videoUsageRepository{job: media.Job{
+		ID: "video_detached_account", RequestID: "request-detached-account",
+		ClientKeyID: 1, ClientKeyName: "client", AccountName: "deleted account",
+		Provider: "grok_web", Model: "grok-imagine-video", ModelRouteID: 3, UpstreamModel: "video",
+		Seconds: 8, Quality: "720p", Status: media.StatusFailed, ErrorCode: "generation_failed",
+		InputJSON: `{}`, CreatedAt: completedAt.Add(-time.Minute), CompletedAt: &completedAt,
+	}}
+	recorder := &durableVideoAuditRecorder{}
+	service := &Service{mediaJobs: repository, audits: recorder}
+	if err := service.RecoverVideoJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.last.AccountID != nil || recorder.last.AccountName != "deleted account" {
+		t.Fatalf("detached account audit = %#v", recorder.last)
+	}
+}
+
 func TestVideoQueueIsBoundedAndDeduplicated(t *testing.T) {
 	service := &Service{}
 	service.ConfigureMedia(&videoUsageRepository{}, 1)

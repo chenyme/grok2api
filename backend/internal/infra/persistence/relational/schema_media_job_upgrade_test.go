@@ -210,6 +210,9 @@ func assertMediaJobSQLContainsBuild(t *testing.T, database *Database) {
 	if strings.Contains(sql, "grok_console") {
 		t.Fatalf("media_jobs unexpectedly allows console: %s", sql)
 	}
+	if !strings.Contains(strings.ToUpper(sql), "ON DELETE SET NULL") {
+		t.Fatalf("media_jobs account history is not detached on account delete: %s", sql)
+	}
 }
 
 func mediaJobsTableSQL(t *testing.T, database *Database) string {
