@@ -13,7 +13,6 @@ import { DashboardTrend } from "@/features/dashboard/dashboard-trend";
 import { VersionUpdateBanner } from "@/features/system/version-update";
 import { ErrorState } from "@/shared/components/data-state";
 import { PeriodSelector } from "@/shared/components/period-selector";
-import { formatDateTime } from "@/shared/lib/format";
 import { PERIOD_DAYS, toPeriodValue, type PeriodDays } from "@/shared/lib/period";
 
 type DashboardPreferences = { periodDays: PeriodDays };
@@ -67,23 +66,21 @@ export function DashboardPage() {
         <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <h1 className="text-xl font-medium">{t("dashboard.title")}</h1>
           <div className="flex min-w-0 shrink-0 items-center gap-2">
-            {dashboard?.generatedAt ? <span className="mr-1 hidden text-[11px] text-muted-foreground lg:inline">{t("dashboard.lastUpdated", { time: formatDateTime(dashboard.generatedAt, i18n.language) })}</span> : null}
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 text-muted-foreground"
-              onClick={refreshAll}
-              disabled={refreshing}
-              aria-label={t("common.refresh")}
-            >
-              <RefreshCw className={refreshing ? "animate-spin" : undefined} />
-            </Button>
             <PeriodSelector
               value={periodDays}
               onChange={(value) => setPreferences((current) => ({ ...current, periodDays: value }))}
               ariaLabel={t("dashboard.usage")}
             />
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={refreshAll}
+              disabled={refreshing}
+            >
+              <RefreshCw className={manualRefreshing ? "animate-spin" : undefined} />
+              {t("common.refresh")}
+            </Button>
           </div>
         </header>
 

@@ -149,8 +149,10 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/console/refresh-quotas", h.refreshAllConsoleQuotas)
 	router.POST("/accounts/refresh-billing", h.refreshAllBilling)
 	router.POST("/accounts/refresh-tokens", h.refreshAllTokens)
+	router.POST("/accounts/cleanup", h.cleanup)
 	router.POST("/accounts/batch/refresh-billing", h.batchRefreshBilling)
 	router.POST("/accounts/batch/refresh-quotas", h.batchRefreshQuotas)
+	router.POST("/accounts/batch/refresh-tokens", h.batchRefreshTokens)
 	router.PATCH("/accounts/batch", h.batchUpdate)
 	router.DELETE("/accounts", h.batchDelete)
 	router.PATCH("/accounts/:id", h.update)
@@ -184,6 +186,11 @@ type batchUpdateRequest struct {
 type batchDeleteRequest struct {
 	IDs      []string `json:"ids" binding:"required"`
 	Provider string   `json:"provider" binding:"required"`
+}
+
+type accountCleanupRequest struct {
+	Provider string                     `json:"provider" binding:"required"`
+	Statuses []accountapp.CleanupStatus `json:"statuses" binding:"required"`
 }
 
 type buildConversionRequest struct {
@@ -464,6 +471,20 @@ func (h *Handler) batchRefreshBilling(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed})
 }
 
+func (h *Handler) cleanup(c *gin.Context) {
+	var request accountCleanupRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	deleted, err := h.service.CleanupAccounts(c.Request.Context(), accountdomain.Provider(request.Provider), request.Statuses)
+	if err != nil {
+		h.writeServiceError(c, "accountCleanupFailed", err, http.StatusInternalServerError, "清理账号失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
+}
+
 func (h *Handler) batchRefreshQuotas(c *gin.Context) {
 	var request batchDeleteRequest
 	if c.ShouldBindJSON(&request) != nil {
@@ -494,6 +515,32 @@ func (h *Handler) batchRefreshQuotas(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed})
+}
+
+func (h *Handler) batchRefreshTokens(c *gin.Context) {
+	var request batchDeleteRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	ids, err := parseIDs(request.IDs)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
+		return
+	}
+	if request.Provider != string(accountdomain.ProviderBuild) {
+		response.Error(c, http.StatusBadRequest, "invalidProvider", "仅 Grok Build 账号支持凭据刷新")
+		return
+	}
+	if !h.validateProviderIDs(c, ids, request.Provider) {
+		return
+	}
+	succeeded, failed, skipped, err := h.service.BatchRefreshTokens(c.Request.Context(), ids)
+	if err != nil {
+		h.writeServiceError(c, "tokenRefreshFailed", err, http.StatusBadGateway, "批量刷新账号凭据失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed, "skipped": skipped})
 }
 
 func (h *Handler) get(c *gin.Context) {
@@ -894,12 +941,13 @@ func (h *Handler) refreshWebQuota(c *gin.Context) {
 }
 
 func (h *Handler) exportCredentials(c *gin.Context) {
-	result, err := h.service.ExportCredentials(c.Request.Context())
+	providerValue := accountdomain.Provider(c.DefaultQuery("provider", string(accountdomain.ProviderBuild)))
+	result, err := h.service.ExportProviderCredentials(c.Request.Context(), providerValue)
 	if err != nil {
 		h.writeServiceError(c, "accountExportFailed", err, http.StatusInternalServerError, "导出账号失败")
 		return
 	}
-	filename := "grok2api-accounts-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
+	filename := "grok2api-" + string(providerValue) + "-accounts-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
 	c.Header("Cache-Control", "no-store")
 	c.Header("Pragma", "no-cache")
 	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)

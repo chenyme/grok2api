@@ -47,6 +47,8 @@ type AccountRepository interface {
 	UpdateMany(ctx context.Context, ids []uint64, updates AccountUpdates) (int64, error)
 	Delete(ctx context.Context, id uint64) error
 	DeleteMany(ctx context.Context, ids []uint64) (int64, error)
+	// DeleteAccountStatusBatch 删除当前仍匹配指定管理端状态的一批账号，并返回实际删除的 ID。
+	DeleteAccountStatusBatch(ctx context.Context, provider account.Provider, status string, now time.Time, limit int) ([]uint64, int, error)
 	UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time) (account.Credential, error)
 	BackfillCredentialRefreshSchedules(ctx context.Context, now time.Time, limit int) (int, error)
 	ListCriticalCredentialRefreshIDs(ctx context.Context, now, expiresBefore time.Time, limit int) ([]uint64, error)

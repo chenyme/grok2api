@@ -102,10 +102,12 @@ export function SettingsPage() {
               <SettingsField controlId="web-base-url" className="sm:col-span-2" label={t("settings.web.baseURL")} error={form.formState.errors.providerWeb?.baseURL?.message}><Input id="web-base-url" {...form.register("providerWeb.baseURL")} /></SettingsField>
               <SettingsField controlId="web-statsig-mode" className="sm:col-span-2" label={t("settings.web.statsigMode")} error={form.formState.errors.providerWeb?.statsigMode?.message}>
                 <Controller control={form.control} name="providerWeb.statsigMode" render={({ field }) => (
-                  <div id="web-statsig-mode" role="radiogroup" className="grid h-8 grid-cols-2 rounded-md bg-muted/55 p-0.5">
-                    <Button type="button" role="radio" size="sm" variant={field.value === "manual" ? "secondary" : "ghost"} className="h-7 text-xs shadow-none" aria-checked={field.value === "manual"} onClick={() => field.onChange("manual")}>{t("settings.web.statsigManual")}</Button>
-                    <Button type="button" role="radio" size="sm" variant={field.value === "url" ? "secondary" : "ghost"} className="h-7 text-xs shadow-none" aria-checked={field.value === "url"} onClick={() => field.onChange("url")}>{t("settings.web.statsigURL")}</Button>
-                  </div>
+                  <Tabs value={field.value} onValueChange={field.onChange}>
+                    <TabsList id="web-statsig-mode" className="grid w-full grid-cols-2 bg-muted/55">
+                      <TabsTrigger value="manual" className="font-normal">{t("settings.web.statsigManual")}</TabsTrigger>
+                      <TabsTrigger value="url" className="font-normal">{t("settings.web.statsigURL")}</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
                 )} />
               </SettingsField>
               {statsigMode === "manual" ? (

@@ -436,6 +436,55 @@ func TestRefreshAllTokensSkipsUnrefreshableAccounts(t *testing.T) {
 	}
 }
 
+func TestBatchRefreshTokensRefreshesOnlySelectedEligibleAccounts(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service, refreshable, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+	selected := []uint64{refreshable.ID}
+	for _, value := range []accountdomain.Credential{
+		{Provider: accountdomain.ProviderBuild, Name: "missing-refresh", SourceKey: "missing-refresh", EncryptedAccessToken: "access", Enabled: true, AuthStatus: accountdomain.AuthStatusActive},
+		{Provider: accountdomain.ProviderBuild, Name: "disabled", SourceKey: "disabled", EncryptedAccessToken: "access", EncryptedRefreshToken: "refresh", Enabled: true, AuthStatus: accountdomain.AuthStatusActive},
+		{Provider: accountdomain.ProviderBuild, Name: "invalid", SourceKey: "invalid", EncryptedAccessToken: "access", EncryptedRefreshToken: "refresh", Enabled: true, AuthStatus: accountdomain.AuthStatusActive},
+	} {
+		created, _, err := service.accounts.UpsertByIdentity(ctx, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		needsUpdate := false
+		if value.Name == "disabled" {
+			created.Enabled = false
+			needsUpdate = true
+		}
+		if value.Name == "invalid" {
+			created.AuthStatus = accountdomain.AuthStatusReauthRequired
+			needsUpdate = true
+		}
+		if needsUpdate {
+			created, err = service.accounts.Update(ctx, created)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		selected = append(selected, created.ID)
+	}
+
+	succeeded, failed, skipped, err := service.BatchRefreshTokens(ctx, append(selected, refreshable.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succeeded != 1 || failed != 0 || skipped != 3 || adapter.refreshCount.Load() != 1 {
+		t.Fatalf("result = %d/%d/%d, refresh count = %d", succeeded, failed, skipped, adapter.refreshCount.Load())
+	}
+	updated, err := service.accounts.Get(ctx, refreshable.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.EncryptedAccessToken != "access-1" {
+		t.Fatalf("refreshed access token = %q", updated.EncryptedAccessToken)
+	}
+}
+
 func TestRefreshBillingCollapsesConcurrentRequests(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
