@@ -799,19 +799,8 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.BuildAPIFallback = existing.BuildAPIFallback
 		row.BuildRouteMode = existing.BuildRouteMode
 		row.BuildSuperEntitled = existing.BuildSuperEntitled
-		// reauth_marked_at 仅由显式状态迁移维护；普通 upsert 保留已有锚点。
-		if row.AuthStatus == string(account.AuthStatusReauthRequired) {
-			if row.ReauthMarkedAt == nil {
-				if existing.ReauthMarkedAt != nil {
-					row.ReauthMarkedAt = existing.ReauthMarkedAt
-				} else {
-					now := time.Now().UTC()
-					row.ReauthMarkedAt = &now
-				}
-			}
-		} else {
-			row.ReauthMarkedAt = nil
-		}
+		// reauth_marked_at 与 Update 路径一致：保持 reauth 时永不被普通 upsert 改写。
+		applyReauthMarkedAtTransition(&row, *existing)
 		if err := tx.Save(&row).Error; err != nil {
 			return repository.AccountUpsertResult{}, accountModel{}, err
 		}
@@ -1106,6 +1095,31 @@ func (r *AccountRepository) DeleteAutoCleanReauthBatch(ctx context.Context, mark
 		var lockedIDs []uint64
 		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", deletable).Pluck("id", &lockedIDs).Error; err != nil {
 			return err
+		}
+		// lock 后再过滤活动视频任务，避免 list 与 delete 之间的 TOCTOU。
+		var lockedBlocked []uint64
+		if err := tx.Model(&mediaJobModel{}).
+			Distinct("account_id").
+			Where("account_id IN ? AND status IN ?", lockedIDs, []string{string(media.StatusQueued), string(media.StatusInProgress)}).
+			Pluck("account_id", &lockedBlocked).Error; err != nil {
+			return err
+		}
+		if len(lockedBlocked) > 0 {
+			blockedSet := make(map[uint64]struct{}, len(lockedBlocked))
+			for _, id := range lockedBlocked {
+				blockedSet[id] = struct{}{}
+			}
+			filtered := lockedIDs[:0]
+			for _, id := range lockedIDs {
+				if _, skip := blockedSet[id]; skip {
+					continue
+				}
+				filtered = append(filtered, id)
+			}
+			lockedIDs = append([]uint64(nil), filtered...)
+		}
+		if len(lockedIDs) == 0 {
+			return nil
 		}
 		deletion := tx.Where("id IN ? AND auth_status = ? AND reauth_marked_at IS NOT NULL AND reauth_marked_at < ?", lockedIDs, account.AuthStatusReauthRequired, markedBefore.UTC())
 		if !includeDisabled {

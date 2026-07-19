@@ -340,9 +340,9 @@ func consoleProviderConfig(cfg config.Config) consoleprovider.Config {
 
 func accountAutoCleanConfig(value config.AccountsConfig) accountapp.AutoCleanConfig {
 	return accountapp.AutoCleanConfig{
-		Enabled: value.AutoCleanReauthEnabled,
-		Interval: value.AutoCleanReauthInterval.Value(),
-		MinAge: value.AutoCleanReauthMinAge.Value(),
+		Enabled:         value.AutoCleanReauthEnabled,
+		Interval:        value.AutoCleanReauthInterval.Value(),
+		MinAge:          value.AutoCleanReauthMinAge.Value(),
 		IncludeDisabled: value.AutoCleanIncludeDisabled,
 	}
 }

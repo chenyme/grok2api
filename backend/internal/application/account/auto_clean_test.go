@@ -145,6 +145,26 @@ func TestAutoCleanReauthMultiBatch(t *testing.T) {
 		})
 		ids = append(ids, value.ID)
 	}
+
+	// 直接验证 repo 分批：第一批最多 100，且 nextAfter 前进。
+	deleted, candidates, nextAfter, err := repo.DeleteAutoCleanReauthBatch(ctx, now.Add(-time.Hour), false, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidates != 100 || len(deleted) != 100 || nextAfter == 0 {
+		t.Fatalf("first batch candidates=%d deleted=%d nextAfter=%d", candidates, len(deleted), nextAfter)
+	}
+	remaining := 0
+	for _, id := range ids {
+		if _, getErr := repo.Get(ctx, id); getErr == nil {
+			remaining++
+		}
+	}
+	if remaining != 5 {
+		t.Fatalf("remaining after first batch = %d", remaining)
+	}
+
+	// 应用层应扫完全部剩余。
 	service.UpdateAutoCleanConfig(AutoCleanConfig{
 		Enabled: true, Interval: 10 * time.Minute, MinAge: time.Hour,
 	})
@@ -153,6 +173,32 @@ func TestAutoCleanReauthMultiBatch(t *testing.T) {
 	}
 	for _, id := range ids {
 		assertMissing(t, repo, id)
+	}
+}
+
+func TestSecondMarkReauthKeepsOriginalAnchor(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 20, 16, 0, 0, 0, time.UTC)
+	service, repo := newAutoCleanTestService(t, now)
+	value := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "second-mark", SourceKey: "second-mark",
+		EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err := service.MarkReauthRequired(ctx, value.ID, "first"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := repo.Get(ctx, value.ID)
+	if err != nil || first.ReauthMarkedAt == nil {
+		t.Fatalf("first mark = %#v err=%v", first, err)
+	}
+	anchor := *first.ReauthMarkedAt
+	time.Sleep(5 * time.Millisecond)
+	if err := service.MarkReauthRequired(ctx, value.ID, "second"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := repo.Get(ctx, value.ID)
+	if err != nil || second.ReauthMarkedAt == nil || !second.ReauthMarkedAt.Equal(anchor) {
+		t.Fatalf("anchor reset: first=%s second=%v", anchor, second.ReauthMarkedAt)
 	}
 }
 

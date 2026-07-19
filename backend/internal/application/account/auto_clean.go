@@ -45,8 +45,14 @@ func (s *Service) autoCleanConfig() AutoCleanConfig {
 }
 
 // RunAccountAutoClean 在启用时周期性删除过期的 reauthRequired 账号；默认关闭。
-// 首次执行等待一个 interval，避免进程启动立即清库。
+// 首次执行等待一个 interval，避免进程启动立即清库；启动前写入的 config wake 会被丢弃。
+// 运行中热更新会通过 wake 立即重扫（仍受 minAge 保护）。
 func (s *Service) RunAccountAutoClean(ctx context.Context) {
+	// NewService / 启动接线可能已向 wake 写入；丢弃以免绕过首轮 interval。
+	select {
+	case <-s.autoCleanWake:
+	default:
+	}
 	cfg := s.autoCleanConfig()
 	initial := cfg.Interval
 	if !cfg.Enabled || initial < time.Minute {
@@ -113,13 +119,13 @@ func (s *Service) runAutoCleanReauth(ctx context.Context, cfg AutoCleanConfig) e
 			}
 			s.clearRefreshState(id)
 		}
-		if len(ids) > 0 {
-			s.invalidateBuildBotFlagCache()
-		}
 		if nextAfter == 0 || candidates < autoCleanReauthBatchSize {
 			break
 		}
 		afterID = nextAfter
+	}
+	if deleted > 0 {
+		s.invalidateBuildBotFlagCache()
 	}
 	if scanned > 0 || deleted > 0 || skipped > 0 {
 		s.logger.Info("auto_clean_reauth", "deleted", deleted, "scanned", scanned, "skipped", skipped)
