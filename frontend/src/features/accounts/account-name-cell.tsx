@@ -1,4 +1,4 @@
-import { Compass, Handshake, SquareTerminal, VenusAndMars, Webhook, type LucideIcon } from "lucide-react";
+import { Bot, Compass, Handshake, SquareTerminal, VenusAndMars, Webhook, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -59,14 +59,6 @@ export function AccountNameCell({ account }: { account: AccountDTO }) {
           </TooltipTrigger>
           <TooltipContent>{account.name}</TooltipContent>
         </Tooltip>
-        {account.buildBotFlagged ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span tabIndex={0} className="inline-flex shrink-0 cursor-help whitespace-nowrap text-xs font-medium text-amber-700 dark:text-amber-300">{t("accounts.botRisk")}</span>
-            </TooltipTrigger>
-            <TooltipContent>{t("accounts.botRiskTooltip")}</TooltipContent>
-          </Tooltip>
-        ) : null}
       </div>
       <div className="flex min-h-4 w-fit min-w-0 items-center">
         <Tooltip>
@@ -125,6 +117,19 @@ export function AccountNameCell({ account }: { account: AccountDTO }) {
                 </Tooltip>
               ) : null}
             </span>
+          </>
+        ) : null}
+        {account.buildBotFlagged ? (
+          <>
+            <span className="mx-2 h-3 w-px shrink-0 bg-border" aria-hidden="true" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0} aria-label={t("accounts.botRisk")} className="inline-flex cursor-help text-amber-500 focus-visible:outline-none dark:text-amber-400">
+                  <Bot className="size-3.5" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{t("accounts.botRiskTooltip")}</TooltipContent>
+            </Tooltip>
           </>
         ) : null}
       </div>
