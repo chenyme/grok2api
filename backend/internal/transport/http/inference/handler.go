@@ -19,6 +19,7 @@ import (
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	consoleprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/console"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -154,6 +155,8 @@ type modelListItem struct {
 	OwnedBy string `json:"owned_by"`
 }
 
+const multiAgentBaseModel = "grok-4.20-multi-agent-0309"
+
 func (h *Handler) listModels(c *gin.Context) {
 	values, err := h.models.ListEnabled(c.Request.Context())
 	if err != nil {
@@ -165,15 +168,23 @@ func (h *Handler) listModels(c *gin.Context) {
 
 // newModelListItems 按下游公开名称去重，隐藏仅用于内部选路的 Provider 前缀。
 func newModelListItems(values []modeldomain.Route) []modelListItem {
-	data := make([]modelListItem, 0, len(values))
-	seen := make(map[string]bool, len(values))
+	aliases := consoleprovider.Aliases()
+	data := make([]modelListItem, 0, len(values)+len(aliases))
+	seen := make(map[string]bool, len(values)+len(aliases))
 	for _, value := range values {
 		publicID := modeldomain.ExternalPublicID(value.Provider, value.PublicID)
-		if seen[publicID] {
-			continue
+		if !seen[publicID] {
+			seen[publicID] = true
+			data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api"})
 		}
-		seen[publicID] = true
-		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api"})
+		if value.UpstreamModel == multiAgentBaseModel {
+			for _, alias := range aliases {
+				if alias.Provider == value.Provider && alias.UpstreamModel == value.UpstreamModel && alias.ReasoningEffort != "" && !seen[alias.Alias] {
+					seen[alias.Alias] = true
+					data = append(data, modelListItem{ID: alias.Alias, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api"})
+				}
+			}
+		}
 	}
 	return data
 }
