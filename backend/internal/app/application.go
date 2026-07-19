@@ -64,6 +64,7 @@ type Application struct {
 	modelRepo     repository.ModelRepository
 	providers     *provider.Registry
 	web           *webprovider.Adapter
+	egress        *infraegress.Manager
 	startup       *startupState
 }
 
@@ -331,7 +332,6 @@ func webProviderConfig(cfg config.Config) webprovider.Config {
 	}
 }
 
-
 func clearanceConfig(cfg config.Config) infraegress.ClearanceConfig {
 	return infraegress.ClearanceConfig{
 		Mode: cfg.Provider.Web.ClearanceMode, FlareSolverrURL: cfg.Provider.Web.FlareSolverrURL,
@@ -457,7 +457,7 @@ func (a *Application) Run(ctx context.Context) error {
 		})
 		return nil
 	})
-		startBackground("clearance_refresh", func(taskCtx context.Context) error {
+	startBackground("clearance_refresh", func(taskCtx context.Context) error {
 		if err := a.egress.RefreshDueClearances(taskCtx, true); err != nil {
 			a.logger.Warn("clearance_initial_refresh_failed", "error", err)
 		}
@@ -469,7 +469,7 @@ func (a *Application) Run(ctx context.Context) error {
 		})
 		return nil
 	})
-if a.settingsBus != nil {
+	if a.settingsBus != nil {
 		startBackground("settings_change_listener", func(taskCtx context.Context) error {
 			return a.settingsBus.ListenSettingsChanges(taskCtx, func(eventCtx context.Context) error {
 				reloadCtx, cancel := context.WithTimeout(eventCtx, 5*time.Second)

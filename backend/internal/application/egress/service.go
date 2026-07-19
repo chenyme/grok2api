@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	ErrInvalidInput = errors.New("代理节点参数无效")
-	ErrInvalidSort  = errors.New("代理节点排序条件无效")
+	ErrInvalidInput         = errors.New("代理节点参数无效")
+	ErrInvalidSort          = errors.New("代理节点排序条件无效")
 	ErrNotFound             = errors.New("代理节点不存在")
 	ErrClearanceUnavailable = errors.New("Clearance 刷新不可用")
 )

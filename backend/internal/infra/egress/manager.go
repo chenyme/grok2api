@@ -112,7 +112,7 @@ func NewManager(repository repository.EgressRepository, cipher *security.Cipher)
 		repository: repository, cipher: cipher,
 		clients: make(map[clientCacheKey]cachedClient), inflight: make(map[uint64]int),
 		nodes: make(map[domain.Scope]cachedNodeSnapshot), clearances: make(map[uint64]clearanceState),
-		solver: flaresolverrSolver{},
+		solver:          flaresolverrSolver{},
 		clearanceConfig: ClearanceConfig{Mode: "manual", TargetURL: "https://grok.com", Timeout: time.Minute, RefreshInterval: 10 * time.Minute},
 	}
 }
@@ -412,7 +412,7 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		}
 		value.client = client
 	} else {
-		client, err := newBrowserClient(proxyURL)
+		client, err := newBrowserClient(proxyURL, userAgent)
 		if err != nil {
 			return cachedClient{}, err
 		}
@@ -554,7 +554,6 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		m.invalidateNodes(value.Scope)
 	}
 }
-
 
 func (m *Manager) clearanceMode() string {
 	m.mu.Lock()
@@ -763,7 +762,6 @@ func (m *Manager) RefreshDueClearances(ctx context.Context, force bool) error {
 	}
 	return errors.Join(refreshErrors...)
 }
-
 
 func isGrokWebScope(scope domain.Scope) bool {
 	return scope == domain.ScopeWeb || scope == domain.ScopeWebAsset || scope == domain.ScopeConsole
