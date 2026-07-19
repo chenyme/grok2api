@@ -489,6 +489,14 @@ func TestExtractUsageFromCompletedEvent(t *testing.T) {
 	}
 }
 
+func TestExtractUsageFromAnthropicMessages(t *testing.T) {
+	metadata := extractMetadata([]byte(`{"id":"msg_1","model":"grok-4.5","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":4}}`))
+	usage := metadata.Usage
+	if usage.InputTokens != 10 || usage.CachedInputTokens != 4 || usage.OutputTokens != 5 || usage.TotalTokens != 15 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
 func TestUsageInspectorHandlesChunkedSSE(t *testing.T) {
 	inspector := &responseInspector{}
 	inspector.Inspect([]byte("data: {\"response\":{\"id\":\"resp_stream\",\"usage\":{\"input_tokens\":2,"))

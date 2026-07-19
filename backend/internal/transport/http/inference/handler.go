@@ -1175,6 +1175,7 @@ type responseUsageDTO struct {
 	ContextDetails         responseContextDetailsDTO `json:"context_details"`
 	PromptTokens           int64                     `json:"prompt_tokens"`
 	CompletionTokens       int64                     `json:"completion_tokens"`
+	CacheReadInputTokens   int64                     `json:"cache_read_input_tokens"`
 }
 
 type responseInputDetailsDTO struct {
@@ -1213,7 +1214,7 @@ func (value responseUsageDTO) toGatewayUsage(responseModel string) gateway.Usage
 		total = input + output
 	}
 	return gateway.Usage{
-		InputTokens: input, CachedInputTokens: value.InputTokensDetails.CachedTokens,
+		InputTokens: input, CachedInputTokens: max(value.InputTokensDetails.CachedTokens, value.CacheReadInputTokens),
 		OutputTokens: output, ReasoningTokens: value.OutputTokensDetails.ReasoningTokens,
 		TotalTokens: total, CostInUSDTicks: value.CostInUSDTicks,
 		NumSourcesUsed: value.NumSourcesUsed, NumServerSideToolsUsed: value.NumServerSideToolsUsed,
