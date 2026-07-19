@@ -51,6 +51,12 @@ bootstrapAdmin:
 	if cfg.Routing.PreferFreeBuild {
 		t.Fatal("preferFreeBuild should retain its false default when omitted from YAML")
 	}
+	if cfg.Accounts.AutoCleanReauthEnabled || cfg.Accounts.AutoCleanDisabledEnabled {
+		t.Fatal("accounts auto-clean flags should default to false")
+	}
+	if cfg.Accounts.AutoCleanReauthInterval.Value() != 10*time.Minute || cfg.Accounts.AutoCleanReauthMinAge.Value() != time.Hour {
+		t.Fatalf("accounts auto-clean defaults = %#v", cfg.Accounts)
+	}
 	if !cfg.Routing.ReasoningReplayEnabled || cfg.Routing.ReasoningReplayTTL.Value() != time.Hour || cfg.Routing.ReasoningReplayMaxEntries != 10240 {
 		t.Fatalf("reasoning replay defaults = %#v", cfg.Routing)
 	}

@@ -1020,6 +1020,23 @@ func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64
 	return deleted, err
 }
 
+func (r *AccountRepository) ListAutoCleanReauthIDs(ctx context.Context, updatedBefore time.Time, includeDisabled bool, limit int) ([]uint64, error) {
+	if limit < 1 {
+		limit = 100
+	}
+	query := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Select("id").
+		Where("auth_status = ? AND updated_at < ?", account.AuthStatusReauthRequired, updatedBefore)
+	if !includeDisabled {
+		query = query.Where("enabled = ?", true)
+	}
+	var ids []uint64
+	if err := query.Order("id ASC").Limit(limit).Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // rejectAccountsWithMediaJobs 仅保护仍需账号继续执行的活动视频任务。
 // completed/failed 已保存账号名称等快照，删除账号后由外键 SET NULL 保留历史。
 func rejectAccountsWithMediaJobs(db *gorm.DB, ids []uint64) error {

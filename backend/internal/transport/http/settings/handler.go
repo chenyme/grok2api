@@ -31,6 +31,7 @@ type settingsConfigDTO struct {
 	Routing           routingConfigDTO           `json:"routing"`
 	Audit             auditConfigDTO             `json:"audit"`
 	ClientKeyDefaults clientKeyDefaultsConfigDTO `json:"clientKeyDefaults"`
+	Accounts          accountsConfigDTO          `json:"accounts"`
 }
 
 type serverConfigDTO struct {
@@ -105,6 +106,13 @@ type auditConfigDTO struct {
 type clientKeyDefaultsConfigDTO struct {
 	RPMLimit      int `json:"rpmLimit"`
 	MaxConcurrent int `json:"maxConcurrent"`
+}
+
+type accountsConfigDTO struct {
+	AutoCleanReauthEnabled   bool   `json:"autoCleanReauthEnabled"`
+	AutoCleanReauthInterval  string `json:"autoCleanReauthInterval"`
+	AutoCleanReauthMinAge    string `json:"autoCleanReauthMinAge"`
+	AutoCleanDisabledEnabled bool   `json:"autoCleanDisabledEnabled"`
 }
 
 type settingsResponse struct {
@@ -194,6 +202,12 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		ClientKeyDefaults: settingsapp.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
 		},
+		Accounts: settingsapp.AccountsConfig{
+			AutoCleanReauthEnabled:   value.Accounts.AutoCleanReauthEnabled,
+			AutoCleanReauthInterval:  value.Accounts.AutoCleanReauthInterval,
+			AutoCleanReauthMinAge:    value.Accounts.AutoCleanReauthMinAge,
+			AutoCleanDisabledEnabled: value.Accounts.AutoCleanDisabledEnabled,
+		},
 	}
 }
 
@@ -241,6 +255,12 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			},
 			ClientKeyDefaults: clientKeyDefaultsConfigDTO{
 				RPMLimit: config.ClientKeyDefaults.RPMLimit, MaxConcurrent: config.ClientKeyDefaults.MaxConcurrent,
+			},
+			Accounts: accountsConfigDTO{
+				AutoCleanReauthEnabled:   config.Accounts.AutoCleanReauthEnabled,
+				AutoCleanReauthInterval:  config.Accounts.AutoCleanReauthInterval,
+				AutoCleanReauthMinAge:    config.Accounts.AutoCleanReauthMinAge,
+				AutoCleanDisabledEnabled: config.Accounts.AutoCleanDisabledEnabled,
 			},
 		},
 		RecommendedProviderBuild: providerBuildRecommendationDTO{

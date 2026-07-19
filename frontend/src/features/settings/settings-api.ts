@@ -21,6 +21,12 @@ export type SettingsConfigDTO = {
   routing: { stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number; preferFreeBuild: boolean };
   audit: { bufferSize: number; batchSize: number; flushInterval: string };
   clientKeyDefaults: { rpmLimit: number; maxConcurrent: number };
+  accounts: {
+    autoCleanReauthEnabled: boolean;
+    autoCleanReauthInterval: string;
+    autoCleanReauthMinAge: string;
+    autoCleanDisabledEnabled: boolean;
+  };
 };
 
 export type EgressNodeDTO = {
@@ -60,6 +66,12 @@ const settingsConfigValidator = hasShape({
   routing: hasShape({ stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber, preferFreeBuild: isBoolean }),
   audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString }),
   clientKeyDefaults: hasShape({ rpmLimit: isNumber, maxConcurrent: isNumber }),
+  accounts: hasShape({
+    autoCleanReauthEnabled: isBoolean,
+    autoCleanReauthInterval: isString,
+    autoCleanReauthMinAge: isString,
+    autoCleanDisabledEnabled: isBoolean,
+  }),
 });
 const decodeSettingsSnapshot = createObjectDecoder<SettingsSnapshotDTO>("settings", {
   config: settingsConfigValidator,

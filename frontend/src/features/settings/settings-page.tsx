@@ -195,6 +195,23 @@ export function SettingsPage() {
             </div>
           </SettingsSection>
 
+          <SettingsSection title={t("settings.accounts.title")}>
+            <div className="space-y-0">
+              <SettingsField controlId="accounts-auto-clean-reauth-enabled" label={t("settings.accounts.autoCleanReauthEnabled")} description={t("settings.accounts.autoCleanReauthEnabledHelp")}>
+                <Controller control={form.control} name="accounts.autoCleanReauthEnabled" render={({ field }) => <div className="flex h-9 items-center"><Switch id="accounts-auto-clean-reauth-enabled" checked={field.value} onCheckedChange={field.onChange} /></div>} />
+              </SettingsField>
+              <SettingsField controlId="accounts-auto-clean-reauth-interval" label={t("settings.accounts.autoCleanReauthInterval")} description={t("settings.accounts.autoCleanReauthIntervalHelp")} error={form.formState.errors.accounts?.autoCleanReauthInterval?.message}>
+                <Controller control={form.control} name="accounts.autoCleanReauthInterval" render={({ field }) => <DurationInput id="accounts-auto-clean-reauth-interval" value={field.value} onChange={field.onChange} />} />
+              </SettingsField>
+              <SettingsField controlId="accounts-auto-clean-reauth-min-age" label={t("settings.accounts.autoCleanReauthMinAge")} description={t("settings.accounts.autoCleanReauthMinAgeHelp")} error={form.formState.errors.accounts?.autoCleanReauthMinAge?.message}>
+                <Controller control={form.control} name="accounts.autoCleanReauthMinAge" render={({ field }) => <DurationInput id="accounts-auto-clean-reauth-min-age" value={field.value} onChange={field.onChange} />} />
+              </SettingsField>
+              <SettingsField controlId="accounts-auto-clean-disabled-enabled" label={t("settings.accounts.autoCleanDisabledEnabled")} description={t("settings.accounts.autoCleanDisabledEnabledHelp")}>
+                <Controller control={form.control} name="accounts.autoCleanDisabledEnabled" render={({ field }) => <div className="flex h-9 items-center"><Switch id="accounts-auto-clean-disabled-enabled" checked={field.value} onCheckedChange={field.onChange} /></div>} />
+              </SettingsField>
+            </div>
+          </SettingsSection>
+
           <SettingsSection title={t("settings.routing.title")}>
             <div className="space-y-0">
               <SettingsField controlId="routing-sticky-ttl" label={t("settings.routing.stickyTTL")} description={t("settings.routing.stickyTTLHelp")} error={form.formState.errors.routing?.stickyTTL?.message}><Controller control={form.control} name="routing.stickyTTL" render={({ field }) => <DurationInput id="routing-sticky-ttl" value={field.value} onChange={field.onChange} />} /></SettingsField>
