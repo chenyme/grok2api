@@ -28,6 +28,7 @@ import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
 import { Pagination } from "@/shared/components/pagination";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
+import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { cn } from "@/shared/lib/cn";
 import { formatDateTime, formatNumber } from "@/shared/lib/format";
@@ -823,7 +824,7 @@ export function AccountsPage() {
         {accountsQuery.isError ? <ErrorState message={accountsQuery.error.message} onRetry={() => void accountsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {accountsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="table-fixed border-collapse min-w-[780px] xl:min-w-[960px] 2xl:min-w-[1080px]">
+          <Table viewportRows={20} rowHeight={56} className="table-fixed border-collapse min-w-[780px] xl:min-w-[960px] 2xl:min-w-[1080px]">
             <colgroup>
               <col style={{ width: "3%" }} />
               <col style={{ width: "18%" }} />
@@ -846,10 +847,15 @@ export function AccountsPage() {
                 <TableActionHead />
               </TableRow>
             </TableHeader>
-            <TableBody>
-              {accountsQuery.isPending ? <TableLoadingRow colSpan={provider === "grok_build" ? 8 : 7} /> : result?.items.map((account) => {
-                return (
-	                  <TableRow className="group [&>td]:py-1.5" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
+            {accountsQuery.isPending ? (
+              <TableBody><TableLoadingRow colSpan={provider === "grok_build" ? 8 : 7} /></TableBody>
+            ) : (
+              <VirtualTableBody
+                items={result?.items ?? []}
+                colSpan={provider === "grok_build" ? 8 : 7}
+                rowHeight={56}
+                renderRow={(account) => (
+	                  <TableRow className="group h-14 [&>td]:py-1.5" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
                     <TableCell className="px-2"><Checkbox checked={selected.has(account.id)} onCheckedChange={(checked) => toggleAccount(account.id, checked === true)} aria-label={t("common.selectItem", { name: account.name })} /></TableCell>
 	                    <TableCell className="min-w-0"><AccountNameCell account={account} /></TableCell>
                     <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("accountType.console")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
@@ -885,9 +891,9 @@ export function AccountsPage() {
                       </DropdownMenu>
                     </TableActionCell>
                   </TableRow>
-                );
-              })}
-            </TableBody>
+                )}
+              />
+            )}
           </Table>
         ) : null}
         </DataTableShell>

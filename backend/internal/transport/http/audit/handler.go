@@ -105,15 +105,7 @@ func (h *Handler) list(c *gin.Context) {
 	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 {
-		pageSize = 20
-	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
+	page, pageSize = repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
 	values, total, err := h.service.List(c.Request.Context(), page, pageSize)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "auditListFailed", "读取审计记录失败")
@@ -128,6 +120,7 @@ func (h *Handler) list(c *gin.Context) {
 
 func (h *Handler) listCursor(c *gin.Context) {
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "50"))
+	_, pageSize = repository.NormalizePage(1, pageSize, repository.DefaultCursorPageSize)
 	result, err := h.service.ListCursor(c.Request.Context(), c.Query("cursor"), pageSize, c.Query("search"), c.Query("period"), newListFilter(c))
 	if errors.Is(err, auditapp.ErrInvalidCursor) {
 		response.Error(c, http.StatusBadRequest, "invalidCursor", err.Error())

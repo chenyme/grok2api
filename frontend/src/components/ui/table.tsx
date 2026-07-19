@@ -2,11 +2,20 @@ import * as React from "react"
 
 import { cn } from "@/shared/lib/cn"
 
-const Table = React.forwardRef<
-  HTMLTableElement,
-  React.HTMLAttributes<HTMLTableElement>
->(({ className, ...props }, ref) => (
-  <div className="relative w-full overflow-auto">
+type TableProps = React.HTMLAttributes<HTMLTableElement> & {
+  viewportRows?: number
+  rowHeight?: number
+}
+
+const Table = React.forwardRef<HTMLTableElement, TableProps>(({ className, viewportRows, rowHeight, ...props }, ref) => (
+  <div
+    data-slot="table-scroll-container"
+    className={cn(
+      "relative w-full overflow-auto",
+      viewportRows && "[&_thead]:sticky [&_thead]:top-0 [&_thead]:z-30 [&_thead]:bg-background"
+    )}
+    style={viewportRows && rowHeight ? { maxHeight: 36 + viewportRows * rowHeight } : undefined}
+  >
     <table
       ref={ref}
       className={cn("w-full caption-bottom text-sm", className)}

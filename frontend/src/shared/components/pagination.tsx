@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/shared/lib/cn";
 
+const PAGE_SIZE_OPTIONS = [20, 100, 500, 1000, 2000] as const;
+
 export function Pagination({ page, pageSize, total, onPageChange, onPageSizeChange, className }: { page: number; pageSize: number; total: number; onPageChange: (page: number) => void; onPageSizeChange?: (pageSize: number) => void; className?: string }) {
   const { t } = useTranslation();
   const pages = Math.max(1, Math.ceil(total / pageSize));
@@ -47,7 +49,7 @@ function PageSizeSelector({ pageSize, onChange }: { pageSize: number; onChange: 
       <Select value={String(pageSize)} onValueChange={(value) => onChange(Number(value))}>
         <SelectTrigger className="h-8 w-[76px] rounded-md bg-secondary px-3 text-xs shadow-none" aria-label={t("common.perPage")}><SelectValue /></SelectTrigger>
         <SelectContent align="end">
-          {[20, 50, 100].map((value) => <SelectItem key={value} value={String(value)}>{value}</SelectItem>)}
+          {PAGE_SIZE_OPTIONS.map((value) => <SelectItem key={value} value={String(value)}>{value}</SelectItem>)}
         </SelectContent>
       </Select>
       <span>{t("common.rows")}</span>

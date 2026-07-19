@@ -18,6 +18,7 @@ import { CursorPagination } from "@/shared/components/pagination";
 import { PageHeader } from "@/shared/components/page-header";
 import { PeriodSelector } from "@/shared/components/period-selector";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
+import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { cn } from "@/shared/lib/cn";
 import { formatDateTime, formatDuration, formatNumber } from "@/shared/lib/format";
@@ -27,7 +28,7 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 export function RequestAuditsPage() {
   const { t, i18n } = useTranslation();
   const [cursors, setCursors] = useState<string[]>([""]);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState("");
   const [modelFilter, setModelFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -159,7 +160,7 @@ export function RequestAuditsPage() {
         {auditsQuery.isError ? <ErrorState message={auditsQuery.error.message} onRetry={() => void auditsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {auditsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table className="min-w-[1136px] table-fixed text-xs">
+          <Table viewportRows={20} rowHeight={72} className="min-w-[1136px] table-fixed text-xs">
             <colgroup>
               <col className="w-40" />
               <col className="w-44" />
@@ -182,8 +183,10 @@ export function RequestAuditsPage() {
                 <SortableTableHead field="createdAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.createdAt")}</SortableTableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
-              {auditsQuery.isPending ? <TableLoadingRow colSpan={8} /> : result?.items.map((audit) => (
+            {auditsQuery.isPending ? (
+              <TableBody><TableLoadingRow colSpan={8} /></TableBody>
+            ) : (
+              <VirtualTableBody items={result?.items ?? []} colSpan={8} rowHeight={72} renderRow={(audit) => (
                 <TableRow className="h-[72px]" key={audit.id}>
                   <TableCell><RequestValue audit={audit} /></TableCell>
                   <TableCell>
@@ -201,8 +204,8 @@ export function RequestAuditsPage() {
                   <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatDuration(audit.durationMs)}</TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(audit.createdAt, i18n.language)}</TableCell>
                 </TableRow>
-              ))}
-            </TableBody>
+              )} />
+            )}
           </Table>
         ) : null}
       </DataTableShell>

@@ -2,6 +2,35 @@ package repository
 
 import "time"
 
+const (
+	// DefaultPageSize is the default size for admin list endpoints.
+	DefaultPageSize = 20
+	// MaxPageSize bounds an individual admin query. It is intentionally finite
+	// so large page requests cannot turn into unbounded database or JSON work.
+	MaxPageSize = 2000
+	// DefaultCursorPageSize is the default batch size for cursor-based audit reads.
+	DefaultCursorPageSize = 50
+)
+
+// NormalizePage applies the common bounded pagination contract used by all
+// admin list endpoints. Keeping this in one place prevents transport and
+// application layers from returning different effective page sizes.
+func NormalizePage(page, pageSize, defaultPageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if defaultPageSize < 1 || defaultPageSize > MaxPageSize {
+		defaultPageSize = DefaultPageSize
+	}
+	if pageSize < 1 {
+		pageSize = defaultPageSize
+	}
+	if pageSize > MaxPageSize {
+		pageSize = MaxPageSize
+	}
+	return page, pageSize
+}
+
 type SortDirection string
 
 const (
