@@ -43,13 +43,9 @@ export const settingsSchema = z.object({
     fallbackBaseURL: z.url().refine((value) => value.startsWith("https://")),
     clientVersion: z.string().trim().min(1),
     clientIdentifier: z.string().trim().min(1),
-    tokenAuth: z.string().trim(),
+    tokenAuth: z.string().trim().min(1),
     tokenAuthConfigured: z.boolean(),
     userAgent: z.string().trim().min(1),
-  }).superRefine((value, context) => {
-    if (!value.tokenAuthConfigured && value.tokenAuth.length === 0) {
-      context.addIssue({ code: "custom", path: ["tokenAuth"], message: "required" });
-    }
   }),
   providerWeb: z.object({
     baseURL: z.url().refine((value) => value.startsWith("https://")),
@@ -114,7 +110,7 @@ export type SettingsForm = z.infer<typeof settingsSchema>;
 export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
   return {
     server: config.server,
-    providerBuild: { ...config.providerBuild, tokenAuth: "" },
+    providerBuild: config.providerBuild,
     providerWeb: {
       ...config.providerWeb,
       statsigManualValue: "",

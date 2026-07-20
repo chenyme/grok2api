@@ -623,6 +623,9 @@ func TestGenerateVideoFallbackInjectsUploadURL(t *testing.T) {
 	adapter.SetVideoUploadIssuer(issuer)
 	var createPayload map[string]any
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Host, "xai.test") && request.Header.Get("User-Agent") != "xai-grok-build/0.2.99" {
+			t.Fatalf("XAI video user agent = %q", request.Header.Get("User-Agent"))
+		}
 		if request.Method == http.MethodPost {
 			if strings.Contains(request.URL.Host, "primary.test") {
 				return jsonResponse(http.StatusForbidden, `{"error":"forbidden"}`, request), nil
@@ -702,6 +705,9 @@ func TestGenerateVideoAutoBotFlaggedUsesXAIDirectly(t *testing.T) {
 			t.Fatalf("bot-flagged auto video must default to XAI")
 		}
 		fallbackHits.Add(1)
+		if request.Header.Get("User-Agent") != "xai-grok-build/0.2.99" {
+			t.Fatalf("XAI video user agent = %q", request.Header.Get("User-Agent"))
+		}
 		if request.Method == http.MethodPost {
 			if request.Header.Get("x-grok-model-override") != xaiVideoModel {
 				t.Fatalf("XAI model override = %q", request.Header.Get("x-grok-model-override"))
