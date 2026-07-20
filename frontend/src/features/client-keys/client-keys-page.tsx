@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Copy, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleHelp, Copy, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -31,6 +31,7 @@ import { Pagination } from "@/shared/components/pagination";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
+import { cn } from "@/shared/lib/cn";
 import { formatDateTime, toDateTimeLocal } from "@/shared/lib/format";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
@@ -64,20 +65,30 @@ export function ClientKeysPage() {
   const schema = z.object({
     name: z.string().min(1, t("errors.required")),
     enabled: z.boolean(),
+    expiryUnlimited: z.boolean(),
     expiresAt: z.string(),
+    rpmUnlimited: z.boolean(),
     rpmLimit: z.number().int().min(1, t("errors.positive")).max(100_000),
+    concurrencyUnlimited: z.boolean(),
     maxConcurrent: z.number().int().min(1, t("errors.positive")).max(1_024),
     billingUnlimited: z.boolean(),
     billingLimitUsd: z.number().min(0.01, t("errors.positive")).max(MAX_BILLING_LIMIT_USD),
     allowedModelIds: z.array(z.string()),
+  }).superRefine((value, context) => {
+    if (!value.expiryUnlimited && !value.expiresAt) {
+      context.addIssue({ code: "custom", path: ["expiresAt"], message: t("errors.required") });
+    }
   });
   type KeyForm = z.infer<typeof schema>;
   const form = useForm<KeyForm>({
     resolver: zodResolver(schema),
-    defaultValues: { name: "", enabled: true, expiresAt: "", rpmLimit: 120, maxConcurrent: 8, billingUnlimited: true, billingLimitUsd: 10, allowedModelIds: [] },
+    defaultValues: { name: "", enabled: true, expiryUnlimited: true, expiresAt: "", rpmUnlimited: false, rpmLimit: 120, concurrencyUnlimited: false, maxConcurrent: 8, billingUnlimited: true, billingLimitUsd: 10, allowedModelIds: [] },
   });
   const keyEnabled = useWatch({ control: form.control, name: "enabled" });
   const selectedModels = useWatch({ control: form.control, name: "allowedModelIds" });
+  const expiryUnlimited = useWatch({ control: form.control, name: "expiryUnlimited" });
+  const rpmUnlimited = useWatch({ control: form.control, name: "rpmUnlimited" });
+  const concurrencyUnlimited = useWatch({ control: form.control, name: "concurrencyUnlimited" });
   const billingUnlimited = useWatch({ control: form.control, name: "billingUnlimited" });
 
   const keysQuery = useQuery({
@@ -95,11 +106,11 @@ export function ClientKeysPage() {
       const body = {
         name: values.name,
         enabled: values.enabled,
-        rpmLimit: values.rpmLimit,
-        maxConcurrent: values.maxConcurrent,
+        rpmLimit: values.rpmUnlimited ? 0 : values.rpmLimit,
+        maxConcurrent: values.concurrencyUnlimited ? 0 : values.maxConcurrent,
         billingLimitUsdTicks: values.billingUnlimited ? 0 : Math.round(values.billingLimitUsd * USD_TICKS),
         allowedModelIds: values.allowedModelIds,
-        expiresAt: values.expiresAt ? new Date(values.expiresAt).toISOString() : "",
+        expiresAt: values.expiryUnlimited ? "" : new Date(values.expiresAt).toISOString(),
       };
       if (editing === "new") {
         return createClientKey(body);
@@ -165,7 +176,7 @@ export function ClientKeysPage() {
     setEditing("new");
     setModelOptionsPage(1);
     setModelOptionsSearch("");
-    form.reset({ name: "", enabled: true, expiresAt: "", rpmLimit: 120, maxConcurrent: 8, billingUnlimited: true, billingLimitUsd: 10, allowedModelIds: [] });
+    form.reset({ name: "", enabled: true, expiryUnlimited: true, expiresAt: "", rpmUnlimited: false, rpmLimit: 120, concurrencyUnlimited: false, maxConcurrent: 8, billingUnlimited: true, billingLimitUsd: 10, allowedModelIds: [] });
   }
 
   function beginEdit(key: ClientKeyDTO): void {
@@ -175,9 +186,12 @@ export function ClientKeysPage() {
     form.reset({
       name: key.name,
       enabled: key.enabled,
+      expiryUnlimited: !key.expiresAt,
       expiresAt: toDateTimeLocal(key.expiresAt),
-      rpmLimit: key.rpmLimit,
-      maxConcurrent: key.maxConcurrent,
+      rpmUnlimited: key.rpmLimit === 0,
+      rpmLimit: key.rpmLimit > 0 ? key.rpmLimit : 120,
+      concurrencyUnlimited: key.maxConcurrent === 0,
+      maxConcurrent: key.maxConcurrent > 0 ? key.maxConcurrent : 8,
       billingUnlimited: key.billingLimitUsdTicks === 0,
       billingLimitUsd: key.billingLimitUsdTicks > 0 ? key.billingLimitUsdTicks / USD_TICKS : 10,
       allowedModelIds: key.allowedModelIds,
@@ -313,8 +327,8 @@ export function ClientKeysPage() {
                     </div>
                   </TableCell>
                   <TableCell className="text-center"><ClientKeyStatus value={key} referenceTime={statusReferenceTime} /></TableCell>
-                  <TableCell className="text-center text-xs tabular-nums">{key.rpmLimit}</TableCell>
-                  <TableCell className="text-center text-xs tabular-nums">{key.maxConcurrent}</TableCell>
+                  <TableCell className="text-center text-xs tabular-nums">{key.rpmLimit > 0 ? key.rpmLimit : t("keys.unlimited")}</TableCell>
+                  <TableCell className="text-center text-xs tabular-nums">{key.maxConcurrent > 0 ? key.maxConcurrent : t("keys.unlimited")}</TableCell>
                   <TableCell><BillingUsage value={key} /></TableCell>
                   <TableCell className="overflow-hidden text-ellipsis whitespace-nowrap text-xs text-muted-foreground" title={key.expiresAt ? formatDateTime(key.expiresAt, i18n.language) : t("keys.neverExpires")}>{key.expiresAt ? formatDateTime(key.expiresAt, i18n.language) : t("keys.neverExpires")}</TableCell>
                   <TableCell className="overflow-hidden text-ellipsis whitespace-nowrap text-xs text-muted-foreground" title={formatDateTime(key.lastUsedAt, i18n.language)}>{formatDateTime(key.lastUsedAt, i18n.language)}</TableCell>
@@ -336,57 +350,95 @@ export function ClientKeysPage() {
       </DataTableShell>
 
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent className="flex max-h-[calc(100svh-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]">
-          <DialogHeader className="shrink-0 border-b px-5 py-4 pr-12">
+        <DialogContent className="flex max-h-[calc(100svh-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0 text-xs sm:max-w-[560px]">
+          <DialogHeader className="shrink-0 px-5 py-4 pr-12">
             <DialogTitle>{editing === "new" ? t("keys.createTitle") : t("keys.editTitle")}</DialogTitle>
             <DialogDescription>{editing === "new" ? t("keys.description") : editing?.prefix}</DialogDescription>
           </DialogHeader>
           <form className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
-            <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-4">
+            <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-5 pb-4 pt-2">
               <div className="space-y-2"><Label htmlFor="key-name">{t("keys.name")}</Label><Input id="key-name" {...form.register("name")} />{form.formState.errors.name ? <p className="text-xs text-destructive">{form.formState.errors.name.message}</p> : null}</div>
-              <div className="flex items-center justify-between border-b py-2"><Label htmlFor="key-enabled">{keyEnabled ? t("common.enabled") : t("common.disabled")}</Label><Switch id="key-enabled" checked={keyEnabled} onCheckedChange={(checked) => form.setValue("enabled", checked)} /></div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2"><Label htmlFor="key-rpm">{t("keys.rpm")}</Label><Input id="key-rpm" type="number" min="1" max="100000" {...form.register("rpmLimit", { valueAsNumber: true })} /></div>
-                <div className="space-y-2"><Label htmlFor="key-concurrency">{t("keys.maxConcurrent")}</Label><Input id="key-concurrency" type="number" min="1" max="1024" {...form.register("maxConcurrent", { valueAsNumber: true })} /></div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label htmlFor="key-rpm">{t("keys.rpm")}</Label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">{t("keys.unlimited")}</span>
+                      <Switch id="key-rpm-unlimited" checked={rpmUnlimited} onCheckedChange={(checked) => form.setValue("rpmUnlimited", checked, { shouldDirty: true })} />
+                    </div>
+                  </div>
+                  <Input id="key-rpm" type="number" min="1" max="100000" disabled={rpmUnlimited} {...form.register("rpmLimit", { valueAsNumber: true })} />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label htmlFor="key-concurrency">{t("keys.maxConcurrent")}</Label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">{t("keys.unlimited")}</span>
+                      <Switch id="key-concurrency-unlimited" checked={concurrencyUnlimited} onCheckedChange={(checked) => form.setValue("concurrencyUnlimited", checked, { shouldDirty: true })} />
+                    </div>
+                  </div>
+                  <Input id="key-concurrency" type="number" min="1" max="1024" disabled={concurrencyUnlimited} {...form.register("maxConcurrent", { valueAsNumber: true })} />
+                </div>
               </div>
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <Label htmlFor="key-billing-unlimited">{t("keys.billingLimit")}</Label>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">{t("keys.unlimited")}</span>
-                    <Switch id="key-billing-unlimited" checked={billingUnlimited} onCheckedChange={(checked) => form.setValue("billingUnlimited", checked, { shouldDirty: true })} />
+              <div className="grid items-start gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <div className="flex h-5 items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <Label htmlFor="key-billing-unlimited">{t("keys.billingLimit")}</Label>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("keys.billingLimitDescription")}>
+                            <CircleHelp className="size-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-72">{t("keys.billingLimitDescription")}</TooltipContent>
+                      </Tooltip>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">{t("keys.unlimited")}</span>
+                      <Switch id="key-billing-unlimited" checked={billingUnlimited} onCheckedChange={(checked) => form.setValue("billingUnlimited", checked, { shouldDirty: true })} />
+                    </div>
+                  </div>
+                  <div className="relative">
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
+                    <Input className="pl-7" type="number" min="0.01" max={MAX_BILLING_LIMIT_USD} step="0.01" disabled={billingUnlimited} {...form.register("billingLimitUsd", { valueAsNumber: true })} />
                   </div>
                 </div>
-                <div className="relative">
-                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
-                  <Input className="pl-7" type="number" min="0.01" max={MAX_BILLING_LIMIT_USD} step="0.01" disabled={billingUnlimited} {...form.register("billingLimitUsd", { valueAsNumber: true })} />
+                <div className="space-y-2">
+                  <div className="flex h-5 items-center justify-between gap-3">
+                    <Label htmlFor="key-expiry-unlimited">{t("keys.expires")}</Label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">{t("keys.unlimited")}</span>
+                      <Switch id="key-expiry-unlimited" checked={expiryUnlimited} onCheckedChange={(checked) => {
+                        form.setValue("expiryUnlimited", checked, { shouldDirty: true });
+                        if (checked) form.clearErrors("expiresAt");
+                      }} />
+                    </div>
+                  </div>
+                  <Controller control={form.control} name="expiresAt" render={({ field }) => <DateTimePicker value={expiryUnlimited ? "" : field.value} onChange={field.onChange} disabled={expiryUnlimited} placeholder={expiryUnlimited ? t("keys.neverExpires") : t("keys.selectExpiry")} />} />
+                  {form.formState.errors.expiresAt ? <p className="text-xs text-destructive">{form.formState.errors.expiresAt.message}</p> : null}
                 </div>
-                <p className="text-xs text-muted-foreground">{t("keys.billingLimitDescription")}</p>
-              </div>
-              <div className="space-y-2">
-                <Label>{t("keys.expires")}</Label>
-                <Controller control={form.control} name="expiresAt" render={({ field }) => <DateTimePicker value={field.value} onChange={field.onChange} />} />
               </div>
               <fieldset className="min-w-0 space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <legend className="text-xs font-medium">{t("keys.models")}</legend>
-                  <span className="min-w-0 truncate text-xs text-muted-foreground">{selectedModels.length === 0 ? t("keys.allModels") : t("keys.selectedModels", { count: selectedModels.length })}</span>
+                  <Badge variant="secondary" className="min-w-0 max-w-[55%] truncate text-[10px] font-normal">{selectedModels.length === 0 ? t("keys.allModels") : t("keys.selectedModels", { count: selectedModels.length })}</Badge>
                 </div>
-                <div className="min-w-0 overflow-hidden rounded-md border">
-                  <div className="relative border-b bg-muted/25">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                    <Input className="rounded-none border-0 bg-transparent pl-8 shadow-none focus-visible:bg-background focus-visible:ring-0" value={modelOptionsSearch} onChange={(event) => { setModelOptionsSearch(event.target.value); setModelOptionsPage(1); }} placeholder={t("keys.modelSearch")} aria-label={t("keys.modelSearch")} />
+                <div className="min-w-0 overflow-hidden rounded-md bg-muted/25 p-1">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input className="bg-transparent pl-8 shadow-none focus-visible:bg-background/70" value={modelOptionsSearch} onChange={(event) => { setModelOptionsSearch(event.target.value); setModelOptionsPage(1); }} placeholder={t("keys.modelSearch")} aria-label={t("keys.modelSearch")} />
                   </div>
-                  <div className="max-h-40 divide-y overflow-y-auto overscroll-contain sm:max-h-52">
-                    {modelsQuery.isPending ? <LoadingState className="min-h-24" /> : modelsQuery.data?.items.map((model) => {
+                  <div className="mt-1 max-h-40 overflow-y-auto overscroll-contain sm:max-h-44">
+                    {modelsQuery.isPending ? <LoadingState className="min-h-20" /> : modelsQuery.data?.items.map((model) => {
                       const checked = selectedModels.includes(model.id);
                       const controlId = `allowed-model-${model.id}`;
                       return (
-                        <label key={model.id} htmlFor={controlId} className="flex h-9 cursor-pointer items-center gap-3 px-3 text-xs transition-colors hover:bg-accent/55">
+                        <label key={model.id} htmlFor={controlId} className={cn("flex h-8 cursor-pointer items-center gap-2.5 rounded-md px-2 text-xs transition-colors hover:bg-accent/40", checked && "bg-accent/55")}>
                           <Checkbox id={controlId} checked={checked} onCheckedChange={() => toggleModel(model.id)} aria-label={t("common.selectItem", { name: model.publicId })} />
-                          <span className="min-w-0 flex-1 truncate font-medium" title={model.publicId}>{model.publicId}</span>
-                          <span className="hidden max-w-[42%] shrink-0 truncate text-muted-foreground sm:block" title={model.upstreamModel}>{model.upstreamModel}</span>
-                          {!model.enabled ? <Badge variant="outline" className="shrink-0 text-muted-foreground">{t("common.disabled")}</Badge> : null}
+                          <span className="min-w-0 flex-1 truncate" title={model.publicId}>{model.publicId}</span>
+                          <span className="hidden max-w-[42%] shrink-0 truncate text-[11px] text-muted-foreground sm:block" title={model.upstreamModel}>{model.upstreamModel}</span>
+                          {!model.enabled ? <Badge variant="secondary" className="shrink-0 text-[10px] font-normal text-muted-foreground">{t("common.disabled")}</Badge> : null}
                         </label>
                       );
                     })}
@@ -395,8 +447,15 @@ export function ClientKeysPage() {
                   {modelsQuery.data && modelsQuery.data.total > modelsQuery.data.pageSize ? <ModelOptionPagination page={modelsQuery.data.page} pageSize={modelsQuery.data.pageSize} total={modelsQuery.data.total} onPageChange={setModelOptionsPage} /> : null}
                 </div>
               </fieldset>
+              <section className="flex items-center justify-between gap-4 rounded-lg bg-muted/25 px-3 py-2.5">
+                <div className="min-w-0">
+                  <Label htmlFor="key-enabled">{keyEnabled ? t("common.enabled") : t("common.disabled")}</Label>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("keys.enabledDescription")}</p>
+                </div>
+                <Switch className="shrink-0" id="key-enabled" checked={keyEnabled} onCheckedChange={(checked) => form.setValue("enabled", checked)} />
+              </section>
             </div>
-            <DialogFooter className="shrink-0 gap-2 border-t bg-background px-5 py-4 sm:gap-0"><Button type="button" variant="secondary" size="sm" onClick={() => setEditing(null)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={saveMutation.isPending}>{saveMutation.isPending ? <Spinner /> : null}{editing === "new" ? t("common.create") : t("common.save")}</Button></DialogFooter>
+            <DialogFooter className="shrink-0 gap-2 bg-muted/20 px-5 py-3.5 sm:gap-0"><Button type="button" variant="secondary" size="sm" onClick={() => setEditing(null)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={saveMutation.isPending}>{saveMutation.isPending ? <Spinner /> : null}{editing === "new" ? t("common.create") : t("common.save")}</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
