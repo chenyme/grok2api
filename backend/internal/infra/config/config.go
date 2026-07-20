@@ -50,6 +50,7 @@ type Config struct {
 	Routing           RoutingConfig           `yaml:"routing"`
 	Audit             AuditConfig             `yaml:"audit"`
 	ClientKeyDefaults ClientKeyDefaultsConfig `yaml:"clientKeyDefaults"`
+	Accounts          AccountsConfig          `yaml:"-"`
 }
 
 type ServerConfig struct {
@@ -197,6 +198,14 @@ type AuditConfig struct {
 type ClientKeyDefaultsConfig struct {
 	RPMLimit      int `yaml:"rpmLimit"`
 	MaxConcurrent int `yaml:"maxConcurrent"`
+}
+
+// AccountsConfig 定义可热加载的账号池维护策略；默认全部关闭。
+type AccountsConfig struct {
+	AutoCleanReauthEnabled   bool
+	AutoCleanReauthInterval  Duration
+	AutoCleanReauthMinAge    Duration
+	AutoCleanIncludeDisabled bool
 }
 
 type Secrets struct {
@@ -461,6 +470,12 @@ func (c Config) Validate() error {
 	if c.ClientKeyDefaults.RPMLimit < 1 || c.ClientKeyDefaults.RPMLimit > clientkeydomain.MaxRPMLimit || c.ClientKeyDefaults.MaxConcurrent < 1 || c.ClientKeyDefaults.MaxConcurrent > clientkeydomain.MaxConcurrent {
 		return errors.New("clientKeyDefaults 超出允许范围")
 	}
+	if c.Accounts.AutoCleanReauthInterval.Value() < time.Minute || c.Accounts.AutoCleanReauthInterval.Value() > time.Hour {
+		return errors.New("accounts.autoCleanReauthInterval 必须在 1 分钟到 1 小时之间")
+	}
+	if c.Accounts.AutoCleanReauthMinAge.Value() < time.Minute || c.Accounts.AutoCleanReauthMinAge.Value() > 30*24*time.Hour {
+		return errors.New("accounts.autoCleanReauthMinAge 必须在 1 分钟到 30 天之间")
+	}
 	return nil
 }
 
@@ -553,6 +568,12 @@ func defaultConfig() Config {
 		},
 		Audit:             AuditConfig{BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond)},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
+		Accounts: AccountsConfig{
+			AutoCleanReauthEnabled:   false,
+			AutoCleanReauthInterval:  Duration(10 * time.Minute),
+			AutoCleanReauthMinAge:    Duration(time.Hour),
+			AutoCleanIncludeDisabled: false,
+		},
 	}
 }
 

@@ -45,6 +45,8 @@ var schemaIndexes = []string{
 	"CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_accounts_identity_key ON provider_accounts(identity_key)",
 	"CREATE INDEX IF NOT EXISTS idx_accounts_routing ON provider_accounts(provider, enabled, auth_status, priority DESC, id ASC)",
 	"CREATE INDEX IF NOT EXISTS idx_accounts_created_id ON provider_accounts(created_at DESC, id DESC)",
+	"CREATE INDEX IF NOT EXISTS idx_accounts_auto_clean_reauth ON provider_accounts(auth_status, reauth_marked_at, id)",
+	"CREATE INDEX IF NOT EXISTS idx_accounts_auto_clean_reauth_cursor ON provider_accounts(auth_status, enabled, id, reauth_marked_at)",
 	"CREATE INDEX IF NOT EXISTS idx_account_credentials_refresh_due ON account_credentials(refresh_due_at, account_id)",
 	"CREATE INDEX IF NOT EXISTS idx_quota_windows_due ON account_quota_windows(remaining, reset_at, account_id)",
 	"CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_public_id ON model_routes(public_id)",
@@ -71,6 +73,7 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_web_response_states_expires ON web_response_states(expires_at)",
 	"CREATE INDEX IF NOT EXISTS idx_web_response_states_account ON web_response_states(account_id, created_at DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_client_created ON media_jobs(client_key_id, created_at DESC)",
+	"CREATE INDEX IF NOT EXISTS idx_media_jobs_account_status ON media_jobs(account_id, status)",
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_recovery ON media_jobs(status, lease_until, created_at, id)",
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_usage_recovery ON media_jobs(status, usage_recorded_at, completed_at, id)",
 	"CREATE INDEX IF NOT EXISTS idx_media_assets_created ON media_assets(created_at DESC, id)",
@@ -123,6 +126,9 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	if err := d.backfillWebEgressIdentities(ctx); err != nil {
 		return fmt.Errorf("迁移 Web 出口身份: %w", err)
 	}
+	if err := d.backfillReauthMarkedAt(ctx); err != nil {
+		return fmt.Errorf("迁移 reauth_marked_at: %w", err)
+	}
 	for _, statement := range schemaIndexes {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("初始化数据库索引: %w", err)
@@ -132,6 +138,15 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 		return fmt.Errorf("迁移模型 Provider 命名空间: %w", err)
 	}
 	return nil
+}
+
+// backfillReauthMarkedAt 为历史 reauthRequired 账号补齐清理锚点；优先使用 updated_at。
+func (d *Database) backfillReauthMarkedAt(ctx context.Context) error {
+	return d.db.WithContext(ctx).Exec(`
+UPDATE provider_accounts
+SET reauth_marked_at = updated_at
+WHERE auth_status = ? AND reauth_marked_at IS NULL
+`, "reauthRequired").Error
 }
 
 type consoleConstraint struct {

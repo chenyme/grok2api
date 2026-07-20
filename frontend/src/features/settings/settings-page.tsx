@@ -1,8 +1,9 @@
 import { RotateCcw, Sparkles } from "lucide-react";
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Controller } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -22,6 +23,8 @@ import { cn } from "@/shared/lib/cn";
 export function SettingsPage() {
   const { t } = useTranslation();
   const { form, settingsQuery, updateMutation, reset } = useSettings();
+  const [autoCleanConfirm, setAutoCleanConfirm] = useState<"enabled" | "includeDisabled" | null>(null);
+  const autoCleanEnabled = form.watch("accounts.autoCleanReauthEnabled") === true;
 
   if (settingsQuery.isError) {
     return <ErrorState message={settingsQuery.error.message} onRetry={() => void settingsQuery.refetch()} />;
@@ -195,6 +198,89 @@ export function SettingsPage() {
             </div>
           </SettingsSection>
 
+          <SettingsSection title={t("settings.accounts.title")}>
+            <div className="space-y-0">
+              <SettingsField controlId="accounts-auto-clean-reauth-enabled" label={t("settings.accounts.autoCleanReauthEnabled")} description={t("settings.accounts.autoCleanReauthEnabledHelp")}>
+                <Controller control={form.control} name="accounts.autoCleanReauthEnabled" render={({ field }) => (
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      id="accounts-auto-clean-reauth-enabled"
+                      checked={Boolean(field.value)}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          setAutoCleanConfirm("enabled");
+                          return;
+                        }
+                        field.onChange(false);
+                        form.setValue("accounts.autoCleanIncludeDisabled", false, { shouldDirty: true, shouldTouch: true });
+                      }}
+                    />
+                  </div>
+                )} />
+              </SettingsField>
+              <SettingsField controlId="accounts-auto-clean-reauth-interval" label={t("settings.accounts.autoCleanReauthInterval")} description={t("settings.accounts.autoCleanReauthIntervalHelp")} error={form.formState.errors.accounts?.autoCleanReauthInterval?.message}>
+                <Controller control={form.control} name="accounts.autoCleanReauthInterval" render={({ field }) => (
+                  <DurationInput id="accounts-auto-clean-reauth-interval" value={field.value} onChange={field.onChange} disabled={!autoCleanEnabled} />
+                )} />
+              </SettingsField>
+              <SettingsField controlId="accounts-auto-clean-reauth-min-age" label={t("settings.accounts.autoCleanReauthMinAge")} description={t("settings.accounts.autoCleanReauthMinAgeHelp")} error={form.formState.errors.accounts?.autoCleanReauthMinAge?.message}>
+                <Controller control={form.control} name="accounts.autoCleanReauthMinAge" render={({ field }) => (
+                  <DurationInput id="accounts-auto-clean-reauth-min-age" value={field.value} onChange={field.onChange} disabled={!autoCleanEnabled} />
+                )} />
+              </SettingsField>
+              <SettingsField controlId="accounts-auto-clean-include-disabled" label={t("settings.accounts.autoCleanIncludeDisabled")} description={t("settings.accounts.autoCleanIncludeDisabledHelp")}>
+                <Controller control={form.control} name="accounts.autoCleanIncludeDisabled" render={({ field }) => (
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      id="accounts-auto-clean-include-disabled"
+                      checked={Boolean(field.value)}
+                      disabled={!autoCleanEnabled}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          setAutoCleanConfirm("includeDisabled");
+                          return;
+                        }
+                        field.onChange(false);
+                      }}
+                    />
+                  </div>
+                )} />
+              </SettingsField>
+            </div>
+            <AlertDialog open={autoCleanConfirm !== null} onOpenChange={(open) => { if (!open) setAutoCleanConfirm(null); }}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    {autoCleanConfirm === "includeDisabled"
+                      ? t("settings.accounts.autoCleanIncludeDisabledTitle")
+                      : t("settings.accounts.autoCleanEnableTitle")}
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {autoCleanConfirm === "includeDisabled"
+                      ? t("settings.accounts.autoCleanIncludeDisabledDescription")
+                      : t("settings.accounts.autoCleanEnableDescription")}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-white hover:bg-destructive/90"
+                    onClick={() => {
+                      if (autoCleanConfirm === "includeDisabled") {
+                        form.setValue("accounts.autoCleanIncludeDisabled", true, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
+                      } else {
+                        form.setValue("accounts.autoCleanReauthEnabled", true, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
+                      }
+                      setAutoCleanConfirm(null);
+                    }}
+                  >
+                    {t("settings.accounts.autoCleanConfirm")}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </SettingsSection>
+
           <SettingsSection title={t("settings.routing.title")}>
             <div className="space-y-0">
               <SettingsField controlId="routing-sticky-ttl" label={t("settings.routing.stickyTTL")} description={t("settings.routing.stickyTTLHelp")} error={form.formState.errors.routing?.stickyTTL?.message}><Controller control={form.control} name="routing.stickyTTL" render={({ field }) => <DurationInput id="routing-sticky-ttl" value={field.value} onChange={field.onChange} />} /></SettingsField>
@@ -259,7 +345,7 @@ function ByteSizeInput({ id, value, onChange }: { id: string; value?: ByteSizeVa
   );
 }
 
-function DurationInput({ id, value, onChange }: { id: string; value?: DurationValue; onChange: (value: DurationValue) => void }) {
+function DurationInput({ id, value, onChange, disabled }: { id: string; value?: DurationValue; onChange: (value: DurationValue) => void; disabled?: boolean }) {
   const { t } = useTranslation();
   const unit = value?.unit ?? "s";
   return (
@@ -269,11 +355,12 @@ function DurationInput({ id, value, onChange }: { id: string; value?: DurationVa
         type="number"
         min="0.001"
         step="any"
+        disabled={disabled}
         className="min-w-0 rounded-r-none"
         value={Number.isFinite(value?.value) ? value?.value : ""}
         onChange={(event) => onChange({ value: event.target.value === "" ? Number.NaN : Number(event.target.value), unit })}
       />
-      <Select value={unit} onValueChange={(nextUnit) => { if (isDurationUnit(nextUnit)) onChange({ value: value?.value ?? 1, unit: nextUnit }); }}>
+      <Select value={unit} disabled={disabled} onValueChange={(nextUnit) => { if (isDurationUnit(nextUnit)) onChange({ value: value?.value ?? 1, unit: nextUnit }); }}>
         <SelectTrigger className="w-24 shrink-0 rounded-l-none bg-secondary/55" aria-label={t("settings.durationUnit")}>
           <SelectValue />
         </SelectTrigger>

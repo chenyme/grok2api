@@ -14,6 +14,7 @@ type Config struct {
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+	Accounts          AccountsConfig
 }
 
 // ServerConfig 定义可热更新的推理入口容量参数。
@@ -93,4 +94,16 @@ type AuditConfig struct {
 type ClientKeyDefaultsConfig struct {
 	RPMLimit      int
 	MaxConcurrent int
+}
+
+// AccountsConfig 定义账号池后台维护策略；默认全部关闭。
+type AccountsConfig struct {
+	// AutoCleanReauthEnabled 为 true 时，周期性删除已标记 reauthRequired 且超过 minAge 的账号。
+	AutoCleanReauthEnabled bool
+	// AutoCleanReauthInterval 自动清理扫描间隔。
+	AutoCleanReauthInterval time.Duration
+	// AutoCleanReauthMinAge 仅删除 reauth_marked_at 早于该时长的 reauthRequired 账号。
+	AutoCleanReauthMinAge time.Duration
+	// AutoCleanIncludeDisabled 为 true 时，reauth 清理时包含 enabled=false 的账号。
+	AutoCleanIncludeDisabled bool
 }

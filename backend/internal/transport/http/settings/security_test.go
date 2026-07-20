@@ -62,3 +62,14 @@ func TestSettingsResponseIncludesPreferFreeBuild(t *testing.T) {
 		t.Fatal("preferFreeBuild was lost from settings response")
 	}
 }
+
+func TestLegacySettingsRequestMayOmitAccounts(t *testing.T) {
+	var dto settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"server":{"maxConcurrentRequests":64}}`), &dto); err != nil {
+		t.Fatal(err)
+	}
+	input := dto.toApplication()
+	if input.AccountsProvided {
+		t.Fatal("missing accounts field was treated as an explicit update")
+	}
+}
