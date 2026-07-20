@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 func TestAutoCleanReauthRespectsMinAgeAndIncludeDisabled(t *testing.T) {
@@ -273,13 +275,15 @@ func assertMissing(t *testing.T, repo *relational.AccountRepository, id uint64) 
 	t.Helper()
 	if _, err := repo.Get(context.Background(), id); err == nil {
 		t.Fatalf("account %d still present", id)
+	} else if !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("account %d get error: %v", id, err)
 	}
 }
 
 func assertPresent(t *testing.T, repo *relational.AccountRepository, id uint64) {
 	t.Helper()
 	if _, err := repo.Get(context.Background(), id); err != nil {
-		t.Fatalf("account %d missing: %v", id, err)
+		t.Fatalf("account %d missing or error: %v", id, err)
 	}
 }
 
