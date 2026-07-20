@@ -74,11 +74,19 @@ type Usage struct {
 }
 
 type Result struct {
-	StatusCode int
-	Status     string
-	Header     http.Header
-	Body       io.ReadCloser
-	Finalize   func(usage Usage, responseID, errorCode string)
+	StatusCode          int
+	Status              string
+	Header              http.Header
+	Body                io.ReadCloser
+	RecordStreamFailure func(StreamFailureDiagnostic)
+	Finalize            func(usage Usage, responseID, errorCode string)
+}
+
+// StreamFailureDiagnostic 是下游已收到 2xx headers 后，上游在流内返回失败终止事件的安全投影。
+// Body 只包含 Transport 提取的错误字段，仍会在 attempt recorder 中执行统一脱敏和容量限制。
+type StreamFailureDiagnostic struct {
+	Body          []byte
+	BodyTruncated bool
 }
 
 type auditRecorder interface {
@@ -503,8 +511,10 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	var lastErr error
 	var lastFailure *UpstreamFailure
 	failureAttempts := newFailureAttemptRecorder(http.MethodPost, path)
+	responseStartedAt := startedAt
 	forwardResponse := func(credential accountdomain.Credential, billing *accountdomain.Billing) (*provider.Response, error) {
 		started := time.Now()
+		responseStartedAt = started
 		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Billing: billing, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, ReasoningReplayKey: reasoningReplayKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
 		err = failureAttempts.captureResponse(credential, started, response, err)
 		timing.markUpstream(time.Since(started))
@@ -823,8 +833,11 @@ attemptLoop:
 			})
 		}
 		response.Body = &firstByteReadCloser{ReadCloser: response.Body, mark: timing.markFirstBody}
+		recordStreamFailure := func(diagnostic StreamFailureDiagnostic) {
+			failureAttempts.captureStreamFailure(credential, responseStartedAt, response, diagnostic)
+		}
 		timingHandedOff = true
-		return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
+		return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, RecordStreamFailure: recordStreamFailure, Finalize: finalize}, nil
 	}
 	if lastFailure != nil {
 		record := auditBase

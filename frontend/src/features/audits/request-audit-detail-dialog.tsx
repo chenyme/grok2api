@@ -80,7 +80,7 @@ function AttemptButton({ attempt, selected, onClick }: { attempt: AuditAttemptDT
     >
       <span className="flex items-center justify-between gap-2">
         <span className="flex min-w-0 items-center gap-2"><Icon className="size-3.5 shrink-0" />{t("audits.attemptNumber", { number: attempt.number })}</span>
-        {attempt.upstreamStatusCode ? <StatusBadge statusCode={attempt.upstreamStatusCode} /> : null}
+        {attempt.upstreamStatusCode ? <StatusBadge statusCode={attempt.upstreamStatusCode} failed={attempt.stage === "response_stream"} /> : null}
       </span>
     </button>
   );
@@ -124,8 +124,11 @@ function AttemptDetail({ attempt }: { attempt: AuditAttemptDTO }) {
 function AttemptSummary({ attempt }: { attempt: AuditAttemptDTO }) {
   const { t } = useTranslation();
   const isHTTP = attempt.source === "upstream_http";
+  const isStreamFailure = isHTTP && attempt.stage === "response_stream";
   const Icon = isHTTP ? Server : attempt.source === "gateway_transport" ? Network : KeyRound;
-  const title = isHTTP
+  const title = isStreamFailure
+    ? t("audits.upstreamStreamFailure", { status: attempt.upstreamStatusCode ?? "-" })
+    : isHTTP
     ? t("audits.upstreamHttpFailure", { status: attempt.upstreamStatusCode ?? "-" })
     : attempt.source === "gateway_transport" ? t("audits.gatewayTransportFailure") : t("audits.credentialFailure");
   return (
@@ -235,7 +238,7 @@ function EmptyPanel({ icon, message }: { icon: ReactNode; message: string }) {
 function formattedResponseBody(attempt: AuditAttemptDTO): string {
   if (attempt.responseBodyEncoding !== "utf8") return attempt.responseBody;
   const contentType = Object.entries(attempt.responseHeaders).find(([name]) => name.toLowerCase() === "content-type")?.[1].join(";") ?? "";
-  if (!contentType.toLowerCase().includes("json")) return attempt.responseBody;
+  if (attempt.stage !== "response_stream" && !contentType.toLowerCase().includes("json")) return attempt.responseBody;
   try {
     return JSON.stringify(JSON.parse(attempt.responseBody), null, 2);
   } catch {
@@ -243,8 +246,10 @@ function formattedResponseBody(attempt: AuditAttemptDTO): string {
   }
 }
 
-function StatusBadge({ statusCode }: { statusCode: number }) {
-  const className = statusCode >= 500
+function StatusBadge({ statusCode, failed = false }: { statusCode: number; failed?: boolean }) {
+  const className = failed
+    ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+    : statusCode >= 500
     ? "bg-red-500/10 text-red-700 dark:text-red-300"
     : statusCode >= 400 ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
       : statusCode >= 200 && statusCode < 300 ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground";

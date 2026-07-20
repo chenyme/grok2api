@@ -146,6 +146,30 @@ func (r *failureAttemptRecorder) captureResponse(credential accountdomain.Creden
 	return nil
 }
 
+func (r *failureAttemptRecorder) captureStreamFailure(credential accountdomain.Credential, startedAt time.Time, response *provider.Response, diagnostic StreamFailureDiagnostic) {
+	if response == nil {
+		return
+	}
+	statusCode := response.StatusCode
+	body, bodyTruncated := r.captureBody(diagnostic.Body, diagnostic.BodyTruncated)
+	r.append(audit.Attempt{
+		Source:                audit.AttemptSourceUpstreamHTTP,
+		Stage:                 "response_stream",
+		AccountID:             auditAccountID(credential.ID),
+		AccountName:           credential.Name,
+		Method:                r.method,
+		RequestPath:           r.path,
+		UpstreamURL:           sanitizeUpstreamURL(response.UpstreamURL),
+		StartedAt:             startedAt.UTC(),
+		DurationMS:            time.Since(startedAt).Milliseconds(),
+		UpstreamStatusCode:    &statusCode,
+		UpstreamStatus:        response.Status,
+		ResponseHeaders:       sanitizeDiagnosticHeaders(response.Header),
+		ResponseBody:          body,
+		ResponseBodyTruncated: bodyTruncated,
+	})
+}
+
 func (r *failureAttemptRecorder) append(attempt audit.Attempt) {
 	attempt.Number = len(r.attempts) + 1
 	r.attempts = append(r.attempts, attempt)

@@ -240,6 +240,31 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 
 	adapter.resetAttempts()
+	streamFailed, err := service.CreateResponse(ctx, Input{RequestID: "req-stream-failed", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`), PromptCacheSeed: "stream-failed-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(streamFailed.Body)
+	if streamFailed.RecordStreamFailure == nil {
+		t.Fatal("stream failure recorder is nil")
+	}
+	streamFailed.RecordStreamFailure(StreamFailureDiagnostic{Body: []byte(`{"type":"response.failed","error":{"message":"access_token=secret-token"}}`)})
+	streamFailed.Finalize(Usage{}, "", "upstream_stream_error")
+	_ = streamFailed.Body.Close()
+	logs, _, err = auditRepo.List(ctx, 0, 10)
+	if err != nil || len(logs) == 0 {
+		t.Fatalf("stream failure audits = %#v, err = %v", logs, err)
+	}
+	streamDetail, err := auditRepo.Get(ctx, logs[0].ID)
+	if err != nil || streamDetail.ErrorCode != "upstream_stream_error" || streamDetail.AttemptCount != 1 || len(streamDetail.Attempts) != 1 {
+		t.Fatalf("stream failure detail = %#v, err = %v", streamDetail, err)
+	}
+	streamAttempt := streamDetail.Attempts[0]
+	if streamAttempt.Stage != "response_stream" || streamAttempt.UpstreamStatusCode == nil || *streamAttempt.UpstreamStatusCode != http.StatusOK || string(streamAttempt.ResponseBody) != `{"type":"response.failed","error":{"message":"access_token=[REDACTED]"}}` {
+		t.Fatalf("stream failure attempt = %#v", streamAttempt)
+	}
+
+	adapter.resetAttempts()
 	interrupted, err := service.CreateResponse(ctx, Input{RequestID: "req-stream-cut", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`), PromptCacheSeed: "other-session"})
 	if err != nil {
 		t.Fatal(err)
