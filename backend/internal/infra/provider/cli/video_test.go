@@ -145,6 +145,9 @@ func TestGenerateVideoPostsSingleImageAndPollsUntilReady(t *testing.T) {
 			if request.Header.Get("Authorization") != "Bearer access-token" {
 				t.Fatalf("missing auth header: %#v", request.Header)
 			}
+			if request.Header.Get("User-Agent") != "grok-shell/0.2.99 (linux; x86_64)" {
+				t.Fatalf("Build video user agent = %q", request.Header.Get("User-Agent"))
+			}
 			if request.Header.Get("x-grok-model-override") != buildVideoModel {
 				t.Fatalf("model override = %q", request.Header.Get("x-grok-model-override"))
 			}

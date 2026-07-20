@@ -102,7 +102,7 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 				t.Fatalf("legacy header %s = %q", legacy, r.Header.Get(legacy))
 			}
 		}
-		if r.Header.Get("x-grok-user-id") != "user-123" || r.Header.Get("x-userid") != "" || r.Header.Get("Accept-Encoding") != "gzip" || len(r.Header.Get("traceparent")) != 55 {
+		if r.Header.Get("x-grok-user-id") != "user-123" || r.Header.Get("x-grok-turn-idx") != "7" || r.Header.Get("x-userid") != "" || r.Header.Get("Accept-Encoding") != "gzip" || len(r.Header.Get("traceparent")) != 55 {
 			t.Fatalf("protocol headers = %#v", r.Header)
 		}
 		if _, ok := r.Header["Tracestate"]; ok {
@@ -133,7 +133,7 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 	adapter.http.Transport = transport
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: account.Credential{ID: 7, UserID: "user-123", EncryptedAccessToken: encrypted}, Method: http.MethodPost, Path: "/responses",
-		Model: "grok-4.5", PromptCacheKey: "isolated-key", NormalizeBody: true,
+		Model: "grok-4.5", PromptCacheKey: "isolated-key", GrokTurnIndex: "7", NormalizeBody: true,
 		Body: []byte(`{"model":"public","prompt_cache_key":"client-key","input":[{"type":"reasoning","id":"rs_1","encrypted_content":"cipher"}]}`),
 	})
 	if err != nil {
@@ -143,6 +143,46 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 	input := captured["input"].([]any)
 	if captured["model"] != "grok-4.5" || captured["prompt_cache_key"] != "isolated-key" || len(input) != 1 || input[0].(map[string]any)["type"] != "reasoning" || input[0].(map[string]any)["encrypted_content"] != "cipher" {
 		t.Fatalf("captured = %#v", captured)
+	}
+}
+
+func TestNormalizeGrokTurnIndex(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "missing"},
+		{name: "zero", value: "0", want: "0"},
+		{name: "positive", value: "42", want: "42"},
+		{name: "trimmed", value: " 7 ", want: "7"},
+		{name: "max uint64", value: "18446744073709551615", want: "18446744073709551615"},
+		{name: "negative", value: "-1"},
+		{name: "explicit positive", value: "+1"},
+		{name: "decimal", value: "1.0"},
+		{name: "overflow", value: "18446744073709551616"},
+		{name: "too long", value: "000000000000000000001"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeGrokTurnIndex(test.value); got != test.want {
+				t.Fatalf("turn index = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestGrokTurnIndexRequiresStableSession(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", nil)
+	applyGrokTurnIndexHeader(request, "7")
+	if got := request.Header.Get("x-grok-turn-idx"); got != "" {
+		t.Fatalf("turn index without session = %q", got)
+	}
+
+	request.Header.Set("x-grok-session-id", "session-1")
+	applyGrokTurnIndexHeader(request, "7")
+	if got := request.Header.Get("x-grok-turn-idx"); got != "7" {
+		t.Fatalf("turn index with session = %q, want 7", got)
 	}
 }
 
