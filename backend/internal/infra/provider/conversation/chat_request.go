@@ -130,7 +130,7 @@ func convertChatMessages(messages []chatMessage) ([]any, error) {
 			if strings.TrimSpace(message.ToolCallID) == "" {
 				return nil, errors.New("tool 消息缺少 tool_call_id")
 			}
-			output, err := contentAsText(message.Content)
+			output, err := convertChatToolOutput(message.Content)
 			if err != nil {
 				return nil, err
 			}
@@ -166,11 +166,11 @@ func convertChatContent(raw json.RawMessage) (any, error) {
 			}
 			result = append(result, map[string]any{"type": "input_text", "text": value})
 		case "image_url", "input_image":
-			imageURL, err := parseImageURL(part)
+			image, err := convertChatImagePart(part)
 			if err != nil {
 				return nil, err
 			}
-			result = append(result, map[string]any{"type": "input_image", "image_url": imageURL})
+			result = append(result, image)
 		default:
 			return nil, fmt.Errorf("不支持 content.type=%q", typeName)
 		}
@@ -178,19 +178,60 @@ func convertChatContent(raw json.RawMessage) (any, error) {
 	return result, nil
 }
 
-func parseImageURL(part map[string]json.RawMessage) (string, error) {
+func convertChatToolOutput(raw json.RawMessage) (any, error) {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text, nil
+	}
+	var parts []map[string]json.RawMessage
+	if json.Unmarshal(raw, &parts) != nil {
+		return contentAsText(raw)
+	}
+	hasImage := false
+	for _, part := range parts {
+		var typeName string
+		_ = json.Unmarshal(part["type"], &typeName)
+		if typeName == "image_url" || typeName == "input_image" {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		return contentAsText(raw)
+	}
+	return convertChatContent(raw)
+}
+
+func convertChatImagePart(part map[string]json.RawMessage) (map[string]any, error) {
+	imageURL, detail, err := parseImageURL(part)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"type": "input_image", "detail": detail, "image_url": imageURL}, nil
+}
+
+func parseImageURL(part map[string]json.RawMessage) (string, string, error) {
 	raw := firstJSON(part["image_url"], part["url"])
+	detail := "auto"
+	var directDetail string
+	if json.Unmarshal(part["detail"], &directDetail) == nil && strings.TrimSpace(directDetail) != "" {
+		detail = strings.TrimSpace(directDetail)
+	}
 	var value string
 	if json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != "" {
-		return value, nil
+		return value, detail, nil
 	}
 	var nested struct {
-		URL string `json:"url"`
+		URL    string `json:"url"`
+		Detail string `json:"detail"`
 	}
 	if json.Unmarshal(raw, &nested) == nil && strings.TrimSpace(nested.URL) != "" {
-		return nested.URL, nil
+		if strings.TrimSpace(nested.Detail) != "" {
+			detail = strings.TrimSpace(nested.Detail)
+		}
+		return nested.URL, detail, nil
 	}
-	return "", errors.New("image_url 缺少有效 url")
+	return "", "", errors.New("image_url 缺少有效 url")
 }
 
 func convertAssistantToolCalls(raw json.RawMessage) ([]any, error) {

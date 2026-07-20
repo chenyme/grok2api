@@ -503,7 +503,7 @@ func anthropicToolResult(raw json.RawMessage, declaredTools map[string]struct{})
 			if err != nil {
 				return nil, err
 			}
-			parts = append(parts, map[string]any{"type": "input_image", "image_url": imageURL})
+			parts = append(parts, map[string]any{"type": "input_image", "detail": "auto", "image_url": imageURL})
 		case "document":
 			document, err := anthropicDocument(block)
 			if err != nil {
