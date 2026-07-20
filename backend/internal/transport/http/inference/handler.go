@@ -1161,23 +1161,23 @@ type responsePayloadDTO struct {
 }
 
 type responseUsageDTO struct {
-	InputTokens            int64                     `json:"input_tokens"`
-	InputTokensCamel       int64                     `json:"inputTokens"`
-	OutputTokens           int64                     `json:"output_tokens"`
-	OutputTokensCamel      int64                     `json:"outputTokens"`
-	TotalTokens            int64                     `json:"total_tokens"`
-	TotalTokensCamel       int64                     `json:"totalTokens"`
-	CostInUSDTicks         int64                     `json:"cost_in_usd_ticks"`
-	NumSourcesUsed         int64                     `json:"num_sources_used"`
-	NumServerSideToolsUsed int64                     `json:"num_server_side_tools_used"`
+	InputTokens            int64 `json:"input_tokens"`
+	InputTokensCamel       int64 `json:"inputTokens"`
+	OutputTokens           int64 `json:"output_tokens"`
+	OutputTokensCamel      int64 `json:"outputTokens"`
+	TotalTokens            int64 `json:"total_tokens"`
+	TotalTokensCamel       int64 `json:"totalTokens"`
+	CostInUSDTicks         int64 `json:"cost_in_usd_ticks"`
+	NumSourcesUsed         int64 `json:"num_sources_used"`
+	NumServerSideToolsUsed int64 `json:"num_server_side_tools_used"`
 	// Responses 协议：input_tokens_details.cached_tokens
 	InputTokensDetails responseInputDetailsDTO `json:"input_tokens_details"`
 	// OpenAI Chat Completions 协议：prompt_tokens_details.cached_tokens
 	PromptTokensDetails responseInputDetailsDTO `json:"prompt_tokens_details"`
 	// Anthropic Messages 协议：顶层 cache_read_input_tokens
-	CacheReadInputTokens     int64                     `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int64                     `json:"cache_creation_input_tokens"`
-	OutputTokensDetails     responseOutputDetailsDTO  `json:"output_tokens_details"`
+	CacheReadInputTokens     int64                    `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64                    `json:"cache_creation_input_tokens"`
+	OutputTokensDetails      responseOutputDetailsDTO `json:"output_tokens_details"`
 	// OpenAI Chat Completions 协议：completion_tokens_details.reasoning_tokens
 	CompletionTokensDetails responseOutputDetailsDTO  `json:"completion_tokens_details"`
 	ContextDetails          responseContextDetailsDTO `json:"context_details"`

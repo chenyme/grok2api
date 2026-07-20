@@ -120,10 +120,12 @@ type ResponseResourceRequest struct {
 	Body           []byte
 	Model          string
 	PromptCacheKey string
-	IdempotencyID  string
-	Streaming      bool
-	NormalizeBody  bool
-	Operation      string
+	// ReasoningReplayKey 只来自客户端显式会话身份；soft cache identity 不得用于密文回放。
+	ReasoningReplayKey string
+	IdempotencyID      string
+	Streaming          bool
+	NormalizeBody      bool
+	Operation          string
 }
 
 // Response 表示尚未写入下游的上游响应。

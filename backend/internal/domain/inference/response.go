@@ -8,13 +8,15 @@ import (
 
 // ResponseOwnership 记录上游 Response 资源所属账号，不保存请求或响应正文。
 type ResponseOwnership struct {
-	ResponseID  string
-	AccountID   uint64
-	ClientKeyID uint64
-	Provider    account.Provider
-	ExpiresAt   time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ResponseID         string
+	AccountID          uint64
+	ClientKeyID        uint64
+	Provider           account.Provider
+	PromptCacheKey     string
+	ReasoningReplayKey string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // WebResponseState 保存 Grok Web 本地 Responses 资源及其上游会话游标。

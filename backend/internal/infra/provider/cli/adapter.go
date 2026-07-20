@@ -156,10 +156,6 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				return invalidResponsesResponse(err), nil
 			}
 		}
-		// 服务端推理回放：在 prompt_cache_key 写入后、出站前注入上一轮 encrypted items。
-		if a.replay != nil && request.PromptCacheKey != "" && !isCompactPath(request.Path) && !compactionRequested {
-			body = a.replay.Apply(ctx, request.Model, request.PromptCacheKey, body)
-		}
 	}
 	if compactionRequested {
 		warnings := ""
@@ -171,6 +167,10 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	// 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source=1 的账号默认走 XAI。
 	primaryBase := a.primaryBaseURL()
 	base := a.inferenceBaseForOperation(request.Credential, request.Billing, request.Method, request.Path)
+	// 缓存亲和与推理回放使用不同身份。回放还必须绑定实际账号和上游平面，
+	// 避免把一个账号或 Build 平面签发的 opaque reasoning 发给另一作用域。
+	replayBaseBody := body
+	body, replayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, base)
 	resp, reqURL, err := a.doResponseRequest(ctx, request, accessToken, body, base)
 	if err != nil {
 		return nil, err
@@ -190,17 +190,18 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		primaryResp := cloneBufferedResponse(resp, primaryBody, primaryTruncated)
 		fallbackBase := a.fallbackBaseURL()
 		if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
-			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(ctx, request, accessToken, body, fallbackBase)
+			fallbackBody, fallbackReplayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, fallbackBase)
+			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(ctx, request, accessToken, fallbackBody, fallbackBase)
 			if fallbackErr == nil {
 				fallbackErr = normalizeGzipResponse(fallbackResp)
 			}
 			fallbackRecovered := false
 			if fallbackErr == nil {
-				fallbackResp, fallbackURL, fallbackRecovered = a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, fallbackBase, fallbackResp, fallbackURL)
+				fallbackResp, fallbackURL, fallbackRecovered = a.recoverReasoningDecodeFailure(ctx, request, accessToken, fallbackBody, fallbackBase, fallbackResp, fallbackURL)
 			}
 			if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
 				a.activateBuildAPIFallback(ctx, &request.Credential)
-				resp, reqURL, base = fallbackResp, fallbackURL, fallbackBase
+				resp, reqURL, base, body, replayKey = fallbackResp, fallbackURL, fallbackBase, fallbackBody, fallbackReplayKey
 				reasoningRecovered = reasoningRecovered || fallbackRecovered
 			} else {
 				if fallbackErr == nil {
@@ -215,8 +216,8 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	modelCatalogChanged := a.modelCatalogChanged(request.Credential.ID, resp.Header.Get("x-models-etag"))
 	// 在协议转换前捕获上游 Responses 形态，写入/清理推理回放缓存。
-	if a.shouldCaptureReplay(request, resp) {
-		resp.Body = a.replay.CaptureBody(resp.Body, request.Model, request.PromptCacheKey, request.Streaming, isCompactPath(request.Path))
+	if a.shouldCaptureReplay(request, resp, replayKey) {
+		resp.Body = a.replay.CaptureBody(resp.Body, request.Model, replayKey, request.Streaming, isCompactPath(request.Path))
 	}
 	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses || request.Operation == conversation.OperationCompaction
 	if responsesOperation && toolCompatibility != nil {
@@ -291,17 +292,45 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, ModelCatalogChanged: modelCatalogChanged}, nil
 }
 
-func (a *Adapter) shouldCaptureReplay(request provider.ResponseResourceRequest, resp *http.Response) bool {
+func (a *Adapter) shouldCaptureReplay(request provider.ResponseResourceRequest, resp *http.Response, replayKey string) bool {
 	if a.replay == nil || !a.replay.Enabled() || resp == nil {
 		return false
 	}
-	if request.Method != http.MethodPost || strings.TrimSpace(request.PromptCacheKey) == "" {
+	if request.Method != http.MethodPost || strings.TrimSpace(replayKey) == "" {
 		return false
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return false
 	}
 	return true
+}
+
+func (a *Adapter) applyReasoningReplay(ctx context.Context, request provider.ResponseResourceRequest, body []byte, base string) ([]byte, string) {
+	if a.replay == nil || !a.replay.Enabled() || request.Method != http.MethodPost {
+		return body, ""
+	}
+	key := a.scopedReasoningReplayKey(request, base)
+	if key == "" {
+		return body, ""
+	}
+	if isCompactPath(request.Path) {
+		// compact 不注入历史，但成功后仍需用同一作用域清理旧 replay。
+		return body, key
+	}
+	return a.replay.Apply(ctx, request.Model, key, body), key
+}
+
+func (a *Adapter) scopedReasoningReplayKey(request provider.ResponseResourceRequest, base string) string {
+	seed := strings.TrimSpace(request.ReasoningReplayKey)
+	if seed == "" || request.Credential.ID == 0 {
+		return ""
+	}
+	plane := "build"
+	if fallback := a.fallbackBaseURL(); fallback != "" && strings.EqualFold(strings.TrimRight(base, "/"), fallback) {
+		plane = "xai"
+	}
+	digest := sha256.Sum256([]byte(fmt.Sprintf("grok2api:reasoning-replay:v2:%s:%d:%s", seed, request.Credential.ID, plane)))
+	return hex.EncodeToString(digest[:])
 }
 
 func isCompactPath(path string) bool {

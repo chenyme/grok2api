@@ -8,7 +8,7 @@ import (
 
 func TestResolveBuildSessionIdentityIsStableAndTenantIsolated(t *testing.T) {
 	base := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "", "session-1", nil)
-	if len(base.upstreamID) != 36 || len(base.affinityKey) != 64 || base != resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "", "session-1", nil) {
+	if len(base.upstreamID) != 36 || len(base.affinityKey) != 64 || len(base.replayKey) != 64 || base != resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "", "session-1", nil) {
 		t.Fatalf("unstable identity = %#v", base)
 	}
 	for name, value := range map[string]buildSessionIdentity{
@@ -55,6 +55,9 @@ func TestResolveBuildSessionIdentitySoftFromMessagesIsStableAcrossTurns(t *testi
 	if !first.soft || first.upstreamID == "" {
 		t.Fatalf("expected soft identity, got %#v", first)
 	}
+	if first.replayKey != "" {
+		t.Fatalf("soft identity must not enable reasoning replay: %#v", first)
+	}
 	if first.upstreamID != second.upstreamID || first.affinityKey != second.affinityKey {
 		t.Fatalf("soft identity drifted across turns: first=%#v second=%#v", first, second)
 	}
@@ -71,6 +74,9 @@ func TestResolveBuildSessionIdentitySoftFromResponsesInput(t *testing.T) {
 	second := resolveBuildSessionIdentity(9, accountdomain.ProviderBuild, "grok-4.5", "", "", body)
 	if first.upstreamID == "" || first != second || !first.soft {
 		t.Fatalf("responses soft identity unstable: %#v %#v", first, second)
+	}
+	if first.replayKey != "" {
+		t.Fatalf("responses soft identity must not enable reasoning replay: %#v", first)
 	}
 }
 

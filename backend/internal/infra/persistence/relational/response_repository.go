@@ -18,6 +18,7 @@ func (r *ResponseRepository) Save(ctx context.Context, value inferencedomain.Res
 	row := responseOwnershipModel{
 		ResponseID: value.ResponseID, AccountID: value.AccountID,
 		ClientKeyID: value.ClientKeyID, Provider: string(value.Provider),
+		PromptCacheKey: value.PromptCacheKey, ReasoningReplayKey: value.ReasoningReplayKey,
 		ExpiresAt: value.ExpiresAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 	return r.db.db.WithContext(ctx).Save(&row).Error
@@ -31,6 +32,7 @@ func (r *ResponseRepository) Get(ctx context.Context, responseID string, clientK
 	return inferencedomain.ResponseOwnership{
 		ResponseID: row.ResponseID, AccountID: row.AccountID,
 		ClientKeyID: row.ClientKeyID, Provider: account.Provider(row.Provider),
+		PromptCacheKey: row.PromptCacheKey, ReasoningReplayKey: row.ReasoningReplayKey,
 		ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
 }

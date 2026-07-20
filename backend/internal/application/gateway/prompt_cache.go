@@ -18,6 +18,8 @@ type buildSessionIdentity struct {
 	upstreamID string
 	// affinityKey 用于账号粘滞；按模型隔离，避免不同模型能力账号互相覆盖。
 	affinityKey string
+	// replayKey 仅由客户端显式会话信号生成；soft 消息锚点不得驱动 encrypted reasoning 回放。
+	replayKey string
 	// soft 表示由消息内容兜底生成（无显式 session 时），仍须稳定。
 	soft bool
 }
@@ -38,9 +40,11 @@ func resolveBuildSessionIdentity(clientKeyID uint64, provider accountdomain.Prov
 	if seed != "" {
 		upstreamSource := fmt.Sprintf("grok2api:build-session:%s:%d:%s:%s", buildSessionIdentityVersion, clientKeyID, provider, seed)
 		affinitySource := fmt.Sprintf("grok2api:build-affinity:%s:%d:%s:%s:%s", buildSessionIdentityVersion, clientKeyID, provider, model, seed)
+		replaySource := fmt.Sprintf("grok2api:build-replay:%s:%d:%s:%s", buildSessionIdentityVersion, clientKeyID, provider, seed)
 		return buildSessionIdentity{
 			upstreamID:  digestUUID(upstreamSource),
 			affinityKey: hexDigest(affinitySource),
+			replayKey:   hexDigest(replaySource),
 		}
 	}
 	// CPA 风格消息 hash 兜底：无 session 时仍尽量粘账号 + 稳定 conv-id，服务 Sub2API 未透传 session 的场景。

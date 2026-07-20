@@ -440,25 +440,37 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		return nil, clientkeyapp.ErrModelNotAllowed
 	}
 	affinityKey := ""
+	ownershipPromptCacheKey := ""
+	reasoningReplayKey := ""
 	if route.Provider == accountdomain.ProviderBuild {
 		// 显式 key / session seed / 消息锚点 soft session（CPA 风格），禁止空 session 随机 conv-id。
-		identity := resolveBuildSessionIdentity(
-			input.ClientKey.ID,
-			route.Provider,
-			route.UpstreamModel,
-			input.PromptCacheKey,
-			input.PromptCacheSeed,
-			input.Body,
-		)
+		identity := buildSessionIdentity{}
+		if ownership != nil && ownership.PromptCacheKey != "" {
+			// previous_response_id 属于既有 Response 链，必须继承根会话身份，
+			// 不能用本轮增量 input 重新计算 soft key。
+			identity.upstreamID = ownership.PromptCacheKey
+			identity.replayKey = ownership.ReasoningReplayKey
+		} else {
+			identity = resolveBuildSessionIdentity(
+				input.ClientKey.ID,
+				route.Provider,
+				route.UpstreamModel,
+				input.PromptCacheKey,
+				input.PromptCacheSeed,
+				input.Body,
+			)
+		}
 		input.PromptCacheKey = identity.upstreamID
 		affinityKey = identity.affinityKey
+		ownershipPromptCacheKey = identity.upstreamID
+		reasoningReplayKey = identity.replayKey
 		if identity.upstreamID == "" {
 			s.logger.Debug("prompt_cache_session_empty", "request_id", input.RequestID, "model", route.UpstreamModel, "provider", route.Provider)
 		} else if identity.soft {
 			s.logger.Debug("prompt_cache_session_soft", "request_id", input.RequestID, "model", route.UpstreamModel)
 		}
 	}
-adapter, ok := s.providers.Responses(route.Provider)
+	adapter, ok := s.providers.Responses(route.Provider)
 	if !ok {
 		return nil, ErrNoAvailableAccount
 	}
@@ -490,7 +502,7 @@ adapter, ok := s.providers.Responses(route.Provider)
 	failureAttempts := newFailureAttemptRecorder(http.MethodPost, path)
 	forwardResponse := func(credential accountdomain.Credential, billing *accountdomain.Billing) (*provider.Response, error) {
 		started := time.Now()
-		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Billing: billing, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
+		response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{Credential: credential, Billing: billing, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, ReasoningReplayKey: reasoningReplayKey, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation)})
 		err = failureAttempts.captureResponse(credential, started, response, err)
 		timing.markUpstream(time.Since(started))
 		return response, err
@@ -796,7 +808,9 @@ attemptLoop:
 					}
 				}
 				if supportsStoredResponses && operation == audit.OperationResponses && responseID != "" && response.StatusCode >= 200 && response.StatusCode < 300 {
-					_ = s.responses.Save(persistCtx, inferencedomain.ResponseOwnership{ResponseID: responseID, AccountID: accountID, ClientKeyID: input.ClientKey.ID, Provider: route.Provider, ExpiresAt: now.Add(responseOwnershipTTL), CreatedAt: now, UpdatedAt: now})
+					if err := s.responses.Save(persistCtx, inferencedomain.ResponseOwnership{ResponseID: responseID, AccountID: accountID, ClientKeyID: input.ClientKey.ID, Provider: route.Provider, PromptCacheKey: ownershipPromptCacheKey, ReasoningReplayKey: reasoningReplayKey, ExpiresAt: now.Add(responseOwnershipTTL), CreatedAt: now, UpdatedAt: now}); err != nil {
+						s.logger.Error("response_ownership_save_failed", "response_id", responseID, "client_key_id", input.ClientKey.ID, "account_id", accountID, "provider", route.Provider, "error", err)
+					}
 				}
 				outcome := "failed"
 				if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" {
