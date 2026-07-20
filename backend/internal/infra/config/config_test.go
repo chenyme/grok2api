@@ -51,6 +51,12 @@ bootstrapAdmin:
 	if cfg.Routing.PreferFreeBuild {
 		t.Fatal("preferFreeBuild should retain its false default when omitted from YAML")
 	}
+	if cfg.Accounts.AutoCleanReauthEnabled || cfg.Accounts.AutoCleanIncludeDisabled {
+		t.Fatal("accounts auto-clean flags should default to false")
+	}
+	if cfg.Accounts.AutoCleanReauthInterval.Value() != 10*time.Minute || cfg.Accounts.AutoCleanReauthMinAge.Value() != time.Hour {
+		t.Fatalf("accounts auto-clean defaults = %#v", cfg.Accounts)
+	}
 	if !cfg.Routing.ReasoningReplayEnabled || cfg.Routing.ReasoningReplayTTL.Value() != time.Hour || cfg.Routing.ReasoningReplayMaxEntries != 10240 {
 		t.Fatalf("reasoning replay defaults = %#v", cfg.Routing)
 	}
@@ -244,6 +250,29 @@ func TestValidateStatsigModes(t *testing.T) {
 	remote.Provider.Web.StatsigSignerURL = "http://signer.example.com:8788/sign"
 	if err := remote.Validate(); err == nil {
 		t.Fatal("public plaintext Statsig signer URL was accepted")
+	}
+}
+
+func TestValidateFlareSolverrClearance(t *testing.T) {
+	base := defaultConfig()
+	base.Secrets.JWTSecret = "12345678901234567890123456789012"
+	base.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	base.Provider.Web.ClearanceMode = ClearanceModeFlareSolverr
+	base.Provider.Web.FlareSolverrURL = "http://flaresolverr:8191"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid FlareSolverr config rejected: %v", err)
+	}
+	base.Provider.Web.FlareSolverrURL = "ftp://solver.example"
+	if err := base.Validate(); err == nil {
+		t.Fatal("invalid FlareSolverr scheme was accepted")
+	}
+	base.Provider.Web.FlareSolverrURL = "http://solver.example:8191"
+	if err := base.Validate(); err == nil {
+		t.Fatal("public plaintext FlareSolverr URL was accepted")
+	}
+	base.Provider.Web.FlareSolverrURL = "https://solver.example/v1"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("public HTTPS FlareSolverr URL rejected: %v", err)
 	}
 }
 

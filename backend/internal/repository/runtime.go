@@ -2,10 +2,17 @@ package repository
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 )
+
+// AccountConcurrencyKey 返回账号推理租约使用的统一运行态键。
+// 账号维护任务必须复用该键判断是否仍有请求占用，避免复制协议字符串后发生漂移。
+func AccountConcurrencyKey(accountID uint64) string {
+	return "account:" + strconv.FormatUint(accountID, 10)
+}
 
 // RateLimiter 定义客户端 RPM 限制边界。
 type RateLimiter interface {

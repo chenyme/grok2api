@@ -8,6 +8,7 @@ export type SettingsConfigDTO = {
   providerWeb: {
     baseURL: string; quotaTimeout: string; chatTimeout: string; imageTimeout: string; videoTimeout: string;
     statsigMode: "manual" | "url"; statsigManualValue?: string; statsigManualConfigured: boolean; statsigSignerURL: string;
+    clearanceMode: "manual" | "flaresolverr"; flareSolverrURL: string; clearanceTimeout: string; clearanceRefresh: string;
     mediaConcurrency: number; allowNSFW: boolean;
     recoveryBackoffBase: string; recoveryBackoffMax: string;
   };
@@ -21,11 +22,18 @@ export type SettingsConfigDTO = {
   routing: { stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number; preferFreeBuild: boolean };
   audit: { bufferSize: number; batchSize: number; flushInterval: string };
   clientKeyDefaults: { rpmLimit: number; maxConcurrent: number };
+  accounts: {
+    autoCleanReauthEnabled: boolean;
+    autoCleanReauthInterval: string;
+    autoCleanReauthMinAge: string;
+    autoCleanIncludeDisabled: boolean;
+  };
 };
 
 export type EgressNodeDTO = {
   id: string; name: string; scope: EgressScope; enabled: boolean;
   proxyConfigured: boolean; userAgent: string; cookieConfigured: boolean;
+  accountBoundProxy: boolean;
   health: number; failureCount: number; cooldownUntil?: string; lastError?: string;
 };
 
@@ -51,7 +59,8 @@ const settingsConfigValidator = hasShape({
   providerWeb: hasShape({
     baseURL: isString, quotaTimeout: isString, chatTimeout: isString, imageTimeout: isString, videoTimeout: isString,
     statsigMode: isOneOf("manual", "url"), statsigManualValue: isOptional(isString), statsigManualConfigured: isBoolean,
-    statsigSignerURL: isString, mediaConcurrency: isNumber, allowNSFW: isBoolean, recoveryBackoffBase: isString, recoveryBackoffMax: isString,
+    statsigSignerURL: isString, clearanceMode: isOneOf("manual", "flaresolverr"), flareSolverrURL: isString,
+    clearanceTimeout: isString, clearanceRefresh: isString, mediaConcurrency: isNumber, allowNSFW: isBoolean, recoveryBackoffBase: isString, recoveryBackoffMax: isString,
   }),
   providerConsole: hasShape({ baseURL: isString, chatTimeout: isString }),
   batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
@@ -60,22 +69,51 @@ const settingsConfigValidator = hasShape({
   routing: hasShape({ stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber, preferFreeBuild: isBoolean }),
   audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString }),
   clientKeyDefaults: hasShape({ rpmLimit: isNumber, maxConcurrent: isNumber }),
+  // 旧后端可无 accounts；decode 后由 withAccountsDefaults 补默认关闭策略。
+  accounts: isOptional(hasShape({
+    autoCleanReauthEnabled: isBoolean,
+    autoCleanReauthInterval: isString,
+    autoCleanReauthMinAge: isString,
+    autoCleanIncludeDisabled: isBoolean,
+  })),
 });
-const decodeSettingsSnapshot = createObjectDecoder<SettingsSnapshotDTO>("settings", {
+const defaultAccountsConfig = (): SettingsConfigDTO["accounts"] => ({
+  autoCleanReauthEnabled: false,
+  autoCleanReauthInterval: "10m",
+  autoCleanReauthMinAge: "1h",
+  autoCleanIncludeDisabled: false,
+});
+function withAccountsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDTO {
+  const accounts = snapshot.config.accounts ?? defaultAccountsConfig();
+  return {
+    ...snapshot,
+    config: {
+      ...snapshot.config,
+      accounts: {
+        autoCleanReauthEnabled: accounts.autoCleanReauthEnabled ?? false,
+        autoCleanReauthInterval: accounts.autoCleanReauthInterval || "10m",
+        autoCleanReauthMinAge: accounts.autoCleanReauthMinAge || "1h",
+        autoCleanIncludeDisabled: accounts.autoCleanIncludeDisabled ?? false,
+      },
+    },
+  };
+}
+const decodeSettingsSnapshotRaw = createObjectDecoder<SettingsSnapshotDTO>("settings", {
   config: settingsConfigValidator,
   recommendedProviderBuild: hasShape({ clientVersion: isString, userAgent: isString }),
   updatedAt: isString,
   revision: isString,
   restartRequired: isArrayOf(isString),
 });
+const decodeSettingsSnapshot = (value: unknown) => withAccountsDefaults(decodeSettingsSnapshotRaw(value));
 const egressNodeValidator = hasShape({
   id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset"), enabled: isBoolean,
-  proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, health: isNumber, failureCount: isNumber,
+  proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, accountBoundProxy: isBoolean, health: isNumber, failureCount: isNumber,
   cooldownUntil: isOptional(isString), lastError: isOptional(isString),
 });
 const decodeEgressNode = createObjectDecoder<EgressNodeDTO>("egress node", {
   id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset"), enabled: isBoolean,
-  proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, health: isNumber, failureCount: isNumber,
+  proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, accountBoundProxy: isBoolean, health: isNumber, failureCount: isNumber,
   cooldownUntil: isOptional(isString), lastError: isOptional(isString),
 });
 const decodeEgressNodeList = createObjectDecoder<EgressNodeListDTO>("egress node list", {
@@ -111,4 +149,8 @@ export function updateEgressNode(id: string, input: EgressNodeInput): Promise<Eg
 
 export function deleteEgressNode(id: string): Promise<{ deleted: boolean }> {
   return apiRequest(`/api/admin/v1/egress-nodes/${id}`, { method: "DELETE" }, decodeBooleanResult<{ deleted: boolean }>("deleted"));
+}
+
+export function refreshEgressClearance(id: string): Promise<{ refreshed: boolean }> {
+  return apiRequest(`/api/admin/v1/egress-nodes/${id}/refresh-clearance`, { method: "POST" }, decodeBooleanResult<{ refreshed: boolean }>("refreshed"));
 }
