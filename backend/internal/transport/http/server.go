@@ -21,6 +21,7 @@ import (
 	updatecheckapp "github.com/chenyme/grok2api/backend/internal/application/updatecheck"
 	accounthttp "github.com/chenyme/grok2api/backend/internal/transport/http/account"
 	adminauthhttp "github.com/chenyme/grok2api/backend/internal/transport/http/adminauth"
+	clipoolhttp "github.com/chenyme/grok2api/backend/internal/transport/http/clipool"
 	audithttp "github.com/chenyme/grok2api/backend/internal/transport/http/audit"
 	clientkeyhttp "github.com/chenyme/grok2api/backend/internal/transport/http/clientkey"
 	dashboardhttp "github.com/chenyme/grok2api/backend/internal/transport/http/dashboard"
@@ -43,6 +44,7 @@ type Dependencies struct {
 	ConcurrencyGate    *middleware.ConcurrencyGate
 	SecureCookies      bool
 	SwaggerEnabled     bool
+	AdminAuthDisabled  bool
 	PublicAPIBaseURL   string
 	FrontendStaticPath string
 	// Readiness 返回可观测的分层就绪状态。Ready 仅为旧调用方保留。
@@ -57,6 +59,7 @@ type Dependencies struct {
 	Audits       *auditapp.Service
 	Dashboard    *dashboardapp.Service
 	Gateway      *gateway.Service
+	CliPool      *gateway.CliPool
 	Media        *mediaapp.Service
 	Settings     *settingsapp.Service
 	Egress       *egressapp.Service
@@ -139,9 +142,12 @@ func New(deps Dependencies) *gin.Engine {
 	authHandler := adminauthhttp.NewHandler(deps.AdminAuth, deps.SecureCookies)
 	authHandler.RegisterPublic(adminRoot)
 	adminProtected := adminRoot.Group("")
-	adminProtected.Use(middleware.AdminAuth(deps.AdminAuth))
+	adminProtected.Use(middleware.AdminAuth(deps.AdminAuth, deps.AdminAuthDisabled))
 	authHandler.RegisterAuthenticated(adminProtected)
 	accounthttp.NewHandler(deps.Accounts, deps.AccountSync).Register(adminProtected)
+	if deps.CliPool != nil {
+		clipoolhttp.NewHandler(deps.CliPool).Register(adminProtected)
+	}
 	modelhttp.NewHandler(deps.Models).Register(adminProtected)
 	clientkeyhttp.NewHandler(deps.ClientKeys).Register(adminProtected)
 	audithttp.NewHandler(deps.Audits).Register(adminProtected)

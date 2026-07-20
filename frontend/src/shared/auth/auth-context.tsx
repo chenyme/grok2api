@@ -19,6 +19,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const restoreSession = useCallback(async (): Promise<void> => {
     setStatus("restoring");
+
+    // 本机免登录：后端 adminAuthDisabled 时 /me 无需 token 即可访问
+    try {
+      const openAccess = await apiRequest("/api/admin/v1/me", { retryAuth: false }, decodeAdminDTO);
+      setAdmin(openAccess);
+      setStatus("authenticated");
+      return;
+    } catch {
+      // 继续走正式会话恢复
+    }
+
     const refreshResult = await refreshAccessToken();
     if (refreshResult === "invalid") {
       setAdmin(null);

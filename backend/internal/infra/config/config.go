@@ -59,6 +59,8 @@ type ServerConfig struct {
 	ReadTimeout           Duration `yaml:"readTimeout"`
 	RequestTimeout        Duration `yaml:"requestTimeout"`
 	SwaggerEnabled        bool     `yaml:"swaggerEnabled"`
+	// AdminAuthDisabled 关闭管理端登录鉴权，仅建议本机开发使用。
+	AdminAuthDisabled bool `yaml:"adminAuthDisabled"`
 }
 
 type FrontendConfig struct {

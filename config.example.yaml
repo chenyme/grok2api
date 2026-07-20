@@ -14,6 +14,8 @@ server:
   requestTimeout: 2h
   # [按需修改] 仅在本地或受信任环境开启，生产环境保持 false。
   swaggerEnabled: false
+  # [按需修改] 本机开发可设 true 关闭管理后台登录；切勿在公网暴露时开启。
+  adminAuthDisabled: false
 
 auth:
   # [通常不要修改] 管理端访问与刷新令牌有效期。

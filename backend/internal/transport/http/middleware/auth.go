@@ -17,8 +17,16 @@ const (
 )
 
 // AdminAuth 校验管理员 Bearer JWT。
-func AdminAuth(service *adminauth.Service) gin.HandlerFunc {
+// disabled 为 true 时跳过鉴权（本机开发），直接注入 LocalAdmin。
+func AdminAuth(service *adminauth.Service, disabled bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if disabled {
+			if service != nil {
+				c.Set(AdminKey, service.LocalAdmin(c.Request.Context()))
+			}
+			c.Next()
+			return
+		}
 		raw, ok := bearerToken(c.GetHeader("Authorization"))
 		if !ok {
 			response.Error(c, http.StatusUnauthorized, "adminUnauthorized", "管理员登录已失效")

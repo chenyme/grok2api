@@ -46,6 +46,17 @@ func NewService(admins repository.AdminRepository, sessions repository.AdminSess
 
 func (s *Service) SetLoginRateLimiter(limiter repository.RateLimiter) { s.loginLimiter = limiter }
 
+// LocalAdmin 返回本机免登录模式下注入的管理员身份（优先库内首个管理员）。
+func (s *Service) LocalAdmin(ctx context.Context) admin.Admin {
+	if s == nil || s.admins == nil {
+		return admin.Admin{ID: 1, Username: "local"}
+	}
+	if value, err := s.admins.GetByID(ctx, 1); err == nil {
+		return value
+	}
+	return admin.Admin{ID: 1, Username: "local"}
+}
+
 // Bootstrap 在数据库没有管理员时创建唯一管理员。
 func (s *Service) Bootstrap(ctx context.Context, username, password string) error {
 	count, err := s.admins.Count(ctx)

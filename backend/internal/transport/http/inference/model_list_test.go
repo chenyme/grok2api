@@ -19,3 +19,17 @@ func TestNewModelListItemsDeduplicatesSharedPublicName(t *testing.T) {
 		t.Fatalf("model list = %#v", items)
 	}
 }
+
+func TestNewModelListItemsExposesCursorFriendlyGrok45Alias(t *testing.T) {
+	now := time.Unix(200, 0).UTC()
+	items := newModelListItems([]modeldomain.Route{
+		{PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, CreatedAt: now},
+	})
+	ids := map[string]bool{}
+	for _, item := range items {
+		ids[item.ID] = true
+	}
+	if !ids["grok-4.5"] || !ids["grok-4-5"] {
+		t.Fatalf("expected grok-4.5 and grok-4-5 in %#v", items)
+	}
+}

@@ -145,16 +145,28 @@ func (h *Handler) listModels(c *gin.Context) {
 }
 
 // newModelListItems 按下游公开名称去重，隐藏仅用于内部选路的 Provider 前缀。
+// 同时附加 ClientModelAliases（例如 grok-4-5 → grok-4.5），供 Cursor 等客户端使用。
 func newModelListItems(values []modeldomain.Route) []modelListItem {
 	data := make([]modelListItem, 0, len(values))
 	seen := make(map[string]bool, len(values))
+	createdByID := make(map[string]int64, len(values))
 	for _, value := range values {
 		publicID := modeldomain.ExternalPublicID(value.Provider, value.PublicID)
-		if seen[publicID] {
+		if !seen[publicID] {
+			seen[publicID] = true
+			created := value.CreatedAt.Unix()
+			createdByID[publicID] = created
+			data = append(data, modelListItem{ID: publicID, Object: "model", Created: created, OwnedBy: "grok2api"})
+		}
+	}
+	for _, alias := range modeldomain.ClientModelAliases() {
+		if alias.Alias == "" || alias.Target == "" || seen[alias.Alias] || !seen[alias.Target] {
 			continue
 		}
-		seen[publicID] = true
-		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api"})
+		seen[alias.Alias] = true
+		data = append(data, modelListItem{
+			ID: alias.Alias, Object: "model", Created: createdByID[alias.Target], OwnedBy: "grok2api",
+		})
 	}
 	return data
 }

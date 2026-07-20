@@ -67,6 +67,8 @@ func (a *Adapter) SetEgress(manager *infraegress.Manager) {
 
 func (a *Adapter) Provider() account.Provider { return account.ProviderBuild }
 
+func (a *Adapter) ModelAliases() []provider.ModelAlias { return Aliases() }
+
 func (a *Adapter) UpdateConfig(cfg Config) {
 	a.cfgMu.Lock()
 	a.cfg = cfg
