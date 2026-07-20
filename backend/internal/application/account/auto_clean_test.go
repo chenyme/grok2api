@@ -202,6 +202,47 @@ func TestSecondMarkReauthKeepsOriginalAnchor(t *testing.T) {
 	}
 }
 
+func TestRunAccountAutoCleanDoesNotDeleteOnEnableOrWake(t *testing.T) {
+	now := time.Date(2026, 7, 20, 19, 0, 0, 0, time.UTC)
+	service, repo := newAutoCleanTestService(t, now)
+	aged := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "wake-aged", SourceKey: "wake-aged",
+		EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+		ReauthMarkedAt: ptrTime(now.Add(-2 * time.Hour)),
+	})
+
+	// 启用只写入配置并唤醒；本身不删除。
+	service.UpdateAutoCleanConfig(AutoCleanConfig{
+		Enabled: true, Interval: time.Minute, MinAge: time.Hour,
+	})
+	assertPresent(t, repo, aged.ID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		service.RunAccountAutoClean(ctx)
+	}()
+
+	// 启动时会 drain 启动前 wake 并 arm timer；热更 wake 只重排 timer。
+	time.Sleep(150 * time.Millisecond)
+	assertPresent(t, repo, aged.ID)
+
+	service.UpdateAutoCleanConfig(AutoCleanConfig{
+		Enabled: true, Interval: time.Minute, MinAge: time.Hour, IncludeDisabled: true,
+	})
+	time.Sleep(150 * time.Millisecond)
+	assertPresent(t, repo, aged.ID)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("auto-clean scheduler did not stop")
+	}
+	assertPresent(t, repo, aged.ID)
+}
+
 func newAutoCleanTestService(t *testing.T, now time.Time) (*Service, *relational.AccountRepository) {
 	t.Helper()
 	ctx := context.Background()
