@@ -16,56 +16,197 @@ var reasoningDecodeFailureMarkers = [][]byte{
 	[]byte("could not decrypt the provided encrypted_content"),
 }
 
+type reasoningRecoveryOutcome struct {
+	encryptedContentDowngraded bool
+	sessionReset               bool
+	failed                     bool
+}
+
+func (o reasoningRecoveryOutcome) merge(other reasoningRecoveryOutcome) reasoningRecoveryOutcome {
+	return reasoningRecoveryOutcome{
+		encryptedContentDowngraded: o.encryptedContentDowngraded || other.encryptedContentDowngraded,
+		sessionReset:               o.sessionReset || other.sessionReset,
+		failed:                     o.failed || other.failed,
+	}
+}
+
+func (o reasoningRecoveryOutcome) appendWarnings(header http.Header) {
+	if o.encryptedContentDowngraded {
+		appendCompatibilityWarning(header, "reasoning_encrypted_content_downgraded")
+	}
+	if o.sessionReset {
+		appendCompatibilityWarning(header, "reasoning_session_reset")
+	}
+	if o.failed {
+		appendCompatibilityWarning(header, "reasoning_recovery_failed")
+	}
+}
+
 // recoverReasoningDecodeFailure handles only the upstream's explicit
-// pre-generation opaque-reasoning decode rejection. The retry uses the same
-// credential, base URL and idempotency key. If the downgraded request is not
-// successful, the original 400 is returned so the Gateway does not rotate to
-// another account or obscure the first failure.
+// pre-generation opaque-reasoning decode rejection. Recovery never changes
+// credential or Build/XAI plane:
+//  1. remove replayed encrypted_content and retry in the same session;
+//  2. when the same decode error remains (or no opaque item exists), clear the
+//     server-side session identity and retry once with the full portable input.
+//
+// If recovery is unsuccessful, the original 400 is returned so the Gateway
+// does not rotate accounts or obscure the first failure.
 func (a *Adapter) recoverReasoningDecodeFailure(
 	ctx context.Context,
 	request provider.ResponseResourceRequest,
 	accessToken string,
 	body []byte,
 	base string,
+	replayKey string,
 	response *http.Response,
 	requestURL string,
-) (*http.Response, string, bool) {
+) (*http.Response, string, reasoningRecoveryOutcome) {
 	if response == nil || response.StatusCode != http.StatusBadRequest {
-		return response, requestURL, false
-	}
-	downgraded, changed := stripReasoningEncryptedContent(body)
-	if !changed {
-		return response, requestURL, false
+		return response, requestURL, reasoningRecoveryOutcome{}
 	}
 	errorBody, truncated, err := provider.ReadDiagnosticBody(response.Body)
 	_ = response.Body.Close()
 	if err != nil {
-		return cloneBufferedResponse(response, errorBody, truncated), requestURL, false
+		return cloneBufferedResponse(response, errorBody, truncated), requestURL, reasoningRecoveryOutcome{}
 	}
 	original := cloneBufferedResponse(response, errorBody, truncated)
 	if truncated || !isReasoningDecodeFailure(errorBody) {
-		return original, requestURL, false
+		return original, requestURL, reasoningRecoveryOutcome{}
+	}
+	// 一旦上游明确拒绝 opaque reasoning，立即清理该账号/平面的服务端回放，
+	// 防止下次请求再次注入同一份已失效密文。成功响应会按正常 Capture 流程写回新状态。
+	if a.replay != nil && replayKey != "" {
+		a.replay.Clear(ctx, request.Model, replayKey)
 	}
 
-	// The fallback body differs from the rejected request, so it must not reuse
-	// the original Idempotency-Key. The first request failed during input
-	// validation before generation, making a fresh key safe here.
-	retryRequest := request
-	retryRequest.IdempotencyID, _ = security.NewOpaqueToken(18)
-	retry, retryURL, retryErr := a.doResponseRequest(ctx, retryRequest, accessToken, downgraded, base)
+	portableBody, encryptedChanged := stripReasoningEncryptedContent(body)
+	if encryptedChanged {
+		retry, retryURL, retryErr := a.retryReasoningRecovery(ctx, request, accessToken, portableBody, base, false)
+		if retryErr != nil {
+			a.logReasoningRecovery(request, base, "encrypted_content", "transport_failed", 0, retryErr)
+			return original, requestURL, reasoningRecoveryOutcome{failed: true}
+		}
+		if err := normalizeGzipResponse(retry); err != nil {
+			_ = retry.Body.Close()
+			a.logReasoningRecovery(request, base, "encrypted_content", "response_decode_failed", retry.StatusCode, err)
+			return original, requestURL, reasoningRecoveryOutcome{failed: true}
+		}
+		if isHTTPSuccess(retry.StatusCode) {
+			_ = original.Body.Close()
+			a.logReasoningRecovery(request, base, "encrypted_content", "recovered", retry.StatusCode, nil)
+			return retry, retryURL, reasoningRecoveryOutcome{encryptedContentDowngraded: true}
+		}
+		sameDecodeFailure, inspectErr := responseHasReasoningDecodeFailure(retry)
+		if inspectErr != nil || !sameDecodeFailure {
+			a.logReasoningRecovery(request, base, "encrypted_content", "retry_rejected", retry.StatusCode, inspectErr)
+			return original, requestURL, reasoningRecoveryOutcome{failed: true}
+		}
+		a.logReasoningRecovery(request, base, "encrypted_content", "decode_error_persisted", retry.StatusCode, nil)
+	}
+
+	if !canResetReasoningSession(request, portableBody) {
+		a.logReasoningRecovery(request, base, "session_reset", "not_safe", 0, nil)
+		return original, requestURL, reasoningRecoveryOutcome{failed: true}
+	}
+	statelessBody := removePromptCacheKey(portableBody)
+	retry, retryURL, retryErr := a.retryReasoningRecovery(ctx, request, accessToken, statelessBody, base, true)
 	if retryErr != nil {
-		return original, requestURL, false
+		a.logReasoningRecovery(request, base, "session_reset", "transport_failed", 0, retryErr)
+		return original, requestURL, reasoningRecoveryOutcome{failed: true}
 	}
 	if err := normalizeGzipResponse(retry); err != nil {
 		_ = retry.Body.Close()
-		return original, requestURL, false
+		a.logReasoningRecovery(request, base, "session_reset", "response_decode_failed", retry.StatusCode, err)
+		return original, requestURL, reasoningRecoveryOutcome{failed: true}
 	}
 	if !isHTTPSuccess(retry.StatusCode) {
+		status := retry.StatusCode
 		_ = retry.Body.Close()
-		return original, requestURL, false
+		a.logReasoningRecovery(request, base, "session_reset", "retry_rejected", status, nil)
+		return original, requestURL, reasoningRecoveryOutcome{failed: true}
 	}
+
 	_ = original.Body.Close()
-	return retry, retryURL, true
+	a.logReasoningRecovery(request, base, "session_reset", "recovered", retry.StatusCode, nil)
+	return retry, retryURL, reasoningRecoveryOutcome{
+		encryptedContentDowngraded: encryptedChanged,
+		sessionReset:               true,
+	}
+}
+
+func (a *Adapter) retryReasoningRecovery(ctx context.Context, request provider.ResponseResourceRequest, accessToken string, body []byte, base string, resetSession bool) (*http.Response, string, error) {
+	retryRequest := request
+	retryRequest.IdempotencyID, _ = security.NewOpaqueToken(18)
+	if resetSession {
+		retryRequest.PromptCacheKey = ""
+		retryRequest.GrokTurnIndex = ""
+	}
+	return a.doResponseRequest(ctx, retryRequest, accessToken, body, base)
+}
+
+func responseHasReasoningDecodeFailure(response *http.Response) (bool, error) {
+	if response == nil || response.StatusCode != http.StatusBadRequest {
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		return false, nil
+	}
+	body, truncated, err := provider.ReadDiagnosticBody(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		return false, err
+	}
+	return !truncated && isReasoningDecodeFailure(body), nil
+}
+
+func canResetReasoningSession(request provider.ResponseResourceRequest, body []byte) bool {
+	if request.Method != http.MethodPost || strings.TrimSpace(request.PromptCacheKey) == "" {
+		return false
+	}
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	previousResponseID, _ := payload["previous_response_id"].(string)
+	return strings.TrimSpace(previousResponseID) == ""
+}
+
+func removePromptCacheKey(body []byte) []byte {
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return body
+	}
+	delete(payload, "prompt_cache_key")
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
+func (a *Adapter) logReasoningRecovery(request provider.ResponseResourceRequest, base, stage, result string, status int, err error) {
+	plane := "build"
+	if fallback := a.fallbackBaseURL(); fallback != "" && strings.EqualFold(strings.TrimRight(base, "/"), fallback) {
+		plane = "xai"
+	}
+	attributes := []any{
+		"account_id", request.Credential.ID,
+		"model", request.Model,
+		"operation", request.Operation,
+		"plane", plane,
+		"stage", stage,
+		"result", result,
+	}
+	if status != 0 {
+		attributes = append(attributes, "status", status)
+	}
+	if err != nil {
+		attributes = append(attributes, "error", err)
+	}
+	logger := a.logger
+	if logger != nil {
+		logger.Warn("reasoning_decode_recovery", attributes...)
+	}
 }
 
 func isReasoningDecodeFailure(body []byte) bool {
