@@ -27,7 +27,7 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 		}
 		switch itemType {
 		case "message":
-			converted, err := normalizeMessageInput(item, param)
+			converted, err := c.normalizeMessageInput(item, param)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -41,7 +41,7 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			c.changed = true
 			rewritten = append(rewritten, converted)
 		case "function_call_output":
-			converted, err := normalizeFunctionCallOutputInput(item, param)
+			converted, err := c.normalizeFunctionCallOutputInput(item, param)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -121,7 +121,7 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			c.changed = true
 			rewritten = append(rewritten, converted)
 		case "custom_tool_call_output":
-			converted, err := normalizeFunctionCallOutputInput(item, param)
+			converted, err := c.normalizeCustomToolCallOutputInput(item, param)
 			if err != nil {
 				return nil, nil, nil, err
 			}

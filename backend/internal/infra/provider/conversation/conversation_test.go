@@ -43,9 +43,64 @@ func TestConvertChatRequestToResponses(t *testing.T) {
 	if content[1].(map[string]any)["image_url"] != "data:image/png;base64,AA==" {
 		t.Fatalf("image content = %#v", content)
 	}
+	if content[1].(map[string]any)["detail"] != "auto" {
+		t.Fatalf("image detail = %#v", content[1])
+	}
 	tools := payload["tools"].([]any)
 	if len(tools) != 2 || tools[0].(map[string]any)["name"] != "lookup" || tools[0].(map[string]any)["type"] != "function" || tools[1].(map[string]any)["type"] != "web_search" {
 		t.Fatalf("tools = %#v", tools)
+	}
+}
+
+func TestConvertChatToolImageResultToMultimodalFunctionOutput(t *testing.T) {
+	body := []byte(`{
+		"model":"public-chat",
+		"messages":[
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":[
+				{"type":"text","text":"Read image file"},
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,AA==","detail":"high"}}
+			]}
+		]
+	}`)
+	converted, _, err := ConvertRequestWithOptions(body, "grok-4.5", OperationChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatal(err)
+	}
+	input := payload["input"].([]any)
+	output := input[1].(map[string]any)["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("tool output = %#v", output)
+	}
+	textBlock := output[0].(map[string]any)
+	imageBlock := output[1].(map[string]any)
+	if textBlock["type"] != "input_text" || textBlock["text"] != "Read image file" ||
+		imageBlock["type"] != "input_image" || imageBlock["detail"] != "high" ||
+		imageBlock["image_url"] != "data:image/png;base64,AA==" {
+		t.Fatalf("tool output = %#v", output)
+	}
+}
+
+func TestConvertChatKeepsNonMultimodalToolJSONAsText(t *testing.T) {
+	body := []byte(`{
+		"model":"public-chat",
+		"messages":[{"role":"tool","tool_call_id":"call_1","content":[{"name":"value","value":1}]}]
+	}`)
+	converted, _, err := ConvertRequestWithOptions(body, "grok-4.5", OperationChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatal(err)
+	}
+	output := payload["input"].([]any)[0].(map[string]any)["output"]
+	if output != `[{"name":"value","value":1}]` {
+		t.Fatalf("tool output = %#v", output)
 	}
 }
 
@@ -314,7 +369,7 @@ func TestConvertAnthropicClaudeCodeRequestToResponses(t *testing.T) {
 	}
 	output := input[2].(map[string]any)["output"].([]any)
 	if len(output) != 4 || !strings.Contains(output[0].(map[string]any)["text"].(string), "failed") ||
-		!strings.Contains(output[2].(map[string]any)["text"].(string), `"Read"`) || output[3].(map[string]any)["type"] != "input_image" {
+		!strings.Contains(output[2].(map[string]any)["text"].(string), `"Read"`) || output[3].(map[string]any)["type"] != "input_image" || output[3].(map[string]any)["detail"] != "auto" {
 		t.Fatalf("tool result = %#v", output)
 	}
 	tools := payload["tools"].([]any)
