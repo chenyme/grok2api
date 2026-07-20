@@ -56,7 +56,7 @@ func (s *Service) RecoverCriticalCredentials(ctx context.Context, expiresWithin 
 		if getErr != nil {
 			return getErr
 		}
-		if credential.RefreshPermanent {
+		if credential.RefreshPermanent && !isRecoverableRefreshErrorCode(credential.LastRefreshErrorCode) {
 			if !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(s.now()) {
 				return nil
 			}
@@ -130,7 +130,7 @@ func (s *Service) refreshDueCredentials(ctx context.Context) error {
 			if !credential.Enabled || credential.AuthStatus != accountdomain.AuthStatusActive || s.providers == nil || !s.providers.SupportsCredentialRefresh(credential.Provider) || credential.EncryptedRefreshToken == "" {
 				return nil
 			}
-			if credential.RefreshPermanent {
+			if credential.RefreshPermanent && !isRecoverableRefreshErrorCode(credential.LastRefreshErrorCode) {
 				if !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(s.now()) {
 					return nil
 				}

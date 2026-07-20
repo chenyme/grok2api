@@ -1744,8 +1744,14 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 	} else if errors.Is(refreshErr, context.DeadlineExceeded) {
 		errorCode = "oauth_timeout"
 	}
-	// 永久失败只能由成功换取新 token 清除，后续偶发传输错误不能把状态降级为可重试。
-	permanent = permanent || credential.RefreshPermanent
+	// 真正的 OAuth 永久失败（invalid_grant 等）只能由成功换 token 清除。
+	// credential_decrypt_failed 是可恢复本地错误：不得被旧 permanent 粘住，也不得把本次可恢复失败抬升为永久。
+	if permanent && isRecoverableRefreshErrorCode(errorCode) {
+		permanent = false
+	}
+	if credential.RefreshPermanent && !isRecoverableRefreshErrorCode(credential.LastRefreshErrorCode) && !isRecoverableRefreshErrorCode(errorCode) {
+		permanent = true
+	}
 	now := s.now()
 	retryAt := now.Add(credentialRefreshBackoff(credential.ID, failureCount, retryAfter))
 	accessTokenAlive := credential.EncryptedAccessToken != "" && !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(now)
@@ -1774,8 +1780,14 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 }
 
 // resolvePermanentRefreshFailure 阻止再次请求已确认失效的 refresh token，并在 access token 到期后收敛账号状态。
+// credential_decrypt_failed 属于本地密钥问题，允许手动 force / 调度重试（密钥恢复后可自愈）；
+// invalid_grant 等真正 OAuth 永久失败仍保持阻断。
 func (s *Service) resolvePermanentRefreshFailure(ctx context.Context, credential accountdomain.Credential, now time.Time, force bool) (accountdomain.Credential, error, bool) {
 	if !credential.RefreshPermanent {
+		return accountdomain.Credential{}, nil, false
+	}
+	if isRecoverableRefreshErrorCode(credential.LastRefreshErrorCode) {
+		// 允许 force 或到期调度再次尝试解密/刷新；成功后会 clear permanent 标记。
 		return accountdomain.Credential{}, nil, false
 	}
 	accessTokenAlive := credential.EncryptedAccessToken != "" && !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(now)
@@ -1791,6 +1803,16 @@ func (s *Service) resolvePermanentRefreshFailure(ctx context.Context, credential
 		return accountdomain.Credential{}, ErrCredentialRefreshPermanent, true
 	}
 	return accountdomain.Credential{}, fmt.Errorf("%w: %s", ErrCredentialRefreshPermanent, credential.LastRefreshErrorCode), true
+}
+
+// isRecoverableRefreshErrorCode 标识“永久标记可被后续成功刷新清除”的本地/临时错误。
+func isRecoverableRefreshErrorCode(code string) bool {
+	switch strings.TrimSpace(code) {
+	case "credential_decrypt_failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func credentialRefreshBackoff(accountID uint64, failureCount int, retryAfter time.Duration) time.Duration {

@@ -1048,11 +1048,11 @@ func (i *responseInspector) Inspect(chunk []byte) {
 			i.observeTerminal(value)
 			if !bytes.Equal(value, []byte("[DONE]")) {
 				metadata := extractMetadata(value)
-				if metadata.Usage.TotalTokens > 0 {
+				if hasUsageSignal(metadata.Usage) {
 					if metadata.Usage.ResponseModel == "" {
 						metadata.Usage.ResponseModel = i.metadata.Model
 					}
-					i.metadata.Usage = metadata.Usage
+					i.metadata.Usage = mergeGatewayUsage(i.metadata.Usage, metadata.Usage)
 				}
 				if metadata.ResponseID != "" {
 					i.metadata.ResponseID = metadata.ResponseID
@@ -1161,20 +1161,28 @@ type responsePayloadDTO struct {
 }
 
 type responseUsageDTO struct {
-	InputTokens            int64                     `json:"input_tokens"`
-	InputTokensCamel       int64                     `json:"inputTokens"`
-	OutputTokens           int64                     `json:"output_tokens"`
-	OutputTokensCamel      int64                     `json:"outputTokens"`
-	TotalTokens            int64                     `json:"total_tokens"`
-	TotalTokensCamel       int64                     `json:"totalTokens"`
-	CostInUSDTicks         int64                     `json:"cost_in_usd_ticks"`
-	NumSourcesUsed         int64                     `json:"num_sources_used"`
-	NumServerSideToolsUsed int64                     `json:"num_server_side_tools_used"`
-	InputTokensDetails     responseInputDetailsDTO   `json:"input_tokens_details"`
-	OutputTokensDetails    responseOutputDetailsDTO  `json:"output_tokens_details"`
-	ContextDetails         responseContextDetailsDTO `json:"context_details"`
-	PromptTokens           int64                     `json:"prompt_tokens"`
-	CompletionTokens       int64                     `json:"completion_tokens"`
+	InputTokens            int64 `json:"input_tokens"`
+	InputTokensCamel       int64 `json:"inputTokens"`
+	OutputTokens           int64 `json:"output_tokens"`
+	OutputTokensCamel      int64 `json:"outputTokens"`
+	TotalTokens            int64 `json:"total_tokens"`
+	TotalTokensCamel       int64 `json:"totalTokens"`
+	CostInUSDTicks         int64 `json:"cost_in_usd_ticks"`
+	NumSourcesUsed         int64 `json:"num_sources_used"`
+	NumServerSideToolsUsed int64 `json:"num_server_side_tools_used"`
+	// Responses 协议：input_tokens_details.cached_tokens
+	InputTokensDetails responseInputDetailsDTO `json:"input_tokens_details"`
+	// OpenAI Chat Completions 协议：prompt_tokens_details.cached_tokens
+	PromptTokensDetails responseInputDetailsDTO `json:"prompt_tokens_details"`
+	// Anthropic Messages 协议：顶层 cache_read_input_tokens
+	CacheReadInputTokens     int64                    `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64                    `json:"cache_creation_input_tokens"`
+	OutputTokensDetails      responseOutputDetailsDTO `json:"output_tokens_details"`
+	// OpenAI Chat Completions 协议：completion_tokens_details.reasoning_tokens
+	CompletionTokensDetails responseOutputDetailsDTO  `json:"completion_tokens_details"`
+	ContextDetails          responseContextDetailsDTO `json:"context_details"`
+	PromptTokens            int64                     `json:"prompt_tokens"`
+	CompletionTokens        int64                     `json:"completion_tokens"`
 }
 
 type responseInputDetailsDTO struct {
@@ -1212,14 +1220,74 @@ func (value responseUsageDTO) toGatewayUsage(responseModel string) gateway.Usage
 	if total == 0 {
 		total = input + output
 	}
+	// 统一缓存命中：Responses / Chat Completions / Anthropic Messages
+	cached := value.InputTokensDetails.CachedTokens
+	if cached == 0 {
+		cached = value.PromptTokensDetails.CachedTokens
+	}
+	if cached == 0 {
+		cached = value.CacheReadInputTokens
+	}
+	reasoning := value.OutputTokensDetails.ReasoningTokens
+	if reasoning == 0 {
+		reasoning = value.CompletionTokensDetails.ReasoningTokens
+	}
 	return gateway.Usage{
-		InputTokens: input, CachedInputTokens: value.InputTokensDetails.CachedTokens,
-		OutputTokens: output, ReasoningTokens: value.OutputTokensDetails.ReasoningTokens,
+		InputTokens: input, CachedInputTokens: cached,
+		OutputTokens: output, ReasoningTokens: reasoning,
 		TotalTokens: total, CostInUSDTicks: value.CostInUSDTicks,
 		NumSourcesUsed: value.NumSourcesUsed, NumServerSideToolsUsed: value.NumServerSideToolsUsed,
 		ContextInputTokens: value.ContextDetails.InputTokens, ContextOutputTokens: value.ContextDetails.OutputTokens,
 		ResponseModel: responseModel,
 	}
+}
+
+func hasUsageSignal(usage gateway.Usage) bool {
+	return usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0 ||
+		usage.CachedInputTokens > 0 || usage.ReasoningTokens > 0 || usage.CostInUSDTicks > 0 ||
+		usage.NumSourcesUsed > 0 || usage.NumServerSideToolsUsed > 0 ||
+		usage.ContextInputTokens > 0 || usage.ContextOutputTokens > 0
+}
+
+// mergeGatewayUsage 合并流式多帧 usage：非零字段覆盖，避免后到半截帧抹掉已解析缓存命中。
+func mergeGatewayUsage(base, next gateway.Usage) gateway.Usage {
+	if next.InputTokens > 0 {
+		base.InputTokens = next.InputTokens
+	}
+	if next.OutputTokens > 0 {
+		base.OutputTokens = next.OutputTokens
+	}
+	if next.TotalTokens > 0 {
+		base.TotalTokens = next.TotalTokens
+	}
+	if next.CachedInputTokens > 0 {
+		base.CachedInputTokens = next.CachedInputTokens
+	}
+	if next.ReasoningTokens > 0 {
+		base.ReasoningTokens = next.ReasoningTokens
+	}
+	if next.CostInUSDTicks > 0 {
+		base.CostInUSDTicks = next.CostInUSDTicks
+	}
+	if next.NumSourcesUsed > 0 {
+		base.NumSourcesUsed = next.NumSourcesUsed
+	}
+	if next.NumServerSideToolsUsed > 0 {
+		base.NumServerSideToolsUsed = next.NumServerSideToolsUsed
+	}
+	if next.ContextInputTokens > 0 {
+		base.ContextInputTokens = next.ContextInputTokens
+	}
+	if next.ContextOutputTokens > 0 {
+		base.ContextOutputTokens = next.ContextOutputTokens
+	}
+	if next.ResponseModel != "" {
+		base.ResponseModel = next.ResponseModel
+	}
+	if base.TotalTokens == 0 && (base.InputTokens > 0 || base.OutputTokens > 0) {
+		base.TotalTokens = base.InputTokens + base.OutputTokens
+	}
+	return base
 }
 
 func copyHeaders(destination, source http.Header) {

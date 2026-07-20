@@ -340,15 +340,17 @@ type requestAuditAttemptModel struct {
 func (requestAuditAttemptModel) TableName() string { return "request_audit_attempts" }
 
 type responseOwnershipModel struct {
-	ResponseID  string          `gorm:"size:255;primaryKey;check:chk_response_ownership_id,length(response_id) BETWEEN 1 AND 255"`
-	AccountID   uint64          `gorm:"not null"`
-	ClientKeyID uint64          `gorm:"not null"`
-	Provider    string          `gorm:"size:32;not null;check:chk_response_ownership_provider,provider IN ('grok_build','grok_web','grok_console')"`
-	ExpiresAt   time.Time       `gorm:"not null;check:chk_response_ownership_expiry,expires_at > created_at"`
-	CreatedAt   time.Time       `gorm:"not null"`
-	UpdatedAt   time.Time       `gorm:"not null"`
-	Account     *accountModel   `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	ClientKey   *clientKeyModel `gorm:"foreignKey:ClientKeyID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	ResponseID         string          `gorm:"size:255;primaryKey;check:chk_response_ownership_id,length(response_id) BETWEEN 1 AND 255"`
+	AccountID          uint64          `gorm:"not null"`
+	ClientKeyID        uint64          `gorm:"not null"`
+	Provider           string          `gorm:"size:32;not null;check:chk_response_ownership_provider,provider IN ('grok_build','grok_web','grok_console')"`
+	PromptCacheKey     string          `gorm:"size:64;not null;default:'';check:chk_response_ownership_cache_key,length(prompt_cache_key) <= 64"`
+	ReasoningReplayKey string          `gorm:"size:64;not null;default:'';check:chk_response_ownership_replay_key,length(reasoning_replay_key) <= 64"`
+	ExpiresAt          time.Time       `gorm:"not null;check:chk_response_ownership_expiry,expires_at > created_at"`
+	CreatedAt          time.Time       `gorm:"not null"`
+	UpdatedAt          time.Time       `gorm:"not null"`
+	Account            *accountModel   `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	ClientKey          *clientKeyModel `gorm:"foreignKey:ClientKeyID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (responseOwnershipModel) TableName() string { return "response_ownership" }
