@@ -33,6 +33,9 @@ func (l *Lease) DialWebSocket(ctx context.Context, endpoint string, headers fhtt
 		}
 		connection, response, err := dialer.DialContext(ctx, endpoint, headers)
 		if err == nil || !l.sticky || attempt >= stickyProxyRetryLimit || !safeProxyConnectionFailure(err, fhttpResponseAsHTTP(response)) {
+			if response != nil && response.StatusCode == http.StatusForbidden && l.clearanceManager != nil && l.clearanceKey != "" {
+				l.clearanceManager.invalidateClearanceKey(l.clearanceKey, l.client)
+			}
 			return connection, response, err
 		}
 		if response != nil && response.Body != nil {

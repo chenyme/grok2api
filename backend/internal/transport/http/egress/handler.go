@@ -50,17 +50,18 @@ type nodeRequest struct {
 }
 
 type nodeResponse struct {
-	ID               uint64     `json:"id,string"`
-	Name             string     `json:"name"`
-	Scope            string     `json:"scope"`
-	Enabled          bool       `json:"enabled"`
-	ProxyConfigured  bool       `json:"proxyConfigured"`
-	UserAgent        string     `json:"userAgent"`
-	CookieConfigured bool       `json:"cookieConfigured"`
-	Health           float64    `json:"health"`
-	FailureCount     int        `json:"failureCount"`
-	CooldownUntil    *time.Time `json:"cooldownUntil,omitempty"`
-	LastError        string     `json:"lastError,omitempty"`
+	ID                uint64     `json:"id,string"`
+	Name              string     `json:"name"`
+	Scope             string     `json:"scope"`
+	Enabled           bool       `json:"enabled"`
+	ProxyConfigured   bool       `json:"proxyConfigured"`
+	UserAgent         string     `json:"userAgent"`
+	CookieConfigured  bool       `json:"cookieConfigured"`
+	AccountBoundProxy bool       `json:"accountBoundProxy"`
+	Health            float64    `json:"health"`
+	FailureCount      int        `json:"failureCount"`
+	CooldownUntil     *time.Time `json:"cooldownUntil,omitempty"`
+	LastError         string     `json:"lastError,omitempty"`
 }
 
 func (value nodeRequest) input() egressapp.Input {
@@ -129,7 +130,8 @@ func newNodeResponse(value egressdomain.PublicNode) nodeResponse {
 	return nodeResponse{
 		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled,
 		ProxyConfigured: value.ProxyConfigured, UserAgent: value.UserAgent, CookieConfigured: value.CookieConfigured,
-		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
+		AccountBoundProxy: value.AccountBoundProxy,
+		Health:            value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
 	}
 }
 

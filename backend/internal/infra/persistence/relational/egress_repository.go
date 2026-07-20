@@ -63,9 +63,12 @@ func (r *EgressRepository) UpdateEgressNode(ctx context.Context, value egress.No
 	return toEgressDomain(row), nil
 }
 
-func (r *EgressRepository) UpdateEgressNodeClearance(ctx context.Context, id uint64, encryptedCookie, userAgent string) error {
+func (r *EgressRepository) UpdateEgressNodeClearance(ctx context.Context, id uint64, encryptedCookie, userAgent, fingerprint, bindingFingerprint string, refreshedAt time.Time) error {
 	result := r.db.db.WithContext(ctx).Model(&egressNodeModel{}).Where("id = ?", id).Updates(map[string]any{
-		"encrypted_cloudflare_cookie": encryptedCookie, "user_agent": userAgent, "updated_at": time.Now().UTC(),
+		"encrypted_cloudflare_cookie": encryptedCookie, "user_agent": userAgent,
+		"clearance_fingerprint": fingerprint, "clearance_refreshed_at": refreshedAt,
+		"clearance_binding_fingerprint": bindingFingerprint,
+		"last_error":                    "", "updated_at": time.Now().UTC(),
 	})
 	if result.Error != nil {
 		return result.Error
@@ -117,7 +120,9 @@ func toEgressDomain(row egressNodeModel) egress.Node {
 	return egress.Node{
 		ID: row.ID, Name: row.Name, Scope: egress.Scope(row.Scope), Enabled: row.Enabled,
 		EncryptedProxyURL: row.EncryptedProxyURL, UserAgent: row.UserAgent, EncryptedCloudflareCookie: row.EncryptedCloudflareCookie,
-		Health: row.Health, FailureCount: row.FailureCount, CooldownUntil: row.CooldownUntil, LastError: row.LastError,
+		ClearanceRefreshedAt: row.ClearanceRefreshedAt, ClearanceFingerprint: row.ClearanceFingerprint,
+		ClearanceBindingFingerprint: row.ClearanceBindingFingerprint,
+		Health:                      row.Health, FailureCount: row.FailureCount, CooldownUntil: row.CooldownUntil, LastError: row.LastError,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
 }
@@ -130,7 +135,9 @@ func fromEgressDomain(value egress.Node) egressNodeModel {
 	return egressNodeModel{
 		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled,
 		EncryptedProxyURL: value.EncryptedProxyURL, UserAgent: value.UserAgent, EncryptedCloudflareCookie: value.EncryptedCloudflareCookie,
-		Health: health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
+		ClearanceRefreshedAt: value.ClearanceRefreshedAt, ClearanceFingerprint: value.ClearanceFingerprint,
+		ClearanceBindingFingerprint: value.ClearanceBindingFingerprint,
+		Health:                      health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }

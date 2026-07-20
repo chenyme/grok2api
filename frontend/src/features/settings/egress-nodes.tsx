@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { createEgressNode, deleteEgressNode, listEgressNodes, refreshEgressClearance, updateEgressNode, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { ErrorState } from "@/shared/components/data-state";
@@ -100,11 +101,21 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
                 <TableCell><div className="text-xs font-medium">{node.name}</div>{node.lastError ? <div className="mt-0.5 max-w-72 truncate text-[11px] text-destructive">{node.lastError}</div> : null}</TableCell>
                 <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(node.scope)}</Badge></TableCell>
                 <TableCell className="text-center text-xs text-muted-foreground">{node.proxyConfigured ? t("settings.egress.configured") : t("settings.egress.direct")}</TableCell>
-                <TableCell className="text-center text-xs text-muted-foreground">{node.cookieConfigured ? t("settings.egress.configured") : t("settings.egress.none")}</TableCell>
+                <TableCell className="text-center text-xs text-muted-foreground">
+                  {node.scope === "grok_build"
+                    ? "—"
+                    : clearanceMode === "flaresolverr"
+                      ? node.accountBoundProxy
+                        ? `${t("settings.web.clearanceFlareSolverr")} · Resin`
+                        : t("settings.web.clearanceFlareSolverr")
+                      : node.cookieConfigured
+                        ? t("settings.egress.configured")
+                        : t("settings.egress.none")}
+                </TableCell>
                 <TableCell className="text-center text-xs tabular-nums">{Math.round(node.health * 100)}%</TableCell>
                 <TableActionCell>
                   <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => openEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem><DropdownMenuSeparator />{clearanceMode === "flaresolverr" && (node.scope === "grok_web" || node.scope === "grok_web_asset") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
+                    <DropdownMenuItem onClick={() => openEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem><DropdownMenuSeparator />{clearanceMode === "flaresolverr" && !node.accountBoundProxy && (node.scope === "grok_web" || node.scope === "grok_web_asset" || node.scope === "grok_console") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
                     <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => remove.mutate(node.id)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
                   </DropdownMenuContent></DropdownMenu>
                 </TableActionCell>
@@ -120,7 +131,7 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
             <DialogTitle>{editing ? t("settings.egress.editTitle") : t("settings.egress.addTitle")}</DialogTitle>
             <DialogDescription>{t("console.egressDialogDescription")}</DialogDescription>
           </DialogHeader>
-          <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+          <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
             <div className="flex items-center justify-between gap-4 rounded-md bg-muted/45 px-3 py-2.5">
               <Label htmlFor="egress-enabled">{t("settings.egress.enabled")}</Label>
               <Switch id="egress-enabled" checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} />
@@ -139,21 +150,26 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
                 </SelectContent>
               </Select>
             </Field>
-            <Field label={t("settings.egress.proxyURL")} controlId="egress-proxy" description={t("settings.egress.proxyProtocols")}>
+            {form.scope !== "grok_build" ? (
+              <div className="flex h-10 items-center justify-between gap-4 rounded-md bg-muted/45 px-3">
+                <span className="text-xs font-medium">{t("settings.egress.clearance")}</span>
+                <Badge variant="secondary" className="shrink-0 text-[10px]">
+                  {clearanceMode === "flaresolverr" ? t("settings.web.clearanceFlareSolverr") : t("settings.web.clearanceManual")}
+                </Badge>
+              </div>
+            ) : null}
+            <Field label={t("settings.egress.proxyURL")} controlId="egress-proxy" help={t("settings.egress.proxyProtocols")}>
               <Input id="egress-proxy" type="password" autoComplete="new-password" placeholder={editing?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL} onChange={(event) => setForm({ ...form, proxyURL: event.target.value })} />
             </Field>
-            {form.scope !== "grok_build" ? (
+            {form.scope !== "grok_build" && clearanceMode === "manual" ? (
               <Field label={t("settings.egress.userAgent")} controlId="egress-user-agent">
                 <Input id="egress-user-agent" value={form.userAgent} onChange={(event) => setForm({ ...form, userAgent: event.target.value })} />
               </Field>
             ) : null}
-            {form.scope !== "grok_build" && (clearanceMode === "manual" || form.scope === "grok_console") ? (
+            {form.scope !== "grok_build" && clearanceMode === "manual" ? (
               <Field label={t("settings.egress.cloudflareCookie")} controlId="egress-cookie">
                 <Input id="egress-cookie" type="password" autoComplete="new-password" placeholder={editing?.cookieConfigured ? t("settings.egress.keepConfigured") : "cf_clearance=...; __cf_bm=..."} value={form.cloudflareCookies} onChange={(event) => setForm({ ...form, cloudflareCookies: event.target.value })} />
               </Field>
-            ) : null}
-            {clearanceMode === "flaresolverr" && (form.scope === "grok_web" || form.scope === "grok_web_asset") ? (
-              <p className="text-[11px] text-muted-foreground">{t("settings.egress.clearanceManaged")}</p>
             ) : null}
             <DialogFooter>
               <Button type="button" variant="secondary" size="sm" onClick={() => setEditing(undefined)}>{t("common.cancel")}</Button>
@@ -166,8 +182,22 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
   );
 }
 
-function Field({ label, controlId, description, children }: { label: string; controlId: string; description?: string; children: ReactNode }) {
-  return <div className="space-y-2"><Label htmlFor={controlId}>{label}</Label>{children}{description ? <p className="whitespace-pre-line text-xs leading-5 text-muted-foreground">{description}</p> : null}</div>;
+function Field({ label, controlId, description, help, children }: { label: string; controlId: string; description?: string; help?: string; children: ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Label htmlFor={controlId}>{label}</Label>
+        {help ? (
+          <Tooltip>
+            <TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={help}><CircleHelp className="size-3.5" /></button></TooltipTrigger>
+            <TooltipContent className="max-w-80 whitespace-pre-line">{help}</TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
+      {children}
+      {description ? <p className="whitespace-pre-line text-xs leading-5 text-muted-foreground">{description}</p> : null}
+    </div>
+  );
 }
 
 function showError(error: unknown, fallback: string) {

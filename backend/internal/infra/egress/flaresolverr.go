@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,6 +17,12 @@ import (
 )
 
 const maxFlareSolverrResponseBytes = 2 << 20
+
+var (
+	proxyCredentialPattern  = regexp.MustCompile(`(?i)\b(https?|socks4a?|socks5h?)://[^\s/@:]+:[^\s/@]+@`)
+	bearerCredentialPattern = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
+	namedCredentialPattern  = regexp.MustCompile(`(?i)\b(token|password|passwd|authorization|cookie)\s*[:=]\s*[^\s,;]+`)
+)
 
 type ClearanceConfig struct {
 	Mode            string
@@ -128,6 +135,15 @@ func sanitizeFlareSolverrMessage(value string) string {
 		}
 		return character
 	}, strings.TrimSpace(value))
+	value = proxyCredentialPattern.ReplaceAllStringFunc(value, func(candidate string) string {
+		separator := strings.Index(candidate, "://")
+		if separator < 0 {
+			return "[redacted proxy]"
+		}
+		return candidate[:separator+3] + "***:***@"
+	})
+	value = bearerCredentialPattern.ReplaceAllString(value, "Bearer [redacted]")
+	value = namedCredentialPattern.ReplaceAllString(value, "$1=[redacted]")
 	characters := []rune(value)
 	if len(characters) > 300 {
 		value = string(characters[:300])

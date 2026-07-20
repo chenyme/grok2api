@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,5 +52,17 @@ func TestFlareSolverrEndpointAcceptsBaseAndV1Path(t *testing.T) {
 		if err != nil || actual != expected {
 			t.Fatalf("endpoint(%q) = %q, %v", input, actual, err)
 		}
+	}
+}
+
+func TestSanitizeFlareSolverrMessageRedactsCredentials(t *testing.T) {
+	message := sanitizeFlareSolverrMessage("proxy socks5h://user:secret@resin:2260 failed; token=abc123 Authorization: Bearer.SECRET cookie=sso-value")
+	for _, secret := range []string{"user", "secret", "abc123", "Bearer.SECRET", "sso-value"} {
+		if strings.Contains(message, secret) {
+			t.Fatalf("sanitized message leaked %q: %q", secret, message)
+		}
+	}
+	if !strings.Contains(message, "socks5h://***:***@") {
+		t.Fatalf("proxy scheme was not retained safely: %q", message)
 	}
 }

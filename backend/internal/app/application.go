@@ -164,6 +164,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	mediaService := mediaapp.NewServiceWithTickets(mediaAssetRepo, mediaJobRepo, mediaUploadTicketRepo, localMediaStore, refreshLock, mediaConfig(cfg))
 
 	egressManager := infraegress.NewManager(egressRepo, cipher)
+	egressManager.SetClearanceLock(refreshLock)
 	egressManager.UpdateClearanceConfig(clearanceConfig(cfg))
 	cliAdapter := cliprovider.NewAdapter(cliprovider.Config{
 		BaseURL: cfg.Provider.Build.BaseURL, FallbackBaseURL: config.NormalizeBuildFallbackBaseURL(cfg.Provider.Build.FallbackBaseURL),
@@ -208,6 +209,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	accountService := accountapp.NewService(accountRepo, auditRepo, deviceSessions, sticky, providers, cipher, refreshLock)
 	cliAdapter.SetFallbackMarker(accountService)
 	accountService.SetLogger(logger)
+	accountService.UpdateAutoCleanConfig(accountAutoCleanConfig(cfg.Accounts))
+	accountService.SetConcurrencyLimiter(concurrency)
 	accountService.SetQuotaRecoveryQueue(quotaQueue)
 	accountService.SetTaskPools(conversionPool, syncPool, refreshPool)
 	windows, err := accountRepo.ListQuotaRecoveryWindows(ctx, 100000)
@@ -300,6 +303,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		gatewayService.UpdateMaxAttempts(next.Routing.MaxAttempts)
 		auditService.UpdateConfig(next.Audit.BatchSize, next.Audit.FlushInterval.Value())
 		clientKeyService.UpdateDefaults(next.ClientKeyDefaults.RPMLimit, next.ClientKeyDefaults.MaxConcurrent)
+		accountService.UpdateAutoCleanConfig(accountAutoCleanConfig(next.Accounts))
 	})
 	updateService := updatecheckapp.NewService(buildinfo.CurrentVersion(), nil)
 
@@ -344,6 +348,15 @@ func consoleProviderConfig(cfg config.Config) consoleprovider.Config {
 	return consoleprovider.Config{
 		BaseURL: cfg.Provider.Console.BaseURL, SessionBaseURL: cfg.Provider.Web.BaseURL,
 		TimeoutSeconds: int(cfg.Provider.Console.ChatTimeout.Value().Seconds()),
+	}
+}
+
+func accountAutoCleanConfig(value config.AccountsConfig) accountapp.AutoCleanConfig {
+	return accountapp.AutoCleanConfig{
+		Enabled:         value.AutoCleanReauthEnabled,
+		Interval:        value.AutoCleanReauthInterval.Value(),
+		MinAge:          value.AutoCleanReauthMinAge.Value(),
+		IncludeDisabled: value.AutoCleanIncludeDisabled,
 	}
 }
 
@@ -431,6 +444,10 @@ func (a *Application) Run(ctx context.Context) error {
 		a.accounts.RunCredentialRefresh(taskCtx)
 		return nil
 	})
+	startBackground("account_auto_clean", func(taskCtx context.Context) error {
+		a.accounts.RunAccountAutoClean(taskCtx)
+		return nil
+	})
 	startBackground("statsig_warmup", func(taskCtx context.Context) error {
 		a.runStatsigWarmup(taskCtx)
 		return nil
@@ -458,7 +475,7 @@ func (a *Application) Run(ctx context.Context) error {
 		return nil
 	})
 	startBackground("clearance_refresh", func(taskCtx context.Context) error {
-		if err := a.egress.RefreshDueClearances(taskCtx, true); err != nil {
+		if err := a.egress.RefreshDueClearances(taskCtx, false); err != nil {
 			a.logger.Warn("clearance_initial_refresh_failed", "error", err)
 		}
 		a.runPeriodicTask(taskCtx, time.Minute, "clearance_refresh", func(runCtx context.Context) error {

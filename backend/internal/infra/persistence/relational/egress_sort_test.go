@@ -3,7 +3,9 @@ package relational
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -60,14 +62,14 @@ func TestEgressStateUpdatesDoNotOverwriteClearanceOrHealth(t *testing.T) {
 	if err := repo.UpdateEgressNodeHealth(ctx, node.ID, 0.4, 2, nil, "anti-bot rejection"); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.UpdateEgressNodeClearance(ctx, node.ID, "new-cookie", "new-agent"); err != nil {
+	if err := repo.UpdateEgressNodeClearance(ctx, node.ID, "new-cookie", "new-agent", strings.Repeat("a", 64), strings.Repeat("b", 64), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	actual, err := repo.GetEgressNode(ctx, node.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actual.Health != 0.4 || actual.FailureCount != 2 || actual.EncryptedCloudflareCookie != "new-cookie" || actual.UserAgent != "new-agent" {
+	if actual.Health != 0.4 || actual.FailureCount != 2 || actual.EncryptedCloudflareCookie != "new-cookie" || actual.UserAgent != "new-agent" || actual.ClearanceBindingFingerprint != strings.Repeat("b", 64) {
 		t.Fatalf("partial updates overwrote state: %#v", actual)
 	}
 }

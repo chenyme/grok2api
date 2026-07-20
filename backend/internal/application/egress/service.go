@@ -48,7 +48,7 @@ type Service struct {
 
 type ClearanceManager interface {
 	RefreshClearance(context.Context, uint64) error
-	InvalidateClearance(uint64)
+	ForgetClearance(uint64)
 }
 
 func NewService(repository repository.EgressRepository, cipher *security.Cipher, browserUA string) *Service {
@@ -86,7 +86,7 @@ func (s *Service) List(ctx context.Context, scope domain.Scope, sort repository.
 	}
 	result := make([]domain.PublicNode, 0, len(values))
 	for _, value := range values {
-		result = append(result, publicNode(value))
+		result = append(result, s.publicNode(value))
 	}
 	return result, nil
 }
@@ -98,9 +98,9 @@ func (s *Service) Create(ctx context.Context, input Input) (domain.PublicNode, e
 	}
 	created, err := s.repository.CreateEgressNode(ctx, value)
 	if err == nil {
-		s.invalidateClearance(created.ID)
+		s.forgetClearance(created.ID)
 	}
-	return publicNode(created), err
+	return s.publicNode(created), err
 }
 
 func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.PublicNode, error) {
@@ -117,9 +117,9 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 	}
 	updated, err := s.repository.UpdateEgressNode(ctx, value)
 	if err == nil {
-		s.invalidateClearance(updated.ID)
+		s.forgetClearance(updated.ID)
 	}
-	return publicNode(updated), err
+	return s.publicNode(updated), err
 }
 
 func (s *Service) Delete(ctx context.Context, id uint64) error {
@@ -128,7 +128,7 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 		return ErrNotFound
 	}
 	if err == nil {
-		s.invalidateClearance(id)
+		s.forgetClearance(id)
 	}
 	return err
 }
@@ -148,12 +148,12 @@ func (s *Service) RefreshClearance(ctx context.Context, id uint64) error {
 	return manager.RefreshClearance(ctx, id)
 }
 
-func (s *Service) invalidateClearance(id uint64) {
+func (s *Service) forgetClearance(id uint64) {
 	s.mu.RLock()
 	manager := s.clearance
 	s.mu.RUnlock()
 	if manager != nil {
-		manager.InvalidateClearance(id)
+		manager.ForgetClearance(id)
 	}
 }
 
@@ -214,10 +214,15 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	if create {
 		value.Health = 1
 	}
+	// Any administrator edit invalidates freshness. Keep the binding fingerprint:
+	// managed mode may use the existing cookie as last-known-good only when the
+	// target and actual proxy still match the binding that produced it.
+	value.ClearanceRefreshedAt = nil
+	value.ClearanceFingerprint = ""
 	return value, nil
 }
 
-func publicNode(value domain.Node) domain.PublicNode {
+func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 	userAgent := value.UserAgent
 	if value.Scope == domain.ScopeBuild {
 		userAgent = ""
@@ -225,9 +230,18 @@ func publicNode(value domain.Node) domain.PublicNode {
 	return domain.PublicNode{
 		ID: value.ID, Name: value.Name, Scope: value.Scope, Enabled: value.Enabled,
 		ProxyConfigured: value.EncryptedProxyURL != "", UserAgent: userAgent, CookieConfigured: value.EncryptedCloudflareCookie != "",
-		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
+		AccountBoundProxy: s.accountBoundProxy(value),
+		Health:            value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
+}
+
+func (s *Service) accountBoundProxy(value domain.Node) bool {
+	if s == nil || s.cipher == nil || strings.TrimSpace(value.EncryptedProxyURL) == "" {
+		return false
+	}
+	proxyURL, err := s.cipher.Decrypt(value.EncryptedProxyURL)
+	return err == nil && strings.Contains(proxyURL, ProxyAccountPlaceholder)
 }
 
 func NormalizeProxyURL(value string) (string, error) {
