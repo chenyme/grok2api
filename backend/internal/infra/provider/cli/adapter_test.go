@@ -102,7 +102,7 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 				t.Fatalf("legacy header %s = %q", legacy, r.Header.Get(legacy))
 			}
 		}
-		if r.Header.Get("x-grok-user-id") != "user-123" || r.Header.Get("x-userid") != "" || r.Header.Get("Accept-Encoding") != "gzip" || len(r.Header.Get("traceparent")) != 55 {
+		if r.Header.Get("x-grok-user-id") != "user-123" || r.Header.Get("x-grok-turn-idx") != "7" || r.Header.Get("x-userid") != "" || r.Header.Get("Accept-Encoding") != "gzip" || len(r.Header.Get("traceparent")) != 55 {
 			t.Fatalf("protocol headers = %#v", r.Header)
 		}
 		if _, ok := r.Header["Tracestate"]; ok {
@@ -133,7 +133,7 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 	adapter.http.Transport = transport
 	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: account.Credential{ID: 7, UserID: "user-123", EncryptedAccessToken: encrypted}, Method: http.MethodPost, Path: "/responses",
-		Model: "grok-4.5", PromptCacheKey: "isolated-key", NormalizeBody: true,
+		Model: "grok-4.5", PromptCacheKey: "isolated-key", GrokTurnIndex: "7", NormalizeBody: true,
 		Body: []byte(`{"model":"public","prompt_cache_key":"client-key","input":[{"type":"reasoning","id":"rs_1","encrypted_content":"cipher"}]}`),
 	})
 	if err != nil {
@@ -143,6 +143,46 @@ func TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning(t *testing.
 	input := captured["input"].([]any)
 	if captured["model"] != "grok-4.5" || captured["prompt_cache_key"] != "isolated-key" || len(input) != 1 || input[0].(map[string]any)["type"] != "reasoning" || input[0].(map[string]any)["encrypted_content"] != "cipher" {
 		t.Fatalf("captured = %#v", captured)
+	}
+}
+
+func TestNormalizeGrokTurnIndex(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "missing"},
+		{name: "zero", value: "0", want: "0"},
+		{name: "positive", value: "42", want: "42"},
+		{name: "trimmed", value: " 7 ", want: "7"},
+		{name: "max uint64", value: "18446744073709551615", want: "18446744073709551615"},
+		{name: "negative", value: "-1"},
+		{name: "explicit positive", value: "+1"},
+		{name: "decimal", value: "1.0"},
+		{name: "overflow", value: "18446744073709551616"},
+		{name: "too long", value: "000000000000000000001"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeGrokTurnIndex(test.value); got != test.want {
+				t.Fatalf("turn index = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestGrokTurnIndexRequiresStableSession(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", nil)
+	applyGrokTurnIndexHeader(request, "7")
+	if got := request.Header.Get("x-grok-turn-idx"); got != "" {
+		t.Fatalf("turn index without session = %q", got)
+	}
+
+	request.Header.Set("x-grok-session-id", "session-1")
+	applyGrokTurnIndexHeader(request, "7")
+	if got := request.Header.Get("x-grok-turn-idx"); got != "7" {
+		t.Fatalf("turn index with session = %q, want 7", got)
 	}
 }
 
@@ -194,10 +234,10 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 		}, nil
 	})
 
-	credential := account.Credential{Provider: account.ProviderBuild, EncryptedAccessToken: encrypted}
+	credential := account.Credential{ID: 7, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted}
 	first, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.5",
-		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-replay-key",
+		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-cache-key", ReasoningReplayKey: "messages-replay-key",
 		Body: []byte(`{"model":"public","max_tokens":128,"messages":[{"role":"user","content":"first"}]}`),
 	})
 	if err != nil {
@@ -212,7 +252,7 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 
 	second, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.5",
-		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-replay-key",
+		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-cache-key", ReasoningReplayKey: "messages-replay-key",
 		Body: []byte(`{"model":"public","max_tokens":128,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"first"},{"role":"user","content":"second"}]}`),
 	})
 	if err != nil {
@@ -224,6 +264,33 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 	}
 	if requestCount != 2 {
 		t.Fatalf("request count = %d", requestCount)
+	}
+}
+
+func TestReasoningReplayScopeSeparatesAccountAndPlane(t *testing.T) {
+	adapter := NewAdapter(Config{
+		BaseURL:         "https://build.example/v1",
+		FallbackBaseURL: "https://xai.example/v1",
+	}, nil)
+	request := provider.ResponseResourceRequest{
+		Credential:         account.Credential{ID: 7},
+		ReasoningReplayKey: "explicit-session",
+	}
+	buildKey := adapter.scopedReasoningReplayKey(request, "https://build.example/v1")
+	if buildKey == "" {
+		t.Fatal("explicit session did not produce replay scope")
+	}
+	otherAccount := request
+	otherAccount.Credential.ID = 8
+	if got := adapter.scopedReasoningReplayKey(otherAccount, "https://build.example/v1"); got == buildKey {
+		t.Fatal("reasoning replay scope was shared across accounts")
+	}
+	if got := adapter.scopedReasoningReplayKey(request, "https://xai.example/v1"); got == buildKey {
+		t.Fatal("reasoning replay scope was shared across Build and XAI")
+	}
+	request.ReasoningReplayKey = ""
+	if got := adapter.scopedReasoningReplayKey(request, "https://build.example/v1"); got != "" {
+		t.Fatalf("soft/empty session unexpectedly enabled replay: %q", got)
 	}
 }
 
@@ -407,13 +474,13 @@ func TestGrokSessionIDFollowsConversationIdentity(t *testing.T) {
 	if err != nil || parsed.Version() != uuid.Version(8) || first != second {
 		t.Fatalf("derived sessions = %q %q, %v", first, second, err)
 	}
+	// 对齐 CPA：无会话键时不得伪造随机 conv-id，否则会打散 xAI 服务器亲和导致 cached_tokens=0。
 	generated, err := grokSessionID("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err = uuid.Parse(generated)
-	if err != nil || parsed.Version() != uuid.Version(7) {
-		t.Fatalf("generated session = %q, %v", generated, err)
+	if generated != "" {
+		t.Fatalf("empty session key must not invent conv-id, got %q", generated)
 	}
 }
 

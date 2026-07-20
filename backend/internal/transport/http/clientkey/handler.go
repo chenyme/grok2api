@@ -32,8 +32,8 @@ type createRequest struct {
 	Name                 string   `json:"name" binding:"required"`
 	Enabled              *bool    `json:"enabled"`
 	ExpiresAt            string   `json:"expiresAt"`
-	RPMLimit             int      `json:"rpmLimit"`
-	MaxConcurrent        int      `json:"maxConcurrent"`
+	RPMLimit             *int     `json:"rpmLimit"`
+	MaxConcurrent        *int     `json:"maxConcurrent"`
 	BillingLimitUSDTicks int64    `json:"billingLimitUsdTicks"`
 	AllowedModelIDs      []string `json:"allowedModelIds"`
 }
@@ -147,7 +147,16 @@ func (h *Handler) create(c *gin.Context) {
 	if request.Enabled != nil {
 		enabled = *request.Enabled
 	}
-	created, err := h.service.Create(c.Request.Context(), clientkeyapp.CreateInput{Name: request.Name, Enabled: enabled, ExpiresAt: expiresAt, RPMLimit: request.RPMLimit, MaxConcurrent: request.MaxConcurrent, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowedModels: modelIDs})
+	input := clientkeyapp.CreateInput{Name: request.Name, Enabled: enabled, ExpiresAt: expiresAt, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowedModels: modelIDs}
+	if request.RPMLimit != nil {
+		input.RPMLimit = *request.RPMLimit
+		input.RPMUnlimited = *request.RPMLimit == 0
+	}
+	if request.MaxConcurrent != nil {
+		input.MaxConcurrent = *request.MaxConcurrent
+		input.ConcurrencyUnlimited = *request.MaxConcurrent == 0
+	}
+	created, err := h.service.Create(c.Request.Context(), input)
 	if err != nil {
 		h.writeServiceError(c, "clientKeyCreateFailed", err)
 		return

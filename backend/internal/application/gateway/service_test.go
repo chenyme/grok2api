@@ -124,7 +124,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	clientService := clientkeyapp.NewService(nil, nil, nil, 60, 4, nil)
 	selector := NewSelector(accountRepo, concurrency, sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientService, registry, selector, responseRepo, 3)
-	result, err := service.CreateResponse(ctx, Input{RequestID: "req-1", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`), PromptCacheSeed: "claude-session"})
+	result, err := service.CreateResponse(ctx, Input{RequestID: "req-1", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`), PromptCacheSeed: "claude-session", GrokTurnIndex: "3"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,10 +140,16 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	if len(adapter.attempts) != 2 || adapter.attempts[0] != first.ID || adapter.attempts[1] != second.ID {
 		t.Fatalf("attempts = %#v", adapter.attempts)
 	}
-	identity := resolveBuildSessionIdentity(clientKey.ID, account.ProviderBuild, "grok-test", "", "claude-session")
+	identity := resolveBuildSessionIdentity(clientKey.ID, account.ProviderBuild, "grok-test", "", "claude-session", nil)
 	expectedCacheKey := identity.upstreamID
 	if adapter.lastPromptCacheKey != expectedCacheKey {
 		t.Fatalf("prompt cache key = %q, want %q", adapter.lastPromptCacheKey, expectedCacheKey)
+	}
+	if adapter.lastReasoningReplayKey != identity.replayKey {
+		t.Fatalf("reasoning replay key = %q, want %q", adapter.lastReasoningReplayKey, identity.replayKey)
+	}
+	if adapter.lastGrokTurnIndex != "3" {
+		t.Fatalf("Grok turn index = %q, want 3", adapter.lastGrokTurnIndex)
 	}
 	if boundID, ok, err := sticky.Get(ctx, stickySessionKey(identity.affinityKey), time.Now().UTC()); err != nil || !ok || boundID != second.ID {
 		t.Fatalf("failover sticky binding = %d, %v, err = %v; want account %d", boundID, ok, err, second.ID)
@@ -161,7 +167,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("audit detail = %#v, err = %v", detail, err)
 	}
 	ownership, err := responseRepo.Get(ctx, "resp-test", clientKey.ID, time.Now().UTC())
-	if err != nil || ownership.AccountID != second.ID {
+	if err != nil || ownership.AccountID != second.ID || ownership.PromptCacheKey != expectedCacheKey || ownership.ReasoningReplayKey != identity.replayKey {
 		t.Fatalf("ownership = %#v, err = %v", ownership, err)
 	}
 
@@ -193,6 +199,13 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	_ = continued.Body.Close()
 	if len(adapter.attempts) != 1 || adapter.attempts[0] != second.ID {
 		t.Fatalf("continued attempts = %#v", adapter.attempts)
+	}
+	if adapter.lastPromptCacheKey != expectedCacheKey || adapter.lastReasoningReplayKey != identity.replayKey {
+		t.Fatalf("continued session identity drifted: cache=%q replay=%q", adapter.lastPromptCacheKey, adapter.lastReasoningReplayKey)
+	}
+	nextOwnership, err := responseRepo.Get(ctx, "resp-next", clientKey.ID, time.Now().UTC())
+	if err != nil || nextOwnership.PromptCacheKey != expectedCacheKey || nextOwnership.ReasoningReplayKey != identity.replayKey {
+		t.Fatalf("continued ownership = %#v, err = %v", nextOwnership, err)
 	}
 
 	adapter.resetAttempts()
@@ -227,6 +240,31 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	missing.Finalize(Usage{}, "", "")
 	if _, err := responseRepo.Get(ctx, "resp-next", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("stale ownership err = %v", err)
+	}
+
+	adapter.resetAttempts()
+	streamFailed, err := service.CreateResponse(ctx, Input{RequestID: "req-stream-failed", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`), PromptCacheSeed: "stream-failed-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(streamFailed.Body)
+	if streamFailed.RecordStreamFailure == nil {
+		t.Fatal("stream failure recorder is nil")
+	}
+	streamFailed.RecordStreamFailure(StreamFailureDiagnostic{Body: []byte(`{"type":"response.failed","error":{"message":"access_token=secret-token"}}`)})
+	streamFailed.Finalize(Usage{}, "", "upstream_stream_error")
+	_ = streamFailed.Body.Close()
+	logs, _, err = auditRepo.List(ctx, 0, 10)
+	if err != nil || len(logs) == 0 {
+		t.Fatalf("stream failure audits = %#v, err = %v", logs, err)
+	}
+	streamDetail, err := auditRepo.Get(ctx, logs[0].ID)
+	if err != nil || streamDetail.ErrorCode != "upstream_stream_error" || streamDetail.AttemptCount != 1 || len(streamDetail.Attempts) != 1 {
+		t.Fatalf("stream failure detail = %#v, err = %v", streamDetail, err)
+	}
+	streamAttempt := streamDetail.Attempts[0]
+	if streamAttempt.Stage != "response_stream" || streamAttempt.UpstreamStatusCode == nil || *streamAttempt.UpstreamStatusCode != http.StatusOK || string(streamAttempt.ResponseBody) != `{"type":"response.failed","error":{"message":"access_token=[REDACTED]"}}` {
+		t.Fatalf("stream failure attempt = %#v", streamAttempt)
 	}
 
 	adapter.resetAttempts()
@@ -577,6 +615,69 @@ func TestGatewayDoesNotPersistStatelessConsoleResponses(t *testing.T) {
 	}
 	if _, err := responseRepo.Get(ctx, "resp-console-stale", key.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("stale console ownership was not removed: %v", err)
+	}
+}
+
+func TestGatewayWebOwnershipDoesNotPersistRawPromptCacheKey(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "web-ownership.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web", SourceKey: "web",
+		EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const model = "grok-web-ownership"
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "web-key", Prefix: "web-key", SecretHash: strings.Repeat("d", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := webStoredResponseAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
+
+	rawKey := strings.Repeat("raw-session-", 16)
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-web-ownership", ClientKey: key, PublicModel: model, PromptCacheKey: rawKey,
+		Body: []byte(`{"model":"grok-web-ownership","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "resp-web-ownership", "")
+	_ = result.Body.Close()
+	ownership, err := responseRepo.Get(ctx, "resp-web-ownership", key.ID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownership.AccountID != credential.ID || ownership.Provider != account.ProviderWeb || ownership.PromptCacheKey != "" || ownership.ReasoningReplayKey != "" {
+		t.Fatalf("web ownership = %#v", ownership)
 	}
 }
 
@@ -1284,13 +1385,15 @@ func runQuotaRefreshWorkers(t *testing.T, service *accountapp.Service) {
 }
 
 type failoverAdapter struct {
-	mu                 sync.Mutex
-	firstID            uint64
-	attempts           []uint64
-	lastMethod         string
-	lastPath           string
-	lastPromptCacheKey string
-	resourceStatus     int
+	mu                     sync.Mutex
+	firstID                uint64
+	attempts               []uint64
+	lastMethod             string
+	lastPath               string
+	lastPromptCacheKey     string
+	lastReasoningReplayKey string
+	lastGrokTurnIndex      string
+	resourceStatus         int
 }
 
 type ssoUnauthorizedAdapter struct {
@@ -1442,6 +1545,25 @@ func (a *systemicForbiddenAdapter) Attempts() []uint64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]uint64(nil), a.attempts...)
+}
+
+type webStoredResponseAdapter struct{}
+
+func (webStoredResponseAdapter) Provider() account.Provider { return account.ProviderWeb }
+func (webStoredResponseAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: account.ProviderWeb,
+		Conversation: provider.ConversationSurface{
+			Responses: true, StoredResponses: true,
+		},
+		Inference: provider.InferencePolicy{Usage: provider.UsageEstimated},
+	}
+}
+func (webStoredResponseAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
+	return &provider.Response{
+		StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"id":"resp-web-ownership"}`)),
+	}, nil
 }
 
 type webRateLimitAdapter struct{}
@@ -1626,6 +1748,8 @@ func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.Re
 	a.lastMethod = request.Method
 	a.lastPath = request.Path
 	a.lastPromptCacheKey = request.PromptCacheKey
+	a.lastReasoningReplayKey = request.ReasoningReplayKey
+	a.lastGrokTurnIndex = request.GrokTurnIndex
 	resourceStatus := a.resourceStatus
 	a.mu.Unlock()
 	status, body := http.StatusOK, "ok"
@@ -1650,6 +1774,8 @@ func (a *failoverAdapter) resetAttempts() {
 	a.lastMethod = ""
 	a.lastPath = ""
 	a.lastPromptCacheKey = ""
+	a.lastReasoningReplayKey = ""
+	a.lastGrokTurnIndex = ""
 }
 func (a *failoverAdapter) ListModels(context.Context, account.Credential) ([]string, error) {
 	return nil, nil

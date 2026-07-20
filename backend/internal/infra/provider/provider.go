@@ -120,10 +120,14 @@ type ResponseResourceRequest struct {
 	Body           []byte
 	Model          string
 	PromptCacheKey string
-	IdempotencyID  string
-	Streaming      bool
-	NormalizeBody  bool
-	Operation      string
+	// ReasoningReplayKey 只来自客户端显式会话身份；soft cache identity 不得用于密文回放。
+	ReasoningReplayKey string
+	// GrokTurnIndex 是客户端显式提供的 Grok Shell 用户轮次；Build 出站前会校验，禁止服务端伪造。
+	GrokTurnIndex string
+	IdempotencyID string
+	Streaming     bool
+	NormalizeBody bool
+	Operation     string
 }
 
 // Response 表示尚未写入下游的上游响应。

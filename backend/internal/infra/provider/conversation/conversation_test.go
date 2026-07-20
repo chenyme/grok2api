@@ -43,9 +43,64 @@ func TestConvertChatRequestToResponses(t *testing.T) {
 	if content[1].(map[string]any)["image_url"] != "data:image/png;base64,AA==" {
 		t.Fatalf("image content = %#v", content)
 	}
+	if content[1].(map[string]any)["detail"] != "auto" {
+		t.Fatalf("image detail = %#v", content[1])
+	}
 	tools := payload["tools"].([]any)
 	if len(tools) != 2 || tools[0].(map[string]any)["name"] != "lookup" || tools[0].(map[string]any)["type"] != "function" || tools[1].(map[string]any)["type"] != "web_search" {
 		t.Fatalf("tools = %#v", tools)
+	}
+}
+
+func TestConvertChatToolImageResultToMultimodalFunctionOutput(t *testing.T) {
+	body := []byte(`{
+		"model":"public-chat",
+		"messages":[
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":[
+				{"type":"text","text":"Read image file"},
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,AA==","detail":"high"}}
+			]}
+		]
+	}`)
+	converted, _, err := ConvertRequestWithOptions(body, "grok-4.5", OperationChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatal(err)
+	}
+	input := payload["input"].([]any)
+	output := input[1].(map[string]any)["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("tool output = %#v", output)
+	}
+	textBlock := output[0].(map[string]any)
+	imageBlock := output[1].(map[string]any)
+	if textBlock["type"] != "input_text" || textBlock["text"] != "Read image file" ||
+		imageBlock["type"] != "input_image" || imageBlock["detail"] != "high" ||
+		imageBlock["image_url"] != "data:image/png;base64,AA==" {
+		t.Fatalf("tool output = %#v", output)
+	}
+}
+
+func TestConvertChatKeepsNonMultimodalToolJSONAsText(t *testing.T) {
+	body := []byte(`{
+		"model":"public-chat",
+		"messages":[{"role":"tool","tool_call_id":"call_1","content":[{"name":"value","value":1}]}]
+	}`)
+	converted, _, err := ConvertRequestWithOptions(body, "grok-4.5", OperationChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatal(err)
+	}
+	output := payload["input"].([]any)[0].(map[string]any)["output"]
+	if output != `[{"name":"value","value":1}]` {
+		t.Fatalf("tool output = %#v", output)
 	}
 }
 
@@ -314,7 +369,7 @@ func TestConvertAnthropicClaudeCodeRequestToResponses(t *testing.T) {
 	}
 	output := input[2].(map[string]any)["output"].([]any)
 	if len(output) != 4 || !strings.Contains(output[0].(map[string]any)["text"].(string), "failed") ||
-		!strings.Contains(output[2].(map[string]any)["text"].(string), `"Read"`) || output[3].(map[string]any)["type"] != "input_image" {
+		!strings.Contains(output[2].(map[string]any)["text"].(string), `"Read"`) || output[3].(map[string]any)["type"] != "input_image" || output[3].(map[string]any)["detail"] != "auto" {
 		t.Fatalf("tool result = %#v", output)
 	}
 	tools := payload["tools"].([]any)
@@ -785,5 +840,36 @@ func TestConvertResponsesStreamMessagesInputTokens(t *testing.T) {
 	}
 	if !strings.Contains(text, `"cost_in_usd_ticks":9000`) || !strings.Contains(text, `"input_tokens":180`) {
 		t.Fatalf("message_delta should retain upstream usage extensions:\n%s", text)
+	}
+}
+
+func TestConvertResponsesStreamMergesPartialUsageFrames(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_usage","model":"grok-4.5","status":"in_progress","usage":{"input_tokens":120,"output_tokens":30,"total_tokens":150,"cost_in_usd_ticks":9000,"output_tokens_details":{"reasoning_tokens":12},"context_details":{"input_tokens":110,"output_tokens":25}}}}`, "",
+		`event: response.in_progress`,
+		`data: {"type":"response.in_progress","response":{"usage":{"input_tokens_details":{"cached_tokens":80}}}}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_usage","model":"grok-4.5","status":"completed"}}`, "", "",
+	}, "\n")
+
+	tests := []struct {
+		operation string
+		want      []string
+	}{
+		{operation: OperationChat, want: []string{`"prompt_tokens":120`, `"completion_tokens":30`, `"cached_tokens":80`, `"reasoning_tokens":12`, `"cost_in_usd_ticks":9000`}},
+		{operation: OperationMessages, want: []string{`"input_tokens":120`, `"output_tokens":30`, `"cache_read_input_tokens":80`, `"cost_in_usd_ticks":9000`}},
+	}
+	for _, test := range tests {
+		converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), test.operation))
+		if err != nil {
+			t.Fatalf("%s conversion: %v", test.operation, err)
+		}
+		text := string(converted)
+		for _, want := range test.want {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s partial usage lost %s:\n%s", test.operation, want, text)
+			}
+		}
 	}
 }

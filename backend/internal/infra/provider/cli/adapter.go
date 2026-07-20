@@ -156,10 +156,6 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				return invalidResponsesResponse(err), nil
 			}
 		}
-		// 服务端推理回放：在 prompt_cache_key 写入后、出站前注入上一轮 encrypted items。
-		if a.replay != nil && request.PromptCacheKey != "" && !isCompactPath(request.Path) && !compactionRequested {
-			body = a.replay.Apply(ctx, request.Model, request.PromptCacheKey, body)
-		}
 	}
 	if compactionRequested {
 		warnings := ""
@@ -171,6 +167,10 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	// 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source=1 的账号默认走 XAI。
 	primaryBase := a.primaryBaseURL()
 	base := a.inferenceBaseForOperation(request.Credential, request.Billing, request.Method, request.Path)
+	// 缓存亲和与推理回放使用不同身份。回放还必须绑定实际账号和上游平面，
+	// 避免把一个账号或 Build 平面签发的 opaque reasoning 发给另一作用域。
+	replayBaseBody := body
+	body, replayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, base)
 	resp, reqURL, err := a.doResponseRequest(ctx, request, accessToken, body, base)
 	if err != nil {
 		return nil, err
@@ -190,17 +190,18 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		primaryResp := cloneBufferedResponse(resp, primaryBody, primaryTruncated)
 		fallbackBase := a.fallbackBaseURL()
 		if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
-			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(ctx, request, accessToken, body, fallbackBase)
+			fallbackBody, fallbackReplayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, fallbackBase)
+			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(ctx, request, accessToken, fallbackBody, fallbackBase)
 			if fallbackErr == nil {
 				fallbackErr = normalizeGzipResponse(fallbackResp)
 			}
 			fallbackRecovered := false
 			if fallbackErr == nil {
-				fallbackResp, fallbackURL, fallbackRecovered = a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, fallbackBase, fallbackResp, fallbackURL)
+				fallbackResp, fallbackURL, fallbackRecovered = a.recoverReasoningDecodeFailure(ctx, request, accessToken, fallbackBody, fallbackBase, fallbackResp, fallbackURL)
 			}
 			if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
 				a.activateBuildAPIFallback(ctx, &request.Credential)
-				resp, reqURL, base = fallbackResp, fallbackURL, fallbackBase
+				resp, reqURL, base, body, replayKey = fallbackResp, fallbackURL, fallbackBase, fallbackBody, fallbackReplayKey
 				reasoningRecovered = reasoningRecovered || fallbackRecovered
 			} else {
 				if fallbackErr == nil {
@@ -215,8 +216,8 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	modelCatalogChanged := a.modelCatalogChanged(request.Credential.ID, resp.Header.Get("x-models-etag"))
 	// 在协议转换前捕获上游 Responses 形态，写入/清理推理回放缓存。
-	if a.shouldCaptureReplay(request, resp) {
-		resp.Body = a.replay.CaptureBody(resp.Body, request.Model, request.PromptCacheKey, request.Streaming, isCompactPath(request.Path))
+	if a.shouldCaptureReplay(request, resp, replayKey) {
+		resp.Body = a.replay.CaptureBody(resp.Body, request.Model, replayKey, request.Streaming, isCompactPath(request.Path))
 	}
 	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses || request.Operation == conversation.OperationCompaction
 	if responsesOperation && toolCompatibility != nil {
@@ -291,17 +292,45 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, ModelCatalogChanged: modelCatalogChanged}, nil
 }
 
-func (a *Adapter) shouldCaptureReplay(request provider.ResponseResourceRequest, resp *http.Response) bool {
+func (a *Adapter) shouldCaptureReplay(request provider.ResponseResourceRequest, resp *http.Response, replayKey string) bool {
 	if a.replay == nil || !a.replay.Enabled() || resp == nil {
 		return false
 	}
-	if request.Method != http.MethodPost || strings.TrimSpace(request.PromptCacheKey) == "" {
+	if request.Method != http.MethodPost || strings.TrimSpace(replayKey) == "" {
 		return false
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return false
 	}
 	return true
+}
+
+func (a *Adapter) applyReasoningReplay(ctx context.Context, request provider.ResponseResourceRequest, body []byte, base string) ([]byte, string) {
+	if a.replay == nil || !a.replay.Enabled() || request.Method != http.MethodPost {
+		return body, ""
+	}
+	key := a.scopedReasoningReplayKey(request, base)
+	if key == "" {
+		return body, ""
+	}
+	if isCompactPath(request.Path) {
+		// compact 不注入历史，但成功后仍需用同一作用域清理旧 replay。
+		return body, key
+	}
+	return a.replay.Apply(ctx, request.Model, key, body), key
+}
+
+func (a *Adapter) scopedReasoningReplayKey(request provider.ResponseResourceRequest, base string) string {
+	seed := strings.TrimSpace(request.ReasoningReplayKey)
+	if seed == "" || request.Credential.ID == 0 {
+		return ""
+	}
+	plane := "build"
+	if fallback := a.fallbackBaseURL(); fallback != "" && strings.EqualFold(strings.TrimRight(base, "/"), fallback) {
+		plane = "xai"
+	}
+	digest := sha256.Sum256([]byte(fmt.Sprintf("grok2api:reasoning-replay:v2:%s:%d:%s", seed, request.Credential.ID, plane)))
+	return hex.EncodeToString(digest[:])
 }
 
 func isCompactPath(path string) bool {
@@ -321,6 +350,7 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 	if err := a.applyHeaders(req, request.Credential, accessToken, request.Model, request.PromptCacheKey, true); err != nil {
 		return nil, "", err
 	}
+	applyGrokTurnIndexHeader(req, request.GrokTurnIndex)
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -338,6 +368,34 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 		return nil, "", err
 	}
 	return resp, req.URL.String(), nil
+}
+
+// applyGrokTurnIndexHeader 只在请求已有稳定 Grok session 时透传真实客户端轮次。
+func applyGrokTurnIndexHeader(request *http.Request, value string) {
+	if request.Header.Get("x-grok-session-id") == "" {
+		return
+	}
+	if turnIndex := normalizeGrokTurnIndex(value); turnIndex != "" {
+		request.Header.Set("x-grok-turn-idx", turnIndex)
+	}
+}
+
+// normalizeGrokTurnIndex 只接受官方客户端生成的非负十进制 u64。
+// 空值或非法值直接省略，避免网关根据历史、工具循环或 compact 结果伪造轮次。
+func normalizeGrokTurnIndex(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 20 {
+		return ""
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return ""
+		}
+	}
+	if _, err := strconv.ParseUint(value, 10, 64); err != nil {
+		return ""
+	}
+	return value
 }
 
 // invalidResponsesResponse 将本地协议校验错误转换为标准 OpenAI 错误响应，避免触发上游账号重试。
@@ -521,7 +579,10 @@ func (a *Adapter) GetBilling(ctx context.Context, credential account.Credential)
 func (a *Adapter) RefreshCredential(ctx context.Context, credential account.Credential) (provider.RefreshedCredential, error) {
 	refreshToken, err := a.cipher.Decrypt(credential.EncryptedRefreshToken)
 	if err != nil {
-		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "credential_decrypt_failed", Permanent: true, Cause: err}
+		// 解密失败通常是本地 encryption key 临时/不匹配，属于可恢复故障；
+		// 不得标记为 permanent（否则密钥恢复后手动/批量刷新永远不会重试）。
+		// 真正的 OAuth 永久失败（如 invalid_grant）由 oauth.refresh 返回 Permanent=true。
+		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "credential_decrypt_failed", Permanent: false, Cause: err}
 	}
 	if strings.TrimSpace(refreshToken) == "" {
 		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "missing_refresh_token", Permanent: true}
@@ -575,14 +636,18 @@ func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential,
 
 	if trace {
 		requestID := uuid.NewString()
+		// 对齐 CPA：仅在存在稳定 session 时设置 x-grok-conv-id / session-id。
+		// 禁止每请求随机 UUID，否则会打散 xAI 服务器亲和，导致 cached_tokens 长期为 0。
 		sessionID, err := grokSessionID(promptCacheKey)
 		if err != nil {
 			return err
 		}
 		req.Header.Set("x-authenticateresponse", "authenticate-response")
 		req.Header.Set("x-grok-agent-id", a.agentID)
-		req.Header.Set("x-grok-session-id", sessionID)
-		req.Header.Set("x-grok-conv-id", sessionID)
+		if sessionID != "" {
+			req.Header.Set("x-grok-session-id", sessionID)
+			req.Header.Set("x-grok-conv-id", sessionID)
+		}
 		req.Header.Set("x-grok-req-id", requestID)
 		// 网关无法从无状态 API 请求可靠恢复 CLI prompt index；该字段在
 		// 官方协议中可选，因此不伪造 x-grok-turn-idx。
@@ -615,19 +680,17 @@ func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential,
 	return nil
 }
 
+// grokSessionID 将稳定会话键转为上游 x-grok-conv-id。
+// 空键返回空串（对齐 CPA grok_build_stays_stateless_without_session），绝不每请求随机生成。
 func grokSessionID(promptCacheKey string) (string, error) {
 	key := strings.TrimSpace(promptCacheKey)
-	if key != "" {
-		if parsed, err := uuid.Parse(key); err == nil {
-			return parsed.String(), nil
-		}
-		return uuid.NewHash(sha256.New(), uuid.NameSpaceURL, []byte("grok2api:session:"+key), 8).String(), nil
+	if key == "" {
+		return "", nil
 	}
-	value, err := uuid.NewV7()
-	if err != nil {
-		return "", err
+	if parsed, err := uuid.Parse(key); err == nil {
+		return parsed.String(), nil
 	}
-	return value.String(), nil
+	return uuid.NewHash(sha256.New(), uuid.NameSpaceURL, []byte("grok2api:session:"+key), 8).String(), nil
 }
 
 func injectPromptCacheKey(body []byte, clientKey string) ([]byte, error) {

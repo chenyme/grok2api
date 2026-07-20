@@ -58,7 +58,7 @@ func normalizeMCPOutputInput(item map[string]any, param string) (map[string]any,
 	}, nil
 }
 
-func normalizeMessageInput(item map[string]any, param string) (map[string]any, error) {
+func (c *responsesToolCompatibility) normalizeMessageInput(item map[string]any, param string) (map[string]any, error) {
 	role := strings.TrimSpace(stringField(item, "role"))
 	if role == "" {
 		role = "assistant"
@@ -66,7 +66,7 @@ func normalizeMessageInput(item map[string]any, param string) (map[string]any, e
 	if role == "model" {
 		role = "assistant"
 	}
-	content, err := normalizeMessageContent(item["content"], role, param+".content")
+	content, err := c.normalizeMessageContent(item["content"], role, param+".content")
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ func normalizeMessageInput(item map[string]any, param string) (map[string]any, e
 	return map[string]any{"type": "message", "role": role, "content": content}, nil
 }
 
-func normalizeMessageContent(value any, role, param string) (any, error) {
+func (c *responsesToolCompatibility) normalizeMessageContent(value any, role, param string) (any, error) {
 	if text, ok := value.(string); ok {
 		return text, nil
 	}
@@ -127,29 +127,52 @@ func normalizeMessageContent(value any, role, param string) (any, error) {
 		case "refusal":
 			normalized = append(normalized, map[string]any{"type": textPartType, "text": stringField(item, "refusal")})
 		case "input_image":
-			normalized = append(normalized, normalizeInputImagePart(item))
+			converted, err := c.normalizeInputImagePart(item, fmt.Sprintf("%s[%d]", param, index))
+			if err != nil {
+				return nil, err
+			}
+			normalized = append(normalized, converted)
 		case "input_file":
 			normalized = append(normalized, normalizeInputFilePart(item))
 		default:
-			return nil, &responsesRequestError{Message: "Grok Build 0.2.103 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
+			return nil, &responsesRequestError{Message: "Grok Build 0.2.106 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
 		}
 	}
 	return normalized, nil
 }
 
-func normalizeInputImagePart(item map[string]any) map[string]any {
-	converted := map[string]any{"type": "input_image"}
+func (c *responsesToolCompatibility) normalizeInputImagePart(item map[string]any, param string) (map[string]any, error) {
+	detail := "auto"
+	if raw, exists := item["detail"]; exists && raw != nil {
+		value, ok := raw.(string)
+		if !ok {
+			return nil, &responsesRequestError{Message: param + ".detail 必须是字符串", Param: param + ".detail", Code: "invalid_parameter"}
+		}
+		detail = strings.TrimSpace(value)
+		if detail == "" {
+			detail = "auto"
+		}
+	}
+	switch detail {
+	case "auto", "low", "high":
+	case "original":
+		// OpenAI 支持 original，但 Grok Build 0.2.106 仅接受到 high。
+		detail = "high"
+		c.addWarning("image_detail_original_downgraded")
+	default:
+		return nil, &responsesRequestError{Message: param + ".detail 只支持 auto、low、high 或 original", Param: param + ".detail", Code: "invalid_parameter"}
+	}
+
+	converted := map[string]any{"type": "input_image", "detail": detail}
 	if value, exists := item["image_url"]; exists && value != nil {
 		converted["image_url"] = cloneJSONValue(value)
 	} else if value, exists := item["url"]; exists && value != nil {
 		converted["image_url"] = cloneJSONValue(value)
 	}
-	for _, key := range []string{"detail", "file_id"} {
-		if value, exists := item[key]; exists && value != nil {
-			converted[key] = cloneJSONValue(value)
-		}
+	if value, exists := item["file_id"]; exists && value != nil {
+		converted["file_id"] = cloneJSONValue(value)
 	}
-	return converted
+	return converted, nil
 }
 
 func normalizeInputFilePart(item map[string]any) map[string]any {

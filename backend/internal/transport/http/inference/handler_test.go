@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
@@ -143,12 +144,13 @@ func TestGatewayErrorHidesUpstreamCredentialStatus(t *testing.T) {
 	openAIRouter.GET("/", func(c *gin.Context) {
 		writeGatewayError(c, &gateway.UpstreamFailure{
 			HTTPStatus: http.StatusForbidden, Code: "upstream_forbidden", PublicMessage: "上游拒绝了该请求",
-			Cause: errors.New("secret upstream response"),
+			UpstreamCode: "permission-denied",
+			Cause:        errors.New("secret upstream response"),
 		})
 	})
 	openAIRecorder := httptest.NewRecorder()
 	openAIRouter.ServeHTTP(openAIRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
-	if openAIRecorder.Code != http.StatusServiceUnavailable || !strings.Contains(openAIRecorder.Body.String(), `"code":"upstream_unavailable"`) || strings.Contains(openAIRecorder.Body.String(), "secret") || strings.Contains(openAIRecorder.Body.String(), "拒绝") {
+	if openAIRecorder.Code != http.StatusServiceUnavailable || !strings.Contains(openAIRecorder.Body.String(), `"code":"permission-denied"`) || !strings.Contains(openAIRecorder.Body.String(), "上游服务暂不可用，聊天端点访问被拒绝") || strings.Contains(openAIRecorder.Body.String(), "secret") || strings.Contains(openAIRecorder.Body.String(), "上游拒绝了该请求") {
 		t.Fatalf("OpenAI status=%d body=%s", openAIRecorder.Code, openAIRecorder.Body.String())
 	}
 
@@ -185,17 +187,19 @@ func TestDirectUpstreamCredentialResponsesAreRewritten(t *testing.T) {
 		status    int
 		anthropic bool
 		media     bool
+		body      string
+		wantCode  string
 	}{
-		{name: "openai unauthorized", status: http.StatusUnauthorized},
-		{name: "anthropic forbidden", status: http.StatusForbidden, anthropic: true},
-		{name: "media forbidden", status: http.StatusForbidden, media: true},
+		{name: "openai unauthorized", status: http.StatusUnauthorized, body: `{"error":"secret upstream credential detail"}`, wantCode: "upstream_unavailable"},
+		{name: "anthropic forbidden", status: http.StatusForbidden, anthropic: true, body: `{"code":"permission-denied","error":"secret upstream credential detail"}`, wantCode: "permission-denied"},
+		{name: "media forbidden", status: http.StatusForbidden, media: true, body: `{"code":"permission-denied","error":"secret upstream credential detail"}`, wantCode: "permission-denied"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			finalCode := ""
 			result := &gateway.Result{
 				StatusCode: tc.status,
 				Header:     http.Header{"Content-Type": {"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"error":"secret upstream credential detail"}`)),
+				Body:       io.NopCloser(strings.NewReader(tc.body)),
 				Finalize: func(_ gateway.Usage, _, code string) {
 					finalCode = code
 				},
@@ -213,8 +217,11 @@ func TestDirectUpstreamCredentialResponsesAreRewritten(t *testing.T) {
 			})
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-			if recorder.Code != http.StatusServiceUnavailable || strings.Contains(recorder.Body.String(), "secret") || finalCode != "upstream_unavailable" {
+			if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"`+tc.wantCode+`"`) || strings.Contains(recorder.Body.String(), "secret") || finalCode != "upstream_unavailable" {
 				t.Fatalf("status=%d body=%s finalize=%s", recorder.Code, recorder.Body.String(), finalCode)
+			}
+			if tc.wantCode == "permission-denied" && !strings.Contains(recorder.Body.String(), "上游服务暂不可用，聊天端点访问被拒绝") {
+				t.Fatalf("permission message missing: %s", recorder.Body.String())
 			}
 		})
 	}
@@ -489,6 +496,54 @@ func TestExtractUsageFromCompletedEvent(t *testing.T) {
 	}
 }
 
+func TestExtractUsageFromAnthropicMessagesCaches(t *testing.T) {
+	// Anthropic Messages 协议用 cache_read_input_tokens，不得再记为 0。
+	metadata := extractMetadata([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"grok-4.5","usage":{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":80,"cost_in_usd_ticks":1000}}`))
+	if metadata.Usage.CachedInputTokens != 80 || metadata.Usage.InputTokens != 100 || metadata.Usage.OutputTokens != 20 {
+		t.Fatalf("anthropic usage = %#v", metadata.Usage)
+	}
+}
+
+func TestExtractUsageFromChatCompletionsCaches(t *testing.T) {
+	// OpenAI Chat Completions 用 prompt_tokens_details.cached_tokens。
+	metadata := extractMetadata([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"grok-4.5","usage":{"prompt_tokens":50,"completion_tokens":10,"total_tokens":60,"prompt_tokens_details":{"cached_tokens":30},"completion_tokens_details":{"reasoning_tokens":5}}}`))
+	if metadata.Usage.CachedInputTokens != 30 || metadata.Usage.InputTokens != 50 || metadata.Usage.OutputTokens != 10 || metadata.Usage.ReasoningTokens != 5 || metadata.Usage.TotalTokens != 60 {
+		t.Fatalf("chat usage = %#v", metadata.Usage)
+	}
+}
+
+func TestExtractUsagePrefersResponsesCachedTokensOverAnthropicField(t *testing.T) {
+	// 同时存在时优先 Responses 字段（正常路径不会并存，防回归）。
+	metadata := extractMetadata([]byte(`{"usage":{"input_tokens":10,"output_tokens":1,"input_tokens_details":{"cached_tokens":7},"cache_read_input_tokens":99}}`))
+	if metadata.Usage.CachedInputTokens != 7 {
+		t.Fatalf("prefer responses cached = %#v", metadata.Usage)
+	}
+}
+
+func TestStreamInspectorMergesCachedTokensAcrossFrames(t *testing.T) {
+	// 模拟流式：先到 input/output，后到带 cache 的 usage 帧。
+	inspector := &responseInspector{protocol: streamProtocolAnthropic}
+	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}\n\n"))
+	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"cache_read_input_tokens\":80}}\n\n"))
+	inspector.Inspect([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	inspector.Finish()
+	usage := inspector.Metadata().Usage
+	if usage.InputTokens != 100 || usage.OutputTokens != 20 || usage.CachedInputTokens != 80 {
+		t.Fatalf("merged stream usage = %#v", usage)
+	}
+}
+
+func TestStreamInspectorAcceptsChatCachedOnlyFrame(t *testing.T) {
+	inspector := &responseInspector{protocol: streamProtocolChat}
+	inspector.Inspect([]byte("data: {\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":5,\"total_tokens\":45,\"prompt_tokens_details\":{\"cached_tokens\":25}}}\n\n"))
+	inspector.Inspect([]byte("data: [DONE]\n\n"))
+	inspector.Finish()
+	usage := inspector.Metadata().Usage
+	if usage.CachedInputTokens != 25 || usage.InputTokens != 40 || usage.TotalTokens != 45 {
+		t.Fatalf("chat stream cached usage = %#v", usage)
+	}
+}
+
 func TestUsageInspectorHandlesChunkedSSE(t *testing.T) {
 	inspector := &responseInspector{}
 	inspector.Inspect([]byte("data: {\"response\":{\"id\":\"resp_stream\",\"usage\":{\"input_tokens\":2,"))
@@ -516,10 +571,11 @@ func TestUsageInspectorHandlesFinalEventWithoutNewline(t *testing.T) {
 func TestCopyStreamRequiresProtocolTerminalEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
-		name     string
-		protocol streamProtocol
-		body     string
-		wantErr  error
+		name           string
+		protocol       streamProtocol
+		body           string
+		wantErr        error
+		wantDiagnostic bool
 	}{
 		{
 			name: "responses completed", protocol: streamProtocolResponses,
@@ -532,11 +588,13 @@ func TestCopyStreamRequiresProtocolTerminalEvent(t *testing.T) {
 		},
 		{
 			name: "responses failed", protocol: streamProtocolResponses,
-			body:    `data: {"type":"response.failed","response":{"error":{"message":"failed"}}}` + "\n\n",
-			wantErr: errUpstreamStreamFailed,
+			body:    `data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"code":"upstream_error","message":"failed"},"output":[{"type":"reasoning","encrypted_content":"must-not-be-audited"}]}}` + "\n\n",
+			wantErr: errUpstreamStreamFailed, wantDiagnostic: true,
 		},
 		{name: "chat done", protocol: streamProtocolChat, body: "data: [DONE]\n\n"},
+		{name: "chat error", protocol: streamProtocolChat, body: `data: {"type":"error","error":{"code":"server_error","message":"chat failed"}}` + "\n\n", wantErr: errUpstreamStreamFailed, wantDiagnostic: true},
 		{name: "anthropic stop", protocol: streamProtocolAnthropic, body: `data: {"type":"message_stop"}` + "\n\n"},
+		{name: "anthropic error", protocol: streamProtocolAnthropic, body: `data: {"type":"error","error":{"type":"api_error","message":"messages failed"}}` + "\n\n", wantErr: errUpstreamStreamFailed, wantDiagnostic: true},
 		{name: "image completed", protocol: streamProtocolImage, body: `data: {"type":"image_generation.completed"}` + "\n\n"},
 	}
 	for _, test := range tests {
@@ -553,10 +611,56 @@ func TestCopyStreamRequiresProtocolTerminalEvent(t *testing.T) {
 			if test.name == "responses completed" && (metadata.ResponseID != "resp_ok" || metadata.Usage.TotalTokens != 5) {
 				t.Fatalf("metadata = %#v", metadata)
 			}
+			if test.wantDiagnostic {
+				if metadata.StreamFailure == nil || !strings.Contains(string(metadata.StreamFailure.Body), "failed") || strings.Contains(string(metadata.StreamFailure.Body), "must-not-be-audited") {
+					t.Fatalf("stream failure diagnostic = %#v", metadata.StreamFailure)
+				}
+			} else if metadata.StreamFailure != nil {
+				t.Fatalf("unexpected stream failure diagnostic = %#v", metadata.StreamFailure)
+			}
 			if recorder.Body.String() != test.body {
 				t.Fatalf("forwarded = %q", recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestWriteResultRecordsStreamFailureDiagnostic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	stream := `data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"upstream failed"}}}` + "\n\n"
+	var finalCode string
+	var diagnostic *gateway.StreamFailureDiagnostic
+	result := &gateway.Result{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		RecordStreamFailure: func(value gateway.StreamFailureDiagnostic) {
+			diagnostic = &value
+		},
+		Finalize: func(_ gateway.Usage, _, code string) {
+			finalCode = code
+		},
+	}
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) {
+		handler.writeResult(c, result, true, streamProtocolResponses)
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != stream || finalCode != "upstream_stream_error" {
+		t.Fatalf("status=%d body=%q final=%q", recorder.Code, recorder.Body.String(), finalCode)
+	}
+	if diagnostic == nil || !strings.Contains(string(diagnostic.Body), `"code":"server_error"`) {
+		t.Fatalf("diagnostic = %#v", diagnostic)
+	}
+}
+
+func TestProjectStreamFailureDiagnosticBoundsErrorMessage(t *testing.T) {
+	diagnostic := projectStreamFailureDiagnostic([]byte(`{"type":"error","error":{"code":"server_error","message":"` + strings.Repeat("错误", maxStreamFailureDiagnosticBytes) + `"},"output":"must-not-be-audited"}`))
+	if !diagnostic.BodyTruncated || len(diagnostic.Body) > maxStreamFailureDiagnosticBytes || len(diagnostic.Body) == 0 || !utf8.Valid(diagnostic.Body) || strings.Contains(string(diagnostic.Body), "must-not-be-audited") {
+		t.Fatalf("diagnostic length=%d truncated=%v", len(diagnostic.Body), diagnostic.BodyTruncated)
 	}
 }
 

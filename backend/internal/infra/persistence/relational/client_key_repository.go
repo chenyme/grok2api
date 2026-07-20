@@ -84,6 +84,22 @@ func (r *ClientKeyRepository) Create(ctx context.Context, value clientkey.Key) (
 		if err := tx.Create(&row).Error; err != nil {
 			return err
 		}
+		// GORM 会把带 default tag 的零值替换为数据库默认值；这里显式写回 0，
+		// 使其稳定表示该维度无限制。
+		unlimited := make(map[string]any, 2)
+		if value.RPMLimit == 0 {
+			unlimited["rpm_limit"] = 0
+			row.RPMLimit = 0
+		}
+		if value.MaxConcurrent == 0 {
+			unlimited["max_concurrent"] = 0
+			row.MaxConcurrent = 0
+		}
+		if len(unlimited) > 0 {
+			if err := tx.Model(&row).Updates(unlimited).Error; err != nil {
+				return err
+			}
+		}
 		return replacePermissions(tx, row.ID, value.AllowedModels)
 	})
 	if err != nil {

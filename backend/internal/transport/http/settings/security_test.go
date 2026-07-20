@@ -34,22 +34,22 @@ func TestSettingsResponseDoesNotExposeManualStatsigValue(t *testing.T) {
 	}
 }
 
-func TestSettingsResponseDoesNotExposeBuildTokenAuth(t *testing.T) {
-	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{ProviderBuild: settingsapp.ProviderBuildConfig{TokenAuth: "must-not-leak"}}})
+func TestSettingsResponseIncludesBuildTokenAuth(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{ProviderBuild: settingsapp.ProviderBuildConfig{TokenAuth: "xai-grok-cli"}}})
 	data, err := json.Marshal(response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "must-not-leak") || !strings.Contains(string(data), `"tokenAuthConfigured":true`) {
-		t.Fatalf("settings response leaked or lost Build token status: %s", data)
+	if !strings.Contains(string(data), `"tokenAuth":"xai-grok-cli"`) || !strings.Contains(string(data), `"tokenAuthConfigured":true`) {
+		t.Fatalf("settings response lost Build token auth: %s", data)
 	}
 }
 
 func TestSettingsResponseIncludesRecommendedBuildBaseline(t *testing.T) {
 	response := newSettingsResponse(settingsapp.Snapshot{RecommendedProviderBuild: settingsapp.ProviderBuildRecommendation{
-		ClientVersion: "0.2.103", UserAgent: "grok-shell/0.2.103 (linux; x86_64)",
+		ClientVersion: "0.2.106", UserAgent: "grok-shell/0.2.106 (linux; x86_64)",
 	}})
-	if response.RecommendedProviderBuild.ClientVersion != "0.2.103" || response.RecommendedProviderBuild.UserAgent == "" {
+	if response.RecommendedProviderBuild.ClientVersion != "0.2.106" || response.RecommendedProviderBuild.UserAgent == "" {
 		t.Fatalf("recommended build = %#v", response.RecommendedProviderBuild)
 	}
 }

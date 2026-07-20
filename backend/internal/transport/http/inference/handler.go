@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
@@ -32,13 +33,15 @@ type Handler struct {
 }
 
 const (
-	responseCopyBufferBytes        = 32 << 10
-	maxJSONMetadataInspectionBytes = 8 << 20
-	maxStreamEventInspectionBytes  = 8 << 20
-	maxJSONResponseTransferBytes   = 128 << 20
-	maxStreamResponseTransferBytes = 256 << 20
-	maxMediaResponseTransferBytes  = int64(2) << 30
-	responseWriteTimeout           = 30 * time.Second
+	responseCopyBufferBytes         = 32 << 10
+	maxJSONMetadataInspectionBytes  = 8 << 20
+	maxStreamEventInspectionBytes   = 8 << 20
+	maxStreamFailureDiagnosticBytes = 64 << 10
+	maxCredentialErrorInspectBytes  = 64 << 10
+	maxJSONResponseTransferBytes    = 128 << 20
+	maxStreamResponseTransferBytes  = 256 << 20
+	maxMediaResponseTransferBytes   = int64(2) << 30
+	responseWriteTimeout            = 30 * time.Second
 )
 
 var (
@@ -228,6 +231,7 @@ func (h *Handler) createChatCompletion(c *gin.Context) {
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
 		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
 		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body),
+		GrokTurnIndex:   c.GetHeader("x-grok-turn-idx"),
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -268,6 +272,7 @@ func (h *Handler) createMessage(c *gin.Context) {
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
 		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
 		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body),
+		GrokTurnIndex:   c.GetHeader("x-grok-turn-idx"),
 	})
 	if err != nil {
 		writeGatewayAnthropicError(c, err)
@@ -338,7 +343,8 @@ func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
 	defer func() { result.Finalize(gateway.Usage{}, "", errorCode) }()
 	if isUpstreamCredentialStatus(result.StatusCode) {
 		errorCode = "upstream_unavailable"
-		writeOpenAIError(c, http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用")
+		clientCode := readCredentialErrorCode(result.StatusCode, result.Body)
+		writeOpenAIError(c, http.StatusServiceUnavailable, clientCode, credentialErrorMessage(clientCode))
 		return
 	}
 	contentLength, contentLengthErr := strconv.ParseInt(result.Header.Get("Content-Length"), 10, 64)
@@ -812,6 +818,7 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
 		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
 		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body), PreviousResponseID: request.PreviousResponseID,
+		GrokTurnIndex: c.GetHeader("x-grok-turn-idx"),
 	}
 	var result *gateway.Result
 	if compact {
@@ -898,10 +905,11 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	defer func() { result.Finalize(usage, responseID, errorCode) }()
 	if isUpstreamCredentialStatus(result.StatusCode) {
 		errorCode = "upstream_unavailable"
+		clientCode := readCredentialErrorCode(result.StatusCode, result.Body)
 		if anthropic {
-			writeAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", "上游服务暂不可用")
+			writeAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", credentialErrorMessage(clientCode), clientCode)
 		} else {
-			writeOpenAIError(c, http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用")
+			writeOpenAIError(c, http.StatusServiceUnavailable, clientCode, credentialErrorMessage(clientCode))
 		}
 		return
 	}
@@ -923,6 +931,9 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	if stream {
 		metadata, copyErr := copyStream(c.Writer, result.Body, protocol)
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
+		if metadata.StreamFailure != nil && result.RecordStreamFailure != nil {
+			result.RecordStreamFailure(*metadata.StreamFailure)
+		}
 	} else {
 		metadata, copyErr := copyJSON(c.Writer, result.Body)
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
@@ -944,9 +955,10 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 }
 
 type responseMetadata struct {
-	Usage      gateway.Usage
-	ResponseID string
-	Model      string
+	Usage         gateway.Usage
+	ResponseID    string
+	Model         string
+	StreamFailure *gateway.StreamFailureDiagnostic
 }
 
 func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol) (responseMetadata, error) {
@@ -1048,11 +1060,11 @@ func (i *responseInspector) Inspect(chunk []byte) {
 			i.observeTerminal(value)
 			if !bytes.Equal(value, []byte("[DONE]")) {
 				metadata := extractMetadata(value)
-				if metadata.Usage.TotalTokens > 0 {
+				if hasUsageSignal(metadata.Usage) {
 					if metadata.Usage.ResponseModel == "" {
 						metadata.Usage.ResponseModel = i.metadata.Model
 					}
-					i.metadata.Usage = metadata.Usage
+					i.metadata.Usage = mergeGatewayUsage(i.metadata.Usage, metadata.Usage)
 				}
 				if metadata.ResponseID != "" {
 					i.metadata.ResponseID = metadata.ResponseID
@@ -1097,26 +1109,130 @@ func (i *responseInspector) observeTerminal(data []byte) {
 		case "response.completed":
 			i.terminalSuccess = true
 		case "response.failed", "response.incomplete", "response.error", "error":
-			i.terminalFailure = true
+			i.markTerminalFailure(data)
 		}
 	case streamProtocolChat:
 		if payload.Type == "error" {
-			i.terminalFailure = true
+			i.markTerminalFailure(data)
 		}
 	case streamProtocolAnthropic:
 		switch payload.Type {
 		case "message_stop":
 			i.terminalSuccess = true
 		case "error":
-			i.terminalFailure = true
+			i.markTerminalFailure(data)
 		}
 	case streamProtocolImage:
 		switch payload.Type {
 		case "image_generation.completed":
 			i.terminalSuccess = true
 		case "image_generation.failed", "error":
-			i.terminalFailure = true
+			i.markTerminalFailure(data)
 		}
+	}
+}
+
+func (i *responseInspector) markTerminalFailure(data []byte) {
+	i.terminalFailure = true
+	if i.metadata.StreamFailure != nil {
+		return
+	}
+	diagnostic := projectStreamFailureDiagnostic(data)
+	if len(diagnostic.Body) > 0 {
+		i.metadata.StreamFailure = &diagnostic
+	}
+}
+
+func projectStreamFailureDiagnostic(data []byte) gateway.StreamFailureDiagnostic {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(data, &root) != nil {
+		return gateway.StreamFailureDiagnostic{}
+	}
+	projected := make(map[string]json.RawMessage)
+	copySafeDiagnosticFields(projected, root, "type", "status", "code", "message", "param")
+	if raw := projectSafeErrorValue(root["error"]); len(raw) > 0 {
+		projected["error"] = raw
+	}
+	if responseRaw := root["response"]; len(responseRaw) > 0 {
+		var response map[string]json.RawMessage
+		if json.Unmarshal(responseRaw, &response) == nil {
+			safeResponse := make(map[string]json.RawMessage)
+			copySafeDiagnosticFields(safeResponse, response, "id", "status", "code", "message")
+			if raw := projectSafeErrorValue(response["error"]); len(raw) > 0 {
+				safeResponse["error"] = raw
+			}
+			if raw := projectSafeErrorValue(response["incomplete_details"]); len(raw) > 0 {
+				safeResponse["incomplete_details"] = raw
+			}
+			if len(safeResponse) > 0 {
+				if encoded, err := json.Marshal(safeResponse); err == nil {
+					projected["response"] = encoded
+				}
+			}
+		}
+	}
+	if len(projected) == 0 {
+		return gateway.StreamFailureDiagnostic{}
+	}
+	encoded, err := json.Marshal(projected)
+	if err != nil {
+		return gateway.StreamFailureDiagnostic{}
+	}
+	diagnostic := gateway.StreamFailureDiagnostic{Body: encoded}
+	if len(diagnostic.Body) > maxStreamFailureDiagnosticBytes {
+		bounded := diagnostic.Body[:maxStreamFailureDiagnosticBytes]
+		for len(bounded) > 0 && !utf8.Valid(bounded) {
+			bounded = bounded[:len(bounded)-1]
+		}
+		diagnostic.Body = append([]byte(nil), bounded...)
+		diagnostic.BodyTruncated = true
+	} else {
+		diagnostic.Body = append([]byte(nil), diagnostic.Body...)
+	}
+	return diagnostic
+}
+
+func copySafeDiagnosticFields(destination, source map[string]json.RawMessage, fields ...string) {
+	for _, field := range fields {
+		if raw := projectSafeScalar(source[field]); len(raw) > 0 {
+			destination[field] = raw
+		}
+	}
+}
+
+func projectSafeErrorValue(raw json.RawMessage) json.RawMessage {
+	if scalar := projectSafeScalar(raw); len(scalar) > 0 {
+		return scalar
+	}
+	var value map[string]json.RawMessage
+	if json.Unmarshal(raw, &value) != nil {
+		return nil
+	}
+	projected := make(map[string]json.RawMessage)
+	copySafeDiagnosticFields(projected, value, "type", "status", "code", "message", "param", "reason")
+	if len(projected) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(projected)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+func projectSafeScalar(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return nil
+	}
+	switch value.(type) {
+	case nil, string, bool, float64:
+		return append(json.RawMessage(nil), raw...)
+	default:
+		return nil
 	}
 }
 
@@ -1161,20 +1277,28 @@ type responsePayloadDTO struct {
 }
 
 type responseUsageDTO struct {
-	InputTokens            int64                     `json:"input_tokens"`
-	InputTokensCamel       int64                     `json:"inputTokens"`
-	OutputTokens           int64                     `json:"output_tokens"`
-	OutputTokensCamel      int64                     `json:"outputTokens"`
-	TotalTokens            int64                     `json:"total_tokens"`
-	TotalTokensCamel       int64                     `json:"totalTokens"`
-	CostInUSDTicks         int64                     `json:"cost_in_usd_ticks"`
-	NumSourcesUsed         int64                     `json:"num_sources_used"`
-	NumServerSideToolsUsed int64                     `json:"num_server_side_tools_used"`
-	InputTokensDetails     responseInputDetailsDTO   `json:"input_tokens_details"`
-	OutputTokensDetails    responseOutputDetailsDTO  `json:"output_tokens_details"`
-	ContextDetails         responseContextDetailsDTO `json:"context_details"`
-	PromptTokens           int64                     `json:"prompt_tokens"`
-	CompletionTokens       int64                     `json:"completion_tokens"`
+	InputTokens            int64 `json:"input_tokens"`
+	InputTokensCamel       int64 `json:"inputTokens"`
+	OutputTokens           int64 `json:"output_tokens"`
+	OutputTokensCamel      int64 `json:"outputTokens"`
+	TotalTokens            int64 `json:"total_tokens"`
+	TotalTokensCamel       int64 `json:"totalTokens"`
+	CostInUSDTicks         int64 `json:"cost_in_usd_ticks"`
+	NumSourcesUsed         int64 `json:"num_sources_used"`
+	NumServerSideToolsUsed int64 `json:"num_server_side_tools_used"`
+	// Responses 协议：input_tokens_details.cached_tokens
+	InputTokensDetails responseInputDetailsDTO `json:"input_tokens_details"`
+	// OpenAI Chat Completions 协议：prompt_tokens_details.cached_tokens
+	PromptTokensDetails responseInputDetailsDTO `json:"prompt_tokens_details"`
+	// Anthropic Messages 协议：顶层 cache_read_input_tokens
+	CacheReadInputTokens     int64                    `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64                    `json:"cache_creation_input_tokens"`
+	OutputTokensDetails      responseOutputDetailsDTO `json:"output_tokens_details"`
+	// OpenAI Chat Completions 协议：completion_tokens_details.reasoning_tokens
+	CompletionTokensDetails responseOutputDetailsDTO  `json:"completion_tokens_details"`
+	ContextDetails          responseContextDetailsDTO `json:"context_details"`
+	PromptTokens            int64                     `json:"prompt_tokens"`
+	CompletionTokens        int64                     `json:"completion_tokens"`
 }
 
 type responseInputDetailsDTO struct {
@@ -1212,14 +1336,74 @@ func (value responseUsageDTO) toGatewayUsage(responseModel string) gateway.Usage
 	if total == 0 {
 		total = input + output
 	}
+	// 统一缓存命中：Responses / Chat Completions / Anthropic Messages
+	cached := value.InputTokensDetails.CachedTokens
+	if cached == 0 {
+		cached = value.PromptTokensDetails.CachedTokens
+	}
+	if cached == 0 {
+		cached = value.CacheReadInputTokens
+	}
+	reasoning := value.OutputTokensDetails.ReasoningTokens
+	if reasoning == 0 {
+		reasoning = value.CompletionTokensDetails.ReasoningTokens
+	}
 	return gateway.Usage{
-		InputTokens: input, CachedInputTokens: value.InputTokensDetails.CachedTokens,
-		OutputTokens: output, ReasoningTokens: value.OutputTokensDetails.ReasoningTokens,
+		InputTokens: input, CachedInputTokens: cached,
+		OutputTokens: output, ReasoningTokens: reasoning,
 		TotalTokens: total, CostInUSDTicks: value.CostInUSDTicks,
 		NumSourcesUsed: value.NumSourcesUsed, NumServerSideToolsUsed: value.NumServerSideToolsUsed,
 		ContextInputTokens: value.ContextDetails.InputTokens, ContextOutputTokens: value.ContextDetails.OutputTokens,
 		ResponseModel: responseModel,
 	}
+}
+
+func hasUsageSignal(usage gateway.Usage) bool {
+	return usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0 ||
+		usage.CachedInputTokens > 0 || usage.ReasoningTokens > 0 || usage.CostInUSDTicks > 0 ||
+		usage.NumSourcesUsed > 0 || usage.NumServerSideToolsUsed > 0 ||
+		usage.ContextInputTokens > 0 || usage.ContextOutputTokens > 0
+}
+
+// mergeGatewayUsage 合并流式多帧 usage：非零字段覆盖，避免后到半截帧抹掉已解析缓存命中。
+func mergeGatewayUsage(base, next gateway.Usage) gateway.Usage {
+	if next.InputTokens > 0 {
+		base.InputTokens = next.InputTokens
+	}
+	if next.OutputTokens > 0 {
+		base.OutputTokens = next.OutputTokens
+	}
+	if next.TotalTokens > 0 {
+		base.TotalTokens = next.TotalTokens
+	}
+	if next.CachedInputTokens > 0 {
+		base.CachedInputTokens = next.CachedInputTokens
+	}
+	if next.ReasoningTokens > 0 {
+		base.ReasoningTokens = next.ReasoningTokens
+	}
+	if next.CostInUSDTicks > 0 {
+		base.CostInUSDTicks = next.CostInUSDTicks
+	}
+	if next.NumSourcesUsed > 0 {
+		base.NumSourcesUsed = next.NumSourcesUsed
+	}
+	if next.NumServerSideToolsUsed > 0 {
+		base.NumServerSideToolsUsed = next.NumServerSideToolsUsed
+	}
+	if next.ContextInputTokens > 0 {
+		base.ContextInputTokens = next.ContextInputTokens
+	}
+	if next.ContextOutputTokens > 0 {
+		base.ContextOutputTokens = next.ContextOutputTokens
+	}
+	if next.ResponseModel != "" {
+		base.ResponseModel = next.ResponseModel
+	}
+	if base.TotalTokens == 0 && (base.InputTokens > 0 || base.OutputTokens > 0) {
+		base.TotalTokens = base.InputTokens + base.OutputTokens
+	}
+	return base
 }
 
 func copyHeaders(destination, source http.Header) {
@@ -1286,7 +1470,8 @@ func writeGatewayError(c *gin.Context, err error) {
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
-			status, code, message = http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用"
+			code = upstreamFailure.ClientCredentialErrorCode()
+			status, message = http.StatusServiceUnavailable, credentialErrorMessage(code)
 		} else {
 			status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
 		}
@@ -1305,6 +1490,7 @@ func writeGatewayError(c *gin.Context, err error) {
 func writeGatewayAnthropicError(c *gin.Context, err error) {
 	status, errorType := http.StatusBadGateway, "api_error"
 	message := "上游服务暂不可用"
+	clientCode := ""
 	var upstreamFailure *gateway.UpstreamFailure
 	var selectionFailure *gateway.SelectionUnavailableError
 	switch {
@@ -1319,7 +1505,8 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
-			status, errorType, message = http.StatusServiceUnavailable, "overloaded_error", "上游服务暂不可用"
+			clientCode = upstreamFailure.ClientCredentialErrorCode()
+			status, errorType, message = http.StatusServiceUnavailable, "overloaded_error", credentialErrorMessage(clientCode)
 		} else {
 			status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
 		}
@@ -1340,7 +1527,7 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		status, errorType = http.StatusServiceUnavailable, "overloaded_error"
 		message = "当前没有可用的上游账号"
 	}
-	writeAnthropicError(c, status, errorType, message)
+	writeAnthropicError(c, status, errorType, message, clientCode)
 }
 
 func isUpstreamCredentialStatus(status int) bool {
@@ -1371,8 +1558,27 @@ func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailabl
 	return status, code, message
 }
 
-func writeAnthropicError(c *gin.Context, status int, errorType, message string) {
-	c.AbortWithStatusJSON(status, gin.H{"type": "error", "error": gin.H{"type": errorType, "message": message}})
+func writeAnthropicError(c *gin.Context, status int, errorType, message string, errorCode ...string) {
+	errorPayload := gin.H{"type": errorType, "message": message}
+	if len(errorCode) > 0 && errorCode[0] != "" && errorCode[0] != "upstream_unavailable" {
+		errorPayload["code"] = errorCode[0]
+	}
+	c.AbortWithStatusJSON(status, gin.H{"type": "error", "error": errorPayload})
+}
+
+func readCredentialErrorCode(status int, source io.Reader) string {
+	body, err := io.ReadAll(io.LimitReader(source, maxCredentialErrorInspectBytes+1))
+	if err != nil || len(body) > maxCredentialErrorInspectBytes {
+		return "upstream_unavailable"
+	}
+	return gateway.ClientCredentialErrorCodeFromBody(status, body)
+}
+
+func credentialErrorMessage(code string) string {
+	if code == "permission-denied" {
+		return "上游服务暂不可用，聊天端点访问被拒绝"
+	}
+	return "上游服务暂不可用"
 }
 
 func forceJSONBoolean(body []byte, key string, value bool) ([]byte, error) {

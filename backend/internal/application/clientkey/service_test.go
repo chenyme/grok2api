@@ -48,13 +48,46 @@ func TestCreateUsesG2AClientKeyFormat(t *testing.T) {
 		t.Fatalf("negative rpm error = %v", err)
 	}
 	zero := 0
-	if _, err := service.Update(ctx, created.Key.ID, UpdateInput{MaxConcurrent: &zero}); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("zero concurrency error = %v", err)
+	updated, err := service.Update(ctx, created.Key.ID, UpdateInput{MaxConcurrent: &zero})
+	if err != nil || updated.MaxConcurrent != 0 {
+		t.Fatalf("zero concurrency update = %#v, err = %v", updated, err)
 	}
 	revealed, err := service.RevealSecret(ctx, created.Key.ID)
 	if err != nil || revealed != created.Secret {
 		t.Fatalf("revealed secret = %q, err = %v", revealed, err)
 	}
+}
+
+func TestUnlimitedRuntimeLimitsBypassLimiterStores(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "unlimited-runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := relational.NewClientKeyRepository(database)
+	service := NewService(repo, failingRateLimiter{}, failingConcurrencyLimiter{}, 60, 5, testCipher(t))
+	created, err := service.Create(ctx, CreateInput{
+		Name: "unlimited", Enabled: true,
+		RPMUnlimited: true, ConcurrencyUnlimited: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Key.RPMLimit != 0 || created.Key.MaxConcurrent != 0 {
+		t.Fatalf("persisted limits = rpm %d, concurrency %d", created.Key.RPMLimit, created.Key.MaxConcurrent)
+	}
+	value, release, err := service.Authenticate(ctx, created.Secret)
+	if err != nil {
+		t.Fatalf("authenticate unlimited key: %v", err)
+	}
+	if value.ID != created.Key.ID {
+		t.Fatalf("authenticated key = %d, want %d", value.ID, created.Key.ID)
+	}
+	release()
 }
 
 func TestAuthenticateDistinguishesRuntimeStoreFailures(t *testing.T) {
