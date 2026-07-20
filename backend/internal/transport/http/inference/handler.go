@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
@@ -32,13 +33,15 @@ type Handler struct {
 }
 
 const (
-	responseCopyBufferBytes        = 32 << 10
-	maxJSONMetadataInspectionBytes = 8 << 20
-	maxStreamEventInspectionBytes  = 8 << 20
-	maxJSONResponseTransferBytes   = 128 << 20
-	maxStreamResponseTransferBytes = 256 << 20
-	maxMediaResponseTransferBytes  = int64(2) << 30
-	responseWriteTimeout           = 30 * time.Second
+	responseCopyBufferBytes         = 32 << 10
+	maxJSONMetadataInspectionBytes  = 8 << 20
+	maxStreamEventInspectionBytes   = 8 << 20
+	maxStreamFailureDiagnosticBytes = 64 << 10
+	maxCredentialErrorInspectBytes  = 64 << 10
+	maxJSONResponseTransferBytes    = 128 << 20
+	maxStreamResponseTransferBytes  = 256 << 20
+	maxMediaResponseTransferBytes   = int64(2) << 30
+	responseWriteTimeout            = 30 * time.Second
 )
 
 var (
@@ -338,7 +341,8 @@ func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
 	defer func() { result.Finalize(gateway.Usage{}, "", errorCode) }()
 	if isUpstreamCredentialStatus(result.StatusCode) {
 		errorCode = "upstream_unavailable"
-		writeOpenAIError(c, http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用")
+		clientCode := readCredentialErrorCode(result.StatusCode, result.Body)
+		writeOpenAIError(c, http.StatusServiceUnavailable, clientCode, credentialErrorMessage(clientCode))
 		return
 	}
 	contentLength, contentLengthErr := strconv.ParseInt(result.Header.Get("Content-Length"), 10, 64)
@@ -898,10 +902,11 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	defer func() { result.Finalize(usage, responseID, errorCode) }()
 	if isUpstreamCredentialStatus(result.StatusCode) {
 		errorCode = "upstream_unavailable"
+		clientCode := readCredentialErrorCode(result.StatusCode, result.Body)
 		if anthropic {
-			writeAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", "上游服务暂不可用")
+			writeAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", credentialErrorMessage(clientCode), clientCode)
 		} else {
-			writeOpenAIError(c, http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用")
+			writeOpenAIError(c, http.StatusServiceUnavailable, clientCode, credentialErrorMessage(clientCode))
 		}
 		return
 	}
@@ -923,6 +928,9 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	if stream {
 		metadata, copyErr := copyStream(c.Writer, result.Body, protocol)
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
+		if metadata.StreamFailure != nil && result.RecordStreamFailure != nil {
+			result.RecordStreamFailure(*metadata.StreamFailure)
+		}
 	} else {
 		metadata, copyErr := copyJSON(c.Writer, result.Body)
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
@@ -944,9 +952,10 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 }
 
 type responseMetadata struct {
-	Usage      gateway.Usage
-	ResponseID string
-	Model      string
+	Usage         gateway.Usage
+	ResponseID    string
+	Model         string
+	StreamFailure *gateway.StreamFailureDiagnostic
 }
 
 func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol) (responseMetadata, error) {
@@ -1097,26 +1106,130 @@ func (i *responseInspector) observeTerminal(data []byte) {
 		case "response.completed":
 			i.terminalSuccess = true
 		case "response.failed", "response.incomplete", "response.error", "error":
-			i.terminalFailure = true
+			i.markTerminalFailure(data)
 		}
 	case streamProtocolChat:
 		if payload.Type == "error" {
-			i.terminalFailure = true
+			i.markTerminalFailure(data)
 		}
 	case streamProtocolAnthropic:
 		switch payload.Type {
 		case "message_stop":
 			i.terminalSuccess = true
 		case "error":
-			i.terminalFailure = true
+			i.markTerminalFailure(data)
 		}
 	case streamProtocolImage:
 		switch payload.Type {
 		case "image_generation.completed":
 			i.terminalSuccess = true
 		case "image_generation.failed", "error":
-			i.terminalFailure = true
+			i.markTerminalFailure(data)
 		}
+	}
+}
+
+func (i *responseInspector) markTerminalFailure(data []byte) {
+	i.terminalFailure = true
+	if i.metadata.StreamFailure != nil {
+		return
+	}
+	diagnostic := projectStreamFailureDiagnostic(data)
+	if len(diagnostic.Body) > 0 {
+		i.metadata.StreamFailure = &diagnostic
+	}
+}
+
+func projectStreamFailureDiagnostic(data []byte) gateway.StreamFailureDiagnostic {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(data, &root) != nil {
+		return gateway.StreamFailureDiagnostic{}
+	}
+	projected := make(map[string]json.RawMessage)
+	copySafeDiagnosticFields(projected, root, "type", "status", "code", "message", "param")
+	if raw := projectSafeErrorValue(root["error"]); len(raw) > 0 {
+		projected["error"] = raw
+	}
+	if responseRaw := root["response"]; len(responseRaw) > 0 {
+		var response map[string]json.RawMessage
+		if json.Unmarshal(responseRaw, &response) == nil {
+			safeResponse := make(map[string]json.RawMessage)
+			copySafeDiagnosticFields(safeResponse, response, "id", "status", "code", "message")
+			if raw := projectSafeErrorValue(response["error"]); len(raw) > 0 {
+				safeResponse["error"] = raw
+			}
+			if raw := projectSafeErrorValue(response["incomplete_details"]); len(raw) > 0 {
+				safeResponse["incomplete_details"] = raw
+			}
+			if len(safeResponse) > 0 {
+				if encoded, err := json.Marshal(safeResponse); err == nil {
+					projected["response"] = encoded
+				}
+			}
+		}
+	}
+	if len(projected) == 0 {
+		return gateway.StreamFailureDiagnostic{}
+	}
+	encoded, err := json.Marshal(projected)
+	if err != nil {
+		return gateway.StreamFailureDiagnostic{}
+	}
+	diagnostic := gateway.StreamFailureDiagnostic{Body: encoded}
+	if len(diagnostic.Body) > maxStreamFailureDiagnosticBytes {
+		bounded := diagnostic.Body[:maxStreamFailureDiagnosticBytes]
+		for len(bounded) > 0 && !utf8.Valid(bounded) {
+			bounded = bounded[:len(bounded)-1]
+		}
+		diagnostic.Body = append([]byte(nil), bounded...)
+		diagnostic.BodyTruncated = true
+	} else {
+		diagnostic.Body = append([]byte(nil), diagnostic.Body...)
+	}
+	return diagnostic
+}
+
+func copySafeDiagnosticFields(destination, source map[string]json.RawMessage, fields ...string) {
+	for _, field := range fields {
+		if raw := projectSafeScalar(source[field]); len(raw) > 0 {
+			destination[field] = raw
+		}
+	}
+}
+
+func projectSafeErrorValue(raw json.RawMessage) json.RawMessage {
+	if scalar := projectSafeScalar(raw); len(scalar) > 0 {
+		return scalar
+	}
+	var value map[string]json.RawMessage
+	if json.Unmarshal(raw, &value) != nil {
+		return nil
+	}
+	projected := make(map[string]json.RawMessage)
+	copySafeDiagnosticFields(projected, value, "type", "status", "code", "message", "param", "reason")
+	if len(projected) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(projected)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+func projectSafeScalar(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return nil
+	}
+	switch value.(type) {
+	case nil, string, bool, float64:
+		return append(json.RawMessage(nil), raw...)
+	default:
+		return nil
 	}
 }
 
@@ -1354,7 +1467,8 @@ func writeGatewayError(c *gin.Context, err error) {
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
-			status, code, message = http.StatusServiceUnavailable, "upstream_unavailable", "上游服务暂不可用"
+			code = upstreamFailure.ClientCredentialErrorCode()
+			status, message = http.StatusServiceUnavailable, credentialErrorMessage(code)
 		} else {
 			status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
 		}
@@ -1373,6 +1487,7 @@ func writeGatewayError(c *gin.Context, err error) {
 func writeGatewayAnthropicError(c *gin.Context, err error) {
 	status, errorType := http.StatusBadGateway, "api_error"
 	message := "上游服务暂不可用"
+	clientCode := ""
 	var upstreamFailure *gateway.UpstreamFailure
 	var selectionFailure *gateway.SelectionUnavailableError
 	switch {
@@ -1387,7 +1502,8 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
-			status, errorType, message = http.StatusServiceUnavailable, "overloaded_error", "上游服务暂不可用"
+			clientCode = upstreamFailure.ClientCredentialErrorCode()
+			status, errorType, message = http.StatusServiceUnavailable, "overloaded_error", credentialErrorMessage(clientCode)
 		} else {
 			status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
 		}
@@ -1408,7 +1524,7 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		status, errorType = http.StatusServiceUnavailable, "overloaded_error"
 		message = "当前没有可用的上游账号"
 	}
-	writeAnthropicError(c, status, errorType, message)
+	writeAnthropicError(c, status, errorType, message, clientCode)
 }
 
 func isUpstreamCredentialStatus(status int) bool {
@@ -1439,8 +1555,27 @@ func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailabl
 	return status, code, message
 }
 
-func writeAnthropicError(c *gin.Context, status int, errorType, message string) {
-	c.AbortWithStatusJSON(status, gin.H{"type": "error", "error": gin.H{"type": errorType, "message": message}})
+func writeAnthropicError(c *gin.Context, status int, errorType, message string, errorCode ...string) {
+	errorPayload := gin.H{"type": errorType, "message": message}
+	if len(errorCode) > 0 && errorCode[0] != "" && errorCode[0] != "upstream_unavailable" {
+		errorPayload["code"] = errorCode[0]
+	}
+	c.AbortWithStatusJSON(status, gin.H{"type": "error", "error": errorPayload})
+}
+
+func readCredentialErrorCode(status int, source io.Reader) string {
+	body, err := io.ReadAll(io.LimitReader(source, maxCredentialErrorInspectBytes+1))
+	if err != nil || len(body) > maxCredentialErrorInspectBytes {
+		return "upstream_unavailable"
+	}
+	return gateway.ClientCredentialErrorCodeFromBody(status, body)
+}
+
+func credentialErrorMessage(code string) string {
+	if code == "permission-denied" {
+		return "上游服务暂不可用，聊天端点访问被拒绝"
+	}
+	return "上游服务暂不可用"
 }
 
 func forceJSONBoolean(body []byte, key string, value bool) ([]byte, error) {

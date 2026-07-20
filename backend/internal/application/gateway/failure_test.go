@@ -21,8 +21,8 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 		upstreamCode           string
 	}{
 		{
-			name: "top-level permanent chat denial", body: `{"status_code":403,"error":"Access to the chat endpoint is denied. Please update the permissions."}`,
-			accountScoped: true, permanentAccountDenial: true,
+			name: "top-level permanent chat denial", body: `{"status_code":403,"code":"permission-denied","error":"Access to the chat endpoint is denied. Please update the permissions."}`,
+			accountScoped: true, permanentAccountDenial: true, upstreamCode: "permission-denied",
 		},
 		{
 			name: "spending limit", body: `{"code":"personal-team-blocked:spending-limit","error":"quota exhausted"}`,
@@ -41,6 +41,9 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 			failure := newHTTPUpstreamFailure(http.StatusForbidden, []byte(test.body), 42, "build")
 			if failure.HTTPStatus != http.StatusForbidden || failure.Code != "upstream_forbidden" || failure.AccountScoped != test.accountScoped || failure.PermanentAccountDenial != test.permanentAccountDenial || failure.QuotaExhausted != test.quotaExhausted || failure.FreeQuotaExhausted != test.freeQuotaExhausted || failure.ModelQuotaExhausted != test.modelQuotaExhausted || failure.UpstreamCode != test.upstreamCode {
 				t.Fatalf("failure = %#v", failure)
+			}
+			if test.upstreamCode == "permission-denied" && (failure.ClientCredentialErrorCode() != "permission-denied" || failure.AuditCode() != "upstream_forbidden_permission_denied") {
+				t.Fatalf("public=%q audit=%q", failure.ClientCredentialErrorCode(), failure.AuditCode())
 			}
 		})
 	}

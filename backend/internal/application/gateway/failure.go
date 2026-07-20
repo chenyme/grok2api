@@ -60,6 +60,29 @@ func (e *UpstreamFailure) AuditCode() string {
 	return truncateFailureCode(e.Code)
 }
 
+// ClientCredentialErrorCode 返回允许暴露给客户端的账号类上游错误码。
+// HTTP 状态和错误文案仍由传输层统一脱敏；这里只放行稳定、无凭据内容的机器码。
+func (e *UpstreamFailure) ClientCredentialErrorCode() string {
+	if e == nil {
+		return "upstream_unavailable"
+	}
+	return clientCredentialErrorCode(e.HTTPStatus, e.UpstreamCode)
+}
+
+// ClientCredentialErrorCodeFromBody 从账号类上游错误正文中提取允许公开的机器码。
+// 用于上游响应已直接交给传输层、尚未构造 UpstreamFailure 的路径。
+func ClientCredentialErrorCodeFromBody(status int, body []byte) string {
+	upstreamCode, _, _ := extractUpstreamErrorMetadata(body)
+	return clientCredentialErrorCode(status, upstreamCode)
+}
+
+func clientCredentialErrorCode(status int, upstreamCode string) string {
+	if status == http.StatusForbidden && normalizeFailureCode(upstreamCode) == "permission_denied" {
+		return "permission-denied"
+	}
+	return "upstream_unavailable"
+}
+
 func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountName string) *UpstreamFailure {
 	upstreamCode, upstreamType, upstreamMessage := extractUpstreamErrorMetadata(body)
 	failure := &UpstreamFailure{

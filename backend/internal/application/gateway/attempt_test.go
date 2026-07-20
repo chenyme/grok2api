@@ -72,6 +72,29 @@ func TestFailureAttemptRecorderUsesProviderDiagnosticResponse(t *testing.T) {
 	}
 }
 
+func TestFailureAttemptRecorderCapturesStreamFailure(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	response := &provider.Response{
+		StatusCode:  http.StatusOK,
+		Status:      "200 OK",
+		Header:      http.Header{"Content-Type": {"text/event-stream"}, "Set-Cookie": {"session=secret"}},
+		UpstreamURL: "https://user:password@api.example.test/v1/responses?token=secret",
+	}
+	recorder.captureStreamFailure(
+		account.Credential{ID: 9, Name: "primary"},
+		time.Now().Add(-time.Second),
+		response,
+		StreamFailureDiagnostic{Body: []byte(`{"type":"response.failed","error":{"message":"access_token=secret-token"}}`)},
+	)
+	stored := recorder.snapshot()
+	if len(stored) != 1 || stored[0].Stage != "response_stream" || stored[0].UpstreamStatusCode == nil || *stored[0].UpstreamStatusCode != http.StatusOK {
+		t.Fatalf("attempt = %#v", stored)
+	}
+	if string(stored[0].ResponseBody) != `{"type":"response.failed","error":{"message":"access_token=[REDACTED]"}}` || stored[0].UpstreamURL != "https://api.example.test/v1/responses" || http.Header(stored[0].ResponseHeaders).Get("Set-Cookie") != "" {
+		t.Fatalf("sanitized attempt = %#v", stored[0])
+	}
+}
+
 func TestFailureAttemptRecorderClassifiesTransportErrorChain(t *testing.T) {
 	dnsErr := &net.DNSError{Err: "no such host", Name: "api.example.test", IsNotFound: true}
 	requestErr := &url.Error{Op: "Post", URL: "https://user:password@api.example.test/v1/responses?token=secret", Err: dnsErr}
