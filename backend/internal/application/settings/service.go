@@ -125,6 +125,8 @@ type EditableConfig struct {
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
 	Accounts          AccountsConfig
+	// AccountsProvided 区分旧管理端未发送 accounts 与显式提交默认值。
+	AccountsProvided bool
 }
 
 // Snapshot 表示当前运行设置和需要重启才能生效的字段。
@@ -436,14 +438,17 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Audit.BatchSize = input.Audit.BatchSize
 	next.ClientKeyDefaults.RPMLimit = input.ClientKeyDefaults.RPMLimit
 	next.ClientKeyDefaults.MaxConcurrent = input.ClientKeyDefaults.MaxConcurrent
-	next.Accounts.AutoCleanReauthEnabled = input.Accounts.AutoCleanReauthEnabled
-	next.Accounts.AutoCleanIncludeDisabled = input.Accounts.AutoCleanIncludeDisabled
+	if input.AccountsProvided {
+		next.Accounts.AutoCleanReauthEnabled = input.Accounts.AutoCleanReauthEnabled
+		next.Accounts.AutoCleanIncludeDisabled = input.Accounts.AutoCleanIncludeDisabled
+	}
 
-	durations := []struct {
+	type durationInput struct {
 		path  string
 		value string
 		set   func(config.Duration)
-	}{
+	}
+	durations := []durationInput{
 		{"routing.stickyTTL", input.Routing.StickyTTL, func(value config.Duration) { next.Routing.StickyTTL = value }},
 		{"routing.cooldownBase", input.Routing.CooldownBase, func(value config.Duration) { next.Routing.CooldownBase = value }},
 		{"routing.cooldownMax", input.Routing.CooldownMax, func(value config.Duration) { next.Routing.CooldownMax = value }},
@@ -458,8 +463,12 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		{"providerConsole.chatTimeout", input.ProviderConsole.ChatTimeout, func(value config.Duration) { next.Provider.Console.ChatTimeout = value }},
 		{"media.cleanupInterval", input.Media.CleanupInterval, func(value config.Duration) { next.Media.CleanupInterval = value }},
 		{"batch.randomDelay", input.Batch.RandomDelay, func(value config.Duration) { next.Batch.RandomDelay = value }},
-		{"accounts.autoCleanReauthInterval", input.Accounts.AutoCleanReauthInterval, func(value config.Duration) { next.Accounts.AutoCleanReauthInterval = value }},
-		{"accounts.autoCleanReauthMinAge", input.Accounts.AutoCleanReauthMinAge, func(value config.Duration) { next.Accounts.AutoCleanReauthMinAge = value }},
+	}
+	if input.AccountsProvided {
+		durations = append(durations,
+			durationInput{"accounts.autoCleanReauthInterval", input.Accounts.AutoCleanReauthInterval, func(value config.Duration) { next.Accounts.AutoCleanReauthInterval = value }},
+			durationInput{"accounts.autoCleanReauthMinAge", input.Accounts.AutoCleanReauthMinAge, func(value config.Duration) { next.Accounts.AutoCleanReauthMinAge = value }},
+		)
 	}
 	for _, item := range durations {
 		value, err := time.ParseDuration(strings.TrimSpace(item.value))
@@ -521,5 +530,6 @@ func toEditable(cfg config.Config) EditableConfig {
 			AutoCleanReauthMinAge:    cfg.Accounts.AutoCleanReauthMinAge.String(),
 			AutoCleanIncludeDisabled: cfg.Accounts.AutoCleanIncludeDisabled,
 		},
+		AccountsProvided: true,
 	}
 }

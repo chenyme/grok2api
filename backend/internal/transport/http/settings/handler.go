@@ -31,7 +31,7 @@ type settingsConfigDTO struct {
 	Routing           routingConfigDTO           `json:"routing"`
 	Audit             auditConfigDTO             `json:"audit"`
 	ClientKeyDefaults clientKeyDefaultsConfigDTO `json:"clientKeyDefaults"`
-	Accounts          accountsConfigDTO          `json:"accounts"`
+	Accounts          *accountsConfigDTO         `json:"accounts,omitempty"`
 }
 
 type serverConfigDTO struct {
@@ -160,7 +160,7 @@ func (h *Handler) update(c *gin.Context) {
 }
 
 func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
-	return settingsapp.EditableConfig{
+	result := settingsapp.EditableConfig{
 		Server: settingsapp.ServerConfig{MaxConcurrentRequests: value.Server.MaxConcurrentRequests},
 		ProviderBuild: settingsapp.ProviderBuildConfig{
 			BaseURL: value.ProviderBuild.BaseURL, FallbackBaseURL: value.ProviderBuild.FallbackBaseURL,
@@ -202,13 +202,17 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		ClientKeyDefaults: settingsapp.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
 		},
-		Accounts: settingsapp.AccountsConfig{
+	}
+	if value.Accounts != nil {
+		result.Accounts = settingsapp.AccountsConfig{
 			AutoCleanReauthEnabled:   value.Accounts.AutoCleanReauthEnabled,
 			AutoCleanReauthInterval:  value.Accounts.AutoCleanReauthInterval,
 			AutoCleanReauthMinAge:    value.Accounts.AutoCleanReauthMinAge,
 			AutoCleanIncludeDisabled: value.Accounts.AutoCleanIncludeDisabled,
-		},
+		}
+		result.AccountsProvided = true
 	}
+	return result
 }
 
 func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
@@ -219,7 +223,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			ProviderBuild: providerBuildConfigDTO{
 				BaseURL: config.ProviderBuild.BaseURL, FallbackBaseURL: config.ProviderBuild.FallbackBaseURL,
 				ClientVersion: config.ProviderBuild.ClientVersion, ClientIdentifier: config.ProviderBuild.ClientIdentifier,
-				TokenAuth: config.ProviderBuild.TokenAuth,
+				TokenAuth:           config.ProviderBuild.TokenAuth,
 				TokenAuthConfigured: strings.TrimSpace(config.ProviderBuild.TokenAuth) != "", UserAgent: config.ProviderBuild.UserAgent,
 			},
 			ProviderWeb: providerWebConfigDTO{
@@ -257,7 +261,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			ClientKeyDefaults: clientKeyDefaultsConfigDTO{
 				RPMLimit: config.ClientKeyDefaults.RPMLimit, MaxConcurrent: config.ClientKeyDefaults.MaxConcurrent,
 			},
-			Accounts: accountsConfigDTO{
+			Accounts: &accountsConfigDTO{
 				AutoCleanReauthEnabled:   config.Accounts.AutoCleanReauthEnabled,
 				AutoCleanReauthInterval:  config.Accounts.AutoCleanReauthInterval,
 				AutoCleanReauthMinAge:    config.Accounts.AutoCleanReauthMinAge,

@@ -256,6 +256,7 @@ type Service struct {
 	deviceSessions        repository.DeviceSessionRepository
 	sticky                repository.StickySessionRepository
 	refreshLock           repository.DistributedLock
+	concurrency           repository.ConcurrencyLimiter
 	quotaQueue            repository.QuotaRecoveryQueue
 	providers             *provider.Registry
 	cipher                *security.Cipher
@@ -274,6 +275,7 @@ type Service struct {
 	credentialRefreshWake chan struct{}
 	autoCleanMu           sync.RWMutex
 	autoClean             AutoCleanConfig
+	autoCleanRevision     uint64
 	autoCleanWake         chan struct{}
 	buildBotFlagCache     *resultcache.Cache[string, []uint64]
 	logger                *slog.Logger
@@ -282,6 +284,11 @@ type Service struct {
 
 func (s *Service) SetQuotaRecoveryQueue(queue repository.QuotaRecoveryQueue) {
 	s.quotaQueue = queue
+}
+
+// SetConcurrencyLimiter 让账号维护任务读取与推理路由相同的活动租约。
+func (s *Service) SetConcurrencyLimiter(value repository.ConcurrencyLimiter) {
+	s.concurrency = value
 }
 
 func NewService(accounts repository.AccountRepository, audits repository.AuditRepository, deviceSessions repository.DeviceSessionRepository, sticky repository.StickySessionRepository, providers *provider.Registry, cipher *security.Cipher, refreshLock repository.DistributedLock) *Service {
@@ -466,7 +473,7 @@ func (s *Service) BatchUpdate(ctx context.Context, ids []uint64, input UpdateInp
 	if err != nil {
 		return 0, err
 	}
-	if input.Enabled != nil && !*input.Enabled && s.sticky != nil {
+	if input.Enabled != nil && !*input.Enabled {
 		for _, id := range ids {
 			_ = s.sticky.DeleteByAccount(ctx, id)
 		}
@@ -481,9 +488,7 @@ func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) 
 		return 0, err
 	}
 	for _, id := range ids {
-		if s.sticky != nil {
-			_ = s.sticky.DeleteByAccount(ctx, id)
-		}
+		_ = s.sticky.DeleteByAccount(ctx, id)
 		s.clearRefreshState(id)
 	}
 	deleted, err := s.accounts.DeleteMany(ctx, ids)

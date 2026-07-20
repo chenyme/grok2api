@@ -149,12 +149,16 @@ func TestAutoCleanReauthMultiBatch(t *testing.T) {
 	}
 
 	// 直接验证 repo 分批：第一批最多 100，且 nextAfter 前进。
-	deleted, candidates, nextAfter, err := repo.DeleteAutoCleanReauthBatch(ctx, now.Add(-time.Hour), false, 0, 100)
+	candidates, err := repo.ListAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidates != 100 || len(deleted) != 100 || nextAfter == 0 {
-		t.Fatalf("first batch candidates=%d deleted=%d nextAfter=%d", candidates, len(deleted), nextAfter)
+	deleted, err := repo.DeleteAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 100 || len(deleted) != 100 || candidates[len(candidates)-1] == 0 {
+		t.Fatalf("first batch candidates=%d deleted=%d nextAfter=%d", len(candidates), len(deleted), candidates[len(candidates)-1])
 	}
 	remaining := 0
 	for _, id := range ids {
@@ -324,5 +328,201 @@ func TestUpdateAutoCleanConfigClamps(t *testing.T) {
 	}
 	if got := autoCleanInterval(AutoCleanConfig{Enabled: true, Interval: 5 * time.Minute}); got != 5*time.Minute {
 		t.Fatalf("enabled interval = %s", got)
+	}
+}
+
+func TestAutoCleanSkipsActiveInferenceLease(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 20, 22, 0, 0, 0, time.UTC)
+	service, repo := newAutoCleanTestService(t, now)
+	limiter := memory.NewConcurrencyLimiter()
+	service.SetConcurrencyLimiter(limiter)
+	value := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "active-lease", SourceKey: "active-lease",
+		EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+		ReauthMarkedAt: ptrTime(now.Add(-2 * time.Hour)),
+	})
+	release, acquired, err := limiter.Acquire(ctx, repository.AccountConcurrencyKey(value.ID), 1)
+	if err != nil || !acquired {
+		t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err)
+	}
+	service.UpdateAutoCleanConfig(AutoCleanConfig{Enabled: true, Interval: time.Minute, MinAge: time.Hour})
+	if err := service.runAutoCleanReauth(ctx, service.autoCleanConfig()); err != nil {
+		t.Fatal(err)
+	}
+	assertPresent(t, repo, value.ID)
+	release()
+	if err := service.runAutoCleanReauth(ctx, service.autoCleanConfig()); err != nil {
+		t.Fatal(err)
+	}
+	assertMissing(t, repo, value.ID)
+}
+
+func TestAutoCleanConfigRevisionRejectsOldTimerAndUnchangedUpdateDoesNotWake(t *testing.T) {
+	service, _ := newAutoCleanTestService(t, time.Date(2026, 7, 20, 23, 0, 0, 0, time.UTC))
+	service.UpdateAutoCleanConfig(AutoCleanConfig{Enabled: true, Interval: 5 * time.Minute, MinAge: time.Hour})
+	select {
+	case <-service.autoCleanWake:
+	default:
+		t.Fatal("initial config update did not wake scheduler")
+	}
+	cfg, revision := service.autoCleanSnapshot()
+	service.UpdateAutoCleanConfig(cfg)
+	select {
+	case <-service.autoCleanWake:
+		t.Fatal("unchanged config woke scheduler")
+	default:
+	}
+	service.UpdateAutoCleanConfig(AutoCleanConfig{Enabled: true, Interval: 5 * time.Minute, MinAge: 2 * time.Hour})
+	if service.autoCleanRevisionCurrent(revision, cfg) {
+		t.Fatal("old timer revision remained executable after config update")
+	}
+}
+
+type deniedAutoCleanLock struct{}
+
+func (deniedAutoCleanLock) Acquire(context.Context, string, time.Duration) (func(), bool, error) {
+	return nil, false, nil
+}
+
+func TestAutoCleanSkipsWhenDistributedLockIsHeld(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	service, repo := newAutoCleanTestService(t, now)
+	service.refreshLock = deniedAutoCleanLock{}
+	value := mustUpsert(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "locked", SourceKey: "locked",
+		EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+		ReauthMarkedAt: ptrTime(now.Add(-2 * time.Hour)),
+	})
+	service.UpdateAutoCleanConfig(AutoCleanConfig{Enabled: true, Interval: time.Minute, MinAge: time.Hour})
+	if err := service.runAutoCleanReauth(ctx, service.autoCleanConfig()); err != nil {
+		t.Fatal(err)
+	}
+	assertPresent(t, repo, value.ID)
+}
+
+type endlessAutoCleanRepository struct {
+	repository.AccountRepository
+	listCalls   int
+	deleteCalls int
+	deletedIDs  []uint64
+}
+
+func (r *endlessAutoCleanRepository) ListAutoCleanReauthCandidates(_ context.Context, _ time.Time, _ bool, afterID uint64, _ int) ([]uint64, error) {
+	r.listCalls++
+	ids := make([]uint64, autoCleanReauthBatchSize)
+	for index := range ids {
+		ids[index] = afterID + uint64(index) + 1
+	}
+	return ids, nil
+}
+
+func (r *endlessAutoCleanRepository) DeleteAutoCleanReauthCandidates(_ context.Context, _ time.Time, _ bool, ids []uint64) ([]uint64, error) {
+	r.deleteCalls++
+	r.deletedIDs = append(r.deletedIDs, ids...)
+	return append([]uint64(nil), ids...), nil
+}
+
+func TestAutoCleanLimitsWorkPerTick(t *testing.T) {
+	repo := &endlessAutoCleanRepository{}
+	service := NewService(repo, nil, nil, nil, nil, nil, nil)
+	service.UpdateAutoCleanConfig(AutoCleanConfig{Enabled: true, Interval: time.Minute, MinAge: time.Hour})
+	if err := service.runAutoCleanReauth(context.Background(), service.autoCleanConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if repo.listCalls != autoCleanReauthMaxDeletes || repo.deleteCalls != autoCleanReauthMaxDeletes {
+		t.Fatalf("calls list=%d delete=%d", repo.listCalls, repo.deleteCalls)
+	}
+}
+
+type activeKeyConcurrency struct {
+	active map[string]struct{}
+	all    bool
+}
+
+func (*activeKeyConcurrency) Acquire(context.Context, string, int) (func(), bool, error) {
+	return func() {}, true, nil
+}
+
+func (l *activeKeyConcurrency) Current(_ context.Context, key string) (int, error) {
+	if l.all {
+		return 1, nil
+	}
+	if _, ok := l.active[key]; ok {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func (l *activeKeyConcurrency) CurrentMany(_ context.Context, keys []string) (map[string]int, error) {
+	values := make(map[string]int, len(keys))
+	for _, key := range keys {
+		current, _ := l.Current(context.Background(), key)
+		values[key] = current
+	}
+	return values, nil
+}
+
+func TestAutoCleanActiveOnlyPagesDoNotConsumeDeleteBudget(t *testing.T) {
+	repo := &endlessAutoCleanRepository{}
+	service := NewService(repo, nil, nil, nil, nil, nil, nil)
+	active := make(map[string]struct{}, 2*autoCleanReauthBatchSize)
+	for id := uint64(1); id <= 2*autoCleanReauthBatchSize; id++ {
+		active[repository.AccountConcurrencyKey(id)] = struct{}{}
+	}
+	service.SetConcurrencyLimiter(&activeKeyConcurrency{active: active})
+	service.UpdateAutoCleanConfig(AutoCleanConfig{Enabled: true, Interval: time.Minute, MinAge: time.Hour})
+	if err := service.runAutoCleanReauth(context.Background(), service.autoCleanConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if repo.listCalls != autoCleanReauthMaxDeletes+2 || repo.deleteCalls != autoCleanReauthMaxDeletes {
+		t.Fatalf("calls list=%d delete=%d", repo.listCalls, repo.deleteCalls)
+	}
+	if len(repo.deletedIDs) == 0 || repo.deletedIDs[0] != 2*autoCleanReauthBatchSize+1 {
+		t.Fatalf("first deleted id=%v", repo.deletedIDs)
+	}
+}
+
+func TestAutoCleanActiveOnlySourceIsBoundedByScanBudget(t *testing.T) {
+	repo := &endlessAutoCleanRepository{}
+	service := NewService(repo, nil, nil, nil, nil, nil, nil)
+	service.SetConcurrencyLimiter(&activeKeyConcurrency{all: true})
+	service.UpdateAutoCleanConfig(AutoCleanConfig{Enabled: true, Interval: time.Minute, MinAge: time.Hour})
+	if err := service.runAutoCleanReauth(context.Background(), service.autoCleanConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if repo.listCalls != autoCleanReauthMaxScans || repo.deleteCalls != 0 {
+		t.Fatalf("calls list=%d delete=%d", repo.listCalls, repo.deleteCalls)
+	}
+}
+
+type configChangingConcurrency struct {
+	service *Service
+	once    bool
+}
+
+func (c *configChangingConcurrency) Acquire(context.Context, string, int) (func(), bool, error) {
+	return func() {}, true, nil
+}
+
+func (c *configChangingConcurrency) Current(context.Context, string) (int, error) {
+	if !c.once {
+		c.once = true
+		c.service.UpdateAutoCleanConfig(AutoCleanConfig{Enabled: true, Interval: 5 * time.Minute, MinAge: 2 * time.Hour})
+	}
+	return 0, nil
+}
+
+func TestAutoCleanPolicyChangeAbortsBeforeDelete(t *testing.T) {
+	repo := &endlessAutoCleanRepository{}
+	service := NewService(repo, nil, nil, nil, nil, nil, nil)
+	service.SetConcurrencyLimiter(&configChangingConcurrency{service: service})
+	service.UpdateAutoCleanConfig(AutoCleanConfig{Enabled: true, Interval: 5 * time.Minute, MinAge: time.Hour})
+	if err := service.runAutoCleanReauth(context.Background(), service.autoCleanConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if repo.deleteCalls != 0 {
+		t.Fatalf("delete calls after policy change=%d", repo.deleteCalls)
 	}
 }

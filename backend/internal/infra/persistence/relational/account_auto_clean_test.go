@@ -57,12 +57,16 @@ func TestDeleteAutoCleanReauthBatchSkipsActiveMediaJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deleted, candidates, nextAfter, err := repo.DeleteAutoCleanReauthBatch(ctx, now.Add(-time.Hour), false, 0, 100)
+	candidates, err := repo.ListAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidates != 2 {
-		t.Fatalf("candidates=%d nextAfter=%d deleted=%v", candidates, nextAfter, deleted)
+	deleted, err := repo.DeleteAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, []uint64{blocked.ID, free.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0] != free.ID {
+		t.Fatalf("candidates=%d deleted=%v", len(candidates), deleted)
 	}
 	if len(deleted) != 1 || deleted[0] != free.ID {
 		t.Fatalf("deleted=%v want only free=%d", deleted, free.ID)
@@ -128,17 +132,121 @@ func TestDeleteAutoCleanSkipsNullAnchorAndQueuedMedia(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deleted, candidates, _, err := repo.DeleteAutoCleanReauthBatch(ctx, now.Add(-time.Hour), false, 0, 100)
+	candidates, err := repo.ListAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidates != 1 || len(deleted) != 0 {
-		t.Fatalf("candidates=%d deleted=%v (null anchor excluded, queued skipped)", candidates, deleted)
+	deleted, err := repo.DeleteAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, []uint64{queued.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 || len(deleted) != 0 {
+		t.Fatalf("candidates=%d deleted=%v (null anchor excluded, queued skipped)", len(candidates), deleted)
 	}
 	if _, err := repo.Get(ctx, nullAnchor.ID); err != nil {
 		t.Fatalf("null-anchor account missing: %v", err)
 	}
 	if _, err := repo.Get(ctx, queued.ID); err != nil {
 		t.Fatalf("queued account missing: %v", err)
+	}
+}
+
+func TestDeleteAutoCleanRevalidatesStatusAfterListing(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC)
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "auto-clean-revalidate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAccountRepository(database)
+	value, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "recovered", SourceKey: "recovered",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+		ReauthMarkedAt: ptrTime(now.Add(-2 * time.Hour)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := repo.ListAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, 0, 100)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("candidates=%v err=%v", candidates, err)
+	}
+	value.AuthStatus = accountdomain.AuthStatusActive
+	if _, err := repo.Update(ctx, value); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := repo.DeleteAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("recovered account deleted: %v", deleted)
+	}
+	if refreshed, err := repo.Get(ctx, value.ID); err != nil || refreshed.AuthStatus != accountdomain.AuthStatusActive || refreshed.ReauthMarkedAt != nil {
+		t.Fatalf("recovered account=%#v err=%v", refreshed, err)
+	}
+}
+
+func TestReauthMarkedAtMigrationBackfillsAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "auto-clean-migration.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAccountRepository(database)
+	markedAt := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
+	reauth, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "legacy-reauth", SourceKey: "legacy-reauth",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "legacy-active", SourceKey: "legacy-active",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", reauth.ID).Update("updated_at", markedAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Exec("DROP INDEX IF EXISTS idx_accounts_auto_clean_reauth").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Exec("DROP INDEX IF EXISTS idx_accounts_auto_clean_reauth_cursor").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.Migrator().DropColumn(&accountModel{}, "ReauthMarkedAt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatalf("migration is not idempotent: %v", err)
+	}
+	reauthAfter, err := repo.Get(ctx, reauth.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeAfter, err := repo.Get(ctx, active.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reauthAfter.ReauthMarkedAt == nil || !reauthAfter.ReauthMarkedAt.Equal(markedAt) {
+		t.Fatalf("reauth anchor=%v want=%s", reauthAfter.ReauthMarkedAt, markedAt)
+	}
+	if activeAfter.ReauthMarkedAt != nil {
+		t.Fatalf("active anchor=%v", activeAfter.ReauthMarkedAt)
 	}
 }

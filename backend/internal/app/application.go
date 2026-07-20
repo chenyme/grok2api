@@ -207,6 +207,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	cliAdapter.SetFallbackMarker(accountService)
 	accountService.SetLogger(logger)
 	accountService.UpdateAutoCleanConfig(accountAutoCleanConfig(cfg.Accounts))
+	accountService.SetConcurrencyLimiter(concurrency)
 	accountService.SetQuotaRecoveryQueue(quotaQueue)
 	accountService.SetTaskPools(conversionPool, syncPool, refreshPool)
 	windows, err := accountRepo.ListQuotaRecoveryWindows(ctx, 100000)
@@ -336,7 +337,6 @@ func consoleProviderConfig(cfg config.Config) consoleprovider.Config {
 		TimeoutSeconds: int(cfg.Provider.Console.ChatTimeout.Value().Seconds()),
 	}
 }
-
 
 func accountAutoCleanConfig(value config.AccountsConfig) accountapp.AutoCleanConfig {
 	return accountapp.AutoCleanConfig{

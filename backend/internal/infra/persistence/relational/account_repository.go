@@ -1046,31 +1046,32 @@ func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64
 	return deleted, err
 }
 
-func (r *AccountRepository) DeleteAutoCleanReauthBatch(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, int, uint64, error) {
+func (r *AccountRepository) ListAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, error) {
 	if limit < 1 {
 		limit = 100
 	}
-	deletedIDs := make([]uint64, 0, limit)
-	candidateCount := 0
-	var nextAfterID uint64
-	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		query := tx.Model(&accountModel{}).
-			Select("id").
-			Where("auth_status = ? AND reauth_marked_at IS NOT NULL AND reauth_marked_at < ?", account.AuthStatusReauthRequired, markedBefore.UTC())
-		if afterID > 0 {
-			query = query.Where("id > ?", afterID)
-		}
-		if !includeDisabled {
-			query = query.Where("enabled = ?", true)
-		}
-		var candidates []uint64
-		if err := query.Order("id ASC").Limit(limit).Pluck("id", &candidates).Error; err != nil || len(candidates) == 0 {
-			return err
-		}
-		candidateCount = len(candidates)
-		nextAfterID = candidates[len(candidates)-1]
+	query := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Select("id").
+		Where("auth_status = ? AND reauth_marked_at IS NOT NULL AND reauth_marked_at < ?", account.AuthStatusReauthRequired, markedBefore.UTC()).
+		Where("NOT EXISTS (SELECT 1 FROM media_jobs job WHERE job.account_id = provider_accounts.id AND job.status IN ?)", []string{string(media.StatusQueued), string(media.StatusInProgress)})
+	if afterID > 0 {
+		query = query.Where("id > ?", afterID)
+	}
+	if !includeDisabled {
+		query = query.Where("enabled = ?", true)
+	}
+	var candidates []uint64
+	err := query.Order("id ASC").Limit(limit).Pluck("id", &candidates).Error
+	return candidates, err
+}
 
-		deletable, err := excludeAccountsWithActiveMediaJobs(tx, candidates)
+func (r *AccountRepository) DeleteAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, candidateIDs []uint64) ([]uint64, error) {
+	if len(candidateIDs) == 0 {
+		return []uint64{}, nil
+	}
+	deletedIDs := make([]uint64, 0, len(candidateIDs))
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		deletable, err := excludeAccountsWithActiveMediaJobs(tx, candidateIDs)
 		if err != nil {
 			return err
 		}
@@ -1079,7 +1080,12 @@ func (r *AccountRepository) DeleteAutoCleanReauthBatch(ctx context.Context, mark
 		}
 
 		var lockedIDs []uint64
-		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", deletable).Pluck("id", &lockedIDs).Error; err != nil {
+		lockQuery := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id IN ? AND auth_status = ? AND reauth_marked_at IS NOT NULL AND reauth_marked_at < ?", deletable, account.AuthStatusReauthRequired, markedBefore.UTC())
+		if !includeDisabled {
+			lockQuery = lockQuery.Where("enabled = ?", true)
+		}
+		if err := lockQuery.Pluck("id", &lockedIDs).Error; err != nil {
 			return err
 		}
 		// lock 后再过滤活动视频任务，避免 list 与 delete 之间的 TOCTOU。
@@ -1117,7 +1123,7 @@ func (r *AccountRepository) DeleteAutoCleanReauthBatch(ctx context.Context, mark
 		}
 		return nil
 	})
-	return deletedIDs, candidateCount, nextAfterID, err
+	return deletedIDs, err
 }
 
 // excludeAccountsWithActiveMediaJobs 返回无 queued/in_progress 视频任务的账号 ID（顺序保持输入顺序）。

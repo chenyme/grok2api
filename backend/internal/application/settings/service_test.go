@@ -350,9 +350,9 @@ func TestApplyDomainConfigAccountsDefaults(t *testing.T) {
 			BaseURL: base.Provider.Web.BaseURL, QuotaTimeout: base.Provider.Web.QuotaTimeout.Value(),
 			StatsigMode: base.Provider.Web.StatsigMode, StatsigManualValue: base.Provider.Web.StatsigManualValue,
 			StatsigSignerURL: base.Provider.Web.StatsigSignerURL,
-			ChatTimeout: base.Provider.Web.ChatTimeout.Value(), ImageTimeout: base.Provider.Web.ImageTimeout.Value(),
+			ChatTimeout:      base.Provider.Web.ChatTimeout.Value(), ImageTimeout: base.Provider.Web.ImageTimeout.Value(),
 			VideoTimeout: base.Provider.Web.VideoTimeout.Value(), MediaConcurrency: base.Provider.Web.MediaConcurrency,
-			AllowNSFW: base.Provider.Web.AllowNSFW,
+			AllowNSFW:           base.Provider.Web.AllowNSFW,
 			RecoveryBackoffBase: base.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: base.Provider.Web.RecoveryBackoffMax.Value(),
 		},
 		Batch: settingsdomain.BatchConfig{
@@ -409,3 +409,23 @@ func TestUpdateAccountsAutoCleanRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUpdateWithoutAccountsPreservesCurrentAutoCleanConfig(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Accounts.AutoCleanReauthEnabled = true
+	cfg.Accounts.AutoCleanReauthInterval = config.Duration(7 * time.Minute)
+	cfg.Accounts.AutoCleanReauthMinAge = config.Duration(3 * time.Hour)
+	cfg.Accounts.AutoCleanIncludeDisabled = true
+	repo := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repo, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Accounts = AccountsConfig{}
+	input.AccountsProvided = false
+	input.Server.MaxConcurrentRequests++
+	if _, err := service.Update(context.Background(), 0, input); err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Accounts.AutoCleanReauthEnabled || !applied.Accounts.AutoCleanIncludeDisabled || applied.Accounts.AutoCleanReauthInterval.Value() != 7*time.Minute || applied.Accounts.AutoCleanReauthMinAge.Value() != 3*time.Hour {
+		t.Fatalf("accounts changed by legacy update: %#v", applied.Accounts)
+	}
+}
