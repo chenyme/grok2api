@@ -44,6 +44,10 @@ type ProviderWebConfig struct {
 	StatsigMode         string
 	StatsigManualValue  string
 	StatsigSignerURL    string
+	ClearanceMode       string
+	FlareSolverrURL     string
+	ClearanceTimeout    time.Duration
+	ClearanceRefresh    time.Duration
 	QuotaTimeout        time.Duration
 	ChatTimeout         time.Duration
 	ImageTimeout        time.Duration

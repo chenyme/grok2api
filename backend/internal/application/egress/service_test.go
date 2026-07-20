@@ -80,7 +80,7 @@ func TestBuildNodeAlwaysUsesProviderUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.UserAgent != "" || publicNode(value).UserAgent != "" {
+	if value.UserAgent != "" || service.publicNode(value).UserAgent != "" {
 		t.Fatalf("build node userAgent = %q", value.UserAgent)
 	}
 	if defaults := service.DefaultUserAgents(); defaults[string(domain.ScopeBuild)] != "" || defaults[string(domain.ScopeWeb)] != "browser-agent" || defaults[string(domain.ScopeConsole)] != "browser-agent" {
@@ -100,5 +100,24 @@ func TestConsoleNodeUsesBrowserDefaultUserAgent(t *testing.T) {
 	}
 	if value.UserAgent != "browser-agent" {
 		t.Fatalf("console node userAgent = %q", value.UserAgent)
+	}
+}
+
+func TestPublicNodeReportsAccountBoundProxy(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("socks5h://Default.{account}:token@resin:2260")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(nil, cipher, "browser-agent")
+	public := service.publicNode(domain.Node{Scope: domain.ScopeWeb, EncryptedProxyURL: encryptedProxy})
+	if !public.AccountBoundProxy {
+		t.Fatal("Resin proxy was not reported as account-bound")
+	}
+	if service.publicNode(domain.Node{Scope: domain.ScopeWeb}).AccountBoundProxy {
+		t.Fatal("direct node was reported as account-bound")
 	}
 }

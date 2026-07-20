@@ -20,33 +20,37 @@ const (
 )
 
 type Node struct {
-	ID                        uint64
-	Name                      string
-	Scope                     Scope
-	Enabled                   bool
-	EncryptedProxyURL         string
-	UserAgent                 string
-	EncryptedCloudflareCookie string
-	Health                    float64
-	FailureCount              int
-	CooldownUntil             *time.Time
-	LastError                 string
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
+	ID                          uint64
+	Name                        string
+	Scope                       Scope
+	Enabled                     bool
+	EncryptedProxyURL           string
+	UserAgent                   string
+	EncryptedCloudflareCookie   string
+	ClearanceRefreshedAt        *time.Time
+	ClearanceFingerprint        string
+	ClearanceBindingFingerprint string
+	Health                      float64
+	FailureCount                int
+	CooldownUntil               *time.Time
+	LastError                   string
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
 }
 
 type PublicNode struct {
-	ID               uint64
-	Name             string
-	Scope            Scope
-	Enabled          bool
-	ProxyConfigured  bool
-	UserAgent        string
-	CookieConfigured bool
-	Health           float64
-	FailureCount     int
-	CooldownUntil    *time.Time
-	LastError        string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                uint64
+	Name              string
+	Scope             Scope
+	Enabled           bool
+	ProxyConfigured   bool
+	UserAgent         string
+	CookieConfigured  bool
+	AccountBoundProxy bool
+	Health            float64
+	FailureCount      int
+	CooldownUntil     *time.Time
+	LastError         string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }

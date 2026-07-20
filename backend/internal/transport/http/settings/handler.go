@@ -65,19 +65,23 @@ type providerBuildConfigDTO struct {
 }
 
 type providerWebConfigDTO struct {
-	BaseURL                 string `json:"baseURL"`
-	StatsigMode             string `json:"statsigMode"`
-	StatsigManualValue      string `json:"statsigManualValue,omitempty"`
-	StatsigManualConfigured bool   `json:"statsigManualConfigured"`
-	StatsigSignerURL        string `json:"statsigSignerURL"`
-	QuotaTimeout            string `json:"quotaTimeout"`
-	ChatTimeout             string `json:"chatTimeout"`
-	ImageTimeout            string `json:"imageTimeout"`
-	VideoTimeout            string `json:"videoTimeout"`
-	MediaConcurrency        int    `json:"mediaConcurrency"`
-	AllowNSFW               bool   `json:"allowNSFW"`
-	RecoveryBackoffBase     string `json:"recoveryBackoffBase"`
-	RecoveryBackoffMax      string `json:"recoveryBackoffMax"`
+	BaseURL                 string  `json:"baseURL"`
+	StatsigMode             string  `json:"statsigMode"`
+	StatsigManualValue      string  `json:"statsigManualValue,omitempty"`
+	StatsigManualConfigured bool    `json:"statsigManualConfigured"`
+	StatsigSignerURL        string  `json:"statsigSignerURL"`
+	ClearanceMode           *string `json:"clearanceMode,omitempty"`
+	FlareSolverrURL         *string `json:"flareSolverrURL,omitempty"`
+	ClearanceTimeout        *string `json:"clearanceTimeout,omitempty"`
+	ClearanceRefresh        *string `json:"clearanceRefresh,omitempty"`
+	QuotaTimeout            string  `json:"quotaTimeout"`
+	ChatTimeout             string  `json:"chatTimeout"`
+	ImageTimeout            string  `json:"imageTimeout"`
+	VideoTimeout            string  `json:"videoTimeout"`
+	MediaConcurrency        int     `json:"mediaConcurrency"`
+	AllowNSFW               bool    `json:"allowNSFW"`
+	RecoveryBackoffBase     string  `json:"recoveryBackoffBase"`
+	RecoveryBackoffMax      string  `json:"recoveryBackoffMax"`
 }
 
 type batchConfigDTO struct {
@@ -160,6 +164,8 @@ func (h *Handler) update(c *gin.Context) {
 }
 
 func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
+	clearanceProvided := value.ProviderWeb.ClearanceMode != nil || value.ProviderWeb.FlareSolverrURL != nil ||
+		value.ProviderWeb.ClearanceTimeout != nil || value.ProviderWeb.ClearanceRefresh != nil
 	result := settingsapp.EditableConfig{
 		Server: settingsapp.ServerConfig{MaxConcurrentRequests: value.Server.MaxConcurrentRequests},
 		ProviderBuild: settingsapp.ProviderBuildConfig{
@@ -171,7 +177,10 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			BaseURL: value.ProviderWeb.BaseURL, QuotaTimeout: value.ProviderWeb.QuotaTimeout,
 			StatsigMode: value.ProviderWeb.StatsigMode, StatsigManualValue: value.ProviderWeb.StatsigManualValue,
 			StatsigManualConfigured: value.ProviderWeb.StatsigManualConfigured, StatsigSignerURL: value.ProviderWeb.StatsigSignerURL,
-			ChatTimeout: value.ProviderWeb.ChatTimeout, ImageTimeout: value.ProviderWeb.ImageTimeout,
+			ClearanceMode: optionalString(value.ProviderWeb.ClearanceMode), FlareSolverrURL: optionalString(value.ProviderWeb.FlareSolverrURL),
+			ClearanceTimeout: optionalString(value.ProviderWeb.ClearanceTimeout), ClearanceRefresh: optionalString(value.ProviderWeb.ClearanceRefresh),
+			ClearanceProvided: clearanceProvided,
+			ChatTimeout:       value.ProviderWeb.ChatTimeout, ImageTimeout: value.ProviderWeb.ImageTimeout,
 			VideoTimeout:     value.ProviderWeb.VideoTimeout,
 			MediaConcurrency: value.ProviderWeb.MediaConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
 			RecoveryBackoffBase: value.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: value.ProviderWeb.RecoveryBackoffMax,
@@ -230,7 +239,9 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				BaseURL: config.ProviderWeb.BaseURL, QuotaTimeout: config.ProviderWeb.QuotaTimeout,
 				StatsigMode: config.ProviderWeb.StatsigMode, StatsigManualConfigured: config.ProviderWeb.StatsigManualConfigured,
 				StatsigSignerURL: config.ProviderWeb.StatsigSignerURL,
-				ChatTimeout:      config.ProviderWeb.ChatTimeout, ImageTimeout: config.ProviderWeb.ImageTimeout,
+				ClearanceMode:    stringPointer(config.ProviderWeb.ClearanceMode), FlareSolverrURL: stringPointer(config.ProviderWeb.FlareSolverrURL),
+				ClearanceTimeout: stringPointer(config.ProviderWeb.ClearanceTimeout), ClearanceRefresh: stringPointer(config.ProviderWeb.ClearanceRefresh),
+				ChatTimeout: config.ProviderWeb.ChatTimeout, ImageTimeout: config.ProviderWeb.ImageTimeout,
 				VideoTimeout:     config.ProviderWeb.VideoTimeout,
 				MediaConcurrency: config.ProviderWeb.MediaConcurrency, AllowNSFW: config.ProviderWeb.AllowNSFW,
 				RecoveryBackoffBase: config.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: config.ProviderWeb.RecoveryBackoffMax,
@@ -275,3 +286,12 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 		UpdatedAt: value.UpdatedAt, Revision: value.Revision, RestartRequired: value.RestartRequired,
 	}
 }
+
+func optionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func stringPointer(value string) *string { return &value }

@@ -329,6 +329,18 @@ Provider、服务容量、批量任务并发、模型路由、媒体、审计和
 - 关联只共享匿名出口身份和管理端来源展示，不共享凭据、额度、可用性、冷却、并发、模型能力或计费。
 - Email 仅用于展示和检索，不作为代理身份。
 
+### FlareSolverr 自动维护 Clearance
+
+如需自动维护 Grok Web / Console 的 Cloudflare Clearance，可启动可选的 FlareSolverr Compose 服务：
+
+```bash
+docker compose --profile flaresolverr up -d
+# 或
+podman compose --profile flaresolverr up -d
+```
+
+随后在管理端打开 **运行设置 → 媒体与网络 → Clearance**，选择 `FlareSolverr`，并将服务地址设为 `http://flaresolverr:8191`。FlareSolverr 不会暴露到宿主机；每个 Web 或 Console 出口节点均使用自身代理获取匹配的 Cookie 与 User-Agent。
+
 ### Resin 粘性代理
 
 出口代理用户名支持 `{account}` 占位符：

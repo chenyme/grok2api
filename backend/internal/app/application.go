@@ -64,6 +64,7 @@ type Application struct {
 	modelRepo     repository.ModelRepository
 	providers     *provider.Registry
 	web           *webprovider.Adapter
+	egress        *infraegress.Manager
 	startup       *startupState
 }
 
@@ -163,6 +164,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	mediaService := mediaapp.NewServiceWithTickets(mediaAssetRepo, mediaJobRepo, mediaUploadTicketRepo, localMediaStore, refreshLock, mediaConfig(cfg))
 
 	egressManager := infraegress.NewManager(egressRepo, cipher)
+	egressManager.SetClearanceLock(refreshLock)
+	egressManager.UpdateClearanceConfig(clearanceConfig(cfg))
 	cliAdapter := cliprovider.NewAdapter(cliprovider.Config{
 		BaseURL: cfg.Provider.Build.BaseURL, FallbackBaseURL: config.NormalizeBuildFallbackBaseURL(cfg.Provider.Build.FallbackBaseURL),
 		ClientVersion: cfg.Provider.Build.ClientVersion, ClientIdentifier: cfg.Provider.Build.ClientIdentifier,
@@ -250,6 +253,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	accountSyncService.SetBulkPool(importPool)
 	accountSyncService.UpdateConcurrency(cfg.Batch.ImportConcurrency)
 	egressService := egressapp.NewService(egressRepo, cipher, infraegress.DefaultUserAgent)
+	egressService.SetClearanceManager(egressManager)
 	clientKeyService := clientkeyapp.NewService(clientKeyRepo, rateLimiter, concurrency, cfg.ClientKeyDefaults.RPMLimit, cfg.ClientKeyDefaults.MaxConcurrent, cipher)
 	auditService := auditapp.NewService(auditRepo, logger, cfg.Audit.BufferSize, cfg.Audit.BatchSize, cfg.Audit.FlushInterval.Value())
 	dashboardService := dashboardapp.NewService(dashboardRepo)
@@ -288,6 +292,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 			TokenAuth: next.Provider.Build.TokenAuth, UserAgent: next.Provider.Build.UserAgent,
 		})
 		webAdapter.UpdateConfig(webProviderConfig(next))
+		egressManager.UpdateClearanceConfig(clearanceConfig(next))
 		consoleAdapter.UpdateConfig(consoleProviderConfig(next))
 		mediaService.UpdateConfig(mediaConfig(next))
 		quotaRecoveryService.UpdateConfig(next.Provider.Web.RecoveryBackoffBase.Value(), next.Provider.Web.RecoveryBackoffMax.Value())
@@ -312,7 +317,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		logger: logger, database: database, server: server,
 		audits: auditService, responses: responseRepo, runtime: runtimeStore,
 		settingsBus: settingsBus, settings: settingsService, gateway: gatewayService, media: mediaService, quotaRecovery: quotaRecoveryService, accounts: accountService, models: modelService, clientKeys: clientKeyService, updates: updateService,
-		accountRepo: accountRepo, modelRepo: modelRepo, providers: providers, web: webAdapter, startup: startup,
+		accountRepo: accountRepo, modelRepo: modelRepo, providers: providers, web: webAdapter, egress: egressManager, startup: startup,
 	}, nil
 }
 
@@ -328,6 +333,14 @@ func webProviderConfig(cfg config.Config) webprovider.Config {
 		ChatTimeoutSeconds: int(cfg.Provider.Web.ChatTimeout.Value().Seconds()), ImageTimeoutSeconds: int(cfg.Provider.Web.ImageTimeout.Value().Seconds()),
 		VideoTimeoutSeconds: int(cfg.Provider.Web.VideoTimeout.Value().Seconds()), MaxInputImageBytes: cfg.Media.MaxImageBytes,
 		AllowNSFW: cfg.Provider.Web.AllowNSFW,
+	}
+}
+
+func clearanceConfig(cfg config.Config) infraegress.ClearanceConfig {
+	return infraegress.ClearanceConfig{
+		Mode: cfg.Provider.Web.ClearanceMode, FlareSolverrURL: cfg.Provider.Web.FlareSolverrURL,
+		TargetURL: cfg.Provider.Web.BaseURL, Timeout: cfg.Provider.Web.ClearanceTimeout.Value(),
+		RefreshInterval: cfg.Provider.Web.ClearanceRefresh.Value(),
 	}
 }
 
@@ -458,6 +471,18 @@ func (a *Application) Run(ctx context.Context) error {
 	startBackground("media_cleanup", func(taskCtx context.Context) error {
 		a.media.RunCleanup(taskCtx, func(err error) {
 			a.logger.Warn("media_cleanup_failed", "error", err)
+		})
+		return nil
+	})
+	startBackground("clearance_refresh", func(taskCtx context.Context) error {
+		if err := a.egress.RefreshDueClearances(taskCtx, false); err != nil {
+			a.logger.Warn("clearance_initial_refresh_failed", "error", err)
+		}
+		a.runPeriodicTask(taskCtx, time.Minute, "clearance_refresh", func(runCtx context.Context) error {
+			if err := a.egress.RefreshDueClearances(runCtx, false); err != nil {
+				a.logger.Warn("clearance_refresh_failed", "error", err)
+			}
+			return nil
 		})
 		return nil
 	})

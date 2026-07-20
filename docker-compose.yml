@@ -19,16 +19,29 @@ services:
 
   # 如果出口 IP 不干净，可取消以下注释使用 WARP 作为落地代理。
   # 启用后，在管理端“设置 -> 出口代理”中新增 socks5://warp:1080。
-  # warp:
-  #   container_name: warp
-  #   image: caomingjun/warp:latest
-  #   restart: unless-stopped
-  #   ports:
-  #     - "127.0.0.1:1080:1080"
-  #   environment:
-  #     - WARP_SLEEP=2
-  #   cap_add:
-  #     - NET_ADMIN
+  warp:
+    container_name: warp
+    image: caomingjun/warp:latest
+    profiles: ["warp"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1080:1080"
+    environment:
+      - WARP_SLEEP=2
+    cap_add:
+      - NET_ADMIN
+
+  # 在管理端将 Clearance 模式设为 FlareSolverr，并使用 http://flaresolverr:8191。
+  # 启动命令：docker compose --profile flaresolverr up -d
+  # Podman：podman compose --profile flaresolverr up -d
+  flaresolverr:
+    container_name: flaresolverr
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    profiles: ["flaresolverr"]
+    environment:
+      TZ: Asia/Shanghai
+      LOG_LEVEL: info
+    restart: unless-stopped
 
 volumes:
   grok2api-data:

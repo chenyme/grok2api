@@ -73,3 +73,14 @@ func TestLegacySettingsRequestMayOmitAccounts(t *testing.T) {
 		t.Fatal("missing accounts field was treated as an explicit update")
 	}
 }
+
+func TestLegacySettingsRequestMayOmitManagedClearance(t *testing.T) {
+	var dto settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"providerWeb":{"baseURL":"https://grok.com"}}`), &dto); err != nil {
+		t.Fatal(err)
+	}
+	input := dto.toApplication()
+	if input.ProviderWeb.ClearanceProvided {
+		t.Fatal("missing managed-clearance fields were treated as an explicit update")
+	}
+}
