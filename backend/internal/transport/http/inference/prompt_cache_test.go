@@ -23,6 +23,10 @@ func TestExtractPromptCacheSeedSupportsClaudeCodeForms(t *testing.T) {
 		{name: "suffix user id", body: `{"metadata":{"user_id":"user_account_session_123e4567-e89b-12d3-a456-426614174000"}}`, want: "123e4567-e89b-12d3-a456-426614174000"},
 		{name: "conversation snake case", body: `{"conversation_id":"conversation-session"}`, want: "conversation-session"},
 		{name: "conversation camel case", body: `{"conversationId":"camel-conversation"}`, want: "camel-conversation"},
+		{name: "body prompt_cache_key", body: `{"prompt_cache_key":"sub2api-session"}`, want: "sub2api-session"},
+		// http.Header canonical key is Session-Id for "session_id"
+		{name: "sub2api session_id via Set", headers: func() http.Header { h := make(http.Header); h.Set("session_id", "sub2-header-session"); return h }(), want: "sub2-header-session"},
+		{name: "grok conv header", headers: http.Header{"X-Grok-Conv-Id": {"grok-conv-session"}}, want: "grok-conv-session"},
 		{name: "per request id ignored", headers: http.Header{"X-Client-Request-Id": {"request-123"}}, want: ""},
 		{name: "ordinary user id", body: `{"metadata":{"user_id":"user-123"}}`, want: ""},
 	}

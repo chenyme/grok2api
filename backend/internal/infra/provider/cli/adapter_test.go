@@ -194,10 +194,10 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 		}, nil
 	})
 
-	credential := account.Credential{Provider: account.ProviderBuild, EncryptedAccessToken: encrypted}
+	credential := account.Credential{ID: 7, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted}
 	first, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.5",
-		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-replay-key",
+		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-cache-key", ReasoningReplayKey: "messages-replay-key",
 		Body: []byte(`{"model":"public","max_tokens":128,"messages":[{"role":"user","content":"first"}]}`),
 	})
 	if err != nil {
@@ -212,7 +212,7 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 
 	second, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.5",
-		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-replay-key",
+		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-cache-key", ReasoningReplayKey: "messages-replay-key",
 		Body: []byte(`{"model":"public","max_tokens":128,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"first"},{"role":"user","content":"second"}]}`),
 	})
 	if err != nil {
@@ -224,6 +224,33 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 	}
 	if requestCount != 2 {
 		t.Fatalf("request count = %d", requestCount)
+	}
+}
+
+func TestReasoningReplayScopeSeparatesAccountAndPlane(t *testing.T) {
+	adapter := NewAdapter(Config{
+		BaseURL:         "https://build.example/v1",
+		FallbackBaseURL: "https://xai.example/v1",
+	}, nil)
+	request := provider.ResponseResourceRequest{
+		Credential:         account.Credential{ID: 7},
+		ReasoningReplayKey: "explicit-session",
+	}
+	buildKey := adapter.scopedReasoningReplayKey(request, "https://build.example/v1")
+	if buildKey == "" {
+		t.Fatal("explicit session did not produce replay scope")
+	}
+	otherAccount := request
+	otherAccount.Credential.ID = 8
+	if got := adapter.scopedReasoningReplayKey(otherAccount, "https://build.example/v1"); got == buildKey {
+		t.Fatal("reasoning replay scope was shared across accounts")
+	}
+	if got := adapter.scopedReasoningReplayKey(request, "https://xai.example/v1"); got == buildKey {
+		t.Fatal("reasoning replay scope was shared across Build and XAI")
+	}
+	request.ReasoningReplayKey = ""
+	if got := adapter.scopedReasoningReplayKey(request, "https://build.example/v1"); got != "" {
+		t.Fatalf("soft/empty session unexpectedly enabled replay: %q", got)
 	}
 }
 
@@ -407,13 +434,13 @@ func TestGrokSessionIDFollowsConversationIdentity(t *testing.T) {
 	if err != nil || parsed.Version() != uuid.Version(8) || first != second {
 		t.Fatalf("derived sessions = %q %q, %v", first, second, err)
 	}
+	// 对齐 CPA：无会话键时不得伪造随机 conv-id，否则会打散 xAI 服务器亲和导致 cached_tokens=0。
 	generated, err := grokSessionID("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err = uuid.Parse(generated)
-	if err != nil || parsed.Version() != uuid.Version(7) {
-		t.Fatalf("generated session = %q, %v", generated, err)
+	if generated != "" {
+		t.Fatalf("empty session key must not invent conv-id, got %q", generated)
 	}
 }
 

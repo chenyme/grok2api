@@ -435,7 +435,7 @@ func TestFreshSchemaContract(t *testing.T) {
 	assertTableColumns(t, database, "admin_sessions", nil, []string{"revoked_at"})
 	assertTableColumns(t, database, "account_model_capabilities", []string{"account_id", "upstream_model"}, []string{"provider", "synced_at"})
 	assertTableColumns(t, database, "request_audits", []string{"media_input_images", "media_output_images", "media_output_seconds"}, nil)
-	assertTableColumns(t, database, "response_ownership", []string{"response_id", "account_id", "client_key_id", "provider", "expires_at"}, []string{"parent_response_id", "model_route_id"})
+	assertTableColumns(t, database, "response_ownership", []string{"response_id", "account_id", "client_key_id", "provider", "prompt_cache_key", "reasoning_replay_key", "expires_at"}, []string{"parent_response_id", "model_route_id"})
 
 	var expiresNotNull int
 	if err := database.db.Raw("SELECT `notnull` FROM pragma_table_info('account_credentials') WHERE name = 'expires_at'").Scan(&expiresNotNull).Error; err != nil {
