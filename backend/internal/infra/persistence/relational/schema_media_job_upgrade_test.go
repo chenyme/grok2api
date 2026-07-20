@@ -37,6 +37,15 @@ func TestMediaJobModelTagsAllowBuildVideoProviderAndScope(t *testing.T) {
 		strings.Contains(scopeTag, "grok_console") {
 		t.Fatalf("egress_scope tag = %q", scopeTag)
 	}
+	inputField, ok := modelType.FieldByName("InputJSON")
+	if !ok {
+		t.Fatal("InputJSON field missing")
+	}
+	inputTag := inputField.Tag.Get("gorm")
+	if !strings.Contains(inputTag, "chk_media_jobs_input_json") ||
+		!strings.Contains(inputTag, "33554432") || strings.Contains(inputTag, "1048576") {
+		t.Fatalf("input_json tag = %q", inputTag)
+	}
 }
 
 func TestInitializeSchemaUpgradesMediaJobChecksForBuild(t *testing.T) {
@@ -84,7 +93,7 @@ func TestInitializeSchemaUpgradesMediaJobChecksForBuild(t *testing.T) {
 		Provider: "grok_build", Model: "grok-imagine-video-1.5", ModelRouteID: 1,
 		UpstreamModel: "grok-imagine-video-1.5", Prompt: "test", Seconds: 6,
 		Size: "16:9", Quality: "720p", Status: mediadomain.StatusQueued,
-		InputJSON: `{}`, CreatedAt: now, UpdatedAt: now,
+		InputJSON: `{"image_urls":["` + strings.Repeat("A", (1<<20)+1) + `"]}`, CreatedAt: now, UpdatedAt: now,
 	}
 	jobs := NewMediaJobRepository(database)
 	if err := jobs.CreateMediaJob(ctx, legacyJob); err == nil {
@@ -183,6 +192,7 @@ func recreateLegacyMediaJobsTable(ctx context.Context, database *Database) error
 				usage_recorded_at datetime,
 				CONSTRAINT chk_media_jobs_provider CHECK (provider IN ('grok_web')),
 				CONSTRAINT chk_media_jobs_egress_scope CHECK (egress_scope IN ('','grok_web')),
+				CONSTRAINT chk_media_jobs_input_json CHECK (length(input_json) <= 1048576),
 				CONSTRAINT fk_media_jobs_account FOREIGN KEY (account_id) REFERENCES provider_accounts(id) ON UPDATE CASCADE ON DELETE RESTRICT,
 				CONSTRAINT fk_media_jobs_client_key FOREIGN KEY (client_key_id) REFERENCES client_keys(id) ON UPDATE CASCADE ON DELETE RESTRICT
 			)
@@ -199,6 +209,9 @@ func assertMediaJobSQLLacksBuild(t *testing.T, database *Database) {
 	if !strings.Contains(sql, "grok_web") {
 		t.Fatalf("legacy media_jobs missing grok_web: %s", sql)
 	}
+	if !strings.Contains(sql, "1048576") {
+		t.Fatalf("legacy media_jobs missing old input_json limit: %s", sql)
+	}
 }
 
 func assertMediaJobSQLContainsBuild(t *testing.T, database *Database) {
@@ -212,6 +225,9 @@ func assertMediaJobSQLContainsBuild(t *testing.T, database *Database) {
 	}
 	if !strings.Contains(strings.ToUpper(sql), "ON DELETE SET NULL") {
 		t.Fatalf("media_jobs account history is not detached on account delete: %s", sql)
+	}
+	if !strings.Contains(sql, "33554432") || strings.Contains(sql, "1048576") {
+		t.Fatalf("media_jobs input_json limit was not upgraded: %s", sql)
 	}
 }
 

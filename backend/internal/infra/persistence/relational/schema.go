@@ -111,6 +111,9 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	if err := d.ensureMediaJobConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 数据库约束: %w", err)
 	}
+	if err := d.ensureMediaJobInputConstraint(ctx); err != nil {
+		return fmt.Errorf("迁移 media job 输入长度约束: %w", err)
+	}
 	if err := d.ensureMediaJobAccountForeignKey(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 账号外键: %w", err)
 	}
@@ -165,6 +168,14 @@ func (d *Database) ensureMediaJobConstraints(ctx context.Context) error {
 		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_provider"},
 		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_egress_scope"},
 	}, "grok_build")
+}
+
+// ensureMediaJobInputConstraint 允许异步视频任务持久化 Base64 首图。
+// SQLite 和 PostgreSQL 都不会由 AutoMigrate 可靠替换已有的同名 CHECK。
+func (d *Database) ensureMediaJobInputConstraint(ctx context.Context) error {
+	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_input_json"},
+	}, "33554432")
 }
 
 // ensureMediaJobAccountForeignKey 让终态视频任务在账号删除后保留快照，
