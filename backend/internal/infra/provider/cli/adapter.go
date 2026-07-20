@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,6 +54,7 @@ type Adapter struct {
 	uploadIssuer   VideoUploadIssuer
 	replay         *reasoningreplay.ReasoningReplay
 	compaction     *gatewayCompactionCodec
+	logger         *slog.Logger
 }
 
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
@@ -63,7 +65,13 @@ func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
 	agentID := uuid.NewString()
 	return &Adapter{
 		cfg: cfg, http: httpClient, oauth: newOAuthClient(httpClient), cipher: cipher, base: transport,
-		agentID: agentID, modelsETags: make(map[uint64]string), compaction: newGatewayCompactionCodec(cipher),
+		agentID: agentID, modelsETags: make(map[uint64]string), compaction: newGatewayCompactionCodec(cipher), logger: slog.Default(),
+	}
+}
+
+func (a *Adapter) SetLogger(logger *slog.Logger) {
+	if logger != nil {
+		a.logger = logger
 	}
 }
 
@@ -178,7 +186,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if err := normalizeGzipResponse(resp); err != nil {
 		return nil, err
 	}
-	resp, reqURL, reasoningRecovered := a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, base, resp, reqURL)
+	resp, reqURL, reasoningRecovery := a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, base, replayKey, resp, reqURL)
 	// 仅可回退操作在当次 Build 主地址明确 403 时用等价请求探测 XAI。
 	if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Billing, request.Method, request.Path, resp.StatusCode) {
 		// 缓冲主 403 正文，备用失败时原样回放，避免二次 primary POST。
@@ -195,14 +203,14 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			if fallbackErr == nil {
 				fallbackErr = normalizeGzipResponse(fallbackResp)
 			}
-			fallbackRecovered := false
+			fallbackRecovery := reasoningRecoveryOutcome{}
 			if fallbackErr == nil {
-				fallbackResp, fallbackURL, fallbackRecovered = a.recoverReasoningDecodeFailure(ctx, request, accessToken, fallbackBody, fallbackBase, fallbackResp, fallbackURL)
+				fallbackResp, fallbackURL, fallbackRecovery = a.recoverReasoningDecodeFailure(ctx, request, accessToken, fallbackBody, fallbackBase, fallbackReplayKey, fallbackResp, fallbackURL)
 			}
 			if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
 				a.activateBuildAPIFallback(ctx, &request.Credential)
 				resp, reqURL, base, body, replayKey = fallbackResp, fallbackURL, fallbackBase, fallbackBody, fallbackReplayKey
-				reasoningRecovered = reasoningRecovered || fallbackRecovered
+				reasoningRecovery = reasoningRecovery.merge(fallbackRecovery)
 			} else {
 				if fallbackErr == nil {
 					_ = fallbackResp.Body.Close()
@@ -225,9 +233,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			resp.Header.Set("X-Grok2API-Compatibility-Warnings", warnings)
 		}
 	}
-	if reasoningRecovered {
-		appendCompatibilityWarning(resp.Header, "reasoning_encrypted_content_downgraded")
-	}
+	reasoningRecovery.appendWarnings(resp.Header)
 	if responsesOperation && toolCompatibility != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if request.Streaming {
 			resp.Body = toolCompatibility.normalizeResponseStream(resp.Body)

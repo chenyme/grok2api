@@ -171,6 +171,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		ClientVersion: cfg.Provider.Build.ClientVersion, ClientIdentifier: cfg.Provider.Build.ClientIdentifier,
 		TokenAuth: cfg.Provider.Build.TokenAuth, UserAgent: cfg.Provider.Build.UserAgent,
 	}, cipher)
+	cliAdapter.SetLogger(logger)
 	cliAdapter.SetEgress(egressManager)
 	cliAdapter.SetVideoUploadIssuer(mediaService)
 	reasoningReplay := reasoningreplay.New(reasoningReplayStore, reasoningreplay.Config{

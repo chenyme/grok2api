@@ -168,6 +168,104 @@ func TestRecoverReasoningDecodeFailureStaysOnXAIFallbackPlane(t *testing.T) {
 	}
 }
 
+func TestRecoverReasoningDecodeFailureResetsSessionWithoutOpaqueInput(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		data, _ := io.ReadAll(request.Body)
+		switch call {
+		case 1:
+			if request.Header.Get("x-grok-session-id") == "" || !strings.Contains(string(data), `"prompt_cache_key":"session-1"`) {
+				t.Fatalf("initial session request headers=%#v body=%s", request.Header, data)
+			}
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+		case 2:
+			if request.Header.Get("x-grok-session-id") != "" || request.Header.Get("x-grok-conv-id") != "" || strings.Contains(string(data), `"prompt_cache_key"`) {
+				t.Fatalf("stateless recovery headers=%#v body=%s", request.Header, data)
+			}
+			return jsonHTTPResponse(request, http.StatusOK, `{"id":"resp_ok","status":"completed","output":[]}`), nil
+		default:
+			t.Fatalf("unexpected call %d", call)
+			return nil, nil
+		}
+	})
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", PromptCacheKey: "session-1",
+		Body: []byte(`{"model":"grok-4.5","input":[{"role":"user","content":"continue"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
+	if calls.Load() != 2 || response.StatusCode != http.StatusOK || !strings.Contains(warnings, "reasoning_session_reset") || strings.Contains(warnings, "reasoning_encrypted_content_downgraded") {
+		t.Fatalf("calls=%d status=%d warnings=%q", calls.Load(), response.StatusCode, warnings)
+	}
+}
+
+func TestRecoverReasoningDecodeFailureEscalatesFromOpaqueStripToSessionReset(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		data, _ := io.ReadAll(request.Body)
+		switch call {
+		case 1:
+			if !strings.Contains(string(data), `"encrypted_content":"opaque"`) || request.Header.Get("x-grok-session-id") == "" {
+				t.Fatalf("initial body=%s headers=%#v", data, request.Header)
+			}
+		case 2:
+			if strings.Contains(string(data), `"encrypted_content"`) || request.Header.Get("x-grok-session-id") == "" || !strings.Contains(string(data), `"prompt_cache_key":"session-1"`) {
+				t.Fatalf("opaque downgrade body=%s headers=%#v", data, request.Header)
+			}
+		case 3:
+			if strings.Contains(string(data), `"encrypted_content"`) || strings.Contains(string(data), `"prompt_cache_key"`) || request.Header.Get("x-grok-session-id") != "" {
+				t.Fatalf("session reset body=%s headers=%#v", data, request.Header)
+			}
+			return jsonHTTPResponse(request, http.StatusOK, `{"id":"resp_ok","status":"completed","output":[]}`), nil
+		default:
+			t.Fatalf("unexpected call %d", call)
+		}
+		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+	})
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", PromptCacheKey: "session-1",
+		Body: []byte(`{"model":"grok-4.5","input":[{"type":"reasoning","summary":[],"encrypted_content":"opaque"},{"role":"user","content":"continue"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
+	if calls.Load() != 3 || response.StatusCode != http.StatusOK || !strings.Contains(warnings, "reasoning_encrypted_content_downgraded") || !strings.Contains(warnings, "reasoning_session_reset") {
+		t.Fatalf("calls=%d status=%d warnings=%q", calls.Load(), response.StatusCode, warnings)
+	}
+}
+
+func TestRecoverReasoningDecodeFailureDoesNotResetStoredResponseChain(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+	})
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", PromptCacheKey: "session-1",
+		Body: []byte(`{"model":"grok-4.5","previous_response_id":"resp_1","input":[{"role":"user","content":"continue"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if calls.Load() != 1 || response.StatusCode != http.StatusBadRequest || !strings.Contains(response.Header.Get("X-Grok2API-Compatibility-Warnings"), "reasoning_recovery_failed") {
+		t.Fatalf("calls=%d status=%d warnings=%q", calls.Load(), response.StatusCode, response.Header.Get("X-Grok2API-Compatibility-Warnings"))
+	}
+}
+
 func TestRecoverReasoningDecodeFailurePreservesOriginalWhenRetryFails(t *testing.T) {
 	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
 	var calls atomic.Int32
@@ -187,7 +285,7 @@ func TestRecoverReasoningDecodeFailurePreservesOriginalWhenRetryFails(t *testing
 	}
 	defer response.Body.Close()
 	data, _ := io.ReadAll(response.Body)
-	if calls.Load() != 2 || response.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "Could not decode") || response.Header.Get("X-Grok2API-Compatibility-Warnings") != "" {
+	if calls.Load() != 2 || response.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "Could not decode") || !strings.Contains(response.Header.Get("X-Grok2API-Compatibility-Warnings"), "reasoning_recovery_failed") {
 		t.Fatalf("calls=%d status=%d headers=%#v body=%s", calls.Load(), response.StatusCode, response.Header, data)
 	}
 }
