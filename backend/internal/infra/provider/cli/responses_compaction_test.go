@@ -99,7 +99,7 @@ func TestCleanGatewayCompactionSummaryMatchesGrokBuildScratchpadRules(t *testing
 	}
 }
 
-func TestPrepareGatewayCompactionSampleMatchesGrokBuild0103(t *testing.T) {
+func TestPrepareGatewayCompactionSampleMatchesGrokBuild02106(t *testing.T) {
 	prepared, err := prepareGatewayCompactionSample([]byte(`{
 		"model":"grok-4.5","stream":true,"store":true,"instructions":"client instructions",
 		"previous_response_id":"resp_old","max_output_tokens":200,
@@ -113,7 +113,7 @@ func TestPrepareGatewayCompactionSampleMatchesGrokBuild0103(t *testing.T) {
 	if json.Unmarshal(prepared, &payload) != nil {
 		t.Fatalf("payload = %s", prepared)
 	}
-	if payload["stream"] != true || payload["store"] != false || payload["instructions"] != nil || payload["temperature"] != float64(1) || payload["tool_choice"] != "none" {
+	if payload["stream"] != true || payload["store"] != false || payload["instructions"] != nil || payload["temperature"] != float64(1) || payload["tool_choice"] != "auto" {
 		t.Fatalf("sample controls = %#v", payload)
 	}
 	if _, exists := payload["previous_response_id"]; exists {
@@ -182,7 +182,7 @@ func TestForwardResponseEmulatesRemoteCompactionV2(t *testing.T) {
 		if json.Unmarshal(data, &payload) != nil {
 			t.Fatalf("payload = %s", data)
 		}
-		if payload["stream"] != true || payload["store"] != false || payload["instructions"] != nil || payload["tool_choice"] != "none" {
+		if payload["stream"] != true || payload["store"] != false || payload["instructions"] != nil || payload["tool_choice"] != "auto" {
 			t.Fatalf("sample flags = %#v", payload)
 		}
 		if _, exists := payload["prompt_cache_key"]; exists {
@@ -288,8 +288,8 @@ func newCompactionTestAdapter(t *testing.T) (*Adapter, string) {
 		t.Fatal(err)
 	}
 	adapter := NewAdapter(Config{
-		BaseURL: "https://build.test/v1", ClientVersion: "0.2.103",
-		ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.103 (linux; x86_64)",
+		BaseURL: "https://build.test/v1", ClientVersion: "0.2.106",
+		ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.106 (linux; x86_64)",
 	}, cipher)
 	return adapter, encrypted
 }
