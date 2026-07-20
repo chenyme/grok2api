@@ -122,12 +122,12 @@ func TestFunctionCallOutputHistoryEncodesStructuredOutput(t *testing.T) {
 }
 
 func TestFunctionCallOutputHistoryPreservesContentBlocks(t *testing.T) {
-	normalized, _, err := normalizeResponsesRequest([]byte(`{
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}],"input":[
 			{"type":"function_call_output","call_id":"call_1","status":"completed","output":[
 				{"type":"input_text","text":"Read image file: screenshot.png"},
-				{"type":"input_image","detail":"auto","image_url":"data:image/png;base64,aGVsbG8="},
-				{"type":"input_image","detail":"high","file_id":"file_image_2"},
+				{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="},
+				{"type":"input_image","detail":"original","file_id":"file_image_2"},
 				{"type":"input_file","file_id":"file_document_1","filename":"notes.txt"}
 			]}
 		]
@@ -156,6 +156,38 @@ func TestFunctionCallOutputHistoryPreservesContentBlocks(t *testing.T) {
 		item["status"] != nil {
 		t.Fatalf("function output history = %#v", item)
 	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "image_detail_original_downgraded") {
+		t.Fatalf("compatibility warnings = %#v", compatibility)
+	}
+}
+
+func TestFunctionCallOutputHistoryKeepsStructuredArraysAsJSON(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{name: "empty", output: `[]`},
+		{name: "scalars", output: `[1,2,true]`},
+		{name: "objects", output: `[{"id":1,"type":"record"}]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			normalized, _, err := normalizeResponsesRequest([]byte(`{
+				"model":"public","input":[{"type":"function_call_output","call_id":"call_1","output":`+test.output+`}]
+			}`), "grok-4.5")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var request map[string]any
+			if err := json.Unmarshal(normalized, &request); err != nil {
+				t.Fatal(err)
+			}
+			output, ok := request["input"].([]any)[0].(map[string]any)["output"].(string)
+			if !ok || output != test.output {
+				t.Fatalf("output = %#v, want JSON string %q", output, test.output)
+			}
+		})
+	}
 }
 
 func TestFunctionCallOutputHistoryRejectsInvalidContentBlocks(t *testing.T) {
@@ -165,12 +197,11 @@ func TestFunctionCallOutputHistoryRejectsInvalidContentBlocks(t *testing.T) {
 		wantParam string
 		wantCode  string
 	}{
-		{name: "non_object", output: `["not an object"]`, wantParam: "input[0].output[0]", wantCode: "invalid_parameter"},
-		{name: "missing_type", output: `[{"text":"missing type"}]`, wantParam: "input[0].output[0].type", wantCode: "invalid_parameter"},
+		{name: "mixed_non_object", output: `[{"type":"input_text","text":"ok"},42]`, wantParam: "input[0].output[1]", wantCode: "invalid_parameter"},
+		{name: "mixed_missing_type", output: `[{"type":"input_text","text":"ok"},{"text":"missing type"}]`, wantParam: "input[0].output[1].type", wantCode: "invalid_parameter"},
 		{name: "missing_text", output: `[{"type":"input_text"}]`, wantParam: "input[0].output[0].text", wantCode: "invalid_parameter"},
-		{name: "missing_image_detail", output: `[{"type":"input_image","image_url":"data:image/png;base64,AA=="}]`, wantParam: "input[0].output[0].detail", wantCode: "invalid_parameter"},
 		{name: "missing_image_source", output: `[{"type":"input_image","detail":"auto"}]`, wantParam: "input[0].output[0].image_url", wantCode: "invalid_parameter"},
-		{name: "invalid_image_detail", output: `[{"type":"input_image","detail":"original","image_url":"data:image/png;base64,AA=="}]`, wantParam: "input[0].output[0].detail", wantCode: "invalid_parameter"},
+		{name: "invalid_image_detail", output: `[{"type":"input_image","detail":"medium","image_url":"data:image/png;base64,AA=="}]`, wantParam: "input[0].output[0].detail", wantCode: "invalid_parameter"},
 		{name: "missing_file_source", output: `[{"type":"input_file","filename":"empty.txt"}]`, wantParam: "input[0].output[0].file_data", wantCode: "invalid_parameter"},
 		{name: "unknown_type", output: `[{"type":"input_audio","data":"AA=="}]`, wantParam: "input[0].output[0].type", wantCode: "unsupported_parameter"},
 	}
@@ -183,6 +214,29 @@ func TestFunctionCallOutputHistoryRejectsInvalidContentBlocks(t *testing.T) {
 				t.Fatalf("error = %#v", err)
 			}
 		})
+	}
+}
+
+func TestMessageImageDetailUsesSameCompatibilityPolicy(t *testing.T) {
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":[{"type":"message","role":"user","content":[
+			{"type":"input_image","image_url":"data:image/png;base64,AA=="},
+			{"type":"input_image","detail":"original","file_id":"file_1"}
+		]}]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	content := request["input"].([]any)[0].(map[string]any)["content"].([]any)
+	if content[0].(map[string]any)["detail"] != "auto" || content[1].(map[string]any)["detail"] != "high" {
+		t.Fatalf("message content = %#v", content)
+	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "image_detail_original_downgraded") {
+		t.Fatalf("compatibility warnings = %#v", compatibility)
 	}
 }
 
@@ -418,7 +472,7 @@ func TestMessageImageAndFileNullFieldsAreRemoved(t *testing.T) {
 	content := request["input"].([]any)[0].(map[string]any)["content"].([]any)
 	image := content[0].(map[string]any)
 	file := content[1].(map[string]any)
-	if image["image_url"] == nil || image["detail"] != nil || image["file_id"] != nil || file["file_id"] != "file_1" || file["file_url"] != nil || file["filename"] != nil {
+	if image["image_url"] == nil || image["detail"] != "auto" || image["file_id"] != nil || file["file_id"] != "file_1" || file["file_url"] != nil || file["filename"] != nil {
 		t.Fatalf("message content = %#v", content)
 	}
 }

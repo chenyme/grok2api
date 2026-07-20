@@ -68,7 +68,7 @@ func TestSummarizeResponseMediaDoesNotInterpretArbitraryImageContent(t *testing.
 
 func TestResponseMediaSummaryLogContainsOnlyMetadata(t *testing.T) {
 	var output bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&output, nil))
+	logger := slog.New(slog.NewTextHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	logResponseMediaSummary(logger, "req-media", responseMediaSummary{
 		InputImages: 42, ImageBytes: 33_030_144, ContentArrays: 42, TextBytes: 840,
 	})
@@ -85,6 +85,29 @@ func TestResponseMediaSummaryLogContainsOnlyMetadata(t *testing.T) {
 		if strings.Contains(logged, forbidden) {
 			t.Fatalf("log contains forbidden value %q: %s", forbidden, logged)
 		}
+	}
+}
+
+func TestPureTextContentArraysSkipMediaAuditLog(t *testing.T) {
+	body := []byte(`{
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"describe this image"}]},
+			{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"done"}]}
+		]
+	}`)
+	summary, err := summarizeResponseMedia(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.InputImages != 0 || summary.ContentArrays != 2 {
+		t.Fatalf("summary = %#v", summary)
+	}
+
+	var output bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logResponseMediaSummary(logger, "req-text", summary)
+	if output.Len() != 0 {
+		t.Fatalf("unexpected media audit log: %s", output.String())
 	}
 }
 

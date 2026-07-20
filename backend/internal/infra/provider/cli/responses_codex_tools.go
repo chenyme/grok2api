@@ -292,23 +292,23 @@ func normalizeShellCallOutputInput(item map[string]any, param string) (map[strin
 	return converted, nil
 }
 
-func normalizeFunctionCallOutputInput(item map[string]any, param string) (map[string]any, error) {
-	return normalizeFunctionLikeCallOutputInput(item, param, true)
+func (c *responsesToolCompatibility) normalizeFunctionCallOutputInput(item map[string]any, param string) (map[string]any, error) {
+	return c.normalizeFunctionLikeCallOutputInput(item, param, true)
 }
 
-func normalizeCustomToolCallOutputInput(item map[string]any, param string) (map[string]any, error) {
-	return normalizeFunctionLikeCallOutputInput(item, param, false)
+func (c *responsesToolCompatibility) normalizeCustomToolCallOutputInput(item map[string]any, param string) (map[string]any, error) {
+	return c.normalizeFunctionLikeCallOutputInput(item, param, false)
 }
 
-func normalizeFunctionLikeCallOutputInput(item map[string]any, param string, allowContentBlocks bool) (map[string]any, error) {
+func (c *responsesToolCompatibility) normalizeFunctionLikeCallOutputInput(item map[string]any, param string, allowContentBlocks bool) (map[string]any, error) {
 	callID := strings.TrimSpace(stringField(item, "call_id"))
 	if callID == "" {
 		return nil, &responsesRequestError{Message: param + ".call_id 不能为空", Param: param + ".call_id", Code: "invalid_parameter"}
 	}
 	output := item["output"]
 	var err error
-	if blocks, ok := output.([]any); ok && allowContentBlocks {
-		output, err = normalizeFunctionCallOutputBlocks(blocks, param+".output")
+	if blocks, ok := output.([]any); ok && allowContentBlocks && isFunctionCallOutputContentArray(blocks) {
+		output, err = c.normalizeFunctionCallOutputBlocks(blocks, param+".output")
 	} else {
 		output, err = encodeToolOutput(output, param+".output")
 	}
@@ -319,7 +319,24 @@ func normalizeFunctionLikeCallOutputInput(item map[string]any, param string, all
 	return map[string]any{"type": "function_call_output", "call_id": callID, "output": output}, nil
 }
 
-func normalizeFunctionCallOutputBlocks(blocks []any, param string) ([]any, error) {
+// isFunctionCallOutputContentArray 区分 Responses 内容数组与普通结构化 JSON 数组。
+// 只要出现一个 input_* 内容块，整个数组就按内容数组严格校验，避免混合数组
+// 中的图片被静默字符串化；普通对象/标量/空数组仍沿用 JSON 字符串契约。
+func isFunctionCallOutputContentArray(blocks []any) bool {
+	for _, raw := range blocks {
+		block, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blockType := strings.TrimSpace(stringField(block, "type"))
+		if strings.HasPrefix(blockType, "input_") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *responsesToolCompatibility) normalizeFunctionCallOutputBlocks(blocks []any, param string) ([]any, error) {
 	normalized := make([]any, 0, len(blocks))
 	for index, raw := range blocks {
 		blockParam := fmt.Sprintf("%s[%d]", param, index)
@@ -339,7 +356,7 @@ func normalizeFunctionCallOutputBlocks(blocks []any, param string) ([]any, error
 			}
 			normalized = append(normalized, map[string]any{"type": "input_text", "text": text})
 		case "input_image":
-			converted, err := normalizeFunctionCallOutputImageBlock(block, blockParam)
+			converted, err := c.normalizeFunctionCallOutputImageBlock(block, blockParam)
 			if err != nil {
 				return nil, err
 			}
@@ -357,16 +374,7 @@ func normalizeFunctionCallOutputBlocks(blocks []any, param string) ([]any, error
 	return normalized, nil
 }
 
-func normalizeFunctionCallOutputImageBlock(block map[string]any, param string) (map[string]any, error) {
-	detail, ok := block["detail"].(string)
-	if !ok {
-		return nil, &responsesRequestError{Message: param + ".detail 必须是字符串", Param: param + ".detail", Code: "invalid_parameter"}
-	}
-	switch detail {
-	case "auto", "low", "high":
-	default:
-		return nil, &responsesRequestError{Message: param + ".detail 只支持 auto、low 或 high", Param: param + ".detail", Code: "invalid_parameter"}
-	}
+func (c *responsesToolCompatibility) normalizeFunctionCallOutputImageBlock(block map[string]any, param string) (map[string]any, error) {
 	_, hasImageURL, err := nonEmptyContentBlockString(block, "image_url", param)
 	if err != nil {
 		return nil, err
@@ -378,7 +386,7 @@ func normalizeFunctionCallOutputImageBlock(block map[string]any, param string) (
 	if !hasImageURL && !hasFileID {
 		return nil, &responsesRequestError{Message: param + ".image_url 或 .file_id 至少需要一个", Param: param + ".image_url", Code: "invalid_parameter"}
 	}
-	return normalizeInputImagePart(block), nil
+	return c.normalizeInputImagePart(block, param)
 }
 
 func normalizeFunctionCallOutputFileBlock(block map[string]any, param string) (map[string]any, error) {

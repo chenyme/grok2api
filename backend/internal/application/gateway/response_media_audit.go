@@ -63,6 +63,9 @@ type mediaJSONArray struct {
 }
 
 func summarizeResponseMedia(body []byte) (responseMediaSummary, error) {
+	if !mayContainResponseMedia(body) {
+		return responseMediaSummary{}, nil
+	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	value, err := decodeMediaJSONValue(decoder)
 	if err != nil {
@@ -83,11 +86,17 @@ func summarizeResponseMedia(body []byte) (responseMediaSummary, error) {
 	return summary, nil
 }
 
+// mayContainResponseMedia 是推理热路径上的低成本预筛选。绝大多数纯文本请求
+// 不再创建 JSON decoder；命中仅代表值得精确扫描，最终统计仍由结构化解析决定。
+func mayContainResponseMedia(body []byte) bool {
+	return bytes.Contains(body, []byte("image"))
+}
+
 func logResponseMediaSummary(logger *slog.Logger, requestID string, summary responseMediaSummary) {
-	if logger == nil || (summary.InputImages == 0 && summary.ContentArrays == 0) {
+	if logger == nil || summary.InputImages == 0 {
 		return
 	}
-	logger.Info(
+	logger.Debug(
 		"request_media_input_summary",
 		"request_id", requestID,
 		"media_input_images", summary.InputImages,
