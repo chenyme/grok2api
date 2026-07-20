@@ -33,7 +33,9 @@ type CreateInput struct {
 	Enabled              bool
 	ExpiresAt            *time.Time
 	RPMLimit             int
+	RPMUnlimited         bool
 	MaxConcurrent        int
+	ConcurrencyUnlimited bool
 	BillingLimitUSDTicks int64
 	AllowedModels        []uint64
 }
@@ -139,14 +141,18 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Created, error
 	if err != nil {
 		return Created{}, fmt.Errorf("加密客户端 Key: %w", err)
 	}
-	if input.RPMLimit == 0 {
+	if input.RPMUnlimited {
+		input.RPMLimit = 0
+	} else if input.RPMLimit == 0 {
 		input.RPMLimit = int(s.defaultRPM.Load())
 	}
-	if input.MaxConcurrent == 0 {
+	if input.ConcurrencyUnlimited {
+		input.MaxConcurrent = 0
+	} else if input.MaxConcurrent == 0 {
 		input.MaxConcurrent = int(s.defaultMax.Load())
 	}
-	if input.RPMLimit < 1 || input.MaxConcurrent < 1 {
-		return Created{}, invalidInput("RPM 和最大并发必须大于零")
+	if input.RPMLimit < 0 || input.MaxConcurrent < 0 {
+		return Created{}, invalidInput("RPM 和最大并发不能小于零")
 	}
 	value, err := s.keys.Create(ctx, clientkeydomain.Key{Name: strings.TrimSpace(input.Name), Prefix: prefix, SecretHash: security.HashToken(raw), EncryptedSecret: encryptedSecret, Enabled: input.Enabled, ExpiresAt: input.ExpiresAt, RPMLimit: input.RPMLimit, MaxConcurrent: input.MaxConcurrent, BillingLimitUSDTicks: input.BillingLimitUSDTicks, AllowedModels: input.AllowedModels})
 	return Created{Key: value, Secret: raw}, mapRepositoryError(err)
@@ -192,14 +198,14 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (cli
 		value.ExpiresAt = input.ExpiresAt
 	}
 	if input.RPMLimit != nil {
-		if *input.RPMLimit < 1 || *input.RPMLimit > clientkeydomain.MaxRPMLimit {
-			return clientkeydomain.Key{}, invalidInput("rpmLimit 必须在 1 到 100000 之间")
+		if *input.RPMLimit < 0 || *input.RPMLimit > clientkeydomain.MaxRPMLimit {
+			return clientkeydomain.Key{}, invalidInput("rpmLimit 必须在 0 到 100000 之间")
 		}
 		value.RPMLimit = *input.RPMLimit
 	}
 	if input.MaxConcurrent != nil {
-		if *input.MaxConcurrent < 1 || *input.MaxConcurrent > clientkeydomain.MaxConcurrent {
-			return clientkeydomain.Key{}, invalidInput("maxConcurrent 必须在 1 到 1024 之间")
+		if *input.MaxConcurrent < 0 || *input.MaxConcurrent > clientkeydomain.MaxConcurrent {
+			return clientkeydomain.Key{}, invalidInput("maxConcurrent 必须在 0 到 1024 之间")
 		}
 		value.MaxConcurrent = *input.MaxConcurrent
 	}
@@ -288,19 +294,26 @@ func (s *Service) Authenticate(ctx context.Context, raw string) (clientkeydomain
 			return clientkeydomain.Key{}, nil, ErrBillingLimit
 		}
 	}
-	allowed, err := s.rateLimiter.Allow(ctx, fmt.Sprintf("client:%d", value.ID), value.RPMLimit, now)
-	if err != nil {
-		return clientkeydomain.Key{}, nil, fmt.Errorf("%w: RPM 限流器: %v", ErrRuntimeUnavailable, err)
+	if value.RPMLimit > 0 {
+		allowed, err := s.rateLimiter.Allow(ctx, fmt.Sprintf("client:%d", value.ID), value.RPMLimit, now)
+		if err != nil {
+			return clientkeydomain.Key{}, nil, fmt.Errorf("%w: RPM 限流器: %v", ErrRuntimeUnavailable, err)
+		}
+		if !allowed {
+			return clientkeydomain.Key{}, nil, ErrRateLimited
+		}
 	}
-	if !allowed {
-		return clientkeydomain.Key{}, nil, ErrRateLimited
-	}
-	release, acquired, err := s.concurrency.Acquire(ctx, fmt.Sprintf("client:%d", value.ID), value.MaxConcurrent)
-	if err != nil {
-		return clientkeydomain.Key{}, nil, fmt.Errorf("%w: 并发租约: %v", ErrRuntimeUnavailable, err)
-	}
-	if !acquired {
-		return clientkeydomain.Key{}, nil, ErrConcurrencyLimit
+	release := func() {}
+	if value.MaxConcurrent > 0 {
+		var acquired bool
+		var err error
+		release, acquired, err = s.concurrency.Acquire(ctx, fmt.Sprintf("client:%d", value.ID), value.MaxConcurrent)
+		if err != nil {
+			return clientkeydomain.Key{}, nil, fmt.Errorf("%w: 并发租约: %v", ErrRuntimeUnavailable, err)
+		}
+		if !acquired {
+			return clientkeydomain.Key{}, nil, ErrConcurrencyLimit
+		}
 	}
 	if s.touches.shouldTouch(value.ID, now) {
 		_ = s.keys.Touch(ctx, value.ID)

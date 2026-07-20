@@ -117,6 +117,9 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	if err := d.ensureMediaAssetConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 media asset 数据库约束: %w", err)
 	}
+	if err := d.ensureClientKeyLimitConstraints(ctx); err != nil {
+		return fmt.Errorf("迁移客户端 Key 限额约束: %w", err)
+	}
 	if err := d.backfillWebEgressIdentities(ctx); err != nil {
 		return fmt.Errorf("迁移 Web 出口身份: %w", err)
 	}
@@ -217,6 +220,45 @@ func (d *Database) ensureMediaAssetConstraints(ctx context.Context) error {
 	return d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &mediaAssetModel{}, table: "media_assets", name: "chk_media_assets_size"},
 	}, "268435456")
+}
+
+// ensureClientKeyLimitConstraints 将历史正数限制升级为允许 0 表示无限制。
+// PostgreSQL 不会由 AutoMigrate 可靠替换同名 CHECK，因此需显式检测并重建。
+func (d *Database) ensureClientKeyLimitConstraints(ctx context.Context) error {
+	constraints := []consoleConstraint{
+		{model: &clientKeyModel{}, table: "client_keys", name: "chk_client_keys_rpm"},
+		{model: &clientKeyModel{}, table: "client_keys", name: "chk_client_keys_max_concurrent"},
+	}
+	migrate := func() error {
+		db := d.db.WithContext(ctx)
+		for _, value := range constraints {
+			definition, err := d.constraintDefinition(ctx, value)
+			if err != nil {
+				return err
+			}
+			if clientKeyLimitConstraintAllowsZero(definition) {
+				continue
+			}
+			if definition != "" {
+				if err := db.Migrator().DropConstraint(value.model, value.name); err != nil {
+					return fmt.Errorf("删除旧约束 %s: %w", value.name, err)
+				}
+			}
+			if err := db.Migrator().CreateConstraint(value.model, value.name); err != nil {
+				return fmt.Errorf("创建约束 %s: %w", value.name, err)
+			}
+		}
+		return nil
+	}
+	if d.dialect == "sqlite" {
+		return d.withSQLiteForeignKeysDisabled(ctx, migrate)
+	}
+	return migrate()
+}
+
+func clientKeyLimitConstraintAllowsZero(definition string) bool {
+	normalized := strings.NewReplacer(" ", "", "\n", "", "\t", "", "\"", "", "`", "", "(", "", ")", "").Replace(strings.ToLower(definition))
+	return strings.Contains(normalized, "between0and") || strings.Contains(normalized, ">=0")
 }
 
 // ensureNamedConstraints 在约束定义尚未包含 marker 时 drop/recreate；已升级则跳过。

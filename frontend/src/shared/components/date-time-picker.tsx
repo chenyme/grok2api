@@ -1,6 +1,6 @@
 import { format } from "date-fns"
 import { enUS, zhCN } from "date-fns/locale"
-import { CalendarIcon, X } from "lucide-react"
+import { CalendarIcon } from "lucide-react"
 import { useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { enUS as enUSDayPicker, zhCN as zhCNDayPicker } from "react-day-picker/locale"
@@ -16,9 +16,10 @@ type DateTimePickerProps = {
   value: string
   onChange: (value: string) => void
   placeholder?: string
+  disabled?: boolean
 }
 
-export function DateTimePicker({ value, onChange, placeholder }: DateTimePickerProps) {
+export function DateTimePicker({ value, onChange, placeholder, disabled = false }: DateTimePickerProps) {
   const { t, i18n } = useTranslation()
   const selected = parseLocalDateTime(value)
   const isChinese = i18n.language.toLowerCase().startsWith("zh")
@@ -48,17 +49,14 @@ export function DateTimePicker({ value, onChange, placeholder }: DateTimePickerP
 
   return (
     <Popover>
-      <div className="flex items-center gap-1.5">
-        <PopoverTrigger asChild>
-          <Button type="button" variant="outline" className={cn("h-8 min-w-0 flex-1 justify-start rounded-md bg-secondary/55 px-3 text-left font-normal", !selected && "text-muted-foreground")}>
-            <CalendarIcon />
-            <span className="truncate">
-              {selected ? format(selected, isChinese ? "yyyy年M月d日 HH:mm:ss" : "MMM d, yyyy HH:mm:ss", { locale: isChinese ? zhCN : enUS }) : (placeholder ?? t("keys.neverExpires"))}
-            </span>
-          </Button>
-        </PopoverTrigger>
-        {selected ? <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" onClick={() => onChange("")} aria-label={t("keys.clearExpiry")} title={t("keys.clearExpiry")}><X /></Button> : null}
-      </div>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="secondary" disabled={disabled} className={cn("h-8 w-full min-w-0 justify-start rounded-md bg-secondary/55 px-3 text-left font-normal", !selected && "text-muted-foreground")}>
+          <CalendarIcon />
+          <span className="truncate">
+            {selected ? format(selected, isChinese ? "yyyy年M月d日 HH:mm:ss" : "MMM d, yyyy HH:mm:ss", { locale: isChinese ? zhCN : enUS }) : (placeholder ?? t("keys.neverExpires"))}
+          </span>
+        </Button>
+      </PopoverTrigger>
       <PopoverContent className="w-auto overflow-hidden p-0" align="start">
         <Calendar
           mode="single"
@@ -67,15 +65,15 @@ export function DateTimePicker({ value, onChange, placeholder }: DateTimePickerP
           onSelect={selectDate}
           locale={isChinese ? zhCNDayPicker : enUSDayPicker}
         />
-        <div className="flex items-center gap-3 border-t p-3">
+        <div className="flex items-center gap-2 border-t px-3 py-2">
           <span className="text-xs text-muted-foreground">{t("keys.expiryTime")}</span>
-          <div className="ml-auto flex items-center gap-1 font-mono text-xs">
+          <div className="ml-auto flex items-center gap-1 text-xs">
             {timeParts.map((part, index) => (
               <div className="contents" key={index}>
                 {index > 0 ? <span className="text-muted-foreground">:</span> : null}
                 <Input
                   aria-label={`${t("keys.expiryTime")} ${index === 0 ? "HH" : index === 1 ? "MM" : "SS"}`}
-                  className="h-8 w-10 bg-background px-1 text-center font-mono text-xs tabular-nums"
+                  className="h-7 w-9 bg-background px-1 text-center text-xs tabular-nums"
                   inputMode="numeric"
                   maxLength={2}
                   pattern="[0-9]*"
