@@ -8,14 +8,14 @@ import (
 	"strings"
 )
 
-// do retries only the connection phase of an account-bound proxy request.
+// do retries only the connection phase of a proxy-pool request.
 // Once the request is written to the upstream tunnel, replaying a POST could
 // duplicate generation or billing and is therefore never attempted here.
 func (l *Lease) do(request *http.Request) (*http.Response, error) {
 	if l == nil || l.client == nil {
 		return nil, errors.New("出口客户端未初始化")
 	}
-	if !l.sticky {
+	if !l.proxyPool {
 		return l.client.Do(request)
 	}
 	current := request
@@ -31,7 +31,10 @@ func (l *Lease) do(request *http.Request) (*http.Response, error) {
 		if err == nil && !retryableResinResponse(response) {
 			return response, nil
 		}
-		if attempt >= stickyProxyRetryLimit || written || !safeProxyConnectionFailure(err, response) {
+		if attempt >= proxyPoolRetryLimit || written || !safeProxyConnectionFailure(err, response) {
+			if safeProxyConnectionFailure(err, response) {
+				l.client.CloseIdleConnections()
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -39,6 +42,7 @@ func (l *Lease) do(request *http.Request) (*http.Response, error) {
 		}
 		next, cloneErr := cloneRequestBody(request)
 		if cloneErr != nil {
+			l.client.CloseIdleConnections()
 			if err != nil {
 				return nil, err
 			}

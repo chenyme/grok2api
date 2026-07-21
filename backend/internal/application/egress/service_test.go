@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
@@ -113,11 +114,80 @@ func TestPublicNodeReportsAccountBoundProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewService(nil, cipher, "browser-agent")
-	public := service.publicNode(domain.Node{Scope: domain.ScopeWeb, EncryptedProxyURL: encryptedProxy})
+	cooldown := time.Now().UTC().Add(time.Minute)
+	public := service.publicNode(domain.Node{
+		Scope: domain.ScopeWeb, EncryptedProxyURL: encryptedProxy, Health: 0.2,
+		FailureCount: 3, CooldownUntil: &cooldown, LastError: "legacy failure",
+	})
 	if !public.AccountBoundProxy {
 		t.Fatal("Resin proxy was not reported as account-bound")
 	}
+	if !public.ProxyPool {
+		t.Fatal("account-bound proxy was not reported as a proxy pool")
+	}
+	if public.Health != 1 || public.FailureCount != 0 || public.CooldownUntil != nil || public.LastError != "" {
+		t.Fatalf("proxy pool exposed obsolete node health: %#v", public)
+	}
 	if service.publicNode(domain.Node{Scope: domain.ScopeWeb}).AccountBoundProxy {
 		t.Fatal("direct node was reported as account-bound")
+	}
+}
+
+func TestApplyInputResetsHealthOnlyWhenEgressConfigurationChanges(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(nil, cipher, "browser-agent")
+	cooldown := time.Now().UTC().Add(time.Minute)
+	base := domain.Node{
+		Name: "node", Scope: domain.ScopeWeb, Enabled: true, Health: 0.2,
+		FailureCount: 4, CooldownUntil: &cooldown, LastError: "transport error",
+	}
+
+	renamed, err := service.applyInput(base, Input{Name: "renamed", Scope: domain.ScopeWeb, Enabled: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Health != base.Health || renamed.FailureCount != base.FailureCount || renamed.CooldownUntil == nil || renamed.LastError != base.LastError {
+		t.Fatalf("name-only edit reset health: %#v", renamed)
+	}
+	legacyPool := base
+	legacyPool.ProxyPool = true
+	legacyPool.EncryptedProxyURL, err = cipher.Encrypt("socks5h://proxy.example:1080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preserved, err := service.applyInput(legacyPool, Input{Name: "renamed", Scope: domain.ScopeWeb, Enabled: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preserved.ProxyPool {
+		t.Fatal("an update without proxyPool disabled the existing mode")
+	}
+
+	proxyURL := "socks5h://proxy.example:1080"
+	proxyPool := true
+	changed, err := service.applyInput(base, Input{Name: "node", Scope: domain.ScopeWeb, Enabled: true, ProxyPool: &proxyPool, ProxyURL: &proxyURL}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Health != 1 || changed.FailureCount != 0 || changed.CooldownUntil != nil || changed.LastError != "" || !changed.ProxyPool {
+		t.Fatalf("egress configuration did not reset health: %#v", changed)
+	}
+}
+
+func TestProxyPoolRequiresConfiguredProxy(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(nil, cipher, "browser-agent")
+	proxyPool := true
+	_, err = service.applyInput(domain.Node{}, Input{
+		Name: "pool", Scope: domain.ScopeBuild, Enabled: true, ProxyPool: &proxyPool,
+	}, true)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("proxy pool without a proxy error = %v", err)
 	}
 }

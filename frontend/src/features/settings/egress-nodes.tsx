@@ -20,7 +20,7 @@ import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { ErrorState } from "@/shared/components/data-state";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
-const emptyInput: EgressNodeInput = { name: "", scope: "grok_build", enabled: true, proxyURL: "", userAgent: "", cloudflareCookies: "" };
+const emptyInput: EgressNodeInput = { name: "", scope: "grok_build", enabled: true, proxyPool: false, proxyURL: "", userAgent: "", cloudflareCookies: "" };
 
 export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flaresolverr" }) {
   const { t } = useTranslation();
@@ -59,7 +59,7 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
   }
 
   function openEdit(node: EgressNodeDTO) {
-    setForm({ name: node.name, scope: node.scope, enabled: node.enabled, userAgent: node.scope === "grok_build" ? "" : node.userAgent, proxyURL: "", cloudflareCookies: "" });
+    setForm({ name: node.name, scope: node.scope, enabled: node.enabled, proxyPool: node.proxyPool, userAgent: node.scope === "grok_build" ? "" : node.userAgent, proxyURL: "", cloudflareCookies: "" });
     setEditing(node);
   }
 
@@ -159,8 +159,18 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
               </div>
             ) : null}
             <Field label={t("settings.egress.proxyURL")} controlId="egress-proxy" help={t("settings.egress.proxyProtocols")}>
-              <Input id="egress-proxy" type="password" autoComplete="new-password" placeholder={editing?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL} onChange={(event) => setForm({ ...form, proxyURL: event.target.value })} />
+              <Input id="egress-proxy" type="password" autoComplete="new-password" placeholder={editing?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL} onChange={(event) => {
+                const proxyURL = event.target.value;
+                setForm({ ...form, proxyURL, proxyPool: editing?.proxyConfigured || proxyURL.trim() ? form.proxyPool : false });
+              }} />
             </Field>
+            <div className="flex items-start justify-between gap-4 rounded-md bg-muted/45 px-3 py-2.5">
+              <div className="space-y-1">
+                <Label htmlFor="egress-proxy-pool">{t("settings.egress.proxyPool")}</Label>
+                <p className="max-w-[390px] text-xs leading-5 text-muted-foreground">{t("settings.egress.proxyPoolHelp")}</p>
+              </div>
+              <Switch id="egress-proxy-pool" className="mt-0.5" checked={form.proxyPool} disabled={!editing?.proxyConfigured && !form.proxyURL?.trim()} onCheckedChange={(proxyPool) => setForm({ ...form, proxyPool })} />
+            </div>
             {form.scope !== "grok_build" && clearanceMode === "manual" ? (
               <Field label={t("settings.egress.userAgent")} controlId="egress-user-agent">
                 <Input id="egress-user-agent" value={form.userAgent} onChange={(event) => setForm({ ...form, userAgent: event.target.value })} />

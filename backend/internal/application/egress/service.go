@@ -31,6 +31,7 @@ type Input struct {
 	Name              string
 	Scope             domain.Scope
 	Enabled           bool
+	ProxyPool         *bool
 	ProxyURL          *string
 	ClearProxyURL     bool
 	UserAgent         string
@@ -158,6 +159,11 @@ func (s *Service) forgetClearance(id uint64) {
 }
 
 func (s *Service) applyInput(value domain.Node, input Input, create bool) (domain.Node, error) {
+	proxyPool := value.ProxyPool
+	if input.ProxyPool != nil {
+		proxyPool = *input.ProxyPool
+	}
+	configurationChanged := create || value.Scope != input.Scope || value.ProxyPool != proxyPool || (!value.Enabled && input.Enabled) || input.ClearProxyURL || input.ProxyURL != nil
 	name := strings.TrimSpace(input.Name)
 	if name == "" || len(name) > 160 {
 		return domain.Node{}, fmt.Errorf("%w: 名称必须在 1 到 160 个字符之间", ErrInvalidInput)
@@ -165,7 +171,7 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	if input.Scope != domain.ScopeBuild && input.Scope != domain.ScopeWeb && input.Scope != domain.ScopeConsole && input.Scope != domain.ScopeWebAsset {
 		return domain.Node{}, fmt.Errorf("%w: scope 必须是 grok_build、grok_web、grok_console 或 grok_web_asset", ErrInvalidInput)
 	}
-	value.Name, value.Scope, value.Enabled = name, input.Scope, input.Enabled
+	value.Name, value.Scope, value.Enabled, value.ProxyPool = name, input.Scope, input.Enabled, proxyPool
 	if input.Scope == domain.ScopeBuild {
 		// Build 请求始终沿用 Provider 生成的 CLI User-Agent，出口节点不得覆盖协议身份。
 		value.UserAgent = ""
@@ -182,17 +188,21 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	}
 	if input.ClearProxyURL {
 		value.EncryptedProxyURL = ""
+		value.ProxyPool = false
 	} else if input.ProxyURL != nil {
 		normalized, err := NormalizeProxyURL(*input.ProxyURL)
 		if err != nil {
 			return domain.Node{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 		}
-		if normalized != "" || create {
+		if normalized != "" {
 			value.EncryptedProxyURL, err = s.cipher.Encrypt(normalized)
 			if err != nil {
 				return domain.Node{}, err
 			}
 		}
+	}
+	if value.ProxyPool && strings.TrimSpace(value.EncryptedProxyURL) == "" {
+		return domain.Node{}, fmt.Errorf("%w: 代理池模式需要配置代理地址", ErrInvalidInput)
 	}
 	if input.Scope == domain.ScopeBuild {
 		value.EncryptedCloudflareCookie = ""
@@ -211,8 +221,11 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 			}
 		}
 	}
-	if create {
+	if configurationChanged {
 		value.Health = 1
+		value.FailureCount = 0
+		value.CooldownUntil = nil
+		value.LastError = ""
 	}
 	// Any administrator edit invalidates freshness. Keep the binding fingerprint:
 	// managed mode may use the existing cookie as last-known-good only when the
@@ -227,11 +240,18 @@ func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 	if value.Scope == domain.ScopeBuild {
 		userAgent = ""
 	}
+	accountBoundProxy := s.accountBoundProxy(value)
+	proxyPool := value.ProxyPool || accountBoundProxy
+	health, failureCount, cooldownUntil, lastError := value.Health, value.FailureCount, value.CooldownUntil, value.LastError
+	if proxyPool {
+		health, failureCount, cooldownUntil, lastError = 1, 0, nil, ""
+	}
 	return domain.PublicNode{
 		ID: value.ID, Name: value.Name, Scope: value.Scope, Enabled: value.Enabled,
 		ProxyConfigured: value.EncryptedProxyURL != "", UserAgent: userAgent, CookieConfigured: value.EncryptedCloudflareCookie != "",
-		AccountBoundProxy: s.accountBoundProxy(value),
-		Health:            value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
+		ProxyPool:         proxyPool,
+		AccountBoundProxy: accountBoundProxy,
+		Health:            health, FailureCount: failureCount, CooldownUntil: cooldownUntil, LastError: lastError,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }

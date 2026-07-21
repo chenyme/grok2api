@@ -483,6 +483,82 @@ func TestBuildForbiddenDoesNotPoisonEgressNode(t *testing.T) {
 	}
 }
 
+func TestUpstreamServerErrorDoesNotPoisonFixedEgressNode(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "build", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+	manager := NewManager(repository, cipher)
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, http.StatusBadGateway, nil)
+	if repository.updates != 0 || repository.node.Health != 1 || repository.node.CooldownUntil != nil {
+		t.Fatalf("upstream 502 poisoned fixed node: updates=%d node=%#v", repository.updates, repository.node)
+	}
+}
+
+func TestProxyPoolTransportFailureDoesNotCreateGlobalCooldown(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cooldown := time.Now().UTC().Add(time.Minute)
+	repository := &mutableEgressRepository{node: domain.Node{
+		ID: 1, Name: "pool", Scope: domain.ScopeBuild, Enabled: true, ProxyPool: true,
+		Health: 0.2, FailureCount: 3, CooldownUntil: &cooldown, LastError: "old failure",
+	}}
+	manager := NewManager(repository, cipher)
+	lease, configured, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
+	if err != nil || !configured || lease == nil {
+		t.Fatalf("pool lease blocked by stale cooldown: configured=%v lease=%#v err=%v", configured, lease, err)
+	}
+	lease.Release()
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("connection refused"))
+	if repository.updates != 0 || repository.node.FailureCount != 3 || repository.node.CooldownUntil == nil {
+		t.Fatalf("pool transport failure changed global state: updates=%d node=%#v", repository.updates, repository.node)
+	}
+	if !managerHasClientForNode(manager, 1) {
+		t.Fatal("pool transport failure evicted the shared node client cache")
+	}
+}
+
+func TestFixedProxyTransportFailureStillCreatesCooldown(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "fixed", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+	manager := NewManager(repository, cipher)
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("connection refused"))
+	if repository.updates != 1 || repository.node.FailureCount != 1 || repository.node.CooldownUntil == nil || repository.node.LastError != "transport error" {
+		t.Fatalf("fixed transport failure did not create cooldown: updates=%d node=%#v", repository.updates, repository.node)
+	}
+}
+
+func TestAccountTemplateIsAnEffectiveProxyPool(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("socks5h://Default.{account}:token@resin.example:2260")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cooldown := time.Now().UTC().Add(time.Minute)
+	repository := &mutableEgressRepository{node: domain.Node{
+		ID: 1, Name: "resin", Scope: domain.ScopeBuild, Enabled: true, Health: 0.2,
+		EncryptedProxyURL: encryptedProxy, CooldownUntil: &cooldown,
+	}}
+	manager := NewManager(repository, cipher)
+	lease, configured, err := manager.AcquireIfConfigured(WithAccountIdentity(context.Background(), "account-1"), domain.ScopeBuild, "")
+	if err != nil || !configured || lease == nil {
+		t.Fatalf("account-template lease blocked by stale cooldown: configured=%v lease=%#v err=%v", configured, lease, err)
+	}
+	defer lease.Release()
+	if !lease.sticky || !lease.proxyPool {
+		t.Fatalf("account-template lease flags: sticky=%v proxyPool=%v", lease.sticky, lease.proxyPool)
+	}
+}
+
 func TestWebForbiddenStillRebuildsBrowserSession(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
