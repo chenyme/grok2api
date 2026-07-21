@@ -22,7 +22,7 @@ func TestRecoverVideoJobsRetriesUsageWithoutRegeneratingVideo(t *testing.T) {
 		ID: "video_usage_recovery", RequestID: "request-usage-recovery",
 		ClientKeyID: 1, ClientKeyName: "client", AccountID: 2, AccountName: "account",
 		Provider: "grok_web", Model: "grok-imagine-video", ModelRouteID: 3, UpstreamModel: "video",
-		Seconds: 8, Quality: "720p", Status: media.StatusCompleted, InputJSON: `{}`, CreatedAt: completedAt.Add(-time.Minute), CompletedAt: &completedAt,
+		Seconds: 8, Quality: "720p", Status: media.StatusCompleted, InputImageCount: 2, CreatedAt: completedAt.Add(-time.Minute), CompletedAt: &completedAt,
 	}}
 	recorder := &durableVideoAuditRecorder{failures: 1}
 	service := &Service{mediaJobs: repository, audits: recorder}
@@ -38,8 +38,20 @@ func TestRecoverVideoJobsRetriesUsageWithoutRegeneratingVideo(t *testing.T) {
 	if repository.job.UsageRecordedAt == nil || recorder.calls != 2 {
 		t.Fatalf("recordedAt = %v, audit calls = %d", repository.job.UsageRecordedAt, recorder.calls)
 	}
-	if recorder.last.EventID != "video_usage_video_usage_recovery" || recorder.last.EstimatedCostInUSDTicks <= 0 {
+	if recorder.last.EventID != "video_usage_video_usage_recovery" || recorder.last.EstimatedCostInUSDTicks <= 0 || recorder.last.MediaInputImages != 2 {
 		t.Fatalf("audit = %#v", recorder.last)
+	}
+}
+
+func TestEncodeVideoInputEnforcesPersistedLimit(t *testing.T) {
+	overhead := len(`{"image_urls":[""]}`)
+	atLimit := strings.Repeat("A", media.MaxInputJSONBytes-overhead)
+	encoded, err := encodeVideoInput([]string{atLimit})
+	if err != nil || len(encoded) != media.MaxInputJSONBytes {
+		t.Fatalf("encoded len=%d err=%v", len(encoded), err)
+	}
+	if _, err := encodeVideoInput([]string{atLimit + "A"}); !errors.Is(err, ErrVideoInputTooLarge) {
+		t.Fatalf("oversized input error = %v", err)
 	}
 }
 

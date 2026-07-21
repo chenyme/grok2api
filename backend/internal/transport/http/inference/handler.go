@@ -584,8 +584,8 @@ func (h *Handler) generateVideo(c *gin.Context) {
 	if request.Image != nil {
 		inputs = append([]videoGenerationImage{*request.Image}, inputs...)
 	}
-	if len(inputs) > 8 {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "image 与 reference_images 合计不能超过 8 张")
+	if len(inputs) > mediadomain.MaxInputImages {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("image 与 reference_images 合计不能超过 %d 张", mediadomain.MaxInputImages))
 		return
 	}
 	referenceURLs := make([]string, 0, len(inputs))
@@ -1467,6 +1467,9 @@ func writeGatewayError(c *gin.Context, err error) {
 		message = "Response 不存在或已过期"
 	case errors.Is(err, gateway.ErrResponseStateUnsupported), errors.Is(err, gateway.ErrConversationUnsupported):
 		status, code = http.StatusBadRequest, "unsupported_parameter"
+		message = err.Error()
+	case errors.Is(err, gateway.ErrVideoInputTooLarge):
+		status, code = http.StatusBadRequest, "invalid_request"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {

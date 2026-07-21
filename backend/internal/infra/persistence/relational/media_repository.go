@@ -266,7 +266,9 @@ func (r *MediaJobRepository) CreateMediaJob(ctx context.Context, value media.Job
 
 func (r *MediaJobRepository) GetMediaJob(ctx context.Context, id string, clientKeyID uint64) (media.Job, error) {
 	var row mediaJobModel
-	if err := r.db.db.WithContext(ctx).Where("id = ? AND client_key_id = ?", id, clientKeyID).First(&row).Error; err != nil {
+	// Public polling and content download do not consume the potentially large,
+	// immutable reference payload. Keep it off this hot path.
+	if err := r.db.db.WithContext(ctx).Omit("input_json").Where("id = ? AND client_key_id = ?", id, clientKeyID).First(&row).Error; err != nil {
 		return media.Job{}, mapError(err)
 	}
 	return mediaJobToDomain(row), nil
@@ -278,7 +280,7 @@ func (r *MediaJobRepository) GetMediaJobsByIDs(ctx context.Context, ids []string
 		return []media.Job{}, nil
 	}
 	var rows []mediaJobModel
-	if err := r.db.db.WithContext(ctx).Where("id IN ?", ids).Find(&rows).Error; err != nil {
+	if err := r.db.db.WithContext(ctx).Omit("input_json").Where("id IN ?", ids).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	values := make([]media.Job, 0, len(rows))
@@ -294,7 +296,9 @@ func (r *MediaJobRepository) UpdateMediaJob(ctx context.Context, value media.Job
 	if value.ClaimToken != "" {
 		query = query.Where("claim_token = ?", value.ClaimToken)
 	}
-	result := query.Select("request_id", "client_key_name", "account_id", "account_name", "egress_node_id", "egress_node_name", "egress_scope", "egress_mode", "provider", "model", "model_route_id", "upstream_model", "prompt", "seconds", "size", "quality", "status", "progress", "input_json", "upstream_url", "result_asset_id", "content_type", "error_code", "error_message", "lease_until", "claim_token", "updated_at", "completed_at", "usage_recorded_at").Updates(updates)
+	// InputJSON and InputImageCount are immutable creation metadata. Progress and
+	// terminal updates must not resend a multi-megabyte Base64 payload.
+	result := query.Select("request_id", "client_key_name", "account_id", "account_name", "egress_node_id", "egress_node_name", "egress_scope", "egress_mode", "provider", "model", "model_route_id", "upstream_model", "prompt", "seconds", "size", "quality", "status", "progress", "upstream_url", "result_asset_id", "content_type", "error_code", "error_message", "lease_until", "claim_token", "updated_at", "completed_at", "usage_recorded_at").Updates(updates)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -376,7 +380,7 @@ func (r *MediaJobRepository) ListUnrecordedTerminalMediaJobs(ctx context.Context
 		limit = 200
 	}
 	var rows []mediaJobModel
-	if err := r.db.db.WithContext(ctx).Where("status IN ? AND usage_recorded_at IS NULL", []media.Status{media.StatusCompleted, media.StatusFailed}).Order("completed_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := r.db.db.WithContext(ctx).Omit("input_json").Where("status IN ? AND usage_recorded_at IS NULL", []media.Status{media.StatusCompleted, media.StatusFailed}).Order("completed_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	values := make([]media.Job, 0, len(rows))
@@ -388,7 +392,11 @@ func (r *MediaJobRepository) ListUnrecordedTerminalMediaJobs(ctx context.Context
 
 func (r *MediaJobRepository) MarkMediaJobUsageRecorded(ctx context.Context, id string, recordedAt time.Time) error {
 	terminalStatuses := []media.Status{media.StatusCompleted, media.StatusFailed}
-	result := r.db.db.WithContext(ctx).Model(&mediaJobModel{}).Where("id = ? AND status IN ? AND usage_recorded_at IS NULL", id, terminalStatuses).Update("usage_recorded_at", recordedAt)
+	// Once the durable audit owns the input-image count, terminal jobs no longer
+	// need raw Base64 references. Compact them in the same idempotent update.
+	result := r.db.db.WithContext(ctx).Model(&mediaJobModel{}).
+		Where("id = ? AND status IN ? AND usage_recorded_at IS NULL", id, terminalStatuses).
+		Updates(map[string]any{"usage_recorded_at": recordedAt, "input_json": "{}"})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -407,7 +415,9 @@ func (r *MediaJobRepository) MarkMediaJobUsageRecorded(ctx context.Context, id s
 func (r *MediaJobRepository) ListRecoverableMediaJobs(ctx context.Context, limit int) ([]media.Job, error) {
 	var rows []mediaJobModel
 	now := time.Now().UTC()
-	if err := r.db.db.WithContext(ctx).Where("status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= ?))", media.StatusQueued, media.StatusInProgress, now).Order("created_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
+	// Recovery only enqueues IDs. The bounded worker reads one complete payload
+	// after it atomically claims the job.
+	if err := r.db.db.WithContext(ctx).Select("id").Where("status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= ?))", media.StatusQueued, media.StatusInProgress, now).Order("created_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	values := make([]media.Job, 0, len(rows))
@@ -446,7 +456,7 @@ func mediaJobFromDomain(value media.Job) *mediaJobModel {
 		Provider: value.Provider,
 		Model:    value.Model, ModelRouteID: value.ModelRouteID, UpstreamModel: value.UpstreamModel,
 		Prompt: value.Prompt, Seconds: value.Seconds, Size: value.Size, Quality: value.Quality,
-		Status: string(value.Status), Progress: value.Progress, InputJSON: value.InputJSON, UpstreamURL: value.UpstreamURL,
+		Status: string(value.Status), Progress: value.Progress, InputJSON: value.InputJSON, InputImageCount: mediaJobInputImageCount(value.InputImageCount), UpstreamURL: value.UpstreamURL,
 		ResultAssetID: value.ResultAssetID, ContentType: value.ContentType, ErrorCode: value.ErrorCode, ErrorMessage: value.ErrorMessage,
 		LeaseUntil: value.LeaseUntil, ClaimToken: value.ClaimToken, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		CompletedAt: value.CompletedAt, UsageRecordedAt: value.UsageRecordedAt,
@@ -458,6 +468,10 @@ func mediaJobToDomain(row mediaJobModel) media.Job {
 	if row.AccountID != nil {
 		accountID = *row.AccountID
 	}
+	var inputImageCount int
+	if row.InputImageCount != nil {
+		inputImageCount = *row.InputImageCount
+	}
 	return media.Job{
 		ID: row.ID, RequestID: row.RequestID, ClientKeyID: row.ClientKeyID, ClientKeyName: row.ClientKeyName,
 		AccountID: accountID, AccountName: row.AccountName,
@@ -465,12 +479,14 @@ func mediaJobToDomain(row mediaJobModel) media.Job {
 		Provider: row.Provider,
 		Model:    row.Model, ModelRouteID: row.ModelRouteID, UpstreamModel: row.UpstreamModel,
 		Prompt: row.Prompt, Seconds: row.Seconds, Size: row.Size, Quality: row.Quality,
-		Status: media.Status(row.Status), Progress: row.Progress, InputJSON: row.InputJSON, UpstreamURL: row.UpstreamURL,
+		Status: media.Status(row.Status), Progress: row.Progress, InputJSON: row.InputJSON, InputImageCount: inputImageCount, UpstreamURL: row.UpstreamURL,
 		ResultAssetID: row.ResultAssetID, ContentType: row.ContentType, ErrorCode: row.ErrorCode, ErrorMessage: row.ErrorMessage,
 		LeaseUntil: row.LeaseUntil, ClaimToken: row.ClaimToken, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		CompletedAt: row.CompletedAt, UsageRecordedAt: row.UsageRecordedAt,
 	}
 }
+
+func mediaJobInputImageCount(value int) *int { return &value }
 
 func mediaJobAccountID(value uint64) *uint64 {
 	if value == 0 {
