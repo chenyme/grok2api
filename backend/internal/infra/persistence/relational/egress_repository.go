@@ -118,7 +118,7 @@ func (r *EgressRepository) DeleteEgressNode(ctx context.Context, id uint64) erro
 
 func toEgressDomain(row egressNodeModel) egress.Node {
 	return egress.Node{
-		ID: row.ID, Name: row.Name, Scope: egress.Scope(row.Scope), Enabled: row.Enabled,
+		ID: row.ID, Name: row.Name, Scope: egress.Scope(row.Scope), Enabled: row.Enabled, ProxyPool: row.ProxyPool,
 		EncryptedProxyURL: row.EncryptedProxyURL, UserAgent: row.UserAgent, EncryptedCloudflareCookie: row.EncryptedCloudflareCookie,
 		ClearanceRefreshedAt: row.ClearanceRefreshedAt, ClearanceFingerprint: row.ClearanceFingerprint,
 		ClearanceBindingFingerprint: row.ClearanceBindingFingerprint,
@@ -133,7 +133,7 @@ func fromEgressDomain(value egress.Node) egressNodeModel {
 		health = 1
 	}
 	return egressNodeModel{
-		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled,
+		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled, ProxyPool: value.ProxyPool,
 		EncryptedProxyURL: value.EncryptedProxyURL, UserAgent: value.UserAgent, EncryptedCloudflareCookie: value.EncryptedCloudflareCookie,
 		ClearanceRefreshedAt: value.ClearanceRefreshedAt, ClearanceFingerprint: value.ClearanceFingerprint,
 		ClearanceBindingFingerprint: value.ClearanceBindingFingerprint,

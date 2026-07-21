@@ -23,7 +23,7 @@ import (
 
 const DefaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 const nodeSnapshotTTL = time.Second
-const stickyProxyRetryLimit = 2
+const proxyPoolRetryLimit = 2
 const clientCacheIdleTTL = 30 * time.Minute
 const clientCacheCleanupInterval = time.Minute
 const maxCachedClients = 4096
@@ -43,6 +43,7 @@ type Lease struct {
 	client           requestClient
 	browser          *browserClient
 	sticky           bool
+	proxyPool        bool
 	clearanceKey     string
 	clearanceManager *Manager
 	release          func()
@@ -213,7 +214,11 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 				continue
 			}
 			configured = true
-			if node.CooldownUntil == nil || !now.Before(*node.CooldownUntil) {
+			proxyPool := m.isProxyPoolNode(node)
+			if node.CooldownUntil == nil || !now.Before(*node.CooldownUntil) || proxyPool {
+				if proxyPool {
+					node.Health, node.FailureCount, node.CooldownUntil, node.LastError = 1, 0, nil, ""
+				}
 				candidateAvailable = append(candidateAvailable, node)
 			}
 		}
@@ -243,6 +248,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		return nil, false, err
 	}
 	sticky := strings.Contains(proxyURL, application.ProxyAccountPlaceholder)
+	proxyPool := selected.ProxyPool || sticky
 	if sticky {
 		accountKey := accountFromContext(ctx)
 		if accountKey == "" && strings.TrimSpace(affinity) != "" {
@@ -296,7 +302,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	m.mu.Unlock()
 	recordSelection(ctx, Selection{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, Proxied: proxyURL != ""})
 	var once sync.Once
-	return &Lease{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, sticky: sticky, clearanceKey: clearanceKey, clearanceManager: m, release: func() {
+	return &Lease{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, sticky: sticky, proxyPool: proxyPool, clearanceKey: clearanceKey, clearanceManager: m, release: func() {
 		once.Do(func() {
 			m.mu.Lock()
 			m.inflight[selected.ID]--
@@ -523,7 +529,7 @@ func (m *Manager) Feedback(ctx context.Context, nodeID uint64, status int, trans
 
 func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, nodeID uint64, status int, transportErr error) {
 	if nodeID == 0 {
-		if transportErr != nil || status >= 500 || (scope != domain.ScopeBuild && status == http.StatusForbidden) {
+		if transportErr != nil || (scope != domain.ScopeBuild && status == http.StatusForbidden) {
 			m.mu.Lock()
 			if isGrokWebScope(scope) && status == http.StatusForbidden && m.clearanceConfig.Mode == "flaresolverr" {
 				state := m.clearances["direct"]
@@ -558,10 +564,8 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		// This is a normal protocol state and must not cool the egress node.
 		return
 	case status == http.StatusForbidden:
-		if m.isStickyProxyNode(value) {
-			// A 403 on an account-bound Resin lease usually means that account's
-			// The account clearance is stale. Do not cool or invalidate the shared node for
-			// unrelated accounts.
+		if m.isProxyPoolNode(value) {
+			// A request-level 403 does not prove that a shared proxy pool is unhealthy.
 			return
 		}
 		value.FailureCount++
@@ -578,20 +582,23 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		}
 		m.invalidateClientLocked(nodeID)
 		m.mu.Unlock()
-	default:
+	case transportErr != nil:
+		if m.isProxyPoolNode(value) {
+			return
+		}
 		value.FailureCount++
 		value.Health = max(0.05, value.Health*0.7)
 		cooldown := min(10*time.Minute, 30*time.Second*time.Duration(1<<min(value.FailureCount-1, 4)))
 		until := now.Add(cooldown)
 		value.CooldownUntil = &until
-		if transportErr != nil {
-			value.LastError = "transport error"
-		} else {
-			value.LastError = fmt.Sprintf("upstream status %d", status)
-		}
+		value.LastError = "transport error"
 		m.mu.Lock()
 		m.invalidateClientLocked(nodeID)
 		m.mu.Unlock()
+	default:
+		// An HTTP status describes the upstream response, not the health of the
+		// configured proxy endpoint. Account routing handles upstream failures.
+		return
 	}
 	if stateRepository, ok := m.repository.(egressStateRepository); ok {
 		if err := stateRepository.UpdateEgressNodeHealth(ctx, value.ID, value.Health, value.FailureCount, value.CooldownUntil, value.LastError); err == nil {
@@ -1055,6 +1062,10 @@ func (m *Manager) isStickyProxyNode(value domain.Node) bool {
 	}
 	proxyURL, err := m.cipher.Decrypt(value.EncryptedProxyURL)
 	return err == nil && strings.Contains(proxyURL, application.ProxyAccountPlaceholder)
+}
+
+func (m *Manager) isProxyPoolNode(value domain.Node) bool {
+	return value.ProxyPool || m.isStickyProxyNode(value)
 }
 
 func (m *Manager) invalidateClientLocked(nodeID uint64) {

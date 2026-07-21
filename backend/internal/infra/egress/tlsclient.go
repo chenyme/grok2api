@@ -32,7 +32,10 @@ func (l *Lease) DialWebSocket(ctx context.Context, endpoint string, headers fhtt
 			NetDialContext:    l.browser.inner.GetDialer().DialContext,
 		}
 		connection, response, err := dialer.DialContext(ctx, endpoint, headers)
-		if err == nil || !l.sticky || attempt >= stickyProxyRetryLimit || !safeProxyConnectionFailure(err, fhttpResponseAsHTTP(response)) {
+		if err == nil || !l.proxyPool || attempt >= proxyPoolRetryLimit || !safeProxyConnectionFailure(err, fhttpResponseAsHTTP(response)) {
+			if l.proxyPool && safeProxyConnectionFailure(err, fhttpResponseAsHTTP(response)) {
+				l.browser.CloseIdleConnections()
+			}
 			if response != nil && response.StatusCode == http.StatusForbidden && l.clearanceManager != nil && l.clearanceKey != "" {
 				l.clearanceManager.invalidateClearanceKey(l.clearanceKey, l.client)
 			}
