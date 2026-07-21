@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"strconv"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	auditapp "github.com/chenyme/grok2api/backend/internal/application/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
@@ -301,10 +304,17 @@ func TestPostgresBillingReservationAndAuditSettlementConcurrency(t *testing.T) {
 	}
 
 	audits := NewAuditRepository(database)
+	batchRecords := make([]audit.Record, 0, len(successfulEventIDs))
 	for _, eventID := range successfulEventIDs {
-		if err := audits.Create(ctx, audit.Record{EventID: eventID, RequestID: eventID, ClientKeyID: key.ID, ModelRouteID: 1, Provider: "grok_build", Operation: audit.OperationResponses, UsageSource: audit.UsageSourceUpstream, StatusCode: 200, CostInUSDTicks: 100, CreatedAt: time.Now().UTC()}); err != nil {
-			t.Fatal(err)
-		}
+		batchRecords = append(batchRecords, audit.Record{
+			EventID: eventID, RequestID: eventID, ClientKeyID: key.ID, ModelRouteID: 1,
+			Provider: "grok_build", Operation: audit.OperationResponses, UsageSource: audit.UsageSourceUpstream,
+			StatusCode: 200, CostInUSDTicks: 100, CreatedAt: time.Now().UTC(),
+			Attempts: []audit.Attempt{{Number: 1, Source: audit.AttemptSourceCredential, Stage: "credential", StartedAt: time.Now().UTC()}},
+		})
+	}
+	if err := audits.CreateBatch(ctx, batchRecords); err != nil {
+		t.Fatal(err)
 	}
 	stored, err = keys.Get(ctx, key.ID)
 	if err != nil || stored.ReservedUsageUSDTicks != 0 || stored.BilledUsageUSDTicks != 1_000 {
@@ -342,6 +352,316 @@ func TestPostgresBillingReservationAndAuditSettlementConcurrency(t *testing.T) {
 	stored, err = keys.Get(ctx, settlementKey.ID)
 	if err != nil || stored.ReservedUsageUSDTicks != 0 || stored.BilledUsageUSDTicks != 100 {
 		t.Fatalf("cleanup and settlement billing state = %#v, err = %v", stored, err)
+	}
+}
+
+func TestPostgresAuditWriterRecoversAfterTerminatedTransaction(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	database, err := OpenPostgres(ctx, dsn, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	keys := NewClientKeyRepository(database)
+	key, err := keys.Create(ctx, clientkey.Key{Name: "postgres-terminated-writer", Prefix: "postgres-terminated-writer", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, BillingLimitUSDTicks: 1_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const eventID = "evt_postgres_terminated_writer_0001"
+	if reserved, reserveErr := keys.ReserveBillingUsage(ctx, key.ID, eventID, 100, time.Now().UTC().Add(time.Hour)); reserveErr != nil || !reserved {
+		t.Fatalf("reserve billing usage: reserved=%v err=%v", reserved, reserveErr)
+	}
+
+	blocker := database.db.WithContext(ctx).Begin()
+	if blocker.Error != nil {
+		t.Fatal(blocker.Error)
+	}
+	if err := blocker.Exec("SELECT id FROM client_keys WHERE id = ? FOR UPDATE", key.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	service := auditapp.NewService(NewAuditRepository(database), slog.New(slog.NewTextHandler(io.Discard, nil)), 32, 16, 100*time.Millisecond)
+	service.UpdateWriterConfig(16, 100*time.Millisecond, time.Millisecond)
+	service.Start()
+	defer func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		if err := service.Close(closeCtx); err != nil {
+			t.Errorf("close audit service: %v", err)
+		}
+	}()
+	defer blocker.Rollback()
+	record := audit.Record{
+		EventID: eventID, RequestID: eventID, ClientKeyID: key.ID, ModelRouteID: 1,
+		Provider: "grok_build", Operation: audit.OperationResponses, UsageSource: audit.UsageSourceUpstream,
+		StatusCode: 200, CostInUSDTicks: 100, CreatedAt: time.Now().UTC(),
+		Attempts: []audit.Attempt{{Number: 1, Source: audit.AttemptSourceCredential, Stage: "credential", StartedAt: time.Now().UTC()}},
+	}
+	result := make(chan error, 1)
+	go func() { result <- service.Create(ctx, record) }()
+
+	pid := waitForPostgresLockWaiter(t, ctx, database.db)
+	var terminated bool
+	if err := database.db.WithContext(ctx).Raw("SELECT pg_terminate_backend(?)", pid).Scan(&terminated).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !terminated {
+		t.Fatalf("PostgreSQL backend %d was not terminated", pid)
+	}
+	if err := blocker.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("acknowledged audit did not recover after connection termination: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("audit writer recovery timed out: %v", ctx.Err())
+	}
+	assertPostgresAuditSettlement(t, ctx, database, keys, key.ID, eventID, 100, 1)
+
+	if err := NewAuditRepository(database).CreateBatch(ctx, []audit.Record{record}); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	assertPostgresAuditSettlement(t, ctx, database, keys, key.ID, eventID, 100, 1)
+}
+
+func TestPostgresAuditBatchRollsBackOnLockTimeoutAndRecovers(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	database, err := OpenPostgres(ctx, dsn, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	keys := NewClientKeyRepository(database)
+	key, err := keys.Create(ctx, clientkey.Key{Name: "postgres-lock-timeout", Prefix: "postgres-lock-timeout", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, BillingLimitUSDTicks: 1_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const eventID = "evt_postgres_lock_timeout_0001"
+	if reserved, reserveErr := keys.ReserveBillingUsage(ctx, key.ID, eventID, 100, time.Now().UTC().Add(time.Hour)); reserveErr != nil || !reserved {
+		t.Fatalf("reserve billing usage: reserved=%v err=%v", reserved, reserveErr)
+	}
+
+	timeoutDSN, err := postgresDSNWithOption(dsn, "-c lock_timeout=150ms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeoutDatabase, err := OpenPostgres(ctx, timeoutDSN, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer timeoutDatabase.Close()
+	timeoutAudits := NewAuditRepository(timeoutDatabase)
+	blocker := database.db.WithContext(ctx).Begin()
+	if blocker.Error != nil {
+		t.Fatal(blocker.Error)
+	}
+	defer blocker.Rollback()
+	if err := blocker.Exec("SELECT id FROM client_keys WHERE id = ? FOR UPDATE", key.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := audit.Record{
+		EventID: eventID, RequestID: eventID, ClientKeyID: key.ID, ModelRouteID: 1,
+		Provider: "grok_build", Operation: audit.OperationResponses, UsageSource: audit.UsageSourceUpstream,
+		StatusCode: 200, CostInUSDTicks: 100, CreatedAt: time.Now().UTC(),
+		Attempts: []audit.Attempt{{Number: 1, Source: audit.AttemptSourceUpstreamHTTP, Stage: "response", StartedAt: time.Now().UTC()}},
+	}
+	if err := timeoutAudits.CreateBatch(ctx, []audit.Record{record}); err == nil {
+		t.Fatal("audit batch unexpectedly succeeded while the client key lock was held")
+	} else if !strings.Contains(err.Error(), "SQLSTATE 55P03") {
+		t.Fatalf("audit batch failed for an unexpected reason: %v", err)
+	}
+	assertPostgresAuditSettlement(t, ctx, database, keys, key.ID, eventID, 0, 0)
+	stored, err := keys.Get(ctx, key.ID)
+	if err != nil || stored.ReservedUsageUSDTicks != 100 {
+		t.Fatalf("reservation was not preserved after rollback: key=%#v err=%v", stored, err)
+	}
+	if err := blocker.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := timeoutAudits.CreateBatch(ctx, []audit.Record{record}); err != nil {
+		t.Fatalf("retry after lock release: %v", err)
+	}
+	assertPostgresAuditSettlement(t, ctx, database, keys, key.ID, eventID, 100, 1)
+}
+
+func TestPostgresAuditBatchUsesStableClientKeyLockOrder(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	database, err := OpenPostgres(ctx, dsn, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	keys := NewClientKeyRepository(database)
+	firstKey, err := keys.Create(ctx, clientkey.Key{Name: "postgres-lock-order-first", Prefix: "postgres-lock-order-first", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, BillingLimitUSDTicks: 1_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := keys.Create(ctx, clientkey.Key{Name: "postgres-lock-order-second", Prefix: "postgres-lock-order-second", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, BillingLimitUSDTicks: 1_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	batchOne := []audit.Record{
+		postgresBillingAudit("evt_postgres_lock_order_a1", firstKey.ID, now),
+		postgresBillingAudit("evt_postgres_lock_order_b1", secondKey.ID, now),
+	}
+	batchTwo := []audit.Record{
+		postgresBillingAudit("evt_postgres_lock_order_b2", secondKey.ID, now),
+		postgresBillingAudit("evt_postgres_lock_order_a2", firstKey.ID, now),
+	}
+	for _, record := range append(append([]audit.Record(nil), batchOne...), batchTwo...) {
+		if reserved, reserveErr := keys.ReserveBillingUsage(ctx, record.ClientKeyID, record.EventID, 10, now.Add(time.Hour)); reserveErr != nil || !reserved {
+			t.Fatalf("reserve %s: reserved=%v err=%v", record.EventID, reserved, reserveErr)
+		}
+	}
+	blocker := database.db.WithContext(ctx).Begin()
+	if blocker.Error != nil {
+		t.Fatal(blocker.Error)
+	}
+	defer blocker.Rollback()
+	if err := blocker.Exec("SELECT id FROM client_keys WHERE id = ? FOR UPDATE", firstKey.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	audits := NewAuditRepository(database)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	go func() { <-start; results <- audits.CreateBatch(ctx, batchOne) }()
+	go func() { <-start; results <- audits.CreateBatch(ctx, batchTwo) }()
+	close(start)
+	waitForPostgresLockWaiters(t, ctx, database.db, 2)
+	if err := blocker.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("opposite-order audit batches should not deadlock: %v", err)
+		}
+	}
+	for _, keyID := range []uint64{firstKey.ID, secondKey.ID} {
+		stored, err := keys.Get(ctx, keyID)
+		if err != nil || stored.ReservedUsageUSDTicks != 0 || stored.BilledUsageUSDTicks != 20 {
+			t.Fatalf("stable lock order settlement key=%d value=%#v err=%v", keyID, stored, err)
+		}
+	}
+}
+
+func waitForPostgresLockWaiter(t *testing.T, ctx context.Context, database *gorm.DB) int {
+	t.Helper()
+	return waitForPostgresLockWaiters(t, ctx, database, 1)[0]
+}
+
+func waitForPostgresLockWaiters(t *testing.T, ctx context.Context, database *gorm.DB, count int) []int {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var rows []postgresPIDRow
+		err := database.WithContext(ctx).Raw(`
+			SELECT pid
+			FROM pg_stat_activity
+			WHERE datname = current_database()
+			  AND pid <> pg_backend_pid()
+			  AND wait_event_type = 'Lock'
+			  AND query LIKE '%client_keys%'
+			ORDER BY query_start
+		`).Scan(&rows).Error
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) >= count {
+			pids := make([]int, count)
+			for index := range count {
+				pids[index] = int(rows[index].PID)
+			}
+			return pids
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for PostgreSQL lock waiter: %v", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+type postgresPIDRow struct {
+	PID int64 `gorm:"column:pid"`
+}
+
+func postgresDSNWithOption(dsn, option string) (string, error) {
+	if _, err := url.ParseRequestURI(dsn); err != nil {
+		return "", err
+	}
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return dsn + separator + "options=" + url.QueryEscape(option), nil
+}
+
+func postgresBillingAudit(eventID string, keyID uint64, createdAt time.Time) audit.Record {
+	return audit.Record{
+		EventID: eventID, RequestID: eventID, ClientKeyID: keyID, ModelRouteID: 1,
+		Provider: "grok_build", Operation: audit.OperationResponses, UsageSource: audit.UsageSourceUpstream,
+		StatusCode: 200, CostInUSDTicks: 10, CreatedAt: createdAt,
+	}
+}
+
+func assertPostgresAuditSettlement(t *testing.T, ctx context.Context, database *Database, keys *ClientKeyRepository, keyID uint64, eventID string, billed int64, attempts int64) {
+	t.Helper()
+	var row requestAuditModel
+	err := database.db.WithContext(ctx).Where("event_id = ?", eventID).Take(&row).Error
+	if billed == 0 {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("audit should be absent after rollback: row=%#v err=%v", row, err)
+		}
+	} else if err != nil {
+		t.Fatalf("load settled audit: %v", err)
+	}
+	var attemptCount int64
+	if row.ID != 0 {
+		if err := database.db.WithContext(ctx).Model(&requestAuditAttemptModel{}).Where("audit_id = ?", row.ID).Count(&attemptCount).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if attemptCount != attempts {
+		t.Fatalf("attempt count = %d, want %d", attemptCount, attempts)
+	}
+	stored, err := keys.Get(ctx, keyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.BilledUsageUSDTicks != billed {
+		t.Fatalf("billed usage = %d, want %d", stored.BilledUsageUSDTicks, billed)
+	}
+	if billed > 0 && stored.ReservedUsageUSDTicks != 0 {
+		t.Fatalf("reserved usage = %d after settlement", stored.ReservedUsageUSDTicks)
 	}
 }
 

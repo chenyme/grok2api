@@ -105,6 +105,7 @@ type auditConfigDTO struct {
 	BufferSize    int    `json:"bufferSize"`
 	BatchSize     int    `json:"batchSize"`
 	FlushInterval string `json:"flushInterval"`
+	CommitDelayMS int    `json:"commitDelayMS"`
 }
 
 type clientKeyDefaultsConfigDTO struct {
@@ -206,7 +207,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			PreferFreeBuild: value.Routing.PreferFreeBuild,
 		},
 		Audit: settingsapp.AuditConfig{
-			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval,
+			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval, CommitDelayMS: value.Audit.CommitDelayMS,
 		},
 		ClientKeyDefaults: settingsapp.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
@@ -267,7 +268,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				PreferFreeBuild: config.Routing.PreferFreeBuild,
 			},
 			Audit: auditConfigDTO{
-				BufferSize: config.Audit.BufferSize, BatchSize: config.Audit.BatchSize, FlushInterval: config.Audit.FlushInterval,
+				BufferSize: config.Audit.BufferSize, BatchSize: config.Audit.BatchSize, FlushInterval: config.Audit.FlushInterval, CommitDelayMS: config.Audit.CommitDelayMS,
 			},
 			ClientKeyDefaults: clientKeyDefaultsConfigDTO{
 				RPMLimit: config.ClientKeyDefaults.RPMLimit, MaxConcurrent: config.ClientKeyDefaults.MaxConcurrent,

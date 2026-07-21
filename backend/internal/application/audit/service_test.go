@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -135,8 +136,11 @@ func TestSummaryFreshBypassesAggregateCache(t *testing.T) {
 }
 
 func TestCreateDurableHonorsCallerDeadline(t *testing.T) {
-	repo := &blockingAuditRepository{}
+	release := make(chan struct{})
+	repo := &blockingAuditRepository{release: release}
 	service := NewService(repo, slog.Default(), 8, 4, time.Second)
+	service.Start()
+	t.Cleanup(func() { closeAuditService(t, service) })
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
 	started := time.Now()
@@ -147,18 +151,231 @@ func TestCreateDurableHonorsCallerDeadline(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
 		t.Fatalf("deadline was not honored: %s", elapsed)
 	}
+	close(release)
+}
+
+func TestCreateRequiresStartedWriter(t *testing.T) {
+	service := NewService(&toggleAuditRepository{}, slog.Default(), 8, 4, time.Second)
+	err := service.Create(context.Background(), auditdomain.Record{EventID: "not-started"})
+	if !errors.Is(err, ErrWriterUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCloseStartsWriterAndFlushesPrestartRecords(t *testing.T) {
+	repo := newGatedAuditRepository()
+	close(repo.release)
+	service := NewService(repo, slog.Default(), 8, 8, time.Hour)
+	if !service.Record(auditdomain.Record{EventID: "prestart-record"}) {
+		t.Fatal("record was not queued")
+	}
+	closeAuditService(t, service)
+	if calls := repo.calls.Load(); calls != 1 {
+		t.Fatalf("CreateBatch calls = %d", calls)
+	}
+	select {
+	case <-repo.committed:
+	default:
+		t.Fatal("prestart record was not committed")
+	}
+}
+
+func TestAcknowledgedWritesWaitForCommitAndCoalesce(t *testing.T) {
+	repo := newGatedAuditRepository()
+	service := NewService(repo, slog.Default(), 32, 32, time.Second)
+	service.UpdateWriterConfig(32, time.Second, 100*time.Millisecond)
+	service.Start()
+	t.Cleanup(func() { closeAuditService(t, service) })
+
+	const writeCount = 8
+	start := make(chan struct{})
+	results := make(chan error, writeCount)
+	for index := range writeCount {
+		go func() {
+			<-start
+			results <- service.Create(context.Background(), auditdomain.Record{EventID: fmt.Sprintf("coalesced-%d", index)})
+		}()
+	}
+	close(start)
+
+	var batch []auditdomain.Record
+	select {
+	case batch = <-repo.started:
+	case <-time.After(time.Second):
+		t.Fatal("batch did not start")
+	}
+	if len(batch) != writeCount {
+		t.Fatalf("batch size = %d", len(batch))
+	}
+	select {
+	case err := <-results:
+		t.Fatalf("ack completed before commit: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(repo.release)
+	for range writeCount {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls := repo.calls.Load(); calls != 1 {
+		t.Fatalf("CreateBatch calls = %d", calls)
+	}
+}
+
+func TestAcknowledgedWriteUsesCallerBudgetWhenQueueIsFull(t *testing.T) {
+	repo := newGatedAuditRepository()
+	service := NewService(repo, slog.Default(), 1, 1, time.Second)
+	service.UpdateWriterConfig(1, time.Second, time.Millisecond)
+	service.Start()
+	t.Cleanup(func() { closeAuditService(t, service) })
+
+	firstResult := make(chan error, 1)
+	go func() {
+		firstResult <- service.Create(context.Background(), auditdomain.Record{EventID: "evt_queue_budget_first_0001", RequestID: "first", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: time.Now().UTC()})
+	}()
+	select {
+	case <-repo.started:
+	case <-time.After(time.Second):
+		t.Fatal("first batch did not start")
+	}
+	if !service.Record(auditdomain.Record{EventID: "evt_queue_budget_buffered_02", RequestID: "buffered", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: time.Now().UTC()}) {
+		t.Fatal("failed to fill the audit queue")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	ackResult := make(chan error, 1)
+	go func() {
+		ackResult <- service.Create(ctx, auditdomain.Record{EventID: "evt_queue_budget_waiting_003", RequestID: "waiting", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: time.Now().UTC()})
+	}()
+	select {
+	case err := <-ackResult:
+		t.Fatalf("acknowledged write returned before queue capacity recovered: %v", err)
+	case <-time.After(2 * auditEnqueueWait):
+	}
+
+	close(repo.release)
+	if err := <-firstResult; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-ackResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWriterIsolatesInvalidAuditRecordFromValidBatch(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-invalid-isolation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	baseRepo := relational.NewAuditRepository(database)
+	repo := &observedBatchAuditRepository{AuditRepository: baseRepo, sizes: make(chan int, 4)}
+	service := NewService(repo, slog.Default(), 8, 8, time.Second)
+	service.UpdateWriterConfig(8, time.Second, 100*time.Millisecond)
+	service.Start()
+	t.Cleanup(func() { closeAuditService(t, service) })
+
+	start := make(chan struct{})
+	type result struct {
+		name string
+		err  error
+	}
+	results := make(chan result, 2)
+	go func() {
+		<-start
+		results <- result{name: "valid", err: service.Create(ctx, auditdomain.Record{
+			EventID: "evt_isolated_valid_record_001", RequestID: "valid", ClientKeyID: 1, ModelRouteID: 1,
+			StatusCode: 200, CreatedAt: time.Now().UTC(),
+		})}
+	}()
+	go func() {
+		<-start
+		results <- result{name: "invalid", err: service.Create(ctx, auditdomain.Record{
+			EventID: "evt_isolated_invalid_record_02", RequestID: "invalid", ClientKeyID: 1, ModelRouteID: 1,
+			StatusCode: 200, CreatedAt: time.Now().UTC(),
+			Attempts: []auditdomain.Attempt{{Number: 0, Source: auditdomain.AttemptSourceCredential, Stage: "credential", StartedAt: time.Now().UTC()}},
+		})}
+	}()
+	close(start)
+
+	for range 2 {
+		value := <-results
+		switch value.name {
+		case "valid":
+			if value.err != nil {
+				t.Fatalf("valid audit failed: %v", value.err)
+			}
+		case "invalid":
+			if !errors.Is(value.err, repository.ErrInvalidRecord) {
+				t.Fatalf("invalid audit error = %v", value.err)
+			}
+		}
+	}
+	if size := <-repo.sizes; size != 2 {
+		t.Fatalf("initial batch size = %d, want 2", size)
+	}
+	_, total, err := baseRepo.List(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("persisted audits = %d, want 1", total)
+	}
+}
+
+func TestCallerTimeoutDoesNotCancelQueuedSettlement(t *testing.T) {
+	repo := newGatedAuditRepository()
+	service := NewService(repo, slog.Default(), 8, 8, time.Second)
+	service.UpdateWriterConfig(8, time.Second, time.Millisecond)
+	service.Start()
+	t.Cleanup(func() { closeAuditService(t, service) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- service.Create(ctx, auditdomain.Record{EventID: "caller-timeout"})
+	}()
+	select {
+	case <-repo.started:
+	case <-time.After(time.Second):
+		t.Fatal("batch did not start")
+	}
+	if err := <-result; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+	close(repo.release)
+	select {
+	case <-repo.committed:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out write was not committed")
+	}
+	if err := service.Create(context.Background(), auditdomain.Record{EventID: "after-timeout"}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLedgerReadinessObserveAndEnforceModes(t *testing.T) {
-	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	initialNow := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	var nowNanos atomic.Int64
+	nowNanos.Store(initialNow.UnixNano())
 	repo := &toggleAuditRepository{err: errors.New("database unavailable")}
 	service := NewService(repo, slog.Default(), 8, 4, time.Second)
-	service.now = func() time.Time { return now }
+	service.Start()
+	t.Cleanup(func() { closeAuditService(t, service) })
+	service.now = func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() }
 	service.UpdateLedgerConfig(LedgerConfig{Mode: LedgerModeObserve, FailureThreshold: 1, UnhealthyGrace: time.Second, QueueHighWatermarkPercent: 90})
 	if err := service.CreateDurable(context.Background(), auditdomain.Record{EventID: "observe"}); err == nil {
 		t.Fatal("expected durable write failure")
 	}
-	now = now.Add(2 * time.Second)
+	nowNanos.Add(int64(2 * time.Second))
 	if snapshot := service.LedgerSnapshot(); snapshot.Ready || snapshot.ConsecutiveFailures != 1 {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
@@ -199,6 +416,7 @@ func TestLedgerReadinessDetectsSustainedQueuePressure(t *testing.T) {
 func TestCommitObserverRunsOnlyAfterDurableCommit(t *testing.T) {
 	repo := &toggleAuditRepository{}
 	service := NewService(repo, slog.Default(), 8, 4, time.Hour)
+	service.Start()
 	var mu sync.Mutex
 	var committed []string
 	service.SetCommitObserver(func(values []string) {
@@ -209,7 +427,6 @@ func TestCommitObserverRunsOnlyAfterDurableCommit(t *testing.T) {
 	if err := service.CreateDurable(context.Background(), auditdomain.Record{EventID: "sync"}); err != nil {
 		t.Fatal(err)
 	}
-	service.Start()
 	if !service.Record(auditdomain.Record{EventID: "batch"}) {
 		t.Fatal("record was not queued")
 	}
@@ -251,11 +468,81 @@ func (r *toggleAuditRepository) CreateBatch(context.Context, []auditdomain.Recor
 	return r.currentError()
 }
 
-type blockingAuditRepository struct{ repository.AuditRepository }
+type blockingAuditRepository struct {
+	repository.AuditRepository
+	release <-chan struct{}
+}
 
 func (r *blockingAuditRepository) Create(ctx context.Context, _ auditdomain.Record) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+func (r *blockingAuditRepository) CreateBatch(ctx context.Context, _ []auditdomain.Record) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.release:
+		return nil
+	}
+}
+
+type gatedAuditRepository struct {
+	repository.AuditRepository
+	started   chan []auditdomain.Record
+	release   chan struct{}
+	committed chan struct{}
+	calls     atomic.Int32
+}
+
+type observedBatchAuditRepository struct {
+	repository.AuditRepository
+	sizes chan int
+}
+
+func (r *observedBatchAuditRepository) CreateBatch(ctx context.Context, values []auditdomain.Record) error {
+	select {
+	case r.sizes <- len(values):
+	default:
+	}
+	return r.AuditRepository.CreateBatch(ctx, values)
+}
+
+func newGatedAuditRepository() *gatedAuditRepository {
+	return &gatedAuditRepository{
+		started:   make(chan []auditdomain.Record, 8),
+		release:   make(chan struct{}),
+		committed: make(chan struct{}, 8),
+	}
+}
+
+func (r *gatedAuditRepository) CreateBatch(ctx context.Context, values []auditdomain.Record) error {
+	r.calls.Add(1)
+	copyValues := append([]auditdomain.Record(nil), values...)
+	select {
+	case r.started <- copyValues:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case r.committed <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func closeAuditService(t *testing.T, service *Service) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := service.Close(ctx); err != nil {
+		t.Errorf("close audit service: %v", err)
+	}
 }
 
 func (r *panicAuditRepository) CreateBatch(context.Context, []auditdomain.Record) error {

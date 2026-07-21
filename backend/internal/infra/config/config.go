@@ -34,6 +34,8 @@ const (
 	maxRoutingCooldown    = 24 * time.Hour
 	minAuditFlushInterval = 10 * time.Millisecond
 	maxAuditFlushInterval = time.Minute
+	minAuditCommitDelay   = time.Millisecond
+	maxAuditCommitDelay   = 50 * time.Millisecond
 	maxAuditBufferSize    = 262144
 	maxAuditBatchSize     = 4096
 	maxDeploymentReplicas = 1024
@@ -209,6 +211,7 @@ type AuditConfig struct {
 	BufferSize                  int      `yaml:"bufferSize"`
 	BatchSize                   int      `yaml:"batchSize"`
 	FlushInterval               Duration `yaml:"flushInterval"`
+	CommitDelay                 Duration `yaml:"commitDelay"`
 	LedgerMode                  string   `yaml:"ledgerMode"`
 	LedgerFailureThreshold      int      `yaml:"ledgerFailureThreshold"`
 	LedgerUnhealthyGrace        Duration `yaml:"ledgerUnhealthyGrace"`
@@ -522,6 +525,9 @@ func (c Config) Validate() error {
 	if c.Audit.BufferSize < 1 || c.Audit.BufferSize > maxAuditBufferSize || c.Audit.BatchSize < 1 || c.Audit.BatchSize > maxAuditBatchSize || c.Audit.BatchSize > c.Audit.BufferSize || c.Audit.FlushInterval.Value() < minAuditFlushInterval || c.Audit.FlushInterval.Value() > maxAuditFlushInterval {
 		return errors.New("audit 队列和批量写入配置无效")
 	}
+	if c.Audit.CommitDelay.Value() < minAuditCommitDelay || c.Audit.CommitDelay.Value() > maxAuditCommitDelay {
+		return errors.New("audit.commitDelay 必须在 1ms 到 50ms 之间")
+	}
 	if c.Audit.LedgerMode != "observe" && c.Audit.LedgerMode != "enforce" {
 		return errors.New("audit.ledgerMode 必须是 observe 或 enforce")
 	}
@@ -637,7 +643,7 @@ func defaultConfig() Config {
 			ReasoningReplayMaxEntries: 10240,
 		},
 		Audit: AuditConfig{
-			BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond),
+			BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond), CommitDelay: Duration(5 * time.Millisecond),
 			LedgerMode: "observe", LedgerFailureThreshold: 3,
 			LedgerUnhealthyGrace: Duration(10 * time.Second), LedgerQueueHighWatermarkPct: 90,
 		},

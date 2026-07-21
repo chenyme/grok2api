@@ -103,6 +103,7 @@ type AuditConfig struct {
 	BufferSize    int
 	BatchSize     int
 	FlushInterval string
+	CommitDelayMS int
 }
 
 // ClientKeyDefaultsConfig 是管理接口使用的密钥默认限制输入。
@@ -336,9 +337,14 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		ReasoningReplayEnabled: base.Routing.ReasoningReplayEnabled, ReasoningReplayTTL: base.Routing.ReasoningReplayTTL,
 		ReasoningReplayMaxEntries: base.Routing.ReasoningReplayMaxEntries,
 	}
+	commitDelay := base.Audit.CommitDelay.Value()
+	if value.Audit.CommitDelay > 0 {
+		commitDelay = value.Audit.CommitDelay
+	}
 	base.Audit = config.AuditConfig{
 		BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: config.Duration(value.Audit.FlushInterval),
-		LedgerMode: base.Audit.LedgerMode, LedgerFailureThreshold: base.Audit.LedgerFailureThreshold,
+		CommitDelay: config.Duration(commitDelay),
+		LedgerMode:  base.Audit.LedgerMode, LedgerFailureThreshold: base.Audit.LedgerFailureThreshold,
 		LedgerUnhealthyGrace: base.Audit.LedgerUnhealthyGrace, LedgerQueueHighWatermarkPct: base.Audit.LedgerQueueHighWatermarkPct,
 	}
 	base.ClientKeyDefaults = config.ClientKeyDefaultsConfig{
@@ -397,7 +403,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			PreferFreeBuild: value.Routing.PreferFreeBuild,
 		},
 		Audit: settingsdomain.AuditConfig{
-			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval.Value(),
+			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval.Value(), CommitDelay: value.Audit.CommitDelay.Value(),
 		},
 		ClientKeyDefaults: settingsdomain.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
@@ -430,6 +436,9 @@ func (s *Service) snapshotLocked() Snapshot {
 }
 
 func mergeEditable(current config.Config, input EditableConfig) (config.Config, error) {
+	if input.Audit.CommitDelayMS < 0 {
+		return config.Config{}, errors.New("audit.commitDelayMS 不能为负数")
+	}
 	next := current
 	next.Server.MaxConcurrentRequests = input.Server.MaxConcurrentRequests
 	next.Provider.Build.BaseURL = strings.TrimSpace(input.ProviderBuild.BaseURL)
@@ -469,6 +478,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Routing.PreferFreeBuild = input.Routing.PreferFreeBuild
 	next.Audit.BufferSize = input.Audit.BufferSize
 	next.Audit.BatchSize = input.Audit.BatchSize
+	if input.Audit.CommitDelayMS > 0 {
+		next.Audit.CommitDelay = config.Duration(time.Duration(input.Audit.CommitDelayMS) * time.Millisecond)
+	}
 	next.ClientKeyDefaults.RPMLimit = input.ClientKeyDefaults.RPMLimit
 	next.ClientKeyDefaults.MaxConcurrent = input.ClientKeyDefaults.MaxConcurrent
 	if input.AccountsProvided {
@@ -562,7 +574,7 @@ func toEditable(cfg config.Config) EditableConfig {
 			PreferFreeBuild: cfg.Routing.PreferFreeBuild,
 		},
 		Audit: AuditConfig{
-			BufferSize: cfg.Audit.BufferSize, BatchSize: cfg.Audit.BatchSize, FlushInterval: cfg.Audit.FlushInterval.String(),
+			BufferSize: cfg.Audit.BufferSize, BatchSize: cfg.Audit.BatchSize, FlushInterval: cfg.Audit.FlushInterval.String(), CommitDelayMS: int(cfg.Audit.CommitDelay.Value() / time.Millisecond),
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: cfg.ClientKeyDefaults.RPMLimit, MaxConcurrent: cfg.ClientKeyDefaults.MaxConcurrent},
 		Accounts: AccountsConfig{

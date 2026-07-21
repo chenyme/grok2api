@@ -60,6 +60,9 @@ bootstrapAdmin:
 	if !cfg.Routing.ReasoningReplayEnabled || cfg.Routing.ReasoningReplayTTL.Value() != time.Hour || cfg.Routing.ReasoningReplayMaxEntries != 10240 {
 		t.Fatalf("reasoning replay defaults = %#v", cfg.Routing)
 	}
+	if cfg.Audit.CommitDelay.Value() != 5*time.Millisecond {
+		t.Fatalf("audit commit delay = %s", cfg.Audit.CommitDelay.Value())
+	}
 	expectedDatabasePath := filepath.Join(dir, "data", "backend.db")
 	if cfg.Database.SQLite.Path != expectedDatabasePath {
 		t.Fatalf("database path = %q, want %q", cfg.Database.SQLite.Path, expectedDatabasePath)
@@ -181,6 +184,9 @@ func TestValidateRejectsUnsafeRuntimeLimits(t *testing.T) {
 	tests := map[string]func(*Config){
 		"request body": func(cfg *Config) { cfg.Server.MaxBodyBytes = maxServerBodyBytes + 1 },
 		"audit buffer": func(cfg *Config) { cfg.Audit.BufferSize = maxAuditBufferSize + 1 },
+		"audit commit delay": func(cfg *Config) {
+			cfg.Audit.CommitDelay = Duration(maxAuditCommitDelay + time.Millisecond)
+		},
 		"client rpm":   func(cfg *Config) { cfg.ClientKeyDefaults.RPMLimit = clientkeydomain.MaxRPMLimit + 1 },
 		"image size":   func(cfg *Config) { cfg.Media.MaxImageBytes = 33 << 20 },
 		"media total":  func(cfg *Config) { cfg.Media.MaxTotalBytes = 1 },

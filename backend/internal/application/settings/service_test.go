@@ -413,6 +413,35 @@ func TestApplyDomainConfigAccountsDefaults(t *testing.T) {
 	if loaded.Accounts.AutoCleanReauthInterval.Value() != 10*time.Minute || loaded.Accounts.AutoCleanReauthMinAge.Value() != time.Hour {
 		t.Fatalf("accounts defaults = %#v", loaded.Accounts)
 	}
+	if loaded.Audit.CommitDelay.Value() != base.Audit.CommitDelay.Value() {
+		t.Fatalf("audit commit delay = %s", loaded.Audit.CommitDelay.Value())
+	}
+}
+
+func TestUpdateAuditCommitDelayRoundTrip(t *testing.T) {
+	cfg := testConfig(t)
+	repo := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repo, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Audit.CommitDelayMS = 12
+	snapshot, err := service.Update(context.Background(), service.Get().Revision, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Audit.CommitDelay.Value() != 12*time.Millisecond || snapshot.Config.Audit.CommitDelayMS != 12 {
+		t.Fatalf("applied=%s snapshot=%d", applied.Audit.CommitDelay.Value(), snapshot.Config.Audit.CommitDelayMS)
+	}
+}
+
+func TestUpdateRejectsNegativeAuditCommitDelay(t *testing.T) {
+	cfg := testConfig(t)
+	service := NewService(cfg, time.Time{}, 0, &runtimeSettingsRepositoryStub{}, nil, nil)
+	input := service.Get().Config
+	input.Audit.CommitDelayMS = -1
+	if _, err := service.Update(context.Background(), service.Get().Revision, input); err == nil {
+		t.Fatal("negative audit commit delay was accepted")
+	}
 }
 
 func TestUpdateAccountsAutoCleanRoundTrip(t *testing.T) {

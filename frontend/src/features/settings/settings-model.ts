@@ -107,7 +107,7 @@ export const settingsSchema = z.object({
     maxAttempts: positiveInteger.max(10),
     preferFreeBuild: z.boolean(),
   }).refine((value) => durationSeconds(value.cooldownMax) >= durationSeconds(value.cooldownBase), { path: ["cooldownMax"] }),
-  audit: z.object({ bufferSize: positiveInteger.max(262_144), batchSize: positiveInteger.max(4_096), flushInterval: auditFlushDuration })
+  audit: z.object({ bufferSize: positiveInteger.max(262_144), batchSize: positiveInteger.max(4_096), flushInterval: auditFlushDuration, commitDelayMS: positiveInteger.max(50) })
     .refine((value) => value.batchSize <= value.bufferSize, { path: ["batchSize"] }),
   clientKeyDefaults: z.object({ rpmLimit: positiveInteger.max(100_000), maxConcurrent: positiveInteger.max(1_024) }),
   accounts: z.object({
@@ -153,7 +153,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       cooldownMax: parseDuration(config.routing.cooldownMax), capacityWait: parseDuration(config.routing.capacityWait), maxAttempts: config.routing.maxAttempts,
       preferFreeBuild: config.routing.preferFreeBuild,
     },
-    audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: parseDuration(config.audit.flushInterval) },
+    audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: parseDuration(config.audit.flushInterval), commitDelayMS: config.audit.commitDelayMS },
     clientKeyDefaults: config.clientKeyDefaults,
     accounts: {
       autoCleanReauthEnabled: config.accounts.autoCleanReauthEnabled,
@@ -190,7 +190,7 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
       cooldownMax: formatDuration(config.routing.cooldownMax), capacityWait: formatDuration(config.routing.capacityWait), maxAttempts: config.routing.maxAttempts,
       preferFreeBuild: config.routing.preferFreeBuild,
     },
-    audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: formatDuration(config.audit.flushInterval) },
+    audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: formatDuration(config.audit.flushInterval), commitDelayMS: config.audit.commitDelayMS },
     clientKeyDefaults: config.clientKeyDefaults,
     accounts: {
       autoCleanReauthEnabled: config.accounts.autoCleanReauthEnabled,

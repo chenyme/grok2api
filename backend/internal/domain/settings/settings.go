@@ -92,6 +92,7 @@ type AuditConfig struct {
 	BufferSize    int
 	BatchSize     int
 	FlushInterval time.Duration
+	CommitDelay   time.Duration
 }
 
 // ClientKeyDefaultsConfig 定义新建客户端密钥的默认限制。
