@@ -175,6 +175,32 @@ func TestListFilters(t *testing.T) {
 	}
 }
 
+func TestListFiltersRecognizesInferredFreeBilling(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "inferred-free.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	value := accountModel{IdentityKey: testIdentityKey("inferred-free"), Provider: "grok_build", Name: "inferred-free", SourceKey: "inferred-free", Enabled: true, AuthStatus: "active", Priority: 1}
+	if err := database.db.WithContext(ctx).Create(&value).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&billingModel{
+		AccountID: value.ID, IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	accounts := NewAccountRepository(database)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "free", Now: now}, 1)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "paid", Now: now}, 0)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "unknown", Now: now}, 0)
+}
+
 func assertAccountFilterCount(t *testing.T, ctx context.Context, accounts *AccountRepository, filter repository.AccountListFilter, expected int64) {
 	t.Helper()
 	_, total, err := accounts.List(ctx, repository.AccountListQuery{Page: repository.PageQuery{Limit: 20}, Filter: filter})

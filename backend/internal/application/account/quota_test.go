@@ -53,6 +53,15 @@ func TestNewQuotaViewEstimatesFreeFromObservedZeroBillingProfile(t *testing.T) {
 	}
 }
 
+func TestNewQuotaViewInfersFreeFromSuccessfulZeroBillingSnapshot(t *testing.T) {
+	quota := newQuotaView(&accountdomain.Billing{
+		IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: time.Now().UTC(),
+	}, 100, nil, "", false)
+	if quota.Type != QuotaTypeFree || quota.Source != "billingProfile" || quota.Confidence != "estimated" {
+		t.Fatalf("quota = %#v", quota)
+	}
+}
+
 func TestNewQuotaViewTreatsZeroUsageSuperGrokAsPaid(t *testing.T) {
 	quota := newQuotaView(&accountdomain.Billing{
 		PlanName: "SuperGrok", IsUnifiedBillingUser: true,
