@@ -169,9 +169,9 @@ func (m *Manager) AcquireCredential(ctx context.Context, scope domain.Scope, cre
 		identity = string(credential.Provider) + "_" + strconv.FormatUint(credential.ID, 10)
 	}
 	// Web and Console accounts can be two database projections of the same SSO
-	// login.  Resin must see one stable account identity across both channels;
+	// login. Resin must see one stable account identity across both channels;
 	// otherwise the proxy rotates the IP while the clearance remains bound to
-	// the other lease.  The digest is non-reversible and is only used as a proxy
+	// the other lease. The digest is non-reversible and is only used as a proxy
 	// template account label.
 	if strings.TrimSpace(credential.EgressIdentity) == "" && credential.AuthType == accountdomain.AuthTypeSSO && strings.TrimSpace(credential.EncryptedAccessToken) != "" {
 		token, decryptErr := m.cipher.Decrypt(credential.EncryptedAccessToken)
@@ -393,7 +393,7 @@ func fallbackScopes(scope domain.Scope) []domain.Scope {
 		return []domain.Scope{domain.ScopeWebAsset, domain.ScopeWeb}
 	}
 	if scope == domain.ScopeConsole {
-		// Console uses the same browser/clearance surface as Grok Web.  A
+		// Console uses the same browser/clearance surface as Grok Web. A
 		// dedicated Console node is preferred, but a Web node is a safe and
 		// expected fallback for deployments that configure one shared pool.
 		return []domain.Scope{domain.ScopeConsole, domain.ScopeWeb}
@@ -462,9 +462,9 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		value.browser = client
 	}
 	value.lastUsed = now
-	// 固定代理同节点出现新指纹说明配置已更新，旧连接池应淘汰。
-	// 账号模板代理的指纹会随 Resin Account 变化，必须并存才能维持各账号的粘性连接池。
-	// 直连节点统一使用 ID 0，不同 Provider 的传输必须并存，避免 Build 与 Web 互相重建客户端。
+	// A new fingerprint on the same fixed-proxy node means its configuration changed, so evict the old connection pool.
+	// Account-template proxy fingerprints vary by Resin Account and must coexist to preserve per-account sticky pools.
+	// Direct nodes all use ID 0, so transports for different Providers must coexist to prevent Build and Web rebuilding each other.
 	if id != 0 && !sticky {
 		for previousKey, previous := range m.clients {
 			if previousKey.nodeID != id {
@@ -550,17 +550,17 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 	case status == http.StatusUnauthorized || status == http.StatusTooManyRequests:
 		return
 	case scope == domain.ScopeBuild && status == http.StatusForbidden:
-		// Build 403 可能是账号权限、额度、Token 或出口策略，响应体由网关层
-		// 分类；仅凭状态码不能把标准 CLI 出口误判为 Web anti-bot。
+		// Build 403 may indicate account permissions, quota, token, or egress policy. The gateway classifies the body;
+		// status alone must not misclassify standard CLI egress as Web anti-bot behavior.
 		return
 	case scope == domain.ScopeBuild && status == http.StatusBadRequest:
-		// Device OAuth 在用户确认前会以 400 + authorization_pending 轮询，
-		// 这是协议正常状态，不能当作出口节点故障进入冷却。
+		// Device OAuth polls with 400 + authorization_pending before user confirmation.
+		// This is a normal protocol state and must not cool the egress node.
 		return
 	case status == http.StatusForbidden:
 		if m.isStickyProxyNode(value) {
 			// A 403 on an account-bound Resin lease usually means that account's
-			// clearance is stale. Do not cool or invalidate the shared node for
+			// The account clearance is stale. Do not cool or invalidate the shared node for
 			// unrelated accounts.
 			return
 		}
