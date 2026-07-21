@@ -104,6 +104,20 @@ export function SettingsPage() {
               <SettingsField controlId="provider-client-identifier" label={t("settings.provider.clientIdentifier")} description={t("settings.provider.clientIdentifierHelp")} error={form.formState.errors.providerBuild?.clientIdentifier?.message}><Input id="provider-client-identifier" {...form.register("providerBuild.clientIdentifier")} /></SettingsField>
               <SettingsField controlId="provider-token-auth" label={t("settings.provider.tokenAuth")} description={t("settings.provider.tokenAuthHelp")} error={form.formState.errors.providerBuild?.tokenAuth?.message}><Input id="provider-token-auth" autoComplete="off" {...form.register("providerBuild.tokenAuth")} /></SettingsField>
               <SettingsField controlId="provider-user-agent" label={t("settings.provider.userAgent")} description={t("settings.provider.userAgentHelp")} error={form.formState.errors.providerBuild?.userAgent?.message}><Input id="provider-user-agent" {...form.register("providerBuild.userAgent")} /></SettingsField>
+              <SettingsField controlId="provider-inject-build-search-tools" label={t("settings.provider.injectBuildSearchTools")} description={t("settings.provider.injectBuildSearchToolsHelp")}>
+                <Controller control={form.control} name="providerBuild.injectBuildSearchTools" render={({ field }) => (
+                  <div className="flex h-9 items-center">
+                    <Switch id="provider-inject-build-search-tools" checked={Boolean(field.value)} onCheckedChange={field.onChange} />
+                  </div>
+                )} />
+              </SettingsField>
+              <SettingsField controlId="provider-hide-injected-search-results" label={t("settings.provider.hideInjectedSearchResults")} description={t("settings.provider.hideInjectedSearchResultsHelp")}>
+                <Controller control={form.control} name="providerBuild.hideInjectedSearchResults" render={({ field }) => (
+                  <div className="flex h-9 items-center">
+                    <Switch id="provider-hide-injected-search-results" checked={Boolean(field.value)} onCheckedChange={field.onChange} disabled={!form.watch("providerBuild.injectBuildSearchTools")} />
+                  </div>
+                )} />
+              </SettingsField>
             </div>
           </SettingsSection>
           </SettingsPane>

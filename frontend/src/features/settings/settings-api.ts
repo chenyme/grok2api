@@ -4,7 +4,17 @@ import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type SettingsConfigDTO = {
   server: { maxConcurrentRequests: number };
-  providerBuild: { baseURL: string; fallbackBaseURL: string; clientVersion: string; clientIdentifier: string; tokenAuth: string; tokenAuthConfigured: boolean; userAgent: string };
+  providerBuild: {
+    baseURL: string;
+    fallbackBaseURL: string;
+    clientVersion: string;
+    clientIdentifier: string;
+    tokenAuth: string;
+    tokenAuthConfigured: boolean;
+    userAgent: string;
+    injectBuildSearchTools: boolean;
+    hideInjectedSearchResults: boolean;
+  };
   providerWeb: {
     baseURL: string; quotaTimeout: string; chatTimeout: string; imageTimeout: string; videoTimeout: string;
     statsigMode: "manual" | "url"; statsigManualValue?: string; statsigManualConfigured: boolean; statsigSignerURL: string;
@@ -55,7 +65,18 @@ export type SettingsSnapshotDTO = {
 
 const settingsConfigValidator = hasShape({
   server: hasShape({ maxConcurrentRequests: isNumber }),
-  providerBuild: hasShape({ baseURL: isString, fallbackBaseURL: isString, clientVersion: isString, clientIdentifier: isString, tokenAuth: isString, tokenAuthConfigured: isBoolean, userAgent: isString }),
+  providerBuild: hasShape({
+    baseURL: isString,
+    fallbackBaseURL: isString,
+    clientVersion: isString,
+    clientIdentifier: isString,
+    tokenAuth: isString,
+    tokenAuthConfigured: isBoolean,
+    userAgent: isString,
+    // 旧后端可无这两个字段；decode 后由 withProviderBuildDefaults 补默认。
+    injectBuildSearchTools: isOptional(isBoolean),
+    hideInjectedSearchResults: isOptional(isBoolean),
+  }),
   providerWeb: hasShape({
     baseURL: isString, quotaTimeout: isString, chatTimeout: isString, imageTimeout: isString, videoTimeout: isString,
     statsigMode: isOneOf("manual", "url"), statsigManualValue: isOptional(isString), statsigManualConfigured: isBoolean,
@@ -98,6 +119,21 @@ function withAccountsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
     },
   };
 }
+function withProviderBuildDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDTO {
+  const build = snapshot.config.providerBuild;
+  return {
+    ...snapshot,
+    config: {
+      ...snapshot.config,
+      providerBuild: {
+        ...build,
+        // free Build 默认注入，对齐代码 DefaultConfig；旧后端缺字段时按 true 展示。
+        injectBuildSearchTools: build.injectBuildSearchTools ?? true,
+        hideInjectedSearchResults: build.hideInjectedSearchResults ?? false,
+      },
+    },
+  };
+}
 const decodeSettingsSnapshotRaw = createObjectDecoder<SettingsSnapshotDTO>("settings", {
   config: settingsConfigValidator,
   recommendedProviderBuild: hasShape({ clientVersion: isString, userAgent: isString }),
@@ -105,7 +141,7 @@ const decodeSettingsSnapshotRaw = createObjectDecoder<SettingsSnapshotDTO>("sett
   revision: isString,
   restartRequired: isArrayOf(isString),
 });
-const decodeSettingsSnapshot = (value: unknown) => withAccountsDefaults(decodeSettingsSnapshotRaw(value));
+const decodeSettingsSnapshot = (value: unknown) => withProviderBuildDefaults(withAccountsDefaults(decodeSettingsSnapshotRaw(value)));
 const egressNodeValidator = hasShape({
   id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset"), enabled: isBoolean,
   proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, accountBoundProxy: isBoolean, health: isNumber, failureCount: isNumber,

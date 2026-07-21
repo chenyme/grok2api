@@ -46,6 +46,8 @@ export const settingsSchema = z.object({
     tokenAuth: z.string().trim().min(1),
     tokenAuthConfigured: z.boolean(),
     userAgent: z.string().trim().min(1),
+    injectBuildSearchTools: z.boolean(),
+    hideInjectedSearchResults: z.boolean(),
   }),
   providerWeb: z.object({
     baseURL: z.url().refine((value) => value.startsWith("https://")),
