@@ -138,6 +138,19 @@ func TestGatewayErrorDoesNotExposeInternalDetails(t *testing.T) {
 	}
 }
 
+func TestGatewayErrorMapsOversizedVideoInputToBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) {
+		writeGatewayError(c, gateway.ErrVideoInputTooLarge)
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"invalid_request"`) || !strings.Contains(recorder.Body.String(), "32 MiB") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestGatewayErrorHidesUpstreamCredentialStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	openAIRouter := gin.New()

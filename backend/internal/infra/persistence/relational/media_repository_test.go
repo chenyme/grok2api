@@ -125,6 +125,68 @@ func TestMediaJobRepositoryListMediaJobsPaginatesAndFilters(t *testing.T) {
 	}
 }
 
+func TestMediaJobRepositoryKeepsLargeInputOffHotPaths(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accountValue, _, err := NewAccountRepository(database).UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "large-input-account", SourceKey: "large-input-account",
+		EncryptedAccessToken: testEncryptedToken, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := clientKeyModel{Name: "large-input-key", Prefix: "large-input-key", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	repository := NewMediaJobRepository(database)
+	now := time.Now().UTC()
+	job := testMediaJob("media_job_large_input", accountValue.ID, key.ID, mediadomain.StatusQueued, now)
+	job.InputJSON = `{"image_urls":["` + strings.Repeat("A", (1<<20)+1) + `"]}`
+	job.InputImageCount = 1
+	if err := repository.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	polled, err := repository.GetMediaJob(ctx, job.ID, key.ID)
+	if err != nil || polled.InputJSON != "" || polled.InputImageCount != 1 {
+		t.Fatalf("poll projection input len=%d count=%d err=%v", len(polled.InputJSON), polled.InputImageCount, err)
+	}
+	recoverable, err := repository.ListRecoverableMediaJobs(ctx, 1000)
+	if err != nil || len(recoverable) != 1 || recoverable[0].ID != job.ID || recoverable[0].InputJSON != "" {
+		t.Fatalf("recoverable jobs=%#v err=%v", recoverable, err)
+	}
+	claimed, ok, err := repository.TryClaimMediaJob(ctx, job.ID, now, now.Add(time.Hour), "claim_large_input_1234")
+	if err != nil || !ok || claimed.InputJSON != job.InputJSON || claimed.InputImageCount != 1 {
+		t.Fatalf("claimed input len=%d count=%d ok=%v err=%v", len(claimed.InputJSON), claimed.InputImageCount, ok, err)
+	}
+	claimed.Progress = 20
+	claimed.InputJSON = `{"image_urls":["should-not-overwrite"]}`
+	if err := repository.UpdateMediaJob(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	var storedInput string
+	if err := database.db.WithContext(ctx).Model(&mediaJobModel{}).Where("id = ?", job.ID).Pluck("input_json", &storedInput).Error; err != nil || storedInput != job.InputJSON {
+		t.Fatalf("progress update changed immutable input len=%d err=%v", len(storedInput), err)
+	}
+	completedAt := now.Add(time.Minute)
+	claimed.Status, claimed.Progress, claimed.CompletedAt = mediadomain.StatusCompleted, 100, &completedAt
+	if err := repository.UpdateMediaJob(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := repository.ListUnrecordedTerminalMediaJobs(ctx, 200)
+	if err != nil || len(terminal) != 1 || terminal[0].InputJSON != "" || terminal[0].InputImageCount != 1 {
+		t.Fatalf("terminal jobs=%#v err=%v", terminal, err)
+	}
+	if err := repository.MarkMediaJobUsageRecorded(ctx, job.ID, completedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Model(&mediaJobModel{}).Where("id = ?", job.ID).Pluck("input_json", &storedInput).Error; err != nil || storedInput != "{}" {
+		t.Fatalf("recorded terminal input=%q err=%v", storedInput, err)
+	}
+}
+
 func TestAccountDeleteDetachesTerminalMediaJobsAndRejectsActiveJobs(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
