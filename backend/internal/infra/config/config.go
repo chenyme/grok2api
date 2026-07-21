@@ -20,7 +20,10 @@ import (
 const (
 	StatsigModeManual             = "manual"
 	StatsigModeURL                = "url"
+	ClearanceModeManual           = "manual"
+	ClearanceModeFlareSolverr     = "flaresolverr"
 	DefaultStatsigSignerURL       = "https://grok.wodf.de/sign"
+	DefaultFlareSolverrURL        = "http://flaresolverr:8191"
 	RecommendedBuildClientVersion = "0.2.106"
 	RecommendedBuildUserAgent     = "grok-shell/" + RecommendedBuildClientVersion + " (linux; x86_64)"
 
@@ -50,6 +53,7 @@ type Config struct {
 	Routing           RoutingConfig           `yaml:"routing"`
 	Audit             AuditConfig             `yaml:"audit"`
 	ClientKeyDefaults ClientKeyDefaultsConfig `yaml:"clientKeyDefaults"`
+	Accounts          AccountsConfig          `yaml:"-"`
 }
 
 type ServerConfig struct {
@@ -138,6 +142,10 @@ type WebProviderConfig struct {
 	StatsigMode         string   `yaml:"-"`
 	StatsigManualValue  string   `yaml:"-"`
 	StatsigSignerURL    string   `yaml:"-"`
+	ClearanceMode       string   `yaml:"-"`
+	FlareSolverrURL     string   `yaml:"-"`
+	ClearanceTimeout    Duration `yaml:"-"`
+	ClearanceRefresh    Duration `yaml:"-"`
 	QuotaTimeout        Duration `yaml:"quotaTimeout"`
 	ChatTimeout         Duration `yaml:"chatTimeout"`
 	ImageTimeout        Duration `yaml:"imageTimeout"`
@@ -197,6 +205,14 @@ type AuditConfig struct {
 type ClientKeyDefaultsConfig struct {
 	RPMLimit      int `yaml:"rpmLimit"`
 	MaxConcurrent int `yaml:"maxConcurrent"`
+}
+
+// AccountsConfig 定义可热加载的账号池维护策略；默认全部关闭。
+type AccountsConfig struct {
+	AutoCleanReauthEnabled   bool
+	AutoCleanReauthInterval  Duration
+	AutoCleanReauthMinAge    Duration
+	AutoCleanIncludeDisabled bool
 }
 
 type Secrets struct {
@@ -418,6 +434,21 @@ func (c Config) Validate() error {
 	default:
 		return errors.New("provider.web Statsig 模式必须是 manual 或 url")
 	}
+	switch c.Provider.Web.ClearanceMode {
+	case ClearanceModeManual:
+	case ClearanceModeFlareSolverr:
+		if err := validateFlareSolverrURL(c.Provider.Web.FlareSolverrURL); err != nil {
+			return fmt.Errorf("provider.web FlareSolverr URL 无效: %w", err)
+		}
+	default:
+		return errors.New("provider.web Clearance 模式必须是 manual 或 flaresolverr")
+	}
+	if c.Provider.Web.ClearanceTimeout.Value() < 10*time.Second || c.Provider.Web.ClearanceTimeout.Value() > 5*time.Minute {
+		return errors.New("provider.web Clearance 超时必须在 10 秒到 5 分钟之间")
+	}
+	if c.Provider.Web.ClearanceRefresh.Value() < time.Minute || c.Provider.Web.ClearanceRefresh.Value() > 24*time.Hour {
+		return errors.New("provider.web Clearance 刷新间隔必须在 1 分钟到 24 小时之间")
+	}
 	if c.Provider.Web.QuotaTimeout.Value() < time.Second || c.Provider.Web.QuotaTimeout.Value() > 2*time.Minute ||
 		c.Provider.Web.ChatTimeout.Value() < 5*time.Second || c.Provider.Web.ChatTimeout.Value() > 30*time.Minute ||
 		c.Provider.Web.ImageTimeout.Value() < 5*time.Second || c.Provider.Web.ImageTimeout.Value() > 30*time.Minute ||
@@ -460,6 +491,12 @@ func (c Config) Validate() error {
 	}
 	if c.ClientKeyDefaults.RPMLimit < 1 || c.ClientKeyDefaults.RPMLimit > clientkeydomain.MaxRPMLimit || c.ClientKeyDefaults.MaxConcurrent < 1 || c.ClientKeyDefaults.MaxConcurrent > clientkeydomain.MaxConcurrent {
 		return errors.New("clientKeyDefaults 超出允许范围")
+	}
+	if c.Accounts.AutoCleanReauthInterval.Value() < time.Minute || c.Accounts.AutoCleanReauthInterval.Value() > time.Hour {
+		return errors.New("accounts.autoCleanReauthInterval 必须在 1 分钟到 1 小时之间")
+	}
+	if c.Accounts.AutoCleanReauthMinAge.Value() < time.Minute || c.Accounts.AutoCleanReauthMinAge.Value() > 30*24*time.Hour {
+		return errors.New("accounts.autoCleanReauthMinAge 必须在 1 分钟到 30 天之间")
 	}
 	return nil
 }
@@ -523,6 +560,8 @@ func defaultConfig() Config {
 			},
 			Web: WebProviderConfig{
 				BaseURL: "https://grok.com", StatsigMode: StatsigModeURL, StatsigSignerURL: DefaultStatsigSignerURL,
+				ClearanceMode: ClearanceModeManual, FlareSolverrURL: DefaultFlareSolverrURL,
+				ClearanceTimeout: Duration(time.Minute), ClearanceRefresh: Duration(10 * time.Minute),
 				QuotaTimeout: Duration(25 * time.Second),
 				ChatTimeout:  Duration(2 * time.Minute), ImageTimeout: Duration(3 * time.Minute),
 				VideoTimeout:     Duration(15 * time.Minute),
@@ -553,7 +592,20 @@ func defaultConfig() Config {
 		},
 		Audit:             AuditConfig{BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond)},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
+		Accounts: AccountsConfig{
+			AutoCleanReauthEnabled:   false,
+			AutoCleanReauthInterval:  Duration(10 * time.Minute),
+			AutoCleanReauthMinAge:    Duration(time.Hour),
+			AutoCleanIncludeDisabled: false,
+		},
 	}
+}
+
+func validateFlareSolverrURL(value string) error {
+	if err := signerurl.Validate(value); err != nil {
+		return errors.New(strings.ReplaceAll(err.Error(), "签名 URL", "URL"))
+	}
+	return nil
 }
 
 func validStatsigID(value string) bool {

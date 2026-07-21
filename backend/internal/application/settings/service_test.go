@@ -90,6 +90,37 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	}
 }
 
+func TestLoadPersistedKeepsConsoleDefaultsWhenFieldIsMissing(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.ProviderConsole = settingsdomain.ProviderConsoleConfig{}
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provider.Console != cfg.Provider.Console {
+		t.Fatalf("console config = %#v, want %#v", loaded.Provider.Console, cfg.Provider.Console)
+	}
+}
+
+func TestLoadPersistedKeepsClearanceDefaultsForOlderPayload(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.ProviderWeb.ClearanceMode = ""
+	value.ProviderWeb.FlareSolverrURL = ""
+	value.ProviderWeb.ClearanceTimeout = 0
+	value.ProviderWeb.ClearanceRefresh = 0
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provider.Web.ClearanceMode != cfg.Provider.Web.ClearanceMode || loaded.Provider.Web.FlareSolverrURL != cfg.Provider.Web.FlareSolverrURL || loaded.Provider.Web.ClearanceTimeout != cfg.Provider.Web.ClearanceTimeout || loaded.Provider.Web.ClearanceRefresh != cfg.Provider.Web.ClearanceRefresh {
+		t.Fatalf("clearance config = %#v, want %#v", loaded.Provider.Web, cfg.Provider.Web)
+	}
+}
+
 func TestSnapshotIncludesRecommendedBuildBaseline(t *testing.T) {
 	service := NewService(testConfig(t), time.Time{}, 0, &runtimeSettingsRepositoryStub{}, nil, nil)
 	recommended := service.Get().RecommendedProviderBuild
@@ -333,5 +364,99 @@ func TestUpdateEmptyFrontendOverrideFallsBackToYAML(t *testing.T) {
 	}
 	if repository.value.Frontend.PublicAPIBaseURL != "" {
 		t.Fatalf("persisted override = %q", repository.value.Frontend.PublicAPIBaseURL)
+	}
+}
+
+func TestApplyDomainConfigAccountsDefaults(t *testing.T) {
+	base := testConfig(t)
+	// 旧持久化 JSON 无 Accounts 段时，应保持代码默认：关闭 + 10m + 1h。
+	loaded := applyDomainConfig(base, settingsdomain.Config{
+		Server: settingsdomain.ServerConfig{MaxConcurrentRequests: base.Server.MaxConcurrentRequests},
+		ProviderBuild: settingsdomain.ProviderBuildConfig{
+			BaseURL: base.Provider.Build.BaseURL, FallbackBaseURL: base.Provider.Build.FallbackBaseURL,
+			ClientVersion: base.Provider.Build.ClientVersion, ClientIdentifier: base.Provider.Build.ClientIdentifier,
+			TokenAuth: base.Provider.Build.TokenAuth, UserAgent: base.Provider.Build.UserAgent,
+		},
+		ProviderWeb: settingsdomain.ProviderWebConfig{
+			BaseURL: base.Provider.Web.BaseURL, QuotaTimeout: base.Provider.Web.QuotaTimeout.Value(),
+			StatsigMode: base.Provider.Web.StatsigMode, StatsigManualValue: base.Provider.Web.StatsigManualValue,
+			StatsigSignerURL: base.Provider.Web.StatsigSignerURL,
+			ChatTimeout:      base.Provider.Web.ChatTimeout.Value(), ImageTimeout: base.Provider.Web.ImageTimeout.Value(),
+			VideoTimeout: base.Provider.Web.VideoTimeout.Value(), MediaConcurrency: base.Provider.Web.MediaConcurrency,
+			AllowNSFW:           base.Provider.Web.AllowNSFW,
+			RecoveryBackoffBase: base.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: base.Provider.Web.RecoveryBackoffMax.Value(),
+		},
+		Batch: settingsdomain.BatchConfig{
+			ImportConcurrency: base.Batch.ImportConcurrency, ConversionConcurrency: base.Batch.ConversionConcurrency,
+			SyncConcurrency: base.Batch.SyncConcurrency, RefreshConcurrency: base.Batch.RefreshConcurrency,
+			RandomDelay: func() *time.Duration { d := base.Batch.RandomDelay.Value(); return &d }(),
+		},
+		Media: settingsdomain.MediaConfig{
+			MaxImageBytes: base.Media.MaxImageBytes, MaxTotalBytes: base.Media.MaxTotalBytes,
+			CleanupThresholdPercent: base.Media.CleanupThresholdPercent, CleanupInterval: base.Media.CleanupInterval.Value(),
+		},
+		Routing: settingsdomain.RoutingConfig{
+			StickyTTL: base.Routing.StickyTTL.Value(), CooldownBase: base.Routing.CooldownBase.Value(),
+			CooldownMax: base.Routing.CooldownMax.Value(), CapacityWait: base.Routing.CapacityWait.Value(),
+			MaxAttempts: base.Routing.MaxAttempts, PreferFreeBuild: base.Routing.PreferFreeBuild,
+		},
+		Audit: settingsdomain.AuditConfig{
+			BufferSize: base.Audit.BufferSize, BatchSize: base.Audit.BatchSize, FlushInterval: base.Audit.FlushInterval.Value(),
+		},
+		ClientKeyDefaults: settingsdomain.ClientKeyDefaultsConfig{
+			RPMLimit: base.ClientKeyDefaults.RPMLimit, MaxConcurrent: base.ClientKeyDefaults.MaxConcurrent,
+		},
+	})
+	if loaded.Accounts.AutoCleanReauthEnabled || loaded.Accounts.AutoCleanIncludeDisabled {
+		t.Fatalf("accounts flags should stay false: %#v", loaded.Accounts)
+	}
+	if loaded.Accounts.AutoCleanReauthInterval.Value() != 10*time.Minute || loaded.Accounts.AutoCleanReauthMinAge.Value() != time.Hour {
+		t.Fatalf("accounts defaults = %#v", loaded.Accounts)
+	}
+}
+
+func TestUpdateAccountsAutoCleanRoundTrip(t *testing.T) {
+	cfg := testConfig(t)
+	repo := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repo, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Accounts = AccountsConfig{
+		AutoCleanReauthEnabled: true, AutoCleanReauthInterval: "5m",
+		AutoCleanReauthMinAge: "2h", AutoCleanIncludeDisabled: true,
+	}
+	snapshot, err := service.Update(context.Background(), service.Get().Revision, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Accounts.AutoCleanReauthEnabled || !applied.Accounts.AutoCleanIncludeDisabled {
+		t.Fatalf("applied accounts = %#v", applied.Accounts)
+	}
+	if applied.Accounts.AutoCleanReauthInterval.Value() != 5*time.Minute || applied.Accounts.AutoCleanReauthMinAge.Value() != 2*time.Hour {
+		t.Fatalf("applied accounts durations = %#v", applied.Accounts)
+	}
+	if !snapshot.Config.Accounts.AutoCleanReauthEnabled || snapshot.Config.Accounts.AutoCleanReauthInterval != "5m" {
+		t.Fatalf("snapshot accounts = %#v", snapshot.Config.Accounts)
+	}
+}
+
+func TestUpdateWithoutAccountsPreservesCurrentAutoCleanConfig(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Accounts.AutoCleanReauthEnabled = true
+	cfg.Accounts.AutoCleanReauthInterval = config.Duration(7 * time.Minute)
+	cfg.Accounts.AutoCleanReauthMinAge = config.Duration(3 * time.Hour)
+	cfg.Accounts.AutoCleanIncludeDisabled = true
+	repo := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repo, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Accounts = AccountsConfig{}
+	input.AccountsProvided = false
+	input.Server.MaxConcurrentRequests++
+	if _, err := service.Update(context.Background(), 0, input); err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Accounts.AutoCleanReauthEnabled || !applied.Accounts.AutoCleanIncludeDisabled || applied.Accounts.AutoCleanReauthInterval.Value() != 7*time.Minute || applied.Accounts.AutoCleanReauthMinAge.Value() != 3*time.Hour {
+		t.Fatalf("accounts changed by legacy update: %#v", applied.Accounts)
 	}
 }
