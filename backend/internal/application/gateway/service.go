@@ -37,6 +37,7 @@ var (
 	ErrResponseAccountUnavailable = errors.New("Response 绑定的上游账号不可用")
 	ErrResponseStateUnsupported   = errors.New("目标模型不支持有状态 Response")
 	ErrConversationUnsupported    = errors.New("目标模型不支持当前对话协议")
+	ErrVideoInputTooLarge         = errors.New("视频参考图片总大小超过 32 MiB")
 )
 
 const responseOwnershipTTL = 30 * 24 * time.Hour

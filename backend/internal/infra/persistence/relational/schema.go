@@ -2,9 +2,15 @@ package relational
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+
+	"github.com/chenyme/grok2api/backend/internal/domain/media"
 )
+
+const mediaJobInputMetadataPendingIndex = "CREATE INDEX IF NOT EXISTS idx_media_jobs_input_metadata_pending ON media_jobs(id) WHERE input_image_count IS NULL"
 
 var schemaModels = []any{
 	&adminModel{},
@@ -80,6 +86,8 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_media_assets_kind_created ON media_assets(kind, created_at DESC, id)",
 	"CREATE INDEX IF NOT EXISTS idx_media_upload_tickets_expires ON media_upload_tickets(expires_at, consumed_at)",
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_result_asset ON media_jobs(result_asset_id) WHERE result_asset_id <> ''",
+	// Pending input metadata rows only; keeps startup backfill scans off the full table after migration completes.
+	mediaJobInputMetadataPendingIndex,
 }
 
 // InitializeSchema 以当前持久化模型作为首版数据库结构基线。
@@ -113,6 +121,17 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	}
 	if err := d.ensureMediaJobConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 数据库约束: %w", err)
+	}
+	if err := d.ensureMediaJobInputConstraint(ctx); err != nil {
+		return fmt.Errorf("迁移 media job 输入长度约束: %w", err)
+	}
+	// Create the pending-metadata partial index before backfill so both first
+	// upgrade and subsequent empty scans avoid walking the full media_jobs table.
+	if err := d.ensureMediaJobInputMetadataPendingIndex(ctx); err != nil {
+		return fmt.Errorf("初始化 media job 输入元数据索引: %w", err)
+	}
+	if err := d.migrateMediaJobInputMetadata(ctx); err != nil {
+		return fmt.Errorf("迁移 media job 输入元数据: %w", err)
 	}
 	if err := d.ensureMediaJobAccountForeignKey(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 账号外键: %w", err)
@@ -180,6 +199,78 @@ func (d *Database) ensureMediaJobConstraints(ctx context.Context) error {
 		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_provider"},
 		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_egress_scope"},
 	}, "grok_build")
+}
+
+// ensureMediaJobInputConstraint 允许异步视频任务持久化 Base64 首图。
+// SQLite 和 PostgreSQL 都不会由 AutoMigrate 可靠替换已有的同名 CHECK。
+func (d *Database) ensureMediaJobInputConstraint(ctx context.Context) error {
+	if err := d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_input_json"},
+	}, strconv.Itoa(media.MaxInputJSONBytes)); err != nil {
+		return err
+	}
+	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_input_image_count"},
+	}, strconv.Itoa(media.MaxInputImages))
+}
+
+// ensureMediaJobInputMetadataPendingIndex accelerates the one-shot input_image_count
+// backfill and keeps later startup probes from full-scanning media_jobs after completion.
+func (d *Database) ensureMediaJobInputMetadataPendingIndex(ctx context.Context) error {
+	if err := d.db.WithContext(ctx).Exec(mediaJobInputMetadataPendingIndex).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateMediaJobInputMetadata backfills the compact image count introduced
+// after InputJSON began accepting large Base64 references. Already-audited
+// terminal jobs can discard the raw payload immediately; active and unaudited
+// jobs retain it for worker recovery.
+func (d *Database) migrateMediaJobInputMetadata(ctx context.Context) error {
+	db := d.db.WithContext(ctx)
+	terminal := []string{"completed", "failed"}
+	if err := db.Model(&mediaJobModel{}).
+		Where("status IN ? AND usage_recorded_at IS NOT NULL AND input_json <> ?", terminal, "{}").
+		UpdateColumn("input_json", "{}").Error; err != nil {
+		return err
+	}
+	type inputRow struct {
+		ID        string
+		InputJSON string
+	}
+	const batchSize = 8
+	cursor := ""
+	for {
+		var rows []inputRow
+		query := db.Model(&mediaJobModel{}).
+			Select("id", "input_json").
+			Where("id > ? AND input_image_count IS NULL", cursor).
+			Order("id ASC").Limit(batchSize)
+		if err := query.Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, row := range rows {
+			var input struct {
+				ImageURLs []string `json:"image_urls"`
+			}
+			parseErr := json.Unmarshal([]byte(row.InputJSON), &input)
+			count := min(len(input.ImageURLs), media.MaxInputImages)
+			updates := map[string]any{"input_image_count": count}
+			// Historical code treated malformed or empty input as no references.
+			// Normalize it once so future startups do not rescan the same row.
+			if parseErr != nil || count == 0 {
+				updates["input_json"] = "{}"
+			}
+			if err := db.Model(&mediaJobModel{}).Where("id = ?", row.ID).UpdateColumns(updates).Error; err != nil {
+				return err
+			}
+		}
+		cursor = rows[len(rows)-1].ID
+	}
 }
 
 // ensureMediaJobAccountForeignKey 让终态视频任务在账号删除后保留快照，

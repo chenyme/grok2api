@@ -11,6 +11,13 @@ const (
 	StatusFailed     Status = "failed"
 )
 
+// MaxInputJSONBytes is the persisted media_jobs.input_json ceiling (32 MiB).
+// Keep the relational CHECK constraint and gateway encode guard aligned with this value.
+const MaxInputJSONBytes = 32 << 20
+
+// MaxInputImages is the maximum number of reference images accepted for a video job.
+const MaxInputImages = 8
+
 // Job 表示可跨进程重启恢复的异步视频任务。
 type Job struct {
 	ID              string
@@ -34,6 +41,7 @@ type Job struct {
 	Status          Status
 	Progress        int
 	InputJSON       string
+	InputImageCount int
 	UpstreamURL     string
 	// ResultAssetID 指向本地媒体资产；XAI ZDR 上传完成后优先从此读取。
 	ResultAssetID   string

@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/domain/media"
 )
 
 func TestPostgresRepositoriesIntegration(t *testing.T) {
@@ -25,6 +28,7 @@ func TestPostgresRepositoriesIntegration(t *testing.T) {
 	if err := database.InitializeSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	verifyPostgresMediaJobInputConstraintUpgrade(t, ctx, database)
 	repository := NewAccountRepository(database)
 	created, wasCreated, err := repository.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "postgres", SourceKey: "postgres-integration-" + time.Now().UTC().Format("150405.000000"),
@@ -108,5 +112,31 @@ func TestPostgresRepositoriesIntegration(t *testing.T) {
 		if err := repository.Delete(ctx, id); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func verifyPostgresMediaJobInputConstraintUpgrade(t *testing.T, ctx context.Context, database *Database) {
+	t.Helper()
+	tx := database.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	if err := tx.Exec("ALTER TABLE media_jobs DROP CONSTRAINT IF EXISTS chk_media_jobs_input_json").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Exec("ALTER TABLE media_jobs ADD CONSTRAINT chk_media_jobs_input_json CHECK (length(input_json) <= 1048576) NOT VALID").Error; err != nil {
+		t.Fatal(err)
+	}
+	testDatabase := &Database{db: tx, dialect: "postgres"}
+	if err := testDatabase.ensureMediaJobInputConstraint(ctx); err != nil {
+		t.Fatal(err)
+	}
+	definition, err := testDatabase.constraintDefinition(ctx, consoleConstraint{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_input_json"})
+	if err != nil || !strings.Contains(definition, strconv.Itoa(media.MaxInputJSONBytes)) || strings.Contains(definition, "1048576") {
+		t.Fatalf("postgres input constraint = %q, err=%v", definition, err)
+	}
+	if err := testDatabase.ensureMediaJobInputConstraint(ctx); err != nil {
+		t.Fatalf("postgres input constraint migration is not idempotent: %v", err)
 	}
 }
