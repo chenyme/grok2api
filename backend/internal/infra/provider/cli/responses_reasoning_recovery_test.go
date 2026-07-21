@@ -245,6 +245,41 @@ func TestRecoverReasoningDecodeFailureEscalatesFromOpaqueStripToSessionReset(t *
 	}
 }
 
+func TestRecoverReasoningDecodeFailurePreservesRateLimitAfterOpaqueStrip(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+		case 2:
+			data, _ := io.ReadAll(request.Body)
+			if strings.Contains(string(data), `"encrypted_content"`) {
+				t.Fatalf("rate-limit recovery body still contains encrypted content: %s", data)
+			}
+			return jsonHTTPResponse(request, http.StatusTooManyRequests, `{"error":{"message":"rate limited"}}`), nil
+		default:
+			t.Fatalf("unexpected call %d", calls.Load())
+			return nil, nil
+		}
+	})
+
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", PromptCacheKey: "session-1",
+		Body: []byte(`{"model":"grok-4.5","input":[{"type":"reasoning","summary":[],"encrypted_content":"opaque"},{"role":"user","content":"continue"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
+	if calls.Load() != 2 || response.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(body), "rate limited") || !strings.Contains(warnings, "reasoning_encrypted_content_downgraded") || strings.Contains(warnings, "reasoning_recovery_failed") {
+		t.Fatalf("calls=%d status=%d warnings=%q body=%s", calls.Load(), response.StatusCode, warnings, body)
+	}
+}
+
 func TestRecoverReasoningDecodeFailureDoesNotResetStoredResponseChain(t *testing.T) {
 	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
 	var calls atomic.Int32
