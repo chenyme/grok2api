@@ -53,6 +53,9 @@ func TestPublicImageSupportsGetHeadAndETag(t *testing.T) {
 	if get.Code != http.StatusOK || get.Header().Get("Content-Type") != "image/png" || get.Body.Len() != len(raw) || get.Header().Get("ETag") == "" {
 		t.Fatalf("GET status=%d headers=%#v size=%d", get.Code, get.Header(), get.Body.Len())
 	}
+	if cache := get.Header().Get("Cache-Control"); cache != "private, max-age=3600" {
+		t.Fatalf("Cache-Control = %q, want private, max-age=3600", cache)
+	}
 	head := httptest.NewRecorder()
 	router.ServeHTTP(head, httptest.NewRequest(http.MethodHead, path, nil))
 	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Content-Length") == "" {

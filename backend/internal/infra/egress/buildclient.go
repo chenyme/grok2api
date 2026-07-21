@@ -13,6 +13,12 @@ import (
 	xproxy "golang.org/x/net/proxy"
 )
 
+// buildResponseHeaderTimeout is how long Build egress waits for the first
+// response header after the request body is fully written. Large prompts can
+// take well over 30s before cli-chat-proxy starts streaming (issue #731).
+// This only bounds header arrival; stream body reads use the request context.
+const buildResponseHeaderTimeout = 10 * time.Minute
+
 // newBuildClient keeps Grok Build on the standard Go HTTP/TLS stack used by
 // the official CLI-facing transport. Browser TLS impersonation is reserved for
 // Grok Web, where the browser fingerprint and User-Agent belong together.
@@ -27,7 +33,7 @@ func newBuildClient(proxyURL string) (*http.Client, error) {
 		MaxConnsPerHost:       256,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: buildResponseHeaderTimeout,
 		ExpectContinueTimeout: time.Second,
 	}
 	if strings.TrimSpace(proxyURL) != "" {

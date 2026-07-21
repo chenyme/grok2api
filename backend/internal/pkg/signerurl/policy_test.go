@@ -34,3 +34,15 @@ func TestValidateRejectsUnsafeOrMalformedSigner(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateWithOptionsRejectsInternalWhenDisallowed(t *testing.T) {
+	if err := ValidateWithOptions("http://grok-signer-go:8788/sign", false); err == nil {
+		t.Fatal("internal signer accepted when allowInternal=false")
+	}
+	if err := ValidateWithOptions("https://grok.wodf.de/sign", false); err != nil {
+		t.Fatalf("public HTTPS signer rejected: %v", err)
+	}
+	if err := ValidateWithOptions("http://grok-signer-go:8788/sign", true); err != nil {
+		t.Fatalf("internal signer rejected when allowInternal=true: %v", err)
+	}
+}

@@ -142,18 +142,21 @@ type WebProviderConfig struct {
 	StatsigMode         string   `yaml:"-"`
 	StatsigManualValue  string   `yaml:"-"`
 	StatsigSignerURL    string   `yaml:"-"`
-	ClearanceMode       string   `yaml:"-"`
-	FlareSolverrURL     string   `yaml:"-"`
-	ClearanceTimeout    Duration `yaml:"-"`
-	ClearanceRefresh    Duration `yaml:"-"`
-	QuotaTimeout        Duration `yaml:"quotaTimeout"`
-	ChatTimeout         Duration `yaml:"chatTimeout"`
-	ImageTimeout        Duration `yaml:"imageTimeout"`
-	VideoTimeout        Duration `yaml:"videoTimeout"`
-	MediaConcurrency    int      `yaml:"mediaConcurrency"`
-	AllowNSFW           bool     `yaml:"allowNSFW"`
-	RecoveryBackoffBase Duration `yaml:"recoveryBackoffBase"`
-	RecoveryBackoffMax  Duration `yaml:"recoveryBackoffMax"`
+	// AllowInternalStatsigSigner permits internal/private signer URLs from the
+	// config file only. Hot settings updates never set this flag (file-only).
+	AllowInternalStatsigSigner bool     `yaml:"allowInternalStatsigSigner"`
+	ClearanceMode              string   `yaml:"-"`
+	FlareSolverrURL            string   `yaml:"-"`
+	ClearanceTimeout           Duration `yaml:"-"`
+	ClearanceRefresh           Duration `yaml:"-"`
+	QuotaTimeout               Duration `yaml:"quotaTimeout"`
+	ChatTimeout                Duration `yaml:"chatTimeout"`
+	ImageTimeout               Duration `yaml:"imageTimeout"`
+	VideoTimeout               Duration `yaml:"videoTimeout"`
+	MediaConcurrency           int      `yaml:"mediaConcurrency"`
+	AllowNSFW                  bool     `yaml:"allowNSFW"`
+	RecoveryBackoffBase        Duration `yaml:"recoveryBackoffBase"`
+	RecoveryBackoffMax         Duration `yaml:"recoveryBackoffMax"`
 }
 
 type ConsoleProviderConfig struct {
@@ -342,6 +345,9 @@ func (c Config) Validate() error {
 			}
 		}
 	}
+	if effectivePublic := c.Frontend.EffectivePublicAPIBaseURL(); strings.HasPrefix(strings.ToLower(effectivePublic), "https://") && !c.Auth.SecureCookies {
+		return errors.New("frontend.publicApiBaseURL 为 HTTPS 时 auth.secureCookies 必须为 true")
+	}
 	switch c.Database.Driver {
 	case "sqlite":
 		if strings.TrimSpace(c.Database.SQLite.Path) == "" {
@@ -422,13 +428,16 @@ func (c Config) Validate() error {
 	if err != nil || webURL.Scheme != "https" || webURL.Host == "" || webURL.User != nil {
 		return errors.New("provider.web.baseURL 必须是无凭据的 HTTPS URL")
 	}
+	if err := validateProviderHost("provider.web.baseURL", webURL.Hostname()); err != nil {
+		return err
+	}
 	switch c.Provider.Web.StatsigMode {
 	case StatsigModeManual:
 		if !validStatsigID(c.Provider.Web.StatsigManualValue) {
 			return errors.New("provider.web 手动 x-statsig-id 格式无效")
 		}
 	case StatsigModeURL:
-		if err := signerurl.Validate(c.Provider.Web.StatsigSignerURL); err != nil {
+		if err := signerurl.ValidateWithOptions(c.Provider.Web.StatsigSignerURL, c.Provider.Web.AllowInternalStatsigSigner); err != nil {
 			return fmt.Errorf("provider.web Statsig 签名 URL 无效: %w", err)
 		}
 	default:
@@ -461,6 +470,9 @@ func (c Config) Validate() error {
 	consoleURL, err := url.ParseRequestURI(strings.TrimSpace(c.Provider.Console.BaseURL))
 	if err != nil || consoleURL.Scheme != "https" || consoleURL.Host == "" || consoleURL.User != nil {
 		return errors.New("provider.console.baseURL 必须是无凭据的 HTTPS URL")
+	}
+	if err := validateProviderHost("provider.console.baseURL", consoleURL.Hostname()); err != nil {
+		return err
 	}
 	if c.Provider.Console.ChatTimeout.Value() < 5*time.Second || c.Provider.Console.ChatTimeout.Value() > 30*time.Minute {
 		return errors.New("provider.console.chatTimeout 必须在 5 秒到 30 分钟之间")
@@ -503,6 +515,7 @@ func (c Config) Validate() error {
 
 // validateAPIBaseURL 仅允许无凭据、query、fragment 的 HTTP(S) API 根地址。
 // requireHTTPS 为 true 时强制 HTTPS（用于生产默认 XAI 备用地址）。
+// Host 必须属于官方 Provider 域名后缀（*.x.ai / *.grok.com）。
 func validateAPIBaseURL(name, raw string, requireHTTPS bool) error {
 	parsed, err := url.ParseRequestURI(strings.TrimSpace(raw))
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
@@ -510,15 +523,33 @@ func validateAPIBaseURL(name, raw string, requireHTTPS bool) error {
 	}
 	switch parsed.Scheme {
 	case "https":
-		return nil
+		return validateProviderHost(name, parsed.Hostname())
 	case "http":
 		if requireHTTPS {
 			return fmt.Errorf("%s 必须是 HTTPS URL", name)
 		}
-		return nil
+		return validateProviderHost(name, parsed.Hostname())
 	default:
 		return fmt.Errorf("%s 必须是不含凭据、查询参数和片段的 HTTP(S) URL", name)
 	}
+}
+
+// allowedProviderHostSuffixes limits hot-updatable and file-loaded Provider
+// BaseURLs so compromised admin sessions cannot exfiltrate credentials to
+// arbitrary hosts.
+var allowedProviderHostSuffixes = []string{"x.ai", "grok.com"}
+
+func validateProviderHost(name, host string) error {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return fmt.Errorf("%s 主机名无效", name)
+	}
+	for _, suffix := range allowedProviderHostSuffixes {
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s 主机必须是 x.ai 或 grok.com 及其子域", name)
 }
 
 // NormalizeBuildFallbackBaseURL 在旧配置缺字段时填入默认 XAI 备用地址。

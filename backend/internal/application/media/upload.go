@@ -295,7 +295,12 @@ func (s *Service) stageVideo(ctx context.Context, id, mimeType string, body io.R
 }
 
 func (s *Service) commitStagedVideo(ctx context.Context, staged stagedVideo, createdAt time.Time) (mediadomain.Asset, error) {
+	cfg := s.runtimeConfig()
+	if err := s.reserveMediaBytes(staged.SizeBytes, cfg.MaxTotalBytes); err != nil {
+		return mediadomain.Asset{}, err
+	}
 	if err := s.objects.CommitVideoUpload(ctx, staged.TempPath, staged.StorageKey); err != nil {
+		s.releaseMediaBytes(staged.SizeBytes)
 		return mediadomain.Asset{}, err
 	}
 	asset := mediadomain.Asset{
@@ -303,10 +308,11 @@ func (s *Service) commitStagedVideo(ctx context.Context, staged stagedVideo, cre
 		SizeBytes: staged.SizeBytes, SHA256: staged.SHA256, CreatedAt: createdAt,
 	}
 	if err := s.assets.CreateMediaAsset(ctx, asset); err != nil {
+		s.releaseMediaBytes(staged.SizeBytes)
 		_ = s.objects.Delete(context.WithoutCancel(ctx), staged.StorageKey)
 		return mediadomain.Asset{}, err
 	}
-	if s.totalBytes.Add(asset.SizeBytes) > cleanupThresholdBytes(s.runtimeConfig()) {
+	if s.totalBytes.Load() > cleanupThresholdBytes(cfg) {
 		select {
 		case s.cleanupSignal <- struct{}{}:
 		default:

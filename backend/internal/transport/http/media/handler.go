@@ -66,7 +66,8 @@ func (h *Handler) getImage(c *gin.Context) {
 	}
 	c.Header("Content-Type", asset.MIMEType)
 	c.Header("Content-Length", strconv.FormatInt(asset.SizeBytes, 10))
-	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	// Capability URLs: keep private so shared caches/CDNs do not pin leaked IDs for a year.
+	c.Header("Cache-Control", "private, max-age=3600")
 	c.Header("ETag", etag)
 	c.Header("X-Content-Type-Options", "nosniff")
 	if c.Request.Method == http.MethodHead {
@@ -95,7 +96,7 @@ func (h *Handler) getVideo(c *gin.Context) {
 	}
 	c.Header("Content-Type", asset.MIMEType)
 	c.Header("Content-Disposition", `inline; filename="`+asset.ID+`"`)
-	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	c.Header("Cache-Control", "private, max-age=3600")
 	c.Header("ETag", `"`+asset.SHA256+`"`)
 	c.Header("X-Content-Type-Options", "nosniff")
 	http.ServeContent(c.Writer, c.Request, asset.ID, asset.CreatedAt, seeker)

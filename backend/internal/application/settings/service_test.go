@@ -51,8 +51,8 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	input.Media.MaxTotalBytes = 2 << 30
 	input.Media.CleanupThresholdPercent = 75
 	input.Media.CleanupInterval = "5m"
-	input.Frontend.PublicAPIBaseURL = "https://public.example.com"
-	input.ProviderConsole.BaseURL = "https://console.example.com"
+	input.Frontend.PublicAPIBaseURL = "http://public.example.com"
+	input.ProviderConsole.BaseURL = "https://console.x.ai"
 	input.ProviderConsole.ChatTimeout = "6m"
 	input.Batch = BatchConfig{ImportConcurrency: 26, ConversionConcurrency: 27, SyncConcurrency: 28, RefreshConcurrency: 29, RandomDelay: "750ms"}
 
@@ -69,13 +69,13 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if applied.Media.MaxTotalBytes != 2<<30 || applied.Media.CleanupThresholdPercent != 75 || applied.Media.CleanupInterval.Value() != 5*time.Minute {
 		t.Fatalf("media configuration was not applied: %#v", applied.Media)
 	}
-	if applied.Frontend.PublicAPIBaseURLOverride != "https://public.example.com" || applied.Frontend.EffectivePublicAPIBaseURL() != "https://public.example.com" {
+	if applied.Frontend.PublicAPIBaseURLOverride != "http://public.example.com" || applied.Frontend.EffectivePublicAPIBaseURL() != "http://public.example.com" {
 		t.Fatalf("frontend configuration was not applied: %#v", applied.Frontend)
 	}
 	if applied.Batch.ImportConcurrency != 26 || applied.Batch.ConversionConcurrency != 27 || applied.Batch.SyncConcurrency != 28 || applied.Batch.RefreshConcurrency != 29 || applied.Batch.RandomDelay.Value() != 750*time.Millisecond {
 		t.Fatalf("batch configuration was not applied: %#v", applied.Batch)
 	}
-	if applied.Provider.Console.BaseURL != "https://console.example.com" || applied.Provider.Console.ChatTimeout.Value() != 6*time.Minute {
+	if applied.Provider.Console.BaseURL != "https://console.x.ai" || applied.Provider.Console.ChatTimeout.Value() != 6*time.Minute {
 		t.Fatalf("console configuration was not applied: %#v", applied.Provider.Console)
 	}
 	if len(snapshot.RestartRequired) != 1 || snapshot.RestartRequired[0] != "audit.bufferSize" {
@@ -85,7 +85,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Routing.MaxAttempts != 5 || !reloaded.Routing.PreferFreeBuild || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" {
+	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Routing.MaxAttempts != 5 || !reloaded.Routing.PreferFreeBuild || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.x.ai" {
 		t.Fatalf("configuration was not persisted")
 	}
 }

@@ -440,7 +440,13 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Provider.Build.UserAgent = strings.TrimSpace(input.ProviderBuild.UserAgent)
 	next.Provider.Web.BaseURL = strings.TrimSpace(input.ProviderWeb.BaseURL)
 	next.Provider.Web.StatsigMode = strings.TrimSpace(input.ProviderWeb.StatsigMode)
-	next.Provider.Web.StatsigSignerURL = strings.TrimSpace(input.ProviderWeb.StatsigSignerURL)
+	nextSigner := strings.TrimSpace(input.ProviderWeb.StatsigSignerURL)
+	// Hot updates cannot introduce or retain a newly-chosen internal signer URL.
+	// File-only allowInternalStatsigSigner is preserved only when the signer URL is unchanged.
+	if nextSigner != strings.TrimSpace(current.Provider.Web.StatsigSignerURL) {
+		next.Provider.Web.AllowInternalStatsigSigner = false
+	}
+	next.Provider.Web.StatsigSignerURL = nextSigner
 	if input.ProviderWeb.ClearanceProvided {
 		next.Provider.Web.ClearanceMode = strings.TrimSpace(input.ProviderWeb.ClearanceMode)
 		next.Provider.Web.FlareSolverrURL = strings.TrimSpace(input.ProviderWeb.FlareSolverrURL)

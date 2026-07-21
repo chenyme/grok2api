@@ -57,8 +57,12 @@ type Adapter struct {
 	logger         *slog.Logger
 }
 
+// fallbackResponseHeaderTimeout matches egress.buildResponseHeaderTimeout so
+// the no-egress path does not reintroduce the 30s header cutoff (issue #731).
+const fallbackResponseHeaderTimeout = 10 * time.Minute
+
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, MaxIdleConns: 256, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 256, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 30 * time.Second}
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, MaxIdleConns: 256, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 256, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: fallbackResponseHeaderTimeout}
 	httpClient := &http.Client{Transport: transport}
 	// The official CLI uses a persistent machine identity. The gateway does not collect machine fingerprints;
 	// instead each backend process generates one random UUID for its lifetime as the Agent identity.

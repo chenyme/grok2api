@@ -28,6 +28,8 @@ var (
 	ErrActiveVideoSelection  = errors.New("排队中或生成中的视频任务不能删除")
 	ErrInvalidFilter         = errors.New("媒体筛选条件无效")
 	ErrMediaJobsUnavailable  = errors.New("视频任务仓储未配置")
+	// ErrMediaQuotaExceeded is returned when total stored media would exceed MaxTotalBytes.
+	ErrMediaQuotaExceeded = errors.New("媒体总容量已达上限")
 )
 
 // Service 负责图片/视频校验、文件落盘和元数据持久化的一致性收口。
@@ -108,31 +110,62 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 	if !supportedImageMIME(mimeType) {
 		return mediadomain.Asset{}, ErrInvalidImage
 	}
+	sizeBytes := int64(len(data))
+	if err := s.reserveMediaBytes(sizeBytes, cfg.MaxTotalBytes); err != nil {
+		return mediadomain.Asset{}, err
+	}
 	id, err := newAssetID()
 	if err != nil {
+		s.releaseMediaBytes(sizeBytes)
 		return mediadomain.Asset{}, err
 	}
 	digest := sha256.Sum256(data)
 	createdAt := time.Now().UTC()
 	storageKey, err := s.objects.SaveImage(ctx, id, mimeType, data)
 	if err != nil {
+		s.releaseMediaBytes(sizeBytes)
 		return mediadomain.Asset{}, err
 	}
 	asset := mediadomain.Asset{
 		ID: id, Kind: "image", StorageKey: storageKey, MIMEType: mimeType,
-		SizeBytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), CreatedAt: createdAt,
+		SizeBytes: sizeBytes, SHA256: hex.EncodeToString(digest[:]), CreatedAt: createdAt,
 	}
 	if err := s.assets.CreateMediaAsset(ctx, asset); err != nil {
+		s.releaseMediaBytes(sizeBytes)
 		_ = s.objects.Delete(context.WithoutCancel(ctx), storageKey)
 		return mediadomain.Asset{}, err
 	}
-	if s.totalBytes.Add(asset.SizeBytes) > cleanupThresholdBytes(cfg) {
+	if s.totalBytes.Load() > cleanupThresholdBytes(cfg) {
 		select {
 		case s.cleanupSignal <- struct{}{}:
 		default:
 		}
 	}
 	return asset, nil
+}
+
+// reserveMediaBytes atomically reserves size against MaxTotalBytes before write.
+// On success the counter already includes size; callers must release on failure.
+func (s *Service) reserveMediaBytes(size, maxTotal int64) error {
+	if size <= 0 {
+		return nil
+	}
+	for {
+		current := s.totalBytes.Load()
+		if maxTotal > 0 && current+size > maxTotal {
+			return ErrMediaQuotaExceeded
+		}
+		if s.totalBytes.CompareAndSwap(current, current+size) {
+			return nil
+		}
+	}
+}
+
+func (s *Service) releaseMediaBytes(size int64) {
+	if size <= 0 {
+		return
+	}
+	s.totalBytes.Add(-size)
 }
 
 // PublicImageURL 返回可直接用于图片展示的公开资源地址。

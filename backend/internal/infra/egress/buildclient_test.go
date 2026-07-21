@@ -46,6 +46,21 @@ func TestNewBuildClientUsesStandardTransportForEveryProxyFamily(t *testing.T) {
 	}
 }
 
+// Issue #731: large Build payloads can take >30s before response headers arrive.
+func TestNewBuildClientResponseHeaderTimeoutCoversSlowBuildHeaders(t *testing.T) {
+	client, err := newBuildClient("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.ResponseHeaderTimeout < 10*time.Minute {
+		t.Fatalf("ResponseHeaderTimeout = %s, want >= 10m (issue #731)", transport.ResponseHeaderTimeout)
+	}
+}
+
 func TestNewBuildClientRejectsUnsupportedProxyScheme(t *testing.T) {
 	if _, err := newBuildClient("ftp://proxy.example:21"); err == nil {
 		t.Fatal("unsupported proxy scheme was accepted")

@@ -68,6 +68,33 @@ func TestServicePersistsAndReopensImage(t *testing.T) {
 	}
 }
 
+func TestSaveImageRejectsWhenTotalQuotaExceeded(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-quota.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects-quota"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(onePixelPNG)
+	service := NewService(relational.NewMediaAssetRepository(database), relational.NewMediaJobRepository(database), objects, nil, Config{
+		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: int64(len(raw)),
+		CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute,
+	})
+	if _, err := service.SaveImage(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SaveImage(ctx, raw); !errors.Is(err, ErrMediaQuotaExceeded) {
+		t.Fatalf("second save err = %v, want ErrMediaQuotaExceeded", err)
+	}
+}
+
 func TestAdminDeleteVideoJobsRemovesTerminalJobAssetAndTicket(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-video-delete.db"))

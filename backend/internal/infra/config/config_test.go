@@ -244,12 +244,40 @@ func TestValidateStatsigModes(t *testing.T) {
 	remote := base
 	remote.Provider.Web.StatsigMode = StatsigModeURL
 	remote.Provider.Web.StatsigSignerURL = "http://grok-signer-go:8788/sign"
+	if err := remote.Validate(); err == nil {
+		t.Fatal("internal Statsig signer was accepted without allowInternalStatsigSigner")
+	}
+	remote.Provider.Web.AllowInternalStatsigSigner = true
 	if err := remote.Validate(); err != nil {
-		t.Fatalf("Docker internal Statsig signer rejected: %v", err)
+		t.Fatalf("Docker internal Statsig signer rejected with allow flag: %v", err)
 	}
 	remote.Provider.Web.StatsigSignerURL = "http://signer.example.com:8788/sign"
 	if err := remote.Validate(); err == nil {
 		t.Fatal("public plaintext Statsig signer URL was accepted")
+	}
+}
+
+func TestValidateRejectsNonProviderBaseURLHosts(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
+	cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	cfg.Provider.Build.BaseURL = "https://attacker.example/v1"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("attacker build baseURL was accepted")
+	}
+	cfg.Provider.Build.BaseURL = "https://cli-chat-proxy.grok.com/v1"
+	cfg.Provider.Web.BaseURL = "https://evil.example"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("attacker web baseURL was accepted")
+	}
+	cfg.Provider.Web.BaseURL = "https://grok.com"
+	cfg.Provider.Console.BaseURL = "https://console.attacker.example"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("attacker console baseURL was accepted")
+	}
+	cfg.Provider.Console.BaseURL = "https://console.x.ai"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid provider hosts rejected: %v", err)
 	}
 }
 
@@ -314,8 +342,17 @@ func TestValidateFrontendPublicAPIBaseURL(t *testing.T) {
 	}
 	cfg.Frontend.PublicAPIBaseURL = "https://api.example.com/grok2api"
 	cfg.Auth.SecureCookies = false
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("https publicApiBaseURL with secureCookies=false was accepted")
+	}
+	cfg.Auth.SecureCookies = true
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("valid frontend.publicApiBaseURL rejected: %v", err)
+		t.Fatalf("valid https publicApiBaseURL with secureCookies rejected: %v", err)
+	}
+	cfg.Frontend.PublicAPIBaseURL = "http://127.0.0.1:8000"
+	cfg.Auth.SecureCookies = false
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("http local publicApiBaseURL rejected: %v", err)
 	}
 }
 

@@ -29,6 +29,18 @@ func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error)
 	return fn(request)
 }
 
+// Issue #731: fallback Build transport must wait longer than 30s for response headers.
+func TestNewAdapterFallbackTransportResponseHeaderTimeout(t *testing.T) {
+	adapter := NewAdapter(Config{}, nil)
+	transport, ok := adapter.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("base transport = %T, want *http.Transport", adapter.base)
+	}
+	if transport.ResponseHeaderTimeout < 10*time.Minute {
+		t.Fatalf("ResponseHeaderTimeout = %s, want >= 10m (issue #731)", transport.ResponseHeaderTimeout)
+	}
+}
+
 func TestCredentialMetadataMarksOnlyNumericBotFlagOne(t *testing.T) {
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {

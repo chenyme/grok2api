@@ -12,7 +12,13 @@ const MaxLength = 2048
 
 // Validate 接受公网 HTTPS:443，或管理员显式配置的内网 HTTP/HTTPS 地址。
 // 内网范围包括容器单标签服务名、localhost、.local/.internal 和私有地址。
+// allowInternal=false 时拒绝一切内网地址（用于管理端热更新路径）。
 func Validate(value string) error {
+	return ValidateWithOptions(value, true)
+}
+
+// ValidateWithOptions 与 Validate 相同，但可关闭内网地址。
+func ValidateWithOptions(value string, allowInternal bool) error {
 	raw := strings.TrimSpace(value)
 	parsed, err := url.ParseRequestURI(raw)
 	if err != nil || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(raw, "#") || len(raw) > MaxLength {
@@ -26,6 +32,9 @@ func Validate(value string) error {
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	internal := IsInternalHost(host)
+	if internal && !allowInternal {
+		return fmt.Errorf("签名 URL 不允许内网地址（需在配置文件中开启 allowInternalStatsigSigner）")
+	}
 	switch strings.ToLower(parsed.Scheme) {
 	case "http":
 		if internal {
