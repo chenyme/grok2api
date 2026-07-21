@@ -211,19 +211,31 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requestCount++
 		var payload struct {
-			Input []map[string]any `json:"input"`
+			Input          []map[string]any `json:"input"`
+			PromptCacheKey string           `json:"prompt_cache_key"`
 		}
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if requestCount == 2 {
+		switch requestCount {
+		case 2:
+			expectedSessionID, err := grokSessionID(payload.PromptCacheKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if payload.PromptCacheKey != "messages-cache-key" || request.Header.Get("x-grok-session-id") != expectedSessionID || len(payload.Input) != 1 || payload.Input[0]["role"] != "user" {
+				t.Fatalf("WebSearch replay isolation = key %q input %#v", payload.PromptCacheKey, payload.Input)
+			}
+		case 3:
 			if len(payload.Input) != 4 || payload.Input[0]["role"] != "user" || payload.Input[1]["type"] != "reasoning" || payload.Input[1]["encrypted_content"] != replayEncrypted || payload.Input[2]["role"] != "assistant" || payload.Input[3]["role"] != "user" {
-				t.Fatalf("second turn replay order = %#v", payload.Input)
+				t.Fatalf("ordinary replay after WebSearch = %#v", payload.Input)
 			}
 		}
-		body := `{"id":"resp_2","model":"grok-4.5","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}]}]}`
+		body := `{"id":"resp_3","model":"grok-4.5","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}]}]}`
 		if requestCount == 1 {
 			body = `{"id":"resp_1","model":"grok-4.5","status":"completed","output":[{"type":"reasoning","encrypted_content":"` + replayEncrypted + `"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"}]}]}`
+		} else if requestCount == 2 {
+			body = `{"id":"resp_search","model":"grok-4.5","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"search"}]}]}`
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -250,6 +262,25 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	webSearch, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.5",
+		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-cache-key", ReasoningReplayKey: "messages-replay-key",
+		Body: []byte(`{
+			"model":"public","max_tokens":128,
+			"messages":[{"role":"user","content":"weather"}],
+			"tools":[{"type":"web_search_20250305","name":"web_search"}]
+		}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(webSearch.Body); err != nil {
+		t.Fatal(err)
+	}
+	if err := webSearch.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	second, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.5",
 		NormalizeBody: true, Operation: conversation.OperationMessages, PromptCacheKey: "messages-cache-key", ReasoningReplayKey: "messages-replay-key",
@@ -262,7 +293,7 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 	if _, err := io.ReadAll(second.Body); err != nil {
 		t.Fatal(err)
 	}
-	if requestCount != 2 {
+	if requestCount != 3 {
 		t.Fatalf("request count = %d", requestCount)
 	}
 }
