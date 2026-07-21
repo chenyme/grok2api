@@ -280,6 +280,54 @@ func TestRecoverReasoningDecodeFailurePreservesRateLimitAfterOpaqueStrip(t *test
 	}
 }
 
+func TestRecoverReasoningDecodeFailurePreservesRateLimitAfterSessionReset(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		data, _ := io.ReadAll(request.Body)
+		switch call {
+		case 1:
+			if !strings.Contains(string(data), `"encrypted_content":"opaque"`) || request.Header.Get("x-grok-session-id") == "" {
+				t.Fatalf("initial body=%s headers=%#v", data, request.Header)
+			}
+		case 2:
+			if strings.Contains(string(data), `"encrypted_content"`) || request.Header.Get("x-grok-session-id") == "" || !strings.Contains(string(data), `"prompt_cache_key":"session-1"`) {
+				t.Fatalf("opaque downgrade body=%s headers=%#v", data, request.Header)
+			}
+		case 3:
+			if strings.Contains(string(data), `"encrypted_content"`) || strings.Contains(string(data), `"prompt_cache_key"`) || request.Header.Get("x-grok-session-id") != "" || request.Header.Get("x-grok-conv-id") != "" {
+				t.Fatalf("session reset body=%s headers=%#v", data, request.Header)
+			}
+			response := jsonHTTPResponse(request, http.StatusTooManyRequests, `{"error":{"message":"rate limited after session reset"}}`)
+			response.Header.Set("Retry-After", "17")
+			return response, nil
+		default:
+			t.Fatalf("unexpected call %d", call)
+			return nil, nil
+		}
+		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+	})
+
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", PromptCacheKey: "session-1",
+		Body: []byte(`{"model":"grok-4.5","input":[{"type":"reasoning","summary":[],"encrypted_content":"opaque"},{"role":"user","content":"continue"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
+	if calls.Load() != 3 || response.StatusCode != http.StatusTooManyRequests || response.Header.Get("Retry-After") != "17" || !strings.Contains(string(body), "rate limited after session reset") {
+		t.Fatalf("calls=%d status=%d retry_after=%q body=%s", calls.Load(), response.StatusCode, response.Header.Get("Retry-After"), body)
+	}
+	if !strings.Contains(warnings, "reasoning_encrypted_content_downgraded") || !strings.Contains(warnings, "reasoning_session_reset") || strings.Contains(warnings, "reasoning_recovery_failed") {
+		t.Fatalf("warnings=%q", warnings)
+	}
+}
+
 // TestRecoverReasoningDecodeFailureWithMillionTokenScaleCompactionBlob 覆盖 Claude Code
 // 在超长上下文压缩后回放大体积 opaque 状态、且上游拒绝该状态的恢复路径。
 func TestRecoverReasoningDecodeFailureWithMillionTokenScaleCompactionBlob(t *testing.T) {

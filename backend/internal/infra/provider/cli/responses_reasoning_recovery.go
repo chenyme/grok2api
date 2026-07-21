@@ -126,6 +126,16 @@ func (a *Adapter) recoverReasoningDecodeFailure(
 		a.logReasoningRecovery(request, base, "session_reset", "response_decode_failed", retry.StatusCode, err)
 		return original, requestURL, reasoningRecoveryOutcome{failed: true}
 	}
+	if retry.StatusCode == http.StatusTooManyRequests {
+		// 无状态恢复也可能命中当前账号的真实限流。与去密文恢复保持一致，
+		// 必须把 429 交回网关，才能执行账号冷却和候选账号切换。
+		_ = original.Body.Close()
+		a.logReasoningRecovery(request, base, "session_reset", "rate_limited", retry.StatusCode, nil)
+		return retry, retryURL, reasoningRecoveryOutcome{
+			encryptedContentDowngraded: encryptedChanged,
+			sessionReset:               true,
+		}
+	}
 	if !isHTTPSuccess(retry.StatusCode) {
 		status := retry.StatusCode
 		_ = retry.Body.Close()

@@ -218,6 +218,12 @@ func TestGatewayCompactionLifecycleWithMillionTokenScaleHistory(t *testing.T) {
 	adapter, encrypted := newCompactionTestAdapter(t)
 	// “x ”在常见 BPE 编码中接近一个 token；此处保守构造超过 1M token 量级的历史文本。
 	history := strings.Repeat("x ", 2<<20)
+	summary := healthyCompactionSummary()
+	continuation := gatewayCompactionContinuation(summary)
+	encodedSummary, err := json.Marshal(continuation)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var calls atomic.Int32
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		call := calls.Add(1)
@@ -230,9 +236,9 @@ func TestGatewayCompactionLifecycleWithMillionTokenScaleHistory(t *testing.T) {
 			if len(data) < 4<<20 || strings.Contains(string(data), "compaction_trigger") {
 				t.Fatalf("压缩采样未携带完整超长历史：size=%d", len(data))
 			}
-			return sseResponse(http.StatusOK, compactionSampleSSE("resp_million", healthyCompactionSummary()), request), nil
+			return sseResponse(http.StatusOK, compactionSampleSSE("resp_million", summary), request), nil
 		case 2:
-			if len(data) >= 4096 || strings.Contains(string(data), `"type":"compaction"`) || strings.Contains(string(data), `"encrypted_content"`) || !strings.Contains(string(data), "压缩后继续执行") {
+			if len(data) >= 4096 || strings.Contains(string(data), `"type":"compaction"`) || strings.Contains(string(data), `"encrypted_content"`) || !strings.Contains(string(data), string(encodedSummary)) || !strings.Contains(string(data), "压缩后继续执行") {
 				t.Fatalf("压缩回放泄漏原始状态：size=%d", len(data))
 			}
 			return jsonHTTPResponse(request, http.StatusOK, `{"id":"resp_continue","status":"completed","output":[]}`), nil
