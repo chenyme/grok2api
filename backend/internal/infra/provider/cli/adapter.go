@@ -39,7 +39,7 @@ type Config struct {
 
 const subscriptionTierTimeout = 10 * time.Second
 
-// Adapter 实现 Grok Build CLI Responses、模型、Billing 与 OAuth 协议。
+// Adapter implements the Grok Build CLI Responses, model, Billing, and OAuth protocols.
 type Adapter struct {
 	cfgMu          sync.RWMutex
 	cfg            Config
@@ -60,8 +60,8 @@ type Adapter struct {
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, MaxIdleConns: 256, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 256, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 30 * time.Second}
 	httpClient := &http.Client{Transport: transport}
-	// 官方 CLI 使用持久化机器身份。网关不采集机器指纹，改为每个后端
-	// 进程生成一个随机 UUID，在进程生命周期内作为统一 Agent 身份。
+	// The official CLI uses a persistent machine identity. The gateway does not collect machine fingerprints;
+	// instead each backend process generates one random UUID for its lifetime as the Agent identity.
 	agentID := uuid.NewString()
 	return &Adapter{
 		cfg: cfg, http: httpClient, oauth: newOAuthClient(httpClient), cipher: cipher, base: transport,
@@ -81,15 +81,15 @@ func (a *Adapter) SetEgress(manager *infraegress.Manager) {
 	}
 }
 
-// SetReasoningReplay 注入服务端推理回放缓存（可选）。
+// SetReasoningReplay injects the optional server-side reasoning replay cache.
 func (a *Adapter) SetReasoningReplay(replay *reasoningreplay.ReasoningReplay) {
 	a.replay = replay
 }
 
 func (a *Adapter) Provider() account.Provider { return account.ProviderBuild }
 
-// CredentialMetadata 只从 Build access token 提取非敏感风险标记。
-// bot_flag_source 必须是 JSON 数字 1；其他值、畸形 token 或解密失败均不标记。
+// CredentialMetadata extracts only non-sensitive risk flags from a Build access token.
+// bot_flag_source must be JSON number 1; other values, malformed tokens, and decryption failures are not marked.
 func (a *Adapter) CredentialMetadata(credential account.Credential) provider.CredentialMetadata {
 	if credential.Provider != account.ProviderBuild || a.cipher == nil || credential.EncryptedAccessToken == "" {
 		return provider.CredentialMetadata{}
@@ -122,6 +122,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	body := request.Body
 	var toolCompatibility *responsesToolCompatibility
 	var conversationOptions conversation.ResponseOptions
+	cacheRoute := buildPromptCacheRoute{}
 	compactionRequested := false
 	if request.NormalizeBody {
 		if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
@@ -158,6 +159,15 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	if len(body) > 0 && request.Method == http.MethodPost {
 		if !compactionRequested {
+			allowClientTools := request.AllowClientToolCacheRoute || (account.RoutingCandidate{Credential: request.Credential, Billing: request.Billing}).IsKnownFreeBuild()
+			body, cacheRoute, err = prepareBuildPromptCacheRoute(body, request.Operation, request.Model, request.PromptCacheKey, allowClientTools)
+			if err != nil {
+				err = fmt.Errorf("准备 Build prompt cache 路由: %w", err)
+				if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
+					return invalidConversationResponse(request.Operation, err), nil
+				}
+				return invalidResponsesResponse(err), nil
+			}
 			body, err = injectPromptCacheKey(body, request.PromptCacheKey)
 			if err != nil {
 				err = fmt.Errorf("写入 prompt_cache_key: %w", err)
@@ -175,11 +185,11 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 		return a.forwardGatewayCompaction(ctx, request, accessToken, body, warnings)
 	}
-	// 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source=1 的账号默认走 XAI。
+	// Explicit mode wins; in auto mode only confirmed Super accounts with bot_flag_source=1 default to XAI.
 	primaryBase := a.primaryBaseURL()
 	base := a.inferenceBaseForOperation(request.Credential, request.Billing, request.Method, request.Path)
-	// 缓存亲和与推理回放使用不同身份。回放还必须绑定实际账号和上游平面，
-	// 避免把一个账号或 Build 平面签发的 opaque reasoning 发给另一作用域。
+	// Cache affinity and reasoning replay use separate identities. Replay is also bound to the actual account and upstream plane,
+	// preventing opaque reasoning issued for one account or Build plane from reaching another scope.
 	replayBaseBody := body
 	body, replayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, base)
 	resp, reqURL, err := a.doResponseRequest(ctx, request, accessToken, body, base)
@@ -190,9 +200,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		return nil, err
 	}
 	resp, reqURL, reasoningRecovery := a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, base, replayKey, resp, reqURL)
-	// 仅可回退操作在当次 Build 主地址明确 403 时用等价请求探测 XAI。
+	// Only eligible operations probe XAI with an equivalent request after the Build primary explicitly returns 403.
 	if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Billing, request.Method, request.Path, resp.StatusCode) {
-		// 缓冲主 403 正文，备用失败时原样回放，避免二次 primary POST。
+		// Buffer the primary 403 body and replay it unchanged if fallback fails; never issue a second primary POST.
 		primaryBody, primaryTruncated, readErr := provider.ReadDiagnosticBody(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
@@ -218,7 +228,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				if fallbackErr == nil {
 					_ = fallbackResp.Body.Close()
 				}
-				// 保留原 primary 403 的 URL 与缓冲正文，不再次请求主地址。
+				// Preserve the original primary 403 URL and buffered body without requesting the primary again.
 				resp = primaryResp
 			}
 		} else {
@@ -226,9 +236,16 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 	}
 	modelCatalogChanged := a.modelCatalogChanged(request.Credential.ID, resp.Header.Get("x-models-etag"))
-	// 在协议转换前捕获上游 Responses 形态，写入/清理推理回放缓存。
+	// Capture or clear reasoning replay in the upstream Responses shape before protocol conversion.
 	if a.shouldCaptureReplay(request, resp, replayKey) {
 		resp.Body = a.replay.CaptureBody(resp.Body, request.Model, replayKey, request.Streaming, isCompactPath(request.Path))
+	}
+	// Replay must read the raw upstream output. Hide xAI native search subcalls from downstream clients
+	// only after capture wrapping has completed.
+	if isHTTPSuccess(resp.StatusCode) {
+		if err := filterBuildPromptCacheResponse(resp, request.Streaming, cacheRoute); err != nil {
+			return nil, err
+		}
 	}
 	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses || request.Operation == conversation.OperationCompaction
 	if responsesOperation && toolCompatibility != nil {
@@ -323,7 +340,7 @@ func (a *Adapter) applyReasoningReplay(ctx context.Context, request provider.Res
 		return body, ""
 	}
 	if isCompactPath(request.Path) {
-		// compact 不注入历史，但成功后仍需用同一作用域清理旧 replay。
+		// compact does not inject history, but a successful request still clears old replay in the same scope.
 		return body, key
 	}
 	return a.replay.Apply(ctx, request.Model, key, body), key
@@ -379,7 +396,7 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 	return resp, req.URL.String(), nil
 }
 
-// applyGrokTurnIndexHeader 只在请求已有稳定 Grok session 时透传真实客户端轮次。
+// applyGrokTurnIndexHeader forwards a real client turn only when the request has a stable Grok session.
 func applyGrokTurnIndexHeader(request *http.Request, value string) {
 	if request.Header.Get("x-grok-session-id") == "" {
 		return
@@ -389,8 +406,8 @@ func applyGrokTurnIndexHeader(request *http.Request, value string) {
 	}
 }
 
-// normalizeGrokTurnIndex 只接受官方客户端生成的非负十进制 u64。
-// 空值或非法值直接省略，避免网关根据历史、工具循环或 compact 结果伪造轮次。
+// normalizeGrokTurnIndex accepts only non-negative decimal u64 values generated by an official client.
+// Empty or invalid values are omitted; the gateway never fabricates turns from history, tool loops, or compaction.
 func normalizeGrokTurnIndex(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > 20 {
@@ -407,7 +424,8 @@ func normalizeGrokTurnIndex(value string) string {
 	return value
 }
 
-// invalidResponsesResponse 将本地协议校验错误转换为标准 OpenAI 错误响应，避免触发上游账号重试。
+// invalidResponsesResponse converts local protocol validation errors to a standard OpenAI error response,
+// avoiding an upstream account retry.
 func invalidResponsesResponse(err error) *provider.Response {
 	code := "invalid_request"
 	param := ""
@@ -448,8 +466,8 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	if err != nil {
 		return nil, err
 	}
-	// 模型目录始终请求 Build 主地址；不得因目录缺 1.5 或 Super entitlement 预切 XAI。
-	// 1.5 能力由 NormalizeAccountModelCapabilities 按 Billing paid / BuildSuperEntitled 本地补齐。
+	// Always request the model catalog from the Build primary; do not preemptively switch to XAI because 1.5 or Super entitlement is absent.
+	// NormalizeAccountModelCapabilities fills 1.5 locally from Billing paid or BuildSuperEntitled.
 	models, status, err := a.listModelsAt(ctx, credential, accessToken, a.primaryBaseURL())
 	if err != nil {
 		return nil, err
@@ -460,8 +478,8 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	return nil, fmt.Errorf("上游模型接口返回 %d", status)
 }
 
-// NormalizeAccountModelCapabilities 按 Super（Billing paid 或 BuildSuperEntitled）归一化 1.5 视频资格。
-// Super 确保包含 grok-imagine-video-1.5；Free/Unknown 精确移除。不读取 BuildAPIFallback。
+// NormalizeAccountModelCapabilities normalizes 1.5 video entitlement from Super (Billing paid or BuildSuperEntitled).
+// Super always includes grok-imagine-video-1.5; Free and Unknown remove it exactly. BuildAPIFallback is ignored.
 func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string {
 	super := account.IsBuildSuper(credential, billing)
 	result := make([]string, 0, len(models)+1)
@@ -557,8 +575,8 @@ func (a *Adapter) modelCatalogChanged(accountID uint64, etag string) bool {
 	}
 	current := a.modelsETags[accountID]
 	if current == "" {
-		// 进程重启后内存中没有目录基线。让 Gateway 补一次账号级
-		// /models 同步；同步成功后 recordModelsETag 会建立基线。
+		// After a process restart there is no in-memory catalog baseline. Let the Gateway perform one account-level
+		// /models sync; recordModelsETag establishes the baseline after success.
 		return true
 	}
 	return current != etag
@@ -573,8 +591,8 @@ func (a *Adapter) GetBilling(ctx context.Context, credential account.Credential)
 	if err != nil {
 		return account.Billing{}, err
 	}
-	// 周额度在 0% 使用时无法区分 Free 与刚开通的付费套餐。官方 CLI
-	// 使用 /user?include=subscription 获取实时订阅等级；失败时再退回 JWT tier。
+	// A weekly quota at 0% usage cannot distinguish Free from a newly activated paid plan.
+	// The official CLI uses /user?include=subscription for the live subscription tier, then falls back to the JWT tier.
 	if tier, tierErr := a.getSubscriptionTier(ctx, credential, accessToken); tierErr == nil && tier != "" {
 		billing.PlanName = tier
 	} else if billing.PlanCode == "" && billing.PlanName == "" {
@@ -588,9 +606,9 @@ func (a *Adapter) GetBilling(ctx context.Context, credential account.Credential)
 func (a *Adapter) RefreshCredential(ctx context.Context, credential account.Credential) (provider.RefreshedCredential, error) {
 	refreshToken, err := a.cipher.Decrypt(credential.EncryptedRefreshToken)
 	if err != nil {
-		// 解密失败通常是本地 encryption key 临时/不匹配，属于可恢复故障；
-		// 不得标记为 permanent（否则密钥恢复后手动/批量刷新永远不会重试）。
-		// 真正的 OAuth 永久失败（如 invalid_grant）由 oauth.refresh 返回 Permanent=true。
+		// Decryption failures are usually temporary or mismatched local encryption keys and are recoverable;
+		// do not mark them permanent, or manual/batch refresh will never retry after the key is fixed.
+		// True permanent OAuth failures such as invalid_grant are returned by oauth.refresh with Permanent=true.
 		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "credential_decrypt_failed", Permanent: false, Cause: err}
 	}
 	if strings.TrimSpace(refreshToken) == "" {
@@ -645,8 +663,8 @@ func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential,
 
 	if trace {
 		requestID := uuid.NewString()
-		// 对齐 CPA：仅在存在稳定 session 时设置 x-grok-conv-id / session-id。
-		// 禁止每请求随机 UUID，否则会打散 xAI 服务器亲和，导致 cached_tokens 长期为 0。
+		// Set x-grok-conv-id and session-id only when a stable session exists.
+		// Never generate a random UUID per request; it breaks xAI session affinity and keeps cached_tokens at zero.
 		sessionID, err := grokSessionID(promptCacheKey)
 		if err != nil {
 			return err
@@ -658,8 +676,8 @@ func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential,
 			req.Header.Set("x-grok-conv-id", sessionID)
 		}
 		req.Header.Set("x-grok-req-id", requestID)
-		// 网关无法从无状态 API 请求可靠恢复 CLI prompt index；该字段在
-		// 官方协议中可选，因此不伪造 x-grok-turn-idx。
+		// The gateway cannot reliably recover the CLI prompt index from a stateless API request.
+		// The field is optional in the official protocol, so do not fabricate x-grok-turn-idx.
 		if credential.UserID != "" {
 			req.Header.Set("x-grok-user-id", credential.UserID)
 		}
@@ -689,8 +707,8 @@ func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential,
 	return nil
 }
 
-// grokSessionID 将稳定会话键转为上游 x-grok-conv-id。
-// 空键返回空串（对齐 CPA grok_build_stays_stateless_without_session），绝不每请求随机生成。
+// grokSessionID converts a stable session key to the upstream x-grok-conv-id.
+// An empty key returns an empty string; stateless requests never receive a random ID.
 func grokSessionID(promptCacheKey string) (string, error) {
 	key := strings.TrimSpace(promptCacheKey)
 	if key == "" {

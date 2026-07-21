@@ -96,6 +96,13 @@ func (a *Adapter) recoverReasoningDecodeFailure(
 			a.logReasoningRecovery(request, base, "encrypted_content", "recovered", retry.StatusCode, nil)
 			return retry, retryURL, reasoningRecoveryOutcome{encryptedContentDowngraded: true}
 		}
+		if retry.StatusCode == http.StatusTooManyRequests {
+			// 去除失效密文后得到的 429 是当前账号的真实上游状态。保留它，
+			// 让网关进行账号冷却和切换，不能回退成已无效的初始解码 400。
+			_ = original.Body.Close()
+			a.logReasoningRecovery(request, base, "encrypted_content", "rate_limited", retry.StatusCode, nil)
+			return retry, retryURL, reasoningRecoveryOutcome{encryptedContentDowngraded: true}
+		}
 		sameDecodeFailure, inspectErr := responseHasReasoningDecodeFailure(retry)
 		if inspectErr != nil || !sameDecodeFailure {
 			a.logReasoningRecovery(request, base, "encrypted_content", "retry_rejected", retry.StatusCode, inspectErr)
@@ -118,6 +125,16 @@ func (a *Adapter) recoverReasoningDecodeFailure(
 		_ = retry.Body.Close()
 		a.logReasoningRecovery(request, base, "session_reset", "response_decode_failed", retry.StatusCode, err)
 		return original, requestURL, reasoningRecoveryOutcome{failed: true}
+	}
+	if retry.StatusCode == http.StatusTooManyRequests {
+		// 无状态恢复也可能命中当前账号的真实限流。与去密文恢复保持一致，
+		// 必须把 429 交回网关，才能执行账号冷却和候选账号切换。
+		_ = original.Body.Close()
+		a.logReasoningRecovery(request, base, "session_reset", "rate_limited", retry.StatusCode, nil)
+		return retry, retryURL, reasoningRecoveryOutcome{
+			encryptedContentDowngraded: encryptedChanged,
+			sessionReset:               true,
+		}
 	}
 	if !isHTTPSuccess(retry.StatusCode) {
 		status := retry.StatusCode

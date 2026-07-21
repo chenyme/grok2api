@@ -245,6 +245,152 @@ func TestRecoverReasoningDecodeFailureEscalatesFromOpaqueStripToSessionReset(t *
 	}
 }
 
+func TestRecoverReasoningDecodeFailurePreservesRateLimitAfterOpaqueStrip(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+		case 2:
+			data, _ := io.ReadAll(request.Body)
+			if strings.Contains(string(data), `"encrypted_content"`) {
+				t.Fatalf("rate-limit recovery body still contains encrypted content: %s", data)
+			}
+			return jsonHTTPResponse(request, http.StatusTooManyRequests, `{"error":{"message":"rate limited"}}`), nil
+		default:
+			t.Fatalf("unexpected call %d", calls.Load())
+			return nil, nil
+		}
+	})
+
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", PromptCacheKey: "session-1",
+		Body: []byte(`{"model":"grok-4.5","input":[{"type":"reasoning","summary":[],"encrypted_content":"opaque"},{"role":"user","content":"continue"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
+	if calls.Load() != 2 || response.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(body), "rate limited") || !strings.Contains(warnings, "reasoning_encrypted_content_downgraded") || strings.Contains(warnings, "reasoning_recovery_failed") {
+		t.Fatalf("calls=%d status=%d warnings=%q body=%s", calls.Load(), response.StatusCode, warnings, body)
+	}
+}
+
+func TestRecoverReasoningDecodeFailurePreservesRateLimitAfterSessionReset(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		data, _ := io.ReadAll(request.Body)
+		switch call {
+		case 1:
+			if !strings.Contains(string(data), `"encrypted_content":"opaque"`) || request.Header.Get("x-grok-session-id") == "" {
+				t.Fatalf("initial body=%s headers=%#v", data, request.Header)
+			}
+		case 2:
+			if strings.Contains(string(data), `"encrypted_content"`) || request.Header.Get("x-grok-session-id") == "" || !strings.Contains(string(data), `"prompt_cache_key":"session-1"`) {
+				t.Fatalf("opaque downgrade body=%s headers=%#v", data, request.Header)
+			}
+		case 3:
+			if strings.Contains(string(data), `"encrypted_content"`) || strings.Contains(string(data), `"prompt_cache_key"`) || request.Header.Get("x-grok-session-id") != "" || request.Header.Get("x-grok-conv-id") != "" {
+				t.Fatalf("session reset body=%s headers=%#v", data, request.Header)
+			}
+			response := jsonHTTPResponse(request, http.StatusTooManyRequests, `{"error":{"message":"rate limited after session reset"}}`)
+			response.Header.Set("Retry-After", "17")
+			return response, nil
+		default:
+			t.Fatalf("unexpected call %d", call)
+			return nil, nil
+		}
+		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+	})
+
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", PromptCacheKey: "session-1",
+		Body: []byte(`{"model":"grok-4.5","input":[{"type":"reasoning","summary":[],"encrypted_content":"opaque"},{"role":"user","content":"continue"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
+	if calls.Load() != 3 || response.StatusCode != http.StatusTooManyRequests || response.Header.Get("Retry-After") != "17" || !strings.Contains(string(body), "rate limited after session reset") {
+		t.Fatalf("calls=%d status=%d retry_after=%q body=%s", calls.Load(), response.StatusCode, response.Header.Get("Retry-After"), body)
+	}
+	if !strings.Contains(warnings, "reasoning_encrypted_content_downgraded") || !strings.Contains(warnings, "reasoning_session_reset") || strings.Contains(warnings, "reasoning_recovery_failed") {
+		t.Fatalf("warnings=%q", warnings)
+	}
+}
+
+// TestRecoverReasoningDecodeFailureWithMillionTokenScaleCompactionBlob 覆盖 Claude Code
+// 在超长上下文压缩后回放大体积 opaque 状态、且上游拒绝该状态的恢复路径。
+func TestRecoverReasoningDecodeFailureWithMillionTokenScaleCompactionBlob(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	// 按常用的约 4 字节/token 估算，4 MiB 的 opaque 状态覆盖约 100 万 token 的量级。
+	compactionBlob := strings.Repeat("x", 4<<20)
+	body, err := json.Marshal(map[string]any{
+		"model": "grok-4.5",
+		"input": []any{
+			map[string]any{
+				"type":              "reasoning",
+				"summary":           []any{},
+				"encrypted_content": compactionBlob,
+			},
+			map[string]any{"role": "user", "content": "压缩后继续执行"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		data, readErr := io.ReadAll(request.Body)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		switch call {
+		case 1:
+			if len(data) < 4<<20 || !strings.Contains(string(data), `"encrypted_content"`) {
+				t.Fatalf("初始 1M 级 compaction 请求不完整：size=%d", len(data))
+			}
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+		case 2:
+			if len(data) >= 4096 || strings.Contains(string(data), `"encrypted_content"`) || !strings.Contains(string(data), "压缩后继续执行") {
+				t.Fatalf("恢复请求仍携带 opaque 状态：size=%d", len(data))
+			}
+			return jsonHTTPResponse(request, http.StatusTooManyRequests, `{"error":{"message":"rate limited after compaction recovery"}}`), nil
+		default:
+			t.Fatalf("unexpected call %d", call)
+			return nil, nil
+		}
+	})
+
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential:     account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:         http.MethodPost,
+		Path:           "/responses",
+		Model:          "grok-4.5",
+		PromptCacheKey: "million-token-session",
+		Body:           body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	responseBody, _ := io.ReadAll(response.Body)
+	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
+	if calls.Load() != 2 || response.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(responseBody), "rate limited after compaction recovery") || !strings.Contains(warnings, "reasoning_encrypted_content_downgraded") {
+		t.Fatalf("calls=%d status=%d warnings=%q body=%s", calls.Load(), response.StatusCode, warnings, responseBody)
+	}
+}
+
 func TestRecoverReasoningDecodeFailureDoesNotResetStoredResponseChain(t *testing.T) {
 	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
 	var calls atomic.Int32

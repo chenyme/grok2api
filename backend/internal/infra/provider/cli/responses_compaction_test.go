@@ -12,6 +12,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
 
@@ -208,6 +209,109 @@ func TestForwardResponseEmulatesRemoteCompactionV2(t *testing.T) {
 	}
 	if !strings.Contains(response.Header.Get("X-Grok2API-Compatibility-Warnings"), "remote_compaction_v2_emulated") {
 		t.Fatalf("warnings = %q", response.Header.Get("X-Grok2API-Compatibility-Warnings"))
+	}
+}
+
+// TestGatewayCompactionLifecycleWithMillionTokenScaleHistory 验证超长历史压缩后，
+// 下一轮只会向上游发送解密出的摘要和新消息，不会重新发送原始历史或 opaque blob。
+func TestGatewayCompactionLifecycleWithMillionTokenScaleHistory(t *testing.T) {
+	adapter, encrypted := newCompactionTestAdapter(t)
+	// “x ”在常见 BPE 编码中接近一个 token；此处保守构造超过 1M token 量级的历史文本。
+	history := strings.Repeat("x ", 2<<20)
+	summary := healthyCompactionSummary()
+	continuation := gatewayCompactionContinuation(summary)
+	encodedSummary, err := json.Marshal(continuation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		data, readErr := io.ReadAll(request.Body)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		switch call {
+		case 1:
+			if len(data) < 4<<20 || strings.Contains(string(data), "compaction_trigger") {
+				t.Fatalf("压缩采样未携带完整超长历史：size=%d", len(data))
+			}
+			return sseResponse(http.StatusOK, compactionSampleSSE("resp_million", summary), request), nil
+		case 2:
+			if len(data) >= 4096 || strings.Contains(string(data), `"type":"compaction"`) || strings.Contains(string(data), `"encrypted_content"`) || !strings.Contains(string(data), string(encodedSummary)) || !strings.Contains(string(data), "压缩后继续执行") {
+				t.Fatalf("压缩回放泄漏原始状态：size=%d", len(data))
+			}
+			return jsonHTTPResponse(request, http.StatusOK, `{"id":"resp_continue","status":"completed","output":[]}`), nil
+		default:
+			t.Fatalf("unexpected call %d", call)
+			return nil, nil
+		}
+	})
+
+	initialBody, err := json.Marshal(map[string]any{
+		"model": "grok-4.5",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": history},
+			map[string]any{"type": "compaction_trigger"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compacted, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential:     account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:         http.MethodPost,
+		Path:           "/responses",
+		Model:          "grok-4.5",
+		PromptCacheKey: "million-token-session",
+		Body:           initialBody,
+		NormalizeBody:  true,
+		Operation:      conversation.OperationResponses,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactedBody, readErr := io.ReadAll(compacted.Body)
+	_ = compacted.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var compactedPayload struct {
+		Output []struct {
+			Type             string `json:"type"`
+			EncryptedContent string `json:"encrypted_content"`
+		} `json:"output"`
+	}
+	if json.Unmarshal(compactedBody, &compactedPayload) != nil || len(compactedPayload.Output) != 1 || compactedPayload.Output[0].Type != "compaction" || compactedPayload.Output[0].EncryptedContent == "" {
+		t.Fatalf("压缩响应无有效 blob：%s", compactedBody)
+	}
+
+	continuedBody, err := json.Marshal(map[string]any{
+		"model": "grok-4.5",
+		"input": []any{
+			map[string]any{"type": "compaction", "encrypted_content": compactedPayload.Output[0].EncryptedContent},
+			map[string]any{"type": "message", "role": "user", "content": "压缩后继续执行"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential:     account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:         http.MethodPost,
+		Path:           "/responses",
+		Model:          "grok-4.5",
+		PromptCacheKey: "million-token-session",
+		Body:           continuedBody,
+		NormalizeBody:  true,
+		Operation:      conversation.OperationResponses,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer continued.Body.Close()
+	if calls.Load() != 2 || continued.StatusCode != http.StatusOK {
+		t.Fatalf("calls=%d status=%d", calls.Load(), continued.StatusCode)
 	}
 }
 
