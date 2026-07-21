@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -146,6 +147,108 @@ func TestCreateDurableHonorsCallerDeadline(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
 		t.Fatalf("deadline was not honored: %s", elapsed)
 	}
+}
+
+func TestLedgerReadinessObserveAndEnforceModes(t *testing.T) {
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	repo := &toggleAuditRepository{err: errors.New("database unavailable")}
+	service := NewService(repo, slog.Default(), 8, 4, time.Second)
+	service.now = func() time.Time { return now }
+	service.UpdateLedgerConfig(LedgerConfig{Mode: LedgerModeObserve, FailureThreshold: 1, UnhealthyGrace: time.Second, QueueHighWatermarkPercent: 90})
+	if err := service.CreateDurable(context.Background(), auditdomain.Record{EventID: "observe"}); err == nil {
+		t.Fatal("expected durable write failure")
+	}
+	now = now.Add(2 * time.Second)
+	if snapshot := service.LedgerSnapshot(); snapshot.Ready || snapshot.ConsecutiveFailures != 1 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if err := service.CheckLedgerReady(); err != nil {
+		t.Fatalf("observe mode blocked traffic: %v", err)
+	}
+
+	service.UpdateLedgerConfig(LedgerConfig{Mode: LedgerModeEnforce, FailureThreshold: 1, UnhealthyGrace: time.Second, QueueHighWatermarkPercent: 90})
+	if err := service.CheckLedgerReady(); !errors.Is(err, ErrLedgerUnavailable) {
+		t.Fatalf("enforce readiness error = %v", err)
+	}
+	repo.setError(nil)
+	if err := service.CreateDurable(context.Background(), auditdomain.Record{EventID: "recovered"}); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := service.LedgerSnapshot(); !snapshot.Ready || snapshot.ConsecutiveFailures != 0 {
+		t.Fatalf("recovered snapshot = %#v", snapshot)
+	}
+}
+
+func TestLedgerReadinessDetectsSustainedQueuePressure(t *testing.T) {
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	service := NewService(&toggleAuditRepository{}, slog.Default(), 2, 2, time.Hour)
+	service.now = func() time.Time { return now }
+	service.UpdateLedgerConfig(LedgerConfig{Mode: LedgerModeEnforce, FailureThreshold: 3, UnhealthyGrace: time.Second, QueueHighWatermarkPercent: 50})
+	if !service.Record(auditdomain.Record{EventID: "queued"}) {
+		t.Fatal("record was not queued")
+	}
+	if snapshot := service.LedgerSnapshot(); !snapshot.Ready {
+		t.Fatalf("queue pressure should honor grace: %#v", snapshot)
+	}
+	now = now.Add(2 * time.Second)
+	if err := service.CheckLedgerReady(); !errors.Is(err, ErrLedgerUnavailable) {
+		t.Fatalf("queue pressure readiness error = %v", err)
+	}
+}
+
+func TestCommitObserverRunsOnlyAfterDurableCommit(t *testing.T) {
+	repo := &toggleAuditRepository{}
+	service := NewService(repo, slog.Default(), 8, 4, time.Hour)
+	var mu sync.Mutex
+	var committed []string
+	service.SetCommitObserver(func(values []string) {
+		mu.Lock()
+		committed = append(committed, values...)
+		mu.Unlock()
+	})
+	if err := service.CreateDurable(context.Background(), auditdomain.Record{EventID: "sync"}); err != nil {
+		t.Fatal(err)
+	}
+	service.Start()
+	if !service.Record(auditdomain.Record{EventID: "batch"}) {
+		t.Fatal("record was not queued")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := service.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(committed) != 2 || committed[0] != "sync" || committed[1] != "batch" {
+		t.Fatalf("committed = %#v", committed)
+	}
+}
+
+type toggleAuditRepository struct {
+	repository.AuditRepository
+	mu  sync.RWMutex
+	err error
+}
+
+func (r *toggleAuditRepository) setError(err error) {
+	r.mu.Lock()
+	r.err = err
+	r.mu.Unlock()
+}
+
+func (r *toggleAuditRepository) currentError() error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.err
+}
+
+func (r *toggleAuditRepository) Create(context.Context, auditdomain.Record) error {
+	return r.currentError()
+}
+
+func (r *toggleAuditRepository) CreateBatch(context.Context, []auditdomain.Record) error {
+	return r.currentError()
 }
 
 type blockingAuditRepository struct{ repository.AuditRepository }

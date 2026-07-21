@@ -121,6 +121,9 @@ func (s *Service) executeImage(
 	if operation == audit.OperationImageEdit {
 		auditBase.MediaInputImages = int64(max(0, inputImageCount))
 	}
+	if err := s.checkLedgerReady(); err != nil {
+		return nil, err
+	}
 	writeFailureAudit := func(statusCode int, errorCode string, credential *accountdomain.Credential) {
 		record := auditBase
 		record.StatusCode = statusCode
@@ -254,8 +257,7 @@ func (s *Service) executeImage(
 	finalize := func(_ Usage, _ string, errorCode string) {
 		once.Do(func() {
 			lease.Release()
-			persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
-			defer cancel()
+			budget := newFinalizationBudget(string(operation), string(route.Provider))
 			record := auditBase
 			record.AccountID, record.AccountName, record.StatusCode = &accountID, credential.Name, response.StatusCode
 			record.ErrorCode = errorCode
@@ -277,14 +279,16 @@ func (s *Service) executeImage(
 					record.PricingVersion = audit.OfficialPricingAsOf
 				}
 			}
-			if err := s.audits.Create(persistCtx, record); err != nil {
-				s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", requestID, "error", err)
-			}
 			quotaKind, _ := s.providers.QuotaKind(route.Provider)
 			if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" && quotaKind == provider.QuotaRemoteWindow && effectiveQuotaMode != "" {
 				if effectiveQuotaMode != "weekly" {
 					units := max(1, response.QuotaUnits)
-					updated, err := s.accounts.DecrementWebQuota(persistCtx, accountID, effectiveQuotaMode, units)
+					var updated bool
+					err := budget.run("quota_decrement", finalizationQuotaBudget, func(stageCtx context.Context) error {
+						var decrementErr error
+						updated, decrementErr = s.accounts.DecrementWebQuota(stageCtx, accountID, effectiveQuotaMode, units)
+						return decrementErr
+					})
 					if err != nil {
 						s.logger.Warn("web_quota_decrement_failed", "account_id", accountID, "mode", effectiveQuotaMode, "units", units, "error", err)
 					} else if updated {
@@ -292,6 +296,11 @@ func (s *Service) executeImage(
 					}
 				}
 				s.accounts.QueueQuotaRefresh(accountID, effectiveQuotaMode)
+			}
+			if err := budget.run("audit", finalizationAuditBudget, func(stageCtx context.Context) error {
+				return s.audits.Create(stageCtx, record)
+			}); err != nil {
+				s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", requestID, "error", err)
 			}
 		})
 	}

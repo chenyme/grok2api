@@ -175,6 +175,36 @@ func TestBillingLimitUsesAtomicReservations(t *testing.T) {
 	unlimitedRelease()
 }
 
+func TestCleanupExpiredBillingProtectsActiveRequest(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "active-billing.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewClientKeyRepository(database)
+	service := NewService(repository, nil, nil, 60, 5, testCipher(t))
+	created, err := service.Create(ctx, CreateInput{Name: "active", Enabled: true, BillingLimitUSDTicks: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const eventID = "evt_active_cleanup_protection"
+	if reserved, reserveErr := service.ReserveBilling(ctx, created.Key, eventID, 40, time.Nanosecond); reserveErr != nil || !reserved {
+		t.Fatalf("reserve: reserved=%v err=%v", reserved, reserveErr)
+	}
+	time.Sleep(time.Millisecond)
+	if cleaned, cleanupErr := service.CleanupExpiredBilling(ctx, 10); cleanupErr != nil || cleaned != 0 {
+		t.Fatalf("active cleanup: cleaned=%d err=%v", cleaned, cleanupErr)
+	}
+	service.CompleteBilling(eventID)
+	if cleaned, cleanupErr := service.CleanupExpiredBilling(ctx, 10); cleanupErr != nil || cleaned != 1 {
+		t.Fatalf("completed cleanup: cleaned=%d err=%v", cleaned, cleanupErr)
+	}
+}
+
 func TestAuthenticateCachesUnlimitedKeyAndInvalidatesOnDisable(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "auth-cache.db"))

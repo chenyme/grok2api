@@ -8,9 +8,12 @@ import (
 	"strings"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
+	"gorm.io/gorm"
 )
 
 const mediaJobInputMetadataPendingIndex = "CREATE INDEX IF NOT EXISTS idx_media_jobs_input_metadata_pending ON media_jobs(id) WHERE input_image_count IS NULL"
+
+const postgresSchemaMigrationLockID int64 = 0x47524f4b32415049
 
 var schemaModels = []any{
 	&adminModel{},
@@ -95,6 +98,19 @@ var schemaIndexes = []string{
 
 // InitializeSchema 以当前持久化模型作为首版数据库结构基线。
 func (d *Database) InitializeSchema(ctx context.Context) error {
+	if d.dialect == "postgres" {
+		return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", postgresSchemaMigrationLockID).Error; err != nil {
+				return fmt.Errorf("acquire PostgreSQL migration lock: %w", err)
+			}
+			locked := &Database{db: tx, dialect: d.dialect}
+			return locked.initializeSchema(ctx)
+		})
+	}
+	return d.initializeSchema(ctx)
+}
+
+func (d *Database) initializeSchema(ctx context.Context) error {
 	db := d.db.WithContext(ctx)
 	// all 作用域会让 Build 与 Web 共用 UA、健康度和冷却状态，升级时直接移除旧节点。
 	if db.Migrator().HasTable(&egressNodeModel{}) {

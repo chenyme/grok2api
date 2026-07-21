@@ -15,16 +15,44 @@ import (
 
 	auditdomain "github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
+	"github.com/chenyme/grok2api/backend/internal/pkg/perfmetrics"
 	"github.com/chenyme/grok2api/backend/internal/pkg/resultcache"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 var (
-	ErrQueueFull     = errors.New("审计写入队列已满")
-	ErrInvalidCursor = errors.New("审计游标无效")
-	ErrInvalidFilter = errors.New("审计筛选条件无效")
-	ErrInvalidPeriod = errors.New("审计时间范围无效")
+	ErrQueueFull         = errors.New("审计写入队列已满")
+	ErrInvalidCursor     = errors.New("审计游标无效")
+	ErrInvalidFilter     = errors.New("审计筛选条件无效")
+	ErrInvalidPeriod     = errors.New("审计时间范围无效")
+	ErrLedgerUnavailable = errors.New("billing ledger is not ready")
 )
+
+type LedgerMode string
+
+const (
+	LedgerModeObserve LedgerMode = "observe"
+	LedgerModeEnforce LedgerMode = "enforce"
+)
+
+type LedgerConfig struct {
+	Mode                      LedgerMode
+	FailureThreshold          int
+	UnhealthyGrace            time.Duration
+	QueueHighWatermarkPercent int
+}
+
+type LedgerSnapshot struct {
+	Mode                LedgerMode
+	Ready               bool
+	QueueDepth          int
+	QueueCapacity       int
+	ConsecutiveFailures int
+	Dropped             uint64
+	LastSuccessAt       time.Time
+	LastFailureAt       time.Time
+	UnhealthySince      time.Time
+}
 
 type Period string
 
@@ -44,26 +72,117 @@ const (
 
 // Service 提供请求元数据审计查询，以及有界异步批量写入。
 type Service struct {
-	audits        repository.AuditRepository
-	logger        *slog.Logger
-	queue         chan auditdomain.Record
-	batchSize     atomic.Int64
-	flushInterval atomic.Int64
-	configChanged chan struct{}
-	startOnce     sync.Once
-	stopOnce      sync.Once
-	stop          chan struct{}
-	done          chan struct{}
-	stopped       atomic.Bool
-	dropped       atomic.Uint64
-	now           func() time.Time
-	summaryCache  *resultcache.Cache[string, SummaryResult]
+	audits               repository.AuditRepository
+	logger               *slog.Logger
+	queue                chan auditdomain.Record
+	batchSize            atomic.Int64
+	flushInterval        atomic.Int64
+	configChanged        chan struct{}
+	startOnce            sync.Once
+	stopOnce             sync.Once
+	stop                 chan struct{}
+	done                 chan struct{}
+	stopped              atomic.Bool
+	dropped              atomic.Uint64
+	now                  func() time.Time
+	summaryCache         *resultcache.Cache[string, SummaryResult]
+	ledgerMu             sync.Mutex
+	ledgerConfig         LedgerConfig
+	ledgerFailures       int
+	ledgerUnhealthySince time.Time
+	ledgerLastSuccess    time.Time
+	ledgerLastFailure    time.Time
+	ledgerLastDrop       time.Time
+	ledgerQueueHighSince time.Time
+	ledgerLastWarning    time.Time
+	observerMu           sync.RWMutex
+	commitObserver       func([]string)
 }
 
 func NewService(audits repository.AuditRepository, logger *slog.Logger, bufferSize, batchSize int, flushInterval time.Duration) *Service {
-	service := &Service{audits: audits, logger: logger, queue: make(chan auditdomain.Record, bufferSize), configChanged: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}), now: time.Now, summaryCache: resultcache.New[string, SummaryResult](64, auditSummaryTTL)}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	service := &Service{
+		audits: audits, logger: logger, queue: make(chan auditdomain.Record, bufferSize),
+		configChanged: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
+		now: time.Now, summaryCache: resultcache.New[string, SummaryResult](64, auditSummaryTTL),
+		ledgerConfig: defaultLedgerConfig(),
+	}
 	service.UpdateConfig(batchSize, flushInterval)
 	return service
+}
+
+func defaultLedgerConfig() LedgerConfig {
+	return LedgerConfig{
+		Mode:                      LedgerModeObserve,
+		FailureThreshold:          3,
+		UnhealthyGrace:            10 * time.Second,
+		QueueHighWatermarkPercent: 90,
+	}
+}
+
+// UpdateLedgerConfig changes readiness policy without altering the audit writer.
+func (s *Service) UpdateLedgerConfig(value LedgerConfig) {
+	defaults := defaultLedgerConfig()
+	if value.Mode != LedgerModeObserve && value.Mode != LedgerModeEnforce {
+		value.Mode = defaults.Mode
+	}
+	if value.FailureThreshold <= 0 {
+		value.FailureThreshold = defaults.FailureThreshold
+	}
+	if value.UnhealthyGrace <= 0 {
+		value.UnhealthyGrace = defaults.UnhealthyGrace
+	}
+	if value.QueueHighWatermarkPercent < 1 || value.QueueHighWatermarkPercent > 100 {
+		value.QueueHighWatermarkPercent = defaults.QueueHighWatermarkPercent
+	}
+	s.ledgerMu.Lock()
+	s.ledgerConfig = value
+	s.ledgerMu.Unlock()
+}
+
+// SetCommitObserver registers a lightweight callback invoked after the audit and billing transaction commits.
+func (s *Service) SetCommitObserver(observer func([]string)) {
+	s.observerMu.Lock()
+	s.commitObserver = observer
+	s.observerMu.Unlock()
+}
+
+// LedgerSnapshot returns a bounded, identity-free view of the durable ledger state.
+func (s *Service) LedgerSnapshot() LedgerSnapshot {
+	now := s.now().UTC()
+	queueDepth := len(s.queue)
+	queueCapacity := cap(s.queue)
+
+	s.ledgerMu.Lock()
+	s.updateQueuePressureLocked(now, queueDepth, queueCapacity)
+	ready := s.ledgerReadyLocked(now)
+	snapshot := LedgerSnapshot{
+		Mode:                s.ledgerConfig.Mode,
+		Ready:               ready,
+		QueueDepth:          queueDepth,
+		QueueCapacity:       queueCapacity,
+		ConsecutiveFailures: s.ledgerFailures,
+		Dropped:             s.dropped.Load(),
+		LastSuccessAt:       s.ledgerLastSuccess,
+		LastFailureAt:       s.ledgerLastFailure,
+		UnhealthySince:      s.ledgerUnhealthySince,
+	}
+	s.ledgerMu.Unlock()
+
+	perfmetrics.Default.SetGauge("audit_queue_depth", perfmetrics.Labels{Subsystem: "audit", Stage: "queue"}, int64(queueDepth))
+	perfmetrics.Default.SetGauge("audit_queue_capacity", perfmetrics.Labels{Subsystem: "audit", Stage: "queue"}, int64(queueCapacity))
+	return snapshot
+}
+
+// CheckLedgerReady fails only in enforce mode; observe mode still records and reports degradation.
+func (s *Service) CheckLedgerReady() error {
+	snapshot := s.LedgerSnapshot()
+	if snapshot.Ready || snapshot.Mode != LedgerModeEnforce {
+		return nil
+	}
+	return ErrLedgerUnavailable
 }
 
 func (s *Service) UpdateConfig(batchSize int, flushInterval time.Duration) {
@@ -101,6 +220,8 @@ func (s *Service) Record(value auditdomain.Record) bool {
 		return false
 	case <-timer.C:
 		dropped := s.dropped.Add(1)
+		s.recordLedgerDrop()
+		perfmetrics.Default.Inc("audit_records_total", perfmetrics.Labels{Subsystem: "audit", Operation: string(value.Operation), Stage: "enqueue", Outcome: "dropped"})
 		if dropped == 1 || dropped%1000 == 0 {
 			s.logger.Warn("audit_queue_full", "dropped", dropped)
 		}
@@ -136,6 +257,9 @@ func (s *Service) createDurable(ctx context.Context, value auditdomain.Record) e
 		lastErr = s.audits.Create(persistCtx, value)
 		cancel()
 		if lastErr == nil {
+			s.recordLedgerSuccess()
+			s.notifyCommitted([]auditdomain.Record{value})
+			perfmetrics.Default.Inc("audit_records_total", perfmetrics.Labels{Subsystem: "audit", Operation: string(value.Operation), Stage: "durable", Outcome: "success"})
 			return nil
 		}
 		if attempt < auditWriteAttempts {
@@ -148,6 +272,8 @@ func (s *Service) createDurable(ctx context.Context, value auditdomain.Record) e
 			}
 		}
 	}
+	s.recordLedgerFailure()
+	perfmetrics.Default.Inc("audit_records_total", perfmetrics.Labels{Subsystem: "audit", Operation: string(value.Operation), Stage: "durable", Outcome: "failed"})
 	return lastErr
 }
 
@@ -490,6 +616,9 @@ func (s *Service) persistBatch(records []auditdomain.Record) {
 		lastErr = batch.Do(ctx, func(workCtx context.Context) error { return s.audits.CreateBatch(workCtx, records) })
 		cancel()
 		if lastErr == nil {
+			s.recordLedgerSuccess()
+			s.notifyCommitted(records)
+			perfmetrics.Default.Add("audit_records_total", perfmetrics.Labels{Subsystem: "audit", Stage: "batch", Outcome: "success"}, int64(len(records)))
 			return
 		}
 		if attempt < auditWriteAttempts {
@@ -501,11 +630,103 @@ func (s *Service) persistBatch(records []auditdomain.Record) {
 			}
 		}
 	}
+	s.recordLedgerFailure()
 	dropped := s.dropped.Add(uint64(len(records)))
+	s.recordLedgerDrop()
+	perfmetrics.Default.Add("audit_records_total", perfmetrics.Labels{Subsystem: "audit", Stage: "batch", Outcome: "dropped"}, int64(len(records)))
 	var panicErr *batch.PanicError
 	if errors.As(lastErr, &panicErr) {
 		s.logger.Error("audit_batch_write_failed", "count", len(records), "attempts", auditWriteAttempts, "dropped", dropped, "error", panicErr, "stack", string(panicErr.Stack))
 	} else {
 		s.logger.Error("audit_batch_write_failed", "count", len(records), "attempts", auditWriteAttempts, "dropped", dropped, "error", lastErr)
+	}
+}
+
+func (s *Service) recordLedgerSuccess() {
+	now := s.now().UTC()
+	s.ledgerMu.Lock()
+	s.ledgerFailures = 0
+	s.ledgerUnhealthySince = time.Time{}
+	s.ledgerLastSuccess = now
+	s.ledgerMu.Unlock()
+}
+
+func (s *Service) recordLedgerFailure() {
+	now := s.now().UTC()
+	s.ledgerMu.Lock()
+	s.ledgerFailures++
+	s.ledgerLastFailure = now
+	if s.ledgerFailures >= s.ledgerConfig.FailureThreshold && s.ledgerUnhealthySince.IsZero() {
+		s.ledgerUnhealthySince = now
+	}
+	s.warnLedgerIfNeededLocked(now, "durable_write_failed")
+	s.ledgerMu.Unlock()
+}
+
+func (s *Service) recordLedgerDrop() {
+	now := s.now().UTC()
+	s.ledgerMu.Lock()
+	s.ledgerLastDrop = now
+	if s.ledgerUnhealthySince.IsZero() {
+		s.ledgerUnhealthySince = now
+	}
+	s.warnLedgerIfNeededLocked(now, "audit_record_dropped")
+	s.ledgerMu.Unlock()
+}
+
+func (s *Service) updateQueuePressureLocked(now time.Time, depth, capacity int) {
+	if capacity <= 0 || depth*100 < capacity*s.ledgerConfig.QueueHighWatermarkPercent {
+		s.ledgerQueueHighSince = time.Time{}
+		return
+	}
+	if s.ledgerQueueHighSince.IsZero() {
+		s.ledgerQueueHighSince = now
+	}
+	if s.ledgerUnhealthySince.IsZero() {
+		s.ledgerUnhealthySince = s.ledgerQueueHighSince
+	}
+}
+
+func (s *Service) ledgerReadyLocked(now time.Time) bool {
+	degradedSince := s.ledgerUnhealthySince
+	if !s.ledgerQueueHighSince.IsZero() && (degradedSince.IsZero() || s.ledgerQueueHighSince.Before(degradedSince)) {
+		degradedSince = s.ledgerQueueHighSince
+	}
+	if degradedSince.IsZero() {
+		return true
+	}
+	return now.Sub(degradedSince) < s.ledgerConfig.UnhealthyGrace
+}
+
+func (s *Service) warnLedgerIfNeededLocked(now time.Time, reason string) {
+	if !s.ledgerLastWarning.IsZero() && now.Sub(s.ledgerLastWarning) < time.Minute {
+		return
+	}
+	s.ledgerLastWarning = now
+	s.logger.Warn("billing_ledger_degraded", "reason", reason, "mode", s.ledgerConfig.Mode, "consecutive_failures", s.ledgerFailures, "queue_depth", len(s.queue), "queue_capacity", cap(s.queue))
+}
+
+func (s *Service) notifyCommitted(records []auditdomain.Record) {
+	s.observerMu.RLock()
+	observer := s.commitObserver
+	s.observerMu.RUnlock()
+	if observer == nil {
+		return
+	}
+	eventIDs := make([]string, 0, len(records))
+	for _, record := range records {
+		if record.EventID != "" {
+			eventIDs = append(eventIDs, record.EventID)
+		}
+	}
+	if len(eventIDs) > 0 {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					s.logger.Error("audit_commit_observer_panicked", "error", recovered)
+				}
+			}()
+			observer(eventIDs)
+		}()
 	}
 }

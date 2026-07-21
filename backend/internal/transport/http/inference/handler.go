@@ -1467,6 +1467,9 @@ func writeGatewayError(c *gin.Context, err error) {
 	var upstreamFailure *gateway.UpstreamFailure
 	var selectionFailure *gateway.SelectionUnavailableError
 	switch {
+	case errors.Is(err, gateway.ErrLedgerUnavailable):
+		status, code = http.StatusServiceUnavailable, "ledger_unavailable"
+		message = gateway.ErrLedgerUnavailable.Error()
 	case errors.Is(err, clientkeyapp.ErrBillingLimit):
 		status, code = http.StatusTooManyRequests, "billing_limit_exceeded"
 		message = clientkeyapp.ErrBillingLimit.Error()
@@ -1512,6 +1515,9 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 	var upstreamFailure *gateway.UpstreamFailure
 	var selectionFailure *gateway.SelectionUnavailableError
 	switch {
+	case errors.Is(err, gateway.ErrLedgerUnavailable):
+		status, errorType = http.StatusServiceUnavailable, "overloaded_error"
+		message = gateway.ErrLedgerUnavailable.Error()
 	case errors.Is(err, clientkeyapp.ErrBillingLimit):
 		status, errorType = http.StatusTooManyRequests, "rate_limit_error"
 		message = clientkeyapp.ErrBillingLimit.Error()

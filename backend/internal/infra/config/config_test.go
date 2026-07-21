@@ -288,6 +288,16 @@ func TestValidateInfrastructureDrivers(t *testing.T) {
 	if err := postgresRedis.Validate(); err != nil {
 		t.Fatalf("valid postgres + redis configuration rejected: %v", err)
 	}
+	postgresRedis.Deployment = DeploymentConfig{Replicas: 2, InstanceID: "replica-a", ClusterID: "cluster-a", SharedMedia: true}
+	if err := postgresRedis.Validate(); err != nil {
+		t.Fatalf("valid multi-replica configuration rejected: %v", err)
+	}
+
+	invalidMultiReplica := base
+	invalidMultiReplica.Deployment.Replicas = 2
+	if err := invalidMultiReplica.Validate(); err == nil {
+		t.Fatal("multi-replica SQLite and memory configuration was accepted")
+	}
 
 	invalidDatabase := base
 	invalidDatabase.Database.Driver = "mysql"

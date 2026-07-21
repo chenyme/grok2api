@@ -1432,10 +1432,13 @@ func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, 
 }
 
 func (r *AccountRepository) UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error {
-	return r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Updates(map[string]any{"observed_model": truncate(model, 255), "observed_model_at": observedAt}).Error
+	model = truncate(model, 255)
+	return r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("id = ? AND (observed_model_at IS NULL OR observed_model_at <= ?) AND (COALESCE(observed_model, '') <> ? OR observed_model_at <= ?)", id, observedAt, model, observedAt.Add(-30*time.Minute)).
+		Updates(map[string]any{"observed_model": model, "observed_model_at": observedAt}).Error
 }
 
-// MarkBuildAPIFallback 仅对 grok_build 账号幂等设置/清除 XAI 推理回退标记。
+// MarkBuildAPIFallback idempotently updates the XAI inference fallback marker for Grok Build accounts.
 func (r *AccountRepository) MarkBuildAPIFallback(ctx context.Context, id uint64, enabled bool) error {
 	result := r.db.db.WithContext(ctx).Model(&accountModel{}).
 		Where("id = ? AND provider = ?", id, account.ProviderBuild).

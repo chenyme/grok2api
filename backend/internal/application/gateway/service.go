@@ -38,11 +38,13 @@ var (
 	ErrResponseStateUnsupported   = errors.New("目标模型不支持有状态 Response")
 	ErrConversationUnsupported    = errors.New("目标模型不支持当前对话协议")
 	ErrVideoInputTooLarge         = errors.New("视频参考图片总大小超过 32 MiB")
+	ErrLedgerUnavailable          = errors.New("计费账本暂不可用")
 )
 
 const responseOwnershipTTL = 30 * 24 * time.Hour
 const finalizationTimeout = 5 * time.Second
-const textBillingReservationTTL = 2 * time.Hour
+const minimumTextBillingReservationTTL = 2 * time.Hour
+const billingReservationCrashGrace = 10 * time.Minute
 const mediaBillingReservationTTL = 24 * time.Hour
 const modelCatalogRefreshTimeout = 30 * time.Second
 
@@ -99,6 +101,10 @@ type auditRecorder interface {
 	Create(ctx context.Context, value audit.Record) error
 }
 
+type ledgerReadinessChecker interface {
+	CheckLedgerReady() error
+}
+
 type routeResolver interface {
 	Get(ctx context.Context, id uint64) (modeldomain.Route, error)
 	GetByPublicID(ctx context.Context, publicID string) (modeldomain.Route, error)
@@ -126,6 +132,7 @@ type Service struct {
 	selector       *Selector
 	responses      repository.ResponseRepository
 	maxAttempts    atomic.Int64
+	requestTimeout atomic.Int64
 	mediaJobs      repository.MediaJobRepository
 	mediaAssets    videoAssetStore
 	mediaQueue     chan string
@@ -251,6 +258,29 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 }
 
 func (s *Service) UpdateMaxAttempts(maxAttempts int) { s.maxAttempts.Store(int64(maxAttempts)) }
+
+func (s *Service) UpdateRequestTimeout(value time.Duration) {
+	if value <= 0 {
+		value = minimumTextBillingReservationTTL
+	}
+	s.requestTimeout.Store(int64(value))
+}
+
+func (s *Service) textBillingReservationTTL() time.Duration {
+	ttl := time.Duration(s.requestTimeout.Load()) + finalizationTimeout + billingReservationCrashGrace
+	return max(minimumTextBillingReservationTTL, ttl)
+}
+
+func (s *Service) checkLedgerReady() error {
+	checker, ok := s.audits.(ledgerReadinessChecker)
+	if !ok {
+		return nil
+	}
+	if err := checker.CheckLedgerReady(); err != nil {
+		return ErrLedgerUnavailable
+	}
+	return nil
+}
 
 func (s *Service) CreateResponse(ctx context.Context, input Input) (*Result, error) {
 	input.Operation = audit.OperationResponses
@@ -502,8 +532,11 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		attempts = 1
 	}
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
+	if err := s.checkLedgerReady(); err != nil {
+		return nil, err
+	}
 	if reservation, priced := audit.EstimateOfficialTextReservation(pricingModel, input.Body); priced {
-		if _, err := s.clientKeys.ReserveBilling(ctx, input.ClientKey, eventID, reservation.CostInUSDTicks, textBillingReservationTTL); err != nil {
+		if _, err := s.clientKeys.ReserveBilling(ctx, input.ClientKey, eventID, reservation.CostInUSDTicks, s.textBillingReservationTTL()); err != nil {
 			return nil, err
 		}
 	}
@@ -770,12 +803,15 @@ attemptLoop:
 		finalize := func(usage Usage, responseID, errorCode string) {
 			once.Do(func() {
 				lease.Release()
-				persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
-				defer cancel()
+				budget := newFinalizationBudget(string(operation), string(route.Provider))
 				if isUpstreamStreamFailure(errorCode) {
-					s.selector.MarkFailure(persistCtx, credential, http.StatusBadGateway, 0)
+					_ = budget.run("account_health", finalizationHealthBudget, func(stageCtx context.Context) error {
+						s.selector.MarkFailure(stageCtx, credential, http.StatusBadGateway, 0)
+						return nil
+					})
 				}
 				now := time.Now().UTC()
+				successful := response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == ""
 				record := auditBase
 				record.AccountID = &accountID
 				record.AccountName = credential.Name
@@ -812,33 +848,47 @@ attemptLoop:
 				}
 				record.CreatedAt = now
 				applyAuditEgress(&record, egressTrace, route.Provider)
-				if err := s.audits.Create(persistCtx, record); err != nil {
-					s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
+				if supportsStoredResponses && operation == audit.OperationResponses && responseID != "" && successful {
+					err := budget.run("response_ownership", finalizationOwnershipBudget, func(stageCtx context.Context) error {
+						return s.responses.Save(stageCtx, inferencedomain.ResponseOwnership{ResponseID: responseID, AccountID: accountID, ClientKeyID: input.ClientKey.ID, Provider: route.Provider, PromptCacheKey: ownershipPromptCacheKey, ReasoningReplayKey: reasoningReplayKey, ExpiresAt: now.Add(responseOwnershipTTL), CreatedAt: now, UpdatedAt: now})
+					})
+					if err != nil {
+						s.logger.Error("response_ownership_save_failed", "response_id", responseID, "client_key_id", input.ClientKey.ID, "account_id", accountID, "provider", route.Provider, "error", err)
+					}
 				}
-				if usage.ResponseModel != "" {
-					_ = s.accounts.ObserveResponseModel(persistCtx, accountID, usage.ResponseModel)
-				}
-				if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" && lease.QuotaMode != "" {
+				if successful && lease.QuotaMode != "" {
 					if lease.QuotaMode != "weekly" {
 						units := max(1, response.QuotaUnits)
-						updated, err := s.accounts.DecrementQuota(persistCtx, accountID, lease.QuotaMode, units)
+						var updated bool
+						err := budget.run("quota_decrement", finalizationQuotaBudget, func(stageCtx context.Context) error {
+							var decrementErr error
+							updated, decrementErr = s.accounts.DecrementQuota(stageCtx, accountID, lease.QuotaMode, units)
+							return decrementErr
+						})
 						if err != nil {
 							s.logger.Warn("provider_quota_decrement_failed", "provider", credential.Provider, "account_id", accountID, "mode", lease.QuotaMode, "units", units, "error", err)
 						} else if updated {
 							s.selector.ConsumeQuota(credential.Provider, accountID, lease.QuotaMode, units)
 						}
 					}
+				}
+				if err := budget.run("audit", finalizationAuditBudget, func(stageCtx context.Context) error {
+					return s.audits.Create(stageCtx, record)
+				}); err != nil {
+					s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
+				}
+				if usage.ResponseModel != "" {
+					_ = budget.run("observed_model", finalizationMetadataBudget, func(stageCtx context.Context) error {
+						return s.accounts.ObserveResponseModel(stageCtx, accountID, usage.ResponseModel)
+					})
+				}
+				if successful && lease.QuotaMode != "" {
 					if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow {
 						s.accounts.QueueQuotaRefresh(accountID, lease.QuotaMode)
 					}
 				}
-				if supportsStoredResponses && operation == audit.OperationResponses && responseID != "" && response.StatusCode >= 200 && response.StatusCode < 300 {
-					if err := s.responses.Save(persistCtx, inferencedomain.ResponseOwnership{ResponseID: responseID, AccountID: accountID, ClientKeyID: input.ClientKey.ID, Provider: route.Provider, PromptCacheKey: ownershipPromptCacheKey, ReasoningReplayKey: reasoningReplayKey, ExpiresAt: now.Add(responseOwnershipTTL), CreatedAt: now, UpdatedAt: now}); err != nil {
-						s.logger.Error("response_ownership_save_failed", "response_id", responseID, "client_key_id", input.ClientKey.ID, "account_id", accountID, "provider", route.Provider, "error", err)
-					}
-				}
 				outcome := "failed"
-				if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" {
+				if successful {
 					outcome = "success"
 				}
 				timing.finish(s.logger, outcome)

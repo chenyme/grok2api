@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -554,6 +555,133 @@ func TestUpstreamServerErrorDoesNotPoisonFixedEgressNode(t *testing.T) {
 	}
 }
 
+func TestHealthySuccessFeedbackSkipsRepositoryReadAndWrite(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "healthy", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+	manager := NewManager(repository, cipher)
+	lease, configured, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
+	if err != nil || !configured || lease == nil {
+		t.Fatalf("lease = %#v, configured = %v, err = %v", lease, configured, err)
+	}
+	lease.Release()
+
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, http.StatusOK, nil)
+	if repository.reads != 0 || repository.updates != 0 {
+		t.Fatalf("healthy success performed repository I/O: reads=%d updates=%d", repository.reads, repository.updates)
+	}
+}
+
+func TestRecoveringSuccessFeedbackPersistsHealthTransition(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "recovering", Scope: domain.ScopeBuild, Enabled: true, Health: 0.8, FailureCount: 1, LastError: "transport error"}}
+	manager := NewManager(repository, cipher)
+	lease, configured, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
+	if err != nil || !configured || lease == nil {
+		t.Fatalf("lease = %#v, configured = %v, err = %v", lease, configured, err)
+	}
+	lease.Release()
+
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, http.StatusOK, nil)
+	if repository.reads != 1 || repository.updates != 1 {
+		t.Fatalf("recovery I/O: reads=%d updates=%d", repository.reads, repository.updates)
+	}
+	if repository.node.Health != 0.9 || repository.node.FailureCount != 0 || repository.node.LastError != "" {
+		t.Fatalf("recovered node = %#v", repository.node)
+	}
+}
+
+func TestExpiredHealthySnapshotRechecksRepositoryOnSuccess(t *testing.T) {
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "healthy", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+	manager := NewManager(repository, nil)
+	if _, err := manager.listNodes(context.Background(), domain.ScopeBuild, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	manager.healthyNodes[1] = time.Now().UTC().Add(-time.Second)
+	manager.mu.Unlock()
+	repository.node = domain.Node{ID: 1, Name: "recovering", Scope: domain.ScopeBuild, Enabled: true, Health: 0.8, FailureCount: 1, LastError: "transport error"}
+
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, http.StatusOK, nil)
+	if repository.reads != 1 || repository.updates != 1 {
+		t.Fatalf("expired health state did not recheck repository: reads=%d updates=%d", repository.reads, repository.updates)
+	}
+}
+
+func TestNodeSnapshotReplacementRemovesRetiredHealthState(t *testing.T) {
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "first", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+	manager := NewManager(repository, nil)
+	now := time.Now().UTC()
+	if _, err := manager.listNodes(context.Background(), domain.ScopeBuild, now); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.cachedNodeIsHealthy(1) {
+		t.Fatal("initial node was not cached as healthy")
+	}
+	repository.node = domain.Node{ID: 2, Name: "replacement", Scope: domain.ScopeBuild, Enabled: true, Health: 1}
+	manager.mu.Lock()
+	snapshot := manager.nodes[domain.ScopeBuild]
+	snapshot.expiresAt = now.Add(-time.Second)
+	manager.nodes[domain.ScopeBuild] = snapshot
+	manager.mu.Unlock()
+	if _, err := manager.listNodes(context.Background(), domain.ScopeBuild, now); err != nil {
+		t.Fatal(err)
+	}
+	if manager.cachedNodeIsHealthy(1) {
+		t.Fatal("retired node retained healthy cache state")
+	}
+	if !manager.cachedNodeIsHealthy(2) {
+		t.Fatal("replacement node was not cached as healthy")
+	}
+}
+
+func TestConcurrentFailurePreventsStaleHealthySnapshotInstall(t *testing.T) {
+	repository := &blockingEgressRepository{
+		node:        domain.Node{ID: 1, Name: "healthy", Scope: domain.ScopeBuild, Enabled: true, Health: 1},
+		listStarted: make(chan struct{}),
+		listRelease: make(chan struct{}),
+	}
+	manager := NewManager(repository, nil)
+	loaded := make(chan []domain.Node, 1)
+	loadErrors := make(chan error, 1)
+	go func() {
+		values, err := manager.listNodes(context.Background(), domain.ScopeBuild, time.Now().UTC())
+		if err != nil {
+			loadErrors <- err
+			return
+		}
+		loaded <- values
+	}()
+	<-repository.listStarted
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("proxy timeout"))
+	close(repository.listRelease)
+	select {
+	case err := <-loadErrors:
+		t.Fatal(err)
+	case values := <-loaded:
+		if len(values) != 1 || values[0].FailureCount != 1 || values[0].CooldownUntil == nil {
+			t.Fatalf("stale list result was returned after invalidation: %#v", values)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("node list did not complete")
+	}
+	if manager.cachedNodeIsHealthy(1) {
+		t.Fatal("stale list result restored healthy cache state after failure feedback")
+	}
+	values, err := manager.listNodes(context.Background(), domain.ScopeBuild, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].FailureCount != 1 || values[0].CooldownUntil == nil {
+		t.Fatalf("reloaded node = %#v", values)
+	}
+}
+
 func TestProxyPoolTransportFailureDoesNotCreateGlobalCooldown(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
@@ -1047,7 +1175,17 @@ type countingEgressRepository struct {
 
 type mutableEgressRepository struct {
 	node    domain.Node
+	reads   int
 	updates int
+}
+
+type blockingEgressRepository struct {
+	egressRepositoryTestStub
+	mu          sync.Mutex
+	node        domain.Node
+	listStarted chan struct{}
+	listRelease chan struct{}
+	listOnce    sync.Once
 }
 
 type clearanceSolverStub struct {
@@ -1073,6 +1211,7 @@ func (r *mutableEgressRepository) ListEgressNodes(_ context.Context, scope domai
 }
 
 func (r *mutableEgressRepository) GetEgressNode(_ context.Context, id uint64) (domain.Node, error) {
+	r.reads++
 	if r.node.ID != id {
 		return domain.Node{}, errors.New("not found")
 	}
@@ -1096,6 +1235,36 @@ func (r *mutableEgressRepository) DeleteEgressNode(_ context.Context, id uint64)
 	}
 	r.node = domain.Node{}
 	return nil
+}
+
+func (r *blockingEgressRepository) ListEgressNodes(_ context.Context, scope domain.Scope, _ repository.SortQuery) ([]domain.Node, error) {
+	r.mu.Lock()
+	node := r.node
+	r.mu.Unlock()
+	r.listOnce.Do(func() {
+		close(r.listStarted)
+		<-r.listRelease
+	})
+	if scope != "" && node.Scope != scope {
+		return nil, nil
+	}
+	return []domain.Node{node}, nil
+}
+
+func (r *blockingEgressRepository) GetEgressNode(_ context.Context, id uint64) (domain.Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.node.ID != id {
+		return domain.Node{}, errors.New("not found")
+	}
+	return r.node, nil
+}
+
+func (r *blockingEgressRepository) UpdateEgressNode(_ context.Context, value domain.Node) (domain.Node, error) {
+	r.mu.Lock()
+	r.node = value
+	r.mu.Unlock()
+	return value, nil
 }
 
 func (r *countingEgressRepository) ListEgressNodes(ctx context.Context, scope domain.Scope, sort repository.SortQuery) ([]domain.Node, error) {

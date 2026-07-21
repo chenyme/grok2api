@@ -75,3 +75,18 @@ type QuotaRecoveryQueue interface {
 	AckQuotaRecovery(ctx context.Context, value account.QuotaRecoveryEvent) error
 	RescheduleQuotaRecovery(ctx context.Context, value account.QuotaRecoveryEvent) error
 }
+
+type QuotaRefreshDirty struct {
+	AccountID  uint64
+	Mode       string
+	Generation uint64
+}
+
+// QuotaRefreshCoordinator preserves successful-request refresh signals across
+// local queue pressure and coordinates trailing refreshes between instances.
+type QuotaRefreshCoordinator interface {
+	MarkQuotaRefreshDirty(ctx context.Context, accountID uint64, mode string, ttl time.Duration) (uint64, error)
+	QuotaRefreshGeneration(ctx context.Context, accountID uint64, mode string) (generation uint64, dirty bool, err error)
+	ClearQuotaRefreshDirty(ctx context.Context, accountID uint64, mode string, generation uint64) (bool, error)
+	ListQuotaRefreshDirty(ctx context.Context, now time.Time, limit int) ([]QuotaRefreshDirty, error)
+}

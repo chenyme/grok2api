@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -66,6 +67,40 @@ func (r *AuditRepository) CreateBatch(ctx context.Context, values []audit.Record
 		reservationByEvent := make(map[string]billingReservationModel, len(reservations))
 		for _, reservation := range reservations {
 			reservationByEvent[reservation.EventID] = reservation
+		}
+		keySet := make(map[uint64]struct{})
+		for _, row := range insertedRows {
+			_, hasReservation := reservationByEvent[row.EventID]
+			if hasReservation || auditBillingAmount(row) > 0 {
+				keySet[row.ClientKeyID] = struct{}{}
+			}
+		}
+		keyIDs := make([]uint64, 0, len(keySet))
+		for keyID := range keySet {
+			keyIDs = append(keyIDs, keyID)
+		}
+		sort.Slice(keyIDs, func(i, j int) bool { return keyIDs[i] < keyIDs[j] })
+		for _, keyID := range keyIDs {
+			if err := lockClientKey(tx, keyID); err != nil {
+				if !errors.Is(err, repository.ErrNotFound) {
+					return err
+				}
+				for _, reservation := range reservations {
+					if reservation.ClientKeyID == keyID {
+						return err
+					}
+				}
+			}
+		}
+		if len(keyIDs) > 0 {
+			reservations = nil
+			if err := tx.Where("event_id IN ?", eventIDs).Find(&reservations).Error; err != nil {
+				return err
+			}
+			clear(reservationByEvent)
+			for _, reservation := range reservations {
+				reservationByEvent[reservation.EventID] = reservation
+			}
 		}
 		for _, row := range insertedRows {
 			reservation, hasReservation := reservationByEvent[row.EventID]
@@ -169,6 +204,19 @@ func createAuditAndBill(tx *gorm.DB, row *requestAuditModel, attempts []requestA
 	if reservationErr != nil && !errors.Is(reservationErr, gorm.ErrRecordNotFound) {
 		return reservationErr
 	}
+	if reservationErr == nil || auditBillingAmount(*row) > 0 {
+		if err := lockClientKey(tx, row.ClientKeyID); err != nil {
+			if reservationErr == nil || !errors.Is(err, repository.ErrNotFound) {
+				return err
+			}
+			return billInsertedAudit(tx, *row, billingReservationModel{}, false)
+		}
+		reservation = billingReservationModel{}
+		reservationErr = tx.Where("event_id = ?", row.EventID).First(&reservation).Error
+		if reservationErr != nil && !errors.Is(reservationErr, gorm.ErrRecordNotFound) {
+			return reservationErr
+		}
+	}
 	return billInsertedAudit(tx, *row, reservation, reservationErr == nil)
 }
 
@@ -188,10 +236,7 @@ func insertAuditAttempts(tx *gorm.DB, auditID uint64, attempts []requestAuditAtt
 }
 
 func billInsertedAudit(tx *gorm.DB, row requestAuditModel, reservation billingReservationModel, hasReservation bool) error {
-	amount := row.CostInUSDTicks
-	if amount <= 0 {
-		amount = row.EstimatedCostInUSDTicks
-	}
+	amount := auditBillingAmount(row)
 	if hasReservation {
 		if err := settleReservedBilling(tx, reservation, amount); err != nil {
 			return err
@@ -216,6 +261,13 @@ func billInsertedAudit(tx *gorm.DB, row requestAuditModel, reservation billingRe
 		return result.Error
 	}
 	return nil
+}
+
+func auditBillingAmount(row requestAuditModel) int64 {
+	if row.CostInUSDTicks > 0 {
+		return row.CostInUSDTicks
+	}
+	return row.EstimatedCostInUSDTicks
 }
 
 func settleReservedBilling(tx *gorm.DB, reservation billingReservationModel, amount int64) error {

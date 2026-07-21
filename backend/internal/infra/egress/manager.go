@@ -38,6 +38,8 @@ const clearanceCacheEvictionBatch = 256
 const egressProbeEndpoint = "https://api64.ipify.org?format=json"
 const egressProbeTimeout = 15 * time.Second
 
+var errNodeSnapshotInvalidated = errors.New("egress node snapshot invalidated")
+
 type Lease struct {
 	NodeID           uint64
 	NodeName         string
@@ -83,6 +85,8 @@ type Manager struct {
 	clients              map[clientCacheKey]cachedClient
 	inflight             map[uint64]int
 	nodes                map[domain.Scope]cachedNodeSnapshot
+	healthyNodes         map[uint64]time.Time
+	nodeVersions         map[domain.Scope]uint64
 	nodeLoads            singleflight.Group
 	lastClientCleanup    time.Time
 	clearanceLoads       singleflight.Group
@@ -133,7 +137,8 @@ func NewManager(repository repository.EgressRepository, cipher *security.Cipher)
 	return &Manager{
 		repository: repository, cipher: cipher,
 		clients: make(map[clientCacheKey]cachedClient), inflight: make(map[uint64]int),
-		nodes: make(map[domain.Scope]cachedNodeSnapshot), clearances: make(map[string]clearanceState),
+		nodes: make(map[domain.Scope]cachedNodeSnapshot), healthyNodes: make(map[uint64]time.Time),
+		nodeVersions: make(map[domain.Scope]uint64), clearances: make(map[string]clearanceState),
 		solver:          flaresolverrSolver{},
 		clearanceConfig: ClearanceConfig{Mode: "manual", TargetURL: "https://grok.com", Timeout: time.Minute, RefreshInterval: 10 * time.Minute},
 	}
@@ -476,41 +481,73 @@ func normalizeProxyAccount(value string) string {
 }
 
 func (m *Manager) listNodes(ctx context.Context, scope domain.Scope, now time.Time) ([]domain.Node, error) {
-	m.mu.Lock()
-	if snapshot, ok := m.nodes[scope]; ok && now.Before(snapshot.expiresAt) {
-		values := append([]domain.Node(nil), snapshot.values...)
-		m.mu.Unlock()
-		return values, nil
-	}
-	m.mu.Unlock()
-	loaded, err, _ := m.nodeLoads.Do(string(scope), func() (any, error) {
-		checkTime := time.Now().UTC()
+	for {
 		m.mu.Lock()
-		if snapshot, ok := m.nodes[scope]; ok && checkTime.Before(snapshot.expiresAt) {
+		if snapshot, ok := m.nodes[scope]; ok && now.Before(snapshot.expiresAt) {
 			values := append([]domain.Node(nil), snapshot.values...)
 			m.mu.Unlock()
 			return values, nil
 		}
 		m.mu.Unlock()
-		values, err := m.repository.ListEgressNodes(ctx, scope, repository.SortQuery{})
+		loaded, err, _ := m.nodeLoads.Do(string(scope), func() (any, error) {
+			checkTime := time.Now().UTC()
+			m.mu.Lock()
+			if snapshot, ok := m.nodes[scope]; ok && checkTime.Before(snapshot.expiresAt) {
+				values := append([]domain.Node(nil), snapshot.values...)
+				m.mu.Unlock()
+				return values, nil
+			}
+			version := m.nodeVersions[scope]
+			m.mu.Unlock()
+			values, err := m.repository.ListEgressNodes(ctx, scope, repository.SortQuery{})
+			if err != nil {
+				return nil, err
+			}
+			m.mu.Lock()
+			if m.nodeVersions[scope] != version {
+				m.mu.Unlock()
+				return nil, errNodeSnapshotInvalidated
+			}
+			m.replaceNodeSnapshotLocked(scope, values, checkTime.Add(nodeSnapshotTTL))
+			m.mu.Unlock()
+			return values, nil
+		})
 		if err != nil {
+			if errors.Is(err, errNodeSnapshotInvalidated) && ctx.Err() == nil {
+				now = time.Now().UTC()
+				continue
+			}
 			return nil, err
 		}
-		m.mu.Lock()
-		m.nodes[scope] = cachedNodeSnapshot{values: append([]domain.Node(nil), values...), expiresAt: checkTime.Add(nodeSnapshotTTL)}
-		m.mu.Unlock()
-		return values, nil
-	})
-	if err != nil {
-		return nil, err
+		return append([]domain.Node(nil), loaded.([]domain.Node)...), nil
 	}
-	return append([]domain.Node(nil), loaded.([]domain.Node)...), nil
 }
 
 func (m *Manager) invalidateNodes(scope domain.Scope) {
 	m.mu.Lock()
-	delete(m.nodes, scope)
+	m.nodeVersions[scope]++
+	snapshot, ok := m.nodes[scope]
+	if ok {
+		delete(m.nodes, scope)
+	}
+	for _, node := range snapshot.values {
+		delete(m.healthyNodes, node.ID)
+	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) replaceNodeSnapshotLocked(scope domain.Scope, values []domain.Node, expiresAt time.Time) {
+	for _, node := range m.nodes[scope].values {
+		delete(m.healthyNodes, node.ID)
+	}
+	for _, node := range values {
+		if nodeIsHealthy(node) {
+			m.healthyNodes[node.ID] = expiresAt
+		} else {
+			delete(m.healthyNodes, node.ID)
+		}
+	}
+	m.nodes[scope] = cachedNodeSnapshot{values: append([]domain.Node(nil), values...), expiresAt: expiresAt}
 }
 
 func fallbackScopes(scope domain.Scope) []domain.Scope {
@@ -661,13 +698,23 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		}
 		return
 	}
+	succeeded := transportErr == nil && status >= 200 && status < 400
+	if succeeded && m.cachedNodeIsHealthy(nodeID) {
+		return
+	}
 	value, err := m.repository.GetEgressNode(ctx, nodeID)
 	if err != nil {
 		return
 	}
+	if succeeded && nodeIsHealthy(value) {
+		m.mu.Lock()
+		m.healthyNodes[nodeID] = time.Now().UTC().Add(nodeSnapshotTTL)
+		m.mu.Unlock()
+		return
+	}
 	now := time.Now().UTC()
 	switch {
-	case transportErr == nil && status >= 200 && status < 400:
+	case succeeded:
 		value.Health = min(1, value.Health+0.1)
 		value.FailureCount = 0
 		value.CooldownUntil = nil
@@ -728,6 +775,21 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 	if _, err := m.repository.UpdateEgressNode(ctx, value); err == nil {
 		m.invalidateNodes(value.Scope)
 	}
+}
+
+func (m *Manager) cachedNodeIsHealthy(nodeID uint64) bool {
+	m.mu.Lock()
+	validUntil, ok := m.healthyNodes[nodeID]
+	healthy := ok && time.Now().UTC().Before(validUntil)
+	if ok && !healthy {
+		delete(m.healthyNodes, nodeID)
+	}
+	m.mu.Unlock()
+	return healthy
+}
+
+func nodeIsHealthy(value domain.Node) bool {
+	return value.Health >= 1 && value.FailureCount == 0 && value.CooldownUntil == nil && value.LastError == ""
 }
 
 func (m *Manager) clearanceMode() string {

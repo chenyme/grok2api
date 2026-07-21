@@ -7,6 +7,7 @@ import (
 	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/pkg/perfmetrics"
 )
 
 // generationTiming 只记录阶段耗时和有限枚举，不保存请求体、凭据或会话键。
@@ -77,10 +78,21 @@ func (t *generationTiming) finish(logger *slog.Logger, outcome string) {
 		"first_body_ms", t.firstBody.Milliseconds(), "attempts", t.attempts, "retries", retries,
 	}
 	t.mu.Unlock()
+	labels := perfmetrics.Labels{Subsystem: "gateway", Provider: string(t.provider), Outcome: outcome}
+	perfmetrics.Default.ObserveDuration("request_duration_us", labels, total)
+	perfmetrics.Default.ObserveDuration("stage_duration_us", withTimingStage(labels, "selection"), t.selectionWait)
+	perfmetrics.Default.ObserveDuration("stage_duration_us", withTimingStage(labels, "credential"), t.credentialWait)
+	perfmetrics.Default.ObserveDuration("stage_duration_us", withTimingStage(labels, "upstream"), t.upstreamWait)
+	perfmetrics.Default.Add("attempt_count", labels, int64(t.attempts))
 	if logger == nil {
 		logger = slog.Default()
 	}
 	logger.Debug("generation_timing", fields...)
+}
+
+func withTimingStage(labels perfmetrics.Labels, stage string) perfmetrics.Labels {
+	labels.Stage = stage
+	return labels
 }
 
 type firstByteReadCloser struct {

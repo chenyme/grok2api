@@ -61,7 +61,7 @@ func TestReadinessKeepsBuildReadyWhenWebIsUnavailable(t *testing.T) {
 	state := newStartupState(0)
 	state.setPhase("running")
 	state.setStatsig("unavailable", "test", 0)
-	snapshot := readinessSnapshot(ctx, state, func(context.Context) error { return nil }, models, accounts, provider.NewRegistry())
+	snapshot := readinessSnapshot(ctx, state, func(context.Context) error { return nil }, models, accounts, provider.NewRegistry(), nil)
 	if !snapshot.Ready || snapshot.State != "degraded" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
@@ -100,7 +100,7 @@ func TestReadinessRestoresPersistedCooldownWithoutUpstreamProbe(t *testing.T) {
 	}
 	state := newStartupState(0)
 	state.setPhase("running")
-	snapshot := readinessSnapshot(ctx, state, func(context.Context) error { return nil }, models, accounts, provider.NewRegistry())
+	snapshot := readinessSnapshot(ctx, state, func(context.Context) error { return nil }, models, accounts, provider.NewRegistry(), nil)
 	if snapshot.Ready || snapshot.State != "not_ready" || snapshot.Components["grok_build"].State != "unavailable" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}

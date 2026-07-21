@@ -3,11 +3,13 @@ package redis
 import (
 	"context"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	redisclient "github.com/redis/go-redis/v9"
 )
 
 func TestRedisRuntimeStoreIntegration(t *testing.T) {
@@ -15,12 +17,30 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 	if address == "" {
 		t.Skip("TEST_REDIS_ADDRESS is not configured")
 	}
+	database := 0
+	if rawDatabase := os.Getenv("TEST_REDIS_DATABASE"); rawDatabase != "" {
+		parsed, parseErr := strconv.Atoi(rawDatabase)
+		if parseErr != nil || parsed < 0 {
+			t.Fatalf("TEST_REDIS_DATABASE = %q", rawDatabase)
+		}
+		database = parsed
+	}
 	ctx := context.Background()
-	store, err := Open(ctx, Config{Address: address, KeyPrefix: "grok2api:test:" + time.Now().UTC().Format("150405.000000") + ":", ConcurrencyLease: time.Minute})
+	store, err := Open(ctx, Config{
+		Address: address, Username: os.Getenv("TEST_REDIS_USERNAME"), Password: os.Getenv("TEST_REDIS_PASSWORD"), Database: database,
+		KeyPrefix: "grok2api:test:" + time.Now().UTC().Format("150405.000000") + ":", ConcurrencyLease: time.Minute,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if os.Getenv("TEST_REDIS_FLUSH_DATABASE") == "1" {
+		defer func() {
+			if err := store.client.FlushDB(ctx).Err(); err != nil {
+				t.Errorf("flush Redis test database: %v", err)
+			}
+		}()
+	}
 
 	if allowed, err := store.Allow(ctx, "key", 1, time.Now()); err != nil || !allowed {
 		t.Fatalf("first rate allowance = %v, err = %v", allowed, err)
@@ -141,6 +161,55 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 	}
 	if err := store.AckQuotaRecovery(ctx, claimed[0]); err != nil {
 		t.Fatal(err)
+	}
+
+	firstGeneration, err := store.MarkQuotaRefreshDirty(ctx, 42, "fast", 200*time.Millisecond)
+	if err != nil || firstGeneration != 1 {
+		t.Fatalf("first quota refresh generation = %d, err = %v", firstGeneration, err)
+	}
+	if cleared, err := store.ClearQuotaRefreshDirty(ctx, 42, "fast", firstGeneration); err != nil || !cleared {
+		t.Fatalf("clear first quota refresh generation = %v, err = %v", cleared, err)
+	}
+	if generation, dirty, err := store.QuotaRefreshGeneration(ctx, 42, "fast"); err != nil || generation != firstGeneration || dirty {
+		t.Fatalf("cleared quota refresh state = generation %d, dirty %v, err %v", generation, dirty, err)
+	}
+	secondGeneration, err := store.MarkQuotaRefreshDirty(ctx, 42, "fast", 200*time.Millisecond)
+	if err != nil || secondGeneration != 2 {
+		t.Fatalf("second quota refresh generation = %d, err = %v", secondGeneration, err)
+	}
+	if cleared, err := store.ClearQuotaRefreshDirty(ctx, 42, "fast", firstGeneration); err != nil || cleared {
+		t.Fatalf("stale quota refresh clear = %v, err = %v", cleared, err)
+	}
+
+	member := "42:fast"
+	generationKey := store.key("quota-refresh", "generations")
+	dirtyKey := store.key("quota-refresh", "dirty")
+	expiryKey := store.key("quota-refresh", "expiry")
+	if _, err := store.MarkQuotaRefreshDirty(ctx, 43, "fast", 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if generation, dirty, err := store.QuotaRefreshGeneration(ctx, 42, "fast"); err != nil || generation != 0 || dirty {
+		t.Fatalf("expired quota refresh state = generation %d, dirty %v, err %v", generation, dirty, err)
+	}
+	if exists, err := store.client.HExists(ctx, generationKey, member).Result(); err != nil || exists {
+		t.Fatalf("expired generation retained = %v, err = %v", exists, err)
+	}
+	if score, err := store.client.ZScore(ctx, dirtyKey, member).Result(); err != redisclient.Nil {
+		t.Fatalf("expired dirty member score = %f, err = %v", score, err)
+	}
+	if score, err := store.client.ZScore(ctx, expiryKey, member).Result(); err != redisclient.Nil {
+		t.Fatalf("expired expiry member score = %f, err = %v", score, err)
+	}
+
+	if _, err := store.MarkQuotaRefreshDirty(ctx, 44, "fast", 2*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkQuotaRefreshDirty(ctx, 45, "fast", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if ttl, err := store.client.PTTL(ctx, generationKey).Result(); err != nil || ttl < 90*time.Minute {
+		t.Fatalf("short-lived member shortened generation key TTL: ttl = %s, err = %v", ttl, err)
 	}
 
 	listenerCtx, cancelListener := context.WithCancel(ctx)

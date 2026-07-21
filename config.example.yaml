@@ -66,6 +66,16 @@ runtimeStore:
     # [按需修改] Redis 使用 TLS 时设为 true。
     tls: false
 
+deployment:
+  # [通常不要修改] 单实例保持 1；多实例必须同时使用 PostgreSQL、Redis 和共享媒体目录。
+  replicas: 1
+  # [必须修改：仅 replicas>1] 每个实例使用不同的稳定标识。
+  instanceID: ""
+  # [必须修改：仅 replicas>1] 同一实例组和共享媒体目录必须使用相同标识。
+  clusterID: "grok2api"
+  # [必须修改：仅 replicas>1] 确认 media.local.path 已挂载为所有实例共享且可读写的存储。
+  sharedMedia: false
+
 media:
   # [通常不要修改] 当前仅支持 local；容量和清理策略在管理端设置。
   driver: local
@@ -78,3 +88,14 @@ routing:
   reasoningReplayEnabled: true
   reasoningReplayTTL: 1h
   reasoningReplayMaxEntries: 10240
+
+audit:
+  # [通常不要修改] 审计批量写入参数；bufferSize 的修改需重启生效。
+  bufferSize: 16384
+  batchSize: 256
+  flushInterval: 250ms
+  # [按需修改] observe 仅报告账本异常；enforce 在异常持续超过宽限期后拒绝新的推理任务。
+  ledgerMode: observe # observe | enforce
+  ledgerFailureThreshold: 3
+  ledgerUnhealthyGrace: 10s
+  ledgerQueueHighWatermarkPercent: 90
