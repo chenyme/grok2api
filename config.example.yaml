@@ -73,6 +73,13 @@ media:
     # [按需修改] 图片二进制目录；数据库只保存资源元数据。
     path: "./data/media"
 
+provider:
+  web:
+    # [按需修改] 仅配置文件可读。true 时允许管理端将 Statsig 签名 URL 设为内网地址
+    #（如 Docker 服务名 http://grok-signer-go:8788/sign）。false（默认）时拒绝一切内网 signer，
+    # 防止被控管理会话把请求导向内网 SSRF。热更新无法改写本开关。
+    allowInternalStatsigSigner: false
+
 routing:
   # [按需修改] 服务端推理回放缓存：多轮时自动补回客户端未携带的 encrypted_content。
   reasoningReplayEnabled: true

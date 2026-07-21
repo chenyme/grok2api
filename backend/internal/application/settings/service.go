@@ -299,10 +299,15 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	if clearanceRefresh <= 0 {
 		clearanceRefresh = base.Provider.Web.ClearanceRefresh.Value()
 	}
+	// AllowInternalStatsigSigner is file-only: never persisted in runtime settings.
+	// Preserve it from base (YAML load) across DB reloads so Docker/K8s internal
+	// signers remain valid after LoadPersisted / ReloadPersisted.
+	allowInternalStatsigSigner := base.Provider.Web.AllowInternalStatsigSigner
 	base.Provider.Web = config.WebProviderConfig{
 		BaseURL: value.ProviderWeb.BaseURL, QuotaTimeout: config.Duration(value.ProviderWeb.QuotaTimeout),
 		StatsigMode: value.ProviderWeb.StatsigMode, StatsigManualValue: value.ProviderWeb.StatsigManualValue, StatsigSignerURL: value.ProviderWeb.StatsigSignerURL,
-		ClearanceMode: clearanceMode, FlareSolverrURL: flareSolverrURL,
+		AllowInternalStatsigSigner: allowInternalStatsigSigner,
+		ClearanceMode:              clearanceMode, FlareSolverrURL: flareSolverrURL,
 		ClearanceTimeout: config.Duration(clearanceTimeout), ClearanceRefresh: config.Duration(clearanceRefresh),
 		ChatTimeout: config.Duration(value.ProviderWeb.ChatTimeout), ImageTimeout: config.Duration(value.ProviderWeb.ImageTimeout),
 		VideoTimeout:     config.Duration(value.ProviderWeb.VideoTimeout),
@@ -440,13 +445,10 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Provider.Build.UserAgent = strings.TrimSpace(input.ProviderBuild.UserAgent)
 	next.Provider.Web.BaseURL = strings.TrimSpace(input.ProviderWeb.BaseURL)
 	next.Provider.Web.StatsigMode = strings.TrimSpace(input.ProviderWeb.StatsigMode)
-	nextSigner := strings.TrimSpace(input.ProviderWeb.StatsigSignerURL)
-	// Hot updates cannot introduce or retain a newly-chosen internal signer URL.
-	// File-only allowInternalStatsigSigner is preserved only when the signer URL is unchanged.
-	if nextSigner != strings.TrimSpace(current.Provider.Web.StatsigSignerURL) {
-		next.Provider.Web.AllowInternalStatsigSigner = false
-	}
-	next.Provider.Web.StatsigSignerURL = nextSigner
+	// AllowInternalStatsigSigner is file-only and never present on EditableConfig.
+	// Keep the current (YAML-loaded) flag so Docker/K8s internal signers work when
+	// explicitly allowed; Validate rejects internal URLs when the flag is false.
+	next.Provider.Web.StatsigSignerURL = strings.TrimSpace(input.ProviderWeb.StatsigSignerURL)
 	if input.ProviderWeb.ClearanceProvided {
 		next.Provider.Web.ClearanceMode = strings.TrimSpace(input.ProviderWeb.ClearanceMode)
 		next.Provider.Web.FlareSolverrURL = strings.TrimSpace(input.ProviderWeb.FlareSolverrURL)

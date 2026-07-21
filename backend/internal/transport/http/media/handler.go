@@ -117,6 +117,8 @@ func (h *Handler) putVideoUpload(c *gin.Context) {
 	case errors.Is(err, mediaapp.ErrVideoUploadTooLarge):
 		// 体积超限优先于通用无效上传，返回 413。
 		c.Status(http.StatusRequestEntityTooLarge)
+	case errors.Is(err, mediaapp.ErrMediaQuotaExceeded):
+		c.Status(http.StatusInsufficientStorage)
 	case errors.Is(err, mediaapp.ErrInvalidVideoUpload):
 		c.Status(http.StatusBadRequest)
 	case errors.Is(err, mediaapp.ErrUploadTicketsUnavailable):

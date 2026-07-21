@@ -142,8 +142,10 @@ type WebProviderConfig struct {
 	StatsigMode         string   `yaml:"-"`
 	StatsigManualValue  string   `yaml:"-"`
 	StatsigSignerURL    string   `yaml:"-"`
-	// AllowInternalStatsigSigner permits internal/private signer URLs from the
-	// config file only. Hot settings updates never set this flag (file-only).
+	// AllowInternalStatsigSigner permits internal/private Statsig signer URLs.
+	// File-only: loaded from YAML, never from admin hot settings. When true,
+	// runtime settings may set an internal signer URL (Docker/K8s service names).
+	// When false, Validate rejects all internal signer URLs.
 	AllowInternalStatsigSigner bool     `yaml:"allowInternalStatsigSigner"`
 	ClearanceMode              string   `yaml:"-"`
 	FlareSolverrURL            string   `yaml:"-"`

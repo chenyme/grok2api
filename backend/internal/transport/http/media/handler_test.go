@@ -222,6 +222,54 @@ func TestPutVideoUploadReturns413WhenBodyTooLarge(t *testing.T) {
 	}
 }
 
+func TestPutVideoUploadReturns507WhenTotalQuotaExceeded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-upload-507.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects-507"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fill hard capacity with an image so video commit rejects at reserve
+	// (before platform-specific video sync), mapping ErrMediaQuotaExceeded → 507.
+	rawPNG, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	payload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x0b}, 64)...)
+	tickets := relational.NewMediaUploadTicketRepository(database)
+	service := mediaapp.NewServiceWithTickets(
+		relational.NewMediaAssetRepository(database),
+		relational.NewMediaJobRepository(database),
+		tickets, objects, nil,
+		mediaapp.Config{
+			PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: int64(len(rawPNG)),
+			CleanupThresholdPercent: 80, CleanupInterval: time.Minute,
+		},
+	)
+	if _, err := service.SaveImage(ctx, rawPNG); err != nil {
+		t.Fatal(err)
+	}
+	uploadURL, _, err := service.IssueVideoUpload(ctx, "job_507_reject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := uploadURL[len("https://api.example/v1/media/uploads/"):]
+	router := gin.New()
+	NewHandler(service).RegisterPublic(router)
+	req := httptest.NewRequest(http.MethodPut, "/v1/media/uploads/"+token, bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "video/mp4")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusInsufficientStorage {
+		t.Fatalf("status = %d, want 507, body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPutVideoUploadReturns400ForInvalidMIME(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()

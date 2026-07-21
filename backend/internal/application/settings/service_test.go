@@ -227,6 +227,90 @@ func TestLoadPersistedRejectsIncompleteStatsigPayload(t *testing.T) {
 	}
 }
 
+// File-only allowInternalStatsigSigner must survive LoadPersisted so Docker/K8s
+// internal signers remain valid after runtime settings are applied from the DB.
+func TestLoadPersistedPreservesFileAllowInternalStatsigSigner(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Provider.Web.AllowInternalStatsigSigner = true
+	cfg.Provider.Web.StatsigMode = config.StatsigModeURL
+	cfg.Provider.Web.StatsigSignerURL = "http://grok-signer-go:8788/sign"
+	value := toDomainConfig(cfg)
+	// Domain payload never carries the file-only flag; base must keep it.
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true, revision: 1, updatedAt: time.Now().UTC()}
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Provider.Web.AllowInternalStatsigSigner {
+		t.Fatal("AllowInternalStatsigSigner was cleared by applyDomainConfig")
+	}
+	if loaded.Provider.Web.StatsigSignerURL != "http://grok-signer-go:8788/sign" {
+		t.Fatalf("signer URL = %q", loaded.Provider.Web.StatsigSignerURL)
+	}
+}
+
+// YAML allowInternal=true + runtime internal signer stays legal; changing the
+// signer to a different internal host still works when the file flag is set;
+// without the flag, any internal signer is rejected.
+func TestInternalStatsigSignerRequiresFileAllowFlag(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Provider.Web.AllowInternalStatsigSigner = true
+	cfg.Provider.Web.StatsigMode = config.StatsigModeURL
+	cfg.Provider.Web.StatsigSignerURL = "https://grok.wodf.de/sign"
+	repo := &runtimeSettingsRepositoryStub{}
+	service := NewService(cfg, time.Time{}, 0, repo, nil, nil)
+
+	input := service.Get().Config
+	input.ProviderWeb.StatsigMode = config.StatsigModeURL
+	input.ProviderWeb.StatsigSignerURL = "http://grok-signer-go:8788/sign"
+	if _, err := service.Update(context.Background(), service.Get().Revision, input); err != nil {
+		t.Fatalf("internal signer with file allow flag rejected: %v", err)
+	}
+	if service.Get().Config.ProviderWeb.StatsigSignerURL != "http://grok-signer-go:8788/sign" {
+		t.Fatalf("signer not applied: %#v", service.Get().Config.ProviderWeb)
+	}
+	// Hot-update to another internal host remains legal while file flag is true.
+	next := service.Get().Config
+	next.ProviderWeb.StatsigSignerURL = "http://signer.internal:8788/sign"
+	if _, err := service.Update(context.Background(), service.Get().Revision, next); err != nil {
+		t.Fatalf("second internal signer with file allow flag rejected: %v", err)
+	}
+
+	// Without the file flag, the same internal URL must be rejected.
+	denied := testConfig(t)
+	denied.Provider.Web.AllowInternalStatsigSigner = false
+	denied.Provider.Web.StatsigMode = config.StatsigModeURL
+	denied.Provider.Web.StatsigSignerURL = "https://grok.wodf.de/sign"
+	blocked := NewService(denied, time.Time{}, 0, &runtimeSettingsRepositoryStub{}, nil, nil)
+	bad := blocked.Get().Config
+	bad.ProviderWeb.StatsigSignerURL = "http://grok-signer-go:8788/sign"
+	if _, err := blocked.Update(context.Background(), blocked.Get().Revision, bad); err == nil {
+		t.Fatal("internal signer accepted without allowInternalStatsigSigner")
+	}
+}
+
+func TestReloadPersistedKeepsFileAllowInternalStatsigSigner(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Provider.Web.AllowInternalStatsigSigner = true
+	cfg.Provider.Web.StatsigMode = config.StatsigModeURL
+	cfg.Provider.Web.StatsigSignerURL = "http://grok-signer-go:8788/sign"
+	value := toDomainConfig(cfg)
+	// Simulate another instance writing a different (still internal) signer.
+	value.ProviderWeb.StatsigSignerURL = "http://signer.internal:8788/sign"
+	repo := &runtimeSettingsRepositoryStub{value: value, found: true, revision: 2, updatedAt: time.Now().UTC()}
+	var applied config.Config
+	service := NewService(cfg, time.Now().UTC(), 1, repo, nil, func(next config.Config) { applied = next })
+	if err := service.ReloadPersisted(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Provider.Web.AllowInternalStatsigSigner {
+		t.Fatal("ReloadPersisted cleared AllowInternalStatsigSigner")
+	}
+	if applied.Provider.Web.StatsigSignerURL != "http://signer.internal:8788/sign" {
+		t.Fatalf("signer after reload = %q", applied.Provider.Web.StatsigSignerURL)
+	}
+}
+
 func TestLoadPersistedRejectsIncompleteBatchPayload(t *testing.T) {
 	cfg := testConfig(t)
 	value := toDomainConfig(cfg)
