@@ -113,7 +113,7 @@ func TestLogVideoGenerationFailurePreservesUpstreamDiagnostic(t *testing.T) {
 		EgressNodeID: &nodeID, EgressNodeName: "proxy-1", EgressScope: "grok_web", EgressMode: "proxy",
 	}, account.Credential{ID: 42, Provider: account.ProviderWeb}, videoStatusError{
 		status:  http.StatusForbidden,
-		message: "Grok Web 媒体上游返回 403: upload denied",
+		message: "Grok Web 媒体上游返回 403: upload denied access_token=secret https://assets.grok.com/video?token=secret",
 	})
 	logLine := output.String()
 	for _, expected := range []string{
@@ -123,6 +123,11 @@ func TestLogVideoGenerationFailurePreservesUpstreamDiagnostic(t *testing.T) {
 	} {
 		if !strings.Contains(logLine, expected) {
 			t.Fatalf("log missing %q: %s", expected, logLine)
+		}
+	}
+	for _, secret := range []string{"access_token=secret", "token=secret"} {
+		if strings.Contains(logLine, secret) {
+			t.Fatalf("log exposed %q: %s", secret, logLine)
 		}
 	}
 }

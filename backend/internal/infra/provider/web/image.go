@@ -1262,14 +1262,22 @@ func (a *Adapter) uploadFileLegacy(ctx context.Context, cfg Config, lease *egres
 		return uploadedFile{}, err
 	}
 	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, webMediaDiagnosticBodyLimit+1))
+		if readErr != nil {
+			return uploadedFile{}, fmt.Errorf("读取上传文件错误响应: %w", readErr)
+		}
+		truncated := len(body) > webMediaDiagnosticBodyLimit
+		if truncated {
+			body = body[:webMediaDiagnosticBodyLimit]
+		}
+		return uploadedFile{}, newWebMediaUpstreamError(response.StatusCode, body, truncated)
+	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
 	if readErr != nil {
 		return uploadedFile{}, fmt.Errorf("读取上传文件响应: %w", readErr)
 	}
 	if len(body) > 2<<20 {
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return uploadedFile{}, &webMediaUpstreamError{status: response.StatusCode, body: uploadFileResponseDiagnostic(body, true)}
-		}
 		return uploadedFile{}, fmt.Errorf("上传文件响应超过 2 MiB")
 	}
 	return decodeLegacyFileUploadResponse(response.StatusCode, body)
@@ -1277,7 +1285,7 @@ func (a *Adapter) uploadFileLegacy(ctx context.Context, cfg Config, lease *egres
 
 func decodeLegacyFileUploadResponse(statusCode int, body []byte) (uploadedFile, error) {
 	if statusCode < 200 || statusCode >= 300 {
-		return uploadedFile{}, &webMediaUpstreamError{status: statusCode, body: uploadFileResponseDiagnostic(body, false)}
+		return uploadedFile{}, newWebMediaUpstreamError(statusCode, body, false)
 	}
 	var value struct {
 		FileMetadataID string `json:"fileMetadataId"`
@@ -1285,7 +1293,7 @@ func decodeLegacyFileUploadResponse(statusCode int, body []byte) (uploadedFile, 
 		FileURI        string `json:"fileUri"`
 	}
 	if err := json.Unmarshal(body, &value); err != nil {
-		return uploadedFile{}, fmt.Errorf("上传文件响应无效: %w（响应: %s）", err, uploadFileResponseDiagnostic(body, false))
+		return uploadedFile{}, fmt.Errorf("上传文件响应无效: %w", err)
 	}
 	if value.FileMetadataID == "" {
 		value.FileMetadataID = value.FileID
@@ -1298,23 +1306,6 @@ func decodeLegacyFileUploadResponse(statusCode int, body []byte) (uploadedFile, 
 		return uploadedFile{}, fmt.Errorf("上传文件成功但上游未返回文件标识")
 	}
 	return uploadedFile{ID: value.FileMetadataID, URI: fileURI}, nil
-}
-
-func uploadFileResponseDiagnostic(body []byte, truncated bool) string {
-	value := strings.Join(strings.Fields(string(body)), " ")
-	if value == "" {
-		value = "<empty>"
-	}
-	const maxRunes = 120
-	runes := []rune(value)
-	if len(runes) > maxRunes {
-		value = string(runes[:maxRunes])
-		truncated = true
-	}
-	if truncated {
-		value += "..."
-	}
-	return value
 }
 
 func (a *Adapter) createMediaPost(ctx context.Context, cfg Config, lease *egress.Lease, token, mediaType, mediaURL, prompt string) (string, error) {
@@ -1335,18 +1326,26 @@ func (a *Adapter) createMediaPost(ctx context.Context, cfg Config, lease *egress
 
 func parseMediaPostResponse(response *http.Response) (string, error) {
 	const responseLimit = 2 << 20
-	body, err := io.ReadAll(io.LimitReader(response.Body, responseLimit+1))
+	readLimit := responseLimit
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		readLimit = webMediaDiagnosticBodyLimit
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, int64(readLimit)+1))
 	if err != nil {
 		return "", fmt.Errorf("读取媒体 Post 响应: %w", err)
 	}
-	if len(body) > responseLimit {
+	truncated := len(body) > readLimit
+	if truncated {
+		body = body[:readLimit]
+	}
+	if truncated && response.StatusCode >= 200 && response.StatusCode < 300 {
 		return "", fmt.Errorf("创建媒体 Post 响应超过安全上限")
 	}
 	if response.StatusCode == http.StatusUnauthorized {
 		return "", provider.ErrUnauthorized
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", &webMediaUpstreamError{status: response.StatusCode, body: strings.TrimSpace(string(body))}
+		return "", newWebMediaUpstreamError(response.StatusCode, body, truncated)
 	}
 	var value struct {
 		Post struct {

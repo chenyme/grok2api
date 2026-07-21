@@ -566,7 +566,7 @@ func (s *Service) logVideoGenerationFailure(job media.Job, credential account.Cr
 		"model", job.UpstreamModel,
 		"egress_scope", job.EgressScope,
 		"egress_mode", job.EgressMode,
-		"error", err,
+		"error", sanitizeDiagnosticText(err.Error(), 512),
 	}
 	if status, ok := provider.ErrorHTTPStatus(err); ok {
 		attributes = append(attributes, "upstream_status", status)
