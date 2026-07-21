@@ -10,8 +10,8 @@ import (
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 )
 
-// Selection 是一次上游请求实际选择的出口快照。它只包含可安全写入审计的元数据，
-// 不包含代理 URL、认证信息、User-Agent 或 Cookie。
+// Selection is the egress snapshot actually selected for an upstream request. It contains only metadata safe for audit
+// and excludes proxy URLs, credentials, User-Agent, and Cookies.
 type Selection struct {
 	NodeID   uint64
 	NodeName string
@@ -19,8 +19,8 @@ type Selection struct {
 	Proxied  bool
 }
 
-// Trace 按作用域保留最后一次实际出口选择。相同请求发生出口重试时，审计记录最终尝试；
-// Web 资源归档使用独立作用域，不会覆盖主要的 Grok Web 推理出口。
+// Trace retains the most recent actual egress selection per scope. When a request retries egress, audit records the final attempt.
+// Web asset archival uses an independent scope and does not overwrite the primary Grok Web inference egress.
 type Trace struct {
 	mu         sync.RWMutex
 	selections map[domain.Scope]Selection
@@ -29,8 +29,8 @@ type Trace struct {
 type traceContextKey struct{}
 type accountContextKey struct{}
 
-// WithAccount 将稳定的 Provider 账号身份传递到出口层。该值只用于渲染
-// Resin 等粘性代理的认证用户名，不会写入上游 Header 或审计。
+// WithAccount passes a stable Provider account identity to the egress layer. It is used only to render
+// authentication usernames for sticky proxies such as Resin and is never written to upstream headers or audit.
 func WithAccount(ctx context.Context, provider string, accountID uint64) context.Context {
 	if ctx == nil || strings.TrimSpace(provider) == "" || accountID == 0 {
 		return ctx
@@ -38,7 +38,8 @@ func WithAccount(ctx context.Context, provider string, accountID uint64) context
 	return WithAccountIdentity(ctx, strings.TrimSpace(provider)+"_"+fmt.Sprintf("%d", accountID))
 }
 
-// WithCredential 将弱关联账号的稳定出口身份传给 Build 传输；未关联账号保持原有 Provider+ID 身份。
+// WithCredential passes the stable egress identity of a weakly linked account to Build transport;
+// unlinked accounts retain the existing Provider+ID identity.
 func WithCredential(ctx context.Context, credential accountdomain.Credential) context.Context {
 	identity := strings.TrimSpace(credential.EgressIdentity)
 	if identity == "" {
@@ -52,7 +53,7 @@ func WithCredential(ctx context.Context, credential accountdomain.Credential) co
 }
 
 // WithAccountIdentity attaches the stable, non-sensitive identity used by
-// account-bound proxy templates such as Resin.  Providers that represent the
+// account-bound proxy templates such as Resin. Providers that represent the
 // same upstream login (for example Web and Console sharing one SSO token) can
 // deliberately pass the same identity so their proxy and clearance lease is
 // not split by the internal provider name.
@@ -75,7 +76,7 @@ func accountFromContext(ctx context.Context) string {
 // provider transports while keeping the context key private.
 func AccountFromContext(ctx context.Context) string { return accountFromContext(ctx) }
 
-// WithTrace 为一次网关请求创建或复用并发安全的出口选择轨迹。
+// WithTrace creates or reuses a concurrency-safe egress selection trace for one gateway request.
 func WithTrace(ctx context.Context) (context.Context, *Trace) {
 	if existing := TraceFromContext(ctx); existing != nil {
 		return ctx, existing
@@ -84,7 +85,7 @@ func WithTrace(ctx context.Context) (context.Context, *Trace) {
 	return context.WithValue(ctx, traceContextKey{}, trace), trace
 }
 
-// TraceFromContext 返回上下文中的出口轨迹；未配置时返回 nil。
+// TraceFromContext returns the egress trace from context, or nil when none is configured.
 func TraceFromContext(ctx context.Context) *Trace {
 	if ctx == nil {
 		return nil
@@ -93,7 +94,7 @@ func TraceFromContext(ctx context.Context) *Trace {
 	return trace
 }
 
-// Selection 返回指定作用域最后一次实际出口选择的安全快照。
+// Selection returns a safe snapshot of the most recent actual egress selection for a scope.
 func (t *Trace) Selection(scope domain.Scope) (Selection, bool) {
 	if t == nil {
 		return Selection{}, false

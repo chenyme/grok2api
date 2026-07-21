@@ -26,9 +26,8 @@ func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
 		return nil, fmt.Errorf("解析 Console Responses 请求: %w", err)
 	}
 	payload["model"] = spec.UpstreamModel
-	// Console is stateless.  Match the reference adapter's compatibility
-	// boundary: replay the supplied input and silently discard stateful client
-	// hints instead of rejecting an otherwise valid request.
+	// Console is stateless. Replay the supplied input and silently discard
+	// stateful client hints instead of rejecting an otherwise valid request.
 	payload["store"] = false
 	for _, field := range []string{
 		"metadata", "previous_response_id", "service_tier", "prompt_cache_key",

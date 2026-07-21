@@ -133,7 +133,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	modelRepo := relational.NewModelRepository(database)
 	auditRepo := relational.NewAuditRepository(database)
 
-	// Super 主 Build：上游仅 grok-4.5，未开 fallback。
+	// Super on primary Build: upstream exposes only grok-4.5 and fallback is disabled.
 	superPrimary, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "super-primary", SourceKey: "super-primary",
 		EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive,
@@ -141,7 +141,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Super fallback：上游目录含 1.5 与其它模型。
+	// Super with fallback: the upstream catalog includes 1.5 and other models.
 	superFallback, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "super-fallback", SourceKey: "super-fallback",
 		EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive,
@@ -150,7 +150,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Free：Billing 无 paid 信号，但上游目录暴露 1.5。
+	// Free: Billing has no paid signal, but the upstream catalog exposes 1.5.
 	freeAccount, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "free-fallback", SourceKey: "free-fallback",
 		EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive,
@@ -159,7 +159,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Unknown：无 Billing 快照，上游目录暴露 1.5。
+	// Unknown: no Billing snapshot and the upstream catalog exposes 1.5.
 	unknownAccount, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "unknown", SourceKey: "unknown",
 		EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive,
@@ -167,7 +167,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Web 不应实现能力归一化；目录原样写入。
+	// Web must not implement capability normalization; persist its catalog unchanged.
 	webAccount, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper, Name: "web", SourceKey: "web",
 		EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive,
@@ -189,9 +189,9 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 
 	const video15 = "grok-imagine-video-1.5"
 	buildAdapter := &buildCapabilityNormalizerAdapter{modelCapabilityAdapter: &modelCapabilityAdapter{models: map[uint64][]string{
-		superPrimary.ID:  {"grok-4.5"},
-		superFallback.ID: {"grok-4.5", video15, "grok-code-fast-1", video15},
-		freeAccount.ID:   {"grok-4.5", video15},
+		superPrimary.ID:   {"grok-4.5"},
+		superFallback.ID:  {"grok-4.5", video15, "grok-code-fast-1", video15},
+		freeAccount.ID:    {"grok-4.5", video15},
 		unknownAccount.ID: {video15, "grok-4.5"},
 	}}}
 	webAdapter := &modelCapabilityAdapter{provider: account.ProviderWeb, models: map[uint64][]string{
@@ -236,12 +236,12 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	assertSupports(superFallback.ID, "grok-code-fast-1", true)
 	assertSupports(freeAccount.ID, "grok-4.5", true)
 
-	// Build 1.5 路由默认 capability 为 video。
+	// Build 1.5 routes default to the video capability.
 	route, err := modelRepo.GetByPublicID(ctx, "Build/"+video15)
 	if err != nil || route.Capability != modeldomain.CapabilityVideo {
 		t.Fatalf("build video route = %#v, err = %v", route, err)
 	}
-	// Web 未走 Build 归一化，仍支持其目录模型。
+	// Web does not use Build normalization and still supports its catalog models.
 	webCandidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderWeb, "grok-imagine-video", "")
 	if err != nil || len(webCandidates) != 1 || !webCandidates[0].SupportsModel {
 		t.Fatalf("web candidates = %#v, err = %v", webCandidates, err)
@@ -331,13 +331,13 @@ type modelCapabilityAdapter struct {
 	peak     atomic.Int64
 }
 
-// buildCapabilityNormalizerAdapter 模拟 Build Adapter：实现可选能力归一化契约。
+// buildCapabilityNormalizerAdapter simulates a Build Adapter implementing optional capability normalization.
 type buildCapabilityNormalizerAdapter struct {
 	*modelCapabilityAdapter
 }
 
 func (a *buildCapabilityNormalizerAdapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string {
-	// 与 cli.Adapter 规则一致：Super（paid 或 entitlement）确保 1.5；否则精确移除。不读 BuildAPIFallback。
+	// Match cli.Adapter rules: Super (paid or entitlement) ensures 1.5; otherwise remove it exactly. Ignore BuildAPIFallback.
 	const video15 = "grok-imagine-video-1.5"
 	super := account.IsBuildSuper(credential, billing)
 	result := make([]string, 0, len(models)+1)
