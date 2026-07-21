@@ -754,6 +754,31 @@ func TestDecodeDirectFileUploadResponse(t *testing.T) {
 	}
 }
 
+func TestDecodeLegacyFileUploadResponseDiagnostics(t *testing.T) {
+	uploaded, err := decodeLegacyFileUploadResponse(http.StatusOK, []byte(`{"fileId":"file-1","fileUri":"users/test/file-1/content"}`))
+	if err != nil || uploaded.ID != "file-1" || uploaded.URI != "https://assets.grok.com/users/test/file-1/content" {
+		t.Fatalf("uploaded=%#v err=%v", uploaded, err)
+	}
+
+	_, err = decodeLegacyFileUploadResponse(http.StatusRequestEntityTooLarge, []byte(`{"error":{"message":"payload too large"}}`))
+	var upstreamErr *webMediaUpstreamError
+	if !errors.As(err, &upstreamErr) || upstreamErr.status != http.StatusRequestEntityTooLarge ||
+		!strings.Contains(err.Error(), "payload too large") {
+		t.Fatalf("upstream error = %v", err)
+	}
+
+	_, err = decodeLegacyFileUploadResponse(http.StatusOK, []byte("<html>bad gateway</html>"))
+	if err == nil || !strings.Contains(err.Error(), "上传文件响应无效") ||
+		!strings.Contains(err.Error(), "<html>bad gateway</html>") {
+		t.Fatalf("invalid response error = %v", err)
+	}
+
+	_, err = decodeLegacyFileUploadResponse(http.StatusBadGateway, nil)
+	if !errors.As(err, &upstreamErr) || !strings.Contains(err.Error(), "<empty>") {
+		t.Fatalf("empty upstream error = %v", err)
+	}
+}
+
 func TestDirectFileUploadFallbackOnlyForUnsupportedEndpoint(t *testing.T) {
 	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone, http.StatusNotImplemented} {
 		if !directFileUploadFallbackStatus(status) {
