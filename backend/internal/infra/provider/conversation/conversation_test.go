@@ -232,6 +232,31 @@ func TestConvertAnthropicMessagesRequestToResponses(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicMessagesDropsClaudeCodeBillingAttribution(t *testing.T) {
+	body := []byte(`{
+		"model":"claude","max_tokens":128,
+		"system":[
+			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.170.abc; cc_entrypoint=sdk-cli; cch=12345;"},
+			{"type":"text","text":"stable system instruction","cache_control":{"type":"ephemeral"}}
+		],
+		"messages":[{"role":"user","content":"hello"}]
+	}`)
+	converted, err := ConvertRequest(body, "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["instructions"] != "stable system instruction" {
+		t.Fatalf("instructions = %#v", payload["instructions"])
+	}
+	if strings.Contains(string(converted), anthropicBillingHeaderPrefix) {
+		t.Fatalf("billing attribution leaked into Build request: %s", converted)
+	}
+}
+
 func TestConvertAnthropicMessagesInlineSystemRole(t *testing.T) {
 	body := []byte(`{
 		"model":"public-chat","max_tokens":1024,
