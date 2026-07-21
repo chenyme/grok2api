@@ -20,7 +20,7 @@ func TestExtractPromptCacheSeedSupportsClaudeCodeForms(t *testing.T) {
 		{name: "codex window header", headers: http.Header{"X-Codex-Window-Id": {"window-2"}}, want: "codex:window:window-2"},
 		{name: "generic header", headers: http.Header{"X-Session-Id": {"generic-session"}}, want: "generic-session"},
 		{name: "codex hyphen header", headers: http.Header{"Session-Id": {"codex-session"}}, want: "codex-session"},
-		{name: "codex underscore header", headers: http.Header{"Session_id": {"legacy-codex-session"}}, want: "legacy-codex-session"},
+		{name: "underscore session header", headers: http.Header{"Session_id": {"underscore-session"}}, want: "underscore-session"},
 		{name: "metadata snake case", body: `{"metadata":{"session_id":"snake-session"}}`, want: "snake-session"},
 		{name: "metadata camel case", body: `{"metadata":{"sessionId":"camel-session"}}`, want: "camel-session"},
 		{name: "embedded json user id", body: `{"metadata":{"user_id":"{\"device_id\":\"d1\",\"session_id\":\"embedded-session\"}"}}`, want: "claude:embedded-session:agent:main"},
@@ -75,7 +75,7 @@ func TestAllowBuildClientToolCacheRouteUsesKnownCLISignals(t *testing.T) {
 		want    bool
 	}{
 		{name: "claude", headers: http.Header{"X-Claude-Code-Session-Id": {"session"}}, want: true},
-		{name: "codex metadata", headers: http.Header{"X-Codex-Turn-Metadata": {"metadata"}}, want: true},
+		{name: "codex metadata", headers: http.Header{"X-Codex-Turn-Metadata": {`{"window_id":"window-1"}`}}, want: true},
 		{name: "codex user agent", headers: http.Header{"User-Agent": {"Codex Desktop/1.0"}}, want: true},
 		{name: "generic", headers: http.Header{"User-Agent": {"custom-client/1.0"}}},
 	}

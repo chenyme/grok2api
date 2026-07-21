@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 )
 
 func TestPrepareBuildPromptCacheRouteToolFree(t *testing.T) {
@@ -122,20 +120,6 @@ func TestPrepareBuildPromptCacheRoutePreservesExplicitXSearch(t *testing.T) {
 	}
 }
 
-func TestIsKnownFreeBuildCacheAccount(t *testing.T) {
-	if !isKnownFreeBuildCacheAccount(accountdomain.Credential{Provider: accountdomain.ProviderBuild, ObservedModel: "grok-4.5-build-free"}, nil) {
-		t.Fatal("observed build-free account was not recognized")
-	}
-	freeBilling := &accountdomain.Billing{PlanName: "free"}
-	if !isKnownFreeBuildCacheAccount(accountdomain.Credential{Provider: accountdomain.ProviderBuild}, freeBilling) {
-		t.Fatal("explicit free billing account was not recognized")
-	}
-	paidBilling := &accountdomain.Billing{PlanName: "supergrok"}
-	if isKnownFreeBuildCacheAccount(accountdomain.Credential{Provider: accountdomain.ProviderBuild, ObservedModel: "grok-4.5-build-free"}, paidBilling) {
-		t.Fatal("paid evidence must override stale build-free observation")
-	}
-}
-
 func TestPrepareBuildPromptCacheRouteRespectsBoundaries(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -175,6 +159,7 @@ func TestFilterBuildPromptCacheResponseJSON(t *testing.T) {
 		"tools":[{"type":"function","name":"x_keyword_search"},{"type":"x_search"}],
 		"output":[
 			{"type":"custom_tool_call","id":"internal","call_id":"xs_call-1","name":"x_keyword_search"},
+			{"type":"custom_tool_call","id":"client_custom","call_id":"call_custom_1","name":"x_keyword_search","input":"{}"},
 			{"type":"function_call","id":"client","call_id":"call_1","name":"x_keyword_search","arguments":"{}"},
 			{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"done"}]}
 		]
@@ -187,7 +172,7 @@ func TestFilterBuildPromptCacheResponseJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if strings.Contains(text, `"id":"internal"`) || strings.Contains(text, `"type":"x_search"`) || !strings.Contains(text, `"id":"client"`) || !strings.Contains(text, `"id":"msg_1"`) || !strings.Contains(text, `"cost_in_usd_ticks":9007199254740993`) {
+	if strings.Contains(text, `"id":"internal"`) || strings.Contains(text, `"type":"x_search"`) || !strings.Contains(text, `"id":"client_custom"`) || !strings.Contains(text, `"id":"client"`) || !strings.Contains(text, `"id":"msg_1"`) || !strings.Contains(text, `"cost_in_usd_ticks":9007199254740993`) {
 		t.Fatalf("filtered response = %s", text)
 	}
 	if response.ContentLength != int64(len(data)) || response.Header.Get("Content-Length") != strconv.Itoa(len(data)) {

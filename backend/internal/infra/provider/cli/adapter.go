@@ -159,7 +159,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	if len(body) > 0 && request.Method == http.MethodPost {
 		if !compactionRequested {
-			allowClientTools := request.AllowClientToolCacheRoute || isKnownFreeBuildCacheAccount(request.Credential, request.Billing)
+			allowClientTools := request.AllowClientToolCacheRoute || (account.RoutingCandidate{Credential: request.Credential, Billing: request.Billing}).IsKnownFreeBuild()
 			body, cacheRoute, err = prepareBuildPromptCacheRoute(body, request.Operation, request.Model, request.PromptCacheKey, allowClientTools)
 			if err != nil {
 				err = fmt.Errorf("准备 Build prompt cache 路由: %w", err)

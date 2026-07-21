@@ -222,10 +222,8 @@ func (f *buildXSearchResponseFilter) isInternalCall(raw json.RawMessage) bool {
 	if !isBuildInternalXSearchToolName(name) || strings.TrimSpace(item.Namespace) != "" {
 		return false
 	}
-	if kind == "function_call" {
-		if _, declared := f.clientTools[name]; declared {
-			return false
-		}
+	if _, declared := f.clientTools[name]; declared {
+		return false
 	}
 	return true
 }

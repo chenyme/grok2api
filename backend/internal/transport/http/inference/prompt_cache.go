@@ -29,10 +29,10 @@ func extractPromptCacheSeed(headers http.Header, body []byte) string {
 			return seed
 		}
 		for _, name := range []string{
-			"X-Session-ID", "X-Session-Id", "Session-Id", "Session_id", "session_id",
-			"X-Conversation-Id", "Conversation-Id", "Conversation_id", "conversation_id",
+			"X-Session-Id", "Session-Id", "Session_id",
+			"X-Conversation-Id", "Conversation-Id", "Conversation_id",
 			// Support session signals forwarded by reverse proxies.
-			"X-Client-Session-Id", "X-Grok-Conv-Id", "x-grok-conv-id",
+			"X-Client-Session-Id", "X-Grok-Conv-Id",
 		} {
 			if seed := normalizePromptCacheSeed(headers.Get(name)); seed != "" {
 				return seed
@@ -138,7 +138,7 @@ func codexPromptCacheSeedFromTurnMetadata(value string) string {
 }
 
 func codexPromptCacheSeedFromRawTurnMetadata(raw json.RawMessage) string {
-	if len(raw) == 0 || isJSONNull(raw) {
+	if len(raw) == 0 {
 		return ""
 	}
 	var value string
@@ -149,7 +149,7 @@ func codexPromptCacheSeedFromRawTurnMetadata(raw json.RawMessage) string {
 }
 
 func normalizeRawPromptCacheSeed(raw json.RawMessage) string {
-	if len(raw) == 0 || isJSONNull(raw) {
+	if len(raw) == 0 {
 		return ""
 	}
 	var value string
@@ -159,10 +159,6 @@ func normalizeRawPromptCacheSeed(raw json.RawMessage) string {
 	return normalizePromptCacheSeed(value)
 }
 
-func isJSONNull(raw json.RawMessage) bool {
-	return strings.EqualFold(strings.TrimSpace(string(raw)), "null")
-}
-
 func allowBuildClientToolCacheRoute(headers http.Header) bool {
 	if headers == nil {
 		return false
@@ -170,7 +166,7 @@ func allowBuildClientToolCacheRoute(headers http.Header) bool {
 	if normalizePromptCacheSeed(headers.Get("X-Claude-Code-Session-Id")) != "" {
 		return true
 	}
-	if strings.TrimSpace(headers.Get("X-Codex-Turn-Metadata")) != "" || strings.TrimSpace(headers.Get("X-Codex-Window-Id")) != "" {
+	if codexPromptCacheSeedFromHeaders(headers) != "" {
 		return true
 	}
 	return strings.Contains(strings.ToLower(headers.Get("User-Agent")), "codex")

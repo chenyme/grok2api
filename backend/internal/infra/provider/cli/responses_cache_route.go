@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 )
 
 // buildPromptCacheRoute records internal tools added to route this request through the cache-capable path.
@@ -46,7 +44,7 @@ func prepareBuildPromptCacheRoute(body []byte, operation, model, promptCacheKey 
 
 	// Hide upstream internal subcalls even when the client explicitly declares x_search.
 	// Cache routing itself applies only to plain-text conversations with a stable cache session identity.
-	if strings.TrimSpace(promptCacheKey) == "" || !isBuildCacheConversationOperation(operation) || isBuildCacheMediaModel(model) || hasBuildCacheMediaTool(tools) {
+	if strings.TrimSpace(promptCacheKey) == "" || !isBuildCacheConversationOperation(operation) || isBuildCacheMediaModel(model) || hasBuildCacheToolType(tools, "image_generation") {
 		return body, route, nil
 	}
 
@@ -109,10 +107,6 @@ func appendBuildCacheXSearchToAllowedTools(raw json.RawMessage) (json.RawMessage
 	return json.Marshal(choice)
 }
 
-func isKnownFreeBuildCacheAccount(credential accountdomain.Credential, billing *accountdomain.Billing) bool {
-	return (accountdomain.RoutingCandidate{Credential: credential, Billing: billing}).IsKnownFreeBuild()
-}
-
 func buildCacheRouteTools(payload map[string]json.RawMessage) ([]json.RawMessage, error) {
 	raw, exists := payload["tools"]
 	if !exists || isEmptyJSON(raw) {
@@ -140,15 +134,6 @@ func hasBuildCacheToolType(tools []json.RawMessage, kind string) bool {
 	for _, rawTool := range tools {
 		toolType, _ := buildCacheToolIdentity(rawTool)
 		if toolType == kind {
-			return true
-		}
-	}
-	return false
-}
-
-func hasBuildCacheMediaTool(tools []json.RawMessage) bool {
-	for _, kind := range []string{"image_generation"} {
-		if hasBuildCacheToolType(tools, kind) {
 			return true
 		}
 	}
