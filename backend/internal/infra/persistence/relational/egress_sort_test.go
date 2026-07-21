@@ -3,7 +3,9 @@ package relational
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -39,6 +41,36 @@ func TestEgressRepositorySortsInDatabase(t *testing.T) {
 	values, err := repo.ListEgressNodes(ctx, "", repository.SortQuery{Field: "health", Direction: repository.SortDescending})
 	if err != nil || len(values) != 3 || values[0].Name != "healthy" || values[2].Name != "slow" {
 		t.Fatalf("health sort = %#v, err = %v", values, err)
+	}
+}
+
+func TestEgressStateUpdatesDoNotOverwriteClearanceOrHealth(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "egress-state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewEgressRepository(database)
+	node, err := repo.CreateEgressNode(ctx, egress.Node{Name: "web", Scope: egress.ScopeWeb, Enabled: true, Health: 1, UserAgent: "old", EncryptedCloudflareCookie: "old-cookie"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateEgressNodeHealth(ctx, node.ID, 0.4, 2, nil, "anti-bot rejection"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateEgressNodeClearance(ctx, node.ID, "new-cookie", "new-agent", strings.Repeat("a", 64), strings.Repeat("b", 64), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := repo.GetEgressNode(ctx, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.Health != 0.4 || actual.FailureCount != 2 || actual.EncryptedCloudflareCookie != "new-cookie" || actual.UserAgent != "new-agent" || actual.ClearanceBindingFingerprint != strings.Repeat("b", 64) {
+		t.Fatalf("partial updates overwrote state: %#v", actual)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
@@ -21,7 +22,20 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/egress-nodes", h.list)
 	router.POST("/egress-nodes", h.create)
 	router.PUT("/egress-nodes/:id", h.update)
+	router.POST("/egress-nodes/:id/refresh-clearance", h.refreshClearance)
 	router.DELETE("/egress-nodes/:id", h.delete)
+}
+
+func (h *Handler) refreshClearance(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := h.service.RefreshClearance(c.Request.Context(), id); err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"refreshed": true})
 }
 
 type nodeRequest struct {
@@ -36,17 +50,18 @@ type nodeRequest struct {
 }
 
 type nodeResponse struct {
-	ID               uint64     `json:"id,string"`
-	Name             string     `json:"name"`
-	Scope            string     `json:"scope"`
-	Enabled          bool       `json:"enabled"`
-	ProxyConfigured  bool       `json:"proxyConfigured"`
-	UserAgent        string     `json:"userAgent"`
-	CookieConfigured bool       `json:"cookieConfigured"`
-	Health           float64    `json:"health"`
-	FailureCount     int        `json:"failureCount"`
-	CooldownUntil    *time.Time `json:"cooldownUntil,omitempty"`
-	LastError        string     `json:"lastError,omitempty"`
+	ID                uint64     `json:"id,string"`
+	Name              string     `json:"name"`
+	Scope             string     `json:"scope"`
+	Enabled           bool       `json:"enabled"`
+	ProxyConfigured   bool       `json:"proxyConfigured"`
+	UserAgent         string     `json:"userAgent"`
+	CookieConfigured  bool       `json:"cookieConfigured"`
+	AccountBoundProxy bool       `json:"accountBoundProxy"`
+	Health            float64    `json:"health"`
+	FailureCount      int        `json:"failureCount"`
+	CooldownUntil     *time.Time `json:"cooldownUntil,omitempty"`
+	LastError         string     `json:"lastError,omitempty"`
 }
 
 func (value nodeRequest) input() egressapp.Input {
@@ -115,7 +130,8 @@ func newNodeResponse(value egressdomain.PublicNode) nodeResponse {
 	return nodeResponse{
 		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled,
 		ProxyConfigured: value.ProxyConfigured, UserAgent: value.UserAgent, CookieConfigured: value.CookieConfigured,
-		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
+		AccountBoundProxy: value.AccountBoundProxy,
+		Health:            value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
 	}
 }
 
@@ -137,6 +153,10 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 		response.Error(c, http.StatusBadRequest, "invalidEgressNode", err.Error())
 	case errors.Is(err, egressapp.ErrNotFound):
 		response.Error(c, http.StatusNotFound, "egressNodeNotFound", err.Error())
+	case errors.Is(err, egressapp.ErrClearanceUnavailable):
+		response.Error(c, http.StatusConflict, "clearanceRefreshUnavailable", err.Error())
+	case strings.Contains(err.Error(), "FlareSolverr") || strings.Contains(err.Error(), "Clearance"):
+		response.Error(c, http.StatusBadGateway, "clearanceRefreshFailed", err.Error())
 	default:
 		response.Error(c, http.StatusInternalServerError, "egressNodeOperationFailed", "代理节点操作失败")
 	}

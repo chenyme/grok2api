@@ -40,6 +40,10 @@ type ProviderWebConfig struct {
 	StatsigManualValue      string
 	StatsigManualConfigured bool
 	StatsigSignerURL        string
+	ClearanceMode           string
+	FlareSolverrURL         string
+	ClearanceTimeout        string
+	ClearanceRefresh        string
 	QuotaTimeout            string
 	ChatTimeout             string
 	ImageTimeout            string
@@ -48,6 +52,9 @@ type ProviderWebConfig struct {
 	AllowNSFW               bool
 	RecoveryBackoffBase     string
 	RecoveryBackoffMax      string
+	// ClearanceProvided distinguishes older admin clients that predate the
+	// managed-clearance fields from an explicit update to those fields.
+	ClearanceProvided bool
 }
 
 type ProviderConsoleConfig struct {
@@ -104,6 +111,14 @@ type ClientKeyDefaultsConfig struct {
 	MaxConcurrent int
 }
 
+// AccountsConfig 是管理接口使用的账号池维护策略输入。
+type AccountsConfig struct {
+	AutoCleanReauthEnabled   bool
+	AutoCleanReauthInterval  string
+	AutoCleanReauthMinAge    string
+	AutoCleanIncludeDisabled bool
+}
+
 // EditableConfig 聚合管理端允许修改的运行参数。
 type EditableConfig struct {
 	Server            ServerConfig
@@ -116,6 +131,9 @@ type EditableConfig struct {
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+	Accounts          AccountsConfig
+	// AccountsProvided 区分旧管理端未发送 accounts 与显式提交默认值。
+	AccountsProvided bool
 }
 
 // Snapshot 表示当前运行设置和需要重启才能生效的字段。
@@ -265,9 +283,27 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		ClientVersion: value.ProviderBuild.ClientVersion, ClientIdentifier: value.ProviderBuild.ClientIdentifier,
 		TokenAuth: value.ProviderBuild.TokenAuth, UserAgent: value.ProviderBuild.UserAgent,
 	}
+	clearanceMode := strings.TrimSpace(value.ProviderWeb.ClearanceMode)
+	if clearanceMode == "" {
+		clearanceMode = base.Provider.Web.ClearanceMode
+	}
+	flareSolverrURL := strings.TrimSpace(value.ProviderWeb.FlareSolverrURL)
+	if flareSolverrURL == "" {
+		flareSolverrURL = base.Provider.Web.FlareSolverrURL
+	}
+	clearanceTimeout := value.ProviderWeb.ClearanceTimeout
+	if clearanceTimeout <= 0 {
+		clearanceTimeout = base.Provider.Web.ClearanceTimeout.Value()
+	}
+	clearanceRefresh := value.ProviderWeb.ClearanceRefresh
+	if clearanceRefresh <= 0 {
+		clearanceRefresh = base.Provider.Web.ClearanceRefresh.Value()
+	}
 	base.Provider.Web = config.WebProviderConfig{
 		BaseURL: value.ProviderWeb.BaseURL, QuotaTimeout: config.Duration(value.ProviderWeb.QuotaTimeout),
 		StatsigMode: value.ProviderWeb.StatsigMode, StatsigManualValue: value.ProviderWeb.StatsigManualValue, StatsigSignerURL: value.ProviderWeb.StatsigSignerURL,
+		ClearanceMode: clearanceMode, FlareSolverrURL: flareSolverrURL,
+		ClearanceTimeout: config.Duration(clearanceTimeout), ClearanceRefresh: config.Duration(clearanceRefresh),
 		ChatTimeout: config.Duration(value.ProviderWeb.ChatTimeout), ImageTimeout: config.Duration(value.ProviderWeb.ImageTimeout),
 		VideoTimeout:     config.Duration(value.ProviderWeb.VideoTimeout),
 		MediaConcurrency: value.ProviderWeb.MediaConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
@@ -306,6 +342,15 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.ClientKeyDefaults = config.ClientKeyDefaultsConfig{
 		RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
 	}
+	// Accounts 为后续新增段；旧持久化缺字段时沿用代码默认（全部关闭）。
+	if value.Accounts.AutoCleanReauthInterval > 0 {
+		base.Accounts.AutoCleanReauthInterval = config.Duration(value.Accounts.AutoCleanReauthInterval)
+	}
+	if value.Accounts.AutoCleanReauthMinAge > 0 {
+		base.Accounts.AutoCleanReauthMinAge = config.Duration(value.Accounts.AutoCleanReauthMinAge)
+	}
+	base.Accounts.AutoCleanReauthEnabled = value.Accounts.AutoCleanReauthEnabled
+	base.Accounts.AutoCleanIncludeDisabled = value.Accounts.AutoCleanIncludeDisabled
 	return base
 }
 
@@ -322,7 +367,9 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			BaseURL: value.Provider.Web.BaseURL, QuotaTimeout: value.Provider.Web.QuotaTimeout.Value(),
 			StatsigMode: value.Provider.Web.StatsigMode, StatsigManualValue: value.Provider.Web.StatsigManualValue,
 			StatsigSignerURL: value.Provider.Web.StatsigSignerURL,
-			ChatTimeout:      value.Provider.Web.ChatTimeout.Value(), ImageTimeout: value.Provider.Web.ImageTimeout.Value(),
+			ClearanceMode:    value.Provider.Web.ClearanceMode, FlareSolverrURL: value.Provider.Web.FlareSolverrURL,
+			ClearanceTimeout: value.Provider.Web.ClearanceTimeout.Value(), ClearanceRefresh: value.Provider.Web.ClearanceRefresh.Value(),
+			ChatTimeout: value.Provider.Web.ChatTimeout.Value(), ImageTimeout: value.Provider.Web.ImageTimeout.Value(),
 			VideoTimeout:     value.Provider.Web.VideoTimeout.Value(),
 			MediaConcurrency: value.Provider.Web.MediaConcurrency, AllowNSFW: value.Provider.Web.AllowNSFW,
 			RecoveryBackoffBase: value.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: value.Provider.Web.RecoveryBackoffMax.Value(),
@@ -352,6 +399,12 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		},
 		ClientKeyDefaults: settingsdomain.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
+		},
+		Accounts: settingsdomain.AccountsConfig{
+			AutoCleanReauthEnabled:   value.Accounts.AutoCleanReauthEnabled,
+			AutoCleanReauthInterval:  value.Accounts.AutoCleanReauthInterval.Value(),
+			AutoCleanReauthMinAge:    value.Accounts.AutoCleanReauthMinAge.Value(),
+			AutoCleanIncludeDisabled: value.Accounts.AutoCleanIncludeDisabled,
 		},
 	}
 }
@@ -388,6 +441,10 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Provider.Web.BaseURL = strings.TrimSpace(input.ProviderWeb.BaseURL)
 	next.Provider.Web.StatsigMode = strings.TrimSpace(input.ProviderWeb.StatsigMode)
 	next.Provider.Web.StatsigSignerURL = strings.TrimSpace(input.ProviderWeb.StatsigSignerURL)
+	if input.ProviderWeb.ClearanceProvided {
+		next.Provider.Web.ClearanceMode = strings.TrimSpace(input.ProviderWeb.ClearanceMode)
+		next.Provider.Web.FlareSolverrURL = strings.TrimSpace(input.ProviderWeb.FlareSolverrURL)
+	}
 	if next.Provider.Web.StatsigMode == config.StatsigModeManual {
 		if value := strings.TrimSpace(input.ProviderWeb.StatsigManualValue); value != "" {
 			next.Provider.Web.StatsigManualValue = value
@@ -412,12 +469,17 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Audit.BatchSize = input.Audit.BatchSize
 	next.ClientKeyDefaults.RPMLimit = input.ClientKeyDefaults.RPMLimit
 	next.ClientKeyDefaults.MaxConcurrent = input.ClientKeyDefaults.MaxConcurrent
+	if input.AccountsProvided {
+		next.Accounts.AutoCleanReauthEnabled = input.Accounts.AutoCleanReauthEnabled
+		next.Accounts.AutoCleanIncludeDisabled = input.Accounts.AutoCleanIncludeDisabled
+	}
 
-	durations := []struct {
+	type durationInput struct {
 		path  string
 		value string
 		set   func(config.Duration)
-	}{
+	}
+	durations := []durationInput{
 		{"routing.stickyTTL", input.Routing.StickyTTL, func(value config.Duration) { next.Routing.StickyTTL = value }},
 		{"routing.cooldownBase", input.Routing.CooldownBase, func(value config.Duration) { next.Routing.CooldownBase = value }},
 		{"routing.cooldownMax", input.Routing.CooldownMax, func(value config.Duration) { next.Routing.CooldownMax = value }},
@@ -432,6 +494,18 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		{"providerConsole.chatTimeout", input.ProviderConsole.ChatTimeout, func(value config.Duration) { next.Provider.Console.ChatTimeout = value }},
 		{"media.cleanupInterval", input.Media.CleanupInterval, func(value config.Duration) { next.Media.CleanupInterval = value }},
 		{"batch.randomDelay", input.Batch.RandomDelay, func(value config.Duration) { next.Batch.RandomDelay = value }},
+	}
+	if input.ProviderWeb.ClearanceProvided {
+		durations = append(durations,
+			durationInput{"providerWeb.clearanceTimeout", input.ProviderWeb.ClearanceTimeout, func(value config.Duration) { next.Provider.Web.ClearanceTimeout = value }},
+			durationInput{"providerWeb.clearanceRefresh", input.ProviderWeb.ClearanceRefresh, func(value config.Duration) { next.Provider.Web.ClearanceRefresh = value }},
+		)
+	}
+	if input.AccountsProvided {
+		durations = append(durations,
+			durationInput{"accounts.autoCleanReauthInterval", input.Accounts.AutoCleanReauthInterval, func(value config.Duration) { next.Accounts.AutoCleanReauthInterval = value }},
+			durationInput{"accounts.autoCleanReauthMinAge", input.Accounts.AutoCleanReauthMinAge, func(value config.Duration) { next.Accounts.AutoCleanReauthMinAge = value }},
+		)
 	}
 	for _, item := range durations {
 		value, err := time.ParseDuration(strings.TrimSpace(item.value))
@@ -458,7 +532,9 @@ func toEditable(cfg config.Config) EditableConfig {
 			BaseURL: cfg.Provider.Web.BaseURL, QuotaTimeout: cfg.Provider.Web.QuotaTimeout.String(),
 			StatsigMode: cfg.Provider.Web.StatsigMode, StatsigManualConfigured: strings.TrimSpace(cfg.Provider.Web.StatsigManualValue) != "",
 			StatsigSignerURL: cfg.Provider.Web.StatsigSignerURL,
-			ChatTimeout:      cfg.Provider.Web.ChatTimeout.String(), ImageTimeout: cfg.Provider.Web.ImageTimeout.String(),
+			ClearanceMode:    cfg.Provider.Web.ClearanceMode, FlareSolverrURL: cfg.Provider.Web.FlareSolverrURL,
+			ClearanceTimeout: cfg.Provider.Web.ClearanceTimeout.String(), ClearanceRefresh: cfg.Provider.Web.ClearanceRefresh.String(),
+			ChatTimeout: cfg.Provider.Web.ChatTimeout.String(), ImageTimeout: cfg.Provider.Web.ImageTimeout.String(),
 			VideoTimeout:     cfg.Provider.Web.VideoTimeout.String(),
 			MediaConcurrency: cfg.Provider.Web.MediaConcurrency, AllowNSFW: cfg.Provider.Web.AllowNSFW,
 			RecoveryBackoffBase: cfg.Provider.Web.RecoveryBackoffBase.String(), RecoveryBackoffMax: cfg.Provider.Web.RecoveryBackoffMax.String(),
@@ -487,5 +563,12 @@ func toEditable(cfg config.Config) EditableConfig {
 			BufferSize: cfg.Audit.BufferSize, BatchSize: cfg.Audit.BatchSize, FlushInterval: cfg.Audit.FlushInterval.String(),
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: cfg.ClientKeyDefaults.RPMLimit, MaxConcurrent: cfg.ClientKeyDefaults.MaxConcurrent},
+		Accounts: AccountsConfig{
+			AutoCleanReauthEnabled:   cfg.Accounts.AutoCleanReauthEnabled,
+			AutoCleanReauthInterval:  cfg.Accounts.AutoCleanReauthInterval.String(),
+			AutoCleanReauthMinAge:    cfg.Accounts.AutoCleanReauthMinAge.String(),
+			AutoCleanIncludeDisabled: cfg.Accounts.AutoCleanIncludeDisabled,
+		},
+		AccountsProvided: true,
 	}
 }
