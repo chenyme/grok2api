@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Clock, Eye, ListVideo, Loader2, RefreshCw, Search, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
@@ -245,20 +245,69 @@ export function VideoGalleryPage() {
       </AlertDialog>
 
       <Dialog open={Boolean(previewing)} onOpenChange={(open) => !open && setPreviewing(null)}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle className="truncate">{previewing?.prompt || t("media.videos.previewTitle")}</DialogTitle>
-            <DialogDescription className="truncate font-mono">{previewing?.id}</DialogDescription>
+        <DialogContent className="max-h-[calc(100vh-2rem)] max-w-4xl overflow-hidden">
+          <DialogHeader className="min-w-0 pr-8">
+            <DialogTitle className="line-clamp-2 min-w-0 break-words leading-6" title={previewing?.prompt || undefined}>{previewing?.prompt || t("media.videos.previewTitle")}</DialogTitle>
+            <DialogDescription className="min-w-0 truncate font-mono" title={previewing?.id}>{previewing?.id}</DialogDescription>
           </DialogHeader>
           {previewing?.assetId ? (
-            <div className="overflow-hidden rounded-lg bg-black">
-              <video key={previewing.assetId} className="max-h-[70vh] w-full" src={videoAssetURL(previewing.assetId)} controls playsInline preload="metadata" />
-            </div>
+            <VideoPreview key={previewing.assetId} assetId={previewing.assetId} />
           ) : null}
         </DialogContent>
       </Dialog>
     </div>
   );
+}
+
+function VideoPreview({ assetId }: { assetId: string }) {
+  const { t } = useTranslation();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+
+  function retry(): void {
+    setState("loading");
+    videoRef.current?.load();
+  }
+
+  return (
+    <div className="relative flex min-h-56 w-full items-center justify-center overflow-hidden rounded-lg bg-black sm:min-h-80">
+      <video
+        ref={videoRef}
+        className={cn("h-auto max-h-[70vh] w-auto max-w-full object-contain", state === "error" && "invisible")}
+        src={videoAssetURL(assetId)}
+        controls
+        playsInline
+        preload="auto"
+        onLoadStart={() => setState("loading")}
+        onLoadedMetadata={(event) => showFirstVideoFrame(event.currentTarget)}
+        onLoadedData={() => setState("ready")}
+        onCanPlay={() => setState("ready")}
+        onEnded={(event) => showFirstVideoFrame(event.currentTarget)}
+        onError={() => setState("error")}
+      />
+      {state === "loading" ? (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black">
+          <Spinner className="size-5 text-white" />
+          <span className="sr-only">{t("common.loading")}</span>
+        </div>
+      ) : null}
+      {state === "error" ? (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center text-white">
+          <AlertCircle className="size-6 text-red-400" />
+          <p className="text-sm">{t("media.videos.previewUnavailable")}</p>
+          <Button type="button" variant="secondary" size="sm" onClick={retry}>
+            <RefreshCw />
+            {t("common.retry")}
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function showFirstVideoFrame(video: HTMLVideoElement): void {
+  if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+  video.currentTime = Math.min(0.01, video.duration / 2);
 }
 
 function isTerminalVideoJob(job: MediaJobDTO): boolean {
