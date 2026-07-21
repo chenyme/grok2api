@@ -48,9 +48,63 @@ func TestResponseRepositoryScopesOwnershipByClientAndExpiry(t *testing.T) {
 	if _, err := repo.Get(ctx, value.ResponseID, value.ClientKeyID, now.Add(2*time.Hour)); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("expired lookup err = %v", err)
 	}
-	deleted, err := repo.DeleteExpired(ctx, now.Add(2*time.Hour))
-	if err != nil || deleted != 1 {
-		t.Fatalf("deleted = %d, err = %v", deleted, err)
+	deleted, err := repo.DeleteExpired(ctx, now.Add(2*time.Hour), 10, 10)
+	if err != nil || deleted.OwnershipDeleted != 1 || deleted.WebStateDeleted != 0 {
+		t.Fatalf("deleted = %#v, err = %v", deleted, err)
+	}
+}
+
+func TestResponseRepositoryDeletesExpiredRowsInBoundedIndependentBatches(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "response-cleanup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	accounts := NewAccountRepository(database)
+	accountValue, _, err := accounts.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderWeb, Name: "cleanup-owner", SourceKey: "cleanup-owner", EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyValue, err := NewClientKeyRepository(database).Create(ctx, clientkeydomain.Key{Name: "cleanup-key", Prefix: "cleanup-prefix", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewResponseRepository(database)
+	for index := range 3 {
+		responseID := "expired-ownership-" + string(rune('a'+index))
+		if err := repo.Save(ctx, inferencedomain.ResponseOwnership{ResponseID: responseID, AccountID: accountValue.ID, ClientKeyID: keyValue.ID, Provider: account.ProviderWeb, ExpiresAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.SaveWebState(ctx, inferencedomain.WebResponseState{ResponseID: "expired-state-" + string(rune('a'+index)), AccountID: accountValue.ID, ConversationID: "conversation", UpstreamParentResponseID: "parent", ResponseJSON: "{}", Status: "completed", ExpiresAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.Save(ctx, inferencedomain.ResponseOwnership{ResponseID: "active-ownership", AccountID: accountValue.ID, ClientKeyID: keyValue.ID, Provider: account.ProviderWeb, ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveWebState(ctx, inferencedomain.WebResponseState{ResponseID: "active-state", AccountID: accountValue.ID, ConversationID: "conversation", UpstreamParentResponseID: "parent", ResponseJSON: "{}", Status: "completed", ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := repo.DeleteExpired(ctx, now, 2, 1)
+	if err != nil || first.OwnershipDeleted != 2 || first.WebStateDeleted != 1 || !first.HasMore {
+		t.Fatalf("first cleanup = %#v, err = %v", first, err)
+	}
+	second, err := repo.DeleteExpired(ctx, now, 10, 10)
+	if err != nil || second.OwnershipDeleted != 1 || second.WebStateDeleted != 2 || second.HasMore {
+		t.Fatalf("second cleanup = %#v, err = %v", second, err)
+	}
+	if _, err := repo.Get(ctx, "active-ownership", keyValue.ID, now); err != nil {
+		t.Fatalf("active ownership was removed: %v", err)
+	}
+	if _, err := repo.GetWebState(ctx, "active-state", now); err != nil {
+		t.Fatalf("active web state was removed: %v", err)
 	}
 }
 

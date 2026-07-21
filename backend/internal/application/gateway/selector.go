@@ -48,7 +48,18 @@ type quotaRecoveryHints struct {
 
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
+	byAccount map[uint64]int
 	expiresAt time.Time
+}
+
+func newCandidateSnapshot(values []account.RoutingCandidate, expiresAt time.Time) candidateSnapshot {
+	byAccount := make(map[uint64]int, len(values))
+	for index, value := range values {
+		if _, exists := byAccount[value.Credential.ID]; !exists {
+			byAccount[value.Credential.ID] = index
+		}
+	}
+	return candidateSnapshot{values: values, byAccount: byAccount, expiresAt: expiresAt}
 }
 
 type candidateCacheKey struct {
@@ -111,7 +122,9 @@ type Selector struct {
 	cooldownMax          time.Duration
 	capacityWait         time.Duration
 	preferFreeBuild      bool
-	mu                   sync.Mutex
+	configMu             sync.RWMutex
+	candidateMu          sync.Mutex
+	selectionMu          sync.RWMutex
 	leaseWakeMu          sync.Mutex
 	leaseWake            chan struct{}
 	lastSelectedAt       map[uint64]time.Time
@@ -135,27 +148,33 @@ func NewSelector(accounts repository.AccountRepository, concurrency repository.C
 }
 
 func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax time.Duration, capacityWait ...time.Duration) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.stickyTTL = stickyTTL
 	s.cooldownBase = cooldownBase
 	s.cooldownMax = cooldownMax
 	if len(capacityWait) > 0 {
 		s.capacityWait = max(time.Duration(0), capacityWait[0])
 	}
-	s.mu.Unlock()
+	s.configMu.Unlock()
 }
 
 // UpdatePreferFreeBuild 热更新 Build Free 账号优先策略。
 func (s *Selector) UpdatePreferFreeBuild(value bool) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.preferFreeBuild = value
-	s.mu.Unlock()
+	s.configMu.Unlock()
 }
 
 func (s *Selector) routingConfig() (time.Duration, time.Duration, time.Duration, time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	return s.stickyTTL, s.cooldownBase, s.cooldownMax, s.capacityWait
+}
+
+func (s *Selector) preferFreeBuildEnabled() bool {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return s.preferFreeBuild
 }
 
 func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*accountLease, error) {
@@ -487,14 +506,14 @@ func (s *Selector) MarkSuccess(ctx context.Context, credential account.Credentia
 func (s *Selector) markSuccess(ctx context.Context, credential account.Credential, quotaProbe bool) {
 	now := time.Now().UTC()
 	persist := credential.FailureCount > 0 || credential.CooldownUntil != nil || credential.LastError != ""
-	s.mu.Lock()
+	s.selectionMu.Lock()
 	if last := s.lastSuccessAt[credential.ID]; last.IsZero() || now.Sub(last) >= successPersistInterval {
 		persist = true
 	}
 	if persist {
 		s.lastSuccessAt[credential.ID] = now
 	}
-	s.mu.Unlock()
+	s.selectionMu.Unlock()
 	if persist {
 		_ = s.accounts.UpdateHealth(ctx, credential.ID, 0, nil, "", true)
 	}
@@ -615,31 +634,27 @@ func (s *Selector) ConsumeQuota(provider account.Provider, accountID uint64, mod
 	if accountID == 0 || mode == "" || mode == "weekly" || amount <= 0 {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.candidateMu.Lock()
+	defer s.candidateMu.Unlock()
 	for key, snapshot := range s.candidates {
 		if key.provider != provider {
 			continue
 		}
-		var next []account.RoutingCandidate
-		for index := range snapshot.values {
-			candidate := snapshot.values[index]
-			if candidate.Credential.ID != accountID || candidate.QuotaWindow == nil || candidate.QuotaWindow.Mode != mode {
-				continue
-			}
-			if next == nil {
-				next = append([]account.RoutingCandidate(nil), snapshot.values...)
-			}
-			window := *next[index].QuotaWindow
-			window.Remaining = max(0, window.Remaining-amount)
-			window.UpdatedAt = time.Now().UTC()
-			next[index].QuotaWindow = &window
-			break
+		index, found := snapshot.byAccount[accountID]
+		if !found || index >= len(snapshot.values) {
+			continue
 		}
-		if next != nil {
-			snapshot.values = next
-			s.candidates[key] = snapshot
+		candidate := snapshot.values[index]
+		if candidate.QuotaWindow == nil || candidate.QuotaWindow.Mode != mode {
+			continue
 		}
+		next := append([]account.RoutingCandidate(nil), snapshot.values...)
+		window := *next[index].QuotaWindow
+		window.Remaining = max(0, window.Remaining-amount)
+		window.UpdatedAt = time.Now().UTC()
+		next[index].QuotaWindow = &window
+		snapshot.values = next
+		s.candidates[key] = snapshot
 	}
 }
 
@@ -666,28 +681,28 @@ func (s *Selector) MarkFailure(ctx context.Context, credential account.Credentia
 
 func (s *Selector) loadCandidates(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
 	key := candidateCacheKey{provider: provider, upstreamModel: upstreamModel, quotaMode: quotaMode}
-	s.mu.Lock()
+	s.candidateMu.Lock()
 	if snapshot, ok := s.candidates[key]; ok && now.Before(snapshot.expiresAt) {
-		s.mu.Unlock()
+		s.candidateMu.Unlock()
 		return snapshot.values, nil
 	}
-	s.mu.Unlock()
+	s.candidateMu.Unlock()
 	loadKey := string(provider) + "\x00" + upstreamModel + "\x00" + quotaMode
 	loaded, err, _ := s.candidateLoads.Do(loadKey, func() (any, error) {
 		checkTime := time.Now().UTC()
-		s.mu.Lock()
+		s.candidateMu.Lock()
 		if snapshot, ok := s.candidates[key]; ok && checkTime.Before(snapshot.expiresAt) {
-			s.mu.Unlock()
+			s.candidateMu.Unlock()
 			return snapshot.values, nil
 		}
-		s.mu.Unlock()
+		s.candidateMu.Unlock()
 		values, err := s.accounts.ListRoutingCandidates(ctx, provider, upstreamModel, quotaMode)
 		if err != nil {
 			return nil, err
 		}
-		s.mu.Lock()
-		s.candidates[key] = candidateSnapshot{values: values, expiresAt: checkTime.Add(candidateCacheTTL)}
-		s.mu.Unlock()
+		s.candidateMu.Lock()
+		s.candidates[key] = newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL))
+		s.candidateMu.Unlock()
 		return values, nil
 	})
 	if err != nil {
@@ -697,8 +712,8 @@ func (s *Selector) loadCandidates(ctx context.Context, provider account.Provider
 }
 
 func (s *Selector) invalidateCandidates(provider account.Provider) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.candidateMu.Lock()
+	defer s.candidateMu.Unlock()
 	for key := range s.candidates {
 		if key.provider == provider {
 			delete(s.candidates, key)
@@ -718,9 +733,9 @@ func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credentia
 	if !acquired {
 		return nil, nil
 	}
-	s.mu.Lock()
+	s.selectionMu.Lock()
 	s.lastSelectedAt[value.ID] = time.Now().UTC()
-	s.mu.Unlock()
+	s.selectionMu.Unlock()
 	return &accountLease{Credential: value, release: func() {
 		release()
 		s.announceLeaseReturn()

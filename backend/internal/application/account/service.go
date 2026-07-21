@@ -56,6 +56,7 @@ const (
 	webQuotaRefreshRetryInterval               = 500 * time.Millisecond
 	webQuotaRefreshSharedPoll                  = time.Second
 	observedModelPersistInterval               = 30 * time.Minute
+	observedModelLocalCacheTTL                 = 5 * time.Second
 	observedModelLockShards                    = 64
 	maxCredentialExportAccounts                = 10000
 	maxCredentialImportAccounts                = 10000
@@ -295,6 +296,7 @@ type Service struct {
 	quotaSyncs            singleflight.Group
 	identitySyncs         singleflight.Group
 	observedModelWrites   singleflight.Group
+	observedModelStore    repository.ObservedModelStateRepository
 	refreshMu             sync.Mutex
 	lastRefreshAt         map[uint64]time.Time
 	observedModelShards   [observedModelLockShards]observedModelShard
@@ -344,6 +346,11 @@ func (s *Service) QuotaRefreshStats() QuotaRefreshStats {
 // SetConcurrencyLimiter 让账号维护任务读取与推理路由相同的活动租约。
 func (s *Service) SetConcurrencyLimiter(value repository.ConcurrencyLimiter) {
 	s.concurrency = value
+}
+
+// SetObservedModelStore enables best-effort cross-instance duplicate suppression.
+func (s *Service) SetObservedModelStore(value repository.ObservedModelStateRepository) {
+	s.observedModelStore = value
 }
 
 func NewService(accounts repository.AccountRepository, audits repository.AuditRepository, deviceSessions repository.DeviceSessionRepository, sticky repository.StickySessionRepository, providers *provider.Registry, cipher *security.Cipher, refreshLock repository.DistributedLock) *Service {
@@ -678,13 +685,33 @@ func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model str
 			shard.lastCleanupAt = now
 		}
 		state, exists := shard.values[id]
-		if exists && state.model == model && observedModelStateIsFresh(now, state.persistedAt) {
+		localFresh := exists && state.model == model && observedModelStateIsFresh(now, state.persistedAt)
+		if localFresh && (s.observedModelStore == nil || now.Sub(state.persistedAt) < observedModelLocalCacheTTL) {
 			shard.Unlock()
 			return nil, nil
 		}
 		shard.Unlock()
-		if err := s.accounts.UpdateObservedModel(ctx, id, model, now); err != nil {
+		if s.observedModelStore != nil {
+			shared, ok, sharedErr := s.observedModelStore.GetObservedModelState(ctx, id)
+			if sharedErr == nil && ok && shared.Model == model && observedModelStateIsFresh(now, shared.ObservedAt) {
+				shard.Lock()
+				shard.values[id] = observedModelState{model: model, persistedAt: now}
+				shard.Unlock()
+				return nil, nil
+			}
+		}
+		updated := true
+		if writer, ok := s.accounts.(repository.ObservedModelWriter); ok {
+			var err error
+			updated, err = writer.UpdateObservedModelIfNewer(ctx, id, model, now)
+			if err != nil {
+				return nil, err
+			}
+		} else if err := s.accounts.UpdateObservedModel(ctx, id, model, now); err != nil {
 			return nil, err
+		}
+		if updated && s.observedModelStore != nil {
+			_ = s.observedModelStore.SetObservedModelState(ctx, id, repository.ObservedModelState{Model: model, ObservedAt: now}, observedModelPersistInterval)
 		}
 		shard.Lock()
 		current, exists := shard.values[id]

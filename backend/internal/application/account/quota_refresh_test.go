@@ -324,6 +324,46 @@ func TestObserveResponseModelCoalescesUnchangedValues(t *testing.T) {
 	}
 }
 
+func TestObserveResponseModelRefreshesAfterCrossInstanceStateChange(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "observed-model-shared.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	base := relational.NewAccountRepository(database)
+	credential, _, err := base.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, AuthType: accountdomain.AuthTypeOAuth,
+		Name: "observed-shared", SourceKey: "observed-shared", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := &observedModelCountingRepository{AccountRepository: base}
+	shared := &observedModelTestStore{values: make(map[uint64]repository.ObservedModelState)}
+	service := NewService(accounts, nil, nil, nil, nil, nil, nil)
+	service.SetObservedModelStore(shared)
+	now := time.Now().UTC()
+	service.now = func() time.Time { return now }
+	if err := service.ObserveResponseModel(ctx, credential.ID, "grok-4.5"); err != nil {
+		t.Fatal(err)
+	}
+	shared.mu.Lock()
+	shared.values[credential.ID] = repository.ObservedModelState{Model: "grok-4.5-build-free", ObservedAt: now}
+	shared.mu.Unlock()
+	now = now.Add(observedModelLocalCacheTTL + time.Second)
+	if err := service.ObserveResponseModel(ctx, credential.ID, "grok-4.5"); err != nil {
+		t.Fatal(err)
+	}
+	if calls := accounts.calls.Load(); calls != 2 {
+		t.Fatalf("cross-instance model change was suppressed, writes = %d", calls)
+	}
+}
+
 func TestObserveResponseModelCoalescesConcurrentFirstWrite(t *testing.T) {
 	accounts := &observedModelBlockingRepository{
 		started: make(chan struct{}),
@@ -416,6 +456,25 @@ type observedModelOrderingRepository struct {
 	calls        atomic.Int64
 	olderStarted chan struct{}
 	olderRelease chan struct{}
+}
+
+type observedModelTestStore struct {
+	mu     sync.Mutex
+	values map[uint64]repository.ObservedModelState
+}
+
+func (s *observedModelTestStore) GetObservedModelState(_ context.Context, accountID uint64) (repository.ObservedModelState, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.values[accountID]
+	return value, ok, nil
+}
+
+func (s *observedModelTestStore) SetObservedModelState(_ context.Context, accountID uint64, value repository.ObservedModelState, _ time.Duration) error {
+	s.mu.Lock()
+	s.values[accountID] = value
+	s.mu.Unlock()
+	return nil
 }
 
 func (r *observedModelCountingRepository) UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error {

@@ -44,6 +44,15 @@ import (
 	httpmiddleware "github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 )
 
+const (
+	responseOwnershipCleanupBatchSize = 1000
+	webResponseStateCleanupBatchSize  = 50
+	responseCleanupMaxBatches         = 100
+	responseCleanupInterval           = 5 * time.Minute
+	responseCleanupBudget             = 30 * time.Second
+	responseCleanupLockTTL            = 2 * time.Minute
+)
+
 // Application 管理后端进程生命周期和本地后台任务。
 type Application struct {
 	logger        *slog.Logger
@@ -51,6 +60,7 @@ type Application struct {
 	server        *http.Server
 	audits        *auditapp.Service
 	responses     repository.ResponseRepository
+	cleanupLock   repository.DistributedLock
 	runtime       io.Closer
 	settingsBus   repository.SettingsChangeBus
 	settings      *settingsapp.Service
@@ -132,6 +142,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	var settingsBus repository.SettingsChangeBus
 	var quotaQueue repository.QuotaRecoveryQueue
 	var quotaRefreshState repository.QuotaRefreshCoordinator
+	var observedModelStore repository.ObservedModelStateRepository
 	var runtimeStore io.Closer
 	runtimeHealth := func(context.Context) error { return nil }
 	switch cfg.RuntimeStore.Driver {
@@ -157,6 +168,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		settingsBus = redisStore
 		quotaQueue = redisStore
 		quotaRefreshState = redisStore
+		observedModelStore = redisStore
 	case "memory":
 		rateLimiter = memory.NewRateLimiter()
 		concurrency = memory.NewConcurrencyLimiter()
@@ -224,6 +236,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	accountService.SetConcurrencyLimiter(concurrency)
 	accountService.SetQuotaRecoveryQueue(quotaQueue)
 	accountService.SetQuotaRefreshCoordinator(quotaRefreshState)
+	accountService.SetObservedModelStore(observedModelStore)
 	accountService.SetTaskPools(conversionPool, syncPool, refreshPool)
 	windows, err := accountRepo.ListQuotaRecoveryWindows(ctx, 100000)
 	if err != nil {
@@ -332,7 +345,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: router, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: cfg.Server.ReadTimeout.Value(), IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10}
 	return &Application{
 		logger: logger, database: database, server: server,
-		audits: auditService, responses: responseRepo, runtime: runtimeStore,
+		audits: auditService, responses: responseRepo, cleanupLock: refreshLock, runtime: runtimeStore,
 		settingsBus: settingsBus, settings: settingsService, gateway: gatewayService, media: mediaService, quotaRecovery: quotaRecoveryService, accounts: accountService, models: modelService, clientKeys: clientKeyService, updates: updateService,
 		accountRepo: accountRepo, modelRepo: modelRepo, providers: providers, web: webAdapter, egress: egressManager, egressOps: egressService, startup: startup,
 	}, nil
@@ -459,9 +472,8 @@ func (a *Application) Run(ctx context.Context) error {
 		return nil
 	})
 	startBackground("response_ownership_cleanup", func(taskCtx context.Context) error {
-		a.runPeriodicTask(taskCtx, 24*time.Hour, "response_ownership_cleanup", func(runCtx context.Context) error {
-			_, err := a.responses.DeleteExpired(runCtx, time.Now().UTC())
-			return err
+		a.runPeriodicTask(taskCtx, responseCleanupInterval, "response_ownership_cleanup", func(runCtx context.Context) error {
+			return a.cleanupExpiredResponses(runCtx, time.Now().UTC())
 		})
 		return nil
 	})
@@ -553,6 +565,58 @@ func (a *Application) Run(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+func (a *Application) cleanupExpiredResponses(ctx context.Context, now time.Time) error {
+	cleanupCtx, cancel := context.WithTimeout(ctx, responseCleanupBudget)
+	defer cancel()
+	if a.cleanupLock != nil {
+		release, acquired, err := a.cleanupLock.Acquire(cleanupCtx, "response-ownership-cleanup", responseCleanupLockTTL)
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			return nil
+		}
+		defer release()
+	}
+	var totalOwnership, totalWebState int64
+	for range responseCleanupMaxBatches {
+		if err := cleanupCtx.Err(); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			a.recordResponseCleanup(totalOwnership, totalWebState, true)
+			return nil
+		}
+		result, err := a.responses.DeleteExpired(cleanupCtx, now, responseOwnershipCleanupBatchSize, webResponseStateCleanupBatchSize)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				a.recordResponseCleanup(totalOwnership, totalWebState, true)
+				return nil
+			}
+			return err
+		}
+		totalOwnership += result.OwnershipDeleted
+		totalWebState += result.WebStateDeleted
+		if !result.HasMore {
+			a.recordResponseCleanup(totalOwnership, totalWebState, false)
+			return nil
+		}
+	}
+	a.recordResponseCleanup(totalOwnership, totalWebState, true)
+	return nil
+}
+
+func (a *Application) recordResponseCleanup(ownershipDeleted, webStateDeleted int64, backlog bool) {
+	outcome := "complete"
+	if backlog {
+		outcome = "backlog"
+		a.logger.Warn("response_cleanup_backlog", "ownership_deleted", ownershipDeleted, "web_state_deleted", webStateDeleted)
+	}
+	labels := perfmetrics.Labels{Subsystem: "response", Operation: "cleanup", Outcome: outcome}
+	perfmetrics.Default.Add("response_cleanup_ownership_rows", labels, ownershipDeleted)
+	perfmetrics.Default.Add("response_cleanup_web_state_rows", labels, webStateDeleted)
 }
 
 func (a *Application) logPerformanceMetrics() {

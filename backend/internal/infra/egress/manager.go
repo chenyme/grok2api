@@ -37,8 +37,11 @@ const maxCachedClearances = 16384
 const clearanceCacheEvictionBatch = 256
 const egressProbeEndpoint = "https://api64.ipify.org?format=json"
 const egressProbeTimeout = 15 * time.Second
+const clientCreationRetryLimit = 3
+const maxClientVersionEntries = 4096
 
 var errNodeSnapshotInvalidated = errors.New("egress node snapshot invalidated")
+var errClientCacheInvalidated = errors.New("egress client cache invalidated")
 
 type Lease struct {
 	NodeID           uint64
@@ -88,6 +91,9 @@ type Manager struct {
 	healthyNodes         map[uint64]time.Time
 	nodeVersions         map[domain.Scope]uint64
 	nodeLoads            singleflight.Group
+	clientLoads          singleflight.Group
+	clientVersions       map[uint64]uint64
+	clientGeneration     uint64
 	lastClientCleanup    time.Time
 	clearanceLoads       singleflight.Group
 	clearanceConfig      ClearanceConfig
@@ -96,6 +102,8 @@ type Manager struct {
 	lastClearanceCleanup time.Time
 	solver               clearanceSolver
 	clearanceLock        repository.DistributedLock
+	newBuildClient       func(string) (requestClient, error)
+	newBrowserClient     func(string, string) (*browserClient, error)
 }
 
 type clearanceState struct {
@@ -138,7 +146,8 @@ func NewManager(repository repository.EgressRepository, cipher *security.Cipher)
 		repository: repository, cipher: cipher,
 		clients: make(map[clientCacheKey]cachedClient), inflight: make(map[uint64]int),
 		nodes: make(map[domain.Scope]cachedNodeSnapshot), healthyNodes: make(map[uint64]time.Time),
-		nodeVersions: make(map[domain.Scope]uint64), clearances: make(map[string]clearanceState),
+		nodeVersions: make(map[domain.Scope]uint64), clientVersions: make(map[uint64]uint64), clearances: make(map[string]clearanceState),
+		newBuildClient: newBuildRequestClient, newBrowserClient: newBrowserClient,
 		solver:          flaresolverrSolver{},
 		clearanceConfig: ClearanceConfig{Mode: "manual", TargetURL: "https://grok.com", Timeout: time.Minute, RefreshInterval: 10 * time.Minute},
 	}
@@ -163,6 +172,7 @@ func (m *Manager) UpdateClearanceConfig(value ClearanceConfig) {
 	configurationChanged := previous.Mode != value.Mode || previous.FlareSolverrURL != value.FlareSolverrURL || previous.TargetURL != value.TargetURL
 	if configurationChanged {
 		m.clearanceVersion++
+		m.invalidateAllClientVersionsLocked()
 	}
 	m.mu.Unlock()
 }
@@ -599,63 +609,130 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		cacheScope = domain.ScopeWeb
 	}
 	key := clientCacheKey{nodeID: id, scope: cacheScope, fingerprint: fingerprint}
-	now := time.Now()
+	loadKey := strconv.FormatUint(key.nodeID, 10) + "\x00" + string(key.scope) + "\x00" + key.fingerprint
+	for attempt := 0; attempt < clientCreationRetryLimit; attempt++ {
+		now := time.Now().UTC()
+		m.mu.Lock()
+		stale := m.cleanupClientCacheLocked(now)
+		if cached, ok := m.clients[key]; ok {
+			cached.lastUsed = now
+			m.clients[key] = cached
+			m.mu.Unlock()
+			closeRequestClients(stale)
+			return cached, nil
+		}
+		m.mu.Unlock()
+		closeRequestClients(stale)
+
+		loaded, err, _ := m.clientLoads.Do(loadKey, func() (any, error) {
+			return m.createAndCacheClient(key, id, scope, proxyURL, userAgent, sticky)
+		})
+		if errors.Is(err, errClientCacheInvalidated) {
+			continue
+		}
+		if err != nil {
+			return cachedClient{}, err
+		}
+		return loaded.(cachedClient), nil
+	}
+	return cachedClient{}, errClientCacheInvalidated
+}
+
+func (m *Manager) createAndCacheClient(key clientCacheKey, id uint64, scope domain.Scope, proxyURL, userAgent string, sticky bool) (cachedClient, error) {
+	now := time.Now().UTC()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cleanupClientCacheLocked(now)
+	stale := m.cleanupClientCacheLocked(now)
 	if cached, ok := m.clients[key]; ok {
 		cached.lastUsed = now
 		m.clients[key] = cached
+		m.mu.Unlock()
+		closeRequestClients(stale)
 		return cached, nil
 	}
-	var value cachedClient
-	if scope == domain.ScopeBuild {
-		client, err := newBuildClient(proxyURL)
-		if err != nil {
-			return cachedClient{}, err
-		}
-		value.client = client
-	} else {
-		client, err := newBrowserClient(proxyURL, userAgent)
-		if err != nil {
-			return cachedClient{}, err
-		}
-		value.client = client
-		value.browser = client
+	version := m.clientVersionLocked(id)
+	m.mu.Unlock()
+	closeRequestClients(stale)
+
+	value, err := m.buildCachedClient(scope, proxyURL, userAgent)
+	if err != nil {
+		return cachedClient{}, err
 	}
-	value.lastUsed = now
-	// A new fingerprint on the same fixed-proxy node means its configuration changed, so evict the old connection pool.
-	// Account-template proxy fingerprints vary by Resin Account and must coexist to preserve per-account sticky pools.
-	// Direct nodes all use ID 0, so transports for different Providers must coexist to prevent Build and Web rebuilding each other.
+	value.lastUsed = time.Now().UTC()
+
+	m.mu.Lock()
+	stale = m.cleanupClientCacheLocked(value.lastUsed)
+	if cached, ok := m.clients[key]; ok {
+		cached.lastUsed = value.lastUsed
+		m.clients[key] = cached
+		m.mu.Unlock()
+		closeRequestClients(append(stale, value.client))
+		return cached, nil
+	}
+	if m.clientVersionLocked(id) != version {
+		m.mu.Unlock()
+		closeRequestClients(append(stale, value.client))
+		return cachedClient{}, errClientCacheInvalidated
+	}
 	if id != 0 && !sticky {
 		for previousKey, previous := range m.clients {
-			if previousKey.nodeID != id {
-				continue
+			if previousKey.nodeID == id {
+				stale = append(stale, m.evictClientLocked(previousKey, previous))
 			}
-			m.evictClientLocked(previousKey, previous)
 		}
 	}
-	m.ensureClientCacheCapacityLocked()
+	stale = append(stale, m.ensureClientCacheCapacityLocked()...)
 	m.clients[key] = value
+	m.mu.Unlock()
+	closeRequestClients(stale)
 	return value, nil
 }
 
-func (m *Manager) cleanupClientCacheLocked(now time.Time) {
+func (m *Manager) buildCachedClient(scope domain.Scope, proxyURL, userAgent string) (cachedClient, error) {
+	if scope == domain.ScopeBuild {
+		factory := m.newBuildClient
+		if factory == nil {
+			factory = newBuildRequestClient
+		}
+		client, err := factory(proxyURL)
+		if err != nil {
+			return cachedClient{}, err
+		}
+		return cachedClient{client: client}, nil
+	}
+	factory := m.newBrowserClient
+	if factory == nil {
+		factory = newBrowserClient
+	}
+	client, err := factory(proxyURL, userAgent)
+	if err != nil {
+		return cachedClient{}, err
+	}
+	return cachedClient{client: client, browser: client}, nil
+}
+
+func newBuildRequestClient(proxyURL string) (requestClient, error) {
+	return newBuildClient(proxyURL)
+}
+
+func (m *Manager) cleanupClientCacheLocked(now time.Time) []requestClient {
 	if m.clients == nil {
 		m.clients = make(map[clientCacheKey]cachedClient)
 	}
 	if !m.lastClientCleanup.IsZero() && now.Sub(m.lastClientCleanup) < clientCacheCleanupInterval {
-		return
+		return nil
 	}
 	m.lastClientCleanup = now
+	var stale []requestClient
 	for key, value := range m.clients {
 		if !value.lastUsed.IsZero() && now.Sub(value.lastUsed) >= clientCacheIdleTTL {
-			m.evictClientLocked(key, value)
+			stale = append(stale, m.evictClientLocked(key, value))
 		}
 	}
+	return stale
 }
 
-func (m *Manager) ensureClientCacheCapacityLocked() {
+func (m *Manager) ensureClientCacheCapacityLocked() []requestClient {
+	var stale []requestClient
 	for len(m.clients) >= maxCachedClients {
 		var oldestKey clientCacheKey
 		var oldest cachedClient
@@ -668,15 +745,43 @@ func (m *Manager) ensureClientCacheCapacityLocked() {
 		if !found {
 			break
 		}
-		m.evictClientLocked(oldestKey, oldest)
+		stale = append(stale, m.evictClientLocked(oldestKey, oldest))
+	}
+	return stale
+}
+
+func (m *Manager) evictClientLocked(key clientCacheKey, value cachedClient) requestClient {
+	delete(m.clients, key)
+	return value.client
+}
+
+func closeRequestClients(values []requestClient) {
+	for _, value := range values {
+		if value != nil {
+			value.CloseIdleConnections()
+		}
 	}
 }
 
-func (m *Manager) evictClientLocked(key clientCacheKey, value cachedClient) {
-	if value.client != nil {
-		value.client.CloseIdleConnections()
+func (m *Manager) clientVersionLocked(nodeID uint64) uint64 {
+	return m.clientGeneration + m.clientVersions[nodeID]
+}
+
+func (m *Manager) invalidateClientVersionLocked(nodeID uint64) {
+	if m.clientVersions == nil {
+		m.clientVersions = make(map[uint64]uint64)
 	}
-	delete(m.clients, key)
+	if _, exists := m.clientVersions[nodeID]; !exists && len(m.clientVersions) >= maxClientVersionEntries {
+		// A generation bump invalidates in-flight creations before the tombstone map is reset.
+		m.clientGeneration++
+		clear(m.clientVersions)
+	}
+	m.clientVersions[nodeID]++
+}
+
+func (m *Manager) invalidateAllClientVersionsLocked() {
+	m.clientGeneration++
+	clear(m.clientVersions)
 }
 
 func (m *Manager) Feedback(ctx context.Context, nodeID uint64, status int, transportErr error) {
@@ -693,8 +798,9 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 				state.used = true
 				m.clearances["direct"] = state
 			}
-			m.invalidateClientForScopeLocked(0, scope)
+			stale := m.invalidateClientForScopeLocked(0, scope)
 			m.mu.Unlock()
+			closeRequestClients(stale)
 		}
 		return
 	}
@@ -713,6 +819,7 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		return
 	}
 	now := time.Now().UTC()
+	var stale []requestClient
 	switch {
 	case succeeded:
 		value.Health = min(1, value.Health+0.1)
@@ -746,7 +853,7 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 			state.used = true
 			m.clearances[key] = state
 		}
-		m.invalidateClientLocked(nodeID)
+		stale = m.invalidateClientLocked(nodeID)
 		m.mu.Unlock()
 	case transportErr != nil:
 		if m.isProxyPoolNode(value) {
@@ -759,13 +866,14 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		value.CooldownUntil = &until
 		value.LastError = "transport error"
 		m.mu.Lock()
-		m.invalidateClientLocked(nodeID)
+		stale = m.invalidateClientLocked(nodeID)
 		m.mu.Unlock()
 	default:
 		// An HTTP status describes the upstream response, not the health of the
 		// configured proxy endpoint. Account routing handles upstream failures.
 		return
 	}
+	closeRequestClients(stale)
 	if stateRepository, ok := m.repository.(egressStateRepository); ok {
 		if err := stateRepository.UpdateEgressNodeHealth(ctx, value.ID, value.Health, value.FailureCount, value.CooldownUntil, value.LastError); err == nil {
 			m.invalidateNodes(value.Scope)
@@ -1116,7 +1224,6 @@ func (m *Manager) RefreshClearance(ctx context.Context, nodeID uint64) error {
 
 func (m *Manager) InvalidateClearance(nodeID uint64) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	prefix := "node:" + strconv.FormatUint(nodeID, 10)
 	if nodeID == 0 {
 		prefix = "direct"
@@ -1128,7 +1235,9 @@ func (m *Manager) InvalidateClearance(nodeID uint64) {
 			m.clearances[key] = state
 		}
 	}
-	m.invalidateClientLocked(nodeID)
+	stale := m.invalidateClientLocked(nodeID)
+	m.mu.Unlock()
+	closeRequestClients(stale)
 }
 
 // ForgetClearance evicts runtime state after an administrator changes or
@@ -1137,7 +1246,6 @@ func (m *Manager) InvalidateClearance(nodeID uint64) {
 // binding before using it as a solver-failure fallback.
 func (m *Manager) ForgetClearance(nodeID uint64) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	prefix := "node:" + strconv.FormatUint(nodeID, 10)
 	if nodeID == 0 {
 		prefix = "direct"
@@ -1151,7 +1259,9 @@ func (m *Manager) ForgetClearance(nodeID uint64) {
 	// one-second snapshots prevents a just-edited proxy from being used once
 	// more before its scope cache expires.
 	clear(m.nodes)
-	m.invalidateClientLocked(nodeID)
+	stale := m.invalidateClientLocked(nodeID)
+	m.mu.Unlock()
+	closeRequestClients(stale)
 }
 
 func (m *Manager) invalidateClearanceKey(key string, client requestClient) {
@@ -1249,31 +1359,33 @@ func (m *Manager) isProxyPoolNode(value domain.Node) bool {
 	return value.ProxyPool || m.isStickyProxyNode(value)
 }
 
-func (m *Manager) invalidateClientLocked(nodeID uint64) {
+func (m *Manager) invalidateClientLocked(nodeID uint64) []requestClient {
+	m.invalidateClientVersionLocked(nodeID)
+	var stale []requestClient
 	for key, cached := range m.clients {
 		if key.nodeID != nodeID {
 			continue
 		}
-		if cached.client != nil {
-			cached.client.CloseIdleConnections()
-		}
 		delete(m.clients, key)
+		stale = append(stale, cached.client)
 	}
+	return stale
 }
 
-func (m *Manager) invalidateClientForScopeLocked(nodeID uint64, scope domain.Scope) {
+func (m *Manager) invalidateClientForScopeLocked(nodeID uint64, scope domain.Scope) []requestClient {
+	m.invalidateClientVersionLocked(nodeID)
 	if scope == domain.ScopeWebAsset {
 		scope = domain.ScopeWeb
 	}
+	var stale []requestClient
 	for key, cached := range m.clients {
 		if key.nodeID != nodeID || key.scope != scope {
 			continue
 		}
-		if cached.client != nil {
-			cached.client.CloseIdleConnections()
-		}
 		delete(m.clients, key)
+		stale = append(stale, cached.client)
 	}
+	return stale
 }
 
 func BuildSSOCookie(token, cloudflareCookies string) string {

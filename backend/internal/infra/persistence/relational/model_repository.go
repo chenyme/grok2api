@@ -179,34 +179,34 @@ func (r *ModelRepository) GetByPublicIDIncludingDisabled(ctx context.Context, pu
 
 func findModelRoutesByPublicID(db *gorm.DB, publicID string) ([]modelRouteModel, error) {
 	candidates := model.PublicIDCandidates(publicID)
-	rows := make([]modelRouteModel, 0, len(candidates))
+	alias := strings.TrimSpace(publicID)
+	query := db.Session(&gorm.Session{})
 	if len(candidates) > 0 {
-		if err := db.Session(&gorm.Session{}).Where("model_routes.public_id IN ?", candidates).
-			Order(modelProviderPriorityExpression + ", model_routes.id ASC").Find(&rows).Error; err != nil {
-			return nil, err
-		}
+		query = query.Where(`
+			(model_routes.public_id IN ? OR EXISTS (
+				SELECT 1 FROM model_route_aliases alias
+				WHERE alias.model_route_id = model_routes.id AND alias.alias = ?
+			))
+		`, candidates, alias).Clauses(clause.OrderBy{Expression: clause.Expr{
+			SQL:  "CASE WHEN model_routes.public_id IN ? THEN 0 ELSE 1 END, " + modelProviderPriorityExpression + ", model_routes.id ASC",
+			Vars: []any{candidates},
+		}})
+	} else {
+		query = query.Where(`
+			EXISTS (
+				SELECT 1 FROM model_route_aliases alias
+				WHERE alias.model_route_id = model_routes.id AND alias.alias = ?
+			)
+		`, alias).Order(modelProviderPriorityExpression + ", model_routes.id ASC")
 	}
-	var aliases []modelRouteModel
-	if err := db.Session(&gorm.Session{}).Joins("JOIN model_route_aliases alias ON alias.model_route_id = model_routes.id").
-		Where("alias.alias = ?", strings.TrimSpace(publicID)).
-		Order(modelProviderPriorityExpression + ", model_routes.id ASC").Find(&aliases).Error; err != nil {
+	var rows []modelRouteModel
+	if err := query.Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	seen := make(map[uint64]bool)
-	result := make([]modelRouteModel, 0, len(rows))
-	for _, values := range [][]modelRouteModel{rows, aliases} {
-		for _, row := range values {
-			if seen[row.ID] {
-				continue
-			}
-			seen[row.ID] = true
-			result = append(result, row)
-		}
-	}
-	if len(result) == 0 {
+	if len(rows) == 0 {
 		return nil, gorm.ErrRecordNotFound
 	}
-	return result, nil
+	return rows, nil
 }
 
 func (r *ModelRepository) GetByProviderUpstream(ctx context.Context, provider account.Provider, upstreamModel string) (model.Route, error) {

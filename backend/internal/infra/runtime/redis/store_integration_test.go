@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 	redisclient "github.com/redis/go-redis/v9"
 )
 
@@ -58,6 +59,21 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 		t.Fatalf("duplicate concurrency acquire = %v, err = %v", acquired, err)
 	}
 	release()
+	concurrencyKey := store.key("concurrency", "snapshot")
+	now := time.Now().UTC()
+	if err := store.client.ZAdd(ctx, concurrencyKey,
+		redisclient.Z{Score: float64(now.Add(-time.Minute).UnixMilli()), Member: "expired"},
+		redisclient.Z{Score: float64(now.Add(time.Minute).UnixMilli()), Member: "active"},
+	).Err(); err != nil {
+		t.Fatal(err)
+	}
+	concurrency, err := store.CurrentMany(ctx, []string{"snapshot"})
+	if err != nil || concurrency["snapshot"] != 1 {
+		t.Fatalf("read-only concurrency snapshot = %#v, err = %v", concurrency, err)
+	}
+	if remaining, err := store.client.ZCard(ctx, concurrencyKey).Result(); err != nil || remaining != 2 {
+		t.Fatalf("concurrency snapshot mutated lease set: remaining=%d err=%v", remaining, err)
+	}
 
 	expiresAt := time.Now().UTC().Add(time.Minute)
 	if err := store.Set(ctx, "sticky", 42, expiresAt); err != nil {
@@ -77,6 +93,20 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 	}
 	if _, ok, err := store.Get(ctx, "sticky", time.Now().UTC()); err != nil || ok {
 		t.Fatalf("deleted sticky remains available: ok=%v err=%v", ok, err)
+	}
+
+	observedAt := time.Now().UTC()
+	if err := store.SetObservedModelState(ctx, 42, repository.ObservedModelState{Model: "grok-4.5-build-free", ObservedAt: observedAt}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok, err := store.GetObservedModelState(ctx, 42); err != nil || !ok || value.Model != "grok-4.5-build-free" || !value.ObservedAt.Equal(observedAt.Truncate(time.Millisecond)) {
+		t.Fatalf("observed model state = %#v, ok=%v, err=%v", value, ok, err)
+	}
+	if err := store.SetObservedModelState(ctx, 42, repository.ObservedModelState{Model: "stale-model", ObservedAt: observedAt.Add(-time.Second)}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok, err := store.GetObservedModelState(ctx, 42); err != nil || !ok || value.Model != "grok-4.5-build-free" {
+		t.Fatalf("stale observed model state replaced value = %#v, ok=%v, err=%v", value, ok, err)
 	}
 
 	const bindWorkers = 16

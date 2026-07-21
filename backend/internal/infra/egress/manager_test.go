@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func TestClientCacheEvictsIdleEntriesAndEnforcesCapacity(t *testing.T) {
 		idleKey:  {client: idleClient, lastUsed: now.Add(-clientCacheIdleTTL)},
 		freshKey: {client: freshClient, lastUsed: now},
 	}}
-	manager.cleanupClientCacheLocked(now)
+	closeRequestClients(manager.cleanupClientCacheLocked(now))
 	if _, exists := manager.clients[idleKey]; exists || idleClient.closedIdle != 1 {
 		t.Fatalf("idle client exists=%v closed=%d", exists, idleClient.closedIdle)
 	}
@@ -53,9 +54,96 @@ func TestClientCacheEvictsIdleEntriesAndEnforcesCapacity(t *testing.T) {
 		key := clientCacheKey{nodeID: uint64(index + 2), scope: domain.ScopeBuild, fingerprint: "cached"}
 		manager.clients[key] = cachedClient{lastUsed: now}
 	}
-	manager.ensureClientCacheCapacityLocked()
+	closeRequestClients(manager.ensureClientCacheCapacityLocked())
 	if len(manager.clients) != maxCachedClients-1 || oldestClient.closedIdle != 1 {
 		t.Fatalf("cache size=%d oldest closed=%d", len(manager.clients), oldestClient.closedIdle)
+	}
+}
+
+func TestClientVersionTombstonesRemainBounded(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	manager.mu.Lock()
+	for nodeID := uint64(1); nodeID <= maxClientVersionEntries+256; nodeID++ {
+		manager.invalidateClientVersionLocked(nodeID)
+	}
+	manager.mu.Unlock()
+	if len(manager.clientVersions) > maxClientVersionEntries {
+		t.Fatalf("client version tombstones = %d, limit = %d", len(manager.clientVersions), maxClientVersionEntries)
+	}
+	if manager.clientGeneration == 0 {
+		t.Fatal("bounded version reset did not advance the invalidation generation")
+	}
+}
+
+func TestClientCreationDoesNotHoldManagerLock(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	manager.newBuildClient = func(string) (requestClient, error) {
+		close(started)
+		<-release
+		return &scriptedRequestClient{}, nil
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false)
+		result <- err
+	}()
+	<-started
+
+	selected := make(chan struct{})
+	go func() {
+		manager.selectNode([]domain.Node{{ID: 1, Health: 1}}, "")
+		close(selected)
+	}()
+	select {
+	case <-selected:
+	case <-time.After(time.Second):
+		t.Fatal("client creation held the manager lock")
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientCreationDiscardsInvalidatedResult(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	first := &scriptedRequestClient{}
+	second := &scriptedRequestClient{}
+	var calls atomic.Int32
+	manager.newBuildClient = func(string) (requestClient, error) {
+		if calls.Add(1) == 1 {
+			close(firstStarted)
+			<-releaseFirst
+			return first, nil
+		}
+		return second, nil
+	}
+	result := make(chan cachedClient, 1)
+	errorsCh := make(chan error, 1)
+	go func() {
+		value, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false)
+		if err != nil {
+			errorsCh <- err
+			return
+		}
+		result <- value
+	}()
+	<-firstStarted
+	manager.InvalidateClearance(1)
+	close(releaseFirst)
+	select {
+	case err := <-errorsCh:
+		t.Fatal(err)
+	case value := <-result:
+		if value.client != second || calls.Load() != 2 || first.closedIdle != 1 {
+			t.Fatalf("client result=%#v calls=%d firstClosed=%d", value, calls.Load(), first.closedIdle)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client creation did not recover after invalidation")
 	}
 }
 

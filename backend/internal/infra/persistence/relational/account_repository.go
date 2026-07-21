@@ -1432,10 +1432,16 @@ func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, 
 }
 
 func (r *AccountRepository) UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error {
+	_, err := r.UpdateObservedModelIfNewer(ctx, id, model, observedAt)
+	return err
+}
+
+func (r *AccountRepository) UpdateObservedModelIfNewer(ctx context.Context, id uint64, model string, observedAt time.Time) (bool, error) {
 	model = truncate(model, 255)
-	return r.db.db.WithContext(ctx).Model(&accountModel{}).
+	result := r.db.db.WithContext(ctx).Model(&accountModel{}).
 		Where("id = ? AND (observed_model_at IS NULL OR observed_model_at <= ?) AND (COALESCE(observed_model, '') <> ? OR observed_model_at <= ?)", id, observedAt, model, observedAt.Add(-30*time.Minute)).
-		Updates(map[string]any{"observed_model": model, "observed_model_at": observedAt}).Error
+		Updates(map[string]any{"observed_model": model, "observed_model_at": observedAt})
+	return result.RowsAffected > 0, result.Error
 }
 
 // MarkBuildAPIFallback idempotently updates the XAI inference fallback marker for Grok Build accounts.

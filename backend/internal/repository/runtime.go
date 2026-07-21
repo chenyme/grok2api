@@ -48,6 +48,19 @@ type ReasoningReplayRepository interface {
 	Delete(ctx context.Context, model, sessionKey string) error
 }
 
+// ObservedModelState is the latest model signal shared by runtime instances.
+type ObservedModelState struct {
+	Model      string
+	ObservedAt time.Time
+}
+
+// ObservedModelStateRepository coordinates duplicate model observations across instances.
+// Implementations must treat this state as an optimization; the account database remains authoritative.
+type ObservedModelStateRepository interface {
+	GetObservedModelState(ctx context.Context, accountID uint64) (ObservedModelState, bool, error)
+	SetObservedModelState(ctx context.Context, accountID uint64, value ObservedModelState, ttl time.Duration) error
+}
+
 // DeviceSessionRepository 定义短期 Device OAuth 会话状态。
 type DeviceSessionRepository interface {
 	Create(ctx context.Context, value account.DeviceSession) error

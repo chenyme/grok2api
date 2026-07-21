@@ -20,6 +20,11 @@ type AccountUpsertResult struct {
 	Created bool
 }
 
+// ObservedModelWriter reports whether an observed model update changed the authoritative row.
+type ObservedModelWriter interface {
+	UpdateObservedModelIfNewer(ctx context.Context, id uint64, model string, observedAt time.Time) (bool, error)
+}
+
 // AccountRepository 定义 OAuth 账号和额度快照持久化能力。
 type AccountRepository interface {
 	List(ctx context.Context, query AccountListQuery) ([]account.Credential, int64, error)

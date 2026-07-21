@@ -363,11 +363,11 @@ func TestAccountRepositoryRejectsStaleObservedModelWrite(t *testing.T) {
 	}
 	older := time.Now().UTC()
 	newer := older.Add(time.Minute)
-	if err := repo.UpdateObservedModel(context.Background(), credential.ID, "grok-newer", newer); err != nil {
-		t.Fatal(err)
+	if updated, err := repo.UpdateObservedModelIfNewer(context.Background(), credential.ID, "grok-newer", newer); err != nil || !updated {
+		t.Fatalf("newer observed model update = %v, err = %v", updated, err)
 	}
-	if err := repo.UpdateObservedModel(context.Background(), credential.ID, "grok-older", older); err != nil {
-		t.Fatal(err)
+	if updated, err := repo.UpdateObservedModelIfNewer(context.Background(), credential.ID, "grok-older", older); err != nil || updated {
+		t.Fatalf("stale observed model update = %v, err = %v", updated, err)
 	}
 	stored, err := repo.Get(context.Background(), credential.ID)
 	if err != nil {

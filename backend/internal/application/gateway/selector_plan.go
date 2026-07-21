@@ -118,7 +118,8 @@ func (s *Selector) planCandidateIndexes(ctx context.Context, values []account.Ro
 		inFlight[position] = concurrencySnapshot[keys[position]]
 	}
 
-	s.mu.Lock()
+	preferFreeBuild := s.preferFreeBuildEnabled()
+	s.selectionMu.RLock()
 	scores := make([]candidateScore, length)
 	for position := range length {
 		index := position
@@ -128,7 +129,7 @@ func (s *Selector) planCandidateIndexes(ctx context.Context, values []account.Ro
 		candidate := values[index]
 		score := candidateScore{
 			index: index, tier: tierOrderRank(tierOrder, candidate.Credential.WebTier),
-			preferFreeBuild: s.preferFreeBuild && candidate.IsKnownFreeBuild(),
+			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
 			inFlight:        inFlight[position], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
 		}
 		if candidate.Billing != nil {
@@ -137,7 +138,7 @@ func (s *Selector) planCandidateIndexes(ctx context.Context, values []account.Ro
 		}
 		scores[position] = score
 	}
-	s.mu.Unlock()
+	s.selectionMu.RUnlock()
 
 	plan := &candidatePlan{values: values, scores: scores}
 	heap.Init(plan)

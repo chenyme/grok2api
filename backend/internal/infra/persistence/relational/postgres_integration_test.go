@@ -18,6 +18,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
+	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"gorm.io/driver/postgres"
@@ -341,6 +342,68 @@ func TestPostgresBillingReservationAndAuditSettlementConcurrency(t *testing.T) {
 	stored, err = keys.Get(ctx, settlementKey.ID)
 	if err != nil || stored.ReservedUsageUSDTicks != 0 || stored.BilledUsageUSDTicks != 100 {
 		t.Fatalf("cleanup and settlement billing state = %#v, err = %v", stored, err)
+	}
+}
+
+func TestPostgresP1RouteLookupAndBoundedResponseCleanup(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not configured")
+	}
+	ctx := context.Background()
+	database, err := OpenPostgres(ctx, dsn, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	aliasRoute := modelRouteModel{PublicID: "Build/grok-p1-legacy", Provider: string(account.ProviderBuild), UpstreamModel: "grok-p1-legacy", Capability: "responses", Origin: "manual", Enabled: true}
+	directRoute := modelRouteModel{PublicID: "Web/grok-p1", Provider: string(account.ProviderWeb), UpstreamModel: "grok-p1", Capability: "chat", Origin: "manual", Enabled: true}
+	if err := database.db.WithContext(ctx).Create(&aliasRoute).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&directRoute).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&modelRouteAliasModel{Alias: "grok-p1", ModelRouteID: aliasRoute.ID, CreatedAt: time.Now().UTC()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	modelRepository := NewModelRepository(database)
+	route, err := modelRepository.GetByPublicIDIncludingDisabled(ctx, "grok-p1")
+	if err != nil || route.ID != directRoute.ID {
+		t.Fatalf("direct route priority = %#v, err = %v", route, err)
+	}
+
+	accounts := NewAccountRepository(database)
+	accountValue, _, err := accounts.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderWeb, Name: "postgres-p1", SourceKey: "postgres-p1", EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := NewClientKeyRepository(database).Create(ctx, clientkey.Key{Name: "postgres-p1", Prefix: "postgres-p1", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	responses := NewResponseRepository(database)
+	now := time.Now().UTC()
+	for index := range 3 {
+		id := fmt.Sprintf("postgres-p1-%d", index)
+		if err := responses.Save(ctx, inferencedomain.ResponseOwnership{ResponseID: "ownership-" + id, AccountID: accountValue.ID, ClientKeyID: key.ID, Provider: account.ProviderWeb, ExpiresAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := responses.SaveWebState(ctx, inferencedomain.WebResponseState{ResponseID: "state-" + id, AccountID: accountValue.ID, ConversationID: "conversation", UpstreamParentResponseID: "parent", ResponseJSON: "{}", Status: "completed", ExpiresAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := responses.DeleteExpired(ctx, now, 2, 1)
+	if err != nil || first.OwnershipDeleted != 2 || first.WebStateDeleted != 1 || !first.HasMore {
+		t.Fatalf("first bounded cleanup = %#v, err = %v", first, err)
+	}
+	second, err := responses.DeleteExpired(ctx, now, 10, 10)
+	if err != nil || second.OwnershipDeleted != 1 || second.WebStateDeleted != 2 || second.HasMore {
+		t.Fatalf("second bounded cleanup = %#v, err = %v", second, err)
 	}
 }
 

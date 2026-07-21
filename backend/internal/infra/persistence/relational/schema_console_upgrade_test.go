@@ -69,6 +69,40 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 	assertTableColumns(t, database, "response_ownership", []string{"prompt_cache_key", "reasoning_replay_key"}, nil)
 }
 
+func TestInitializeSchemaDropsRedundantResponseExpiryIndexes(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "response-indexes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_response_ownership_expires ON response_ownership(expires_at)",
+		"CREATE INDEX IF NOT EXISTS idx_web_response_states_expires ON web_response_states(expires_at)",
+	} {
+		if err := database.db.WithContext(ctx).Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"response_ownership", "web_response_states"} {
+		var indexes []struct{ Name string }
+		if err := database.db.Raw("PRAGMA index_list('" + table + "')").Scan(&indexes).Error; err != nil {
+			t.Fatal(err)
+		}
+		for _, index := range indexes {
+			if index.Name == "idx_response_ownership_expires" || index.Name == "idx_web_response_states_expires" {
+				t.Fatalf("redundant expiry index %s remains on %s", index.Name, table)
+			}
+		}
+	}
+}
+
 func assertSQLiteUniqueIndexes(t *testing.T, database *Database, table string, expected ...string) {
 	t.Helper()
 	var indexes []struct {

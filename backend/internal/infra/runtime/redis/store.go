@@ -24,6 +24,7 @@ const (
 	maxDeviceSessions           = 1000
 	maxQuotaRecoveryEvents      = 100000
 	maxQuotaRefreshDirty        = 100000
+	observedModelStateTTL       = 30 * time.Minute
 )
 
 var rateScript = redisclient.NewScript(`
@@ -224,6 +225,14 @@ end
 return result
 `)
 
+var setObservedModelStateScript = redisclient.NewScript(`
+local previous = redis.call('HGET', KEYS[1], 'observed_at')
+if previous and tonumber(previous) > tonumber(ARGV[2]) then return 0 end
+redis.call('HSET', KEYS[1], 'model', ARGV[1], 'observed_at', ARGV[2])
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+return 1
+`)
+
 var quotaRefreshStateScript = redisclient.NewScript(`
 local generation = redis.call('HGET', KEYS[1], ARGV[1]) or '0'
 local retentionExpires = redis.call('ZSCORE', KEYS[3], ARGV[1])
@@ -293,6 +302,40 @@ func (s *Store) Close() error { return s.client.Close() }
 func (s *Store) Ping(ctx context.Context) error { return s.client.Ping(ctx).Err() }
 
 func (s *Store) key(namespace, key string) string { return s.prefix + namespace + ":" + key }
+
+func (s *Store) GetObservedModelState(ctx context.Context, accountID uint64) (repository.ObservedModelState, bool, error) {
+	if accountID == 0 {
+		return repository.ObservedModelState{}, false, nil
+	}
+	values, err := s.client.HMGet(ctx, s.key("observed-model", strconv.FormatUint(accountID, 10)), "model", "observed_at").Result()
+	if err != nil {
+		return repository.ObservedModelState{}, false, err
+	}
+	if len(values) != 2 || values[0] == nil || values[1] == nil {
+		return repository.ObservedModelState{}, false, nil
+	}
+	model, ok := values[0].(string)
+	if !ok || strings.TrimSpace(model) == "" {
+		return repository.ObservedModelState{}, false, nil
+	}
+	observedMillis, err := strconv.ParseInt(fmt.Sprint(values[1]), 10, 64)
+	if err != nil || observedMillis <= 0 {
+		return repository.ObservedModelState{}, false, nil
+	}
+	return repository.ObservedModelState{Model: model, ObservedAt: time.UnixMilli(observedMillis).UTC()}, true, nil
+}
+
+func (s *Store) SetObservedModelState(ctx context.Context, accountID uint64, value repository.ObservedModelState, ttl time.Duration) error {
+	if accountID == 0 || strings.TrimSpace(value.Model) == "" || value.ObservedAt.IsZero() {
+		return nil
+	}
+	if ttl <= 0 {
+		ttl = observedModelStateTTL
+	}
+	return setObservedModelStateScript.Run(ctx, s.client,
+		[]string{s.key("observed-model", strconv.FormatUint(accountID, 10))},
+		strings.TrimSpace(value.Model), value.ObservedAt.UTC().UnixMilli(), ttl.Milliseconds()).Err()
+}
 
 // PublishSettingsChanged 发布运行设置失效通知，不在 Redis 中复制设置内容。
 func (s *Store) PublishSettingsChanged(ctx context.Context) error {
@@ -372,13 +415,12 @@ func (s *Store) CurrentMany(ctx context.Context, keys []string) (map[string]int,
 	if len(keys) == 0 {
 		return values, nil
 	}
-	now := strconv.FormatInt(time.Now().UTC().UnixMilli(), 10)
+	now := "(" + strconv.FormatInt(time.Now().UTC().UnixMilli(), 10)
 	pipe := s.client.Pipeline()
 	counts := make(map[string]*redisclient.IntCmd, len(keys))
 	for _, key := range keys {
 		redisKey := s.key("concurrency", key)
-		pipe.ZRemRangeByScore(ctx, redisKey, "-inf", now)
-		counts[key] = pipe.ZCard(ctx, redisKey)
+		counts[key] = pipe.ZCount(ctx, redisKey, now, "+inf")
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, err
