@@ -147,6 +147,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return invalidResponsesResponse(err), nil
 		}
 	}
+	if request.Operation == conversation.OperationMessages && conversationOptions.AnthropicWebSearch {
+		request.ReasoningReplayKey = ""
+	}
 	if compactionRequested {
 		body, err = prepareGatewayCompactionSample(body)
 		if err != nil {
