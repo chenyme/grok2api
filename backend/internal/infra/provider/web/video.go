@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,15 +19,117 @@ import (
 )
 
 type webMediaUpstreamError struct {
-	status int
-	body   string
+	status  int
+	summary string
 }
 
 func (e *webMediaUpstreamError) Error() string {
-	return fmt.Sprintf("Grok Web 媒体上游返回 %d: %s", e.status, e.body)
+	if e == nil {
+		return ""
+	}
+	return e.summary
 }
 
-func (e *webMediaUpstreamError) HTTPStatusCode() int { return e.status }
+func (e *webMediaUpstreamError) HTTPStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.status
+}
+
+const (
+	webMediaDiagnosticBodyLimit    = 64 << 10
+	webMediaDiagnosticSummaryLimit = 256
+	webMediaDiagnosticFieldLimit   = 160
+)
+
+var (
+	webMediaAuthorizationPattern = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+`)
+	webMediaCookiePattern        = regexp.MustCompile(`(?i)\b(cookie|set-cookie)\b\s*[:=]\s*[^\r\n]+`)
+	webMediaSecretPattern        = regexp.MustCompile(`(?i)(["']?(?:authorization|proxy-authorization|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|upload[_-]?url|cookie|sso|session[_-]?id)["']?\s*[:=]\s*["']?)[^"'\s,;}]+`)
+	webMediaJWTPattern           = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}(?:\.[A-Za-z0-9_-]{12,})?\b`)
+	webMediaEmailPattern         = regexp.MustCompile(`(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`)
+	webMediaURLPattern           = regexp.MustCompile(`https?://[^\s"'<>]+`)
+)
+
+// newWebMediaUpstreamError keeps the HTTP status while exposing only a
+// bounded, redacted summary to logs, persisted jobs, and API responses.
+func newWebMediaUpstreamError(status int, body []byte, truncated bool) *webMediaUpstreamError {
+	return &webMediaUpstreamError{status: status, summary: summarizeWebMediaUpstreamError(status, body, truncated)}
+}
+
+func summarizeWebMediaUpstreamError(status int, body []byte, truncated bool) string {
+	code, message, structured := extractWebMediaUpstreamErrorFields(body)
+	parts := []string{fmt.Sprintf("Grok Web 媒体上游返回 %d", status)}
+	if code != "" {
+		parts = append(parts, code)
+	}
+	if message != "" {
+		parts = append(parts, message)
+	} else if len(strings.TrimSpace(string(body))) == 0 {
+		parts = append(parts, "<empty>")
+	} else if truncated {
+		parts = append(parts, "响应正文过长")
+	} else if !structured {
+		parts = append(parts, "响应正文不可解析")
+	} else if code == "" {
+		parts = append(parts, "未提供错误详情")
+	}
+	return boundWebMediaDiagnostic(strings.Join(parts, ": "), webMediaDiagnosticSummaryLimit)
+}
+
+func extractWebMediaUpstreamErrorFields(body []byte) (code, message string, structured bool) {
+	var root map[string]any
+	if err := json.Unmarshal(body, &root); err != nil {
+		return "", "", false
+	}
+	structured = true
+	if errorObject, ok := root["error"].(map[string]any); ok {
+		code = firstWebMediaDiagnosticCode(errorObject, "code", "type", "error")
+		message = firstString(errorObject, "message", "error", "detail")
+	} else if errorText, ok := root["error"].(string); ok {
+		message = errorText
+	}
+	if code == "" {
+		code = firstWebMediaDiagnosticCode(root, "code", "error_code", "type")
+	}
+	if message == "" {
+		message = firstString(root, "message", "error_message", "detail")
+	}
+	return safeWebMediaDiagnostic(code, 64), safeWebMediaDiagnostic(message, webMediaDiagnosticFieldLimit), true
+}
+
+func firstWebMediaDiagnosticCode(value map[string]any, keys ...string) string {
+	if code := firstString(value, keys...); code != "" {
+		return code
+	}
+	if code, ok := firstInt(value, keys...); ok {
+		return fmt.Sprintf("%d", code)
+	}
+	return ""
+}
+
+func safeWebMediaDiagnostic(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	value = webMediaCookiePattern.ReplaceAllString(value, "$1: [REDACTED]")
+	value = webMediaAuthorizationPattern.ReplaceAllString(value, "$1 [REDACTED]")
+	value = webMediaSecretPattern.ReplaceAllString(value, "$1[REDACTED]")
+	value = webMediaJWTPattern.ReplaceAllString(value, "[REDACTED]")
+	value = webMediaEmailPattern.ReplaceAllString(value, "[REDACTED_EMAIL]")
+	value = webMediaURLPattern.ReplaceAllString(value, "[REDACTED_URL]")
+	return boundWebMediaDiagnostic(value, limit)
+}
+
+func boundWebMediaDiagnostic(value string, limit int) string {
+	if limit <= 0 || value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
 
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
 	cfg := a.config()
@@ -163,20 +266,24 @@ func (a *Adapter) DownloadVideo(ctx context.Context, credential account.Credenti
 
 func parseVideoStream(response *http.Response, progress func(int)) (provider.VideoResult, string, error) {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		body, _ := io.ReadAll(io.LimitReader(response.Body, webMediaDiagnosticBodyLimit+1))
 		if response.StatusCode == http.StatusUnauthorized {
 			return provider.VideoResult{}, "", provider.ErrUnauthorized
 		}
-		return provider.VideoResult{}, "", &webMediaUpstreamError{status: response.StatusCode, body: strings.TrimSpace(string(body))}
+		truncated := len(body) > webMediaDiagnosticBodyLimit
+		if truncated {
+			body = body[:webMediaDiagnosticBodyLimit]
+		}
+		return provider.VideoResult{}, "", newWebMediaUpstreamError(response.StatusCode, body, truncated)
 	}
 	var result provider.VideoResult
 	var postID string
 	handle := func(root map[string]any) (bool, error) {
 		if errorValue, ok := root["error"].(map[string]any); ok {
-			return false, fmt.Errorf("视频上游错误: %v", errorValue["message"])
+			return false, webMediaStreamError(errorValue)
 		}
 		if errorValue := nestedMap(root, "result", "response", "error"); errorValue != nil {
-			return false, fmt.Errorf("视频上游错误: %v", errorValue["message"])
+			return false, webMediaStreamError(errorValue)
 		}
 		stream := nestedMap(root, "result", "response", "streamingVideoGenerationResponse")
 		if stream != nil {
@@ -217,6 +324,14 @@ func parseVideoStream(response *http.Response, progress func(int)) (provider.Vid
 		return provider.VideoResult{}, "", err
 	}
 	return result, postID, nil
+}
+
+func webMediaStreamError(value map[string]any) error {
+	message := safeWebMediaDiagnostic(firstString(value, "message", "error", "detail"), webMediaDiagnosticFieldLimit)
+	if message == "" {
+		message = "未提供错误详情"
+	}
+	return fmt.Errorf("视频上游错误: %s", message)
 }
 
 func videoFileAttachments(root map[string]any) []string {
