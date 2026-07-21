@@ -725,7 +725,7 @@ func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery
 }
 
 func isEstimatedFreeBillingProfile(billing *accountdomain.Billing) bool {
-	return billing != nil && billing.HasFreeProfileSignal()
+	return billing != nil && (billing.HasFreeProfileSignal() || billing.HasInferredFreeProfileSignal())
 }
 
 // StartDeviceLogin 启动短期 Device OAuth，会话只保存在有界运行态存储中。

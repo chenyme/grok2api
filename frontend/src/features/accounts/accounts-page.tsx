@@ -1219,24 +1219,56 @@ function AccountTypeText({ label, title, variant }: { label: string; title?: str
 }
 
 function AccountStatus({ account }: { account: AccountDTO }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   if (!account.enabled) {
     return <Badge variant="outline" className="text-muted-foreground">{t("accounts.statusDisabled")}</Badge>;
   }
   if (account.authStatus === "reauthRequired") {
     return <Badge variant="destructive">{t("accounts.statusReauthRequired")}</Badge>;
   }
-  if (account.provider === "grok_console" && account.quotaWindows?.some((window) => window.mode === "console" && window.remaining <= 0)) {
-    return <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.waitingReset")}</Badge>;
+  const consoleWindow = account.provider === "grok_console"
+    ? account.quotaWindows?.find((window) => window.mode === "console" && window.remaining <= 0)
+    : undefined;
+  if (consoleWindow) {
+    const detail = consoleWindow.resetAt
+      ? t("accounts.quotaResetAt", { time: formatDateTime(consoleWindow.resetAt, i18n.language) })
+      : t("accounts.quotaResetUnknown");
+    return (
+      <StatusTooltip content={detail}>
+        <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.waitingReset")}</Badge>
+      </StatusTooltip>
+    );
   }
   if (account.quota.status === "waitingReset") {
-    return <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.waitingReset")}</Badge>;
+    const detail = account.quota.nextProbeAt
+      ? t(account.quota.type === "paid" ? "accounts.paidWaitingResetUntil" : "accounts.waitingResetUntil", { time: formatDateTime(account.quota.nextProbeAt, i18n.language) })
+      : t("accounts.quotaResetUnknown");
+    return (
+      <StatusTooltip content={detail}>
+        <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.waitingReset")}</Badge>
+      </StatusTooltip>
+    );
   }
   if (account.quota.status === "probing") {
-    return <Badge variant="secondary" className="bg-sky-500/10 text-sky-700 dark:text-sky-300">{t("accounts.probing")}</Badge>;
+    return (
+      <StatusTooltip content={t(account.quota.type === "paid" ? "accounts.paidProbingQuota" : "accounts.probingQuota")}>
+        <Badge variant="secondary" className="bg-sky-500/10 text-sky-700 dark:text-sky-300">{t("accounts.probing")}</Badge>
+      </StatusTooltip>
+    );
   }
   if (account.cooldownUntil && new Date(account.cooldownUntil) > new Date()) {
     return <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.statusCooldown")}</Badge>;
   }
   return <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("accounts.statusActive")}</Badge>;
+}
+
+function StatusTooltip({ children, content }: { children: ReactNode; content: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span tabIndex={0} className="inline-flex cursor-help">{children}</span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-72">{content}</TooltipContent>
+    </Tooltip>
+  );
 }

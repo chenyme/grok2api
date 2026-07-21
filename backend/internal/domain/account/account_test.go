@@ -35,6 +35,20 @@ func TestBillingIsPaidMatchesSQLSignals(t *testing.T) {
 	if !(Billing{PlanName: "Free"}).HasFreeProfileSignal() || !(Billing{PlanCode: "x_basic"}).HasFreeProfileSignal() {
 		t.Fatal("known restricted tiers should be recognized as free/basic")
 	}
+	now := time.Now().UTC()
+	if !(Billing{SyncedAt: now, IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY"}).HasInferredFreeProfileSignal() {
+		t.Fatal("a successful zero-value billing snapshot should be inferred as free")
+	}
+	for _, billing := range []Billing{
+		{IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY"},
+		{SyncedAt: now, MonthlyLimit: 1},
+		{SyncedAt: now, CreditUsagePercent: 1},
+		{SyncedAt: now, PlanName: "SuperGrok"},
+	} {
+		if billing.HasInferredFreeProfileSignal() {
+			t.Fatalf("billing must remain non-inferred: %#v", billing)
+		}
+	}
 }
 
 func TestBuildRouteModeValidation(t *testing.T) {
@@ -77,6 +91,7 @@ func TestRoutingCandidateIsKnownFreeBuild(t *testing.T) {
 		want      bool
 	}{
 		{name: "billing profile", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, Billing: &freeBilling}, want: true},
+		{name: "inferred zero billing profile", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, Billing: &Billing{SyncedAt: time.Now().UTC(), IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY"}}, want: true},
 		{name: "ambiguous weekly profile", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, Billing: &Billing{IsUnifiedBillingUser: true, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY"}}},
 		{name: "observed response model", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild, ObservedModel: "grok-4.5-build-free"}}, want: true},
 		{name: "quota recovery", candidate: RoutingCandidate{Credential: Credential{Provider: ProviderBuild}, QuotaRecovery: &freeRecovery}, want: true},

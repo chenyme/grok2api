@@ -20,13 +20,11 @@ export function AccountQuota({ quota, billing, locale }: { quota: QuotaDTO; bill
   const used = formatNumber(quota.used, locale, 0);
   const limit = formatNumber(quota.limit, locale, 0);
   const isEstimated = !quota.limitKnown;
-  const statusDescription = quota.status === "waitingReset" && quota.nextProbeAt
+  const recoveryDescription = quota.nextProbeAt
     ? t("accounts.waitingResetUntil", { time: formatDateTime(quota.nextProbeAt, locale) })
     : quota.status === "probing"
       ? t("accounts.probingQuota")
-      : quota.confirmed
-        ? t("accounts.upstreamConfirmed")
-        : null;
+      : t("accounts.quotaResetUnknown");
   const usage = quota.limit > 0
     ? isEstimated ? t("accounts.freeEstimatedUsage", { used, limit }) : `${used} / ${limit} tokens`
     : t("accounts.freeObservedUsage", { used });
@@ -43,14 +41,16 @@ export function AccountQuota({ quota, billing, locale }: { quota: QuotaDTO; bill
                   <Info className="size-3.5" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent>{t("accounts.freeEstimatedDescription")}</TooltipContent>
+              <TooltipContent className="max-w-80 space-y-1">
+                <div>{t("accounts.freeEstimatedDescription")}</div>
+                <div className="text-muted-foreground">{recoveryDescription}</div>
+              </TooltipContent>
             </Tooltip>
           ) : null}
         </div>
         <span className="shrink-0 text-muted-foreground">{isEstimated ? "≈" : ""}{formatNumber(quota.usagePercent, locale, 1)}%</span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary" style={{ width: `${percent}%` }} /></div>
-      {statusDescription ? <div className="text-[11px] text-muted-foreground">{statusDescription}</div> : null}
     </div>
   );
 }
@@ -65,10 +65,6 @@ function BuildQuota({ quota, billing, locale }: { quota: QuotaDTO; billing?: Bil
   const weeklyPercent = Math.max(0, Math.min(100, percentageQuota ? quota.usagePercent : (billing?.creditUsagePercent ?? 0)));
   const monthlyPercent = Math.max(0, Math.min(100, quota.usagePercent));
   const weeklyPeriodEnd = quota.periodEnd ?? billing?.usagePeriodEnd;
-  const statusDescription = quota.status === "waitingReset" && quota.nextProbeAt
-    ? t("accounts.paidWaitingResetUntil", { time: formatDateTime(quota.nextProbeAt, locale) })
-    : quota.status === "probing" ? t("accounts.paidProbingQuota") : null;
-
   return (
     <div className="w-full min-w-0 space-y-1.5">
       <div className={cn("grid w-full min-w-0 divide-x divide-border/70", hasWeekly && hasMonthly ? "grid-cols-2" : "grid-cols-1")}>
@@ -101,7 +97,6 @@ function BuildQuota({ quota, billing, locale }: { quota: QuotaDTO; billing?: Bil
           </Tooltip>
         ) : null}
       </div>
-      {statusDescription ? <div className="text-[11px] text-muted-foreground">{statusDescription}</div> : null}
     </div>
   );
 }

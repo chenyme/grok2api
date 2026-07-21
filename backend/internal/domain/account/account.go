@@ -375,11 +375,22 @@ func (b Billing) IsPaid() bool {
 		b.MonthlyLimit > 0 || b.OnDemandCap > 0 || b.OnDemandUsed > 0 || b.PrepaidBalance > 0
 }
 
-// HasFreeProfileSignal 仅接受明确的 Free/Basic 套餐名称。
-// currentPeriod、unified billing、top-up 等字段在零使用量的付费账号上同样存在，
-// 不能作为 Free 证据，否则会把刚开通的 SuperGrok 误判为 Free。
+// HasFreeProfileSignal accepts an explicit Free or Basic plan name.
 func (b Billing) HasFreeProfileSignal() bool {
 	return isFreeBillingPlan(b.PlanCode) || isFreeBillingPlan(b.PlanName)
+}
+
+// HasInferredFreeProfileSignal accepts a successful zero-value billing snapshot
+// with no plan name. The upstream omits the Free plan name in this response.
+// A non-zero usage or paid balance remains unknown unless another Free signal
+// is available, preventing ordinary weekly billing from being misclassified.
+func (b Billing) HasInferredFreeProfileSignal() bool {
+	if b.SyncedAt.IsZero() || strings.TrimSpace(b.PlanCode) != "" || strings.TrimSpace(b.PlanName) != "" {
+		return false
+	}
+	return b.MonthlyLimit == 0 && b.Used == 0 &&
+		b.OnDemandCap == 0 && b.OnDemandUsed == 0 &&
+		b.PrepaidBalance == 0 && b.CreditUsagePercent == 0
 }
 
 func normalizeBillingPlan(value string) string {
@@ -433,7 +444,7 @@ func (c RoutingCandidate) IsKnownFreeBuild() bool {
 	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(c.Credential.ObservedModel)), "-build-free") {
 		return true
 	}
-	return c.Billing != nil && c.Billing.HasFreeProfileSignal()
+	return c.Billing != nil && (c.Billing.HasFreeProfileSignal() || c.Billing.HasInferredFreeProfileSignal())
 }
 
 // IsExhausted 判断额度快照是否已达到账号保留阈值。
