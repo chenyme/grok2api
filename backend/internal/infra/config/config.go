@@ -126,12 +126,17 @@ type ProviderConfig struct {
 }
 
 type BuildProviderConfig struct {
-	BaseURL          string `yaml:"baseURL"`
-	FallbackBaseURL  string `yaml:"fallbackBaseURL"`
-	ClientVersion    string `yaml:"clientVersion"`
-	ClientIdentifier string `yaml:"clientIdentifier"`
-	TokenAuth        string `yaml:"tokenAuth"`
-	UserAgent        string `yaml:"userAgent"`
+	BaseURL                    string `yaml:"baseURL"`
+	FallbackBaseURL            string `yaml:"fallbackBaseURL"`
+	ClientVersion              string `yaml:"clientVersion"`
+	ClientIdentifier           string `yaml:"clientIdentifier"`
+	TokenAuth                  string `yaml:"tokenAuth"`
+	UserAgent                  string `yaml:"userAgent"`
+	// InjectBuildSearchTools 为 free Build OAuth 注入原生 web_search/x_search，
+	// 以进入可写回 cached_tokens 的 cli-chat-proxy 路径（对齐 CPA #4213）。
+	InjectBuildSearchTools bool `yaml:"injectBuildSearchTools"`
+	// HideInjectedSearchResults 预留：隐藏仅因缓存亲和注入而产生的搜索结果（当前未启用过滤）。
+	HideInjectedSearchResults bool `yaml:"hideInjectedSearchResults"`
 }
 
 // DefaultBuildFallbackBaseURL 是主 Build API 对可回退推理操作 403 时探测的 XAI API 根地址。
@@ -557,6 +562,9 @@ func defaultConfig() Config {
 				BaseURL: "https://cli-chat-proxy.grok.com/v1", FallbackBaseURL: DefaultBuildFallbackBaseURL,
 				ClientVersion: RecommendedBuildClientVersion, ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli",
 				UserAgent: RecommendedBuildUserAgent,
+				// free Build 默认注入，避免 cached_tokens 长期为 0；付费 API 池可在配置中关闭。
+				InjectBuildSearchTools:    true,
+				HideInjectedSearchResults: false,
 			},
 			Web: WebProviderConfig{
 				BaseURL: "https://grok.com", StatsigMode: StatsigModeURL, StatsigSignerURL: DefaultStatsigSignerURL,

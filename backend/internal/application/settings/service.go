@@ -20,12 +20,14 @@ var (
 
 // ProviderBuildConfig 是管理接口使用的 Provider 可编辑输入。
 type ProviderBuildConfig struct {
-	BaseURL          string
-	FallbackBaseURL  string
-	ClientVersion    string
-	ClientIdentifier string
-	TokenAuth        string
-	UserAgent        string
+	BaseURL                    string
+	FallbackBaseURL            string
+	ClientVersion              string
+	ClientIdentifier           string
+	TokenAuth                  string
+	UserAgent                  string
+	InjectBuildSearchTools     bool
+	HideInjectedSearchResults  bool
 }
 
 // ProviderBuildRecommendation 表示当前网关已完成兼容回归的 Grok Build 协议基线。
@@ -282,6 +284,8 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		BaseURL: value.ProviderBuild.BaseURL, FallbackBaseURL: config.NormalizeBuildFallbackBaseURL(value.ProviderBuild.FallbackBaseURL),
 		ClientVersion: value.ProviderBuild.ClientVersion, ClientIdentifier: value.ProviderBuild.ClientIdentifier,
 		TokenAuth: value.ProviderBuild.TokenAuth, UserAgent: value.ProviderBuild.UserAgent,
+		InjectBuildSearchTools:    value.ProviderBuild.InjectBuildSearchTools,
+		HideInjectedSearchResults: value.ProviderBuild.HideInjectedSearchResults,
 	}
 	clearanceMode := strings.TrimSpace(value.ProviderWeb.ClearanceMode)
 	if clearanceMode == "" {
@@ -362,6 +366,8 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			BaseURL: value.Provider.Build.BaseURL, FallbackBaseURL: config.NormalizeBuildFallbackBaseURL(value.Provider.Build.FallbackBaseURL),
 			ClientVersion: value.Provider.Build.ClientVersion, ClientIdentifier: value.Provider.Build.ClientIdentifier,
 			TokenAuth: value.Provider.Build.TokenAuth, UserAgent: value.Provider.Build.UserAgent,
+			InjectBuildSearchTools:    value.Provider.Build.InjectBuildSearchTools,
+			HideInjectedSearchResults: value.Provider.Build.HideInjectedSearchResults,
 		},
 		ProviderWeb: settingsdomain.ProviderWebConfig{
 			BaseURL: value.Provider.Web.BaseURL, QuotaTimeout: value.Provider.Web.QuotaTimeout.Value(),
@@ -438,6 +444,8 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		next.Provider.Build.TokenAuth = tokenAuth
 	}
 	next.Provider.Build.UserAgent = strings.TrimSpace(input.ProviderBuild.UserAgent)
+	next.Provider.Build.InjectBuildSearchTools = input.ProviderBuild.InjectBuildSearchTools
+	next.Provider.Build.HideInjectedSearchResults = input.ProviderBuild.HideInjectedSearchResults
 	next.Provider.Web.BaseURL = strings.TrimSpace(input.ProviderWeb.BaseURL)
 	next.Provider.Web.StatsigMode = strings.TrimSpace(input.ProviderWeb.StatsigMode)
 	next.Provider.Web.StatsigSignerURL = strings.TrimSpace(input.ProviderWeb.StatsigSignerURL)
@@ -527,6 +535,8 @@ func toEditable(cfg config.Config) EditableConfig {
 			BaseURL: cfg.Provider.Build.BaseURL, FallbackBaseURL: config.NormalizeBuildFallbackBaseURL(cfg.Provider.Build.FallbackBaseURL),
 			ClientVersion: cfg.Provider.Build.ClientVersion, ClientIdentifier: cfg.Provider.Build.ClientIdentifier,
 			TokenAuth: cfg.Provider.Build.TokenAuth, UserAgent: cfg.Provider.Build.UserAgent,
+			InjectBuildSearchTools:    cfg.Provider.Build.InjectBuildSearchTools,
+			HideInjectedSearchResults: cfg.Provider.Build.HideInjectedSearchResults,
 		},
 		ProviderWeb: ProviderWebConfig{
 			BaseURL: cfg.Provider.Web.BaseURL, QuotaTimeout: cfg.Provider.Web.QuotaTimeout.String(),

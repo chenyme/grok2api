@@ -170,6 +170,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		BaseURL: cfg.Provider.Build.BaseURL, FallbackBaseURL: config.NormalizeBuildFallbackBaseURL(cfg.Provider.Build.FallbackBaseURL),
 		ClientVersion: cfg.Provider.Build.ClientVersion, ClientIdentifier: cfg.Provider.Build.ClientIdentifier,
 		TokenAuth: cfg.Provider.Build.TokenAuth, UserAgent: cfg.Provider.Build.UserAgent,
+		InjectBuildSearchTools:    cfg.Provider.Build.InjectBuildSearchTools,
+		HideInjectedSearchResults: cfg.Provider.Build.HideInjectedSearchResults,
 	}, cipher)
 	cliAdapter.SetLogger(logger)
 	cliAdapter.SetEgress(egressManager)
@@ -291,6 +293,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 			BaseURL: next.Provider.Build.BaseURL, FallbackBaseURL: config.NormalizeBuildFallbackBaseURL(next.Provider.Build.FallbackBaseURL),
 			ClientVersion: next.Provider.Build.ClientVersion, ClientIdentifier: next.Provider.Build.ClientIdentifier,
 			TokenAuth: next.Provider.Build.TokenAuth, UserAgent: next.Provider.Build.UserAgent,
+			InjectBuildSearchTools:    next.Provider.Build.InjectBuildSearchTools,
+			HideInjectedSearchResults: next.Provider.Build.HideInjectedSearchResults,
 		})
 		webAdapter.UpdateConfig(webProviderConfig(next))
 		egressManager.UpdateClearanceConfig(clearanceConfig(next))

@@ -69,12 +69,14 @@ type BatchConfig struct {
 
 // ProviderBuildConfig 定义 Grok Build CLI 上游协议标识。
 type ProviderBuildConfig struct {
-	BaseURL          string
-	FallbackBaseURL  string
-	ClientVersion    string
-	ClientIdentifier string
-	TokenAuth        string
-	UserAgent        string
+	BaseURL                    string
+	FallbackBaseURL            string
+	ClientVersion              string
+	ClientIdentifier           string
+	TokenAuth                  string
+	UserAgent                  string
+	InjectBuildSearchTools     bool
+	HideInjectedSearchResults  bool
 }
 
 // RoutingConfig 定义会话粘性、冷却和故障切换边界。

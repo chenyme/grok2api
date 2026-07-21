@@ -29,12 +29,14 @@ import (
 )
 
 type Config struct {
-	BaseURL          string
-	FallbackBaseURL  string
-	ClientVersion    string
-	ClientIdentifier string
-	TokenAuth        string
-	UserAgent        string
+	BaseURL                 string
+	FallbackBaseURL         string
+	ClientVersion           string
+	ClientIdentifier        string
+	TokenAuth               string
+	UserAgent               string
+	InjectBuildSearchTools  bool
+	HideInjectedSearchResults bool
 }
 
 const subscriptionTierTimeout = 10 * time.Second
@@ -158,6 +160,18 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	if len(body) > 0 && request.Method == http.MethodPost {
 		if !compactionRequested {
+			if a.config().InjectBuildSearchTools {
+				var injected bool
+				body, injected, err = injectBuildSearchTools(body)
+				if err != nil {
+					err = fmt.Errorf("注入 build search tools: %w", err)
+					if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
+						return invalidConversationResponse(request.Operation, err), nil
+					}
+					return invalidResponsesResponse(err), nil
+				}
+				_ = injected // 预留：HideInjectedSearchResults 可据此过滤上游搜索输出。
+			}
 			body, err = injectPromptCacheKey(body, request.PromptCacheKey)
 			if err != nil {
 				err = fmt.Errorf("写入 prompt_cache_key: %w", err)

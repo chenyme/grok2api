@@ -55,13 +55,15 @@ type frontendConfigDTO struct {
 }
 
 type providerBuildConfigDTO struct {
-	BaseURL             string `json:"baseURL"`
-	FallbackBaseURL     string `json:"fallbackBaseURL"`
-	ClientVersion       string `json:"clientVersion"`
-	ClientIdentifier    string `json:"clientIdentifier"`
-	TokenAuth           string `json:"tokenAuth"`
-	TokenAuthConfigured bool   `json:"tokenAuthConfigured"`
-	UserAgent           string `json:"userAgent"`
+	BaseURL                    string `json:"baseURL"`
+	FallbackBaseURL            string `json:"fallbackBaseURL"`
+	ClientVersion              string `json:"clientVersion"`
+	ClientIdentifier           string `json:"clientIdentifier"`
+	TokenAuth                  string `json:"tokenAuth"`
+	TokenAuthConfigured        bool   `json:"tokenAuthConfigured"`
+	UserAgent                  string `json:"userAgent"`
+	InjectBuildSearchTools     bool   `json:"injectBuildSearchTools"`
+	HideInjectedSearchResults  bool   `json:"hideInjectedSearchResults"`
 }
 
 type providerWebConfigDTO struct {
@@ -172,6 +174,8 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			BaseURL: value.ProviderBuild.BaseURL, FallbackBaseURL: value.ProviderBuild.FallbackBaseURL,
 			ClientVersion: value.ProviderBuild.ClientVersion, ClientIdentifier: value.ProviderBuild.ClientIdentifier,
 			TokenAuth: value.ProviderBuild.TokenAuth, UserAgent: value.ProviderBuild.UserAgent,
+			InjectBuildSearchTools:    value.ProviderBuild.InjectBuildSearchTools,
+			HideInjectedSearchResults: value.ProviderBuild.HideInjectedSearchResults,
 		},
 		ProviderWeb: settingsapp.ProviderWebConfig{
 			BaseURL: value.ProviderWeb.BaseURL, QuotaTimeout: value.ProviderWeb.QuotaTimeout,
@@ -234,6 +238,8 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				ClientVersion: config.ProviderBuild.ClientVersion, ClientIdentifier: config.ProviderBuild.ClientIdentifier,
 				TokenAuth:           config.ProviderBuild.TokenAuth,
 				TokenAuthConfigured: strings.TrimSpace(config.ProviderBuild.TokenAuth) != "", UserAgent: config.ProviderBuild.UserAgent,
+				InjectBuildSearchTools:    config.ProviderBuild.InjectBuildSearchTools,
+				HideInjectedSearchResults: config.ProviderBuild.HideInjectedSearchResults,
 			},
 			ProviderWeb: providerWebConfigDTO{
 				BaseURL: config.ProviderWeb.BaseURL, QuotaTimeout: config.ProviderWeb.QuotaTimeout,
