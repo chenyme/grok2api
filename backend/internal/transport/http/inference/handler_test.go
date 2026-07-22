@@ -179,6 +179,19 @@ func TestGatewayErrorHidesUpstreamCredentialStatus(t *testing.T) {
 		t.Fatalf("Anthropic status=%d body=%s", anthropicRecorder.Code, anthropicRecorder.Body.String())
 	}
 
+	quotaRouter := gin.New()
+	quotaRouter.GET("/", func(c *gin.Context) {
+		writeGatewayAnthropicError(c, &gateway.UpstreamFailure{
+			HTTPStatus: http.StatusTooManyRequests, Code: "upstream_rate_limited", PublicMessage: "official upgrade prompt",
+			QuotaExhausted: true,
+		})
+	})
+	quotaRecorder := httptest.NewRecorder()
+	quotaRouter.ServeHTTP(quotaRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if quotaRecorder.Code != http.StatusServiceUnavailable || !strings.Contains(quotaRecorder.Body.String(), `"type":"overloaded_error"`) || strings.Contains(quotaRecorder.Body.String(), "upgrade") {
+		t.Fatalf("Anthropic quota status=%d body=%s", quotaRecorder.Code, quotaRecorder.Body.String())
+	}
+
 	credentialRouter := gin.New()
 	credentialRouter.GET("/", func(c *gin.Context) {
 		writeGatewayAnthropicError(c, &gateway.UpstreamFailure{
@@ -689,6 +702,7 @@ func TestCopyHeadersFiltersHopByHopAndUpstreamCookies(t *testing.T) {
 		"Connection":          {"X-Upstream-Internal"},
 		"Content-Type":        {"application/json"},
 		"Set-Cookie":          {"upstream_session=secret"},
+		"X-Models-Etag":       {`"upstream-account-catalog"`},
 		"X-Request-Id":        {"req_123"},
 		"X-Upstream-Internal": {"hidden"},
 	}
@@ -699,7 +713,7 @@ func TestCopyHeadersFiltersHopByHopAndUpstreamCookies(t *testing.T) {
 	if destination.Get("Content-Type") != "application/json" || destination.Get("X-Request-Id") != "req_123" {
 		t.Fatalf("forwarded headers = %#v", destination)
 	}
-	if destination.Get("Set-Cookie") != "" || destination.Get("X-Upstream-Internal") != "" || destination.Get("Connection") != "" {
+	if destination.Get("Set-Cookie") != "" || destination.Get("X-Models-Etag") != "" || destination.Get("X-Upstream-Internal") != "" || destination.Get("Connection") != "" {
 		t.Fatalf("filtered headers leaked = %#v", destination)
 	}
 }

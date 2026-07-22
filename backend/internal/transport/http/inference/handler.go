@@ -17,6 +17,7 @@ import (
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
+	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
@@ -165,16 +166,22 @@ type videoGenerationRequest struct {
 }
 
 type modelListItem struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID         string                 `json:"id"`
+	Object     string                 `json:"object"`
+	Created    int64                  `json:"created"`
+	OwnedBy    string                 `json:"owned_by"`
+	Provider   account.Provider       `json:"-"`
+	Capability modeldomain.Capability `json:"-"`
 }
 
 func (h *Handler) listModels(c *gin.Context) {
 	values, err := h.models.ListEnabled(c.Request.Context())
 	if err != nil {
 		writeOpenAIError(c, http.StatusInternalServerError, "model_list_failed", "读取模型列表失败")
+		return
+	}
+	if clientVersion := strings.TrimSpace(c.Query("client_version")); clientVersion != "" {
+		writeCodexModelCatalog(c, newCodexModelCatalog(newModelListItems(values)))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": newModelListItems(values)})
@@ -190,7 +197,7 @@ func newModelListItems(values []modeldomain.Route) []modelListItem {
 			continue
 		}
 		seen[publicID] = true
-		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api"})
+		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api", Provider: value.Provider, Capability: value.Capability})
 	}
 	return data
 }
@@ -1414,7 +1421,7 @@ func copyHeaders(destination, source http.Header) {
 	excluded := map[string]struct{}{
 		"connection": {}, "content-length": {}, "keep-alive": {}, "proxy-authenticate": {},
 		"proxy-authorization": {}, "set-cookie": {}, "te": {}, "trailer": {},
-		"transfer-encoding": {}, "upgrade": {},
+		"transfer-encoding": {}, "upgrade": {}, "x-models-etag": {},
 	}
 	for _, value := range source.Values("Connection") {
 		for name := range strings.SplitSeq(value, ",") {
@@ -1476,8 +1483,12 @@ func writeGatewayError(c *gin.Context, err error) {
 		status, code = http.StatusBadRequest, "invalid_request"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
-		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
+		if isSanitizedUpstreamAvailabilityFailure(upstreamFailure) {
+			// Gateway mid-tier behavior: never expose upstream upgrade/billing prompts to clients.
 			code = upstreamFailure.ClientCredentialErrorCode()
+			if upstreamFailure.QuotaExhausted || upstreamFailure.FreeQuotaExhausted || upstreamFailure.HTTPStatus == http.StatusPaymentRequired {
+				code = "upstream_unavailable"
+			}
 			status, message = http.StatusServiceUnavailable, credentialErrorMessage(code)
 		} else {
 			status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
@@ -1511,8 +1522,11 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		status, errorType = http.StatusBadRequest, "invalid_request_error"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
-		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
+		if isSanitizedUpstreamAvailabilityFailure(upstreamFailure) {
 			clientCode = upstreamFailure.ClientCredentialErrorCode()
+			if upstreamFailure.QuotaExhausted || upstreamFailure.FreeQuotaExhausted || upstreamFailure.HTTPStatus == http.StatusPaymentRequired {
+				clientCode = "upstream_unavailable"
+			}
 			status, errorType, message = http.StatusServiceUnavailable, "overloaded_error", credentialErrorMessage(clientCode)
 		} else {
 			status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
@@ -1538,7 +1552,12 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 }
 
 func isUpstreamCredentialStatus(status int) bool {
-	return status == http.StatusUnauthorized || status == http.StatusForbidden
+	// Include 402 so official "add credits / upgrade SuperGrok" bodies never reach clients (Grok CLI, etc.).
+	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusPaymentRequired
+}
+
+func isSanitizedUpstreamAvailabilityFailure(failure *gateway.UpstreamFailure) bool {
+	return failure != nil && (isUpstreamCredentialStatus(failure.HTTPStatus) || failure.QuotaExhausted || failure.FreeQuotaExhausted)
 }
 
 func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailableError) (int, string, string) {

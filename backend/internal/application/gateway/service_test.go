@@ -115,7 +115,11 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adapter := &failoverAdapter{firstID: first.ID}
+	adapter := &failoverAdapter{
+		firstID: first.ID, failureStatus: http.StatusPaymentRequired,
+		failureBody:   `{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits"}`,
+		failureHeader: http.Header{"X-Should-Retry": {"false"}},
+	}
 	registry := provider.NewRegistry(adapter)
 	cipher := testCipher(t)
 	sticky := memory.NewStickyStore()
@@ -159,11 +163,11 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("observed account = %#v, err = %v", observedAccount, err)
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "Build/grok-test" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 || logs[0].AttemptCount != 0 {
+	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "Build/grok-test" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 || logs[0].StatusCode != http.StatusOK || logs[0].AttemptCount != 1 {
 		t.Fatalf("audit = %#v, %d, %v", logs, total, err)
 	}
 	detail, err := auditRepo.Get(ctx, logs[0].ID)
-	if err != nil || len(detail.Attempts) != 0 {
+	if err != nil || len(detail.Attempts) != 1 || detail.Attempts[0].UpstreamStatusCode == nil || *detail.Attempts[0].UpstreamStatusCode != http.StatusPaymentRequired || !strings.Contains(string(detail.Attempts[0].ResponseBody), "personal-team-blocked:spending-limit") {
 		t.Fatalf("audit detail = %#v, err = %v", detail, err)
 	}
 	ownership, err := responseRepo.Get(ctx, "resp-test", clientKey.ID, time.Now().UTC())
@@ -1387,6 +1391,9 @@ func runQuotaRefreshWorkers(t *testing.T, service *accountapp.Service) {
 type failoverAdapter struct {
 	mu                     sync.Mutex
 	firstID                uint64
+	failureStatus          int
+	failureBody            string
+	failureHeader          http.Header
 	attempts               []uint64
 	lastMethod             string
 	lastPath               string
@@ -1753,12 +1760,21 @@ func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.Re
 	resourceStatus := a.resourceStatus
 	a.mu.Unlock()
 	status, body := http.StatusOK, "ok"
+	header := make(http.Header)
 	if request.Method != http.MethodPost && resourceStatus != 0 {
 		status, body = resourceStatus, "missing"
 	} else if request.Credential.ID == a.firstID {
-		status, body = http.StatusTooManyRequests, "limited"
+		status = a.failureStatus
+		if status == 0 {
+			status = http.StatusTooManyRequests
+		}
+		body = a.failureBody
+		if body == "" {
+			body = "limited"
+		}
+		header = a.failureHeader.Clone()
 	}
-	return &provider.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	return &provider.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
 }
 
 func (a *failoverAdapter) setResourceStatus(status int) {
