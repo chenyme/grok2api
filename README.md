@@ -211,6 +211,17 @@ The frontend runs at `http://127.0.0.1:5173` by default and proxies API requests
 
 After the administrator has been created, change its password and remove `bootstrapAdmin` from the configuration. Keep `credentialEncryptionKey` permanently: changing it makes existing encrypted credentials unreadable.
 
+### Migrating accounts from the Python version
+
+The **Grok Web SSO tokens** used by the Python version can be migrated, but its database or original pool JSON cannot be imported directly. Export **TXT (one token per line)** from the Python v2 admin page, or extract the raw SSO tokens from the old storage. Then open `/accounts` in the Go version, select **Grok Web**, and use **Connect account → Quick import SSO** or **Import account files**.
+
+The Go Web importer accepts:
+
+- TXT: one raw token per line; `sso=<token>` and `sso=<token>; ...` are also accepted
+- JSON: `{"provider":"grok_web","accounts":[{"sso_token":"...","name":"optional","tier":"auto|basic|super|heavy"}]}`
+
+Python pool assignments, tags, status, quota, usage, cooldown, proxy, and Cloudflare metadata are not migrated. TXT imports use tier `auto` and resync upstream state. The Python version did not contain Grok Build OAuth credentials, so its pools cannot be imported under the **Grok Build** tab. Each import is limited to 1,000 files, 30 MiB total, and 10,000 accounts; wait for identity, quota, and model-capability synchronization after importing.
+
 ## Models and routing
 
 Public model names are unqualified by default. Internally, `Build/`, `Web/`, and `Console/` are used as stable route IDs. Qualified names remain available for explicitly selecting a source, but they are not shown as ordinary model names.
