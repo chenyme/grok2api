@@ -67,3 +67,14 @@ func TestRetryableResponseHonorsUpstreamRetryVeto(t *testing.T) {
 		t.Fatal("未知 x-should-retry 值应按未提供处理")
 	}
 }
+
+func TestPaymentRequiredAlwaysRetriesDespiteUpstreamVeto(t *testing.T) {
+	response := &provider.Response{
+		StatusCode: http.StatusPaymentRequired,
+		Header:     http.Header{"X-Should-Retry": {"false"}},
+		Body:       io.NopCloser(strings.NewReader(`{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits"}`)),
+	}
+	if !isRetryableResponse(response) {
+		t.Fatal("402 spending-limit must force account rotation even when X-Should-Retry is false")
+	}
+}

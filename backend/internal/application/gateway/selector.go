@@ -33,6 +33,10 @@ const maxConcurrencySnapshots = 256
 
 const modelAccessDeniedCooldown = 5 * time.Minute
 
+// freeQuotaRecoveryPause is how long a free/unrecognized profile stays out of the pool after quota exhaustion.
+// Shorter than a full calendar day so recovered accounts rejoin faster; a failed probe re-applies the pause.
+const freeQuotaRecoveryPause = 2 * time.Hour
+
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
 	expiresAt time.Time
@@ -495,7 +499,7 @@ func (s *Selector) markSuccess(ctx context.Context, credential account.Credentia
 
 func (s *Selector) MarkFreeQuotaExhausted(ctx context.Context, credential account.Credential, used, limit int64) {
 	now := time.Now().UTC()
-	nextProbeAt := now.Add(24 * time.Hour)
+	nextProbeAt := now.Add(freeQuotaRecoveryPause)
 	_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
 		AccountID: credential.ID, Kind: account.QuotaRecoveryKindFree, Status: account.QuotaRecoveryStatusExhausted,
 		ConfirmedUsed: used, ConfirmedLimit: limit, ExhaustedAt: &now,
@@ -512,7 +516,7 @@ func (s *Selector) MarkModelQuotaExhausted(ctx context.Context, credential accou
 		return
 	}
 	if retryAfter <= 0 {
-		retryAfter = 24 * time.Hour
+		retryAfter = freeQuotaRecoveryPause
 	}
 	until := time.Now().UTC().Add(retryAfter)
 	_ = s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
@@ -540,22 +544,23 @@ func (s *Selector) MarkModelAccessDenied(ctx context.Context, credential account
 	s.invalidateCandidates(credential.Provider)
 }
 
-// MarkPaidQuotaExhausted 使用已知真实账期将付费账号移出号池，到期后才允许 Billing 探测。
+// MarkPaidQuotaExhausted 将额度耗尽的账号移出号池。
+// 付费账期已知时等到 period end 再探测；否则按 freeQuotaRecoveryPause 暂停后允许探测。
 func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential account.Credential, billing *account.Billing) bool {
-	if billing == nil || !billing.IsPaid() {
-		return false
-	}
-	periodEnd, ok := billing.PeriodEnd()
-	if !ok {
-		return false
-	}
 	now := time.Now().UTC()
-	_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
-		AccountID: credential.ID, Kind: account.QuotaRecoveryKindPaid, Status: account.QuotaRecoveryStatusExhausted,
-		ExhaustedAt: &now, NextProbeAt: &periodEnd, LastConfirmedAt: &now, UpdatedAt: now,
-	})
-	_ = s.sticky.DeleteByAccount(ctx, credential.ID)
-	s.invalidateCandidates(credential.Provider)
+	if billing != nil && billing.IsPaid() {
+		if periodEnd, ok := billing.PeriodEnd(); ok {
+			_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
+				AccountID: credential.ID, Kind: account.QuotaRecoveryKindPaid, Status: account.QuotaRecoveryStatusExhausted,
+				ExhaustedAt: &now, NextProbeAt: &periodEnd, LastConfirmedAt: &now, UpdatedAt: now,
+			})
+			_ = s.sticky.DeleteByAccount(ctx, credential.ID)
+			s.invalidateCandidates(credential.Provider)
+			return true
+		}
+	}
+	// Fallback: free/unrecognized billing profiles (e.g. 402 personal-team-blocked:spending-limit).
+	s.MarkFreeQuotaExhausted(ctx, credential, 0, 0)
 	return true
 }
 

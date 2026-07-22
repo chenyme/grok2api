@@ -725,6 +725,12 @@ attemptLoop:
 				failureHandled = true
 			} else if lastFailure.QuotaExhausted {
 				failureHandled = s.selector.MarkPaidQuotaExhausted(ctx, credential, lease.Billing)
+				if !failureHandled {
+					// Unrecognized / free Build profiles still return 402 spending-limit.
+					// Pause so the account leaves the hot pool until freeQuotaRecoveryPause elapses.
+					s.selector.MarkFreeQuotaExhausted(ctx, credential, 0, 0)
+					failureHandled = true
+				}
 			}
 			if s.providers.SupportsCredentialRefresh(credential.Provider) && lastFailure.PermanentAccountDenial {
 				if credential.Provider == accountdomain.ProviderBuild {
@@ -1146,7 +1152,17 @@ func isRetryableResponse(response *provider.Response) bool {
 	if response == nil || !isRetryable(response.StatusCode) {
 		return false
 	}
+	// Account-scoped payment failures must always rotate accounts.
+	// Upstream X-Should-Retry:false is only honored for non-account errors (e.g. 5xx history).
+	if forcesAccountFailover(response.StatusCode) {
+		return true
+	}
 	return !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-Should-Retry")), "false")
+}
+
+// forcesAccountFailover returns true for statuses that always mean "this account cannot serve the request".
+func forcesAccountFailover(status int) bool {
+	return status == http.StatusPaymentRequired
 }
 
 func parseRetryAfter(value string, now time.Time) time.Duration {

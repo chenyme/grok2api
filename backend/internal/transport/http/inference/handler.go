@@ -1476,8 +1476,12 @@ func writeGatewayError(c *gin.Context, err error) {
 		status, code = http.StatusBadRequest, "invalid_request"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
-		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) {
+		if isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) || upstreamFailure.QuotaExhausted || upstreamFailure.FreeQuotaExhausted {
+			// Gateway mid-tier behavior: never expose upstream upgrade/billing prompts to clients.
 			code = upstreamFailure.ClientCredentialErrorCode()
+			if upstreamFailure.QuotaExhausted || upstreamFailure.FreeQuotaExhausted || upstreamFailure.HTTPStatus == http.StatusPaymentRequired {
+				code = "upstream_unavailable"
+			}
 			status, message = http.StatusServiceUnavailable, credentialErrorMessage(code)
 		} else {
 			status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
@@ -1538,7 +1542,8 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 }
 
 func isUpstreamCredentialStatus(status int) bool {
-	return status == http.StatusUnauthorized || status == http.StatusForbidden
+	// Include 402 so official "add credits / upgrade SuperGrok" bodies never reach clients (Grok CLI, etc.).
+	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusPaymentRequired
 }
 
 func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailableError) (int, string, string) {
