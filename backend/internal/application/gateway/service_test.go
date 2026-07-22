@@ -102,10 +102,18 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	third, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "third", SourceKey: "third", EncryptedAccessToken: "three", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 50, MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fourth, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "fourth", SourceKey: "fourth", EncryptedAccessToken: "four", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 25, MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-test"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, accountID := range []uint64{first.ID, second.ID} {
+	for _, accountID := range []uint64{first.ID, second.ID, third.ID, fourth.ID} {
 		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-test"}, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
@@ -115,7 +123,12 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adapter := &failoverAdapter{firstID: first.ID}
+	adapter := &failoverAdapter{
+		failedIDs:   map[uint64]bool{first.ID: true, second.ID: true, third.ID: true},
+		firstStatus: http.StatusPaymentRequired,
+		firstBody:   `{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits or need a Grok subscription."}`,
+		firstHeader: http.Header{"X-Should-Retry": {"false"}},
+	}
 	registry := provider.NewRegistry(adapter)
 	cipher := testCipher(t)
 	sticky := memory.NewStickyStore()
@@ -137,7 +150,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	if string(body) != "ok" {
 		t.Fatalf("body = %q", body)
 	}
-	if len(adapter.attempts) != 2 || adapter.attempts[0] != first.ID || adapter.attempts[1] != second.ID {
+	if len(adapter.attempts) != 4 || adapter.attempts[0] != first.ID || adapter.attempts[1] != second.ID || adapter.attempts[2] != third.ID || adapter.attempts[3] != fourth.ID {
 		t.Fatalf("attempts = %#v", adapter.attempts)
 	}
 	identity := resolveBuildSessionIdentity(clientKey.ID, account.ProviderBuild, "grok-test", "", "claude-session", nil)
@@ -151,15 +164,22 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	if adapter.lastGrokTurnIndex != "3" {
 		t.Fatalf("Grok turn index = %q, want 3", adapter.lastGrokTurnIndex)
 	}
-	if boundID, ok, err := sticky.Get(ctx, stickySessionKey(identity.affinityKey), time.Now().UTC()); err != nil || !ok || boundID != second.ID {
-		t.Fatalf("failover sticky binding = %d, %v, err = %v; want account %d", boundID, ok, err, second.ID)
+	if boundID, ok, err := sticky.Get(ctx, stickySessionKey(identity.affinityKey), time.Now().UTC()); err != nil || !ok || boundID != fourth.ID {
+		t.Fatalf("failover sticky binding = %d, %v, err = %v; want account %d", boundID, ok, err, fourth.ID)
 	}
-	observedAccount, err := accountRepo.Get(ctx, second.ID)
+	recovery, err := accountRepo.GetQuotaRecovery(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery.Kind != account.QuotaRecoveryKindPaid || recovery.Status != account.QuotaRecoveryStatusExhausted || recovery.NextProbeAt == nil || time.Until(*recovery.NextProbeAt) < 23*time.Hour {
+		t.Fatalf("spending-limit account did not enter persistent quota recovery: %#v", recovery)
+	}
+	observedAccount, err := accountRepo.Get(ctx, fourth.ID)
 	if err != nil || observedAccount.ObservedModel != "grok-test-build-free" {
 		t.Fatalf("observed account = %#v, err = %v", observedAccount, err)
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "Build/grok-test" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 || logs[0].AttemptCount != 0 {
+	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != fourth.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "Build/grok-test" || logs[0].AccountName != "fourth" || logs[0].CachedInputTokens != 80 || logs[0].AttemptCount != 0 {
 		t.Fatalf("audit = %#v, %d, %v", logs, total, err)
 	}
 	detail, err := auditRepo.Get(ctx, logs[0].ID)
@@ -167,7 +187,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("audit detail = %#v, err = %v", detail, err)
 	}
 	ownership, err := responseRepo.Get(ctx, "resp-test", clientKey.ID, time.Now().UTC())
-	if err != nil || ownership.AccountID != second.ID || ownership.PromptCacheKey != expectedCacheKey || ownership.ReasoningReplayKey != identity.replayKey {
+	if err != nil || ownership.AccountID != fourth.ID || ownership.PromptCacheKey != expectedCacheKey || ownership.ReasoningReplayKey != identity.replayKey {
 		t.Fatalf("ownership = %#v, err = %v", ownership, err)
 	}
 
@@ -197,7 +217,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	_, _ = io.ReadAll(continued.Body)
 	continued.Finalize(Usage{}, "resp-next", "")
 	_ = continued.Body.Close()
-	if len(adapter.attempts) != 1 || adapter.attempts[0] != second.ID {
+	if len(adapter.attempts) != 1 || adapter.attempts[0] != fourth.ID {
 		t.Fatalf("continued attempts = %#v", adapter.attempts)
 	}
 	if adapter.lastPromptCacheKey != expectedCacheKey || adapter.lastReasoningReplayKey != identity.replayKey {
@@ -216,7 +236,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	_, _ = io.ReadAll(resource.Body)
 	resource.Finalize(Usage{}, "", "")
 	_ = resource.Body.Close()
-	if adapter.lastPath != "/responses/resp-test?include=reasoning.encrypted_content" || adapter.lastMethod != http.MethodGet || len(adapter.attempts) != 1 || adapter.attempts[0] != second.ID {
+	if adapter.lastPath != "/responses/resp-test?include=reasoning.encrypted_content" || adapter.lastMethod != http.MethodGet || len(adapter.attempts) != 1 || adapter.attempts[0] != fourth.ID {
 		t.Fatalf("resource request = %s %s, attempts = %#v", adapter.lastMethod, adapter.lastPath, adapter.attempts)
 	}
 
@@ -1387,6 +1407,7 @@ func runQuotaRefreshWorkers(t *testing.T, service *accountapp.Service) {
 type failoverAdapter struct {
 	mu                     sync.Mutex
 	firstID                uint64
+	failedIDs              map[uint64]bool
 	attempts               []uint64
 	lastMethod             string
 	lastPath               string
@@ -1394,6 +1415,9 @@ type failoverAdapter struct {
 	lastReasoningReplayKey string
 	lastGrokTurnIndex      string
 	resourceStatus         int
+	firstStatus            int
+	firstBody              string
+	firstHeader            http.Header
 }
 
 type ssoUnauthorizedAdapter struct {
@@ -1751,14 +1775,26 @@ func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.Re
 	a.lastReasoningReplayKey = request.ReasoningReplayKey
 	a.lastGrokTurnIndex = request.GrokTurnIndex
 	resourceStatus := a.resourceStatus
+	firstStatus := a.firstStatus
+	firstBody := a.firstBody
+	firstHeader := a.firstHeader.Clone()
+	failed := request.Credential.ID == a.firstID || a.failedIDs[request.Credential.ID]
 	a.mu.Unlock()
 	status, body := http.StatusOK, "ok"
+	header := make(http.Header)
 	if request.Method != http.MethodPost && resourceStatus != 0 {
 		status, body = resourceStatus, "missing"
-	} else if request.Credential.ID == a.firstID {
+	} else if failed {
 		status, body = http.StatusTooManyRequests, "limited"
+		if firstStatus != 0 {
+			status = firstStatus
+		}
+		if firstBody != "" {
+			body = firstBody
+		}
+		header = firstHeader
 	}
-	return &provider.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	return &provider.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
 }
 
 func (a *failoverAdapter) setResourceStatus(status int) {

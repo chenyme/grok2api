@@ -32,6 +32,7 @@ const concurrencySnapshotTTL = 25 * time.Millisecond
 const maxConcurrencySnapshots = 256
 
 const modelAccessDeniedCooldown = 5 * time.Minute
+const unknownPaidQuotaProbeInterval = 24 * time.Hour
 
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
@@ -540,20 +541,22 @@ func (s *Selector) MarkModelAccessDenied(ctx context.Context, credential account
 	s.invalidateCandidates(credential.Provider)
 }
 
-// MarkPaidQuotaExhausted 使用已知真实账期将付费账号移出号池，到期后才允许 Billing 探测。
+// MarkPaidQuotaExhausted 将明确的付费额度耗尽移出号池。
+// 已知真实账期时等到账期结束；快照不完整时保守等待后再做 Billing 探测。
 func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential account.Credential, billing *account.Billing) bool {
-	if billing == nil || !billing.IsPaid() {
-		return false
-	}
-	periodEnd, ok := billing.PeriodEnd()
-	if !ok {
-		return false
-	}
 	now := time.Now().UTC()
-	_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
+	nextProbeAt := now.Add(unknownPaidQuotaProbeInterval)
+	if billing != nil && billing.IsPaid() {
+		if periodEnd, ok := billing.PeriodEnd(); ok && periodEnd.After(now) {
+			nextProbeAt = periodEnd
+		}
+	}
+	if err := s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
 		AccountID: credential.ID, Kind: account.QuotaRecoveryKindPaid, Status: account.QuotaRecoveryStatusExhausted,
-		ExhaustedAt: &now, NextProbeAt: &periodEnd, LastConfirmedAt: &now, UpdatedAt: now,
-	})
+		ExhaustedAt: &now, NextProbeAt: &nextProbeAt, LastConfirmedAt: &now, UpdatedAt: now,
+	}); err != nil {
+		return false
+	}
 	_ = s.sticky.DeleteByAccount(ctx, credential.ID)
 	s.invalidateCandidates(credential.Provider)
 	return true

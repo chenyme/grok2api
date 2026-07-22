@@ -58,6 +58,11 @@ func TestRetryableResponseHonorsUpstreamRetryVeto(t *testing.T) {
 	if isRetryableResponse(response) {
 		t.Fatal("x-should-retry:false 必须禁止换账号重试")
 	}
+	response.StatusCode = http.StatusPaymentRequired
+	if !isRetryableResponse(response) {
+		t.Fatal("账号级 402 必须忽略上游的原账号重试 veto，允许跨账号故障转移")
+	}
+	response.StatusCode = http.StatusInternalServerError
 	response.Header.Set("X-Should-Retry", "true")
 	if !isRetryableResponse(response) {
 		t.Fatal("x-should-retry:true 不应覆盖现有状态码重试策略")

@@ -45,6 +45,8 @@ const finalizationTimeout = 5 * time.Second
 const textBillingReservationTTL = 2 * time.Hour
 const mediaBillingReservationTTL = 24 * time.Hour
 const modelCatalogRefreshTimeout = 30 * time.Second
+const unknownQuotaExhaustedCooldown = 24 * time.Hour
+const maxQuotaFailoverAttempts = 10
 
 var freeQuotaUsagePattern = regexp.MustCompile(`(?i)tokens\s*\(actual/limit\)\s*:\s*([0-9]+)\s*/\s*([0-9]+)`)
 
@@ -725,6 +727,16 @@ attemptLoop:
 				failureHandled = true
 			} else if lastFailure.QuotaExhausted {
 				failureHandled = s.selector.MarkPaidQuotaExhausted(ctx, credential, lease.Billing)
+				if !failureHandled {
+					// spending-limit is definitive for this account even when the cached
+					// Billing snapshot has no trustworthy period end. Keep it out of the
+					// pool long enough to avoid immediately poisoning other sticky sessions.
+					if retryAfter < unknownQuotaExhaustedCooldown {
+						retryAfter = unknownQuotaExhaustedCooldown
+					}
+					s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
+					failureHandled = true
+				}
 			}
 			if s.providers.SupportsCredentialRefresh(credential.Provider) && lastFailure.PermanentAccountDenial {
 				if credential.Provider == accountdomain.ProviderBuild {
@@ -752,6 +764,12 @@ attemptLoop:
 				if failureFingerprints[lastFailure.Fingerprint] >= 2 {
 					break
 				}
+			}
+			// Definite account quota exhaustion should not consume the small generic
+			// retry budget while healthy accounts remain in a large pool. Stored
+			// responses stay pinned and therefore never receive this extension.
+			if ownership == nil && lastFailure.AccountScoped && lastFailure.QuotaExhausted && attempts < maxQuotaFailoverAttempts {
+				attempts++
 			}
 			continue
 		}
@@ -1145,6 +1163,11 @@ func isRetryable(status int) bool {
 func isRetryableResponse(response *provider.Response) bool {
 	if response == nil || !isRetryable(response.StatusCode) {
 		return false
+	}
+	// X-Should-Retry describes retrying the same upstream account. A 402 is
+	// account-scoped, so the gateway must still fail over to another account.
+	if response.StatusCode == http.StatusPaymentRequired {
+		return true
 	}
 	return !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-Should-Retry")), "false")
 }
