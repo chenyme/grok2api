@@ -264,7 +264,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
             <DialogTitle>{editing ? t("settings.egress.editTitle") : t("settings.egress.addTitle")}</DialogTitle>
             <DialogDescription>{t("console.egressDialogDescription")}</DialogDescription>
           </DialogHeader>
-          <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+          <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); event.stopPropagation(); save.mutate(); }}>
             <div className="flex items-center justify-between gap-4 rounded-md bg-muted/45 px-3 py-2.5">
               <Label htmlFor="egress-enabled">{t("settings.egress.enabled")}</Label>
               <Switch id="egress-enabled" checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} />
@@ -273,7 +273,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
               <Input id="egress-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
             </Field>
             <Field label={t("settings.egress.capacity")} controlId="egress-capacity">
-              <Input id="egress-capacity" type="number" min={0} max={100000} value={form.accountCapacity} onChange={(event) => setForm({ ...form, accountCapacity: Number(event.target.value) })} />
+              <Input id="egress-capacity" type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={form.accountCapacity || ""} onChange={(event) => setForm({ ...form, accountCapacity: Number(event.target.value) })} />
             </Field>
             <Field label={t("settings.egress.scope")} controlId="egress-scope">
               <Select value={form.scope} onValueChange={(value) => changeScope(value as EgressScope)}>

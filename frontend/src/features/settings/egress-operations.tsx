@@ -207,14 +207,14 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
       <Dialog open={sourceEditing !== undefined} onOpenChange={(open) => { if (!open) setSourceEditing(undefined); }}>
         <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-[520px]">
           <DialogHeader className="pr-8"><DialogTitle>{sourceEditing ? t("settings.egress.editSource") : t("settings.egress.addSource")}</DialogTitle><DialogDescription>{t("settings.egress.sourceDialogDescription")}</DialogDescription></DialogHeader>
-          <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); saveSource.mutate(); }}>
+          <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); event.stopPropagation(); saveSource.mutate(); }}>
             <ToggleControl label={t("settings.egress.enabled")} checked={sourceForm.enabled} onChange={(enabled) => setSourceForm({ ...sourceForm, enabled })} />
             <Control label={t("settings.egress.name")}><Input value={sourceForm.name} onChange={(event) => setSourceForm({ ...sourceForm, name: event.target.value })} /></Control>
             <Control label={t("settings.egress.scope")}><ScopeSelect value={sourceForm.scope} onChange={(scope) => setSourceForm({ ...sourceForm, scope })} scopeLabel={scopeLabel} /></Control>
             <Control label={t("settings.egress.subscriptionURL")}><Input type="password" autoComplete="new-password" placeholder={sourceEditing?.urlConfigured ? t("settings.egress.keepConfigured") : "https://..."} value={sourceForm.url} onChange={(event) => setSourceForm({ ...sourceForm, url: event.target.value })} /></Control>
             <div className="grid gap-3 sm:grid-cols-2">
               <Control label={t("settings.egress.refreshInterval")}><Input type="number" min={60} max={86400} value={sourceForm.refreshIntervalSeconds} onChange={(event) => setSourceForm({ ...sourceForm, refreshIntervalSeconds: Number(event.target.value) })} /></Control>
-              <Control label={t("settings.egress.capacity")}><Input type="number" min={0} max={100000} value={sourceForm.defaultAccountCapacity} onChange={(event) => setSourceForm({ ...sourceForm, defaultAccountCapacity: Number(event.target.value) })} /></Control>
+              <Control label={t("settings.egress.capacity")}><Input type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={sourceForm.defaultAccountCapacity || ""} onChange={(event) => setSourceForm({ ...sourceForm, defaultAccountCapacity: Number(event.target.value) })} /></Control>
             </div>
             <DialogFooter><Button type="button" size="sm" variant="secondary" onClick={() => setSourceEditing(undefined)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={!sourceForm.name.trim() || (!sourceEditing && !sourceForm.url.trim()) || saveSource.isPending}>{saveSource.isPending ? <Spinner /> : null}{t("common.save")}</Button></DialogFooter>
           </form>
@@ -224,9 +224,9 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-[620px]">
           <DialogHeader className="pr-8"><DialogTitle>{t("settings.egress.importText")}</DialogTitle><DialogDescription>{t("settings.egress.importDialogDescription")}</DialogDescription></DialogHeader>
-          <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); importText.mutate(); }}>
+          <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); event.stopPropagation(); importText.mutate(); }}>
             <div className="grid gap-3 sm:grid-cols-2"><Control label={t("settings.egress.name")}><Input value={importForm.name} onChange={(event) => setImportForm({ ...importForm, name: event.target.value })} /></Control><Control label={t("settings.egress.scope")}><ScopeSelect value={importForm.scope} onChange={(scope) => setImportForm({ ...importForm, scope })} scopeLabel={scopeLabel} /></Control></div>
-            <Control label={t("settings.egress.capacity")}><Input type="number" min={0} max={100000} value={importForm.accountCapacity} onChange={(event) => setImportForm({ ...importForm, accountCapacity: Number(event.target.value) })} /></Control>
+            <Control label={t("settings.egress.capacity")}><Input type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={importForm.accountCapacity || ""} onChange={(event) => setImportForm({ ...importForm, accountCapacity: Number(event.target.value) })} /></Control>
             <Control label={t("settings.egress.proxyList")}><Textarea className="min-h-52 font-mono text-xs" value={importForm.content} onChange={(event) => setImportForm({ ...importForm, content: event.target.value })} /></Control>
             <DialogFooter><Button type="button" size="sm" variant="secondary" onClick={() => setImportOpen(false)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={!importForm.name.trim() || !importForm.content.trim() || importText.isPending}>{importText.isPending ? <Spinner /> : null}{t("settings.egress.importText")}</Button></DialogFooter>
           </form>
