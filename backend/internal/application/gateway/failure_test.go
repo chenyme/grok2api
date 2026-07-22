@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -9,6 +10,33 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
+
+type responseHeaderTimeoutTestError struct{}
+
+func (responseHeaderTimeoutTestError) Error() string {
+	return "http2: timeout awaiting response headers"
+}
+func (responseHeaderTimeoutTestError) Timeout() bool   { return true }
+func (responseHeaderTimeoutTestError) Temporary() bool { return true }
+
+func TestTransportUpstreamFailureClassifiesResponseHeaderTimeout(t *testing.T) {
+	failure := newTransportUpstreamFailure(responseHeaderTimeoutTestError{}, 42, "build")
+	if failure.HTTPStatus != http.StatusGatewayTimeout || failure.Code != "upstream_header_timeout" || failure.PublicMessage != "等待上游响应头超时" || failure.AuditCode() != "upstream_header_timeout" {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if stage := transportStage(responseHeaderTimeoutTestError{}); stage != "response_header_timeout" {
+		t.Fatalf("stage = %q", stage)
+	}
+	if isRetryableTransportFailure(accountdomain.ProviderBuild, responseHeaderTimeoutTestError{}) {
+		t.Fatal("a Build response-header timeout must not switch accounts")
+	}
+	if !isRetryableTransportFailure(accountdomain.ProviderWeb, responseHeaderTimeoutTestError{}) {
+		t.Fatal("the Build-specific retry veto must not change Web failover")
+	}
+	if !isRetryableTransportFailure(accountdomain.ProviderBuild, errors.New("connection reset by peer")) {
+		t.Fatal("ordinary pre-response transport failures must retain failover behavior")
+	}
+}
 
 func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 	tests := []struct {

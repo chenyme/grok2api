@@ -20,6 +20,62 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
+type responseHeaderTimeoutError struct{}
+
+func (responseHeaderTimeoutError) Error() string   { return "http2: timeout awaiting response headers" }
+func (responseHeaderTimeoutError) Timeout() bool   { return true }
+func (responseHeaderTimeoutError) Temporary() bool { return true }
+
+func TestBuildResponseHeaderTimeoutHotUpdateRebuildsCachedClients(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	var observed []time.Duration
+	var clients []*scriptedRequestClient
+	manager.newBuildClient = func(_ string, timeout time.Duration) (requestClient, error) {
+		client := &scriptedRequestClient{}
+		observed = append(observed, timeout)
+		clients = append(clients, client)
+		return client, nil
+	}
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	manager.UpdateBuildResponseHeaderTimeout(7 * time.Minute)
+	if len(clients) != 1 || clients[0].closedIdle != 1 {
+		t.Fatalf("old clients=%d closed=%d", len(clients), clients[0].closedIdle)
+	}
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 2 || observed[0] != 5*time.Minute || observed[1] != 7*time.Minute {
+		t.Fatalf("observed timeouts = %v", observed)
+	}
+}
+
+func TestResponseHeaderTimeoutDoesNotPenalizeEgress(t *testing.T) {
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "fixed", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+	manager := NewManager(repository, nil)
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, responseHeaderTimeoutError{})
+	if repository.updates != 0 || repository.node.Health != 1 || repository.node.CooldownUntil != nil {
+		t.Fatalf("response-header timeout changed node health: updates=%d node=%#v", repository.updates, repository.node)
+	}
+	key := clientCacheKey{nodeID: 0, scope: domain.ScopeBuild, fingerprint: "direct"}
+	manager.clients[key] = cachedClient{client: &scriptedRequestClient{}}
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 0, 0, responseHeaderTimeoutError{})
+	if _, exists := manager.clients[key]; !exists {
+		t.Fatal("response-header timeout invalidated the direct Build client")
+	}
+}
+
+func TestResponseHeaderTimeoutRetainsWebEgressFeedback(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	key := clientCacheKey{nodeID: 0, scope: domain.ScopeWeb, fingerprint: "direct"}
+	manager.clients[key] = cachedClient{client: &scriptedRequestClient{}}
+	manager.FeedbackForScope(context.Background(), domain.ScopeWeb, 0, 0, responseHeaderTimeoutError{})
+	if _, exists := manager.clients[key]; exists {
+		t.Fatal("Build-specific timeout policy suppressed Web egress feedback")
+	}
+}
+
 func TestDirectFallbackRebuildsClientAfterAntiBotRejection(t *testing.T) {
 	manager := &Manager{clients: map[clientCacheKey]cachedClient{{nodeID: 0, scope: domain.ScopeWeb, fingerprint: "web"}: {}}}
 	manager.Feedback(context.Background(), 0, http.StatusForbidden, nil)
@@ -79,7 +135,7 @@ func TestClientCreationDoesNotHoldManagerLock(t *testing.T) {
 	manager := NewManager(egressRepositoryTestStub{}, nil)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	manager.newBuildClient = func(string) (requestClient, error) {
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
 		close(started)
 		<-release
 		return &scriptedRequestClient{}, nil
@@ -144,7 +200,7 @@ func TestInflightCountersRemainBalancedConcurrently(t *testing.T) {
 func TestClientCacheCoalescesLastUsedWrites(t *testing.T) {
 	manager := NewManager(egressRepositoryTestStub{}, nil)
 	client := &scriptedRequestClient{}
-	manager.newBuildClient = func(string) (requestClient, error) { return client, nil }
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) { return client, nil }
 	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +251,7 @@ func TestClientCreationDiscardsInvalidatedResult(t *testing.T) {
 	first := &scriptedRequestClient{}
 	second := &scriptedRequestClient{}
 	var calls atomic.Int32
-	manager.newBuildClient = func(string) (requestClient, error) {
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
 		if calls.Add(1) == 1 {
 			close(firstStarted)
 			<-releaseFirst
@@ -1679,7 +1735,7 @@ func BenchmarkManagerAcquireCachedBuild(b *testing.B) {
 	}
 	node := domain.Node{ID: 1, Name: "build", Scope: domain.ScopeBuild, Enabled: true, Health: 1}
 	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{node}}, cipher)
-	manager.newBuildClient = func(string) (requestClient, error) {
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
 		return &scriptedRequestClient{do: func(int, *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 		}}, nil
