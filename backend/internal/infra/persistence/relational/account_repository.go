@@ -64,6 +64,12 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 		query = query.Where("EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.tier = ?)", input.Filter.QuotaType)
 	}
 	query = applyAccountStatusFilter(query, input.Filter.Status, input.Filter.Now)
+	switch input.Filter.Egress {
+	case "bound":
+		query = query.Where("egress_node_id IS NOT NULL")
+	case "unbound":
+		query = query.Where("egress_node_id IS NULL")
+	}
 	if input.Filter.Refreshable != nil {
 		if *input.Filter.Refreshable {
 			query = query.Where("EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.encrypted_refresh <> '')")
@@ -801,6 +807,9 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.BuildAPIFallback = existing.BuildAPIFallback
 		row.BuildRouteMode = existing.BuildRouteMode
 		row.BuildSuperEntitled = existing.BuildSuperEntitled
+		row.EgressNodeID = existing.EgressNodeID
+		row.EgressAssignmentMode = existing.EgressAssignmentMode
+		row.EgressAssignedAt = existing.EgressAssignedAt
 		// reauth_marked_at 与 Update 路径一致：保持 reauth 时永不被普通 upsert 改写。
 		applyReauthMarkedAtTransition(&row, *existing)
 		if err := tx.Save(&row).Error; err != nil {
@@ -1010,6 +1019,76 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, update
 	}
 	result := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id IN ?", ids).Updates(values)
 	return result.RowsAffected, result.Error
+}
+
+// UpdateEgressBindings assigns one egress node to multiple accounts of one
+// provider. A nil node clears the binding and restores normal pool selection.
+func (r *AccountRepository) UpdateEgressBindings(ctx context.Context, providerValue account.Provider, ids []uint64, nodeID *uint64, mode account.EgressAssignmentMode, assignedAt time.Time) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	values := map[string]any{
+		"egress_node_id": nodeID,
+	}
+	if nodeID == nil {
+		values["egress_assignment_mode"] = ""
+		values["egress_assigned_at"] = nil
+	} else {
+		values["egress_assignment_mode"] = string(mode)
+		values["egress_assigned_at"] = assignedAt.UTC()
+	}
+	result := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("provider = ? AND id IN ?", providerValue, ids).
+		Updates(values)
+	return result.RowsAffected, mapError(result.Error)
+}
+
+// ListEgressAssignments returns all accounts for one provider with their
+// binding metadata. It deliberately includes disabled accounts so capacity
+// reporting reflects every account that reserves a proxy slot.
+func (r *AccountRepository) ListEgressAssignments(ctx context.Context, providerValue account.Provider) ([]account.Credential, error) {
+	var rows []accountModel
+	if err := r.db.db.WithContext(ctx).Preload("Credential").Preload("WebProfile").
+		Where("provider = ?", providerValue).Order("id ASC").Find(&rows).Error; err != nil {
+		return nil, mapError(err)
+	}
+	values := make([]account.Credential, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, toAccountDomain(row))
+	}
+	return values, nil
+}
+
+func (r *AccountRepository) ListEgressBindingProviders(ctx context.Context, nodeID uint64) ([]account.Provider, error) {
+	if nodeID == 0 {
+		return []account.Provider{}, nil
+	}
+	return r.listEgressBindingProviders(r.db.db.WithContext(ctx).Model(&accountModel{}).Where("egress_node_id = ?", nodeID))
+}
+
+func (r *AccountRepository) ListEgressSourceBindingProviders(ctx context.Context, sourceID uint64) ([]account.Provider, error) {
+	if sourceID == 0 {
+		return []account.Provider{}, nil
+	}
+	query := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Joins("JOIN egress_nodes ON egress_nodes.id = provider_accounts.egress_node_id").
+		Where("egress_nodes.source_id = ?", sourceID)
+	return r.listEgressBindingProviders(query)
+}
+
+func (r *AccountRepository) listEgressBindingProviders(query *gorm.DB) ([]account.Provider, error) {
+	var raw []string
+	if err := query.Distinct("provider_accounts.provider").Order("provider_accounts.provider ASC").Pluck("provider_accounts.provider", &raw).Error; err != nil {
+		return nil, mapError(err)
+	}
+	result := make([]account.Provider, 0, len(raw))
+	for _, value := range raw {
+		provider := account.Provider(value)
+		if provider.IsValid() {
+			result = append(result, provider)
+		}
+	}
+	return result, nil
 }
 
 func (r *AccountRepository) Delete(ctx context.Context, id uint64) error {

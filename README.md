@@ -363,6 +363,12 @@ At runtime, the placeholder is replaced with a stable anonymous account identity
 
 The egress layer retries only connection errors that clearly occur before a request is submitted. Submitted generation requests, authentication failures, exhausted quotas, and upstream rate limits are never automatically replayed at the egress layer.
 
+### Proxy operations and account allocation
+
+The admin console can import HTTP/SOCKS proxy lists from encrypted HTTP(S) subscription sources or pasted plain/Base64 text. It records proxy probe status, latency, and exit IP without exposing proxy credentials or subscription URLs.
+
+Accounts can be explicitly bound in batches to one enabled proxy node. Automatic allocation uses only recently healthy nodes, respects each node's optional account capacity, and balances automatic assignments when sufficient capacity exists. Manual bindings are never moved by automatic balancing.
+
 ## Security and production guidance
 
 - Serve the application over HTTPS and enable `auth.secureCookies` for an HTTPS admin address

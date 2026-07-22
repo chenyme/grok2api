@@ -81,6 +81,8 @@ export type AccountDTO = {
   buildSuperEntitled: boolean;
   buildRouteMode: BuildRouteMode;
   buildBotFlagged: boolean;
+  egressNodeId?: string;
+  egressAssignmentMode?: "manual" | "auto";
   modelSyncFailed?: boolean;
   refreshDueAt?: string;
   lastRefreshAt?: string;
@@ -180,6 +182,7 @@ const accountValidator = hasShape({
   webTierSyncedAt: isOptional(isString), nsfwEnabledAt: isOptional(isString), termsAcceptedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
   enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean, cloudflareCookieConfigured: isBoolean,
   buildSuperEntitled: isBoolean, buildRouteMode: isOneOf("auto", "build", "xai"), buildBotFlagged: isBoolean, modelSyncFailed: isOptional(isBoolean), refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
+  egressNodeId: isOptional(isString), egressAssignmentMode: isOptional(isOneOf("manual", "auto")),
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")), linkedAccounts: isOptional(isArrayOf(linkedAccountValidator)),
@@ -208,6 +211,7 @@ type ListAccountsInput = {
   search?: string;
   type?: string;
   status?: string;
+  egress?: string;
   renewal?: string;
   risk?: string;
   provider: AccountProvider;
@@ -220,6 +224,7 @@ export function listAccounts(input: ListAccountsInput): Promise<PaginatedDTO<Acc
   if (input.search) query.set("search", input.search);
   if (input.type) query.set("type", input.type);
   if (input.status) query.set("status", input.status);
+  if (input.egress) query.set("egress", input.egress);
   if (input.renewal) query.set("renewal", input.renewal);
   if (input.risk) query.set("risk", input.risk);
   if (input.sortBy && input.sortOrder) {

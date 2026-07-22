@@ -28,6 +28,7 @@ type Trace struct {
 
 type traceContextKey struct{}
 type accountContextKey struct{}
+type egressNodeContextKey struct{}
 
 // WithAccount passes a stable Provider account identity to the egress layer. It is used only to render
 // authentication usernames for sticky proxies such as Resin and is never written to upstream headers or audit.
@@ -47,10 +48,31 @@ func WithCredential(ctx context.Context, credential accountdomain.Credential) co
 		if provider == "" {
 			provider = accountdomain.ProviderBuild
 		}
-		return WithAccount(ctx, string(provider), credential.ID)
+		return WithEgressNode(WithAccount(ctx, string(provider), credential.ID), credential.EgressNodeID)
 	}
-	return WithAccountIdentity(ctx, identity)
+	return WithEgressNode(WithAccountIdentity(ctx, identity), credential.EgressNodeID)
 }
+
+// WithEgressNode attaches the explicitly assigned node ID for transports that
+// only receive a request context (notably Grok Build's RoundTripper).
+func WithEgressNode(ctx context.Context, nodeID uint64) context.Context {
+	if ctx == nil || nodeID == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, egressNodeContextKey{}, nodeID)
+}
+
+func egressNodeFromContext(ctx context.Context) uint64 {
+	if ctx == nil {
+		return 0
+	}
+	value, _ := ctx.Value(egressNodeContextKey{}).(uint64)
+	return value
+}
+
+// EgressNodeFromContext exposes a non-sensitive binding identifier to the
+// Build transport without exposing the context key itself.
+func EgressNodeFromContext(ctx context.Context) uint64 { return egressNodeFromContext(ctx) }
 
 // WithAccountIdentity attaches the stable, non-sensitive identity used by
 // account-bound proxy templates such as Resin. Providers that represent the

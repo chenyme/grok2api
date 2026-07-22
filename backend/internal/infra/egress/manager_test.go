@@ -319,6 +319,64 @@ func TestAcquireCredentialRendersResinAccountAndOverridesNodeCookie(t *testing.T
 	}
 }
 
+func TestAcquireCredentialUsesExplicitBoundNode(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL, err := cipher.Encrypt("http://bound-node.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
+		{ID: 1, Name: "pool-node", Scope: domain.ScopeBuild, Enabled: true, Health: 1},
+		{ID: 2, Name: "bound-node", Scope: domain.ScopeBuild, Enabled: true, Health: 1, EncryptedProxyURL: proxyURL},
+	}}, cipher)
+	lease, err := manager.AcquireCredential(context.Background(), domain.ScopeBuild, accountdomain.Credential{
+		ID: 42, Provider: accountdomain.ProviderBuild, EgressNodeID: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.NodeID != 2 || lease.NodeName != "bound-node" {
+		t.Fatalf("bound lease = node %d (%q)", lease.NodeID, lease.NodeName)
+	}
+}
+
+func TestAcquireCredentialDoesNotRouteDirectWhenBoundNodeHasNoProxy(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
+		{ID: 2, Name: "empty-node", Scope: domain.ScopeBuild, Enabled: true, Health: 1},
+	}}, cipher)
+	_, err = manager.AcquireCredential(context.Background(), domain.ScopeBuild, accountdomain.Credential{
+		ID: 42, Provider: accountdomain.ProviderBuild, EgressNodeID: 2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "未配置代理地址") {
+		t.Fatalf("bound node without proxy error = %v", err)
+	}
+}
+
+func TestAcquireCredentialDoesNotFallbackWhenBoundNodeIsUnavailable(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
+		{ID: 1, Name: "pool-node", Scope: domain.ScopeBuild, Enabled: true, Health: 1},
+		{ID: 2, Name: "disabled-node", Scope: domain.ScopeBuild, Enabled: false, Health: 1},
+	}}, cipher)
+	_, err = manager.AcquireCredential(context.Background(), domain.ScopeBuild, accountdomain.Credential{
+		ID: 42, Provider: accountdomain.ProviderBuild, EgressNodeID: 2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "已禁用") {
+		t.Fatalf("bound unavailable error = %v", err)
+	}
+}
+
 func TestFlareSolverrModeIgnoresCredentialCookie(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
@@ -1054,7 +1112,12 @@ func (s egressRepositoryTestStub) ListEgressNodes(_ context.Context, scope domai
 	}
 	return values, nil
 }
-func (egressRepositoryTestStub) GetEgressNode(context.Context, uint64) (domain.Node, error) {
+func (s egressRepositoryTestStub) GetEgressNode(_ context.Context, id uint64) (domain.Node, error) {
+	for _, node := range s.nodes {
+		if node.ID == id {
+			return node, nil
+		}
+	}
 	return domain.Node{}, errors.New("not found")
 }
 func (egressRepositoryTestStub) CreateEgressNode(context.Context, domain.Node) (domain.Node, error) {

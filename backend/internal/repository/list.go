@@ -71,6 +71,7 @@ type AccountListFilter struct {
 	Provider    string
 	QuotaType   string
 	Status      string
+	Egress      string
 	Refreshable *bool
 	AccountIDs  []uint64
 	RestrictIDs bool

@@ -58,6 +58,15 @@ func TestListFilters(t *testing.T) {
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{ExcludeIDs: []uint64{free.ID}, Now: now}, 2)
 	refreshable := true
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Refreshable: &refreshable, Now: now}, 1)
+	boundNode := egressNodeModel{Name: "bound-filter", Scope: "grok_build", Enabled: true}
+	if err := database.db.WithContext(ctx).Create(&boundNode).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", free.ID).Update("egress_node_id", boundNode.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Egress: "bound", Now: now}, 1)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Egress: "unbound", Now: now}, 2)
 
 	// 零 Billing + build_super_entitled：paid 可查到，free 查不到。
 	entitled := accountModel{IdentityKey: testIdentityKey("entitled-zero"), Provider: "grok_build", Name: "entitled-zero", SourceKey: "entitled-zero", ObservedModel: "grok-build-free", Enabled: true, AuthStatus: "active", Priority: 1, BuildSuperEntitled: true}
