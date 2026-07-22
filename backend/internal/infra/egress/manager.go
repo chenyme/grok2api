@@ -26,6 +26,7 @@ import (
 
 const DefaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 const nodeSnapshotTTL = time.Second
+const operationsConfigSnapshotTTL = time.Second
 const proxyPoolRetryLimit = 2
 const clientCacheIdleTTL = 30 * time.Minute
 const clientCacheCleanupInterval = time.Minute
@@ -84,6 +85,9 @@ type Manager struct {
 	inflight             map[uint64]int
 	nodes                map[domain.Scope]cachedNodeSnapshot
 	nodeLoads            singleflight.Group
+	operationsConfig     cachedOperationsConfig
+	operationsConfigLoad singleflight.Group
+	operationsConfigVer  uint64
 	lastClientCleanup    time.Time
 	clearanceLoads       singleflight.Group
 	clearanceConfig      ClearanceConfig
@@ -133,6 +137,11 @@ type clientCacheKey struct {
 
 type cachedNodeSnapshot struct {
 	values    []domain.Node
+	expiresAt time.Time
+}
+
+type cachedOperationsConfig struct {
+	value     domain.OperationsConfig
 	expiresAt time.Time
 }
 
@@ -321,6 +330,18 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		}
 		return m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected)
 	}
+	fallbackConfig, fallbackSupported, fallbackConfigErr := m.loadOperationsConfig(ctx, now)
+	fallback := domain.FallbackConfig{Mode: domain.FallbackModeNone}
+	reservedFallbackNodes := make(map[uint64]struct{}, 4)
+	if fallbackConfigErr == nil && fallbackSupported {
+		fallback = fallbackConfig.FallbackFor(scope)
+		for _, fallbackScope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
+			configuredFallback := fallbackConfig.FallbackFor(fallbackScope)
+			if configuredFallback.Mode == domain.FallbackModeFixed && configuredFallback.NodeID != 0 {
+				reservedFallbackNodes[configuredFallback.NodeID] = struct{}{}
+			}
+		}
+	}
 	for _, candidateScope := range fallbackScopes(scope) {
 		nodes, err := m.listNodes(ctx, candidateScope, now)
 		if err != nil {
@@ -329,6 +350,11 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		candidateAvailable := make([]domain.Node, 0, len(nodes))
 		for _, node := range nodes {
 			if !node.Enabled {
+				continue
+			}
+			// A fixed fallback is a reserved last resort, not another member of
+			// the primary pool. It is validated again immediately before use.
+			if _, reserved := reservedFallbackNodes[node.ID]; reserved {
 				continue
 			}
 			configured = true
@@ -350,7 +376,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		if configured {
 			primaryErr = fmt.Errorf("当前没有可用的 %s 出口节点", scope)
 		}
-		lease, fallbackConfigured, applied, err := m.acquireFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr)
+		lease, fallbackConfigured, applied, err := m.applyFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr, fallback, fallbackSupported, fallbackConfigErr)
 		if err != nil {
 			return nil, fallbackConfigured, err
 		}
@@ -389,15 +415,17 @@ func (m *Manager) acquireUnavailableFallback(ctx context.Context, scope domain.S
 // failures are intentionally not retried through this path because replaying
 // a non-idempotent upstream request on a different IP can duplicate work.
 func (m *Manager) acquireFallback(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, managedClearance bool, primaryErr error) (*Lease, bool, bool, error) {
-	configRepository, ok := m.repository.(operationsConfigRepository)
-	if !ok {
+	fallback, supported, err := m.fallbackFor(ctx, scope, time.Now().UTC())
+	return m.applyFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr, fallback, supported, err)
+}
+
+func (m *Manager) applyFallback(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, managedClearance bool, primaryErr error, fallback domain.FallbackConfig, supported bool, configErr error) (*Lease, bool, bool, error) {
+	if configErr != nil {
+		return nil, false, false, fallbackError(primaryErr, fmt.Errorf("读取出口回退配置: %w", configErr))
+	}
+	if !supported {
 		return nil, false, false, nil
 	}
-	config, err := configRepository.GetEgressOperationsConfig(ctx)
-	if err != nil {
-		return nil, false, false, fallbackError(primaryErr, fmt.Errorf("读取出口回退配置: %w", err))
-	}
-	fallback := config.FallbackFor(scope)
 	switch fallback.Mode {
 	case domain.FallbackModeNone:
 		return nil, false, false, nil
@@ -424,6 +452,53 @@ func (m *Manager) acquireFallback(ctx context.Context, scope domain.Scope, affin
 	default:
 		return nil, false, false, fallbackError(primaryErr, fmt.Errorf("出口回退模式 %q 无效", fallback.Mode))
 	}
+}
+
+func (m *Manager) fallbackFor(ctx context.Context, scope domain.Scope, now time.Time) (domain.FallbackConfig, bool, error) {
+	config, supported, err := m.loadOperationsConfig(ctx, now)
+	if err != nil || !supported {
+		return domain.FallbackConfig{Mode: domain.FallbackModeNone}, supported, err
+	}
+	return config.FallbackFor(scope), true, nil
+}
+
+func (m *Manager) loadOperationsConfig(ctx context.Context, now time.Time) (domain.OperationsConfig, bool, error) {
+	configRepository, ok := m.repository.(operationsConfigRepository)
+	if !ok {
+		return domain.OperationsConfig{}, false, nil
+	}
+	m.mu.Lock()
+	cached := m.operationsConfig
+	m.mu.Unlock()
+	if !cached.expiresAt.IsZero() && now.Before(cached.expiresAt) {
+		return cached.value, true, nil
+	}
+	loaded, err, _ := m.operationsConfigLoad.Do("operations", func() (any, error) {
+		checkTime := time.Now().UTC()
+		m.mu.Lock()
+		cached := m.operationsConfig
+		m.mu.Unlock()
+		if !cached.expiresAt.IsZero() && checkTime.Before(cached.expiresAt) {
+			return cached.value, nil
+		}
+		m.mu.Lock()
+		version := m.operationsConfigVer
+		m.mu.Unlock()
+		value, err := configRepository.GetEgressOperationsConfig(ctx)
+		if err != nil {
+			return domain.OperationsConfig{}, err
+		}
+		m.mu.Lock()
+		if version == m.operationsConfigVer {
+			m.operationsConfig = cachedOperationsConfig{value: value, expiresAt: checkTime.Add(operationsConfigSnapshotTTL)}
+		}
+		m.mu.Unlock()
+		return value, nil
+	})
+	if err != nil {
+		return domain.OperationsConfig{}, true, err
+	}
+	return loaded.(domain.OperationsConfig), true, nil
 }
 
 func (m *Manager) fixedFallbackNode(ctx context.Context, scope domain.Scope, nodeID uint64) (domain.Node, error) {
@@ -631,6 +706,13 @@ func (m *Manager) listNodes(ctx context.Context, scope domain.Scope, now time.Ti
 func (m *Manager) invalidateNodes(scope domain.Scope) {
 	m.mu.Lock()
 	delete(m.nodes, scope)
+	m.mu.Unlock()
+}
+
+func (m *Manager) InvalidateOperationsConfig() {
+	m.mu.Lock()
+	m.operationsConfig = cachedOperationsConfig{}
+	m.operationsConfigVer++
 	m.mu.Unlock()
 }
 

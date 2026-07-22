@@ -50,6 +50,12 @@ const emptyImport: ImportForm = { name: "", scope: "grok_build", accountCapacity
 // request to 32 nodes leaves enough headroom for the admin HTTP timeout.
 const egressProbeBatchSize = 32;
 const fallbackScopes: EgressScope[] = ["grok_build", "grok_web", "grok_console", "grok_web_asset"];
+const fallbackDescriptionKeys: Record<EgressScope, string> = {
+  grok_build: "settings.egress.fallbackBuildHelp",
+  grok_web: "settings.egress.fallbackWebHelp",
+  grok_console: "settings.egress.fallbackConsoleHelp",
+  grok_web_asset: "settings.egress.fallbackWebAssetHelp",
+};
 
 function defaultFallbacks(): Record<EgressScope, EgressFallbackConfigDTO> {
   return {
@@ -200,36 +206,44 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
             <AutomationRow controlId="egress-auto-balance" label={t("settings.egress.autoBalance")} description={t("settings.egress.autoBalanceHelp")}>
               <div className="flex h-8 items-center"><Switch id="egress-auto-balance" checked={operationsForm.autoBalanceEnabled} onCheckedChange={(autoBalanceEnabled) => setOperationsDraft({ ...operationsForm, autoBalanceEnabled })} /></div>
             </AutomationRow>
-            <div className="border-t py-4">
-              <div className="px-0.5">
-                <h4 className="text-xs font-medium">{t("settings.egress.fallback")}</h4>
-                <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">{t("settings.egress.fallbackHelp")}</p>
+            <div className="pt-4">
+              <div className="flex items-center gap-1.5 px-0.5">
+                <h3 className="text-sm font-medium tracking-tight">{t("settings.egress.fallback")}</h3>
+                <Tooltip>
+                  <TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("settings.egress.fallbackHelp")}><CircleHelp className="size-3.5" /></button></TooltipTrigger>
+                  <TooltipContent className="max-w-80">{t("settings.egress.fallbackHelp")}</TooltipContent>
+                </Tooltip>
               </div>
-              <div className="mt-3 overflow-hidden rounded-md border">
+              <div className="mt-3 space-y-2">
                 {fallbackScopes.map((scope) => {
                   const fallback = operationsForm.fallbacks[scope];
                   const candidates = fallbackNodeCandidates(nodesQuery.data?.items ?? [], scope);
                   const selectedAvailable = candidates.some((node) => node.id === fallback.nodeId);
                   return (
-                    <div className="grid gap-2 border-b p-3 last:border-b-0 sm:grid-cols-[minmax(8rem,1fr)_minmax(11rem,1fr)_minmax(12rem,1.4fr)] sm:items-center" key={scope}>
-                      <Label className="text-xs font-medium">{scopeLabel(scope)}</Label>
-                      <Select value={fallback.mode} onValueChange={(mode) => setFallbackMode(scope, mode as EgressFallbackMode)}>
-                        <SelectTrigger aria-label={t("settings.egress.fallbackMode", { scope: scopeLabel(scope) })}><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">{t("settings.egress.fallbackNone")}</SelectItem>
-                          <SelectItem value="direct">{t("settings.egress.fallbackDirect")}</SelectItem>
-                          <SelectItem value="fixed" disabled={candidates.length === 0}>{t("settings.egress.fallbackFixed")}</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {fallback.mode === "fixed" ? (
-                        <Select value={selectedAvailable ? (fallback.nodeId ?? "unavailable") : "unavailable"} disabled={candidates.length === 0} onValueChange={(nodeId) => setFallback(scope, { mode: "fixed", nodeId })}>
-                          <SelectTrigger aria-label={t("settings.egress.fallbackNode", { scope: scopeLabel(scope) })}><SelectValue /></SelectTrigger>
+                    <div className="grid min-w-0 gap-2.5 py-1 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] sm:items-center sm:gap-8" key={scope}>
+                      <div className="min-w-0">
+                        <div className="flex min-h-5 items-center"><Label className="text-xs font-medium">{scopeLabel(scope)}</Label></div>
+                        <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">{t(fallbackDescriptionKeys[scope])}</p>
+                      </div>
+                      <div className={fallback.mode === "fixed" ? "grid min-w-0 gap-2 sm:grid-cols-2" : "grid min-w-0"}>
+                        <Select value={fallback.mode} onValueChange={(mode) => setFallbackMode(scope, mode as EgressFallbackMode)}>
+                          <SelectTrigger aria-label={t("settings.egress.fallbackMode", { scope: scopeLabel(scope) })}><SelectValue /></SelectTrigger>
                           <SelectContent>
-                            {!selectedAvailable ? <SelectItem value="unavailable" disabled>{t("settings.egress.fallbackNodeUnavailable")}</SelectItem> : null}
-                            {candidates.map((node) => <SelectItem key={node.id} value={node.id}>{node.name} ({scopeLabel(node.scope)})</SelectItem>)}
+                            <SelectItem value="none">{t("settings.egress.fallbackNone")}</SelectItem>
+                            <SelectItem value="direct">{t("settings.egress.fallbackDirect")}</SelectItem>
+                            <SelectItem value="fixed" disabled={candidates.length === 0}>{t("settings.egress.fallbackFixed")}</SelectItem>
                           </SelectContent>
                         </Select>
-                      ) : <div className="flex h-8 items-center text-xs text-muted-foreground">{fallback.mode === "direct" ? t("settings.egress.fallbackDirect") : t("settings.egress.fallbackNone")}</div>}
+                        {fallback.mode === "fixed" ? (
+                          <Select value={selectedAvailable ? (fallback.nodeId ?? "unavailable") : "unavailable"} disabled={candidates.length === 0} onValueChange={(nodeId) => setFallback(scope, { mode: "fixed", nodeId })}>
+                            <SelectTrigger aria-label={t("settings.egress.fallbackNode", { scope: scopeLabel(scope) })}><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {!selectedAvailable ? <SelectItem value="unavailable" disabled>{t("settings.egress.fallbackNodeUnavailable")}</SelectItem> : null}
+                              {candidates.map((node) => <SelectItem key={node.id} value={node.id}>{node.name} ({scopeLabel(node.scope)})</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        ) : null}
+                      </div>
                     </div>
                   );
                 })}

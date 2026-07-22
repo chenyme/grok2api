@@ -615,6 +615,96 @@ func TestEgressOperationsConfigPersistsFixedFallback(t *testing.T) {
 	if fallback := stored.FallbackFor(egress.ScopeWeb); fallback.Mode != egress.FallbackModeDirect || fallback.NodeID != 0 {
 		t.Fatalf("stored Web fallback = %#v", fallback)
 	}
+	updated, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
+		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+		Fallbacks: map[egress.Scope]egressapp.FallbackConfigInput{
+			egress.ScopeBuild: {Mode: egress.FallbackModeNone},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback := updated.FallbackFor(egress.ScopeWeb); fallback.Mode != egress.FallbackModeDirect {
+		t.Fatalf("sparse update reset Web fallback = %#v", fallback)
+	}
+}
+
+func TestFixedFallbackReferenceIsProtectedAndClearedOnDelete(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	fixed := createHealthyEgressNode(t, ctx, nodes, cipher, "fixed-fallback", 0)
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+	if _, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
+		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+		Fallbacks: map[egress.Scope]egressapp.FallbackConfigInput{
+			egress.ScopeBuild: {Mode: egress.FallbackModeFixed, NodeID: fixed.ID},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(ctx, fixed.ID, egressapp.Input{
+		Name: fixed.Name, Scope: fixed.Scope, Enabled: false,
+	}); !errors.Is(err, egressapp.ErrInvalidInput) || !strings.Contains(err.Error(), "固定回退") {
+		t.Fatalf("disable fixed fallback error = %v", err)
+	}
+	if err := service.Delete(ctx, fixed.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := nodes.GetEgressOperationsConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback := stored.FallbackFor(egress.ScopeBuild); fallback.Mode != egress.FallbackModeNone || fallback.NodeID != 0 {
+		t.Fatalf("deleted fallback reference = %#v", fallback)
+	}
+}
+
+func TestSubscriptionSyncClearsStaleFixedFallbackReference(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	source, err := nodes.CreateEgressSource(ctx, egress.SubscriptionSource{
+		Name: "source", Scope: egress.ScopeBuild, Enabled: true, RefreshIntervalSeconds: 900,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("http://subscription.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodes.UpsertEgressNodesFromSource(ctx, source.ID, []egress.Node{{
+		Name: "subscription", Scope: egress.ScopeBuild, Enabled: true, SourceID: source.ID,
+		SourceKey: "one", EncryptedProxyURL: encryptedProxy, Health: 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := nodes.ListEgressNodes(ctx, egress.ScopeBuild, repository.SortQuery{})
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("subscription nodes=%#v err=%v", listed, err)
+	}
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+	if _, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
+		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+		Fallbacks: map[egress.Scope]egressapp.FallbackConfigInput{
+			egress.ScopeBuild: {Mode: egress.FallbackModeFixed, NodeID: listed[0].ID},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodes.UpsertEgressNodesFromSource(ctx, source.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := nodes.GetEgressOperationsConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback := stored.FallbackFor(egress.ScopeBuild); fallback.Mode != egress.FallbackModeNone || fallback.NodeID != 0 {
+		t.Fatalf("stale subscription fallback reference = %#v", fallback)
+	}
 }
 
 func TestEgressOperationsConfigRejectsUnsafeFixedFallback(t *testing.T) {

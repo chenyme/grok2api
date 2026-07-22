@@ -214,6 +214,38 @@ func TestUnavailableBuildPrimaryUsesConfiguredDirectFallbackTransport(t *testing
 	}
 }
 
+func TestFixedFallbackIsReservedFromPrimarySelection(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryURL, err := cipher.Encrypt("http://primary.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackURL, err := cipher.Encrypt("http://fallback.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := domain.DefaultOperationsConfig()
+	config.Fallbacks[domain.ScopeBuild] = domain.FallbackConfig{Mode: domain.FallbackModeFixed, NodeID: 2}
+	manager := NewManager(fallbackEgressRepository{
+		egressRepositoryTestStub: egressRepositoryTestStub{nodes: []domain.Node{
+			{ID: 1, Name: "primary", Scope: domain.ScopeBuild, Enabled: true, Health: 1, EncryptedProxyURL: primaryURL},
+			{ID: 2, Name: "fallback", Scope: domain.ScopeBuild, Enabled: true, Health: 1, EncryptedProxyURL: fallbackURL},
+		}},
+		config: config,
+	}, cipher)
+	lease, configured, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "reserved-fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if !configured || lease.NodeID != 1 {
+		t.Fatalf("primary lease=%#v configured=%v", lease, configured)
+	}
+}
+
 func TestDisabledConfiguredNodesAllowDirectFallback(t *testing.T) {
 	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{
 		ID: 1, Name: "disabled-proxy", Scope: domain.ScopeBuild, Enabled: false, Health: 1,
@@ -1107,12 +1139,55 @@ func TestEgressNodeSnapshotAvoidsRepeatedRepositoryReads(t *testing.T) {
 	}
 }
 
+func TestOperationsConfigSnapshotAvoidsRepeatedRepositoryReads(t *testing.T) {
+	repository := &countingFallbackRepository{config: domain.DefaultOperationsConfig()}
+	manager := NewManager(repository, nil)
+	for range 2 {
+		lease, configured, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
+		if err != nil || configured || lease != nil {
+			t.Fatalf("lease=%#v configured=%v err=%v", lease, configured, err)
+		}
+	}
+	if repository.configCalls != 1 {
+		t.Fatalf("operations config reads = %d, want 1", repository.configCalls)
+	}
+}
+
+func TestOperationsConfigSnapshotCanBeInvalidated(t *testing.T) {
+	repository := &countingFallbackRepository{config: domain.DefaultOperationsConfig()}
+	manager := NewManager(repository, nil)
+	first, _, err := manager.fallbackFor(context.Background(), domain.ScopeWeb, time.Now().UTC())
+	if err != nil || first.Mode != domain.FallbackModeNone {
+		t.Fatalf("first fallback=%#v err=%v", first, err)
+	}
+	repository.config.Fallbacks[domain.ScopeWeb] = domain.FallbackConfig{Mode: domain.FallbackModeDirect}
+	manager.InvalidateOperationsConfig()
+	second, _, err := manager.fallbackFor(context.Background(), domain.ScopeWeb, time.Now().UTC())
+	if err != nil || second.Mode != domain.FallbackModeDirect {
+		t.Fatalf("second fallback=%#v err=%v", second, err)
+	}
+	if repository.configCalls != 2 {
+		t.Fatalf("operations config reads = %d, want 2", repository.configCalls)
+	}
+}
+
 type egressRepositoryTestStub struct{ nodes []domain.Node }
 
 type fallbackEgressRepository struct {
 	egressRepositoryTestStub
 	config    domain.OperationsConfig
 	configErr error
+}
+
+type countingFallbackRepository struct {
+	egressRepositoryTestStub
+	config      domain.OperationsConfig
+	configCalls int
+}
+
+func (r *countingFallbackRepository) GetEgressOperationsConfig(context.Context) (domain.OperationsConfig, error) {
+	r.configCalls++
+	return r.config, nil
 }
 
 func (r fallbackEgressRepository) GetEgressOperationsConfig(context.Context) (domain.OperationsConfig, error) {
