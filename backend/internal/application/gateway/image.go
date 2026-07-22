@@ -191,6 +191,7 @@ func (s *Service) executeImage(
 			lease.Release()
 			continue
 		}
+		lease.markSelectorUpstreamStarted()
 		response, err = execute(ctx, route.Provider, credential, route.UpstreamModel)
 		if err != nil {
 			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
@@ -256,6 +257,8 @@ func (s *Service) executeImage(
 	var once sync.Once
 	finalize := func(_ Usage, _ string, errorCode string) {
 		once.Do(func() {
+			successful := response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == ""
+			lease.completeSelectorObservation(successful)
 			lease.Release()
 			budget := newFinalizationBudget(string(operation), string(route.Provider))
 			record := auditBase
@@ -263,7 +266,7 @@ func (s *Service) executeImage(
 			record.ErrorCode = errorCode
 			record.DurationMS, record.CreatedAt = time.Since(startedAt).Milliseconds(), time.Now().UTC()
 			applyAuditEgress(&record, egressTrace, route.Provider)
-			if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" {
+			if successful {
 				record.MediaOutputImages = int64(max(0, requestedCount))
 				var pricing audit.PricingResult
 				var priced bool
@@ -280,7 +283,7 @@ func (s *Service) executeImage(
 				}
 			}
 			quotaKind, _ := s.providers.QuotaKind(route.Provider)
-			if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" && quotaKind == provider.QuotaRemoteWindow && effectiveQuotaMode != "" {
+			if successful && quotaKind == provider.QuotaRemoteWindow && effectiveQuotaMode != "" {
 				if effectiveQuotaMode != "weekly" {
 					units := max(1, response.QuotaUnits)
 					var updated bool

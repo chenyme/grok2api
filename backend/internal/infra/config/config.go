@@ -202,6 +202,9 @@ type RoutingConfig struct {
 	CapacityWait              Duration `yaml:"capacityWait"`
 	MaxAttempts               int      `yaml:"maxAttempts"`
 	PreferFreeBuild           bool     `yaml:"preferFreeBuild"`
+	SegmentedSelectorEnabled  bool     `yaml:"segmentedSelectorEnabled"`
+	SegmentedMinCandidates    int      `yaml:"segmentedSelectorMinCandidates"`
+	SegmentedWindowSize       int      `yaml:"segmentedSelectorWindowSize"`
 	ReasoningReplayEnabled    bool     `yaml:"reasoningReplayEnabled"`
 	ReasoningReplayTTL        Duration `yaml:"reasoningReplayTTL"`
 	ReasoningReplayMaxEntries int      `yaml:"reasoningReplayMaxEntries"`
@@ -516,6 +519,11 @@ func (c Config) Validate() error {
 	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > 5*time.Second || c.Routing.MaxAttempts < 1 || c.Routing.MaxAttempts > 10 {
 		return errors.New("routing 配置无效")
 	}
+	if c.Routing.SegmentedMinCandidates < 100 || c.Routing.SegmentedMinCandidates > 1000000 ||
+		c.Routing.SegmentedWindowSize < 8 || c.Routing.SegmentedWindowSize > 256 ||
+		c.Routing.SegmentedWindowSize > c.Routing.SegmentedMinCandidates {
+		return errors.New("routing segmented selector 配置无效")
+	}
 	if c.Routing.ReasoningReplayTTL.Value() <= 0 || c.Routing.ReasoningReplayTTL.Value() > 24*time.Hour {
 		return errors.New("routing.reasoningReplayTTL 必须在 1 纳秒到 24 小时之间")
 	}
@@ -638,6 +646,9 @@ func defaultConfig() Config {
 			CapacityWait:              Duration(500 * time.Millisecond),
 			MaxAttempts:               3,
 			PreferFreeBuild:           false,
+			SegmentedSelectorEnabled:  false,
+			SegmentedMinCandidates:    3000,
+			SegmentedWindowSize:       64,
 			ReasoningReplayEnabled:    true,
 			ReasoningReplayTTL:        Duration(time.Hour),
 			ReasoningReplayMaxEntries: 10240,

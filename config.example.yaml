@@ -88,6 +88,10 @@ routing:
   reasoningReplayEnabled: true
   reasoningReplayTTL: 1h
   reasoningReplayMaxEntries: 10240
+  # [通常不要修改] 大账号池分段选号默认关闭；启用后仍保留完整池回退和原子并发门禁。
+  segmentedSelectorEnabled: false
+  segmentedSelectorMinCandidates: 3000
+  segmentedSelectorWindowSize: 64
 
 audit:
   # [通常不要修改] 审计批量写入参数；bufferSize 的修改需重启生效。

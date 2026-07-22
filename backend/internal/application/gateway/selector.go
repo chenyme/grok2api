@@ -17,12 +17,13 @@ import (
 )
 
 type accountLease struct {
-	Credential     account.Credential
-	Billing        *account.Billing
-	QuotaProbe     bool
-	QuotaProbeKind account.QuotaRecoveryKind
-	QuotaMode      string
-	release        func()
+	Credential          account.Credential
+	Billing             *account.Billing
+	QuotaProbe          bool
+	QuotaProbeKind      account.QuotaRecoveryKind
+	QuotaMode           string
+	selectorObservation *selectorLeaseObservation
+	release             func()
 }
 
 const quotaProbeLease = 5 * time.Minute
@@ -133,9 +134,27 @@ func (e *SelectionUnavailableError) Error() string {
 }
 
 func (l *accountLease) Release() {
-	if l != nil && l.release != nil {
+	if l == nil {
+		return
+	}
+	if l.selectorObservation != nil {
+		l.selectorObservation.completeRelease()
+	}
+	if l.release != nil {
 		l.release()
 		l.release = nil
+	}
+}
+
+func (l *accountLease) markSelectorUpstreamStarted() {
+	if l != nil && l.selectorObservation != nil {
+		l.selectorObservation.upstreamStarted.Store(true)
+	}
+}
+
+func (l *accountLease) completeSelectorObservation(success bool) {
+	if l != nil && l.selectorObservation != nil {
+		l.selectorObservation.complete(success)
 	}
 }
 
@@ -149,6 +168,8 @@ type Selector struct {
 	cooldownMax            time.Duration
 	capacityWait           time.Duration
 	preferFreeBuild        bool
+	segmentedConfig        segmentedSelectorConfig
+	segmentedState         segmentedSelectorState
 	configMu               sync.RWMutex
 	candidateMu            sync.Mutex
 	selectionMu            sync.RWMutex
@@ -195,6 +216,15 @@ func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax time.Durati
 func (s *Selector) UpdatePreferFreeBuild(value bool) {
 	s.configMu.Lock()
 	s.preferFreeBuild = value
+	s.configMu.Unlock()
+}
+
+// UpdateSegmentedSelector changes the large-pool bounded planner policy.
+func (s *Selector) UpdateSegmentedSelector(enabled bool, minCandidates, windowSize int) {
+	s.configMu.Lock()
+	s.segmentedConfig = normalizeSegmentedSelectorConfig(segmentedSelectorConfig{
+		enabled: enabled, minCandidates: minCandidates, windowSize: windowSize,
+	})
 	s.configMu.Unlock()
 }
 
@@ -368,6 +398,12 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			return lease, nil
 		}
 		return nil, &SelectionUnavailableError{Reason: SelectionSaturated, RetryAfter: time.Second}
+	}
+	if stickyKey == "" {
+		activeRequest := s.nextSegmentedActiveRequest(provider, upstreamModel, quotaMode, len(normalCandidates))
+		if activeRequest != nil {
+			return s.acquireSegmentedCandidates(ctx, values, normalCandidates, quotaMode, s.resolveTierOrder(provider, upstreamModel), *activeRequest)
+		}
 	}
 	_, _, _, capacityWait := s.routingConfig()
 	waitDeadline := time.Now().Add(capacityWait)

@@ -74,6 +74,29 @@ func TestLegacySettingsRequestMayOmitAccounts(t *testing.T) {
 	}
 }
 
+func TestLegacySettingsRequestMayOmitSegmentedSelector(t *testing.T) {
+	var dto settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"routing":{"stickyTTL":"1h"}}`), &dto); err != nil {
+		t.Fatal(err)
+	}
+	input := dto.toApplication()
+	if input.Routing.SegmentedSelectorProvided {
+		t.Fatal("missing segmented selector was treated as an explicit update")
+	}
+}
+
+func TestSettingsResponseIncludesSegmentedSelector(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{
+		Routing: settingsapp.RoutingConfig{SegmentedSelector: settingsapp.SegmentedSelectorConfig{
+			Enabled: true, MinCandidates: 3000, WindowSize: 64,
+		}},
+	}})
+	selector := response.Config.Routing.SegmentedSelector
+	if selector == nil || !selector.Enabled || selector.MinCandidates != 3000 || selector.WindowSize != 64 {
+		t.Fatalf("segmented selector = %#v", selector)
+	}
+}
+
 func TestLegacySettingsRequestMayOmitManagedClearance(t *testing.T) {
 	var dto settingsConfigDTO
 	if err := json.Unmarshal([]byte(`{"providerWeb":{"baseURL":"https://grok.com"}}`), &dto); err != nil {

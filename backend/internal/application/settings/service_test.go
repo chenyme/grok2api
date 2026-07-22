@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -47,6 +48,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	input.Server.MaxConcurrentRequests = 2048
 	input.Routing.MaxAttempts = 5
 	input.Routing.PreferFreeBuild = true
+	input.Routing.SegmentedSelector = SegmentedSelectorConfig{Enabled: true, MinCandidates: 5000, WindowSize: 96}
 	input.Audit.BufferSize = cfg.Audit.BufferSize + 1
 	input.Media.MaxTotalBytes = 2 << 30
 	input.Media.CleanupThresholdPercent = 75
@@ -60,7 +62,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied.Routing.MaxAttempts != 5 || !applied.Routing.PreferFreeBuild {
+	if applied.Routing.MaxAttempts != 5 || !applied.Routing.PreferFreeBuild || !applied.Routing.SegmentedSelectorEnabled || applied.Routing.SegmentedMinCandidates != 5000 || applied.Routing.SegmentedWindowSize != 96 {
 		t.Fatalf("runtime configuration was not applied: %#v", applied.Routing)
 	}
 	if applied.Server.MaxConcurrentRequests != 2048 {
@@ -85,8 +87,53 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Routing.MaxAttempts != 5 || !reloaded.Routing.PreferFreeBuild || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" {
+	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Routing.MaxAttempts != 5 || !reloaded.Routing.PreferFreeBuild || !reloaded.Routing.SegmentedSelectorEnabled || reloaded.Routing.SegmentedMinCandidates != 5000 || reloaded.Routing.SegmentedWindowSize != 96 || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" {
 		t.Fatalf("configuration was not persisted")
+	}
+}
+
+func TestLoadPersistedKeepsSegmentedSelectorDefaultsForOlderPayload(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Routing.SegmentedSelectorEnabled = true
+	cfg.Routing.SegmentedMinCandidates = 4321
+	cfg.Routing.SegmentedWindowSize = 72
+	value := toDomainConfig(cfg)
+	value.Routing.SegmentedSelector = nil
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Routing.SegmentedSelectorEnabled || loaded.Routing.SegmentedMinCandidates != 4321 || loaded.Routing.SegmentedWindowSize != 72 {
+		t.Fatalf("segmented selector defaults were not preserved: %#v", loaded.Routing)
+	}
+}
+
+func TestLoadPersistedPreservesExplicitlyDisabledSegmentedSelector(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Routing.SegmentedSelectorEnabled = true
+	value := toDomainConfig(cfg)
+	value.Routing.SegmentedSelector = &settingsdomain.SegmentedSelectorConfig{
+		ActiveEnabled: false, MinCandidates: 6000, WindowSize: 128,
+	}
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Routing.SegmentedSelectorEnabled || loaded.Routing.SegmentedMinCandidates != 6000 || loaded.Routing.SegmentedWindowSize != 128 {
+		t.Fatalf("explicit segmented selector settings were not preserved: %#v", loaded.Routing)
+	}
+}
+
+func TestLegacyShadowSettingCannotEnableSegmentedSelector(t *testing.T) {
+	var persisted settingsdomain.Config
+	if err := json.Unmarshal([]byte(`{"Routing":{"SegmentedSelector":{"ActiveEnabled":false,"Enabled":true,"MinCandidates":3000,"WindowSize":64,"SamplePercent":100}}}`), &persisted); err != nil {
+		t.Fatal(err)
+	}
+	loaded := applyDomainConfig(testConfig(t), persisted)
+	if loaded.Routing.SegmentedSelectorEnabled {
+		t.Fatal("legacy shadow-only setting enabled the authoritative segmented selector")
 	}
 }
 

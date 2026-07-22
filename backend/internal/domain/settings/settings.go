@@ -79,12 +79,22 @@ type ProviderBuildConfig struct {
 
 // RoutingConfig 定义会话粘性、冷却和故障切换边界。
 type RoutingConfig struct {
-	StickyTTL       time.Duration
-	CooldownBase    time.Duration
-	CooldownMax     time.Duration
-	CapacityWait    time.Duration
-	MaxAttempts     int
-	PreferFreeBuild bool
+	StickyTTL         time.Duration
+	CooldownBase      time.Duration
+	CooldownMax       time.Duration
+	CapacityWait      time.Duration
+	MaxAttempts       int
+	PreferFreeBuild   bool
+	SegmentedSelector *SegmentedSelectorConfig
+}
+
+// SegmentedSelectorConfig persists the bounded selector policy.
+// A nil value means the stored settings predate this policy and startup defaults must be preserved.
+type SegmentedSelectorConfig struct {
+	// ActiveEnabled retains the original persisted field name so existing disabled policies remain disabled.
+	ActiveEnabled bool
+	MinCandidates int
+	WindowSize    int
 }
 
 // AuditConfig 定义请求审计异步写入参数。

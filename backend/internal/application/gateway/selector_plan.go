@@ -97,28 +97,63 @@ func (s *Selector) planCandidates(ctx context.Context, values []account.RoutingC
 // planCandidateIndexes 在不可变候选快照上按下标规划，避免过滤阶段复制完整账号结构。
 // indexes 为 nil 时表示使用 values 的全部元素。
 func (s *Selector) planCandidateIndexes(ctx context.Context, values []account.RoutingCandidate, indexes []int, now time.Time, tierOrder []account.WebTier) (*candidatePlan, error) {
+	return s.planCandidateIndexesWithHints(ctx, values, indexes, now, tierOrder, nil, s.preferFreeBuildEnabled())
+}
+
+func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []account.RoutingCandidate, indexes []int, now time.Time, tierOrder []account.WebTier, concurrencyHints []int, preferFreeBuild bool) (*candidatePlan, error) {
 	length := len(indexes)
 	if indexes == nil {
 		length = len(values)
 	}
-	keys := make([]string, length)
-	for position := range length {
-		index := position
-		if indexes != nil {
-			index = indexes[position]
-		}
-		keys[position] = accountConcurrencyKey(values[index].Credential.ID)
-	}
-	concurrencySnapshot, err := s.loadConcurrencySnapshot(ctx, keys)
-	if err != nil {
-		return nil, err
-	}
 	inFlight := make([]int, length)
-	for position := range length {
-		inFlight[position] = concurrencySnapshot[keys[position]]
+	if concurrencyHints == nil {
+		keys := make([]string, length)
+		for position := range length {
+			index := position
+			if indexes != nil {
+				index = indexes[position]
+			}
+			keys[position] = accountConcurrencyKey(values[index].Credential.ID)
+		}
+		concurrencySnapshot, err := s.loadConcurrencySnapshot(ctx, keys)
+		if err != nil {
+			return nil, err
+		}
+		for position := range length {
+			inFlight[position] = concurrencySnapshot[keys[position]]
+		}
+	} else {
+		missingIndexes := make([]int, 0, length)
+		keys := make([]string, 0, length)
+		for position := range length {
+			index := position
+			if indexes != nil {
+				index = indexes[position]
+			}
+			if concurrencyHints[index] != 0 {
+				continue
+			}
+			missingIndexes = append(missingIndexes, index)
+			keys = append(keys, accountConcurrencyKey(values[index].Credential.ID))
+		}
+		if len(keys) > 0 {
+			concurrencySnapshot, err := s.loadConcurrencySnapshot(ctx, keys)
+			if err != nil {
+				return nil, err
+			}
+			for position, index := range missingIndexes {
+				concurrencyHints[index] = concurrencySnapshot[keys[position]] + 1
+			}
+		}
+		for position := range length {
+			index := position
+			if indexes != nil {
+				index = indexes[position]
+			}
+			inFlight[position] = concurrencyHints[index] - 1
+		}
 	}
 
-	preferFreeBuild := s.preferFreeBuildEnabled()
 	s.selectionMu.RLock()
 	scores := make([]candidateScore, length)
 	for position := range length {
@@ -139,7 +174,6 @@ func (s *Selector) planCandidateIndexes(ctx context.Context, values []account.Ro
 		scores[position] = score
 	}
 	s.selectionMu.RUnlock()
-
 	plan := &candidatePlan{values: values, scores: scores}
 	heap.Init(plan)
 	return plan, nil

@@ -19,7 +19,10 @@ export type SettingsConfigDTO = {
     cleanupInterval: string;
   };
   frontend: { publicApiBaseURL: string };
-  routing: { stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number; preferFreeBuild: boolean };
+  routing: {
+    stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number; preferFreeBuild: boolean;
+    segmentedSelector: { enabled: boolean; minCandidates: number; windowSize: number };
+  };
   audit: { bufferSize: number; batchSize: number; flushInterval: string; commitDelayMS: number };
   clientKeyDefaults: { rpmLimit: number; maxConcurrent: number };
   accounts: {
@@ -85,7 +88,10 @@ const settingsConfigValidator = hasShape({
   batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
   media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),
   frontend: hasShape({ publicApiBaseURL: isString }),
-  routing: hasShape({ stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber, preferFreeBuild: isBoolean }),
+  routing: hasShape({
+    stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber, preferFreeBuild: isBoolean,
+    segmentedSelector: isOptional(hasShape({ enabled: isBoolean, minCandidates: isNumber, windowSize: isNumber })),
+  }),
   audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString, commitDelayMS: isOptional(isNumber) }),
   clientKeyDefaults: hasShape({ rpmLimit: isNumber, maxConcurrent: isNumber }),
   // 旧后端可无 accounts；decode 后由 withAccountsDefaults 补默认关闭策略。
@@ -104,6 +110,7 @@ const defaultAccountsConfig = (): SettingsConfigDTO["accounts"] => ({
 });
 function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDTO {
   const accounts = snapshot.config.accounts ?? defaultAccountsConfig();
+  const segmentedSelector = snapshot.config.routing.segmentedSelector ?? { enabled: false, minCandidates: 3000, windowSize: 64 };
   return {
     ...snapshot,
     config: {
@@ -111,6 +118,14 @@ function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
       audit: {
         ...snapshot.config.audit,
         commitDelayMS: snapshot.config.audit.commitDelayMS ?? 5,
+      },
+      routing: {
+        ...snapshot.config.routing,
+        segmentedSelector: {
+          enabled: segmentedSelector.enabled ?? false,
+          minCandidates: segmentedSelector.minCandidates || 3000,
+          windowSize: segmentedSelector.windowSize || 64,
+        },
       },
       accounts: {
         autoCleanReauthEnabled: accounts.autoCleanReauthEnabled ?? false,

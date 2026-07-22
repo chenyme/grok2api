@@ -51,6 +51,9 @@ bootstrapAdmin:
 	if cfg.Routing.PreferFreeBuild {
 		t.Fatal("preferFreeBuild should retain its false default when omitted from YAML")
 	}
+	if cfg.Routing.SegmentedSelectorEnabled || cfg.Routing.SegmentedMinCandidates != 3000 || cfg.Routing.SegmentedWindowSize != 64 {
+		t.Fatalf("segmented selector defaults = %#v", cfg.Routing)
+	}
 	if cfg.Accounts.AutoCleanReauthEnabled || cfg.Accounts.AutoCleanIncludeDisabled {
 		t.Fatal("accounts auto-clean flags should default to false")
 	}
@@ -143,6 +146,21 @@ routing:
 	}
 	if _, err := Load(path); err == nil {
 		t.Fatal("unknown field was accepted")
+	}
+}
+
+func TestValidateRejectsInvalidSegmentedSelectorConfig(t *testing.T) {
+	tests := []func(*RoutingConfig){
+		func(value *RoutingConfig) { value.SegmentedMinCandidates = 99 },
+		func(value *RoutingConfig) { value.SegmentedWindowSize = 257 },
+		func(value *RoutingConfig) { value.SegmentedWindowSize = value.SegmentedMinCandidates + 1 },
+	}
+	for index, mutate := range tests {
+		cfg := defaultConfig()
+		mutate(&cfg.Routing)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("case %d accepted invalid segmented selector config", index)
+		}
 	}
 }
 
