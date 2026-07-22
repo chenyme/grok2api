@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -945,7 +946,7 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 			result.RecordStreamFailure(*metadata.StreamFailure)
 		}
 	} else {
-		metadata, copyErr := copyJSON(c.Writer, result.Body)
+		metadata, copyErr := copyJSON(c.Writer, result.Body, protocol)
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
 	}
 	if err != nil {
@@ -965,10 +966,11 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 }
 
 type responseMetadata struct {
-	Usage         gateway.Usage
-	ResponseID    string
-	Model         string
-	StreamFailure *gateway.StreamFailureDiagnostic
+	Usage                    gateway.Usage
+	cacheCreationInputTokens int64
+	ResponseID               string
+	Model                    string
+	StreamFailure            *gateway.StreamFailureDiagnostic
 }
 
 func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol) (responseMetadata, error) {
@@ -1005,7 +1007,7 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 	}
 }
 
-func copyJSON(writer gin.ResponseWriter, source io.Reader) (responseMetadata, error) {
+func copyJSON(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol) (responseMetadata, error) {
 	buffer := make([]byte, responseCopyBufferBytes)
 	metadataBody := make([]byte, 0, responseCopyBufferBytes)
 	metadataComplete := true
@@ -1036,7 +1038,7 @@ func copyJSON(writer gin.ResponseWriter, source io.Reader) (responseMetadata, er
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				if metadataComplete {
-					return extractMetadata(metadataBody), nil
+					return normalizeMetadataUsage(extractMetadata(metadataBody), protocol), nil
 				}
 				return responseMetadata{}, nil
 			}
@@ -1083,12 +1085,41 @@ func (i *responseInspector) Inspect(chunk []byte) {
 					i.metadata.Model = metadata.Model
 					i.metadata.Usage.ResponseModel = metadata.Model
 				}
+				if metadata.cacheCreationInputTokens > 0 {
+					i.metadata.cacheCreationInputTokens = metadata.cacheCreationInputTokens
+				}
 			}
 		}
 	}
 }
 
-func (i *responseInspector) Metadata() responseMetadata { return i.metadata }
+func (i *responseInspector) Metadata() responseMetadata {
+	return normalizeMetadataUsage(i.metadata, i.protocol)
+}
+
+func normalizeMetadataUsage(metadata responseMetadata, protocol streamProtocol) responseMetadata {
+	if protocol != streamProtocolAnthropic {
+		return metadata
+	}
+	inputTokens := saturatingUsageSum(metadata.Usage.InputTokens, metadata.Usage.CachedInputTokens, metadata.cacheCreationInputTokens)
+	metadata.Usage.InputTokens = inputTokens
+	metadata.Usage.TotalTokens = saturatingUsageSum(inputTokens, metadata.Usage.OutputTokens)
+	return metadata
+}
+
+func saturatingUsageSum(values ...int64) int64 {
+	var total int64
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if value > math.MaxInt64-total {
+			return math.MaxInt64
+		}
+		total += value
+	}
+	return total
+}
 
 func (i *responseInspector) TerminalError() error {
 	if i.terminalFailure {
@@ -1276,6 +1307,7 @@ func extractMetadata(data []byte) responseMetadata {
 		return metadata
 	}
 	metadata.Usage = usage.toGatewayUsage(metadata.Model)
+	metadata.cacheCreationInputTokens = usage.CacheCreationInputTokens
 	return metadata
 }
 

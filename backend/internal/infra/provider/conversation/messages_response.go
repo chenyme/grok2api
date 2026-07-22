@@ -105,9 +105,11 @@ func nullableAnthropicString(value string) any {
 }
 
 func anthropicUsage(value responseUsage, webSearchRequests int) map[string]any {
+	inputTokens := max(int64(0), value.InputTokens)
+	cacheReadInputTokens := min(inputTokens, max(int64(0), value.InputTokensDetails.CachedTokens))
 	usage := map[string]any{
-		"input_tokens": value.InputTokens, "output_tokens": value.OutputTokens,
-		"cache_creation_input_tokens": 0, "cache_read_input_tokens": value.InputTokensDetails.CachedTokens,
+		"input_tokens": inputTokens - cacheReadInputTokens, "output_tokens": value.OutputTokens,
+		"cache_creation_input_tokens": 0, "cache_read_input_tokens": cacheReadInputTokens,
 		"cost_in_usd_ticks":          value.CostInUSDTicks,
 		"num_sources_used":           value.NumSourcesUsed,
 		"num_server_side_tools_used": value.NumServerSideToolsUsed,
