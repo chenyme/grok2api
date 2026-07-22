@@ -577,6 +577,68 @@ func TestEgressOperationsMaintenanceRetriesAssignmentAfterFailure(t *testing.T) 
 	}
 }
 
+func TestEgressOperationsConfigPersistsFixedFallback(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	fixed := createHealthyEgressNode(t, ctx, nodes, cipher, "fixed-fallback", 0)
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+
+	saved, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
+		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+		Fallbacks: map[egress.Scope]egressapp.FallbackConfigInput{
+			egress.ScopeBuild: {Mode: egress.FallbackModeFixed, NodeID: fixed.ID},
+			egress.ScopeWeb:   {Mode: egress.FallbackModeDirect},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback := saved.FallbackFor(egress.ScopeBuild); fallback.Mode != egress.FallbackModeFixed || fallback.NodeID != fixed.ID {
+		t.Fatalf("saved Build fallback = %#v", fallback)
+	}
+	if fallback := saved.FallbackFor(egress.ScopeWeb); fallback.Mode != egress.FallbackModeDirect || fallback.NodeID != 0 {
+		t.Fatalf("saved Web fallback = %#v", fallback)
+	}
+	if fallback := saved.FallbackFor(egress.ScopeConsole); fallback.Mode != egress.FallbackModeNone || fallback.NodeID != 0 {
+		t.Fatalf("default Console fallback = %#v", fallback)
+	}
+
+	stored, err := nodes.GetEgressOperationsConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback := stored.FallbackFor(egress.ScopeBuild); fallback.Mode != egress.FallbackModeFixed || fallback.NodeID != fixed.ID {
+		t.Fatalf("stored Build fallback = %#v", fallback)
+	}
+	if fallback := stored.FallbackFor(egress.ScopeWeb); fallback.Mode != egress.FallbackModeDirect || fallback.NodeID != 0 {
+		t.Fatalf("stored Web fallback = %#v", fallback)
+	}
+}
+
+func TestEgressOperationsConfigRejectsUnsafeFixedFallback(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	pool := createHealthyEgressNode(t, ctx, nodes, cipher, "pool-fallback", 0)
+	pool.ProxyPool = true
+	if _, err := nodes.UpdateEgressNode(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+	_, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
+		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+		Fallbacks: map[egress.Scope]egressapp.FallbackConfigInput{
+			egress.ScopeBuild: {Mode: egress.FallbackModeFixed, NodeID: pool.ID},
+		},
+	})
+	if !errors.Is(err, egressapp.ErrInvalidInput) || !strings.Contains(err.Error(), "代理池") {
+		t.Fatalf("pool fallback error = %v", err)
+	}
+}
+
 type retryingAssignmentRepository struct {
 	*AccountRepository
 	failNext        bool

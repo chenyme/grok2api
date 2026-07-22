@@ -112,6 +112,13 @@ type egressStateRepository interface {
 	UpdateEgressNodeLastError(context.Context, uint64, string) error
 }
 
+// operationsConfigRepository is optional so lightweight routing repositories
+// retain their narrow contract. The relational implementation supplies it,
+// allowing fallback policy to be read only when primary selection fails.
+type operationsConfigRepository interface {
+	GetEgressOperationsConfig(context.Context) (domain.OperationsConfig, error)
+}
+
 type cachedClient struct {
 	client   requestClient
 	browser  *browserClient
@@ -293,20 +300,24 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	if boundNodeID != 0 {
 		selected, err := m.repository.GetEgressNode(ctx, boundNodeID)
 		if err != nil {
-			return nil, true, fmt.Errorf("读取绑定出口节点: %w", err)
+			primaryErr := fmt.Errorf("读取绑定出口节点: %w", err)
+			if !errors.Is(err, repository.ErrNotFound) {
+				return nil, true, primaryErr
+			}
+			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr)
 		}
 		if !domain.SupportsScope(selected.Scope, scope) {
-			return nil, true, fmt.Errorf("绑定出口节点 %d 与 %s 作用域不兼容", boundNodeID, scope)
+			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 与 %s 作用域不兼容", boundNodeID, scope))
 		}
 		if !selected.Enabled {
-			return nil, true, fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID)
+			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID))
 		}
 		if strings.TrimSpace(selected.EncryptedProxyURL) == "" {
-			return nil, true, fmt.Errorf("绑定出口节点 %d 未配置代理地址", boundNodeID)
+			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 未配置代理地址", boundNodeID))
 		}
 		proxyPool := m.isProxyPoolNode(selected)
 		if !proxyPool && selected.CooldownUntil != nil && now.Before(*selected.CooldownUntil) {
-			return nil, true, fmt.Errorf("绑定出口节点 %d 正在冷却", boundNodeID)
+			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 正在冷却", boundNodeID))
 		}
 		return m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected)
 	}
@@ -335,8 +346,19 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		}
 	}
 	if len(available) == 0 {
+		primaryErr := error(nil)
 		if configured {
-			return nil, false, fmt.Errorf("当前没有可用的 %s 出口节点", scope)
+			primaryErr = fmt.Errorf("当前没有可用的 %s 出口节点", scope)
+		}
+		lease, fallbackConfigured, applied, err := m.acquireFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr)
+		if err != nil {
+			return nil, fallbackConfigured, err
+		}
+		if applied {
+			return lease, fallbackConfigured, nil
+		}
+		if primaryErr != nil {
+			return nil, false, primaryErr
 		}
 		if !allowDirect {
 			recordSelection(ctx, Selection{NodeName: "direct", Scope: scope})
@@ -347,6 +369,105 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	sort.SliceStable(available, func(i, j int) bool { return available[i].ID < available[j].ID })
 	selected := m.selectNode(available, affinity)
 	return m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected)
+}
+
+// acquireUnavailableFallback keeps the primary selection error when fallback
+// is disabled. A fixed fallback is never silently replaced with direct traffic
+// when it is invalid or unavailable.
+func (m *Manager) acquireUnavailableFallback(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, managedClearance bool, primaryErr error) (*Lease, bool, error) {
+	lease, configured, applied, err := m.acquireFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr)
+	if err != nil {
+		return nil, configured, err
+	}
+	if applied {
+		return lease, configured, nil
+	}
+	return nil, true, primaryErr
+}
+
+// acquireFallback is called before an upstream request is written. Transport
+// failures are intentionally not retried through this path because replaying
+// a non-idempotent upstream request on a different IP can duplicate work.
+func (m *Manager) acquireFallback(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, managedClearance bool, primaryErr error) (*Lease, bool, bool, error) {
+	configRepository, ok := m.repository.(operationsConfigRepository)
+	if !ok {
+		return nil, false, false, nil
+	}
+	config, err := configRepository.GetEgressOperationsConfig(ctx)
+	if err != nil {
+		return nil, false, false, fallbackError(primaryErr, fmt.Errorf("读取出口回退配置: %w", err))
+	}
+	fallback := config.FallbackFor(scope)
+	switch fallback.Mode {
+	case domain.FallbackModeNone:
+		return nil, false, false, nil
+	case domain.FallbackModeDirect:
+		if !allowDirect {
+			recordSelection(ctx, Selection{NodeName: "direct", Scope: scope})
+			return nil, false, true, nil
+		}
+		lease, _, err := m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, domain.Node{ID: 0, Name: "direct", Scope: scope, Enabled: true, Health: 1})
+		if err != nil {
+			return nil, false, false, fallbackError(primaryErr, fmt.Errorf("获取本地直连回退: %w", err))
+		}
+		return lease, false, true, nil
+	case domain.FallbackModeFixed:
+		selected, err := m.fixedFallbackNode(ctx, scope, fallback.NodeID)
+		if err != nil {
+			return nil, false, false, fallbackError(primaryErr, err)
+		}
+		lease, _, err := m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected)
+		if err != nil {
+			return nil, false, false, fallbackError(primaryErr, fmt.Errorf("获取固定回退节点 %d: %w", selected.ID, err))
+		}
+		return lease, true, true, nil
+	default:
+		return nil, false, false, fallbackError(primaryErr, fmt.Errorf("出口回退模式 %q 无效", fallback.Mode))
+	}
+}
+
+func (m *Manager) fixedFallbackNode(ctx context.Context, scope domain.Scope, nodeID uint64) (domain.Node, error) {
+	if nodeID == 0 {
+		return domain.Node{}, errors.New("固定回退节点未指定")
+	}
+	selected, err := m.repository.GetEgressNode(ctx, nodeID)
+	if err != nil {
+		return domain.Node{}, fmt.Errorf("读取固定回退节点 %d: %w", nodeID, err)
+	}
+	if !domain.SupportsScope(selected.Scope, scope) {
+		return domain.Node{}, fmt.Errorf("固定回退节点 %d 与 %s 作用域不兼容", nodeID, scope)
+	}
+	if !selected.Enabled {
+		return domain.Node{}, fmt.Errorf("固定回退节点 %d 已禁用", nodeID)
+	}
+	if selected.ProxyPool {
+		return domain.Node{}, fmt.Errorf("固定回退节点 %d 使用代理池模式", nodeID)
+	}
+	if strings.TrimSpace(selected.EncryptedProxyURL) == "" {
+		return domain.Node{}, fmt.Errorf("固定回退节点 %d 未配置代理地址", nodeID)
+	}
+	if selected.CooldownUntil != nil && time.Now().UTC().Before(*selected.CooldownUntil) {
+		return domain.Node{}, fmt.Errorf("固定回退节点 %d 正在冷却", nodeID)
+	}
+	proxyURL, err := m.cipher.Decrypt(selected.EncryptedProxyURL)
+	if err != nil {
+		return domain.Node{}, fmt.Errorf("读取固定回退节点 %d 代理配置: %w", nodeID, err)
+	}
+	proxyURL, err = application.NormalizeProxyURL(proxyURL)
+	if err != nil || proxyURL == "" {
+		return domain.Node{}, fmt.Errorf("固定回退节点 %d 代理地址无效", nodeID)
+	}
+	if strings.Contains(proxyURL, application.ProxyAccountPlaceholder) {
+		return domain.Node{}, fmt.Errorf("固定回退节点 %d 使用账号代理模板", nodeID)
+	}
+	return selected, nil
+}
+
+func fallbackError(primaryErr, fallbackErr error) error {
+	if primaryErr == nil {
+		return fallbackErr
+	}
+	return fmt.Errorf("%w；出口回退不可用: %v", primaryErr, fallbackErr)
 }
 
 func (m *Manager) leaseForNode(ctx context.Context, scope domain.Scope, affinity, encryptedCredentialCookies string, managedClearance bool, selected domain.Node) (*Lease, bool, error) {
