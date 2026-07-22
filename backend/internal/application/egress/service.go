@@ -51,6 +51,7 @@ type Service struct {
 	browserUA         string
 	clearance         ClearanceManager
 	prober            NodeProber
+	operationsCache   OperationsConfigInvalidator
 	assignmentMu      sync.Mutex
 	lastAssignmentRun time.Time
 	assignmentRunning bool
@@ -153,6 +154,9 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 	if err != nil {
 		return domain.PublicNode{}, err
 	}
+	if err := s.validateFallbackNodeUpdate(ctx, value); err != nil {
+		return domain.PublicNode{}, err
+	}
 	if previousScope != value.Scope {
 		if err := s.validateNodeBindingScope(ctx, value.ID, value.Scope); err != nil {
 			return domain.PublicNode{}, err
@@ -165,6 +169,26 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 	return s.publicNode(updated), err
 }
 
+func (s *Service) validateFallbackNodeUpdate(ctx context.Context, node domain.Node) error {
+	if s.operations == nil {
+		return nil
+	}
+	config, err := s.operations.GetEgressOperationsConfig(ctx)
+	if err != nil {
+		return err
+	}
+	for _, scope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
+		fallback := config.FallbackFor(scope)
+		if fallback.Mode != domain.FallbackModeFixed || fallback.NodeID != node.ID {
+			continue
+		}
+		if err := s.validateFixedFallbackNode(scope, node, false); err != nil {
+			return fmt.Errorf("节点已配置为 %s 固定回退，无法应用当前修改: %w", scope, err)
+		}
+	}
+	return nil
+}
+
 func (s *Service) Delete(ctx context.Context, id uint64) error {
 	err := s.repository.DeleteEgressNode(ctx, id)
 	if errors.Is(err, repository.ErrNotFound) {
@@ -172,6 +196,7 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 	}
 	if err == nil {
 		s.forgetClearance(id)
+		s.invalidateOperationsConfig()
 	}
 	return err
 }
@@ -192,6 +217,7 @@ func (s *Service) DeleteMany(ctx context.Context, nodeIDs []uint64) (int, error)
 		for _, id := range ids {
 			s.forgetClearance(id)
 		}
+		s.invalidateOperationsConfig()
 		return deleted, nil
 	}
 

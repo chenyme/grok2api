@@ -514,6 +514,14 @@ type egressOperationsConfigModel struct {
 	AutoAssignEnabled         bool      `gorm:"not null;default:false"`
 	AutoBalanceEnabled        bool      `gorm:"not null;default:false"`
 	AssignmentIntervalSeconds int       `gorm:"not null;default:300;check:chk_egress_operations_config_assignment_interval,assignment_interval_seconds BETWEEN 60 AND 86400"`
+	BuildFallbackMode         string    `gorm:"size:16;not null;default:none"`
+	BuildFallbackNodeID       uint64    `gorm:"not null;default:0"`
+	WebFallbackMode           string    `gorm:"size:16;not null;default:none"`
+	WebFallbackNodeID         uint64    `gorm:"not null;default:0"`
+	ConsoleFallbackMode       string    `gorm:"size:16;not null;default:none"`
+	ConsoleFallbackNodeID     uint64    `gorm:"not null;default:0"`
+	WebAssetFallbackMode      string    `gorm:"size:16;not null;default:none"`
+	WebAssetFallbackNodeID    uint64    `gorm:"not null;default:0"`
 	UpdatedAt                 time.Time `gorm:"not null"`
 }
 

@@ -47,6 +47,10 @@ type NodeProber interface {
 	ProbeEgressNode(context.Context, uint64) (domain.ProbeResult, error)
 }
 
+type OperationsConfigInvalidator interface {
+	InvalidateOperationsConfig()
+}
+
 type SubscriptionSourceInput struct {
 	Name                   string
 	Scope                  domain.Scope
@@ -80,6 +84,12 @@ type OperationsConfigInput struct {
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
 	AssignmentIntervalSeconds int
+	Fallbacks                 map[domain.Scope]FallbackConfigInput
+}
+
+type FallbackConfigInput struct {
+	Mode   domain.FallbackMode
+	NodeID uint64
 }
 
 func (s *Service) operationsRepository() (OperationsRepository, error) {
@@ -93,6 +103,21 @@ func (s *Service) SetNodeProber(value NodeProber) {
 	s.mu.Lock()
 	s.prober = value
 	s.mu.Unlock()
+}
+
+func (s *Service) SetOperationsConfigInvalidator(value OperationsConfigInvalidator) {
+	s.mu.Lock()
+	s.operationsCache = value
+	s.mu.Unlock()
+}
+
+func (s *Service) invalidateOperationsConfig() {
+	s.mu.RLock()
+	value := s.operationsCache
+	s.mu.RUnlock()
+	if value != nil {
+		value.InvalidateOperationsConfig()
+	}
 }
 
 func (s *Service) nodeProber() NodeProber {
@@ -332,10 +357,91 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 	if input.ProbeIntervalSeconds < 60 || input.ProbeIntervalSeconds > 86400 || input.AssignmentIntervalSeconds < 60 || input.AssignmentIntervalSeconds > 86400 {
 		return domain.OperationsConfig{}, fmt.Errorf("%w: 自动任务间隔必须在 60 到 86400 秒之间", ErrInvalidInput)
 	}
-	return operations.SaveEgressOperationsConfig(ctx, domain.OperationsConfig{
+	current, err := operations.GetEgressOperationsConfig(ctx)
+	if err != nil {
+		return domain.OperationsConfig{}, err
+	}
+	fallbacks := current.Fallbacks
+	if input.Fallbacks != nil {
+		fallbacks, err = s.validateFallbacks(ctx, current, input.Fallbacks)
+		if err != nil {
+			return domain.OperationsConfig{}, err
+		}
+	}
+	saved, err := operations.SaveEgressOperationsConfig(ctx, domain.OperationsConfig{
 		ProbeIntervalSeconds: input.ProbeIntervalSeconds, AutoAssignEnabled: input.AutoAssignEnabled,
-		AutoBalanceEnabled: input.AutoBalanceEnabled, AssignmentIntervalSeconds: input.AssignmentIntervalSeconds, UpdatedAt: time.Now().UTC(),
+		AutoBalanceEnabled: input.AutoBalanceEnabled, AssignmentIntervalSeconds: input.AssignmentIntervalSeconds,
+		Fallbacks: fallbacks, UpdatedAt: time.Now().UTC(),
 	})
+	if err == nil {
+		s.invalidateOperationsConfig()
+	}
+	return saved, err
+}
+
+func (s *Service) validateFallbacks(ctx context.Context, current domain.OperationsConfig, input map[domain.Scope]FallbackConfigInput) (map[domain.Scope]domain.FallbackConfig, error) {
+	result := make(map[domain.Scope]domain.FallbackConfig, 4)
+	for _, scope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
+		result[scope] = current.FallbackFor(scope)
+	}
+	for scope, fallback := range input {
+		if !validScope(scope) {
+			return nil, fmt.Errorf("%w: 回退作用域无效", ErrInvalidInput)
+		}
+		mode := fallback.Mode.Normalized()
+		if !mode.IsValid() {
+			return nil, fmt.Errorf("%w: 回退模式无效", ErrInvalidInput)
+		}
+		switch mode {
+		case domain.FallbackModeNone, domain.FallbackModeDirect:
+			if fallback.NodeID != 0 {
+				return nil, fmt.Errorf("%w: 仅固定代理回退可以指定节点", ErrInvalidInput)
+			}
+		case domain.FallbackModeFixed:
+			if fallback.NodeID == 0 {
+				return nil, fmt.Errorf("%w: 固定代理回退必须指定节点", ErrInvalidInput)
+			}
+			node, err := s.repository.GetEgressNode(ctx, fallback.NodeID)
+			if errors.Is(err, repository.ErrNotFound) {
+				return nil, fmt.Errorf("%w: 固定回退节点不存在", ErrInvalidInput)
+			}
+			if err != nil {
+				return nil, err
+			}
+			if err := s.validateFixedFallbackNode(scope, node, true); err != nil {
+				return nil, err
+			}
+		}
+		result[scope] = domain.FallbackConfig{Mode: mode, NodeID: fallback.NodeID}
+	}
+	return result, nil
+}
+
+func (s *Service) validateFixedFallbackNode(scope domain.Scope, node domain.Node, rejectCooldown bool) error {
+	if !domain.SupportsScope(node.Scope, scope) {
+		return fmt.Errorf("%w: 固定回退节点与 %s 作用域不兼容", ErrInvalidInput, scope)
+	}
+	if !node.Enabled || strings.TrimSpace(node.EncryptedProxyURL) == "" {
+		return fmt.Errorf("%w: 固定回退节点必须启用且配置代理地址", ErrInvalidInput)
+	}
+	if node.ProxyPool {
+		return fmt.Errorf("%w: 固定回退节点不能使用代理池模式", ErrInvalidInput)
+	}
+	if rejectCooldown && node.CooldownUntil != nil && time.Now().UTC().Before(*node.CooldownUntil) {
+		return fmt.Errorf("%w: 固定回退节点正在冷却", ErrInvalidInput)
+	}
+	proxyURL, err := s.cipher.Decrypt(node.EncryptedProxyURL)
+	if err != nil {
+		return fmt.Errorf("%w: 固定回退节点代理配置无效", ErrInvalidInput)
+	}
+	proxyURL, err = NormalizeProxyURL(proxyURL)
+	if err != nil || proxyURL == "" {
+		return fmt.Errorf("%w: 固定回退节点代理地址无效", ErrInvalidInput)
+	}
+	if strings.Contains(proxyURL, ProxyAccountPlaceholder) {
+		return fmt.Errorf("%w: 固定回退节点不能使用账号代理模板", ErrInvalidInput)
+	}
+	return nil
 }
 
 func (s *Service) applySourceInput(value domain.SubscriptionSource, input SubscriptionSourceInput, create bool) (domain.SubscriptionSource, error) {
