@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -563,10 +564,12 @@ func TestExtractUsageFromCompletedEvent(t *testing.T) {
 }
 
 func TestExtractUsageFromAnthropicMessagesCaches(t *testing.T) {
-	// Anthropic Messages 协议用 cache_read_input_tokens，不得再记为 0。
-	metadata := extractMetadata([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"grok-4.5","usage":{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":80,"cost_in_usd_ticks":1000}}`))
+	metadata := normalizeMetadataUsage(extractMetadata([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"grok-4.5","usage":{"input_tokens":20,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":80,"cost_in_usd_ticks":1000}}`)), streamProtocolAnthropic)
 	if metadata.Usage.CachedInputTokens != 80 || metadata.Usage.InputTokens != 100 || metadata.Usage.OutputTokens != 20 {
 		t.Fatalf("anthropic usage = %#v", metadata.Usage)
+	}
+	if metadata.Usage.TotalTokens != 120 {
+		t.Fatalf("anthropic total usage = %#v", metadata.Usage)
 	}
 }
 
@@ -587,15 +590,49 @@ func TestExtractUsagePrefersResponsesCachedTokensOverAnthropicField(t *testing.T
 }
 
 func TestStreamInspectorMergesCachedTokensAcrossFrames(t *testing.T) {
-	// 模拟流式：先到 input/output，后到带 cache 的 usage 帧。
 	inspector := &responseInspector{protocol: streamProtocolAnthropic}
-	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}\n\n"))
+	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":20,\"output_tokens\":20}}\n\n"))
 	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"cache_read_input_tokens\":80}}\n\n"))
 	inspector.Inspect([]byte("data: {\"type\":\"message_stop\"}\n\n"))
 	inspector.Finish()
 	usage := inspector.Metadata().Usage
-	if usage.InputTokens != 100 || usage.OutputTokens != 20 || usage.CachedInputTokens != 80 {
+	if usage.InputTokens != 100 || usage.OutputTokens != 20 || usage.CachedInputTokens != 80 || usage.TotalTokens != 120 {
 		t.Fatalf("merged stream usage = %#v", usage)
+	}
+}
+
+func TestAnthropicUsageReconstructsCacheCreationAndSaturates(t *testing.T) {
+	metadata := responseMetadata{
+		Usage:                    gateway.Usage{InputTokens: 20, CachedInputTokens: 70, OutputTokens: 5},
+		cacheCreationInputTokens: 10,
+	}
+	usage := normalizeMetadataUsage(metadata, streamProtocolAnthropic).Usage
+	if usage.InputTokens != 100 || usage.CachedInputTokens != 70 || usage.TotalTokens != 105 {
+		t.Fatalf("anthropic reconstructed usage = %#v", usage)
+	}
+
+	overflow := responseMetadata{Usage: gateway.Usage{InputTokens: math.MaxInt64, CachedInputTokens: 1, OutputTokens: 1}}
+	usage = normalizeMetadataUsage(overflow, streamProtocolAnthropic).Usage
+	if usage.InputTokens != math.MaxInt64 || usage.TotalTokens != math.MaxInt64 {
+		t.Fatalf("anthropic saturated usage = %#v", usage)
+	}
+}
+
+func TestCopyJSONReconstructsAnthropicTotalInputForAudit(t *testing.T) {
+	payload := []byte(`{"id":"msg_1","type":"message","model":"grok-4.5","usage":{"input_tokens":10899,"output_tokens":227,"cache_creation_input_tokens":0,"cache_read_input_tokens":229504}}`)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+
+	metadata, err := copyJSON(context.Writer, bytes.NewReader(payload), streamProtocolAnthropic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(recorder.Body.Bytes(), payload) {
+		t.Fatalf("forwarded body = %s", recorder.Body.String())
+	}
+	usage := metadata.Usage
+	if usage.InputTokens != 240403 || usage.CachedInputTokens != 229504 || usage.OutputTokens != 227 || usage.TotalTokens != 240630 {
+		t.Fatalf("anthropic audit usage = %#v", usage)
 	}
 }
 
@@ -766,7 +803,7 @@ func TestCopyJSONForwardsBodyBeyondMetadataInspectionLimit(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
 
-	metadata, err := copyJSON(context.Writer, bytes.NewReader(payload))
+	metadata, err := copyJSON(context.Writer, bytes.NewReader(payload), streamProtocolResponses)
 	if err != nil {
 		t.Fatal(err)
 	}
