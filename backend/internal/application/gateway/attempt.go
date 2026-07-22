@@ -19,6 +19,7 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
 type failureAttemptRecorder struct {
@@ -347,6 +348,8 @@ func errorUpstreamURL(err error) string {
 
 func transportStage(err error) string {
 	switch {
+	case neterrorpkg.IsResponseHeaderTimeout(err):
+		return "response_header_timeout"
 	case errors.Is(err, context.Canceled):
 		return "request_canceled"
 	case errors.Is(err, context.DeadlineExceeded):

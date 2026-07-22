@@ -1536,6 +1536,9 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 			status, errorType, message = http.StatusServiceUnavailable, "overloaded_error", credentialErrorMessage(clientCode)
 		} else {
 			status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
+			if upstreamFailure.Code == "upstream_header_timeout" {
+				errorType = "timeout_error"
+			}
 		}
 		if !isUpstreamCredentialStatus(upstreamFailure.HTTPStatus) && upstreamFailure.RetryAfter > 0 {
 			c.Header("Retry-After", strconv.FormatInt(max(1, int64(upstreamFailure.RetryAfter.Round(time.Second)/time.Second)), 10))

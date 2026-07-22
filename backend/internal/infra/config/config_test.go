@@ -69,6 +69,9 @@ bootstrapAdmin:
 	if cfg.Audit.LedgerMode != "enforce" || cfg.Audit.LedgerFailureThreshold != 1 {
 		t.Fatalf("audit ledger defaults = %#v", cfg.Audit)
 	}
+	if cfg.Provider.Build.ResponseHeaderTimeout.Value() != 5*time.Minute {
+		t.Fatalf("Build response header timeout = %s", cfg.Provider.Build.ResponseHeaderTimeout.Value())
+	}
 	expectedDatabasePath := filepath.Join(dir, "data", "backend.db")
 	if cfg.Database.SQLite.Path != expectedDatabasePath {
 		t.Fatalf("database path = %q, want %q", cfg.Database.SQLite.Path, expectedDatabasePath)
@@ -80,6 +83,16 @@ bootstrapAdmin:
 	expectedFrontendPath := filepath.Join(dir, "frontend", "dist")
 	if cfg.Frontend.StaticPath != expectedFrontendPath {
 		t.Fatalf("frontend static path = %q, want %q", cfg.Frontend.StaticPath, expectedFrontendPath)
+	}
+}
+
+func TestBuildResponseHeaderTimeoutIsRuntimeOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("provider:\n  build:\n    responseHeaderTimeout: 10m\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("runtime-only Build response header timeout was accepted from YAML")
 	}
 }
 

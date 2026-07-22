@@ -16,11 +16,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
@@ -29,15 +31,19 @@ import (
 )
 
 type Config struct {
-	BaseURL          string
-	FallbackBaseURL  string
-	ClientVersion    string
-	ClientIdentifier string
-	TokenAuth        string
-	UserAgent        string
+	BaseURL               string
+	FallbackBaseURL       string
+	ClientVersion         string
+	ClientIdentifier      string
+	TokenAuth             string
+	UserAgent             string
+	ResponseHeaderTimeout time.Duration
 }
 
-const subscriptionTierTimeout = 10 * time.Second
+const (
+	subscriptionTierTimeout = 10 * time.Second
+	buildControlTimeout     = 30 * time.Second
+)
 
 // Adapter implements the Grok Build CLI Responses, model, Billing, and OAuth protocols.
 type Adapter struct {
@@ -46,7 +52,7 @@ type Adapter struct {
 	http           *http.Client
 	oauth          *oauthClient
 	cipher         *security.Cipher
-	base           http.RoundTripper
+	base           *buildDirectTransport
 	agentID        string
 	modelsMu       sync.Mutex
 	modelsETags    map[uint64]string
@@ -58,7 +64,8 @@ type Adapter struct {
 }
 
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, MaxIdleConns: 256, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 256, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 30 * time.Second}
+	cfg.ResponseHeaderTimeout = normalizeBuildResponseHeaderTimeout(cfg.ResponseHeaderTimeout)
+	transport := newBuildDirectTransport(cfg.ResponseHeaderTimeout)
 	httpClient := &http.Client{Transport: transport}
 	// The official CLI uses a persistent machine identity. The gateway does not collect machine fingerprints;
 	// instead each backend process generates one random UUID for its lifetime as the Agent identity.
@@ -103,9 +110,53 @@ func (a *Adapter) CredentialMetadata(credential account.Credential) provider.Cre
 }
 
 func (a *Adapter) UpdateConfig(cfg Config) {
+	cfg.ResponseHeaderTimeout = normalizeBuildResponseHeaderTimeout(cfg.ResponseHeaderTimeout)
 	a.cfgMu.Lock()
+	previousTimeout := a.cfg.ResponseHeaderTimeout
 	a.cfg = cfg
 	a.cfgMu.Unlock()
+	if previousTimeout != cfg.ResponseHeaderTimeout && a.base != nil {
+		a.base.UpdateResponseHeaderTimeout(cfg.ResponseHeaderTimeout)
+	}
+}
+
+type buildDirectTransport struct {
+	current atomic.Pointer[http.Transport]
+}
+
+func newBuildDirectTransport(responseHeaderTimeout time.Duration) *buildDirectTransport {
+	value := &buildDirectTransport{}
+	value.current.Store(newBuildHTTPTransport(responseHeaderTimeout))
+	return value
+}
+
+func (t *buildDirectTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return t.current.Load().RoundTrip(request)
+}
+
+func (t *buildDirectTransport) UpdateResponseHeaderTimeout(responseHeaderTimeout time.Duration) {
+	next := newBuildHTTPTransport(responseHeaderTimeout)
+	previous := t.current.Swap(next)
+	if previous != nil {
+		previous.CloseIdleConnections()
+	}
+}
+
+func newBuildHTTPTransport(responseHeaderTimeout time.Duration) *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true,
+		MaxIdleConns: 256, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 256,
+		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second,
+		ResponseHeaderTimeout: normalizeBuildResponseHeaderTimeout(responseHeaderTimeout),
+		ExpectContinueTimeout: time.Second,
+	}
+}
+
+func normalizeBuildResponseHeaderTimeout(value time.Duration) time.Duration {
+	if value <= 0 {
+		return settingsdomain.DefaultBuildResponseHeaderTimeout
+	}
+	return value
 }
 
 func (a *Adapter) config() Config {
@@ -468,6 +519,8 @@ func invalidConversationResponse(operation string, err error) *provider.Response
 }
 
 func (a *Adapter) ListModels(ctx context.Context, credential account.Credential) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, buildControlTimeout)
+	defer cancel()
 	accessToken, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
 		return nil, err
@@ -589,6 +642,8 @@ func (a *Adapter) modelCatalogChanged(accountID uint64, etag string) bool {
 }
 
 func (a *Adapter) GetBilling(ctx context.Context, credential account.Credential) (account.Billing, error) {
+	ctx, cancel := context.WithTimeout(ctx, buildControlTimeout)
+	defer cancel()
 	accessToken, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
 		return account.Billing{}, err
@@ -610,6 +665,8 @@ func (a *Adapter) GetBilling(ctx context.Context, credential account.Credential)
 }
 
 func (a *Adapter) RefreshCredential(ctx context.Context, credential account.Credential) (provider.RefreshedCredential, error) {
+	ctx, cancel := context.WithTimeout(ctx, buildControlTimeout)
+	defer cancel()
 	refreshToken, err := a.cipher.Decrypt(credential.EncryptedRefreshToken)
 	if err != nil {
 		// Decryption failures are usually temporary or mismatched local encryption keys and are recoverable;
@@ -637,10 +694,14 @@ func (a *Adapter) RefreshCredential(ctx context.Context, credential account.Cred
 }
 
 func (a *Adapter) StartDeviceAuthorization(ctx context.Context) (provider.DeviceAuthorization, error) {
+	ctx, cancel := context.WithTimeout(ctx, buildControlTimeout)
+	defer cancel()
 	return a.oauth.startDevice(ctx)
 }
 
 func (a *Adapter) PollDeviceAuthorization(ctx context.Context, deviceCode string) (provider.CredentialSeed, error) {
+	ctx, cancel := context.WithTimeout(ctx, buildControlTimeout)
+	defer cancel()
 	tokens, err := a.oauth.pollDevice(ctx, deviceCode)
 	if err != nil {
 		return provider.CredentialSeed{}, err

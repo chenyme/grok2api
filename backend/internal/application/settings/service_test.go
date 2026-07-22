@@ -46,6 +46,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
 	input := service.Get().Config
 	input.Server.MaxConcurrentRequests = 2048
+	input.ProviderBuild.ResponseHeaderTimeout = "7m"
 	input.Routing.MaxAttempts = 5
 	input.Routing.PreferFreeBuild = true
 	input.Routing.SegmentedSelector = SegmentedSelectorConfig{Enabled: true, MinCandidates: 5000, WindowSize: 96}
@@ -68,6 +69,9 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if applied.Server.MaxConcurrentRequests != 2048 {
 		t.Fatalf("server configuration was not applied: %#v", applied.Server)
 	}
+	if applied.Provider.Build.ResponseHeaderTimeout.Value() != 7*time.Minute {
+		t.Fatalf("Build response header timeout was not applied: %s", applied.Provider.Build.ResponseHeaderTimeout.Value())
+	}
 	if applied.Media.MaxTotalBytes != 2<<30 || applied.Media.CleanupThresholdPercent != 75 || applied.Media.CleanupInterval.Value() != 5*time.Minute {
 		t.Fatalf("media configuration was not applied: %#v", applied.Media)
 	}
@@ -87,8 +91,26 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Routing.MaxAttempts != 5 || !reloaded.Routing.PreferFreeBuild || !reloaded.Routing.SegmentedSelectorEnabled || reloaded.Routing.SegmentedMinCandidates != 5000 || reloaded.Routing.SegmentedWindowSize != 96 || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" {
+	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Provider.Build.ResponseHeaderTimeout.Value() != 7*time.Minute || reloaded.Routing.MaxAttempts != 5 || !reloaded.Routing.PreferFreeBuild || !reloaded.Routing.SegmentedSelectorEnabled || reloaded.Routing.SegmentedMinCandidates != 5000 || reloaded.Routing.SegmentedWindowSize != 96 || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" {
 		t.Fatalf("configuration was not persisted")
+	}
+}
+
+func TestUpdateRejectsBuildResponseHeaderTimeoutOutsideSafeRange(t *testing.T) {
+	for _, value := range []string{"29s", "31m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := testConfig(t)
+			repository := &runtimeSettingsRepositoryStub{}
+			service := NewService(cfg, time.Time{}, 0, repository, nil, nil)
+			input := service.Get().Config
+			input.ProviderBuild.ResponseHeaderTimeout = value
+			if _, err := service.Update(context.Background(), 0, input); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("error = %v", err)
+			}
+			if repository.found {
+				t.Fatal("invalid Build response header timeout was persisted")
+			}
+		})
 	}
 }
 

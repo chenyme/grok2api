@@ -29,6 +29,19 @@ func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error)
 	return fn(request)
 }
 
+func TestAdapterHotUpdatesDirectResponseHeaderTimeout(t *testing.T) {
+	adapter := NewAdapter(Config{ResponseHeaderTimeout: 2 * time.Minute}, nil)
+	before := adapter.base.current.Load()
+	if before.ResponseHeaderTimeout != 2*time.Minute {
+		t.Fatalf("initial timeout = %s", before.ResponseHeaderTimeout)
+	}
+	adapter.UpdateConfig(Config{ResponseHeaderTimeout: 7 * time.Minute})
+	after := adapter.base.current.Load()
+	if after == before || after.ResponseHeaderTimeout != 7*time.Minute {
+		t.Fatalf("updated transport=%p timeout=%s", after, after.ResponseHeaderTimeout)
+	}
+}
+
 func TestCredentialMetadataMarksOnlyNumericBotFlagOne(t *testing.T) {
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {

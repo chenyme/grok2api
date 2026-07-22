@@ -27,6 +27,7 @@ import (
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -631,6 +632,9 @@ attemptLoop:
 				continue
 			}
 			lastFailure = newTransportUpstreamFailure(err, credential.ID, credential.Name)
+			if !isRetryableTransportFailure(credential.Provider, err) {
+				break
+			}
 			failureFingerprints[lastFailure.Fingerprint]++
 			if failureFingerprints[lastFailure.Fingerprint] >= 2 {
 				break
@@ -675,6 +679,9 @@ attemptLoop:
 					break
 				} else {
 					lastFailure = newTransportUpstreamFailure(err, credential.ID, credential.Name)
+					if !isRetryableTransportFailure(credential.Provider, err) {
+						break attemptLoop
+					}
 				}
 				continue
 			}
@@ -737,6 +744,9 @@ attemptLoop:
 						break attemptLoop
 					}
 					lastFailure = newTransportUpstreamFailure(err, credential.ID, credential.Name)
+					if !isRetryableTransportFailure(credential.Provider, err) {
+						break attemptLoop
+					}
 					continue attemptLoop
 				}
 				goto handleResponse
@@ -949,6 +959,10 @@ func isUpstreamStreamFailure(errorCode string) bool {
 	default:
 		return false
 	}
+}
+
+func isRetryableTransportFailure(providerValue accountdomain.Provider, err error) bool {
+	return providerValue != accountdomain.ProviderBuild || !neterrorpkg.IsResponseHeaderTimeout(err)
 }
 
 func isSSOCredentialRejected(err error, credential accountdomain.Credential) bool {
