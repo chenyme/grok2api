@@ -366,7 +366,7 @@ type quotaResponse struct {
 
 func (h *Handler) list(c *gin.Context) {
 	page, pageSize := pagination(c)
-	values, total, err := h.service.List(c.Request.Context(), page, pageSize, c.Query("search"), accountapp.ListFilter{Provider: c.Query("provider"), QuotaType: c.Query("type"), Status: c.Query("status"), Renewal: c.Query("renewal"), Risk: c.Query("risk"), Sort: repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))}})
+	values, total, err := h.service.List(c.Request.Context(), page, pageSize, c.Query("search"), accountapp.ListFilter{Provider: c.Query("provider"), QuotaType: c.Query("type"), Status: c.Query("status"), Egress: c.Query("egress"), Renewal: c.Query("renewal"), Risk: c.Query("risk"), Sort: repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))}})
 	if errors.Is(err, accountapp.ErrInvalidFilter) {
 		response.Error(c, http.StatusBadRequest, "invalidFilter", err.Error())
 		return

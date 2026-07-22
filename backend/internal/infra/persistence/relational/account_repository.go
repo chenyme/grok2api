@@ -64,6 +64,12 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 		query = query.Where("EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.tier = ?)", input.Filter.QuotaType)
 	}
 	query = applyAccountStatusFilter(query, input.Filter.Status, input.Filter.Now)
+	switch input.Filter.Egress {
+	case "bound":
+		query = query.Where("egress_node_id IS NOT NULL")
+	case "unbound":
+		query = query.Where("egress_node_id IS NULL")
+	}
 	if input.Filter.Refreshable != nil {
 		if *input.Filter.Refreshable {
 			query = query.Where("EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.encrypted_refresh <> '')")

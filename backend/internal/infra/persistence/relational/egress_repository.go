@@ -342,6 +342,36 @@ func (r *EgressRepository) DeleteEgressNode(ctx context.Context, id uint64) erro
 	})
 }
 
+// DeleteEgressNodes deletes a selection atomically. Account bindings are
+// removed first so no account can retain a reference to a deleted node.
+func (r *EgressRepository) DeleteEgressNodes(ctx context.Context, ids []uint64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var deleted int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for start := 0; start < len(ids); start += 500 {
+			end := start + 500
+			if end > len(ids) {
+				end = len(ids)
+			}
+			batch := ids[start:end]
+			if result := tx.Model(&accountModel{}).Where("egress_node_id IN ?", batch).Updates(map[string]any{
+				"egress_node_id": nil, "egress_assignment_mode": "", "egress_assigned_at": nil,
+			}); result.Error != nil {
+				return result.Error
+			}
+			result := tx.Where("id IN ?", batch).Delete(&egressNodeModel{})
+			if result.Error != nil {
+				return result.Error
+			}
+			deleted += result.RowsAffected
+		}
+		return nil
+	})
+	return int(deleted), mapError(err)
+}
+
 func (r *EgressRepository) assignedAccountCounts(ctx context.Context) (map[uint64]int, error) {
 	type row struct {
 		NodeID uint64

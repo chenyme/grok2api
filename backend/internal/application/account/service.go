@@ -188,6 +188,7 @@ type ListFilter struct {
 	Provider  string
 	QuotaType string
 	Status    string
+	Egress    string
 	Renewal   string
 	Risk      string
 	Sort      repository.SortQuery
@@ -343,7 +344,7 @@ func (s *Service) ProviderDefinition(value accountdomain.Provider) (provider.Def
 
 func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]View, int64, error) {
 	page, pageSize = normalizePage(page, pageSize)
-	if (filter.Provider != "" && !accountdomain.Provider(filter.Provider).IsValid()) || !oneOf(filter.QuotaType, "", "free", "paid", "unknown", "auto", "basic", "super", "heavy") || !oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") || !oneOf(filter.Renewal, "", "refreshable", "unrefreshable") || !oneOf(filter.Risk, "", "flagged", "normal") || (filter.Risk != "" && filter.Provider != string(accountdomain.ProviderBuild)) || !repository.IsValidSort(filter.Sort, "name", "type", "status", "createdAt") {
+	if (filter.Provider != "" && !accountdomain.Provider(filter.Provider).IsValid()) || !oneOf(filter.QuotaType, "", "free", "paid", "unknown", "auto", "basic", "super", "heavy") || !oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") || !oneOf(filter.Egress, "", "bound", "unbound") || !oneOf(filter.Renewal, "", "refreshable", "unrefreshable") || !oneOf(filter.Risk, "", "flagged", "normal") || (filter.Risk != "" && filter.Provider != string(accountdomain.ProviderBuild)) || !repository.IsValidSort(filter.Sort, "name", "type", "status", "createdAt") {
 		return nil, 0, ErrInvalidFilter
 	}
 	var refreshable *bool
@@ -351,7 +352,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		value := filter.Renewal == "refreshable"
 		refreshable = &value
 	}
-	repositoryFilter := repository.AccountListFilter{Provider: filter.Provider, QuotaType: filter.QuotaType, Status: filter.Status, Refreshable: refreshable, Now: s.now()}
+	repositoryFilter := repository.AccountListFilter{Provider: filter.Provider, QuotaType: filter.QuotaType, Status: filter.Status, Egress: filter.Egress, Refreshable: refreshable, Now: s.now()}
 	if filter.Risk != "" {
 		flaggedIDs, err := s.buildBotFlaggedAccountIDs(ctx)
 		if err != nil {

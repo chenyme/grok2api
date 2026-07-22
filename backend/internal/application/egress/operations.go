@@ -263,7 +263,7 @@ func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult
 			}
 		}
 	}
-	ids = uniqueAccountIDs(ids)
+	ids = uniqueIDs(ids)
 	if len(ids) > maxManualProbeNodes {
 		return ProbeBatchResult{}, fmt.Errorf("%w: 单次最多测试 %d 个代理", ErrInvalidInput, maxManualProbeNodes)
 	}

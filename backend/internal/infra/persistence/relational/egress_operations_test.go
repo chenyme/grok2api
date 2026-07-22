@@ -167,6 +167,42 @@ func TestEgressOperationsAssignsManyAccountsToOneManualNode(t *testing.T) {
 	}
 }
 
+func TestEgressOperationsBatchDeleteClearsAccountBindings(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	first := createHealthyEgressNode(t, ctx, nodes, cipher, "delete-first", 0)
+	second := createHealthyEgressNode(t, ctx, nodes, cipher, "delete-second", 0)
+	firstAccount := createEgressOperationsAccount(t, ctx, accounts, "delete-first-account")
+	secondAccount := createEgressOperationsAccount(t, ctx, accounts, "delete-second-account")
+	if _, err := accounts.UpdateEgressBindings(ctx, account.ProviderBuild, []uint64{firstAccount.ID}, &first.ID, account.EgressAssignmentManual, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accounts.UpdateEgressBindings(ctx, account.ProviderBuild, []uint64{secondAccount.ID}, &second.ID, account.EgressAssignmentAuto, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
+	deleted, err := service.DeleteMany(ctx, []uint64{first.ID, second.ID, first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d", deleted)
+	}
+	for _, value := range []account.Credential{firstAccount, secondAccount} {
+		stored, err := accounts.Get(ctx, value.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.EgressNodeID != 0 || stored.EgressAssignmentMode != "" || stored.EgressAssignedAt != nil {
+			t.Fatalf("account binding not cleared: %#v", stored)
+		}
+	}
+}
+
 func TestEgressOperationsRejectsManualBindingsToDisabledOrDirectNodes(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

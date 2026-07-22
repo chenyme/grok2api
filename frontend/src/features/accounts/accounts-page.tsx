@@ -117,6 +117,7 @@ export function AccountsPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [egressFilter, setEgressFilter] = useState("");
   const [renewalFilter, setRenewalFilter] = useState("");
   const [riskFilter, setRiskFilter] = useState("");
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
@@ -184,8 +185,8 @@ export function AccountsPage() {
   const selected = selection.provider === provider ? selection.ids : new Set<string>();
 
   const accountsQuery = useQuery({
-    queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, renewalFilter, riskFilter, sort.field, sort.order],
-    queryFn: () => listAccounts({ provider, page, pageSize, search: debouncedSearch, type: typeFilter, status: statusFilter, renewal: provider === "grok_build" ? renewalFilter : undefined, risk: provider === "grok_build" ? riskFilter : undefined, sortBy: sort.field, sortOrder: sort.order }),
+    queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, egressFilter, renewalFilter, riskFilter, sort.field, sort.order],
+    queryFn: () => listAccounts({ provider, page, pageSize, search: debouncedSearch, type: typeFilter, status: statusFilter, egress: egressFilter, renewal: provider === "grok_build" ? renewalFilter : undefined, risk: provider === "grok_build" ? riskFilter : undefined, sortBy: sort.field, sortOrder: sort.order }),
   });
 
   const summaryQuery = useQuery({
@@ -823,6 +824,10 @@ export function AccountsPage() {
                   { value: "cooldown", label: t("accounts.statusCooldown") },
                   { value: "waitingReset", label: t("accounts.waitingReset") },
                   { value: "probing", label: t("accounts.probing") },
+                ] },
+                { id: "egress", label: t("accounts.egressFilter"), value: egressFilter, onChange: (value) => { setEgressFilter(value); setPage(1); }, options: [
+                  { value: "bound", label: t("accounts.egressBound") },
+                  { value: "unbound", label: t("accounts.egressUnbound") },
                 ] },
                 ...(provider === "grok_build" ? [{ id: "renewal", label: t("accountCredential.label"), value: renewalFilter, onChange: (value: string) => { setRenewalFilter(value); setPage(1); }, options: [
                   { value: "refreshable", label: t("accountCredential.autoRefresh") },

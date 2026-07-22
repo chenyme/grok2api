@@ -1,11 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -16,9 +18,10 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EgressOperations } from "@/features/settings/egress-operations";
-import { createEgressNode, deleteEgressNode, listEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
-import { SortableTableHead } from "@/shared/components/sortable-table-head";
+import { createEgressNode, deleteEgressNode, deleteEgressNodes, listEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { ErrorState } from "@/shared/components/data-state";
+import { DataTableFilters } from "@/shared/components/data-table-filters";
+import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
 const emptyInput: EgressNodeInput = { name: "", scope: "grok_build", enabled: true, proxyPool: false, accountCapacity: 0, proxyURL: "", userAgent: "", cloudflareCookies: "" };
@@ -29,6 +32,13 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
   const [editing, setEditing] = useState<EgressNodeDTO | null | undefined>(undefined);
   const [form, setForm] = useState<EgressNodeInput>(emptyInput);
   const [sort, setSort] = useState<TableSort>({ field: "", order: "asc" });
+  const [search, setSearch] = useState("");
+  const [scopeFilter, setScopeFilter] = useState("");
+  const [enabledFilter, setEnabledFilter] = useState("");
+  const [probeFilter, setProbeFilter] = useState("");
+  const [assignmentFilter, setAssignmentFilter] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const query = useQuery({ queryKey: ["egress-nodes", sort.field, sort.order], queryFn: () => listEgressNodes({ sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined }) });
   const save = useMutation({
     mutationFn: () => {
@@ -45,7 +55,25 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
   });
   const remove = useMutation({
     mutationFn: deleteEgressNode,
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); toast.success(t("settings.egress.deleted")); },
+    onSuccess: (_, id) => {
+      setSelected((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+      void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+      toast.success(t("settings.egress.deleted"));
+    },
+    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+  });
+  const removeMany = useMutation({
+    mutationFn: () => deleteEgressNodes([...selected]),
+    onSuccess: (value) => {
+      setSelected(new Set());
+      setBatchDeleteOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+      toast.success(t("settings.egress.batchDeleted", value));
+    },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
   const refreshClearance = useMutation({
@@ -91,40 +119,111 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
     setSort((current) => nextTableSort(current, field, initialOrder));
   }
 
+  function toggleVisible(checked: boolean): void {
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const node of filteredNodes) {
+        if (checked) next.add(node.id);
+        else next.delete(node.id);
+      }
+      return next;
+    });
+  }
+
+  function toggleNode(id: string, checked: boolean): void {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
   const nodes = query.data?.items ?? [];
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const filteredNodes = nodes.filter((node) => {
+    if (normalizedSearch && !node.name.toLocaleLowerCase().includes(normalizedSearch)) return false;
+    if (scopeFilter && node.scope !== scopeFilter) return false;
+    if (enabledFilter === "enabled" && !node.enabled) return false;
+    if (enabledFilter === "disabled" && node.enabled) return false;
+    if (probeFilter && node.probeStatus !== probeFilter) return false;
+    if (assignmentFilter === "bound" && node.assignedAccountCount === 0) return false;
+    if (assignmentFilter === "unbound" && node.assignedAccountCount > 0) return false;
+    return true;
+  });
+  const selectedVisible = filteredNodes.filter((node) => selected.has(node.id));
+  const allVisibleSelected = filteredNodes.length > 0 && selectedVisible.length === filteredNodes.length;
+  const selectedAssignedAccounts = nodes.filter((node) => selected.has(node.id)).reduce((total, node) => total + node.assignedAccountCount, 0);
+
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-muted-foreground">{t("console.egressDescription")}</p>
         <Button type="button" size="sm" variant="secondary" onClick={openCreate}><Plus />{t("settings.egress.add")}</Button>
       </div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
+          <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setSelected(new Set()); }} placeholder={t("settings.egress.search")} aria-label={t("settings.egress.search")} />
+          </div>
+          <DataTableFilters filters={[
+            { id: "scope", label: t("settings.egress.scope"), value: scopeFilter, onChange: (value) => { setScopeFilter(value); setSelected(new Set()); }, options: [
+              { value: "grok_build", label: scopeLabel("grok_build") },
+              { value: "grok_web", label: scopeLabel("grok_web") },
+              { value: "grok_console", label: scopeLabel("grok_console") },
+              { value: "grok_web_asset", label: scopeLabel("grok_web_asset") },
+            ] },
+            { id: "enabled", label: t("settings.egress.enabled"), value: enabledFilter, onChange: (value) => { setEnabledFilter(value); setSelected(new Set()); }, options: [
+              { value: "enabled", label: t("common.enable") },
+              { value: "disabled", label: t("common.disable") },
+            ] },
+            { id: "probe", label: t("settings.egress.probe"), value: probeFilter, onChange: (value) => { setProbeFilter(value); setSelected(new Set()); }, options: [
+              { value: "healthy", label: t("settings.egress.healthy") },
+              { value: "unhealthy", label: t("settings.egress.unhealthy") },
+              { value: "unknown", label: t("settings.egress.notTested") },
+            ] },
+            { id: "assignment", label: t("settings.egress.accounts"), value: assignmentFilter, onChange: (value) => { setAssignmentFilter(value); setSelected(new Set()); }, options: [
+              { value: "bound", label: t("settings.egress.assigned") },
+              { value: "unbound", label: t("settings.egress.unassigned") },
+            ] },
+          ]} />
+        </div>
+        {selected.size > 0 ? (
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
+            <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
+          </div>
+        ) : null}
+      </div>
       {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : <div className="overflow-hidden rounded-md border">
         <Table>
-          <TableHeader><TableRow><SortableTableHead field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="text-center">{t("settings.egress.probe")}</TableHead><TableActionHead /></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead className="w-10 px-2"><Checkbox checked={allVisibleSelected ? true : selectedVisible.length > 0 ? "indeterminate" : false} disabled={filteredNodes.length === 0} onCheckedChange={(checked) => toggleVisible(checked === true)} aria-label={t("settings.egress.selectVisible")} /></TableHead><SortableTableHead field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="text-center">{t("settings.egress.probe")}</TableHead><TableActionHead /></TableRow></TableHeader>
           <TableBody>
-            {nodes.length === 0 ? <TableRow><TableCell colSpan={8} className="h-20 text-center text-xs text-muted-foreground">{t("settings.egress.directFallback")}</TableCell></TableRow> : nodes.map((node) => (
-              <TableRow className="group" key={node.id}>
+            {filteredNodes.length === 0 ? <TableRow><TableCell colSpan={9} className="h-20 text-center text-xs text-muted-foreground">{nodes.length === 0 ? t("settings.egress.directFallback") : t("settings.egress.noMatches")}</TableCell></TableRow> : filteredNodes.map((node) => (
+              <TableRow className="group" key={node.id} data-state={selected.has(node.id) ? "selected" : undefined}>
+                <TableCell className="px-2"><Checkbox checked={selected.has(node.id)} onCheckedChange={(checked) => toggleNode(node.id, checked === true)} aria-label={t("common.selectItem", { name: node.name })} /></TableCell>
                 <TableCell><div className="text-xs font-medium">{node.name}</div>{node.lastError ? <div className="mt-0.5 max-w-72 truncate text-[11px] text-destructive">{node.lastError}</div> : null}</TableCell>
                 <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(node.scope)}</Badge></TableCell>
                 <TableCell className="text-center text-xs text-muted-foreground">{node.proxyConfigured ? t("settings.egress.configured") : t("settings.egress.direct")}</TableCell>
                 <TableCell className="text-center text-xs text-muted-foreground">
                   {node.scope === "grok_build"
-                    ? "—"
+                    ? "-"
                     : clearanceMode === "flaresolverr"
                       ? node.accountBoundProxy
                         ? `${t("settings.web.clearanceFlareSolverr")} · Resin`
                         : t("settings.web.clearanceFlareSolverr")
-	                      : node.cookieConfigured
-	                        ? t("settings.egress.configured")
-	                        : t("settings.egress.none")}
-	                </TableCell>
-	                <TableCell className="text-center text-xs tabular-nums">{node.assignedAccountCount}{node.accountCapacity > 0 ? ` / ${node.accountCapacity}` : ""}</TableCell>
-	                <TableCell className="text-center text-xs tabular-nums">{Math.round(node.health * 100)}%</TableCell>
-	                <TableCell className="text-center text-xs tabular-nums"><span className={node.probeStatus === "healthy" ? "text-emerald-600 dark:text-emerald-400" : node.probeStatus === "unhealthy" ? "text-destructive" : "text-muted-foreground"}>{node.probeStatus === "healthy" ? `${node.exitIp ?? ""} ${node.probeLatencyMs}ms` : node.probeStatus === "unhealthy" ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}</span></TableCell>
-	                <TableActionCell>
+                      : node.cookieConfigured
+                        ? t("settings.egress.configured")
+                        : t("settings.egress.none")}
+                </TableCell>
+                <TableCell className="text-center text-xs tabular-nums">{node.assignedAccountCount}{node.accountCapacity > 0 ? ` / ${node.accountCapacity}` : ""}</TableCell>
+                <TableCell className="text-center text-xs tabular-nums">{Math.round(node.health * 100)}%</TableCell>
+                <TableCell className="text-center text-xs tabular-nums"><span className={node.probeStatus === "healthy" ? "text-emerald-600 dark:text-emerald-400" : node.probeStatus === "unhealthy" ? "text-destructive" : "text-muted-foreground"}>{node.probeStatus === "healthy" ? `${node.exitIp ?? ""} ${node.probeLatencyMs}ms` : node.probeStatus === "unhealthy" ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}</span></TableCell>
+                <TableActionCell>
                   <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
-	                    <DropdownMenuItem onClick={() => openEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem><DropdownMenuSeparator />{clearanceMode === "flaresolverr" && !node.accountBoundProxy && (node.scope === "grok_web" || node.scope === "grok_web_asset" || node.scope === "grok_console") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
-	                    <DropdownMenuItem disabled={testNode.isPending || !node.proxyConfigured} onClick={() => testNode.mutate(node.id)}><RefreshCw />{t("settings.egress.test")}</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => openEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem><DropdownMenuSeparator />{clearanceMode === "flaresolverr" && !node.accountBoundProxy && (node.scope === "grok_web" || node.scope === "grok_web_asset" || node.scope === "grok_console") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
+                    <DropdownMenuItem disabled={testNode.isPending || !node.proxyConfigured} onClick={() => testNode.mutate(node.id)}><RefreshCw />{t("settings.egress.test")}</DropdownMenuItem>
                     <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => remove.mutate(node.id)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
                   </DropdownMenuContent></DropdownMenu>
                 </TableActionCell>
@@ -135,6 +234,13 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
       </div>}
 
       <EgressOperations scopeLabel={scopeLabel} />
+
+      <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogTitle>{t("settings.egress.batchDeleteTitle", { count: selected.size })}</AlertDialogTitle><AlertDialogDescription>{t("settings.egress.batchDeleteDescription", { count: selected.size, accounts: selectedAssignedAccounts })}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel disabled={removeMany.isPending}>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={removeMany.isPending} onClick={(event) => { event.preventDefault(); removeMany.mutate(); }}>{removeMany.isPending ? <Spinner /> : null}{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={editing !== undefined} onOpenChange={(open) => { if (!open) setEditing(undefined); }}>
         <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-[520px]">

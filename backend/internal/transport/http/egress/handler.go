@@ -22,6 +22,7 @@ func NewHandler(service *egressapp.Service) *Handler { return &Handler{service: 
 func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/egress-nodes", h.list)
 	router.POST("/egress-nodes", h.create)
+	router.DELETE("/egress-nodes", h.deleteMany)
 	router.POST("/egress-nodes/test", h.testNodes)
 	router.POST("/egress-nodes/:id/test", h.testNode)
 	router.POST("/egress-nodes/:id/accounts", h.assignAccounts)
@@ -93,6 +94,29 @@ type accountAssignmentRequest struct {
 	Provider string   `json:"provider" binding:"required"`
 	IDs      []string `json:"ids" binding:"required"`
 	Mode     string   `json:"mode"`
+}
+
+type batchNodeDeleteRequest struct {
+	IDs []string `json:"ids" binding:"required"`
+}
+
+func (h *Handler) deleteMany(c *gin.Context) {
+	var request batchNodeDeleteRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	ids, err := parseEgressNodeIDs(request.IDs)
+	if err != nil || len(ids) > 5000 {
+		response.Error(c, http.StatusBadRequest, "invalidId", "代理节点 ID 无效")
+		return
+	}
+	deleted, err := h.service.DeleteMany(c.Request.Context(), ids)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
 }
 
 func (h *Handler) assignAccounts(c *gin.Context) {
@@ -217,6 +241,26 @@ func newNodeResponse(value egressdomain.PublicNode) nodeResponse {
 }
 
 func parseAccountIDs(values []string) ([]uint64, error) {
+	result := make([]uint64, 0, len(values))
+	seen := make(map[uint64]struct{}, len(values))
+	for _, value := range values {
+		id, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || id == 0 {
+			return nil, errors.New("invalid id")
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	if len(result) == 0 {
+		return nil, errors.New("no ids")
+	}
+	return result, nil
+}
+
+func parseEgressNodeIDs(values []string) ([]uint64, error) {
 	result := make([]uint64, 0, len(values))
 	seen := make(map[uint64]struct{}, len(values))
 	for _, value := range values {

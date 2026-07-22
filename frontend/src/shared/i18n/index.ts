@@ -1474,16 +1474,23 @@ Object.assign(resources.en.translation.settings.egress as unknown as Record<stri
   rebalanced: "Account allocation completed: {{assigned}} assigned, {{rebalanced}} balanced, {{unplaced}} unplaced", automationSaved: "Automation saved",
   editSource: "Edit subscription", subscriptionURL: "Subscription URL", probeInterval: "Test interval (seconds)", assignmentInterval: "Allocation interval (seconds)",
   autoAssign: "Assign unbound accounts automatically", autoBalance: "Balance automatic assignments", refreshInterval: "Subscription refresh interval (seconds)", proxyList: "Proxy list",
+  search: "Search proxy nodes", healthy: "Healthy", assigned: "Assigned", unassigned: "Unassigned", noMatches: "No proxy nodes match the current filters", selectVisible: "Select filtered proxy nodes",
+  batchDeleted: "Deleted {{deleted}} proxy nodes", batchDeleteTitle: "Delete {{count}} selected proxy nodes?", batchDeleteDescription: "This deletes the selected nodes and unbinds {{accounts}} associated accounts. This cannot be undone.",
+});
+
+Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Record<string, string>, {
+  search: "搜索代理节点", healthy: "可用", assigned: "已分配账号", unassigned: "未分配账号", noMatches: "没有符合当前筛选条件的代理节点", selectVisible: "选择筛选出的代理节点",
+  batchDeleted: "已删除 {{deleted}} 个代理节点", batchDeleteTitle: "删除选中的 {{count}} 个代理节点？", batchDeleteDescription: "将删除选中的节点，并解除 {{accounts}} 个关联账号的代理绑定。此操作无法撤销。",
 });
 
 Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<string, string>, {
   bindEgress: "绑定代理", unbindEgress: "解绑代理", bindEgressTitle: "绑定 {{count}} 个账号的代理", bindEgressDescription: "手动绑定的账号不会被自动均衡迁移。",
-  bindEgressNode: "代理节点", bindEgressEmpty: "请选择代理节点", bindEgressNoNodes: "当前账号池没有可绑定的代理节点", egressBound: "代理已绑定", egressUnbound: "代理已解绑",
+  bindEgressNode: "代理节点", bindEgressEmpty: "请选择代理节点", bindEgressNoNodes: "当前账号池没有可绑定的代理节点", egressBound: "代理已绑定", egressUnbound: "代理已解绑", egressFilter: "代理绑定",
 });
 
 Object.assign(resources.en.translation.accounts as unknown as Record<string, string>, {
   bindEgress: "Bind proxy", unbindEgress: "Unbind proxy", bindEgressTitle: "Bind a proxy to {{count}} accounts", bindEgressDescription: "Manual bindings are never moved by automatic balancing.",
-  bindEgressNode: "Proxy node", bindEgressEmpty: "Select a proxy node", bindEgressNoNodes: "No compatible proxy nodes are available for this account pool", egressBound: "Proxy bound", egressUnbound: "Proxy unbound",
+  bindEgressNode: "Proxy node", bindEgressEmpty: "Select a proxy node", bindEgressNoNodes: "No compatible proxy nodes are available for this account pool", egressBound: "Proxy bound", egressUnbound: "Proxy unbound", egressFilter: "Proxy binding",
 });
 
 function readStoredLanguage(): string | null {

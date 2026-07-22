@@ -191,6 +191,10 @@ export function deleteEgressNode(id: string): Promise<{ deleted: boolean }> {
   return apiRequest(`/api/admin/v1/egress-nodes/${id}`, { method: "DELETE" }, decodeBooleanResult<{ deleted: boolean }>("deleted"));
 }
 
+export function deleteEgressNodes(ids: string[]): Promise<{ deleted: number }> {
+  return apiRequest("/api/admin/v1/egress-nodes", { method: "DELETE", body: { ids } }, createObjectDecoder<{ deleted: number }>("egress node batch delete", { deleted: isNumber }));
+}
+
 export function refreshEgressClearance(id: string): Promise<{ refreshed: boolean }> {
 	return apiRequest(`/api/admin/v1/egress-nodes/${id}/refresh-clearance`, { method: "POST" }, decodeBooleanResult<{ refreshed: boolean }>("refreshed"));
 }

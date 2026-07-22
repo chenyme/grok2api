@@ -67,6 +67,12 @@ type AssignmentResult struct {
 	Assigned int
 }
 
+// BatchNodeDeleter is optional so lightweight repository adapters only need
+// the single-node contract unless they can provide an atomic bulk operation.
+type BatchNodeDeleter interface {
+	DeleteEgressNodes(context.Context, []uint64) (int, error)
+}
+
 type ClearanceManager interface {
 	RefreshClearance(context.Context, uint64) error
 	ForgetClearance(uint64)
@@ -161,6 +167,38 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 	return err
 }
 
+// DeleteMany removes nodes in one repository operation when available. The
+// relational implementation also clears any account bindings in that same
+// transaction, so a deleted node can never remain referenced by an account.
+func (s *Service) DeleteMany(ctx context.Context, nodeIDs []uint64) (int, error) {
+	ids := uniqueIDs(nodeIDs)
+	if len(ids) == 0 {
+		return 0, fmt.Errorf("%w: 代理节点参数无效", ErrInvalidInput)
+	}
+	if batch, ok := s.repository.(BatchNodeDeleter); ok {
+		deleted, err := batch.DeleteEgressNodes(ctx, ids)
+		if err != nil {
+			return 0, err
+		}
+		for _, id := range ids {
+			s.forgetClearance(id)
+		}
+		return deleted, nil
+	}
+
+	deleted := 0
+	for _, id := range ids {
+		if err := s.Delete(ctx, id); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return deleted, err
+		}
+		deleted++
+	}
+	return deleted, nil
+}
+
 func (s *Service) RefreshClearance(ctx context.Context, id uint64) error {
 	if _, err := s.repository.GetEgressNode(ctx, id); errors.Is(err, repository.ErrNotFound) {
 		return ErrNotFound
@@ -198,7 +236,7 @@ func (s *Service) AssignAccounts(ctx context.Context, nodeID uint64, provider ac
 	if !scopeSupportsProvider(node.Scope, provider) {
 		return AssignmentResult{}, fmt.Errorf("%w: 代理节点作用域与账号来源不兼容", ErrInvalidInput)
 	}
-	unique := uniqueAccountIDs(accountIDs)
+	unique := uniqueIDs(accountIDs)
 	count, err := s.accounts.CountProviderAccountsByIDs(ctx, provider, unique)
 	if err != nil {
 		return AssignmentResult{}, err
@@ -221,7 +259,7 @@ func (s *Service) UnassignAccounts(ctx context.Context, provider accountdomain.P
 	if !provider.IsValid() || len(accountIDs) == 0 {
 		return AssignmentResult{}, fmt.Errorf("%w: 账号出口解绑参数无效", ErrInvalidInput)
 	}
-	unique := uniqueAccountIDs(accountIDs)
+	unique := uniqueIDs(accountIDs)
 	count, err := s.accounts.CountProviderAccountsByIDs(ctx, provider, unique)
 	if err != nil {
 		return AssignmentResult{}, err
@@ -249,7 +287,7 @@ func scopeSupportsProvider(scope domain.Scope, provider accountdomain.Provider) 
 	}
 }
 
-func uniqueAccountIDs(values []uint64) []uint64 {
+func uniqueIDs(values []uint64) []uint64 {
 	seen := make(map[uint64]struct{}, len(values))
 	result := make([]uint64, 0, len(values))
 	for _, value := range values {
