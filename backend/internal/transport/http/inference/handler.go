@@ -17,6 +17,7 @@ import (
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
+	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
@@ -165,16 +166,22 @@ type videoGenerationRequest struct {
 }
 
 type modelListItem struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID         string                 `json:"id"`
+	Object     string                 `json:"object"`
+	Created    int64                  `json:"created"`
+	OwnedBy    string                 `json:"owned_by"`
+	Provider   account.Provider       `json:"-"`
+	Capability modeldomain.Capability `json:"-"`
 }
 
 func (h *Handler) listModels(c *gin.Context) {
 	values, err := h.models.ListEnabled(c.Request.Context())
 	if err != nil {
 		writeOpenAIError(c, http.StatusInternalServerError, "model_list_failed", "读取模型列表失败")
+		return
+	}
+	if clientVersion := strings.TrimSpace(c.Query("client_version")); clientVersion != "" {
+		writeCodexModelCatalog(c, newCodexModelCatalog(newModelListItems(values)))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": newModelListItems(values)})
@@ -190,7 +197,7 @@ func newModelListItems(values []modeldomain.Route) []modelListItem {
 			continue
 		}
 		seen[publicID] = true
-		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api"})
+		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api", Provider: value.Provider, Capability: value.Capability})
 	}
 	return data
 }
@@ -1414,7 +1421,7 @@ func copyHeaders(destination, source http.Header) {
 	excluded := map[string]struct{}{
 		"connection": {}, "content-length": {}, "keep-alive": {}, "proxy-authenticate": {},
 		"proxy-authorization": {}, "set-cookie": {}, "te": {}, "trailer": {},
-		"transfer-encoding": {}, "upgrade": {},
+		"transfer-encoding": {}, "upgrade": {}, "x-models-etag": {},
 	}
 	for _, value := range source.Values("Connection") {
 		for name := range strings.SplitSeq(value, ",") {
