@@ -13,14 +13,15 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { createEgressNode, deleteEgressNode, listEgressNodes, refreshEgressClearance, updateEgressNode, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { EgressOperations } from "@/features/settings/egress-operations";
+import { createEgressNode, deleteEgressNode, listEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { ErrorState } from "@/shared/components/data-state";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
-const emptyInput: EgressNodeInput = { name: "", scope: "grok_build", enabled: true, proxyPool: false, proxyURL: "", userAgent: "", cloudflareCookies: "" };
+const emptyInput: EgressNodeInput = { name: "", scope: "grok_build", enabled: true, proxyPool: false, accountCapacity: 0, proxyURL: "", userAgent: "", cloudflareCookies: "" };
 
 export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flaresolverr" }) {
   const { t } = useTranslation();
@@ -52,6 +53,11 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); toast.success(t("settings.egress.clearanceRefreshed")); },
     onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
   });
+  const testNode = useMutation({
+    mutationFn: testEgressNode,
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); toast.success(t("settings.egress.testedOne")); },
+    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+  });
 
   function openCreate() {
     setForm(emptyInput);
@@ -59,7 +65,7 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
   }
 
   function openEdit(node: EgressNodeDTO) {
-    setForm({ name: node.name, scope: node.scope, enabled: node.enabled, proxyPool: node.proxyPool, userAgent: node.scope === "grok_build" ? "" : node.userAgent, proxyURL: "", cloudflareCookies: "" });
+    setForm({ name: node.name, scope: node.scope, enabled: node.enabled, proxyPool: node.proxyPool, accountCapacity: node.accountCapacity, userAgent: node.scope === "grok_build" ? "" : node.userAgent, proxyURL: "", cloudflareCookies: "" });
     setEditing(node);
   }
 
@@ -94,9 +100,9 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
       </div>
       {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : <div className="overflow-hidden rounded-md border">
         <Table>
-          <TableHeader><TableRow><SortableTableHead field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><SortableTableHead field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableActionHead /></TableRow></TableHeader>
+          <TableHeader><TableRow><SortableTableHead field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="text-center">{t("settings.egress.probe")}</TableHead><TableActionHead /></TableRow></TableHeader>
           <TableBody>
-            {nodes.length === 0 ? <TableRow><TableCell colSpan={6} className="h-20 text-center text-xs text-muted-foreground">{t("settings.egress.directFallback")}</TableCell></TableRow> : nodes.map((node) => (
+            {nodes.length === 0 ? <TableRow><TableCell colSpan={8} className="h-20 text-center text-xs text-muted-foreground">{t("settings.egress.directFallback")}</TableCell></TableRow> : nodes.map((node) => (
               <TableRow className="group" key={node.id}>
                 <TableCell><div className="text-xs font-medium">{node.name}</div>{node.lastError ? <div className="mt-0.5 max-w-72 truncate text-[11px] text-destructive">{node.lastError}</div> : null}</TableCell>
                 <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(node.scope)}</Badge></TableCell>
@@ -108,14 +114,17 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
                       ? node.accountBoundProxy
                         ? `${t("settings.web.clearanceFlareSolverr")} · Resin`
                         : t("settings.web.clearanceFlareSolverr")
-                      : node.cookieConfigured
-                        ? t("settings.egress.configured")
-                        : t("settings.egress.none")}
-                </TableCell>
-                <TableCell className="text-center text-xs tabular-nums">{Math.round(node.health * 100)}%</TableCell>
-                <TableActionCell>
+	                      : node.cookieConfigured
+	                        ? t("settings.egress.configured")
+	                        : t("settings.egress.none")}
+	                </TableCell>
+	                <TableCell className="text-center text-xs tabular-nums">{node.assignedAccountCount}{node.accountCapacity > 0 ? ` / ${node.accountCapacity}` : ""}</TableCell>
+	                <TableCell className="text-center text-xs tabular-nums">{Math.round(node.health * 100)}%</TableCell>
+	                <TableCell className="text-center text-xs tabular-nums"><span className={node.probeStatus === "healthy" ? "text-emerald-600 dark:text-emerald-400" : node.probeStatus === "unhealthy" ? "text-destructive" : "text-muted-foreground"}>{node.probeStatus === "healthy" ? `${node.exitIp ?? ""} ${node.probeLatencyMs}ms` : node.probeStatus === "unhealthy" ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}</span></TableCell>
+	                <TableActionCell>
                   <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => openEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem><DropdownMenuSeparator />{clearanceMode === "flaresolverr" && !node.accountBoundProxy && (node.scope === "grok_web" || node.scope === "grok_web_asset" || node.scope === "grok_console") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
+	                    <DropdownMenuItem onClick={() => openEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem><DropdownMenuSeparator />{clearanceMode === "flaresolverr" && !node.accountBoundProxy && (node.scope === "grok_web" || node.scope === "grok_web_asset" || node.scope === "grok_console") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
+	                    <DropdownMenuItem disabled={testNode.isPending || !node.proxyConfigured} onClick={() => testNode.mutate(node.id)}><RefreshCw />{t("settings.egress.test")}</DropdownMenuItem>
                     <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => remove.mutate(node.id)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
                   </DropdownMenuContent></DropdownMenu>
                 </TableActionCell>
@@ -124,6 +133,8 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
           </TableBody>
         </Table>
       </div>}
+
+      <EgressOperations scopeLabel={scopeLabel} />
 
       <Dialog open={editing !== undefined} onOpenChange={(open) => { if (!open) setEditing(undefined); }}>
         <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-[520px]">
@@ -138,6 +149,9 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
             </div>
             <Field label={t("settings.egress.name")} controlId="egress-name">
               <Input id="egress-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+            </Field>
+            <Field label={t("settings.egress.capacity")} controlId="egress-capacity">
+              <Input id="egress-capacity" type="number" min={0} max={100000} value={form.accountCapacity} onChange={(event) => setForm({ ...form, accountCapacity: Number(event.target.value) })} />
             </Field>
             <Field label={t("settings.egress.scope")} controlId="egress-scope">
               <Select value={form.scope} onValueChange={(value) => changeScope(value as EgressScope)}>

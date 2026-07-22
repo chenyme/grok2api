@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +35,8 @@ const clearanceCacheCleanupInterval = time.Minute
 const clearanceCacheMinIdleTTL = 30 * time.Minute
 const maxCachedClearances = 16384
 const clearanceCacheEvictionBatch = 256
+const egressProbeEndpoint = "https://api64.ipify.org?format=json"
+const egressProbeTimeout = 15 * time.Second
 
 type Lease struct {
 	NodeID           uint64
@@ -158,7 +163,7 @@ func (m *Manager) UpdateClearanceConfig(value ClearanceConfig) {
 }
 
 func (m *Manager) Acquire(ctx context.Context, scope domain.Scope, affinity string) (*Lease, error) {
-	lease, _, err := m.acquire(ctx, scope, affinity, true, "")
+	lease, _, err := m.acquire(ctx, scope, affinity, true, "", egressNodeFromContext(ctx))
 	return lease, err
 }
 
@@ -182,27 +187,126 @@ func (m *Manager) AcquireCredential(ctx context.Context, scope domain.Scope, cre
 		identity = "sso_" + security.HashToken(token)[:32]
 	}
 	ctx = WithAccountIdentity(ctx, identity)
-	lease, _, err := m.acquire(ctx, scope, strconv.FormatUint(credential.ID, 10), true, credential.EncryptedCloudflareCookie)
+	ctx = WithEgressNode(ctx, credential.EgressNodeID)
+	lease, _, err := m.acquire(ctx, scope, strconv.FormatUint(credential.ID, 10), true, credential.EncryptedCloudflareCookie, credential.EgressNodeID)
 	return lease, err
 }
 
 func (m *Manager) AcquireIfConfigured(ctx context.Context, scope domain.Scope, affinity string) (*Lease, bool, error) {
-	return m.acquire(ctx, scope, affinity, false, "")
+	return m.acquire(ctx, scope, affinity, false, "", egressNodeFromContext(ctx))
 }
 
-func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string) (*Lease, bool, error) {
+// ProbeEgressNode verifies one configured proxy using a fixed public IP echo
+// endpoint. The target is intentionally not caller-controlled, so management
+// APIs cannot turn proxy tests into an internal-network request primitive.
+func (m *Manager) ProbeEgressNode(ctx context.Context, nodeID uint64) (domain.ProbeResult, error) {
+	return m.probeEgressNode(ctx, nodeID, egressProbeEndpoint)
+}
+
+func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, targetURL string) (domain.ProbeResult, error) {
+	startedAt := time.Now().UTC()
+	result := domain.ProbeResult{Status: domain.ProbeStatusUnhealthy, TestedAt: startedAt}
+	if nodeID == 0 {
+		result.Error = "代理节点 ID 无效"
+		return result, errors.New(result.Error)
+	}
+	node, err := m.repository.GetEgressNode(ctx, nodeID)
+	if err != nil {
+		result.Error = "读取代理节点失败"
+		return result, err
+	}
+	proxyURL, err := m.cipher.Decrypt(node.EncryptedProxyURL)
+	if err != nil {
+		result.Error = "读取代理配置失败"
+		return result, err
+	}
+	proxyURL, err = application.NormalizeProxyURL(proxyURL)
+	if err != nil {
+		result.Error = "代理地址无效"
+		return result, err
+	}
+	if proxyURL == "" {
+		result.Error = "未配置代理地址"
+		return result, errors.New(result.Error)
+	}
+	if strings.Contains(proxyURL, application.ProxyAccountPlaceholder) {
+		proxyURL, err = renderAccountProxyURL(proxyURL, "egress_probe")
+		if err != nil {
+			result.Error = "账号代理模板无效"
+			return result, err
+		}
+	}
+	client, err := newBuildClient(proxyURL)
+	if err != nil {
+		result.Error = "创建代理连接失败"
+		return result, err
+	}
+	defer client.CloseIdleConnections()
+	probeCtx, cancel := context.WithTimeout(ctx, egressProbeTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		result.Error = "构造探测请求失败"
+		return result, err
+	}
+	request.Header.Set("User-Agent", DefaultUserAgent)
+	response, err := client.Do(request)
+	if err != nil {
+		result.Error = "代理连接失败"
+		return result, err
+	}
+	defer response.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if readErr != nil {
+		result.Error = "读取探测响应失败"
+		return result, readErr
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		result.Error = fmt.Sprintf("探测服务返回 HTTP %d", response.StatusCode)
+		return result, errors.New(result.Error)
+	}
+	var payload struct {
+		IP string `json:"ip"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		result.Error = "探测服务响应格式无效"
+		return result, err
+	}
+	address, err := netip.ParseAddr(strings.TrimSpace(payload.IP))
+	if err != nil {
+		result.Error = "探测服务未返回有效出口 IP"
+		return result, err
+	}
+	result.Status = domain.ProbeStatusHealthy
+	result.TestedAt = time.Now().UTC()
+	result.LatencyMS = max(1, int(time.Since(startedAt).Milliseconds()))
+	result.ExitIP = address.String()
+	result.Error = ""
+	return result, nil
+}
+
+func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, boundNodeID uint64) (*Lease, bool, error) {
 	now := time.Now().UTC()
 	managedClearance := isGrokWebScope(scope) && m.clearanceMode() == "flaresolverr"
-	credentialCookies := ""
-	if !managedClearance && scope != domain.ScopeBuild && strings.TrimSpace(encryptedCredentialCookies) != "" {
-		decryptedCookies, decryptErr := m.cipher.Decrypt(encryptedCredentialCookies)
-		if decryptErr != nil {
-			return nil, false, decryptErr
-		}
-		credentialCookies = application.SanitizeCloudflareCookies(decryptedCookies)
-	}
 	configured := false
 	var available []domain.Node
+	if boundNodeID != 0 {
+		selected, err := m.repository.GetEgressNode(ctx, boundNodeID)
+		if err != nil {
+			return nil, true, fmt.Errorf("读取绑定出口节点: %w", err)
+		}
+		if !domain.SupportsScope(selected.Scope, scope) {
+			return nil, true, fmt.Errorf("绑定出口节点 %d 与 %s 作用域不兼容", boundNodeID, scope)
+		}
+		if !selected.Enabled {
+			return nil, true, fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID)
+		}
+		proxyPool := m.isProxyPoolNode(selected)
+		if !proxyPool && selected.CooldownUntil != nil && now.Before(*selected.CooldownUntil) {
+			return nil, true, fmt.Errorf("绑定出口节点 %d 正在冷却", boundNodeID)
+		}
+		return m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected)
+	}
 	for _, candidateScope := range fallbackScopes(scope) {
 		nodes, err := m.listNodes(ctx, candidateScope, now)
 		if err != nil {
@@ -239,6 +343,18 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	}
 	sort.SliceStable(available, func(i, j int) bool { return available[i].ID < available[j].ID })
 	selected := m.selectNode(available, affinity)
+	return m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected)
+}
+
+func (m *Manager) leaseForNode(ctx context.Context, scope domain.Scope, affinity, encryptedCredentialCookies string, managedClearance bool, selected domain.Node) (*Lease, bool, error) {
+	credentialCookies := ""
+	if !managedClearance && scope != domain.ScopeBuild && strings.TrimSpace(encryptedCredentialCookies) != "" {
+		decryptedCookies, decryptErr := m.cipher.Decrypt(encryptedCredentialCookies)
+		if decryptErr != nil {
+			return nil, true, decryptErr
+		}
+		credentialCookies = application.SanitizeCloudflareCookies(decryptedCookies)
+	}
 	proxyURL, err := m.cipher.Decrypt(selected.EncryptedProxyURL)
 	if err != nil {
 		return nil, false, err

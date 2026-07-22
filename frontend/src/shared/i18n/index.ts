@@ -757,7 +757,7 @@ const resources = {
         console: { baseURLHelp: "Grok Console 请求与账号操作使用的基础端点。", chatTimeoutHelp: "Grok Console 聊天请求完成前允许等待的最长时间。" },
         batch: { title: "批量任务", importConcurrency: "导入同步并发", importConcurrencyHelp: "批量导入后并行执行账号初始化与信息同步的任务数。", conversionConcurrency: "账号转换并发", conversionConcurrencyHelp: "跨 Provider 转换账号时允许同时处理的任务数。", syncConcurrency: "数据同步并发", syncConcurrencyHelp: "批量同步账号额度、状态与能力时允许同时处理的任务数。", refreshConcurrency: "凭据刷新并发", refreshConcurrencyHelp: "批量刷新账号凭据时允许同时处理的任务数。", randomDelay: "随机延迟上限（ms）", randomDelayHelp: "批量任务启动前增加的随机延迟上限，用于平滑上游请求峰值。" },
         media: { title: "媒体存储", maxImageSize: "单张图片上限", maxImageSizeHelp: "单个图片文件允许写入本地媒体存储的最大大小。", maxTotalSize: "媒体存储上限", maxTotalSizeHelp: "本地图片与视频文件允许占用的总存储空间。", cleanupThresholdPercent: "自动清理阈值", cleanupThresholdPercentHelp: "存储使用率达到该比例后，系统按时间清理较早的媒体文件。", cleanupInterval: "容量检查间隔", cleanupIntervalHelp: "后台检查媒体存储使用量并触发清理的时间间隔。", sizeUnit: "存储单位", publicApiBaseURL: "公共 API 地址", publicApiBaseURLHelp: "用于生成图片公开 URL 与文档示例地址。留空时回退到服务启动值，默认为 http://127.0.0.1:8000。" },
-        egress: { title: "出口代理", description: "节点按 Grok Build、Grok Web、Grok Console 或 Web 资源独立管理代理和健康状态。Build 沿用 Provider 的 User-Agent；Web 与 Console 节点单独管理浏览器 User-Agent 与 Cookie。代理地址和 Cloudflare Cookie 仅写入。", add: "添加节点", saved: "代理节点已保存", deleted: "代理节点已删除", name: "名称", scope: "作用域", proxy: "代理", clearance: "Clearance", health: "健康度", directFallback: "未配置节点时使用直连", scopeBuild: "Grok Build", scopeWeb: "Grok Web", scopeWebAsset: "Grok Web（仅资源）", configured: "已配置", direct: "直连", none: "无", editTitle: "编辑代理节点", addTitle: "添加代理节点", dialogDescription: "Build 节点只配置代理并沿用 Provider 的 User-Agent；Web 与 Console 节点使用各自的浏览器 User-Agent 和 Cloudflare Cookie。", enabled: "启用", proxyURL: "代理地址", proxyProtocols: "支持 HTTP、HTTPS、SOCKS4、SOCKS4A、SOCKS5、SOCKS5H\nResin 可在用户名中使用 {account} 绑定账号租约。", proxyPool: "代理池模式", proxyPoolHelp: "共享代理池的单次连接失败不会使整个出口节点进入冷却；包含 {account} 的代理会自动启用此策略。", userAgent: "User-Agent", cloudflareCookie: "Cloudflare Cookie", keepConfigured: "已配置，留空保持不变", operationFailed: "操作失败", refreshClearance: "刷新 Clearance", clearanceRefreshed: "Clearance 已刷新", clearanceManaged: "Cloudflare Cookie 与 User-Agent 由 FlareSolverr 自动维护；Resin 等账号粘性代理会按账号隔离。" },
+        egress: { title: "出口代理", description: "节点按 Grok Build、Grok Web、Grok Console 或 Web 资源独立管理代理和健康状态。Build 沿用 Provider 的 User-Agent；Web 与 Console 节点单独管理浏览器 User-Agent 和 Cookie。代理地址和 Cloudflare Cookie 仅写入。", add: "添加节点", saved: "代理节点已保存", deleted: "代理节点已删除", name: "名称", scope: "作用域", proxy: "代理", clearance: "Clearance", health: "健康度", directFallback: "未配置节点时使用直连", scopeBuild: "Grok Build", scopeWeb: "Grok Web", scopeWebAsset: "Grok Web（仅资源）", configured: "已配置", direct: "直连", none: "无", editTitle: "编辑代理节点", addTitle: "添加代理节点", dialogDescription: "Build 节点只配置代理并沿用 Provider 的 User-Agent；Web 与 Console 节点使用各自的浏览器 User-Agent 和 Cloudflare Cookie。", enabled: "启用", proxyURL: "代理地址", proxyProtocols: "支持 HTTP、HTTPS、SOCKS4、SOCKS4A、SOCKS5、SOCKS5H\nResin 可在用户名中使用 {account} 绑定账号租约。", proxyPool: "代理池模式", proxyPoolHelp: "共享代理池的单次连接失败不会使整个出口节点进入冷却；包含 {account} 的代理会自动启用此策略。", userAgent: "User-Agent", cloudflareCookie: "Cloudflare Cookie", keepConfigured: "已配置，留空保持不变", operationFailed: "操作失败", refreshClearance: "刷新 Clearance", clearanceRefreshed: "Clearance 已刷新", clearanceManaged: "Cloudflare Cookie 与 User-Agent 由 FlareSolverr 自动维护；Resin 等账号粘性代理会按账号隔离。", accounts: "账号", probe: "探测", unhealthy: "不可用", notTested: "未测试", test: "测试代理", testedOne: "代理测试完成", operations: "代理运营", testAll: "测试全部", rebalance: "自动均衡", importText: "导入文本", addSource: "添加订阅", source: "订阅源", sync: "同步", capacity: "账号容量", noSources: "暂无订阅源", never: "从未", unlimited: "不限", sourceSaved: "订阅源已保存", sourceDeleted: "订阅源已删除", sourceSynced: "订阅同步完成：导入 {{imported}}，跳过 {{skipped}}", imported: "代理导入完成：导入 {{imported}}，跳过 {{skipped}}", tested: "代理测试完成：可用 {{healthy}}，不可用 {{unhealthy}}", rebalanced: "账号调配完成：新增 {{assigned}}，均衡 {{rebalanced}}，未分配 {{unplaced}}", automationSaved: "自动任务已保存", editSource: "编辑订阅", subscriptionURL: "订阅地址", probeInterval: "测试间隔（秒）", assignmentInterval: "调配间隔（秒）", autoAssign: "自动分配未绑定账号", autoBalance: "自动均衡自动绑定账号", refreshInterval: "订阅刷新间隔（秒）", proxyList: "代理列表" },
         routing: { title: "路由策略", stickyTTL: "会话粘性时长", stickyTTLHelp: "同一会话优先复用已选账号的有效时长；到期后重新参与调度。", cooldownBase: "基础冷却时间", cooldownBaseHelp: "账号发生可恢复故障后首次进入冷却的时长。", cooldownMax: "最大冷却时间", cooldownMaxHelp: "连续故障触发指数退避时允许达到的最长冷却时间。", capacityWait: "账号满载等待", capacityWaitHelp: "全部候选账号并发已满时，切换或失败前等待容量释放的时间。", maxAttempts: "最大尝试次数", maxAttemptsHelp: "单次请求在可用账号之间切换并重试的最大次数。", preferFreeBuild: "Grok Build Free 账号优先", preferFreeBuildHelp: "启用后优先选择已确认可用的 Free 账号，其他路由条件保持不变。" },
         audit: { title: "请求审计", bufferSize: "队列容量", bufferSizeHelp: "审计记录进入持久化前可在内存队列中等待的最大数量。", batchSize: "批量写入数", batchSizeHelp: "每次数据库事务最多写入的审计记录数量。", flushInterval: "刷新间隔", flushIntervalHelp: "队列未达到批量写入数时，强制提交待处理审计记录的间隔。" },
         clientKeys: { title: "密钥默认限制", rpmLimit: "默认 RPM", rpmLimitHelp: "新建客户端密钥默认允许的每分钟请求数。", maxConcurrent: "默认并发数", maxConcurrentHelp: "新建客户端密钥默认允许同时执行的请求数。" },
@@ -1462,6 +1462,29 @@ const resources = {
     },
   },
 } as const;
+
+// Kept separate from the legacy one-line settings resources so proxy
+// operations can evolve without making that catalog harder to review.
+Object.assign(resources.en.translation.settings.egress as unknown as Record<string, string>, {
+  accounts: "Accounts", probe: "Probe", unhealthy: "Unhealthy", notTested: "Not tested", test: "Test proxy", testedOne: "Proxy test completed",
+  operations: "Proxy operations", testAll: "Test all", rebalance: "Balance accounts", importText: "Import text", addSource: "Add subscription",
+  source: "Subscription", sync: "Sync", capacity: "Account capacity", noSources: "No subscription sources", never: "Never", unlimited: "Unlimited",
+  sourceSaved: "Subscription saved", sourceDeleted: "Subscription deleted", sourceSynced: "Subscription synced: {{imported}} imported, {{skipped}} skipped",
+  imported: "Proxy import completed: {{imported}} imported, {{skipped}} skipped", tested: "Proxy test completed: {{healthy}} healthy, {{unhealthy}} unhealthy",
+  rebalanced: "Account allocation completed: {{assigned}} assigned, {{rebalanced}} balanced, {{unplaced}} unplaced", automationSaved: "Automation saved",
+  editSource: "Edit subscription", subscriptionURL: "Subscription URL", probeInterval: "Test interval (seconds)", assignmentInterval: "Allocation interval (seconds)",
+  autoAssign: "Assign unbound accounts automatically", autoBalance: "Balance automatic assignments", refreshInterval: "Subscription refresh interval (seconds)", proxyList: "Proxy list",
+});
+
+Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<string, string>, {
+  bindEgress: "绑定代理", unbindEgress: "解绑代理", bindEgressTitle: "绑定 {{count}} 个账号的代理", bindEgressDescription: "手动绑定的账号不会被自动均衡迁移。",
+  bindEgressNode: "代理节点", bindEgressEmpty: "请选择代理节点", bindEgressNoNodes: "当前账号池没有可绑定的代理节点", egressBound: "代理已绑定", egressUnbound: "代理已解绑",
+});
+
+Object.assign(resources.en.translation.accounts as unknown as Record<string, string>, {
+  bindEgress: "Bind proxy", unbindEgress: "Unbind proxy", bindEgressTitle: "Bind a proxy to {{count}} accounts", bindEgressDescription: "Manual bindings are never moved by automatic balancing.",
+  bindEgressNode: "Proxy node", bindEgressEmpty: "Select a proxy node", bindEgressNoNodes: "No compatible proxy nodes are available for this account pool", egressBound: "Proxy bound", egressUnbound: "Proxy unbound",
+});
 
 function readStoredLanguage(): string | null {
   if (typeof window === "undefined") return null;

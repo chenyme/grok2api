@@ -801,6 +801,9 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.BuildAPIFallback = existing.BuildAPIFallback
 		row.BuildRouteMode = existing.BuildRouteMode
 		row.BuildSuperEntitled = existing.BuildSuperEntitled
+		row.EgressNodeID = existing.EgressNodeID
+		row.EgressAssignmentMode = existing.EgressAssignmentMode
+		row.EgressAssignedAt = existing.EgressAssignedAt
 		// reauth_marked_at 与 Update 路径一致：保持 reauth 时永不被普通 upsert 改写。
 		applyReauthMarkedAtTransition(&row, *existing)
 		if err := tx.Save(&row).Error; err != nil {
@@ -1010,6 +1013,44 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, update
 	}
 	result := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id IN ?", ids).Updates(values)
 	return result.RowsAffected, result.Error
+}
+
+// UpdateEgressBindings assigns one egress node to multiple accounts of one
+// provider. A nil node clears the binding and restores normal pool selection.
+func (r *AccountRepository) UpdateEgressBindings(ctx context.Context, providerValue account.Provider, ids []uint64, nodeID *uint64, mode account.EgressAssignmentMode, assignedAt time.Time) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	values := map[string]any{
+		"egress_node_id": nodeID,
+	}
+	if nodeID == nil {
+		values["egress_assignment_mode"] = ""
+		values["egress_assigned_at"] = nil
+	} else {
+		values["egress_assignment_mode"] = string(mode)
+		values["egress_assigned_at"] = assignedAt.UTC()
+	}
+	result := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("provider = ? AND id IN ?", providerValue, ids).
+		Updates(values)
+	return result.RowsAffected, mapError(result.Error)
+}
+
+// ListEgressAssignments returns all accounts for one provider with their
+// binding metadata. It deliberately includes disabled accounts so capacity
+// reporting reflects every account that reserves a proxy slot.
+func (r *AccountRepository) ListEgressAssignments(ctx context.Context, providerValue account.Provider) ([]account.Credential, error) {
+	var rows []accountModel
+	if err := r.db.db.WithContext(ctx).Preload("Credential").Preload("WebProfile").
+		Where("provider = ?", providerValue).Order("id ASC").Find(&rows).Error; err != nil {
+		return nil, mapError(err)
+	}
+	values := make([]account.Credential, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, toAccountDomain(row))
+	}
+	return values, nil
 }
 
 func (r *AccountRepository) Delete(ctx context.Context, id uint64) error {
