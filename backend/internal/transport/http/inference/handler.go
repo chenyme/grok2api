@@ -2,6 +2,7 @@ package inference
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -165,16 +166,21 @@ type videoGenerationRequest struct {
 }
 
 type modelListItem struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID         string                 `json:"id"`
+	Object     string                 `json:"object"`
+	Created    int64                  `json:"created"`
+	OwnedBy    string                 `json:"owned_by"`
+	Capability modeldomain.Capability `json:"-"`
 }
 
 func (h *Handler) listModels(c *gin.Context) {
 	values, err := h.models.ListEnabled(c.Request.Context())
 	if err != nil {
 		writeOpenAIError(c, http.StatusInternalServerError, "model_list_failed", "读取模型列表失败")
+		return
+	}
+	if clientVersion := strings.TrimSpace(c.Query("client_version")); clientVersion != "" {
+		c.JSON(http.StatusOK, newCodexModelCache(clientVersion, newModelListItems(values)))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": newModelListItems(values)})
@@ -190,9 +196,165 @@ func newModelListItems(values []modeldomain.Route) []modelListItem {
 			continue
 		}
 		seen[publicID] = true
-		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api"})
+		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api", Capability: value.Capability})
 	}
 	return data
+}
+
+type codexReasoningLevel struct {
+	Effort      string `json:"effort"`
+	Description string `json:"description"`
+}
+
+type codexTruncationPolicy struct {
+	Mode  string `json:"mode"`
+	Limit int    `json:"limit"`
+}
+
+type codexModelEntry struct {
+	Slug                          string                `json:"slug"`
+	DisplayName                   string                `json:"display_name"`
+	Description                   string                `json:"description"`
+	DefaultReasoningLevel         string                `json:"default_reasoning_level"`
+	SupportedReasoningLevels      []codexReasoningLevel `json:"supported_reasoning_levels"`
+	ShellType                     string                `json:"shell_type"`
+	Visibility                    string                `json:"visibility"`
+	SupportedInAPI                bool                  `json:"supported_in_api"`
+	Priority                      int                   `json:"priority"`
+	SupportVerbosity              bool                  `json:"support_verbosity"`
+	DefaultVerbosity              string                `json:"default_verbosity"`
+	ApplyPatchToolType            string                `json:"apply_patch_tool_type"`
+	WebSearchToolType             string                `json:"web_search_tool_type"`
+	TruncationPolicy              codexTruncationPolicy `json:"truncation_policy"`
+	SupportsParallelToolCalls     bool                  `json:"supports_parallel_tool_calls"`
+	ContextWindow                 int                   `json:"context_window"`
+	MaxContextWindow              int                   `json:"max_context_window"`
+	EffectiveContextWindowPercent int                   `json:"effective_context_window_percent"`
+	InputModalities               []string              `json:"input_modalities"`
+	SupportsSearchTool            bool                  `json:"supports_search_tool"`
+	AutoCompactTokenLimit         *int                  `json:"auto_compact_token_limit"`
+}
+
+type codexModelCache struct {
+	FetchedAt     string            `json:"fetched_at"`
+	Etag          string            `json:"etag"`
+	ClientVersion string            `json:"client_version"`
+	Models        []codexModelEntry `json:"models"`
+}
+
+var codexReasoningDescriptions = map[string]string{
+	"none":   "No reasoning",
+	"low":    "Fast responses with lighter reasoning",
+	"medium": "Balances speed and reasoning depth for everyday tasks",
+	"high":   "Greater reasoning depth for complex problems",
+	"xhigh":  "Extra high reasoning depth for complex problems",
+	"max":    "Maximum reasoning depth for the hardest problems",
+}
+
+type grokModelCapability struct {
+	contextWindow   int
+	reasoningLevels []string
+	description     string
+}
+
+var grokCapabilities = map[string]grokModelCapability{
+	"grok-4.5":                     {500000, []string{"low", "medium", "high"}, "xAI Grok 4.5 — frontier model with strong reasoning, vision, and 500K context."},
+	"grok-4.3":                     {1000000, []string{"none", "low", "medium", "high"}, "xAI Grok 4.3 — high-capacity reasoning model with 1M token context."},
+	"grok-build-0.1":               {256000, nil, "xAI Grok Build 0.1 — fast agentic coding model optimized for tool use."},
+	"grok-4.20-0309-reasoning":     {2000000, []string{"low", "medium", "high"}, "xAI Grok 4.20 reasoning variant with 2M token context."},
+	"grok-4.20-0309-non-reasoning": {2000000, nil, "xAI Grok 4.20 non-reasoning variant for fast, lightweight responses."},
+	"grok-4.20-multi-agent-0309":   {2000000, []string{"low", "medium", "high"}, "xAI Grok 4.20 multi-agent model with parallel reasoning and 2M context."},
+	"grok-3-mini":                  {131072, []string{"low", "medium", "high"}, "xAI Grok 3 Mini — lightweight efficient model for everyday tasks."},
+	"grok-3-mini-fast":             {131072, []string{"low", "medium", "high"}, "xAI Grok 3 Mini Fast — optimized for speed and low latency."},
+	"grok-composer-2.5-fast":       {200000, nil, "xAI Grok Composer 2.5 — fast generation model."},
+}
+
+var grokDefaultCapability = grokModelCapability{
+	contextWindow: 500000, reasoningLevels: []string{"low", "medium", "high"},
+	description: "Grok model served via grok2api.",
+}
+
+func lookupGrokCapability(slug string) grokModelCapability {
+	if cap, ok := grokCapabilities[slug]; ok {
+		return cap
+	}
+	return grokDefaultCapability
+}
+
+func defaultReasoningLevel(levels []string) string {
+	if len(levels) == 0 {
+		return "none"
+	}
+	return levels[len(levels)-1]
+}
+
+func codexVisibilityForCapability(capability modeldomain.Capability) string {
+	switch capability {
+	case modeldomain.CapabilityImage, modeldomain.CapabilityImageEdit, modeldomain.CapabilityVideo:
+		return "hide"
+	default:
+		return "list"
+	}
+}
+
+func codexReasoningLevelsFor(levels []string) []codexReasoningLevel {
+	result := make([]codexReasoningLevel, 0, len(levels))
+	for _, level := range levels {
+		desc := codexReasoningDescriptions[level]
+		result = append(result, codexReasoningLevel{Effort: level, Description: desc})
+	}
+	return result
+}
+
+func newCodexModelCache(clientVersion string, items []modelListItem) codexModelCache {
+	models := make([]codexModelEntry, 0, len(items))
+	for index, item := range items {
+		cap := lookupGrokCapability(item.ID)
+		models = append(models, codexModelEntry{
+			Slug:                          item.ID,
+			DisplayName:                   codexDisplayName(item.ID),
+			Description:                   cap.description,
+			DefaultReasoningLevel:         defaultReasoningLevel(cap.reasoningLevels),
+			SupportedReasoningLevels:      codexReasoningLevelsFor(cap.reasoningLevels),
+			ShellType:                     "shell_command",
+			Visibility:                    codexVisibilityForCapability(item.Capability),
+			SupportedInAPI:                true,
+			Priority:                      index + 1,
+			SupportVerbosity:              true,
+			DefaultVerbosity:              "low",
+			ApplyPatchToolType:            "freeform",
+			WebSearchToolType:             "text_and_image",
+			TruncationPolicy:              codexTruncationPolicy{Mode: "tokens", Limit: 10000},
+			SupportsParallelToolCalls:     true,
+			ContextWindow:                 cap.contextWindow,
+			MaxContextWindow:              cap.contextWindow,
+			EffectiveContextWindowPercent: 95,
+			InputModalities:               []string{"text", "image"},
+			SupportsSearchTool:            true,
+			AutoCompactTokenLimit:         nil,
+		})
+	}
+	payload := codexModelCache{
+		FetchedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		Etag:          fmt.Sprintf("W/\"%x\"", sha1Sum(models)),
+		ClientVersion: clientVersion,
+		Models:        models,
+	}
+	return payload
+}
+
+func codexDisplayName(slug string) string {
+	display := strings.NewReplacer("_", " ", "-", " ").Replace(slug)
+	return strings.Title(display)
+}
+
+func sha1Sum(models []codexModelEntry) []byte {
+	h := sha1.New()
+	for _, m := range models {
+		io.WriteString(h, m.Slug)
+		io.WriteString(h, m.DisplayName)
+	}
+	return h.Sum(nil)
 }
 
 func (h *Handler) createResponse(c *gin.Context) {
