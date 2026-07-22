@@ -196,9 +196,7 @@ export function SettingsPage() {
             </div>
           </SettingsSection>
 
-          <SettingsSection title={t("settings.egress.title")}>
-            <EgressNodes clearanceMode={activeClearanceMode} />
-          </SettingsSection>
+          <EgressNodes title={t("settings.egress.title")} clearanceMode={activeClearanceMode} />
           </SettingsPane>
 
           <SettingsPane value="policies">

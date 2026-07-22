@@ -145,9 +145,15 @@ func (s *Service) UpdateSource(ctx context.Context, id uint64, input Subscriptio
 	if err != nil {
 		return domain.PublicSubscriptionSource{}, err
 	}
+	previousScope := value.Scope
 	value, err = s.applySourceInput(value, input, false)
 	if err != nil {
 		return domain.PublicSubscriptionSource{}, err
+	}
+	if previousScope != value.Scope {
+		if err := s.validateSourceBindingScope(ctx, value.ID, value.Scope); err != nil {
+			return domain.PublicSubscriptionSource{}, err
+		}
 	}
 	updated, err := operations.UpdateEgressSource(ctx, value)
 	if errors.Is(err, repository.ErrNotFound) {
@@ -238,8 +244,11 @@ func (s *Service) TestNode(ctx context.Context, id uint64) (domain.ProbeResult, 
 	if !result.Status.IsValid() {
 		result.Status = domain.ProbeStatusUnhealthy
 	}
-	if probeErr != nil && strings.TrimSpace(result.Error) == "" {
-		result.Error = "代理探测失败"
+	if probeErr != nil {
+		result.Status = domain.ProbeStatusUnhealthy
+		if strings.TrimSpace(result.Error) == "" {
+			result.Error = "代理探测失败"
+		}
 	}
 	if updateErr := operations.UpdateEgressNodeProbe(ctx, id, result); updateErr != nil {
 		if errors.Is(updateErr, repository.ErrNotFound) {
@@ -247,7 +256,10 @@ func (s *Service) TestNode(ctx context.Context, id uint64) (domain.ProbeResult, 
 		}
 		return result, updateErr
 	}
-	return result, probeErr
+	// An unreachable proxy is a completed probe with an unhealthy result, not
+	// an API operation failure. Persistence and repository failures still return
+	// above so callers can distinguish them from node health.
+	return result, nil
 }
 
 func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult, error) {

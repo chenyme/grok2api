@@ -53,6 +53,7 @@ type Service struct {
 	prober            NodeProber
 	assignmentMu      sync.Mutex
 	lastAssignmentRun time.Time
+	assignmentRunning bool
 }
 
 // AccountBindingRepository is intentionally narrow so existing account
@@ -61,6 +62,8 @@ type AccountBindingRepository interface {
 	CountProviderAccountsByIDs(context.Context, accountdomain.Provider, []uint64) (int64, error)
 	UpdateEgressBindings(context.Context, accountdomain.Provider, []uint64, *uint64, accountdomain.EgressAssignmentMode, time.Time) (int64, error)
 	ListEgressAssignments(context.Context, accountdomain.Provider) ([]accountdomain.Credential, error)
+	ListEgressBindingProviders(context.Context, uint64) ([]accountdomain.Provider, error)
+	ListEgressSourceBindingProviders(context.Context, uint64) ([]accountdomain.Provider, error)
 }
 
 type AssignmentResult struct {
@@ -145,9 +148,15 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 	if err != nil {
 		return domain.PublicNode{}, err
 	}
+	previousScope := value.Scope
 	value, err = s.applyInput(value, input, false)
 	if err != nil {
 		return domain.PublicNode{}, err
+	}
+	if previousScope != value.Scope {
+		if err := s.validateNodeBindingScope(ctx, value.ID, value.Scope); err != nil {
+			return domain.PublicNode{}, err
+		}
 	}
 	updated, err := s.repository.UpdateEgressNode(ctx, value)
 	if err == nil {
@@ -285,6 +294,37 @@ func scopeSupportsProvider(scope domain.Scope, provider accountdomain.Provider) 
 	default:
 		return false
 	}
+}
+
+func (s *Service) validateNodeBindingScope(ctx context.Context, nodeID uint64, scope domain.Scope) error {
+	if s.accounts == nil {
+		return nil
+	}
+	providers, err := s.accounts.ListEgressBindingProviders(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	return validateBindingProviders(scope, providers)
+}
+
+func (s *Service) validateSourceBindingScope(ctx context.Context, sourceID uint64, scope domain.Scope) error {
+	if s.accounts == nil {
+		return nil
+	}
+	providers, err := s.accounts.ListEgressSourceBindingProviders(ctx, sourceID)
+	if err != nil {
+		return err
+	}
+	return validateBindingProviders(scope, providers)
+}
+
+func validateBindingProviders(scope domain.Scope, providers []accountdomain.Provider) error {
+	for _, provider := range providers {
+		if !scopeSupportsProvider(scope, provider) {
+			return fmt.Errorf("%w: 当前节点仍绑定 %s 账号，不能改为 %s 作用域", ErrInvalidInput, provider, scope)
+		}
+	}
+	return nil
 }
 
 func uniqueIDs(values []uint64) []uint64 {

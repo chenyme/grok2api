@@ -324,9 +324,13 @@ func TestAcquireCredentialUsesExplicitBoundNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	proxyURL, err := cipher.Encrypt("http://bound-node.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
 	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
 		{ID: 1, Name: "pool-node", Scope: domain.ScopeBuild, Enabled: true, Health: 1},
-		{ID: 2, Name: "bound-node", Scope: domain.ScopeBuild, Enabled: true, Health: 1},
+		{ID: 2, Name: "bound-node", Scope: domain.ScopeBuild, Enabled: true, Health: 1, EncryptedProxyURL: proxyURL},
 	}}, cipher)
 	lease, err := manager.AcquireCredential(context.Background(), domain.ScopeBuild, accountdomain.Credential{
 		ID: 42, Provider: accountdomain.ProviderBuild, EgressNodeID: 2,
@@ -337,6 +341,22 @@ func TestAcquireCredentialUsesExplicitBoundNode(t *testing.T) {
 	defer lease.Release()
 	if lease.NodeID != 2 || lease.NodeName != "bound-node" {
 		t.Fatalf("bound lease = node %d (%q)", lease.NodeID, lease.NodeName)
+	}
+}
+
+func TestAcquireCredentialDoesNotRouteDirectWhenBoundNodeHasNoProxy(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
+		{ID: 2, Name: "empty-node", Scope: domain.ScopeBuild, Enabled: true, Health: 1},
+	}}, cipher)
+	_, err = manager.AcquireCredential(context.Background(), domain.ScopeBuild, accountdomain.Credential{
+		ID: 42, Provider: accountdomain.ProviderBuild, EgressNodeID: 2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "未配置代理地址") {
+		t.Fatalf("bound node without proxy error = %v", err)
 	}
 }
 

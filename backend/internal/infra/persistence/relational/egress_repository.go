@@ -49,13 +49,9 @@ func (r *EgressRepository) GetEgressNode(ctx context.Context, id uint64) (egress
 	if err := r.db.db.WithContext(ctx).First(&row, id).Error; err != nil {
 		return egress.Node{}, mapError(err)
 	}
-	value := toEgressDomain(row)
-	counts, err := r.assignedAccountCounts(ctx)
-	if err != nil {
-		return egress.Node{}, err
-	}
-	value.AssignedAccountCount = counts[value.ID]
-	return value, nil
+	// AssignedAccountCount is management-list metadata. Keep point lookups lean:
+	// this method is also used by the bound-account inference hot path.
+	return toEgressDomain(row), nil
 }
 
 func (r *EgressRepository) CreateEgressNode(ctx context.Context, value egress.Node) (egress.Node, error) {
@@ -270,6 +266,14 @@ func (r *EgressRepository) UpsertEgressNodesFromSource(ctx context.Context, sour
 	}
 	returned := 0
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existingKeys []string
+		if err := tx.Model(&egressNodeModel{}).Where("source_id = ?", sourceID).Pluck("source_key", &existingKeys).Error; err != nil {
+			return mapError(err)
+		}
+		existing := make(map[string]struct{}, len(existingKeys))
+		for _, key := range existingKeys {
+			existing[key] = struct{}{}
+		}
 		keys := make([]string, 0, len(values))
 		for _, value := range values {
 			if value.SourceID != sourceID || value.SourceKey == "" {
@@ -287,7 +291,10 @@ func (r *EgressRepository) UpsertEgressNodesFromSource(ctx context.Context, sour
 				return mapError(err)
 			}
 			keys = append(keys, value.SourceKey)
-			returned++
+			if _, found := existing[value.SourceKey]; !found {
+				returned++
+				existing[value.SourceKey] = struct{}{}
+			}
 		}
 		stale := tx.Model(&egressNodeModel{}).Where("source_id = ?", sourceID)
 		if len(keys) > 0 {

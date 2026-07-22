@@ -63,7 +63,7 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 	if err != nil {
 		return RebalanceResult{}, err
 	}
-	nodes := eligibleNodesForProvider(allNodes, provider, probeInterval, now)
+	nodes := s.eligibleNodesForProvider(allNodes, provider, probeInterval, now)
 	if len(nodes) == 0 {
 		return RebalanceResult{Unplaced: countAutoAssignable(accounts, autoAssign, autoBalance)}, nil
 	}
@@ -103,11 +103,37 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 		assignment[credential.ID] = target.ID
 		loads[target.ID]++
 		freshMove[credential.ID] = true
-		result.Assigned++
+		if credential.EgressNodeID == 0 {
+			result.Assigned++
+		} else {
+			result.Rebalanced++
+		}
+	}
+
+	// Capacity is a placement constraint, not an optional balancing preference.
+	// Repair automatic assignments that became over capacity even when ordinary
+	// load balancing is disabled. Manual assignments remain immovable.
+	moves := 0
+	blockedCapacitySources := make(map[uint64]bool)
+	for moves < maxAutomaticReassignments {
+		source, destination, found := overCapacityPair(nodes, loads, blockedCapacitySources)
+		if !found {
+			break
+		}
+		candidateID, movable := findMovableAccount(accounts, assignment, freshMove, source.ID, now)
+		if !movable {
+			blockedCapacitySources[source.ID] = true
+			continue
+		}
+		assignment[candidateID] = destination.ID
+		loads[source.ID]--
+		loads[destination.ID]++
+		freshMove[candidateID] = true
+		moves++
+		result.Rebalanced++
 	}
 
 	if autoBalance {
-		moves := 0
 		blocked := make(map[uint64]bool)
 		for moves < maxAutomaticReassignments {
 			source, destination, found := rebalancePair(nodes, loads, blocked)
@@ -144,12 +170,15 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 	return result, nil
 }
 
-func eligibleNodesForProvider(values []domain.Node, provider accountdomain.Provider, probeInterval time.Duration, now time.Time) []domain.Node {
+func (s *Service) eligibleNodesForProvider(values []domain.Node, provider accountdomain.Provider, probeInterval time.Duration, now time.Time) []domain.Node {
 	values = append([]domain.Node(nil), values...)
 	result := make([]domain.Node, 0, len(values))
 	maxAge := max(probeInterval*2, time.Minute)
 	for _, value := range values {
 		if !value.Enabled || value.EncryptedProxyURL == "" || !scopeSupportsProvider(value.Scope, provider) || value.ProbeStatus != domain.ProbeStatusHealthy || value.LastProbedAt == nil || now.Sub(value.LastProbedAt.UTC()) > maxAge {
+			continue
+		}
+		if value.CooldownUntil != nil && now.Before(value.CooldownUntil.UTC()) && !value.ProxyPool && !s.accountBoundProxy(value) {
 			continue
 		}
 		result = append(result, value)
@@ -165,7 +194,10 @@ func isAutoAssignable(credential accountdomain.Credential, autoAssign, autoBalan
 	if credential.EgressNodeID == 0 {
 		return autoAssign
 	}
-	return credential.EgressAssignmentMode == accountdomain.EgressAssignmentAuto && autoBalance
+	// Once auto assignment owns a binding, it must continue repairing unhealthy
+	// or over-capacity placement whenever either automatic mode is running.
+	// autoBalance only controls optional movement between otherwise valid nodes.
+	return credential.EgressAssignmentMode == accountdomain.EgressAssignmentAuto && (autoAssign || autoBalance)
 }
 
 func countAutoAssignable(values []accountdomain.Credential, autoAssign, autoBalance bool) int {
@@ -179,9 +211,16 @@ func countAutoAssignable(values []accountdomain.Credential, autoAssign, autoBala
 }
 
 func leastLoadedNode(values []domain.Node, loads map[uint64]int) (domain.Node, bool) {
+	return leastLoadedNodeExcept(values, loads, 0)
+}
+
+func leastLoadedNodeExcept(values []domain.Node, loads map[uint64]int, excludedID uint64) (domain.Node, bool) {
 	var selected domain.Node
 	found := false
 	for _, value := range values {
+		if value.ID == excludedID {
+			continue
+		}
 		if value.AccountCapacity > 0 && loads[value.ID] >= value.AccountCapacity {
 			continue
 		}
@@ -190,6 +229,28 @@ func leastLoadedNode(values []domain.Node, loads map[uint64]int) (domain.Node, b
 		}
 	}
 	return selected, found
+}
+
+func overCapacityPair(values []domain.Node, loads map[uint64]int, blocked map[uint64]bool) (domain.Node, domain.Node, bool) {
+	ordered := append([]domain.Node(nil), values...)
+	sort.Slice(ordered, func(i, j int) bool {
+		iOverflow := loads[ordered[i].ID] - ordered[i].AccountCapacity
+		jOverflow := loads[ordered[j].ID] - ordered[j].AccountCapacity
+		if iOverflow == jOverflow {
+			return ordered[i].ID < ordered[j].ID
+		}
+		return iOverflow > jOverflow
+	})
+	for _, source := range ordered {
+		if blocked[source.ID] || source.AccountCapacity <= 0 || loads[source.ID] <= source.AccountCapacity {
+			continue
+		}
+		destination, found := leastLoadedNodeExcept(values, loads, source.ID)
+		if found {
+			return source, destination, true
+		}
+	}
+	return domain.Node{}, domain.Node{}, false
 }
 
 func rebalancePair(values []domain.Node, loads map[uint64]int, blocked map[uint64]bool) (domain.Node, domain.Node, bool) {
@@ -262,13 +323,20 @@ func (s *Service) RunMaintenance(ctx context.Context) error {
 	}
 	if config.AutoAssignEnabled || config.AutoBalanceEnabled {
 		s.mu.Lock()
-		due := s.lastAssignmentRun.IsZero() || time.Since(s.lastAssignmentRun) >= time.Duration(config.AssignmentIntervalSeconds)*time.Second
+		due := !s.assignmentRunning && (s.lastAssignmentRun.IsZero() || time.Since(s.lastAssignmentRun) >= time.Duration(config.AssignmentIntervalSeconds)*time.Second)
 		if due {
-			s.lastAssignmentRun = time.Now().UTC()
+			s.assignmentRunning = true
 		}
 		s.mu.Unlock()
 		if due {
-			if _, balanceErr := s.RebalanceAccounts(ctx, config.AutoAssignEnabled, config.AutoBalanceEnabled, time.Duration(config.ProbeIntervalSeconds)*time.Second); balanceErr != nil {
+			_, balanceErr := s.RebalanceAccounts(ctx, config.AutoAssignEnabled, config.AutoBalanceEnabled, time.Duration(config.ProbeIntervalSeconds)*time.Second)
+			s.mu.Lock()
+			s.assignmentRunning = false
+			if balanceErr == nil {
+				s.lastAssignmentRun = time.Now().UTC()
+			}
+			s.mu.Unlock()
+			if balanceErr != nil {
 				resultErr = errors.Join(resultErr, balanceErr)
 			}
 		}

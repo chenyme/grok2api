@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -19,14 +19,15 @@ import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHea
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EgressOperations } from "@/features/settings/egress-operations";
 import { createEgressNode, deleteEgressNode, deleteEgressNodes, listEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
-import { ErrorState } from "@/shared/components/data-state";
+import { ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
+import { cn } from "@/shared/lib/cn";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
 const emptyInput: EgressNodeInput = { name: "", scope: "grok_build", enabled: true, proxyPool: false, accountCapacity: 0, proxyURL: "", userAgent: "", cloudflareCookies: "" };
 
-export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flaresolverr" }) {
+export function EgressNodes({ title, clearanceMode }: { title: string; clearanceMode: "manual" | "flaresolverr" }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<EgressNodeDTO | null | undefined>(undefined);
@@ -83,8 +84,12 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
   });
   const testNode = useMutation({
     mutationFn: testEgressNode,
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); toast.success(t("settings.egress.testedOne")); },
+    onSuccess: (result) => {
+      if (result.status === "healthy") toast.success(t("settings.egress.testedOne"));
+      else toast.error(result.error || t("settings.egress.operationFailed"));
+    },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); },
   });
 
   function openCreate() {
@@ -154,90 +159,101 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
   const selectedVisible = filteredNodes.filter((node) => selected.has(node.id));
   const allVisibleSelected = filteredNodes.length > 0 && selectedVisible.length === filteredNodes.length;
   const selectedAssignedAccounts = nodes.filter((node) => selected.has(node.id)).reduce((total, node) => total + node.assignedAccountCount, 0);
+  const selectedSourceNodes = nodes.filter((node) => selected.has(node.id) && node.sourceId).length;
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">{t("console.egressDescription")}</p>
-        <Button type="button" size="sm" variant="secondary" onClick={openCreate}><Plus />{t("settings.egress.add")}</Button>
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
-          <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setSelected(new Set()); }} placeholder={t("settings.egress.search")} aria-label={t("settings.egress.search")} />
-          </div>
-          <DataTableFilters filters={[
-            { id: "scope", label: t("settings.egress.scope"), value: scopeFilter, onChange: (value) => { setScopeFilter(value); setSelected(new Set()); }, options: [
-              { value: "grok_build", label: scopeLabel("grok_build") },
-              { value: "grok_web", label: scopeLabel("grok_web") },
-              { value: "grok_console", label: scopeLabel("grok_console") },
-              { value: "grok_web_asset", label: scopeLabel("grok_web_asset") },
-            ] },
-            { id: "enabled", label: t("settings.egress.enabled"), value: enabledFilter, onChange: (value) => { setEnabledFilter(value); setSelected(new Set()); }, options: [
-              { value: "enabled", label: t("common.enable") },
-              { value: "disabled", label: t("common.disable") },
-            ] },
-            { id: "probe", label: t("settings.egress.probe"), value: probeFilter, onChange: (value) => { setProbeFilter(value); setSelected(new Set()); }, options: [
-              { value: "healthy", label: t("settings.egress.healthy") },
-              { value: "unhealthy", label: t("settings.egress.unhealthy") },
-              { value: "unknown", label: t("settings.egress.notTested") },
-            ] },
-            { id: "assignment", label: t("settings.egress.accounts"), value: assignmentFilter, onChange: (value) => { setAssignmentFilter(value); setSelected(new Set()); }, options: [
-              { value: "bound", label: t("settings.egress.assigned") },
-              { value: "unbound", label: t("settings.egress.unassigned") },
-            ] },
-          ]} />
+    <div className="space-y-8">
+      <section className="space-y-3">
+        <div className="flex min-h-8 items-center justify-between gap-3 px-1">
+          <h2 className="text-sm font-medium tracking-tight">{title}</h2>
+          <Button type="button" size="sm" variant="secondary" onClick={openCreate}><Plus />{t("settings.egress.add")}</Button>
         </div>
-        {selected.size > 0 ? (
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
-            <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
+        <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
+            <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setSelected(new Set()); }} placeholder={t("settings.egress.search")} aria-label={t("settings.egress.search")} />
+            </div>
+            <DataTableFilters filters={[
+              { id: "scope", label: t("settings.egress.scope"), value: scopeFilter, onChange: (value) => { setScopeFilter(value); setSelected(new Set()); }, options: [
+                { value: "grok_build", label: scopeLabel("grok_build") },
+                { value: "grok_web", label: scopeLabel("grok_web") },
+                { value: "grok_console", label: scopeLabel("grok_console") },
+                { value: "grok_web_asset", label: scopeLabel("grok_web_asset") },
+              ] },
+              { id: "enabled", label: t("settings.egress.enabled"), value: enabledFilter, onChange: (value) => { setEnabledFilter(value); setSelected(new Set()); }, options: [
+                { value: "enabled", label: t("common.enable") },
+                { value: "disabled", label: t("common.disable") },
+              ] },
+              { id: "probe", label: t("settings.egress.probe"), value: probeFilter, onChange: (value) => { setProbeFilter(value); setSelected(new Set()); }, options: [
+                { value: "healthy", label: t("settings.egress.healthy") },
+                { value: "unhealthy", label: t("settings.egress.unhealthy") },
+                { value: "unknown", label: t("settings.egress.notTested") },
+              ] },
+              { id: "assignment", label: t("settings.egress.accounts"), value: assignmentFilter, onChange: (value) => { setAssignmentFilter(value); setSelected(new Set()); }, options: [
+                { value: "bound", label: t("settings.egress.assigned") },
+                { value: "unbound", label: t("settings.egress.unassigned") },
+              ] },
+            ]} />
           </div>
-        ) : null}
-      </div>
-      {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : <div className="overflow-hidden rounded-md border">
-        <Table>
-          <TableHeader><TableRow><TableHead className="w-10 px-2"><Checkbox checked={allVisibleSelected ? true : selectedVisible.length > 0 ? "indeterminate" : false} disabled={filteredNodes.length === 0} onCheckedChange={(checked) => toggleVisible(checked === true)} aria-label={t("settings.egress.selectVisible")} /></TableHead><SortableTableHead field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="text-center">{t("settings.egress.probe")}</TableHead><TableActionHead /></TableRow></TableHeader>
+          {selected.size > 0 ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
+              <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
+            </div>
+          ) : null}
+        </div>
+        {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : <div className="overflow-hidden rounded-md border">
+          <Table className="min-w-[920px]">
+          <TableHeader><TableRow><TableHead className="w-10 px-2"><Checkbox checked={allVisibleSelected ? true : selectedVisible.length > 0 ? "indeterminate" : false} disabled={filteredNodes.length === 0} onCheckedChange={(checked) => toggleVisible(checked === true)} aria-label={t("settings.egress.selectVisible")} /></TableHead><SortableTableHead className="min-w-44" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-28" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-24" field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="min-w-32" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-24 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-32" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="min-w-40 text-center">{t("settings.egress.probe")}</TableHead><TableActionHead /></TableRow></TableHeader>
           <TableBody>
-            {filteredNodes.length === 0 ? <TableRow><TableCell colSpan={9} className="h-20 text-center text-xs text-muted-foreground">{nodes.length === 0 ? t("settings.egress.directFallback") : t("settings.egress.noMatches")}</TableCell></TableRow> : filteredNodes.map((node) => (
-              <TableRow className="group" key={node.id} data-state={selected.has(node.id) ? "selected" : undefined}>
+            {query.isPending ? <TableLoadingRow colSpan={9} /> : null}
+            {!query.isPending && filteredNodes.length === 0 ? <TableRow><TableCell colSpan={9} className="h-24 text-center text-xs text-muted-foreground">{nodes.length === 0 ? t("settings.egress.directFallback") : t("settings.egress.noMatches")}</TableCell></TableRow> : filteredNodes.map((node) => (
+              <TableRow className="group h-12" key={node.id} data-state={selected.has(node.id) ? "selected" : undefined}>
                 <TableCell className="px-2"><Checkbox checked={selected.has(node.id)} onCheckedChange={(checked) => toggleNode(node.id, checked === true)} aria-label={t("common.selectItem", { name: node.name })} /></TableCell>
-                <TableCell><div className="text-xs font-medium">{node.name}</div>{node.lastError ? <div className="mt-0.5 max-w-72 truncate text-[11px] text-destructive">{node.lastError}</div> : null}</TableCell>
-                <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(node.scope)}</Badge></TableCell>
-                <TableCell className="text-center text-xs text-muted-foreground">{node.proxyConfigured ? t("settings.egress.configured") : t("settings.egress.direct")}</TableCell>
-                <TableCell className="text-center text-xs text-muted-foreground">
-                  {node.scope === "grok_build"
-                    ? "-"
-                    : clearanceMode === "flaresolverr"
-                      ? node.accountBoundProxy
-                        ? `${t("settings.web.clearanceFlareSolverr")} · Resin`
-                        : t("settings.web.clearanceFlareSolverr")
-                      : node.cookieConfigured
-                        ? t("settings.egress.configured")
-                        : t("settings.egress.none")}
+                <TableCell>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className={cn("size-1.5 shrink-0 rounded-full", node.enabled ? "bg-emerald-500" : "bg-muted-foreground/35")} />
+                    <span className={cn("truncate text-xs font-medium", !node.enabled && "text-muted-foreground")}>{node.name}</span>
+                    {node.lastError ? <ErrorTooltip message={node.lastError} /> : null}
+                  </div>
                 </TableCell>
-                <TableCell className="text-center text-xs tabular-nums">{node.assignedAccountCount}{node.accountCapacity > 0 ? ` / ${node.accountCapacity}` : ""}</TableCell>
-                <TableCell className="text-center text-xs tabular-nums">{Math.round(node.health * 100)}%</TableCell>
-                <TableCell className="text-center text-xs tabular-nums"><span className={node.probeStatus === "healthy" ? "text-emerald-600 dark:text-emerald-400" : node.probeStatus === "unhealthy" ? "text-destructive" : "text-muted-foreground"}>{node.probeStatus === "healthy" ? `${node.exitIp ?? ""} ${node.probeLatencyMs}ms` : node.probeStatus === "unhealthy" ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}</span></TableCell>
+                <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(node.scope)}</Badge></TableCell>
+                <TableCell className="text-center"><Badge variant={node.proxyConfigured ? "secondary" : "outline"} className={cn("text-[10px]", node.proxyConfigured ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground")}>{node.proxyConfigured ? t("settings.egress.configured") : t("settings.egress.direct")}</Badge></TableCell>
+                <TableCell className="text-center"><ClearanceBadge node={node} clearanceMode={clearanceMode} /></TableCell>
+                <TableCell className="text-center text-xs tabular-nums"><span className="font-medium">{node.assignedAccountCount}</span>{node.accountCapacity > 0 ? <span className="text-muted-foreground"> / {node.accountCapacity}</span> : null}</TableCell>
+                <TableCell><HealthMeter value={node.health} /></TableCell>
+                <TableCell><ProbeSummary node={node} /></TableCell>
                 <TableActionCell>
-                  <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => openEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem><DropdownMenuSeparator />{clearanceMode === "flaresolverr" && !node.accountBoundProxy && (node.scope === "grok_web" || node.scope === "grok_web_asset" || node.scope === "grok_console") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
-                    <DropdownMenuItem disabled={testNode.isPending || !node.proxyConfigured} onClick={() => testNode.mutate(node.id)}><RefreshCw />{t("settings.egress.test")}</DropdownMenuItem>
-                    <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => remove.mutate(node.id)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
-                  </DropdownMenuContent></DropdownMenu>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      {clearanceMode === "flaresolverr" && !node.accountBoundProxy && (node.scope === "grok_web" || node.scope === "grok_web_asset" || node.scope === "grok_console") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
+                      <DropdownMenuItem disabled={testNode.isPending || !node.proxyConfigured} onClick={() => testNode.mutate(node.id)}><RefreshCw />{t("settings.egress.test")}</DropdownMenuItem>
+                      <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => remove.mutate(node.id)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </TableActionCell>
               </TableRow>
             ))}
           </TableBody>
-        </Table>
-      </div>}
+          </Table>
+        </div>}
+      </section>
 
       <EgressOperations scopeLabel={scopeLabel} />
 
       <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>{t("settings.egress.batchDeleteTitle", { count: selected.size })}</AlertDialogTitle><AlertDialogDescription>{t("settings.egress.batchDeleteDescription", { count: selected.size, accounts: selectedAssignedAccounts })}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("settings.egress.batchDeleteTitle", { count: selected.size })}</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-1">
+              <span className="block">{t("settings.egress.batchDeleteDescription", { count: selected.size, accounts: selectedAssignedAccounts })}</span>
+              {selectedSourceNodes > 0 ? <span className="block">{t("settings.egress.batchDeleteSourceHint", { count: selectedSourceNodes })}</span> : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel disabled={removeMany.isPending}>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={removeMany.isPending} onClick={(event) => { event.preventDefault(); removeMany.mutate(); }}>{removeMany.isPending ? <Spinner /> : null}{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -308,6 +324,54 @@ export function EgressNodes({ clearanceMode }: { clearanceMode: "manual" | "flar
           </form>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function ErrorTooltip({ message }: { message: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex shrink-0 cursor-help text-destructive" tabIndex={0} aria-label={message}><CircleAlert className="size-3.5" /></span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-80">{message}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function ClearanceBadge({ node, clearanceMode }: { node: EgressNodeDTO; clearanceMode: "manual" | "flaresolverr" }) {
+  const { t } = useTranslation();
+  if (node.scope === "grok_build") return <span className="text-xs text-muted-foreground">—</span>;
+  if (clearanceMode === "flaresolverr") {
+    return <Badge variant="secondary" className="text-[10px]">{node.accountBoundProxy ? `${t("settings.web.clearanceFlareSolverr")} · Resin` : t("settings.web.clearanceFlareSolverr")}</Badge>;
+  }
+  return <Badge variant={node.cookieConfigured ? "secondary" : "outline"} className={cn("text-[10px]", !node.cookieConfigured && "text-muted-foreground")}>{node.cookieConfigured ? t("settings.egress.configured") : t("settings.egress.none")}</Badge>;
+}
+
+function HealthMeter({ value }: { value: number }) {
+  const percent = Math.max(0, Math.min(100, Math.round(value * 100)));
+  return (
+    <div className="mx-auto flex w-24 items-center gap-2">
+      <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+        <div className={cn("h-full rounded-full transition-[width]", percent >= 70 ? "bg-emerald-500" : percent >= 35 ? "bg-amber-500" : "bg-destructive")} style={{ width: `${percent}%` }} />
+      </div>
+      <span className="w-8 text-right text-[11px] tabular-nums text-muted-foreground">{percent}%</span>
+    </div>
+  );
+}
+
+function ProbeSummary({ node }: { node: EgressNodeDTO }) {
+  const { t } = useTranslation();
+  const healthy = node.probeStatus === "healthy";
+  const unhealthy = node.probeStatus === "unhealthy";
+  return (
+    <div className="flex min-w-0 items-center justify-center gap-2 text-xs">
+      <span className={cn("size-1.5 shrink-0 rounded-full", healthy ? "bg-emerald-500" : unhealthy ? "bg-destructive" : "bg-muted-foreground/35")} />
+      <span className={cn("truncate", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")}>
+        {healthy ? node.exitIp || t("settings.egress.healthy") : unhealthy ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}
+      </span>
+      {healthy ? <span className="shrink-0 tabular-nums text-muted-foreground">{node.probeLatencyMs} ms</span> : null}
+      {unhealthy && node.probeError ? <ErrorTooltip message={node.probeError} /> : null}
     </div>
   );
 }

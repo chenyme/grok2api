@@ -1059,6 +1059,38 @@ func (r *AccountRepository) ListEgressAssignments(ctx context.Context, providerV
 	return values, nil
 }
 
+func (r *AccountRepository) ListEgressBindingProviders(ctx context.Context, nodeID uint64) ([]account.Provider, error) {
+	if nodeID == 0 {
+		return []account.Provider{}, nil
+	}
+	return r.listEgressBindingProviders(r.db.db.WithContext(ctx).Model(&accountModel{}).Where("egress_node_id = ?", nodeID))
+}
+
+func (r *AccountRepository) ListEgressSourceBindingProviders(ctx context.Context, sourceID uint64) ([]account.Provider, error) {
+	if sourceID == 0 {
+		return []account.Provider{}, nil
+	}
+	query := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Joins("JOIN egress_nodes ON egress_nodes.id = provider_accounts.egress_node_id").
+		Where("egress_nodes.source_id = ?", sourceID)
+	return r.listEgressBindingProviders(query)
+}
+
+func (r *AccountRepository) listEgressBindingProviders(query *gorm.DB) ([]account.Provider, error) {
+	var raw []string
+	if err := query.Distinct("provider_accounts.provider").Order("provider_accounts.provider ASC").Pluck("provider_accounts.provider", &raw).Error; err != nil {
+		return nil, mapError(err)
+	}
+	result := make([]account.Provider, 0, len(raw))
+	for _, value := range raw {
+		provider := account.Provider(value)
+		if provider.IsValid() {
+			result = append(result, provider)
+		}
+	}
+	return result, nil
+}
+
 func (r *AccountRepository) Delete(ctx context.Context, id uint64) error {
 	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var lockedID uint64

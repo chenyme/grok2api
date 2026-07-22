@@ -60,7 +60,7 @@ export type EgressOperationsConfigDTO = {
   assignmentIntervalSeconds: number; updatedAt: string;
 };
 export type EgressImportResultDTO = { imported: number; skipped: number };
-export type EgressProbeResultDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt: string; latencyMs: number; exitIp?: string };
+export type EgressProbeResultDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt: string; latencyMs: number; exitIp?: string; error?: string };
 export type EgressProbeBatchResultDTO = { requested: number; healthy: number; unhealthy: number };
 export type EgressRebalanceResultDTO = { assigned: number; rebalanced: number; unplaced: number };
 
@@ -200,7 +200,7 @@ export function refreshEgressClearance(id: string): Promise<{ refreshed: boolean
 }
 
 export function testEgressNode(id: string): Promise<EgressProbeResultDTO> {
-  return apiRequest(`/api/admin/v1/egress-nodes/${id}/test`, { method: "POST" }, createObjectDecoder<EgressProbeResultDTO>("egress probe", { status: isOneOf("unknown", "healthy", "unhealthy"), testedAt: isString, latencyMs: isNumber, exitIp: isOptional(isString) }));
+  return apiRequest(`/api/admin/v1/egress-nodes/${id}/test`, { method: "POST" }, createObjectDecoder<EgressProbeResultDTO>("egress probe", { status: isOneOf("unknown", "healthy", "unhealthy"), testedAt: isString, latencyMs: isNumber, exitIp: isOptional(isString), error: isOptional(isString) }));
 }
 
 export function testEgressNodes(ids?: string[]): Promise<EgressProbeBatchResultDTO> {

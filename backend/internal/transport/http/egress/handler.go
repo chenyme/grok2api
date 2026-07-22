@@ -460,7 +460,7 @@ func (h *Handler) testNode(c *gin.Context) {
 		h.writeError(c, err)
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"status": value.Status, "testedAt": value.TestedAt, "latencyMs": value.LatencyMS, "exitIp": value.ExitIP})
+	response.Success(c, http.StatusOK, gin.H{"status": value.Status, "testedAt": value.TestedAt, "latencyMs": value.LatencyMS, "exitIp": value.ExitIP, "error": value.Error})
 }
 
 func (h *Handler) testNodes(c *gin.Context) {

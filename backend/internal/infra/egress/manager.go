@@ -301,6 +301,9 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		if !selected.Enabled {
 			return nil, true, fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID)
 		}
+		if strings.TrimSpace(selected.EncryptedProxyURL) == "" {
+			return nil, true, fmt.Errorf("绑定出口节点 %d 未配置代理地址", boundNodeID)
+		}
 		proxyPool := m.isProxyPoolNode(selected)
 		if !proxyPool && selected.CooldownUntil != nil && now.Before(*selected.CooldownUntil) {
 			return nil, true, fmt.Errorf("绑定出口节点 %d 正在冷却", boundNodeID)

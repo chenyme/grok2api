@@ -24,6 +24,14 @@ const (
 	subscriptionFetchTimeout = 20 * time.Second
 )
 
+var blockedSubscriptionPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
+
 type subscriptionEntry struct {
 	ProxyURL string
 	Key      string
@@ -163,11 +171,15 @@ func resolvePublicAddresses(ctx context.Context, resolver *net.Resolver, host st
 
 func isPublicAddress(value netip.Addr) bool {
 	value = value.Unmap()
-	if !value.IsValid() || value.IsLoopback() || value.IsPrivate() || value.IsLinkLocalUnicast() || value.IsLinkLocalMulticast() || value.IsMulticast() || value.IsUnspecified() {
+	if !value.IsValid() || !value.IsGlobalUnicast() || value.IsLoopback() || value.IsPrivate() || value.IsLinkLocalUnicast() || value.IsLinkLocalMulticast() || value.IsMulticast() || value.IsUnspecified() {
 		return false
 	}
-	// RFC 6598 shared address space is not reported by Addr.IsPrivate().
-	return !netip.MustParsePrefix("100.64.0.0/10").Contains(value)
+	for _, prefix := range blockedSubscriptionPrefixes {
+		if prefix.Contains(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseProxySubscription(value string) ([]subscriptionEntry, int, error) {
