@@ -32,6 +32,10 @@
 
 <table>
 <tr>
+<td width="200" align="center" valign="middle"><a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE"><img src="https://raw.githubusercontent.com/Krill-ai-org/krill-ai-static/refs/heads/main/krill-logo/Eng/250x150.png" alt="Krill AI" width="160"></a></td>
+<td valign="middle">感谢 Krill AI 赞助了本项目！Krill 提供 GPT / Claude / Gemini / 多款国产模型的官方稳定极速的 API 中转服务，支持企业级定制、报销开票、7×16h 专属技术支持。更有独家适配的 WebSocket 链接方式，让您畅享极速首字速度。Krill 为本项目提供了特别优惠，使用<a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE">此链接</a>注册并在下订单时填写“grok2api”优惠码，首次购买套餐可以享受 Codex 77 折优惠！</td>
+</tr>
+<tr>
 <td width="200" align="center" valign="middle"><a href="https://github.com/DEEIX-AI/DEEIX-Chat"><img src="frontend/public/sponner/deeix-chat_deeix-ai.png" alt="DEEIX AI / DEEIX Chat" width="160"></a></td>
 <td valign="middle">DEEIX-Chat 是一款开源可部署的 AI Chat 平台，面向需要长期、稳定、统一使用多模型能力的个人、团队与企业，将模型、对话、文件、工具调用与后台管理整合为一套可部署、可扩展的系统。点击 <a href="https://github.com/DEEIX-AI/DEEIX-Chat">此处</a> 开始部署！</td>
 </tr>

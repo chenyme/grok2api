@@ -286,6 +286,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	egressService := egressapp.NewService(egressRepo, cipher, infraegress.DefaultUserAgent, accountRepo)
 	egressService.SetClearanceManager(egressManager)
 	egressService.SetNodeProber(egressManager)
+	egressService.SetOperationsConfigInvalidator(egressManager)
 	clientKeyService := clientkeyapp.NewService(clientKeyRepo, rateLimiter, concurrency, cfg.ClientKeyDefaults.RPMLimit, cfg.ClientKeyDefaults.MaxConcurrent, cipher)
 	auditService := auditapp.NewService(auditRepo, logger, cfg.Audit.BufferSize, cfg.Audit.BatchSize, cfg.Audit.FlushInterval.Value())
 	auditService.UpdateWriterConfig(cfg.Audit.BatchSize, cfg.Audit.FlushInterval.Value(), cfg.Audit.CommitDelay.Value())

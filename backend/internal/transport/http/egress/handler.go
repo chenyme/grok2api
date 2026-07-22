@@ -2,6 +2,7 @@ package egress
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -328,18 +329,55 @@ type probeBatchRequest struct {
 }
 
 type operationsConfigRequest struct {
-	ProbeIntervalSeconds      int  `json:"probeIntervalSeconds"`
-	AutoAssignEnabled         bool `json:"autoAssignEnabled"`
-	AutoBalanceEnabled        bool `json:"autoBalanceEnabled"`
-	AssignmentIntervalSeconds int  `json:"assignmentIntervalSeconds"`
+	ProbeIntervalSeconds      int                                  `json:"probeIntervalSeconds"`
+	AutoAssignEnabled         bool                                 `json:"autoAssignEnabled"`
+	AutoBalanceEnabled        bool                                 `json:"autoBalanceEnabled"`
+	AssignmentIntervalSeconds int                                  `json:"assignmentIntervalSeconds"`
+	Fallbacks                 map[string]operationsFallbackRequest `json:"fallbacks"`
+}
+
+type operationsFallbackRequest struct {
+	Mode   string `json:"mode"`
+	NodeID string `json:"nodeId"`
 }
 
 type operationsConfigResponse struct {
-	ProbeIntervalSeconds      int       `json:"probeIntervalSeconds"`
-	AutoAssignEnabled         bool      `json:"autoAssignEnabled"`
-	AutoBalanceEnabled        bool      `json:"autoBalanceEnabled"`
-	AssignmentIntervalSeconds int       `json:"assignmentIntervalSeconds"`
-	UpdatedAt                 time.Time `json:"updatedAt"`
+	ProbeIntervalSeconds      int                                   `json:"probeIntervalSeconds"`
+	AutoAssignEnabled         bool                                  `json:"autoAssignEnabled"`
+	AutoBalanceEnabled        bool                                  `json:"autoBalanceEnabled"`
+	AssignmentIntervalSeconds int                                   `json:"assignmentIntervalSeconds"`
+	Fallbacks                 map[string]operationsFallbackResponse `json:"fallbacks"`
+	UpdatedAt                 time.Time                             `json:"updatedAt"`
+}
+
+type operationsFallbackResponse struct {
+	Mode   string `json:"mode"`
+	NodeID string `json:"nodeId,omitempty"`
+}
+
+func (value operationsConfigRequest) input() (egressapp.OperationsConfigInput, error) {
+	result := egressapp.OperationsConfigInput{
+		ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
+		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
+	}
+	if value.Fallbacks == nil {
+		return result, nil
+	}
+	result.Fallbacks = make(map[egressdomain.Scope]egressapp.FallbackConfigInput, len(value.Fallbacks))
+	for rawScope, fallback := range value.Fallbacks {
+		nodeID := uint64(0)
+		if strings.TrimSpace(fallback.NodeID) != "" {
+			parsed, err := strconv.ParseUint(fallback.NodeID, 10, 64)
+			if err != nil || parsed == 0 {
+				return egressapp.OperationsConfigInput{}, fmt.Errorf("%w: 固定回退节点 ID 无效", egressapp.ErrInvalidInput)
+			}
+			nodeID = parsed
+		}
+		result.Fallbacks[egressdomain.Scope(rawScope)] = egressapp.FallbackConfigInput{
+			Mode: egressdomain.FallbackMode(strings.TrimSpace(fallback.Mode)), NodeID: nodeID,
+		}
+	}
+	return result, nil
 }
 
 func (value sourceRequest) input() egressapp.SubscriptionSourceInput {
@@ -358,9 +396,19 @@ func newSourceResponse(value egressdomain.PublicSubscriptionSource) sourceRespon
 }
 
 func newOperationsConfigResponse(value egressdomain.OperationsConfig) operationsConfigResponse {
+	fallbacks := make(map[string]operationsFallbackResponse, 4)
+	for _, scope := range []egressdomain.Scope{egressdomain.ScopeBuild, egressdomain.ScopeWeb, egressdomain.ScopeConsole, egressdomain.ScopeWebAsset} {
+		fallback := value.FallbackFor(scope)
+		item := operationsFallbackResponse{Mode: string(fallback.Mode)}
+		if fallback.NodeID != 0 {
+			item.NodeID = strconv.FormatUint(fallback.NodeID, 10)
+		}
+		fallbacks[string(scope)] = item
+	}
 	return operationsConfigResponse{
 		ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
-		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds, UpdatedAt: value.UpdatedAt,
+		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
+		Fallbacks: fallbacks, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -497,10 +545,12 @@ func (h *Handler) updateOperationsConfig(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	value, err := h.service.UpdateOperationsConfig(c.Request.Context(), egressapp.OperationsConfigInput{
-		ProbeIntervalSeconds: request.ProbeIntervalSeconds, AutoAssignEnabled: request.AutoAssignEnabled,
-		AutoBalanceEnabled: request.AutoBalanceEnabled, AssignmentIntervalSeconds: request.AssignmentIntervalSeconds,
-	})
+	input, err := request.input()
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	value, err := h.service.UpdateOperationsConfig(c.Request.Context(), input)
 	if err != nil {
 		h.writeError(c, err)
 		return

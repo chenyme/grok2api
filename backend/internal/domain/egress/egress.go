@@ -135,14 +135,74 @@ type PublicSubscriptionSource struct {
 	UpdatedAt              time.Time
 }
 
-// OperationsConfig controls background probe and account assignment work. It
-// defaults to a conservative disabled state for assignment mutations.
+// FallbackMode controls what happens when no primary egress node can be
+// acquired for a request scope. The default is deliberately none so upgrades
+// preserve the existing fail-closed behavior.
+type FallbackMode string
+
+const (
+	FallbackModeNone   FallbackMode = "none"
+	FallbackModeDirect FallbackMode = "direct"
+	FallbackModeFixed  FallbackMode = "fixed"
+)
+
+func (value FallbackMode) IsValid() bool {
+	switch value {
+	case FallbackModeNone, FallbackModeDirect, FallbackModeFixed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Normalized maps the zero value left by pre-fallback database rows to the
+// conservative disabled mode.
+func (value FallbackMode) Normalized() FallbackMode {
+	if value == "" {
+		return FallbackModeNone
+	}
+	return value
+}
+
+type FallbackConfig struct {
+	Mode   FallbackMode
+	NodeID uint64
+}
+
+// OperationsConfig controls background probe, account assignment, and egress
+// fallback work. It defaults to a conservative disabled state for mutations
+// and fallback routing.
 type OperationsConfig struct {
 	ProbeIntervalSeconds      int
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
 	AssignmentIntervalSeconds int
+	Fallbacks                 map[Scope]FallbackConfig
 	UpdatedAt                 time.Time
+}
+
+func DefaultOperationsConfig() OperationsConfig {
+	return OperationsConfig{
+		ProbeIntervalSeconds:      900,
+		AssignmentIntervalSeconds: 300,
+		Fallbacks: map[Scope]FallbackConfig{
+			ScopeBuild:    {Mode: FallbackModeNone},
+			ScopeWeb:      {Mode: FallbackModeNone},
+			ScopeConsole:  {Mode: FallbackModeNone},
+			ScopeWebAsset: {Mode: FallbackModeNone},
+		},
+	}
+}
+
+// FallbackFor always returns a canonical, safe fallback value. It accepts
+// sparse maps so older callers and historical records remain compatible.
+func (value OperationsConfig) FallbackFor(scope Scope) FallbackConfig {
+	fallback := value.Fallbacks[scope]
+	fallback.Mode = fallback.Mode.Normalized()
+	if fallback.Mode != FallbackModeFixed {
+		fallback.NodeID = 0
+	}
+	return fallback
 }
 
 // SupportsScope reports whether a node can serve requests for the supplied

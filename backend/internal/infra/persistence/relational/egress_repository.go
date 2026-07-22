@@ -305,6 +305,9 @@ func (r *EgressRepository) UpsertEgressNodesFromSource(ctx context.Context, sour
 		}).Error; err != nil {
 			return mapError(err)
 		}
+		if err := clearInvalidEgressFallbackNodeReferences(tx); err != nil {
+			return err
+		}
 		return nil
 	})
 	return returned, err
@@ -314,7 +317,7 @@ func (r *EgressRepository) GetEgressOperationsConfig(ctx context.Context) (egres
 	var row egressOperationsConfigModel
 	if err := r.db.db.WithContext(ctx).First(&row, 1).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return egress.OperationsConfig{ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300}, nil
+			return egress.DefaultOperationsConfig(), nil
 		}
 		return egress.OperationsConfig{}, mapError(err)
 	}
@@ -337,6 +340,9 @@ func (r *EgressRepository) DeleteEgressNode(ctx context.Context, id uint64) erro
 		})
 		if result.Error != nil {
 			return result.Error
+		}
+		if err := clearEgressFallbackNodeReferences(tx, []uint64{id}); err != nil {
+			return err
 		}
 		result = tx.Delete(&egressNodeModel{}, id)
 		if result.Error != nil {
@@ -368,6 +374,9 @@ func (r *EgressRepository) DeleteEgressNodes(ctx context.Context, ids []uint64) 
 			}); result.Error != nil {
 				return result.Error
 			}
+			if err := clearEgressFallbackNodeReferences(tx, batch); err != nil {
+				return err
+			}
 			result := tx.Where("id IN ?", batch).Delete(&egressNodeModel{})
 			if result.Error != nil {
 				return result.Error
@@ -377,6 +386,64 @@ func (r *EgressRepository) DeleteEgressNodes(ctx context.Context, ids []uint64) 
 		return nil
 	})
 	return int(deleted), mapError(err)
+}
+
+func clearEgressFallbackNodeReferences(tx *gorm.DB, ids []uint64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, columns := range [][2]string{
+		{"build_fallback_mode", "build_fallback_node_id"},
+		{"web_fallback_mode", "web_fallback_node_id"},
+		{"console_fallback_mode", "console_fallback_node_id"},
+		{"web_asset_fallback_mode", "web_asset_fallback_node_id"},
+	} {
+		if err := tx.Model(&egressOperationsConfigModel{}).
+			Where("id = ? AND "+columns[1]+" IN ?", 1, ids).
+			Updates(map[string]any{columns[0]: string(egress.FallbackModeNone), columns[1]: 0}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func clearInvalidEgressFallbackNodeReferences(tx *gorm.DB) error {
+	var config egressOperationsConfigModel
+	if err := tx.First(&config, 1).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	for _, fallback := range []struct {
+		scope                egress.Scope
+		mode                 string
+		nodeID               uint64
+		modeColumn, idColumn string
+	}{
+		{egress.ScopeBuild, config.BuildFallbackMode, config.BuildFallbackNodeID, "build_fallback_mode", "build_fallback_node_id"},
+		{egress.ScopeWeb, config.WebFallbackMode, config.WebFallbackNodeID, "web_fallback_mode", "web_fallback_node_id"},
+		{egress.ScopeConsole, config.ConsoleFallbackMode, config.ConsoleFallbackNodeID, "console_fallback_mode", "console_fallback_node_id"},
+		{egress.ScopeWebAsset, config.WebAssetFallbackMode, config.WebAssetFallbackNodeID, "web_asset_fallback_mode", "web_asset_fallback_node_id"},
+	} {
+		if egress.FallbackMode(fallback.mode).Normalized() != egress.FallbackModeFixed {
+			continue
+		}
+		var node egressNodeModel
+		err := tx.First(&node, fallback.nodeID).Error
+		valid := err == nil && node.Enabled && !node.ProxyPool && node.EncryptedProxyURL != "" && egress.SupportsScope(egress.Scope(node.Scope), fallback.scope)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if valid {
+			continue
+		}
+		if err := tx.Model(&egressOperationsConfigModel{}).Where("id = ?", 1).
+			Updates(map[string]any{fallback.modeColumn: string(egress.FallbackModeNone), fallback.idColumn: 0}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *EgressRepository) assignedAccountCounts(ctx context.Context) (map[uint64]int, error) {
@@ -452,13 +519,29 @@ func fromEgressSubscriptionSourceDomain(value egress.SubscriptionSource) egressS
 func toEgressOperationsConfigDomain(row egressOperationsConfigModel) egress.OperationsConfig {
 	return egress.OperationsConfig{
 		ProbeIntervalSeconds: row.ProbeIntervalSeconds, AutoAssignEnabled: row.AutoAssignEnabled, AutoBalanceEnabled: row.AutoBalanceEnabled,
-		AssignmentIntervalSeconds: row.AssignmentIntervalSeconds, UpdatedAt: row.UpdatedAt,
+		AssignmentIntervalSeconds: row.AssignmentIntervalSeconds,
+		Fallbacks: map[egress.Scope]egress.FallbackConfig{
+			egress.ScopeBuild:    {Mode: egress.FallbackMode(row.BuildFallbackMode).Normalized(), NodeID: row.BuildFallbackNodeID},
+			egress.ScopeWeb:      {Mode: egress.FallbackMode(row.WebFallbackMode).Normalized(), NodeID: row.WebFallbackNodeID},
+			egress.ScopeConsole:  {Mode: egress.FallbackMode(row.ConsoleFallbackMode).Normalized(), NodeID: row.ConsoleFallbackNodeID},
+			egress.ScopeWebAsset: {Mode: egress.FallbackMode(row.WebAssetFallbackMode).Normalized(), NodeID: row.WebAssetFallbackNodeID},
+		},
+		UpdatedAt: row.UpdatedAt,
 	}
 }
 
 func fromEgressOperationsConfigDomain(value egress.OperationsConfig) egressOperationsConfigModel {
+	buildFallback := value.FallbackFor(egress.ScopeBuild)
+	webFallback := value.FallbackFor(egress.ScopeWeb)
+	consoleFallback := value.FallbackFor(egress.ScopeConsole)
+	webAssetFallback := value.FallbackFor(egress.ScopeWebAsset)
 	return egressOperationsConfigModel{
 		ID: 1, ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
-		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds, UpdatedAt: value.UpdatedAt,
+		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
+		BuildFallbackMode: string(buildFallback.Mode), BuildFallbackNodeID: buildFallback.NodeID,
+		WebFallbackMode: string(webFallback.Mode), WebFallbackNodeID: webFallback.NodeID,
+		ConsoleFallbackMode: string(consoleFallback.Mode), ConsoleFallbackNodeID: consoleFallback.NodeID,
+		WebAssetFallbackMode: string(webAssetFallback.Mode), WebAssetFallbackNodeID: webAssetFallback.NodeID,
+		UpdatedAt: value.UpdatedAt,
 	}
 }
