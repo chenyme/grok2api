@@ -69,6 +69,7 @@ func (r *AccountRepository) UpdateIdentityMetadata(ctx context.Context, accountI
 	if result.RowsAffected == 0 {
 		return repository.ErrNotFound
 	}
+	r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, AccountID: accountID})
 	return nil
 }
 
@@ -77,7 +78,7 @@ func (r *AccountRepository) ReconcileProviderLinks(ctx context.Context, accountI
 	if accountID == 0 {
 		return repository.ErrNotFound
 	}
-	return mapError(r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := mapError(r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var value accountModel
 		if err := tx.Select("id", "provider", "source_key", "user_id", "team_id").First(&value, accountID).Error; err != nil {
 			return err
@@ -111,6 +112,10 @@ func (r *AccountRepository) ReconcileProviderLinks(ctx context.Context, accountI
 		}
 		return nil
 	}))
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged, AccountID: accountID})
+	}
+	return err
 }
 
 func reconcileWebConsoleByUserID(tx *gorm.DB, value accountModel, valueIsWeb bool) error {

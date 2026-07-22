@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	dashboardapp "github.com/chenyme/grok2api/backend/internal/application/dashboard"
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
+	invalidationapp "github.com/chenyme/grok2api/backend/internal/application/invalidation"
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	quotarecoveryapp "github.com/chenyme/grok2api/backend/internal/application/quotarecovery"
@@ -55,29 +57,31 @@ const (
 
 // Application 管理后端进程生命周期和本地后台任务。
 type Application struct {
-	logger        *slog.Logger
-	database      *relational.Database
-	server        *http.Server
-	audits        *auditapp.Service
-	responses     repository.ResponseRepository
-	cleanupLock   repository.DistributedLock
-	runtime       io.Closer
-	settingsBus   repository.SettingsChangeBus
-	settings      *settingsapp.Service
-	gateway       *gateway.Service
-	media         *mediaapp.Service
-	quotaRecovery *quotarecoveryapp.Service
-	accounts      *accountapp.Service
-	models        *modelapp.Service
-	clientKeys    *clientkeyapp.Service
-	updates       *updatecheckapp.Service
-	accountRepo   repository.AccountRepository
-	modelRepo     repository.ModelRepository
-	providers     *provider.Registry
-	web           *webprovider.Adapter
-	egress        *infraegress.Manager
-	egressOps     *egressapp.Service
-	startup       *startupState
+	logger          *slog.Logger
+	database        *relational.Database
+	server          *http.Server
+	audits          *auditapp.Service
+	responses       repository.ResponseRepository
+	cleanupLock     repository.DistributedLock
+	runtime         io.Closer
+	settingsBus     repository.SettingsChangeBus
+	invalidationBus repository.InvalidationBus
+	settings        *settingsapp.Service
+	gateway         *gateway.Service
+	media           *mediaapp.Service
+	quotaRecovery   *quotarecoveryapp.Service
+	accounts        *accountapp.Service
+	models          *modelapp.Service
+	clientKeys      *clientkeyapp.Service
+	updates         *updatecheckapp.Service
+	invalidations   *invalidationapp.Service
+	accountRepo     repository.AccountRepository
+	modelRepo       repository.ModelRepository
+	providers       *provider.Registry
+	web             *webprovider.Adapter
+	egress          *infraegress.Manager
+	egressOps       *egressapp.Service
+	startup         *startupState
 }
 
 // New 完成数据库、Provider、应用服务和 HTTP 路由装配。
@@ -143,6 +147,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	var quotaQueue repository.QuotaRecoveryQueue
 	var quotaRefreshState repository.QuotaRefreshCoordinator
 	var observedModelStore repository.ObservedModelStateRepository
+	var invalidationBus repository.InvalidationBus
 	var runtimeStore io.Closer
 	runtimeHealth := func(context.Context) error { return nil }
 	switch cfg.RuntimeStore.Driver {
@@ -158,6 +163,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 			return nil, openErr
 		}
 		runtimeStore = redisStore
+		invalidationBus = redisStore
 		runtimeHealth = redisStore.Ping
 		rateLimiter = redisStore
 		concurrency = redisruntime.NewConcurrencyLimiter(redisStore)
@@ -288,6 +294,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	dashboardService := dashboardapp.NewService(dashboardRepo)
 	selector := gateway.NewSelector(accountRepo, concurrency, sticky, providers, cfg.Routing.StickyTTL.Value(), cfg.Routing.CooldownBase.Value(), cfg.Routing.CooldownMax.Value(), cfg.Routing.CapacityWait.Value())
 	selector.UpdatePreferFreeBuild(cfg.Routing.PreferFreeBuild)
+	invalidationService := invalidationapp.NewService(invalidationBus, invalidationSourceInstance(cfg), selector.ApplyInvalidation, logger)
+	accountRepo.SetInvalidationObserver(invalidationService.Notify)
+	modelRepo.SetInvalidationObserver(invalidationService.Notify)
 	gatewayService := gateway.NewService(modelService, auditService, accountService, clientKeyService, providers, selector, responseRepo, cfg.Routing.MaxAttempts)
 	gatewayService.SetLogger(logger)
 	gatewayService.UpdateRequestTimeout(cfg.Server.RequestTimeout.Value())
@@ -347,9 +356,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	return &Application{
 		logger: logger, database: database, server: server,
 		audits: auditService, responses: responseRepo, cleanupLock: refreshLock, runtime: runtimeStore,
-		settingsBus: settingsBus, settings: settingsService, gateway: gatewayService, media: mediaService, quotaRecovery: quotaRecoveryService, accounts: accountService, models: modelService, clientKeys: clientKeyService, updates: updateService,
+		settingsBus: settingsBus, invalidationBus: invalidationBus, settings: settingsService, gateway: gatewayService, media: mediaService, quotaRecovery: quotaRecoveryService, accounts: accountService, models: modelService, clientKeys: clientKeyService, updates: updateService, invalidations: invalidationService,
 		accountRepo: accountRepo, modelRepo: modelRepo, providers: providers, web: webAdapter, egress: egressManager, egressOps: egressService, startup: startup,
 	}, nil
+}
+
+func invalidationSourceInstance(cfg config.Config) string {
+	if value := strings.TrimSpace(cfg.Deployment.InstanceID); value != "" {
+		return value
+	}
+	return fmt.Sprintf("process-%d", time.Now().UnixNano())
 }
 
 func maxBatchConcurrency(value config.BatchConfig) int {
@@ -436,6 +452,10 @@ func (a *Application) Run(ctx context.Context) error {
 			defer background.Done()
 			a.runSupervisedTask(runCtx, name, task)
 		}()
+	}
+	if a.invalidationBus != nil {
+		startBackground("invalidation_publisher", a.invalidations.RunPublisher)
+		startBackground("invalidation_subscriber", a.invalidations.RunSubscriber)
 	}
 	startBackground("settings_reconcile", func(taskCtx context.Context) error {
 		a.runPeriodicTask(taskCtx, 30*time.Second, "settings_reconcile", func(runCtx context.Context) error {

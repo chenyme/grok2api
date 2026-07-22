@@ -15,9 +15,22 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-type AccountRepository struct{ db *Database }
+type AccountRepository struct {
+	db       *Database
+	observer repository.InvalidationObserver
+}
 
 func NewAccountRepository(db *Database) *AccountRepository { return &AccountRepository{db: db} }
+
+func (r *AccountRepository) SetInvalidationObserver(observer repository.InvalidationObserver) {
+	r.observer = observer
+}
+
+func (r *AccountRepository) notifyInvalidation(ctx context.Context, event repository.InvalidationEvent) {
+	if r.observer != nil {
+		r.observer(ctx, event)
+	}
+}
 
 type quotaBreakdownJSON struct {
 	ProductCode  int     `json:"productCode"`
@@ -307,6 +320,129 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 	return result, nil
 }
 
+func (r *AccountRepository) ListRoutingAccountBases(ctx context.Context, provider account.Provider, quotaMode string) ([]account.RoutingAccountBase, error) {
+	values, err := r.ListEnabled(ctx, provider)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uint64, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	billings, err := r.GetBillings(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	recoveries, err := r.GetQuotaRecoveries(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	quotaWindows := make(map[uint64]account.QuotaWindow, len(ids))
+	if len(ids) > 0 && (provider == account.ProviderWeb || quotaMode != "") {
+		modes := make([]string, 0, 2)
+		if provider == account.ProviderWeb {
+			modes = append(modes, "weekly")
+		}
+		if quotaMode != "" {
+			modes = append(modes, quotaMode)
+		}
+		var rows []quotaWindowModel
+		if err := r.db.db.WithContext(ctx).Where("account_id IN ? AND mode IN ?", ids, modes).Order("CASE WHEN mode = 'weekly' THEN 0 ELSE 1 END").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if _, exists := quotaWindows[row.AccountID]; !exists {
+				quotaWindows[row.AccountID] = toQuotaWindowDomain(row)
+			}
+		}
+	}
+	result := make([]account.RoutingAccountBase, 0, len(values))
+	for _, value := range values {
+		base := account.RoutingAccountBase{Credential: value}
+		if billing, ok := billings[value.ID]; ok {
+			base.Billing = &billing
+		}
+		if recovery, ok := recoveries[value.ID]; ok {
+			base.QuotaRecovery = &recovery
+		}
+		if window, ok := quotaWindows[value.ID]; ok {
+			base.QuotaWindow = &window
+		}
+		result = append(result, base)
+	}
+	return result, nil
+}
+
+func (r *AccountRepository) ListRoutingAccountOverlays(ctx context.Context, provider account.Provider, upstreamModel string) (account.RoutingOverlaySnapshot, error) {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		return account.RoutingOverlaySnapshot{}, nil
+	}
+	var boundIDs []uint64
+	if err := r.db.db.WithContext(ctx).
+		Table("model_route_accounts AS binding").
+		Select("binding.account_id").
+		Joins("JOIN model_routes AS route ON route.id = binding.model_route_id").
+		Where("route.provider = ? AND route.upstream_model = ?", provider, upstreamModel).
+		Scan(&boundIDs).Error; err != nil {
+		return account.RoutingOverlaySnapshot{}, err
+	}
+	values := make(map[uint64]account.RoutingAccountOverlay)
+	for _, id := range boundIDs {
+		values[id] = account.RoutingAccountOverlay{AccountID: id, Bound: true, ModelCapabilityKnown: true, SupportsModel: true}
+	}
+	var states []accountModelSyncStateModel
+	if err := r.db.db.WithContext(ctx).
+		Table("account_model_sync_states AS state").
+		Select("state.*").
+		Joins("JOIN provider_accounts AS account ON account.id = state.account_id").
+		Where("account.provider = ? AND account.enabled = TRUE AND state.last_success_at IS NOT NULL", provider).
+		Find(&states).Error; err != nil {
+		return account.RoutingOverlaySnapshot{}, err
+	}
+	for _, state := range states {
+		overlay := values[state.AccountID]
+		overlay.AccountID = state.AccountID
+		overlay.ModelCapabilityKnown = true
+		values[state.AccountID] = overlay
+	}
+	var capabilities []accountModelCapabilityModel
+	if err := r.db.db.WithContext(ctx).
+		Table("account_model_capabilities AS capability").
+		Select("capability.*").
+		Joins("JOIN provider_accounts AS account ON account.id = capability.account_id").
+		Where("account.provider = ? AND account.enabled = TRUE AND capability.upstream_model = ?", provider, upstreamModel).
+		Find(&capabilities).Error; err != nil {
+		return account.RoutingOverlaySnapshot{}, err
+	}
+	for _, capability := range capabilities {
+		overlay := values[capability.AccountID]
+		overlay.AccountID = capability.AccountID
+		overlay.SupportsModel = true
+		values[capability.AccountID] = overlay
+	}
+	var blockRows []accountModelQuotaBlockModel
+	if err := r.db.db.WithContext(ctx).
+		Table("account_model_quota_blocks AS block").
+		Select("block.*").
+		Joins("JOIN provider_accounts AS account ON account.id = block.account_id").
+		Where("account.provider = ? AND account.enabled = TRUE AND block.upstream_model = ? AND block.cooldown_until > ?", provider, upstreamModel, time.Now().UTC()).
+		Find(&blockRows).Error; err != nil {
+		return account.RoutingOverlaySnapshot{}, err
+	}
+	for _, row := range blockRows {
+		overlay := values[row.AccountID]
+		overlay.AccountID = row.AccountID
+		overlay.ModelQuotaBlock = &account.ModelQuotaBlock{AccountID: row.AccountID, UpstreamModel: row.UpstreamModel, Reason: row.Reason, CooldownUntil: row.CooldownUntil.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
+		values[row.AccountID] = overlay
+	}
+	result := account.RoutingOverlaySnapshot{HasBindings: len(boundIDs) > 0, Values: make([]account.RoutingAccountOverlay, 0, len(values))}
+	for _, value := range values {
+		result.Values = append(result.Values, value)
+	}
+	return result, nil
+}
+
 func (r *AccountRepository) ListEnabled(ctx context.Context, provider account.Provider) ([]account.Credential, error) {
 	var rows []accountModel
 	err := r.db.db.WithContext(ctx).Preload("Credential").Preload("WebProfile").Where("provider = ? AND enabled = ? AND auth_status = ?", provider, true, account.AuthStatusActive).Order("priority DESC, id ASC").Find(&rows).Error
@@ -495,7 +631,11 @@ func (r *AccountRepository) LinkWebToBuild(ctx context.Context, webAccountID, bu
 		}
 		return tx.Create(&accountProviderLinkModel{WebAccountID: webAccountID, BuildAccountID: buildAccountID, CreatedAt: time.Now().UTC()}).Error
 	})
-	return mapError(err)
+	err = mapError(err)
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged})
+	}
+	return err
 }
 
 func (r *AccountRepository) attachAccountLinks(ctx context.Context, values []account.Credential) error {
@@ -676,6 +816,7 @@ func (r *AccountRepository) UpsertByIdentity(ctx context.Context, value account.
 	if err != nil {
 		return account.Credential{}, false, mapError(err)
 	}
+	r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: value.Provider, AccountID: result.ID})
 	stored, err := r.Get(ctx, result.ID)
 	return stored, result.Created, err
 }
@@ -742,6 +883,13 @@ func (r *AccountRepository) UpsertManyByIdentity(ctx context.Context, values []a
 	})
 	if err != nil {
 		return nil, mapError(err)
+	}
+	providers := make(map[account.Provider]struct{})
+	for _, value := range values {
+		providers[value.Provider] = struct{}{}
+	}
+	for providerValue := range providers {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: providerValue})
 	}
 	return results, nil
 }
@@ -847,12 +995,17 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 }
 
 func (r *AccountRepository) Update(ctx context.Context, value account.Credential) (account.Credential, error) {
-	row := fromAccountDomain(value)
+	var row accountModel
+	var storedProvider account.Provider
 	if err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing accountModel
-		if err := tx.Select("identity_key", "created_at", "auth_status", "reauth_marked_at").First(&existing, row.ID).Error; err != nil {
+		if err := tx.Select("id", "identity_key", "created_at", "provider", "auth_status", "reauth_marked_at").First(&existing, value.ID).Error; err != nil {
 			return err
 		}
+		storedProvider = account.Provider(existing.Provider)
+		value.Provider = storedProvider
+		row = fromAccountDomain(value)
+		row.ID = existing.ID
 		// 身份同步补充的 user_id/email 不得让普通编辑重写持久化身份键。
 		row.IdentityKey = existing.IdentityKey
 		row.CreatedAt = existing.CreatedAt
@@ -864,6 +1017,7 @@ func (r *AccountRepository) Update(ctx context.Context, value account.Credential
 	}); err != nil {
 		return account.Credential{}, mapError(err)
 	}
+	r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: storedProvider, AccountID: row.ID})
 	return r.Get(ctx, row.ID)
 }
 
@@ -919,7 +1073,11 @@ func (r *AccountRepository) MarkWebNSFWEnabled(ctx context.Context, id uint64, e
 	if id == 0 || enabledAt.IsZero() {
 		return fmt.Errorf("Web NSFW 标记参数无效")
 	}
-	return r.markWebProfileTimestamp(ctx, id, "nsfw_enabled_at", enabledAt)
+	err := r.markWebProfileTimestamp(ctx, id, "nsfw_enabled_at", enabledAt)
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: account.ProviderWeb, AccountID: id})
+	}
+	return err
 }
 
 // MarkWebTermsAccepted 幂等保存已完整接受的产品协议版本。
@@ -929,7 +1087,7 @@ func (r *AccountRepository) MarkWebTermsAccepted(ctx context.Context, id uint64,
 		return fmt.Errorf("Web 服务协议标记参数无效")
 	}
 	acceptedAt = acceptedAt.UTC()
-	return mapError(r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := mapError(r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var accountRow accountModel
 		if err := tx.Select("id", "provider").First(&accountRow, id).Error; err != nil {
 			return err
@@ -949,6 +1107,10 @@ func (r *AccountRepository) MarkWebTermsAccepted(ctx context.Context, id uint64,
 			Where("account_id = ? AND (terms_accepted_version < ? OR terms_accepted_at IS NULL)", id, version).
 			Updates(map[string]any{"terms_accepted_at": acceptedAt, "terms_accepted_version": version}).Error
 	}))
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: account.ProviderWeb, AccountID: id})
+	}
+	return err
 }
 
 // MarkWebBirthDateSet 幂等保存首次成功设置或确认已有生日的时间。
@@ -956,7 +1118,11 @@ func (r *AccountRepository) MarkWebBirthDateSet(ctx context.Context, id uint64, 
 	if id == 0 || setAt.IsZero() {
 		return fmt.Errorf("Web 生日标记参数无效")
 	}
-	return r.markWebProfileTimestamp(ctx, id, "birth_date_set_at", setAt)
+	err := r.markWebProfileTimestamp(ctx, id, "birth_date_set_at", setAt)
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: account.ProviderWeb, AccountID: id})
+	}
+	return err
 }
 
 func (r *AccountRepository) markWebProfileTimestamp(ctx context.Context, id uint64, column string, value time.Time) error {
@@ -1018,6 +1184,9 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, update
 		return 0, nil
 	}
 	result := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id IN ?", ids).Updates(values)
+	if result.Error == nil && result.RowsAffected > 0 {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged})
+	}
 	return result.RowsAffected, result.Error
 }
 
@@ -1092,7 +1261,7 @@ func (r *AccountRepository) listEgressBindingProviders(query *gorm.DB) ([]accoun
 }
 
 func (r *AccountRepository) Delete(ctx context.Context, id uint64) error {
-	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var lockedID uint64
 		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Pluck("id", &lockedID).Error; err != nil {
 			return err
@@ -1105,6 +1274,10 @@ func (r *AccountRepository) Delete(ctx context.Context, id uint64) error {
 		}
 		return mapError(tx.Delete(&accountModel{}, id).Error)
 	})
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged})
+	}
+	return err
 }
 
 func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64, error) {
@@ -1124,6 +1297,9 @@ func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64
 		deleted = result.RowsAffected
 		return result.Error
 	})
+	if err == nil && deleted > 0 {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged})
+	}
 	return deleted, err
 }
 
@@ -1204,6 +1380,9 @@ func (r *AccountRepository) DeleteAutoCleanReauthCandidates(ctx context.Context,
 		}
 		return nil
 	})
+	if err == nil && len(deletedIDs) > 0 {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged})
+	}
 	return deletedIDs, err
 }
 
@@ -1295,6 +1474,9 @@ func (r *AccountRepository) DeleteAccountStatusBatch(ctx context.Context, provid
 		}
 		return nil
 	})
+	if err == nil && len(deletedIDs) > 0 {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: providerValue})
+	}
 	return deletedIDs, candidateCount, err
 }
 
@@ -1335,7 +1517,14 @@ func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessT
 	}); err != nil {
 		return account.Credential{}, err
 	}
-	return r.Get(ctx, id)
+	stored, err := r.Get(ctx, id)
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged, Provider: stored.Provider, AccountID: id})
+	} else {
+		// The database write already committed; retain a broad fallback if the read-back fails.
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged, AccountID: id})
+	}
+	return stored, err
 }
 
 // BackfillCredentialRefreshSchedules 为升级前凭据分批补齐调度时间，不解密 Token，也不发起 OAuth 请求。
@@ -1425,10 +1614,14 @@ func (r *AccountRepository) NextCredentialRefreshDueAt(ctx context.Context) (*ti
 }
 
 func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string, permanent bool) error {
-	return r.db.db.WithContext(ctx).Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(map[string]any{
+	err := r.db.db.WithContext(ctx).Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(map[string]any{
 		"refresh_due_at": retryAt.UTC(), "refresh_failures": max(0, failureCount),
 		"last_refresh_error": truncate(errorCode, 100), "refresh_permanent": permanent, "updated_at": time.Now().UTC(),
 	}).Error
+	if err == nil && permanent {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged, AccountID: id})
+	}
+	return err
 }
 
 func (r *AccountRepository) UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error {
@@ -1441,6 +1634,9 @@ func (r *AccountRepository) UpdateObservedModelIfNewer(ctx context.Context, id u
 	result := r.db.db.WithContext(ctx).Model(&accountModel{}).
 		Where("id = ? AND (observed_model_at IS NULL OR observed_model_at <= ?) AND (COALESCE(observed_model, '') <> ? OR observed_model_at <= ?)", id, observedAt, model, observedAt.Add(-30*time.Minute)).
 		Updates(map[string]any{"observed_model": model, "observed_model_at": observedAt})
+	if result.Error == nil && result.RowsAffected > 0 {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, AccountID: id})
+	}
 	return result.RowsAffected > 0, result.Error
 }
 
@@ -1462,6 +1658,7 @@ func (r *AccountRepository) MarkBuildAPIFallback(ctx context.Context, id uint64,
 		}
 		return fmt.Errorf("仅 grok_build 账号支持 Build API 降级标记")
 	}
+	r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: account.ProviderBuild, AccountID: id})
 	return nil
 }
 
@@ -1471,7 +1668,11 @@ func (r *AccountRepository) UpdateHealth(ctx context.Context, id uint64, failure
 		now := time.Now().UTC()
 		updates["last_used_at"] = &now
 	}
-	return r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Updates(updates).Error
+	err := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Updates(updates).Error
+	if err == nil && !success {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, AccountID: id})
+	}
+	return err
 }
 
 func (r *AccountRepository) UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error {
@@ -1485,13 +1686,17 @@ func (r *AccountRepository) UpsertModelQuotaBlock(ctx context.Context, value acc
 		AccountID: value.AccountID, UpstreamModel: truncate(value.UpstreamModel, 255), Reason: truncate(value.Reason, 100),
 		CooldownUntil: value.CooldownUntil.UTC(), UpdatedAt: now,
 	}
-	return r.db.db.WithContext(ctx).Clauses(clause.OnConflict{
+	err := r.db.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "account_id"}, {Name: "upstream_model"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"reason":         gorm.Expr("CASE WHEN cooldown_until > ? THEN reason ELSE ? END", row.CooldownUntil, row.Reason),
 			"cooldown_until": gorm.Expr("CASE WHEN cooldown_until > ? THEN cooldown_until ELSE ? END", row.CooldownUntil, row.CooldownUntil), "updated_at": now,
 		}),
 	}).Create(&row).Error
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountModelQuotaChanged, AccountID: value.AccountID, UpstreamModel: value.UpstreamModel})
+	}
+	return err
 }
 
 func (r *AccountRepository) PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error) {
@@ -1513,6 +1718,9 @@ func (r *AccountRepository) PruneExpiredModelQuotaBlocks(ctx context.Context, no
 		}
 		return nil
 	})
+	if err == nil && deleted > 0 {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountModelQuotaChanged})
+	}
 	return deleted, err
 }
 
@@ -1522,7 +1730,11 @@ func (r *AccountRepository) SaveBilling(ctx context.Context, value account.Billi
 		return err
 	}
 	row := billingModel{AccountID: value.AccountID, PlanCode: truncate(value.PlanCode, 100), PlanName: truncate(value.PlanName, 160), MonthlyLimit: value.MonthlyLimit, Used: value.Used, OnDemandCap: value.OnDemandCap, OnDemandUsed: value.OnDemandUsed, PrepaidBalance: value.PrepaidBalance, CreditUsagePercent: value.CreditUsagePercent, IsUnifiedBillingUser: value.IsUnifiedBillingUser, OnDemandEnabled: value.OnDemandEnabled, TopUpMethod: truncate(value.TopUpMethod, 100), UsagePeriodType: truncate(value.UsagePeriodType, 100), UsagePeriodStart: truncate(value.UsagePeriodStart, 64), UsagePeriodEnd: truncate(value.UsagePeriodEnd, 64), BillingPeriodStart: truncate(value.BillingPeriodStart, 64), BillingPeriodEnd: truncate(value.BillingPeriodEnd, 64), HistoryJSON: string(history), SyncedAt: value.SyncedAt}
-	return r.db.db.WithContext(ctx).Save(&row).Error
+	err = r.db.db.WithContext(ctx).Save(&row).Error
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountBillingChanged, AccountID: value.AccountID})
+	}
+	return err
 }
 
 func (r *AccountRepository) GetBilling(ctx context.Context, accountID uint64) (account.Billing, error) {
@@ -1585,7 +1797,11 @@ func (r *AccountRepository) SaveQuotaRecovery(ctx context.Context, value account
 		ConfirmedLimit: value.ConfirmedLimit, ExhaustedAt: value.ExhaustedAt, NextProbeAt: value.NextProbeAt,
 		LastConfirmedAt: value.LastConfirmedAt, UpdatedAt: value.UpdatedAt,
 	}
-	return r.db.db.WithContext(ctx).Save(&row).Error
+	err := r.db.db.WithContext(ctx).Save(&row).Error
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountRecoveryChanged, AccountID: value.AccountID})
+	}
+	return err
 }
 
 func (r *AccountRepository) ClaimQuotaProbe(ctx context.Context, accountID uint64, now, leaseUntil time.Time) (bool, error) {
@@ -1596,7 +1812,11 @@ func (r *AccountRepository) ClaimQuotaProbe(ctx context.Context, accountID uint6
 }
 
 func (r *AccountRepository) ClearQuotaRecovery(ctx context.Context, accountID uint64) error {
-	return r.db.db.WithContext(ctx).Delete(&quotaRecoveryModel{}, "account_id = ?", accountID).Error
+	err := r.db.db.WithContext(ctx).Delete(&quotaRecoveryModel{}, "account_id = ?", accountID).Error
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountRecoveryChanged, AccountID: accountID})
+	}
+	return err
 }
 
 func (r *AccountRepository) HasQuotaWindows(ctx context.Context, accountID uint64) (bool, error) {
@@ -1621,11 +1841,19 @@ func (r *AccountRepository) GetQuotaWindows(ctx context.Context, accountIDs []ui
 }
 
 func (r *AccountRepository) SaveQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error {
-	return r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, false)
+	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, false)
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountQuotaChanged, AccountID: accountID})
+	}
+	return err
 }
 
 func (r *AccountRepository) ReplaceQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error {
-	return r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, true)
+	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, true)
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountQuotaChanged, AccountID: accountID})
+	}
+	return err
 }
 
 func (r *AccountRepository) saveQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow, replace bool) error {
@@ -1690,8 +1918,12 @@ func (r *AccountRepository) DecrementQuotaWindowBy(ctx context.Context, accountI
 }
 
 func (r *AccountRepository) ExhaustQuotaWindow(ctx context.Context, accountID uint64, mode string, resetAt *time.Time, now time.Time) error {
-	return r.db.db.WithContext(ctx).Model(&quotaWindowModel{}).Where("account_id = ? AND mode = ?", accountID, mode).
+	err := r.db.db.WithContext(ctx).Model(&quotaWindowModel{}).Where("account_id = ? AND mode = ?", accountID, mode).
 		Updates(map[string]any{"remaining": 0, "reset_at": resetAt, "updated_at": now}).Error
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountQuotaChanged, AccountID: accountID})
+	}
+	return err
 }
 
 func (r *AccountRepository) ListDueQuotaWindows(ctx context.Context, now time.Time, limit int) ([]account.QuotaWindow, error) {

@@ -276,3 +276,86 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 		}
 	}
 }
+
+func TestRedisInvalidationBusIntegration(t *testing.T) {
+	address := os.Getenv("TEST_REDIS_ADDRESS")
+	if address == "" {
+		t.Skip("TEST_REDIS_ADDRESS is not configured")
+	}
+	database := 0
+	if rawDatabase := os.Getenv("TEST_REDIS_DATABASE"); rawDatabase != "" {
+		parsed, err := strconv.Atoi(rawDatabase)
+		if err != nil || parsed < 0 {
+			t.Fatalf("TEST_REDIS_DATABASE = %q", rawDatabase)
+		}
+		database = parsed
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, Config{
+		Address: address, Username: os.Getenv("TEST_REDIS_USERNAME"), Password: os.Getenv("TEST_REDIS_PASSWORD"), Database: database,
+		KeyPrefix: "grok2api:invalidation-test:" + time.Now().UTC().Format("150405.000000") + ":", ConcurrencyLease: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if os.Getenv("TEST_REDIS_FLUSH_DATABASE") == "1" {
+		defer func() {
+			if err := store.client.FlushDB(ctx).Err(); err != nil {
+				t.Errorf("flush Redis test database: %v", err)
+			}
+		}()
+	}
+
+	listenerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	received := make(chan repository.InvalidationEvent, 4)
+	done := make(chan error, 1)
+	go func() {
+		done <- store.ListenInvalidations(listenerCtx, func(_ context.Context, event repository.InvalidationEvent) error {
+			received <- event
+			return nil
+		})
+	}()
+
+	event := repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: account.ProviderBuild, SourceInstance: "instance-a"}
+	deadline := time.NewTimer(3 * time.Second)
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	var first repository.InvalidationEvent
+	waiting := true
+	for waiting {
+		select {
+		case <-ticker.C:
+			if err := store.PublishInvalidation(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		case first = <-received:
+			waiting = false
+		case <-deadline.C:
+			t.Fatal("invalidation notification was not delivered")
+		}
+	}
+	if first.Revision == 0 || first.Layer() != repository.InvalidationLayerBase {
+		t.Fatalf("first invalidation = %#v", first)
+	}
+	if err := store.client.Publish(ctx, store.key("events", "invalidation"), "not-json").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PublishInvalidation(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case second := <-received:
+		if second.Revision <= first.Revision {
+			t.Fatalf("revisions did not advance: first=%d second=%d", first.Revision, second.Revision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second invalidation notification was not delivered")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

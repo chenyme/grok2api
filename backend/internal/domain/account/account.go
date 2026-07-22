@@ -352,6 +352,29 @@ type RoutingCandidate struct {
 	SupportsModel        bool
 }
 
+// RoutingAccountBase contains provider-level routing state reusable across
+// models. Credentials remain encrypted until the provider adapter uses them.
+type RoutingAccountBase struct {
+	Credential    Credential
+	Billing       *Billing
+	QuotaRecovery *QuotaRecovery
+	QuotaWindow   *QuotaWindow
+}
+
+// RoutingAccountOverlay contains model-specific eligibility state.
+type RoutingAccountOverlay struct {
+	AccountID            uint64
+	Bound                bool
+	ModelCapabilityKnown bool
+	SupportsModel        bool
+	ModelQuotaBlock      *ModelQuotaBlock
+}
+
+type RoutingOverlaySnapshot struct {
+	HasBindings bool
+	Values      []RoutingAccountOverlay
+}
+
 // ModelQuotaBlock 表示账号的单模型配额暂不可用，不影响该账号上的其他模型。
 type ModelQuotaBlock struct {
 	AccountID     uint64

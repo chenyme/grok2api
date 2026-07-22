@@ -80,6 +80,72 @@ type SettingsChangeBus interface {
 	ListenSettingsChanges(ctx context.Context, handler func(context.Context) error) error
 }
 
+type InvalidationKind string
+
+const (
+	InvalidationRouteChanged             InvalidationKind = "route_changed"
+	InvalidationModelBindingChanged      InvalidationKind = "model_binding_changed"
+	InvalidationAccountStateChanged      InvalidationKind = "account_state_changed"
+	InvalidationAccountCredentialChanged InvalidationKind = "account_credential_changed"
+	InvalidationAccountCapabilityChanged InvalidationKind = "account_capability_changed"
+	InvalidationAccountBillingChanged    InvalidationKind = "account_billing_changed"
+	InvalidationAccountQuotaChanged      InvalidationKind = "account_quota_changed"
+	InvalidationAccountRecoveryChanged   InvalidationKind = "account_recovery_changed"
+	InvalidationAccountModelQuotaChanged InvalidationKind = "account_model_quota_changed"
+)
+
+type InvalidationLayer string
+
+const (
+	InvalidationLayerRoute   InvalidationLayer = "route"
+	InvalidationLayerBase    InvalidationLayer = "account_base"
+	InvalidationLayerOverlay InvalidationLayer = "account_overlay"
+)
+
+type InvalidationEvent struct {
+	Kind           InvalidationKind `json:"kind"`
+	Provider       account.Provider `json:"provider,omitempty"`
+	AccountID      uint64           `json:"accountId,omitempty"`
+	UpstreamModel  string           `json:"upstreamModel,omitempty"`
+	Revision       uint64           `json:"revision,omitempty"`
+	SourceInstance string           `json:"sourceInstance,omitempty"`
+	PublishedAt    time.Time        `json:"publishedAt,omitempty"`
+}
+
+func (e InvalidationEvent) Layer() InvalidationLayer {
+	switch e.Kind {
+	case InvalidationRouteChanged:
+		return InvalidationLayerRoute
+	case InvalidationModelBindingChanged, InvalidationAccountCapabilityChanged, InvalidationAccountModelQuotaChanged:
+		return InvalidationLayerOverlay
+	case InvalidationAccountStateChanged, InvalidationAccountCredentialChanged, InvalidationAccountBillingChanged, InvalidationAccountQuotaChanged, InvalidationAccountRecoveryChanged:
+		return InvalidationLayerBase
+	default:
+		return ""
+	}
+}
+
+func (e InvalidationEvent) Valid() bool {
+	if e.Layer() == "" {
+		return false
+	}
+	switch e.Provider {
+	case "", account.ProviderBuild, account.ProviderWeb, account.ProviderConsole:
+		return true
+	default:
+		return false
+	}
+}
+
+type InvalidationObserver func(context.Context, InvalidationEvent)
+
+// InvalidationBus distributes cache invalidation metadata only. Authoritative
+// account, route, credential, quota, and billing data remain in the database.
+type InvalidationBus interface {
+	PublishInvalidation(ctx context.Context, event InvalidationEvent) error
+	ListenInvalidations(ctx context.Context, handler func(context.Context, InvalidationEvent) error) error
+}
+
 // QuotaRecoveryQueue 保存分模式额度的到期探测事件，支持多实例原子认领。
 type QuotaRecoveryQueue interface {
 	ScheduleQuotaRecovery(ctx context.Context, value account.QuotaRecoveryEvent) error
