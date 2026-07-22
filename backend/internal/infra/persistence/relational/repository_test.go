@@ -335,6 +335,9 @@ func TestAccountRepositoryPersistsObservedBuildBillingFields(t *testing.T) {
 	if err := repo.UpdateObservedModel(context.Background(), credential.ID, "grok-4.5-build-free", now); err != nil {
 		t.Fatal(err)
 	}
+	if err := repo.UpdateObservedModel(context.Background(), credential.ID, "grok-4.5-build-free", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.SaveBilling(context.Background(), account.Billing{AccountID: credential.ID, IsUnifiedBillingUser: true, OnDemandEnabled: &onDemandEnabled, TopUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD", UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", UsagePeriodStart: "2026-07-12T00:00:00Z", UsagePeriodEnd: "2026-07-19T00:00:00Z", History: []account.BillingHistoryEntry{{Year: 2026, Month: 6}}, SyncedAt: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -342,9 +345,36 @@ func TestAccountRepositoryPersistsObservedBuildBillingFields(t *testing.T) {
 	if err != nil || storedCredential.ObservedModel != "grok-4.5-build-free" || storedCredential.ObservedModelAt == nil {
 		t.Fatalf("credential = %#v, err = %v", storedCredential, err)
 	}
+	if !storedCredential.ObservedModelAt.Equal(now) {
+		t.Fatalf("unchanged observed model refreshed early at %v, want %v", storedCredential.ObservedModelAt, now)
+	}
 	billing, err := repo.GetBilling(context.Background(), credential.ID)
 	if err != nil || !billing.IsUnifiedBillingUser || billing.OnDemandEnabled == nil || *billing.OnDemandEnabled || billing.TopUpMethod != "TOP_UP_METHOD_SAVED_PAYMENT_METHOD" || billing.UsagePeriodType != "USAGE_PERIOD_TYPE_WEEKLY" || billing.UsagePeriodEnd != "2026-07-19T00:00:00Z" || len(billing.History) != 1 {
 		t.Fatalf("billing = %#v, err = %v", billing, err)
+	}
+}
+
+func TestAccountRepositoryRejectsStaleObservedModelWrite(t *testing.T) {
+	database := openTestDatabase(t)
+	repo := NewAccountRepository(database)
+	credential, _, err := repo.UpsertByIdentity(context.Background(), account.Credential{Provider: account.ProviderBuild, Name: "observed-order", SourceKey: "observed-order", EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := time.Now().UTC()
+	newer := older.Add(time.Minute)
+	if updated, err := repo.UpdateObservedModelIfNewer(context.Background(), credential.ID, "grok-newer", newer); err != nil || !updated {
+		t.Fatalf("newer observed model update = %v, err = %v", updated, err)
+	}
+	if updated, err := repo.UpdateObservedModelIfNewer(context.Background(), credential.ID, "grok-older", older); err != nil || updated {
+		t.Fatalf("stale observed model update = %v, err = %v", updated, err)
+	}
+	stored, err := repo.Get(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ObservedModel != "grok-newer" || stored.ObservedModelAt == nil || !stored.ObservedModelAt.Equal(newer) {
+		t.Fatalf("observed model after stale write = %q at %v", stored.ObservedModel, stored.ObservedModelAt)
 	}
 }
 

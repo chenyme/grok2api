@@ -2,6 +2,7 @@ package relational
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,24 @@ import (
 type Database struct {
 	db      *gorm.DB
 	dialect string
+}
+
+func (d *Database) Stats() sql.DBStats {
+	if d == nil {
+		return sql.DBStats{}
+	}
+	sqlDB, err := d.db.DB()
+	if err != nil {
+		return sql.DBStats{}
+	}
+	return sqlDB.Stats()
+}
+
+func (d *Database) Dialect() string {
+	if d == nil {
+		return ""
+	}
+	return d.dialect
 }
 
 // OpenSQLite 打开纯 Go SQLite 数据库并启用 WAL、外键与 busy timeout。

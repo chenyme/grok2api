@@ -272,7 +272,7 @@ func fetchStatsigMetaContent(ctx context.Context, baseURL, token string, lease *
 	if lease == nil {
 		return "", fmt.Errorf("Statsig 获取缺少出口租约")
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	requestCtx, cancel := context.WithTimeout(infraegress.WithPhysicalCallStage(ctx, "statsig_meta"), 15*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/index", nil)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +113,39 @@ func TestParseImportedCredentialsBatch(t *testing.T) {
 	}
 	if values[0].SourceKey == values[1].SourceKey {
 		t.Fatal("不同账号生成了相同来源标识")
+	}
+}
+
+func TestParseImportedCredentialsJSONSequence(t *testing.T) {
+	data := []byte("{\n  \"access_token\": \"access-1\",\n  \"sub\": \"user-1\"\n}\n" +
+		"{\"refresh_token\":\"refresh-2\",\"email\":\"two@example.com\"}\n")
+	values, err := parseImportedCredentials(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0].AccessToken != "access-1" || values[0].UserID != "user-1" || values[1].RefreshToken != "refresh-2" {
+		t.Fatalf("JSON sequence import = %#v", values)
+	}
+}
+
+func TestParseImportedCredentialsLooseAccountsDocument(t *testing.T) {
+	data := []byte("{\n  \"accounts\": [\n" +
+		"{\"access_token\":\"access-1\",\"sub\":\"user-1\"}\n" +
+		"{\"refresh_token\":\"refresh-2\"}\n")
+	values, err := parseImportedCredentials(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0].UserID != "user-1" || values[1].RefreshToken != "refresh-2" {
+		t.Fatalf("loose accounts import = %#v", values)
+	}
+}
+
+func TestParseImportedCredentialsLooseAccountsDocumentReportsLine(t *testing.T) {
+	data := []byte("{\n  \"accounts\": [\n{\"access_token\":\"access-1\"}\nnot-json\n")
+	_, err := parseImportedCredentials(data)
+	if err == nil || !strings.Contains(err.Error(), "第 4 行") {
+		t.Fatalf("error = %v, want line number", err)
 	}
 }
 

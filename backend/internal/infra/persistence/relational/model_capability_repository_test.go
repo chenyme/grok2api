@@ -235,6 +235,42 @@ func TestPublicModelNameResolvesAcrossAvailableProviders(t *testing.T) {
 	}
 }
 
+func TestModelRouteLookupPrioritizesDirectPublicIDOverAlias(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	models := NewModelRepository(database)
+
+	aliasRoute := modelRouteModel{
+		PublicID: "Build/grok-legacy-priority", Provider: string(account.ProviderBuild), UpstreamModel: "grok-legacy-priority",
+		Capability: string(model.CapabilityResponses), Origin: string(model.OriginManual), Enabled: true,
+	}
+	directRoute := modelRouteModel{
+		PublicID: "Web/grok-priority", Provider: string(account.ProviderWeb), UpstreamModel: "grok-priority",
+		Capability: string(model.CapabilityChat), Origin: string(model.OriginManual), Enabled: true,
+	}
+	if err := database.db.WithContext(ctx).Create(&aliasRoute).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&directRoute).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&modelRouteAliasModel{Alias: "grok-priority", ModelRouteID: aliasRoute.ID, CreatedAt: time.Now().UTC()}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	routes, err := findModelRoutesByPublicID(database.db.WithContext(ctx), "grok-priority")
+	if err != nil || len(routes) != 2 {
+		t.Fatalf("routes = %#v, err = %v", routes, err)
+	}
+	if routes[0].ID != directRoute.ID || routes[1].ID != aliasRoute.ID {
+		t.Fatalf("direct/alias priority = %#v", routes)
+	}
+	value, err := models.GetByPublicIDIncludingDisabled(ctx, "grok-priority")
+	if err != nil || value.ID != directRoute.ID {
+		t.Fatalf("selected direct route = %#v, err = %v", value, err)
+	}
+}
+
 func TestReplaceProviderRoutesReconcilesStaticCatalog(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

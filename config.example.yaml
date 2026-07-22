@@ -66,6 +66,16 @@ runtimeStore:
     # [按需修改] Redis 使用 TLS 时设为 true。
     tls: false
 
+deployment:
+  # [通常不要修改] 单实例保持 1；多实例必须同时使用 PostgreSQL、Redis 和共享媒体目录。
+  replicas: 1
+  # [必须修改：仅 replicas>1] 每个实例使用不同的稳定标识。
+  instanceID: ""
+  # [必须修改：仅 replicas>1] 同一实例组和共享媒体目录必须使用相同标识。
+  clusterID: "grok2api"
+  # [必须修改：仅 replicas>1] 确认 media.local.path 已挂载为所有实例共享且可读写的存储。
+  sharedMedia: false
+
 media:
   # [通常不要修改] 当前仅支持 local；容量和清理策略在管理端设置。
   driver: local
@@ -78,3 +88,20 @@ routing:
   reasoningReplayEnabled: true
   reasoningReplayTTL: 1h
   reasoningReplayMaxEntries: 10240
+  # [通常不要修改] 大账号池分段选号默认关闭；启用后仍保留完整池回退和原子并发门禁。
+  segmentedSelectorEnabled: false
+  segmentedSelectorMinCandidates: 3000
+  segmentedSelectorWindowSize: 64
+
+audit:
+  # [通常不要修改] 审计批量写入参数；bufferSize 的修改需重启生效。
+  bufferSize: 16384
+  batchSize: 256
+  flushInterval: 250ms
+  # [通常不要修改] 需要调用方确认提交的审计最多聚合等待该时长；建议保持 1ms–50ms。
+  commitDelay: 5ms
+  # [通常不要修改] enforce 会在异常持续超过宽限期后暂停新的推理请求；确认发生数据丢失时会立即暂停。
+  ledgerMode: enforce # observe | enforce
+  ledgerFailureThreshold: 1
+  ledgerUnhealthyGrace: 10s
+  ledgerQueueHighWatermarkPercent: 90

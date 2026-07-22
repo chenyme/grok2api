@@ -151,6 +151,19 @@ func TestGatewayErrorMapsOversizedVideoInputToBadRequest(t *testing.T) {
 	}
 }
 
+func TestGatewayErrorMapsLedgerUnavailableToServiceUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) {
+		writeGatewayError(c, gateway.ErrLedgerUnavailable)
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"ledger_unavailable"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestGatewayErrorHidesUpstreamCredentialStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	openAIRouter := gin.New()

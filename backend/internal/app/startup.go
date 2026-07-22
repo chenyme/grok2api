@@ -7,6 +7,7 @@ import (
 	"time"
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
+	auditapp "github.com/chenyme/grok2api/backend/internal/application/audit"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -116,20 +117,23 @@ func readinessSnapshot(
 	models repository.ModelRepository,
 	accounts repository.AccountRepository,
 	providers *provider.Registry,
+	ledger *auditapp.Service,
 ) httpserver.ReadinessSnapshot {
 	phase, updatedAt, report, statsig := state.snapshot()
 	snapshot := httpserver.ReadinessSnapshot{
 		Ready: false, State: phase, UpdatedAt: updatedAt, Startup: newReadinessStartupReport(report),
 		Components: map[string]httpserver.ReadinessComponent{
-			"runtime_store": {State: "unknown"},
-			"grok_build":    {State: "unknown"},
-			"grok_web":      {State: "unknown"},
-			"statsig":       statsig,
+			"runtime_store":  {State: "unknown"},
+			"billing_ledger": {State: "unknown"},
+			"grok_build":     {State: "unknown"},
+			"grok_web":       {State: "unknown"},
+			"statsig":        statsig,
 		},
 	}
 	if phase != "running" {
 		return snapshot
 	}
+	ledgerDegraded := false
 	healthCtx, cancel := context.WithTimeout(ctx, time.Second)
 	err := runtimeHealth(healthCtx)
 	cancel()
@@ -139,6 +143,20 @@ func readinessSnapshot(
 		return snapshot
 	}
 	snapshot.Components["runtime_store"] = httpserver.ReadinessComponent{State: "ready"}
+	if ledger != nil {
+		ledgerState := ledger.LedgerSnapshot()
+		if ledgerState.Ready {
+			snapshot.Components["billing_ledger"] = httpserver.ReadinessComponent{State: "ready"}
+		} else {
+			detail := fmt.Sprintf("审计账本不可用；连续失败 %d 次，丢失 %d 条，队列 %d/%d", ledgerState.ConsecutiveFailures, ledgerState.Dropped, ledgerState.QueueDepth, ledgerState.QueueCapacity)
+			snapshot.Components["billing_ledger"] = httpserver.ReadinessComponent{State: "degraded", Detail: detail}
+			if ledgerState.Irrecoverable || ledgerState.Mode == auditapp.LedgerModeEnforce {
+				snapshot.State = "not_ready"
+				return snapshot
+			}
+			ledgerDegraded = true
+		}
+	}
 
 	routes, err := models.ListConfiguredEnabled(ctx)
 	if err != nil {
@@ -211,7 +229,7 @@ func readinessSnapshot(
 		return snapshot
 	}
 	snapshot.Ready = true
-	if unavailableProviders > 0 {
+	if unavailableProviders > 0 || ledgerDegraded {
 		snapshot.State = "degraded"
 	} else {
 		snapshot.State = "ready"

@@ -8,9 +8,12 @@ import (
 	"strings"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
+	"gorm.io/gorm"
 )
 
 const mediaJobInputMetadataPendingIndex = "CREATE INDEX IF NOT EXISTS idx_media_jobs_input_metadata_pending ON media_jobs(id) WHERE input_image_count IS NULL"
+
+const postgresSchemaMigrationLockID int64 = 0x47524f4b32415049
 
 var schemaModels = []any{
 	&adminModel{},
@@ -76,10 +79,10 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_audits_status_created_id ON request_audits(status_code, created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_audits_streaming_created_id ON request_audits(streaming, created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_audit_attempts_audit_number ON request_audit_attempts(audit_id, number)",
-	"CREATE INDEX IF NOT EXISTS idx_response_ownership_expires ON response_ownership(expires_at)",
+	"CREATE INDEX IF NOT EXISTS idx_response_ownership_expires_id ON response_ownership(expires_at, response_id)",
 	"CREATE INDEX IF NOT EXISTS idx_response_ownership_account ON response_ownership(account_id)",
 	"CREATE INDEX IF NOT EXISTS idx_response_ownership_client_key ON response_ownership(client_key_id)",
-	"CREATE INDEX IF NOT EXISTS idx_web_response_states_expires ON web_response_states(expires_at)",
+	"CREATE INDEX IF NOT EXISTS idx_web_response_states_expires_id ON web_response_states(expires_at, response_id)",
 	"CREATE INDEX IF NOT EXISTS idx_web_response_states_account ON web_response_states(account_id, created_at DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_client_created ON media_jobs(client_key_id, created_at DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_account_status ON media_jobs(account_id, status)",
@@ -95,6 +98,19 @@ var schemaIndexes = []string{
 
 // InitializeSchema 以当前持久化模型作为首版数据库结构基线。
 func (d *Database) InitializeSchema(ctx context.Context) error {
+	if d.dialect == "postgres" {
+		return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", postgresSchemaMigrationLockID).Error; err != nil {
+				return fmt.Errorf("acquire PostgreSQL migration lock: %w", err)
+			}
+			locked := &Database{db: tx, dialect: d.dialect}
+			return locked.initializeSchema(ctx)
+		})
+	}
+	return d.initializeSchema(ctx)
+}
+
+func (d *Database) initializeSchema(ctx context.Context) error {
 	db := d.db.WithContext(ctx)
 	// all 作用域会让 Build 与 Web 共用 UA、健康度和冷却状态，升级时直接移除旧节点。
 	if db.Migrator().HasTable(&egressNodeModel{}) {
@@ -151,6 +167,9 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	if err := d.backfillReauthMarkedAt(ctx); err != nil {
 		return fmt.Errorf("迁移 reauth_marked_at: %w", err)
 	}
+	if err := d.dropRedundantResponseExpiryIndexes(ctx); err != nil {
+		return fmt.Errorf("迁移响应过期索引: %w", err)
+	}
 	for _, statement := range schemaIndexes {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("初始化数据库索引: %w", err)
@@ -158,6 +177,15 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	}
 	if err := d.ensureCanonicalModelPublicIDs(ctx); err != nil {
 		return fmt.Errorf("迁移模型 Provider 命名空间: %w", err)
+	}
+	return nil
+}
+
+func (d *Database) dropRedundantResponseExpiryIndexes(ctx context.Context) error {
+	for _, name := range []string{"idx_response_ownership_expires", "idx_web_response_states_expires"} {
+		if err := d.db.WithContext(ctx).Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
+			return fmt.Errorf("drop index %s: %w", name, err)
+		}
 	}
 	return nil
 }

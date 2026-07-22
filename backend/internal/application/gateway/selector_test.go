@@ -602,11 +602,10 @@ func TestCandidatePlanPreservesSelectorOrdering(t *testing.T) {
 
 func TestSelectorConsumesOnlyMatchingQuotaSnapshot(t *testing.T) {
 	key := candidateCacheKey{provider: account.ProviderWeb, upstreamModel: "chat", quotaMode: "fast"}
-	selector := &Selector{candidates: map[candidateCacheKey]candidateSnapshot{
-		key: {values: []account.RoutingCandidate{{
-			Credential: account.Credential{ID: 7}, QuotaWindow: &account.QuotaWindow{AccountID: 7, Mode: "fast", Remaining: 10},
-		}}},
+	values := []account.RoutingCandidate{{
+		Credential: account.Credential{ID: 7}, QuotaWindow: &account.QuotaWindow{AccountID: 7, Mode: "fast", Remaining: 10},
 	}}
+	selector := &Selector{candidates: map[candidateCacheKey]candidateSnapshot{key: newCandidateSnapshot(values, time.Now().UTC().Add(time.Minute))}}
 	original := selector.candidates[key].values
 	selector.ConsumeQuota(account.ProviderWeb, 7, "fast", 3)
 	window := selector.candidates[key].values[0].QuotaWindow

@@ -3,6 +3,7 @@ package relational
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -183,46 +184,52 @@ func (r *ClientKeyRepository) ReserveBillingUsage(ctx context.Context, id uint64
 		return false, repository.ErrConflict
 	}
 	reserved := false
+	now := time.Now().UTC()
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := cleanupExpiredBillingReservations(tx, id, time.Now().UTC()); err != nil {
-			return err
-		}
 		var existing billingReservationModel
 		err := tx.Where("event_id = ?", eventID).First(&existing).Error
-		if err == nil {
-			if existing.ClientKeyID == id && existing.Amount == amount {
+		switch {
+		case err == nil && existing.ClientKeyID != id:
+			return repository.ErrConflict
+		case err == nil && existing.ExpiresAt.After(now):
+			if existing.Amount == amount {
 				reserved = true
 				return nil
 			}
 			return repository.ErrConflict
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		result := tx.Model(&clientKeyModel{}).
-			Where(`id = ? AND billing_limit_usd_ticks > 0 AND ? <= CASE
-				WHEN billed_usage_usd_ticks >= billing_limit_usd_ticks THEN 0
-				WHEN reserved_usage_usd_ticks >= billing_limit_usd_ticks - billed_usage_usd_ticks THEN 0
-				ELSE billing_limit_usd_ticks - billed_usage_usd_ticks - reserved_usage_usd_ticks
-			END`, id, amount).
-			UpdateColumn("reserved_usage_usd_ticks", gorm.Expr("reserved_usage_usd_ticks + ?", amount))
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			var key clientKeyModel
-			if err := tx.Select("id", "billing_limit_usd_ticks").First(&key, id).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return repository.ErrNotFound
-				}
+		case err == nil:
+			if err := cleanupExpiredBillingReservations(tx, existing.ClientKeyID, now); err != nil {
 				return err
 			}
-			if key.BillingLimitUSDTicks == 0 {
-				return nil
-			}
-			return repository.ErrLimitExceeded
+		case errors.Is(err, gorm.ErrRecordNotFound):
+		default:
+			return err
 		}
-		reservation := billingReservationModel{EventID: eventID, ClientKeyID: id, Amount: amount, ExpiresAt: expiresAt, CreatedAt: time.Now().UTC()}
+		acquired, err := reserveBillingCapacity(tx, id, amount)
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			limited, err := billingKeyHasLimit(tx, id)
+			if err != nil || !limited {
+				return err
+			}
+			if err := cleanupExpiredBillingReservations(tx, id, now); err != nil {
+				return err
+			}
+			acquired, err = reserveBillingCapacity(tx, id, amount)
+			if err != nil {
+				return err
+			}
+			if !acquired {
+				limited, err = billingKeyHasLimit(tx, id)
+				if err != nil || !limited {
+					return err
+				}
+				return repository.ErrLimitExceeded
+			}
+		}
+		reservation := billingReservationModel{EventID: eventID, ClientKeyID: id, Amount: amount, ExpiresAt: expiresAt, CreatedAt: now}
 		if err := tx.Create(&reservation).Error; err != nil {
 			return err
 		}
@@ -237,6 +244,28 @@ func (r *ClientKeyRepository) ReserveBillingUsage(ctx context.Context, id uint64
 		return true, nil
 	}
 	return false, repository.ErrConflict
+}
+
+func reserveBillingCapacity(tx *gorm.DB, keyID uint64, amount int64) (bool, error) {
+	result := tx.Model(&clientKeyModel{}).
+		Where(`id = ? AND billing_limit_usd_ticks > 0 AND ? <= CASE
+			WHEN billed_usage_usd_ticks >= billing_limit_usd_ticks THEN 0
+			WHEN reserved_usage_usd_ticks >= billing_limit_usd_ticks - billed_usage_usd_ticks THEN 0
+			ELSE billing_limit_usd_ticks - billed_usage_usd_ticks - reserved_usage_usd_ticks
+		END`, keyID, amount).
+		UpdateColumn("reserved_usage_usd_ticks", gorm.Expr("reserved_usage_usd_ticks + ?", amount))
+	return result.RowsAffected == 1, result.Error
+}
+
+func billingKeyHasLimit(tx *gorm.DB, keyID uint64) (bool, error) {
+	var key clientKeyModel
+	if err := tx.Select("id", "billing_limit_usd_ticks").First(&key, keyID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, repository.ErrNotFound
+		}
+		return false, err
+	}
+	return key.BillingLimitUSDTicks > 0, nil
 }
 
 // CancelBillingReservation 释放尚未进入审计结算的请求预留。
@@ -270,25 +299,79 @@ func (r *ClientKeyRepository) CancelBillingReservation(ctx context.Context, even
 }
 
 // CleanupExpiredBillingReservations 分批释放进程异常遗留的过期预留。
-func (r *ClientKeyRepository) CleanupExpiredBillingReservations(ctx context.Context, now time.Time, limit int) (int, error) {
+func (r *ClientKeyRepository) CleanupExpiredBillingReservations(ctx context.Context, now time.Time, limit int, protectedEventIDSets ...[]string) (int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	var keyIDs []uint64
-	if err := r.db.db.WithContext(ctx).Model(&billingReservationModel{}).Distinct("client_key_id").Where("expires_at <= ?", now).Limit(limit).Pluck("client_key_id", &keyIDs).Error; err != nil {
+	protected := make(map[string]struct{})
+	for _, values := range protectedEventIDSets {
+		for _, eventID := range values {
+			if eventID != "" {
+				protected[eventID] = struct{}{}
+			}
+		}
+	}
+	scanLimit := min(200000, limit+len(protected))
+	const noPendingMediaUsage = "NOT EXISTS (SELECT 1 FROM media_jobs WHERE billing_reservations.event_id = 'video_usage_' || media_jobs.id AND media_jobs.usage_recorded_at IS NULL)"
+	var candidates []billingReservationModel
+	if err := r.db.db.WithContext(ctx).Model(&billingReservationModel{}).
+		Select("event_id", "client_key_id", "amount", "expires_at").
+		Where("expires_at <= ?", now).
+		Where(noPendingMediaUsage).
+		Order("expires_at ASC, event_id ASC").Limit(scanLimit).Find(&candidates).Error; err != nil {
 		return 0, err
 	}
+	byKey := make(map[uint64][]string)
+	selected := 0
+	for _, candidate := range candidates {
+		if _, skip := protected[candidate.EventID]; skip {
+			continue
+		}
+		byKey[candidate.ClientKeyID] = append(byKey[candidate.ClientKeyID], candidate.EventID)
+		selected++
+		if selected >= limit {
+			break
+		}
+	}
+	keyIDs := make([]uint64, 0, len(byKey))
+	for keyID := range byKey {
+		keyIDs = append(keyIDs, keyID)
+	}
+	sort.Slice(keyIDs, func(i, j int) bool { return keyIDs[i] < keyIDs[j] })
 	cleaned := 0
 	for _, keyID := range keyIDs {
+		eventIDs := byKey[keyID]
 		err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			before, err := expiredBillingReservationCount(tx, keyID, now)
-			if err != nil {
+			if err := lockClientKey(tx, keyID); err != nil {
 				return err
 			}
-			if err := cleanupExpiredBillingReservations(tx, keyID, now); err != nil {
+			var rows []billingReservationModel
+			if err := tx.Model(&billingReservationModel{}).Select("event_id", "amount").
+				Where("client_key_id = ? AND event_id IN ? AND expires_at <= ?", keyID, eventIDs, now).
+				Where(noPendingMediaUsage).Find(&rows).Error; err != nil {
 				return err
 			}
-			cleaned += int(before)
+			if len(rows) == 0 {
+				return nil
+			}
+			var amount int64
+			rowIDs := make([]string, 0, len(rows))
+			for _, row := range rows {
+				amount += row.Amount
+				rowIDs = append(rowIDs, row.EventID)
+			}
+			result := tx.Where("client_key_id = ? AND event_id IN ? AND expires_at <= ?", keyID, rowIDs, now).
+				Where(noPendingMediaUsage).Delete(&billingReservationModel{})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != int64(len(rows)) {
+				return repository.ErrConflict
+			}
+			if err := decrementReservedUsage(tx, keyID, amount); err != nil {
+				return err
+			}
+			cleaned += len(rows)
 			return nil
 		})
 		if err != nil {

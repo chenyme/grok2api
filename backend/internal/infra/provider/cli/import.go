@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -32,6 +36,7 @@ type importedCredentialEntry struct {
 	ExpiresAt    string `json:"expires_at"`
 	ExpiresIn    int64  `json:"expires_in"`
 	Email        string `json:"email"`
+	Subject      string `json:"sub"`
 	UserID       string `json:"user_id"`
 	PrincipalID  string `json:"principal_id"`
 	TeamID       string `json:"team_id"`
@@ -58,31 +63,13 @@ func marshalCredentials(values []provider.CredentialSeed) ([]byte, error) {
 }
 
 func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
-	var shape map[string]json.RawMessage
-	if err := json.Unmarshal(data, &shape); err != nil {
-		return nil, fmt.Errorf("解析账号凭据 JSON: %w", err)
-	}
-
-	var entries []importedCredentialEntry
-	if _, batch := shape["accounts"]; batch {
-		var document credentialImportDocument
-		if err := json.Unmarshal(data, &document); err != nil {
-			return nil, fmt.Errorf("解析批量账号凭据: %w", err)
-		}
-		entries = document.Accounts
-	} else {
-		var entry importedCredentialEntry
-		if err := json.Unmarshal(data, &entry); err != nil {
-			return nil, fmt.Errorf("解析 OAuth 凭据: %w", err)
-		}
-		entries = []importedCredentialEntry{entry}
+	entries, err := parseImportedCredentialEntries(data)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("账号凭据中没有账号")
-	}
-	if len(entries) > maxCredentialImportAccounts {
-		return nil, fmt.Errorf("%w: 单次最多导入 %d 个账号", provider.ErrCredentialLimit, maxCredentialImportAccounts)
 	}
 
 	result := make([]provider.CredentialSeed, 0, len(entries))
@@ -94,6 +81,144 @@ func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
 		result = append(result, seed)
 	}
 	return result, nil
+}
+
+func parseImportedCredentialEntries(data []byte) ([]importedCredentialEntry, error) {
+	entries, sequenceErr := parseImportedCredentialJSONSequence(data)
+	if sequenceErr == nil {
+		return entries, nil
+	}
+	if errors.Is(sequenceErr, provider.ErrCredentialLimit) {
+		return nil, sequenceErr
+	}
+	if entries, recognized, err := parseLooseCredentialDocument(data); recognized {
+		return entries, err
+	}
+	return nil, sequenceErr
+}
+
+// parseImportedCredentialJSONSequence accepts both one regular JSON document and
+// multiple top-level JSON values (JSONL/NDJSON). json.Decoder deliberately does
+// not depend on line boundaries, so pretty-printed entries remain valid.
+func parseImportedCredentialJSONSequence(data []byte) ([]importedCredentialEntry, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	entries := make([]importedCredentialEntry, 0)
+	documentIndex := 0
+	for {
+		var raw json.RawMessage
+		err := decoder.Decode(&raw)
+		if err == io.EOF {
+			return entries, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("解析账号凭据 JSON 第 %d 条: %w", documentIndex+1, err)
+		}
+		documentIndex++
+		values, err := parseImportedCredentialJSONValue(raw)
+		if err != nil {
+			return nil, fmt.Errorf("解析账号凭据 JSON 第 %d 条: %w", documentIndex, err)
+		}
+		if err := appendImportedCredentialEntries(&entries, values); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func parseImportedCredentialJSONValue(data []byte) ([]importedCredentialEntry, error) {
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(data, &shape); err != nil {
+		return nil, err
+	}
+
+	if accounts, batch := shape["accounts"]; batch {
+		var entries []importedCredentialEntry
+		if err := json.Unmarshal(accounts, &entries); err != nil {
+			return nil, fmt.Errorf("解析批量账号凭据: %w", err)
+		}
+		return entries, nil
+	}
+
+	var entry importedCredentialEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return nil, fmt.Errorf("解析 OAuth 凭据: %w", err)
+	}
+	return []importedCredentialEntry{entry}, nil
+}
+
+func appendImportedCredentialEntries(target *[]importedCredentialEntry, values []importedCredentialEntry) error {
+	if len(values) > maxCredentialImportAccounts-len(*target) {
+		return fmt.Errorf("%w: 单次最多导入 %d 个账号", provider.ErrCredentialLimit, maxCredentialImportAccounts)
+	}
+	*target = append(*target, values...)
+	return nil
+}
+
+// parseLooseCredentialDocument supports account dumps shaped like
+// { "accounts": [ followed by one complete object per line, even when the
+// producer omitted commas or the final closing brackets. This compatibility
+// path is intentionally limited to that recognizable wrapper.
+func parseLooseCredentialDocument(data []byte) ([]importedCredentialEntry, bool, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 64*1024), max(len(data), 64*1024))
+	entries := make([]importedCredentialEntry, 0)
+	nonEmptyLine := 0
+	lineNumber := 0
+	closed := false
+	for scanner.Scan() {
+		lineNumber++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		nonEmptyLine++
+		if nonEmptyLine == 1 {
+			if line != "{" {
+				return nil, false, nil
+			}
+			continue
+		}
+		if nonEmptyLine == 2 {
+			if compactLooseJSONLine(line) != `"accounts":[` {
+				return nil, false, nil
+			}
+			continue
+		}
+		if isLooseDocumentClosing(line) {
+			closed = true
+			continue
+		}
+		if closed {
+			return nil, true, fmt.Errorf("解析批量账号凭据第 %d 行: 结束标记后仍有内容", lineNumber)
+		}
+		line = strings.TrimSpace(strings.TrimSuffix(line, ","))
+		values, err := parseImportedCredentialJSONValue([]byte(line))
+		if err != nil {
+			return nil, true, fmt.Errorf("解析批量账号凭据第 %d 行: %w", lineNumber, err)
+		}
+		if err := appendImportedCredentialEntries(&entries, values); err != nil {
+			return nil, true, err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, true, fmt.Errorf("读取批量账号凭据: %w", err)
+	}
+	if nonEmptyLine < 2 {
+		return nil, false, nil
+	}
+	return entries, true, nil
+}
+
+func compactLooseJSONLine(value string) string {
+	return strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(value)
+}
+
+func isLooseDocumentClosing(value string) bool {
+	switch compactLooseJSONLine(value) {
+	case "]", "],", "}", "},", "]}", "]},":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeImportedCredential(entry importedCredentialEntry) (provider.CredentialSeed, error) {
@@ -114,7 +239,7 @@ func normalizeImportedCredential(entry importedCredentialEntry) (provider.Creden
 	}
 
 	claims := decodeJWTClaims(firstNonEmpty(entry.IDToken, accessToken))
-	userID := firstNonEmpty(entry.UserID, entry.PrincipalID, stringClaim(claims, "sub"))
+	userID := firstNonEmpty(entry.UserID, entry.PrincipalID, entry.Subject, stringClaim(claims, "sub"))
 	email := firstNonEmpty(entry.Email, stringClaim(claims, "email"))
 	teamID := firstNonEmpty(entry.TeamID, stringClaim(claims, "team_id"))
 	expiresAt, err := importedCredentialExpiry(entry, claims)

@@ -48,16 +48,53 @@ func (r *ResponseRepository) Delete(ctx context.Context, responseID string, clie
 	return nil
 }
 
-func (r *ResponseRepository) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
+func (r *ResponseRepository) DeleteExpired(ctx context.Context, now time.Time, ownershipLimit, webStateLimit int) (repository.ResponseCleanupResult, error) {
+	result := repository.ResponseCleanupResult{}
+	if ownershipLimit > 0 {
+		deleted, err := r.deleteExpiredOwnership(ctx, now, ownershipLimit)
+		if err != nil {
+			return result, err
+		}
+		result.OwnershipDeleted = deleted
+		result.HasMore = result.HasMore || deleted >= int64(ownershipLimit)
+	}
+	if webStateLimit > 0 {
+		deleted, err := r.deleteExpiredWebState(ctx, now, webStateLimit)
+		if err != nil {
+			return result, err
+		}
+		result.WebStateDeleted = deleted
+		result.HasMore = result.HasMore || deleted >= int64(webStateLimit)
+	}
+	return result, nil
+}
+
+func (r *ResponseRepository) deleteExpiredOwnership(ctx context.Context, now time.Time, limit int) (int64, error) {
 	var deleted int64
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		ownership := tx.Where("expires_at <= ?", now).Delete(&responseOwnershipModel{})
-		if ownership.Error != nil {
-			return ownership.Error
-		}
-		states := tx.Where("expires_at <= ?", now).Delete(&webResponseStateModel{})
-		deleted = ownership.RowsAffected + states.RowsAffected
-		return states.Error
+		ids := tx.Model(&responseOwnershipModel{}).
+			Select("response_id").
+			Where("expires_at <= ?", now).
+			Order("expires_at ASC, response_id ASC").
+			Limit(limit)
+		result := tx.Where("response_id IN (?)", ids).Delete(&responseOwnershipModel{})
+		deleted = result.RowsAffected
+		return result.Error
+	})
+	return deleted, err
+}
+
+func (r *ResponseRepository) deleteExpiredWebState(ctx context.Context, now time.Time, limit int) (int64, error) {
+	var deleted int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		ids := tx.Model(&webResponseStateModel{}).
+			Select("response_id").
+			Where("expires_at <= ?", now).
+			Order("expires_at ASC, response_id ASC").
+			Limit(limit)
+		result := tx.Where("response_id IN (?)", ids).Delete(&webResponseStateModel{})
+		deleted = result.RowsAffected
+		return result.Error
 	})
 	return deleted, err
 }

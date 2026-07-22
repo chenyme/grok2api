@@ -24,7 +24,9 @@ func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, erro
 		return nil, err
 	}
 	if !configured {
-		return t.fallback.RoundTrip(request)
+		response, requestErr := t.fallback.RoundTrip(request)
+		infraegress.RecordDirectPhysicalCall(request.Context(), response, requestErr)
+		return response, requestErr
 	}
 	if lease.UserAgent != "" {
 		request.Header.Set("User-Agent", lease.UserAgent)

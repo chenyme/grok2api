@@ -25,6 +25,7 @@ export function SettingsPage() {
   const { form, settingsQuery, updateMutation, reset } = useSettings();
   const [autoCleanConfirm, setAutoCleanConfirm] = useState<"enabled" | "includeDisabled" | null>(null);
   const autoCleanEnabled = form.watch("accounts.autoCleanReauthEnabled") === true;
+  const segmentedSelectorEnabled = form.watch("routing.segmentedSelector.enabled") === true;
 
   if (settingsQuery.isError) {
     return <ErrorState message={settingsQuery.error.message} onRetry={() => void settingsQuery.refetch()} />;
@@ -309,6 +310,9 @@ export function SettingsPage() {
               <SettingsField controlId="routing-capacity-wait" label={t("settings.routing.capacityWait", { defaultValue: "Saturated account wait" })} description={t("settings.routing.capacityWaitHelp")} error={form.formState.errors.routing?.capacityWait?.message}><Controller control={form.control} name="routing.capacityWait" render={({ field }) => <DurationInput id="routing-capacity-wait" value={field.value} onChange={field.onChange} />} /></SettingsField>
               <SettingsField controlId="routing-max-attempts" label={t("settings.routing.maxAttempts")} description={t("settings.routing.maxAttemptsHelp")} error={form.formState.errors.routing?.maxAttempts?.message}><Input id="routing-max-attempts" type="number" min={1} max={10} {...form.register("routing.maxAttempts", { valueAsNumber: true })} /></SettingsField>
               <SettingsField controlId="routing-prefer-free-build" label={t("settings.routing.preferFreeBuild")} description={t("settings.routing.preferFreeBuildHelp")}><Controller control={form.control} name="routing.preferFreeBuild" render={({ field }) => <div className="flex h-9 items-center"><Switch id="routing-prefer-free-build" checked={field.value} onCheckedChange={field.onChange} /></div>} /></SettingsField>
+              <SettingsField controlId="routing-segmented-selector-enabled" label={t("settingsRoutingSegmented.enabled")} description={t("settingsRoutingSegmented.enabledHelp")}><Controller control={form.control} name="routing.segmentedSelector.enabled" render={({ field }) => <div className="flex h-9 items-center"><Switch id="routing-segmented-selector-enabled" checked={field.value} onCheckedChange={field.onChange} /></div>} /></SettingsField>
+              <SettingsField controlId="routing-segmented-min-candidates" label={t("settingsRoutingSegmented.minCandidates")} description={t("settingsRoutingSegmented.minCandidatesHelp")} error={form.formState.errors.routing?.segmentedSelector?.minCandidates?.message}><Input id="routing-segmented-min-candidates" type="number" min={100} max={1_000_000} disabled={!segmentedSelectorEnabled} {...form.register("routing.segmentedSelector.minCandidates", { valueAsNumber: true })} /></SettingsField>
+              <SettingsField controlId="routing-segmented-window-size" label={t("settingsRoutingSegmented.windowSize")} description={t("settingsRoutingSegmented.windowSizeHelp")} error={form.formState.errors.routing?.segmentedSelector?.windowSize?.message}><Input id="routing-segmented-window-size" type="number" min={8} max={256} disabled={!segmentedSelectorEnabled} {...form.register("routing.segmentedSelector.windowSize", { valueAsNumber: true })} /></SettingsField>
             </div>
           </SettingsSection>
 
@@ -317,6 +321,7 @@ export function SettingsPage() {
               <SettingsField controlId="audit-buffer-size" label={t("settings.audit.bufferSize")} description={t("settings.audit.bufferSizeHelp")} badge={t("settings.restartRequired")} error={form.formState.errors.audit?.bufferSize?.message}><Input id="audit-buffer-size" type="number" min={1} max={262_144} {...form.register("audit.bufferSize", { valueAsNumber: true })} /></SettingsField>
               <SettingsField controlId="audit-batch-size" label={t("settings.audit.batchSize")} description={t("settings.audit.batchSizeHelp")} error={form.formState.errors.audit?.batchSize?.message}><Input id="audit-batch-size" type="number" min={1} max={4_096} {...form.register("audit.batchSize", { valueAsNumber: true })} /></SettingsField>
               <SettingsField controlId="audit-flush-interval" label={t("settings.audit.flushInterval")} description={t("settings.audit.flushIntervalHelp")} error={form.formState.errors.audit?.flushInterval?.message}><Controller control={form.control} name="audit.flushInterval" render={({ field }) => <DurationInput id="audit-flush-interval" value={field.value} onChange={field.onChange} />} /></SettingsField>
+              <SettingsField controlId="audit-commit-delay" label={t("settings.audit.commitDelay")} description={t("settings.audit.commitDelayHelp")} error={form.formState.errors.audit?.commitDelayMS?.message}><Input id="audit-commit-delay" type="number" min={1} max={50} {...form.register("audit.commitDelayMS", { valueAsNumber: true })} /></SettingsField>
             </div>
           </SettingsSection>
 

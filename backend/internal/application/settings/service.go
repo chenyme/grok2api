@@ -90,12 +90,20 @@ type FrontendConfig struct {
 
 // RoutingConfig 是管理接口使用的路由可编辑输入。
 type RoutingConfig struct {
-	StickyTTL       string
-	CooldownBase    string
-	CooldownMax     string
-	CapacityWait    string
-	MaxAttempts     int
-	PreferFreeBuild bool
+	StickyTTL                 string
+	CooldownBase              string
+	CooldownMax               string
+	CapacityWait              string
+	MaxAttempts               int
+	PreferFreeBuild           bool
+	SegmentedSelector         SegmentedSelectorConfig
+	SegmentedSelectorProvided bool
+}
+
+type SegmentedSelectorConfig struct {
+	Enabled       bool
+	MinCandidates int
+	WindowSize    int
 }
 
 // AuditConfig 是管理接口使用的审计可编辑输入。
@@ -103,6 +111,7 @@ type AuditConfig struct {
 	BufferSize    int
 	BatchSize     int
 	FlushInterval string
+	CommitDelayMS int
 }
 
 // ClientKeyDefaultsConfig 是管理接口使用的密钥默认限制输入。
@@ -329,15 +338,33 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.Media.CleanupThresholdPercent = value.Media.CleanupThresholdPercent
 	base.Media.CleanupInterval = config.Duration(value.Media.CleanupInterval)
 	base.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(value.Frontend.PublicAPIBaseURL)
+	segmentedEnabled := base.Routing.SegmentedSelectorEnabled
+	segmentedMinCandidates := base.Routing.SegmentedMinCandidates
+	segmentedWindowSize := base.Routing.SegmentedWindowSize
+	if value.Routing.SegmentedSelector != nil {
+		segmentedEnabled = value.Routing.SegmentedSelector.ActiveEnabled
+		segmentedMinCandidates = value.Routing.SegmentedSelector.MinCandidates
+		segmentedWindowSize = value.Routing.SegmentedSelector.WindowSize
+	}
 	base.Routing = config.RoutingConfig{
 		StickyTTL: config.Duration(value.Routing.StickyTTL), CooldownBase: config.Duration(value.Routing.CooldownBase),
 		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts,
-		PreferFreeBuild:        value.Routing.PreferFreeBuild,
-		ReasoningReplayEnabled: base.Routing.ReasoningReplayEnabled, ReasoningReplayTTL: base.Routing.ReasoningReplayTTL,
+		PreferFreeBuild:          value.Routing.PreferFreeBuild,
+		SegmentedSelectorEnabled: segmentedEnabled,
+		SegmentedMinCandidates:   segmentedMinCandidates,
+		SegmentedWindowSize:      segmentedWindowSize,
+		ReasoningReplayEnabled:   base.Routing.ReasoningReplayEnabled, ReasoningReplayTTL: base.Routing.ReasoningReplayTTL,
 		ReasoningReplayMaxEntries: base.Routing.ReasoningReplayMaxEntries,
+	}
+	commitDelay := base.Audit.CommitDelay.Value()
+	if value.Audit.CommitDelay > 0 {
+		commitDelay = value.Audit.CommitDelay
 	}
 	base.Audit = config.AuditConfig{
 		BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: config.Duration(value.Audit.FlushInterval),
+		CommitDelay: config.Duration(commitDelay),
+		LedgerMode:  base.Audit.LedgerMode, LedgerFailureThreshold: base.Audit.LedgerFailureThreshold,
+		LedgerUnhealthyGrace: base.Audit.LedgerUnhealthyGrace, LedgerQueueHighWatermarkPct: base.Audit.LedgerQueueHighWatermarkPct,
 	}
 	base.ClientKeyDefaults = config.ClientKeyDefaultsConfig{
 		RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
@@ -393,9 +420,13 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			StickyTTL: value.Routing.StickyTTL.Value(), CooldownBase: value.Routing.CooldownBase.Value(),
 			CooldownMax: value.Routing.CooldownMax.Value(), CapacityWait: value.Routing.CapacityWait.Value(), MaxAttempts: value.Routing.MaxAttempts,
 			PreferFreeBuild: value.Routing.PreferFreeBuild,
+			SegmentedSelector: &settingsdomain.SegmentedSelectorConfig{
+				ActiveEnabled: value.Routing.SegmentedSelectorEnabled,
+				MinCandidates: value.Routing.SegmentedMinCandidates, WindowSize: value.Routing.SegmentedWindowSize,
+			},
 		},
 		Audit: settingsdomain.AuditConfig{
-			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval.Value(),
+			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval.Value(), CommitDelay: value.Audit.CommitDelay.Value(),
 		},
 		ClientKeyDefaults: settingsdomain.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
@@ -428,6 +459,9 @@ func (s *Service) snapshotLocked() Snapshot {
 }
 
 func mergeEditable(current config.Config, input EditableConfig) (config.Config, error) {
+	if input.Audit.CommitDelayMS < 0 {
+		return config.Config{}, errors.New("audit.commitDelayMS 不能为负数")
+	}
 	next := current
 	next.Server.MaxConcurrentRequests = input.Server.MaxConcurrentRequests
 	next.Provider.Build.BaseURL = strings.TrimSpace(input.ProviderBuild.BaseURL)
@@ -465,8 +499,16 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(input.Frontend.PublicAPIBaseURL)
 	next.Routing.MaxAttempts = input.Routing.MaxAttempts
 	next.Routing.PreferFreeBuild = input.Routing.PreferFreeBuild
+	if input.Routing.SegmentedSelectorProvided {
+		next.Routing.SegmentedSelectorEnabled = input.Routing.SegmentedSelector.Enabled
+		next.Routing.SegmentedMinCandidates = input.Routing.SegmentedSelector.MinCandidates
+		next.Routing.SegmentedWindowSize = input.Routing.SegmentedSelector.WindowSize
+	}
 	next.Audit.BufferSize = input.Audit.BufferSize
 	next.Audit.BatchSize = input.Audit.BatchSize
+	if input.Audit.CommitDelayMS > 0 {
+		next.Audit.CommitDelay = config.Duration(time.Duration(input.Audit.CommitDelayMS) * time.Millisecond)
+	}
 	next.ClientKeyDefaults.RPMLimit = input.ClientKeyDefaults.RPMLimit
 	next.ClientKeyDefaults.MaxConcurrent = input.ClientKeyDefaults.MaxConcurrent
 	if input.AccountsProvided {
@@ -558,9 +600,14 @@ func toEditable(cfg config.Config) EditableConfig {
 			StickyTTL: cfg.Routing.StickyTTL.String(), CooldownBase: cfg.Routing.CooldownBase.String(),
 			CooldownMax: cfg.Routing.CooldownMax.String(), CapacityWait: cfg.Routing.CapacityWait.String(), MaxAttempts: cfg.Routing.MaxAttempts,
 			PreferFreeBuild: cfg.Routing.PreferFreeBuild,
+			SegmentedSelector: SegmentedSelectorConfig{
+				Enabled: cfg.Routing.SegmentedSelectorEnabled, MinCandidates: cfg.Routing.SegmentedMinCandidates,
+				WindowSize: cfg.Routing.SegmentedWindowSize,
+			},
+			SegmentedSelectorProvided: true,
 		},
 		Audit: AuditConfig{
-			BufferSize: cfg.Audit.BufferSize, BatchSize: cfg.Audit.BatchSize, FlushInterval: cfg.Audit.FlushInterval.String(),
+			BufferSize: cfg.Audit.BufferSize, BatchSize: cfg.Audit.BatchSize, FlushInterval: cfg.Audit.FlushInterval.String(), CommitDelayMS: int(cfg.Audit.CommitDelay.Value() / time.Millisecond),
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: cfg.ClientKeyDefaults.RPMLimit, MaxConcurrent: cfg.ClientKeyDefaults.MaxConcurrent},
 		Accounts: AccountsConfig{

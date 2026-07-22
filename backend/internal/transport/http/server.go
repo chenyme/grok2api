@@ -158,6 +158,7 @@ func New(deps Dependencies) *gin.Engine {
 
 	v1 := router.Group("/v1")
 	v1.Use(deps.ConcurrencyGate.Middleware())
+	v1.Use(middleware.ObserveBodyMemory())
 	if deps.TrafficReady != nil {
 		v1.Use(func(c *gin.Context) {
 			if deps.TrafficReady() {

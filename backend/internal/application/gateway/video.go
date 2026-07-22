@@ -62,6 +62,9 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
+	if err := s.checkLedgerReady(); err != nil {
+		return media.Job{}, err
+	}
 	externalModel := model.ExternalPublicID(route.Provider, route.PublicID)
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
 	lease, err := s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", nil, false)

@@ -23,6 +23,8 @@ const (
 	maxStickyBindingsPerAccount = 10000
 	maxDeviceSessions           = 1000
 	maxQuotaRecoveryEvents      = 100000
+	maxQuotaRefreshDirty        = 100000
+	observedModelStateTTL       = 30 * time.Minute
 )
 
 var rateScript = redisclient.NewScript(`
@@ -154,6 +156,103 @@ redis.call('HDEL', KEYS[3], ARGV[1])
 return redis.call('ZREM', KEYS[1], ARGV[1])
 `)
 
+var markQuotaRefreshDirtyScript = redisclient.NewScript(`
+local now = tonumber(ARGV[4])
+local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now, 'LIMIT', 0, 1000)
+for _, member in ipairs(expired) do
+  redis.call('ZREM', KEYS[3], member)
+  redis.call('ZREM', KEYS[2], member)
+  redis.call('HDEL', KEYS[1], member)
+end
+local memberExpires = redis.call('ZSCORE', KEYS[3], ARGV[1])
+if memberExpires and tonumber(memberExpires) <= now then
+  redis.call('ZREM', KEYS[3], ARGV[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('HDEL', KEYS[1], ARGV[1])
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+if not redis.call('ZSCORE', KEYS[2], ARGV[1]) and redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[3]) then return 0 end
+local generation = redis.call('HINCRBY', KEYS[1], ARGV[1], 1)
+redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
+redis.call('ZADD', KEYS[3], ARGV[2], ARGV[1])
+local latest = redis.call('ZREVRANGE', KEYS[3], 0, 0, 'WITHSCORES')
+if #latest == 2 then
+  redis.call('PEXPIREAT', KEYS[1], latest[2])
+  redis.call('PEXPIREAT', KEYS[2], latest[2])
+  redis.call('PEXPIREAT', KEYS[3], latest[2])
+end
+return generation
+`)
+
+var clearQuotaRefreshDirtyScript = redisclient.NewScript(`
+local retentionExpires = redis.call('ZSCORE', KEYS[3], ARGV[1])
+if not retentionExpires or tonumber(retentionExpires) <= tonumber(ARGV[3]) then
+  redis.call('ZREM', KEYS[3], ARGV[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('HDEL', KEYS[1], ARGV[1])
+  return 0
+end
+local dirtyExpires = redis.call('ZSCORE', KEYS[2], ARGV[1])
+if not dirtyExpires or tonumber(dirtyExpires) <= tonumber(ARGV[3]) then
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  return 0
+end
+if tonumber(redis.call('HGET', KEYS[1], ARGV[1]) or '0') ~= tonumber(ARGV[2]) then return 0 end
+redis.call('ZREM', KEYS[2], ARGV[1])
+return 1
+`)
+
+var listQuotaRefreshDirtyScript = redisclient.NewScript(`
+local limit = tonumber(ARGV[2])
+local now = tonumber(ARGV[1])
+local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now, 'LIMIT', 0, 1000)
+for _, member in ipairs(expired) do
+  redis.call('ZREM', KEYS[3], member)
+  redis.call('ZREM', KEYS[2], member)
+  redis.call('HDEL', KEYS[1], member)
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+local members = redis.call('ZRANGEBYSCORE', KEYS[2], '(' .. ARGV[1], '+inf', 'LIMIT', 0, limit)
+local result = {}
+for _, member in ipairs(members) do
+  local retentionExpires = redis.call('ZSCORE', KEYS[3], member)
+  local generation = redis.call('HGET', KEYS[1], member)
+  if retentionExpires and tonumber(retentionExpires) > now and generation then
+    table.insert(result, member)
+    table.insert(result, generation)
+  end
+end
+return result
+`)
+
+var setObservedModelStateScript = redisclient.NewScript(`
+local previous = redis.call('HGET', KEYS[1], 'observed_at')
+if previous and tonumber(previous) > tonumber(ARGV[2]) then return 0 end
+redis.call('HSET', KEYS[1], 'model', ARGV[1], 'observed_at', ARGV[2])
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+return 1
+`)
+
+var quotaRefreshStateScript = redisclient.NewScript(`
+local generation = redis.call('HGET', KEYS[1], ARGV[1]) or '0'
+local retentionExpires = redis.call('ZSCORE', KEYS[3], ARGV[1])
+if not retentionExpires or tonumber(retentionExpires) <= tonumber(ARGV[2]) then
+  redis.call('ZREM', KEYS[3], ARGV[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('HDEL', KEYS[1], ARGV[1])
+  generation = '0'
+  return {generation, '0'}
+end
+local dirtyExpires = redis.call('ZSCORE', KEYS[2], ARGV[1])
+local dirty = '0'
+if dirtyExpires and tonumber(dirtyExpires) > tonumber(ARGV[2]) then
+  dirty = '1'
+elseif dirtyExpires then
+  redis.call('ZREM', KEYS[2], ARGV[1])
+end
+return {generation, dirty}
+`)
+
 var rescheduleQuotaRecoveryScript = redisclient.NewScript(`
 if redis.call('HGET', KEYS[3], ARGV[1]) ~= ARGV[4] then return 0 end
 redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
@@ -204,9 +303,88 @@ func (s *Store) Ping(ctx context.Context) error { return s.client.Ping(ctx).Err(
 
 func (s *Store) key(namespace, key string) string { return s.prefix + namespace + ":" + key }
 
+func (s *Store) GetObservedModelState(ctx context.Context, accountID uint64) (repository.ObservedModelState, bool, error) {
+	if accountID == 0 {
+		return repository.ObservedModelState{}, false, nil
+	}
+	values, err := s.client.HMGet(ctx, s.key("observed-model", strconv.FormatUint(accountID, 10)), "model", "observed_at").Result()
+	if err != nil {
+		return repository.ObservedModelState{}, false, err
+	}
+	if len(values) != 2 || values[0] == nil || values[1] == nil {
+		return repository.ObservedModelState{}, false, nil
+	}
+	model, ok := values[0].(string)
+	if !ok || strings.TrimSpace(model) == "" {
+		return repository.ObservedModelState{}, false, nil
+	}
+	observedMillis, err := strconv.ParseInt(fmt.Sprint(values[1]), 10, 64)
+	if err != nil || observedMillis <= 0 {
+		return repository.ObservedModelState{}, false, nil
+	}
+	return repository.ObservedModelState{Model: model, ObservedAt: time.UnixMilli(observedMillis).UTC()}, true, nil
+}
+
+func (s *Store) SetObservedModelState(ctx context.Context, accountID uint64, value repository.ObservedModelState, ttl time.Duration) error {
+	if accountID == 0 || strings.TrimSpace(value.Model) == "" || value.ObservedAt.IsZero() {
+		return nil
+	}
+	if ttl <= 0 {
+		ttl = observedModelStateTTL
+	}
+	return setObservedModelStateScript.Run(ctx, s.client,
+		[]string{s.key("observed-model", strconv.FormatUint(accountID, 10))},
+		strings.TrimSpace(value.Model), value.ObservedAt.UTC().UnixMilli(), ttl.Milliseconds()).Err()
+}
+
 // PublishSettingsChanged 发布运行设置失效通知，不在 Redis 中复制设置内容。
 func (s *Store) PublishSettingsChanged(ctx context.Context) error {
 	return s.client.Publish(ctx, s.key("events", "settings"), "reload").Err()
+}
+
+func (s *Store) PublishInvalidation(ctx context.Context, event repository.InvalidationEvent) error {
+	if !event.Valid() {
+		return errors.New("invalid invalidation event")
+	}
+	if event.PublishedAt.IsZero() {
+		event.PublishedAt = time.Now().UTC()
+	}
+	revision, err := s.client.Incr(ctx, s.key("invalidation-revision", string(event.Layer())+":"+string(event.Provider))).Result()
+	if err != nil {
+		return err
+	}
+	event.Revision = uint64(revision)
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	return s.client.Publish(ctx, s.key("events", "invalidation"), payload).Err()
+}
+
+func (s *Store) ListenInvalidations(ctx context.Context, handler func(context.Context, repository.InvalidationEvent) error) error {
+	pubsub := s.client.Subscribe(ctx, s.key("events", "invalidation"))
+	defer pubsub.Close()
+	if _, err := pubsub.Receive(ctx); err != nil {
+		return err
+	}
+	channel := pubsub.Channel()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case message, ok := <-channel:
+			if !ok {
+				return errors.New("Redis invalidation channel closed")
+			}
+			var event repository.InvalidationEvent
+			if err := json.Unmarshal([]byte(message.Payload), &event); err != nil || !event.Valid() {
+				continue
+			}
+			if err := handler(ctx, event); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // ListenSettingsChanges 监听设置变更并调用重载函数，go-redis 会在连接中断后自动重连。
@@ -282,13 +460,12 @@ func (s *Store) CurrentMany(ctx context.Context, keys []string) (map[string]int,
 	if len(keys) == 0 {
 		return values, nil
 	}
-	now := strconv.FormatInt(time.Now().UTC().UnixMilli(), 10)
+	now := "(" + strconv.FormatInt(time.Now().UTC().UnixMilli(), 10)
 	pipe := s.client.Pipeline()
 	counts := make(map[string]*redisclient.IntCmd, len(keys))
 	for _, key := range keys {
 		redisKey := s.key("concurrency", key)
-		pipe.ZRemRangeByScore(ctx, redisKey, "-inf", now)
-		counts[key] = pipe.ZCard(ctx, redisKey)
+		counts[key] = pipe.ZCount(ctx, redisKey, now, "+inf")
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, err
@@ -368,6 +545,79 @@ func (s *Store) ScheduleQuotaRecovery(ctx context.Context, value account.QuotaRe
 		return fmt.Errorf("额度恢复队列已满")
 	}
 	return nil
+}
+
+func (s *Store) MarkQuotaRefreshDirty(ctx context.Context, accountID uint64, mode string, ttl time.Duration) (uint64, error) {
+	mode = strings.TrimSpace(mode)
+	if accountID == 0 || mode == "" || ttl <= 0 {
+		return 0, fmt.Errorf("quota refresh identity is invalid")
+	}
+	member := strconv.FormatUint(accountID, 10) + ":" + mode
+	now := time.Now().UTC()
+	expiresAt := now.Add(ttl)
+	generation, err := markQuotaRefreshDirtyScript.Run(ctx, s.client,
+		[]string{s.key("quota-refresh", "generations"), s.key("quota-refresh", "dirty"), s.key("quota-refresh", "expiry")},
+		member, expiresAt.UnixMilli(), maxQuotaRefreshDirty, now.UnixMilli(),
+	).Uint64()
+	if err != nil {
+		return 0, err
+	}
+	if generation == 0 {
+		return 0, fmt.Errorf("quota refresh dirty set is full")
+	}
+	return generation, nil
+}
+
+func (s *Store) QuotaRefreshGeneration(ctx context.Context, accountID uint64, mode string) (uint64, bool, error) {
+	member := strconv.FormatUint(accountID, 10) + ":" + strings.TrimSpace(mode)
+	values, err := quotaRefreshStateScript.Run(ctx, s.client,
+		[]string{s.key("quota-refresh", "generations"), s.key("quota-refresh", "dirty"), s.key("quota-refresh", "expiry")}, member, time.Now().UTC().UnixMilli(),
+	).StringSlice()
+	if err != nil {
+		return 0, false, err
+	}
+	if len(values) != 2 {
+		return 0, false, fmt.Errorf("quota refresh state response is invalid")
+	}
+	generation, err := strconv.ParseUint(values[0], 10, 64)
+	return generation, values[1] == "1", err
+}
+
+func (s *Store) ClearQuotaRefreshDirty(ctx context.Context, accountID uint64, mode string, generation uint64) (bool, error) {
+	member := strconv.FormatUint(accountID, 10) + ":" + strings.TrimSpace(mode)
+	result, err := clearQuotaRefreshDirtyScript.Run(ctx, s.client,
+		[]string{s.key("quota-refresh", "generations"), s.key("quota-refresh", "dirty"), s.key("quota-refresh", "expiry")},
+		member, generation, time.Now().UTC().UnixMilli(),
+	).Int()
+	return result == 1, err
+}
+
+func (s *Store) ListQuotaRefreshDirty(ctx context.Context, now time.Time, limit int) ([]repository.QuotaRefreshDirty, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	values, err := listQuotaRefreshDirtyScript.Run(ctx, s.client,
+		[]string{s.key("quota-refresh", "generations"), s.key("quota-refresh", "dirty"), s.key("quota-refresh", "expiry")},
+		now.UnixMilli(), limit,
+	).StringSlice()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]repository.QuotaRefreshDirty, 0, min(limit, len(values)/2))
+	for index := 0; index+1 < len(values); index += 2 {
+		member := values[index]
+		separator := strings.IndexByte(member, ':')
+		if separator <= 0 || separator == len(member)-1 {
+			continue
+		}
+		accountID, parseErr := strconv.ParseUint(member[:separator], 10, 64)
+		generation, generationErr := strconv.ParseUint(values[index+1], 10, 64)
+		if parseErr != nil || generationErr != nil || accountID == 0 || generation == 0 {
+			continue
+		}
+		result = append(result, repository.QuotaRefreshDirty{AccountID: accountID, Mode: member[separator+1:], Generation: generation})
+	}
+	return result, nil
 }
 
 func (s *Store) EnsureQuotaRecovery(ctx context.Context, value account.QuotaRecoveryEvent) error {

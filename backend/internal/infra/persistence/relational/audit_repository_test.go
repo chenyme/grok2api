@@ -3,6 +3,7 @@ package relational
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -89,6 +90,37 @@ func TestAuditRepositoryBatchAndCursor(t *testing.T) {
 	}
 }
 
+func TestAuditRepositoryBatchSpansMultipleSQLChunks(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-multi-chunk.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAuditRepository(database)
+	now := time.Now().UTC()
+	values := make([]audit.Record, 45)
+	for index := range values {
+		values[index] = audit.Record{
+			EventID: fmt.Sprintf("evt_multi_chunk_audit_%04d", index), RequestID: fmt.Sprintf("multi-chunk-%04d", index),
+			ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: now.Add(time.Duration(index) * time.Millisecond),
+			Attempts: []audit.Attempt{{Number: 1, Source: audit.AttemptSourceCredential, Stage: "credential", StartedAt: now}},
+		}
+	}
+	if err := repository.CreateBatch(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if count := tableRowCount(t, database, "request_audits"); count != int64(len(values)) {
+		t.Fatalf("request audits = %d", count)
+	}
+	if count := tableRowCount(t, database, "request_audit_attempts"); count != int64(len(values)) {
+		t.Fatalf("request audit attempts = %d", count)
+	}
+}
+
 func TestAuditRepositoryAtomicallyRecordsClientBillingUsage(t *testing.T) {
 	ctx := context.Background()
 	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-billing.db"))
@@ -169,6 +201,153 @@ func TestAuditRepositorySettlesBillingReservationIdempotently(t *testing.T) {
 	}
 	if count := tableRowCount(t, database, "billing_reservations"); count != 0 {
 		t.Fatalf("billing reservations = %d", count)
+	}
+}
+
+func TestAuditRepositoryBatchMixedDuplicateUsesIdempotentFallback(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-mixed-batch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := clientKeyModel{Name: "mixed", Prefix: "mixed", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 120, MaxConcurrent: 8}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAuditRepository(database)
+	now := time.Now().UTC()
+	existing := audit.Record{
+		EventID: "evt_mixed_batch_existing_0001", RequestID: "mixed-existing", ClientKeyID: key.ID, ModelRouteID: 1,
+		StatusCode: 200, EstimatedCostInUSDTicks: 20, CreatedAt: now,
+		Attempts: []audit.Attempt{{Number: 1, Source: audit.AttemptSourceCredential, Stage: "credential", StartedAt: now}},
+	}
+	if err := repository.Create(ctx, existing); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CreateBatch(ctx, []audit.Record{
+		{
+			EventID: existing.EventID, RequestID: "duplicate-must-not-rebill", ClientKeyID: key.ID, ModelRouteID: 1,
+			StatusCode: 200, EstimatedCostInUSDTicks: 999, CreatedAt: now.Add(time.Second),
+			Attempts: []audit.Attempt{{Number: 1, Source: audit.AttemptSourceCredential, Stage: "duplicate", StartedAt: now}},
+		},
+		{
+			EventID: "evt_mixed_batch_new_record_0002", RequestID: "mixed-new", ClientKeyID: key.ID, ModelRouteID: 1,
+			StatusCode: 200, EstimatedCostInUSDTicks: 30, CreatedAt: now.Add(2 * time.Second),
+			Attempts: []audit.Attempt{
+				{Number: 1, Source: audit.AttemptSourceCredential, Stage: "credential", StartedAt: now},
+				{Number: 2, Source: audit.AttemptSourceUpstreamHTTP, Stage: "upstream_response", StartedAt: now},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stored clientKeyModel
+	if err := database.db.WithContext(ctx).First(&stored, key.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.BilledUsageUSDTicks != 50 {
+		t.Fatalf("billed usage = %d", stored.BilledUsageUSDTicks)
+	}
+	if count := tableRowCount(t, database, "request_audits"); count != 2 {
+		t.Fatalf("request audits = %d", count)
+	}
+	if count := tableRowCount(t, database, "request_audit_attempts"); count != 3 {
+		t.Fatalf("request audit attempts = %d", count)
+	}
+}
+
+func TestAuditRepositoryBatchSettlesReservationsAndReleasesZeroCost(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-batch-reservations.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := clientKeyModel{Name: "batch-reserved", Prefix: "batch-reserved", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 120, MaxConcurrent: 8, BillingLimitUSDTicks: 1_000}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	events := []string{"evt_batch_reserved_priced_0001", "evt_batch_reserved_zero_000002"}
+	keys := NewClientKeyRepository(database)
+	for index, amount := range []int64{80, 70} {
+		reserved, err := keys.ReserveBillingUsage(ctx, key.ID, events[index], amount, time.Now().UTC().Add(time.Hour))
+		if err != nil || !reserved {
+			t.Fatalf("reserve %s: reserved=%v err=%v", events[index], reserved, err)
+		}
+	}
+	audits := NewAuditRepository(database)
+	if err := audits.CreateBatch(ctx, []audit.Record{
+		{EventID: events[0], RequestID: "batch-priced", ClientKeyID: key.ID, ModelRouteID: 1, StatusCode: 200, CostInUSDTicks: 30, CreatedAt: time.Now().UTC()},
+		{EventID: events[1], RequestID: "batch-zero", ClientKeyID: key.ID, ModelRouteID: 1, StatusCode: 500, CreatedAt: time.Now().UTC()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stored clientKeyModel
+	if err := database.db.WithContext(ctx).First(&stored, key.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.ReservedUsageUSDTicks != 0 || stored.BilledUsageUSDTicks != 30 {
+		t.Fatalf("settled key = reserved %d, billed %d", stored.ReservedUsageUSDTicks, stored.BilledUsageUSDTicks)
+	}
+	if count := tableRowCount(t, database, "billing_reservations"); count != 0 {
+		t.Fatalf("billing reservations = %d", count)
+	}
+}
+
+func TestAuditRepositoryBatchRollsBackAuditBillingAndReservationTogether(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-batch-rollback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := clientKeyModel{Name: "batch-rollback", Prefix: "batch-rollback", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 120, MaxConcurrent: 8, BillingLimitUSDTicks: 1_000}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	eventID := "evt_batch_rollback_record_0001"
+	keys := NewClientKeyRepository(database)
+	if reserved, err := keys.ReserveBillingUsage(ctx, key.ID, eventID, 80, time.Now().UTC().Add(time.Hour)); err != nil || !reserved {
+		t.Fatalf("reserve: reserved=%v err=%v", reserved, err)
+	}
+	audits := NewAuditRepository(database)
+	err = audits.CreateBatch(ctx, []audit.Record{{
+		EventID: eventID, RequestID: "batch-rollback", ClientKeyID: key.ID, ModelRouteID: 1,
+		StatusCode: 200, CostInUSDTicks: 30, CreatedAt: time.Now().UTC(),
+		Attempts: []audit.Attempt{{Number: 0, Source: audit.AttemptSourceCredential, Stage: "invalid", StartedAt: time.Now().UTC()}},
+	}})
+	if !errors.Is(err, repositorypkg.ErrInvalidRecord) {
+		t.Fatalf("batch error = %v", err)
+	}
+	var invalid *repositorypkg.InvalidBatchRecordError
+	if !errors.As(err, &invalid) || invalid.Index != 0 {
+		t.Fatalf("invalid record error = %#v", invalid)
+	}
+	if count := tableRowCount(t, database, "request_audits"); count != 0 {
+		t.Fatalf("request audits = %d", count)
+	}
+	if count := tableRowCount(t, database, "request_audit_attempts"); count != 0 {
+		t.Fatalf("request audit attempts = %d", count)
+	}
+	if count := tableRowCount(t, database, "billing_reservations"); count != 1 {
+		t.Fatalf("billing reservations = %d", count)
+	}
+	var stored clientKeyModel
+	if err := database.db.WithContext(ctx).First(&stored, key.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.ReservedUsageUSDTicks != 80 || stored.BilledUsageUSDTicks != 0 {
+		t.Fatalf("rolled back key = reserved %d, billed %d", stored.ReservedUsageUSDTicks, stored.BilledUsageUSDTicks)
 	}
 }
 
