@@ -212,7 +212,8 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		fallbackBase := a.fallbackBaseURL()
 		if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
 			fallbackBody, fallbackReplayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, fallbackBase)
-			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(ctx, request, accessToken, fallbackBody, fallbackBase)
+			fallbackCtx := infraegress.WithPhysicalCallStage(ctx, "plane_fallback")
+			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(fallbackCtx, request, accessToken, fallbackBody, fallbackBase)
 			if fallbackErr == nil {
 				fallbackErr = normalizeGzipResponse(fallbackResp)
 			}
@@ -369,6 +370,11 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 		bodyReader = bytes.NewReader(body)
 	}
 	requestCtx := infraegress.WithCredential(ctx, request.Credential)
+	plane := "build"
+	if fallback := a.fallbackBaseURL(); fallback != "" && strings.EqualFold(strings.TrimRight(base, "/"), fallback) {
+		plane = "xai"
+	}
+	requestCtx = infraegress.WithPhysicalCallPlane(requestCtx, plane)
 	req, err := http.NewRequestWithContext(requestCtx, request.Method, a.urlWithBase(base, request.Path), bodyReader)
 	if err != nil {
 		return nil, "", err

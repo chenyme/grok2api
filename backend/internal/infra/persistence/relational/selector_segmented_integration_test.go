@@ -38,7 +38,11 @@ func TestPostgresRedisSegmentedSelectorIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Errorf("close PostgreSQL integration database: %v", err)
+		}
+	})
 	if err := database.InitializeSchema(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,9 @@ type Labels struct {
 	Subsystem string
 	Operation string
 	Provider  string
+	Plane     string
 	Stage     string
+	Ordinal   string
 	Outcome   string
 }
 
@@ -48,7 +50,9 @@ type registryShard struct {
 }
 
 type Registry struct {
-	shards [registryShardCount]registryShard
+	shards        [registryShardCount]registryShard
+	dynamicMu     sync.RWMutex
+	dynamicGauges map[metricKey]func() int64
 }
 
 func NewRegistry() *Registry {
@@ -56,6 +60,7 @@ func NewRegistry() *Registry {
 	for index := range registry.shards {
 		registry.shards[index].values = make(map[metricKey]metricValue)
 	}
+	registry.dynamicGauges = make(map[metricKey]func() int64)
 	return registry
 }
 
@@ -100,6 +105,22 @@ func (r *Registry) SetGauge(name string, labels Labels, value int64) {
 	shard.mu.Unlock()
 }
 
+// RegisterDynamicGauge exposes a bounded gauge whose value is read only when
+// metrics are collected. The callback must be non-blocking and side-effect
+// free; it is intended for atomic runtime state such as active request bytes.
+func (r *Registry) RegisterDynamicGauge(name string, labels Labels, read func() int64) {
+	if r == nil || name == "" || read == nil {
+		return
+	}
+	key := metricKey{name: name, labels: labels}
+	r.dynamicMu.Lock()
+	if r.dynamicGauges == nil {
+		r.dynamicGauges = make(map[metricKey]func() int64)
+	}
+	r.dynamicGauges[key] = read
+	r.dynamicMu.Unlock()
+}
+
 // CollectAndReset returns interval counters while retaining the latest gauge
 // values for the next collection window.
 func (r *Registry) CollectAndReset() []Sample {
@@ -127,6 +148,27 @@ func (r *Registry) CollectAndReset() []Sample {
 		}
 		shard.mu.Unlock()
 	}
+	r.dynamicMu.RLock()
+	dynamic := make(map[metricKey]func() int64, len(r.dynamicGauges))
+	for key, read := range r.dynamicGauges {
+		dynamic[key] = read
+	}
+	r.dynamicMu.RUnlock()
+	for key, read := range dynamic {
+		value := Sample{Name: key.name, Labels: key.labels, Gauge: read(), HasGauge: true}
+		found := false
+		for index := range result {
+			if result[index].Name == key.name && result[index].Labels == key.labels {
+				result[index].Gauge = value.Gauge
+				result[index].HasGauge = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, value)
+		}
+	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Name != result[j].Name {
 			return result[i].Name < result[j].Name
@@ -142,7 +184,9 @@ func (r *Registry) shard(key metricKey) *registryShard {
 	hash = hashMetricString(hash, key.labels.Subsystem)
 	hash = hashMetricString(hash, key.labels.Operation)
 	hash = hashMetricString(hash, key.labels.Provider)
+	hash = hashMetricString(hash, key.labels.Plane)
 	hash = hashMetricString(hash, key.labels.Stage)
+	hash = hashMetricString(hash, key.labels.Ordinal)
 	hash = hashMetricString(hash, key.labels.Outcome)
 	return &r.shards[hash%registryShardCount]
 }
@@ -157,5 +201,5 @@ func hashMetricString(hash uint64, value string) uint64 {
 }
 
 func labelsKey(value Labels) string {
-	return value.Subsystem + "\x00" + value.Operation + "\x00" + value.Provider + "\x00" + value.Stage + "\x00" + value.Outcome
+	return value.Subsystem + "\x00" + value.Operation + "\x00" + value.Provider + "\x00" + value.Plane + "\x00" + value.Stage + "\x00" + value.Ordinal + "\x00" + value.Outcome
 }

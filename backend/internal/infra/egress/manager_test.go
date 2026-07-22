@@ -62,11 +62,11 @@ func TestClientCacheEvictsIdleEntriesAndEnforcesCapacity(t *testing.T) {
 
 func TestClientVersionTombstonesRemainBounded(t *testing.T) {
 	manager := NewManager(egressRepositoryTestStub{}, nil)
-	manager.mu.Lock()
+	manager.clientMu.Lock()
 	for nodeID := uint64(1); nodeID <= maxClientVersionEntries+256; nodeID++ {
 		manager.invalidateClientVersionLocked(nodeID)
 	}
-	manager.mu.Unlock()
+	manager.clientMu.Unlock()
 	if len(manager.clientVersions) > maxClientVersionEntries {
 		t.Fatalf("client version tombstones = %d, limit = %d", len(manager.clientVersions), maxClientVersionEntries)
 	}
@@ -104,6 +104,87 @@ func TestClientCreationDoesNotHoldManagerLock(t *testing.T) {
 	close(release)
 	if err := <-result; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSelectNodeUsesAtomicInflightCounters(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	nodes := []domain.Node{{ID: 1, Health: 1}, {ID: 2, Health: 1}}
+	manager.incrementInflight(1)
+	if selected := manager.selectNode(nodes, ""); selected.ID != 2 {
+		t.Fatalf("selected node = %d, want 2", selected.ID)
+	}
+	manager.decrementInflight(1)
+	if selected := manager.selectNode(nodes, ""); selected.ID != 1 {
+		t.Fatalf("selected node after release = %d, want stable node 1", selected.ID)
+	}
+}
+
+func TestInflightCountersRemainBalancedConcurrently(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	const workers = 64
+	const iterations = 1000
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for range iterations {
+				manager.incrementInflight(1)
+				manager.decrementInflight(1)
+			}
+		}()
+	}
+	wait.Wait()
+	if value := manager.inflightCount(1); value != 0 {
+		t.Fatalf("inflight count = %d, want 0", value)
+	}
+}
+
+func TestClientCacheCoalescesLastUsedWrites(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	client := &scriptedRequestClient{}
+	manager.newBuildClient = func(string) (requestClient, error) { return client, nil }
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().UTC()
+	var key clientCacheKey
+	manager.clientMu.Lock()
+	for candidate, value := range manager.clients {
+		key = candidate
+		value.lastUsed = base
+		manager.clients[candidate] = value
+	}
+	manager.lastClientCleanup = base
+	manager.clientMu.Unlock()
+
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	manager.clientMu.RLock()
+	untouched := manager.clients[key].lastUsed
+	manager.clientMu.RUnlock()
+	if !untouched.Equal(base) {
+		t.Fatalf("fresh cache hit rewrote lastUsed: got %s want %s", untouched, base)
+	}
+
+	stale := base.Add(-clientCacheTouchInterval - time.Second)
+	manager.clientMu.Lock()
+	value := manager.clients[key]
+	value.lastUsed = stale
+	manager.clients[key] = value
+	manager.lastClientCleanup = time.Now().UTC()
+	manager.clientMu.Unlock()
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	manager.clientMu.RLock()
+	refreshed := manager.clients[key].lastUsed
+	manager.clientMu.RUnlock()
+	if !refreshed.After(stale) {
+		t.Fatalf("stale cache hit did not refresh lastUsed: got %s, stale %s", refreshed, stale)
 	}
 }
 
@@ -690,9 +771,9 @@ func TestExpiredHealthySnapshotRechecksRepositoryOnSuccess(t *testing.T) {
 	if _, err := manager.listNodes(context.Background(), domain.ScopeBuild, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	manager.mu.Lock()
+	manager.nodeMu.Lock()
 	manager.healthyNodes[1] = time.Now().UTC().Add(-time.Second)
-	manager.mu.Unlock()
+	manager.nodeMu.Unlock()
 	repository.node = domain.Node{ID: 1, Name: "recovering", Scope: domain.ScopeBuild, Enabled: true, Health: 0.8, FailureCount: 1, LastError: "transport error"}
 
 	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, http.StatusOK, nil)
@@ -712,11 +793,11 @@ func TestNodeSnapshotReplacementRemovesRetiredHealthState(t *testing.T) {
 		t.Fatal("initial node was not cached as healthy")
 	}
 	repository.node = domain.Node{ID: 2, Name: "replacement", Scope: domain.ScopeBuild, Enabled: true, Health: 1}
-	manager.mu.Lock()
+	manager.nodeMu.Lock()
 	snapshot := manager.nodes[domain.ScopeBuild]
 	snapshot.expiresAt = now.Add(-time.Second)
 	manager.nodes[domain.ScopeBuild] = snapshot
-	manager.mu.Unlock()
+	manager.nodeMu.Unlock()
 	if _, err := manager.listNodes(context.Background(), domain.ScopeBuild, now); err != nil {
 		t.Fatal(err)
 	}
@@ -767,6 +848,51 @@ func TestConcurrentFailurePreventsStaleHealthySnapshotInstall(t *testing.T) {
 	}
 	if len(values) != 1 || values[0].FailureCount != 1 || values[0].CooldownUntil == nil {
 		t.Fatalf("reloaded node = %#v", values)
+	}
+}
+
+func TestForgetClearancePreventsStaleNodeSnapshotInstall(t *testing.T) {
+	repository := &blockingEgressRepository{
+		node:        domain.Node{ID: 1, Name: "before", Scope: domain.ScopeBuild, Enabled: true, Health: 1},
+		listStarted: make(chan struct{}),
+		listRelease: make(chan struct{}),
+	}
+	manager := NewManager(repository, nil)
+	loaded := make(chan []domain.Node, 1)
+	loadErrors := make(chan error, 1)
+	go func() {
+		values, err := manager.listNodes(context.Background(), domain.ScopeBuild, time.Now().UTC())
+		if err != nil {
+			loadErrors <- err
+			return
+		}
+		loaded <- values
+	}()
+	<-repository.listStarted
+	if _, err := repository.UpdateEgressNode(context.Background(), domain.Node{ID: 2, Name: "after", Scope: domain.ScopeBuild, Enabled: true, Health: 1}); err != nil {
+		t.Fatal(err)
+	}
+	manager.ForgetClearance(1)
+	close(repository.listRelease)
+
+	select {
+	case err := <-loadErrors:
+		t.Fatal(err)
+	case values := <-loaded:
+		if len(values) != 1 || values[0].Name != "after" {
+			t.Fatalf("stale node snapshot returned after administrative invalidation: %#v", values)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("node list did not complete")
+	}
+
+	manager.nodeMu.RLock()
+	snapshot := manager.nodes[domain.ScopeBuild]
+	_, staleHealthy := manager.healthyNodes[1]
+	_, currentHealthy := manager.healthyNodes[2]
+	manager.nodeMu.RUnlock()
+	if len(snapshot.values) != 1 || snapshot.values[0].Name != "after" || staleHealthy || !currentHealthy {
+		t.Fatalf("runtime node state was not replaced cleanly: snapshot=%#v staleHealthy=%v currentHealthy=%v", snapshot, staleHealthy, currentHealthy)
 	}
 }
 
@@ -1246,8 +1372,8 @@ func TestEgressNodeSnapshotAvoidsRepeatedRepositoryReads(t *testing.T) {
 type egressRepositoryTestStub struct{ nodes []domain.Node }
 
 func managerHasClientForNode(manager *Manager, nodeID uint64) bool {
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
+	manager.clientMu.Lock()
+	defer manager.clientMu.Unlock()
 	for key := range manager.clients {
 		if key.nodeID == nodeID {
 			return true
@@ -1376,6 +1502,40 @@ func (s egressRepositoryTestStub) GetEgressNode(_ context.Context, id uint64) (d
 		}
 	}
 	return domain.Node{}, errors.New("not found")
+}
+
+func BenchmarkManagerAcquireCachedBuild(b *testing.B) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		b.Fatal(err)
+	}
+	node := domain.Node{ID: 1, Name: "build", Scope: domain.ScopeBuild, Enabled: true, Health: 1}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{node}}, cipher)
+	manager.newBuildClient = func(string) (requestClient, error) {
+		return &scriptedRequestClient{do: func(int, *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		}}, nil
+	}
+	lease, err := manager.Acquire(context.Background(), domain.ScopeBuild, "")
+	if err != nil {
+		b.Fatal(err)
+	}
+	lease.Release()
+	manager.nodeMu.Lock()
+	manager.nodes[domain.ScopeBuild] = cachedNodeSnapshot{values: []domain.Node{node}, expiresAt: time.Now().Add(time.Hour)}
+	manager.nodeMu.Unlock()
+
+	b.ReportAllocs()
+	b.RunParallel(func(worker *testing.PB) {
+		for worker.Next() {
+			lease, acquireErr := manager.Acquire(context.Background(), domain.ScopeBuild, "")
+			if acquireErr != nil {
+				b.Error(acquireErr)
+				continue
+			}
+			lease.Release()
+		}
+	})
 }
 func (egressRepositoryTestStub) CreateEgressNode(context.Context, domain.Node) (domain.Node, error) {
 	return domain.Node{}, errors.New("unsupported")

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
@@ -154,11 +155,13 @@ func (a *Adapter) recoverReasoningDecodeFailure(
 func (a *Adapter) retryReasoningRecovery(ctx context.Context, request provider.ResponseResourceRequest, accessToken string, body []byte, base string, resetSession bool) (*http.Response, string, error) {
 	retryRequest := request
 	retryRequest.IdempotencyID, _ = security.NewOpaqueToken(18)
+	stage := "reasoning_replay"
 	if resetSession {
 		retryRequest.PromptCacheKey = ""
 		retryRequest.GrokTurnIndex = ""
+		stage = "reasoning_session_reset"
 	}
-	return a.doResponseRequest(ctx, retryRequest, accessToken, body, base)
+	return a.doResponseRequest(infraegress.WithPhysicalCallStage(ctx, stage), retryRequest, accessToken, body, base)
 }
 
 func responseHasReasoningDecodeFailure(response *http.Response) (bool, error) {

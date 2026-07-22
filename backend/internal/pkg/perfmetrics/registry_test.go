@@ -25,6 +25,23 @@ func TestCollectAndResetRetainsGaugeAndClearsIntervalCounters(t *testing.T) {
 	}
 }
 
+func TestCollectAndResetReadsDynamicGaugeAtCollectionTime(t *testing.T) {
+	registry := NewRegistry()
+	labels := Labels{Subsystem: "http"}
+	var value int64 = 7
+	registry.RegisterDynamicGauge("active_bytes", labels, func() int64 { return value })
+
+	first := registry.CollectAndReset()
+	if len(first) != 1 || !first[0].HasGauge || first[0].Gauge != 7 {
+		t.Fatalf("first dynamic gauge sample = %#v", first)
+	}
+	value = 11
+	second := registry.CollectAndReset()
+	if len(second) != 1 || !second[0].HasGauge || second[0].Gauge != 11 {
+		t.Fatalf("second dynamic gauge sample = %#v", second)
+	}
+}
+
 func BenchmarkRegistryParallel(b *testing.B) {
 	registry := NewRegistry()
 	labels := Labels{Subsystem: "gateway", Operation: "responses", Provider: "grok_build", Stage: "upstream", Outcome: "success"}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
@@ -68,7 +69,12 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		resp, reqURL, err := a.doResponseRequest(ctx, upstreamRequest, accessToken, body, base)
+		stage := "compaction"
+		if attempt > 1 {
+			stage = "compaction_retry"
+		}
+		attemptCtx := infraegress.WithPhysicalCallStage(ctx, stage)
+		resp, reqURL, err := a.doResponseRequest(attemptCtx, upstreamRequest, accessToken, body, base)
 		if err != nil {
 			lastErr = err
 			if attempt < maxAttempts && waitGatewayCompactionRetry(ctx, retryDelay) {
@@ -86,7 +92,8 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 			primaryResp := cloneBufferedResponse(resp, primaryBody, primaryTruncated)
 			fallbackBase := a.fallbackBaseURL()
 			if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
-				fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(ctx, upstreamRequest, accessToken, body, fallbackBase)
+				fallbackCtx := infraegress.WithPhysicalCallStage(attemptCtx, "plane_fallback")
+				fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(fallbackCtx, upstreamRequest, accessToken, body, fallbackBase)
 				if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
 					a.activateBuildAPIFallback(ctx, &request.Credential)
 					resp, reqURL, base = fallbackResp, fallbackURL, fallbackBase
