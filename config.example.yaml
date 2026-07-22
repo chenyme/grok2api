@@ -100,8 +100,8 @@ audit:
   flushInterval: 250ms
   # [通常不要修改] 需要调用方确认提交的审计最多聚合等待该时长；建议保持 1ms–50ms。
   commitDelay: 5ms
-  # [按需修改] observe 仅报告账本异常；enforce 在异常持续超过宽限期后拒绝新的推理任务。
-  ledgerMode: observe # observe | enforce
-  ledgerFailureThreshold: 3
+  # [通常不要修改] enforce 会在异常持续超过宽限期后暂停新的推理请求；确认发生数据丢失时会立即暂停。
+  ledgerMode: enforce # observe | enforce
+  ledgerFailureThreshold: 1
   ledgerUnhealthyGrace: 10s
   ledgerQueueHighWatermarkPercent: 90

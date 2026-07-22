@@ -393,6 +393,12 @@ func (s *Service) CompleteBilling(eventID string) {
 }
 
 func (s *Service) CompleteBillingBatch(eventIDs []string) {
+	s.ReleaseBillingProtectionBatch(eventIDs)
+}
+
+// ReleaseBillingProtectionBatch removes process-local activity markers. The
+// durable reservation remains authoritative until commit, cancel, or expiry.
+func (s *Service) ReleaseBillingProtectionBatch(eventIDs []string) {
 	if len(eventIDs) == 0 {
 		return
 	}

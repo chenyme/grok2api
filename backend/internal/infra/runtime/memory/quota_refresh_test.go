@@ -77,3 +77,25 @@ func TestQuotaRefreshCoordinatorListExcludesClearedAndExpiredState(t *testing.T)
 		t.Fatalf("listed cleared or expired states: %+v", states)
 	}
 }
+
+func TestQuotaRefreshCoordinatorCompactsStaleExpiryGenerations(t *testing.T) {
+	coordinator := NewQuotaRefreshCoordinator()
+	ctx := context.Background()
+	const updates = 10000
+
+	for range updates {
+		if _, err := coordinator.MarkQuotaRefreshDirty(ctx, 42, "fast", 24*time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(coordinator.values) != 1 || len(coordinator.dirty) != 1 {
+		t.Fatalf("coordinator state = values:%d dirty:%d", len(coordinator.values), len(coordinator.dirty))
+	}
+	if got, maxExpected := len(coordinator.expires), quotaRefreshExpiryCompactionMinStale+2; got > maxExpected {
+		t.Fatalf("expiry heap retained %d stale generations, want at most %d", got, maxExpected)
+	}
+	if generation, dirty, err := coordinator.QuotaRefreshGeneration(ctx, 42, "fast"); err != nil || !dirty || generation != updates {
+		t.Fatalf("generation = %d, dirty = %v, err = %v", generation, dirty, err)
+	}
+}

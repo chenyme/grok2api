@@ -66,6 +66,9 @@ bootstrapAdmin:
 	if cfg.Audit.CommitDelay.Value() != 5*time.Millisecond {
 		t.Fatalf("audit commit delay = %s", cfg.Audit.CommitDelay.Value())
 	}
+	if cfg.Audit.LedgerMode != "enforce" || cfg.Audit.LedgerFailureThreshold != 1 {
+		t.Fatalf("audit ledger defaults = %#v", cfg.Audit)
+	}
 	expectedDatabasePath := filepath.Join(dir, "data", "backend.db")
 	if cfg.Database.SQLite.Path != expectedDatabasePath {
 		t.Fatalf("database path = %q, want %q", cfg.Database.SQLite.Path, expectedDatabasePath)

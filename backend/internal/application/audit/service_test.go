@@ -49,7 +49,7 @@ func TestServiceCloseFlushesQueuedAudits(t *testing.T) {
 }
 
 func TestAuditBatchRetriesTransientDatabaseFailure(t *testing.T) {
-	repo := &flakyAuditRepository{failures: 2}
+	repo := &flakyAuditRepository{failures: 5}
 	service := NewService(repo, slog.Default(), 8, 4, time.Hour)
 	service.Start()
 	if !service.Record(auditdomain.Record{RequestID: "retry", StatusCode: 200}) {
@@ -60,7 +60,7 @@ func TestAuditBatchRetriesTransientDatabaseFailure(t *testing.T) {
 	if err := service.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if attempts := repo.attempts.Load(); attempts != 3 {
+	if attempts := repo.attempts.Load(); attempts != 6 {
 		t.Fatalf("attempts = %d", attempts)
 	}
 }
@@ -279,6 +279,13 @@ func TestWriterIsolatesInvalidAuditRecordFromValidBatch(t *testing.T) {
 	repo := &observedBatchAuditRepository{AuditRepository: baseRepo, sizes: make(chan int, 4)}
 	service := NewService(repo, slog.Default(), 8, 8, time.Second)
 	service.UpdateWriterConfig(8, time.Second, 100*time.Millisecond)
+	service.UpdateLedgerConfig(LedgerConfig{Mode: LedgerModeObserve, FailureThreshold: 1, UnhealthyGrace: time.Hour, QueueHighWatermarkPercent: 90})
+	droppedEvents := make(chan string, 1)
+	service.SetDropObserver(func(eventIDs []string) {
+		if len(eventIDs) > 0 {
+			droppedEvents <- eventIDs[0]
+		}
+	})
 	service.Start()
 	t.Cleanup(func() { closeAuditService(t, service) })
 
@@ -328,6 +335,20 @@ func TestWriterIsolatesInvalidAuditRecordFromValidBatch(t *testing.T) {
 	if total != 1 {
 		t.Fatalf("persisted audits = %d, want 1", total)
 	}
+	select {
+	case eventID := <-droppedEvents:
+		if eventID != "evt_isolated_invalid_record_02" {
+			t.Fatalf("dropped event = %q", eventID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("drop observer was not notified")
+	}
+	if snapshot := service.LedgerSnapshot(); snapshot.Ready || !snapshot.Irrecoverable || snapshot.Dropped != 1 {
+		t.Fatalf("ledger snapshot after rejected record = %#v", snapshot)
+	}
+	if err := service.CheckLedgerReady(); !errors.Is(err, ErrLedgerUnavailable) {
+		t.Fatalf("irrecoverable drop did not block observe mode: %v", err)
+	}
 }
 
 func TestCallerTimeoutDoesNotCancelQueuedSettlement(t *testing.T) {
@@ -369,14 +390,19 @@ func TestLedgerReadinessObserveAndEnforceModes(t *testing.T) {
 	repo := &toggleAuditRepository{err: errors.New("database unavailable")}
 	service := NewService(repo, slog.Default(), 8, 4, time.Second)
 	service.Start()
-	t.Cleanup(func() { closeAuditService(t, service) })
+	t.Cleanup(func() {
+		repo.setError(nil)
+		closeAuditService(t, service)
+	})
 	service.now = func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() }
 	service.UpdateLedgerConfig(LedgerConfig{Mode: LedgerModeObserve, FailureThreshold: 1, UnhealthyGrace: time.Second, QueueHighWatermarkPercent: 90})
-	if err := service.CreateDurable(context.Background(), auditdomain.Record{EventID: "observe"}); err == nil {
-		t.Fatal("expected durable write failure")
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer writeCancel()
+	if err := service.CreateDurable(writeCtx, auditdomain.Record{EventID: "observe"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("write error = %v", err)
 	}
 	nowNanos.Add(int64(2 * time.Second))
-	if snapshot := service.LedgerSnapshot(); snapshot.Ready || snapshot.ConsecutiveFailures != 1 {
+	if snapshot := service.LedgerSnapshot(); snapshot.Ready || snapshot.ConsecutiveFailures < 1 {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 	if err := service.CheckLedgerReady(); err != nil {
@@ -388,7 +414,9 @@ func TestLedgerReadinessObserveAndEnforceModes(t *testing.T) {
 		t.Fatalf("enforce readiness error = %v", err)
 	}
 	repo.setError(nil)
-	if err := service.CreateDurable(context.Background(), auditdomain.Record{EventID: "recovered"}); err != nil {
+	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer recoveryCancel()
+	if err := service.CreateDurable(recoveryCtx, auditdomain.Record{EventID: "recovered"}); err != nil {
 		t.Fatal(err)
 	}
 	if snapshot := service.LedgerSnapshot(); !snapshot.Ready || snapshot.ConsecutiveFailures != 0 {
@@ -410,6 +438,11 @@ func TestLedgerReadinessDetectsSustainedQueuePressure(t *testing.T) {
 	now = now.Add(2 * time.Second)
 	if err := service.CheckLedgerReady(); !errors.Is(err, ErrLedgerUnavailable) {
 		t.Fatalf("queue pressure readiness error = %v", err)
+	}
+	<-service.queue
+	service.recordLedgerSuccess()
+	if snapshot := service.LedgerSnapshot(); !snapshot.Ready {
+		t.Fatalf("drained queue did not restore readiness: %#v", snapshot)
 	}
 }
 

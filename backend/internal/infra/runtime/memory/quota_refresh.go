@@ -12,7 +12,10 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
-const maxQuotaRefreshDirty = 100000
+const (
+	maxQuotaRefreshDirty                 = 100000
+	quotaRefreshExpiryCompactionMinStale = 1024
+)
 
 type quotaRefreshDirtyState struct {
 	accountID  uint64
@@ -74,6 +77,7 @@ func (c *QuotaRefreshCoordinator) MarkQuotaRefreshDirty(_ context.Context, accou
 	c.values[key] = state
 	c.dirty[key] = struct{}{}
 	heap.Push(&c.expires, quotaRefreshExpiry{key: key, generation: state.generation, expiresAt: state.expiresAt})
+	c.compactExpiryHeapLocked()
 	return state.generation, nil
 }
 
@@ -86,6 +90,7 @@ func (c *QuotaRefreshCoordinator) QuotaRefreshGeneration(_ context.Context, acco
 	if !ok || !now.Before(state.expiresAt) {
 		delete(c.values, key)
 		delete(c.dirty, key)
+		c.compactExpiryHeapLocked()
 		return 0, false, nil
 	}
 	return state.generation, state.dirty, nil
@@ -100,6 +105,7 @@ func (c *QuotaRefreshCoordinator) ClearQuotaRefreshDirty(_ context.Context, acco
 	if !ok || !now.Before(state.expiresAt) {
 		delete(c.values, key)
 		delete(c.dirty, key)
+		c.compactExpiryHeapLocked()
 		return false, nil
 	}
 	if state.generation != generation {
@@ -139,6 +145,7 @@ func (c *QuotaRefreshCoordinator) ListQuotaRefreshDirty(_ context.Context, now t
 	if len(values) > limit {
 		values = values[:limit]
 	}
+	c.compactExpiryHeapLocked()
 	return values, nil
 }
 
@@ -152,6 +159,20 @@ func (c *QuotaRefreshCoordinator) pruneLocked(now time.Time) {
 		delete(c.values, expired.key)
 		delete(c.dirty, expired.key)
 	}
+}
+
+// compactExpiryHeapLocked bounds stale generation entries without adding a
+// second index. Rebuilding is amortized and retains exactly one expiry per key.
+func (c *QuotaRefreshCoordinator) compactExpiryHeapLocked() {
+	if len(c.expires) <= len(c.values)*2+quotaRefreshExpiryCompactionMinStale {
+		return
+	}
+	values := make(quotaRefreshExpiryHeap, 0, len(c.values))
+	for key, state := range c.values {
+		values = append(values, quotaRefreshExpiry{key: key, generation: state.generation, expiresAt: state.expiresAt})
+	}
+	heap.Init(&values)
+	c.expires = values
 }
 
 func quotaRefreshKey(accountID uint64, mode string) string {
