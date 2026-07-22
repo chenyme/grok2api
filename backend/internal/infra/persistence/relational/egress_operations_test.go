@@ -2,7 +2,6 @@ package relational
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -219,32 +218,6 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	}
 	if stored.ProbeStatus != egress.ProbeStatusHealthy || stored.ProbeLatencyMS != 42 || stored.ExitIP != "1.1.1.1" || stored.LastProbedAt == nil {
 		t.Fatalf("stored probe = %#v", stored)
-	}
-}
-
-func TestEgressOperationsTestsAllNodesBeyondSelectedBatchLimit(t *testing.T) {
-	ctx := context.Background()
-	database := openTestDatabase(t)
-	accounts := NewAccountRepository(database)
-	nodes := NewEgressRepository(database)
-	cipher := egressOperationsCipher(t)
-	ids := make([]uint64, 0, 201)
-	for index := 0; index < 201; index++ {
-		node := createHealthyEgressNode(t, ctx, nodes, cipher, fmt.Sprintf("probe-%03d", index), 0)
-		ids = append(ids, node.ID)
-	}
-	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
-	service.SetNodeProber(egressProbeStub{result: egress.ProbeResult{Status: egress.ProbeStatusHealthy, TestedAt: time.Now().UTC()}})
-
-	all, err := service.TestNodes(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if all.Requested != len(ids) || all.Healthy != len(ids) || all.Unhealthy != 0 {
-		t.Fatalf("test all result = %#v", all)
-	}
-	if _, err := service.TestNodes(ctx, ids); err == nil || !strings.Contains(err.Error(), "单次最多测试") {
-		t.Fatalf("selected batch error = %v", err)
 	}
 }
 

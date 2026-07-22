@@ -251,7 +251,6 @@ func (s *Service) TestNode(ctx context.Context, id uint64) (domain.ProbeResult, 
 }
 
 func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult, error) {
-	testAll := len(ids) == 0
 	if len(ids) == 0 {
 		nodes, err := s.repository.ListEgressNodes(ctx, "", repository.SortQuery{})
 		if err != nil {
@@ -265,9 +264,7 @@ func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult
 		}
 	}
 	ids = uniqueAccountIDs(ids)
-	// An omitted ID list is the admin "test all" operation. Keep the limit for
-	// explicit selections so an accidental bulk request remains bounded.
-	if !testAll && len(ids) > maxManualProbeNodes {
+	if len(ids) > maxManualProbeNodes {
 		return ProbeBatchResult{}, fmt.Errorf("%w: 单次最多测试 %d 个代理", ErrInvalidInput, maxManualProbeNodes)
 	}
 	result := ProbeBatchResult{Requested: len(ids)}

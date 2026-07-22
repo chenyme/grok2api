@@ -19,6 +19,7 @@ import {
   deleteEgressSource,
   getEgressOperationsConfig,
   importEgressText,
+  listEgressNodes,
   listEgressSources,
   rebalanceEgressAccounts,
   syncEgressSource,
@@ -39,6 +40,9 @@ const emptySource: SourceForm = {
   name: "", scope: "grok_build", enabled: true, url: "", refreshIntervalSeconds: 900, defaultAccountCapacity: 0,
 };
 const emptyImport: ImportForm = { name: "", scope: "grok_build", accountCapacity: 0, content: "" };
+// Eight probes run concurrently and each can take up to 15 seconds. Keeping a
+// request to 32 nodes leaves enough headroom for the admin HTTP timeout.
+const egressProbeBatchSize = 32;
 const defaultOperationsForm: Omit<EgressOperationsConfigDTO, "updatedAt"> = {
   probeIntervalSeconds: 900, autoAssignEnabled: false, autoBalanceEnabled: false, assignmentIntervalSeconds: 300,
 };
@@ -51,6 +55,19 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOpera
     autoBalanceEnabled: value.autoBalanceEnabled,
     assignmentIntervalSeconds: value.assignmentIntervalSeconds,
   };
+}
+
+async function testAllEgressNodes() {
+  const nodes = await listEgressNodes();
+  const ids = nodes.items.filter((node) => node.enabled && node.proxyConfigured).map((node) => node.id);
+  const result = { requested: 0, healthy: 0, unhealthy: 0 };
+  for (let index = 0; index < ids.length; index += egressProbeBatchSize) {
+    const batch = await testEgressNodes(ids.slice(index, index + egressProbeBatchSize));
+    result.requested += batch.requested;
+    result.healthy += batch.healthy;
+    result.unhealthy += batch.unhealthy;
+  }
+  return result;
 }
 
 export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressScope) => string }) {
@@ -94,7 +111,7 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
     onError: showError,
   });
   const testAll = useMutation({
-    mutationFn: () => testEgressNodes(),
+    mutationFn: testAllEgressNodes,
     onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.tested", value)); },
     onError: showError,
   });
