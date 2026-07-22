@@ -33,6 +33,19 @@ const maxConcurrencySnapshots = 256
 
 const modelAccessDeniedCooldown = 5 * time.Minute
 
+const defaultFreeQuotaRecoveryPause = 24 * time.Hour
+
+// paymentRequiredRecoveryPause is only the final fallback for a 402 account
+// without an upstream reset, Retry-After, or parseable billing period.
+const paymentRequiredRecoveryPause = 20 * time.Hour
+
+type quotaRecoveryHints struct {
+	Billing    *account.Billing
+	QuotaMode  string
+	RetryAfter time.Duration
+	Fallback   time.Duration
+}
+
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
 	expiresAt time.Time
@@ -493,9 +506,16 @@ func (s *Selector) markSuccess(ctx context.Context, credential account.Credentia
 	}
 }
 
-func (s *Selector) MarkFreeQuotaExhausted(ctx context.Context, credential account.Credential, used, limit int64) {
+func (s *Selector) MarkFreeQuotaExhausted(ctx context.Context, credential account.Credential, used, limit int64, hints quotaRecoveryHints) {
 	now := time.Now().UTC()
-	nextProbeAt := now.Add(24 * time.Hour)
+	if hints.Fallback <= 0 {
+		hints.Fallback = defaultFreeQuotaRecoveryPause
+	}
+	nextProbeAt := s.resolveQuotaRecoveryAt(ctx, credential.ID, now, hints)
+	s.markFreeQuotaExhaustedAt(ctx, credential, used, limit, now, nextProbeAt)
+}
+
+func (s *Selector) markFreeQuotaExhaustedAt(ctx context.Context, credential account.Credential, used, limit int64, now, nextProbeAt time.Time) {
 	_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
 		AccountID: credential.ID, Kind: account.QuotaRecoveryKindFree, Status: account.QuotaRecoveryStatusExhausted,
 		ConfirmedUsed: used, ConfirmedLimit: limit, ExhaustedAt: &now,
@@ -508,11 +528,11 @@ func (s *Selector) MarkFreeQuotaExhausted(ctx context.Context, credential accoun
 func (s *Selector) MarkModelQuotaExhausted(ctx context.Context, credential account.Credential, upstreamModel string, retryAfter time.Duration) {
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	if upstreamModel == "" {
-		s.MarkFreeQuotaExhausted(ctx, credential, 0, 0)
+		s.MarkFreeQuotaExhausted(ctx, credential, 0, 0, quotaRecoveryHints{})
 		return
 	}
 	if retryAfter <= 0 {
-		retryAfter = 24 * time.Hour
+		retryAfter = defaultFreeQuotaRecoveryPause
 	}
 	until := time.Now().UTC().Add(retryAfter)
 	_ = s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
@@ -540,23 +560,51 @@ func (s *Selector) MarkModelAccessDenied(ctx context.Context, credential account
 	s.invalidateCandidates(credential.Provider)
 }
 
-// MarkPaidQuotaExhausted 使用已知真实账期将付费账号移出号池，到期后才允许 Billing 探测。
-func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential account.Credential, billing *account.Billing) bool {
-	if billing == nil || !billing.IsPaid() {
-		return false
-	}
-	periodEnd, ok := billing.PeriodEnd()
-	if !ok {
-		return false
-	}
+// MarkPaymentQuotaExhausted 将 402/spending-limit 账号移出号池。付费账号按真实账期
+// 进行 Billing 探测；Free/Unknown 依次采用上游 ResetAt、Retry-After、账期时间和 20h fallback。
+func (s *Selector) MarkPaymentQuotaExhausted(ctx context.Context, credential account.Credential, hints quotaRecoveryHints) {
 	now := time.Now().UTC()
-	_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
-		AccountID: credential.ID, Kind: account.QuotaRecoveryKindPaid, Status: account.QuotaRecoveryStatusExhausted,
-		ExhaustedAt: &now, NextProbeAt: &periodEnd, LastConfirmedAt: &now, UpdatedAt: now,
-	})
-	_ = s.sticky.DeleteByAccount(ctx, credential.ID)
-	s.invalidateCandidates(credential.Provider)
-	return true
+	if hints.Billing != nil && hints.Billing.IsPaid() {
+		if periodEnd, ok := hints.Billing.PeriodEnd(); ok && periodEnd.After(now) {
+			_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
+				AccountID: credential.ID, Kind: account.QuotaRecoveryKindPaid, Status: account.QuotaRecoveryStatusExhausted,
+				ExhaustedAt: &now, NextProbeAt: &periodEnd, LastConfirmedAt: &now, UpdatedAt: now,
+			})
+			_ = s.sticky.DeleteByAccount(ctx, credential.ID)
+			s.invalidateCandidates(credential.Provider)
+			return
+		}
+	}
+	hints.Fallback = paymentRequiredRecoveryPause
+	s.MarkFreeQuotaExhausted(ctx, credential, 0, 0, hints)
+}
+
+func (s *Selector) resolveQuotaRecoveryAt(ctx context.Context, accountID uint64, now time.Time, hints quotaRecoveryHints) time.Time {
+	if mode := strings.TrimSpace(hints.QuotaMode); mode != "" {
+		if windows, err := s.accounts.GetQuotaWindows(ctx, []uint64{accountID}); err == nil {
+			var resetAt time.Time
+			for _, window := range windows[accountID] {
+				if window.Mode != mode || window.ResetAt == nil || !window.ResetAt.After(now) {
+					continue
+				}
+				if resetAt.IsZero() || window.ResetAt.Before(resetAt) {
+					resetAt = window.ResetAt.UTC()
+				}
+			}
+			if !resetAt.IsZero() {
+				return resetAt
+			}
+		}
+	}
+	if hints.RetryAfter > 0 {
+		return now.Add(hints.RetryAfter)
+	}
+	if hints.Billing != nil {
+		if periodEnd, ok := hints.Billing.PeriodEnd(); ok && periodEnd.After(now) {
+			return periodEnd
+		}
+	}
+	return now.Add(hints.Fallback)
 }
 
 // MarkQuotaStateChanged 在 Billing 探测改变持久化额度状态后立即失效候选快照。
