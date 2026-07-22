@@ -179,6 +179,19 @@ func TestGatewayErrorHidesUpstreamCredentialStatus(t *testing.T) {
 		t.Fatalf("Anthropic status=%d body=%s", anthropicRecorder.Code, anthropicRecorder.Body.String())
 	}
 
+	quotaRouter := gin.New()
+	quotaRouter.GET("/", func(c *gin.Context) {
+		writeGatewayAnthropicError(c, &gateway.UpstreamFailure{
+			HTTPStatus: http.StatusTooManyRequests, Code: "upstream_rate_limited", PublicMessage: "official upgrade prompt",
+			QuotaExhausted: true,
+		})
+	})
+	quotaRecorder := httptest.NewRecorder()
+	quotaRouter.ServeHTTP(quotaRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if quotaRecorder.Code != http.StatusServiceUnavailable || !strings.Contains(quotaRecorder.Body.String(), `"type":"overloaded_error"`) || strings.Contains(quotaRecorder.Body.String(), "upgrade") {
+		t.Fatalf("Anthropic quota status=%d body=%s", quotaRecorder.Code, quotaRecorder.Body.String())
+	}
+
 	credentialRouter := gin.New()
 	credentialRouter.GET("/", func(c *gin.Context) {
 		writeGatewayAnthropicError(c, &gateway.UpstreamFailure{

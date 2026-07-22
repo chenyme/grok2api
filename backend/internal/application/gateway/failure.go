@@ -104,8 +104,9 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.PublicMessage = "上游账号额度不足"
 		failure.AccountScoped = true
 		failure.QuotaExhausted = true
-		// spending-limit is account-scoped; free-window recovery applies when billing is not paid.
-		failure.FreeQuotaExhausted = isFreeQuotaExhaustion(metadataText) || isPaidQuotaExhaustion(metadataText)
+		// spending-limit is account-scoped, but its paid/free recovery kind depends on
+		// the selected account's billing snapshot and must be decided by the selector.
+		failure.FreeQuotaExhausted = isFreeQuotaExhaustion(metadataText)
 	case http.StatusForbidden:
 		failure.Code = "upstream_forbidden"
 		failure.PublicMessage = "上游拒绝了该请求"

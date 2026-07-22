@@ -655,7 +655,7 @@ attemptLoop:
 		}
 		egressForbidden := s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden
 		finalEgressForbidden := egressForbidden && (attempt > 0 || attempt+1 >= attempts)
-		if isRetryableResponse(response) && !finalEgressForbidden {
+		if isRetryableResponse(response, route.Provider) && !finalEgressForbidden {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
 			body, _ := readRetryableBody(response.Body)
 			if egressForbidden {
@@ -715,22 +715,23 @@ attemptLoop:
 				s.selector.MarkQuotaStateChanged(credential.Provider)
 				failureHandled = reconcileErr == nil && exhausted
 			} else if used, limit, exhausted := parseFreeQuotaExhaustion(body); exhausted {
-				s.selector.MarkFreeQuotaExhausted(ctx, credential, used, limit)
+				s.selector.MarkFreeQuotaExhausted(ctx, credential, used, limit, quotaRecoveryHints{
+					Billing: lease.Billing, QuotaMode: lease.QuotaMode, RetryAfter: retryAfter,
+				})
 				failureHandled = true
 			} else if lastFailure.ModelQuotaExhausted {
 				s.selector.MarkModelQuotaExhausted(ctx, credential, route.UpstreamModel, retryAfter)
 				failureHandled = true
 			} else if lastFailure.FreeQuotaExhausted {
-				s.selector.MarkFreeQuotaExhausted(ctx, credential, 0, 0)
+				s.selector.MarkFreeQuotaExhausted(ctx, credential, 0, 0, quotaRecoveryHints{
+					Billing: lease.Billing, QuotaMode: lease.QuotaMode, RetryAfter: retryAfter,
+				})
 				failureHandled = true
 			} else if lastFailure.QuotaExhausted {
-				failureHandled = s.selector.MarkPaidQuotaExhausted(ctx, credential, lease.Billing)
-				if !failureHandled {
-					// Unrecognized / free Build profiles still return 402 spending-limit.
-					// Pause so the account leaves the hot pool until freeQuotaRecoveryPause elapses.
-					s.selector.MarkFreeQuotaExhausted(ctx, credential, 0, 0)
-					failureHandled = true
-				}
+				s.selector.MarkPaymentQuotaExhausted(ctx, credential, quotaRecoveryHints{
+					Billing: lease.Billing, QuotaMode: lease.QuotaMode, RetryAfter: retryAfter,
+				})
+				failureHandled = true
 			}
 			if s.providers.SupportsCredentialRefresh(credential.Provider) && lastFailure.PermanentAccountDenial {
 				if credential.Provider == accountdomain.ProviderBuild {
@@ -805,8 +806,9 @@ attemptLoop:
 				record.ContextOutputTokens = usage.ContextOutputTokens
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
-				if response.StatusCode < 200 || response.StatusCode >= 300 || errorCode != "" {
-					record.Attempts = failureAttempts.snapshot()
+				attempts := failureAttempts.snapshot()
+				if response.StatusCode < 200 || response.StatusCode >= 300 || errorCode != "" || len(attempts) > 0 {
+					record.Attempts = attempts
 				}
 				record.CreatedAt = now
 				applyAuditEgress(&record, egressTrace, route.Provider)
@@ -1148,21 +1150,22 @@ func isRetryable(status int) bool {
 	return status == 402 || status == 403 || status == 429 || status >= 500
 }
 
-func isRetryableResponse(response *provider.Response) bool {
+func isRetryableResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
 	if response == nil || !isRetryable(response.StatusCode) {
 		return false
 	}
 	// Account-scoped payment failures must always rotate accounts.
 	// Upstream X-Should-Retry:false is only honored for non-account errors (e.g. 5xx history).
-	if forcesAccountFailover(response.StatusCode) {
+	if forcesAccountFailover(response.StatusCode, upstreamProvider) {
 		return true
 	}
 	return !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-Should-Retry")), "false")
 }
 
-// forcesAccountFailover returns true for statuses that always mean "this account cannot serve the request".
-func forcesAccountFailover(status int) bool {
-	return status == http.StatusPaymentRequired
+// forcesAccountFailover scopes the Build billing-wall override to the Provider
+// whose 402 contract is known. Other Providers continue honoring X-Should-Retry.
+func forcesAccountFailover(status int, upstreamProvider accountdomain.Provider) bool {
+	return upstreamProvider == accountdomain.ProviderBuild && status == http.StatusPaymentRequired
 }
 
 func parseRetryAfter(value string, now time.Time) time.Duration {
