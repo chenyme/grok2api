@@ -689,6 +689,7 @@ func TestCopyHeadersFiltersHopByHopAndUpstreamCookies(t *testing.T) {
 		"Connection":          {"X-Upstream-Internal"},
 		"Content-Type":        {"application/json"},
 		"Set-Cookie":          {"upstream_session=secret"},
+		"X-Models-Etag":       {`"upstream-account-catalog"`},
 		"X-Request-Id":        {"req_123"},
 		"X-Upstream-Internal": {"hidden"},
 	}
@@ -699,7 +700,7 @@ func TestCopyHeadersFiltersHopByHopAndUpstreamCookies(t *testing.T) {
 	if destination.Get("Content-Type") != "application/json" || destination.Get("X-Request-Id") != "req_123" {
 		t.Fatalf("forwarded headers = %#v", destination)
 	}
-	if destination.Get("Set-Cookie") != "" || destination.Get("X-Upstream-Internal") != "" || destination.Get("Connection") != "" {
+	if destination.Get("Set-Cookie") != "" || destination.Get("X-Models-Etag") != "" || destination.Get("X-Upstream-Internal") != "" || destination.Get("Connection") != "" {
 		t.Fatalf("filtered headers leaked = %#v", destination)
 	}
 }
