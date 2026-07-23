@@ -1,3 +1,6 @@
+const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
+const numberFormatters = new Map<string, Intl.NumberFormat>();
+
 export function formatDateTime(value: string | null | undefined, locale: string): string {
   if (!value) {
     return "-";
@@ -6,14 +9,25 @@ export function formatDateTime(value: string | null | undefined, locale: string)
   if (Number.isNaN(date.getTime())) {
     return "-";
   }
-  return new Intl.DateTimeFormat(locale, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
+  let formatter = dateTimeFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    dateTimeFormatters.set(locale, formatter);
+  }
+  return formatter.format(date);
 }
 
 export function formatNumber(value: number, locale: string, maximumFractionDigits = 2): string {
-  return new Intl.NumberFormat(locale, { maximumFractionDigits }).format(value);
+  const key = `${locale}:${maximumFractionDigits}`;
+  let formatter = numberFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale, { maximumFractionDigits });
+    numberFormatters.set(key, formatter);
+  }
+  return formatter.format(value);
 }
 
 export function formatDuration(milliseconds: number): string {
