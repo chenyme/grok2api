@@ -1,6 +1,7 @@
 package console
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -30,6 +31,7 @@ type importEntry struct {
 }
 
 func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
+	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
 		return nil, fmt.Errorf("账号文件中没有 Grok Console 账号")
@@ -37,22 +39,16 @@ func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
 	if !strings.HasPrefix(trimmed, "{") {
 		return parsePlainTextCredentials(trimmed)
 	}
-	var document importDocument
-	if err := json.Unmarshal(data, &document); err != nil {
+	entries, err := provider.DecodeCredentialJSONEntries[importEntry](data, string(account.ProviderConsole), maxImportAccounts)
+	if err != nil {
 		return nil, fmt.Errorf("解析 Grok Console 账号 JSON: %w", err)
 	}
-	if document.Provider != "" && document.Provider != string(account.ProviderConsole) {
-		return nil, fmt.Errorf("账号文件 Provider 必须是 %s", account.ProviderConsole)
-	}
-	if len(document.Accounts) == 0 {
+	if len(entries) == 0 {
 		return nil, fmt.Errorf("账号文件中没有 Grok Console 账号")
 	}
-	if len(document.Accounts) > maxImportAccounts {
-		return nil, provider.ErrCredentialLimit
-	}
-	seen := make(map[string]struct{}, len(document.Accounts))
-	result := make([]provider.CredentialSeed, 0, len(document.Accounts))
-	for index, entry := range document.Accounts {
+	seen := make(map[string]struct{}, len(entries))
+	result := make([]provider.CredentialSeed, 0, len(entries))
+	for index, entry := range entries {
 		token := sanitizeSSOToken(firstNonEmpty(entry.SSOToken, entry.Token))
 		if token == "" {
 			return nil, fmt.Errorf("第 %d 个账号缺少 sso_token", index+1)

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -36,6 +37,7 @@ type importEntry struct {
 }
 
 func (a *Adapter) ParseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
+	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
 		return nil, fmt.Errorf("账号文件中没有 Grok Web 账号")
@@ -43,19 +45,12 @@ func (a *Adapter) ParseImportedCredentials(data []byte) ([]provider.CredentialSe
 	if !strings.HasPrefix(trimmed, "{") {
 		return parsePlainTextCredentials(trimmed)
 	}
-	var document importDocument
-	if err := json.Unmarshal(data, &document); err != nil {
+	entries, err := provider.DecodeCredentialJSONEntries[importEntry](data, string(account.ProviderWeb), maxImportAccounts)
+	if err != nil {
 		return nil, fmt.Errorf("解析 Grok Web 账号 JSON: %w", err)
 	}
-	if document.Provider != "" && document.Provider != string(account.ProviderWeb) {
-		return nil, fmt.Errorf("账号文件 Provider 必须是 %s", account.ProviderWeb)
-	}
-	entries := document.Accounts
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("账号文件中没有 Grok Web 账号")
-	}
-	if len(entries) > maxImportAccounts {
-		return nil, provider.ErrCredentialLimit
 	}
 	seen := make(map[string]struct{}, len(entries))
 	result := make([]provider.CredentialSeed, 0, len(entries))

@@ -117,8 +117,8 @@ func TestParseImportedCredentialsBatch(t *testing.T) {
 }
 
 func TestParseImportedCredentialsJSONSequence(t *testing.T) {
-	data := []byte("{\n  \"access_token\": \"access-1\",\n  \"sub\": \"user-1\"\n}\n" +
-		"{\"refresh_token\":\"refresh-2\",\"email\":\"two@example.com\"}\n")
+	data := []byte("\xef\xbb\xbf{\n  \"access_token\": \"access-1\",\n  \"sub\": \"user-1\"\n}\r\n\r\n" +
+		"{\"refresh_token\":\"refresh-2\",\"email\":\"two@example.com\"}\r\n")
 	values, err := parseImportedCredentials(data)
 	if err != nil {
 		t.Fatal(err)

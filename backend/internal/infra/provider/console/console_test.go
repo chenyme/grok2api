@@ -243,6 +243,18 @@ func TestConsoleImportAcceptsJSONPlainTextAndCookieFormat(t *testing.T) {
 	}
 }
 
+func TestConsoleImportAcceptsJSONLines(t *testing.T) {
+	data := []byte("\xef\xbb\xbf{\"name\":\"first\",\"sso_token\":\"token-one\",\"email\":\"one@example.com\"}\r\n\r\n" +
+		"{\"name\":\"second\",\"token\":\"token-two\",\"user_id\":\"user-two\"}\r\n")
+	values, err := parseImportedCredentials(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0].AccessToken != "token-one" || values[0].Email != "one@example.com" || values[1].AccessToken != "token-two" || values[1].UserID != "user-two" {
+		t.Fatalf("credentials = %#v", values)
+	}
+}
+
 func TestConsoleRetryAfterParsesCompoundDuration(t *testing.T) {
 	if value := consoleRetryAfter([]byte(`Rate limit reached. Resets in: 1h 2m 3s`)); value != time.Hour+2*time.Minute+3*time.Second {
 		t.Fatalf("retry after = %s", value)
