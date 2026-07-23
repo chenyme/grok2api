@@ -74,6 +74,33 @@ func TestLegacySettingsRequestMayOmitAccounts(t *testing.T) {
 	}
 }
 
+func TestLegacySettingsRequestPreservesBuildForbiddenCodesWhenOmitted(t *testing.T) {
+	var dto settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"accounts":{"markBuildForbiddenReauth":true,"autoCleanReauthEnabled":false,"autoCleanReauthInterval":"10m","autoCleanReauthMinAge":"1h","autoCleanIncludeDisabled":false}}`), &dto); err != nil {
+		t.Fatal(err)
+	}
+	input := dto.toApplication()
+	if !input.AccountsProvided || !input.Accounts.MarkBuildForbiddenReauthProvided || input.Accounts.BuildForbiddenReauthCodesProvided {
+		t.Fatalf("legacy field presence was not preserved: %#v", input.Accounts)
+	}
+}
+
+func TestSettingsResponseIncludesBuildForbiddenCodes(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{
+		Accounts: settingsapp.AccountsConfig{
+			MarkBuildForbiddenReauth:  true,
+			BuildForbiddenReauthCodes: []string{"permission-denied", "team-access-denied"},
+		},
+	}})
+	if response.Config.Accounts == nil || response.Config.Accounts.BuildForbiddenReauthCodes == nil {
+		t.Fatal("Build forbidden codes were omitted from the settings response")
+	}
+	codes := *response.Config.Accounts.BuildForbiddenReauthCodes
+	if len(codes) != 2 || codes[0] != "permission-denied" || codes[1] != "team-access-denied" {
+		t.Fatalf("Build forbidden codes = %#v", codes)
+	}
+}
+
 func TestLegacySettingsRequestMayOmitSegmentedSelector(t *testing.T) {
 	var dto settingsConfigDTO
 	if err := json.Unmarshal([]byte(`{"routing":{"stickyTTL":"1h"}}`), &dto); err != nil {

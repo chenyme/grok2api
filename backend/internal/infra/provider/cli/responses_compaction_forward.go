@@ -83,6 +83,7 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 			return nil, err
 		}
 
+		var recoveredPrimaryFailure *provider.DiagnosticResponse
 		if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Billing, request.Method, request.Path, resp.StatusCode) {
 			primaryBody, primaryTruncated, readErr := provider.ReadDiagnosticBody(resp.Body)
 			_ = resp.Body.Close()
@@ -90,21 +91,26 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 				return nil, readErr
 			}
 			primaryResp := cloneBufferedResponse(resp, primaryBody, primaryTruncated)
-			fallbackBase := a.fallbackBaseURL()
-			if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
-				fallbackCtx := infraegress.WithPhysicalCallStage(attemptCtx, "plane_fallback")
-				fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(fallbackCtx, upstreamRequest, accessToken, body, fallbackBase)
-				if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
-					a.activateBuildAPIFallback(ctx, &request.Credential)
-					resp, reqURL, base = fallbackResp, fallbackURL, fallbackBase
-				} else {
-					if fallbackErr == nil {
-						_ = fallbackResp.Body.Close()
+			if isDefinitiveAccountBlockBody(primaryBody) {
+				resp = primaryResp
+			} else {
+				fallbackBase := a.fallbackBaseURL()
+				if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
+					fallbackCtx := infraegress.WithPhysicalCallStage(attemptCtx, "plane_fallback")
+					fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(fallbackCtx, upstreamRequest, accessToken, body, fallbackBase)
+					if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
+						recoveredPrimaryFailure = bufferedFailureDiagnostic(primaryResp, primaryBody, primaryTruncated)
+						a.activateBuildAPIFallback(ctx, &request.Credential)
+						resp, reqURL, base = fallbackResp, fallbackURL, fallbackBase
+					} else {
+						if fallbackErr == nil {
+							_ = fallbackResp.Body.Close()
+						}
+						resp = primaryResp
 					}
+				} else {
 					resp = primaryResp
 				}
-			} else {
-				resp = primaryResp
 			}
 		}
 
@@ -171,7 +177,8 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 		return &provider.Response{
 			StatusCode: resp.StatusCode, Status: resp.Status, Header: headers,
 			Body: io.NopCloser(bytes.NewReader(converted)), UpstreamURL: reqURL,
-			ModelCatalogChanged: modelCatalogChanged,
+			RecoveredPrimaryFailure: recoveredPrimaryFailure,
+			ModelCatalogChanged:     modelCatalogChanged,
 		}, nil
 	}
 	return nil, lastErr

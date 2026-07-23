@@ -142,7 +142,9 @@ type Response struct {
 	QuotaUnits  int
 	UpstreamURL string
 	Diagnostic  *DiagnosticResponse
-	RateLimit   *RateLimitMetadata
+	// RecoveredPrimaryFailure records a primary-plane failure hidden by a successful Provider fallback.
+	RecoveredPrimaryFailure *DiagnosticResponse
+	RateLimit               *RateLimitMetadata
 	// ModelCatalogChanged indicates that the model catalog ETag in an inference response differs from
 	// the ETag from the account's most recent successful /models sync.
 	ModelCatalogChanged bool

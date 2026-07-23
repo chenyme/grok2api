@@ -26,6 +26,8 @@ export type SettingsConfigDTO = {
   audit: { bufferSize: number; batchSize: number; flushInterval: string; commitDelayMS: number };
   clientKeyDefaults: { rpmLimit: number; maxConcurrent: number };
   accounts: {
+    markBuildForbiddenReauth: boolean;
+    buildForbiddenReauthCodes: string[];
     autoCleanReauthEnabled: boolean;
     autoCleanReauthInterval: string;
     autoCleanReauthMinAge: string;
@@ -96,8 +98,10 @@ const settingsConfigValidator = hasShape({
   }),
   audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString, commitDelayMS: isOptional(isNumber) }),
   clientKeyDefaults: hasShape({ rpmLimit: isNumber, maxConcurrent: isNumber }),
-  // 旧后端可无 accounts；decode 后由 withAccountsDefaults 补默认关闭策略。
+  // Older backends may omit accounts; withSettingsDefaults supplies a safe local default.
   accounts: isOptional(hasShape({
+    markBuildForbiddenReauth: isOptional(isBoolean),
+    buildForbiddenReauthCodes: isOptional(isArrayOf(isString)),
     autoCleanReauthEnabled: isBoolean,
     autoCleanReauthInterval: isString,
     autoCleanReauthMinAge: isString,
@@ -105,6 +109,8 @@ const settingsConfigValidator = hasShape({
   })),
 });
 const defaultAccountsConfig = (): SettingsConfigDTO["accounts"] => ({
+  markBuildForbiddenReauth: false,
+  buildForbiddenReauthCodes: ["permission-denied"],
   autoCleanReauthEnabled: false,
   autoCleanReauthInterval: "10m",
   autoCleanReauthMinAge: "1h",
@@ -130,6 +136,8 @@ function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
         },
       },
       accounts: {
+        markBuildForbiddenReauth: accounts.markBuildForbiddenReauth ?? false,
+        buildForbiddenReauthCodes: accounts.buildForbiddenReauthCodes ?? ["permission-denied"],
         autoCleanReauthEnabled: accounts.autoCleanReauthEnabled ?? false,
         autoCleanReauthInterval: accounts.autoCleanReauthInterval || "10m",
         autoCleanReauthMinAge: accounts.autoCleanReauthMinAge || "1h",

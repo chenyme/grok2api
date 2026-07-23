@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -41,6 +42,8 @@ const (
 	maxAuditBatchSize     = 4096
 	maxDeploymentReplicas = 1024
 )
+
+var buildForbiddenCodePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 // Config 表示后端运行配置。
 type Config struct {
@@ -230,10 +233,12 @@ type ClientKeyDefaultsConfig struct {
 
 // AccountsConfig 定义可热加载的账号池维护策略；默认全部关闭。
 type AccountsConfig struct {
-	AutoCleanReauthEnabled   bool
-	AutoCleanReauthInterval  Duration
-	AutoCleanReauthMinAge    Duration
-	AutoCleanIncludeDisabled bool
+	MarkBuildForbiddenReauth  bool
+	BuildForbiddenReauthCodes []string
+	AutoCleanReauthEnabled    bool
+	AutoCleanReauthInterval   Duration
+	AutoCleanReauthMinAge     Duration
+	AutoCleanIncludeDisabled  bool
 }
 
 type Secrets struct {
@@ -562,6 +567,17 @@ func (c Config) Validate() error {
 	if c.Accounts.AutoCleanReauthMinAge.Value() < time.Minute || c.Accounts.AutoCleanReauthMinAge.Value() > 30*24*time.Hour {
 		return errors.New("accounts.autoCleanReauthMinAge 必须在 1 分钟到 30 天之间")
 	}
+	if len(c.Accounts.BuildForbiddenReauthCodes) > 32 {
+		return errors.New("accounts.buildForbiddenReauthCodes 最多支持 32 个错误码")
+	}
+	for _, code := range c.Accounts.BuildForbiddenReauthCodes {
+		if !buildForbiddenCodePattern.MatchString(strings.TrimSpace(code)) {
+			return errors.New("accounts.buildForbiddenReauthCodes 包含无效错误码")
+		}
+	}
+	if len(c.Accounts.BuildForbiddenReauthCodes) == 0 {
+		return errors.New("accounts.buildForbiddenReauthCodes 至少需要一个错误码")
+	}
 	return nil
 }
 
@@ -665,10 +681,12 @@ func defaultConfig() Config {
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
 		Accounts: AccountsConfig{
-			AutoCleanReauthEnabled:   false,
-			AutoCleanReauthInterval:  Duration(10 * time.Minute),
-			AutoCleanReauthMinAge:    Duration(time.Hour),
-			AutoCleanIncludeDisabled: false,
+			MarkBuildForbiddenReauth:  false,
+			BuildForbiddenReauthCodes: []string{"permission-denied"},
+			AutoCleanReauthEnabled:    false,
+			AutoCleanReauthInterval:   Duration(10 * time.Minute),
+			AutoCleanReauthMinAge:     Duration(time.Hour),
+			AutoCleanIncludeDisabled:  false,
 		},
 	}
 }

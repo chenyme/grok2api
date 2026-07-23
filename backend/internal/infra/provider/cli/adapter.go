@@ -251,6 +251,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		return nil, err
 	}
 	resp, reqURL, reasoningRecovery := a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, base, replayKey, resp, reqURL)
+	var recoveredPrimaryFailure *provider.DiagnosticResponse
 	// Only eligible operations probe XAI with an equivalent request after the Build primary explicitly returns 403.
 	if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Billing, request.Method, request.Path, resp.StatusCode) {
 		// Buffer the primary 403 body and replay it unchanged if fallback fails; never issue a second primary POST.
@@ -260,31 +261,36 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return nil, readErr
 		}
 		primaryResp := cloneBufferedResponse(resp, primaryBody, primaryTruncated)
-		fallbackBase := a.fallbackBaseURL()
-		if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
-			fallbackBody, fallbackReplayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, fallbackBase)
-			fallbackCtx := infraegress.WithPhysicalCallStage(ctx, "plane_fallback")
-			fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(fallbackCtx, request, accessToken, fallbackBody, fallbackBase)
-			if fallbackErr == nil {
-				fallbackErr = normalizeGzipResponse(fallbackResp)
-			}
-			fallbackRecovery := reasoningRecoveryOutcome{}
-			if fallbackErr == nil {
-				fallbackResp, fallbackURL, fallbackRecovery = a.recoverReasoningDecodeFailure(ctx, request, accessToken, fallbackBody, fallbackBase, fallbackReplayKey, fallbackResp, fallbackURL)
-			}
-			if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
-				a.activateBuildAPIFallback(ctx, &request.Credential)
-				resp, reqURL, base, body, replayKey = fallbackResp, fallbackURL, fallbackBase, fallbackBody, fallbackReplayKey
-				reasoningRecovery = reasoningRecovery.merge(fallbackRecovery)
-			} else {
+		if isDefinitiveAccountBlockBody(primaryBody) {
+			resp = primaryResp
+		} else {
+			fallbackBase := a.fallbackBaseURL()
+			if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
+				fallbackBody, fallbackReplayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, fallbackBase)
+				fallbackCtx := infraegress.WithPhysicalCallStage(ctx, "plane_fallback")
+				fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(fallbackCtx, request, accessToken, fallbackBody, fallbackBase)
 				if fallbackErr == nil {
-					_ = fallbackResp.Body.Close()
+					fallbackErr = normalizeGzipResponse(fallbackResp)
 				}
-				// Preserve the original primary 403 URL and buffered body without requesting the primary again.
+				fallbackRecovery := reasoningRecoveryOutcome{}
+				if fallbackErr == nil {
+					fallbackResp, fallbackURL, fallbackRecovery = a.recoverReasoningDecodeFailure(ctx, request, accessToken, fallbackBody, fallbackBase, fallbackReplayKey, fallbackResp, fallbackURL)
+				}
+				if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
+					recoveredPrimaryFailure = bufferedFailureDiagnostic(primaryResp, primaryBody, primaryTruncated)
+					a.activateBuildAPIFallback(ctx, &request.Credential)
+					resp, reqURL, base, body, replayKey = fallbackResp, fallbackURL, fallbackBase, fallbackBody, fallbackReplayKey
+					reasoningRecovery = reasoningRecovery.merge(fallbackRecovery)
+				} else {
+					if fallbackErr == nil {
+						_ = fallbackResp.Body.Close()
+					}
+					// Preserve the original primary 403 URL and buffered body without requesting the primary again.
+					resp = primaryResp
+				}
+			} else {
 				resp = primaryResp
 			}
-		} else {
-			resp = primaryResp
 		}
 	}
 	modelCatalogChanged := a.modelCatalogChanged(request.Credential.ID, resp.Header.Get("x-models-etag"))
@@ -359,15 +365,15 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				if diagnostic == nil {
 					return nil, convertErr
 				}
-				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: reqURL, Diagnostic: diagnostic, ModelCatalogChanged: modelCatalogChanged}, nil
+				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: reqURL, Diagnostic: diagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, ModelCatalogChanged: modelCatalogChanged}, nil
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(converted))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(converted)))
 			resp.Header.Set("Content-Type", "application/json")
-			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: diagnostic, ModelCatalogChanged: modelCatalogChanged}, nil
+			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: diagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, ModelCatalogChanged: modelCatalogChanged}, nil
 		}
 	}
-	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, ModelCatalogChanged: modelCatalogChanged}, nil
+	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, RecoveredPrimaryFailure: recoveredPrimaryFailure, ModelCatalogChanged: modelCatalogChanged}, nil
 }
 
 func (a *Adapter) shouldCaptureReplay(request provider.ResponseResourceRequest, resp *http.Response, replayKey string) bool {

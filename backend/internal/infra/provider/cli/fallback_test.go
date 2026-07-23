@@ -98,6 +98,35 @@ func TestForwardResponsePrimary403Fallback200Activates(t *testing.T) {
 	if marker.calls.Load() != 1 {
 		t.Fatalf("marker calls = %d", marker.calls.Load())
 	}
+	if response.RecoveredPrimaryFailure == nil || response.RecoveredPrimaryFailure.StatusCode != http.StatusForbidden || !strings.Contains(string(response.RecoveredPrimaryFailure.Body), "forbidden") {
+		t.Fatalf("recovered primary failure = %#v", response.RecoveredPrimaryFailure)
+	}
+}
+
+func TestForwardResponseBlockedAccountDoesNotProbeXAI(t *testing.T) {
+	adapter, encrypted := newFallbackTestAdapter(t)
+	marker := &fallbackMarkerStub{}
+	adapter.SetFallbackMarker(marker)
+	var fallbackHits atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Host, "xai.test") {
+			fallbackHits.Add(1)
+			return jsonResponse(http.StatusOK, `{"id":"unexpected","output":[]}`, request), nil
+		}
+		return jsonResponse(http.StatusForbidden, `{"code":"unauthorized:blocked-user","error":"User is blocked"}`, request), nil
+	})
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 111, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Billing:    &account.Billing{MonthlyLimit: 100}, Method: http.MethodPost, Path: "/responses",
+		Body: []byte(`{"model":"grok-4.5","input":"hi"}`), Model: "grok-4.5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || fallbackHits.Load() != 0 || marker.calls.Load() != 0 {
+		t.Fatalf("status=%d fallback=%d marks=%d", response.StatusCode, fallbackHits.Load(), marker.calls.Load())
+	}
 }
 
 func TestForwardResponseNonSuper403NeverProbesXAI(t *testing.T) {

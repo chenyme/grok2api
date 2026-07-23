@@ -47,8 +47,13 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 		quotaExhausted         bool
 		freeQuotaExhausted     bool
 		modelQuotaExhausted    bool
+		accountBlocked         bool
 		upstreamCode           string
 	}{
+		{
+			name: "blocked account", body: `{"code":"unauthorized:blocked-user","error":"User is blocked"}`,
+			accountScoped: true, accountBlocked: true, upstreamCode: "unauthorized:blocked-user",
+		},
 		{
 			name: "top-level permanent chat denial", body: `{"status_code":403,"code":"permission-denied","error":"Access to the chat endpoint is denied. Please update the permissions."}`,
 			accountScoped: true, permanentAccountDenial: true, upstreamCode: "permission-denied",
@@ -68,7 +73,7 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			failure := newHTTPUpstreamFailure(http.StatusForbidden, []byte(test.body), 42, "build")
-			if failure.HTTPStatus != http.StatusForbidden || failure.Code != "upstream_forbidden" || failure.AccountScoped != test.accountScoped || failure.PermanentAccountDenial != test.permanentAccountDenial || failure.QuotaExhausted != test.quotaExhausted || failure.FreeQuotaExhausted != test.freeQuotaExhausted || failure.ModelQuotaExhausted != test.modelQuotaExhausted || failure.UpstreamCode != test.upstreamCode {
+			if failure.HTTPStatus != http.StatusForbidden || failure.Code != "upstream_forbidden" || failure.AccountScoped != test.accountScoped || failure.AccountBlocked != test.accountBlocked || failure.PermanentAccountDenial != test.permanentAccountDenial || failure.QuotaExhausted != test.quotaExhausted || failure.FreeQuotaExhausted != test.freeQuotaExhausted || failure.ModelQuotaExhausted != test.modelQuotaExhausted || failure.UpstreamCode != test.upstreamCode {
 				t.Fatalf("failure = %#v", failure)
 			}
 			if test.upstreamCode == "permission-denied" && (failure.ClientCredentialErrorCode() != "permission-denied" || failure.AuditCode() != "upstream_forbidden_permission_denied") {
@@ -118,5 +123,46 @@ func TestPaymentRequiredAlwaysRetriesDespiteUpstreamVeto(t *testing.T) {
 	}
 	if isRetryableResponse(response, accountdomain.ProviderWeb) {
 		t.Fatal("non-Build 402 must continue honoring X-Should-Retry:false")
+	}
+}
+
+func TestBuildForbiddenAlwaysEntersAccountFailureHandling(t *testing.T) {
+	response := &provider.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{"X-Should-Retry": {"false"}},
+		Body:       io.NopCloser(strings.NewReader(`{"code":"permission-denied"}`)),
+	}
+	if !isRetryableResponse(response, accountdomain.ProviderBuild) {
+		t.Fatal("Build 403 must enter account failure handling even when X-Should-Retry is false")
+	}
+	if isRetryableResponse(response, accountdomain.ProviderWeb) {
+		t.Fatal("non-Build 403 must continue honoring X-Should-Retry:false")
+	}
+}
+
+func TestBuildForbiddenReauthPolicyMatchesExactErrorCodes(t *testing.T) {
+	service := &Service{}
+	service.UpdateBuildForbiddenReauthPolicy(true, []string{"permission-denied", "team-access-denied"})
+
+	for _, code := range []string{"permission-denied", "TEAM-ACCESS-DENIED"} {
+		failure := &UpstreamFailure{HTTPStatus: http.StatusForbidden, UpstreamCode: code}
+		if !service.shouldInvalidateBuildForbidden(failure) {
+			t.Fatalf("configured code %q did not match", code)
+		}
+	}
+	for _, failure := range []*UpstreamFailure{
+		{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission_denied"},
+		{HTTPStatus: http.StatusForbidden, UpstreamCode: "unconfigured-denial"},
+		{HTTPStatus: http.StatusUnauthorized, UpstreamCode: "permission-denied"},
+		{HTTPStatus: http.StatusInternalServerError, UpstreamCode: "permission-denied"},
+	} {
+		if service.shouldInvalidateBuildForbidden(failure) {
+			t.Fatalf("unconfigured or ineligible failure matched: %#v", failure)
+		}
+	}
+
+	service.UpdateBuildForbiddenReauthPolicy(false, []string{"permission-denied"})
+	if service.shouldInvalidateBuildForbidden(&UpstreamFailure{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission-denied"}) {
+		t.Fatal("disabled policy matched an error code")
 	}
 }
