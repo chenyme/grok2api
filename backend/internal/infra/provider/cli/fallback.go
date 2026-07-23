@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/config"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
 // FallbackMarker 记录 Build 请求因当次 403 成功回退到 XAI。
@@ -161,6 +163,37 @@ func (a *Adapter) activateBuildAPIFallback(ctx context.Context, credential *acco
 
 func isHTTPForbidden(status int) bool {
 	return status == http.StatusForbidden
+}
+
+func isDefinitiveAccountBlockBody(body []byte) bool {
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	code := fallbackStringField(payload, "code")
+	message := firstNonEmpty(fallbackStringField(payload, "error"), fallbackStringField(payload, "message"))
+	if nested, ok := payload["error"].(map[string]any); ok {
+		code = firstNonEmpty(fallbackStringField(nested, "code"), code)
+		message = firstNonEmpty(fallbackStringField(nested, "message"), message)
+	}
+	code = strings.ToLower(strings.TrimSpace(code))
+	message = strings.ToLower(strings.Trim(strings.TrimSpace(message), " .!\t\r\n"))
+	return strings.Contains(code, "blocked-user") || message == "user is blocked"
+}
+
+func fallbackStringField(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+func bufferedFailureDiagnostic(response *http.Response, body []byte, truncated bool) *provider.DiagnosticResponse {
+	if response == nil {
+		return &provider.DiagnosticResponse{StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header), Body: append([]byte(nil), body...), BodyTruncated: truncated}
+	}
+	return &provider.DiagnosticResponse{
+		StatusCode: response.StatusCode, Status: response.Status, Header: response.Header.Clone(),
+		Body: append([]byte(nil), body...), BodyTruncated: truncated,
+	}
 }
 
 func isHTTPSuccess(status int) bool {

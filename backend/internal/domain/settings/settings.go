@@ -120,6 +120,10 @@ type ClientKeyDefaultsConfig struct {
 
 // AccountsConfig 定义账号池后台维护策略；默认全部关闭。
 type AccountsConfig struct {
+	// MarkBuildForbiddenReauth marks high-confidence Grok Build permission denials as requiring reauthorization.
+	MarkBuildForbiddenReauth bool
+	// BuildForbiddenReauthCodes contains exact upstream error codes that opt into account invalidation.
+	BuildForbiddenReauthCodes []string
 	// AutoCleanReauthEnabled 为 true 时，周期性删除已标记 reauthRequired 且超过 minAge 的账号。
 	AutoCleanReauthEnabled bool
 	// AutoCleanReauthInterval 自动清理扫描间隔。

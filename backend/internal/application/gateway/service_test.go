@@ -1048,6 +1048,35 @@ func TestBuildChatPermissionDenialDoesNotInvalidateVideoCredential(t *testing.T)
 	if len(candidates) != 1 || candidates[0].ModelQuotaBlock == nil || candidates[0].ModelQuotaBlock.Reason != "model_access_denied" {
 		t.Fatalf("model-scoped denial was not persisted: %#v", candidates)
 	}
+
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-chat-denied-opt-in"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-chat-denied", "grok-chat-denied-opt-in"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	service.UpdateBuildForbiddenReauthPolicy(true, []string{"permission-denied"})
+	adapter.recoverDenied.Store(true)
+	refreshesBefore := adapter.refreshes.Load()
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-chat-denied-opt-in", ClientKey: clientKey, PublicModel: "grok-chat-denied-opt-in",
+		Body: []byte(`{"model":"grok-chat-denied-opt-in","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatalf("recovered permission denial should keep the current request successful: %v", err)
+	}
+	_ = result.Body.Close()
+	result.Finalize(Usage{}, "", "")
+	invalidated, err := accountRepo.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalidated.AuthStatus != account.AuthStatusReauthRequired {
+		t.Fatalf("opt-in denial did not invalidate account: %#v", invalidated)
+	}
+	if adapter.refreshes.Load() != refreshesBefore {
+		t.Fatalf("opt-in denial performed a redundant refresh: before=%d after=%d", refreshesBefore, adapter.refreshes.Load())
+	}
 }
 
 func TestWebRateLimitExhaustsOnlyRequestedQuotaMode(t *testing.T) {
@@ -1618,10 +1647,11 @@ type systemicForbiddenAdapter struct {
 }
 
 type authRescueAdapter struct {
-	attempts  atomic.Int64
-	refreshes atomic.Int64
-	rejectAll atomic.Bool
-	denyChat  atomic.Bool
+	attempts      atomic.Int64
+	refreshes     atomic.Int64
+	rejectAll     atomic.Bool
+	denyChat      atomic.Bool
+	recoverDenied atomic.Bool
 }
 
 func (a *authRescueAdapter) Provider() account.Provider { return account.ProviderBuild }
@@ -1631,6 +1661,16 @@ func (a *authRescueAdapter) Definition() provider.Definition {
 func (a *authRescueAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.attempts.Add(1)
 	if a.denyChat.Load() {
+		if a.recoverDenied.Load() {
+			return &provider.Response{
+				StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"id":"resp-fallback","status":"completed","output":[]}`)),
+				RecoveredPrimaryFailure: &provider.DiagnosticResponse{
+					StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
+					Body: []byte(`{"code":"permission-denied","error":"Access to the chat endpoint is denied"}`),
+				},
+			}, nil
+		}
 		return &provider.Response{
 			StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
 			Body: io.NopCloser(strings.NewReader(`{"error":{"code":"permission_denied","message":"Access to the chat endpoint is denied"}}`)),

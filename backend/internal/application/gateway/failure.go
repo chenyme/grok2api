@@ -22,6 +22,7 @@ type UpstreamFailure struct {
 	AccountID              uint64
 	AccountName            string
 	AccountScoped          bool
+	AccountBlocked         bool
 	PermanentAccountDenial bool
 	QuotaExhausted         bool
 	FreeQuotaExhausted     bool
@@ -101,6 +102,7 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.PublicMessage = "上游账号认证失败"
 		failure.AccountScoped = true
 		failure.CredentialRejected = true
+		failure.AccountBlocked = isDefinitiveAccountBlock(metadataText)
 	case http.StatusPaymentRequired:
 		failure.Code = "upstream_payment_required"
 		failure.PublicMessage = "上游账号额度不足"
@@ -112,12 +114,13 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 	case http.StatusForbidden:
 		failure.Code = "upstream_forbidden"
 		failure.PublicMessage = "上游拒绝了该请求"
+		failure.AccountBlocked = isDefinitiveAccountBlock(metadataText)
 		failure.PermanentAccountDenial = isPermanentAccountDenial(metadataText)
 		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
 		failure.FreeQuotaExhausted = failure.ModelQuotaExhausted || isFreeQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
 		failure.CredentialRejected = !failure.QuotaExhausted && containsAny(metadataText, "authentication", "unauthorized", "invalid token", "token expired")
-		failure.AccountScoped = failure.PermanentAccountDenial || failure.QuotaExhausted || failure.CredentialRejected || isAccountScopedForbidden(metadataText)
+		failure.AccountScoped = failure.AccountBlocked || failure.PermanentAccountDenial || failure.QuotaExhausted || failure.CredentialRejected || isAccountScopedForbidden(metadataText)
 	case http.StatusTooManyRequests:
 		failure.Code = "upstream_rate_limited"
 		failure.PublicMessage = "上游请求频率受限"
@@ -185,10 +188,14 @@ func isAccountScopedForbidden(text string) bool {
 }
 
 func isPermanentAccountDenial(text string) bool {
-	if strings.Contains(text, "access to the chat endpoint is denied") {
+	if containsAny(text, "permission-denied", "permission_denied", "access to the chat endpoint is denied") {
 		return true
 	}
 	return strings.Trim(strings.TrimSpace(text), " .!\t\r\n") == "access denied"
+}
+
+func isDefinitiveAccountBlock(text string) bool {
+	return containsAny(text, "blocked-user", "user is blocked")
 }
 
 func isPaidQuotaExhaustion(text string) bool {

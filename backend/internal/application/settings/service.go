@@ -123,10 +123,16 @@ type ClientKeyDefaultsConfig struct {
 
 // AccountsConfig 是管理接口使用的账号池维护策略输入。
 type AccountsConfig struct {
-	AutoCleanReauthEnabled   bool
-	AutoCleanReauthInterval  string
-	AutoCleanReauthMinAge    string
-	AutoCleanIncludeDisabled bool
+	MarkBuildForbiddenReauth  bool
+	BuildForbiddenReauthCodes []string
+	AutoCleanReauthEnabled    bool
+	AutoCleanReauthInterval   string
+	AutoCleanReauthMinAge     string
+	AutoCleanIncludeDisabled  bool
+	// MarkBuildForbiddenReauthProvided preserves the value when an older management client omits the field.
+	MarkBuildForbiddenReauthProvided bool
+	// BuildForbiddenReauthCodesProvided preserves the configured codes when an older management client omits the field.
+	BuildForbiddenReauthCodesProvided bool
 }
 
 // EditableConfig 聚合管理端允许修改的运行参数。
@@ -383,6 +389,10 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	}
 	base.Accounts.AutoCleanReauthEnabled = value.Accounts.AutoCleanReauthEnabled
 	base.Accounts.AutoCleanIncludeDisabled = value.Accounts.AutoCleanIncludeDisabled
+	base.Accounts.MarkBuildForbiddenReauth = value.Accounts.MarkBuildForbiddenReauth
+	if value.Accounts.BuildForbiddenReauthCodes != nil {
+		base.Accounts.BuildForbiddenReauthCodes = append([]string(nil), value.Accounts.BuildForbiddenReauthCodes...)
+	}
 	return base
 }
 
@@ -438,10 +448,12 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
 		},
 		Accounts: settingsdomain.AccountsConfig{
-			AutoCleanReauthEnabled:   value.Accounts.AutoCleanReauthEnabled,
-			AutoCleanReauthInterval:  value.Accounts.AutoCleanReauthInterval.Value(),
-			AutoCleanReauthMinAge:    value.Accounts.AutoCleanReauthMinAge.Value(),
-			AutoCleanIncludeDisabled: value.Accounts.AutoCleanIncludeDisabled,
+			MarkBuildForbiddenReauth:  value.Accounts.MarkBuildForbiddenReauth,
+			BuildForbiddenReauthCodes: append([]string(nil), value.Accounts.BuildForbiddenReauthCodes...),
+			AutoCleanReauthEnabled:    value.Accounts.AutoCleanReauthEnabled,
+			AutoCleanReauthInterval:   value.Accounts.AutoCleanReauthInterval.Value(),
+			AutoCleanReauthMinAge:     value.Accounts.AutoCleanReauthMinAge.Value(),
+			AutoCleanIncludeDisabled:  value.Accounts.AutoCleanIncludeDisabled,
 		},
 	}
 }
@@ -518,6 +530,12 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.ClientKeyDefaults.RPMLimit = input.ClientKeyDefaults.RPMLimit
 	next.ClientKeyDefaults.MaxConcurrent = input.ClientKeyDefaults.MaxConcurrent
 	if input.AccountsProvided {
+		if input.Accounts.MarkBuildForbiddenReauthProvided {
+			next.Accounts.MarkBuildForbiddenReauth = input.Accounts.MarkBuildForbiddenReauth
+		}
+		if input.Accounts.BuildForbiddenReauthCodesProvided {
+			next.Accounts.BuildForbiddenReauthCodes = normalizeForbiddenCodes(input.Accounts.BuildForbiddenReauthCodes)
+		}
 		next.Accounts.AutoCleanReauthEnabled = input.Accounts.AutoCleanReauthEnabled
 		next.Accounts.AutoCleanIncludeDisabled = input.Accounts.AutoCleanIncludeDisabled
 	}
@@ -621,11 +639,32 @@ func toEditable(cfg config.Config) EditableConfig {
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: cfg.ClientKeyDefaults.RPMLimit, MaxConcurrent: cfg.ClientKeyDefaults.MaxConcurrent},
 		Accounts: AccountsConfig{
-			AutoCleanReauthEnabled:   cfg.Accounts.AutoCleanReauthEnabled,
-			AutoCleanReauthInterval:  cfg.Accounts.AutoCleanReauthInterval.String(),
-			AutoCleanReauthMinAge:    cfg.Accounts.AutoCleanReauthMinAge.String(),
-			AutoCleanIncludeDisabled: cfg.Accounts.AutoCleanIncludeDisabled,
+			MarkBuildForbiddenReauth:          cfg.Accounts.MarkBuildForbiddenReauth,
+			BuildForbiddenReauthCodes:         append([]string(nil), cfg.Accounts.BuildForbiddenReauthCodes...),
+			MarkBuildForbiddenReauthProvided:  true,
+			BuildForbiddenReauthCodesProvided: true,
+			AutoCleanReauthEnabled:            cfg.Accounts.AutoCleanReauthEnabled,
+			AutoCleanReauthInterval:           cfg.Accounts.AutoCleanReauthInterval.String(),
+			AutoCleanReauthMinAge:             cfg.Accounts.AutoCleanReauthMinAge.String(),
+			AutoCleanIncludeDisabled:          cfg.Accounts.AutoCleanIncludeDisabled,
 		},
 		AccountsProvided: true,
 	}
+}
+
+func normalizeForbiddenCodes(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		code := strings.ToLower(strings.TrimSpace(value))
+		if code == "" {
+			continue
+		}
+		if _, exists := seen[code]; exists {
+			continue
+		}
+		seen[code] = struct{}{}
+		result = append(result, code)
+	}
+	return result
 }
