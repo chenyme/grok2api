@@ -214,6 +214,8 @@ type ListAccountsInput = {
   egress?: string;
   renewal?: string;
   risk?: string;
+  agreement?: string;
+  association?: string;
   provider: AccountProvider;
   sortBy?: string;
   sortOrder?: SortOrder;
@@ -227,6 +229,8 @@ export function listAccounts(input: ListAccountsInput): Promise<PaginatedDTO<Acc
   if (input.egress) query.set("egress", input.egress);
   if (input.renewal) query.set("renewal", input.renewal);
   if (input.risk) query.set("risk", input.risk);
+  if (input.agreement) query.set("agreement", input.agreement);
+  if (input.association) query.set("association", input.association);
   if (input.sortBy && input.sortOrder) {
     query.set("sortBy", input.sortBy);
     query.set("sortOrder", input.sortOrder);

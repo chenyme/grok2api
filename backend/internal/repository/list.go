@@ -73,6 +73,10 @@ type AccountListFilter struct {
 	Status      string
 	Egress      string
 	Refreshable *bool
+	// Agreement filters grok_web accounts by NSFW and current terms acceptance.
+	Agreement string
+	// Association filters grok_web accounts by Build and Console links.
+	Association string
 	AccountIDs  []uint64
 	RestrictIDs bool
 	ExcludeIDs  []uint64

@@ -90,6 +90,8 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 			query = query.Where("NOT EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.encrypted_refresh <> '')")
 		}
 	}
+	query = applyWebAgreementFilter(query, input.Filter.Agreement)
+	query = applyWebAssociationFilter(query, input.Filter.Association)
 	if input.Filter.RestrictIDs {
 		if len(input.Filter.AccountIDs) == 0 {
 			query = query.Where("1 = 0")
@@ -1494,6 +1496,53 @@ func applyAccountStatusFilter(query *gorm.DB, status string, now time.Time) *gor
 		return query.Where("enabled = ? AND auth_status = ? AND (EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'exhausted') OR "+providerQuotaExhaustedPredicate+")", true, account.AuthStatusActive)
 	case "probing":
 		return query.Where("enabled = ? AND auth_status = ? AND EXISTS (SELECT 1 FROM account_quota_recovery recovery WHERE recovery.account_id = provider_accounts.id AND recovery.status = 'probing')", true, account.AuthStatusActive)
+	default:
+		return query
+	}
+}
+
+// Web agreement predicates match the effective state exposed by the admin API.
+// Terms are current only when the recorded version reaches CurrentWebTermsVersion.
+const (
+	webNSFWEnabledPredicate   = "EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.nsfw_enabled_at IS NOT NULL)"
+	webTermsAcceptedPredicate = "EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.terms_accepted_at IS NOT NULL AND profile.terms_accepted_version >= ?)"
+	webBuildLinkedPredicate   = "EXISTS (SELECT 1 FROM account_provider_links link WHERE link.web_account_id = provider_accounts.id)"
+	webConsoleLinkedPredicate = "EXISTS (SELECT 1 FROM web_console_account_links link WHERE link.web_account_id = provider_accounts.id)"
+)
+
+func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
+	switch agreement {
+	case "nsfwEnabled":
+		return query.Where(webNSFWEnabledPredicate)
+	case "nsfwDisabled":
+		return query.Where("NOT " + webNSFWEnabledPredicate)
+	case "termsAccepted":
+		return query.Where(webTermsAcceptedPredicate, account.CurrentWebTermsVersion)
+	case "termsNotAccepted":
+		return query.Where("NOT "+webTermsAcceptedPredicate, account.CurrentWebTermsVersion)
+	case "allAccepted":
+		return query.Where(webNSFWEnabledPredicate).Where(webTermsAcceptedPredicate, account.CurrentWebTermsVersion)
+	case "allNotAccepted":
+		return query.Where("NOT "+webNSFWEnabledPredicate).Where("NOT "+webTermsAcceptedPredicate, account.CurrentWebTermsVersion)
+	default:
+		return query
+	}
+}
+
+func applyWebAssociationFilter(query *gorm.DB, association string) *gorm.DB {
+	switch association {
+	case "buildLinked":
+		return query.Where(webBuildLinkedPredicate)
+	case "buildUnlinked":
+		return query.Where("NOT " + webBuildLinkedPredicate)
+	case "consoleLinked":
+		return query.Where(webConsoleLinkedPredicate)
+	case "consoleUnlinked":
+		return query.Where("NOT " + webConsoleLinkedPredicate)
+	case "allLinked":
+		return query.Where(webBuildLinkedPredicate).Where(webConsoleLinkedPredicate)
+	case "allUnlinked":
+		return query.Where("NOT " + webBuildLinkedPredicate).Where("NOT " + webConsoleLinkedPredicate)
 	default:
 		return query
 	}
