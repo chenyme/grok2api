@@ -20,7 +20,7 @@ const (
 
 // Generated from xai-org/grok-build's full_replace_summary_prompt.txt using
 // build_summary_prompt(None), so the optional {user_context_section} slot is
-// empty. The Grok Build 0.2.106 source confirms that this text is appended as
+// empty. The Grok Build 0.2.110 source confirms that this text is appended as
 // the final user item for every compaction attempt.
 //
 //go:embed responses_compaction_prompt.txt
@@ -125,7 +125,7 @@ func expandGatewayCompactionHistory(body []byte, codec *gatewayCompactionCodec, 
 	return encoded, foreign, err
 }
 
-// prepareGatewayCompactionSample mirrors Grok Build 0.2.106 full-replace
+// prepareGatewayCompactionSample mirrors Grok Build 0.2.110 full-replace
 // sampling: normal /responses SSE, instructions=null, tools retained with
 // tool_choice=auto, concise reasoning summary, and the canonical final user prompt.
 func prepareGatewayCompactionSample(body []byte) ([]byte, error) {

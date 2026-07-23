@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 var nativeHostedToolChoiceTypes = map[string]string{
@@ -21,8 +22,8 @@ var nativeHostedToolChoiceTypes = map[string]string{
 	"local_shell":                   "shell",
 }
 
-// webSearchCompatibilityFields 是 Codex/OpenAI 新版声明中已知、但 0.2.106 上游会以
-// "Argument not supported" 拒绝的控制字段。Build 只能降级为其原生最小搜索工具。
+// webSearchCompatibilityFields lists newer Codex/OpenAI controls that Build 0.2.110 rejects.
+// The compatibility layer can only reduce them to Build's native minimal search tool.
 var webSearchCompatibilityFields = map[string]struct{}{
 	"external_web_access":  {},
 	"indexed_web_access":   {},
@@ -33,7 +34,7 @@ var webSearchCompatibilityFields = map[string]struct{}{
 	"safe_search":          {},
 }
 
-// normalizeNativeTool 保留 0.2.106 已确认支持的工具，并拒绝只属于 Tool Search 的延迟字段。
+// normalizeNativeTool preserves tools supported by Build 0.2.110 and removes Tool Search-only fields.
 func (c *responsesToolCompatibility) normalizeNativeTool(tool map[string]any, _ string) ([]any, error) {
 	converted := cloneJSONObject(tool)
 	if _, exists := converted["defer_loading"]; exists {
@@ -44,8 +45,47 @@ func (c *responsesToolCompatibility) normalizeNativeTool(tool map[string]any, _ 
 	return []any{converted}, nil
 }
 
-// normalizeWebSearchTool 保留 0.2.106 原生支持的 allowed_domains 约束，
-// 并将无法等价表达的新版控制字段安全降级。
+func (c *responsesToolCompatibility) normalizeXSearchTool(tool map[string]any, param string) ([]any, error) {
+	converted := cloneJSONObject(tool)
+	var fromDate, toDate time.Time
+	var hasFromDate, hasToDate bool
+	for _, field := range []string{"from_date", "to_date"} {
+		value, exists := converted[field]
+		if !exists {
+			continue
+		}
+		if value == nil {
+			delete(converted, field)
+			c.changed = true
+			continue
+		}
+		text, ok := value.(string)
+		date, err := time.Parse("2006-01-02", text)
+		if !ok || err != nil || len(text) != len("2006-01-02") || date.Year() < 1 || date.Format("2006-01-02") != text {
+			return nil, &responsesRequestError{
+				Message: field + " 必须使用 YYYY-MM-DD 格式",
+				Param:   param + "." + field,
+				Code:    "invalid_parameter",
+			}
+		}
+		if field == "from_date" {
+			fromDate, hasFromDate = date, true
+		} else {
+			toDate, hasToDate = date, true
+		}
+	}
+	if hasFromDate && hasToDate && fromDate.After(toDate) {
+		return nil, &responsesRequestError{
+			Message: "from_date 不得晚于 to_date",
+			Param:   param + ".from_date",
+			Code:    "invalid_parameter",
+		}
+	}
+	return c.normalizeNativeTool(converted, param)
+}
+
+// normalizeWebSearchTool preserves Build 0.2.110's allowed_domains constraint and safely
+// reduces newer controls that cannot be represented with equivalent semantics.
 func (c *responsesToolCompatibility) normalizeWebSearchTool(tool map[string]any, kind, param string) ([]any, error) {
 	if external, exists := tool["external_web_access"]; exists {
 		enabled, ok := external.(bool)
@@ -53,8 +93,8 @@ func (c *responsesToolCompatibility) normalizeWebSearchTool(tool map[string]any,
 			return nil, &responsesRequestError{Message: "external_web_access 必须是布尔值", Param: param + ".external_web_access", Code: "invalid_parameter"}
 		}
 		if !enabled {
-			// 0.2.106 不能表达“只允许索引、禁止外网”。发送最小 web_search
-			// 会扩大客户端授权，因此直接移除该搜索工具，形成安全的能力子集。
+			// Build cannot express indexed-only search without external access. Sending a minimal
+			// web_search would broaden the client's authorization, so remove the tool instead.
 			c.webSearchDisabled = true
 			c.changed = true
 			c.addWarning("web_search_disabled_no_external_access")
@@ -208,7 +248,7 @@ func (c *responsesToolCompatibility) normalizeMCPTool(tool map[string]any, clien
 
 func unsupportedBuildToolError(kind, param string) error {
 	return &responsesRequestError{
-		Message: fmt.Sprintf("Grok Build 0.2.106 不支持 tools.type=%q", kind),
+		Message: fmt.Sprintf("Grok Build 0.2.110 不支持 tools.type=%q", kind),
 		Param:   param + ".type", Code: "unsupported_parameter",
 	}
 }

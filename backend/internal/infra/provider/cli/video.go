@@ -36,8 +36,8 @@ type videoRequestProfile struct {
 
 var (
 	buildVideoRequestProfile = videoRequestProfile{model: buildVideoModel, imageURLField: "image_url"}
-	// 官方 0.2.106 的直连 XAI 图片/视频工具使用 xai-grok-build/<version>，
-	// 与 cli-chat-proxy 采样请求的 grok-shell/<version> UA 不同。
+	// Direct XAI image and video tools use xai-grok-build/<version>, unlike the
+	// grok-shell/<version> user agent used for cli-chat-proxy sampling requests.
 	xaiVideoRequestProfile = videoRequestProfile{model: xaiVideoModel, imageURLField: "url", userAgentProduct: "xai-grok-build"}
 )
 

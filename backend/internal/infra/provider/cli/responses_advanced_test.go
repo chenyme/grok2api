@@ -313,7 +313,7 @@ func TestResponsesWebSearchAliasesAndOptions(t *testing.T) {
 	}
 }
 
-func TestResponsesBuild02101NativeAndUnsupportedToolMatrix(t *testing.T) {
+func TestResponsesBuild02110NativeAndUnsupportedToolMatrix(t *testing.T) {
 	native := []string{"x_search", "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter", "mcp", "shell"}
 	for _, kind := range native {
 		t.Run("native_"+kind, func(t *testing.T) {
@@ -349,7 +349,45 @@ func TestResponsesBuild02101NativeAndUnsupportedToolMatrix(t *testing.T) {
 			body := []byte(`{"model":"public","input":"hello","tools":[{"type":"` + kind + `"}]}`)
 			_, _, err := normalizeResponsesRequest(body, "grok-4.5")
 			requestErr, ok := err.(*responsesRequestError)
-			if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].type" || !strings.Contains(requestErr.Message, "0.2.106") {
+			if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].type" || !strings.Contains(requestErr.Message, "0.2.110") {
+				t.Fatalf("error = %#v", err)
+			}
+		})
+	}
+}
+
+func TestResponsesXSearchDateBounds(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public","input":"search",
+		"tools":[{"type":"x_search","from_date":"2026-07-01","to_date":"2026-07-23"}]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tool := request["tools"].([]any)[0].(map[string]any)
+	if tool["from_date"] != "2026-07-01" || tool["to_date"] != "2026-07-23" {
+		t.Fatalf("x_search date bounds = %#v", tool)
+	}
+
+	tests := []struct {
+		name  string
+		body  string
+		param string
+	}{
+		{name: "non string", body: `{"model":"public","input":"search","tools":[{"type":"x_search","from_date":1}]}`, param: "tools[0].from_date"},
+		{name: "not canonical", body: `{"model":"public","input":"search","tools":[{"type":"x_search","from_date":"2026-7-01"}]}`, param: "tools[0].from_date"},
+		{name: "invalid date", body: `{"model":"public","input":"search","tools":[{"type":"x_search","to_date":"2026-02-30"}]}`, param: "tools[0].to_date"},
+		{name: "inverted", body: `{"model":"public","input":"search","tools":[{"type":"x_search","from_date":"2026-07-24","to_date":"2026-07-23"}]}`, param: "tools[0].from_date"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := normalizeResponsesRequest([]byte(test.body), "grok-4.5")
+			requestErr, ok := err.(*responsesRequestError)
+			if !ok || requestErr.Code != "invalid_parameter" || requestErr.Param != test.param {
 				t.Fatalf("error = %#v", err)
 			}
 		})

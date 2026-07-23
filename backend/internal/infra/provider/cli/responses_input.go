@@ -135,7 +135,7 @@ func (c *responsesToolCompatibility) normalizeMessageContent(value any, role, pa
 		case "input_file":
 			normalized = append(normalized, normalizeInputFilePart(item))
 		default:
-			return nil, &responsesRequestError{Message: "Grok Build 0.2.106 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
+			return nil, &responsesRequestError{Message: "Grok Build 0.2.110 不支持该 message.content 类型", Param: fmt.Sprintf("%s[%d].type", param, index), Code: "unsupported_parameter"}
 		}
 	}
 	return normalized, nil
@@ -156,7 +156,7 @@ func (c *responsesToolCompatibility) normalizeInputImagePart(item map[string]any
 	switch detail {
 	case "auto", "low", "high":
 	case "original":
-		// OpenAI 支持 original，但 Grok Build 0.2.106 仅接受到 high。
+		// OpenAI accepts original, while Grok Build 0.2.110 supports up to high.
 		detail = "high"
 		c.addWarning("image_detail_original_downgraded")
 	default:

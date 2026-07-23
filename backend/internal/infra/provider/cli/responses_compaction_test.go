@@ -392,8 +392,8 @@ func newCompactionTestAdapter(t *testing.T) (*Adapter, string) {
 		t.Fatal(err)
 	}
 	adapter := NewAdapter(Config{
-		BaseURL: "https://build.test/v1", ClientVersion: "0.2.106",
-		ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.106 (linux; x86_64)",
+		BaseURL: "https://build.test/v1", ClientVersion: "0.2.110",
+		ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli", UserAgent: "grok-shell/0.2.110 (linux; x86_64)",
 	}, cipher)
 	return adapter, encrypted
 }

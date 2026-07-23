@@ -245,7 +245,9 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 		return c.normalizeLegacyLocalShellTool(tool, param)
 	case "apply_patch":
 		return c.normalizeApplyPatchTool(tool, param)
-	case "x_search", "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter":
+	case "x_search":
+		return c.normalizeXSearchTool(tool, param)
+	case "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter":
 		return c.normalizeNativeTool(tool, param)
 	case "computer_use_preview":
 		return nil, unsupportedBuildToolError(kind, param)

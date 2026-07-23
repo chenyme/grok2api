@@ -19,7 +19,7 @@ func (c *responsesToolCompatibility) normalizeShellTool(tool map[string]any, par
 	return c.normalizeNativeTool(tool, param)
 }
 
-// normalizeLegacyLocalShellTool 将旧 Codex local_shell 升级为 0.2.106 原生 local shell 环境。
+// normalizeLegacyLocalShellTool upgrades the legacy Codex local_shell declaration to Build 0.2.110.
 func (c *responsesToolCompatibility) normalizeLegacyLocalShellTool(tool map[string]any, param string) ([]any, error) {
 	if c.nativeShell || c.legacyLocalShell {
 		return nil, &responsesRequestError{
@@ -368,7 +368,7 @@ func (c *responsesToolCompatibility) normalizeFunctionCallOutputBlocks(blocks []
 			}
 			normalized = append(normalized, converted)
 		default:
-			return nil, &responsesRequestError{Message: "Grok Build 0.2.106 不支持该 function_call_output.output 类型", Param: blockParam + ".type", Code: "unsupported_parameter"}
+			return nil, &responsesRequestError{Message: "Grok Build 0.2.110 不支持该 function_call_output.output 类型", Param: blockParam + ".type", Code: "unsupported_parameter"}
 		}
 	}
 	return normalized, nil
