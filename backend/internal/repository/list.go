@@ -73,11 +73,9 @@ type AccountListFilter struct {
 	Status      string
 	Egress      string
 	Refreshable *bool
-	// Agreement 仅对 grok_web 有意义：按 NSFW / 服务协议接受状态筛选。
-	// 取值：nsfwEnabled | nsfwDisabled | termsAccepted | termsNotAccepted | allAccepted | allNotAccepted
+	// Agreement filters grok_web accounts by NSFW and current terms acceptance.
 	Agreement string
-	// Association 仅对 grok_web 有意义：按 Build / Console 关联状态筛选。
-	// 取值：buildLinked | buildUnlinked | consoleLinked | consoleUnlinked | allLinked | allUnlinked
+	// Association filters grok_web accounts by Build and Console links.
 	Association string
 	AccountIDs  []uint64
 	RestrictIDs bool

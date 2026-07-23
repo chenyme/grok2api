@@ -96,7 +96,7 @@ func TestListFilters(t *testing.T) {
 		webByTier[tier] = value
 		assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", QuotaType: tier, Now: now}, 1)
 	}
-	// Web 协议与关联筛选：NSFW / 服务协议 / Build / Console。
+	// Web agreement and association filters cover NSFW, terms, Build, and Console.
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", Agreement: "nsfwDisabled", Now: now}, 4)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", Agreement: "termsNotAccepted", Now: now}, 4)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", Agreement: "allNotAccepted", Now: now}, 4)
@@ -118,7 +118,7 @@ func TestListFilters(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
-	// 过期协议版本不得算作已接受。
+	// An outdated terms version must not count as accepted.
 	staleTermsWeb := webByTier["heavy"]
 	if err := database.db.WithContext(ctx).Model(&webAccountProfileModel{}).Where("account_id = ?", staleTermsWeb.ID).Updates(map[string]any{
 		"terms_accepted_at": now, "terms_accepted_version": account.CurrentWebTermsVersion - 1,

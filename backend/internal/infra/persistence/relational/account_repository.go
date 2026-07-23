@@ -1501,8 +1501,8 @@ func applyAccountStatusFilter(query *gorm.DB, status string, now time.Time) *gor
 	}
 }
 
-// webNSFWEnabledPredicate / webTermsAcceptedPredicate 与管理端展示标记保持一致：
-// NSFW 以 nsfw_enabled_at 是否记录为准；服务协议要求版本达到 CurrentWebTermsVersion。
+// Web agreement predicates match the effective state exposed by the admin API.
+// Terms are current only when the recorded version reaches CurrentWebTermsVersion.
 const (
 	webNSFWEnabledPredicate   = "EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.nsfw_enabled_at IS NOT NULL)"
 	webTermsAcceptedPredicate = "EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.terms_accepted_at IS NOT NULL AND profile.terms_accepted_version >= ?)"

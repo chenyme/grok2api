@@ -220,9 +220,9 @@ type ListFilter struct {
 	Egress    string
 	Renewal   string
 	Risk      string
-	// Agreement 仅对 grok_web：nsfwEnabled | nsfwDisabled | termsAccepted | termsNotAccepted | allAccepted | allNotAccepted
+	// Agreement applies only to grok_web accounts.
 	Agreement string
-	// Association 仅对 grok_web：buildLinked | buildUnlinked | consoleLinked | consoleUnlinked | allLinked | allUnlinked
+	// Association applies only to grok_web accounts.
 	Association string
 	Sort        repository.SortQuery
 }
