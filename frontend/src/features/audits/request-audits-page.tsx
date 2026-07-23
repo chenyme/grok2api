@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Activity, ArrowDown, ArrowUp, BrainCircuit, CircleCheck, CircleDollarSign, CornerDownRight, Database, Info, Minimize2, RefreshCw, Search, WholeWord, type LucideIcon } from "lucide-react";
-import { useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -25,9 +25,13 @@ import { formatDateTime, formatDuration, formatNumber } from "@/shared/lib/forma
 import { toPeriodValue, type PeriodDays } from "@/shared/lib/period";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
+const AUDIT_PAGE_CACHE_TIME_MS = 60_000;
+const AUDIT_SUMMARY_CACHE_TIME_MS = 120_000;
+
+type AuditCursorState = { scope: string; values: string[] };
+
 export function RequestAuditsPage() {
   const { t, i18n } = useTranslation();
-  const [cursors, setCursors] = useState<string[]>([""]);
   const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState("");
   const [modelFilter, setModelFilter] = useState("");
@@ -43,16 +47,37 @@ export function RequestAuditsPage() {
   const debouncedSearch = useDebouncedValue(search);
   const debouncedKeyFilter = useDebouncedValue(keyFilter);
   const debouncedAccountFilter = useDebouncedValue(accountFilter);
-  const cursor = cursors[cursors.length - 1];
   const period: AuditPeriod = toPeriodValue(periodDays);
+  const cursorScope = useMemo(() => JSON.stringify([
+    pageSize, debouncedSearch, modelFilter, statusFilter, modeFilter,
+    debouncedKeyFilter, debouncedAccountFilter, period, sort.field, sort.order,
+  ]), [pageSize, debouncedSearch, modelFilter, statusFilter, modeFilter, debouncedKeyFilter, debouncedAccountFilter, period, sort.field, sort.order]);
+  const [cursorState, setCursorState] = useState<AuditCursorState>(() => ({ scope: cursorScope, values: [""] }));
+  if (cursorState.scope !== cursorScope) {
+    setCursorState({ scope: cursorScope, values: [""] });
+  }
+  const cursors = cursorState.scope === cursorScope ? cursorState.values : [""];
+  const cursor = cursors[cursors.length - 1];
+
+  const updateCursors = useCallback((update: (values: string[]) => string[]) => {
+    setCursorState((current) => {
+      const values = current.scope === cursorScope ? current.values : [""];
+      return { scope: cursorScope, values: update(values) };
+    });
+  }, [cursorScope]);
+
   const auditsQuery = useQuery({
-    queryKey: ["request-audits", "cursor", cursor, pageSize, debouncedSearch, modelFilter, statusFilter, modeFilter, debouncedKeyFilter, debouncedAccountFilter, period, sort.field, sort.order],
-    queryFn: () => getRequestAudits({ cursor, pageSize, search: debouncedSearch, model: modelFilter, status: statusFilter, mode: modeFilter, key: debouncedKeyFilter, account: debouncedAccountFilter, period, sortBy: sort.field, sortOrder: sort.order }),
+    queryKey: ["request-audits", "cursor", cursorScope, cursor],
+    queryFn: ({ signal }) => getRequestAudits({ cursor, pageSize, search: debouncedSearch, model: modelFilter, status: statusFilter, mode: modeFilter, key: debouncedKeyFilter, account: debouncedAccountFilter, period, sortBy: sort.field, sortOrder: sort.order }, signal),
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[2] === cursorScope ? previous : undefined,
+    gcTime: AUDIT_PAGE_CACHE_TIME_MS,
+    structuralSharing: false,
   });
   const summaryQuery = useQuery({
     queryKey: ["request-audits", "summary", debouncedSearch, modelFilter, statusFilter, modeFilter, debouncedKeyFilter, debouncedAccountFilter, period],
-    queryFn: () => getRequestAuditSummary({ search: debouncedSearch, model: modelFilter, status: statusFilter, mode: modeFilter, key: debouncedKeyFilter, account: debouncedAccountFilter, period }, forceSummaryRefresh.current),
+    queryFn: ({ signal }) => getRequestAuditSummary({ search: debouncedSearch, model: modelFilter, status: statusFilter, mode: modeFilter, key: debouncedKeyFilter, account: debouncedAccountFilter, period }, forceSummaryRefresh.current, signal),
     placeholderData: (previous) => previous,
+    gcTime: AUDIT_SUMMARY_CACHE_TIME_MS,
   });
   const modelOptionsQuery = useQuery({
     queryKey: ["models", "audit-filter"],
@@ -60,11 +85,15 @@ export function RequestAuditsPage() {
     staleTime: 60_000,
   });
   const result = auditsQuery.data;
+  const nextCursor = result?.nextCursor ?? "";
   const summary = summaryQuery.data;
   const summaryLoading = summaryQuery.isPending || summaryQuery.isPlaceholderData;
   const cacheRate = summary?.usage.inputTokens ? summary.usage.cachedInputTokens / summary.usage.inputTokens * 100 : 0;
   const estimatedCostTicks = summary?.usage.estimatedCostInUsdTicks ?? 0;
   const hasEstimatedCost = (summary?.pricing.pricedRequests ?? 0) > 0;
+  const modelOptions = useMemo(() => [...new Map((modelOptionsQuery.data?.items ?? []).map((model) => [model.publicId, { value: model.publicId, label: model.publicId }])).values()], [modelOptionsQuery.data?.items]);
+  const openAudit = useCallback((audit: AuditDTO) => setSelectedAudit(audit), []);
+  const renderAuditRow = useCallback((audit: AuditDTO) => <AuditRow key={audit.id} audit={audit} locale={i18n.language} onOpen={openAudit} />, [i18n.language, openAudit]);
 
   function refreshAll(): void {
     setManualRefreshing(true);
@@ -79,10 +108,9 @@ export function RequestAuditsPage() {
     });
   }
 
-  function changeSort(field: string, initialOrder: SortOrder): void {
+  const changeSort = useCallback((field: string, initialOrder: SortOrder): void => {
     setSort((current) => nextTableSort(current, field, initialOrder));
-    setCursors([""]);
-  }
+  }, []);
 
   return (
     <div className="space-y-5">
@@ -91,8 +119,8 @@ export function RequestAuditsPage() {
         description={t("audits.description")}
         actions={(
           <>
-            <PeriodSelector value={periodDays} onChange={(days) => { setPeriodDays(days); setCursors([""]); }} ariaLabel={t("audits.usageSummary")} />
-            <Button variant="secondary" size="sm" onClick={refreshAll} disabled={auditsQuery.isFetching || summaryQuery.isFetching || manualRefreshing}><RefreshCw className={manualRefreshing ? "animate-spin" : undefined} />{t("common.refresh")}</Button>
+            <PeriodSelector value={periodDays} onChange={setPeriodDays} ariaLabel={t("audits.usageSummary")} />
+            <Button variant="secondary" size="sm" onClick={refreshAll} disabled={auditsQuery.isFetching || summaryQuery.isFetching || manualRefreshing}><RefreshCw className={manualRefreshing || auditsQuery.isFetching || summaryQuery.isFetching ? "animate-spin" : undefined} />{t("common.refresh")}</Button>
           </>
         )}
       />
@@ -126,41 +154,42 @@ export function RequestAuditsPage() {
             <div className="flex w-full items-center gap-2 sm:w-auto">
               <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setCursors([""]); }} placeholder={t("audits.search")} aria-label={t("audits.search")} />
+                <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("audits.search")} aria-label={t("audits.search")} />
               </div>
               <DataTableFilters filters={[
-                { id: "model", label: t("audits.model"), value: modelFilter, onChange: (value) => { setModelFilter(value); setCursors([""]); }, options: [...new Map((modelOptionsQuery.data?.items ?? []).map((model) => [model.publicId, { value: model.publicId, label: model.publicId }])).values()] },
-                { id: "status", label: t("audits.status"), value: statusFilter, onChange: (value) => { setStatusFilter(value); setCursors([""]); }, options: [
+                { id: "model", label: t("audits.model"), value: modelFilter, onChange: setModelFilter, options: modelOptions },
+                { id: "status", label: t("audits.status"), value: statusFilter, onChange: setStatusFilter, options: [
                   { value: "2xx", label: `2xx · ${t("audits.statusSuccess")}` },
                   { value: "4xx", label: `4xx · ${t("audits.statusClientError")}` },
                   { value: "5xx", label: `5xx · ${t("audits.statusServerError")}` },
                 ] },
-                { id: "mode", label: t("audits.mode"), value: modeFilter, onChange: (value) => { setModeFilter(value); setCursors([""]); }, options: [
+                { id: "mode", label: t("audits.mode"), value: modeFilter, onChange: setModeFilter, options: [
                   { value: "stream", label: t("audits.stream") },
                   { value: "nonStream", label: t("audits.nonStream") },
                 ] },
-                { id: "key", type: "text", label: t("audits.key"), value: keyFilter, placeholder: t("audits.keyFilterPlaceholder"), onChange: (value) => { setKeyFilter(value); setCursors([""]); } },
-                { id: "account", type: "text", label: t("audits.account"), value: accountFilter, placeholder: t("audits.accountFilterPlaceholder"), onChange: (value) => { setAccountFilter(value); setCursors([""]); } },
+                { id: "key", type: "text", label: t("audits.key"), value: keyFilter, placeholder: t("audits.keyFilterPlaceholder"), onChange: setKeyFilter },
+                { id: "account", type: "text", label: t("audits.account"), value: accountFilter, placeholder: t("audits.accountFilterPlaceholder"), onChange: setAccountFilter },
               ]} />
             </div>
           </>
         )}
-        footer={result && result.items.length > 0 ? (
+        footer={(result?.items.length ?? 0) > 0 || cursors.length > 1 ? (
           <CursorPagination
             page={cursors.length}
             pageSize={pageSize}
-            hasMore={result.hasMore && Boolean(result.nextCursor)}
-            onFirstPage={() => setCursors([""])}
-            onPreviousPage={() => setCursors((values) => values.slice(0, -1))}
-            onNextPage={() => setCursors((values) => [...values, result.nextCursor])}
-            onPageSizeChange={(value) => { setPageSize(value); setCursors([""]); }}
+            hasMore={Boolean(result?.hasMore && nextCursor)}
+            disabled={auditsQuery.isFetching}
+            onFirstPage={() => updateCursors(() => [""])}
+            onPreviousPage={() => updateCursors((values) => values.length > 1 ? values.slice(0, -1) : values)}
+            onNextPage={() => { if (nextCursor) updateCursors((values) => [...values, nextCursor]); }}
+            onPageSizeChange={setPageSize}
           />
         ) : undefined}
       >
         {auditsQuery.isError ? <ErrorState message={auditsQuery.error.message} onRetry={() => void auditsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {auditsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table viewportRows={20} rowHeight={72} className="min-w-[1136px] table-fixed text-xs">
+          <Table viewportRows={20} rowHeight={72} aria-busy={auditsQuery.isFetching} className={cn("min-w-[1136px] table-fixed text-xs transition-opacity", auditsQuery.isPlaceholderData && "pointer-events-none opacity-60")}>
             <colgroup>
               <col className="w-36" />
               <col className="w-44" />
@@ -186,25 +215,7 @@ export function RequestAuditsPage() {
             {auditsQuery.isPending ? (
               <TableBody><TableLoadingRow colSpan={8} /></TableBody>
             ) : (
-              <VirtualTableBody items={result?.items ?? []} colSpan={8} rowHeight={72} renderRow={(audit) => (
-                <TableRow className="h-[72px]" key={audit.id}>
-                  <TableCell><RequestValue audit={audit} /></TableCell>
-                  <TableCell>
-                    <ModelRouteValue
-                      model={audit.modelPublicId || `#${audit.modelRouteId}`}
-                      upstreamModel={audit.modelUpstreamModel || "-"}
-                      account={audit.accountName || (audit.accountId ? `#${audit.accountId}` : "-")}
-                      clientKey={audit.clientKeyName || `#${audit.clientKeyId}`}
-                    />
-                  </TableCell>
-                  <TableCell><EgressValue audit={audit} /></TableCell>
-                  <TableCell><BillingValue audit={audit} /></TableCell>
-                  <TableCell className="px-3"><UsageDetails audit={audit} locale={i18n.language} /></TableCell>
-                  <TableCell className="text-center"><AuditStatus audit={audit} onOpen={() => setSelectedAudit(audit)} /></TableCell>
-                  <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatDuration(audit.durationMs)}</TableCell>
-                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(audit.createdAt, i18n.language)}</TableCell>
-                </TableRow>
-              )} />
+              <VirtualTableBody items={result?.items ?? []} colSpan={8} rowHeight={72} overscan={6} renderRow={renderAuditRow} />
             )}
           </Table>
         ) : null}
@@ -213,6 +224,28 @@ export function RequestAuditsPage() {
     </div>
   );
 }
+
+const AuditRow = memo(function AuditRow({ audit, locale, onOpen }: { audit: AuditDTO; locale: string; onOpen: (audit: AuditDTO) => void }) {
+  return (
+    <TableRow className="h-[72px]">
+      <TableCell><RequestValue audit={audit} /></TableCell>
+      <TableCell>
+        <ModelRouteValue
+          model={audit.modelPublicId || `#${audit.modelRouteId}`}
+          upstreamModel={audit.modelUpstreamModel || "-"}
+          account={audit.accountName || (audit.accountId ? `#${audit.accountId}` : "-")}
+          clientKey={audit.clientKeyName || `#${audit.clientKeyId}`}
+        />
+      </TableCell>
+      <TableCell><EgressValue audit={audit} /></TableCell>
+      <TableCell><BillingValue audit={audit} /></TableCell>
+      <TableCell className="px-3"><UsageDetails audit={audit} locale={locale} /></TableCell>
+      <TableCell className="text-center"><AuditStatus audit={audit} onOpen={() => onOpen(audit)} /></TableCell>
+      <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatDuration(audit.durationMs)}</TableCell>
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(audit.createdAt, locale)}</TableCell>
+    </TableRow>
+  );
+});
 
 function RequestValue({ audit }: { audit: AuditDTO }) {
   const { t } = useTranslation();

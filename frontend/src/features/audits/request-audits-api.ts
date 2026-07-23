@@ -161,7 +161,7 @@ type AuditQuery = {
   sortOrder?: SortOrder;
 };
 
-export function getRequestAudits(input: AuditQuery): Promise<AuditCursorPageDTO> {
+export function getRequestAudits(input: AuditQuery, signal?: AbortSignal): Promise<AuditCursorPageDTO> {
   const query = new URLSearchParams({ pagination: "cursor", pageSize: String(input.pageSize ?? 50), period: input.period });
   if (input.cursor) query.set("cursor", input.cursor);
   if (input.search) query.set("search", input.search);
@@ -174,10 +174,10 @@ export function getRequestAudits(input: AuditQuery): Promise<AuditCursorPageDTO>
     query.set("sortBy", input.sortBy);
     query.set("sortOrder", input.sortOrder);
   }
-  return apiRequest(`/api/admin/v1/request-audits?${query}`, {}, decodeAuditPage);
+  return apiRequest(`/api/admin/v1/request-audits?${query}`, { signal }, decodeAuditPage);
 }
 
-export function getRequestAuditSummary(input: Omit<AuditQuery, "cursor" | "pageSize">, refresh = false): Promise<AuditSummaryDTO> {
+export function getRequestAuditSummary(input: Omit<AuditQuery, "cursor" | "pageSize">, refresh = false, signal?: AbortSignal): Promise<AuditSummaryDTO> {
   const query = new URLSearchParams({ period: input.period });
   if (input.search) query.set("search", input.search);
   if (input.model) query.set("model", input.model);
@@ -186,9 +186,9 @@ export function getRequestAuditSummary(input: Omit<AuditQuery, "cursor" | "pageS
   if (input.key) query.set("key", input.key);
   if (input.account) query.set("account", input.account);
   if (refresh) query.set("refresh", "1");
-  return apiRequest(`/api/admin/v1/request-audits/summary?${query}`, {}, decodeAuditSummary);
+  return apiRequest(`/api/admin/v1/request-audits/summary?${query}`, { signal }, decodeAuditSummary);
 }
 
-export function getRequestAudit(id: string): Promise<AuditDetailDTO> {
-  return apiRequest(`/api/admin/v1/request-audits/${id}`, {}, decodeAuditDetail);
+export function getRequestAudit(id: string, signal?: AbortSignal): Promise<AuditDetailDTO> {
+  return apiRequest(`/api/admin/v1/request-audits/${id}`, { signal }, decodeAuditDetail);
 }
