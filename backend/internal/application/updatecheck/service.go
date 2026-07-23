@@ -204,6 +204,23 @@ func compareSemanticVersion(left, right semanticVersion) int {
 	if left.prerelease == right.prerelease {
 		return 0
 	}
+	leftHotfix, leftHotfixNumber := projectHotfix(left.prerelease)
+	rightHotfix, rightHotfixNumber := projectHotfix(right.prerelease)
+	if leftHotfix && rightHotfix {
+		if leftHotfixNumber < rightHotfixNumber {
+			return -1
+		}
+		if leftHotfixNumber > rightHotfixNumber {
+			return 1
+		}
+		return 0
+	}
+	if leftHotfix {
+		return 1
+	}
+	if rightHotfix {
+		return -1
+	}
 	if left.prerelease == "" {
 		return 1
 	}
@@ -211,6 +228,22 @@ func compareSemanticVersion(left, right semanticVersion) int {
 		return -1
 	}
 	return strings.Compare(left.prerelease, right.prerelease)
+}
+
+func projectHotfix(value string) (bool, uint64) {
+	const prefix = "hotfix."
+	if !strings.HasPrefix(value, prefix) {
+		return false, 0
+	}
+	part := strings.TrimPrefix(value, prefix)
+	if part == "" || (len(part) > 1 && part[0] == '0') {
+		return false, 0
+	}
+	number, err := strconv.ParseUint(part, 10, 64)
+	if err != nil {
+		return false, 0
+	}
+	return true, number
 }
 
 func truncateRunes(value string, limit int) string {

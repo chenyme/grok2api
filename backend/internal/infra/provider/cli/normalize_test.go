@@ -38,6 +38,37 @@ func TestNormalizeResponsesRequest(t *testing.T) {
 	}
 }
 
+func TestNormalizeBuildReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   string
+	}{
+		{name: "max", effort: "max", want: "high"},
+		{name: "xhigh", effort: "xhigh", want: "high"},
+		{name: "uppercase max", effort: "MAX", want: "high"},
+		{name: "high", effort: "high", want: "high"},
+		{name: "medium", effort: "medium", want: "medium"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := []byte(`{"reasoning":{"effort":"` + test.effort + `"},"input":"hello"}`)
+			normalized, err := normalizeBuildReasoningEffort(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(normalized, &payload); err != nil {
+				t.Fatal(err)
+			}
+			reasoning, ok := payload["reasoning"].(map[string]any)
+			if !ok || reasoning["effort"] != test.want {
+				t.Fatalf("reasoning = %#v, want %q", payload["reasoning"], test.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeResponsesRequestPreservesExplicitPromptCacheKey(t *testing.T) {
 	normalized, _, err := normalizeResponsesRequest([]byte(`{"model":"public","input":"hello","prompt_cache_key":"official-key"}`), "grok-4.5")
 	if err != nil {

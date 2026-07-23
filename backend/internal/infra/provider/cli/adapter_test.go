@@ -795,6 +795,7 @@ func TestForwardResponsePreservesClaudeCodeMessagesOptions(t *testing.T) {
 		Body: []byte(`{
 			"model":"public","max_tokens":256,"stop_sequences":["STOP"],
 			"thinking":{"type":"enabled","budget_tokens":20000},
+			"output_config":{"effort":"max"},
 			"messages":[{"role":"system","content":"legacy system"},{"role":"user","content":"hello"}]
 		}`),
 	})

@@ -65,4 +65,26 @@ func TestSemanticVersionComparison(t *testing.T) {
 	if _, ok := parseSemanticVersion("dev"); ok {
 		t.Fatal("development version was accepted as semver")
 	}
+	base, _ := parseSemanticVersion("v3.0.8")
+	hotfix1, _ := parseSemanticVersion("v3.0.8-hotfix.1")
+	hotfix2, _ := parseSemanticVersion("v3.0.8-hotfix.2")
+	sameBasePrerelease, _ := parseSemanticVersion("v3.0.8-rc.1")
+	next, _ := parseSemanticVersion("v3.0.9")
+	if compareSemanticVersion(hotfix1, base) <= 0 || compareSemanticVersion(hotfix2, hotfix1) <= 0 || compareSemanticVersion(next, hotfix2) <= 0 {
+		t.Fatal("project hotfix ordering is invalid")
+	}
+	if compareSemanticVersion(hotfix1, sameBasePrerelease) <= 0 {
+		t.Fatal("project hotfix should follow ordinary prereleases")
+	}
+}
+
+func TestCheckFindsHotfixAfterStableRelease(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"tag_name":"v3.0.8-hotfix.1"}`)), Header: make(http.Header)}, nil
+	})}
+	service := NewService("v3.0.8", client)
+	snapshot := service.Check(context.Background())
+	if snapshot.Status != StatusUpdateAvailable || !snapshot.UpdateAvailable {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
 }

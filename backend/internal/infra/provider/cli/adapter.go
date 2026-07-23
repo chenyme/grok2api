@@ -198,6 +198,13 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			return invalidResponsesResponse(err), nil
 		}
+		body, err = normalizeBuildReasoningEffort(body)
+		if err != nil {
+			if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
+				return invalidConversationResponse(request.Operation, err), nil
+			}
+			return invalidResponsesResponse(err), nil
+		}
 	}
 	if request.Operation == conversation.OperationMessages && conversationOptions.AnthropicWebSearch {
 		request.ReasoningReplayKey = ""
