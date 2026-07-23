@@ -333,33 +333,28 @@ func (a *Application) reconcileStartup(ctx context.Context) {
 }
 
 func (a *Application) runStatsigWarmup(ctx context.Context) {
-	timer := time.NewTimer(0)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-		}
+	a.runPeriodicTaskWithDelay(ctx, 0, statsigWarmupInterval, "web_statsig_warmup", func(taskCtx context.Context) error {
 		a.startup.setStatsig("warming", "正在预热共享签名", 0)
-		values, err := a.accountRepo.ListEnabled(ctx, accountdomain.ProviderWeb)
+		values, err := a.accountRepo.ListEnabled(taskCtx, accountdomain.ProviderWeb)
 		if err == nil && len(values) == 0 {
 			a.startup.setStatsig("disabled", "没有启用的 Grok Web 账号", 0)
-		} else if err == nil {
-			warmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			return nil
+		}
+		if err == nil {
+			warmCtx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
 			var warmed int
 			warmed, err = a.web.WarmStatsig(warmCtx, values[0])
 			cancel()
 			if err == nil {
 				a.startup.setStatsig("warm", "共享签名已预热", warmed)
+				return nil
 			}
 		}
-		if err != nil && ctx.Err() == nil {
-			a.logger.Warn("web_statsig_warmup_failed", "error", err)
+		if taskCtx.Err() == nil {
 			a.startup.setStatsig("unavailable", "预热失败，将由请求按需重试", 0)
 		}
-		resetTimer(timer, statsigWarmupInterval)
-	}
+		return err
+	})
 }
 
 func (a *Application) queueDueWebQuotaRefresh(ctx context.Context) {
@@ -379,17 +374,13 @@ func (a *Application) queueDueWebQuotaRefresh(ctx context.Context) {
 }
 
 func (a *Application) runWebQuotaCatchup(ctx context.Context) {
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
+	a.runPeriodicTaskWithDelay(ctx, 5*time.Second, webQuotaCatchupEvery, "web_quota_stale_catchup", func(taskCtx context.Context) error {
+		ids, err := a.accountRepo.ListStaleWebQuotaAccountIDs(taskCtx, time.Now().UTC().Add(-webQuotaStaleAfter), 100)
+		if err != nil {
+			return err
 		}
-		ids, err := a.accountRepo.ListStaleWebQuotaAccountIDs(ctx, time.Now().UTC().Add(-webQuotaStaleAfter), 100)
-		if err == nil && len(ids) > 0 {
-			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		if len(ids) > 0 {
+			runCtx, cancel := context.WithTimeout(taskCtx, 2*time.Minute)
 			var succeeded int
 			succeeded, _, err = a.accounts.SyncWebQuotaAccounts(runCtx, ids)
 			cancel()
@@ -398,25 +389,18 @@ func (a *Application) runWebQuotaCatchup(ctx context.Context) {
 				report.StaleWebQuotasSynced = succeeded
 			})
 		}
-		if err != nil && ctx.Err() == nil {
-			a.logger.Warn("web_quota_stale_catchup_failed", "error", err)
-		}
-		resetTimer(timer, webQuotaCatchupEvery)
-	}
+		return err
+	})
 }
 
 func (a *Application) runModelCatalogCatchup(ctx context.Context) {
-	timer := time.NewTimer(20 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
+	a.runPeriodicTaskWithDelay(ctx, 20*time.Second, modelCatalogCatchupEvery, "model_catalog_stale_catchup", func(taskCtx context.Context) error {
+		ids, err := a.modelRepo.ListStaleAccountSyncIDs(taskCtx, time.Now().UTC().Add(-modelCatalogStaleAfter), 100)
+		if err != nil {
+			return err
 		}
-		ids, err := a.modelRepo.ListStaleAccountSyncIDs(ctx, time.Now().UTC().Add(-modelCatalogStaleAfter), 100)
-		if err == nil && len(ids) > 0 {
-			runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		if len(ids) > 0 {
+			runCtx, cancel := context.WithTimeout(taskCtx, 5*time.Minute)
 			var succeeded int
 			succeeded, _, err = a.models.SyncAccounts(runCtx, ids)
 			cancel()
@@ -425,9 +409,6 @@ func (a *Application) runModelCatalogCatchup(ctx context.Context) {
 				report.StaleModelCatalogsSynced = succeeded
 			})
 		}
-		if err != nil && ctx.Err() == nil {
-			a.logger.Warn("model_catalog_stale_catchup_failed", "error", err)
-		}
-		resetTimer(timer, modelCatalogCatchupEvery)
-	}
+		return err
+	})
 }

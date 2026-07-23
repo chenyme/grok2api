@@ -1,13 +1,14 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Unlink, Webhook } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { CopyButton } from "@/shared/components/copy-button";
+import { showError } from "@/shared/lib/show-error";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -81,7 +82,7 @@ import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/accoun
 import { AccountNameCell } from "@/features/accounts/account-name-cell";
 import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
 import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
-import { assignEgressAccounts, listEgressNodes, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
+import { assignEgressAccounts, listEgressNodes, unassignEgressAccounts, type EgressScope } from "@/entities/egress";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -159,7 +160,7 @@ export function AccountsPage() {
     if (importToastRef.current !== null) toast.dismiss(importToastRef.current);
   }, []);
 
-  const accountSchema = z.object({
+  const accountSchema = useMemo(() => z.object({
     name: z.string().min(1, t("errors.required")),
     enabled: z.boolean(),
     priority: z.number().int(),
@@ -169,7 +170,7 @@ export function AccountsPage() {
     clearCloudflareCookies: z.boolean(),
     buildSuperEntitled: z.boolean(),
     buildRouteMode: z.enum(["auto", "build", "xai"]),
-  });
+  }), [t]);
   type AccountForm = z.infer<typeof accountSchema>;
   const form = useForm<AccountForm>({
     resolver: zodResolver(accountSchema),
@@ -658,10 +659,6 @@ export function AccountsPage() {
     ? syncingProgress
     : convertingProgress ?? syncingProgress;
   const webConversionPending = conversionMutation.isPending || webConsoleSyncMutation.isPending;
-
-  function showError(error: unknown): void {
-    toast.error(error instanceof Error ? error.message : t("errors.generic"));
-  }
 
   const result = accountsQuery.data;
   const pageIDs = result?.items.map((account) => account.id) ?? [];

@@ -85,9 +85,20 @@ type Application struct {
 }
 
 // New 完成数据库、Provider、应用服务和 HTTP 路由装配。
-func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Application, error) {
+func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ *Application, err error) {
 	var database *relational.Database
-	var err error
+	var runtimeStore io.Closer
+	defer func() {
+		if err != nil {
+			if runtimeStore != nil {
+				_ = runtimeStore.Close()
+			}
+			if database != nil {
+				database.Close()
+			}
+		}
+	}()
+
 	switch cfg.Database.Driver {
 	case "sqlite":
 		database, err = relational.OpenSQLite(ctx, cfg.Database.SQLite.Path)
@@ -99,13 +110,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	if err != nil {
 		return nil, err
 	}
-	if err := database.InitializeSchema(ctx); err != nil {
-		database.Close()
+	if err = database.InitializeSchema(ctx); err != nil {
 		return nil, err
 	}
 	cipher, err := security.NewCipher(cfg.Secrets.CredentialEncryptionKey)
 	if err != nil {
-		database.Close()
 		return nil, err
 	}
 
@@ -124,17 +133,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	mediaUploadTicketRepo := relational.NewMediaUploadTicketRepository(database)
 	loadedConfig, settingsUpdatedAt, settingsRevision, err := settingsapp.LoadPersisted(ctx, cfg, runtimeSettingsRepo)
 	if err != nil {
-		database.Close()
 		return nil, err
 	}
 	cfg = loadedConfig
 	localMediaStore, err := inframedia.NewLocalStore(cfg.Media.Local.Path)
 	if err != nil {
-		database.Close()
 		return nil, err
 	}
-	if err := preflightDeployment(cfg); err != nil {
-		database.Close()
+	if err = preflightDeployment(cfg); err != nil {
 		return nil, err
 	}
 	var rateLimiter repository.RateLimiter
@@ -148,7 +154,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	var quotaRefreshState repository.QuotaRefreshCoordinator
 	var observedModelStore repository.ObservedModelStateRepository
 	var invalidationBus repository.InvalidationBus
-	var runtimeStore io.Closer
 	runtimeHealth := func(context.Context) error { return nil }
 	switch cfg.RuntimeStore.Driver {
 	case "redis":
@@ -159,7 +164,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 			ConcurrencyLease: cfg.Server.RequestTimeout.Value() + time.Minute,
 		})
 		if openErr != nil {
-			database.Close()
 			return nil, openErr
 		}
 		runtimeStore = redisStore
@@ -185,7 +189,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		quotaQueue = memory.NewQuotaRecoveryQueue()
 		quotaRefreshState = memory.NewQuotaRefreshCoordinator()
 	default:
-		database.Close()
 		return nil, fmt.Errorf("不支持的运行态驱动: %s", cfg.RuntimeStore.Driver)
 	}
 	logger.Info("deployment_topology", "replicas", cfg.Deployment.Replicas, "instance_id", cfg.Deployment.InstanceID, "cluster_id", cfg.Deployment.ClusterID, "database", cfg.Database.Driver, "runtime_store", cfg.RuntimeStore.Driver, "media_driver", cfg.Media.Driver, "shared_media", cfg.Deployment.SharedMedia)
@@ -213,20 +216,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	webAdapter.SetLogger(logger)
 	consoleAdapter := consoleprovider.NewAdapter(consoleProviderConfig(cfg), egressManager, cipher)
 	providers := provider.NewRegistry(cliAdapter, webAdapter, consoleAdapter)
-	if err := providers.Validate(); err != nil {
-		if runtimeStore != nil {
-			_ = runtimeStore.Close()
-		}
-		database.Close()
+	if err = providers.Validate(); err != nil {
 		return nil, fmt.Errorf("校验 Provider 注册表: %w", err)
 	}
 	adminService := adminauth.NewService(adminRepo, sessionRepo, security.NewTokenService(cfg.Secrets.JWTSecret), cfg.Auth.AccessTokenTTL.Value(), cfg.Auth.RefreshTokenTTL.Value())
 	adminService.SetLoginRateLimiter(rateLimiter)
-	if err := adminService.Bootstrap(ctx, cfg.BootstrapAdmin.Username, cfg.BootstrapAdmin.Password); err != nil {
-		if runtimeStore != nil {
-			_ = runtimeStore.Close()
-		}
-		database.Close()
+	if err = adminService.Bootstrap(ctx, cfg.BootstrapAdmin.Username, cfg.BootstrapAdmin.Password); err != nil {
 		return nil, err
 	}
 	bulkPool := batch.NewSharedPool(maxBatchConcurrency(cfg.Batch), concurrency, "bulk:upstream")
@@ -248,19 +243,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	accountService.SetTaskPools(conversionPool, syncPool, refreshPool)
 	windows, err := accountRepo.ListQuotaRecoveryWindows(ctx, 100000)
 	if err != nil {
-		if runtimeStore != nil {
-			_ = runtimeStore.Close()
-		}
-		database.Close()
 		return nil, fmt.Errorf("加载 Web 额度恢复事件: %w", err)
 	}
 	for _, window := range windows {
 		if window.ResetAt != nil {
-			if err := quotaQueue.ScheduleQuotaRecovery(ctx, account.QuotaRecoveryEvent{AccountID: window.AccountID, Mode: window.Mode, DueAt: *window.ResetAt}); err != nil {
-				if runtimeStore != nil {
-					_ = runtimeStore.Close()
-				}
-				database.Close()
+			if err = quotaQueue.ScheduleQuotaRecovery(ctx, account.QuotaRecoveryEvent{AccountID: window.AccountID, Mode: window.Mode, DueAt: *window.ResetAt}); err != nil {
 				return nil, fmt.Errorf("恢复 Web 额度事件: %w", err)
 			}
 		}
@@ -268,18 +255,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	modelService := modelapp.NewService(modelRepo, accountRepo, accountService, providers)
 	modelService.SetBulkPool(syncPool)
 	modelService.SetLogger(logger)
-	if err := modelRepo.ReplaceProviderRoutes(ctx, account.ProviderWeb, webprovider.Routes()); err != nil {
-		if runtimeStore != nil {
-			_ = runtimeStore.Close()
-		}
-		database.Close()
+	if err = modelRepo.ReplaceProviderRoutes(ctx, account.ProviderWeb, webprovider.Routes()); err != nil {
 		return nil, fmt.Errorf("初始化 Grok Web 模型目录: %w", err)
 	}
-	if err := modelRepo.ReplaceProviderRoutes(ctx, account.ProviderConsole, consoleprovider.Routes()); err != nil {
-		if runtimeStore != nil {
-			_ = runtimeStore.Close()
-		}
-		database.Close()
+	if err = modelRepo.ReplaceProviderRoutes(ctx, account.ProviderConsole, consoleprovider.Routes()); err != nil {
 		return nil, fmt.Errorf("初始化 Grok Console 模型目录: %w", err)
 	}
 	accountSyncService := accountsyncapp.NewService(logger, accountService, accountService, accountService, modelService)
@@ -667,21 +646,7 @@ func (a *Application) logPerformanceMetrics() {
 		perfmetrics.Default.SetGauge("quota_refresh_running", labels, int64(quota.Running))
 	}
 	for _, sample := range perfmetrics.Default.CollectAndReset() {
-		a.logger.Info("performance_metric",
-			"name", sample.Name,
-			"subsystem", sample.Labels.Subsystem,
-			"operation", sample.Labels.Operation,
-			"provider", sample.Labels.Provider,
-			"plane", sample.Labels.Plane,
-			"stage", sample.Labels.Stage,
-			"ordinal", sample.Labels.Ordinal,
-			"outcome", sample.Labels.Outcome,
-			"count", sample.Count,
-			"total", sample.Total,
-			"maximum", sample.Maximum,
-			"gauge", sample.Gauge,
-			"has_gauge", sample.HasGauge,
-		)
+		a.logger.Info("performance_metric", "metric", sample)
 	}
 }
 
@@ -694,7 +659,11 @@ func (a *Application) Close() error {
 }
 
 func (a *Application) runPeriodicTask(ctx context.Context, interval time.Duration, name string, task func(context.Context) error) {
-	timer := time.NewTimer(interval)
+	a.runPeriodicTaskWithDelay(ctx, 0, interval, name, task)
+}
+
+func (a *Application) runPeriodicTaskWithDelay(ctx context.Context, initialDelay, interval time.Duration, name string, task func(context.Context) error) {
+	timer := time.NewTimer(initialDelay)
 	defer timer.Stop()
 	for {
 		select {

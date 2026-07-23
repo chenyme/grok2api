@@ -1,13 +1,15 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, CircleHelp, Copy, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { CopyButton } from "@/shared/components/copy-button";
+import { showError } from "@/shared/lib/show-error";
+import { useInvalidatingMutation } from "@/shared/hooks/use-invalidating-mutation";
 
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -62,7 +64,7 @@ export function ClientKeysPage() {
   const [statusReferenceTime] = useState(() => Date.now());
   const debouncedSearch = useDebouncedValue(search);
   const debouncedModelOptionsSearch = useDebouncedValue(modelOptionsSearch);
-  const schema = z.object({
+  const schema = useMemo(() => z.object({
     name: z.string().min(1, t("errors.required")),
     enabled: z.boolean(),
     expiryUnlimited: z.boolean(),
@@ -78,7 +80,7 @@ export function ClientKeysPage() {
     if (!value.expiryUnlimited && !value.expiresAt) {
       context.addIssue({ code: "custom", path: ["expiresAt"], message: t("errors.required") });
     }
-  });
+  }), [t]);
   type KeyForm = z.infer<typeof schema>;
   const form = useForm<KeyForm>({
     resolver: zodResolver(schema),
@@ -131,14 +133,11 @@ export function ClientKeysPage() {
     onError: showError,
   });
 
-  const deleteMutation = useMutation({
+  const deleteMutation = useInvalidatingMutation({
     mutationFn: deleteClientKey,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["client-keys"] });
-      setDeleting(null);
-      toast.success(t("keys.deleted"));
-    },
-    onError: showError,
+    invalidateKeys: [["client-keys"]],
+    successKey: "keys.deleted",
+    onSuccess: () => setDeleting(null),
   });
 
   const copyMutation = useMutation({
@@ -147,30 +146,19 @@ export function ClientKeysPage() {
     onError: showError,
   });
 
-  const batchUpdateMutation = useMutation({
+  const batchUpdateMutation = useInvalidatingMutation({
     mutationFn: (enabled: boolean) => updateClientKeysEnabled([...selected], enabled),
-    onSuccess: () => {
-      setSelected(new Set());
-      void queryClient.invalidateQueries({ queryKey: ["client-keys"] });
-      toast.success(t("keys.batchUpdated"));
-    },
-    onError: showError,
+    invalidateKeys: [["client-keys"]],
+    successKey: "keys.batchUpdated",
+    onSuccess: () => setSelected(new Set()),
   });
 
-  const batchDeleteMutation = useMutation({
+  const batchDeleteMutation = useInvalidatingMutation({
     mutationFn: () => deleteClientKeys([...selected]),
-    onSuccess: () => {
-      setSelected(new Set());
-      setBatchDeleteOpen(false);
-      void queryClient.invalidateQueries({ queryKey: ["client-keys"] });
-      toast.success(t("keys.deleted"));
-    },
-    onError: showError,
+    invalidateKeys: [["client-keys"]],
+    successKey: "keys.deleted",
+    onSuccess: () => { setSelected(new Set()); setBatchDeleteOpen(false); },
   });
-
-  function showError(error: unknown): void {
-    toast.error(error instanceof Error ? error.message : t("errors.generic"));
-  }
 
   function beginCreate(): void {
     setEditing("new");

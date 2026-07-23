@@ -123,12 +123,19 @@ type accountModelSyncer interface {
 	SyncAccount(ctx context.Context, accountID uint64) (int, error)
 }
 
+// clientKeyService 抽象客户端密钥服务的计费和模型访问控制能力。
+type clientKeyService interface {
+	CanUseModel(value clientkey.Key, modelID uint64) bool
+	ReserveBilling(ctx context.Context, key clientkey.Key, eventID string, amount int64, ttl time.Duration) (bool, error)
+	CancelBilling(ctx context.Context, eventID string) error
+}
+
 // Service handles model routing, account selection, failover, and audit finalization.
 type Service struct {
 	models         routeResolver
 	audits         auditRecorder
 	accounts       *accountapp.Service
-	clientKeys     *clientkeyapp.Service
+	clientKeys     clientKeyService
 	providers      *provider.Registry
 	selector       *Selector
 	responses      repository.ResponseRepository
@@ -169,7 +176,7 @@ func (s *Service) ConfigureMediaAssets(store videoAssetStore) {
 	s.mediaAssets = store
 }
 
-func NewService(models routeResolver, audits auditRecorder, accounts *accountapp.Service, clientKeys *clientkeyapp.Service, providers *provider.Registry, selector *Selector, responses repository.ResponseRepository, maxAttempts int) *Service {
+func NewService(models routeResolver, audits auditRecorder, accounts *accountapp.Service, clientKeys clientKeyService, providers *provider.Registry, selector *Selector, responses repository.ResponseRepository, maxAttempts int) *Service {
 	service := &Service{
 		models: models, audits: audits, accounts: accounts, clientKeys: clientKeys, providers: providers,
 		selector: selector, responses: responses, logger: slog.Default(),
@@ -238,9 +245,12 @@ func (s *Service) markTeamModelRateLimit(credential accountdomain.Credential, up
 		s.rateLimitTeams = make(map[uint64]string)
 	}
 	s.rateLimitTeams[credential.ID] = teamFingerprint
-	for existingKey, value := range s.rateLimits {
-		if !now.Before(value.Until) {
-			delete(s.rateLimits, existingKey)
+	// 情性清理：仅在 map 超过阈值时批量删除过期条目，避免每次 429 都 O(n) 遍历。
+	if len(s.rateLimits) > 128 {
+		for existingKey, existing := range s.rateLimits {
+			if !now.Before(existing.Until) {
+				delete(s.rateLimits, existingKey)
+			}
 		}
 	}
 	if current, ok := s.rateLimits[key]; ok && !current.Until.Before(until) {

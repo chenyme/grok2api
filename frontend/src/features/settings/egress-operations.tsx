@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
+import { showError } from "@/shared/lib/show-error";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -400,8 +401,4 @@ function Control({ label, children }: { label: string; children: ReactNode }) {
 
 function ToggleControl({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
   return <div className="flex min-h-10 items-center justify-between gap-4 rounded-md bg-muted/45 px-3"><Label className="text-xs font-medium">{label}</Label><Switch checked={checked} onCheckedChange={onChange} /></div>;
-}
-
-function showError(error: unknown) {
-  toast.error(error instanceof Error ? error.message : "Operation failed");
 }

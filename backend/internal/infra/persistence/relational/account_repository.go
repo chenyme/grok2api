@@ -11,6 +11,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/repository"
+	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -185,6 +186,59 @@ func (r *AccountRepository) Summarize(ctx context.Context, now time.Time) ([]rep
 	return rows, err
 }
 
+// accountEnrichment 是批量加载的账号附加信息（账单、额度恢复、配额窗口）。
+type accountEnrichment struct {
+	Billings     map[uint64]account.Billing
+	Recoveries   map[uint64]account.QuotaRecovery
+	QuotaWindows map[uint64]account.QuotaWindow
+}
+
+// loadAccountEnrichment 并行加载账号的账单、额度恢复和配额窗口信息。
+func (r *AccountRepository) loadAccountEnrichment(ctx context.Context, ids []uint64, provider account.Provider, quotaMode string) (accountEnrichment, error) {
+	var enrichment accountEnrichment
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		billings, err := r.GetBillings(gCtx, ids)
+		if err != nil {
+			return err
+		}
+		enrichment.Billings = billings
+		return nil
+	})
+	g.Go(func() error {
+		recoveries, err := r.GetQuotaRecoveries(gCtx, ids)
+		if err != nil {
+			return err
+		}
+		enrichment.Recoveries = recoveries
+		return nil
+	})
+	g.Go(func() error {
+		quotaWindows := make(map[uint64]account.QuotaWindow, len(ids))
+		if len(ids) > 0 && (provider == account.ProviderWeb || quotaMode != "") {
+			var rows []quotaWindowModel
+			modes := make([]string, 0, 2)
+			if provider == account.ProviderWeb {
+				modes = append(modes, "weekly")
+			}
+			if quotaMode != "" {
+				modes = append(modes, quotaMode)
+			}
+			if err := r.db.db.WithContext(gCtx).Where("account_id IN ? AND mode IN ?", ids, modes).Order("CASE WHEN mode = 'weekly' THEN 0 ELSE 1 END").Find(&rows).Error; err != nil {
+				return err
+			}
+			for _, row := range rows {
+				if _, exists := quotaWindows[row.AccountID]; !exists {
+					quotaWindows[row.AccountID] = toQuotaWindowDomain(row)
+				}
+			}
+		}
+		enrichment.QuotaWindows = quotaWindows
+		return nil
+	})
+	return enrichment, g.Wait()
+}
+
 // ListRoutingCandidates 批量加载账号、额度、恢复状态和目标模型能力，避免推理热路径按账号逐条查询。
 func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string) ([]account.RoutingCandidate, error) {
 	values, err := r.ListEnabled(ctx, provider)
@@ -219,32 +273,9 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 	for _, value := range values {
 		ids = append(ids, value.ID)
 	}
-	billings, err := r.GetBillings(ctx, ids)
+	enrichment, err := r.loadAccountEnrichment(ctx, ids, provider, quotaMode)
 	if err != nil {
 		return nil, err
-	}
-	recoveries, err := r.GetQuotaRecoveries(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	quotaWindows := make(map[uint64]account.QuotaWindow, len(ids))
-	if len(ids) > 0 && (provider == account.ProviderWeb || quotaMode != "") {
-		var rows []quotaWindowModel
-		modes := make([]string, 0, 2)
-		if provider == account.ProviderWeb {
-			modes = append(modes, "weekly")
-		}
-		if quotaMode != "" {
-			modes = append(modes, quotaMode)
-		}
-		if err := r.db.db.WithContext(ctx).Where("account_id IN ? AND mode IN ?", ids, modes).Order("CASE WHEN mode = 'weekly' THEN 0 ELSE 1 END").Find(&rows).Error; err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			if _, exists := quotaWindows[row.AccountID]; !exists {
-				quotaWindows[row.AccountID] = toQuotaWindowDomain(row)
-			}
-		}
 	}
 	known := make(map[uint64]bool, len(ids))
 	supported := make(map[uint64]bool, len(ids))
@@ -279,7 +310,7 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 				continue
 			}
 			var billing *account.Billing
-			if snapshot, exists := billings[value.ID]; exists {
+			if snapshot, exists := enrichment.Billings[value.ID]; exists {
 				billing = &snapshot
 			}
 			if account.IsBuildSuper(value, billing) {
@@ -295,7 +326,7 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 			capabilityKnown, supportsModel = true, true
 		} else if sharedSuperBuildModel {
 			var billing *account.Billing
-			if snapshot, exists := billings[value.ID]; exists {
+			if snapshot, exists := enrichment.Billings[value.ID]; exists {
 				billing = &snapshot
 			}
 			if account.IsBuildSuper(value, billing) {
@@ -303,13 +334,13 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 			}
 		}
 		candidate := account.RoutingCandidate{Credential: value, ModelCapabilityKnown: capabilityKnown, SupportsModel: supportsModel}
-		if billing, ok := billings[value.ID]; ok {
+		if billing, ok := enrichment.Billings[value.ID]; ok {
 			candidate.Billing = &billing
 		}
-		if recovery, ok := recoveries[value.ID]; ok {
+		if recovery, ok := enrichment.Recoveries[value.ID]; ok {
 			candidate.QuotaRecovery = &recovery
 		}
-		if window, ok := quotaWindows[value.ID]; ok {
+		if window, ok := enrichment.QuotaWindows[value.ID]; ok {
 			candidate.QuotaWindow = &window
 		}
 		if block, ok := modelQuotaBlocks[value.ID]; ok {
@@ -329,43 +360,20 @@ func (r *AccountRepository) ListRoutingAccountBases(ctx context.Context, provide
 	for _, value := range values {
 		ids = append(ids, value.ID)
 	}
-	billings, err := r.GetBillings(ctx, ids)
+	enrichment, err := r.loadAccountEnrichment(ctx, ids, provider, quotaMode)
 	if err != nil {
 		return nil, err
-	}
-	recoveries, err := r.GetQuotaRecoveries(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	quotaWindows := make(map[uint64]account.QuotaWindow, len(ids))
-	if len(ids) > 0 && (provider == account.ProviderWeb || quotaMode != "") {
-		modes := make([]string, 0, 2)
-		if provider == account.ProviderWeb {
-			modes = append(modes, "weekly")
-		}
-		if quotaMode != "" {
-			modes = append(modes, quotaMode)
-		}
-		var rows []quotaWindowModel
-		if err := r.db.db.WithContext(ctx).Where("account_id IN ? AND mode IN ?", ids, modes).Order("CASE WHEN mode = 'weekly' THEN 0 ELSE 1 END").Find(&rows).Error; err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			if _, exists := quotaWindows[row.AccountID]; !exists {
-				quotaWindows[row.AccountID] = toQuotaWindowDomain(row)
-			}
-		}
 	}
 	result := make([]account.RoutingAccountBase, 0, len(values))
 	for _, value := range values {
 		base := account.RoutingAccountBase{Credential: value}
-		if billing, ok := billings[value.ID]; ok {
+		if billing, ok := enrichment.Billings[value.ID]; ok {
 			base.Billing = &billing
 		}
-		if recovery, ok := recoveries[value.ID]; ok {
+		if recovery, ok := enrichment.Recoveries[value.ID]; ok {
 			base.QuotaRecovery = &recovery
 		}
-		if window, ok := quotaWindows[value.ID]; ok {
+		if window, ok := enrichment.QuotaWindows[value.ID]; ok {
 			base.QuotaWindow = &window
 		}
 		result = append(result, base)

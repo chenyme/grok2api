@@ -49,7 +49,7 @@ func OpenSQLite(ctx context.Context, path string) (*Database, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开 SQLite: %w", err)
 	}
-	return configureDatabase(ctx, db, "sqlite", 16, 16)
+	return configureDatabase(ctx, db, "sqlite", 4, 4)
 }
 
 // OpenPostgres 打开 PostgreSQL 数据库并配置连接池。

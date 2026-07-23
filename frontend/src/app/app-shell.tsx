@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Box, ChevronDown, Eye, Image, KeyRound, Languages, LayoutDashboard, LogOut, Menu, MessageSquareText, Monitor, Moon, MoreHorizontal, Settings, Sparkles, Sun, Users, Video } from "lucide-react";
 import { useTheme } from "next-themes";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
@@ -91,8 +91,7 @@ export function AppShell() {
     }
   }
 
-  function navigationLinks(): ReactNode {
-    return navigation.map(({ href, label, icon: Icon }) => (
+  const navigationLinks = useMemo(() => navigation.map(({ href, label, icon: Icon }) => (
       <NavLink
         key={href}
         to={href}
@@ -111,8 +110,7 @@ export function AppShell() {
           </>
         )}
       </NavLink>
-    ));
-  }
+    )), [t]);
 
   function documentationLinks(): ReactNode {
     return documentation.map(({ label, icon: Icon, items }) => {
@@ -167,7 +165,7 @@ export function AppShell() {
 
   const navigationContent = (
     <nav className="mt-7 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2 pb-2" aria-label={t("shell.navigation")}>
-      <div className="space-y-1">{navigationLinks()}</div>
+      <div className="space-y-1">{navigationLinks}</div>
       <div className="mt-7">
         <div className="px-2.5 pb-2 text-xs font-normal text-foreground">{t("nav.docs")}</div>
         <div className="space-y-1">{documentationLinks()}</div>

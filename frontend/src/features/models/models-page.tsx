@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 
+import { showError } from "@/shared/lib/show-error";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -132,10 +133,6 @@ export function ModelsPage() {
     },
     onError: showError,
   });
-
-  function showError(error: unknown): void {
-    toast.error(error instanceof Error ? error.message : t("errors.generic"));
-  }
 
   function beginEdit(model: ModelRouteDTO): void {
     setEditing(model);

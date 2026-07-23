@@ -1,3 +1,14 @@
+const dateTimeFormatCache = new Map<string, Intl.DateTimeFormat>();
+
+function getDateTimeFormat(locale: string): Intl.DateTimeFormat {
+  let formatter = dateTimeFormatCache.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" });
+    dateTimeFormatCache.set(locale, formatter);
+  }
+  return formatter;
+}
+
 export function formatDateTime(value: string | null | undefined, locale: string): string {
   if (!value) {
     return "-";
@@ -6,10 +17,7 @@ export function formatDateTime(value: string | null | undefined, locale: string)
   if (Number.isNaN(date.getTime())) {
     return "-";
   }
-  return new Intl.DateTimeFormat(locale, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
+  return getDateTimeFormat(locale).format(date);
 }
 
 export function formatNumber(value: number, locale: string, maximumFractionDigits = 2): string {

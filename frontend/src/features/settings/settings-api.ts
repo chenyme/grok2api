@@ -1,6 +1,10 @@
 import { apiRequest } from "@/shared/api/client";
 import { createObjectDecoder, decodeBooleanResult, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isRecordOf, isString } from "@/shared/api/decoder";
-import type { SortOrder } from "@/shared/lib/table-sort";
+import type { EgressScope } from "@/entities/egress";
+
+// Egress 类型和 API 已提升到 entities/egress，此处保留 re-export 以兼容 settings 内部引用。
+export { assignEgressAccounts, createEgressNode, deleteEgressNode, deleteEgressNodes, listEgressNodes, refreshEgressClearance, unassignEgressAccounts, updateEgressNode } from "@/entities/egress";
+export type { EgressNodeDTO, EgressNodeInput, EgressNodeListDTO, EgressScope } from "@/entities/egress";
 
 export type SettingsConfigDTO = {
   server: { maxConcurrentRequests: number };
@@ -33,24 +37,8 @@ export type SettingsConfigDTO = {
   };
 };
 
-export type EgressNodeDTO = {
-	id: string; name: string; scope: EgressScope; enabled: boolean;
-	proxyConfigured: boolean; userAgent: string; cookieConfigured: boolean;
-	accountBoundProxy: boolean; proxyPool: boolean;
-	sourceId?: string; accountCapacity: number; assignedAccountCount: number;
-	health: number; failureCount: number; cooldownUntil?: string; lastError?: string;
-	probeStatus: "unknown" | "healthy" | "unhealthy"; lastProbedAt?: string; probeLatencyMs: number; exitIp?: string; probeError?: string;
-};
-
-export type EgressNodeInput = {
-	name: string; scope: EgressScope; enabled: boolean; proxyPool: boolean; proxyURL?: string;
-	accountCapacity: number; clearProxyURL?: boolean; userAgent: string; cloudflareCookies?: string; clearCookies?: boolean;
-};
-
-export type EgressScope = "grok_build" | "grok_web" | "grok_console" | "grok_web_asset";
 export type EgressFallbackMode = "none" | "direct" | "fixed";
 export type EgressFallbackConfigDTO = { mode: EgressFallbackMode; nodeId?: string };
-export type EgressNodeListDTO = { items: EgressNodeDTO[]; defaultUserAgents: Record<EgressScope, string> };
 export type EgressSourceDTO = {
   id: string; name: string; scope: EgressScope; enabled: boolean; urlConfigured: boolean;
   refreshIntervalSeconds: number; defaultAccountCapacity: number;
@@ -146,24 +134,6 @@ const decodeSettingsSnapshotRaw = createObjectDecoder<SettingsSnapshotDTO>("sett
   restartRequired: isArrayOf(isString),
 });
 const decodeSettingsSnapshot = (value: unknown) => withSettingsDefaults(decodeSettingsSnapshotRaw(value));
-const egressNodeValidator = hasShape({
-	id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset"), enabled: isBoolean,
-	proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, accountBoundProxy: isBoolean, proxyPool: isBoolean, health: isNumber, failureCount: isNumber,
-	sourceId: isOptional(isString), accountCapacity: isNumber, assignedAccountCount: isNumber,
-	probeStatus: isOneOf("unknown", "healthy", "unhealthy"), lastProbedAt: isOptional(isString), probeLatencyMs: isNumber, exitIp: isOptional(isString), probeError: isOptional(isString),
-	cooldownUntil: isOptional(isString), lastError: isOptional(isString),
-});
-const decodeEgressNode = createObjectDecoder<EgressNodeDTO>("egress node", {
-	id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset"), enabled: isBoolean,
-	proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, accountBoundProxy: isBoolean, proxyPool: isBoolean, health: isNumber, failureCount: isNumber,
-	sourceId: isOptional(isString), accountCapacity: isNumber, assignedAccountCount: isNumber,
-	probeStatus: isOneOf("unknown", "healthy", "unhealthy"), lastProbedAt: isOptional(isString), probeLatencyMs: isNumber, exitIp: isOptional(isString), probeError: isOptional(isString),
-	cooldownUntil: isOptional(isString), lastError: isOptional(isString),
-});
-const decodeEgressNodeList = createObjectDecoder<EgressNodeListDTO>("egress node list", {
-  items: isArrayOf(egressNodeValidator),
-  defaultUserAgents: hasShape({ grok_build: isString, grok_web: isString, grok_console: isString, grok_web_asset: isString }),
-});
 const egressSourceValidator = hasShape({
   id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset"), enabled: isBoolean, urlConfigured: isBoolean,
   refreshIntervalSeconds: isNumber, defaultAccountCapacity: isNumber, lastSyncedAt: isOptional(isString), nextSyncAt: isOptional(isString),
@@ -190,36 +160,6 @@ export function getSettings(): Promise<SettingsSnapshotDTO> {
 
 export function updateSettings(revision: string, config: SettingsConfigDTO): Promise<SettingsSnapshotDTO> {
   return apiRequest("/api/admin/v1/settings", { method: "PUT", body: { revision, config } }, decodeSettingsSnapshot);
-}
-
-export function listEgressNodes(input?: { sortBy?: string; sortOrder?: SortOrder }): Promise<EgressNodeListDTO> {
-  const query = new URLSearchParams();
-  if (input?.sortBy && input.sortOrder) {
-    query.set("sortBy", input.sortBy);
-    query.set("sortOrder", input.sortOrder);
-  }
-  const suffix = query.size > 0 ? `?${query}` : "";
-  return apiRequest(`/api/admin/v1/egress-nodes${suffix}`, {}, decodeEgressNodeList);
-}
-
-export function createEgressNode(input: EgressNodeInput): Promise<EgressNodeDTO> {
-  return apiRequest("/api/admin/v1/egress-nodes", { method: "POST", body: input }, decodeEgressNode);
-}
-
-export function updateEgressNode(id: string, input: EgressNodeInput): Promise<EgressNodeDTO> {
-  return apiRequest(`/api/admin/v1/egress-nodes/${id}`, { method: "PUT", body: input }, decodeEgressNode);
-}
-
-export function deleteEgressNode(id: string): Promise<{ deleted: boolean }> {
-  return apiRequest(`/api/admin/v1/egress-nodes/${id}`, { method: "DELETE" }, decodeBooleanResult<{ deleted: boolean }>("deleted"));
-}
-
-export function deleteEgressNodes(ids: string[]): Promise<{ deleted: number }> {
-  return apiRequest("/api/admin/v1/egress-nodes", { method: "DELETE", body: { ids } }, createObjectDecoder<{ deleted: number }>("egress node batch delete", { deleted: isNumber }));
-}
-
-export function refreshEgressClearance(id: string): Promise<{ refreshed: boolean }> {
-	return apiRequest(`/api/admin/v1/egress-nodes/${id}/refresh-clearance`, { method: "POST" }, decodeBooleanResult<{ refreshed: boolean }>("refreshed"));
 }
 
 export function testEgressNode(id: string): Promise<EgressProbeResultDTO> {
@@ -264,12 +204,4 @@ export function updateEgressOperationsConfig(input: Omit<EgressOperationsConfigD
 
 export function rebalanceEgressAccounts(): Promise<EgressRebalanceResultDTO> {
   return apiRequest("/api/admin/v1/egress-operations/rebalance", { method: "POST" }, decodeEgressRebalanceResult);
-}
-
-export function assignEgressAccounts(nodeID: string, provider: "grok_build" | "grok_web" | "grok_console", ids: string[], mode: "manual" | "auto" = "manual"): Promise<{ assigned: number }> {
-  return apiRequest(`/api/admin/v1/egress-nodes/${nodeID}/accounts`, { method: "POST", body: { provider, ids, mode } }, createObjectDecoder<{ assigned: number }>("egress account assignment", { assigned: isNumber }));
-}
-
-export function unassignEgressAccounts(provider: "grok_build" | "grok_web" | "grok_console", ids: string[]): Promise<{ assigned: number }> {
-  return apiRequest("/api/admin/v1/egress-nodes/accounts", { method: "DELETE", body: { provider, ids } }, createObjectDecoder<{ assigned: number }>("egress account assignment", { assigned: isNumber }));
 }

@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
+import { showError } from "@/shared/lib/show-error";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -52,7 +53,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       return editing ? updateEgressNode(editing.id, input) : createEgressNode(input);
     },
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); setEditing(undefined); toast.success(t("settings.egress.saved")); },
-    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+    onError: showError,
   });
   const remove = useMutation({
     mutationFn: deleteEgressNode,
@@ -65,7 +66,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("settings.egress.deleted"));
     },
-    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+    onError: showError,
   });
   const removeMany = useMutation({
     mutationFn: () => deleteEgressNodes([...selected]),
@@ -75,7 +76,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("settings.egress.batchDeleted", value));
     },
-    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+    onError: showError,
   });
   const refreshClearance = useMutation({
     mutationFn: (id: string) => refreshEgressClearance(id),
@@ -88,7 +89,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       if (result.status === "healthy") toast.success(t("settings.egress.testedOne"));
       else toast.error(result.error || t("settings.egress.operationFailed"));
     },
-    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+    onError: showError,
     onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); },
   });
 
@@ -392,8 +393,4 @@ function Field({ label, controlId, description, help, children }: { label: strin
       {description ? <p className="whitespace-pre-line text-xs leading-5 text-muted-foreground">{description}</p> : null}
     </div>
   );
-}
-
-function showError(error: unknown, fallback: string) {
-  toast.error(error instanceof Error ? error.message : fallback);
 }

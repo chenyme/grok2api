@@ -1,5 +1,6 @@
 import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import { createObjectDecoder, createPaginatedDecoder, decodeBooleanResult, decodeCountResult, hasShape, isArrayOf, isBoolean, isNumber, isOptional, isString } from "@/shared/api/decoder";
+import { buildPaginatedQuery } from "@/shared/api/query";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type ClientKeyDTO = {
@@ -53,14 +54,7 @@ type ListClientKeysInput = {
 };
 
 export function listClientKeys(input: ListClientKeysInput): Promise<PaginatedDTO<ClientKeyDTO>> {
-  const query = new URLSearchParams({ page: String(input.page), pageSize: String(input.pageSize) });
-  if (input.search) query.set("search", input.search);
-  if (input.status) query.set("status", input.status);
-  if (input.modelScope) query.set("modelScope", input.modelScope);
-  if (input.sortBy && input.sortOrder) {
-    query.set("sortBy", input.sortBy);
-    query.set("sortOrder", input.sortOrder);
-  }
+  const query = buildPaginatedQuery(input, { status: input.status, modelScope: input.modelScope });
   return apiRequest(`/api/admin/v1/client-keys?${query}`, {}, decodeClientKeyPage);
 }
 

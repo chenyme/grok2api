@@ -1,6 +1,7 @@
 package perfmetrics
 
 import (
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -27,6 +28,38 @@ type Sample struct {
 	Maximum  int64
 	Gauge    int64
 	HasGauge bool
+}
+
+// LogValue 实现 slog.LogValuer，避免调用方手动展开所有标签字段。
+func (s Sample) LogValue() slog.Value {
+	attrs := []slog.Attr{
+		slog.String("name", s.Name),
+		slog.String("subsystem", s.Labels.Subsystem),
+		slog.String("operation", s.Labels.Operation),
+		slog.Uint64("count", s.Count),
+		slog.Int64("total", s.Total),
+		slog.Int64("maximum", s.Maximum),
+		slog.Bool("has_gauge", s.HasGauge),
+	}
+	if s.Labels.Provider != "" {
+		attrs = append(attrs, slog.String("provider", s.Labels.Provider))
+	}
+	if s.Labels.Plane != "" {
+		attrs = append(attrs, slog.String("plane", s.Labels.Plane))
+	}
+	if s.Labels.Stage != "" {
+		attrs = append(attrs, slog.String("stage", s.Labels.Stage))
+	}
+	if s.Labels.Ordinal != "" {
+		attrs = append(attrs, slog.String("ordinal", s.Labels.Ordinal))
+	}
+	if s.Labels.Outcome != "" {
+		attrs = append(attrs, slog.String("outcome", s.Labels.Outcome))
+	}
+	if s.HasGauge {
+		attrs = append(attrs, slog.Int64("gauge", s.Gauge))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 type metricKey struct {
