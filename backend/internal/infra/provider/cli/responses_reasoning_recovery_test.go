@@ -448,8 +448,8 @@ func newReasoningRecoveryTestAdapter(t *testing.T) (*Adapter, string) {
 	}
 	return NewAdapter(Config{
 		BaseURL: "https://build.test/v1", FallbackBaseURL: "https://xai.test/v1",
-		ClientVersion: "0.2.106", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli",
-		UserAgent: "grok-shell/0.2.106 (linux; x86_64)",
+		ClientVersion: "0.2.110", ClientIdentifier: "grok-shell", TokenAuth: "xai-grok-cli",
+		UserAgent: "grok-shell/0.2.110 (linux; x86_64)",
 	}, cipher), encrypted
 }
 

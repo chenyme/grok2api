@@ -403,6 +403,31 @@ func TestConvertAnthropicClaudeCodeRequestToResponses(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicMessagesPreservesExtendedReasoningEffort(t *testing.T) {
+	for _, effort := range []string{"xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			body := []byte(`{
+				"model":"public-chat","max_tokens":1024,
+				"messages":[{"role":"user","content":"hello"}],
+				"thinking":{"type":"enabled","budget_tokens":1024},
+				"output_config":{"effort":"` + effort + `"}
+			}`)
+			converted, _, err := ConvertRequestWithOptions(body, "grok-4.5", OperationMessages)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(converted, &payload); err != nil {
+				t.Fatal(err)
+			}
+			reasoning, ok := payload["reasoning"].(map[string]any)
+			if !ok || reasoning["effort"] != effort {
+				t.Fatalf("reasoning = %#v", payload["reasoning"])
+			}
+		})
+	}
+}
+
 func TestConvertAnthropicToolReferenceValidatesDeclaredTool(t *testing.T) {
 	body := []byte(`{
 		"model":"public","max_tokens":64,

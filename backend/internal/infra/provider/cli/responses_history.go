@@ -53,8 +53,8 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			rewritten = append(rewritten, converted)
 		case "file_search_call", "web_search_call", "image_generation_call", "code_interpreter_call",
 			"shell_call", "mcp_list_tools", "mcp_approval_request", "mcp_approval_response", "mcp_call", "compaction":
-			// 这些类型已进入 Grok Build 0.2.106 的 Responses InputItem 契约。
-			// 仅清理 Codex 私有字段和 null，不能把原生调用降级成文本边界。
+			// These types are part of the Grok Build 0.2.110 Responses InputItem contract.
+			// Remove only Codex-private fields and nulls; native calls must not degrade to text.
 			converted := sanitizeNativeHistoryInput(item, itemType)
 			c.changed = true
 			rewritten = append(rewritten, converted)
@@ -286,8 +286,8 @@ func hasPortableReasoningContent(item map[string]any) bool {
 	return false
 }
 
-// sanitizeNativeHistoryInput 按 Grok Build 0.2.106 的原生 InputItem 字段重建历史，
-// 避免 Codex 扩展元数据干扰 Rust untagged enum 的反序列化。
+// sanitizeNativeHistoryInput rebuilds history from Grok Build 0.2.110 native InputItem fields
+// so Codex extension metadata cannot interfere with Rust untagged enum deserialization.
 func sanitizeNativeHistoryInput(item map[string]any, itemType string) map[string]any {
 	var fields []string
 	switch itemType {
