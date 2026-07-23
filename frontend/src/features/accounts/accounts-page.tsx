@@ -798,7 +798,7 @@ export function AccountsPage() {
           ref={fileInputRef}
           type="file"
           multiple
-          accept={provider === "grok_build" ? "application/json,.json" : "application/json,text/plain,.json,.txt"}
+          accept="application/json,text/plain,.json,.txt"
           className="hidden"
           onChange={(event) => {
             const files = Array.from(event.target.files ?? []);

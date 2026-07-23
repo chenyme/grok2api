@@ -849,11 +849,11 @@ func writeAccountEvent(c *gin.Context, event string, value any) error {
 }
 
 func (h *Handler) importFile(c *gin.Context, providerValue accountdomain.Provider) {
-	fileDescription := "账号凭据 JSON"
+	fileDescription := "账号凭据 JSON 或逐行 JSON 文本"
 	if providerValue == accountdomain.ProviderWeb {
-		fileDescription = "Grok Web JSON 或 SSO 文本"
+		fileDescription = "Grok Web JSON、逐行 JSON 或 SSO 文本"
 	} else if providerValue == accountdomain.ProviderConsole {
-		fileDescription = "Grok Console JSON 或 SSO 文本"
+		fileDescription = "Grok Console JSON、逐行 JSON 或 SSO 文本"
 	}
 	documents, ok := readAccountImportDocuments(c, fileDescription)
 	if !ok {

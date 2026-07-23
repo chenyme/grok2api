@@ -54,3 +54,24 @@ func TestWebCredentialJSONUsesCurrentDocumentShape(t *testing.T) {
 		t.Fatal("legacy tier pools were accepted")
 	}
 }
+
+func TestWebCredentialJSONLinesPreserveMetadata(t *testing.T) {
+	adapter := &Adapter{}
+	data := []byte("\xef\xbb\xbf{\"name\":\"first\",\"sso_token\":\"token-one\",\"tier\":\"super\",\"email\":\"one@example.com\"}\r\n\r\n" +
+		"{\"name\":\"second\",\"token\":\"token-two\",\"user_id\":\"user-two\"}\r\n")
+	values, err := adapter.ParseImportedCredentials(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0].AccessToken != "token-one" || values[0].WebTier != account.WebTierSuper || values[0].Email != "one@example.com" || values[1].AccessToken != "token-two" || values[1].UserID != "user-two" {
+		t.Fatalf("credentials = %#v", values)
+	}
+}
+
+func TestWebCredentialJSONLinesRejectMalformedLine(t *testing.T) {
+	adapter := &Adapter{}
+	_, err := adapter.ParseImportedCredentials([]byte("{\"sso_token\":\"token-one\"}\ninvalid-secret\n"))
+	if err == nil || !strings.Contains(err.Error(), "第 2 行") || strings.Contains(err.Error(), "invalid-secret") {
+		t.Fatalf("error = %v", err)
+	}
+}

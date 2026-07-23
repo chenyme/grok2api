@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -84,6 +83,7 @@ func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
 }
 
 func parseImportedCredentialEntries(data []byte) ([]importedCredentialEntry, error) {
+	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
 	entries, sequenceErr := parseImportedCredentialJSONSequence(data)
 	if sequenceErr == nil {
 		return entries, nil
@@ -97,31 +97,8 @@ func parseImportedCredentialEntries(data []byte) ([]importedCredentialEntry, err
 	return nil, sequenceErr
 }
 
-// parseImportedCredentialJSONSequence accepts both one regular JSON document and
-// multiple top-level JSON values (JSONL/NDJSON). json.Decoder deliberately does
-// not depend on line boundaries, so pretty-printed entries remain valid.
 func parseImportedCredentialJSONSequence(data []byte) ([]importedCredentialEntry, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	entries := make([]importedCredentialEntry, 0)
-	documentIndex := 0
-	for {
-		var raw json.RawMessage
-		err := decoder.Decode(&raw)
-		if err == io.EOF {
-			return entries, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("解析账号凭据 JSON 第 %d 条: %w", documentIndex+1, err)
-		}
-		documentIndex++
-		values, err := parseImportedCredentialJSONValue(raw)
-		if err != nil {
-			return nil, fmt.Errorf("解析账号凭据 JSON 第 %d 条: %w", documentIndex, err)
-		}
-		if err := appendImportedCredentialEntries(&entries, values); err != nil {
-			return nil, err
-		}
-	}
+	return provider.DecodeCredentialJSONEntries[importedCredentialEntry](data, credentialImportProvider, maxCredentialImportAccounts)
 }
 
 func parseImportedCredentialJSONValue(data []byte) ([]importedCredentialEntry, error) {
