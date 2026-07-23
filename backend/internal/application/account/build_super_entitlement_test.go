@@ -124,6 +124,18 @@ func TestAccountViewsIncludeBuildBotFlagMetadata(t *testing.T) {
 	if _, _, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderWeb), Risk: "flagged"}); !errors.Is(err, ErrInvalidFilter) {
 		t.Fatalf("non-Build risk filter err = %v", err)
 	}
+	if _, _, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderBuild), Agreement: "nsfwEnabled"}); !errors.Is(err, ErrInvalidFilter) {
+		t.Fatalf("non-Web agreement filter err = %v", err)
+	}
+	if _, _, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderBuild), Association: "buildLinked"}); !errors.Is(err, ErrInvalidFilter) {
+		t.Fatalf("non-Web association filter err = %v", err)
+	}
+	if _, _, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderWeb), Agreement: "invalid"}); !errors.Is(err, ErrInvalidFilter) {
+		t.Fatalf("invalid agreement filter err = %v", err)
+	}
+	if _, _, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderWeb), Association: "invalid"}); !errors.Is(err, ErrInvalidFilter) {
+		t.Fatalf("invalid association filter err = %v", err)
+	}
 	summary, err := service.Summary(ctx)
 	if err != nil || summary.Risk != 1 {
 		t.Fatalf("summary=%#v err=%v", summary, err)

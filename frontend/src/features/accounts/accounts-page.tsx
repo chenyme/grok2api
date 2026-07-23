@@ -120,6 +120,8 @@ export function AccountsPage() {
   const [egressFilter, setEgressFilter] = useState("");
   const [renewalFilter, setRenewalFilter] = useState("");
   const [riskFilter, setRiskFilter] = useState("");
+  const [agreementFilter, setAgreementFilter] = useState("");
+  const [associationFilter, setAssociationFilter] = useState("");
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selection, setSelection] = useState<AccountSelection>(() => ({ provider: "grok_build", ids: new Set() }));
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
@@ -185,8 +187,15 @@ export function AccountsPage() {
   const selected = selection.provider === provider ? selection.ids : new Set<string>();
 
   const accountsQuery = useQuery({
-    queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, egressFilter, renewalFilter, riskFilter, sort.field, sort.order],
-    queryFn: () => listAccounts({ provider, page, pageSize, search: debouncedSearch, type: typeFilter, status: statusFilter, egress: egressFilter, renewal: provider === "grok_build" ? renewalFilter : undefined, risk: provider === "grok_build" ? riskFilter : undefined, sortBy: sort.field, sortOrder: sort.order }),
+    queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, egressFilter, renewalFilter, riskFilter, agreementFilter, associationFilter, sort.field, sort.order],
+    queryFn: () => listAccounts({
+      provider, page, pageSize, search: debouncedSearch, type: typeFilter, status: statusFilter, egress: egressFilter,
+      renewal: provider === "grok_build" ? renewalFilter : undefined,
+      risk: provider === "grok_build" ? riskFilter : undefined,
+      agreement: provider === "grok_web" ? agreementFilter : undefined,
+      association: provider === "grok_web" ? associationFilter : undefined,
+      sortBy: sort.field, sortOrder: sort.order,
+    }),
   });
 
   const summaryQuery = useQuery({
@@ -564,6 +573,8 @@ export function AccountsPage() {
     setStatusFilter("");
     setRenewalFilter("");
     setRiskFilter("");
+    setAgreementFilter("");
+    setAssociationFilter("");
     setQuickImportOpen(false);
     setQuickImportTokens("");
   }
@@ -836,6 +847,22 @@ export function AccountsPage() {
                 ...(provider === "grok_build" ? [{ id: "risk", label: t("accounts.riskFilter"), value: riskFilter, onChange: (value: string) => { setRiskFilter(value); setPage(1); }, options: [
                   { value: "flagged", label: t("accounts.botRisk") },
                   { value: "normal", label: t("accounts.riskNormal") },
+                ] }] : []),
+                ...(provider === "grok_web" ? [{ id: "agreement", label: t("accounts.agreementFilter"), value: agreementFilter, onChange: (value: string) => { setAgreementFilter(value); setPage(1); }, options: [
+                  { value: "nsfwEnabled", label: t("accounts.agreementNsfwEnabled") },
+                  { value: "nsfwDisabled", label: t("accounts.agreementNsfwDisabled") },
+                  { value: "termsAccepted", label: t("accounts.agreementTermsAccepted") },
+                  { value: "termsNotAccepted", label: t("accounts.agreementTermsNotAccepted") },
+                  { value: "allAccepted", label: t("accounts.agreementAllAccepted") },
+                  { value: "allNotAccepted", label: t("accounts.agreementAllNotAccepted") },
+                ] }] : []),
+                ...(provider === "grok_web" ? [{ id: "association", label: t("accounts.associationFilter"), value: associationFilter, onChange: (value: string) => { setAssociationFilter(value); setPage(1); }, options: [
+                  { value: "buildLinked", label: t("accounts.associationBuildLinked") },
+                  { value: "buildUnlinked", label: t("accounts.associationBuildUnlinked") },
+                  { value: "consoleLinked", label: t("accounts.associationConsoleLinked") },
+                  { value: "consoleUnlinked", label: t("accounts.associationConsoleUnlinked") },
+                  { value: "allLinked", label: t("accounts.associationAllLinked") },
+                  { value: "allUnlinked", label: t("accounts.associationAllUnlinked") },
                 ] }] : []),
               ]} />
             </div>
