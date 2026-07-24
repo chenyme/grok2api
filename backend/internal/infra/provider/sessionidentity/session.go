@@ -96,6 +96,15 @@ func Parse(body []byte) (provider.AccountIdentity, error) {
 	if err := json.Unmarshal(body, &value); err != nil {
 		return provider.AccountIdentity{}, fmt.Errorf("解析 Grok Session: %w", err)
 	}
+	// unauthenticated / blocked 表示当前 SSO 对上游不可用，必须在采纳身份字段之前判定，
+	// 避免 status=blocked 仍携带 userId/email 时被当成有效身份继续调度。
+	status := strings.TrimSpace(value.Status)
+	if strings.EqualFold(status, "unauthenticated") {
+		return provider.AccountIdentity{}, provider.ErrUnauthorized
+	}
+	if strings.EqualFold(status, "blocked") {
+		return provider.AccountIdentity{}, fmt.Errorf("%w: session status blocked", provider.ErrUnauthorized)
+	}
 	identity := provider.AccountIdentity{
 		UserID: firstNonEmpty(value.Session.UserID, value.User.ID, value.User.UserID, value.User.Sub, value.ID, value.UserID, value.Sub),
 		Email:  firstNonEmpty(value.Session.Email, value.User.Email, value.Email),
@@ -105,15 +114,6 @@ func Parse(body []byte) (provider.AccountIdentity, error) {
 	identity.Email = strings.TrimSpace(identity.Email)
 	identity.TeamID = strings.TrimSpace(identity.TeamID)
 	if identity.UserID == "" && identity.Email == "" {
-		status := strings.TrimSpace(value.Status)
-		// unauthenticated / blocked 均表示当前 SSO 对上游不可用，统一映射为 ErrUnauthorized，
-		// 以便导入与身份同步路径将账号标为 reauthRequired（管理端「失效」）并移出调度。
-		if strings.EqualFold(status, "unauthenticated") {
-			return provider.AccountIdentity{}, provider.ErrUnauthorized
-		}
-		if strings.EqualFold(status, "blocked") {
-			return provider.AccountIdentity{}, fmt.Errorf("%w: session status blocked", provider.ErrUnauthorized)
-		}
 		return provider.AccountIdentity{}, fmt.Errorf("Grok Session 缺少账号身份")
 	}
 	return identity, nil

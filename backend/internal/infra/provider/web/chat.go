@@ -185,10 +185,35 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		previous = currentPrevious
 		if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 			if upstream.StatusCode == http.StatusForbidden {
+				// 先读正文：blocked-user 必须直接交给 gateway 标失效，禁止 Statsig 重试吞掉首包。
+				body, readErr := io.ReadAll(io.LimitReader(upstream.Body, 4<<20))
+				_ = upstream.Body.Close()
+				if readErr != nil {
+					lease.Release()
+					return nil, readErr
+				}
+				if bodyLooksLikeAccountBlocked(body) {
+					return &provider.Response{
+						StatusCode: upstream.StatusCode, Status: upstream.Status, Header: http.Header(upstream.Header),
+						UpstreamURL: responseUpstreamURL(upstream),
+						Body: &releaseBody{ReadCloser: io.NopCloser(bytes.NewReader(body)), release: func() {
+							a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, upstream.StatusCode, nil)
+							lease.Release()
+						}},
+					}, nil
+				}
 				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
-					a.releaseStatsigRetry(upstream, lease)
+					lease.Release()
 					continue
 				}
+				return &provider.Response{
+					StatusCode: upstream.StatusCode, Status: upstream.Status, Header: http.Header(upstream.Header),
+					UpstreamURL: responseUpstreamURL(upstream),
+					Body: &releaseBody{ReadCloser: io.NopCloser(bytes.NewReader(body)), release: func() {
+						a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, upstream.StatusCode, nil)
+						lease.Release()
+					}},
+				}, nil
 			}
 			return &provider.Response{
 				StatusCode: upstream.StatusCode, Status: upstream.Status, Header: http.Header(upstream.Header),

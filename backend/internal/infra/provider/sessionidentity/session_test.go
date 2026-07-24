@@ -15,11 +15,27 @@ func TestParseBlockedSessionIsUnauthorized(t *testing.T) {
 	}
 }
 
+func TestParseBlockedSessionWithIdentityFieldsIsUnauthorized(t *testing.T) {
+	t.Parallel()
+	_, err := Parse([]byte(`{"status":"blocked","userId":"user-1","email":"a@example.com","session":{"userId":"user-1","email":"a@example.com"}}`))
+	if !errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized even when identity fields are present", err)
+	}
+}
+
 func TestParseUnauthenticatedSessionIsUnauthorized(t *testing.T) {
 	t.Parallel()
 	_, err := Parse([]byte(`{"status":"unauthenticated"}`))
 	if !errors.Is(err, provider.ErrUnauthorized) {
 		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestParseUnauthenticatedSessionWithIdentityFieldsIsUnauthorized(t *testing.T) {
+	t.Parallel()
+	_, err := Parse([]byte(`{"status":"unauthenticated","userId":"user-1","email":"a@example.com"}`))
+	if !errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized even when identity fields are present", err)
 	}
 }
 

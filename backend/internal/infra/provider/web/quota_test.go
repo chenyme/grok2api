@@ -175,6 +175,42 @@ func TestSyncQuotaBlockedForbiddenIsUnauthorized(t *testing.T) {
 	}
 }
 
+func TestSyncQuotaBlockedForbiddenSkipsStatsigRetryInURLMode(t *testing.T) {
+	var rateLimitCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// URL mode may also probe the base URL for Statsig meta; only count quota endpoint.
+		if request.URL.Path == "/rest/rate-limits" {
+			rateLimitCalls.Add(1)
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusForbidden)
+			_, _ = writer.Write([]byte(`{"code":7,"message":"User is blocked [WKE=unauthorized:blocked-user]","details":[]}`))
+			return
+		}
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("blocked-sso-url")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// URL mode would invalidate Statsig and retry unless blocked body is classified first.
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "url", StatsigSignerURL: "https://signer.example/sign",
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 6, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
+	if !errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+	if rateLimitCalls.Load() != 1 {
+		t.Fatalf("blocked credential made %d rate-limits requests, want 1 (no Statsig retry)", rateLimitCalls.Load())
+	}
+}
+
 func TestSyncQuotaGenericForbiddenIsNotUnauthorized(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")

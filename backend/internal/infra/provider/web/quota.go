@@ -162,6 +162,11 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 			return account.QuotaWindow{}, err
 		}
 		if response.StatusCode == http.StatusForbidden {
+			// 封号正文优先于 Statsig 重试：首包 blocked-user 不得因 invalidate 被丢弃。
+			if bodyLooksLikeAccountBlocked(body) {
+				a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+				return account.QuotaWindow{}, fmt.Errorf("%w: account blocked", provider.ErrUnauthorized)
+			}
 			if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, endpoint) {
 				continue
 			}
@@ -173,8 +178,7 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 		if response.StatusCode == http.StatusUnauthorized {
 			return account.QuotaWindow{}, provider.ErrUnauthorized
 		}
-		// 403 + blocked-user 与对话封号同源；映射为 ErrUnauthorized 以便额度同步将账号标为失效。
-		// 其它 403（如临时 anti-bot）保持普通错误，避免误杀。
+		// 循环内已处理封号 403；此处兜底防止路径遗漏。
 		if response.StatusCode == http.StatusForbidden && bodyLooksLikeAccountBlocked(body) {
 			return account.QuotaWindow{}, fmt.Errorf("%w: account blocked", provider.ErrUnauthorized)
 		}
