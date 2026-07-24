@@ -17,9 +17,10 @@ import (
 
 const (
 	defaultOAuthClientID = "b1a00492-073a-47ea-816f-4c329264a828"
-	defaultOAuthScope    = "openid profile email offline_access grok-cli:access api:access"
+	defaultOAuthScope    = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write"
 	defaultDeviceURL     = "https://auth.x.ai/oauth2/device/code"
 	defaultTokenURL      = "https://auth.x.ai/oauth2/token"
+	deviceClientSurface  = "ui"
 )
 
 type oauthClient struct {
@@ -28,14 +29,15 @@ type oauthClient struct {
 	scope     string
 	deviceURL string
 	tokenURL  string
+	version   func() string
 }
 
-func newOAuthClient(httpClient *http.Client) *oauthClient {
-	return &oauthClient{http: httpClient, clientID: defaultOAuthClientID, scope: defaultOAuthScope, deviceURL: defaultDeviceURL, tokenURL: defaultTokenURL}
+func newOAuthClient(httpClient *http.Client, version func() string) *oauthClient {
+	return &oauthClient{http: httpClient, clientID: defaultOAuthClientID, scope: defaultOAuthScope, deviceURL: defaultDeviceURL, tokenURL: defaultTokenURL, version: version}
 }
 
 func (c *oauthClient) startDevice(ctx context.Context) (provider.DeviceAuthorization, error) {
-	form := url.Values{"client_id": {c.clientID}, "scope": {c.scope}}
+	form := url.Values{"client_id": {c.clientID}, "scope": {c.scope}, "referrer": {"grok-build"}}
 	var payload struct {
 		DeviceCode              string `json:"device_code"`
 		UserCode                string `json:"user_code"`
@@ -44,7 +46,7 @@ func (c *oauthClient) startDevice(ctx context.Context) (provider.DeviceAuthoriza
 		Interval                int    `json:"interval"`
 		ExpiresIn               int    `json:"expires_in"`
 	}
-	if err := c.postForm(ctx, c.deviceURL, form, &payload); err != nil {
+	if err := c.postForm(ctx, c.deviceURL, form, &payload, true); err != nil {
 		return provider.DeviceAuthorization{}, err
 	}
 	if payload.DeviceCode == "" || payload.UserCode == "" || payload.VerificationURI == "" {
@@ -61,12 +63,12 @@ func (c *oauthClient) startDevice(ctx context.Context) (provider.DeviceAuthoriza
 
 func (c *oauthClient) pollDevice(ctx context.Context, deviceCode string) (tokenPayload, error) {
 	form := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "client_id": {c.clientID}, "device_code": {deviceCode}}
-	return c.exchange(ctx, form, "")
+	return c.exchange(ctx, form, "", true)
 }
 
 func (c *oauthClient) refresh(ctx context.Context, refreshToken string) (tokenPayload, error) {
 	form := url.Values{"grant_type": {"refresh_token"}, "client_id": {c.clientID}, "refresh_token": {refreshToken}}
-	value, err := c.exchange(ctx, form, refreshToken)
+	value, err := c.exchange(ctx, form, refreshToken, false)
 	if errors.Is(err, provider.ErrAuthorizationDenied) {
 		return tokenPayload{}, &provider.CredentialRefreshError{Code: "refresh_denied", Permanent: true, Cause: err}
 	}
@@ -80,13 +82,16 @@ type tokenPayload struct {
 	IDToken      string
 }
 
-func (c *oauthClient) exchange(ctx context.Context, form url.Values, fallbackRefresh string) (tokenPayload, error) {
+func (c *oauthClient) exchange(ctx context.Context, form url.Values, fallbackRefresh string, deviceFlow bool) (tokenPayload, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return tokenPayload{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	if deviceFlow {
+		c.applyDeviceHeaders(req)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return tokenPayload{}, err
@@ -143,13 +148,16 @@ func parseOAuthRetryAfter(value string) time.Duration {
 	return 0
 }
 
-func (c *oauthClient) postForm(ctx context.Context, endpoint string, form url.Values, output any) error {
+func (c *oauthClient) postForm(ctx context.Context, endpoint string, form url.Values, output any, deviceFlow bool) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	if deviceFlow {
+		c.applyDeviceHeaders(req)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -163,6 +171,16 @@ func (c *oauthClient) postForm(ctx context.Context, endpoint string, form url.Va
 		return fmt.Errorf("xAI OAuth 返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return json.Unmarshal(body, output)
+}
+
+func (c *oauthClient) applyDeviceHeaders(req *http.Request) {
+	if c.version != nil {
+		if version := strings.TrimSpace(c.version()); version != "" {
+			req.Header.Set("x-grok-client-version", version)
+		}
+	}
+	// The management UI presents the verification URL and code to a human.
+	req.Header.Set("x-grok-client-surface", deviceClientSurface)
 }
 
 func firstNonEmpty(values ...string) string {

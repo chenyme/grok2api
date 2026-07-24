@@ -47,9 +47,9 @@ func TestSettingsResponseIncludesBuildTokenAuth(t *testing.T) {
 
 func TestSettingsResponseIncludesRecommendedBuildBaseline(t *testing.T) {
 	response := newSettingsResponse(settingsapp.Snapshot{RecommendedProviderBuild: settingsapp.ProviderBuildRecommendation{
-		ClientVersion: "0.2.110", UserAgent: "grok-shell/0.2.110 (linux; x86_64)",
+		ClientVersion: "0.2.111", UserAgent: "grok-shell/0.2.111 (linux; x86_64)",
 	}})
-	if response.RecommendedProviderBuild.ClientVersion != "0.2.110" || response.RecommendedProviderBuild.UserAgent == "" {
+	if response.RecommendedProviderBuild.ClientVersion != "0.2.111" || response.RecommendedProviderBuild.UserAgent == "" {
 		t.Fatalf("recommended build = %#v", response.RecommendedProviderBuild)
 	}
 }
