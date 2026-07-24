@@ -70,10 +70,12 @@ func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
 	// The official CLI uses a persistent machine identity. The gateway does not collect machine fingerprints;
 	// instead each backend process generates one random UUID for its lifetime as the Agent identity.
 	agentID := uuid.NewString()
-	return &Adapter{
-		cfg: cfg, http: httpClient, oauth: newOAuthClient(httpClient), cipher: cipher, base: transport,
+	adapter := &Adapter{
+		cfg: cfg, http: httpClient, cipher: cipher, base: transport,
 		agentID: agentID, modelsETags: make(map[uint64]string), compaction: newGatewayCompactionCodec(cipher), logger: slog.Default(),
 	}
+	adapter.oauth = newOAuthClient(httpClient, func() string { return adapter.config().ClientVersion })
+	return adapter
 }
 
 func (a *Adapter) SetLogger(logger *slog.Logger) {
