@@ -143,6 +143,72 @@ func TestSyncQuotaStopsAfterFirstUnauthorizedMode(t *testing.T) {
 	}
 }
 
+
+func TestSyncQuotaBlockedForbiddenIsUnauthorized(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = writer.Write([]byte(`{"code":7,"message":"User is blocked [WKE=unauthorized:blocked-user]","details":[]}`))
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("blocked-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 4, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
+	if !errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+	// manual Statsig mode does not invalidate/retry; SyncQuota stops after the first unauthorized mode.
+	if calls.Load() != 1 {
+		t.Fatalf("blocked credential made %d quota requests, want 1", calls.Load())
+	}
+}
+
+func TestSyncQuotaGenericForbiddenIsNotUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = writer.Write([]byte(`{"message":"temporary rejection"}`))
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("generic-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 5, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
+	if err == nil || errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v, want generic forbidden error", err)
+	}
+}
+
+func TestBodyLooksLikeAccountBlocked(t *testing.T) {
+	if !bodyLooksLikeAccountBlocked([]byte(`{"code":7,"message":"User is blocked [WKE=unauthorized:blocked-user]"}`)) {
+		t.Fatal("expected blocked body to match")
+	}
+	if bodyLooksLikeAccountBlocked([]byte(`{"message":"temporary rejection"}`)) {
+		t.Fatal("expected generic body not to match")
+	}
+}
+
 func TestInferWebTierFromUpstreamQuota(t *testing.T) {
 	tests := []struct {
 		name    string

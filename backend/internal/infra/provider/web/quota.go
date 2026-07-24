@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -171,6 +172,11 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
 		if response.StatusCode == http.StatusUnauthorized {
 			return account.QuotaWindow{}, provider.ErrUnauthorized
+		}
+		// 403 + blocked-user 与对话封号同源；映射为 ErrUnauthorized 以便额度同步将账号标为失效。
+		// 其它 403（如临时 anti-bot）保持普通错误，避免误杀。
+		if response.StatusCode == http.StatusForbidden && bodyLooksLikeAccountBlocked(body) {
+			return account.QuotaWindow{}, fmt.Errorf("%w: account blocked", provider.ErrUnauthorized)
 		}
 		return account.QuotaWindow{}, fmt.Errorf("Grok Web 额度接口返回 %d", response.StatusCode)
 	}
@@ -473,4 +479,11 @@ func parseQuotaBreakdown(message []byte) (account.QuotaBreakdown, bool) {
 		return account.QuotaBreakdown{}, false
 	}
 	return result, true
+}
+
+
+// bodyLooksLikeAccountBlocked 识别额度接口上明确的账号封禁响应（与 gateway AccountBlocked 同信号）。
+func bodyLooksLikeAccountBlocked(body []byte) bool {
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "blocked-user") || strings.Contains(text, "user is blocked")
 }

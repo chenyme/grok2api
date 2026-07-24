@@ -16,7 +16,9 @@ type providerLinkRepository interface {
 }
 
 // SyncAccountIdentity 尽力补充 Web/Console 的稳定上游身份，并据此建立高可信弱关联。
-// 只有明确的 401 会将当前 Provider 账号移出号池；其他同步失败不影响健康状态。
+// Session unauthenticated / blocked、HTTP 401 等映射为 ErrUnauthorized 时，
+// 会将当前 Provider 账号标为 reauthRequired（管理端「失效」）并移出调度；
+// 其他同步失败不影响健康状态。
 func (s *Service) SyncAccountIdentity(ctx context.Context, id uint64) error {
 	_, err, _ := s.identitySyncs.Do(fmt.Sprintf("%d", id), func() (any, error) {
 		return nil, s.syncAccountIdentity(ctx, id)

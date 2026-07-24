@@ -105,8 +105,14 @@ func Parse(body []byte) (provider.AccountIdentity, error) {
 	identity.Email = strings.TrimSpace(identity.Email)
 	identity.TeamID = strings.TrimSpace(identity.TeamID)
 	if identity.UserID == "" && identity.Email == "" {
-		if strings.EqualFold(strings.TrimSpace(value.Status), "unauthenticated") {
+		status := strings.TrimSpace(value.Status)
+		// unauthenticated / blocked 均表示当前 SSO 对上游不可用，统一映射为 ErrUnauthorized，
+		// 以便导入与身份同步路径将账号标为 reauthRequired（管理端「失效」）并移出调度。
+		if strings.EqualFold(status, "unauthenticated") {
 			return provider.AccountIdentity{}, provider.ErrUnauthorized
+		}
+		if strings.EqualFold(status, "blocked") {
+			return provider.AccountIdentity{}, fmt.Errorf("%w: session status blocked", provider.ErrUnauthorized)
 		}
 		return provider.AccountIdentity{}, fmt.Errorf("Grok Session 缺少账号身份")
 	}
