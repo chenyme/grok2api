@@ -61,6 +61,7 @@ type ChatRequest = {
 
 type PendingTruncateAction =
   | { kind: "delete"; messageId: string; trailingCount: number }
+  | { kind: "regenerate"; messageId: string; trailingCount: number }
   | { kind: "edit-user"; messageId: string; content: string; trailingCount: number };
 
 type ChatSession = {
@@ -417,12 +418,16 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
   function stopGenerating(): void {
     if (!mutation.isPending) return;
     const assistantMessageId = mutation.variables?.assistantMessageId;
+    const snapshot = streamSnapshotRef.current;
     cancelActiveRequest();
     if (assistantMessageId) {
       setMessages((current) => current.flatMap((message) => {
         if (message.id !== assistantMessageId) return [message];
-        if (!message.content.trim() && !message.reasoning?.trim() && !(message.tools?.length)) return [];
-        return [message];
+        const updated = hasChatStreamContent(snapshot)
+          ? { ...message, content: snapshot.text, reasoning: snapshot.reasoning, tools: snapshot.tools }
+          : message;
+        if (!updated.content.trim() && !updated.reasoning?.trim() && !(updated.tools?.length)) return [];
+        return [updated];
       }));
     }
     mutation.reset();
@@ -441,7 +446,7 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
     beginAssistantRequest({ history, assistantMessage, cacheKey: promptCacheKey });
   }
 
-  function regenerateAssistant(messageId: string): void {
+  function applyRegenerateAssistant(messageId: string): void {
     if (!apiKey || !model) return;
     const index = messages.findIndex((message) => message.id === messageId);
     if (index < 0 || messages[index]?.role !== "assistant") return;
@@ -453,6 +458,18 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
     setMessages([...history, assistantMessage]);
     clearEditState();
     beginAssistantRequest({ history, assistantMessage, cacheKey, cancelPrevious: true });
+  }
+
+  function regenerateAssistant(messageId: string): void {
+    if (!apiKey || !model) return;
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0 || messages[index]?.role !== "assistant") return;
+    const trailingCount = messages.length - index - 1;
+    if (trailingCount > 0) {
+      setPendingTruncate({ kind: "regenerate", messageId, trailingCount });
+      return;
+    }
+    applyRegenerateAssistant(messageId);
   }
 
   function startEditMessage(messageId: string): void {
@@ -489,7 +506,14 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
     cancelActiveRequest();
     invalidatePromptCache();
     // Drop the selected message and every turn after it so the transcript stays a single continuous branch.
-    setMessages((current) => current.slice(0, index));
+    const nextMessages = messages.slice(0, index);
+    setMessages(nextMessages);
+    if (nextMessages.length === 0) {
+      setSessions((current) => {
+        const next = current.filter((session) => session.id !== sessionId);
+        return persistChatSessions(storageScope, next);
+      });
+    }
     clearEditStateIfAtOrAfter(index);
     mutation.reset();
   }
@@ -542,6 +566,10 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
     setPendingTruncate(null);
     if (action.kind === "delete") {
       applyDeleteMessage(action.messageId);
+      return;
+    }
+    if (action.kind === "regenerate") {
+      applyRegenerateAssistant(action.messageId);
       return;
     }
     applyUserEditAndRegenerate(action.messageId, action.content);
@@ -771,6 +799,8 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
             <AlertDialogTitle>
               {pendingTruncate?.kind === "edit-user"
                 ? t("creativeConsole.editUserTruncateTitle")
+                : pendingTruncate?.kind === "regenerate"
+                  ? t("creativeConsole.regenerateTruncateTitle")
                 : t("creativeConsole.deleteMessageConfirmTitle")}
             </AlertDialogTitle>
             <AlertDialogDescription>
@@ -778,6 +808,8 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
                 ? t(
                   pendingTruncate.kind === "edit-user"
                     ? "creativeConsole.editUserTruncateDescription"
+                    : pendingTruncate.kind === "regenerate"
+                      ? "creativeConsole.regenerateTruncateDescription"
                     : "creativeConsole.deleteMessageConfirmDescription",
                   { count: pendingTruncate.trailingCount },
                 )
@@ -795,6 +827,8 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
             >
               {pendingTruncate?.kind === "edit-user"
                 ? t("creativeConsole.saveAndRegenerate")
+                : pendingTruncate?.kind === "regenerate"
+                  ? t("creativeConsole.regenerate")
                 : t("creativeConsole.deleteMessage")}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -1382,6 +1416,10 @@ function isLocalRecord(value: unknown): value is Record<string, unknown> {
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
+}
+
+function hasChatStreamContent(snapshot: ChatStreamSnapshot): boolean {
+  return Boolean(snapshot.text.trim() || snapshot.reasoning.trim() || snapshot.tools.length);
 }
 
 function formatChatSessionTime(value: number, language: string): string {
