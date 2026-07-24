@@ -171,6 +171,17 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 			return nil, nil
 		}
 		converted := cloneJSONObject(tool)
+		if parameters, exists := converted["parameters"]; exists {
+			normalized, changed, normalizeErr := normalizeBuildFunctionParametersRoot(parameters, param+".parameters")
+			if normalizeErr != nil {
+				return nil, normalizeErr
+			}
+			if changed {
+				converted["parameters"] = normalized
+				c.changed = true
+				c.addWarning("function_parameters_nullable_root_normalized")
+			}
+		}
 		identity := responsesToolIdentity{Kind: responsesFunctionTool, Namespace: namespace, Name: name}
 		alias := c.alias(identity)
 		converted["name"] = alias
@@ -256,6 +267,188 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 			return nil, &responsesRequestError{Message: param + ".type 不能为空", Param: param + ".type", Code: "invalid_parameter"}
 		}
 		return nil, unsupportedBuildToolError(kind, param)
+	}
+}
+
+// normalizeBuildFunctionParametersRoot removes root-level nullability from function schemas.
+// Build requires the parameter root to be an object, while Codex can emit `object | null`
+// for tools with an optional argument object. Nested nullable fields remain untouched.
+func normalizeBuildFunctionParametersRoot(value any, param string) (any, bool, error) {
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return value, false, nil
+	}
+	normalized := cloneJSONObject(schema)
+	changed := false
+
+	if rawTypes, ok := normalized["type"].([]any); ok {
+		filtered, removedNull := withoutNullSchemaTypes(rawTypes)
+		if removedNull {
+			changed = true
+			switch len(filtered) {
+			case 0:
+				return nil, false, invalidBuildFunctionParametersRoot(param)
+			case 1:
+				if filtered[0] != "object" {
+					return nil, false, invalidBuildFunctionParametersRoot(param)
+				}
+				normalized["type"] = "object"
+			default:
+				return nil, false, invalidBuildFunctionParametersRoot(param)
+			}
+		}
+	}
+
+	for _, keyword := range []string{"anyOf", "oneOf"} {
+		rawBranches, exists := normalized[keyword]
+		if !exists {
+			continue
+		}
+		branches, ok := rawBranches.([]any)
+		if !ok {
+			continue
+		}
+		filtered := make([]any, 0, len(branches))
+		removedNull := false
+		for _, rawBranch := range branches {
+			if isNullOnlySchema(rawBranch) {
+				removedNull = true
+				continue
+			}
+			filtered = append(filtered, rawBranch)
+		}
+		if !removedNull {
+			continue
+		}
+		changed = true
+		if len(filtered) == 0 {
+			return nil, false, invalidBuildFunctionParametersRoot(param)
+		}
+		if len(filtered) == 1 {
+			branch, ok := filtered[0].(map[string]any)
+			if !ok || !isObjectRootSchema(branch, normalized, nil) {
+				return nil, false, invalidBuildFunctionParametersRoot(param)
+			}
+			if len(normalized) == 1 {
+				normalized = cloneJSONObject(branch)
+				normalized["type"] = "object"
+				continue
+			}
+			normalized[keyword] = cloneJSONArray(filtered)
+			normalized["type"] = "object"
+			continue
+		}
+		for _, rawBranch := range filtered {
+			branch, ok := rawBranch.(map[string]any)
+			if !ok || !isObjectRootSchema(branch, normalized, nil) {
+				return nil, false, invalidBuildFunctionParametersRoot(param)
+			}
+		}
+		normalized[keyword] = cloneJSONArray(filtered)
+		normalized["type"] = "object"
+	}
+
+	return normalized, changed, nil
+}
+
+func withoutNullSchemaTypes(types []any) ([]any, bool) {
+	filtered := make([]any, 0, len(types))
+	removed := false
+	for _, value := range types {
+		if value == "null" {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered, removed
+}
+
+func isNullOnlySchema(value any) bool {
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	if schema["type"] == "null" {
+		return true
+	}
+	types, ok := schema["type"].([]any)
+	if !ok || len(types) == 0 {
+		return false
+	}
+	for _, value := range types {
+		if value != "null" {
+			return false
+		}
+	}
+	return true
+}
+
+func isObjectRootSchema(schema, root map[string]any, visited map[string]struct{}) bool {
+	rawType, hasType := schema["type"]
+	if rawType == "object" {
+		return true
+	}
+	if types, ok := rawType.([]any); ok && len(types) > 0 {
+		for _, value := range types {
+			if value != "object" {
+				return false
+			}
+		}
+		return true
+	}
+	if hasType {
+		return false
+	}
+	if _, hasProperties := schema["properties"]; hasProperties {
+		return true
+	}
+	ref, ok := schema["$ref"].(string)
+	if !ok {
+		return false
+	}
+	if visited == nil {
+		visited = make(map[string]struct{})
+	}
+	if _, seen := visited[ref]; seen {
+		return false
+	}
+	resolved, ok := resolveLocalSchemaRef(root, ref)
+	if !ok {
+		return false
+	}
+	visited[ref] = struct{}{}
+	return isObjectRootSchema(resolved, root, visited)
+}
+
+func resolveLocalSchemaRef(root map[string]any, ref string) (map[string]any, bool) {
+	if ref == "#" {
+		return root, true
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, false
+	}
+	var current any = root
+	for _, encoded := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
+		segment := strings.ReplaceAll(strings.ReplaceAll(encoded, "~1", "/"), "~0", "~")
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[segment]
+		if !ok {
+			return nil, false
+		}
+	}
+	resolved, ok := current.(map[string]any)
+	return resolved, ok
+}
+
+func invalidBuildFunctionParametersRoot(param string) error {
+	return &responsesRequestError{
+		Message: param + " 顶层必须是非 nullable 的 object schema",
+		Param:   param,
+		Code:    "invalid_parameter",
 	}
 }
 
