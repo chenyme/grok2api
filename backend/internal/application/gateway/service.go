@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -739,17 +740,35 @@ attemptLoop:
 		}
 		egressForbidden := s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden
 		finalEgressForbidden := egressForbidden && (attempt > 0 || attempt+1 >= attempts)
+		// 403 必须先按响应体分类：contains blocked-user / user is blocked 时账号失效并换号；
+		// 仅当未命中封号正文时，才把 403 当作出口反爬重试（不惩罚账号）。禁止仅凭状态码或数字 code 失效。
+		if response.StatusCode == http.StatusForbidden {
+			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
+			body, _ := readRetryableBody(response.Body)
+			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
+			if lastFailure.AccountBlocked {
+				failureHandled := s.markReauthRequired(ctx, input.RequestID, credential, fmt.Sprintf("%s account is blocked", credential.Provider))
+				if lastFailure.AccountScoped && !failureHandled {
+					s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
+				}
+				lease.Release()
+				lastErr = fmt.Errorf("上游返回 %d", response.StatusCode)
+				s.logger.Warn("upstream_request_failed", "request_id", input.RequestID, "account_id", credential.ID, "provider", credential.Provider, "status", response.StatusCode, "upstream_code", lastFailure.UpstreamCode, "account_scoped", lastFailure.AccountScoped, "account_blocked", true)
+				continue
+			}
+			if egressForbidden && !finalEgressForbidden {
+				// 非封号 403：出口/反爬会话问题，不惩罚账号。
+				delete(excluded, credential.ID)
+				lease.Release()
+				lastErr = fmt.Errorf("上游出口会话被拒绝")
+				continue
+			}
+			// 最终一次非封号 403：body 已读，回填后走通用可重试/收尾逻辑。
+			response.Body = io.NopCloser(bytes.NewReader(body))
+		}
 		if isRetryableResponse(response, route.Provider) && !finalEgressForbidden {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
 			body, _ := readRetryableBody(response.Body)
-			if egressForbidden {
-				// Web 403/code 7 means the browser session at the egress was rejected; the Provider rebuilt it and reduced node health, so do not penalize the account.
-				delete(excluded, credential.ID)
-				lease.Release()
-				lastErr = fmt.Errorf("Grok Web 出口会话被反机器人规则拒绝")
-				lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
-				continue
-			}
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
 			buildForbiddenReauth := credential.Provider == accountdomain.ProviderBuild && s.shouldInvalidateBuildForbidden(lastFailure)
 			if buildForbiddenReauth {
