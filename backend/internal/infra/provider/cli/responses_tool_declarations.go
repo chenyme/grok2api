@@ -326,7 +326,7 @@ func normalizeBuildFunctionParametersRoot(value any, param string) (any, bool, e
 		}
 		if len(filtered) == 1 {
 			branch, ok := filtered[0].(map[string]any)
-			if !ok || !isObjectRootSchema(branch) {
+			if !ok || !isObjectRootSchema(branch, normalized, nil) {
 				return nil, false, invalidBuildFunctionParametersRoot(param)
 			}
 			if len(normalized) == 1 {
@@ -340,7 +340,7 @@ func normalizeBuildFunctionParametersRoot(value any, param string) (any, bool, e
 		}
 		for _, rawBranch := range filtered {
 			branch, ok := rawBranch.(map[string]any)
-			if !ok || !isObjectRootSchema(branch) {
+			if !ok || !isObjectRootSchema(branch, normalized, nil) {
 				return nil, false, invalidBuildFunctionParametersRoot(param)
 			}
 		}
@@ -384,7 +384,7 @@ func isNullOnlySchema(value any) bool {
 	return true
 }
 
-func isObjectRootSchema(schema map[string]any) bool {
+func isObjectRootSchema(schema, root map[string]any, visited map[string]struct{}) bool {
 	rawType, hasType := schema["type"]
 	if rawType == "object" {
 		return true
@@ -400,8 +400,48 @@ func isObjectRootSchema(schema map[string]any) bool {
 	if hasType {
 		return false
 	}
-	_, hasProperties := schema["properties"]
-	return hasProperties
+	if _, hasProperties := schema["properties"]; hasProperties {
+		return true
+	}
+	ref, ok := schema["$ref"].(string)
+	if !ok {
+		return false
+	}
+	if visited == nil {
+		visited = make(map[string]struct{})
+	}
+	if _, seen := visited[ref]; seen {
+		return false
+	}
+	resolved, ok := resolveLocalSchemaRef(root, ref)
+	if !ok {
+		return false
+	}
+	visited[ref] = struct{}{}
+	return isObjectRootSchema(resolved, root, visited)
+}
+
+func resolveLocalSchemaRef(root map[string]any, ref string) (map[string]any, bool) {
+	if ref == "#" {
+		return root, true
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, false
+	}
+	var current any = root
+	for _, encoded := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
+		segment := strings.ReplaceAll(strings.ReplaceAll(encoded, "~1", "/"), "~0", "~")
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[segment]
+		if !ok {
+			return nil, false
+		}
+	}
+	resolved, ok := current.(map[string]any)
+	return resolved, ok
 }
 
 func invalidBuildFunctionParametersRoot(param string) error {
