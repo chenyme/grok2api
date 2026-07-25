@@ -375,13 +375,7 @@ func parseConsoleRetryAfterHeader(value string, now time.Time) time.Duration {
 }
 
 func parseConsoleRateLimitMetadata(body []byte) *provider.RateLimitMetadata {
-	for _, text := range consoleRateLimitTexts(body) {
-		metadata := parseConsoleRateLimitText(text)
-		if metadata != nil {
-			return metadata
-		}
-	}
-	return nil
+	return provider.ParseRateLimitMetadata(body)
 }
 
 func consoleRateLimitTexts(body []byte) []string {

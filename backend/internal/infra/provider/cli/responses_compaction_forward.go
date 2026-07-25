@@ -91,7 +91,7 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 				return nil, readErr
 			}
 			primaryResp := cloneBufferedResponse(resp, primaryBody, primaryTruncated)
-			if isDefinitiveAccountBlockBody(primaryBody) {
+			if shouldSkipXAIFallback(primaryBody) {
 				resp = primaryResp
 			} else {
 				fallbackBase := a.fallbackBaseURL()

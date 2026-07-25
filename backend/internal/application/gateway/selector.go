@@ -626,6 +626,8 @@ func (s *Selector) MarkModelQuotaExhausted(ctx context.Context, credential accou
 	_ = s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
 		AccountID: credential.ID, UpstreamModel: upstreamModel, Reason: "model_quota_depleted", CooldownUntil: until, UpdatedAt: time.Now().UTC(),
 	})
+	// Free/model quota exhaustion must drop sticky bindings so soft-affinity requests rotate.
+	_ = s.sticky.DeleteByAccount(ctx, credential.ID)
 	s.invalidateCandidates(credential.Provider)
 }
 

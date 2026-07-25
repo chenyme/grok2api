@@ -1667,6 +1667,678 @@ func (a *teamModelRateLimitConsoleAdapter) Attempts() []teamModelRateLimitConsol
 	return append([]teamModelRateLimitConsoleAttempt(nil), a.attempts...)
 }
 
+func TestGatewaySafetyRejectionDoesNotTouchAccountState(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "safety-rejection.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"safety-a", "safety-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			EncryptedRefreshToken: "refresh-" + name, ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-safety"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-safety"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "safety-key", Prefix: "safety", SecretHash: strings.Repeat("e", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"code":"permission-denied","error":"Content violates usage guidelines. SAFETY_CHECK_TYPE_VIOLENCE"}`
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{status: http.StatusForbidden, body: body}},
+		credentials[1].ID: {{status: http.StatusOK, body: `{"id":"resp-should-not-run"}`}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+	service.UpdateBuildForbiddenReauthPolicy(true, []string{"permission-denied"})
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-safety", ClientKey: clientKey, PublicModel: "grok-safety",
+		Body: []byte(`{"model":"grok-safety","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatalf("safety rejection should return the upstream 403 response, err=%v", err)
+	}
+	if result.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d", result.StatusCode)
+	}
+	responseBody, _ := io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "", "upstream_forbidden")
+	_ = result.Body.Close()
+	if !strings.Contains(string(responseBody), "Content violates usage guidelines") {
+		t.Fatalf("body = %s", responseBody)
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != credentials[0].ID {
+		t.Fatalf("safety rejection must use exactly one physical request, attempts=%#v", attempts)
+	}
+	if adapter.refreshes.Load() != 0 {
+		t.Fatalf("safety rejection refreshed OAuth: %d", adapter.refreshes.Load())
+	}
+	for _, credential := range credentials {
+		observed, getErr := accountRepo.Get(ctx, credential.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount != 0 || observed.CooldownUntil != nil {
+			t.Fatalf("account %d changed after safety rejection: %#v", credential.ID, observed)
+		}
+		candidates, listErr := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-safety", "")
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		for _, candidate := range candidates {
+			if candidate.Credential.ID == credential.ID && candidate.ModelQuotaBlock != nil {
+				t.Fatalf("safety rejection must not mark model access denied: %#v", candidate.ModelQuotaBlock)
+			}
+		}
+	}
+}
+
+func TestGatewayFreeUsageExhaustionFailsOverToAnotherAccount(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "free-usage-failover.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"free-a", "free-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-free-usage"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-free-usage"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "free-key", Prefix: "free", SecretHash: strings.Repeat("f", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exhausted := `{"code":"subscription:free-usage-exhausted","error":"tokens (actual/limit): 10/10; Usage resets over a rolling 24-hour window"}`
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{status: http.StatusTooManyRequests, body: exhausted, header: http.Header{"X-Should-Retry": {"false"}}}},
+		credentials[1].ID: {{status: http.StatusOK, body: `{"id":"resp-free-b"}`}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-free-usage", ClientKey: clientKey, PublicModel: "grok-free-usage",
+		Body: []byte(`{"model":"grok-free-usage","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", result.StatusCode)
+	}
+	result.Finalize(Usage{}, "resp-free-b", "")
+	_ = result.Body.Close()
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+		t.Fatalf("free-usage must fail over A->B, attempts=%#v", attempts)
+	}
+	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-free-usage", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, candidate := range candidates {
+		if candidate.Credential.ID == credentials[0].ID {
+			found = true
+			if candidate.ModelQuotaBlock == nil || candidate.ModelQuotaBlock.Reason != "model_quota_depleted" {
+				t.Fatalf("account A model quota not marked: %#v", candidate.ModelQuotaBlock)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("account A missing from candidates snapshot")
+	}
+}
+
+func TestGatewayBuildTeamRPSRateLimitSwitchesTeam(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "build-team-rps.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	teamX := "00000000-0000-0000-0000-0000000000a1"
+	teamY := "00000000-0000-0000-0000-0000000000b2"
+	credentials := make([]account.Credential, 0, 3)
+	// A and B share Team X; C uses Team Y. After A hits Team RPS, B must be skipped.
+	for index, seed := range []struct {
+		name   string
+		teamID string
+	}{{"build-team-x-a", teamX}, {"build-team-x-b", teamX}, {"build-team-y-c", teamY}} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: seed.name, SourceKey: seed.name, TeamID: seed.teamID,
+			EncryptedAccessToken: "token-" + seed.name, ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 300 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	model := "grok-build-team-rps"
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "team-rps-key", Prefix: "teamrps", SecretHash: strings.Repeat("1", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Body TeamID is the source of truth for the rate-limit key (even if credential metadata drifts).
+	limited := `{"code":"resource-exhausted","error":"Too many requests for team ` + teamX + ` and model ` + model + `. Requests per Second (actual/limit): 2/2."}`
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{status: http.StatusTooManyRequests, body: limited}},
+		credentials[1].ID: {{status: http.StatusOK, body: `{"id":"resp-should-skip-same-team"}`}},
+		credentials[2].ID: {{status: http.StatusOK, body: `{"id":"resp-team-y"}`}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-team-rps", ClientKey: clientKey, PublicModel: model,
+		Body: []byte(`{"model":"` + model + `","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", result.StatusCode)
+	}
+	result.Finalize(Usage{}, "resp-team-y", "")
+	_ = result.Body.Close()
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[2].ID {
+		t.Fatalf("team RPS must skip same-team B and choose different-team C, attempts=%#v want A then C", attempts)
+	}
+	if adapter.lastRateLimit == nil || adapter.lastRateLimit.TeamID != teamX || adapter.lastRateLimit.Model != model || adapter.lastRateLimit.Scope != provider.RateLimitScopeRPS || adapter.lastRateLimit.Actual != 2 || adapter.lastRateLimit.Limit != 2 {
+		t.Fatalf("rate limit metadata = %#v", adapter.lastRateLimit)
+	}
+	// Second request must keep skipping Team X (A and B) via cached Team+Model limit.
+	before := len(adapter.Attempts())
+	result, err = service.CreateResponse(ctx, Input{
+		RequestID: "req-team-rps-cached", ClientKey: clientKey, PublicModel: model,
+		Body: []byte(`{"model":"` + model + `","input":"again"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Finalize(Usage{}, "", "")
+	_ = result.Body.Close()
+	attempts := adapter.Attempts()
+	if len(attempts) != before+1 || attempts[len(attempts)-1] != credentials[2].ID {
+		t.Fatalf("cached Team X limit should go straight to Team Y, attempts=%#v", attempts)
+	}
+}
+
+func TestGatewayGeneric429CoolsAccountAndRotates(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "generic-429.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"fast-a", "fast-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-fast"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-fast"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "fast-key", Prefix: "fast", SecretHash: strings.Repeat("2", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{status: http.StatusTooManyRequests, body: `{"error":"You are sending requests too quickly. Please try again later."}`}},
+		credentials[1].ID: {{status: http.StatusOK, body: `{"id":"resp-fast-b"}`}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-generic-429", ClientKey: clientKey, PublicModel: "grok-fast",
+		Body: []byte(`{"model":"grok-fast","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Finalize(Usage{}, "resp-fast-b", "")
+	_ = result.Body.Close()
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+		t.Fatalf("generic 429 must rotate, attempts=%#v", attempts)
+	}
+	cooled, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cooled.AuthStatus != account.AuthStatusActive || cooled.FailureCount != 1 || cooled.CooldownUntil == nil {
+		t.Fatalf("generic 429 must briefly cool account A without permanent invalidation: %#v", cooled)
+	}
+}
+
+func TestGatewayExhausted429PreservesLastBodyInFailure(t *testing.T) {
+	// When all attempts fail, CreateResponse returns UpstreamFailure (sanitized).
+	// captureResponse must reattach the diagnostic body so subsequent classification
+	// and attempt diagnostics still see the complete last JSON payload.
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "exhausted-429-body.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"body-a", "body-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-body"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-body"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "body-key", Prefix: "body", SecretHash: strings.Repeat("4", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstBody := `{"code":"resource-exhausted","error":"first too quickly"}`
+	secondBody := `{"code":"resource-exhausted","error":"second too quickly complete json"}`
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{status: http.StatusTooManyRequests, body: firstBody}},
+		credentials[1].ID: {{status: http.StatusTooManyRequests, body: secondBody}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	// Capture attempts via a wrapping audit recorder that keeps the in-memory Attempts slice.
+	audits := &attemptCapturingAudit{inner: auditRepo}
+	service := NewService(modelRepo, audits, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
+
+	_, err = service.CreateResponse(ctx, Input{
+		RequestID: "req-body-429", ClientKey: clientKey, PublicModel: "grok-body",
+		Body: []byte(`{"model":"grok-body","input":"hello"}`),
+	})
+	var upstreamFailure *UpstreamFailure
+	if !errors.As(err, &upstreamFailure) {
+		t.Fatalf("err = %T %v", err, err)
+	}
+	if upstreamFailure.HTTPStatus != http.StatusTooManyRequests {
+		t.Fatalf("status = %d", upstreamFailure.HTTPStatus)
+	}
+	if len(audits.last.Attempts) < 2 {
+		t.Fatalf("attempts = %#v", audits.last.Attempts)
+	}
+	last := audits.last.Attempts[len(audits.last.Attempts)-1]
+	if !strings.Contains(string(last.ResponseBody), "second too quickly complete json") {
+		t.Fatalf("last attempt body not preserved: %q", last.ResponseBody)
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 2 {
+		t.Fatalf("attempts = %#v", attempts)
+	}
+}
+
+type attemptCapturingAudit struct {
+	inner auditRecorder
+	last  audit.Record
+}
+
+func (a *attemptCapturingAudit) Create(ctx context.Context, value audit.Record) error {
+	a.last = value
+	if a.inner != nil {
+		return a.inner.Create(ctx, value)
+	}
+	return nil
+}
+
+func TestGatewayBarePermissionDeniedDoesNotPenalizeAccount(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "bare-permission.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "bare", SourceKey: "bare", EncryptedAccessToken: "access",
+		EncryptedRefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour),
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-bare"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-bare"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "bare-key", Prefix: "bare", SecretHash: strings.Repeat("5", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"code":"permission-denied","error":"request rejected by policy"}`
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credential.ID: {{status: http.StatusForbidden, body: body}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
+	service.UpdateBuildForbiddenReauthPolicy(true, []string{"permission-denied"})
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-bare", ClientKey: clientKey, PublicModel: "grok-bare",
+		Body: []byte(`{"model":"grok-bare","input":"hello"}`),
+	})
+	// Bare permission-denied falls through as a terminal upstream 403 (not account-scoped retry loop).
+	if err != nil {
+		// May surface as UpstreamFailure if freeBuild path no longer forces rotation and non-retryable path...
+		// Build 403 is still forcesAccountFailover, so it will enter retryable path; with one account and
+		// AccountScoped=false, fingerprint limit may break after 2 identical failures.
+		var upstreamFailure *UpstreamFailure
+		if !errors.As(err, &upstreamFailure) {
+			t.Fatalf("err = %T %v", err, err)
+		}
+	} else {
+		if result.StatusCode != http.StatusForbidden {
+			t.Fatalf("status = %d", result.StatusCode)
+		}
+		_ = result.Body.Close()
+		result.Finalize(Usage{}, "", "upstream_forbidden")
+	}
+	observed, getErr := accountRepo.Get(ctx, credential.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount != 0 || observed.CooldownUntil != nil {
+		t.Fatalf("bare permission-denied penalized account: %#v", observed)
+	}
+	if adapter.refreshes.Load() != 0 {
+		t.Fatalf("bare permission-denied refreshed OAuth: %d", adapter.refreshes.Load())
+	}
+	candidates, listErr := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-bare", "")
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	for _, candidate := range candidates {
+		if candidate.Credential.ID == credential.ID && candidate.ModelQuotaBlock != nil {
+			t.Fatalf("bare permission-denied must not create model block: %#v", candidate.ModelQuotaBlock)
+		}
+	}
+}
+
+func TestGatewayPreviousResponseIDDoesNotCrossAccounts(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "prev-response-pin.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"pin-a", "pin-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-pin"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-pin"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "pin-key", Prefix: "pin", SecretHash: strings.Repeat("3", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := responseRepo.Save(ctx, inferencedomain.ResponseOwnership{
+		ResponseID: "resp-pin-root", AccountID: credentials[0].ID, ClientKeyID: clientKey.ID,
+		Provider: account.ProviderBuild, PromptCacheKey: "session-pin", ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exhausted := `{"code":"subscription:free-usage-exhausted","error":"tokens (actual/limit): 10/10"}`
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{status: http.StatusTooManyRequests, body: exhausted, header: http.Header{"X-Should-Retry": {"false"}}}},
+		credentials[1].ID: {{status: http.StatusOK, body: `{"id":"resp-should-not-run"}`}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	_, err = service.CreateResponse(ctx, Input{
+		RequestID: "req-pin", ClientKey: clientKey, PublicModel: "grok-pin",
+		PreviousResponseID: "resp-pin-root",
+		Body:               []byte(`{"model":"grok-pin","previous_response_id":"resp-pin-root","input":"hello"}`),
+	})
+	if err == nil {
+		t.Fatal("pinned free-usage exhaustion should fail without cross-account failover")
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != credentials[0].ID {
+		t.Fatalf("previous_response_id must stay pinned to account A, attempts=%#v", attempts)
+	}
+}
+
+type scriptedBuildResponse struct {
+	status int
+	body   string
+	header http.Header
+}
+
+type scriptedBuildAdapter struct {
+	mu            sync.Mutex
+	attempts      []uint64
+	responses     map[uint64][]scriptedBuildResponse
+	refreshes     atomic.Int64
+	lastRateLimit *provider.RateLimitMetadata
+}
+
+func (a *scriptedBuildAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (a *scriptedBuildAdapter) Definition() provider.Definition {
+	definition := testConversationDefinition(account.ProviderBuild)
+	definition.Conversation.StoredResponses = true
+	definition.Conversation.Compact = true
+	return definition
+}
+func (a *scriptedBuildAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.attempts = append(a.attempts, request.Credential.ID)
+	queue := a.responses[request.Credential.ID]
+	if len(queue) == 0 {
+		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"resp-default"}`))}, nil
+	}
+	next := queue[0]
+	a.responses[request.Credential.ID] = queue[1:]
+	header := next.header.Clone()
+	if header == nil {
+		header = make(http.Header)
+	}
+	var rateLimit *provider.RateLimitMetadata
+	if next.status == http.StatusTooManyRequests {
+		rateLimit = provider.ParseRateLimitMetadata([]byte(next.body))
+		a.lastRateLimit = rateLimit
+	}
+	return &provider.Response{
+		StatusCode: next.status, Status: http.StatusText(next.status), Header: header,
+		Body: io.NopCloser(strings.NewReader(next.body)), RateLimit: rateLimit,
+	}, nil
+}
+func (a *scriptedBuildAdapter) RefreshCredential(context.Context, account.Credential) (provider.RefreshedCredential, error) {
+	a.refreshes.Add(1)
+	return provider.RefreshedCredential{EncryptedAccessToken: "access-new", EncryptedRefreshToken: "refresh-new", ExpiresAt: time.Now().Add(6 * time.Hour)}, nil
+}
+func (a *scriptedBuildAdapter) Attempts() []uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]uint64(nil), a.attempts...)
+}
+
 type systemicForbiddenAdapter struct {
 	mu       sync.Mutex
 	attempts []uint64

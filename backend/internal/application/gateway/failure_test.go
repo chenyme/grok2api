@@ -44,6 +44,7 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 		body                   string
 		accountScoped          bool
 		permanentAccountDenial bool
+		safetyRejection        bool
 		quotaExhausted         bool
 		freeQuotaExhausted     bool
 		modelQuotaExhausted    bool
@@ -77,11 +78,20 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 			name: "free model quota", body: `{"error":"You've used all the included free usage for model grok-build"}`,
 			accountScoped: true, quotaExhausted: true, freeQuotaExhausted: true, modelQuotaExhausted: true,
 		},
+		{
+			name: "safety usage guidelines", body: `{"code":"permission-denied","error":"Content violates usage guidelines. SAFETY_CHECK_TYPE_VIOLENCE"}`,
+			safetyRejection: true, upstreamCode: "permission-denied",
+		},
+		{
+			name: "bare permission-denied without access text", body: `{"code":"permission-denied","error":"request rejected by policy"}`,
+			// Unknown request-level denial: not permanent, not account-scoped punishment.
+			upstreamCode: "permission-denied",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			failure := newHTTPUpstreamFailure(http.StatusForbidden, []byte(test.body), 42, "build")
-			if failure.HTTPStatus != http.StatusForbidden || failure.Code != "upstream_forbidden" || failure.AccountScoped != test.accountScoped || failure.AccountBlocked != test.accountBlocked || failure.PermanentAccountDenial != test.permanentAccountDenial || failure.QuotaExhausted != test.quotaExhausted || failure.FreeQuotaExhausted != test.freeQuotaExhausted || failure.ModelQuotaExhausted != test.modelQuotaExhausted || failure.UpstreamCode != test.upstreamCode {
+			if failure.HTTPStatus != http.StatusForbidden || failure.Code != "upstream_forbidden" || failure.AccountScoped != test.accountScoped || failure.AccountBlocked != test.accountBlocked || failure.PermanentAccountDenial != test.permanentAccountDenial || failure.SafetyRejection != test.safetyRejection || failure.QuotaExhausted != test.quotaExhausted || failure.FreeQuotaExhausted != test.freeQuotaExhausted || failure.ModelQuotaExhausted != test.modelQuotaExhausted || failure.UpstreamCode != test.upstreamCode {
 				t.Fatalf("failure = %#v", failure)
 			}
 			if test.upstreamCode == "permission-denied" && (failure.ClientCredentialErrorCode() != "permission-denied" || failure.AuditCode() != "upstream_forbidden_permission_denied") {
@@ -172,5 +182,36 @@ func TestBuildForbiddenReauthPolicyMatchesExactErrorCodes(t *testing.T) {
 	service.UpdateBuildForbiddenReauthPolicy(false, []string{"permission-denied"})
 	if service.shouldInvalidateBuildForbidden(&UpstreamFailure{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission-denied"}) {
 		t.Fatal("disabled policy matched an error code")
+	}
+}
+
+func TestHTTPUpstreamFailureClassifiesFreeUsageExhaustionAsModelQuota(t *testing.T) {
+	body := `{"code":"subscription:free-usage-exhausted","error":"tokens (actual/limit): 10/10"}`
+	failure := newHTTPUpstreamFailure(http.StatusTooManyRequests, []byte(body), 7, "build")
+	if !failure.AccountScoped || !failure.FreeQuotaExhausted || !failure.ModelQuotaExhausted || !failure.QuotaExhausted {
+		t.Fatalf("failure = %#v", failure)
+	}
+}
+
+func TestBuildRateLimitForcesAccountFailoverDespiteRetryVeto(t *testing.T) {
+	response := &provider.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"X-Should-Retry": {"false"}},
+		Body:       io.NopCloser(strings.NewReader(`{"code":"subscription:free-usage-exhausted"}`)),
+	}
+	if !isRetryableResponse(response, accountdomain.ProviderBuild) {
+		t.Fatal("Build free-usage 429 must force account rotation even when X-Should-Retry is false")
+	}
+	if isRetryableResponse(response, accountdomain.ProviderWeb) {
+		t.Fatal("non-Build 429 must continue honoring X-Should-Retry:false")
+	}
+}
+
+func TestBuildForbiddenReauthPolicyIgnoresSafetyRejection(t *testing.T) {
+	service := &Service{}
+	service.UpdateBuildForbiddenReauthPolicy(true, []string{"permission-denied"})
+	failure := &UpstreamFailure{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission-denied", SafetyRejection: true}
+	if service.shouldInvalidateBuildForbidden(failure) {
+		t.Fatal("safety rejection must not match permission-denied invalidation policy")
 	}
 }

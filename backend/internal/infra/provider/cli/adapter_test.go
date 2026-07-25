@@ -946,3 +946,26 @@ func TestForwardResponseInjectsPromptCacheKeyAfterChatConversion(t *testing.T) {
 		t.Fatalf("chat response = %#v", payload)
 	}
 }
+
+func TestShouldSkipXAIFallbackForSafetyAndBlocked(t *testing.T) {
+	if !shouldSkipXAIFallback([]byte(`{"code":"permission-denied","error":"Content violates usage guidelines. SAFETY_CHECK_TYPE_VIOLENCE"}`)) {
+		t.Fatal("safety body must skip XAI fallback")
+	}
+	if !shouldSkipXAIFallback([]byte(`{"code":"unauthorized:blocked-user","error":"User is blocked"}`)) {
+		t.Fatal("blocked body must skip XAI fallback")
+	}
+	if shouldSkipXAIFallback([]byte(`{"code":"permission-denied","error":"Access to the chat endpoint is denied"}`)) {
+		t.Fatal("ordinary permission denial may still probe XAI for Super Auto accounts")
+	}
+}
+
+func TestParseBuildTeamRPSRateLimitMetadata(t *testing.T) {
+	body := []byte(`{"code":"resource-exhausted","error":"Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20. Requests per Second (actual/limit): 2/2."}`)
+	metadata := provider.ParseRateLimitMetadata(body)
+	if metadata == nil {
+		t.Fatal("expected rate limit metadata")
+	}
+	if metadata.Scope != provider.RateLimitScopeRPS || metadata.TeamID != "00000000-0000-0000-0000-000000000013" || metadata.Model != "grok-4.20" || metadata.Actual != 2 || metadata.Limit != 2 {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
