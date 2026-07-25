@@ -106,6 +106,7 @@ export const settingsSchema = z.object({
     conversionConcurrency: positiveInteger.max(50),
     syncConcurrency: positiveInteger.max(50),
     refreshConcurrency: positiveInteger.max(50),
+    probeConcurrency: positiveInteger.max(50),
     randomDelay: z.number().int().min(0).max(5_000),
   }),
   media: z.object({

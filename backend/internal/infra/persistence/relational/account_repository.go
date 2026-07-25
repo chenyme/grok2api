@@ -960,6 +960,10 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.LastUsedAt = existing.LastUsedAt
 		row.ObservedModel = existing.ObservedModel
 		row.ObservedModelAt = existing.ObservedModelAt
+		// all-time 累计用量由审计路径原子递增，普通 upsert 不得改写。
+		row.TotalTokens = existing.TotalTokens
+		row.TotalCostTicks = existing.TotalCostTicks
+		row.TotalRequests = existing.TotalRequests
 		// 账号级 Build 路由、XAI 回退记录与 Super entitlement 在 upsert/转换/刷新路径中保留。
 		row.BuildAPIFallback = existing.BuildAPIFallback
 		row.BuildRouteMode = existing.BuildRouteMode
@@ -1008,7 +1012,7 @@ func (r *AccountRepository) Update(ctx context.Context, value account.Credential
 	var storedProvider account.Provider
 	if err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing accountModel
-		if err := tx.Select("id", "identity_key", "created_at", "provider", "auth_status", "reauth_marked_at").First(&existing, value.ID).Error; err != nil {
+		if err := tx.Select("id", "identity_key", "created_at", "provider", "auth_status", "reauth_marked_at", "total_tokens", "total_cost_ticks", "total_requests").First(&existing, value.ID).Error; err != nil {
 			return err
 		}
 		storedProvider = account.Provider(existing.Provider)
@@ -1018,6 +1022,10 @@ func (r *AccountRepository) Update(ctx context.Context, value account.Credential
 		// 身份同步补充的 user_id/email 不得让普通编辑重写持久化身份键。
 		row.IdentityKey = existing.IdentityKey
 		row.CreatedAt = existing.CreatedAt
+		// all-time 累计用量由审计路径原子递增，普通 Update 不得用陈旧值覆盖。
+		row.TotalTokens = existing.TotalTokens
+		row.TotalCostTicks = existing.TotalCostTicks
+		row.TotalRequests = existing.TotalRequests
 		applyReauthMarkedAtTransition(&row, existing)
 		if err := tx.Save(&row).Error; err != nil {
 			return err
@@ -1729,6 +1737,63 @@ func (r *AccountRepository) UpdateHealth(ctx context.Context, id uint64, failure
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, AccountID: id})
 	}
 	return err
+}
+
+// IncrementAccountUsage 原子累加账号 all-time 用量：每次成功审计写入调用，tokens/costTicks 可为 0，requests 固定 +1。
+// 使用 gorm.Expr 避免并发递增丢失更新。
+func (r *AccountRepository) IncrementAccountUsage(ctx context.Context, id uint64, tokens, costTicks int64) error {
+	if id == 0 {
+		return nil
+	}
+	if tokens < 0 {
+		tokens = 0
+	}
+	if costTicks < 0 {
+		costTicks = 0
+	}
+	updates := map[string]any{
+		"total_tokens":      gorm.Expr("total_tokens + ?", tokens),
+		"total_cost_ticks":  gorm.Expr("total_cost_ticks + ?", costTicks),
+		"total_requests":    gorm.Expr("total_requests + 1"),
+	}
+	return r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// MarkAuthStatus 仅写入认证状态，避免全量 Save 时重写凭据密文。
+func (r *AccountRepository) MarkAuthStatus(ctx context.Context, id uint64, status account.AuthStatus, lastError string) error {
+	if id == 0 {
+		return repository.ErrNotFound
+	}
+	if status != account.AuthStatusActive && status != account.AuthStatusReauthRequired {
+		return repository.ErrConflict
+	}
+	now := time.Now().UTC()
+	updates := map[string]any{
+		"auth_status": string(status),
+		"last_error":  truncate(lastError, 512),
+		"updated_at":  now,
+	}
+	if status == account.AuthStatusReauthRequired {
+		// 切入 reauth 时打锚点；若已是 reauth，保留原 reauth_marked_at。
+		var existing accountModel
+		if err := r.db.db.WithContext(ctx).Select("id", "auth_status", "reauth_marked_at").First(&existing, id).Error; err != nil {
+			return mapError(err)
+		}
+		if existing.AuthStatus != string(account.AuthStatusReauthRequired) || existing.ReauthMarkedAt == nil {
+			updates["reauth_marked_at"] = &now
+		}
+	} else {
+		updates["reauth_marked_at"] = nil
+	}
+	result := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return mapError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return repository.ErrNotFound
+	}
+	r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, AccountID: id})
+	return nil
 }
 
 func (r *AccountRepository) UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error {

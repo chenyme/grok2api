@@ -46,6 +46,11 @@ type accountModel struct {
 	LastUsedAt       *time.Time
 	ObservedModel    string `gorm:"size:255;check:chk_accounts_observed_model,length(observed_model) <= 255"`
 	ObservedModelAt  *time.Time
+	// TotalTokens/TotalCostTicks/TotalRequests 是账号级 all-time 累计用量，每次审计写入时原子递增。
+	// TotalCostTicks 单位为 USD ticks（1 USD = 10,000,000,000 ticks），与 request_audits.cost_in_usd_ticks 一致。
+	TotalTokens    int64 `gorm:"not null;default:0;check:chk_accounts_total_tokens,total_tokens >= 0"`
+	TotalCostTicks int64 `gorm:"column:total_cost_ticks;not null;default:0;check:chk_accounts_total_cost_ticks,total_cost_ticks >= 0"`
+	TotalRequests  int64 `gorm:"not null;default:0;check:chk_accounts_total_requests,total_requests >= 0"`
 	// BuildAPIFallback 仅对 grok_build 有意义：XAI 推理回退标记；其他 Provider 保持 false。
 	BuildAPIFallback bool `gorm:"not null;default:false"`
 	// BuildRouteMode 仅控制 grok_build 推理地址；其它 Provider 固定 auto。

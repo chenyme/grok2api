@@ -313,6 +313,7 @@ type Service struct {
 	conversionPool        *batch.Pool
 	syncPool              *batch.Pool
 	refreshPool           *batch.Pool
+	probePool             *batch.Pool
 	credentialRefreshWake chan struct{}
 	autoCleanMu           sync.RWMutex
 	autoClean             AutoCleanConfig
@@ -372,14 +373,14 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		},
 		autoCleanWake:     make(chan struct{}, 1),
 		buildBotFlagCache: resultcache.New[string, []uint64](1, buildBotFlagCacheTTL),
-		conversionPool:    batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), logger: slog.Default(),
+		conversionPool:    batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), probePool: batch.NewPool(10), logger: slog.Default(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
 }
 
 func (s *Service) SetBulkPool(pool *batch.Pool) {
 	if pool != nil {
-		s.conversionPool, s.syncPool, s.refreshPool = pool, pool, pool
+		s.conversionPool, s.syncPool, s.refreshPool, s.probePool = pool, pool, pool, pool
 	}
 }
 
@@ -1676,6 +1677,13 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 }
 
 func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason string) error {
+	// 优先只更新 auth_status/last_error，避免全量 Update 重写凭据密文。
+	if err := s.accounts.MarkAuthStatus(ctx, id, accountdomain.AuthStatusReauthRequired, reason); err == nil {
+		if s.sticky != nil {
+			_ = s.sticky.DeleteByAccount(ctx, id)
+		}
+		return nil
+	}
 	value, err := s.accounts.Get(ctx, id)
 	if err != nil {
 		return mapRepositoryError(err)

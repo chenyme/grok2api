@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -155,6 +156,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/batch/reset-quota", h.batchResetQuota)
 	router.POST("/accounts/batch/refresh-quotas", h.batchRefreshQuotas)
 	router.POST("/accounts/batch/refresh-tokens", h.batchRefreshTokens)
+	router.POST("/accounts/batch/health-probe", h.batchHealthProbe)
 	router.PATCH("/accounts/batch", h.batchUpdate)
 	router.DELETE("/accounts", h.batchDelete)
 	router.PATCH("/accounts/:id", h.update)
@@ -183,6 +185,12 @@ type batchUpdateRequest struct {
 	Priority         *int     `json:"priority"`
 	MaxConcurrent    *int     `json:"maxConcurrent"`
 	MinimumRemaining *float64 `json:"minimumRemaining"`
+}
+
+type batchHealthProbeRequest struct {
+	IDs           []string `json:"ids"`
+	Provider      string   `json:"provider"`
+	UpstreamModel string   `json:"upstreamModel"`
 }
 
 type batchDeleteRequest struct {
@@ -268,6 +276,9 @@ type accountResponse struct {
 	CooldownUntil              *time.Time              `json:"cooldownUntil,omitempty"`
 	LastError                  string                  `json:"lastError,omitempty"`
 	LastUsedAt                 *time.Time              `json:"lastUsedAt,omitempty"`
+	TotalTokens                int64                   `json:"totalTokens"`
+	TotalCostTicks             int64                   `json:"totalCostTicks"`
+	TotalRequests              int64                   `json:"totalRequests"`
 	LinkedAccountID            uint64                  `json:"linkedAccountId,omitempty,string"`
 	LinkedName                 string                  `json:"linkedAccountName,omitempty"`
 	LinkedProvider             string                  `json:"linkedProvider,omitempty"`
@@ -578,6 +589,36 @@ func (h *Handler) batchRefreshTokens(c *gin.Context) {
 	succeeded, failed, skipped, err := h.service.BatchRefreshTokens(c.Request.Context(), ids)
 	if err != nil {
 		h.writeServiceError(c, "tokenRefreshFailed", err, http.StatusBadGateway, "批量刷新账号凭据失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed, "skipped": skipped})
+}
+
+func (h *Handler) batchHealthProbe(c *gin.Context) {
+	var request batchHealthProbeRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	ids, err := parseIDs(request.IDs)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
+		return
+	}
+	if request.Provider != string(accountdomain.ProviderBuild) {
+		response.Error(c, http.StatusBadRequest, "invalidProvider", "仅 Grok Build 账号支持批量测活")
+		return
+	}
+	if strings.TrimSpace(request.UpstreamModel) == "" {
+		response.Error(c, http.StatusBadRequest, "invalidModel", "请选择测活目标模型")
+		return
+	}
+	if !h.validateProviderIDs(c, ids, request.Provider) {
+		return
+	}
+	succeeded, failed, skipped, err := h.service.BatchHealthProbe(c.Request.Context(), ids, request.UpstreamModel)
+	if err != nil {
+		h.writeServiceError(c, "healthProbeFailed", err, http.StatusBadGateway, "批量测活失败")
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed, "skipped": skipped})
@@ -1188,7 +1229,9 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		RefreshFailures: c.RefreshFailureCount, LastRefreshError: c.LastRefreshErrorCode,
 		Priority: c.Priority, MaxConcurrent: c.MaxConcurrent, MinimumRemaining: c.MinimumRemaining,
 		FailureCount: c.FailureCount, CooldownUntil: c.CooldownUntil, LastError: c.LastError,
-		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),
+		LastUsedAt: c.LastUsedAt,
+		TotalTokens: c.TotalTokens, TotalCostTicks: c.TotalCostTicks, TotalRequests: c.TotalRequests,
+		LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),
 		CreatedAt: c.CreatedAt, ObservedModel: c.ObservedModel, ObservedModelAt: c.ObservedModelAt,
 		CloudflareCookieConfigured: c.EncryptedCloudflareCookie != "",
 		BuildSuperEntitled:         c.BuildSuperEntitled && c.Provider == accountdomain.ProviderBuild,
