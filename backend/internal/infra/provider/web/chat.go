@@ -185,10 +185,35 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		previous = currentPrevious
 		if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 			if upstream.StatusCode == http.StatusForbidden {
+				// Preserve definitive account-block signals before a Statsig retry can discard the first response.
+				body, readErr := io.ReadAll(io.LimitReader(upstream.Body, 4<<20))
+				_ = upstream.Body.Close()
+				if readErr != nil {
+					lease.Release()
+					return nil, readErr
+				}
+				if provider.IsDefinitiveAccountBlockBody(body) {
+					return &provider.Response{
+						StatusCode: upstream.StatusCode, Status: upstream.Status, Header: http.Header(upstream.Header),
+						UpstreamURL: responseUpstreamURL(upstream),
+						Body: &releaseBody{ReadCloser: io.NopCloser(bytes.NewReader(body)), release: func() {
+							lease.Release()
+						}},
+					}, nil
+				}
+				lease.InvalidateClearance()
 				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
-					a.releaseStatsigRetry(upstream, lease)
+					lease.Release()
 					continue
 				}
+				return &provider.Response{
+					StatusCode: upstream.StatusCode, Status: upstream.Status, Header: http.Header(upstream.Header),
+					UpstreamURL: responseUpstreamURL(upstream),
+					Body: &releaseBody{ReadCloser: io.NopCloser(bytes.NewReader(body)), release: func() {
+						a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, upstream.StatusCode, nil)
+						lease.Release()
+					}},
+				}, nil
 			}
 			return &provider.Response{
 				StatusCode: upstream.StatusCode, Status: upstream.Status, Header: http.Header(upstream.Header),
@@ -349,7 +374,7 @@ func (a *Adapter) openChat(ctx context.Context, credential account.Credential, p
 	request.Header = buildHeaders(token, lease, "application/json")
 	applyAppHeaders(request.Header, cfg.BaseURL, cfg.BaseURL+"/")
 	a.applySignedStatsig(requestCtx, request, token, lease)
-	response, err := lease.Do(request)
+	response, err := lease.DoDeferredForbidden(request)
 	if err != nil {
 		cancel()
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)

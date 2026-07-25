@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -739,17 +740,35 @@ attemptLoop:
 		}
 		egressForbidden := s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden
 		finalEgressForbidden := egressForbidden && (attempt > 0 || attempt+1 >= attempts)
+		// Classify 403 bodies before egress retry. Definitive blocked-account signals invalidate and rotate the account;
+		// all other 403 responses retain the egress retry path without penalizing the account.
+		if response.StatusCode == http.StatusForbidden {
+			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
+			body, _ := readRetryableBody(response.Body)
+			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
+			if lastFailure.AccountBlocked {
+				failureHandled := s.markReauthRequired(ctx, input.RequestID, credential, fmt.Sprintf("%s account is blocked", credential.Provider))
+				if lastFailure.AccountScoped && !failureHandled {
+					s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
+				}
+				lease.Release()
+				lastErr = fmt.Errorf("上游返回 %d", response.StatusCode)
+				s.logger.Warn("upstream_request_failed", "request_id", input.RequestID, "account_id", credential.ID, "provider", credential.Provider, "status", response.StatusCode, "upstream_code", lastFailure.UpstreamCode, "account_scoped", lastFailure.AccountScoped, "account_blocked", true)
+				continue
+			}
+			if egressForbidden && !finalEgressForbidden {
+				// A non-blocking 403 is an egress/browser-session failure and must not penalize the account.
+				delete(excluded, credential.ID)
+				lease.Release()
+				lastErr = fmt.Errorf("上游出口会话被拒绝")
+				continue
+			}
+			// Restore the consumed final non-blocking 403 body for the common response path.
+			response.Body = io.NopCloser(bytes.NewReader(body))
+		}
 		if isRetryableResponse(response, route.Provider) && !finalEgressForbidden {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
 			body, _ := readRetryableBody(response.Body)
-			if egressForbidden {
-				// Web 403/code 7 means the browser session at the egress was rejected; the Provider rebuilt it and reduced node health, so do not penalize the account.
-				delete(excluded, credential.ID)
-				lease.Release()
-				lastErr = fmt.Errorf("Grok Web 出口会话被反机器人规则拒绝")
-				lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
-				continue
-			}
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
 			buildForbiddenReauth := credential.Provider == accountdomain.ProviderBuild && s.shouldInvalidateBuildForbidden(lastFailure)
 			if buildForbiddenReauth {
