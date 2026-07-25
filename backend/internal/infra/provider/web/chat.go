@@ -423,6 +423,13 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 			sieve = newToolStreamSieve(tools.available)
 		}
 		messagesStream := newWebMessagesStream(writer, responseID, model, parsed.InputTokens, options)
+		visiblePhase := webVisibleStreamPhase{}
+		writeDelta := func(kind, delta string) error {
+			if !visiblePhase.Allow(kind, delta) {
+				return nil
+			}
+			return writeWebStreamDelta(writer, messagesStream, operation, responseID, model, kind, delta)
+		}
 		if operation != conversation.OperationMessages {
 			writeStreamStart(writer, operation, responseID, model, parsed.InputTokens)
 		}
@@ -448,14 +455,14 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 				result := sieve.Feed(delta)
 				if result.SafeText != "" {
 					clientText.WriteString(result.SafeText)
-					if err := writeWebStreamDelta(writer, messagesStream, operation, responseID, model, kind, result.SafeText); err != nil {
+					if err := writeDelta(kind, result.SafeText); err != nil {
 						return err
 					}
 				}
 				if result.Complete {
 					if len(result.Calls) == 0 {
 						clientText.WriteString(result.Raw)
-						return writeWebStreamDelta(writer, messagesStream, operation, responseID, model, kind, result.Raw)
+						return writeDelta(kind, result.Raw)
 					}
 					parsed.ToolCalls = result.Calls
 					return writeWebStreamToolCalls(writer, messagesStream, operation, responseID, model, result.Calls)
@@ -465,7 +472,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 			if kind == "text" {
 				clientText.WriteString(delta)
 			}
-			return writeWebStreamDelta(writer, messagesStream, operation, responseID, model, kind, delta)
+			return writeDelta(kind, delta)
 		})
 		if err != nil {
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
@@ -476,7 +483,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 			result := sieve.Flush()
 			if result.SafeText != "" {
 				clientText.WriteString(result.SafeText)
-				if err := writeWebStreamDelta(writer, messagesStream, operation, responseID, model, "text", result.SafeText); err != nil {
+				if err := writeDelta("text", result.SafeText); err != nil {
 					_ = writer.CloseWithError(err)
 					return
 				}
@@ -504,7 +511,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 					delta = "\n\n" + delta
 				}
 				clientText.WriteString(delta)
-				if err := writeWebStreamDelta(writer, messagesStream, operation, responseID, model, "text", delta); err != nil {
+				if err := writeDelta("text", delta); err != nil {
 					_ = writer.CloseWithError(err)
 					return
 				}
@@ -1988,6 +1995,26 @@ func writeStreamStart(writer io.Writer, operation, responseID, model string, inp
 		return
 	}
 	writeSSE(writer, "response.created", map[string]any{"type": "response.created", "response": map[string]any{"id": responseID, "object": "response", "status": "in_progress", "model": model, "output": []any{}}})
+}
+
+type webVisibleStreamPhase struct {
+	textStarted bool
+}
+
+// Allow keeps client-visible output monotonic when Grok Web emits additional
+// reasoning after final text has already started. The complete reasoning is
+// still retained in parsedChat for non-streaming output and usage accounting.
+func (p *webVisibleStreamPhase) Allow(kind, delta string) bool {
+	if delta == "" {
+		return false
+	}
+	if kind == "reasoning" {
+		return !p.textStarted
+	}
+	if kind == "text" {
+		p.textStarted = true
+	}
+	return true
 }
 
 func writeStreamDelta(writer io.Writer, operation, responseID, model, kind, delta string) error {
