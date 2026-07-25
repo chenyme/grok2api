@@ -740,8 +740,8 @@ attemptLoop:
 		}
 		egressForbidden := s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden
 		finalEgressForbidden := egressForbidden && (attempt > 0 || attempt+1 >= attempts)
-		// 403 必须先按响应体分类：contains blocked-user / user is blocked 时账号失效并换号；
-		// 仅当未命中封号正文时，才把 403 当作出口反爬重试（不惩罚账号）。禁止仅凭状态码或数字 code 失效。
+		// Classify 403 bodies before egress retry. Definitive blocked-account signals invalidate and rotate the account;
+		// all other 403 responses retain the egress retry path without penalizing the account.
 		if response.StatusCode == http.StatusForbidden {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
 			body, _ := readRetryableBody(response.Body)
@@ -757,13 +757,13 @@ attemptLoop:
 				continue
 			}
 			if egressForbidden && !finalEgressForbidden {
-				// 非封号 403：出口/反爬会话问题，不惩罚账号。
+				// A non-blocking 403 is an egress/browser-session failure and must not penalize the account.
 				delete(excluded, credential.ID)
 				lease.Release()
 				lastErr = fmt.Errorf("上游出口会话被拒绝")
 				continue
 			}
-			// 最终一次非封号 403：body 已读，回填后走通用可重试/收尾逻辑。
+			// Restore the consumed final non-blocking 403 body for the common response path.
 			response.Body = io.NopCloser(bytes.NewReader(body))
 		}
 		if isRetryableResponse(response, route.Provider) && !finalEgressForbidden {

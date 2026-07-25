@@ -10,7 +10,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -151,7 +150,7 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 		request.Header = buildHeaders(token, lease, "application/json")
 		applyAppHeaders(request.Header, cfg.BaseURL, cfg.BaseURL+"/")
 		a.applySignedStatsig(requestCtx, request, token, lease)
-		response, err = lease.Do(request)
+		response, err = lease.DoDeferredForbidden(request)
 		if err != nil {
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 			return account.QuotaWindow{}, err
@@ -162,11 +161,11 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 			return account.QuotaWindow{}, err
 		}
 		if response.StatusCode == http.StatusForbidden {
-			// 封号正文优先于 Statsig 重试：首包 blocked-user 不得因 invalidate 被丢弃。
-			if bodyLooksLikeAccountBlocked(body) {
-				a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+			// Preserve definitive account-block signals before a Statsig retry can discard the first response.
+			if provider.IsDefinitiveAccountBlockBody(body) {
 				return account.QuotaWindow{}, fmt.Errorf("%w: account blocked", provider.ErrUnauthorized)
 			}
+			lease.InvalidateClearance()
 			if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, endpoint) {
 				continue
 			}
@@ -174,14 +173,13 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 		break
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
 		if response.StatusCode == http.StatusUnauthorized {
 			return account.QuotaWindow{}, provider.ErrUnauthorized
 		}
-		// 循环内已处理封号 403；此处兜底防止路径遗漏。
-		if response.StatusCode == http.StatusForbidden && bodyLooksLikeAccountBlocked(body) {
+		if response.StatusCode == http.StatusForbidden && provider.IsDefinitiveAccountBlockBody(body) {
 			return account.QuotaWindow{}, fmt.Errorf("%w: account blocked", provider.ErrUnauthorized)
 		}
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
 		return account.QuotaWindow{}, fmt.Errorf("Grok Web 额度接口返回 %d", response.StatusCode)
 	}
 	a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
@@ -232,7 +230,7 @@ func (a *Adapter) syncWeeklyCredits(ctx context.Context, credential account.Cred
 	request.Header.Set("x-grpc-web", "1")
 	request.Header.Set("x-user-agent", "connect-es/2.1.1")
 
-	response, err := lease.Do(request)
+	response, err := lease.DoDeferredForbidden(request)
 	if err != nil {
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 		return account.QuotaWindow{}, err
@@ -243,10 +241,16 @@ func (a *Adapter) syncWeeklyCredits(ctx context.Context, credential account.Cred
 		return account.QuotaWindow{}, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
 		if response.StatusCode == http.StatusUnauthorized {
 			return account.QuotaWindow{}, provider.ErrUnauthorized
 		}
+		if response.StatusCode == http.StatusForbidden && provider.IsDefinitiveAccountBlockBody(body) {
+			return account.QuotaWindow{}, fmt.Errorf("%w: account blocked", provider.ErrUnauthorized)
+		}
+		if response.StatusCode == http.StatusForbidden {
+			lease.InvalidateClearance()
+		}
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
 		return account.QuotaWindow{}, fmt.Errorf("Grok Web 周额度接口返回 %d", response.StatusCode)
 	}
 	window, err := parseWeeklyCreditsResponse(body, credential.ID, time.Now().UTC())
@@ -483,11 +487,4 @@ func parseQuotaBreakdown(message []byte) (account.QuotaBreakdown, bool) {
 		return account.QuotaBreakdown{}, false
 	}
 	return result, true
-}
-
-
-// bodyLooksLikeAccountBlocked 识别额度接口上明确的账号封禁响应（与 gateway AccountBlocked 同信号）。
-func bodyLooksLikeAccountBlocked(body []byte) bool {
-	text := strings.ToLower(string(body))
-	return strings.Contains(text, "blocked-user") || strings.Contains(text, "user is blocked")
 }

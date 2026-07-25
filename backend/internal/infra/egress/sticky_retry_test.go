@@ -90,6 +90,36 @@ func TestStickyLeaseDoesNotRetryUnsafeUpstreamOutcomes(t *testing.T) {
 	}
 }
 
+func TestLeaseDefersForbiddenClearanceInvalidationUntilClassification(t *testing.T) {
+	client := &scriptedRequestClient{do: func(int, *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: http.NoBody}, nil
+	}}
+	manager := &Manager{clearances: map[string]clearanceState{"account-bound": {}}}
+	lease := &Lease{client: client, clearanceManager: manager, clearanceKey: "account-bound"}
+	request, err := http.NewRequest(http.MethodPost, "https://example.com/generate", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := lease.DoDeferredForbidden(request)
+	if err != nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+	manager.clearanceMu.Lock()
+	invalidBeforeClassification := manager.clearances["account-bound"].invalid
+	manager.clearanceMu.Unlock()
+	if invalidBeforeClassification || client.closedIdle != 0 {
+		t.Fatalf("clearance invalid=%v closedIdle=%d before classification", invalidBeforeClassification, client.closedIdle)
+	}
+
+	lease.InvalidateClearance()
+	manager.clearanceMu.Lock()
+	invalidAfterClassification := manager.clearances["account-bound"].invalid
+	manager.clearanceMu.Unlock()
+	if !invalidAfterClassification || client.closedIdle != 1 {
+		t.Fatalf("clearance invalid=%v closedIdle=%d after classification", invalidAfterClassification, client.closedIdle)
+	}
+}
+
 func TestStickyLeaseDoesNotRetryAfterRequestWasWritten(t *testing.T) {
 	client := &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
 		trace := httptrace.ContextClientTrace(request.Context())
