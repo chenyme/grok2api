@@ -87,7 +87,7 @@ func TestSyncAggregatesCapabilitiesFromAllAccounts(t *testing.T) {
 	if attempts := webAdapter.attemptCount(); attempts != 1 {
 		t.Fatalf("web attempts = %d", attempts)
 	}
-	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-premium", "")
+	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "grok-premium", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestSyncAggregatesCapabilitiesFromAllAccounts(t *testing.T) {
 	if support[first.ID] || !support[second.ID] {
 		t.Fatalf("support = %#v", support)
 	}
-	webCandidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderWeb, "grok-chat-auto", "")
+	webCandidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderWeb, 0, "grok-chat-auto", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 
 	assertSupports := func(accountID uint64, upstream string, want bool) {
 		t.Helper()
-		candidates, listErr := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, upstream, "")
+		candidates, listErr := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, upstream, "")
 		if listErr != nil {
 			t.Fatal(listErr)
 		}
@@ -242,7 +242,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 		t.Fatalf("build video route = %#v, err = %v", route, err)
 	}
 	// Web does not use Build normalization and still supports its catalog models.
-	webCandidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderWeb, "grok-imagine-video", "")
+	webCandidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderWeb, 0, "grok-imagine-video", "")
 	if err != nil || len(webCandidates) != 1 || !webCandidates[0].SupportsModel {
 		t.Fatalf("web candidates = %#v, err = %v", webCandidates, err)
 	}

@@ -42,7 +42,7 @@ func TestConsoleQuotaParticipatesInRoutingAndSummary(t *testing.T) {
 	if profileCount != 0 {
 		t.Fatalf("console created %d web profiles", profileCount)
 	}
-	candidates, err := repository.ListRoutingCandidates(ctx, account.ProviderConsole, "grok-4.3", "console")
+	candidates, err := repository.ListRoutingCandidates(ctx, account.ProviderConsole, 0, "grok-4.3", "console")
 	if err != nil {
 		t.Fatal(err)
 	}

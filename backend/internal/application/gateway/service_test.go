@@ -1058,7 +1058,7 @@ func TestBuildChatPermissionDenialDoesNotInvalidateVideoCredential(t *testing.T)
 	if updated.AuthStatus != account.AuthStatusActive || updated.FailureCount != 0 || updated.CooldownUntil != nil {
 		t.Fatalf("chat denial invalidated the whole credential: %#v", updated)
 	}
-	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-chat-denied", "")
+	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "grok-chat-denied", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -63,7 +63,7 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_account_credentials_refresh_due ON account_credentials(refresh_due_at, account_id)",
 	"CREATE INDEX IF NOT EXISTS idx_quota_windows_due ON account_quota_windows(remaining, reset_at, account_id)",
 	"CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_public_id ON model_routes(public_id)",
-	"CREATE UNIQUE INDEX IF NOT EXISTS uidx_provider_upstream ON model_routes(provider, upstream_model)",
+	"CREATE INDEX IF NOT EXISTS idx_model_routes_provider_upstream ON model_routes(provider, upstream_model)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_created_id ON model_routes(created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_enabled ON model_routes(enabled, public_id, id)",
 	"CREATE INDEX IF NOT EXISTS idx_model_route_aliases_route ON model_route_aliases(model_route_id, alias)",
@@ -175,6 +175,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	if err := d.dropRedundantResponseExpiryIndexes(ctx); err != nil {
 		return fmt.Errorf("迁移响应过期索引: %w", err)
 	}
+	if err := d.dropProviderUpstreamUniqueIndex(ctx); err != nil {
+		return fmt.Errorf("迁移模型路由上游唯一约束: %w", err)
+	}
 	for _, statement := range schemaIndexes {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("初始化数据库索引: %w", err)
@@ -228,6 +231,14 @@ func (d *Database) dropRedundantResponseExpiryIndexes(ctx context.Context) error
 		if err := d.db.WithContext(ctx).Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
 			return fmt.Errorf("drop index %s: %w", name, err)
 		}
+	}
+	return nil
+}
+
+// dropProviderUpstreamUniqueIndex 允许同一 Provider 下多条对外名映射到同一上游模型。
+func (d *Database) dropProviderUpstreamUniqueIndex(ctx context.Context) error {
+	if err := d.db.WithContext(ctx).Exec("DROP INDEX IF EXISTS uidx_provider_upstream").Error; err != nil {
+		return fmt.Errorf("drop index uidx_provider_upstream: %w", err)
 	}
 	return nil
 }

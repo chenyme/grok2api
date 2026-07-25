@@ -22,6 +22,7 @@ type layeredAccountRepository struct {
 	bases          []account.RoutingAccountBase
 	nextBases      []account.RoutingAccountBase
 	overlays       map[string]account.RoutingOverlaySnapshot
+	routeOverlays  map[uint64]account.RoutingOverlaySnapshot
 	firstBaseStart chan struct{}
 	firstBaseReady chan struct{}
 	baseHook       func()
@@ -50,20 +51,23 @@ func (r *layeredAccountRepository) ListRoutingAccountBases(context.Context, acco
 	return values, nil
 }
 
-func (r *layeredAccountRepository) ListRoutingCandidates(context.Context, account.Provider, string, string) ([]account.RoutingCandidate, error) {
+func (r *layeredAccountRepository) ListRoutingCandidates(context.Context, account.Provider, uint64, string, string) ([]account.RoutingCandidate, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.combinedCalls++
 	return r.combined, nil
 }
 
-func (r *layeredAccountRepository) ListRoutingAccountOverlays(_ context.Context, _ account.Provider, upstreamModel string) (account.RoutingOverlaySnapshot, error) {
+func (r *layeredAccountRepository) ListRoutingAccountOverlays(_ context.Context, _ account.Provider, modelRouteID uint64, upstreamModel string) (account.RoutingOverlaySnapshot, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.overlayCalls == nil {
 		r.overlayCalls = make(map[string]int)
 	}
 	r.overlayCalls[upstreamModel]++
+	if modelRouteID > 0 && r.routeOverlays != nil {
+		return r.routeOverlays[modelRouteID], nil
+	}
 	return r.overlays[upstreamModel], nil
 }
 
@@ -78,7 +82,7 @@ func TestSelectorLayeredCacheReusesBaseAcrossModels(t *testing.T) {
 	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
 	now := time.Now().UTC()
 	for _, model := range []string{"model-a", "model-b"} {
-		values, err := selector.loadCandidates(context.Background(), account.ProviderBuild, model, "", now)
+		values, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, model, "", now)
 		if err != nil || len(values) != 1 || values[0].Credential.ID != 1 {
 			t.Fatalf("model %s candidates = %#v, err = %v", model, values, err)
 		}
@@ -90,7 +94,7 @@ func TestSelectorLayeredCacheReusesBaseAcrossModels(t *testing.T) {
 	}
 
 	selector.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountBillingChanged, Provider: account.ProviderBuild})
-	if _, err := selector.loadCandidates(context.Background(), account.ProviderBuild, "model-a", "", now); err != nil {
+	if _, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, "model-a", "", now); err != nil {
 		t.Fatal(err)
 	}
 	baseCalls, modelACalls = repo.callCounts("model-a")
@@ -99,12 +103,34 @@ func TestSelectorLayeredCacheReusesBaseAcrossModels(t *testing.T) {
 	}
 
 	selector.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountCapabilityChanged, Provider: account.ProviderBuild})
-	if _, err := selector.loadCandidates(context.Background(), account.ProviderBuild, "model-a", "", now); err != nil {
+	if _, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, "model-a", "", now); err != nil {
 		t.Fatal(err)
 	}
 	baseCalls, modelACalls = repo.callCounts("model-a")
 	if baseCalls != 2 || modelACalls != 2 {
 		t.Fatalf("overlay invalidation reloaded base=%d overlay=%d", baseCalls, modelACalls)
+	}
+}
+
+func TestSelectorLayeredCacheSeparatesRoutesSharingUpstream(t *testing.T) {
+	repo := newLayeredRepositoryFixture()
+	repo.bases = []account.RoutingAccountBase{
+		{Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive}},
+		{Credential: account.Credential{ID: 2, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive}},
+	}
+	repo.routeOverlays = map[uint64]account.RoutingOverlaySnapshot{
+		101: {HasBindings: true, Values: []account.RoutingAccountOverlay{{AccountID: 1, Bound: true, ModelCapabilityKnown: true, SupportsModel: true}}},
+		202: {HasBindings: true, Values: []account.RoutingAccountOverlay{{AccountID: 2, Bound: true, ModelCapabilityKnown: true, SupportsModel: true}}},
+	}
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	now := time.Now().UTC()
+	first, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 101, "shared-model", "", now)
+	if err != nil || len(first) != 1 || first[0].Credential.ID != 1 {
+		t.Fatalf("route 101 candidates = %#v, err = %v", first, err)
+	}
+	second, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 202, "shared-model", "", now)
+	if err != nil || len(second) != 1 || second[0].Credential.ID != 2 {
+		t.Fatalf("route 202 candidates = %#v, err = %v", second, err)
 	}
 }
 
@@ -124,7 +150,7 @@ func TestSelectorLayeredLoadRetriesInsteadOfMixingVersions(t *testing.T) {
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		values, err := selector.loadCandidates(context.Background(), account.ProviderBuild, "model-a", "", time.Now().UTC())
+		values, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, "model-a", "", time.Now().UTC())
 		resultCh <- result{values: values, err: err}
 	}()
 	<-repo.firstBaseStart
@@ -160,7 +186,7 @@ func TestSelectorFallsBackWhenLayerVersionsKeepChanging(t *testing.T) {
 	repo.baseHook = func() {
 		selector.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: account.ProviderBuild})
 	}
-	values, err := selector.loadCandidates(context.Background(), account.ProviderBuild, "model-a", "", time.Now().UTC())
+	values, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, "model-a", "", time.Now().UTC())
 	if err != nil || len(values) != 1 || values[0].Credential.ID != 9 {
 		t.Fatalf("fallback candidates = %#v, err = %v", values, err)
 	}
@@ -215,7 +241,7 @@ func TestLayeredRoutingMatchesCombinedRepositoryResult(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	combined, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, "model-a", "")
+	combined, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "model-a", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +249,7 @@ func TestLayeredRoutingMatchesCombinedRepositoryResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	overlay, err := accounts.ListRoutingAccountOverlays(ctx, account.ProviderBuild, "model-a")
+	overlay, err := accounts.ListRoutingAccountOverlays(ctx, account.ProviderBuild, 0, "model-a")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -176,7 +176,7 @@ func (s *Service) executeImage(
 	var lastCredentialFailure *accountdomain.Credential
 	var lastCredentialError error
 	for attempt := 0; attempt < attempts; attempt++ {
-		lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false)
+		lease, err = s.selector.Acquire(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false)
 		if err != nil {
 			writeFailureAudit(http.StatusServiceUnavailable, "upstream_unavailable", lastCredentialFailure)
 			return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)

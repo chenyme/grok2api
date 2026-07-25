@@ -47,7 +47,7 @@ func benchmarkSegmentedSelector(b *testing.B, candidateCount int, enabled, force
 			shard := segmentedSelectorShard(account.ProviderBuild, "benchmark-model", "")
 			selector.segmentedState.activeCursors[shard].Store(0)
 		}
-		lease, err := selector.Acquire(context.Background(), account.ProviderBuild, "benchmark-model", "", "", nil, false)
+		lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "benchmark-model", "", "", nil, false)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -60,7 +60,7 @@ func TestSegmentedActiveReadsOnlyFirstAvailableWindow(t *testing.T) {
 	selector := newSegmentedActiveTestSelector(100, limiter, nil)
 	selector.UpdateSegmentedSelector(true, 100, 8)
 
-	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, "model", "", "", nil, false)
+	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestSegmentedActiveRotatesWindowStartPerRoute(t *testing.T) {
 	selector.UpdateSegmentedSelector(true, 100, 8)
 	wanted := []uint64{1, 9, 17}
 	for index, expected := range wanted {
-		lease, err := selector.Acquire(context.Background(), account.ProviderBuild, "model", "", "", nil, false)
+		lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -119,7 +119,7 @@ func TestSegmentedActiveContinuesAfterSaturatedWindow(t *testing.T) {
 	selector := newSegmentedActiveTestSelector(100, limiter, nil)
 	selector.UpdateSegmentedSelector(true, 100, 8)
 
-	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, "model", "", "", nil, false)
+	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestSegmentedActiveExhaustsHigherPriorityCohortBeforeFallingBack(t *testing
 	selector := newSegmentedActiveTestSelector(100, limiter, priorities)
 	selector.UpdateSegmentedSelector(true, 100, 8)
 
-	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, "model", "", "", nil, false)
+	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestSegmentedActiveScansEveryCandidateBeforeSaturated(t *testing.T) {
 	selector := newSegmentedActiveTestSelector(100, limiter, nil)
 	selector.UpdateSegmentedSelector(true, 100, 8)
 
-	_, err := selector.Acquire(context.Background(), account.ProviderBuild, "model", "", "", nil, false)
+	_, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 	var unavailable *SelectionUnavailableError
 	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionSaturated {
 		t.Fatalf("error = %v", err)
@@ -266,7 +266,7 @@ func TestSegmentedActiveFallsBackToFullPlannerAfterBoundedWindows(t *testing.T) 
 	}
 	selector := newSegmentedActiveTestSelector(100, limiter, priorities)
 	selector.UpdateSegmentedSelector(true, 100, 8)
-	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, "model", "", "", nil, false)
+	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestSegmentedActiveWaitsAndRescansAfterCapacityReturns(t *testing.T) {
 		selector.announceLeaseReturn()
 	}()
 
-	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, "model", "", "", nil, false)
+	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestSegmentedActiveDoesNotRepeatWindowsAfterFullFallback(t *testing.T) {
 		selector.announceLeaseReturn()
 	}()
 
-	_, err := selector.Acquire(context.Background(), account.ProviderBuild, "model", "", "", nil, false)
+	_, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 	var unavailable *SelectionUnavailableError
 	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionSaturated {
 		t.Fatalf("error = %v", err)
@@ -352,7 +352,7 @@ func TestSegmentedActiveUsesFullPlannerAfterExhaustingSmallPool(t *testing.T) {
 		selector.announceLeaseReturn()
 	}()
 
-	_, err := selector.Acquire(context.Background(), account.ProviderBuild, "model", "", "", nil, false)
+	_, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 	var unavailable *SelectionUnavailableError
 	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionSaturated {
 		t.Fatalf("error = %v", err)
@@ -389,9 +389,9 @@ func TestSegmentedActiveSkipsStickyPinnedAndSmallPools(t *testing.T) {
 			var lease *accountLease
 			var err error
 			if test.pinned {
-				lease, err = selector.AcquirePinned(context.Background(), account.ProviderBuild, 1, "model", "", true)
+				lease, err = selector.AcquirePinned(context.Background(), account.ProviderBuild, 1, 0, "model", "", true)
 			} else {
-				lease, err = selector.Acquire(context.Background(), account.ProviderBuild, "model", "", test.affinity, nil, false)
+				lease, err = selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", test.affinity, nil, false)
 			}
 			if err != nil {
 				t.Fatal(err)
