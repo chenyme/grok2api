@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Unlink, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -96,6 +96,7 @@ type BuildConversionProgressState = {
 
 type WebConversionTarget = "build" | "console";
 type BuildQuotaTask = "sync" | "reset";
+type EgressConfigurationTask = "bind" | "unbind";
 
 type AccountSelection = {
   provider: AccountProvider;
@@ -130,7 +131,8 @@ export function AccountsPage() {
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [batchQuotaTaskOpen, setBatchQuotaTaskOpen] = useState(false);
   const [batchQuotaTask, setBatchQuotaTask] = useState<BuildQuotaTask>("sync");
-  const [egressBindingOpen, setEgressBindingOpen] = useState(false);
+  const [egressConfigurationOpen, setEgressConfigurationOpen] = useState(false);
+  const [egressConfigurationTask, setEgressConfigurationTask] = useState<EgressConfigurationTask>("bind");
   const [egressNodeID, setEgressNodeID] = useState("");
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupStatuses, setCleanupStatuses] = useState<Set<AccountCleanupStatus>>(() => new Set());
@@ -211,7 +213,7 @@ export function AccountsPage() {
   const egressNodesQuery = useQuery({
     queryKey: ["egress-nodes", "account-binding"],
     queryFn: () => listEgressNodes(),
-    enabled: egressBindingOpen,
+    enabled: egressConfigurationOpen && egressConfigurationTask === "bind",
   });
 
   const invalidateAccountData = useCallback(() => {
@@ -523,7 +525,7 @@ export function AccountsPage() {
     },
     onSuccess: () => {
       clearSelection();
-      setEgressBindingOpen(false);
+      setEgressConfigurationOpen(false);
       invalidateAccountData();
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("accounts.egressBound"));
@@ -534,6 +536,7 @@ export function AccountsPage() {
     mutationFn: () => unassignEgressAccounts(provider, [...selected]),
     onSuccess: () => {
       clearSelection();
+      setEgressConfigurationOpen(false);
       invalidateAccountData();
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("accounts.egressUnbound"));
@@ -901,8 +904,11 @@ export function AccountsPage() {
                 <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
-                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => { setEgressNodeID(""); setEgressBindingOpen(true); }}><Link />{t("accounts.bindEgress")}</Button>
-                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => unbindEgressMutation.mutate()}><Unlink />{t("accounts.unbindEgress")}</Button>
+                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
+                  setEgressNodeID("");
+                  setEgressConfigurationTask("bind");
+                  setEgressConfigurationOpen(true);
+                }}>{t("accounts.egressConfiguration")}</Button>
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion([...selected])}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets([...selected])}>{t("webAccountScripts.action")}</Button> : null}
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
@@ -1303,38 +1309,64 @@ export function AccountsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <Dialog open={egressBindingOpen} onOpenChange={(open) => {
-        if (bindEgressMutation.isPending) return;
-        setEgressBindingOpen(open);
-        if (!open) setEgressNodeID("");
+      <Dialog open={egressConfigurationOpen} onOpenChange={(open) => {
+        if (bindEgressMutation.isPending || unbindEgressMutation.isPending) return;
+        setEgressConfigurationOpen(open);
+        if (!open) {
+          setEgressConfigurationTask("bind");
+          setEgressNodeID("");
+        }
       }}>
         <DialogContent className="sm:max-w-[460px]">
           <DialogHeader>
-            <DialogTitle>{t("accounts.bindEgressTitle", { count: selected.size })}</DialogTitle>
-            <DialogDescription>{t("accounts.bindEgressDescription")}</DialogDescription>
+            <DialogTitle>{t("accounts.egressConfigurationTitle", { count: selected.size })}</DialogTitle>
+            <DialogDescription>{t("accounts.egressConfigurationDescription")}</DialogDescription>
           </DialogHeader>
-          {egressNodesQuery.isPending ? <div className="flex min-h-20 items-center justify-center"><Spinner /></div> : null}
-          {egressNodesQuery.isError ? <p className="text-sm text-destructive">{egressNodesQuery.error.message}</p> : null}
-          {!egressNodesQuery.isPending && !egressNodesQuery.isError ? (
-            bindableEgressNodes.length > 0 ? (
-              <div className="space-y-2">
-                <Label htmlFor="account-egress-node">{t("accounts.bindEgressNode")}</Label>
-                <Select value={egressNodeID} onValueChange={setEgressNodeID}>
-                  <SelectTrigger id="account-egress-node"><SelectValue placeholder={t("accounts.bindEgressEmpty")} /></SelectTrigger>
-                  <SelectContent>
-                    {bindableEgressNodes.map((node) => (
-                      <SelectItem key={node.id} value={node.id}>
-                        {node.name} ({node.assignedAccountCount}{node.accountCapacity > 0 ? ` / ${node.accountCapacity}` : ` / ${t("settings.egress.unlimited")}`})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+          <div className="space-y-3">
+            <Tabs value={egressConfigurationTask} onValueChange={(value) => setEgressConfigurationTask(value as EgressConfigurationTask)}>
+              <TabsList className="grid h-10 w-full grid-cols-2 p-1">
+                <TabsTrigger value="bind" className="h-8 font-normal" disabled={bindEgressMutation.isPending || unbindEgressMutation.isPending}>{t("accounts.bindEgress")}</TabsTrigger>
+                <TabsTrigger value="unbind" className="h-8 font-normal" disabled={bindEgressMutation.isPending || unbindEgressMutation.isPending}>{t("accounts.unbindEgress")}</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            {egressConfigurationTask === "bind" ? (
+              <div className="min-h-20">
+                {egressNodesQuery.isPending ? <div className="flex min-h-20 items-center justify-center"><Spinner /></div> : null}
+                {egressNodesQuery.isError ? <p className="text-sm text-destructive">{egressNodesQuery.error.message}</p> : null}
+                {!egressNodesQuery.isPending && !egressNodesQuery.isError ? (
+                  bindableEgressNodes.length > 0 ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="account-egress-node">{t("accounts.bindEgressNode")}</Label>
+                      <Select value={egressNodeID} onValueChange={setEgressNodeID} disabled={bindEgressMutation.isPending}>
+                        <SelectTrigger id="account-egress-node"><SelectValue placeholder={t("accounts.bindEgressEmpty")} /></SelectTrigger>
+                        <SelectContent>
+                          {bindableEgressNodes.map((node) => (
+                            <SelectItem key={node.id} value={node.id}>
+                              {node.name} ({node.assignedAccountCount}{node.accountCapacity > 0 ? ` / ${node.accountCapacity}` : ` / ${t("settings.egress.unlimited")}`})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : <p className="text-xs leading-5 text-muted-foreground">{t("accounts.bindEgressNoNodes")}</p>
+                ) : null}
               </div>
-            ) : <p className="text-sm text-muted-foreground">{t("accounts.bindEgressNoNodes")}</p>
-          ) : null}
+            ) : <p className="min-h-20 text-xs leading-5 text-muted-foreground">{t("accounts.unbindEgressDescription")}</p>}
+          </div>
           <DialogFooter>
-            <Button type="button" variant="secondary" size="sm" disabled={bindEgressMutation.isPending} onClick={() => setEgressBindingOpen(false)}>{t("common.cancel")}</Button>
-            <Button type="button" size="sm" disabled={!egressNodeID || bindEgressMutation.isPending} onClick={() => bindEgressMutation.mutate()}>{bindEgressMutation.isPending ? <Spinner /> : null}{t("accounts.bindEgress")}</Button>
+            <Button type="button" variant="secondary" size="sm" disabled={bindEgressMutation.isPending || unbindEgressMutation.isPending} onClick={() => setEgressConfigurationOpen(false)}>{t("common.cancel")}</Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={bindEgressMutation.isPending || unbindEgressMutation.isPending || (egressConfigurationTask === "bind" && (!egressNodeID || egressNodesQuery.isPending || egressNodesQuery.isError))}
+              onClick={() => {
+                if (egressConfigurationTask === "bind") bindEgressMutation.mutate();
+                else unbindEgressMutation.mutate();
+              }}
+            >
+              {bindEgressMutation.isPending || unbindEgressMutation.isPending ? <Spinner /> : null}
+              {t("accountQuotaTask.execute")}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

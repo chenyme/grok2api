@@ -1623,12 +1623,14 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
 });
 
 Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<string, string>, {
-  bindEgress: "绑定代理", unbindEgress: "解绑代理", bindEgressTitle: "绑定 {{count}} 个账号的代理", bindEgressDescription: "手动绑定的账号不会被自动均衡迁移。",
+  egressConfiguration: "代理配置", egressConfigurationTitle: "配置 {{count}} 个账号的代理", egressConfigurationDescription: "选择绑定或解绑所选账号的固定出口代理。",
+  bindEgress: "绑定代理", unbindEgress: "解绑代理", unbindEgressDescription: "移除所选账号的固定代理绑定；账号随后按当前出口策略重新参与调度。",
   bindEgressNode: "代理节点", bindEgressEmpty: "请选择代理节点", bindEgressNoNodes: "当前账号池没有可绑定的代理节点", egressBound: "代理已绑定", egressUnbound: "代理已解绑", egressFilter: "代理绑定",
 });
 
 Object.assign(resources.en.translation.accounts as unknown as Record<string, string>, {
-  bindEgress: "Bind proxy", unbindEgress: "Unbind proxy", bindEgressTitle: "Bind a proxy to {{count}} accounts", bindEgressDescription: "Manual bindings are never moved by automatic balancing.",
+  egressConfiguration: "Proxy configuration", egressConfigurationTitle: "Configure proxy for {{count}} accounts", egressConfigurationDescription: "Choose whether to bind or unbind a fixed egress proxy for the selected accounts.",
+  bindEgress: "Bind proxy", unbindEgress: "Unbind proxy", unbindEgressDescription: "Remove fixed proxy bindings from the selected accounts. They will return to the current egress routing policy.",
   bindEgressNode: "Proxy node", bindEgressEmpty: "Select a proxy node", bindEgressNoNodes: "No compatible proxy nodes are available for this account pool", egressBound: "Proxy bound", egressUnbound: "Proxy unbound", egressFilter: "Proxy binding",
 });
 
