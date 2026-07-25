@@ -77,6 +77,63 @@ func TestMultiplePublicIDsCanShareUpstream(t *testing.T) {
 	}
 }
 
+func TestSharedUpstreamRoutesKeepAccountBindingsIsolated(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	models := NewModelRepository(database)
+	accounts := NewAccountRepository(database)
+	createAccount := func(name, sourceKey string) account.Credential {
+		value, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: sourceKey,
+			EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive, Enabled: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := models.ReplaceAccountCapabilities(ctx, value.ID, []string{"shared-upstream"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	accountA := createAccount("account-a", "shared-binding-a")
+	accountB := createAccount("account-b", "shared-binding-b")
+	createRoute := func(publicID string, accountIDs []uint64) model.Route {
+		route, err := models.Create(ctx, model.Route{
+			PublicID: publicID, Provider: account.ProviderBuild, UpstreamModel: "shared-upstream",
+			Capability: model.CapabilityResponses, Origin: model.OriginManual, Enabled: true,
+		}, accountIDs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return route
+	}
+	routeA := createRoute("alias-a", []uint64{accountA.ID})
+	routeB := createRoute("alias-b", []uint64{accountB.ID})
+	unboundRoute := createRoute("alias-unbound", nil)
+
+	assertCandidates := func(route model.Route, expected ...uint64) {
+		candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, route.ID, route.UpstreamModel, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual := make(map[uint64]bool, len(candidates))
+		for _, candidate := range candidates {
+			actual[candidate.Credential.ID] = true
+		}
+		if len(actual) != len(expected) {
+			t.Fatalf("route %s candidates = %#v, want %v", route.PublicID, actual, expected)
+		}
+		for _, id := range expected {
+			if !actual[id] {
+				t.Fatalf("route %s candidates = %#v, missing %d", route.PublicID, actual, id)
+			}
+		}
+	}
+	assertCandidates(routeA, accountA.ID)
+	assertCandidates(routeB, accountB.ID)
+	assertCandidates(unboundRoute, accountA.ID, accountB.ID)
+}
+
 func TestUpsertDiscoveredCreatesCanonicalWhenManualAliasExists(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

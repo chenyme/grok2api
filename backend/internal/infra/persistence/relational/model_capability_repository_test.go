@@ -145,7 +145,7 @@ func TestBuildPaidCapabilitiesAreSharedAcrossActiveSuperAccounts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("sort by shared account support: %v", err)
 	}
-	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, sharedModel, "")
+	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, 0, sharedModel, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestBuildPaidCapabilitiesAreSharedAcrossActiveSuperAccounts(t *testing.T) {
 	if route.SupportedAccounts != 1 || route.TotalAccounts != 3 {
 		t.Fatalf("disabled observer must not grant shared entitlement: %#v", route)
 	}
-	candidates, err = accounts.ListRoutingCandidates(ctx, account.ProviderBuild, sharedModel, "")
+	candidates, err = accounts.ListRoutingCandidates(ctx, account.ProviderBuild, 0, sharedModel, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestManualModelRouteBindingsAndRediscovery(t *testing.T) {
 	if _, err := models.GetByPublicID(ctx, created.PublicID); err != nil {
 		t.Fatalf("bound route must be available without a discovery snapshot: %v", err)
 	}
-	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, created.UpstreamModel, "")
+	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, created.ID, created.UpstreamModel, "")
 	if err != nil {
 		t.Fatal(err)
 	}

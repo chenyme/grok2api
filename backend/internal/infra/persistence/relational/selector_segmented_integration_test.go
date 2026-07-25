@@ -113,7 +113,7 @@ func TestPostgresRedisSegmentedSelectorIntegration(t *testing.T) {
 
 	t.Run("continues to the next window", func(t *testing.T) {
 		saturate(t, 64)
-		lease, err := newSelector().Acquire(ctx, account.ProviderBuild, "p4-model", "", "", nil, false)
+		lease, err := newSelector().Acquire(ctx, account.ProviderBuild, 0, "p4-model", "", "", nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,7 +125,7 @@ func TestPostgresRedisSegmentedSelectorIntegration(t *testing.T) {
 
 	t.Run("falls back after four saturated windows", func(t *testing.T) {
 		saturate(t, 256)
-		lease, err := newSelector().Acquire(ctx, account.ProviderBuild, "p4-model", "", "", nil, false)
+		lease, err := newSelector().Acquire(ctx, account.ProviderBuild, 0, "p4-model", "", "", nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -151,7 +151,7 @@ func TestPostgresRedisSegmentedSelectorIntegration(t *testing.T) {
 			go func(selector *gateway.Selector) {
 				defer wait.Done()
 				<-start
-				lease, err := selector.Acquire(ctx, account.ProviderBuild, "p4-model", "", "", nil, false)
+				lease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "p4-model", "", "", nil, false)
 				if err != nil {
 					results <- result{err: err}
 					return

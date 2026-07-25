@@ -180,7 +180,7 @@ func readinessSnapshot(
 		if usable[route.Provider] || route.SupportedAccounts == 0 {
 			continue
 		}
-		candidates, listErr := accounts.ListRoutingCandidates(ctx, route.Provider, route.UpstreamModel, providers.QuotaMode(route.Provider, route.UpstreamModel))
+		candidates, listErr := accounts.ListRoutingCandidates(ctx, route.Provider, route.ID, route.UpstreamModel, providers.QuotaMode(route.Provider, route.UpstreamModel))
 		if listErr != nil {
 			providerErrors[route.Provider] = true
 			continue
