@@ -1875,6 +1875,48 @@ func (r *AccountRepository) ClearQuotaRecovery(ctx context.Context, accountID ui
 	return err
 }
 
+func (r *AccountRepository) ResetQuotaState(ctx context.Context, provider account.Provider, accountIDs []uint64) error {
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("account_id IN ?", accountIDs).Delete(&quotaRecoveryModel{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("account_id IN ? AND reason = ?", accountIDs, "model_quota_depleted").Delete(&accountModelQuotaBlockModel{}).Error
+	})
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountRecoveryChanged, Provider: provider})
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountModelQuotaChanged, Provider: provider})
+	}
+	return err
+}
+
+func (r *AccountRepository) ResetProviderQuotaState(ctx context.Context, provider account.Provider, activeOnly bool) (int64, error) {
+	var accountCount int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		accountQuery := func() *gorm.DB {
+			query := tx.Model(&accountModel{}).Where("provider = ?", provider)
+			if activeOnly {
+				query = query.Where("enabled = ? AND auth_status = ?", true, account.AuthStatusActive)
+			}
+			return query
+		}
+		if err := accountQuery().Count(&accountCount).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("account_id IN (?)", accountQuery().Select("id")).Delete(&quotaRecoveryModel{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("account_id IN (?) AND reason = ?", accountQuery().Select("id"), "model_quota_depleted").Delete(&accountModelQuotaBlockModel{}).Error
+	})
+	if err == nil && accountCount > 0 {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountRecoveryChanged, Provider: provider})
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountModelQuotaChanged, Provider: provider})
+	}
+	return accountCount, err
+}
+
 func (r *AccountRepository) HasQuotaWindows(ctx context.Context, accountID uint64) (bool, error) {
 	var count int64
 	err := r.db.db.WithContext(ctx).Model(&quotaWindowModel{}).Where("account_id = ? AND synced_at IS NOT NULL", accountID).Count(&count).Error

@@ -145,7 +145,7 @@ func TestSelectorSkipsQuotaProbeBeforeDue(t *testing.T) {
 	}
 }
 
-func TestSelectorQuotaRecoveryUsesBestKnownReset(t *testing.T) {
+func TestSelectorQuotaRecoveryUsesFixedFreeAndUpstreamPaidReset(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quota-recovery.db"))
 	if err != nil {
@@ -164,43 +164,65 @@ func TestSelectorQuotaRecoveryUsesBestKnownReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	resetAt := now.Add(4 * time.Hour).Truncate(time.Second)
-	if err := accounts.SaveQuotaWindows(ctx, value.ID, account.WebTierAuto, now, []account.QuotaWindow{{
-		AccountID: value.ID, Mode: "fast", Remaining: 0, Total: 20, ResetAt: &resetAt, Source: account.QuotaSourceUpstream,
-	}}); err != nil {
-		t.Fatal(err)
-	}
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 
 	paidPeriodEnd := now.Add(7 * time.Hour).Truncate(time.Second)
 	selector.MarkPaymentQuotaExhausted(ctx, value, quotaRecoveryHints{Billing: &account.Billing{
 		AccountID: value.ID, PlanCode: "super", MonthlyLimit: 100, BillingPeriodEnd: paidPeriodEnd.Format(time.RFC3339),
-	}, QuotaMode: "fast", RetryAfter: time.Hour})
+	}})
 	recovery := requireQuotaRecovery(t, ctx, accounts, value.ID)
 	if recovery.Kind != account.QuotaRecoveryKindPaid || recovery.NextProbeAt == nil || !recovery.NextProbeAt.Equal(paidPeriodEnd) {
 		t.Fatalf("paid recovery = %#v", recovery)
 	}
 
-	selector.MarkPaymentQuotaExhausted(ctx, value, quotaRecoveryHints{QuotaMode: "fast", RetryAfter: time.Hour})
-	recovery = requireQuotaRecovery(t, ctx, accounts, value.ID)
-	if recovery.Kind != account.QuotaRecoveryKindFree || recovery.NextProbeAt == nil || !recovery.NextProbeAt.Equal(resetAt) {
-		t.Fatalf("upstream reset recovery = %#v", recovery)
-	}
-
-	retryStarted := time.Now().UTC()
-	selector.MarkPaymentQuotaExhausted(ctx, value, quotaRecoveryHints{QuotaMode: "missing", RetryAfter: 90 * time.Minute})
-	recovery = requireQuotaRecovery(t, ctx, accounts, value.ID)
-	assertRecoveryDelay(t, recovery, retryStarted, 90*time.Minute)
-
-	fallbackStarted := time.Now().UTC()
-	selector.MarkPaymentQuotaExhausted(ctx, value, quotaRecoveryHints{QuotaMode: "missing"})
-	recovery = requireQuotaRecovery(t, ctx, accounts, value.ID)
-	assertRecoveryDelay(t, recovery, fallbackStarted, paymentRequiredRecoveryPause)
-
 	freeStarted := time.Now().UTC()
-	selector.MarkFreeQuotaExhausted(ctx, value, 100, 100, quotaRecoveryHints{QuotaMode: "missing"})
+	selector.MarkPaymentQuotaExhausted(ctx, value, quotaRecoveryHints{})
+	recovery = requireQuotaRecovery(t, ctx, accounts, value.ID)
+	if recovery.Kind != account.QuotaRecoveryKindFree {
+		t.Fatalf("free recovery = %#v", recovery)
+	}
+	assertRecoveryDelay(t, recovery, freeStarted, defaultFreeQuotaRecoveryPause)
+
+	freeStarted = time.Now().UTC()
+	selector.MarkFreeQuotaExhausted(ctx, value, 100, 100)
 	recovery = requireQuotaRecovery(t, ctx, accounts, value.ID)
 	assertRecoveryDelay(t, recovery, freeStarted, defaultFreeQuotaRecoveryPause)
+}
+
+func TestSelectorModelQuotaUsesFixedFreeAndUpstreamPaidDelay(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-quota-recovery.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	value, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "build", SourceKey: "model-quota-build", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	freeStarted := time.Now().UTC()
+	selector.MarkModelQuotaExhausted(ctx, value, &account.Billing{PlanName: "free"}, "free-model", time.Hour)
+	freeCandidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "free-model", "")
+	if err != nil || len(freeCandidates) != 1 || freeCandidates[0].ModelQuotaBlock == nil {
+		t.Fatalf("free candidates = %#v, err = %v", freeCandidates, err)
+	}
+	assertTimeDelay(t, freeCandidates[0].ModelQuotaBlock.CooldownUntil, freeStarted, defaultFreeQuotaRecoveryPause)
+
+	paidStarted := time.Now().UTC()
+	selector.MarkModelQuotaExhausted(ctx, value, &account.Billing{PlanName: "SuperGrok"}, "paid-model", 2*time.Hour)
+	paidCandidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "paid-model", "")
+	if err != nil || len(paidCandidates) != 1 || paidCandidates[0].ModelQuotaBlock == nil {
+		t.Fatalf("paid candidates = %#v, err = %v", paidCandidates, err)
+	}
+	assertTimeDelay(t, paidCandidates[0].ModelQuotaBlock.CooldownUntil, paidStarted, 2*time.Hour)
 }
 
 func requireQuotaRecovery(t *testing.T, ctx context.Context, accounts repository.AccountRepository, accountID uint64) account.QuotaRecovery {
@@ -217,9 +239,14 @@ func assertRecoveryDelay(t *testing.T, recovery account.QuotaRecovery, started t
 	if recovery.NextProbeAt == nil {
 		t.Fatalf("recovery has no next probe: %#v", recovery)
 	}
+	assertTimeDelay(t, *recovery.NextProbeAt, started, delay)
+}
+
+func assertTimeDelay(t *testing.T, actual, started time.Time, delay time.Duration) {
+	t.Helper()
 	want := started.Add(delay)
-	if recovery.NextProbeAt.Before(want.Add(-time.Second)) || recovery.NextProbeAt.After(want.Add(2*time.Second)) {
-		t.Fatalf("next probe = %s, want around %s", recovery.NextProbeAt, want)
+	if actual.Before(want.Add(-time.Second)) || actual.After(want.Add(2*time.Second)) {
+		t.Fatalf("time = %s, want around %s", actual, want)
 	}
 }
 
