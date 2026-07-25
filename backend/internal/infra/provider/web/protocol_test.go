@@ -867,6 +867,27 @@ func TestConsumeUpstreamChatFixture(t *testing.T) {
 	}
 }
 
+func TestWebVisibleStreamPhaseSuppressesLateReasoning(t *testing.T) {
+	phase := webVisibleStreamPhase{}
+	tests := []struct {
+		kind  string
+		delta string
+		want  bool
+	}{
+		{kind: "reasoning", delta: "first thought", want: true},
+		{kind: "text", delta: "", want: false},
+		{kind: "reasoning", delta: "continued thought", want: true},
+		{kind: "text", delta: "answer", want: true},
+		{kind: "reasoning", delta: "late thought", want: false},
+		{kind: "text", delta: " continued", want: true},
+	}
+	for index, test := range tests {
+		if got := phase.Allow(test.kind, test.delta); got != test.want {
+			t.Fatalf("step %d Allow(%q, %q) = %v, want %v", index, test.kind, test.delta, got, test.want)
+		}
+	}
+}
+
 func TestPreflightRejectsInBandErrorBeforeStreaming(t *testing.T) {
 	source := io.NopCloser(strings.NewReader(`data: {"error":{"message":"rate limited","code":8}}` + "\n"))
 	if _, err := preflightUpstream(source); err == nil || !strings.Contains(err.Error(), "rate limited") {
