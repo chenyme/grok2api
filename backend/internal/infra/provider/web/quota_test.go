@@ -9,14 +9,17 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 const capturedWeeklyCreditsHex = "00000000630a610d0000304112001a00220c089abbccd2061080f2d1fc012a0c089ab0f1d2061080f2d1fc013a07080515000020413a070804150000803f3a020802421e0802120c089abbccd2061080f2d1fc011a0c089ab0f1d2061080f2d1fc01580162006801800000000f677270632d7374617475733a300d0a"
@@ -143,6 +146,134 @@ func TestSyncQuotaStopsAfterFirstUnauthorizedMode(t *testing.T) {
 	}
 }
 
+func TestSyncQuotaBlockedForbiddenIsUnauthorized(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = writer.Write([]byte(`{"code":7,"message":"User is blocked [WKE=unauthorized:blocked-user]","details":[]}`))
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("blocked-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	egressRepository := &recordingWebEgressRepository{node: egressdomain.Node{
+		ID: 1, Name: "web", Scope: egressdomain.ScopeWeb, Enabled: true, Health: 1,
+	}}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+	}, infraegress.NewManager(egressRepository, cipher), cipher, nil, nil)
+	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 4, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
+	if !errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+	// manual Statsig mode does not invalidate/retry; SyncQuota stops after the first unauthorized mode.
+	if calls.Load() != 1 {
+		t.Fatalf("blocked credential made %d quota requests, want 1", calls.Load())
+	}
+	if updates := egressRepository.UpdateCount(); updates != 0 {
+		t.Fatalf("blocked account changed egress health %d times", updates)
+	}
+}
+
+func TestSyncQuotaBlockedForbiddenSkipsStatsigRetryInURLMode(t *testing.T) {
+	var rateLimitCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// URL mode may also probe the base URL for Statsig meta; only count quota endpoint.
+		if request.URL.Path == "/rest/rate-limits" {
+			rateLimitCalls.Add(1)
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusForbidden)
+			_, _ = writer.Write([]byte(`{"code":7,"message":"User is blocked [WKE=unauthorized:blocked-user]","details":[]}`))
+			return
+		}
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("blocked-sso-url")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// URL mode would invalidate Statsig and retry unless blocked body is classified first.
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "url", StatsigSignerURL: "https://signer.example/sign",
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 6, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
+	if !errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+	if rateLimitCalls.Load() != 1 {
+		t.Fatalf("blocked credential made %d rate-limits requests, want 1 (no Statsig retry)", rateLimitCalls.Load())
+	}
+}
+
+func TestSyncQuotaGenericForbiddenIsNotUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = writer.Write([]byte(`{"message":"temporary rejection"}`))
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("generic-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 5, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
+	if err == nil || errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v, want generic forbidden error", err)
+	}
+}
+
+func TestSyncWeeklyCreditsBlockedForbiddenIsUnauthorized(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = writer.Write([]byte(`{"code":"unauthorized:blocked-user","error":"User is blocked"}`))
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("blocked-weekly-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	_, err = adapter.SyncQuotaMode(context.Background(), account.Credential{ID: 7, EncryptedAccessToken: encrypted}, weeklyQuotaMode)
+	if !errors.Is(err, provider.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("blocked weekly credential made %d requests, want 1", calls.Load())
+	}
+}
+
 func TestInferWebTierFromUpstreamQuota(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -206,6 +337,49 @@ func TestResolveWebTierUsesFreshWebQuotaOverStoredTier(t *testing.T) {
 	if tier != account.WebTierAuto || useWeekly {
 		t.Fatalf("auto should not be promoted when modes unavailable: got %q, weekly=%v", tier, useWeekly)
 	}
+}
+
+type recordingWebEgressRepository struct {
+	mu      sync.Mutex
+	node    egressdomain.Node
+	updates int
+}
+
+func (r *recordingWebEgressRepository) ListEgressNodes(_ context.Context, scope egressdomain.Scope, _ repository.SortQuery) ([]egressdomain.Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.node.Scope != scope {
+		return nil, nil
+	}
+	return []egressdomain.Node{r.node}, nil
+}
+
+func (r *recordingWebEgressRepository) GetEgressNode(context.Context, uint64) (egressdomain.Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.node, nil
+}
+
+func (r *recordingWebEgressRepository) CreateEgressNode(context.Context, egressdomain.Node) (egressdomain.Node, error) {
+	return egressdomain.Node{}, errors.New("unsupported")
+}
+
+func (r *recordingWebEgressRepository) UpdateEgressNode(_ context.Context, value egressdomain.Node) (egressdomain.Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.node = value
+	r.updates++
+	return value, nil
+}
+
+func (r *recordingWebEgressRepository) DeleteEgressNode(context.Context, uint64) error {
+	return errors.New("unsupported")
+}
+
+func (r *recordingWebEgressRepository) UpdateCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.updates
 }
 
 func TestSyncQuotaCorrectsStoredSuperFromFreshWebQuota(t *testing.T) {

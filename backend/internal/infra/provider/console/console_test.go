@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -348,6 +349,59 @@ func TestAdapterAttachesConsoleRateLimitMetadata(t *testing.T) {
 	}
 }
 
+func TestAdapterDoesNotPenalizeEgressForBlockedAccount(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantUpdates int
+	}{
+		{name: "blocked account", body: `{"code":"unauthorized:blocked-user","error":"User is blocked"}`, wantUpdates: 0},
+		{name: "anti-bot rejection", body: `{"error":{"code":7,"message":"Request rejected by anti-bot rules."}}`, wantUpdates: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(writer, test.body)
+			}))
+			defer server.Close()
+
+			cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			encrypted, err := cipher.Encrypt("test-sso")
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository := &recordingConsoleEgressRepository{node: egressdomain.Node{
+				ID: 1, Name: "console", Scope: egressdomain.ScopeConsole, Enabled: true, Health: 1,
+			}}
+			adapter := NewAdapter(Config{BaseURL: server.URL, TimeoutSeconds: 5}, infraegress.NewManager(repository, cipher), cipher)
+			credential := account.Credential{ID: 1, Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, EncryptedAccessToken: encrypted}
+			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+				Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
+				Operation: conversation.OperationResponses, NormalizeBody: true, Body: []byte(`{"model":"grok-4.3","input":"hello"}`),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = response.Body.Close()
+			if response.StatusCode != http.StatusForbidden || string(body) != test.body {
+				t.Fatalf("status=%d body=%s", response.StatusCode, body)
+			}
+			if updates := repository.UpdateCount(); updates != test.wantUpdates {
+				t.Fatalf("egress updates = %d, want %d", updates, test.wantUpdates)
+			}
+		})
+	}
+}
+
 func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	var received map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -493,4 +547,47 @@ func (consoleEgressRepositoryStub) UpdateEgressNode(context.Context, egressdomai
 
 func (consoleEgressRepositoryStub) DeleteEgressNode(context.Context, uint64) error {
 	return errors.New("unsupported")
+}
+
+type recordingConsoleEgressRepository struct {
+	mu      sync.Mutex
+	node    egressdomain.Node
+	updates int
+}
+
+func (r *recordingConsoleEgressRepository) ListEgressNodes(_ context.Context, scope egressdomain.Scope, _ repository.SortQuery) ([]egressdomain.Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.node.Scope != scope {
+		return nil, nil
+	}
+	return []egressdomain.Node{r.node}, nil
+}
+
+func (r *recordingConsoleEgressRepository) GetEgressNode(context.Context, uint64) (egressdomain.Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.node, nil
+}
+
+func (r *recordingConsoleEgressRepository) CreateEgressNode(context.Context, egressdomain.Node) (egressdomain.Node, error) {
+	return egressdomain.Node{}, errors.New("unsupported")
+}
+
+func (r *recordingConsoleEgressRepository) UpdateEgressNode(_ context.Context, value egressdomain.Node) (egressdomain.Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.node = value
+	r.updates++
+	return value, nil
+}
+
+func (r *recordingConsoleEgressRepository) DeleteEgressNode(context.Context, uint64) error {
+	return errors.New("unsupported")
+}
+
+func (r *recordingConsoleEgressRepository) UpdateCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.updates
 }

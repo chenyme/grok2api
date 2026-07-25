@@ -292,86 +292,103 @@ func TestGatewaySSOUnauthorizedMarksInvalidAndSwitchesAccount(t *testing.T) {
 	for _, providerValue := range []account.Provider{account.ProviderWeb, account.ProviderConsole} {
 		providerValue := providerValue
 		t.Run(string(providerValue), func(t *testing.T) {
-			ctx := context.Background()
-			database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "sso-401.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer database.Close()
-			if err := database.InitializeSchema(ctx); err != nil {
-				t.Fatal(err)
-			}
-			accountRepo := relational.NewAccountRepository(database)
-			modelRepo := relational.NewModelRepository(database)
-			auditRepo := relational.NewAuditRepository(database)
-			responseRepo := relational.NewResponseRepository(database)
-			keyRepo := relational.NewClientKeyRepository(database)
-			credentials := make([]account.Credential, 0, 2)
-			for index, name := range []string{"rejected", "healthy"} {
-				credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
-					Provider: providerValue, AuthType: account.AuthTypeSSO, Name: name, SourceKey: string(providerValue) + "-" + name,
-					EncryptedAccessToken: "encrypted-" + name, Enabled: true, AuthStatus: account.AuthStatusActive,
-					Priority: 200 - index*100, MaxConcurrent: 1,
-				})
-				if createErr != nil {
-					t.Fatal(createErr)
-				}
-				credentials = append(credentials, credential)
-			}
-			modelName := "grok-sso-401"
-			if err := modelRepo.UpsertDiscovered(ctx, providerValue, []string{modelName}); err != nil {
-				t.Fatal(err)
-			}
-			for _, credential := range credentials {
-				if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{modelName}, time.Now().UTC()); err != nil {
-					t.Fatal(err)
-				}
-			}
-			key, err := keyRepo.Create(ctx, clientkey.Key{
-				Name: "sso-401-key", Prefix: "sso-401", SecretHash: strings.Repeat("e", 64), EncryptedSecret: "encrypted-key",
-				Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			adapter := &ssoUnauthorizedAdapter{providerValue: providerValue, rejectedID: credentials[0].ID}
-			registry := provider.NewRegistry(adapter)
-			sticky := memory.NewStickyStore()
-			accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
-			selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
-			service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
-
-			result, err := service.CreateResponse(ctx, Input{
-				RequestID: "req-sso-401", ClientKey: key, PublicModel: modelName,
-				Body: []byte(`{"model":"grok-sso-401","input":"hello"}`),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			body, err := io.ReadAll(result.Body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			result.Finalize(Usage{}, "", "")
-			_ = result.Body.Close()
-			if string(body) != "ok" {
-				t.Fatalf("body = %q", body)
-			}
-			if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
-				t.Fatalf("attempts = %#v", attempts)
-			}
-			rejected, err := accountRepo.Get(ctx, credentials[0].ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if rejected.AuthStatus != account.AuthStatusReauthRequired || !rejected.Enabled {
-				t.Fatalf("rejected account = %#v", rejected)
-			}
-			healthy, err := accountRepo.Get(ctx, credentials[1].ID)
-			if err != nil || healthy.AuthStatus != account.AuthStatusActive {
-				t.Fatalf("healthy account = %#v, err = %v", healthy, err)
-			}
+			testGatewaySSOFailureMarksInvalidAndSwitchesAccount(t, providerValue, http.StatusUnauthorized, `{"error":{"code":"unauthorized","message":"credential rejected"}}`)
 		})
+	}
+}
+
+func TestGatewaySSOBlockedForbiddenMarksInvalidAndSwitchesAccount(t *testing.T) {
+	for _, providerValue := range []account.Provider{account.ProviderWeb, account.ProviderConsole} {
+		providerValue := providerValue
+		t.Run(string(providerValue), func(t *testing.T) {
+			testGatewaySSOFailureMarksInvalidAndSwitchesAccount(t, providerValue, http.StatusForbidden, `{"error":{"code":7,"message":"User is blocked [WKE=unauthorized:blocked-user]"}}`)
+		})
+	}
+}
+
+func testGatewaySSOFailureMarksInvalidAndSwitchesAccount(t *testing.T, providerValue account.Provider, failureStatus int, failureBody string) {
+	t.Helper()
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "sso-failure.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"rejected", "healthy"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: providerValue, AuthType: account.AuthTypeSSO, Name: name, SourceKey: string(providerValue) + "-" + name,
+			EncryptedAccessToken: "encrypted-" + name, Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index*100, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	modelName := "grok-sso-401"
+	if err := modelRepo.UpsertDiscovered(ctx, providerValue, []string{modelName}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{modelName}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "sso-401-key", Prefix: "sso-401", SecretHash: strings.Repeat("e", 64), EncryptedSecret: "encrypted-key",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &ssoFailureAdapter{
+		providerValue: providerValue, rejectedID: credentials[0].ID,
+		failureStatus: failureStatus, failureBody: failureBody,
+	}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-sso-401", ClientKey: key, PublicModel: modelName,
+		Body: []byte(`{"model":"grok-sso-401","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Finalize(Usage{}, "", "")
+	_ = result.Body.Close()
+	if string(body) != "ok" {
+		t.Fatalf("body = %q", body)
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+		t.Fatalf("attempts = %#v", attempts)
+	}
+	rejected, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected.AuthStatus != account.AuthStatusReauthRequired || !rejected.Enabled {
+		t.Fatalf("rejected account = %#v", rejected)
+	}
+	healthy, err := accountRepo.Get(ctx, credentials[1].ID)
+	if err != nil || healthy.AuthStatus != account.AuthStatusActive {
+		t.Fatalf("healthy account = %#v, err = %v", healthy, err)
 	}
 }
 
@@ -1552,30 +1569,39 @@ type failoverAdapter struct {
 	resourceStatus         int
 }
 
-type ssoUnauthorizedAdapter struct {
+type ssoFailureAdapter struct {
 	mu            sync.Mutex
 	providerValue account.Provider
 	rejectedID    uint64
+	failureStatus int
+	failureBody   string
 	attempts      []uint64
 }
 
-func (a *ssoUnauthorizedAdapter) Provider() account.Provider { return a.providerValue }
-func (a *ssoUnauthorizedAdapter) Definition() provider.Definition {
+func (a *ssoFailureAdapter) Provider() account.Provider { return a.providerValue }
+func (a *ssoFailureAdapter) Definition() provider.Definition {
 	return testConversationDefinition(a.providerValue)
 }
-func (a *ssoUnauthorizedAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+func (a *ssoFailureAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.mu.Lock()
 	a.attempts = append(a.attempts, request.Credential.ID)
 	a.mu.Unlock()
 	if request.Credential.ID == a.rejectedID {
+		status := a.failureStatus
+		if status == 0 {
+			status = http.StatusUnauthorized
+		}
+		body := a.failureBody
+		if body == "" {
+			body = `{"error":{"code":"unauthorized","message":"credential rejected"}}`
+		}
 		return &provider.Response{
-			StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", Header: make(http.Header),
-			Body: io.NopCloser(strings.NewReader(`{"error":{"code":"unauthorized","message":"credential rejected"}}`)),
+			StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)),
 		}, nil
 	}
 	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
 }
-func (a *ssoUnauthorizedAdapter) Attempts() []uint64 {
+func (a *ssoFailureAdapter) Attempts() []uint64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]uint64(nil), a.attempts...)
@@ -1970,7 +1996,10 @@ func testConversationDefinition(providerValue account.Provider) provider.Definit
 	}
 	if providerValue == account.ProviderWeb {
 		definition.Quota = provider.QuotaRemoteWindow
-		definition.Inference = provider.InferencePolicy{Usage: provider.UsageEstimated, RetryForbiddenAsEgress: true}
+		definition.Inference.Usage = provider.UsageEstimated
+	}
+	if providerValue == account.ProviderWeb || providerValue == account.ProviderConsole {
+		definition.Inference.RetryForbiddenAsEgress = true
 	}
 	return definition
 }

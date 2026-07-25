@@ -70,16 +70,35 @@ type requestClient interface {
 }
 
 func (l *Lease) Do(request *http.Request) (*http.Response, error) {
+	return l.doRequest(request, true)
+}
+
+// DoDeferredForbidden executes an HTTP request while leaving 403 clearance
+// invalidation to the caller after it has classified the response body.
+func (l *Lease) DoDeferredForbidden(request *http.Request) (*http.Response, error) {
+	return l.doRequest(request, false)
+}
+
+func (l *Lease) doRequest(request *http.Request, invalidateForbidden bool) (*http.Response, error) {
 	if l == nil || l.client == nil {
 		return nil, errors.New("出口客户端未初始化")
 	}
 	response, err := l.do(request)
 	recordPhysicalCall(request.Context(), response, err)
-	if err == nil && response != nil && response.StatusCode == http.StatusForbidden && l.clearanceManager != nil && l.clearanceKey != "" {
-		l.clearanceManager.invalidateClearanceKey(l.clearanceKey, l.client)
+	if invalidateForbidden && err == nil && response != nil && response.StatusCode == http.StatusForbidden {
+		l.InvalidateClearance()
 	}
 	return response, err
 }
+
+// InvalidateClearance invalidates the exact browser-session binding used by
+// this lease after a 403 has been classified as egress-related.
+func (l *Lease) InvalidateClearance() {
+	if l != nil && l.clearanceManager != nil && l.clearanceKey != "" {
+		l.clearanceManager.invalidateClearanceKey(l.clearanceKey, l.client)
+	}
+}
+
 func (l *Lease) Release() {
 	if l != nil && l.release != nil {
 		l.release()

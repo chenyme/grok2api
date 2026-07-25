@@ -144,7 +144,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if request.Streaming {
 		upstream.Header.Set("Accept", "text/event-stream")
 	}
-	response, err := lease.Do(upstream)
+	response, err := lease.DoDeferredForbidden(upstream)
 	if err != nil {
 		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, 0, err)
 		lease.Release()
@@ -162,7 +162,34 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return nil, err
 		}
 	}
+	responseReleased := false
+	if response.StatusCode == http.StatusForbidden {
+		data, truncated, readErr := provider.ReadDiagnosticBody(response.Body)
+		_ = response.Body.Close()
+		if readErr != nil {
+			lease.Release()
+			cancel()
+			return nil, readErr
+		}
+		if !provider.IsDefinitiveAccountBlockBody(data) {
+			lease.InvalidateClearance()
+			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
+		}
+		lease.Release()
+		cancel()
+		responseReleased = true
+		responseBodyTruncated = responseBodyTruncated || truncated
+		response.Body = io.NopCloser(bytes.NewReader(data))
+		response.ContentLength = int64(len(data))
+		response.Header.Set("Content-Length", strconv.Itoa(len(data)))
+		if truncated {
+			response.Header.Set("X-Grok2API-Body-Truncated", "1")
+		}
+	}
 	release := func() {
+		if responseReleased {
+			return
+		}
 		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
 		lease.Release()
 		cancel()

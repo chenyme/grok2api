@@ -15,8 +15,9 @@ type providerLinkRepository interface {
 	UpdateIdentityMetadata(ctx context.Context, accountID uint64, email, userID, teamID string) error
 }
 
-// SyncAccountIdentity 尽力补充 Web/Console 的稳定上游身份，并据此建立高可信弱关联。
-// 只有明确的 401 会将当前 Provider 账号移出号池；其他同步失败不影响健康状态。
+// SyncAccountIdentity best-effort fills stable Web/Console identity metadata and reconciles trusted links.
+// Definitive unauthorized signals mark the current Provider account as reauthRequired and remove it from scheduling;
+// other synchronization failures do not affect account health.
 func (s *Service) SyncAccountIdentity(ctx context.Context, id uint64) error {
 	_, err, _ := s.identitySyncs.Do(fmt.Sprintf("%d", id), func() (any, error) {
 		return nil, s.syncAccountIdentity(ctx, id)
