@@ -168,6 +168,20 @@ routing:
 	}
 }
 
+func TestValidateAllowsMaxAttemptsAboveFormerCap(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
+	cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	cfg.Routing.MaxAttempts = 100
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("maxAttempts above former cap rejected: %v", err)
+	}
+	cfg.Routing.MaxAttempts = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("maxAttempts below 1 was accepted")
+	}
+}
+
 func TestValidateRejectsInvalidSegmentedSelectorConfig(t *testing.T) {
 	tests := []func(*RoutingConfig){
 		func(value *RoutingConfig) { value.SegmentedMinCandidates = 99 },

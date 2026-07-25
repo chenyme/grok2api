@@ -122,7 +122,7 @@ export const settingsSchema = z.object({
     cooldownBase: routingCooldownDuration,
     cooldownMax: routingCooldownDuration,
     capacityWait: routingCapacityWaitDuration,
-    maxAttempts: positiveInteger.max(10),
+    maxAttempts: positiveInteger,
     preferFreeBuild: z.boolean(),
     segmentedSelector: z.object({
       enabled: z.boolean(),
