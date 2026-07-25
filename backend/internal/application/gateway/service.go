@@ -828,21 +828,17 @@ attemptLoop:
 				s.selector.MarkQuotaStateChanged(credential.Provider)
 				failureHandled = reconcileErr == nil && exhausted
 			} else if used, limit, exhausted := parseFreeQuotaExhaustion(body); exhausted {
-				s.selector.MarkFreeQuotaExhausted(ctx, credential, used, limit, quotaRecoveryHints{
-					Billing: lease.Billing, QuotaMode: lease.QuotaMode, RetryAfter: retryAfter,
-				})
+				s.selector.MarkFreeQuotaExhausted(ctx, credential, used, limit)
 				failureHandled = true
 			} else if lastFailure.ModelQuotaExhausted {
-				s.selector.MarkModelQuotaExhausted(ctx, credential, route.UpstreamModel, retryAfter)
+				s.selector.MarkModelQuotaExhausted(ctx, credential, lease.Billing, route.UpstreamModel, retryAfter)
 				failureHandled = true
 			} else if lastFailure.FreeQuotaExhausted {
-				s.selector.MarkFreeQuotaExhausted(ctx, credential, 0, 0, quotaRecoveryHints{
-					Billing: lease.Billing, QuotaMode: lease.QuotaMode, RetryAfter: retryAfter,
-				})
+				s.selector.MarkFreeQuotaExhausted(ctx, credential, 0, 0)
 				failureHandled = true
 			} else if lastFailure.QuotaExhausted {
 				s.selector.MarkPaymentQuotaExhausted(ctx, credential, quotaRecoveryHints{
-					Billing: lease.Billing, QuotaMode: lease.QuotaMode, RetryAfter: retryAfter,
+					Billing: lease.Billing,
 				})
 				failureHandled = true
 			}

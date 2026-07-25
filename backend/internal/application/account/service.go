@@ -61,6 +61,8 @@ const (
 	maxCredentialExportAccounts                = 10000
 	maxCredentialImportAccounts                = 10000
 	credentialImportChunkSize                  = 100
+	maxQuotaResetAccounts                      = 10000
+	quotaResetChunkSize                        = 500
 	maxBuildConversionAccounts                 = 1000
 	maxWebConsoleSyncAccounts                  = 1000
 	accountTaskBatchSize                       = 1000
@@ -2789,6 +2791,43 @@ func (s *Service) BatchRefreshBilling(ctx context.Context, ids []uint64) (int, i
 		return 0, 0, err
 	}
 	return s.refreshBillings(ctx, values, nil)
+}
+
+// BatchResetQuotaState clears local Build quota recovery state without changing
+// upstream billing snapshots or historical audit usage.
+func (s *Service) BatchResetQuotaState(ctx context.Context, ids []uint64) (int, error) {
+	values, err := normalizeIDs(ids, maxQuotaResetAccounts)
+	if err != nil {
+		return 0, err
+	}
+	for start := 0; start < len(values); start += quotaResetChunkSize {
+		end := min(start+quotaResetChunkSize, len(values))
+		count, countErr := s.accounts.CountProviderAccountsByIDs(ctx, accountdomain.ProviderBuild, values[start:end])
+		if countErr != nil {
+			return 0, countErr
+		}
+		if count != int64(end-start) {
+			return 0, invalidInput("仅 Grok Build 账号支持手动重置额度状态")
+		}
+	}
+	reset := 0
+	for start := 0; start < len(values); start += quotaResetChunkSize {
+		if err := ctx.Err(); err != nil {
+			return reset, err
+		}
+		end := min(start+quotaResetChunkSize, len(values))
+		if err := s.accounts.ResetQuotaState(ctx, accountdomain.ProviderBuild, values[start:end]); err != nil {
+			return reset, err
+		}
+		reset += end - start
+	}
+	return reset, nil
+}
+
+// ResetAllBuildQuotaState clears local quota state for every enabled Build
+// account without materializing the complete account ID set in memory.
+func (s *Service) ResetAllBuildQuotaState(ctx context.Context) (int64, error) {
+	return s.accounts.ResetProviderQuotaState(ctx, accountdomain.ProviderBuild, true)
 }
 
 // BatchRefreshQuota 使用有限并发同步选中 Web 或 Console 账号的额度窗口。

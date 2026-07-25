@@ -89,6 +89,8 @@ type AccountRepository interface {
 	SaveQuotaRecovery(ctx context.Context, value account.QuotaRecovery) error
 	ClaimQuotaProbe(ctx context.Context, accountID uint64, now, leaseUntil time.Time) (bool, error)
 	ClearQuotaRecovery(ctx context.Context, accountID uint64) error
+	ResetQuotaState(ctx context.Context, provider account.Provider, accountIDs []uint64) error
+	ResetProviderQuotaState(ctx context.Context, provider account.Provider, activeOnly bool) (int64, error)
 	HasQuotaWindows(ctx context.Context, accountID uint64) (bool, error)
 	GetQuotaWindows(ctx context.Context, accountIDs []uint64) (map[uint64][]account.QuotaWindow, error)
 	ReplaceQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error
