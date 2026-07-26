@@ -124,6 +124,18 @@ type ProbeFamilyResult struct {
 	Error       string
 }
 
+// SubscriptionImportFilter restricts which candidates can be written when a
+// subscription or pasted proxy list is imported. A zero value leaves import
+// behavior unchanged and avoids a preflight probe.
+type SubscriptionImportFilter struct {
+	MaxLatencyMS int
+	Countries    []string
+}
+
+func (value SubscriptionImportFilter) Active() bool {
+	return value.MaxLatencyMS > 0 || len(value.Countries) > 0
+}
+
 // SubscriptionSource stores a write-only remote proxy subscription. The URL
 // remains encrypted at rest and must never be returned by management APIs.
 type SubscriptionSource struct {
@@ -134,6 +146,7 @@ type SubscriptionSource struct {
 	EncryptedURL           string
 	RefreshIntervalSeconds int
 	DefaultAccountCapacity int
+	ImportFilter           SubscriptionImportFilter
 	LastSyncedAt           *time.Time
 	NextSyncAt             *time.Time
 	LastSyncImported       int
@@ -150,6 +163,7 @@ type PublicSubscriptionSource struct {
 	URLConfigured          bool
 	RefreshIntervalSeconds int
 	DefaultAccountCapacity int
+	ImportFilter           SubscriptionImportFilter
 	LastSyncedAt           *time.Time
 	NextSyncAt             *time.Time
 	LastSyncImported       int

@@ -55,20 +55,23 @@ export type EgressScope = "grok_build" | "grok_web" | "grok_console" | "grok_web
 export type EgressFallbackMode = "none" | "direct" | "fixed";
 export type EgressFallbackConfigDTO = { mode: EgressFallbackMode; nodeId?: string };
 export type EgressNodeListDTO = { items: EgressNodeDTO[]; defaultUserAgents: Record<EgressScope, string> };
+export type EgressImportFilterInput = { maxLatencyMs: number; countries: string[] };
 export type EgressSourceDTO = {
   id: string; name: string; scope: EgressScope; enabled: boolean; urlConfigured: boolean;
   refreshIntervalSeconds: number; defaultAccountCapacity: number;
+  importFilter: EgressImportFilterInput;
   lastSyncedAt?: string; nextSyncAt?: string; lastSyncImported: number; lastSyncError?: string;
 };
 export type EgressSourceInput = {
   name: string; scope: EgressScope; enabled: boolean; url?: string; clearUrl?: boolean;
-  refreshIntervalSeconds: number; defaultAccountCapacity: number;
+  refreshIntervalSeconds: number; defaultAccountCapacity: number; importFilter: EgressImportFilterInput;
 };
 export type EgressOperationsConfigDTO = {
   probeProvider: "ipinfo" | "cloudflare"; probeIntervalSeconds: number; autoAssignEnabled: boolean; autoBalanceEnabled: boolean;
   assignmentIntervalSeconds: number; fallbacks: Record<EgressScope, EgressFallbackConfigDTO>; updatedAt: string;
 };
-export type EgressImportResultDTO = { imported: number; skipped: number };
+export type EgressImportResultDTO = { imported: number; skipped: number; filtered: number };
+export type EgressTextImportInput = { name: string; scope: EgressScope; accountCapacity: number; content: string; importFilter: EgressImportFilterInput };
 export type EgressIPProbeDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt?: string; latencyMs: number; exitIp?: string; exitCountry?: string; error?: string };
 export type EgressProbeResultDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt: string; latencyMs: number; exitIp?: string; exitCountry?: string; error?: string; probeProvider?: "ipinfo" | "cloudflare"; ipv4: EgressIPProbeDTO; ipv6: EgressIPProbeDTO };
 export type EgressProbeBatchResultDTO = { requested: number; healthy: number; unhealthy: number };
@@ -197,15 +200,15 @@ const decodeEgressNodeList = (value: unknown): EgressNodeListDTO => {
 const egressSourceValidator = hasShape({
   id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset"), enabled: isBoolean, urlConfigured: isBoolean,
   refreshIntervalSeconds: isNumber, defaultAccountCapacity: isNumber, lastSyncedAt: isOptional(isString), nextSyncAt: isOptional(isString),
-  lastSyncImported: isNumber, lastSyncError: isOptional(isString),
+  importFilter: hasShape({ maxLatencyMs: isNumber, countries: isArrayOf(isString) }), lastSyncImported: isNumber, lastSyncError: isOptional(isString),
 });
 const decodeEgressSource = createObjectDecoder<EgressSourceDTO>("egress source", {
   id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset"), enabled: isBoolean, urlConfigured: isBoolean,
   refreshIntervalSeconds: isNumber, defaultAccountCapacity: isNumber, lastSyncedAt: isOptional(isString), nextSyncAt: isOptional(isString),
-  lastSyncImported: isNumber, lastSyncError: isOptional(isString),
+  importFilter: hasShape({ maxLatencyMs: isNumber, countries: isArrayOf(isString) }), lastSyncImported: isNumber, lastSyncError: isOptional(isString),
 });
 const decodeEgressSourceList = createObjectDecoder<{ items: EgressSourceDTO[] }>("egress source list", { items: isArrayOf(egressSourceValidator) });
-const decodeEgressImportResult = createObjectDecoder<EgressImportResultDTO>("egress import result", { imported: isNumber, skipped: isNumber });
+const decodeEgressImportResult = createObjectDecoder<EgressImportResultDTO>("egress import result", { imported: isNumber, skipped: isNumber, filtered: isNumber });
 const decodeEgressProbeBatchResult = createObjectDecoder<EgressProbeBatchResultDTO>("egress probe result", { requested: isNumber, healthy: isNumber, unhealthy: isNumber });
 const decodeEgressRebalanceResult = createObjectDecoder<EgressRebalanceResultDTO>("egress rebalance result", { assigned: isNumber, rebalanced: isNumber, unplaced: isNumber });
 const egressFallbackConfigValidator = hasShape({ mode: isOneOf("none", "direct", "fixed"), nodeId: isOptional(isString) });
@@ -292,7 +295,7 @@ export function syncEgressSource(id: string): Promise<EgressImportResultDTO> {
   return apiRequest(`/api/admin/v1/egress-sources/${id}/sync`, { method: "POST" }, decodeEgressImportResult);
 }
 
-export function importEgressText(input: { name: string; scope: EgressScope; accountCapacity: number; content: string }): Promise<EgressImportResultDTO> {
+export function importEgressText(input: EgressTextImportInput): Promise<EgressImportResultDTO> {
   return apiRequest("/api/admin/v1/egress-imports", { method: "POST", body: input }, decodeEgressImportResult);
 }
 

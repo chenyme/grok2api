@@ -42,24 +42,36 @@ func (s *Service) syncSource(ctx context.Context, operations OperationsRepositor
 		recordFailure()
 		return ImportResult{}, ErrSubscriptionSync
 	}
+	screened, filtered, err := s.screenSubscriptionEntries(ctx, entries, source.ImportFilter)
+	if err != nil {
+		if errors.Is(err, ErrOperationsUnavailable) {
+			return ImportResult{}, err
+		}
+		recordFailure()
+		return ImportResult{}, fmt.Errorf("%w: 代理预检失败", ErrSubscriptionSync)
+	}
 	userAgent := ""
 	if source.Scope != domain.ScopeBuild {
 		s.mu.RLock()
 		userAgent = s.browserUA
 		s.mu.RUnlock()
 	}
-	nodes := make([]domain.Node, 0, len(entries))
-	for index, entry := range entries {
-		encryptedProxy, encryptErr := s.cipher.Encrypt(entry.ProxyURL)
+	nodes := make([]domain.Node, 0, len(screened))
+	for index, candidate := range screened {
+		encryptedProxy, encryptErr := s.cipher.Encrypt(candidate.Entry.ProxyURL)
 		if encryptErr != nil {
 			recordFailure()
 			return ImportResult{}, fmt.Errorf("%w: 加密导入节点", ErrSubscriptionSync)
 		}
-		nodes = append(nodes, domain.Node{
+		node := domain.Node{
 			Name: sourceNodeName(source.Name, index), Scope: source.Scope, Enabled: true,
-			SourceID: source.ID, SourceKey: entry.Key, AccountCapacity: source.DefaultAccountCapacity,
+			SourceID: source.ID, SourceKey: candidate.Entry.Key, AccountCapacity: source.DefaultAccountCapacity,
 			EncryptedProxyURL: encryptedProxy, UserAgent: userAgent, Health: 1, ProbeStatus: domain.ProbeStatusUnknown,
-		})
+		}
+		if candidate.Probe != nil {
+			applyProbeResult(&node, *candidate.Probe)
+		}
+		nodes = append(nodes, node)
 	}
 	imported, err := operations.UpsertEgressNodesFromSource(ctx, source.ID, nodes)
 	if err != nil {
@@ -70,5 +82,5 @@ func (s *Service) syncSource(ctx context.Context, operations OperationsRepositor
 	if err := operations.UpdateEgressSourceSync(ctx, source.ID, now, nextSyncAt, imported, ""); err != nil {
 		return ImportResult{}, err
 	}
-	return ImportResult{Imported: imported, Skipped: skipped}, nil
+	return ImportResult{Imported: imported, Skipped: skipped, Filtered: filtered}, nil
 }

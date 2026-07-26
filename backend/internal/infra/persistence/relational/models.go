@@ -469,6 +469,8 @@ type egressSubscriptionSourceModel struct {
 	EncryptedURL           string `gorm:"type:text;not null;default:'';check:chk_egress_subscription_sources_url,length(encrypted_url) <= 65536"`
 	RefreshIntervalSeconds int    `gorm:"not null;default:900;check:chk_egress_subscription_sources_refresh,refresh_interval_seconds BETWEEN 60 AND 86400"`
 	DefaultAccountCapacity int    `gorm:"not null;default:0;check:chk_egress_subscription_sources_capacity,default_account_capacity BETWEEN 0 AND 100000"`
+	ImportMaxLatencyMS     int    `gorm:"not null;default:0"`
+	ImportCountries        string `gorm:"size:512;not null;default:''"`
 	LastSyncedAt           *time.Time
 	NextSyncAt             *time.Time `gorm:"index:idx_egress_subscription_sources_due"`
 	LastSyncImported       int        `gorm:"not null;default:0;check:chk_egress_subscription_sources_imported,last_sync_imported >= 0"`

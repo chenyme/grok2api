@@ -314,24 +314,13 @@ type preparedEgressProbe struct {
 // endpoints. Both requests share one immutable node snapshot so a concurrent
 // administrator edit cannot mix results from different proxy configurations.
 func (m *Manager) ProbeEgressNode(ctx context.Context, node domain.Node) (domain.ProbeResult, error) {
-	type outcome struct {
-		family string
-		result domain.ProbeFamilyResult
-		err    error
-	}
 	startedAt := time.Now().UTC()
-	var provider domain.ProbeProvider
-	config, supported, configErr := m.loadOperationsConfig(ctx, time.Now().UTC())
-	if configErr != nil {
+	provider, err := m.probeProvider(ctx)
+	if err != nil {
 		message := "读取代理探测服务配置失败"
 		result := failedEgressProbeResult(provider, message, startedAt)
-		m.logProbeSetupFailure(ctx, node, provider, "load_probe_config", message, configErr, result.LatencyMS)
-		return result, configErr
-	}
-	if supported {
-		provider = config.ProbeProvider.Normalized()
-	} else {
-		provider = domain.ProbeProviderCloudflare
+		m.logProbeSetupFailure(ctx, node, provider, "load_probe_config", message, err, result.LatencyMS)
+		return result, err
 	}
 	target, stage, message, prepareErr := m.prepareEgressProbe(node)
 	if prepareErr != nil {
@@ -339,13 +328,54 @@ func (m *Manager) ProbeEgressNode(ctx context.Context, node domain.Node) (domain
 		m.logProbeSetupFailure(ctx, node, provider, stage, message, prepareErr, result.LatencyMS)
 		return result, prepareErr
 	}
+	return m.probePreparedEgress(ctx, target, provider, startedAt)
+}
+
+// ProbeEgressProxy verifies a subscription import candidate before it is
+// persisted. The destination remains fixed by the configured probe provider.
+func (m *Manager) ProbeEgressProxy(ctx context.Context, proxyURL string) (domain.ProbeResult, error) {
+	startedAt := time.Now().UTC()
+	probeNode := domain.Node{Name: "subscription-import", Scope: domain.ScopeBuild}
+	provider, err := m.probeProvider(ctx)
+	if err != nil {
+		message := "读取代理探测服务配置失败"
+		result := failedEgressProbeResult(provider, message, startedAt)
+		m.logProbeSetupFailure(ctx, probeNode, provider, "load_probe_config", message, err, result.LatencyMS)
+		return result, err
+	}
+	target, stage, message, prepareErr := m.prepareEgressProxy(proxyURL)
+	if prepareErr != nil {
+		result := failedEgressProbeResult(provider, message, startedAt)
+		m.logProbeSetupFailure(ctx, probeNode, provider, stage, message, prepareErr, result.LatencyMS)
+		return result, prepareErr
+	}
+	return m.probePreparedEgress(ctx, target, provider, startedAt)
+}
+
+func (m *Manager) probeProvider(ctx context.Context) (domain.ProbeProvider, error) {
+	config, supported, err := m.loadOperationsConfig(ctx, time.Now().UTC())
+	if err != nil {
+		return "", err
+	}
+	if supported {
+		return config.ProbeProvider.Normalized(), nil
+	}
+	return domain.ProbeProviderCloudflare, nil
+}
+
+func (m *Manager) probePreparedEgress(ctx context.Context, target preparedEgressProbe, provider domain.ProbeProvider, startedAt time.Time) (domain.ProbeResult, error) {
+	type outcome struct {
+		family string
+		result domain.ProbeFamilyResult
+		err    error
+	}
 	ipv4Endpoint, ipv6Endpoint := probeEndpoints(provider)
 	outcomes := make(chan outcome, 2)
 	for _, probe := range []struct{ family, endpoint string }{{"ipv4", ipv4Endpoint}, {"ipv6", ipv6Endpoint}} {
-		go func() {
-			result, err := m.probeEgressEndpoint(ctx, target, provider, probe.family, probe.endpoint)
-			outcomes <- outcome{family: probe.family, result: result, err: err}
-		}()
+		go func(family, endpoint string) {
+			result, err := m.probeEgressEndpoint(ctx, target, provider, family, endpoint)
+			outcomes <- outcome{family: family, result: result, err: err}
+		}(probe.family, probe.endpoint)
 	}
 	var ipv4Err, ipv6Err error
 	result := domain.ProbeResult{Status: domain.ProbeStatusUnhealthy, Provider: provider}
@@ -406,6 +436,26 @@ func (m *Manager) prepareEgressProbe(node domain.Node) (preparedEgressProbe, str
 		}
 	}
 	target.proxyURL = proxyURL
+	return target, "", "", nil
+}
+
+func (m *Manager) prepareEgressProxy(proxyURL string) (preparedEgressProbe, string, string, error) {
+	target := preparedEgressProbe{nodeName: "subscription-import", nodeScope: domain.ScopeBuild}
+	normalized, err := application.NormalizeProxyURL(proxyURL)
+	if err != nil {
+		return target, "normalize_proxy", "代理地址无效", err
+	}
+	if normalized == "" {
+		message := "未配置代理地址"
+		return target, "normalize_proxy", message, errors.New(message)
+	}
+	if strings.Contains(normalized, application.ProxyAccountPlaceholder) {
+		normalized, err = renderAccountProxyURL(normalized, "egress_probe")
+		if err != nil {
+			return target, "render_proxy_identity", "账号代理模板无效", err
+		}
+	}
+	target.proxyURL = normalized
 	return target, "", "", nil
 }
 

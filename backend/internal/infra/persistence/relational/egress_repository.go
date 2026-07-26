@@ -3,6 +3,7 @@ package relational
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/egress"
@@ -293,13 +294,24 @@ func (r *EgressRepository) UpsertEgressNodesFromSource(ctx context.Context, sour
 				return errors.New("invalid subscription node")
 			}
 			row := fromEgressDomain(value)
+			updates := map[string]any{
+				"name": row.Name, "scope": row.Scope, "enabled": row.Enabled, "proxy_pool": row.ProxyPool,
+				"account_capacity": row.AccountCapacity, "encrypted_proxy_url": row.EncryptedProxyURL,
+				"updated_at": time.Now().UTC(),
+			}
+			// An import preflight has a real probe timestamp. Ordinary source
+			// refreshes deliberately leave existing probe metadata intact.
+			if value.LastProbedAt != nil {
+				updates["probe_status"] = row.ProbeStatus
+				updates["last_probed_at"] = row.LastProbedAt
+				updates["probe_latency_ms"] = row.ProbeLatencyMS
+				updates["exit_ip"] = row.ExitIP
+				updates["exit_country"] = row.ExitCountry
+				updates["probe_error"] = row.ProbeError
+			}
 			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "source_id"}, {Name: "source_key"}},
-				DoUpdates: clause.Assignments(map[string]any{
-					"name": row.Name, "scope": row.Scope, "enabled": row.Enabled, "proxy_pool": row.ProxyPool,
-					"account_capacity": row.AccountCapacity, "encrypted_proxy_url": row.EncryptedProxyURL,
-					"updated_at": time.Now().UTC(),
-				}),
+				Columns:   []clause.Column{{Name: "source_id"}, {Name: "source_key"}},
+				DoUpdates: clause.Assignments(updates),
 			}).Create(&row).Error; err != nil {
 				return mapError(err)
 			}
@@ -556,6 +568,7 @@ func toEgressSubscriptionSourceDomain(row egressSubscriptionSourceModel) egress.
 	return egress.SubscriptionSource{
 		ID: row.ID, Name: row.Name, Scope: egress.Scope(row.Scope), Enabled: row.Enabled, EncryptedURL: row.EncryptedURL,
 		RefreshIntervalSeconds: row.RefreshIntervalSeconds, DefaultAccountCapacity: row.DefaultAccountCapacity,
+		ImportFilter: egress.SubscriptionImportFilter{MaxLatencyMS: row.ImportMaxLatencyMS, Countries: storedImportCountries(row.ImportCountries)},
 		LastSyncedAt: row.LastSyncedAt, NextSyncAt: row.NextSyncAt, LastSyncImported: row.LastSyncImported, LastSyncError: row.LastSyncError,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
@@ -565,9 +578,17 @@ func fromEgressSubscriptionSourceDomain(value egress.SubscriptionSource) egressS
 	return egressSubscriptionSourceModel{
 		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled, EncryptedURL: value.EncryptedURL,
 		RefreshIntervalSeconds: value.RefreshIntervalSeconds, DefaultAccountCapacity: value.DefaultAccountCapacity,
+		ImportMaxLatencyMS: value.ImportFilter.MaxLatencyMS, ImportCountries: strings.Join(value.ImportFilter.Countries, ","),
 		LastSyncedAt: value.LastSyncedAt, NextSyncAt: value.NextSyncAt, LastSyncImported: value.LastSyncImported, LastSyncError: value.LastSyncError,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
+}
+
+func storedImportCountries(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
 }
 
 func toEgressOperationsConfigDomain(row egressOperationsConfigModel) egress.OperationsConfig {

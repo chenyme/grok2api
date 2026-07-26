@@ -30,23 +30,27 @@ import {
   updateEgressSource,
   type EgressFallbackConfigDTO,
   type EgressFallbackMode,
-	  type EgressProbeBatchResultDTO,
+  type EgressImportFilterInput,
+  type EgressProbeBatchResultDTO,
   type EgressNodeDTO,
   type EgressOperationsConfigDTO,
   type EgressScope,
   type EgressSourceDTO,
   type EgressSourceInput,
+  type EgressTextImportInput,
 } from "@/features/settings/settings-api";
 import { formatDateTime } from "@/shared/lib/format";
 import { ErrorState, LoadingState, TableLoadingRow } from "@/shared/components/data-state";
 
-type SourceForm = EgressSourceInput & { url: string };
-type ImportForm = { name: string; scope: EgressScope; accountCapacity: number; content: string };
+type ImportFilterForm = { maxLatencyMs: number; countries: string };
+type SourceForm = Omit<EgressSourceInput, "importFilter"> & { url: string; importFilter: ImportFilterForm };
+type ImportForm = Omit<EgressTextImportInput, "importFilter"> & { importFilter: ImportFilterForm };
 
 const emptySource: SourceForm = {
   name: "", scope: "grok_build", enabled: true, url: "", refreshIntervalSeconds: 900, defaultAccountCapacity: 0,
+  importFilter: { maxLatencyMs: 0, countries: "" },
 };
-const emptyImport: ImportForm = { name: "", scope: "grok_build", accountCapacity: 0, content: "" };
+const emptyImport: ImportForm = { name: "", scope: "grok_build", accountCapacity: 0, content: "", importFilter: { maxLatencyMs: 0, countries: "" } };
 // Eight nodes run concurrently; each checks IPv4 and IPv6 in parallel with a
 // 15-second ceiling. Keeping a request to 32 nodes leaves enough headroom for
 // the admin HTTP timeout.
@@ -58,6 +62,17 @@ const fallbackDescriptionKeys: Record<EgressScope, string> = {
   grok_console: "settings.egress.fallbackConsoleHelp",
   grok_web_asset: "settings.egress.fallbackWebAssetHelp",
 };
+
+function importFilterForm(value?: EgressImportFilterInput): ImportFilterForm {
+  return { maxLatencyMs: value?.maxLatencyMs ?? 0, countries: value?.countries.join(", ") ?? "" };
+}
+
+function importFilterInput(value: ImportFilterForm): EgressImportFilterInput {
+  return {
+    maxLatencyMs: Math.max(0, Number.isFinite(value.maxLatencyMs) ? value.maxLatencyMs : 0),
+    countries: value.countries.split(/[,，]/).map((country) => country.trim()).filter(Boolean),
+  };
+}
 
 function defaultFallbacks(): Record<EgressScope, EgressFallbackConfigDTO> {
   return {
@@ -143,7 +158,11 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
   };
   const saveSource = useMutation({
     mutationFn: () => {
-      const input: EgressSourceInput = { ...sourceForm, url: sourceForm.url.trim() || undefined };
+      const input: EgressSourceInput = {
+        name: sourceForm.name, scope: sourceForm.scope, enabled: sourceForm.enabled, url: sourceForm.url.trim() || undefined,
+        refreshIntervalSeconds: sourceForm.refreshIntervalSeconds, defaultAccountCapacity: sourceForm.defaultAccountCapacity,
+        importFilter: importFilterInput(sourceForm.importFilter),
+      };
       return sourceEditing ? updateEgressSource(sourceEditing.id, input) : createEgressSource(input);
     },
     onSuccess: () => { invalidate(); setSourceEditing(undefined); toast.success(t("settings.egress.sourceSaved")); },
@@ -160,7 +179,7 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
     onError: showError,
   });
   const importText = useMutation({
-    mutationFn: () => importEgressText(importForm),
+    mutationFn: () => importEgressText({ ...importForm, importFilter: importFilterInput(importForm.importFilter) }),
     onSuccess: (value) => { invalidate(); setImportOpen(false); toast.success(t("settings.egress.imported", value)); },
     onError: showError,
   });
@@ -193,7 +212,7 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
     }
     setSourceForm({
       name: value.name, scope: value.scope, enabled: value.enabled, url: "", refreshIntervalSeconds: value.refreshIntervalSeconds,
-      defaultAccountCapacity: value.defaultAccountCapacity,
+      defaultAccountCapacity: value.defaultAccountCapacity, importFilter: importFilterForm(value.importFilter),
     });
     setSourceEditing(value);
   }
@@ -299,15 +318,16 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
 
         {sourcesQuery.isError ? <ErrorState message={sourcesQuery.error.message} onRetry={() => void sourcesQuery.refetch()} /> : (
           <div className="overflow-hidden rounded-md border">
-            <Table className="min-w-[640px]">
-              <TableHeader><TableRow><TableHead className="min-w-48">{t("settings.egress.source")}</TableHead><TableHead className="w-32 text-center">{t("settings.egress.scope")}</TableHead><TableHead className="min-w-44">{t("settings.egress.lastSync")}</TableHead><TableHead className="w-28 text-center">{t("settings.egress.capacity")}</TableHead><TableActionHead /></TableRow></TableHeader>
+            <Table className="min-w-[760px]">
+              <TableHeader><TableRow><TableHead className="min-w-44">{t("settings.egress.source")}</TableHead><TableHead className="w-32 text-center">{t("settings.egress.scope")}</TableHead><TableHead className="min-w-44">{t("settings.egress.importFilter")}</TableHead><TableHead className="min-w-40">{t("settings.egress.lastSync")}</TableHead><TableHead className="w-28 text-center">{t("settings.egress.capacity")}</TableHead><TableActionHead /></TableRow></TableHeader>
               <TableBody>
-                {sourcesQuery.isPending ? <TableLoadingRow colSpan={5} /> : null}
-                {!sourcesQuery.isPending && (sourcesQuery.data?.items.length ?? 0) === 0 ? <TableRow><TableCell colSpan={5} className="h-24 text-center text-xs text-muted-foreground">{t("settings.egress.noSources")}</TableCell></TableRow> : null}
+                {sourcesQuery.isPending ? <TableLoadingRow colSpan={6} /> : null}
+                {!sourcesQuery.isPending && (sourcesQuery.data?.items.length ?? 0) === 0 ? <TableRow><TableCell colSpan={6} className="h-24 text-center text-xs text-muted-foreground">{t("settings.egress.noSources")}</TableCell></TableRow> : null}
                 {sourcesQuery.data?.items.map((source) => (
                   <TableRow className="group h-12" key={source.id}>
                     <TableCell><div className="flex min-w-0 items-center gap-2"><span className={source.enabled ? "size-1.5 shrink-0 rounded-full bg-emerald-500" : "size-1.5 shrink-0 rounded-full bg-muted-foreground/35"} /><span className="truncate text-xs font-medium">{source.name}</span>{source.lastSyncError ? <SourceError message={source.lastSyncError} /> : null}</div></TableCell>
                     <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(source.scope)}</Badge></TableCell>
+                    <TableCell className="text-xs text-muted-foreground"><SourceImportFilter filter={source.importFilter} /></TableCell>
                     <TableCell className="text-xs text-muted-foreground">{source.lastSyncedAt ? formatDateTime(source.lastSyncedAt, i18n.language) : t("settings.egress.never")}</TableCell>
                     <TableCell className="text-center text-xs tabular-nums">{source.defaultAccountCapacity || t("settings.egress.unlimited")}</TableCell>
                     <TableActionCell>
@@ -338,6 +358,7 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
               <Control label={t("settings.egress.refreshInterval")}><Input type="number" min={60} max={86400} value={sourceForm.refreshIntervalSeconds} onChange={(event) => setSourceForm({ ...sourceForm, refreshIntervalSeconds: Number(event.target.value) })} /></Control>
               <Control label={t("settings.egress.capacity")}><Input type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={sourceForm.defaultAccountCapacity || ""} onChange={(event) => setSourceForm({ ...sourceForm, defaultAccountCapacity: Number(event.target.value) })} /></Control>
             </div>
+            <ImportFilterControls value={sourceForm.importFilter} onChange={(importFilter) => setSourceForm({ ...sourceForm, importFilter })} />
             <DialogFooter><Button type="button" size="sm" variant="secondary" onClick={() => setSourceEditing(undefined)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={!sourceForm.name.trim() || (!sourceEditing && !sourceForm.url.trim()) || saveSource.isPending}>{saveSource.isPending ? <Spinner /> : null}{t("common.save")}</Button></DialogFooter>
           </form>
         </DialogContent>
@@ -349,6 +370,7 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
           <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); event.stopPropagation(); importText.mutate(); }}>
             <div className="grid gap-3 sm:grid-cols-2"><Control label={t("settings.egress.name")}><Input value={importForm.name} onChange={(event) => setImportForm({ ...importForm, name: event.target.value })} /></Control><Control label={t("settings.egress.scope")}><ScopeSelect value={importForm.scope} onChange={(scope) => setImportForm({ ...importForm, scope })} scopeLabel={scopeLabel} /></Control></div>
             <Control label={t("settings.egress.capacity")}><Input type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={importForm.accountCapacity || ""} onChange={(event) => setImportForm({ ...importForm, accountCapacity: Number(event.target.value) })} /></Control>
+            <ImportFilterControls value={importForm.importFilter} onChange={(importFilter) => setImportForm({ ...importForm, importFilter })} />
             <Control label={t("settings.egress.proxyList")}><Textarea className="min-h-52 font-mono text-xs" value={importForm.content} onChange={(event) => setImportForm({ ...importForm, content: event.target.value })} /></Control>
             <DialogFooter><Button type="button" size="sm" variant="secondary" onClick={() => setImportOpen(false)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={!importForm.name.trim() || !importForm.content.trim() || importText.isPending}>{importText.isPending ? <Spinner /> : null}{t("settings.egress.importText")}</Button></DialogFooter>
           </form>
@@ -419,6 +441,31 @@ function IntervalInput({ id, value, unit, onChange }: { id: string; value: numbe
     <div className="flex min-w-0">
       <Input id={id} className="min-w-0 rounded-r-none" type="number" min={60} max={86400} value={value} onChange={(event) => onChange(Number(event.target.value))} />
       <div className="flex h-8 w-16 shrink-0 items-center rounded-r-md bg-secondary/55 px-3 text-xs text-foreground">{unit}</div>
+    </div>
+  );
+}
+
+function SourceImportFilter({ filter }: { filter: EgressImportFilterInput }) {
+  const { t } = useTranslation();
+  const values: string[] = [];
+  if (filter.maxLatencyMs > 0) values.push(t("settings.egress.maxLatencySummary", { value: filter.maxLatencyMs }));
+  if (filter.countries.length > 0) values.push(filter.countries.join(", "));
+  return <span className="block truncate">{values.length > 0 ? values.join(" · ") : t("settings.egress.noImportFilter")}</span>;
+}
+
+function ImportFilterControls({ value, onChange }: { value: ImportFilterForm; onChange: (value: ImportFilterForm) => void }) {
+  const { t } = useTranslation();
+  const enabled = value.maxLatencyMs > 0 || value.countries.trim() !== "";
+  return (
+    <div className="space-y-3 border-y py-3">
+      <div className="flex items-center justify-between gap-3">
+        <Label className="text-xs font-medium">{t("settings.egress.importFilter")}</Label>
+        <span className={enabled ? "text-[11px] text-emerald-600 dark:text-emerald-400" : "text-[11px] text-muted-foreground"}>{enabled ? t("settings.egress.preflightEnabled") : t("settings.egress.preflightDisabled")}</span>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Control label={t("settings.egress.maxImportLatency")}><Input type="number" min={0} max={60000} placeholder={t("settings.egress.unlimited")} value={value.maxLatencyMs || ""} onChange={(event) => onChange({ ...value, maxLatencyMs: Number(event.target.value) })} /></Control>
+        <Control label={t("settings.egress.countries")}><Input placeholder={t("settings.egress.countriesPlaceholder")} value={value.countries} onChange={(event) => onChange({ ...value, countries: event.target.value })} /></Control>
+      </div>
     </div>
   );
 }
