@@ -168,17 +168,31 @@ routing:
 	}
 }
 
-func TestValidateAllowsMaxAttemptsAboveFormerCap(t *testing.T) {
-	cfg := defaultConfig()
-	cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
-	cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-	cfg.Routing.MaxAttempts = 100
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("maxAttempts above former cap rejected: %v", err)
+func TestValidateMaxAttemptsRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{name: "unlimited", value: -1},
+		{name: "minimum", value: 1},
+		{name: "above former cap", value: 11},
+		{name: "maximum", value: 200},
+		{name: "zero", value: 0, wantErr: true},
+		{name: "below unlimited", value: -2, wantErr: true},
+		{name: "above maximum", value: 201, wantErr: true},
 	}
-	cfg.Routing.MaxAttempts = 0
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("maxAttempts below 1 was accepted")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
+			cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+			cfg.Routing.MaxAttempts = test.value
+			err := cfg.Validate()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr = %v", err, test.wantErr)
+			}
+		})
 	}
 }
 

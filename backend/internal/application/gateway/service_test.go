@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -288,6 +289,184 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 }
 
+func TestRoutingAttemptPolicy(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured int
+		allowed    []bool
+		hasNext    []bool
+	}{
+		{name: "finite", configured: 2, allowed: []bool{true, true, false}, hasNext: []bool{true, false, false}},
+		{name: "unlimited", configured: unlimitedRoutingAttempts, allowed: []bool{true, true, true}, hasNext: []bool{true, true, true}},
+		{name: "invalid fallback", configured: 0, allowed: []bool{true, true, true, false}, hasNext: []bool{true, true, false, false}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy := newRoutingAttemptPolicy(test.configured)
+			for attempt, want := range test.allowed {
+				if got := policy.allows(attempt); got != want {
+					t.Fatalf("allows(%d) = %t, want %t", attempt, got, want)
+				}
+			}
+			for attempt, want := range test.hasNext {
+				if got := policy.hasNext(attempt); got != want {
+					t.Fatalf("hasNext(%d) = %t, want %t", attempt, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestGatewayUnlimitedAttemptsExhaustsEligiblePool(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway-unlimited-attempts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credentials := make([]account.Credential, 0, 5)
+	for index := range 5 {
+		name := fmt.Sprintf("build-%d", index+1)
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: "encrypted-" + name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 500 - index*100, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-unlimited"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-unlimited"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "unlimited-key", Prefix: "unlimited", SecretHash: strings.Repeat("a", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failureIDs := make(map[uint64]bool, len(credentials)-1)
+	for _, credential := range credentials[:len(credentials)-1] {
+		failureIDs[credential.ID] = true
+	}
+	adapter := &failoverAdapter{
+		failureIDs: failureIDs, failureStatus: http.StatusPaymentRequired,
+		failureBody:   `{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits"}`,
+		failureHeader: http.Header{"X-Should-Retry": {"false"}},
+	}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, unlimitedRoutingAttempts)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-unlimited", ClientKey: clientKey, PublicModel: "grok-unlimited",
+		Body: []byte(`{"model":"grok-unlimited","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", result.StatusCode)
+	}
+	_, _ = io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "resp-unlimited", "")
+	_ = result.Body.Close()
+	if len(adapter.attempts) != len(credentials) {
+		t.Fatalf("attempts = %#v, want all %d eligible accounts", adapter.attempts, len(credentials))
+	}
+	for index, credential := range credentials {
+		if adapter.attempts[index] != credential.ID {
+			t.Fatalf("attempt %d used account %d, want %d", index, adapter.attempts[index], credential.ID)
+		}
+	}
+
+	adapter.resetAttempts()
+	continued, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-unlimited-continued", ClientKey: clientKey, PublicModel: "grok-unlimited",
+		PreviousResponseID: "resp-unlimited", Body: []byte(`{"model":"grok-unlimited","previous_response_id":"resp-unlimited"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(continued.Body)
+	continued.Finalize(Usage{}, "resp-unlimited-next", "")
+	_ = continued.Body.Close()
+	if len(adapter.attempts) != 1 || adapter.attempts[0] != credentials[len(credentials)-1].ID {
+		t.Fatalf("owned response attempts = %#v, want only account %d", adapter.attempts, credentials[len(credentials)-1].ID)
+	}
+}
+
+func TestGatewayUnlimitedAttemptsRetainsEgressRetry(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway-unlimited-egress-retry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+		Name: "web-egress-retry", SourceKey: "web-egress-retry", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const model = "grok-web-egress-retry"
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &transientEgressForbiddenAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, unlimitedRoutingAttempts)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-unlimited-egress-retry", ClientKey: clientkey.Key{ID: 1, Name: "web-key"}, PublicModel: model,
+		Body: []byte(`{"model":"grok-web-egress-retry","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", result.StatusCode)
+	}
+	_, _ = io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "", "")
+	_ = result.Body.Close()
+	if calls := adapter.calls.Load(); calls != 2 {
+		t.Fatalf("calls = %d, want one egress retry", calls)
+	}
+}
+
 func TestGatewaySSOUnauthorizedMarksInvalidAndSwitchesAccount(t *testing.T) {
 	for _, providerValue := range []account.Provider{account.ProviderWeb, account.ProviderConsole} {
 		providerValue := providerValue
@@ -557,6 +736,61 @@ func TestGenerateImageReturnsWhenEveryCredentialRefreshFails(t *testing.T) {
 	}
 	if adapter.generationCalls.Load() != 0 {
 		t.Fatalf("generation calls = %d", adapter.generationCalls.Load())
+	}
+}
+
+func TestGenerateImageUnlimitedAttemptsRetainsEgressRetry(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "image-unlimited-egress-retry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	now := time.Now().UTC()
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+		Name: "image-egress-retry", SourceKey: "image-egress-retry", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const model = "grok-image-egress-retry"
+	if err := modelRepo.UpsertRoutes(ctx, []modeldomain.Route{{
+		PublicID: model, Provider: account.ProviderWeb, UpstreamModel: model,
+		Capability: modeldomain.CapabilityImage, Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, now); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &webImageStreamAdapter{forbiddenRemaining: 1}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, unlimitedRoutingAttempts)
+
+	result, err := service.GenerateImage(ctx, ImageGenerationInput{
+		RequestID: "req-image-unlimited-egress-retry", ClientKey: clientkey.Key{ID: 1, Name: "image-key"},
+		PublicModel: model, Prompt: "test", Count: 1, ResponseFormat: "url",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "", "")
+	_ = result.Body.Close()
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credential.ID || attempts[1] != credential.ID {
+		t.Fatalf("attempts = %#v, want one egress retry on account %d", attempts, credential.ID)
 	}
 }
 
@@ -1557,6 +1791,7 @@ func runQuotaRefreshWorkers(t *testing.T, service *accountapp.Service) {
 type failoverAdapter struct {
 	mu                     sync.Mutex
 	firstID                uint64
+	failureIDs             map[uint64]bool
 	failureStatus          int
 	failureBody            string
 	failureHeader          http.Header
@@ -1608,6 +1843,27 @@ func (a *ssoFailureAdapter) Attempts() []uint64 {
 }
 
 type statelessConsoleAdapter struct{}
+
+type transientEgressForbiddenAdapter struct {
+	calls atomic.Int64
+}
+
+func (a *transientEgressForbiddenAdapter) Provider() account.Provider { return account.ProviderWeb }
+func (a *transientEgressForbiddenAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderWeb)
+}
+func (a *transientEgressForbiddenAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
+	if a.calls.Add(1) == 1 {
+		return &provider.Response{
+			StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"error":"egress session rejected"}`)),
+		}, nil
+	}
+	return &provider.Response{
+		StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"id":"resp-egress-retry","status":"completed"}`)),
+	}, nil
+}
 
 type teamModelRateLimitConsoleAttempt struct {
 	AccountID uint64
@@ -1762,14 +2018,15 @@ func (webStoredResponseAdapter) ForwardResponse(context.Context, provider.Respon
 type webRateLimitAdapter struct{}
 
 type webImageStreamAdapter struct {
-	mu             sync.Mutex
-	streaming      bool
-	partialImages  int
-	editRequest    provider.ImageEditRequest
-	synced         chan string
-	failureEgress  *infraegress.Manager
-	attempts       []uint64
-	unauthorizedID uint64
+	mu                 sync.Mutex
+	streaming          bool
+	partialImages      int
+	editRequest        provider.ImageEditRequest
+	synced             chan string
+	failureEgress      *infraegress.Manager
+	attempts           []uint64
+	unauthorizedID     uint64
+	forbiddenRemaining int
 }
 
 type webChatQuotaAdapter struct {
@@ -1833,7 +2090,17 @@ func (a *webImageStreamAdapter) GenerateImage(ctx context.Context, request provi
 	failureEgress := a.failureEgress
 	a.attempts = append(a.attempts, request.Credential.ID)
 	unauthorizedID := a.unauthorizedID
+	forbidden := a.forbiddenRemaining > 0
+	if forbidden {
+		a.forbiddenRemaining--
+	}
 	a.mu.Unlock()
+	if forbidden {
+		return &provider.Response{
+			StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"error":"egress session rejected"}`)),
+		}, nil
+	}
 	if request.Credential.ID == unauthorizedID {
 		return &provider.Response{
 			StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", Header: make(http.Header),
@@ -1949,7 +2216,7 @@ func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.Re
 	header := make(http.Header)
 	if request.Method != http.MethodPost && resourceStatus != 0 {
 		status, body = resourceStatus, "missing"
-	} else if request.Credential.ID == a.firstID {
+	} else if request.Credential.ID == a.firstID || a.failureIDs[request.Credential.ID] {
 		status = a.failureStatus
 		if status == 0 {
 			status = http.StatusTooManyRequests
