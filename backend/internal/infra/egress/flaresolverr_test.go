@@ -42,6 +42,24 @@ func TestFlareSolverrSolveUsesNodeProxyAndFiltersCookies(t *testing.T) {
 	}
 }
 
+func TestFlareSolverrSolveAcceptsNoChallengeWithoutCloudflareCookies(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"status":"ok","solution":{"userAgent":"Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36","cookies":[{"name":"sso","value":"ignored"}]}}`))
+	}))
+	defer server.Close()
+
+	solution, err := (flaresolverrSolver{}).Solve(context.Background(), ClearanceConfig{
+		FlareSolverrURL: server.URL, TargetURL: "https://grok.com", Timeout: time.Second,
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if solution.Cookies != "" || solution.UserAgent == "" {
+		t.Fatalf("solution = %#v", solution)
+	}
+}
+
 func TestFlareSolverrEndpointAcceptsBaseAndV1Path(t *testing.T) {
 	for input, expected := range map[string]string{
 		"http://flaresolverr:8191":   "http://flaresolverr:8191/v1",

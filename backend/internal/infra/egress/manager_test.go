@@ -1472,6 +1472,41 @@ func TestPersistedClearancePreventsDuplicateInstanceRefresh(t *testing.T) {
 	}
 }
 
+func TestNoChallengeClearanceDoesNotBlockOrRefreshRepeatedly(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}
+	solver := &clearanceSolverStub{noCookies: true}
+	config := ClearanceConfig{Mode: "flaresolverr", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com", Timeout: time.Second, RefreshInterval: time.Hour}
+	firstManager := NewManager(repository, cipher)
+	firstManager.solver = solver
+	firstManager.UpdateClearanceConfig(config)
+	for range 2 {
+		lease, acquireErr := firstManager.Acquire(context.Background(), domain.ScopeWeb, "account")
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		if lease.CFCookies != "" || lease.UserAgent != "Chrome/146 test" {
+			t.Fatalf("cookie-less lease = %#v", lease)
+		}
+		lease.Release()
+	}
+
+	secondManager := NewManager(repository, cipher)
+	secondManager.solver = solver
+	secondManager.UpdateClearanceConfig(config)
+	lease, err := secondManager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	if solver.calls != 1 || repository.node.ClearanceRefreshedAt == nil || repository.node.UserAgent != "Chrome/146 test" {
+		t.Fatalf("cookie-less clearance was not reused: calls=%d node=%#v", solver.calls, repository.node)
+	}
+}
+
 func TestWebAssetCredentialFallsBackToWebWithSameResinIdentity(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
@@ -1627,9 +1662,10 @@ type blockingEgressRepository struct {
 }
 
 type clearanceSolverStub struct {
-	calls    int
-	proxyURL string
-	err      error
+	calls     int
+	proxyURL  string
+	err       error
+	noCookies bool
 }
 
 func (s *clearanceSolverStub) Solve(_ context.Context, _ ClearanceConfig, proxyURL string) (clearanceSolution, error) {
@@ -1637,6 +1673,9 @@ func (s *clearanceSolverStub) Solve(_ context.Context, _ ClearanceConfig, proxyU
 	s.proxyURL = proxyURL
 	if s.err != nil {
 		return clearanceSolution{}, s.err
+	}
+	if s.noCookies {
+		return clearanceSolution{UserAgent: "Chrome/146 test"}, nil
 	}
 	return clearanceSolution{Cookies: fmt.Sprintf("cf_clearance=value-%d", s.calls), UserAgent: "Chrome/146 test"}, nil
 }
