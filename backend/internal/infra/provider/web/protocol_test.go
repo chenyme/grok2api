@@ -834,6 +834,24 @@ func TestParseVideoStreamReportsCodeOnlyAndStringErrors(t *testing.T) {
 	}
 }
 
+func TestParseVideoStreamIgnoresDefaultErrorEnvelope(t *testing.T) {
+	fixture := `data: {"result":{"response":{"error":{"internalError":false,"message":{"text":"","severity":"ERROR"},"severity":"ERROR"},"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post_ok","videoUrl":"users/user_1/generated/video_ok/generated_video.mp4"}}}}` + "\n"
+	response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(fixture))}
+	result, postID, err := parseVideoStream(response, nil)
+	if err != nil || postID != "post_ok" || result.URL != "https://assets.grok.com/users/user_1/generated/video_ok/generated_video.mp4" {
+		t.Fatalf("result = %#v, post = %q, err = %v", result, postID, err)
+	}
+}
+
+func TestParseVideoStreamReportsActiveInternalError(t *testing.T) {
+	fixture := `data: {"result":{"response":{"error":{"internalError":true,"message":"","severity":"ERROR"}}}}` + "\n"
+	response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(fixture))}
+	_, _, err := parseVideoStream(response, nil)
+	if err == nil || !strings.Contains(err.Error(), "internal_error=true") || !strings.Contains(err.Error(), "severity=ERROR") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestDirectFileUploadFallbackOnlyForUnsupportedEndpoint(t *testing.T) {
 	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone, http.StatusNotImplemented} {
 		if !directFileUploadFallbackStatus(status) {

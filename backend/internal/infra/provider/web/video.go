@@ -416,10 +416,12 @@ func webMediaStreamError(value map[string]any) error {
 	code := safeWebMediaDiagnostic(firstWebMediaDiagnosticCode(value, "code", "error_code", "systemErrCode"), 64)
 	errorType := safeWebMediaDiagnostic(firstString(value, "type", "error_type"), 64)
 	status := safeWebMediaDiagnostic(firstWebMediaDiagnosticCode(value, "status", "status_code"), 64)
+	internalError := webMediaDiagnosticScalar(value["internalError"], 64)
+	severity := webMediaDiagnosticScalar(value["severity"], 64)
 	reason := safeWebMediaDiagnostic(firstString(value, "reason"), webMediaDiagnosticFieldLimit)
-	message := safeWebMediaDiagnostic(firstString(value, "message", "error", "detail", "description", "error_description"), webMediaDiagnosticFieldLimit)
+	message := webMediaStreamMessage(value)
 	details := webMediaStreamDetails(value["details"])
-	parts := make([]string, 0, 7)
+	parts := make([]string, 0, 9)
 	for _, item := range []struct {
 		name  string
 		value string
@@ -427,6 +429,8 @@ func webMediaStreamError(value map[string]any) error {
 		{name: "code", value: code},
 		{name: "type", value: errorType},
 		{name: "status", value: status},
+		{name: "internal_error", value: internalError},
+		{name: "severity", value: severity},
 		{name: "reason", value: reason},
 		{name: "message", value: message},
 		{name: "details", value: details},
@@ -447,6 +451,9 @@ func webMediaStreamError(value map[string]any) error {
 func webMediaStreamErrorValue(value any) error {
 	switch typed := value.(type) {
 	case map[string]any:
+		if !webMediaStreamErrorActive(typed) {
+			return nil
+		}
 		return webMediaStreamError(typed)
 	case string:
 		message := safeWebMediaDiagnostic(typed, webMediaDiagnosticFieldLimit)
@@ -457,13 +464,80 @@ func webMediaStreamErrorValue(value any) error {
 	return nil
 }
 
+func webMediaStreamErrorActive(value map[string]any) bool {
+	for key, item := range value {
+		// Some Grok video frames include an empty error envelope whose severity
+		// is populated even though every actual error value is empty.
+		if key == "severity" {
+			continue
+		}
+		if webMediaStreamValueMeaningful(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func webMediaStreamValueMeaningful(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		value := strings.ToLower(strings.TrimSpace(typed))
+		return value != "" && value != "0" && value != "false" && value != "null" && value != "none"
+	case bool:
+		return typed
+	case float64:
+		return typed != 0
+	case float32:
+		return typed != 0
+	case int:
+		return typed != 0
+	case int64:
+		return typed != 0
+	case json.Number:
+		return typed.String() != "" && typed.String() != "0"
+	case map[string]any:
+		return webMediaStreamErrorActive(typed)
+	case []any:
+		for _, item := range typed {
+			if webMediaStreamValueMeaningful(item) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+func webMediaStreamMessage(value map[string]any) string {
+	for _, key := range []string{"message", "error", "detail", "description", "error_description"} {
+		if message := webMediaStreamDetails(value[key]); message != "" {
+			return message
+		}
+	}
+	return ""
+}
+
+func webMediaDiagnosticScalar(value any, limit int) string {
+	switch typed := value.(type) {
+	case string:
+		return safeWebMediaDiagnostic(typed, limit)
+	case bool, float64, float32, int, int64, json.Number:
+		return safeWebMediaDiagnostic(fmt.Sprint(typed), limit)
+	default:
+		return ""
+	}
+}
+
 func webMediaStreamDetails(value any) string {
 	switch typed := value.(type) {
 	case string:
 		return safeWebMediaDiagnostic(typed, webMediaDiagnosticFieldLimit)
 	case map[string]any:
 		code := safeWebMediaDiagnostic(firstWebMediaDiagnosticCode(typed, "code", "error_code", "systemErrCode"), 64)
-		message := safeWebMediaDiagnostic(firstString(typed, "message", "error", "detail", "reason", "description"), webMediaDiagnosticFieldLimit)
+		message := safeWebMediaDiagnostic(firstString(typed, "message", "text", "error", "detail", "reason", "description"), webMediaDiagnosticFieldLimit)
 		if code != "" && message != "" {
 			return boundWebMediaDiagnostic(code+": "+message, webMediaDiagnosticFieldLimit)
 		}
@@ -485,6 +559,8 @@ func webMediaStreamDetails(value any) string {
 			}
 		}
 		return boundWebMediaDiagnostic(strings.Join(parts, "; "), webMediaDiagnosticFieldLimit)
+	case bool, float64, float32, int, int64, json.Number:
+		return webMediaDiagnosticScalar(typed, webMediaDiagnosticFieldLimit)
 	default:
 		return ""
 	}
