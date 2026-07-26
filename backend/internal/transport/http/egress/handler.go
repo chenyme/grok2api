@@ -369,7 +369,8 @@ type importFilterResponse struct {
 }
 
 type probeBatchRequest struct {
-	IDs []string `json:"ids"`
+	IDs             []string `json:"ids"`
+	RemoveUnhealthy bool     `json:"removeUnhealthy"`
 }
 
 type operationsConfigRequest struct {
@@ -590,12 +591,17 @@ func (h *Handler) testNodes(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidId", "账号 ID 无效")
 		return
 	}
-	value, err := h.service.TestNodes(c.Request.Context(), ids)
+	var value egressapp.ProbeBatchResult
+	if request.RemoveUnhealthy {
+		value, err = h.service.TestNodesAndRemoveUnhealthy(c.Request.Context(), ids)
+	} else {
+		value, err = h.service.TestNodes(c.Request.Context(), ids)
+	}
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"requested": value.Requested, "healthy": value.Healthy, "unhealthy": value.Unhealthy})
+	response.Success(c, http.StatusOK, gin.H{"requested": value.Requested, "healthy": value.Healthy, "unhealthy": value.Unhealthy, "removed": value.Removed})
 }
 
 func (h *Handler) operationsConfig(c *gin.Context) {
@@ -632,12 +638,16 @@ func (h *Handler) rebalance(c *gin.Context) {
 		h.writeError(c, err)
 		return
 	}
-	value, err := h.service.RebalanceAccounts(c.Request.Context(), true, true, time.Duration(config.ProbeIntervalSeconds)*time.Second)
+	value, err := h.service.RebalanceAccountsAllowCapacityOverflow(c.Request.Context(), true, true, time.Duration(config.ProbeIntervalSeconds)*time.Second)
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"assigned": value.Assigned, "rebalanced": value.Rebalanced, "unplaced": value.Unplaced})
+	unplacedByProvider := make(map[string]int, len(value.UnplacedByProvider))
+	for provider, count := range value.UnplacedByProvider {
+		unplacedByProvider[string(provider)] = count
+	}
+	response.Success(c, http.StatusOK, gin.H{"assigned": value.Assigned, "rebalanced": value.Rebalanced, "overflowed": value.Overflowed, "unplaced": value.Unplaced, "unplacedByProvider": unplacedByProvider})
 }
 
 func parseOptionalAccountIDs(values []string) ([]uint64, error) {

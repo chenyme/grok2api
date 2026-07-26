@@ -93,6 +93,7 @@ type ProbeBatchResult struct {
 	Requested int
 	Healthy   int
 	Unhealthy int
+	Removed   int
 }
 
 type OperationsConfigInput struct {
@@ -321,10 +322,31 @@ func (s *Service) TestNode(ctx context.Context, id uint64) (domain.ProbeResult, 
 }
 
 func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult, error) {
+	result, _, err := s.testNodes(ctx, ids)
+	return result, err
+}
+
+// TestNodesAndRemoveUnhealthy only removes nodes whose probe result was
+// persisted as unhealthy during this invocation. It intentionally does not
+// turn a repository or context error into a destructive delete.
+func (s *Service) TestNodesAndRemoveUnhealthy(ctx context.Context, ids []uint64) (ProbeBatchResult, error) {
+	result, unhealthyIDs, err := s.testNodes(ctx, ids)
+	if err != nil || len(unhealthyIDs) == 0 {
+		return result, err
+	}
+	deleted, err := s.DeleteMany(ctx, unhealthyIDs)
+	if err != nil {
+		return result, err
+	}
+	result.Removed = deleted
+	return result, nil
+}
+
+func (s *Service) testNodes(ctx context.Context, ids []uint64) (ProbeBatchResult, []uint64, error) {
 	if len(ids) == 0 {
 		nodes, err := s.repository.ListEgressNodes(ctx, "", repository.SortQuery{})
 		if err != nil {
-			return ProbeBatchResult{}, err
+			return ProbeBatchResult{}, nil, err
 		}
 		ids = make([]uint64, 0, len(nodes))
 		for _, node := range nodes {
@@ -335,13 +357,14 @@ func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult
 	}
 	ids = uniqueIDs(ids)
 	if len(ids) > maxManualProbeNodes {
-		return ProbeBatchResult{}, fmt.Errorf("%w: 单次最多测试 %d 个代理", ErrInvalidInput, maxManualProbeNodes)
+		return ProbeBatchResult{}, nil, fmt.Errorf("%w: 单次最多测试 %d 个代理", ErrInvalidInput, maxManualProbeNodes)
 	}
 	result := ProbeBatchResult{Requested: len(ids)}
 	if len(ids) == 0 {
-		return result, nil
+		return result, nil, nil
 	}
 	var mu sync.Mutex
+	unhealthyIDs := make([]uint64, 0)
 	jobs := make(chan uint64)
 	var workers sync.WaitGroup
 	for range min(maxConcurrentProbes, len(ids)) {
@@ -355,6 +378,9 @@ func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult
 					result.Healthy++
 				} else {
 					result.Unhealthy++
+					if err == nil && probe.Status == domain.ProbeStatusUnhealthy {
+						unhealthyIDs = append(unhealthyIDs, id)
+					}
 				}
 				mu.Unlock()
 			}
@@ -366,12 +392,12 @@ func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult
 		case <-ctx.Done():
 			close(jobs)
 			workers.Wait()
-			return result, ctx.Err()
+			return result, unhealthyIDs, ctx.Err()
 		}
 	}
 	close(jobs)
 	workers.Wait()
-	return result, nil
+	return result, unhealthyIDs, nil
 }
 
 func (s *Service) OperationsConfig(ctx context.Context) (domain.OperationsConfig, error) {

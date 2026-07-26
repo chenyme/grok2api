@@ -34,6 +34,7 @@ import {
   type EgressProbeBatchResultDTO,
   type EgressNodeDTO,
   type EgressOperationsConfigDTO,
+  type EgressRebalanceResultDTO,
   type EgressScope,
   type EgressSourceDTO,
   type EgressSourceInput,
@@ -105,21 +106,21 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOpera
 }
 
 type EgressProbeProgress = { completed: number; total: number };
-type EgressProbeRunResult = { requested: number; healthy: number; unhealthy: number; untested: number };
+type EgressProbeRunResult = { requested: number; healthy: number; unhealthy: number; removed: number; untested: number; rebalance?: EgressRebalanceResultDTO };
 
 async function testAllEgressNodes(onProgress: (value: EgressProbeProgress) => void): Promise<EgressProbeRunResult> {
   const nodes = await listEgressNodes();
-  // Manual checks are diagnostic: include disabled nodes so an operator can
-  // inspect a proxy before deciding to return it to the scheduling pool.
+  // Include disabled nodes too: this explicit bulk action removes only nodes
+  // that fail the probe just performed, then releases bindings for repair.
   const ids = nodes.items.filter((node) => node.proxyConfigured).map((node) => node.id);
-  const result = { requested: 0, healthy: 0, unhealthy: 0, untested: 0 };
+  const result = { requested: 0, healthy: 0, unhealthy: 0, removed: 0, untested: 0 };
   onProgress({ completed: 0, total: ids.length });
   for (let index = 0; index < ids.length; index += egressProbeBatchSize) {
     const idsInBatch = ids.slice(index, index + egressProbeBatchSize);
 	  let batch: EgressProbeBatchResultDTO | undefined;
     for (let attempt = 0; attempt < 2 && !batch; attempt += 1) {
       try {
-        batch = await testEgressNodes(idsInBatch);
+        batch = await testEgressNodes(idsInBatch, true);
       } catch {
         // Continue with the remaining snapshot even when a single admin
         // request was interrupted; retry once for transient proxy timeouts.
@@ -129,12 +130,14 @@ async function testAllEgressNodes(onProgress: (value: EgressProbeProgress) => vo
       result.requested += batch.requested;
       result.healthy += batch.healthy;
       result.unhealthy += batch.unhealthy;
+			result.removed += batch.removed;
     } else {
       result.untested += idsInBatch.length;
     }
     onProgress({ completed: Math.min(index + idsInBatch.length, ids.length), total: ids.length });
   }
-  return result;
+  const rebalance = result.removed > 0 ? await rebalanceEgressAccounts() : undefined;
+  return { ...result, rebalance };
 }
 
 export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressScope) => string }) {
@@ -150,6 +153,15 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
   const operationsQuery = useQuery({ queryKey: ["egress-operations"], queryFn: getEgressOperationsConfig });
   const nodesQuery = useQuery({ queryKey: ["egress-nodes", "fallback-options"], queryFn: () => listEgressNodes() });
   const operationsForm = operationsDraft ?? operationsFormFrom(operationsQuery.data);
+
+  function unplacedDetails(value?: EgressRebalanceResultDTO): string {
+    if (!value || value.unplaced === 0) return "";
+    const details = Object.entries(value.unplacedByProvider)
+      .filter(([scope, count]) => count > 0 && fallbackScopes.includes(scope as EgressScope))
+      .map(([scope, count]) => t("settings.egress.unplacedProvider", { scope: scopeLabel(scope as EgressScope), count }))
+      .join("；");
+    return details ? t("settings.egress.unplacedDetails", { details }) : "";
+  }
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
@@ -187,15 +199,18 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
 	mutationFn: () => testAllEgressNodes(setTestAllProgress),
 	 onSuccess: (value) => {
 		invalidate();
-		if (value.untested > 0) toast.warning(t("settings.egress.testedIncomplete", value));
-		else toast.success(t("settings.egress.tested", value));
+		const allocation = value.rebalance;
+		const toastValue = { ...value, ...allocation, unplacedDetails: unplacedDetails(allocation) };
+		if (value.untested > 0) toast.warning(t("settings.egress.testedIncomplete", toastValue));
+		else if (allocation) toast.success(t("settings.egress.testedAndRebalanced", toastValue));
+		else toast.success(t("settings.egress.tested", toastValue));
 	 },
     onError: showError,
 	 onSettled: () => setTestAllProgress(null),
   });
   const rebalance = useMutation({
     mutationFn: rebalanceEgressAccounts,
-    onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.rebalanced", value)); },
+    onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.rebalanced", { ...value, unplacedDetails: unplacedDetails(value) })); },
     onError: showError,
   });
   const saveOperations = useMutation({

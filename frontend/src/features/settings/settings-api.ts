@@ -74,8 +74,8 @@ export type EgressImportResultDTO = { imported: number; skipped: number; filtere
 export type EgressTextImportInput = { name: string; scope: EgressScope; accountCapacity: number; content: string; importFilter: EgressImportFilterInput };
 export type EgressIPProbeDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt?: string; latencyMs: number; exitIp?: string; exitCountry?: string; error?: string };
 export type EgressProbeResultDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt: string; latencyMs: number; exitIp?: string; exitCountry?: string; error?: string; probeProvider?: "ipinfo" | "cloudflare"; ipv4: EgressIPProbeDTO; ipv6: EgressIPProbeDTO };
-export type EgressProbeBatchResultDTO = { requested: number; healthy: number; unhealthy: number };
-export type EgressRebalanceResultDTO = { assigned: number; rebalanced: number; unplaced: number };
+export type EgressProbeBatchResultDTO = { requested: number; healthy: number; unhealthy: number; removed: number };
+export type EgressRebalanceResultDTO = { assigned: number; rebalanced: number; overflowed: number; unplaced: number; unplacedByProvider: Record<string, number> };
 
 export type SettingsSnapshotDTO = {
   config: SettingsConfigDTO;
@@ -209,8 +209,8 @@ const decodeEgressSource = createObjectDecoder<EgressSourceDTO>("egress source",
 });
 const decodeEgressSourceList = createObjectDecoder<{ items: EgressSourceDTO[] }>("egress source list", { items: isArrayOf(egressSourceValidator) });
 const decodeEgressImportResult = createObjectDecoder<EgressImportResultDTO>("egress import result", { imported: isNumber, skipped: isNumber, filtered: isNumber });
-const decodeEgressProbeBatchResult = createObjectDecoder<EgressProbeBatchResultDTO>("egress probe result", { requested: isNumber, healthy: isNumber, unhealthy: isNumber });
-const decodeEgressRebalanceResult = createObjectDecoder<EgressRebalanceResultDTO>("egress rebalance result", { assigned: isNumber, rebalanced: isNumber, unplaced: isNumber });
+const decodeEgressProbeBatchResult = createObjectDecoder<EgressProbeBatchResultDTO>("egress probe result", { requested: isNumber, healthy: isNumber, unhealthy: isNumber, removed: isNumber });
+const decodeEgressRebalanceResult = createObjectDecoder<EgressRebalanceResultDTO>("egress rebalance result", { assigned: isNumber, rebalanced: isNumber, overflowed: isNumber, unplaced: isNumber, unplacedByProvider: isRecordOf(isNumber) });
 const egressFallbackConfigValidator = hasShape({ mode: isOneOf("none", "direct", "fixed"), nodeId: isOptional(isString) });
 const decodeEgressOperationsConfigRaw = createObjectDecoder<EgressOperationsConfigWireDTO>("egress operations config", {
   probeProvider: isOptional(isOneOf("ipinfo", "cloudflare")), probeIntervalSeconds: isNumber, autoAssignEnabled: isBoolean, autoBalanceEnabled: isBoolean, assignmentIntervalSeconds: isNumber,
@@ -271,8 +271,8 @@ export function testEgressNode(id: string): Promise<EgressProbeResultDTO> {
   return apiRequest(`/api/admin/v1/egress-nodes/${id}/test`, { method: "POST" }, decodeEgressProbeResult);
 }
 
-export function testEgressNodes(ids?: string[]): Promise<EgressProbeBatchResultDTO> {
-  return apiRequest("/api/admin/v1/egress-nodes/test", { method: "POST", body: { ids: ids ?? [] } }, decodeEgressProbeBatchResult);
+export function testEgressNodes(ids?: string[], removeUnhealthy = false): Promise<EgressProbeBatchResultDTO> {
+  return apiRequest("/api/admin/v1/egress-nodes/test", { method: "POST", body: { ids: ids ?? [], removeUnhealthy } }, decodeEgressProbeBatchResult);
 }
 
 export function listEgressSources(): Promise<{ items: EgressSourceDTO[] }> {
