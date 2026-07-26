@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Unlink, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -50,6 +50,8 @@ import {
   pollDeviceAuthorization,
   refreshAccountBilling,
   refreshAccountsQuota,
+  resetAccountsQuota,
+  resetAllAccountQuota,
   refreshAccountsTokens,
   refreshAccountToken,
   refreshAccountQuota,
@@ -93,6 +95,8 @@ type BuildConversionProgressState = {
 };
 
 type WebConversionTarget = "build" | "console";
+type BuildQuotaTask = "sync" | "reset";
+type EgressConfigurationTask = "bind" | "unbind";
 
 type AccountSelection = {
   provider: AccountProvider;
@@ -125,12 +129,16 @@ export function AccountsPage() {
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selection, setSelection] = useState<AccountSelection>(() => ({ provider: "grok_build", ids: new Set() }));
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
-  const [egressBindingOpen, setEgressBindingOpen] = useState(false);
+  const [batchQuotaTaskOpen, setBatchQuotaTaskOpen] = useState(false);
+  const [batchQuotaTask, setBatchQuotaTask] = useState<BuildQuotaTask>("sync");
+  const [egressConfigurationOpen, setEgressConfigurationOpen] = useState(false);
+  const [egressConfigurationTask, setEgressConfigurationTask] = useState<EgressConfigurationTask>("bind");
   const [egressNodeID, setEgressNodeID] = useState("");
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupStatuses, setCleanupStatuses] = useState<Set<AccountCleanupStatus>>(() => new Set());
   const [exportOpen, setExportOpen] = useState(false);
   const [syncAllOpen, setSyncAllOpen] = useState(false);
+  const [allQuotaTask, setAllQuotaTask] = useState<BuildQuotaTask>("sync");
   const [quotaSyncProgress, setQuotaSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [webConversionTargets, setWebConversionTargets] = useState<string[] | "all" | null>(null);
   const [webConversionTarget, setWebConversionTarget] = useState<WebConversionTarget>("build");
@@ -205,7 +213,7 @@ export function AccountsPage() {
   const egressNodesQuery = useQuery({
     queryKey: ["egress-nodes", "account-binding"],
     queryFn: () => listEgressNodes(),
-    enabled: egressBindingOpen,
+    enabled: egressConfigurationOpen && egressConfigurationTask === "bind",
   });
 
   const invalidateAccountData = useCallback(() => {
@@ -329,6 +337,16 @@ export function AccountsPage() {
     },
     onError: (error) => { if (!isAbortError(error)) showError(error); },
     onSettled: () => { quotaSyncAbortRef.current = null; setQuotaSyncProgress(null); invalidateAccountData(); },
+  });
+
+  const allQuotaResetMutation = useMutation({
+    mutationFn: resetAllAccountQuota,
+    onSuccess: (result) => {
+      setSyncAllOpen(false);
+      toast.success(t("accountQuotaReset.completed", result));
+    },
+    onError: showError,
+    onSettled: invalidateAccountData,
   });
   const conversionMutation = useMutation({
     mutationFn: (input: BuildConversionInput) => {
@@ -461,8 +479,20 @@ export function AccountsPage() {
     mutationFn: () => refreshAccountsQuota([...selected], provider),
     onSuccess: (result) => {
       clearSelection();
+      setBatchQuotaTaskOpen(false);
       invalidateAccountData();
       toast.success(t("accounts.batchBillingRefreshed", result));
+    },
+    onError: showError,
+  });
+
+  const batchQuotaResetMutation = useMutation({
+    mutationFn: () => resetAccountsQuota([...selected], provider),
+    onSuccess: (result) => {
+      clearSelection();
+      setBatchQuotaTaskOpen(false);
+      invalidateAccountData();
+      toast.success(t("accountQuotaReset.completed", result));
     },
     onError: showError,
   });
@@ -495,7 +525,7 @@ export function AccountsPage() {
     },
     onSuccess: () => {
       clearSelection();
-      setEgressBindingOpen(false);
+      setEgressConfigurationOpen(false);
       invalidateAccountData();
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("accounts.egressBound"));
@@ -506,6 +536,7 @@ export function AccountsPage() {
     mutationFn: () => unassignEgressAccounts(provider, [...selected]),
     onSuccess: () => {
       clearSelection();
+      setEgressConfigurationOpen(false);
       invalidateAccountData();
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("accounts.egressUnbound"));
@@ -723,12 +754,14 @@ export function AccountsPage() {
   const hasProviderAccounts = providerAccountTotal > 0 || (result?.total ?? 0) > 0;
   const bindableEgressNodes = (egressNodesQuery.data?.items ?? []).filter((node) => node.enabled && node.proxyConfigured && scopeSupportsAccountProvider(node.scope, provider));
   const bulkTaskPending = quotaSyncMutation.isPending
+    || allQuotaResetMutation.isPending
     || allTokenMutation.isPending
     || conversionMutation.isPending
     || webConsoleSyncMutation.isPending
     || importMutation.isPending
     || batchUpdateMutation.isPending
     || batchBillingMutation.isPending
+    || batchQuotaResetMutation.isPending
     || batchTokenMutation.isPending
     || batchDeleteMutation.isPending
     || bindEgressMutation.isPending
@@ -871,11 +904,21 @@ export function AccountsPage() {
                 <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
-                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => { setEgressNodeID(""); setEgressBindingOpen(true); }}><Link />{t("accounts.bindEgress")}</Button>
-                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => unbindEgressMutation.mutate()}><Unlink />{t("accounts.unbindEgress")}</Button>
+                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
+                  setEgressNodeID("");
+                  setEgressConfigurationTask("bind");
+                  setEgressConfigurationOpen(true);
+                }}>{t("accounts.egressConfiguration")}</Button>
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion([...selected])}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets([...selected])}>{t("webAccountScripts.action")}</Button> : null}
-                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchBillingMutation.mutate()}>{t("accountCredential.quotaSyncAction")}</Button>
+                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
+                  if (provider === "grok_build") {
+                    setBatchQuotaTask("sync");
+                    setBatchQuotaTaskOpen(true);
+                    return;
+                  }
+                  batchBillingMutation.mutate();
+                }}>{t("accountCredential.quotaSyncAction")}</Button>
                 {provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchTokenMutation.mutate()}>{t("accountCredential.refreshAction")}</Button> : null}
                 <Button variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={bulkTaskPending} onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
               </div>
@@ -883,7 +926,7 @@ export function AccountsPage() {
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion("all")}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets("all")}>{t("webAccountScripts.action")}</Button> : null}
-                {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setSyncAllOpen(true)}>{t("accountCredential.quotaSyncAction")}</Button> : null}
+                {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => { setAllQuotaTask("sync"); setSyncAllOpen(true); }}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={bulkTaskPending} onClick={() => { setCleanupStatuses(new Set()); setCleanupOpen(true); }}><Trash2 />{t("accounts.cleanupAction")}</Button> : null}
               </div>
@@ -990,10 +1033,37 @@ export function AccountsPage() {
         />
       ) : null}
 
-      <AlertDialog open={syncAllOpen} onOpenChange={(open) => { if (!open) quotaSyncAbortRef.current?.abort(); setSyncAllOpen(open); }}>
+      <AlertDialog open={syncAllOpen} onOpenChange={(open) => {
+        if (quotaSyncMutation.isPending || allQuotaResetMutation.isPending) return;
+        if (!open) quotaSyncAbortRef.current?.abort();
+        setSyncAllOpen(open);
+      }}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>{t("accounts.syncAllTitle")}</AlertDialogTitle><AlertDialogDescription>{t(provider === "grok_web" ? "accounts.syncAllWebDescription" : provider === "grok_console" ? "console.syncAllDescription" : "accounts.syncAllDescription")}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction disabled={quotaSyncMutation.isPending} onClick={(event) => { event.preventDefault(); quotaSyncMutation.mutate(provider); }}>{quotaSyncMutation.isPending ? <><Spinner />{quotaSyncProgress ? <span className="tabular-nums">{quotaSyncProgress.completed} / {quotaSyncProgress.total}</span> : t("common.loading")}</> : t("accounts.syncAll")}</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(provider === "grok_build" ? "accountQuotaTask.allTitle" : "accounts.syncAllTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t(provider === "grok_build" ? "accountQuotaTask.allDescription" : provider === "grok_web" ? "accounts.syncAllWebDescription" : "console.syncAllDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          {provider === "grok_build" ? (
+            <div className="space-y-3">
+              <Tabs value={allQuotaTask} onValueChange={(value) => setAllQuotaTask(value as BuildQuotaTask)}>
+                <TabsList className="grid h-10 w-full grid-cols-2 p-1">
+                  <TabsTrigger value="sync" className="h-8 font-normal" disabled={quotaSyncMutation.isPending || allQuotaResetMutation.isPending}>{t("accounts.refreshBilling")}</TabsTrigger>
+                  <TabsTrigger value="reset" className="h-8 font-normal" disabled={quotaSyncMutation.isPending || allQuotaResetMutation.isPending}>{t("accountQuotaReset.action")}</TabsTrigger>
+                </TabsList>
+              </Tabs>
+              <p className="min-h-10 text-xs leading-5 text-muted-foreground">{t(allQuotaTask === "sync" ? "accounts.syncAllDescription" : "accountQuotaTask.resetAllDescription")}</p>
+            </div>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction disabled={quotaSyncMutation.isPending || allQuotaResetMutation.isPending} onClick={(event) => {
+              event.preventDefault();
+              if (provider === "grok_build" && allQuotaTask === "reset") allQuotaResetMutation.mutate();
+              else quotaSyncMutation.mutate(provider);
+            }}>
+              {quotaSyncMutation.isPending ? <><Spinner />{quotaSyncProgress ? <span className="tabular-nums">{quotaSyncProgress.completed} / {quotaSyncProgress.total}</span> : t("common.loading")}</> : allQuotaResetMutation.isPending ? <Spinner /> : t(provider === "grok_build" ? "accountQuotaTask.execute" : "accounts.syncAll")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
@@ -1207,38 +1277,96 @@ export function AccountsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <Dialog open={egressBindingOpen} onOpenChange={(open) => {
-        if (bindEgressMutation.isPending) return;
-        setEgressBindingOpen(open);
-        if (!open) setEgressNodeID("");
+      <AlertDialog open={batchQuotaTaskOpen} onOpenChange={(open) => {
+        if (batchBillingMutation.isPending || batchQuotaResetMutation.isPending) return;
+        setBatchQuotaTaskOpen(open);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("accountQuotaTask.title", { count: selected.size })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("accountQuotaTask.description")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3">
+            <Tabs value={batchQuotaTask} onValueChange={(value) => setBatchQuotaTask(value as BuildQuotaTask)}>
+              <TabsList className="grid h-10 w-full grid-cols-2 p-1">
+                <TabsTrigger value="sync" className="h-8 font-normal" disabled={batchBillingMutation.isPending || batchQuotaResetMutation.isPending}>{t("accounts.refreshBilling")}</TabsTrigger>
+                <TabsTrigger value="reset" className="h-8 font-normal" disabled={batchBillingMutation.isPending || batchQuotaResetMutation.isPending}>{t("accountQuotaReset.action")}</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <p className="min-h-10 text-xs leading-5 text-muted-foreground">{t(batchQuotaTask === "sync" ? "accountQuotaTask.syncDescription" : "accountQuotaReset.description")}</p>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction disabled={batchBillingMutation.isPending || batchQuotaResetMutation.isPending} onClick={(event) => {
+              event.preventDefault();
+              if (batchQuotaTask === "reset") batchQuotaResetMutation.mutate();
+              else batchBillingMutation.mutate();
+            }}>
+              {batchBillingMutation.isPending || batchQuotaResetMutation.isPending ? <Spinner /> : null}
+              {t("accountQuotaTask.execute")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={egressConfigurationOpen} onOpenChange={(open) => {
+        if (bindEgressMutation.isPending || unbindEgressMutation.isPending) return;
+        setEgressConfigurationOpen(open);
+        if (!open) {
+          setEgressConfigurationTask("bind");
+          setEgressNodeID("");
+        }
       }}>
         <DialogContent className="sm:max-w-[460px]">
           <DialogHeader>
-            <DialogTitle>{t("accounts.bindEgressTitle", { count: selected.size })}</DialogTitle>
-            <DialogDescription>{t("accounts.bindEgressDescription")}</DialogDescription>
+            <DialogTitle>{t("accounts.egressConfigurationTitle", { count: selected.size })}</DialogTitle>
+            <DialogDescription>{t("accounts.egressConfigurationDescription")}</DialogDescription>
           </DialogHeader>
-          {egressNodesQuery.isPending ? <div className="flex min-h-20 items-center justify-center"><Spinner /></div> : null}
-          {egressNodesQuery.isError ? <p className="text-sm text-destructive">{egressNodesQuery.error.message}</p> : null}
-          {!egressNodesQuery.isPending && !egressNodesQuery.isError ? (
-            bindableEgressNodes.length > 0 ? (
-              <div className="space-y-2">
-                <Label htmlFor="account-egress-node">{t("accounts.bindEgressNode")}</Label>
-                <Select value={egressNodeID} onValueChange={setEgressNodeID}>
-                  <SelectTrigger id="account-egress-node"><SelectValue placeholder={t("accounts.bindEgressEmpty")} /></SelectTrigger>
-                  <SelectContent>
-                    {bindableEgressNodes.map((node) => (
-                      <SelectItem key={node.id} value={node.id}>
-                        {node.name} ({node.assignedAccountCount}{node.accountCapacity > 0 ? ` / ${node.accountCapacity}` : ` / ${t("settings.egress.unlimited")}`})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+          <div className="space-y-3">
+            <Tabs value={egressConfigurationTask} onValueChange={(value) => setEgressConfigurationTask(value as EgressConfigurationTask)}>
+              <TabsList className="grid h-10 w-full grid-cols-2 p-1">
+                <TabsTrigger value="bind" className="h-8 font-normal" disabled={bindEgressMutation.isPending || unbindEgressMutation.isPending}>{t("accounts.bindEgress")}</TabsTrigger>
+                <TabsTrigger value="unbind" className="h-8 font-normal" disabled={bindEgressMutation.isPending || unbindEgressMutation.isPending}>{t("accounts.unbindEgress")}</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            {egressConfigurationTask === "bind" ? (
+              <div className="min-h-20">
+                {egressNodesQuery.isPending ? <div className="flex min-h-20 items-center justify-center"><Spinner /></div> : null}
+                {egressNodesQuery.isError ? <p className="text-sm text-destructive">{egressNodesQuery.error.message}</p> : null}
+                {!egressNodesQuery.isPending && !egressNodesQuery.isError ? (
+                  bindableEgressNodes.length > 0 ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="account-egress-node">{t("accounts.bindEgressNode")}</Label>
+                      <Select value={egressNodeID} onValueChange={setEgressNodeID} disabled={bindEgressMutation.isPending}>
+                        <SelectTrigger id="account-egress-node"><SelectValue placeholder={t("accounts.bindEgressEmpty")} /></SelectTrigger>
+                        <SelectContent>
+                          {bindableEgressNodes.map((node) => (
+                            <SelectItem key={node.id} value={node.id}>
+                              {node.name} ({node.assignedAccountCount}{node.accountCapacity > 0 ? ` / ${node.accountCapacity}` : ` / ${t("settings.egress.unlimited")}`})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : <p className="text-xs leading-5 text-muted-foreground">{t("accounts.bindEgressNoNodes")}</p>
+                ) : null}
               </div>
-            ) : <p className="text-sm text-muted-foreground">{t("accounts.bindEgressNoNodes")}</p>
-          ) : null}
+            ) : <p className="min-h-20 text-xs leading-5 text-muted-foreground">{t("accounts.unbindEgressDescription")}</p>}
+          </div>
           <DialogFooter>
-            <Button type="button" variant="secondary" size="sm" disabled={bindEgressMutation.isPending} onClick={() => setEgressBindingOpen(false)}>{t("common.cancel")}</Button>
-            <Button type="button" size="sm" disabled={!egressNodeID || bindEgressMutation.isPending} onClick={() => bindEgressMutation.mutate()}>{bindEgressMutation.isPending ? <Spinner /> : null}{t("accounts.bindEgress")}</Button>
+            <Button type="button" variant="secondary" size="sm" disabled={bindEgressMutation.isPending || unbindEgressMutation.isPending} onClick={() => setEgressConfigurationOpen(false)}>{t("common.cancel")}</Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={bindEgressMutation.isPending || unbindEgressMutation.isPending || (egressConfigurationTask === "bind" && (!egressNodeID || egressNodesQuery.isPending || egressNodesQuery.isError))}
+              onClick={() => {
+                if (egressConfigurationTask === "bind") bindEgressMutation.mutate();
+                else unbindEgressMutation.mutate();
+              }}
+            >
+              {bindEgressMutation.isPending || unbindEgressMutation.isPending ? <Spinner /> : null}
+              {t("accountQuotaTask.execute")}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

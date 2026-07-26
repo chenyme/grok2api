@@ -111,7 +111,7 @@ func TestListRoutingCandidatesSharesEntitledBuildModels(t *testing.T) {
 	if err := models.ReplaceAccountCapabilities(ctx, peer.ID, []string{"grok-4.5"}, now); err != nil {
 		t.Fatal(err)
 	}
-	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, sharedModel, "")
+	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, 0, sharedModel, "")
 	if err != nil {
 		t.Fatal(err)
 	}

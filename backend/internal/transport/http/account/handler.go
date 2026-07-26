@@ -148,9 +148,11 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/web/:id/nsfw", h.enableWebNSFW)
 	router.POST("/accounts/console/refresh-quotas", h.refreshAllConsoleQuotas)
 	router.POST("/accounts/refresh-billing", h.refreshAllBilling)
+	router.POST("/accounts/reset-quota", h.resetAllBuildQuota)
 	router.POST("/accounts/refresh-tokens", h.refreshAllTokens)
 	router.POST("/accounts/cleanup", h.cleanup)
 	router.POST("/accounts/batch/refresh-billing", h.batchRefreshBilling)
+	router.POST("/accounts/batch/reset-quota", h.batchResetQuota)
 	router.POST("/accounts/batch/refresh-quotas", h.batchRefreshQuotas)
 	router.POST("/accounts/batch/refresh-tokens", h.batchRefreshTokens)
 	router.PATCH("/accounts/batch", h.batchUpdate)
@@ -475,6 +477,38 @@ func (h *Handler) batchRefreshBilling(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed})
+}
+
+func (h *Handler) batchResetQuota(c *gin.Context) {
+	var request batchDeleteRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	ids, err := parseIDs(request.IDs)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
+		return
+	}
+	if request.Provider != string(accountdomain.ProviderBuild) {
+		response.Error(c, http.StatusBadRequest, "invalidProvider", "仅 Grok Build 账号支持手动重置额度状态")
+		return
+	}
+	reset, err := h.service.BatchResetQuotaState(c.Request.Context(), ids)
+	if err != nil {
+		h.writeServiceError(c, "quotaBatchResetFailed", err, http.StatusInternalServerError, "批量重置额度状态失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"reset": reset})
+}
+
+func (h *Handler) resetAllBuildQuota(c *gin.Context) {
+	reset, err := h.service.ResetAllBuildQuotaState(c.Request.Context())
+	if err != nil {
+		h.writeServiceError(c, "quotaResetFailed", err, http.StatusInternalServerError, "重置全部 Grok Build 额度状态失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"reset": reset})
 }
 
 func (h *Handler) cleanup(c *gin.Context) {

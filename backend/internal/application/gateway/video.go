@@ -67,7 +67,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	}
 	externalModel := model.ExternalPublicID(route.Provider, route.PublicID)
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
-	lease, err := s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", nil, false)
+	lease, err := s.selector.Acquire(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", nil, false)
 	if err != nil {
 		return media.Job{}, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 	}
@@ -291,7 +291,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	}
 	// 视频任务创建时已持久化账号归属；恢复只能重新获取原账号，禁止因后续
 	// 轮询或结果处理失败切换到其他账号。
-	lease, err := s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.UpstreamModel, "", true)
+	lease, err := s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.ID, route.UpstreamModel, "", true)
 	if err != nil {
 		if parent.Err() != nil {
 			s.deferVideoJob(parent, job)

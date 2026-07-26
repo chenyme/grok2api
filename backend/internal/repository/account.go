@@ -28,7 +28,7 @@ type ObservedModelWriter interface {
 // RoutingLayerRepository separates reusable account state from model overlays.
 type RoutingLayerRepository interface {
 	ListRoutingAccountBases(ctx context.Context, provider account.Provider, quotaMode string) ([]account.RoutingAccountBase, error)
-	ListRoutingAccountOverlays(ctx context.Context, provider account.Provider, upstreamModel string) (account.RoutingOverlaySnapshot, error)
+	ListRoutingAccountOverlays(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel string) (account.RoutingOverlaySnapshot, error)
 }
 
 // AccountRepository 定义 OAuth 账号和额度快照持久化能力。
@@ -49,7 +49,7 @@ type AccountRepository interface {
 	// ListMissingConsoleSyncBatch 以 ID 游标取缺少 Console 账号的 Web 账号；total/skipped 仅在 afterID 为 0 时返回。
 	ListMissingConsoleSyncBatch(ctx context.Context, afterID uint64, limit int) ([]account.Credential, int64, int64, error)
 	HasActive(ctx context.Context, provider account.Provider) (bool, error)
-	ListRoutingCandidates(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string) ([]account.RoutingCandidate, error)
+	ListRoutingCandidates(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode string) ([]account.RoutingCandidate, error)
 	Get(ctx context.Context, id uint64) (account.Credential, error)
 	LinkWebToBuild(ctx context.Context, webAccountID, buildAccountID uint64) error
 	GetBillings(ctx context.Context, accountIDs []uint64) (map[uint64]account.Billing, error)
@@ -89,6 +89,8 @@ type AccountRepository interface {
 	SaveQuotaRecovery(ctx context.Context, value account.QuotaRecovery) error
 	ClaimQuotaProbe(ctx context.Context, accountID uint64, now, leaseUntil time.Time) (bool, error)
 	ClearQuotaRecovery(ctx context.Context, accountID uint64) error
+	ResetQuotaState(ctx context.Context, provider account.Provider, accountIDs []uint64) error
+	ResetProviderQuotaState(ctx context.Context, provider account.Provider, activeOnly bool) (int64, error)
 	HasQuotaWindows(ctx context.Context, accountID uint64) (bool, error)
 	GetQuotaWindows(ctx context.Context, accountIDs []uint64) (map[uint64][]account.QuotaWindow, error)
 	ReplaceQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error
