@@ -50,6 +50,30 @@ const billingReservationCrashGrace = 10 * time.Minute
 const mediaBillingReservationTTL = 24 * time.Hour
 const modelCatalogRefreshTimeout = 30 * time.Second
 const accountStateWriteTimeout = 3 * time.Second
+const unlimitedRoutingAttempts = -1
+
+type routingAttemptPolicy struct {
+	limit     int
+	unlimited bool
+}
+
+func newRoutingAttemptPolicy(configured int) routingAttemptPolicy {
+	if configured == unlimitedRoutingAttempts {
+		return routingAttemptPolicy{unlimited: true}
+	}
+	if configured <= 0 {
+		configured = 3
+	}
+	return routingAttemptPolicy{limit: configured}
+}
+
+func (p routingAttemptPolicy) allows(attempt int) bool {
+	return p.unlimited || attempt < p.limit
+}
+
+func (p routingAttemptPolicy) hasNext(attempt int) bool {
+	return p.unlimited || attempt+1 < p.limit
+}
 
 var freeQuotaUsagePattern = regexp.MustCompile(`(?i)tokens\s*\(actual/limit\)\s*:\s*([0-9]+)\s*/\s*([0-9]+)`)
 
@@ -660,13 +684,10 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	if input.PreviousResponseID != "" && !supportsStoredResponses {
 		return nil, ErrResponseStateUnsupported
 	}
-	attempts := int(s.maxAttempts.Load())
-	if attempts <= 0 {
-		attempts = 3
-	}
+	attemptPolicy := newRoutingAttemptPolicy(int(s.maxAttempts.Load()))
 	idempotencyID, _ := security.NewOpaqueToken(18)
 	if ownership != nil {
-		attempts = 1
+		attemptPolicy = newRoutingAttemptPolicy(1)
 	}
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
 	if err := s.checkLedgerReady(); err != nil {
@@ -703,7 +724,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		return result, err
 	}
 attemptLoop:
-	for attempt := 0; attempt < attempts; attempt++ {
+	for attempt := 0; attemptPolicy.allows(attempt); attempt++ {
 		var lease *accountLease
 		var err error
 		selectionStarted := time.Now()
@@ -838,7 +859,7 @@ attemptLoop:
 			}
 		}
 		egressForbidden := s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden
-		finalEgressForbidden := egressForbidden && (attempt > 0 || attempt+1 >= attempts)
+		finalEgressForbidden := egressForbidden && (attempt > 0 || !attemptPolicy.hasNext(attempt))
 		// Classify 403 bodies before egress retry. Definitive blocked-account signals invalidate and rotate the account;
 		// request-level safety rejections are returned as-is without account side effects;
 		// all other 403 responses retain the egress retry path without penalizing the account.
