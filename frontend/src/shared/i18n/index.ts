@@ -1546,13 +1546,13 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
   health: "请求健康",
   healthHelp: "由真实 Grok 请求的成功、连接失败和反爬拒绝累计得出，与连通探测独立。",
   probe: "连通探测",
-  probeHelp: "最近一次通过该代理分别请求所选服务 IPv4 与 IPv6 固定端点的结果；任一地址族可用即汇总为可用，不代表 Grok 请求健康度。",
+  probeHelp: "最近一次通过该代理分别请求所选服务 IPv4 与 IPv6 固定端点的结果。仅表示代理能访问 IP 回显端点，不保证 Grok 上游可用，也不代表真实请求健康度。",
   probeProvider: "IP 回显服务",
   probeProviderHelp: "选择 IPv4 与 IPv6 连通探测使用的固定服务。Cloudflare 为默认服务，IPinfo 可手动切换。",
 });
 Object.assign(resources.en.translation.settings.egress as unknown as Record<string, string>, {
   accounts: "Bound", health: "Request health", healthHelp: "Accumulated from real Grok request successes, transport failures, and anti-bot rejections; independent of the connectivity probe.",
-  probe: "Connectivity probe", probeHelp: "The latest independent IPv4 and IPv6 checks through the selected IP echo service; either family succeeding makes the aggregate probe healthy. This does not represent Grok request health.", probeProvider: "IP echo service", probeProviderHelp: "Choose the fixed service used for IPv4 and IPv6 connectivity checks. Cloudflare is the default and IPinfo remains selectable.", healthy: "Healthy", unhealthy: "Unhealthy", notTested: "Not tested", test: "Test proxy", testedOne: "Proxy test completed",
+  probe: "Connectivity probe", probeHelp: "The latest independent IPv4 and IPv6 checks through the selected IP echo service. This only confirms access to the IP echo endpoint; it does not guarantee Grok upstream availability or represent real request health.", probeProvider: "IP echo service", probeProviderHelp: "Choose the fixed service used for IPv4 and IPv6 connectivity checks. Cloudflare is the default and IPinfo remains selectable.", healthy: "Healthy", unhealthy: "Unhealthy", notTested: "Not tested", test: "Test proxy", testedOne: "Proxy test completed",
   operations: "Proxy operations", automation: "Automation", automationHelp: "Configure recurring node checks and automatic account bindings. The actions on the right run once immediately.",
   subscriptions: "Proxy sources", subscriptionsHelp: "Save a subscription URL for recurring imports. Use Add node above for a single proxy.",
   testAll: "Check all", testAllHelp: "Check every enabled proxy node now and update its health status.",
