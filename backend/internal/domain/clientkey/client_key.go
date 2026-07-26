@@ -24,10 +24,13 @@ type Key struct {
 	BillingLimitUSDTicks  int64
 	BilledUsageUSDTicks   int64
 	ReservedUsageUSDTicks int64
-	AllowedModels         []uint64
-	LastUsedAt            *time.Time
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// AllowModelAliases 为 true 时，/v1/models 会展开思考等级后缀别名（如 grok-4.5-low），
+	// 且允许使用这些别名发起请求；关闭时仅暴露并接受基础模型名。
+	AllowModelAliases bool
+	AllowedModels     []uint64
+	LastUsedAt        *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // IsAvailable 判断客户端 Key 当前是否可用。

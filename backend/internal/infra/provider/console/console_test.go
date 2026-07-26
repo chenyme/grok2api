@@ -46,8 +46,8 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 		}
 	}
 	aliases := Aliases()
-	if len(aliases) != 13 {
-		t.Fatalf("aliases = %d, want 13", len(aliases))
+	if len(aliases) != 17 {
+		t.Fatalf("aliases = %d, want 17", len(aliases))
 	}
 	registry := provider.NewRegistry(NewAdapter(Config{}, nil, nil))
 	if registry.SupportsStoredResponses(account.ProviderConsole) {
@@ -56,7 +56,8 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 	for _, name := range []string{
 		"grok-4.3-console", "grok-4.20-0309-console", "grok-4.20-0309-reasoning-console",
 		"grok-4.20-0309-non-reasoning-console", "grok-4.20-multi-agent-console", "grok-build-console",
-		"grok-4.3-low", "grok-4.3-medium", "grok-4.3-high",
+		"grok-4.3-none", "grok-4.3-low", "grok-4.3-medium", "grok-4.3-high",
+		"grok-4.20-0309-reasoning-low", "grok-4.20-0309-reasoning-medium", "grok-4.20-0309-reasoning-high",
 		"grok-4.20-multi-agent-low", "grok-4.20-multi-agent-medium", "grok-4.20-multi-agent-high", "grok-4.20-multi-agent-xhigh",
 	} {
 		alias, ok := registry.ResolveModelAlias(name)

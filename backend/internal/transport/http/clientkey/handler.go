@@ -35,6 +35,7 @@ type createRequest struct {
 	RPMLimit             *int     `json:"rpmLimit"`
 	MaxConcurrent        *int     `json:"maxConcurrent"`
 	BillingLimitUSDTicks int64    `json:"billingLimitUsdTicks"`
+	AllowModelAliases    *bool    `json:"allowModelAliases"`
 	AllowedModelIDs      []string `json:"allowedModelIds"`
 }
 
@@ -45,6 +46,7 @@ type updateRequest struct {
 	RPMLimit             *int      `json:"rpmLimit"`
 	MaxConcurrent        *int      `json:"maxConcurrent"`
 	BillingLimitUSDTicks *int64    `json:"billingLimitUsdTicks"`
+	AllowModelAliases    *bool     `json:"allowModelAliases"`
 	AllowedModelIDs      *[]string `json:"allowedModelIds"`
 }
 
@@ -67,6 +69,7 @@ type keyResponse struct {
 	MaxConcurrent        int        `json:"maxConcurrent"`
 	BillingLimitUSDTicks int64      `json:"billingLimitUsdTicks"`
 	BilledUsageUSDTicks  int64      `json:"billedUsageUsdTicks"`
+	AllowModelAliases    bool       `json:"allowModelAliases"`
 	AllowedModelIDs      []string   `json:"allowedModelIds"`
 	LastUsedAt           *time.Time `json:"lastUsedAt,omitempty"`
 }
@@ -148,6 +151,9 @@ func (h *Handler) create(c *gin.Context) {
 		enabled = *request.Enabled
 	}
 	input := clientkeyapp.CreateInput{Name: request.Name, Enabled: enabled, ExpiresAt: expiresAt, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowedModels: modelIDs}
+	if request.AllowModelAliases != nil {
+		input.AllowModelAliases = *request.AllowModelAliases
+	}
 	if request.RPMLimit != nil {
 		input.RPMLimit = *request.RPMLimit
 		input.RPMUnlimited = *request.RPMLimit == 0
@@ -174,7 +180,7 @@ func (h *Handler) update(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	input := clientkeyapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, RPMLimit: request.RPMLimit, MaxConcurrent: request.MaxConcurrent, BillingLimitUSDTicks: request.BillingLimitUSDTicks}
+	input := clientkeyapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, RPMLimit: request.RPMLimit, MaxConcurrent: request.MaxConcurrent, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowModelAliases: request.AllowModelAliases}
 	if request.ExpiresAt != nil {
 		if *request.ExpiresAt == "" {
 			input.ClearExpiresAt = true
@@ -251,7 +257,11 @@ func newKeyResponse(value clientkeydomain.Key) keyResponse {
 	for _, id := range value.AllowedModels {
 		ids = append(ids, strconv.FormatUint(id, 10))
 	}
-	return keyResponse{ID: value.ID, Name: value.Name, Prefix: value.Prefix, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt, RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent, BillingLimitUSDTicks: value.BillingLimitUSDTicks, BilledUsageUSDTicks: value.BilledUsageUSDTicks, AllowedModelIDs: ids, LastUsedAt: value.LastUsedAt}
+	return keyResponse{
+		ID: value.ID, Name: value.Name, Prefix: value.Prefix, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+		RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent, BillingLimitUSDTicks: value.BillingLimitUSDTicks,
+		BilledUsageUSDTicks: value.BilledUsageUSDTicks, AllowModelAliases: value.AllowModelAliases, AllowedModelIDs: ids, LastUsedAt: value.LastUsedAt,
+	}
 }
 
 func parseTime(value string) (*time.Time, error) {
