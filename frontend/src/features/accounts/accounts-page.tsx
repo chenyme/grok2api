@@ -207,7 +207,7 @@ export function AccountsPage() {
       renewal: provider === "grok_build" ? renewalFilter : undefined,
       risk: provider === "grok_build" ? riskFilter : undefined,
       agreement: provider === "grok_web" ? agreementFilter : undefined,
-      association: provider === "grok_web" ? associationFilter : undefined,
+      association: associationFilter || undefined,
       sortBy: sort.field, sortOrder: sort.order,
     }),
   });
@@ -1018,14 +1018,17 @@ export function AccountsPage() {
                   { value: "allAccepted", label: t("accounts.agreementAllAccepted") },
                   { value: "allNotAccepted", label: t("accounts.agreementAllNotAccepted") },
                 ] }] : []),
-                ...(provider === "grok_web" ? [{ id: "association", label: t("accounts.associationFilter"), value: associationFilter, onChange: (value: string) => { setAssociationFilter(value); setPage(1); }, options: [
+                { id: "association", label: t("accounts.associationFilter"), value: associationFilter, onChange: (value: string) => { setAssociationFilter(value); setPage(1); }, options: provider === "grok_web" ? [
                   { value: "buildLinked", label: t("accounts.associationBuildLinked") },
                   { value: "buildUnlinked", label: t("accounts.associationBuildUnlinked") },
                   { value: "consoleLinked", label: t("accounts.associationConsoleLinked") },
                   { value: "consoleUnlinked", label: t("accounts.associationConsoleUnlinked") },
                   { value: "allLinked", label: t("accounts.associationAllLinked") },
                   { value: "allUnlinked", label: t("accounts.associationAllUnlinked") },
-                ] }] : []),
+                ] : [
+                  { value: "webLinked", label: t("accounts.associationWebLinked") },
+                  { value: "webUnlinked", label: t("accounts.associationWebUnlinked") },
+                ] },
               ]} />
             </div>
             {selected.size > 0 ? (

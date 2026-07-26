@@ -91,7 +91,7 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 		}
 	}
 	query = applyWebAgreementFilter(query, input.Filter.Agreement)
-	query = applyWebAssociationFilter(query, input.Filter.Association)
+	query = applyAssociationFilter(query, input.Filter.Provider, input.Filter.Association)
 	if input.Filter.RestrictIDs {
 		if len(input.Filter.AccountIDs) == 0 {
 			query = query.Where("1 = 0")
@@ -1515,6 +1515,9 @@ const (
 	webTermsAcceptedPredicate = "EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.terms_accepted_at IS NOT NULL AND profile.terms_accepted_version >= ?)"
 	webBuildLinkedPredicate   = "EXISTS (SELECT 1 FROM account_provider_links link WHERE link.web_account_id = provider_accounts.id)"
 	webConsoleLinkedPredicate = "EXISTS (SELECT 1 FROM web_console_account_links link WHERE link.web_account_id = provider_accounts.id)"
+	// Build/Console 侧按 Web 绑定筛选的谓词（webLinked / webUnlinked）。
+	buildWebLinkedPredicate   = "EXISTS (SELECT 1 FROM account_provider_links link WHERE link.build_account_id = provider_accounts.id)"
+	consoleWebLinkedPredicate = "EXISTS (SELECT 1 FROM web_console_account_links link WHERE link.console_account_id = provider_accounts.id)"
 )
 
 func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
@@ -1536,7 +1539,10 @@ func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
 	}
 }
 
-func applyWebAssociationFilter(query *gorm.DB, association string) *gorm.DB {
+// applyAssociationFilter 按号池应用关联筛选：
+// Web 端保留 build/console/all 六项；Build、Console 端的 webLinked/webUnlinked
+// 因谓词分别落在 build_account_id / console_account_id，必须依赖 provider 分流。
+func applyAssociationFilter(query *gorm.DB, providerValue, association string) *gorm.DB {
 	switch association {
 	case "buildLinked":
 		return query.Where(webBuildLinkedPredicate)
@@ -1550,6 +1556,16 @@ func applyWebAssociationFilter(query *gorm.DB, association string) *gorm.DB {
 		return query.Where(webBuildLinkedPredicate).Where(webConsoleLinkedPredicate)
 	case "allUnlinked":
 		return query.Where("NOT " + webBuildLinkedPredicate).Where("NOT " + webConsoleLinkedPredicate)
+	case "webLinked":
+		if providerValue == string(account.ProviderConsole) {
+			return query.Where(consoleWebLinkedPredicate)
+		}
+		return query.Where(buildWebLinkedPredicate)
+	case "webUnlinked":
+		if providerValue == string(account.ProviderConsole) {
+			return query.Where("NOT " + consoleWebLinkedPredicate)
+		}
+		return query.Where("NOT " + buildWebLinkedPredicate)
 	default:
 		return query
 	}

@@ -224,7 +224,8 @@ type ListFilter struct {
 	Risk      string
 	// Agreement applies only to grok_web accounts.
 	Agreement string
-	// Association applies only to grok_web accounts.
+	// Association 按号池取值：grok_web 支持 build/console/all 六项；
+	// grok_build 与 grok_console 仅支持 webLinked / webUnlinked。
 	Association string
 	Sort        repository.SortQuery
 }
@@ -421,8 +422,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		(filter.Risk != "" && filter.Provider != string(accountdomain.ProviderBuild)) ||
 		!oneOf(filter.Agreement, "", "nsfwEnabled", "nsfwDisabled", "termsAccepted", "termsNotAccepted", "allAccepted", "allNotAccepted") ||
 		(filter.Agreement != "" && filter.Provider != string(accountdomain.ProviderWeb)) ||
-		!oneOf(filter.Association, "", "buildLinked", "buildUnlinked", "consoleLinked", "consoleUnlinked", "allLinked", "allUnlinked") ||
-		(filter.Association != "" && filter.Provider != string(accountdomain.ProviderWeb)) ||
+		!validAssociationFilter(filter.Provider, filter.Association) ||
 		!repository.IsValidSort(filter.Sort, "name", "type", "status", "createdAt") {
 		return nil, 0, ErrInvalidFilter
 	}
@@ -535,6 +535,22 @@ func oneOf(value string, allowed ...string) bool {
 		}
 	}
 	return false
+}
+
+// validAssociationFilter 校验关联筛选值与号池的合法组合。
+// grok_web 沿用 build/console/all 六项；grok_build、grok_console 仅支持按 Web 绑定筛选。
+func validAssociationFilter(providerValue, association string) bool {
+	if association == "" {
+		return true
+	}
+	switch providerValue {
+	case string(accountdomain.ProviderWeb):
+		return oneOf(association, "buildLinked", "buildUnlinked", "consoleLinked", "consoleUnlinked", "allLinked", "allUnlinked")
+	case string(accountdomain.ProviderBuild), string(accountdomain.ProviderConsole):
+		return oneOf(association, "webLinked", "webUnlinked")
+	default:
+		return false
+	}
 }
 
 // BatchUpdate 对一组账号应用同一组路由参数，单次最多处理一个管理端最大分页。
