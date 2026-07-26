@@ -789,12 +789,48 @@ func TestDecodeLegacyFileUploadResponseDiagnostics(t *testing.T) {
 
 func TestWebMediaStreamErrorRedactsSensitiveValues(t *testing.T) {
 	err := webMediaStreamError(map[string]any{
+		"code":    17,
+		"type":    "video_generation_error",
+		"status":  "rejected",
+		"reason":  "policy check failed",
 		"message": "Bearer sensitive-token from owner@example.com at https://grok.com/private?token=secret",
+		"details": []any{map[string]any{"code": "blocked", "message": "access_token=detail-secret"}},
 	})
-	for _, secret := range []string{"sensitive-token", "owner@example.com", "token=secret"} {
+	for _, expected := range []string{"code=17", "type=video_generation_error", "status=rejected", "reason=policy check failed", "details=blocked:"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("stream error missing %q: %v", expected, err)
+		}
+	}
+	for _, secret := range []string{"sensitive-token", "owner@example.com", "token=secret", "detail-secret"} {
 		if strings.Contains(err.Error(), secret) {
 			t.Fatalf("stream error exposed %q: %v", secret, err)
 		}
+	}
+}
+
+func TestWebMediaStreamErrorReportsUnknownShape(t *testing.T) {
+	err := webMediaStreamError(map[string]any{"opaque": true, "retryAfter": 30})
+	if !strings.Contains(err.Error(), "fields=[opaque,retryAfter]") {
+		t.Fatalf("unknown stream error = %v", err)
+	}
+}
+
+func TestParseVideoStreamReportsCodeOnlyAndStringErrors(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		fixture string
+		want    string
+	}{
+		{name: "code only", fixture: `data: {"result":{"response":{"error":{"code":23,"details":[]}}}}` + "\n", want: "code=23"},
+		{name: "string", fixture: `data: {"error":"generation rejected"}` + "\n", want: "message=generation rejected"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(test.fixture))}
+			_, _, err := parseVideoStream(response, nil)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -1228,6 +1264,43 @@ func TestParseVideoStreamUsesModelResponseAttachment(t *testing.T) {
 	}
 	if postID != "post_1" || result.URL != "https://assets.grok.com/users/user_1/generated/video_1/generated_video.mp4" || result.ContentType != "video/mp4" {
 		t.Fatalf("result = %#v, post = %q", result, postID)
+	}
+}
+
+func TestParseVideoStreamReportsModerationAndRejectsLaterAttachment(t *testing.T) {
+	fixture := `data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoId":"video_blocked","assetId":"asset_blocked","videoPostId":"post_blocked","moderated":true}}}}` + "\n" +
+		`data: {"result":{"response":{"modelResponse":{"fileAttachments":["users/user_1/generated/video_blocked/generated_video.mp4"]}}}}` + "\n"
+	response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(fixture))}
+	result, postID, err := parseVideoStream(response, nil)
+	if err == nil || result.URL != "" || postID != "post_blocked" {
+		t.Fatalf("result = %#v, post = %q, err = %v", result, postID, err)
+	}
+	message := err.Error()
+	for _, expected := range []string{"视频被上游内容审核拦截", "moderated=true", "progress=100", "video_id=video_blocked", "asset_id=asset_blocked", "post_id=post_blocked"} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("diagnostic missing %q: %s", expected, message)
+		}
+	}
+	if strings.Contains(message, "generated_video.mp4") {
+		t.Fatalf("diagnostic exposed rejected URL: %s", message)
+	}
+}
+
+func TestParseVideoStreamReportsUnsupportedURLShape(t *testing.T) {
+	fixture := `data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post_unsupported","status":"completed","videoUrl":"users/user_1/generated/video_1/output.m3u8"},"modelResponse":{"text":"completed without mp4"}}}}` + "\n"
+	response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(fixture))}
+	_, _, err := parseVideoStream(response, nil)
+	if err == nil {
+		t.Fatal("expected unsupported URL diagnostic")
+	}
+	message := err.Error()
+	for _, expected := range []string{"不受支持的内容 URL", "url_candidates=1", "status=completed", "message=completed without mp4"} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("diagnostic missing %q: %s", expected, message)
+		}
+	}
+	if strings.Contains(message, "output.m3u8") {
+		t.Fatalf("diagnostic exposed rejected URL: %s", message)
 	}
 }
 

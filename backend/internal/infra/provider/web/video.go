@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -178,9 +179,6 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if parseErr != nil {
 		return provider.VideoResult{}, parseErr
 	}
-	if result.URL == "" {
-		return provider.VideoResult{}, fmt.Errorf("视频生成完成但没有返回内容 URL")
-	}
 	return result, nil
 }
 
@@ -278,35 +276,72 @@ func parseVideoStream(response *http.Response, progress func(int)) (provider.Vid
 	}
 	var result provider.VideoResult
 	var postID string
+	diagnostics := videoStreamDiagnostics{}
 	handle := func(root map[string]any) (bool, error) {
-		if errorValue, ok := root["error"].(map[string]any); ok {
-			return false, webMediaStreamError(errorValue)
+		diagnostics.frames++
+		if errorValue, exists := root["error"]; exists {
+			if streamErr := webMediaStreamErrorValue(errorValue); streamErr != nil {
+				return false, streamErr
+			}
 		}
-		if errorValue := nestedMap(root, "result", "response", "error"); errorValue != nil {
-			return false, webMediaStreamError(errorValue)
+		if responseValue := nestedMap(root, "result", "response"); responseValue != nil {
+			if errorValue, exists := responseValue["error"]; exists {
+				if streamErr := webMediaStreamErrorValue(errorValue); streamErr != nil {
+					return false, streamErr
+				}
+			}
 		}
 		stream := nestedMap(root, "result", "response", "streamingVideoGenerationResponse")
 		if stream != nil {
-			if value, ok := numberAsInt(stream["progress"]); ok && progress != nil {
-				progress(value)
+			diagnostics.streamFrames++
+			if value, ok := numberAsInt(stream["progress"]); ok {
+				diagnostics.progress = max(diagnostics.progress, value)
+				if progress != nil {
+					progress(value)
+				}
 			}
-			if value, _ := stream["videoPostId"].(string); value != "" {
+			if value := firstString(stream, "videoId", "video_id"); value != "" {
+				diagnostics.videoID = value
+			}
+			if value := firstString(stream, "assetId", "asset_id"); value != "" {
+				diagnostics.assetID = value
+			}
+			if value := firstString(stream, "videoPostId", "video_post_id"); value != "" {
 				postID = value
-			} else if value, _ := stream["videoId"].(string); value != "" {
+			} else if value := firstString(stream, "videoId", "video_id"); value != "" {
 				postID = value
+			}
+			diagnostics.postID = postID
+			if value := firstString(stream, "status", "currentStatus", "current_status"); value != "" {
+				diagnostics.status = value
 			}
 			moderated, _ := stream["moderated"].(bool)
 			if moderated {
+				diagnostics.moderated = true
 				return false, nil
 			}
-			if setVideoResultURL(&result, firstString(stream, "videoUrl", "contentUrl", "contentURL", "assetUrl", "assetURL", "fileUri", "fileURL")) {
+			candidate := firstString(stream, "videoUrl", "contentUrl", "contentURL", "assetUrl", "assetURL", "fileUri", "fileURL")
+			if candidate != "" {
+				diagnostics.urlCandidates++
+			}
+			if !diagnostics.moderated && setVideoResultURL(&result, candidate) {
 				return true, nil
+			}
+			if candidate != "" {
+				diagnostics.rejectedURLs++
+			}
+		}
+		if modelResponse := nestedMap(root, "result", "response", "modelResponse"); modelResponse != nil {
+			if value := firstString(modelResponse, "message", "text", "token"); value != "" {
+				diagnostics.message = safeWebMediaDiagnostic(value, webMediaDiagnosticFieldLimit)
 			}
 		}
 		for _, attachment := range videoFileAttachments(root) {
-			if setVideoResultURL(&result, attachment) {
+			diagnostics.urlCandidates++
+			if !diagnostics.moderated && setVideoResultURL(&result, attachment) {
 				return true, nil
 			}
+			diagnostics.rejectedURLs++
 		}
 		return false, nil
 	}
@@ -323,15 +358,151 @@ func parseVideoStream(response *http.Response, progress func(int)) (provider.Vid
 	if err != nil {
 		return provider.VideoResult{}, "", err
 	}
+	if result.URL == "" {
+		return provider.VideoResult{}, postID, diagnostics.missingContentError()
+	}
 	return result, postID, nil
 }
 
-func webMediaStreamError(value map[string]any) error {
-	message := safeWebMediaDiagnostic(firstString(value, "message", "error", "detail"), webMediaDiagnosticFieldLimit)
-	if message == "" {
-		message = "未提供错误详情"
+type videoStreamDiagnostics struct {
+	frames        int
+	streamFrames  int
+	progress      int
+	urlCandidates int
+	rejectedURLs  int
+	moderated     bool
+	videoID       string
+	assetID       string
+	postID        string
+	status        string
+	message       string
+}
+
+func (d videoStreamDiagnostics) missingContentError() error {
+	reason := "视频生成流结束但没有返回内容 URL"
+	if d.moderated {
+		reason = "视频被上游内容审核拦截"
+	} else if d.rejectedURLs > 0 {
+		reason = "视频上游返回了不受支持的内容 URL"
 	}
-	return fmt.Errorf("视频上游错误: %s", message)
+	parts := []string{
+		fmt.Sprintf("progress=%d", d.progress),
+		fmt.Sprintf("frames=%d", d.frames),
+		fmt.Sprintf("stream_frames=%d", d.streamFrames),
+		fmt.Sprintf("url_candidates=%d", d.urlCandidates),
+	}
+	if d.moderated {
+		parts = append(parts, "moderated=true")
+	}
+	if d.status != "" {
+		parts = append(parts, "status="+safeWebMediaDiagnostic(d.status, 64))
+	}
+	if d.videoID != "" {
+		parts = append(parts, "video_id="+safeWebMediaDiagnostic(d.videoID, 80))
+	}
+	if d.assetID != "" {
+		parts = append(parts, "asset_id="+safeWebMediaDiagnostic(d.assetID, 80))
+	}
+	if d.postID != "" {
+		parts = append(parts, "post_id="+safeWebMediaDiagnostic(d.postID, 80))
+	}
+	if d.message != "" {
+		parts = append(parts, "message="+d.message)
+	}
+	return fmt.Errorf("%s (%s)", reason, strings.Join(parts, ", "))
+}
+
+func webMediaStreamError(value map[string]any) error {
+	code := safeWebMediaDiagnostic(firstWebMediaDiagnosticCode(value, "code", "error_code", "systemErrCode"), 64)
+	errorType := safeWebMediaDiagnostic(firstString(value, "type", "error_type"), 64)
+	status := safeWebMediaDiagnostic(firstWebMediaDiagnosticCode(value, "status", "status_code"), 64)
+	reason := safeWebMediaDiagnostic(firstString(value, "reason"), webMediaDiagnosticFieldLimit)
+	message := safeWebMediaDiagnostic(firstString(value, "message", "error", "detail", "description", "error_description"), webMediaDiagnosticFieldLimit)
+	details := webMediaStreamDetails(value["details"])
+	parts := make([]string, 0, 7)
+	for _, item := range []struct {
+		name  string
+		value string
+	}{
+		{name: "code", value: code},
+		{name: "type", value: errorType},
+		{name: "status", value: status},
+		{name: "reason", value: reason},
+		{name: "message", value: message},
+		{name: "details", value: details},
+	} {
+		if item.value != "" {
+			parts = append(parts, item.name+"="+item.value)
+		}
+	}
+	if reason == "" && message == "" && details == "" {
+		parts = append(parts, "fields=["+strings.Join(webMediaDiagnosticKeys(value), ",")+"]")
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "未提供错误详情")
+	}
+	return fmt.Errorf("视频上游错误: %s", boundWebMediaDiagnostic(strings.Join(parts, ", "), webMediaDiagnosticSummaryLimit))
+}
+
+func webMediaStreamErrorValue(value any) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		return webMediaStreamError(typed)
+	case string:
+		message := safeWebMediaDiagnostic(typed, webMediaDiagnosticFieldLimit)
+		if message != "" {
+			return fmt.Errorf("视频上游错误: message=%s", message)
+		}
+	}
+	return nil
+}
+
+func webMediaStreamDetails(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return safeWebMediaDiagnostic(typed, webMediaDiagnosticFieldLimit)
+	case map[string]any:
+		code := safeWebMediaDiagnostic(firstWebMediaDiagnosticCode(typed, "code", "error_code", "systemErrCode"), 64)
+		message := safeWebMediaDiagnostic(firstString(typed, "message", "error", "detail", "reason", "description"), webMediaDiagnosticFieldLimit)
+		if code != "" && message != "" {
+			return boundWebMediaDiagnostic(code+": "+message, webMediaDiagnosticFieldLimit)
+		}
+		if message != "" {
+			return message
+		}
+		if code != "" {
+			return code
+		}
+		return "fields=[" + strings.Join(webMediaDiagnosticKeys(typed), ",") + "]"
+	case []any:
+		parts := make([]string, 0, min(3, len(typed)))
+		for _, item := range typed {
+			if len(parts) >= 3 {
+				break
+			}
+			if detail := webMediaStreamDetails(item); detail != "" {
+				parts = append(parts, detail)
+			}
+		}
+		return boundWebMediaDiagnostic(strings.Join(parts, "; "), webMediaDiagnosticFieldLimit)
+	default:
+		return ""
+	}
+}
+
+func webMediaDiagnosticKeys(value map[string]any) []string {
+	keys := make([]string, 0, len(value))
+	for key := range value {
+		key = safeWebMediaDiagnostic(key, 32)
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) > 8 {
+		keys = keys[:8]
+	}
+	return keys
 }
 
 func videoFileAttachments(root map[string]any) []string {
