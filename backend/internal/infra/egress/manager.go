@@ -1225,7 +1225,7 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 		state.used = true
 		m.clearances[key] = state
 	}
-	if (!known || state.cookies == "") && persist && existingCookies != "" {
+	if (!known || state.userAgent == "") && persist && (existingCookies != "" || node.ClearanceRefreshedAt != nil) {
 		if !known {
 			m.ensureClearanceCacheCapacityLocked()
 		}
@@ -1240,7 +1240,10 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 		known = true
 		m.clearances[key] = state
 	}
-	fresh := known && !state.invalid && state.cookies != "" && state.version == version &&
+	// A successful solve may legitimately return no Cloudflare cookies when the
+	// selected egress does not trigger a challenge. The solver User-Agent marks
+	// that cookie-less result as complete so requests do not block on re-solving.
+	fresh := known && !state.invalid && state.userAgent != "" && state.version == version &&
 		state.fingerprint == fingerprint && (state.bindingFingerprint == "" || state.bindingFingerprint == bindingFingerprint) &&
 		!state.refreshedAt.IsZero() && now.Sub(state.refreshedAt) < interval
 	if fresh {
@@ -1250,7 +1253,7 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 		m.clearanceMu.Unlock()
 		return cookies, userAgent, nil
 	}
-	fallbackAllowed := known && !state.invalid && state.cookies != "" &&
+	fallbackAllowed := known && !state.invalid && state.userAgent != "" &&
 		(state.bindingFingerprint == "" || state.bindingFingerprint == bindingFingerprint)
 	fallback := clearanceSolution{Cookies: state.cookies, UserAgent: state.userAgent}
 	if fallbackAllowed {
@@ -1378,7 +1381,7 @@ func (m *Manager) loadPersistedClearance(ctx context.Context, nodeID uint64, fin
 	latest, err := m.repository.GetEgressNode(ctx, nodeID)
 	if err != nil || latest.ClearanceRefreshedAt == nil || latest.ClearanceFingerprint != fingerprint ||
 		(latest.ClearanceBindingFingerprint != "" && latest.ClearanceBindingFingerprint != bindingFingerprint) ||
-		time.Since(*latest.ClearanceRefreshedAt) >= interval || strings.TrimSpace(latest.EncryptedCloudflareCookie) == "" {
+		time.Since(*latest.ClearanceRefreshedAt) >= interval {
 		return clearanceSolution{}, time.Time{}, false
 	}
 	cookies, err := m.cipher.Decrypt(latest.EncryptedCloudflareCookie)
@@ -1387,7 +1390,7 @@ func (m *Manager) loadPersistedClearance(ctx context.Context, nodeID uint64, fin
 	}
 	cookies = application.SanitizeCloudflareCookies(cookies)
 	userAgent := strings.TrimSpace(latest.UserAgent)
-	if cookies == "" || userAgent == "" {
+	if userAgent == "" {
 		return clearanceSolution{}, time.Time{}, false
 	}
 	return clearanceSolution{Cookies: cookies, UserAgent: userAgent}, *latest.ClearanceRefreshedAt, true
@@ -1647,7 +1650,7 @@ func (m *Manager) RefreshDueClearances(ctx context.Context, force bool) error {
 		}
 	}
 	shouldUseDirect := direct.used || force && webNodeCount == 0
-	if shouldUseDirect && (force || direct.invalid || direct.cookies == "" || direct.version != version || now.Sub(direct.refreshedAt) >= interval) {
+	if shouldUseDirect && (force || direct.invalid || direct.userAgent == "" || direct.version != version || now.Sub(direct.refreshedAt) >= interval) {
 		_, err, _ := m.clearanceLoads.Do("direct", func() (any, error) {
 			return m.refreshNode(ctx, domain.Node{Name: "direct", Scope: domain.ScopeWeb, Enabled: true}, "", "direct", false, force, false)
 		})
