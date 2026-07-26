@@ -441,9 +441,9 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	probedAt := time.Now().UTC().Truncate(time.Millisecond)
 	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
 	service.SetNodeProber(egressProbeStub{result: egress.ProbeResult{
-		Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "1.1.1.1",
+		Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "1.1.1.1", ExitCountry: "US",
 		Provider: egress.ProbeProviderCloudflare,
-		IPv4:     egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 40, ExitIP: "1.1.1.1"},
+		IPv4:     egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 40, ExitIP: "1.1.1.1", ExitCountry: "US"},
 		IPv6:     egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "2606:4700:4700::1111"},
 	}})
 
@@ -451,14 +451,14 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != egress.ProbeStatusHealthy || result.ExitIP != "1.1.1.1" {
+	if result.Status != egress.ProbeStatusHealthy || result.ExitIP != "1.1.1.1" || result.ExitCountry != "US" {
 		t.Fatalf("probe result = %#v", result)
 	}
 	stored, err := nodes.GetEgressNode(ctx, node.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.ProbeStatus != egress.ProbeStatusHealthy || stored.ProbeProvider != egress.ProbeProviderCloudflare || stored.ProbeLatencyMS != 42 || stored.ExitIP != "1.1.1.1" || stored.LastProbedAt == nil {
+	if stored.ProbeStatus != egress.ProbeStatusHealthy || stored.ProbeProvider != egress.ProbeProviderCloudflare || stored.ProbeLatencyMS != 42 || stored.ExitIP != "1.1.1.1" || stored.ExitCountry != "US" || stored.LastProbedAt == nil {
 		t.Fatalf("stored probe = %#v", stored)
 	}
 	if stored.IPv4Probe.ExitIP != "1.1.1.1" || stored.IPv6Probe.ExitIP != "2606:4700:4700::1111" || stored.IPv6Probe.Status != egress.ProbeStatusHealthy {

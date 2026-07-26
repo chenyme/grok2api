@@ -1629,6 +1629,8 @@ Object.assign(resources.en.translation.settings.egress as unknown as Record<stri
   fallbackNode: "Fixed fallback proxy for {{scope}}", fallbackNodeUnavailable: "Configured node is unavailable",
   refreshInterval: "Subscription refresh interval (seconds)", proxyList: "Proxy list",
   search: "Search proxy nodes", assigned: "Assigned", unassigned: "Unassigned", noMatches: "No proxy nodes match the current filters", selectVisible: "Select filtered proxy nodes",
+	maxLatency: "Max latency", maxLatencyPlaceholder: "e.g. 300 ms", country: "Country", countryUnknown: "Country unknown", ipType: "IP type", ipv4: "IPv4", ipv6: "IPv6", ipTypeUnknown: "IP type unknown", filteredCount: "{{count}} matches",
+	testingProgress: "Checking {{completed}} / {{total}}", testedIncomplete: "Checks finished: {{healthy}} healthy, {{unhealthy}} unhealthy, {{untested}} not completed",
   batchDeleted: "Deleted {{deleted}} proxy nodes", batchDeleteTitle: "Delete {{count}} selected proxy nodes?", batchDeleteDescription: "This deletes the selected nodes and unbinds {{accounts}} associated accounts. This cannot be undone.",
   batchDeleteSourceHint: "{{count}} source-managed nodes may be recreated by the next source sync.",
 });
@@ -1675,6 +1677,8 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
   unassigned: "未分配账号",
   noMatches: "没有符合当前筛选条件的代理节点",
   selectVisible: "选择筛选出的代理节点",
+	maxLatency: "最高延迟", maxLatencyPlaceholder: "例如 300 ms", country: "国家", countryUnknown: "国家未知", ipType: "IP 类型", ipv4: "IPv4", ipv6: "IPv6", ipTypeUnknown: "IP 类型未知", filteredCount: "符合 {{count}} 个",
+	testingProgress: "检测中 {{completed}} / {{total}}", testedIncomplete: "检测完成：可用 {{healthy}}，不可用 {{unhealthy}}，未完成 {{untested}}",
   batchDeleted: "已删除 {{deleted}} 个代理节点",
   batchDeleteTitle: "删除选中的 {{count}} 个代理节点？",
   batchDeleteDescription: "将删除选中的节点，并解除 {{accounts}} 个关联账号的代理绑定。此操作无法撤销。",

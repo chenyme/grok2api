@@ -131,9 +131,17 @@ export type AccountSummaryDTO = {
   recovering: number;
   attention: number;
   risk: number;
-  providers: Record<AccountProvider, { total: number; available: number }>;
+	providers: Record<AccountProvider, AccountProviderSummaryDTO>;
   recovery: { cooldown: number; waitingReset: number; probing: number };
   issues: { disabled: number; reauthRequired: number };
+};
+
+export type AccountProviderSummaryDTO = {
+	total: number;
+	available: number;
+	risk: number;
+	recovery: { cooldown: number; waitingReset: number; probing: number };
+	issues: { disabled: number; reauthRequired: number };
 };
 
 export type DeviceSessionDTO = {
@@ -193,7 +201,11 @@ const decodeAccount = createValidatedDecoder<AccountDTO>("account", accountValid
 const decodeAccountPage = createPaginatedDecoder<AccountDTO>(accountValidator);
 const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account summary", {
   total: isNumber, available: isNumber, recovering: isNumber, attention: isNumber, risk: isNumber,
-  providers: isRecordOf(hasShape({ total: isNumber, available: isNumber })),
+	providers: isRecordOf(hasShape({
+		total: isNumber, available: isNumber, risk: isNumber,
+		recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
+		issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),
+	})),
   recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
   issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),
 });

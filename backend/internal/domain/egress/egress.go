@@ -42,6 +42,7 @@ type Node struct {
 	LastProbedAt                *time.Time
 	ProbeLatencyMS              int
 	ExitIP                      string
+	ExitCountry                 string
 	ProbeError                  string
 	ProbeProvider               ProbeProvider
 	IPv4Probe                   ProbeFamilyResult
@@ -71,6 +72,7 @@ type PublicNode struct {
 	LastProbedAt         *time.Time
 	ProbeLatencyMS       int
 	ExitIP               string
+	ExitCountry          string
 	ProbeError           string
 	ProbeProvider        ProbeProvider
 	IPv4Probe            ProbeFamilyResult
@@ -100,24 +102,26 @@ func (value ProbeStatus) IsValid() bool {
 // ProbeResult contains only operational metadata. It never stores or exposes
 // proxy credentials.
 type ProbeResult struct {
-	Status    ProbeStatus
-	TestedAt  time.Time
-	LatencyMS int
-	ExitIP    string
-	Error     string
-	Provider  ProbeProvider
-	IPv4      ProbeFamilyResult
-	IPv6      ProbeFamilyResult
+	Status      ProbeStatus
+	TestedAt    time.Time
+	LatencyMS   int
+	ExitIP      string
+	ExitCountry string
+	Error       string
+	Provider    ProbeProvider
+	IPv4        ProbeFamilyResult
+	IPv6        ProbeFamilyResult
 }
 
 // ProbeFamilyResult stores one address family's independent connectivity
 // result. A zero TestedAt represents a family that has not been tested yet.
 type ProbeFamilyResult struct {
-	Status    ProbeStatus
-	TestedAt  time.Time
-	LatencyMS int
-	ExitIP    string
-	Error     string
+	Status      ProbeStatus
+	TestedAt    time.Time
+	LatencyMS   int
+	ExitIP      string
+	ExitCountry string
+	Error       string
 }
 
 // SubscriptionSource stores a write-only remote proxy subscription. The URL

@@ -30,6 +30,7 @@ import {
   updateEgressSource,
   type EgressFallbackConfigDTO,
   type EgressFallbackMode,
+	  type EgressProbeBatchResultDTO,
   type EgressNodeDTO,
   type EgressOperationsConfigDTO,
   type EgressScope,
@@ -88,15 +89,33 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOpera
   };
 }
 
-async function testAllEgressNodes() {
+type EgressProbeProgress = { completed: number; total: number };
+type EgressProbeRunResult = { requested: number; healthy: number; unhealthy: number; untested: number };
+
+async function testAllEgressNodes(onProgress: (value: EgressProbeProgress) => void): Promise<EgressProbeRunResult> {
   const nodes = await listEgressNodes();
   const ids = nodes.items.filter((node) => node.enabled && node.proxyConfigured).map((node) => node.id);
-  const result = { requested: 0, healthy: 0, unhealthy: 0 };
+  const result = { requested: 0, healthy: 0, unhealthy: 0, untested: 0 };
+  onProgress({ completed: 0, total: ids.length });
   for (let index = 0; index < ids.length; index += egressProbeBatchSize) {
-    const batch = await testEgressNodes(ids.slice(index, index + egressProbeBatchSize));
-    result.requested += batch.requested;
-    result.healthy += batch.healthy;
-    result.unhealthy += batch.unhealthy;
+    const idsInBatch = ids.slice(index, index + egressProbeBatchSize);
+	  let batch: EgressProbeBatchResultDTO | undefined;
+    for (let attempt = 0; attempt < 2 && !batch; attempt += 1) {
+      try {
+        batch = await testEgressNodes(idsInBatch);
+      } catch {
+        // Continue with the remaining snapshot even when a single admin
+        // request was interrupted; retry once for transient proxy timeouts.
+      }
+    }
+    if (batch) {
+      result.requested += batch.requested;
+      result.healthy += batch.healthy;
+      result.unhealthy += batch.unhealthy;
+    } else {
+      result.untested += idsInBatch.length;
+    }
+    onProgress({ completed: Math.min(index + idsInBatch.length, ids.length), total: ids.length });
   }
   return result;
 }
@@ -109,6 +128,7 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
   const [importOpen, setImportOpen] = useState(false);
   const [importForm, setImportForm] = useState<ImportForm>(emptyImport);
   const [operationsDraft, setOperationsDraft] = useState<Omit<EgressOperationsConfigDTO, "updatedAt"> | null>(null);
+	const [testAllProgress, setTestAllProgress] = useState<EgressProbeProgress | null>(null);
   const sourcesQuery = useQuery({ queryKey: ["egress-sources"], queryFn: listEgressSources });
   const operationsQuery = useQuery({ queryKey: ["egress-operations"], queryFn: getEgressOperationsConfig });
   const nodesQuery = useQuery({ queryKey: ["egress-nodes", "fallback-options"], queryFn: () => listEgressNodes() });
@@ -143,9 +163,14 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
     onError: showError,
   });
   const testAll = useMutation({
-    mutationFn: testAllEgressNodes,
-    onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.tested", value)); },
+	mutationFn: () => testAllEgressNodes(setTestAllProgress),
+	 onSuccess: (value) => {
+		invalidate();
+		if (value.untested > 0) toast.warning(t("settings.egress.testedIncomplete", value));
+		else toast.success(t("settings.egress.tested", value));
+	 },
     onError: showError,
+	 onSettled: () => setTestAllProgress(null),
   });
   const rebalance = useMutation({
     mutationFn: rebalanceEgressAccounts,
@@ -189,7 +214,7 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
     <section className="space-y-8">
       <div className="space-y-3">
         <OperationSectionHeader title={t("settings.egress.automation")} help={t("settings.egress.automationHelp")}>
-          <ActionTooltip label={t("settings.egress.testAllHelp")}><Button type="button" size="sm" variant="secondary" disabled={testAll.isPending} onClick={() => testAll.mutate()}>{testAll.isPending ? <Spinner /> : <Network />}{t("settings.egress.testAll")}</Button></ActionTooltip>
+	          <ActionTooltip label={t("settings.egress.testAllHelp")}><Button type="button" size="sm" variant="secondary" disabled={testAll.isPending} onClick={() => testAll.mutate()}>{testAll.isPending ? <Spinner /> : <Network />}{testAll.isPending && testAllProgress ? t("settings.egress.testingProgress", testAllProgress) : t("settings.egress.testAll")}</Button></ActionTooltip>
           <ActionTooltip label={t("settings.egress.rebalanceHelp")}><Button type="button" size="sm" variant="secondary" disabled={rebalance.isPending} onClick={() => rebalance.mutate()}>{rebalance.isPending ? <Spinner /> : <Shuffle />}{t("settings.egress.rebalance")}</Button></ActionTooltip>
           <ActionTooltip label={t("settings.egress.saveAutomationHelp")}><Button type="button" size="sm" disabled={operationsDraft === null || saveOperations.isPending} onClick={() => saveOperations.mutate()}>{saveOperations.isPending ? <Spinner /> : null}{t("common.save")}</Button></ActionTooltip>
         </OperationSectionHeader>

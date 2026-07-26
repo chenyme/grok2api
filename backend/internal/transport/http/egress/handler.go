@@ -87,6 +87,7 @@ type nodeResponse struct {
 	LastProbedAt         *time.Time          `json:"lastProbedAt,omitempty"`
 	ProbeLatencyMS       int                 `json:"probeLatencyMs"`
 	ExitIP               string              `json:"exitIp,omitempty"`
+	ExitCountry          string              `json:"exitCountry,omitempty"`
 	ProbeError           string              `json:"probeError,omitempty"`
 	ProbeProvider        string              `json:"probeProvider,omitempty"`
 	IPv4Probe            probeFamilyResponse `json:"ipv4Probe"`
@@ -95,11 +96,12 @@ type nodeResponse struct {
 }
 
 type probeFamilyResponse struct {
-	Status    string     `json:"status"`
-	TestedAt  *time.Time `json:"testedAt,omitempty"`
-	LatencyMS int        `json:"latencyMs"`
-	ExitIP    string     `json:"exitIp,omitempty"`
-	Error     string     `json:"error,omitempty"`
+	Status      string     `json:"status"`
+	TestedAt    *time.Time `json:"testedAt,omitempty"`
+	LatencyMS   int        `json:"latencyMs"`
+	ExitIP      string     `json:"exitIp,omitempty"`
+	ExitCountry string     `json:"exitCountry,omitempty"`
+	Error       string     `json:"error,omitempty"`
 }
 
 type accountAssignmentRequest struct {
@@ -247,7 +249,8 @@ func newNodeResponse(value egressdomain.PublicNode) nodeResponse {
 		AccountBoundProxy: value.AccountBoundProxy,
 		SourceID:          value.SourceID, AccountCapacity: value.AccountCapacity,
 		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
-		ProbeStatus: string(value.ProbeStatus), LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS, ExitIP: value.ExitIP, ProbeError: value.ProbeError,
+		ProbeStatus: string(value.ProbeStatus), LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS,
+		ExitIP: value.ExitIP, ExitCountry: value.ExitCountry, ProbeError: value.ProbeError,
 		ProbeProvider: string(value.ProbeProvider),
 		IPv4Probe:     newProbeFamilyResponse(value.IPv4Probe), IPv6Probe: newProbeFamilyResponse(value.IPv6Probe),
 		AssignedAccountCount: value.AssignedAccountCount,
@@ -265,7 +268,7 @@ func newProbeFamilyResponse(value egressdomain.ProbeFamilyResult) probeFamilyRes
 		testedAt = &canonical
 	}
 	return probeFamilyResponse{
-		Status: string(status), TestedAt: testedAt, LatencyMS: value.LatencyMS, ExitIP: value.ExitIP, Error: value.Error,
+		Status: string(status), TestedAt: testedAt, LatencyMS: value.LatencyMS, ExitIP: value.ExitIP, ExitCountry: value.ExitCountry, Error: value.Error,
 	}
 }
 
@@ -539,7 +542,8 @@ func (h *Handler) testNode(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{
-		"status": value.Status, "testedAt": value.TestedAt, "latencyMs": value.LatencyMS, "exitIp": value.ExitIP, "error": value.Error,
+		"status": value.Status, "testedAt": value.TestedAt, "latencyMs": value.LatencyMS,
+		"exitIp": value.ExitIP, "exitCountry": value.ExitCountry, "error": value.Error,
 		"probeProvider": value.Provider,
 		"ipv4":          newProbeFamilyResponse(value.IPv4), "ipv6": newProbeFamilyResponse(value.IPv6),
 	})

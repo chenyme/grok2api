@@ -415,12 +415,19 @@ func (h *Handler) summary(c *gin.Context) {
 	build := value.Providers[string(accountdomain.ProviderBuild)]
 	web := value.Providers[string(accountdomain.ProviderWeb)]
 	console := value.Providers[string(accountdomain.ProviderConsole)]
+	providerSummary := func(summary accountapp.ProviderSummary) gin.H {
+		return gin.H{
+			"total": summary.Total, "available": summary.Available, "risk": summary.Risk,
+			"recovery": gin.H{"cooldown": summary.Recovery.Cooldown, "waitingReset": summary.Recovery.WaitingReset, "probing": summary.Recovery.Probing},
+			"issues":   gin.H{"disabled": summary.Issues.Disabled, "reauthRequired": summary.Issues.ReauthRequired},
+		}
+	}
 	response.Success(c, http.StatusOK, gin.H{
 		"total": value.Total, "available": value.Available, "recovering": value.Recovering, "attention": value.Attention, "risk": value.Risk,
 		"providers": gin.H{
-			string(accountdomain.ProviderBuild):   gin.H{"total": build.Total, "available": build.Available},
-			string(accountdomain.ProviderWeb):     gin.H{"total": web.Total, "available": web.Available},
-			string(accountdomain.ProviderConsole): gin.H{"total": console.Total, "available": console.Available},
+			string(accountdomain.ProviderBuild):   providerSummary(build),
+			string(accountdomain.ProviderWeb):     providerSummary(web),
+			string(accountdomain.ProviderConsole): providerSummary(console),
 		},
 		"recovery": gin.H{"cooldown": value.Recovery.Cooldown, "waitingReset": value.Recovery.WaitingReset, "probing": value.Recovery.Probing},
 		"issues":   gin.H{"disabled": value.Issues.Disabled, "reauthRequired": value.Issues.ReauthRequired},

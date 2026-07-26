@@ -125,7 +125,7 @@ func TestAccountViewsIncludeBuildBotFlagMetadata(t *testing.T) {
 		t.Fatalf("non-Build risk filter err = %v", err)
 	}
 	summary, err := service.Summary(ctx)
-	if err != nil || summary.Risk != 1 {
+	if err != nil || summary.Risk != 1 || summary.Providers[string(accountdomain.ProviderBuild)].Risk != 1 {
 		t.Fatalf("summary=%#v err=%v", summary, err)
 	}
 }

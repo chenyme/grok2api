@@ -360,9 +360,9 @@ func (m *Manager) ProbeEgressNode(ctx context.Context, node domain.Node) (domain
 	result.TestedAt = time.Now().UTC()
 	result.LatencyMS = max(result.IPv4.LatencyMS, result.IPv6.LatencyMS)
 	if result.IPv4.Status == domain.ProbeStatusHealthy {
-		result.Status, result.ExitIP = domain.ProbeStatusHealthy, result.IPv4.ExitIP
+		result.Status, result.ExitIP, result.ExitCountry = domain.ProbeStatusHealthy, result.IPv4.ExitIP, result.IPv4.ExitCountry
 	} else if result.IPv6.Status == domain.ProbeStatusHealthy {
-		result.Status, result.ExitIP = domain.ProbeStatusHealthy, result.IPv6.ExitIP
+		result.Status, result.ExitIP, result.ExitCountry = domain.ProbeStatusHealthy, result.IPv6.ExitIP, result.IPv6.ExitCountry
 	}
 	if result.Status == domain.ProbeStatusHealthy {
 		return result, nil
@@ -494,7 +494,7 @@ func (m *Manager) probeEgressEndpoint(ctx context.Context, target preparedEgress
 			m.log().WarnContext(ctx, "egress_probe_failed", attributes...)
 			return
 		}
-		attributes = append(attributes, "latency_ms", result.LatencyMS, "exit_ip", result.ExitIP)
+		attributes = append(attributes, "latency_ms", result.LatencyMS, "exit_ip", result.ExitIP, "exit_country", result.ExitCountry)
 		m.log().InfoContext(ctx, "egress_probe_succeeded", attributes...)
 	}()
 	clientFactory := m.newBuildClient
@@ -590,13 +590,7 @@ func (m *Manager) probeEgressEndpoint(ctx context.Context, target preparedEgress
 		return result, errors.New(result.Error)
 	}
 	stage = "decode_response"
-	exitIP, err := decodeProbeIP(body)
-	if err != nil {
-		result.Error = "探测服务响应格式无效"
-		return result, err
-	}
-	stage = "validate_exit_ip"
-	address, err := netip.ParseAddr(exitIP)
+	address, country, err := parseEgressProbeTrace(body)
 	if err != nil || (family == "ipv4" && !address.Is4()) || (family == "ipv6" && !address.Is6()) {
 		result.Error = fmt.Sprintf("探测服务未返回有效 %s 出口 IP", strings.ToUpper(family))
 		if err == nil {
@@ -607,25 +601,54 @@ func (m *Manager) probeEgressEndpoint(ctx context.Context, target preparedEgress
 	result.Status = domain.ProbeStatusHealthy
 	result.LatencyMS = max(1, int(time.Since(startedAt).Milliseconds()))
 	result.ExitIP = address.String()
+	result.ExitCountry = country
 	result.Error = ""
 	stage = "complete"
 	return result, nil
 }
 
 func decodeProbeIP(body []byte) (string, error) {
+	address, _, err := parseEgressProbeTrace(body)
+	if err != nil {
+		return "", err
+	}
+	return address.String(), nil
+}
+
+// parseEgressProbeTrace supports Cloudflare's key/value trace and IPInfo's
+// JSON response so country metadata remains available for either provider.
+func parseEgressProbeTrace(body []byte) (netip.Addr, string, error) {
 	var payload struct {
-		IP string `json:"ip"`
+		IP      string `json:"ip"`
+		Country string `json:"country"`
 	}
 	if json.Unmarshal(body, &payload) == nil && strings.TrimSpace(payload.IP) != "" {
-		return strings.TrimSpace(payload.IP), nil
+		address, err := netip.ParseAddr(strings.TrimSpace(payload.IP))
+		if err != nil {
+			return netip.Addr{}, "", fmt.Errorf("解析出口 IP: %w", err)
+		}
+		return address.Unmap(), normalizeProbeCountry(payload.Country), nil
 	}
+	values := make(map[string]string)
 	for line := range strings.SplitSeq(string(body), "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
-		if found && key == "ip" && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value), nil
+		if found {
+			values[key] = strings.TrimSpace(value)
 		}
 	}
-	return "", errors.New("probe response does not contain an IP address")
+	address, err := netip.ParseAddr(values["ip"])
+	if err != nil {
+		return netip.Addr{}, "", fmt.Errorf("解析出口 IP: %w", err)
+	}
+	return address.Unmap(), normalizeProbeCountry(values["loc"]), nil
+}
+
+func normalizeProbeCountry(value string) string {
+	country := strings.ToUpper(strings.TrimSpace(value))
+	if len(country) != 2 {
+		return ""
+	}
+	return country
 }
 
 func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, boundNodeID uint64) (*Lease, bool, error) {

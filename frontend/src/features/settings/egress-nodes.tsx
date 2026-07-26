@@ -38,6 +38,9 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   const [enabledFilter, setEnabledFilter] = useState("");
   const [probeFilter, setProbeFilter] = useState("");
   const [assignmentFilter, setAssignmentFilter] = useState("");
+  const [maxLatencyFilter, setMaxLatencyFilter] = useState("");
+  const [countryFilter, setCountryFilter] = useState("");
+  const [ipTypeFilter, setIPTypeFilter] = useState("");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const query = useQuery({ queryKey: ["egress-nodes", sort.field, sort.order], queryFn: () => listEgressNodes({ sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined }) });
@@ -146,6 +149,10 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
 
   const nodes = query.data?.items ?? [];
   const normalizedSearch = search.trim().toLocaleLowerCase();
+  const normalizedMaxLatency = maxLatencyFilter.trim();
+  const maximumLatency = normalizedMaxLatency === "" ? undefined : Number(normalizedMaxLatency);
+  const countries = [...new Set(nodes.map((node) => node.exitCountry?.trim().toUpperCase()).filter((country): country is string => Boolean(country)))].sort();
+  const activeFilterCount = [scopeFilter, enabledFilter, probeFilter, assignmentFilter, normalizedMaxLatency, countryFilter, ipTypeFilter].filter(Boolean).length;
   const filteredNodes = nodes.filter((node) => {
     if (normalizedSearch && !node.name.toLocaleLowerCase().includes(normalizedSearch)) return false;
     if (scopeFilter && node.scope !== scopeFilter) return false;
@@ -154,6 +161,11 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
     if (probeFilter && node.probeStatus !== probeFilter) return false;
     if (assignmentFilter === "bound" && node.assignedAccountCount === 0) return false;
     if (assignmentFilter === "unbound" && node.assignedAccountCount > 0) return false;
+    if (maximumLatency !== undefined && (!Number.isFinite(maximumLatency) || maximumLatency < 0 || node.probeStatus !== "healthy" || node.probeLatencyMs > maximumLatency)) return false;
+    const country = node.exitCountry?.trim().toUpperCase() ?? "";
+    if (countryFilter === "unknown" && !country) return false;
+    if (countryFilter && countryFilter !== "unknown" && country !== countryFilter) return false;
+    if (ipTypeFilter && egressIPType(node.exitIp) !== ipTypeFilter) return false;
     return true;
   });
   const selectedVisible = filteredNodes.filter((node) => selected.has(node.id));
@@ -169,7 +181,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
           <Button type="button" size="sm" variant="secondary" onClick={openCreate}><Plus />{t("settings.egress.add")}</Button>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-          <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
+	          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex-none">
             <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setSelected(new Set()); }} placeholder={t("settings.egress.search")} aria-label={t("settings.egress.search")} />
@@ -194,7 +206,18 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                 { value: "bound", label: t("settings.egress.assigned") },
                 { value: "unbound", label: t("settings.egress.unassigned") },
               ] },
+	              { id: "max-latency", label: t("settings.egress.maxLatency"), value: maxLatencyFilter, placeholder: t("settings.egress.maxLatencyPlaceholder"), type: "text", onChange: (value) => { setMaxLatencyFilter(value); setSelected(new Set()); } },
+	              { id: "country", label: t("settings.egress.country"), value: countryFilter, onChange: (value) => { setCountryFilter(value); setSelected(new Set()); }, options: [
+	                { value: "unknown", label: t("settings.egress.countryUnknown") },
+	                ...countries.map((country) => ({ value: country, label: country })),
+	              ] },
+	              { id: "ip-type", label: t("settings.egress.ipType"), value: ipTypeFilter, onChange: (value) => { setIPTypeFilter(value); setSelected(new Set()); }, options: [
+	                { value: "ipv4", label: t("settings.egress.ipv4") },
+	                { value: "ipv6", label: t("settings.egress.ipv6") },
+	                { value: "unknown", label: t("settings.egress.ipTypeUnknown") },
+	              ] },
             ]} />
+	            {activeFilterCount > 0 ? <span className="shrink-0 text-xs tabular-nums text-muted-foreground" aria-live="polite">{t("settings.egress.filteredCount", { count: filteredNodes.length })}</span> : null}
           </div>
           {selected.size > 0 ? (
             <div className="flex items-center gap-1.5">
@@ -363,21 +386,22 @@ function HealthMeter({ value }: { value: number }) {
 function ProbeSummary({ node }: { node: EgressNodeDTO }) {
   return (
     <div className="mx-auto grid w-fit max-w-full grid-cols-[2rem_auto] grid-rows-2 items-center gap-x-2 gap-y-1 py-1 text-xs">
-      <ProbeFamilySummary family="IPv4" probe={node.ipv4Probe} row={1} />
-      <ProbeFamilySummary family="IPv6" probe={node.ipv6Probe} row={2} />
+      <ProbeFamilySummary family="IPv4" probe={node.ipv4Probe} row={1} primaryExitIP={node.exitIp} exitCountry={node.exitCountry} />
+      <ProbeFamilySummary family="IPv6" probe={node.ipv6Probe} row={2} primaryExitIP={node.exitIp} exitCountry={node.exitCountry} />
     </div>
   );
 }
 
-function ProbeFamilySummary({ family, probe, row }: { family: "IPv4" | "IPv6"; probe: EgressIPProbeDTO; row: 1 | 2 }) {
+function ProbeFamilySummary({ family, probe, row, primaryExitIP, exitCountry }: { family: "IPv4" | "IPv6"; probe: EgressIPProbeDTO; row: 1 | 2; primaryExitIP?: string; exitCountry?: string }) {
   const { t } = useTranslation();
   const healthy = probe.status === "healthy";
   const unhealthy = probe.status === "unhealthy";
   const rowClass = row === 1 ? "row-start-1" : "row-start-2";
+  const exitLabel = [probe.exitIp === primaryExitIP ? exitCountry : "", probe.exitIp || t("settings.egress.healthy")].filter(Boolean).join(" · ");
   const stateContent = <span className="flex min-w-0 items-center gap-1.5">
     <span className={cn("size-1.5 shrink-0 rounded-full", healthy ? "bg-emerald-500" : unhealthy ? "bg-destructive" : "bg-muted-foreground/35")} />
     <span className={cn("truncate", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")} title={healthy ? probe.exitIp : undefined}>
-      {healthy ? probe.exitIp || t("settings.egress.healthy") : unhealthy ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}
+      {healthy ? exitLabel : unhealthy ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}
     </span>
   </span>;
   return (
@@ -394,6 +418,14 @@ function ProbeFamilySummary({ family, probe, row }: { family: "IPv4" | "IPv6"; p
       </span>
     </div>
   );
+}
+
+function egressIPType(value?: string): "ipv4" | "ipv6" | "unknown" {
+	const normalized = value?.trim() ?? "";
+	if (!normalized) return "unknown";
+	if (normalized.includes(":")) return "ipv6";
+	if (normalized.includes(".")) return "ipv4";
+	return "unknown";
 }
 
 function Field({ label, controlId, description, help, children }: { label: string; controlId: string; description?: string; help?: string; children: ReactNode }) {
