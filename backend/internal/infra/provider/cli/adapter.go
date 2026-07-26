@@ -303,17 +303,23 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 	}
 	var rateLimit *provider.RateLimitMetadata
+	var rateLimitDiagnostic *provider.DiagnosticResponse
 	if resp.StatusCode == http.StatusTooManyRequests {
 		body, truncated, readErr := provider.ReadDiagnosticBody(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
 			return nil, readErr
 		}
-		_ = truncated
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		resp.ContentLength = int64(len(body))
 		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 		rateLimit = provider.RateLimitFromResponse(resp.StatusCode, resp.Header, body)
+		if truncated {
+			rateLimitDiagnostic = &provider.DiagnosticResponse{
+				StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(),
+				Body: append([]byte(nil), body...), BodyTruncated: true,
+			}
+		}
 	}
 	modelCatalogChanged := a.modelCatalogChanged(request.Credential.ID, resp.Header.Get("x-models-etag"))
 	// Capture or clear reasoning replay in the upstream Responses shape before protocol conversion.
@@ -380,7 +386,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			var diagnostic *provider.DiagnosticResponse
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				diagnostic = &provider.DiagnosticResponse{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: data, BodyTruncated: diagnosticTruncated}
+				diagnostic = &provider.DiagnosticResponse{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: data, BodyTruncated: diagnosticTruncated || rateLimitDiagnostic != nil}
 			}
 			converted, convertErr := conversation.ConvertResponseJSONWithOptions(data, request.Operation, conversationOptions)
 			if convertErr != nil {
@@ -395,7 +401,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: diagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
 		}
 	}
-	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, RecoveredPrimaryFailure: recoveredPrimaryFailure, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
+	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: rateLimitDiagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
 }
 
 func (a *Adapter) shouldCaptureReplay(request provider.ResponseResourceRequest, resp *http.Response, replayKey string) bool {

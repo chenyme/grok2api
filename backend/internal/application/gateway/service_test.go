@@ -913,7 +913,7 @@ func TestGatewayCoolsFreeBuildAccountsAfterForbidden(t *testing.T) {
 	}
 }
 
-func TestGatewayRefreshesAndRetriesBuildPermissionDenialOnce(t *testing.T) {
+func TestGatewayRefreshesAndRetriesBuildUnauthorizedOnce(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "auth-rescue.db"))
 	if err != nil {
@@ -1057,6 +1057,9 @@ func TestBuildChatPermissionDenialDoesNotInvalidateVideoCredential(t *testing.T)
 	}
 	if updated.AuthStatus != account.AuthStatusActive || updated.FailureCount != 0 || updated.CooldownUntil != nil {
 		t.Fatalf("chat denial invalidated the whole credential: %#v", updated)
+	}
+	if adapter.refreshes.Load() != 0 || adapter.attempts.Load() != 1 {
+		t.Fatalf("Build 403 must not refresh OAuth or replay the request: attempts=%d refreshes=%d", adapter.attempts.Load(), adapter.refreshes.Load())
 	}
 	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "grok-chat-denied", "")
 	if err != nil {
@@ -1753,7 +1756,7 @@ func TestGatewaySafetyRejectionDoesNotTouchAccountState(t *testing.T) {
 		if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount != 0 || observed.CooldownUntil != nil {
 			t.Fatalf("account %d changed after safety rejection: %#v", credential.ID, observed)
 		}
-		candidates, listErr := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-safety", "")
+		candidates, listErr := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "grok-safety", "")
 		if listErr != nil {
 			t.Fatal(listErr)
 		}
@@ -1808,6 +1811,12 @@ func TestGatewayFreeUsageExhaustionFailsOverToAnotherAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	periodEnd := time.Now().UTC().Add(7 * 24 * time.Hour).Truncate(time.Second)
+	if err := accountRepo.SaveBilling(ctx, account.Billing{
+		AccountID: credentials[0].ID, PlanName: "free", BillingPeriodEnd: periodEnd.Format(time.RFC3339), SyncedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	exhausted := `{"code":"subscription:free-usage-exhausted","error":"tokens (actual/limit): 10/10; Usage resets over a rolling 24-hour window"}`
 	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
 		credentials[0].ID: {{status: http.StatusTooManyRequests, body: exhausted, header: http.Header{"X-Should-Retry": {"false"}}}},
@@ -1819,6 +1828,7 @@ func TestGatewayFreeUsageExhaustionFailsOverToAnotherAccount(t *testing.T) {
 	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
 
+	exhaustedAt := time.Now().UTC()
 	result, err := service.CreateResponse(ctx, Input{
 		RequestID: "req-free-usage", ClientKey: clientKey, PublicModel: "grok-free-usage",
 		Body: []byte(`{"model":"grok-free-usage","input":"hello"}`),
@@ -1834,7 +1844,7 @@ func TestGatewayFreeUsageExhaustionFailsOverToAnotherAccount(t *testing.T) {
 	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
 		t.Fatalf("free-usage must fail over A->B, attempts=%#v", attempts)
 	}
-	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-free-usage", "")
+	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "grok-free-usage", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1842,9 +1852,13 @@ func TestGatewayFreeUsageExhaustionFailsOverToAnotherAccount(t *testing.T) {
 	for _, candidate := range candidates {
 		if candidate.Credential.ID == credentials[0].ID {
 			found = true
-			if candidate.ModelQuotaBlock == nil || candidate.ModelQuotaBlock.Reason != "model_quota_depleted" {
-				t.Fatalf("account A model quota not marked: %#v", candidate.ModelQuotaBlock)
+			if candidate.ModelQuotaBlock != nil {
+				t.Fatalf("subscription quota must not create a model block: %#v", candidate.ModelQuotaBlock)
 			}
+			if candidate.QuotaRecovery == nil || candidate.QuotaRecovery.Kind != account.QuotaRecoveryKindFree || candidate.QuotaRecovery.Status != account.QuotaRecoveryStatusExhausted || candidate.QuotaRecovery.ConfirmedUsed != 10 || candidate.QuotaRecovery.ConfirmedLimit != 10 {
+				t.Fatalf("account A quota recovery = %#v", candidate.QuotaRecovery)
+			}
+			assertRecoveryDelay(t, *candidate.QuotaRecovery, exhaustedAt, defaultFreeQuotaRecoveryPause)
 		}
 	}
 	if !found {
@@ -1870,12 +1884,14 @@ func TestGatewayBuildTeamRPSRateLimitSwitchesTeam(t *testing.T) {
 
 	teamX := "00000000-0000-0000-0000-0000000000a1"
 	teamY := "00000000-0000-0000-0000-0000000000b2"
+	staleTeam := "00000000-0000-0000-0000-0000000000c3"
 	credentials := make([]account.Credential, 0, 3)
-	// A and B share Team X; C uses Team Y. After A hits Team RPS, B must be skipped.
+	// A has stale credential metadata but reports Team X in the 429 body. B also
+	// uses Team X and C uses Team Y. Both A and B must be skipped after the limit.
 	for index, seed := range []struct {
 		name   string
 		teamID string
-	}{{"build-team-x-a", teamX}, {"build-team-x-b", teamX}, {"build-team-y-c", teamY}} {
+	}{{"build-team-x-a", staleTeam}, {"build-team-x-b", teamX}, {"build-team-y-c", teamY}} {
 		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
 			Provider: account.ProviderBuild, Name: seed.name, SourceKey: seed.name, TeamID: seed.teamID,
 			EncryptedAccessToken: "token-" + seed.name, ExpiresAt: time.Now().Add(time.Hour),
@@ -1947,6 +1963,86 @@ func TestGatewayBuildTeamRPSRateLimitSwitchesTeam(t *testing.T) {
 	attempts := adapter.Attempts()
 	if len(attempts) != before+1 || attempts[len(attempts)-1] != credentials[2].ID {
 		t.Fatalf("cached Team X limit should go straight to Team Y, attempts=%#v", attempts)
+	}
+}
+
+func TestActiveTeamModelRateLimitFallsBackToCurrentCredentialTeam(t *testing.T) {
+	now := time.Now().UTC()
+	const model = "grok-team-fallback"
+	const observedTeam = "00000000-0000-0000-0000-0000000000e5"
+	const currentTeam = "00000000-0000-0000-0000-0000000000f6"
+	credential := account.Credential{ID: 42, Provider: account.ProviderBuild, TeamID: currentTeam}
+	currentFingerprint := rateLimitTeamFingerprint(currentTeam)
+	service := &Service{
+		rateLimits: map[string]teamModelRateLimit{
+			teamModelRateLimitKey(account.ProviderBuild, currentFingerprint, model): {
+				TeamFingerprint: shortTeamFingerprint(currentFingerprint), Until: now.Add(time.Minute),
+			},
+		},
+		rateLimitTeams: map[uint64]teamRateLimitObservation{
+			credential.ID: {Fingerprint: rateLimitTeamFingerprint(observedTeam), ExpiresAt: now.Add(time.Minute)},
+		},
+	}
+	service.rateLimitActive.Store(true)
+
+	limited, ok := service.activeTeamModelRateLimit(credential, model, now)
+	if !ok || limited.TeamFingerprint != shortTeamFingerprint(currentFingerprint) {
+		t.Fatalf("limit = %#v, ok=%v", limited, ok)
+	}
+}
+
+func TestActiveTeamModelRateLimitDropsExpiredObservedTeam(t *testing.T) {
+	now := time.Now().UTC()
+	const model = "grok-team-observation-expiry"
+	const observedTeam = "00000000-0000-0000-0000-0000000000A1"
+	const currentTeam = "00000000-0000-0000-0000-0000000000b2"
+	credential := account.Credential{ID: 43, Provider: account.ProviderBuild, TeamID: currentTeam}
+	currentFingerprint := rateLimitTeamFingerprint(currentTeam)
+	service := &Service{
+		rateLimits: map[string]teamModelRateLimit{
+			teamModelRateLimitKey(account.ProviderBuild, rateLimitTeamFingerprint(observedTeam), model): {
+				TeamFingerprint: shortTeamFingerprint(rateLimitTeamFingerprint(observedTeam)), Until: now.Add(time.Minute),
+			},
+			teamModelRateLimitKey(account.ProviderBuild, currentFingerprint, model): {
+				TeamFingerprint: shortTeamFingerprint(currentFingerprint), Until: now.Add(time.Minute),
+			},
+		},
+		rateLimitTeams: map[uint64]teamRateLimitObservation{
+			credential.ID: {Fingerprint: rateLimitTeamFingerprint(observedTeam), ExpiresAt: now.Add(-time.Second)},
+		},
+	}
+	service.rateLimitActive.Store(true)
+
+	limited, ok := service.activeTeamModelRateLimit(credential, model, now)
+	if !ok || limited.TeamFingerprint != shortTeamFingerprint(currentFingerprint) {
+		t.Fatalf("limit = %#v, ok=%v", limited, ok)
+	}
+	if _, exists := service.rateLimitTeams[credential.ID]; exists {
+		t.Fatal("expired observed Team mapping was retained")
+	}
+}
+
+func TestActiveTeamModelRateLimitPrunesExpiredUnrelatedLimit(t *testing.T) {
+	now := time.Now().UTC()
+	service := &Service{
+		rateLimits: map[string]teamModelRateLimit{
+			teamModelRateLimitKey(account.ProviderBuild, rateLimitTeamFingerprint("00000000-0000-0000-0000-0000000000a1"), "old-model"): {
+				Until: now.Add(-time.Second),
+			},
+		},
+		rateLimitTeams: map[uint64]teamRateLimitObservation{
+			99: {Fingerprint: rateLimitTeamFingerprint("00000000-0000-0000-0000-0000000000a1"), ExpiresAt: now.Add(-time.Second)},
+		},
+	}
+	service.rateLimitActive.Store(true)
+	service.rateLimitNextExpiry.Store(now.Add(-time.Second).UnixNano())
+
+	credential := account.Credential{ID: 100, Provider: account.ProviderBuild, TeamID: "00000000-0000-0000-0000-0000000000b2"}
+	if limited, ok := service.activeTeamModelRateLimit(credential, "new-model", now); ok {
+		t.Fatalf("expired unrelated limit remained active: %#v", limited)
+	}
+	if service.rateLimitActive.Load() || service.rateLimitNextExpiry.Load() != 0 || len(service.rateLimits) != 0 || len(service.rateLimitTeams) != 0 {
+		t.Fatalf("expired state was not fully pruned: active=%v next=%d limits=%d teams=%d", service.rateLimitActive.Load(), service.rateLimitNextExpiry.Load(), len(service.rateLimits), len(service.rateLimitTeams))
 	}
 }
 
@@ -2172,21 +2268,20 @@ func TestGatewayBarePermissionDeniedDoesNotPenalizeAccount(t *testing.T) {
 		RequestID: "req-bare", ClientKey: clientKey, PublicModel: "grok-bare",
 		Body: []byte(`{"model":"grok-bare","input":"hello"}`),
 	})
-	// Bare permission-denied falls through as a terminal upstream 403 (not account-scoped retry loop).
 	if err != nil {
-		// May surface as UpstreamFailure if freeBuild path no longer forces rotation and non-retryable path...
-		// Build 403 is still forcesAccountFailover, so it will enter retryable path; with one account and
-		// AccountScoped=false, fingerprint limit may break after 2 identical failures.
-		var upstreamFailure *UpstreamFailure
-		if !errors.As(err, &upstreamFailure) {
-			t.Fatalf("err = %T %v", err, err)
-		}
-	} else {
-		if result.StatusCode != http.StatusForbidden {
-			t.Fatalf("status = %d", result.StatusCode)
-		}
-		_ = result.Body.Close()
-		result.Finalize(Usage{}, "", "upstream_forbidden")
+		t.Fatalf("bare permission-denied must return the original response: %v", err)
+	}
+	if result.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d", result.StatusCode)
+	}
+	responseBody, _ := io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "", "upstream_forbidden")
+	_ = result.Body.Close()
+	if !strings.Contains(string(responseBody), "request rejected by policy") {
+		t.Fatalf("body = %s", responseBody)
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 1 {
+		t.Fatalf("attempts = %#v, want one terminal request", attempts)
 	}
 	observed, getErr := accountRepo.Get(ctx, credential.ID)
 	if getErr != nil {
@@ -2198,7 +2293,7 @@ func TestGatewayBarePermissionDeniedDoesNotPenalizeAccount(t *testing.T) {
 	if adapter.refreshes.Load() != 0 {
 		t.Fatalf("bare permission-denied refreshed OAuth: %d", adapter.refreshes.Load())
 	}
-	candidates, listErr := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, "grok-bare", "")
+	candidates, listErr := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "grok-bare", "")
 	if listErr != nil {
 		t.Fatal(listErr)
 	}
@@ -2206,6 +2301,81 @@ func TestGatewayBarePermissionDeniedDoesNotPenalizeAccount(t *testing.T) {
 		if candidate.Credential.ID == credential.ID && candidate.ModelQuotaBlock != nil {
 			t.Fatalf("bare permission-denied must not create model block: %#v", candidate.ModelQuotaBlock)
 		}
+	}
+}
+
+func TestGatewayBarePermissionDeniedRetainsEgressRetryForWebAndConsole(t *testing.T) {
+	for _, providerValue := range []account.Provider{account.ProviderWeb, account.ProviderConsole} {
+		providerValue := providerValue
+		t.Run(string(providerValue), func(t *testing.T) {
+			ctx := context.Background()
+			database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "bare-permission-egress.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			if err := database.InitializeSchema(ctx); err != nil {
+				t.Fatal(err)
+			}
+			accountRepo := relational.NewAccountRepository(database)
+			modelRepo := relational.NewModelRepository(database)
+			auditRepo := relational.NewAuditRepository(database)
+			responseRepo := relational.NewResponseRepository(database)
+			keyRepo := relational.NewClientKeyRepository(database)
+
+			model := "grok-egress-" + string(providerValue)
+			credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+				Provider: providerValue, AuthType: account.AuthTypeSSO, Name: "egress", SourceKey: model,
+				EncryptedAccessToken: "access", ExpiresAt: time.Now().Add(time.Hour), WebTier: account.WebTierSuper,
+				Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := modelRepo.UpsertDiscovered(ctx, providerValue, []string{model}); err != nil {
+				t.Fatal(err)
+			}
+			if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+			clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+				Name: "egress-key", Prefix: "egress", SecretHash: strings.Repeat("7", 64), EncryptedSecret: "encrypted",
+				Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			adapter := &barePermissionEgressAdapter{providerValue: providerValue}
+			registry := provider.NewRegistry(adapter)
+			sticky := memory.NewStickyStore()
+			accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+			selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+			service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
+
+			result, err := service.CreateResponse(ctx, Input{
+				RequestID: "req-egress", ClientKey: clientKey, PublicModel: model,
+				Body: []byte(`{"model":"` + model + `","input":"hello"}`),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d", result.StatusCode)
+			}
+			result.Finalize(Usage{}, "", "")
+			_ = result.Body.Close()
+			if attempts := adapter.attempts.Load(); attempts != 2 {
+				t.Fatalf("egress attempts = %d, want 2", attempts)
+			}
+			observed, err := accountRepo.Get(ctx, credential.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount != 0 || observed.CooldownUntil != nil {
+				t.Fatalf("egress retry changed account state: %#v", observed)
+			}
+		})
 	}
 }
 
@@ -2284,10 +2454,109 @@ func TestGatewayPreviousResponseIDDoesNotCrossAccounts(t *testing.T) {
 	}
 }
 
+func TestGatewayPinnedResponseReturnsCachedTeamRateLimitWithoutSpinning(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "pinned-team-rate-limit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	const model = "grok-pinned-team-limit"
+	const teamID = "00000000-0000-0000-0000-0000000000d4"
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "pinned-team", SourceKey: "pinned-team", TeamID: teamID,
+		EncryptedAccessToken: "access", ExpiresAt: time.Now().Add(time.Hour),
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "pinned-team-key", Prefix: "pinnedteam", SecretHash: strings.Repeat("6", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := responseRepo.Save(ctx, inferencedomain.ResponseOwnership{
+		ResponseID: "resp-pinned-team", AccountID: credential.ID, ClientKeyID: clientKey.ID,
+		Provider: account.ProviderBuild, PromptCacheKey: "session-pinned-team", ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+	service.markTeamModelRateLimit(credential, model, provider.RateLimitMetadata{
+		Scope: provider.RateLimitScopeRPS, TeamID: teamID, Model: model, Actual: 2, Limit: 2, RetryAfter: time.Minute,
+	}, now)
+
+	requestCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	_, err = service.CreateResponse(requestCtx, Input{
+		RequestID: "req-pinned-team", ClientKey: clientKey, PublicModel: model,
+		PreviousResponseID: "resp-pinned-team",
+		Body:               []byte(`{"model":"grok-pinned-team-limit","previous_response_id":"resp-pinned-team","input":"hello"}`),
+	})
+	var failure *UpstreamFailure
+	if !errors.As(err, &failure) || failure.HTTPStatus != http.StatusTooManyRequests || failure.RetryAfter <= 0 {
+		t.Fatalf("failure = %#v, err = %v", failure, err)
+	}
+	if requestCtx.Err() != nil {
+		t.Fatalf("pinned request waited for context expiry: %v", requestCtx.Err())
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 0 {
+		t.Fatalf("cached Team limit must not reach upstream, attempts=%#v", attempts)
+	}
+}
+
 type scriptedBuildResponse struct {
 	status int
 	body   string
 	header http.Header
+}
+
+type barePermissionEgressAdapter struct {
+	providerValue account.Provider
+	attempts      atomic.Int64
+}
+
+func (a *barePermissionEgressAdapter) Provider() account.Provider { return a.providerValue }
+func (a *barePermissionEgressAdapter) Definition() provider.Definition {
+	return testConversationDefinition(a.providerValue)
+}
+func (a *barePermissionEgressAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
+	if a.attempts.Add(1) == 1 {
+		return &provider.Response{
+			StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"code":"permission-denied","error":"request rejected by policy"}`)),
+		}, nil
+	}
+	return &provider.Response{
+		StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"id":"resp-egress-ok","status":"completed","output":[]}`)),
+	}, nil
 }
 
 type scriptedBuildAdapter struct {
@@ -2382,7 +2651,7 @@ func (a *authRescueAdapter) ForwardResponse(_ context.Context, request provider.
 	}
 	if request.Credential.EncryptedAccessToken == "access-old" {
 		return &provider.Response{
-			StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
+			StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", Header: make(http.Header),
 			Body: io.NopCloser(strings.NewReader(`{"error":{"code":"permission_denied","message":"Access to the chat endpoint is denied"}}`)),
 		}, nil
 	}

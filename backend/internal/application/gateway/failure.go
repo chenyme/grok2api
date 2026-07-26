@@ -125,7 +125,7 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 			break
 		}
 		failure.AccountBlocked = isDefinitiveAccountBlock(metadataText)
-		failure.PermanentAccountDenial = isPermanentAccountDenial(metadataText)
+		failure.PermanentAccountDenial = isPermanentAccountDenial(upstreamMessage)
 		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
 		failure.FreeQuotaExhausted = failure.ModelQuotaExhausted || isFreeQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
@@ -135,9 +135,10 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.Code = "upstream_rate_limited"
 		failure.PublicMessage = "上游请求频率受限"
 		failure.AccountScoped = true
-		// free-usage-exhausted is model-scoped for the requested chat model.
+		// Subscription-level free usage and explicit per-model free usage are
+		// distinct so the gateway can preserve their different recovery scopes.
 		failure.FreeQuotaExhausted = isFreeQuotaExhaustion(metadataText)
-		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText) || failure.FreeQuotaExhausted
+		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
 	default:
 		failure.Code = "upstream_server_error"
@@ -204,7 +205,8 @@ func isAccountScopedForbidden(text string) bool {
 // A bare permission-denied code without access-denied wording is not enough:
 // content safety rejections and other policy 403s share that code.
 func isPermanentAccountDenial(text string) bool {
-	return containsAny(text, "access to the chat endpoint is denied", "access denied")
+	text = strings.ToLower(strings.Trim(strings.TrimSpace(text), " .!\t\r\n"))
+	return strings.Contains(text, "access to the chat endpoint is denied") || text == "access denied"
 }
 
 // isSafetyRejection identifies request-level content safety denials that must

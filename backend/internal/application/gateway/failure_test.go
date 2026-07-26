@@ -87,6 +87,14 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 			// Unknown request-level denial: not permanent, not account-scoped punishment.
 			upstreamCode: "permission-denied",
 		},
+		{
+			name: "request-level access denied sentence", body: `{"code":"operation-denied","error":"Access denied because this operation is unavailable under ZDR"}`,
+			upstreamCode: "operation-denied",
+		},
+		{
+			name: "exact access denied", body: `{"code":"operation-denied","error":"Access denied."}`,
+			accountScoped: true, permanentAccountDenial: true, upstreamCode: "operation-denied",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -185,8 +193,16 @@ func TestBuildForbiddenReauthPolicyMatchesExactErrorCodes(t *testing.T) {
 	}
 }
 
-func TestHTTPUpstreamFailureClassifiesFreeUsageExhaustionAsModelQuota(t *testing.T) {
+func TestHTTPUpstreamFailureClassifiesSubscriptionFreeUsageAsAccountQuota(t *testing.T) {
 	body := `{"code":"subscription:free-usage-exhausted","error":"tokens (actual/limit): 10/10"}`
+	failure := newHTTPUpstreamFailure(http.StatusTooManyRequests, []byte(body), 7, "build")
+	if !failure.AccountScoped || !failure.FreeQuotaExhausted || failure.ModelQuotaExhausted || !failure.QuotaExhausted {
+		t.Fatalf("failure = %#v", failure)
+	}
+}
+
+func TestHTTPUpstreamFailureKeepsExplicitModelFreeUsageScoped(t *testing.T) {
+	body := `{"error":"You've used all the included free usage for model grok-build"}`
 	failure := newHTTPUpstreamFailure(http.StatusTooManyRequests, []byte(body), 7, "build")
 	if !failure.AccountScoped || !failure.FreeQuotaExhausted || !failure.ModelQuotaExhausted || !failure.QuotaExhausted {
 		t.Fatalf("failure = %#v", failure)
@@ -213,5 +229,51 @@ func TestBuildForbiddenReauthPolicyIgnoresSafetyRejection(t *testing.T) {
 	failure := &UpstreamFailure{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission-denied", SafetyRejection: true}
 	if service.shouldInvalidateBuildForbidden(failure) {
 		t.Fatal("safety rejection must not match permission-denied invalidation policy")
+	}
+}
+
+func TestTerminalRequestForbiddenScopesBarePermissionDeniedToBuild(t *testing.T) {
+	bare := &UpstreamFailure{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission-denied"}
+	if !isTerminalRequestForbidden(accountdomain.ProviderBuild, bare) {
+		t.Fatal("Build bare permission-denied must remain a terminal request failure")
+	}
+	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderWeb, accountdomain.ProviderConsole} {
+		if isTerminalRequestForbidden(providerValue, bare) {
+			t.Fatalf("%s bare permission-denied must retain egress recovery", providerValue)
+		}
+	}
+
+	safety := &UpstreamFailure{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission-denied", SafetyRejection: true}
+	for _, providerValue := range []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderWeb, accountdomain.ProviderConsole} {
+		if !isTerminalRequestForbidden(providerValue, safety) {
+			t.Fatalf("%s safety rejection must remain terminal", providerValue)
+		}
+	}
+}
+
+func TestUnclassifiedFreeBuildForbiddenDoesNotOverrideKnownFailures(t *testing.T) {
+	credential := accountdomain.Credential{Provider: accountdomain.ProviderBuild}
+	unknown := &UpstreamFailure{HTTPStatus: http.StatusForbidden}
+	if !isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, unknown, false) {
+		t.Fatal("unknown Free Build 403 must retain the short cooldown fallback")
+	}
+	known := []*UpstreamFailure{
+		{HTTPStatus: http.StatusForbidden, AccountScoped: true, PermanentAccountDenial: true},
+		{HTTPStatus: http.StatusForbidden, AccountScoped: true, QuotaExhausted: true},
+		{HTTPStatus: http.StatusForbidden, AccountScoped: true, CredentialRejected: true},
+		{HTTPStatus: http.StatusForbidden, AccountScoped: true, AccountBlocked: true},
+		{HTTPStatus: http.StatusForbidden, SafetyRejection: true},
+		{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission-denied"},
+	}
+	for _, failure := range known {
+		if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, failure, false) {
+			t.Fatalf("known failure was flattened into generic Free 403 handling: %#v", failure)
+		}
+	}
+	if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, unknown, true) {
+		t.Fatal("configured invalidation must take precedence over generic Free 403 handling")
+	}
+	if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, accountdomain.Credential{Provider: accountdomain.ProviderBuild, BuildSuperEntitled: true}, nil, unknown, false) {
+		t.Fatal("Super Build 403 must not enter the Free fallback")
 	}
 }

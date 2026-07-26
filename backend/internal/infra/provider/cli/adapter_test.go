@@ -969,3 +969,35 @@ func TestParseBuildTeamRPSRateLimitMetadata(t *testing.T) {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 }
+
+func TestForwardResponsePreservesTruncatedRateLimitDiagnostic(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, cipher)
+	body := `{"code":"resource-exhausted","error":"Too many requests"}` + strings.Repeat("x", provider.MaxDiagnosticBodyBytes)
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(body)), Request: request,
+		}, nil
+	})
+
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", NormalizeBody: true,
+		Body: []byte(`{"model":"grok-4.5","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.Diagnostic == nil || !response.Diagnostic.BodyTruncated || len(response.Diagnostic.Body) != provider.MaxDiagnosticBodyBytes {
+		t.Fatalf("diagnostic = %#v", response.Diagnostic)
+	}
+}
