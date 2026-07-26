@@ -32,7 +32,7 @@ import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { cn } from "@/shared/lib/cn";
-import { formatDateTime, formatNumber } from "@/shared/lib/format";
+import { formatDateTime, formatNumber, formatUSDCost } from "@/shared/lib/format";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 import {
   acceptWebAccountTerms,
@@ -49,6 +49,7 @@ import {
   listAccounts,
   pollDeviceAuthorization,
   refreshAccountBilling,
+  probeAccountsHealth,
   refreshAccountsQuota,
   resetAccountsQuota,
   resetAllAccountQuota,
@@ -80,6 +81,7 @@ import {
   type QuotaDTO,
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
+import { listModels } from "@/entities/model/model-api";
 import { AccountNameCell } from "@/features/accounts/account-name-cell";
 import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
 import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
@@ -133,6 +135,8 @@ export function AccountsPage() {
   const [batchQuotaTask, setBatchQuotaTask] = useState<BuildQuotaTask>("sync");
   const [egressConfigurationOpen, setEgressConfigurationOpen] = useState(false);
   const [egressConfigurationTask, setEgressConfigurationTask] = useState<EgressConfigurationTask>("bind");
+  const [healthProbeOpen, setHealthProbeOpen] = useState(false);
+  const [healthProbeModel, setHealthProbeModel] = useState("");
   const [egressNodeID, setEgressNodeID] = useState("");
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupStatuses, setCleanupStatuses] = useState<Set<AccountCleanupStatus>>(() => new Set());
@@ -507,6 +511,24 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const healthProbeModelsQuery = useQuery({
+    queryKey: ["health-probe-models", "grok_build"],
+    queryFn: () => listModels({ page: 1, pageSize: 100, provider: "grok_build", status: "enabled" }),
+    enabled: healthProbeOpen && provider === "grok_build",
+  });
+
+  const batchHealthProbeMutation = useMutation({
+    mutationFn: () => probeAccountsHealth([...selected], provider, healthProbeModel.replace(/^Build\//i, "")),
+    onSuccess: (result) => {
+      clearSelection();
+      setHealthProbeOpen(false);
+      setHealthProbeModel("");
+      invalidateAccountData();
+      toast.success(t("accounts.batchHealthProbed", result));
+    },
+    onError: showError,
+  });
+
   const batchDeleteMutation = useMutation({
     mutationFn: () => deleteAccounts([...selected], provider),
     onSuccess: () => {
@@ -763,6 +785,7 @@ export function AccountsPage() {
     || batchBillingMutation.isPending
     || batchQuotaResetMutation.isPending
     || batchTokenMutation.isPending
+    || batchHealthProbeMutation.isPending
     || batchDeleteMutation.isPending
     || bindEgressMutation.isPending
     || unbindEgressMutation.isPending
@@ -911,6 +934,7 @@ export function AccountsPage() {
                 }}>{t("accounts.egressConfiguration")}</Button>
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion([...selected])}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets([...selected])}>{t("webAccountScripts.action")}</Button> : null}
+                {provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => { setHealthProbeModel(""); setHealthProbeOpen(true); }}>{t("accountCredential.healthProbeAction")}</Button> : null}
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
                   if (provider === "grok_build") {
                     setBatchQuotaTask("sync");
@@ -926,6 +950,7 @@ export function AccountsPage() {
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion("all")}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets("all")}>{t("webAccountScripts.action")}</Button> : null}
+                {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending || selected.size === 0} onClick={() => { if (selected.size === 0) { toast.error(t("accounts.healthProbeNeedSelection")); return; } setHealthProbeModel(""); setHealthProbeOpen(true); }}>{t("accountCredential.healthProbeAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => { setAllQuotaTask("sync"); setSyncAllOpen(true); }}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={bulkTaskPending} onClick={() => { setCleanupStatuses(new Set()); setCleanupOpen(true); }}><Trash2 />{t("accounts.cleanupAction")}</Button> : null}
@@ -974,7 +999,7 @@ export function AccountsPage() {
 	                    <TableCell className="min-w-0"><AccountNameCell account={account} /></TableCell>
                     <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("accountType.console")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
                     <TableCell className="text-center whitespace-nowrap"><AccountStatus account={account} /></TableCell>
-                    <TableCell className={provider === "grok_build" ? undefined : "px-6"}>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}</TableCell>
+                    <TableCell className={provider === "grok_build" ? undefined : "px-6"}>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}<div className="mt-1 text-[11px] text-muted-foreground">{t("accounts.totalUsage", { requests: formatNumber(account.totalRequests, i18n.language, 0), tokens: formatNumber(account.totalTokens, i18n.language), cost: formatUSDCost(account.totalCostTicks, 4) })}</div></TableCell>
                     {provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
                       {account.refreshable ? (
                         <Tooltip>
@@ -1269,6 +1294,64 @@ export function AccountsPage() {
           <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => deleting && deleteMutation.mutate(deleting.id)}>{t("accounts.cleanupStart")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+
+      <Dialog open={healthProbeOpen} onOpenChange={(open) => {
+        if (batchHealthProbeMutation.isPending) return;
+        setHealthProbeOpen(open);
+        if (!open) setHealthProbeModel("");
+      }}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle>{t("accounts.healthProbeTitle")}</DialogTitle>
+            <DialogDescription>{t("accounts.healthProbeDescription", { count: selected.size })}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+              {t("accounts.healthProbeWarning")}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="health-probe-model">{t("accounts.healthProbeModel")}</Label>
+              <Select value={healthProbeModel} onValueChange={setHealthProbeModel}>
+                <SelectTrigger id="health-probe-model"><SelectValue placeholder={t("accounts.healthProbeNeedModel")} /></SelectTrigger>
+                <SelectContent>
+                  {(healthProbeModelsQuery.data?.items ?? [])
+                    .filter((item) => item.capability === "responses" || item.capability === "chat")
+                    .map((item) => (
+                      <SelectItem key={item.id} value={item.upstreamModel || item.publicId.replace(/^Build\//i, "")}>
+                        {item.publicId || item.upstreamModel}
+                        {item.upstreamModel && item.publicId && item.publicId !== item.upstreamModel ? ` · ${item.upstreamModel}` : ""}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">{t("accounts.healthProbeModelHelp")}</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="secondary" size="sm" disabled={batchHealthProbeMutation.isPending} onClick={() => setHealthProbeOpen(false)}>{t("common.cancel")}</Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={batchHealthProbeMutation.isPending || !healthProbeModel}
+              onClick={() => {
+                if (selected.size === 0) {
+                  toast.error(t("accounts.healthProbeNeedSelection"));
+                  return;
+                }
+                if (!healthProbeModel) {
+                  toast.error(t("accounts.healthProbeNeedModel"));
+                  return;
+                }
+                batchHealthProbeMutation.mutate();
+              }}
+            >
+              {batchHealthProbeMutation.isPending ? <Spinner /> : null}
+              {t("accounts.healthProbeStart")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
         <AlertDialogContent>

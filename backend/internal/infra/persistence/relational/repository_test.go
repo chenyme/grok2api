@@ -459,7 +459,7 @@ func TestFreshSchemaContract(t *testing.T) {
 			t.Fatalf("missing table for %T", model)
 		}
 	}
-	assertTableColumns(t, database, "provider_accounts", []string{"provider", "source_key", "auth_status", "build_api_fallback", "build_route_mode", "build_super_entitled"}, []string{"oidc_client_id", "expires_at", "encrypted_access_token", "encrypted_refresh_token"})
+	assertTableColumns(t, database, "provider_accounts", []string{"provider", "source_key", "auth_status", "build_api_fallback", "build_route_mode", "build_super_entitled", "total_tokens", "total_cost_ticks", "total_requests"}, []string{"oidc_client_id", "expires_at", "encrypted_access_token", "encrypted_refresh_token"})
 	assertTableColumns(t, database, "account_credentials", []string{"account_id", "auth_type", "client_id", "encrypted_primary", "encrypted_refresh", "expires_at", "refresh_due_at", "last_refresh_at", "refresh_failures", "last_refresh_error", "refresh_permanent"}, nil)
 	assertTableColumns(t, database, "web_account_profiles", []string{"account_id", "tier", "synced_at", "nsfw_enabled_at"}, nil)
 	assertTableColumns(t, database, "admin_sessions", nil, []string{"revoked_at"})

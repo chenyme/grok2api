@@ -95,6 +95,9 @@ export type AccountDTO = {
   cooldownUntil?: string;
   lastError?: string;
   lastUsedAt?: string;
+  totalTokens: number;
+  totalCostTicks: number;
+  totalRequests: number;
   linkedAccountId?: string;
   linkedAccountName?: string;
   linkedProvider?: "grok_build" | "grok_web";
@@ -185,6 +188,7 @@ const accountValidator = hasShape({
   egressNodeId: isOptional(isString), egressAssignmentMode: isOptional(isOneOf("manual", "auto")),
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
+  totalTokens: isNumber, totalCostTicks: isNumber, totalRequests: isNumber,
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")), linkedAccounts: isOptional(isArrayOf(linkedAccountValidator)),
   createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
 });
@@ -474,6 +478,14 @@ export function resetAllAccountQuota(): Promise<{ reset: number }> {
 
 export function refreshAccountsTokens(ids: string[], provider: AccountProvider): Promise<AccountTokenRefreshResultDTO> {
   return apiRequest("/api/admin/v1/accounts/batch/refresh-tokens", { method: "POST", body: { ids, provider } }, createObjectDecoder("account token refresh batch", { succeeded: isNumber, failed: isNumber, skipped: isNumber }));
+}
+
+export function probeAccountsHealth(ids: string[], provider: AccountProvider, upstreamModel: string): Promise<{ succeeded: number; failed: number; skipped: number }> {
+  return apiRequest(
+    "/api/admin/v1/accounts/batch/health-probe",
+    { method: "POST", body: { ids, provider, upstreamModel } },
+    createObjectDecoder("account health probe batch", { succeeded: isNumber, failed: isNumber, skipped: isNumber }),
+  );
 }
 
 export function cleanupAccounts(provider: AccountProvider, statuses: AccountCleanupStatus[]): Promise<{ deleted: number }> {

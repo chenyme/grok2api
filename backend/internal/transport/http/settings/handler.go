@@ -90,6 +90,7 @@ type batchConfigDTO struct {
 	ConversionConcurrency int    `json:"conversionConcurrency"`
 	SyncConcurrency       int    `json:"syncConcurrency"`
 	RefreshConcurrency    int    `json:"refreshConcurrency"`
+	ProbeConcurrency      int    `json:"probeConcurrency"`
 	RandomDelay           string `json:"randomDelay"`
 }
 
@@ -203,6 +204,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		Batch: settingsapp.BatchConfig{
 			ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
 			SyncConcurrency: value.Batch.SyncConcurrency, RefreshConcurrency: value.Batch.RefreshConcurrency,
+			ProbeConcurrency: value.Batch.ProbeConcurrency,
 			RandomDelay: value.Batch.RandomDelay,
 		},
 		Media: settingsapp.MediaConfig{
@@ -276,6 +278,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			Batch: batchConfigDTO{
 				ImportConcurrency: config.Batch.ImportConcurrency, ConversionConcurrency: config.Batch.ConversionConcurrency,
 				SyncConcurrency: config.Batch.SyncConcurrency, RefreshConcurrency: config.Batch.RefreshConcurrency,
+				ProbeConcurrency: config.Batch.ProbeConcurrency,
 				RandomDelay: config.Batch.RandomDelay,
 			},
 			Media: mediaConfigDTO{

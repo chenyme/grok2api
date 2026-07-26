@@ -156,7 +156,12 @@ type Credential struct {
 	LastUsedAt       *time.Time
 	ObservedModel    string
 	ObservedModelAt  *time.Time
-	WebTier          WebTier
+	// TotalTokens/TotalCostTicks/TotalRequests 是账号级 all-time 累计用量（每次审计写入递增）。
+	// TotalCostTicks 单位为 USD ticks（1 USD = 10,000,000,000 ticks）。
+	TotalTokens    int64
+	TotalCostTicks int64
+	TotalRequests  int64
+	WebTier        WebTier
 	WebTierSyncedAt  *time.Time
 	// EgressIdentity 是不含凭据和个人信息的稳定出口身份。
 	// 关联到同一 Web 账号的 Build/Console 只共享该值，不共享任何运行状态。

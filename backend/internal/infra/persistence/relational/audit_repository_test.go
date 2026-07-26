@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	repositorypkg "github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -489,3 +490,107 @@ func TestAuditRepositorySummaryAppliesRangeAndGroupsPricingTier(t *testing.T) {
 }
 
 func uint64Pointer(value uint64) *uint64 { return &value }
+
+// TestAuditRepositoryIncrementsAccountUsage 验证审计写入集中递增 provider_accounts 的 all-time 累计用量，
+// 且无 account_id 的记录（如选号失败）不贡献用量。
+func TestAuditRepositoryIncrementsAccountUsage(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := NewAccountRepository(database)
+	account, _, err := accountRepo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "usage", SourceKey: "usage",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audits := NewAuditRepository(database)
+	now := time.Now().UTC()
+	records := []audit.Record{
+		{RequestID: "u1", ClientKeyID: 1, ModelRouteID: 1, AccountID: uint64Pointer(account.ID), TotalTokens: 120, CostInUSDTicks: 5_000_000_000, StatusCode: 200, CreatedAt: now},
+		{RequestID: "u2", ClientKeyID: 1, ModelRouteID: 1, AccountID: uint64Pointer(account.ID), TotalTokens: 80, EstimatedCostInUSDTicks: 2_000_000_000, StatusCode: 200, CreatedAt: now},
+		{RequestID: "u3-noacct", ClientKeyID: 1, ModelRouteID: 1, TotalTokens: 999, StatusCode: 500, CreatedAt: now}, // 无 account_id，不计入
+	}
+	if err := audits.CreateBatch(ctx, records); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := accountRepo.Get(ctx, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.TotalRequests != 2 || stored.TotalTokens != 200 || stored.TotalCostTicks != 7_000_000_000 {
+		t.Fatalf("after batch: requests=%d tokens=%d cost=%d", stored.TotalRequests, stored.TotalTokens, stored.TotalCostTicks)
+	}
+	// 直接递增一次（模拟单条 Create 路径），并验证 upsert/update 不清零。
+	if err := accountRepo.IncrementAccountUsage(ctx, account.ID, 10, 1_000_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := accountRepo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "usage", SourceKey: "usage",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accountRepo.MarkAuthStatus(ctx, account.ID, accountdomain.AuthStatusReauthRequired, "test"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = accountRepo.Get(ctx, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.TotalRequests != 3 || stored.TotalTokens != 210 || stored.TotalCostTicks != 8_000_000_000 {
+		t.Fatalf("after increment+upsert+update: requests=%d tokens=%d cost=%d", stored.TotalRequests, stored.TotalTokens, stored.TotalCostTicks)
+	}
+}
+
+// TestBackfillAccountUsageTotalsOnce 验证 SUM-guard 历史回填：首次按 request_audits 求和，二次启动不重算。
+func TestBackfillAccountUsageTotalsOnce(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-backfill.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := NewAccountRepository(database)
+	account, _, err := accountRepo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "backfill", SourceKey: "backfill",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 直接写一条审计（触发增量路径），再清零计数器模拟「列刚加完、历史未回填」。
+	audits := NewAuditRepository(database)
+	now := time.Now().UTC()
+	if err := audits.Create(ctx, audit.Record{RequestID: "b1", ClientKeyID: 1, ModelRouteID: 1, AccountID: uint64Pointer(account.ID), TotalTokens: 77, EstimatedCostInUSDTicks: 3_000_000_000, StatusCode: 200, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", account.ID).
+		Updates(map[string]any{"total_tokens": 0, "total_cost_ticks": 0, "total_requests": 0}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.backfillAccountUsageTotals(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := accountRepo.Get(ctx, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.TotalRequests != 1 || stored.TotalTokens != 77 || stored.TotalCostTicks != 3_000_000_000 {
+		t.Fatalf("backfill: requests=%d tokens=%d cost=%d", stored.TotalRequests, stored.TotalTokens, stored.TotalCostTicks)
+	}
+	// 再次调用应被 guard 跳过（不重算、不报错）。
+	if err := database.backfillAccountUsageTotals(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

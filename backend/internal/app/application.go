@@ -234,7 +234,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	conversionPool := batch.NewSharedChildPool(cfg.Batch.ConversionConcurrency, concurrency, "bulk:conversion", bulkPool)
 	syncPool := batch.NewSharedChildPool(cfg.Batch.SyncConcurrency, concurrency, "bulk:sync", bulkPool)
 	refreshPool := batch.NewSharedChildPool(cfg.Batch.RefreshConcurrency, concurrency, "bulk:refresh", bulkPool)
-	for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool} {
+	probePool := batch.NewSharedChildPool(cfg.Batch.ProbeConcurrency, concurrency, "bulk:probe", bulkPool)
+	for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool, probePool} {
 		pool.UpdateJitter(cfg.Batch.RandomDelay.Value())
 	}
 	accountService := accountapp.NewService(accountRepo, auditRepo, deviceSessions, sticky, providers, cipher, refreshLock)
@@ -246,6 +247,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	accountService.SetQuotaRefreshCoordinator(quotaRefreshState)
 	accountService.SetObservedModelStore(observedModelStore)
 	accountService.SetTaskPools(conversionPool, syncPool, refreshPool)
+	accountService.SetProbePool(probePool)
 	windows, err := accountRepo.ListQuotaRecoveryWindows(ctx, 100000)
 	if err != nil {
 		if runtimeStore != nil {
@@ -328,7 +330,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		conversionPool.UpdateLimit(next.Batch.ConversionConcurrency)
 		syncPool.UpdateLimit(next.Batch.SyncConcurrency)
 		refreshPool.UpdateLimit(next.Batch.RefreshConcurrency)
-		for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool} {
+		probePool.UpdateLimit(next.Batch.ProbeConcurrency)
+		for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool, probePool} {
 			pool.UpdateJitter(next.Batch.RandomDelay.Value())
 		}
 		cliAdapter.UpdateConfig(cliprovider.Config{
@@ -379,7 +382,7 @@ func invalidationSourceInstance(cfg config.Config) string {
 }
 
 func maxBatchConcurrency(value config.BatchConfig) int {
-	return max(value.ImportConcurrency, value.ConversionConcurrency, value.SyncConcurrency, value.RefreshConcurrency)
+	return max(value.ImportConcurrency, value.ConversionConcurrency, value.SyncConcurrency, value.RefreshConcurrency, value.ProbeConcurrency)
 }
 
 func webProviderConfig(cfg config.Config) webprovider.Config {

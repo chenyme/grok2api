@@ -58,7 +58,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	input.Frontend.PublicAPIBaseURL = "https://public.example.com"
 	input.ProviderConsole.BaseURL = "https://console.example.com"
 	input.ProviderConsole.ChatTimeout = "6m"
-	input.Batch = BatchConfig{ImportConcurrency: 26, ConversionConcurrency: 27, SyncConcurrency: 28, RefreshConcurrency: 29, RandomDelay: "750ms"}
+	input.Batch = BatchConfig{ImportConcurrency: 26, ConversionConcurrency: 27, SyncConcurrency: 28, RefreshConcurrency: 29, ProbeConcurrency: 11, RandomDelay: "750ms"}
 
 	snapshot, err := service.Update(context.Background(), service.Get().Revision, input)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if applied.Frontend.PublicAPIBaseURLOverride != "https://public.example.com" || applied.Frontend.EffectivePublicAPIBaseURL() != "https://public.example.com" {
 		t.Fatalf("frontend configuration was not applied: %#v", applied.Frontend)
 	}
-	if applied.Batch.ImportConcurrency != 26 || applied.Batch.ConversionConcurrency != 27 || applied.Batch.SyncConcurrency != 28 || applied.Batch.RefreshConcurrency != 29 || applied.Batch.RandomDelay.Value() != 750*time.Millisecond {
+	if applied.Batch.ImportConcurrency != 26 || applied.Batch.ConversionConcurrency != 27 || applied.Batch.SyncConcurrency != 28 || applied.Batch.RefreshConcurrency != 29 || applied.Batch.ProbeConcurrency != 11 || applied.Batch.RandomDelay.Value() != 750*time.Millisecond {
 		t.Fatalf("batch configuration was not applied: %#v", applied.Batch)
 	}
 	if applied.Provider.Console.BaseURL != "https://console.example.com" || applied.Provider.Console.ChatTimeout.Value() != 6*time.Minute {
@@ -458,7 +458,7 @@ func TestApplyDomainConfigAccountsDefaults(t *testing.T) {
 		},
 		Batch: settingsdomain.BatchConfig{
 			ImportConcurrency: base.Batch.ImportConcurrency, ConversionConcurrency: base.Batch.ConversionConcurrency,
-			SyncConcurrency: base.Batch.SyncConcurrency, RefreshConcurrency: base.Batch.RefreshConcurrency,
+			SyncConcurrency: base.Batch.SyncConcurrency, RefreshConcurrency: base.Batch.RefreshConcurrency, ProbeConcurrency: base.Batch.ProbeConcurrency,
 			RandomDelay: func() *time.Duration { d := base.Batch.RandomDelay.Value(); return &d }(),
 		},
 		Media: settingsdomain.MediaConfig{

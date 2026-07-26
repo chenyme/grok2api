@@ -45,3 +45,10 @@ export function toDateTimeLocal(value: string | null | undefined): string {
   const offset = date.getTimezoneOffset() * 60_000;
   return new Date(date.getTime() - offset).toISOString().slice(0, 19);
 }
+
+// USD ticks 与后端一致：1 USD = 10,000,000,000 ticks（见 domain/audit/pricing.go）。
+const USD_TICKS_PER_DOLLAR = 10_000_000_000;
+
+export function formatUSDCost(ticks: number, fractionDigits: number): string {
+  return `$${(ticks / USD_TICKS_PER_DOLLAR).toFixed(fractionDigits)}`;
+}

@@ -43,7 +43,10 @@ func (r *AuditRepository) Create(ctx context.Context, value audit.Record) error 
 	row := prepared[0].row
 	attempts := prepared[0].attempts
 	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return createAuditAndBill(tx, &row, attempts)
+		if err := createAuditAndBill(tx, &row, attempts); err != nil {
+			return err
+		}
+		return incrementAccountUsagePrepared(tx, prepared)
 	})
 }
 
@@ -56,14 +59,60 @@ func (r *AuditRepository) CreateBatch(ctx context.Context, values []audit.Record
 		return err
 	}
 	err = r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return createPreparedAuditBatchFast(tx, prepared)
+		if err := createPreparedAuditBatchFast(tx, prepared); err != nil {
+			return err
+		}
+		return incrementAccountUsagePrepared(tx, prepared)
 	})
 	if !errors.Is(err, errAuditBatchRequiresFallback) {
 		return err
 	}
 	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return createPreparedAuditBatchSafe(tx, prepared)
+		if err := createPreparedAuditBatchSafe(tx, prepared); err != nil {
+			return err
+		}
+		return incrementAccountUsagePrepared(tx, prepared)
 	})
+}
+
+// incrementAccountUsagePrepared 在审计写入同一事务内，按 account_id 聚合并原子递增 provider_accounts 的 all-time 用量。
+// 无 account_id 的记录（如选号失败）跳过；成本取 cost_in_usd_ticks>0 否则 estimated，与 dashboard billed_cost 一致。
+func incrementAccountUsagePrepared(tx *gorm.DB, prepared []preparedAudit) error {
+	type usageDelta struct {
+		tokens    int64
+		costTicks int64
+		requests  int64
+	}
+	deltas := make(map[uint64]usageDelta)
+	for _, item := range prepared {
+		row := item.row
+		if row.AccountID == nil || *row.AccountID == 0 {
+			continue
+		}
+		id := *row.AccountID
+		delta := deltas[id]
+		delta.requests++
+		if row.TotalTokens > 0 {
+			delta.tokens += row.TotalTokens
+		}
+		if row.CostInUSDTicks > 0 {
+			delta.costTicks += row.CostInUSDTicks
+		} else if row.EstimatedCostInUSDTicks > 0 {
+			delta.costTicks += row.EstimatedCostInUSDTicks
+		}
+		deltas[id] = delta
+	}
+	for id, delta := range deltas {
+		updates := map[string]any{
+			"total_tokens":     gorm.Expr("total_tokens + ?", delta.tokens),
+			"total_cost_ticks": gorm.Expr("total_cost_ticks + ?", delta.costTicks),
+			"total_requests":   gorm.Expr("total_requests + ?", delta.requests),
+		}
+		if err := tx.Model(&accountModel{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func prepareAudits(values []audit.Record) ([]preparedAudit, error) {

@@ -13,7 +13,7 @@ export type SettingsConfigDTO = {
     recoveryBackoffBase: string; recoveryBackoffMax: string;
   };
   providerConsole: { baseURL: string; chatTimeout: string };
-  batch: { importConcurrency: number; conversionConcurrency: number; syncConcurrency: number; refreshConcurrency: number; randomDelay: string };
+  batch: { importConcurrency: number; conversionConcurrency: number; syncConcurrency: number; refreshConcurrency: number; probeConcurrency: number; randomDelay: string };
   media: {
     maxImageBytes: number; maxTotalBytes: number; cleanupThresholdPercent: number;
     cleanupInterval: string;
@@ -89,7 +89,14 @@ const settingsConfigValidator = hasShape({
     clearanceTimeout: isString, clearanceRefresh: isString, mediaConcurrency: isNumber, allowNSFW: isBoolean, recoveryBackoffBase: isString, recoveryBackoffMax: isString,
   }),
   providerConsole: hasShape({ baseURL: isString, chatTimeout: isString }),
-  batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
+  batch: hasShape({
+    importConcurrency: isNumber,
+    conversionConcurrency: isNumber,
+    syncConcurrency: isNumber,
+    refreshConcurrency: isNumber,
+    probeConcurrency: isOptional(isNumber),
+    randomDelay: isString,
+  }),
   media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),
   frontend: hasShape({ publicApiBaseURL: isString }),
   routing: hasShape({
@@ -126,6 +133,10 @@ function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
       audit: {
         ...snapshot.config.audit,
         commitDelayMS: snapshot.config.audit.commitDelayMS ?? 5,
+      },
+      batch: {
+        ...snapshot.config.batch,
+        probeConcurrency: snapshot.config.batch.probeConcurrency || 10,
       },
       routing: {
         ...snapshot.config.routing,

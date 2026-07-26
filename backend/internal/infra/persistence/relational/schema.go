@@ -172,6 +172,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	if err := d.backfillReauthMarkedAt(ctx); err != nil {
 		return fmt.Errorf("迁移 reauth_marked_at: %w", err)
 	}
+	if err := d.backfillAccountUsageTotals(ctx); err != nil {
+		return fmt.Errorf("迁移账号累计用量: %w", err)
+	}
 	if err := d.dropRedundantResponseExpiryIndexes(ctx); err != nil {
 		return fmt.Errorf("迁移响应过期索引: %w", err)
 	}
@@ -250,6 +253,26 @@ UPDATE provider_accounts
 SET reauth_marked_at = updated_at
 WHERE auth_status = ? AND reauth_marked_at IS NULL
 `, "reauthRequired").Error
+}
+
+// backfillAccountUsageTotals 在新增 total_tokens/total_cost_ticks/total_requests 列后，
+// 用 SUM-guard 做一次性历史回填：仅当所有账号累计请求仍为 0（列刚加完或全新装机）时执行。
+// 一旦有任一账号产生流量，max(total_requests)>0，之后永不再跑（幂等）。计数器随后由审计写入路径原子递增。
+func (d *Database) backfillAccountUsageTotals(ctx context.Context) error {
+	var maxRequests int64
+	if err := d.db.WithContext(ctx).Raw(`SELECT COALESCE(MAX(total_requests), 0) FROM provider_accounts`).Scan(&maxRequests).Error; err != nil {
+		return err
+	}
+	if maxRequests > 0 {
+		return nil
+	}
+	return d.db.WithContext(ctx).Exec(`
+UPDATE provider_accounts
+SET
+  total_tokens     = COALESCE((SELECT SUM(total_tokens)            FROM request_audits WHERE account_id = provider_accounts.id AND total_tokens > 0), 0),
+  total_cost_ticks = COALESCE((SELECT SUM(CASE WHEN cost_in_usd_ticks > 0 THEN cost_in_usd_ticks ELSE estimated_cost_in_usd_ticks END) FROM request_audits WHERE account_id = provider_accounts.id), 0),
+  total_requests   = COALESCE((SELECT COUNT(*)                       FROM request_audits WHERE account_id = provider_accounts.id), 0)
+`).Error
 }
 
 type consoleConstraint struct {
