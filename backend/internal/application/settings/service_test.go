@@ -115,6 +115,42 @@ func TestUpdateRejectsBuildResponseHeaderTimeoutOutsideSafeRange(t *testing.T) {
 	}
 }
 
+func TestUpdateValidatesMaxAttemptsRange(t *testing.T) {
+	cfg := testConfig(t)
+	repository := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
+
+	input := service.Get().Config
+	input.Routing.MaxAttempts = 200
+	snapshot, err := service.Update(context.Background(), 0, input)
+	if err != nil {
+		t.Fatalf("maximum maxAttempts was rejected: %v", err)
+	}
+	if applied.Routing.MaxAttempts != 200 || snapshot.Config.Routing.MaxAttempts != 200 {
+		t.Fatalf("maximum maxAttempts was not applied: applied=%d snapshot=%d", applied.Routing.MaxAttempts, snapshot.Config.Routing.MaxAttempts)
+	}
+
+	input = snapshot.Config
+	input.Routing.MaxAttempts = -1
+	snapshot, err = service.Update(context.Background(), snapshot.Revision, input)
+	if err != nil {
+		t.Fatalf("unlimited maxAttempts was rejected: %v", err)
+	}
+	if applied.Routing.MaxAttempts != -1 || snapshot.Config.Routing.MaxAttempts != -1 {
+		t.Fatalf("unlimited maxAttempts was not applied: applied=%d snapshot=%d", applied.Routing.MaxAttempts, snapshot.Config.Routing.MaxAttempts)
+	}
+
+	input = snapshot.Config
+	input.Routing.MaxAttempts = 201
+	if _, err := service.Update(context.Background(), snapshot.Revision, input); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("maxAttempts above maximum error = %v", err)
+	}
+	if repository.value.Routing.MaxAttempts != -1 {
+		t.Fatalf("invalid maxAttempts was persisted: %d", repository.value.Routing.MaxAttempts)
+	}
+}
+
 func TestLoadPersistedKeepsSegmentedSelectorDefaultsForOlderPayload(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Routing.SegmentedSelectorEnabled = true
