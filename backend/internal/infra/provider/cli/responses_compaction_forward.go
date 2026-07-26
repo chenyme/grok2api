@@ -91,7 +91,7 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 				return nil, readErr
 			}
 			primaryResp := cloneBufferedResponse(resp, primaryBody, primaryTruncated)
-			if isDefinitiveAccountBlockBody(primaryBody) {
+			if shouldSkipXAIFallback(primaryBody) {
 				resp = primaryResp
 			} else {
 				fallbackBase := a.fallbackBaseURL()
@@ -412,8 +412,12 @@ func gatewayCompactionHTTPFailure(resp *http.Response, reqURL string, modelCatal
 	if err != nil {
 		return nil, false, err
 	}
-	transient := gatewayCompactionStatusTransient(resp.StatusCode, string(body))
 	headers := resp.Header.Clone()
+	transient := gatewayCompactionStatusTransient(resp.StatusCode, string(body))
+	if strings.EqualFold(strings.TrimSpace(headers.Get("X-Should-Retry")), "false") {
+		transient = false
+	}
+	rateLimit := provider.RateLimitFromResponse(resp.StatusCode, headers, body)
 	headers.Set("Content-Length", strconv.Itoa(len(body)))
 	if warnings != "" {
 		headers.Set("X-Grok2API-Compatibility-Warnings", warnings)
@@ -425,7 +429,7 @@ func gatewayCompactionHTTPFailure(resp *http.Response, reqURL string, modelCatal
 	return &provider.Response{
 		StatusCode: resp.StatusCode, Status: resp.Status, Header: headers,
 		Body: io.NopCloser(bytes.NewReader(body)), UpstreamURL: reqURL,
-		Diagnostic: diagnostic, ModelCatalogChanged: modelCatalogChanged,
+		Diagnostic: diagnostic, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged,
 	}, transient, nil
 }
 

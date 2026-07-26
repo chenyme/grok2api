@@ -619,6 +619,8 @@ func (s *Selector) MarkModelQuotaExhausted(ctx context.Context, credential accou
 	_ = s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
 		AccountID: credential.ID, UpstreamModel: upstreamModel, Reason: "model_quota_depleted", CooldownUntil: until, UpdatedAt: time.Now().UTC(),
 	})
+	// The model block makes affected bindings ineligible and they are rebound on
+	// the next request. Preserve unrelated model/session affinity for this account.
 	s.invalidateCandidates(credential.Provider)
 }
 
