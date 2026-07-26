@@ -46,8 +46,9 @@ const emptySource: SourceForm = {
   name: "", scope: "grok_build", enabled: true, url: "", refreshIntervalSeconds: 900, defaultAccountCapacity: 0,
 };
 const emptyImport: ImportForm = { name: "", scope: "grok_build", accountCapacity: 0, content: "" };
-// Eight probes run concurrently and each can take up to 15 seconds. Keeping a
-// request to 32 nodes leaves enough headroom for the admin HTTP timeout.
+// Eight nodes run concurrently; each checks IPv4 and IPv6 in parallel with a
+// 15-second ceiling. Keeping a request to 32 nodes leaves enough headroom for
+// the admin HTTP timeout.
 const egressProbeBatchSize = 32;
 const fallbackScopes: EgressScope[] = ["grok_build", "grok_web", "grok_console", "grok_web_asset"];
 const fallbackDescriptionKeys: Record<EgressScope, string> = {

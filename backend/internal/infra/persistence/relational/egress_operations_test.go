@@ -442,6 +442,8 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
 	service.SetNodeProber(egressProbeStub{result: egress.ProbeResult{
 		Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "1.1.1.1",
+		IPv4: egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 40, ExitIP: "1.1.1.1"},
+		IPv6: egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "2606:4700:4700::1111"},
 	}})
 
 	result, err := service.TestNode(ctx, node.ID)
@@ -457,6 +459,9 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	}
 	if stored.ProbeStatus != egress.ProbeStatusHealthy || stored.ProbeLatencyMS != 42 || stored.ExitIP != "1.1.1.1" || stored.LastProbedAt == nil {
 		t.Fatalf("stored probe = %#v", stored)
+	}
+	if stored.IPv4Probe.ExitIP != "1.1.1.1" || stored.IPv6Probe.ExitIP != "2606:4700:4700::1111" || stored.IPv6Probe.Status != egress.ProbeStatusHealthy {
+		t.Fatalf("stored family probes = ipv4:%#v ipv6:%#v", stored.IPv4Probe, stored.IPv6Probe)
 	}
 }
 

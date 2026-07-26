@@ -3,12 +3,15 @@ package egress
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"sort"
 	"strconv"
@@ -40,7 +43,8 @@ const clearanceCacheCleanupInterval = time.Minute
 const clearanceCacheMinIdleTTL = 30 * time.Minute
 const maxCachedClearances = 16384
 const clearanceCacheEvictionBatch = 256
-const egressProbeEndpoint = "https://api64.ipify.org?format=json"
+const egressIPv4ProbeEndpoint = "https://ipinfo.io/json"
+const egressIPv6ProbeEndpoint = "https://v6.ipinfo.io/json"
 const egressProbeTimeout = 15 * time.Second
 const clientCreationRetryLimit = 3
 const maxClientVersionEntries = 4096
@@ -109,6 +113,7 @@ func (l *Lease) Release() {
 type Manager struct {
 	repository           repository.EgressRepository
 	cipher               *security.Cipher
+	logger               *slog.Logger
 	nodeMu               sync.RWMutex
 	clientMu             sync.RWMutex
 	clearanceMu          sync.Mutex
@@ -199,6 +204,20 @@ func NewManager(repository repository.EgressRepository, cipher *security.Cipher)
 	return manager
 }
 
+func (m *Manager) SetLogger(logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	m.logger = logger
+}
+
+func (m *Manager) log() *slog.Logger {
+	if m == nil || m.logger == nil {
+		return slog.Default()
+	}
+	return m.logger
+}
+
 // UpdateBuildResponseHeaderTimeout rebuilds only cached Build clients. Active
 // requests keep their current transport and are not interrupted.
 func (m *Manager) UpdateBuildResponseHeaderTimeout(value time.Duration) {
@@ -279,30 +298,120 @@ func (m *Manager) AcquireIfConfigured(ctx context.Context, scope domain.Scope, a
 	return m.acquire(ctx, scope, affinity, false, "", egressNodeFromContext(ctx))
 }
 
-// ProbeEgressNode verifies one configured proxy using a fixed public IP echo
-// endpoint. The target is intentionally not caller-controlled, so management
+// ProbeEgressNode verifies IPv4 and IPv6 independently through fixed IPinfo
+// endpoints. The targets are intentionally not caller-controlled, so management
 // APIs cannot turn proxy tests into an internal-network request primitive.
 func (m *Manager) ProbeEgressNode(ctx context.Context, nodeID uint64) (domain.ProbeResult, error) {
-	return m.probeEgressNode(ctx, nodeID, egressProbeEndpoint)
+	type outcome struct {
+		family string
+		result domain.ProbeFamilyResult
+		err    error
+	}
+	outcomes := make(chan outcome, 2)
+	for family, endpoint := range map[string]string{"ipv4": egressIPv4ProbeEndpoint, "ipv6": egressIPv6ProbeEndpoint} {
+		go func() {
+			result, err := m.probeEgressNode(ctx, nodeID, family, endpoint)
+			outcomes <- outcome{family: family, result: result, err: err}
+		}()
+	}
+	var ipv4Err, ipv6Err error
+	result := domain.ProbeResult{Status: domain.ProbeStatusUnhealthy}
+	for range 2 {
+		current := <-outcomes
+		if current.family == "ipv4" {
+			result.IPv4, ipv4Err = current.result, current.err
+		} else {
+			result.IPv6, ipv6Err = current.result, current.err
+		}
+	}
+	result.TestedAt = time.Now().UTC()
+	result.LatencyMS = max(result.IPv4.LatencyMS, result.IPv6.LatencyMS)
+	if result.IPv4.Status == domain.ProbeStatusHealthy {
+		result.Status, result.ExitIP = domain.ProbeStatusHealthy, result.IPv4.ExitIP
+	} else if result.IPv6.Status == domain.ProbeStatusHealthy {
+		result.Status, result.ExitIP = domain.ProbeStatusHealthy, result.IPv6.ExitIP
+	}
+	if result.Status == domain.ProbeStatusHealthy {
+		return result, nil
+	}
+	errorsByFamily := make([]string, 0, 2)
+	if result.IPv4.Error != "" {
+		errorsByFamily = append(errorsByFamily, "IPv4: "+result.IPv4.Error)
+	}
+	if result.IPv6.Error != "" {
+		errorsByFamily = append(errorsByFamily, "IPv6: "+result.IPv6.Error)
+	}
+	result.Error = strings.Join(errorsByFamily, "; ")
+	if result.Error == "" {
+		result.Error = "IPv4 和 IPv6 代理探测均失败"
+	}
+	return result, errors.Join(ipv4Err, ipv6Err, errors.New(result.Error))
 }
 
-func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, targetURL string) (domain.ProbeResult, error) {
+func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, family, targetURL string) (result domain.ProbeFamilyResult, probeErr error) {
 	startedAt := time.Now().UTC()
-	result := domain.ProbeResult{Status: domain.ProbeStatusUnhealthy, TestedAt: startedAt}
+	result = domain.ProbeFamilyResult{Status: domain.ProbeStatusUnhealthy, TestedAt: startedAt}
+	stage := "validate_node"
+	nodeName := ""
+	nodeScope := domain.Scope("")
+	statusCode := 0
+	var traceMu sync.Mutex
+	var connectStartedAt, tlsStartedAt time.Time
+	connectMS, tlsMS, firstByteMS := 0, 0, 0
+	defer func() {
+		durationMS := max(1, int(time.Since(startedAt).Milliseconds()))
+		traceMu.Lock()
+		if !connectStartedAt.IsZero() && connectMS == 0 {
+			connectMS = max(1, int(time.Since(connectStartedAt).Milliseconds()))
+		}
+		if !tlsStartedAt.IsZero() && tlsMS == 0 {
+			tlsMS = max(1, int(time.Since(tlsStartedAt).Milliseconds()))
+		}
+		connectDurationMS, tlsDurationMS, firstByteDurationMS := connectMS, tlsMS, firstByteMS
+		traceMu.Unlock()
+		attributes := []any{
+			"node_id", nodeID,
+			"node_name", nodeName,
+			"scope", nodeScope,
+			"address_family", family,
+			"endpoint", targetURL,
+			"stage", stage,
+			"status_code", statusCode,
+			"duration_ms", durationMS,
+			"connect_ms", connectDurationMS,
+			"tls_ms", tlsDurationMS,
+			"first_byte_ms", firstByteDurationMS,
+		}
+		if probeErr != nil || result.Status != domain.ProbeStatusHealthy {
+			attributes = append(attributes, "probe_error", result.Error)
+			if probeErr != nil {
+				attributes = append(attributes, "error", sanitizeFlareSolverrMessage(probeErr.Error()))
+			}
+			m.log().WarnContext(ctx, "egress_probe_failed", attributes...)
+			return
+		}
+		attributes = append(attributes, "latency_ms", result.LatencyMS, "exit_ip", result.ExitIP)
+		m.log().InfoContext(ctx, "egress_probe_succeeded", attributes...)
+	}()
 	if nodeID == 0 {
 		result.Error = "代理节点 ID 无效"
 		return result, errors.New(result.Error)
 	}
+	stage = "load_node"
 	node, err := m.repository.GetEgressNode(ctx, nodeID)
 	if err != nil {
 		result.Error = "读取代理节点失败"
 		return result, err
 	}
+	nodeName = node.Name
+	nodeScope = node.Scope
+	stage = "decrypt_proxy"
 	proxyURL, err := m.cipher.Decrypt(node.EncryptedProxyURL)
 	if err != nil {
 		result.Error = "读取代理配置失败"
 		return result, err
 	}
+	stage = "normalize_proxy"
 	proxyURL, err = application.NormalizeProxyURL(proxyURL)
 	if err != nil {
 		result.Error = "代理地址无效"
@@ -313,13 +422,19 @@ func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, targetURL 
 		return result, errors.New(result.Error)
 	}
 	if strings.Contains(proxyURL, application.ProxyAccountPlaceholder) {
+		stage = "render_proxy_identity"
 		proxyURL, err = renderAccountProxyURL(proxyURL, "egress_probe")
 		if err != nil {
 			result.Error = "账号代理模板无效"
 			return result, err
 		}
 	}
-	client, err := newBuildClient(proxyURL, egressProbeTimeout)
+	stage = "create_client"
+	clientFactory := m.newBuildClient
+	if clientFactory == nil {
+		clientFactory = newBuildRequestClient
+	}
+	client, err := clientFactory(proxyURL, egressProbeTimeout)
 	if err != nil {
 		result.Error = "创建代理连接失败"
 		return result, err
@@ -327,23 +442,65 @@ func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, targetURL 
 	defer client.CloseIdleConnections()
 	probeCtx, cancel := context.WithTimeout(ctx, egressProbeTimeout)
 	defer cancel()
+	probeCtx = httptrace.WithClientTrace(probeCtx, &httptrace.ClientTrace{
+		ConnectStart: func(_, _ string) {
+			traceMu.Lock()
+			if connectStartedAt.IsZero() {
+				connectStartedAt = time.Now()
+			}
+			traceMu.Unlock()
+		},
+		ConnectDone: func(_, _ string, _ error) {
+			traceMu.Lock()
+			if !connectStartedAt.IsZero() && connectMS == 0 {
+				connectMS = max(1, int(time.Since(connectStartedAt).Milliseconds()))
+			}
+			traceMu.Unlock()
+		},
+		TLSHandshakeStart: func() {
+			traceMu.Lock()
+			if tlsStartedAt.IsZero() {
+				tlsStartedAt = time.Now()
+			}
+			traceMu.Unlock()
+		},
+		TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+			traceMu.Lock()
+			if !tlsStartedAt.IsZero() && tlsMS == 0 {
+				tlsMS = max(1, int(time.Since(tlsStartedAt).Milliseconds()))
+			}
+			traceMu.Unlock()
+		},
+		GotFirstResponseByte: func() {
+			traceMu.Lock()
+			if firstByteMS == 0 {
+				firstByteMS = max(1, int(time.Since(startedAt).Milliseconds()))
+			}
+			traceMu.Unlock()
+		},
+	})
+	stage = "build_request"
 	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		result.Error = "构造探测请求失败"
 		return result, err
 	}
 	request.Header.Set("User-Agent", DefaultUserAgent)
+	stage = "execute_request"
 	response, err := client.Do(request)
 	if err != nil {
 		result.Error = "代理连接失败"
 		return result, err
 	}
+	statusCode = response.StatusCode
 	defer response.Body.Close()
+	stage = "read_response"
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	if readErr != nil {
 		result.Error = "读取探测响应失败"
 		return result, readErr
 	}
+	stage = "validate_status"
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		result.Error = fmt.Sprintf("探测服务返回 HTTP %d", response.StatusCode)
 		return result, errors.New(result.Error)
@@ -351,13 +508,18 @@ func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, targetURL 
 	var payload struct {
 		IP string `json:"ip"`
 	}
+	stage = "decode_response"
 	if err := json.Unmarshal(body, &payload); err != nil {
 		result.Error = "探测服务响应格式无效"
 		return result, err
 	}
+	stage = "validate_exit_ip"
 	address, err := netip.ParseAddr(strings.TrimSpace(payload.IP))
-	if err != nil {
-		result.Error = "探测服务未返回有效出口 IP"
+	if err != nil || (family == "ipv4" && !address.Is4()) || (family == "ipv6" && !address.Is6()) {
+		result.Error = fmt.Sprintf("探测服务未返回有效 %s 出口 IP", strings.ToUpper(family))
+		if err == nil {
+			err = errors.New(result.Error)
+		}
 		return result, err
 	}
 	result.Status = domain.ProbeStatusHealthy
@@ -365,6 +527,7 @@ func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, targetURL 
 	result.LatencyMS = max(1, int(time.Since(startedAt).Milliseconds()))
 	result.ExitIP = address.String()
 	result.Error = ""
+	stage = "complete"
 	return result, nil
 }
 

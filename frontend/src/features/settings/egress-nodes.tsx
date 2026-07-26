@@ -18,7 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EgressOperations } from "@/features/settings/egress-operations";
-import { createEgressNode, deleteEgressNode, deleteEgressNodes, listEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { createEgressNode, deleteEgressNode, deleteEgressNodes, listEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
@@ -204,8 +204,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
           ) : null}
         </div>
         {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : <div className="overflow-hidden rounded-md border">
-          <Table className="min-w-[920px]">
-          <TableHeader><TableRow><TableHead className="w-10 px-2"><Checkbox checked={allVisibleSelected ? true : selectedVisible.length > 0 ? "indeterminate" : false} disabled={filteredNodes.length === 0} onCheckedChange={(checked) => toggleVisible(checked === true)} aria-label={t("settings.egress.selectVisible")} /></TableHead><SortableTableHead className="min-w-44" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-28" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-24" field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="min-w-32" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-24 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-32" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="min-w-40 text-center">{t("settings.egress.probe")}</TableHead><TableActionHead /></TableRow></TableHeader>
+          <Table className="min-w-[1040px]">
+          <TableHeader><TableRow><TableHead className="w-10 px-2"><Checkbox checked={allVisibleSelected ? true : selectedVisible.length > 0 ? "indeterminate" : false} disabled={filteredNodes.length === 0} onCheckedChange={(checked) => toggleVisible(checked === true)} aria-label={t("settings.egress.selectVisible")} /></TableHead><SortableTableHead className="min-w-44" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-28" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-24" field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="min-w-32" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-24 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-32" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" title={t("settings.egress.healthHelp")} onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="min-w-64 text-center" title={t("settings.egress.probeHelp")}>{t("settings.egress.probe")}</TableHead><TableActionHead /></TableRow></TableHeader>
           <TableBody>
             {query.isPending ? <TableLoadingRow colSpan={9} /> : null}
             {!query.isPending && filteredNodes.length === 0 ? <TableRow><TableCell colSpan={9} className="h-24 text-center text-xs text-muted-foreground">{nodes.length === 0 ? t("settings.egress.directFallback") : t("settings.egress.noMatches")}</TableCell></TableRow> : filteredNodes.map((node) => (
@@ -361,17 +361,26 @@ function HealthMeter({ value }: { value: number }) {
 }
 
 function ProbeSummary({ node }: { node: EgressNodeDTO }) {
-  const { t } = useTranslation();
-  const healthy = node.probeStatus === "healthy";
-  const unhealthy = node.probeStatus === "unhealthy";
   return (
-    <div className="flex min-w-0 items-center justify-center gap-2 text-xs">
-      <span className={cn("size-1.5 shrink-0 rounded-full", healthy ? "bg-emerald-500" : unhealthy ? "bg-destructive" : "bg-muted-foreground/35")} />
-      <span className={cn("truncate", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")}>
-        {healthy ? node.exitIp || t("settings.egress.healthy") : unhealthy ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}
+    <div className="mx-auto grid w-full max-w-72 gap-1 py-1 text-xs">
+      <ProbeFamilySummary family="IPv4" probe={node.ipv4Probe} />
+      <ProbeFamilySummary family="IPv6" probe={node.ipv6Probe} />
+    </div>
+  );
+}
+
+function ProbeFamilySummary({ family, probe }: { family: "IPv4" | "IPv6"; probe: EgressIPProbeDTO }) {
+  const { t } = useTranslation();
+  const healthy = probe.status === "healthy";
+  const unhealthy = probe.status === "unhealthy";
+  return (
+    <div className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)_auto_auto] items-center gap-1.5">
+      <span className="text-[10px] font-medium text-muted-foreground">{family}</span>
+      <span className={cn("truncate text-left", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")}>
+        {healthy ? probe.exitIp || t("settings.egress.healthy") : unhealthy ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}
       </span>
-      {healthy ? <span className="shrink-0 tabular-nums text-muted-foreground">{node.probeLatencyMs} ms</span> : null}
-      {unhealthy && node.probeError ? <ErrorTooltip message={node.probeError} /> : null}
+      {healthy ? <span className="shrink-0 tabular-nums text-muted-foreground">{probe.latencyMs} ms</span> : <span />}
+      {unhealthy && probe.error ? <ErrorTooltip message={probe.error} /> : <span className="w-3.5" />}
     </div>
   );
 }

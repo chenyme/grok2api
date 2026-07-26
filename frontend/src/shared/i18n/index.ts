@@ -1542,8 +1542,15 @@ const resources = {
 
 // Kept separate from the legacy one-line settings resources so proxy
 // operations can evolve without making that catalog harder to review.
+Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Record<string, string>, {
+  health: "请求健康",
+  healthHelp: "由真实 Grok 请求的成功、连接失败和反爬拒绝累计得出，与连通探测独立。",
+  probe: "连通探测",
+  probeHelp: "最近一次通过该代理分别请求 IPinfo IPv4 与 IPv6 回显端点的结果；任一地址族可用即汇总为可用，不代表 Grok 请求健康度。",
+});
 Object.assign(resources.en.translation.settings.egress as unknown as Record<string, string>, {
-  accounts: "Bound", probe: "Probe", healthy: "Healthy", unhealthy: "Unhealthy", notTested: "Not tested", test: "Test proxy", testedOne: "Proxy test completed",
+  accounts: "Bound", health: "Request health", healthHelp: "Accumulated from real Grok request successes, transport failures, and anti-bot rejections; independent of the connectivity probe.",
+  probe: "Connectivity probe", probeHelp: "The latest independent IPinfo IPv4 and IPv6 checks through this proxy; either family succeeding makes the aggregate probe healthy. This does not represent Grok request health.", healthy: "Healthy", unhealthy: "Unhealthy", notTested: "Not tested", test: "Test proxy", testedOne: "Proxy test completed",
   operations: "Proxy operations", automation: "Automation", automationHelp: "Configure recurring node checks and automatic account bindings. The actions on the right run once immediately.",
   subscriptions: "Proxy sources", subscriptionsHelp: "Save a subscription URL for recurring imports. Use Add node above for a single proxy.",
   testAll: "Check all", testAllHelp: "Check every enabled proxy node now and update its health status.",

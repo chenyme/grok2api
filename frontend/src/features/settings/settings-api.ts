@@ -42,6 +42,7 @@ export type EgressNodeDTO = {
 	sourceId?: string; accountCapacity: number; assignedAccountCount: number;
 	health: number; failureCount: number; cooldownUntil?: string; lastError?: string;
 	probeStatus: "unknown" | "healthy" | "unhealthy"; lastProbedAt?: string; probeLatencyMs: number; exitIp?: string; probeError?: string;
+	ipv4Probe: EgressIPProbeDTO; ipv6Probe: EgressIPProbeDTO;
 };
 
 export type EgressNodeInput = {
@@ -67,7 +68,8 @@ export type EgressOperationsConfigDTO = {
   assignmentIntervalSeconds: number; fallbacks: Record<EgressScope, EgressFallbackConfigDTO>; updatedAt: string;
 };
 export type EgressImportResultDTO = { imported: number; skipped: number };
-export type EgressProbeResultDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt: string; latencyMs: number; exitIp?: string; error?: string };
+export type EgressIPProbeDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt?: string; latencyMs: number; exitIp?: string; error?: string };
+export type EgressProbeResultDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt: string; latencyMs: number; exitIp?: string; error?: string; ipv4: EgressIPProbeDTO; ipv6: EgressIPProbeDTO };
 export type EgressProbeBatchResultDTO = { requested: number; healthy: number; unhealthy: number };
 export type EgressRebalanceResultDTO = { assigned: number; rebalanced: number; unplaced: number };
 
@@ -154,11 +156,15 @@ const decodeSettingsSnapshotRaw = createObjectDecoder<SettingsSnapshotDTO>("sett
   restartRequired: isArrayOf(isString),
 });
 const decodeSettingsSnapshot = (value: unknown) => withSettingsDefaults(decodeSettingsSnapshotRaw(value));
+const egressIPProbeValidator = hasShape({
+	status: isOneOf("unknown", "healthy", "unhealthy"), testedAt: isOptional(isString), latencyMs: isNumber, exitIp: isOptional(isString), error: isOptional(isString),
+});
 const egressNodeValidator = hasShape({
 	id: isString, name: isString, scope: isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset"), enabled: isBoolean,
 	proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, accountBoundProxy: isBoolean, proxyPool: isBoolean, health: isNumber, failureCount: isNumber,
 	sourceId: isOptional(isString), accountCapacity: isNumber, assignedAccountCount: isNumber,
 	probeStatus: isOneOf("unknown", "healthy", "unhealthy"), lastProbedAt: isOptional(isString), probeLatencyMs: isNumber, exitIp: isOptional(isString), probeError: isOptional(isString),
+	ipv4Probe: egressIPProbeValidator, ipv6Probe: egressIPProbeValidator,
 	cooldownUntil: isOptional(isString), lastError: isOptional(isString),
 });
 const decodeEgressNode = createObjectDecoder<EgressNodeDTO>("egress node", {
@@ -166,6 +172,7 @@ const decodeEgressNode = createObjectDecoder<EgressNodeDTO>("egress node", {
 	proxyConfigured: isBoolean, userAgent: isString, cookieConfigured: isBoolean, accountBoundProxy: isBoolean, proxyPool: isBoolean, health: isNumber, failureCount: isNumber,
 	sourceId: isOptional(isString), accountCapacity: isNumber, assignedAccountCount: isNumber,
 	probeStatus: isOneOf("unknown", "healthy", "unhealthy"), lastProbedAt: isOptional(isString), probeLatencyMs: isNumber, exitIp: isOptional(isString), probeError: isOptional(isString),
+	ipv4Probe: egressIPProbeValidator, ipv6Probe: egressIPProbeValidator,
 	cooldownUntil: isOptional(isString), lastError: isOptional(isString),
 });
 const decodeEgressNodeList = createObjectDecoder<EgressNodeListDTO>("egress node list", {
@@ -231,7 +238,7 @@ export function refreshEgressClearance(id: string): Promise<{ refreshed: boolean
 }
 
 export function testEgressNode(id: string): Promise<EgressProbeResultDTO> {
-  return apiRequest(`/api/admin/v1/egress-nodes/${id}/test`, { method: "POST" }, createObjectDecoder<EgressProbeResultDTO>("egress probe", { status: isOneOf("unknown", "healthy", "unhealthy"), testedAt: isString, latencyMs: isNumber, exitIp: isOptional(isString), error: isOptional(isString) }));
+  return apiRequest(`/api/admin/v1/egress-nodes/${id}/test`, { method: "POST" }, createObjectDecoder<EgressProbeResultDTO>("egress probe", { status: isOneOf("unknown", "healthy", "unhealthy"), testedAt: isString, latencyMs: isNumber, exitIp: isOptional(isString), error: isOptional(isString), ipv4: egressIPProbeValidator, ipv6: egressIPProbeValidator }));
 }
 
 export function testEgressNodes(ids?: string[]): Promise<EgressProbeBatchResultDTO> {

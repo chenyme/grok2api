@@ -1,9 +1,12 @@
 package egress
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -73,6 +76,127 @@ func TestResponseHeaderTimeoutRetainsWebEgressFeedback(t *testing.T) {
 	manager.FeedbackForScope(context.Background(), domain.ScopeWeb, 0, 0, responseHeaderTimeoutError{})
 	if _, exists := manager.clients[key]; exists {
 		t.Fatal("Build-specific timeout policy suppressed Web egress feedback")
+	}
+}
+
+func TestProbeEgressNodeLogsSuccessWithoutProxyCredentials(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("socks5://user:secret@proxy.example:1080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 42, Name: "web-us", Scope: domain.ScopeWeb, EncryptedProxyURL: encryptedProxy}}
+	manager := NewManager(repository, cipher)
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{do: func(int, *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ip":"203.0.113.8"}`))}, nil
+		}}, nil
+	}
+	var output bytes.Buffer
+	manager.SetLogger(slog.New(slog.NewTextHandler(&output, nil)))
+
+	result, err := manager.probeEgressNode(context.Background(), 42, "ipv4", "https://probe.example/ip")
+	if err != nil || result.Status != domain.ProbeStatusHealthy || result.ExitIP != "203.0.113.8" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	logOutput := output.String()
+	if !strings.Contains(logOutput, "egress_probe_succeeded") || !strings.Contains(logOutput, "node_id=42") || !strings.Contains(logOutput, "exit_ip=203.0.113.8") {
+		t.Fatalf("probe log missing fields: %s", logOutput)
+	}
+	if strings.Contains(logOutput, "user") || strings.Contains(logOutput, "secret") || strings.Contains(logOutput, "proxy.example") {
+		t.Fatalf("probe log leaked proxy credentials: %s", logOutput)
+	}
+}
+
+func TestProbeEgressNodeLogsSanitizedFailureStage(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("socks5://user:secret@proxy.example:1080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 7, Name: "web-jp", Scope: domain.ScopeWeb, EncryptedProxyURL: encryptedProxy}}
+	manager := NewManager(repository, cipher)
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{do: func(int, *http.Request) (*http.Response, error) {
+			return nil, errors.New("dial socks5://user:secret@proxy.example:1080 failed; token=abc123")
+		}}, nil
+	}
+	var output bytes.Buffer
+	manager.SetLogger(slog.New(slog.NewTextHandler(&output, nil)))
+
+	result, err := manager.probeEgressNode(context.Background(), 7, "ipv4", "https://probe.example/ip")
+	if err == nil || result.Error != "代理连接失败" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	logOutput := output.String()
+	if !strings.Contains(logOutput, "egress_probe_failed") || !strings.Contains(logOutput, "stage=execute_request") || !strings.Contains(logOutput, "token=[redacted]") || !strings.Contains(logOutput, "socks5://***:***@") {
+		t.Fatalf("probe failure log missing fields or redaction: %s", logOutput)
+	}
+	if strings.Contains(logOutput, "secret") || strings.Contains(logOutput, "abc123") {
+		t.Fatalf("probe failure log leaked credentials: %s", logOutput)
+	}
+}
+
+func TestProbeEgressNodeKeepsIPv4AndIPv6ResultsSeparate(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("http://proxy.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(&mutableEgressRepository{node: domain.Node{ID: 9, Name: "dual", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}}, cipher)
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
+			payload := `{"ip":"198.51.100.9"}`
+			if request.URL.Host == "v6.ipinfo.io" {
+				payload = `{"ip":"2001:db8::9"}`
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload))}, nil
+		}}, nil
+	}
+
+	result, err := manager.ProbeEgressNode(context.Background(), 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.ProbeStatusHealthy || result.IPv4.ExitIP != "198.51.100.9" || result.IPv6.ExitIP != "2001:db8::9" {
+		t.Fatalf("dual-stack result = %#v", result)
+	}
+}
+
+func TestProbeEgressNodeIsHealthyWhenOnlyIPv4Works(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("http://proxy.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(&mutableEgressRepository{node: domain.Node{ID: 10, Name: "v4-only", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}}, cipher)
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
+			if request.URL.Host == "v6.ipinfo.io" {
+				return nil, errors.New("network is unreachable")
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ip":"198.51.100.10"}`))}, nil
+		}}, nil
+	}
+
+	result, err := manager.ProbeEgressNode(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.ProbeStatusHealthy || result.IPv4.Status != domain.ProbeStatusHealthy || result.IPv6.Status != domain.ProbeStatusUnhealthy || result.IPv6.Error == "" {
+		t.Fatalf("IPv4-only result = %#v", result)
 	}
 }
 

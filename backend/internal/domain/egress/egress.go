@@ -43,6 +43,8 @@ type Node struct {
 	ProbeLatencyMS              int
 	ExitIP                      string
 	ProbeError                  string
+	IPv4Probe                   ProbeFamilyResult
+	IPv6Probe                   ProbeFamilyResult
 	AssignedAccountCount        int
 	CreatedAt                   time.Time
 	UpdatedAt                   time.Time
@@ -69,6 +71,8 @@ type PublicNode struct {
 	ProbeLatencyMS       int
 	ExitIP               string
 	ProbeError           string
+	IPv4Probe            ProbeFamilyResult
+	IPv6Probe            ProbeFamilyResult
 	AssignedAccountCount int
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
@@ -94,6 +98,18 @@ func (value ProbeStatus) IsValid() bool {
 // ProbeResult contains only operational metadata. It never stores or exposes
 // proxy credentials.
 type ProbeResult struct {
+	Status    ProbeStatus
+	TestedAt  time.Time
+	LatencyMS int
+	ExitIP    string
+	Error     string
+	IPv4      ProbeFamilyResult
+	IPv6      ProbeFamilyResult
+}
+
+// ProbeFamilyResult stores one address family's independent connectivity
+// result. A zero TestedAt represents a family that has not been tested yet.
+type ProbeFamilyResult struct {
 	Status    ProbeStatus
 	TestedAt  time.Time
 	LatencyMS int
