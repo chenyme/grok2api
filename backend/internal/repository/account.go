@@ -20,6 +20,13 @@ type AccountUpsertResult struct {
 	Created bool
 }
 
+// LinkedDeleteResolution is the server-side expansion of root deletes with optional linked peers.
+type LinkedDeleteResolution struct {
+	RootIDs          []uint64
+	FinalIDs         []uint64
+	LinkedByProvider map[account.Provider]int
+}
+
 // ObservedModelWriter reports whether an observed model update changed the authoritative row.
 type ObservedModelWriter interface {
 	UpdateObservedModelIfNewer(ctx context.Context, id uint64, model string, observedAt time.Time) (bool, error)
@@ -59,6 +66,12 @@ type AccountRepository interface {
 	UpdateMany(ctx context.Context, ids []uint64, updates AccountUpdates) (int64, error)
 	Delete(ctx context.Context, id uint64) error
 	DeleteMany(ctx context.Context, ids []uint64) (int64, error)
+	// ResolveLinkedDeleteIDs expands root account IDs with one-hop (or Build/Console two-hop via Web)
+	// peers from link tables for optional linked deletion. It never guesses by email/name/userId.
+	ResolveLinkedDeleteIDs(ctx context.Context, provider account.Provider, rootIDs []uint64, targets []account.Provider) (LinkedDeleteResolution, error)
+	// DeleteManyWithLinked locks roots, resolves linked peers, checks media jobs, and deletes
+	// the final set inside a single DB transaction (avoids resolve/delete TOCTOU).
+	DeleteManyWithLinked(ctx context.Context, provider account.Provider, rootIDs []uint64, targets []account.Provider) (LinkedDeleteResolution, int64, error)
 	// ListAutoCleanReauthCandidates 以 ID 游标列出达到清理年龄的 reauthRequired 账号。
 	ListAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, error)
 	// DeleteAutoCleanReauthCandidates 在事务内重新校验状态与年龄并跳过活动视频任务，返回实际删除 ID。

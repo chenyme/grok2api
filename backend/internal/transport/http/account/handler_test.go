@@ -65,16 +65,55 @@ func TestWriteServiceErrorUsesCredentialLimitCodes(t *testing.T) {
 	}{
 		{name: "import", err: fmt.Errorf("%w: too many", accountapp.ErrImportLimit), code: "accountImportLimitExceeded"},
 		{name: "export", err: fmt.Errorf("%w: too many", accountapp.ErrExportLimit), code: "accountExportLimitExceeded"},
+		{name: "invalid input", err: fmt.Errorf("%w: bad", accountapp.ErrInvalidInput), code: "fallback"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			new(Handler).writeServiceError(ctx, "fallback", test.err, 500, "failed")
+			if test.name == "invalid input" {
+				if recorder.Code != 400 {
+					t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+				}
+				return
+			}
 			if recorder.Code != 400 || !strings.Contains(recorder.Body.String(), `"code":"`+test.code+`"`) {
 				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestParseLinkedDeleteTargets(t *testing.T) {
+	targets, err := parseLinkedDeleteTargets([]string{"grok_build", "grok_console", "grok_build"})
+	if err != nil || len(targets) != 2 || targets[0] != accountdomain.ProviderBuild || targets[1] != accountdomain.ProviderConsole {
+		t.Fatalf("targets=%v err=%v", targets, err)
+	}
+	if _, err := parseLinkedDeleteTargets([]string{"nope"}); err == nil {
+		t.Fatal("expected invalid target")
+	}
+	targets, err = parseLinkedDeleteTargets(nil)
+	if err != nil || targets != nil {
+		t.Fatalf("empty targets=%v err=%v", targets, err)
+	}
+}
+
+func TestNewAccountDeleteResponseShape(t *testing.T) {
+	payload := newAccountDeleteResponse(accountapp.AccountDeleteResult{
+		Deleted: 3, RootsDeleted: 1, LinkedDeleted: 2,
+		DeletedByProvider: map[accountdomain.Provider]int64{
+			accountdomain.ProviderWeb:     1,
+			accountdomain.ProviderBuild:   1,
+			accountdomain.ProviderConsole: 1,
+		},
+	})
+	if payload["deleted"] != int64(3) || payload["rootsDeleted"] != int64(1) || payload["linkedDeleted"] != int64(2) {
+		t.Fatalf("payload = %#v", payload)
+	}
+	byProvider, ok := payload["deletedByProvider"].(gin.H)
+	if !ok || byProvider["grok_web"] != int64(1) {
+		t.Fatalf("byProvider = %#v", payload["deletedByProvider"])
 	}
 }
 

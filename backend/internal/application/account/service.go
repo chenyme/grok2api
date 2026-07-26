@@ -564,21 +564,63 @@ func (s *Service) BatchUpdate(ctx context.Context, ids []uint64, input UpdateInp
 	return updated, nil
 }
 
-// BatchDelete 原子删除一组账号及其额度状态。
+// AccountDeleteResult summarizes a single/batch delete with optional linked peers.
+type AccountDeleteResult struct {
+	Deleted           int64
+	RootsDeleted      int64
+	LinkedDeleted     int64
+	DeletedByProvider map[accountdomain.Provider]int64
+}
+
+// BatchDelete 原子删除一组账号及其额度状态（不扩展关联）。
 func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) {
+	result, err := s.BatchDeleteWithLinked(ctx, accountdomain.Provider(""), ids, nil)
+	return result.Deleted, err
+}
+
+// BatchDeleteWithLinked deletes root accounts and optional linked peers resolved from binding tables.
+// Resolve + media check + delete run in one DB transaction (DeleteManyWithLinked) to avoid TOCTOU.
+func (s *Service) BatchDeleteWithLinked(ctx context.Context, providerValue accountdomain.Provider, ids []uint64, targets []accountdomain.Provider) (AccountDeleteResult, error) {
+	var out AccountDeleteResult
 	ids, err := normalizeBatchIDs(ids)
 	if err != nil {
-		return 0, err
+		return out, err
 	}
-	for _, id := range ids {
-		_ = s.sticky.DeleteByAccount(ctx, id)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	if len(targets) > 0 && !providerValue.IsValid() {
+		return out, invalidInput("账号来源无效")
+	}
+	// Atomic path: lock roots → expand links → lock final → media reject → delete.
+	resolution, deleted, err := s.accounts.DeleteManyWithLinked(ctx, providerValue, ids, targets)
+	if err != nil {
+		return out, mapLinkedDeleteError(err)
+	}
+	finalIDs := resolution.FinalIDs
+	for _, id := range finalIDs {
+		if s.sticky != nil {
+			_ = s.sticky.DeleteByAccount(ctx, id)
+		}
 		s.clearRefreshState(id)
 	}
-	deleted, err := s.accounts.DeleteMany(ctx, ids)
-	if err == nil {
+	if deleted > 0 {
 		s.invalidateBuildBotFlagCache()
 	}
-	return deleted, mapRepositoryError(err)
+	out.Deleted = deleted
+	out.RootsDeleted = int64(len(resolution.RootIDs))
+	if deleted >= out.RootsDeleted {
+		out.LinkedDeleted = deleted - out.RootsDeleted
+	}
+	out.DeletedByProvider = map[accountdomain.Provider]int64{}
+	// Best-effort breakdown: count roots as current provider when known; linked counts from resolution.
+	if providerValue.IsValid() {
+		out.DeletedByProvider[providerValue] = out.RootsDeleted
+	}
+	for provider, count := range resolution.LinkedByProvider {
+		out.DeletedByProvider[provider] += int64(count)
+	}
+	return out, nil
 }
 
 // AccountsBelongToProvider 校验批量账号是否全部属于指定号池。
@@ -1664,15 +1706,48 @@ func (s *Service) MarkBuildAPIFallback(ctx context.Context, id uint64, enabled b
 }
 
 func (s *Service) Delete(ctx context.Context, id uint64) error {
-	if s.sticky != nil {
-		_ = s.sticky.DeleteByAccount(ctx, id)
+	// Single-account delete must preserve ErrNotFound when the root row is gone
+	// (BatchDeleteWithLinked/DeleteMany return deleted=0, nil for missing IDs).
+	result, err := s.DeleteWithLinked(ctx, accountdomain.Provider(""), id, nil)
+	if err != nil {
+		return err
 	}
-	s.clearRefreshState(id)
-	err := s.accounts.Delete(ctx, id)
-	if err == nil {
-		s.invalidateBuildBotFlagCache()
+	if result.Deleted == 0 {
+		return ErrNotFound
 	}
-	return mapRepositoryError(err)
+	return nil
+}
+
+// DeleteWithLinked deletes one account and optional linked peers.
+func (s *Service) DeleteWithLinked(ctx context.Context, providerValue accountdomain.Provider, id uint64, targets []accountdomain.Provider) (AccountDeleteResult, error) {
+	if id == 0 {
+		return AccountDeleteResult{}, invalidInput("账号 ID 无效")
+	}
+	result, err := s.BatchDeleteWithLinked(ctx, providerValue, []uint64{id}, targets)
+	if err != nil {
+		return result, err
+	}
+	// Fail closed for the single-root API: missing root must not report success.
+	if result.Deleted == 0 {
+		return result, ErrNotFound
+	}
+	return result, nil
+}
+
+// PreviewLinkedDelete returns root/linked counts for the delete confirmation UI.
+func (s *Service) PreviewLinkedDelete(ctx context.Context, providerValue accountdomain.Provider, ids []uint64, targets []accountdomain.Provider) (repository.LinkedDeleteResolution, error) {
+	ids, err := normalizeBatchIDs(ids)
+	if err != nil {
+		return repository.LinkedDeleteResolution{}, err
+	}
+	if !providerValue.IsValid() {
+		return repository.LinkedDeleteResolution{}, invalidInput("账号来源无效")
+	}
+	resolution, err := s.accounts.ResolveLinkedDeleteIDs(ctx, providerValue, ids, targets)
+	if err != nil {
+		return repository.LinkedDeleteResolution{}, mapLinkedDeleteError(err)
+	}
+	return resolution, nil
 }
 
 func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason string) error {
@@ -2983,6 +3058,17 @@ func invalidInput(message string) error {
 }
 
 // mapRepositoryError 隔离持久化层错误，避免 transport 依赖仓储实现语义。
+func mapLinkedDeleteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "关联删除目标") || strings.Contains(msg, "账号来源无效") {
+		return invalidInput(msg)
+	}
+	return mapRepositoryError(err)
+}
+
 func mapRepositoryError(err error) error {
 	if errors.Is(err, repository.ErrNotFound) {
 		return ErrNotFound

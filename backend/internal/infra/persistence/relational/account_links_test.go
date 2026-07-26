@@ -2,12 +2,15 @@ package relational
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/domain/media"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 func TestReconcileProviderLinksUsesOnlyHighConfidenceIdentity(t *testing.T) {
@@ -236,4 +239,299 @@ func createLinkedAccountTestCredential(t *testing.T, ctx context.Context, repo *
 		t.Fatal(err)
 	}
 	return stored
+}
+
+func TestResolveLinkedDeleteIDsWebAndTwoHop(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "linked-delete-resolve.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAccountRepository(database)
+
+	webLinked := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-linked", SourceKey: "sso:" + strings.Repeat("e", 64), UserID: "u-link",
+	})
+	build := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "build-linked", SourceKey: "build-link", UserID: "u-link",
+	})
+	console := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "console-linked", SourceKey: "console-sso:" + strings.Repeat("e", 64), UserID: "u-link",
+	})
+	if err := repo.LinkWebToBuild(ctx, webLinked.ID, build.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReconcileProviderLinks(ctx, webLinked.ID); err != nil {
+		t.Fatal(err)
+	}
+	webOnly := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-only", SourceKey: "sso:" + strings.Repeat("f", 64),
+	})
+	// Same email as webLinked's potential peers but no link rows for this web.
+	_ = createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "email-build", SourceKey: "email-build-only", Email: "same@example.com",
+	})
+
+	// Web no targets → roots only
+	res, err := repo.ResolveLinkedDeleteIDs(ctx, account.ProviderWeb, []uint64{webLinked.ID, webOnly.ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.FinalIDs) != 2 || res.LinkedByProvider[account.ProviderBuild] != 0 {
+		t.Fatalf("no targets resolution = %#v", res)
+	}
+
+	// Web + build only
+	res, err = repo.ResolveLinkedDeleteIDs(ctx, account.ProviderWeb, []uint64{webLinked.ID, webOnly.ID}, []account.Provider{account.ProviderBuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.LinkedByProvider[account.ProviderBuild] != 1 || res.LinkedByProvider[account.ProviderConsole] != 0 || !containsID(res.FinalIDs, build.ID) || containsID(res.FinalIDs, console.ID) {
+		t.Fatalf("web+build = %#v", res)
+	}
+
+	// Web + build + console
+	res, err = repo.ResolveLinkedDeleteIDs(ctx, account.ProviderWeb, []uint64{webLinked.ID}, []account.Provider{account.ProviderBuild, account.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.LinkedByProvider[account.ProviderBuild] != 1 || res.LinkedByProvider[account.ProviderConsole] != 1 || len(res.FinalIDs) != 3 {
+		t.Fatalf("web+both = %#v", res)
+	}
+
+	// Build → console two-hop, keep web
+	res, err = repo.ResolveLinkedDeleteIDs(ctx, account.ProviderBuild, []uint64{build.ID}, []account.Provider{account.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsID(res.FinalIDs, build.ID) || !containsID(res.FinalIDs, console.ID) || containsID(res.FinalIDs, webLinked.ID) {
+		t.Fatalf("build+console keep web = %#v", res)
+	}
+
+	// Build → web + console
+	res, err = repo.ResolveLinkedDeleteIDs(ctx, account.ProviderBuild, []uint64{build.ID}, []account.Provider{account.ProviderWeb, account.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.FinalIDs) != 3 || !containsID(res.FinalIDs, webLinked.ID) {
+		t.Fatalf("build+web+console = %#v", res)
+	}
+
+	// Target includes current provider → error
+	if _, err := repo.ResolveLinkedDeleteIDs(ctx, account.ProviderWeb, []uint64{webOnly.ID}, []account.Provider{account.ProviderWeb}); err == nil {
+		t.Fatal("expected error when target includes current provider")
+	}
+
+	// Console → build two-hop, keep web
+	res, err = repo.ResolveLinkedDeleteIDs(ctx, account.ProviderConsole, []uint64{console.ID}, []account.Provider{account.ProviderBuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsID(res.FinalIDs, console.ID) || !containsID(res.FinalIDs, build.ID) || containsID(res.FinalIDs, webLinked.ID) {
+		t.Fatalf("console+build keep web = %#v", res)
+	}
+
+	// Duplicate root IDs collapse
+	res, err = repo.ResolveLinkedDeleteIDs(ctx, account.ProviderWeb, []uint64{webLinked.ID, webLinked.ID}, []account.Provider{account.ProviderBuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.RootIDs) != 1 || res.RootIDs[0] != webLinked.ID {
+		t.Fatalf("dedup roots = %#v", res.RootIDs)
+	}
+
+	// Email-only peer must not be pulled in
+	res, err = repo.ResolveLinkedDeleteIDs(ctx, account.ProviderWeb, []uint64{webOnly.ID}, []account.Provider{account.ProviderBuild, account.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.FinalIDs) != 1 || res.FinalIDs[0] != webOnly.ID || res.LinkedByProvider[account.ProviderBuild] != 0 {
+		t.Fatalf("email-only must not expand = %#v", res)
+	}
+
+	// Invalid target provider
+	if _, err := repo.ResolveLinkedDeleteIDs(ctx, account.ProviderWeb, []uint64{webOnly.ID}, []account.Provider{account.Provider("nope")}); err == nil {
+		t.Fatal("expected invalid target error")
+	}
+}
+
+func TestResolveLinkedDeleteIDsBuildWithoutWeb(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "linked-delete-orphan-build.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAccountRepository(database)
+	build := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "orphan-build", SourceKey: "orphan-build",
+	})
+	res, err := repo.ResolveLinkedDeleteIDs(ctx, account.ProviderBuild, []uint64{build.ID}, []account.Provider{account.ProviderWeb, account.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.FinalIDs) != 1 || res.FinalIDs[0] != build.ID {
+		t.Fatalf("unlinked build expand = %#v", res)
+	}
+}
+
+func TestDeleteManyRejectsWhenLinkedPeerHasActiveMediaJob(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "linked-delete-media.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAccountRepository(database)
+	digest := strings.Repeat("m", 64)
+	web := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-media", SourceKey: "sso:" + digest, UserID: "u-media",
+	})
+	build := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "build-media", SourceKey: "build-media", UserID: "u-media",
+	})
+	if err := repo.LinkWebToBuild(ctx, web.ID, build.ID); err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := repo.ResolveLinkedDeleteIDs(ctx, account.ProviderWeb, []uint64{web.ID}, []account.Provider{account.ProviderBuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolution.FinalIDs) != 2 {
+		t.Fatalf("resolution = %#v", resolution)
+	}
+
+	key := clientKeyModel{Name: "linked-media-key", Prefix: "linked-media-key", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	accountID := build.ID
+	job := mediaJobModel{
+		ID: "media_job_linked_peer", RequestID: "req_linked_peer",
+		ClientKeyID: key.ID, ClientKeyName: "key", AccountID: &accountID, AccountName: "build-media",
+		EgressScope: "grok_build", EgressMode: "direct", Provider: string(account.ProviderBuild),
+		Model: "video", ModelRouteID: 1, UpstreamModel: "video", Prompt: "x", Seconds: 1, Size: "16:9",
+		Quality: "720p", Status: string(media.StatusInProgress), Progress: 10, InputJSON: "{}",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := database.db.WithContext(ctx).Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.DeleteMany(ctx, resolution.FinalIDs); err == nil {
+		t.Fatal("expected active media job on peer to block delete")
+	}
+	if _, err := repo.Get(ctx, web.ID); err != nil {
+		t.Fatalf("web should remain after blocked linked delete: %v", err)
+	}
+	if _, err := repo.Get(ctx, build.ID); err != nil {
+		t.Fatalf("build should remain after blocked linked delete: %v", err)
+	}
+}
+
+func TestDeleteManyWithLinkedAtomicWebBothAndMediaBlock(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "linked-delete-atomic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAccountRepository(database)
+	digest := strings.Repeat("z", 64)
+	web := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-atomic", SourceKey: "sso:" + digest, UserID: "u-atomic",
+	})
+	build := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "build-atomic", SourceKey: "build-atomic", UserID: "u-atomic",
+	})
+	console := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "console-atomic", SourceKey: "console-sso:" + digest, UserID: "u-atomic",
+	})
+	if err := repo.LinkWebToBuild(ctx, web.ID, build.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReconcileProviderLinks(ctx, web.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	resolution, deleted, err := repo.DeleteManyWithLinked(ctx, account.ProviderWeb, []uint64{web.ID}, []account.Provider{account.ProviderBuild, account.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 3 || len(resolution.FinalIDs) != 3 {
+		t.Fatalf("deleted=%d resolution=%#v", deleted, resolution)
+	}
+	if _, err := repo.Get(ctx, web.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("web should be gone: %v", err)
+	}
+	if _, err := repo.Get(ctx, build.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("build should be gone: %v", err)
+	}
+	if _, err := repo.Get(ctx, console.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("console should be gone: %v", err)
+	}
+
+	// Media block path
+	digest2 := strings.Repeat("y", 64)
+	web2 := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-media2", SourceKey: "sso:" + digest2, UserID: "u-media2",
+	})
+	build2 := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "build-media2", SourceKey: "build-media2", UserID: "u-media2",
+	})
+	if err := repo.LinkWebToBuild(ctx, web2.ID, build2.ID); err != nil {
+		t.Fatal(err)
+	}
+	key := clientKeyModel{Name: "atomic-media-key", Prefix: "atomic-media-key", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	accountID := build2.ID
+	job := mediaJobModel{
+		ID: "media_job_atomic", RequestID: "req_atomic",
+		ClientKeyID: key.ID, ClientKeyName: "key", AccountID: &accountID, AccountName: "build-media2",
+		EgressScope: "grok_build", EgressMode: "direct", Provider: string(account.ProviderBuild),
+		Model: "video", ModelRouteID: 1, UpstreamModel: "video", Prompt: "x", Seconds: 1, Size: "16:9",
+		Quality: "720p", Status: string(media.StatusInProgress), Progress: 10, InputJSON: "{}",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := database.db.WithContext(ctx).Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.DeleteManyWithLinked(ctx, account.ProviderWeb, []uint64{web2.ID}, []account.Provider{account.ProviderBuild}); err == nil {
+		t.Fatal("expected media job to block DeleteManyWithLinked")
+	}
+	if _, err := repo.Get(ctx, web2.ID); err != nil {
+		t.Fatalf("web2 should remain: %v", err)
+	}
+	if _, err := repo.Get(ctx, build2.ID); err != nil {
+		t.Fatalf("build2 should remain: %v", err)
+	}
+}
+
+func containsID(ids []uint64, want uint64) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }

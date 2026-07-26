@@ -39,6 +39,7 @@ import {
   cleanupAccounts,
   deleteAccount,
   deleteAccounts,
+  previewAccountDeletion,
   enableWebAccountNSFW,
   convertWebAccountsToBuild,
   exportAccounts,
@@ -151,6 +152,10 @@ export function AccountsPage() {
   const [renewalProgress, setRenewalProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [editing, setEditing] = useState<AccountDTO | null>(null);
   const [deleting, setDeleting] = useState<AccountDTO | null>(null);
+  const [linkedDeleteTargets, setLinkedDeleteTargets] = useState<AccountProvider[]>([]);
+  const [linkedDeleteCounts, setLinkedDeleteCounts] = useState<Partial<Record<AccountProvider, number>>>({});
+  // Preview failures must not be painted as +0 — block confirm until a successful recount.
+  const [linkedDeletePreviewError, setLinkedDeletePreviewError] = useState(false);
   const [deviceOpen, setDeviceOpen] = useState(false);
   const [deviceSession, setDeviceSession] = useState<DeviceSessionDTO | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<"starting" | "pending" | "failed">("starting");
@@ -193,6 +198,7 @@ export function AccountsPage() {
   const buildSuperEntitled = useWatch({ control: form.control, name: "buildSuperEntitled" });
   const buildRouteMode = useWatch({ control: form.control, name: "buildRouteMode" });
   const selected = selection.provider === provider ? selection.ids : new Set<string>();
+  const selectedIdsKey = Array.from(selected).sort().join(",");
 
   const accountsQuery = useQuery({
     queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, egressFilter, renewalFilter, riskFilter, agreementFilter, associationFilter, sort.field, sort.order],
@@ -251,11 +257,131 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  
+  useEffect(() => {
+    if (!deleting && !batchDeleteOpen) return;
+    const ids = deleting ? [deleting.id] : (selectedIdsKey ? selectedIdsKey.split(",") : []);
+    if (linkedDeleteTargets.length === 0 || ids.length === 0) return;
+    let cancelled = false;
+    // Keep dialog height stable: never mount/unmount loading rows; only update counts in place.
+    // Clear error/counts only inside the async path (not sync in effect body) to satisfy react-hooks/set-state-in-effect.
+    const timer = window.setTimeout(() => {
+      void previewAccountDeletion(ids, provider, linkedDeleteTargets)
+        .then((preview) => {
+          if (cancelled) return;
+          // Always materialize a count for every selected target (including 0),
+          // otherwise a missing key would leave the spinner forever.
+          const next: Partial<Record<AccountProvider, number>> = {};
+          for (const target of linkedDeleteTargets) {
+            next[target] = preview.linkedByProvider?.[target] ?? 0;
+          }
+          setLinkedDeletePreviewError(false);
+          setLinkedDeleteCounts(next);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          // Do NOT write fake +0 — that understates destructive scope. Block confirm until retry succeeds.
+          setLinkedDeleteCounts({});
+          setLinkedDeletePreviewError(true);
+          toast.error(t("accounts.linkedDeletePreviewFailed"));
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [batchDeleteOpen, deleting, linkedDeleteTargets, provider, selectedIdsKey, t]);
+
+
+  const linkedTargetOptions = (current: AccountProvider): AccountProvider[] =>
+    (["grok_web", "grok_build", "grok_console"] as AccountProvider[]).filter((item) => item !== current);
+
+  const linkedTargetLabel = (value: AccountProvider) => {
+    if (value === "grok_build") return "Grok Build";
+    if (value === "grok_console") return "Grok Console";
+    return "Grok Web";
+  };
+
+  const linkedTargetIcon = (value: AccountProvider) => {
+    if (value === "grok_build") return SquareTerminal;
+    if (value === "grok_console") return Webhook;
+    return Compass;
+  };
+
+  const linkedTargetIconClass = (value: AccountProvider) => {
+    if (value === "grok_build") return "text-quota-product-1";
+    if (value === "grok_console") return "text-quota-product-4";
+    return "text-quota-product-2";
+  };
+
+  // Count is display-only. Until preview returns, show a tiny spinner — never flash +0 then +N.
+  // On preview error keep targets checked but show failure (not +0) and block confirm.
+  const linkedCountPending = (target: AccountProvider, checked: boolean) =>
+    checked && !linkedDeletePreviewError && !(target in linkedDeleteCounts);
+
+  const linkedCountFailed = (target: AccountProvider, checked: boolean) =>
+    checked && linkedDeletePreviewError && !(target in linkedDeleteCounts);
+
+  const linkedExtraLabel = (target: AccountProvider, checked: boolean) => {
+    if (!checked) return "";
+    if (linkedCountFailed(target, checked)) return t("accounts.linkedDeleteExtraFailed");
+    if (linkedCountPending(target, checked)) return "";
+    return t("accounts.linkedDeleteExtra", { count: linkedDeleteCounts[target] ?? 0 });
+  };
+
+  // When any linked target is checked, require a successful preview before confirm.
+  const linkedPreviewBlocking =
+    linkedDeleteTargets.length > 0 &&
+    (linkedDeletePreviewError || linkedDeleteTargets.some((target) => !(target in linkedDeleteCounts)));
+
+  const resetLinkedDeleteState = () => {
+    setLinkedDeleteTargets([]);
+    setLinkedDeleteCounts({});
+    setLinkedDeletePreviewError(false);
+  };
+
+  const toggleLinkedDeleteTarget = (target: AccountProvider, checked: boolean) => {
+    setLinkedDeleteTargets((current) => {
+      const next = checked ? (current.includes(target) ? current : [...current, target]) : current.filter((item) => item !== target);
+      if (next.length === 0) {
+        setLinkedDeleteCounts({});
+        setLinkedDeletePreviewError(false);
+      } else if (!checked) {
+        setLinkedDeleteCounts((counts) => {
+          const copy = { ...counts };
+          delete copy[target];
+          return copy;
+        });
+      } else {
+        // New selection: drop previous error and recount.
+        setLinkedDeletePreviewError(false);
+      }
+      return next;
+    });
+  };
+
+  const selectAllLinkedTargets = () => {
+    const options = linkedTargetOptions(provider);
+    const allSelected = options.every((item) => linkedDeleteTargets.includes(item));
+    if (allSelected) {
+      setLinkedDeleteTargets([]);
+      setLinkedDeleteCounts({});
+      return;
+    }
+    // Clear counts so newly selected targets show spinner until preview returns.
+    setLinkedDeletePreviewError(false);
+    setLinkedDeleteCounts({});
+    setLinkedDeleteTargets(options);
+  };
+
   const deleteMutation = useMutation({
-    mutationFn: deleteAccount,
+    // Snapshot id/targets in mutate() args so AlertDialog close/reset cannot clear linkedDeleteTargets mid-flight.
+    mutationFn: (input: { id: string; provider: AccountProvider; linkedDeleteTargets: AccountProvider[] }) =>
+      deleteAccount(input.id, input.linkedDeleteTargets.length ? { provider: input.provider, linkedDeleteTargets: input.linkedDeleteTargets } : undefined),
     onSuccess: () => {
       invalidateAccountData();
       setDeleting(null);
+      resetLinkedDeleteState();
       toast.success(t("accounts.deleted"));
     },
     onError: showError,
@@ -508,10 +634,13 @@ export function AccountsPage() {
   });
 
   const batchDeleteMutation = useMutation({
-    mutationFn: () => deleteAccounts([...selected], provider),
+    // Snapshot selection/targets at click time; dialog unmount/reset must not empty targets.
+    mutationFn: (input: { ids: string[]; provider: AccountProvider; linkedDeleteTargets: AccountProvider[] }) =>
+      deleteAccounts(input.ids, input.provider, input.linkedDeleteTargets),
     onSuccess: () => {
       clearSelection();
       setBatchDeleteOpen(false);
+      resetLinkedDeleteState();
       invalidateAccountData();
       toast.success(t("accounts.deleted"));
     },
@@ -1000,7 +1129,7 @@ export function AccountsPage() {
                           {provider === "grok_build" ? <DropdownMenuItem onClick={() => tokenMutation.mutate(account.id)}><RotateCw />{t("accounts.refreshToken")}</DropdownMenuItem> : null}
                           <DropdownMenuItem onClick={() => provider === "grok_build" ? billingMutation.mutate(account.id) : quotaMutation.mutate(account.id)}><RefreshCw />{provider === "grok_build" ? t("accounts.refreshBilling") : t("accounts.refreshModeQuota")}</DropdownMenuItem>
                           <DropdownMenuSeparator />
-                          <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleting(account)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
+                          <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => { resetLinkedDeleteState(); setDeleting(account); }}><Trash2 />{t("common.delete")}</DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableActionCell>
@@ -1263,17 +1392,119 @@ export function AccountsPage() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => !open && setDeleting(null)}>
+      <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => {
+        if (!open) {
+          // Do not clear linked targets while a delete request is in flight.
+          if (deleteMutation.isPending) return;
+          setDeleting(null);
+          resetLinkedDeleteState();
+        }
+      }}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.deleteTitle")}</AlertDialogTitle><AlertDialogDescription>{t("accounts.deleteDescription")}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => deleting && deleteMutation.mutate(deleting.id)}>{t("accounts.cleanupStart")}</AlertDialogAction></AlertDialogFooter>
+
+            <div className="space-y-3 border-t pt-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium">{t("accounts.linkedDeleteTitle")}</p>
+                <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={selectAllLinkedTargets}>
+                  {linkedTargetOptions(provider).every((item) => linkedDeleteTargets.includes(item)) ? t("accounts.linkedDeleteClearAll") : t("accounts.linkedDeleteSelectAll")}
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-x-6 gap-y-2">
+                {linkedTargetOptions(provider).map((target) => {
+                  const checked = linkedDeleteTargets.includes(target);
+                  const TargetIcon = linkedTargetIcon(target);
+                  const pending = linkedCountPending(target, checked);
+                  const failed = linkedCountFailed(target, checked);
+                  return (
+                    <label key={target} className="flex min-h-6 items-center gap-2 text-sm">
+                      <Checkbox checked={checked} onCheckedChange={(value) => toggleLinkedDeleteTarget(target, value === true)} />
+                      <TargetIcon className={cn("size-3.5 shrink-0", linkedTargetIconClass(target))} aria-hidden />
+                      <span className="inline-flex min-w-0 items-center gap-1.5">
+                        <span>{linkedTargetLabel(target)}</span>
+                        {/* Fixed slot: spinner while waiting, then +N — never show +0 as a fake result. */}
+                        <span
+                          className={cn(
+                            "inline-flex h-4 min-w-[2.75rem] items-center justify-start tabular-nums text-xs",
+                            failed ? "text-destructive" : "text-muted-foreground",
+                            !checked && "invisible",
+                          )}
+                          aria-hidden={!checked}
+                          aria-busy={pending}
+                        >
+                          {pending ? <Spinner className="size-3.5" /> : linkedExtraLabel(target, checked)}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="min-h-4 text-xs text-muted-foreground">
+                {linkedDeletePreviewError ? t("accounts.linkedDeletePreviewFailed") : t("accounts.linkedDeleteHint")}
+              </p>
+            </div>
+
+          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={deleteMutation.isPending || !deleting || linkedPreviewBlocking} onClick={(event) => {
+              event.preventDefault();
+              if (!deleting || linkedPreviewBlocking) return;
+              deleteMutation.mutate({ id: deleting.id, provider, linkedDeleteTargets: [...linkedDeleteTargets] });
+            }}>{t("accounts.deleteConfirm")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
+      <AlertDialog open={batchDeleteOpen} onOpenChange={(open) => {
+        if (!open && batchDeleteMutation.isPending) return;
+        setBatchDeleteOpen(open);
+        if (!open) resetLinkedDeleteState();
+      }}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.batchDeleteTitle", { count: selected.size })}</AlertDialogTitle><AlertDialogDescription>{t("accounts.deleteDescription")}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => batchDeleteMutation.mutate()}>{t("accounts.cleanupStart")}</AlertDialogAction></AlertDialogFooter>
+
+            <div className="space-y-3 border-t pt-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium">{t("accounts.linkedDeleteTitle")}</p>
+                <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={selectAllLinkedTargets}>
+                  {linkedTargetOptions(provider).every((item) => linkedDeleteTargets.includes(item)) ? t("accounts.linkedDeleteClearAll") : t("accounts.linkedDeleteSelectAll")}
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-x-6 gap-y-2">
+                {linkedTargetOptions(provider).map((target) => {
+                  const checked = linkedDeleteTargets.includes(target);
+                  const TargetIcon = linkedTargetIcon(target);
+                  const pending = linkedCountPending(target, checked);
+                  const failed = linkedCountFailed(target, checked);
+                  return (
+                    <label key={target} className="flex min-h-6 items-center gap-2 text-sm">
+                      <Checkbox checked={checked} onCheckedChange={(value) => toggleLinkedDeleteTarget(target, value === true)} />
+                      <TargetIcon className={cn("size-3.5 shrink-0", linkedTargetIconClass(target))} aria-hidden />
+                      <span className="inline-flex min-w-0 items-center gap-1.5">
+                        <span>{linkedTargetLabel(target)}</span>
+                        <span
+                          className={cn(
+                            "inline-flex h-4 min-w-[2.75rem] items-center justify-start tabular-nums text-xs",
+                            failed ? "text-destructive" : "text-muted-foreground",
+                            !checked && "invisible",
+                          )}
+                          aria-hidden={!checked}
+                          aria-busy={pending}
+                        >
+                          {pending ? <Spinner className="size-3.5" /> : linkedExtraLabel(target, checked)}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="min-h-4 text-xs text-muted-foreground">
+                {linkedDeletePreviewError ? t("accounts.linkedDeletePreviewFailed") : t("accounts.linkedDeleteHint")}
+              </p>
+            </div>
+
+          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={batchDeleteMutation.isPending || selected.size === 0 || linkedPreviewBlocking} onClick={(event) => {
+              event.preventDefault();
+              if (linkedPreviewBlocking) return;
+              batchDeleteMutation.mutate({ ids: [...selected], provider, linkedDeleteTargets: [...linkedDeleteTargets] });
+            }}>{t("accounts.deleteConfirm")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
