@@ -457,6 +457,8 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 		value.ProbeLatencyMS = 0
 		value.ExitIP = ""
 		value.ProbeError = ""
+		value.IPv4Probe = domain.ProbeFamilyResult{Status: domain.ProbeStatusUnknown}
+		value.IPv6Probe = domain.ProbeFamilyResult{Status: domain.ProbeStatusUnknown}
 	}
 	// Any administrator edit invalidates freshness. Keep the binding fingerprint:
 	// managed mode may use the existing cookie as last-known-good only when the
@@ -486,6 +488,7 @@ func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 		AccountBoundProxy: accountBoundProxy,
 		Health:            health, FailureCount: failureCount, CooldownUntil: cooldownUntil, LastError: lastError,
 		ProbeStatus: value.ProbeStatus, LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS, ExitIP: value.ExitIP, ProbeError: value.ProbeError,
+		IPv4Probe: value.IPv4Probe, IPv6Probe: value.IPv6Probe,
 		AssignedAccountCount: value.AssignedAccountCount,
 		CreatedAt:            value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
