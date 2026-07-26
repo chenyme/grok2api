@@ -32,7 +32,7 @@ func TestListRejectsInvalidWebFilters(t *testing.T) {
 	}
 }
 
-// 按号池校验关联筛选合法值：Web 六项，Build/Console 仅 webLinked/webUnlinked。
+// Validate provider-specific association filters: Web supports six values; Build and Console support Web links only.
 func TestValidAssociationFilterPerProvider(t *testing.T) {
 	web := string(accountdomain.ProviderWeb)
 	build := string(accountdomain.ProviderBuild)

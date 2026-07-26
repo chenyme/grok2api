@@ -15,6 +15,39 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const (
+	accountLinkAdvisoryNamespace int32 = 0x47524F4B // GROK
+	accountLinkAdvisoryOperation int32 = 0x4C4E4B44 // LNKD
+	accountLinkLockTimeout             = 5 * time.Second
+)
+
+// lockAccountLinkMutation serializes link-table writes and account deletions on PostgreSQL.
+// These maintenance operations are rare, and a shared transaction-scoped lock prevents
+// link snapshot races and cyclic account/FK row-lock acquisition across mutation paths.
+func lockAccountLinkMutation(tx *gorm.DB) error {
+	return lockAccountLinkMutationWithTimeout(tx, accountLinkLockTimeout)
+}
+
+func lockAccountLinkMutationWithTimeout(tx *gorm.DB, timeout time.Duration) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = accountLinkLockTimeout
+	}
+	parentCtx := tx.Statement.Context
+	lockCtx, cancel := context.WithTimeout(parentCtx, timeout)
+	defer cancel()
+	err := tx.WithContext(lockCtx).Exec("SELECT pg_advisory_xact_lock(?, ?)", accountLinkAdvisoryNamespace, accountLinkAdvisoryOperation).Error
+	if err != nil && parentCtx.Err() != nil {
+		return parentCtx.Err()
+	}
+	if err != nil && errors.Is(lockCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w: 账号关联关系正在变更，请稍后重试", repository.ErrConflict)
+	}
+	return err
+}
+
 func linkWebToConsole(tx *gorm.DB, webAccountID, consoleAccountID uint64) error {
 	var webAccount, consoleAccount accountModel
 	if err := tx.Select("id", "provider").First(&webAccount, webAccountID).Error; err != nil {
@@ -82,6 +115,9 @@ func (r *AccountRepository) ReconcileProviderLinks(ctx context.Context, accountI
 		return repository.ErrNotFound
 	}
 	err := mapError(r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
 		var value accountModel
 		if err := tx.Select("id", "provider", "source_key", "user_id", "team_id").First(&value, accountID).Error; err != nil {
 			return err
@@ -233,7 +269,7 @@ func (r *AccountRepository) ResolveLinkedDeleteIDs(ctx context.Context, provider
 }
 
 // resolveLinkedDeleteIDs is the shared expander used by preview and by the delete transactions.
-// 除集合外还产出 RootGroups（根→对端整组，跳过粒度）与 PeerProviders（对端→号池，删除后计数）。
+// It also returns RootGroups for group-level skips and PeerProviders for per-provider delete counts.
 func resolveLinkedDeleteIDs(db *gorm.DB, providerValue account.Provider, rootIDs []uint64, targets []account.Provider) (repository.LinkedDeleteResolution, error) {
 	result := repository.LinkedDeleteResolution{
 		LinkedByProvider: map[account.Provider]int{},
@@ -274,7 +310,7 @@ func resolveLinkedDeleteIDs(db *gorm.DB, providerValue account.Provider, rootIDs
 			if pair.RootID == 0 || pair.PeerID == 0 {
 				continue
 			}
-			// 已是根或已被前序组认领（1:1 约束下理论不会重复，防御性去重）。
+			// Skip roots and peers already claimed by an earlier 1:1 group.
 			if _, exists := finalSet[pair.PeerID]; exists {
 				continue
 			}
@@ -348,14 +384,14 @@ func resolveLinkedDeleteIDs(db *gorm.DB, providerValue account.Provider, rootIDs
 	return result, nil
 }
 
-// deleteLinkedGroupsTx 在已持有根行锁的事务内完成：关联展开 → 锁 final → 媒体处理 → 删除。
-// skipMedia=false：任一活动视频任务整体报错；skipMedia=true：命中的根组（根+对端）整组跳过。
+// deleteLinkedGroupsTx expands links, locks the final set, checks media jobs, and deletes rows while roots are locked.
+// skipMedia=false rejects the operation; skipMedia=true skips each blocked root group as a unit.
 func deleteLinkedGroupsTx(tx *gorm.DB, providerValue account.Provider, lockedRoots []uint64, targets []account.Provider, skipMedia bool) (repository.LinkedDeleteOutcome, error) {
 	outcome := repository.LinkedDeleteOutcome{
 		LinkedDeletedByProvider: map[account.Provider]int64{},
 	}
 
-	// 1) 事务内展开关联（根行已被调用方锁定，链接表读取一致）。
+	// 1) Expand links while the caller holds root row locks.
 	var resolution repository.LinkedDeleteResolution
 	var err error
 	if len(targets) == 0 {
@@ -380,7 +416,7 @@ func deleteLinkedGroupsTx(tx *gorm.DB, providerValue account.Provider, lockedRoo
 		return outcome, nil
 	}
 
-	// 2) 锁 final 集（根+对端）。
+	// 2) Lock roots and linked peers in the final set.
 	var lockedFinal []uint64
 	if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("id IN ?", resolution.FinalIDs).Order("id ASC").Pluck("id", &lockedFinal).Error; err != nil {
@@ -391,7 +427,7 @@ func deleteLinkedGroupsTx(tx *gorm.DB, providerValue account.Provider, lockedRoo
 	}
 	outcome.Resolution.FinalIDs = append([]uint64(nil), lockedFinal...)
 
-	// 3) 媒体处理。
+	// 3) Apply active-media protection.
 	deletable := lockedFinal
 	if skipMedia {
 		var blocked []uint64
@@ -401,7 +437,7 @@ func deleteLinkedGroupsTx(tx *gorm.DB, providerValue account.Provider, lockedRoo
 			return outcome, err
 		}
 		if len(blocked) > 0 {
-			// 对端 → 根 反查，命中即整组剔除。
+			// Map blocked peers back to roots and remove each complete group.
 			peerRoot := make(map[uint64]uint64, len(resolution.PeerProviders))
 			for root, peers := range resolution.RootGroups {
 				for _, peer := range peers {
@@ -442,7 +478,7 @@ func deleteLinkedGroupsTx(tx *gorm.DB, providerValue account.Provider, lockedRoo
 		return outcome, nil
 	}
 
-	// 4) 删除剩余行并按池计数。
+	// 4) Delete remaining rows and count them by provider.
 	result := tx.Where("id IN ?", deletable).Delete(&accountModel{})
 	if result.Error != nil {
 		return outcome, result.Error
@@ -477,17 +513,28 @@ func (r *AccountRepository) DeleteManyWithLinked(ctx context.Context, providerVa
 	}
 
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 先锁根行；指定 provider 时只认该池内的根。
-		rootQuery := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", roots)
-		if providerValue.IsValid() {
-			rootQuery = rootQuery.Where("provider = ?", providerValue)
-		}
-		var lockedRoots []uint64
-		if err := rootQuery.Order("id ASC").Pluck("id", &lockedRoots).Error; err != nil {
+		if err := lockAccountLinkMutation(tx); err != nil {
 			return err
 		}
-		if len(lockedRoots) == 0 {
+
+		// Lock roots in one stable order, then validate their provider without masking missing IDs.
+		var lockedRows []struct {
+			ID       uint64
+			Provider string
+		}
+		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "provider").Where("id IN ?", roots).Order("id ASC").Find(&lockedRows).Error; err != nil {
+			return err
+		}
+		if len(lockedRows) == 0 {
 			return nil
+		}
+		lockedRoots := make([]uint64, 0, len(lockedRows))
+		for _, row := range lockedRows {
+			if providerValue.IsValid() && account.Provider(row.Provider) != providerValue {
+				return fmt.Errorf("%w: 账号不属于指定号池", repository.ErrConflict)
+			}
+			lockedRoots = append(lockedRoots, row.ID)
 		}
 		inner, err := deleteLinkedGroupsTx(tx, providerValue, lockedRoots, targets, skipMedia)
 		if err != nil {
@@ -505,8 +552,8 @@ func (r *AccountRepository) DeleteManyWithLinked(ctx context.Context, providerVa
 	return outcome, nil
 }
 
-// DeleteAccountStatusBatchWithLinked 是账号清理的批原语：事务内按状态 + id 游标取 ≤limit 根，
-// 展开关联、整组跳过活动媒体后删除。返回 outcome、候选数、最大候选 id（供游标推进）。
+// DeleteAccountStatusBatchWithLinked selects at most limit roots by state and ID cursor,
+// expands links, skips active-media groups, and returns the candidate count and next cursor.
 func (r *AccountRepository) DeleteAccountStatusBatchWithLinked(ctx context.Context, providerValue account.Provider, status string, now time.Time, afterID uint64, limit int, targets []account.Provider) (repository.LinkedDeleteOutcome, int, uint64, error) {
 	outcome := repository.LinkedDeleteOutcome{
 		Resolution:              repository.LinkedDeleteResolution{LinkedByProvider: map[account.Provider]int{}},
@@ -521,7 +568,10 @@ func (r *AccountRepository) DeleteAccountStatusBatchWithLinked(ctx context.Conte
 	candidateCount := 0
 	maxCandidateID := afterID
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 状态谓词 + 游标 + 行锁一次完成：锁下状态不可再变，等价于批内重校验。
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
+		// Select, filter, and lock roots in one query to revalidate state inside the batch.
 		selection := applyAccountStatusFilter(
 			tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("provider = ?", providerValue),
 			status, now,
@@ -549,14 +599,14 @@ func (r *AccountRepository) DeleteAccountStatusBatchWithLinked(ctx context.Conte
 		return repository.LinkedDeleteOutcome{}, 0, afterID, err
 	}
 	if outcome.Deleted > 0 {
-		// 关联删除会跨号池删行，通知不能限定在根号池，否则对端池的候选缓存不会失效。
+		// Linked deletion crosses providers, so invalidate all candidate caches.
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged})
 	}
 	return outcome, candidateCount, maxCandidateID, nil
 }
 
-// CountCleanupWithLinked 返回清理预览计数（纯 COUNT，不物化 id 列表）。
-// 三个清理状态互斥，按状态分别计数后求和；关联计数经 link 表子查询（两跳走 JOIN）。
+// CountCleanupWithLinked computes preview counts without materializing account IDs.
+// Cleanup states are disjoint; linked counts use indexed subqueries and joins for two-hop paths.
 func (r *AccountRepository) CountCleanupWithLinked(ctx context.Context, providerValue account.Provider, statuses []string, now time.Time, targets []account.Provider) (repository.CleanupPreview, error) {
 	preview := repository.CleanupPreview{
 		RootsByStatus:    map[string]int64{},
@@ -649,7 +699,7 @@ func uniqueSortedIDs(ids []uint64) []uint64 {
 	return out
 }
 
-// accountLinkPair 表示「根账号 → 对端账号」的一条绑定（两跳时对端为最终对端）。
+// accountLinkPair maps a root account to its final peer, including two-hop paths.
 type accountLinkPair struct {
 	RootID uint64
 	PeerID uint64
@@ -688,7 +738,7 @@ func listBuildWebPairs(db *gorm.DB, buildIDs []uint64) ([]accountLinkPair, error
 	return pairs, err
 }
 
-// listBuildConsolePairs 两跳：Build → 其 Web → 该 Web 的 Console。
+// listBuildConsolePairs follows Build to Web to Console without returning the intermediate Web.
 func listBuildConsolePairs(db *gorm.DB, buildIDs []uint64) ([]accountLinkPair, error) {
 	if len(buildIDs) == 0 {
 		return nil, nil
@@ -712,7 +762,7 @@ func listConsoleWebPairs(db *gorm.DB, consoleIDs []uint64) ([]accountLinkPair, e
 	return pairs, err
 }
 
-// listConsoleBuildPairs 两跳：Console → 其 Web → 该 Web 的 Build。
+// listConsoleBuildPairs follows Console to Web to Build without returning the intermediate Web.
 func listConsoleBuildPairs(db *gorm.DB, consoleIDs []uint64) ([]accountLinkPair, error) {
 	if len(consoleIDs) == 0 {
 		return nil, nil

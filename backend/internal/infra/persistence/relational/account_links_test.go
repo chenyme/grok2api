@@ -520,7 +520,7 @@ func TestDeleteManyWithLinkedAtomicWebBothAndMediaBlock(t *testing.T) {
 	if err := database.db.WithContext(ctx).Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
-	// 单删语义（skipMedia=false）：对端活动媒体 → 整次拒绝，全部保留。
+	// Single-delete mode rejects the entire operation when a peer has an active media job.
 	if _, err := repo.DeleteManyWithLinked(ctx, account.ProviderWeb, []uint64{web2.ID}, []account.Provider{account.ProviderBuild}, false); err == nil {
 		t.Fatal("expected media job to block DeleteManyWithLinked")
 	}
@@ -531,7 +531,7 @@ func TestDeleteManyWithLinkedAtomicWebBothAndMediaBlock(t *testing.T) {
 		t.Fatalf("build2 should remain: %v", err)
 	}
 
-	// 批量语义（skipMedia=true）：命中媒体的根组整组跳过，其余组照删。
+	// Batch mode skips the complete blocked root group and deletes all other groups.
 	digest3 := strings.Repeat("x", 64)
 	web3 := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
 		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-clean3", SourceKey: "sso:" + digest3, UserID: "u-clean3",
@@ -563,7 +563,7 @@ func TestDeleteManyWithLinkedAtomicWebBothAndMediaBlock(t *testing.T) {
 	}
 }
 
-// 清理批原语：状态选根、关联展开、媒体整组跳过、游标推进。
+// Cleanup batches select roots by state, expand links, skip media groups, and advance the cursor.
 func TestDeleteAccountStatusBatchWithLinkedCursorAndSkip(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -584,7 +584,7 @@ func TestDeleteAccountStatusBatchWithLinkedCursorAndSkip(t *testing.T) {
 		}
 	}
 
-	// 三组 disabled Web+Build 链 + 一个 active Web（不应入选）。
+	// Seed three disabled Web-Build groups and one active Web account that must not be selected.
 	type trio struct{ web, build uint64 }
 	var trios []trio
 	for i := 0; i < 3; i++ {
@@ -605,7 +605,7 @@ func TestDeleteAccountStatusBatchWithLinkedCursorAndSkip(t *testing.T) {
 		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "cl-active", SourceKey: "sso:" + strings.Repeat("d", 64),
 	})
 
-	// 第 1 组的 Build 挂活动媒体：该组整组跳过。
+	// Attach an active media job to the first Build account so its group is skipped.
 	key := clientKeyModel{Name: "cl-media-key", Prefix: "cl-media-key", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
 	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
 		t.Fatal(err)
@@ -623,7 +623,7 @@ func TestDeleteAccountStatusBatchWithLinkedCursorAndSkip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// limit=2 分两批扫：批 1 命中 trio0(跳过)+trio1(删)；批 2 命中 trio2(删)。
+	// With limit=2, the first batch skips group 0 and deletes group 1; the second deletes group 2.
 	targets := []account.Provider{account.ProviderBuild}
 	outcome1, candidates1, maxID1, err := repo.DeleteAccountStatusBatchWithLinked(ctx, account.ProviderWeb, "disabled", now, 0, 2, targets)
 	if err != nil {
@@ -639,7 +639,7 @@ func TestDeleteAccountStatusBatchWithLinkedCursorAndSkip(t *testing.T) {
 	if candidates2 != 1 || outcome2.Deleted != 2 || outcome2.RootsDeleted != 1 || len(outcome2.SkippedRoots) != 0 {
 		t.Fatalf("batch2 outcome=%#v candidates=%d", outcome2, candidates2)
 	}
-	// 跳过组仍在；其余两组（web+build）已删；active 保留。
+	// The skipped group and active account remain; both accounts in the other groups are gone.
 	if _, err := repo.Get(ctx, trios[0].web); err != nil {
 		t.Fatalf("skipped web should remain: %v", err)
 	}
@@ -659,7 +659,7 @@ func TestDeleteAccountStatusBatchWithLinkedCursorAndSkip(t *testing.T) {
 	}
 }
 
-// 清理预览：各状态根计数 + 一跳/两跳关联计数（纯 COUNT）。
+// Cleanup preview counts roots by state and linked peers across one-hop and two-hop paths.
 func TestCountCleanupWithLinked(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -680,7 +680,7 @@ func TestCountCleanupWithLinked(t *testing.T) {
 		}
 	}
 
-	// disabled Web + Build/Console 双关联；reauth Web 无关联；cooldown Web + Console；active Web + Build。
+	// Seed a disabled Web with both peers, an unlinked reauth Web, a cooldown Web-Console pair, and an active Web-Build pair.
 	digestA := strings.Repeat("p", 64)
 	webA := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "pv-a", SourceKey: "sso:" + digestA, UserID: "pv-a"})
 	buildA := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "pv-a-build", SourceKey: "pv-a-build", UserID: "pv-a"})
@@ -720,12 +720,12 @@ func TestCountCleanupWithLinked(t *testing.T) {
 	if preview.RootsByStatus["disabled"] != 1 || preview.RootsByStatus["reauthRequired"] != 1 || preview.RootsByStatus["cooldown"] != 1 {
 		t.Fatalf("roots by status = %#v", preview.RootsByStatus)
 	}
-	// disabled webA: build+console；cooldown webC: console；reauth webB: 无 → build 1, console 2。
+	// The selected roots expand to one Build peer and two Console peers.
 	if preview.RootCount != 3 || preview.LinkedByProvider[account.ProviderBuild] != 1 || preview.LinkedByProvider[account.ProviderConsole] != 2 || preview.Total != 6 {
 		t.Fatalf("preview = %#v", preview)
 	}
 
-	// 两跳预览：disabled Build 根 → Console。
+	// Verify the two-hop preview from a disabled Build root to Console.
 	setStatus(buildD.ID, map[string]any{"enabled": false})
 	digestE := strings.Repeat("t", 64)
 	consoleD := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "pv-d-console", SourceKey: "console-sso:" + digestD, UserID: "pv-d"})

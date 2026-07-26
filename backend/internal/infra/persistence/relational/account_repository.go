@@ -617,6 +617,9 @@ func (r *AccountRepository) LinkWebToBuild(ctx context.Context, webAccountID, bu
 		return repository.ErrConflict
 	}
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
 		var webAccount, buildAccount accountModel
 		if err := tx.Select("id", "provider").First(&webAccount, webAccountID).Error; err != nil {
 			return err
@@ -1271,6 +1274,9 @@ func (r *AccountRepository) listEgressBindingProviders(query *gorm.DB) ([]accoun
 
 func (r *AccountRepository) Delete(ctx context.Context, id uint64) error {
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
 		var lockedID uint64
 		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Pluck("id", &lockedID).Error; err != nil {
 			return err
@@ -1295,6 +1301,9 @@ func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64
 	}
 	var deleted int64
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
 		var lockedIDs []uint64
 		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", ids).Pluck("id", &lockedIDs).Error; err != nil {
 			return err
@@ -1337,6 +1346,9 @@ func (r *AccountRepository) DeleteAutoCleanReauthCandidates(ctx context.Context,
 	}
 	deletedIDs := make([]uint64, 0, len(candidateIDs))
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
 		deletable, err := excludeAccountsWithActiveMediaJobs(tx, candidateIDs)
 		if err != nil {
 			return err
@@ -1426,7 +1438,7 @@ func excludeAccountsWithActiveMediaJobs(db *gorm.DB, ids []uint64) ([]uint64, er
 	return out, nil
 }
 
-// activeMediaJobStatuses 是仍需账号继续执行的视频任务状态（删除保护范围）。
+// activeMediaJobStatuses lists video states that still require the account and block deletion.
 func activeMediaJobStatuses() []string {
 	return []string{string(media.StatusQueued), string(media.StatusInProgress)}
 }
@@ -1472,7 +1484,7 @@ const (
 	webTermsAcceptedPredicate = "EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.terms_accepted_at IS NOT NULL AND profile.terms_accepted_version >= ?)"
 	webBuildLinkedPredicate   = "EXISTS (SELECT 1 FROM account_provider_links link WHERE link.web_account_id = provider_accounts.id)"
 	webConsoleLinkedPredicate = "EXISTS (SELECT 1 FROM web_console_account_links link WHERE link.web_account_id = provider_accounts.id)"
-	// Build/Console 侧按 Web 绑定筛选的谓词（webLinked / webUnlinked）。
+	// Build and Console filter by whether a Web link exists.
 	buildWebLinkedPredicate   = "EXISTS (SELECT 1 FROM account_provider_links link WHERE link.build_account_id = provider_accounts.id)"
 	consoleWebLinkedPredicate = "EXISTS (SELECT 1 FROM web_console_account_links link WHERE link.console_account_id = provider_accounts.id)"
 )
@@ -1496,9 +1508,9 @@ func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
 	}
 }
 
-// applyAssociationFilter 按号池应用关联筛选：
-// Web 端保留 build/console/all 六项；Build、Console 端的 webLinked/webUnlinked
-// 因谓词分别落在 build_account_id / console_account_id，必须依赖 provider 分流。
+// applyAssociationFilter applies provider-specific association predicates.
+// Web supports Build, Console, and combined filters; Build and Console use
+// provider-specific foreign keys for webLinked and webUnlinked.
 func applyAssociationFilter(query *gorm.DB, providerValue, association string) *gorm.DB {
 	switch association {
 	case "buildLinked":

@@ -39,34 +39,35 @@ var (
 var ErrCredentialRefreshPermanent = errors.New("OAuth refresh token 已永久失效")
 
 const (
-	estimatedFreeTokenLimit      int64         = 1_000_000
-	freeUsageWindow              time.Duration = 24 * time.Hour
-	forcedRefreshMinInterval     time.Duration = 30 * time.Second
-	paidProbeRetryInterval       time.Duration = 15 * time.Minute
-	credentialRefreshAdvance     time.Duration = 3 * time.Minute
-	credentialRefreshSafetyPoll  time.Duration = time.Minute
-	credentialRefreshTimeout     time.Duration = 30 * time.Second
-	credentialRefreshStateTTL    time.Duration = 5 * time.Second
-	credentialStateWriteTimeout  time.Duration = 5 * time.Second
-	credentialRefreshBatchSize                 = 100
-	managedTaskWorkerCeiling                   = 50
-	webQuotaRefreshQueueSize                   = 4096
-	webQuotaRefreshTimeout                     = 30 * time.Second
-	webQuotaRefreshDirtyTTL                    = 24 * time.Hour
-	webQuotaRefreshRetryInterval               = 500 * time.Millisecond
-	webQuotaRefreshSharedPoll                  = time.Second
-	observedModelPersistInterval               = 30 * time.Minute
-	observedModelLocalCacheTTL                 = 5 * time.Second
-	observedModelLockShards                    = 64
-	maxCredentialExportAccounts                = 10000
-	maxCredentialImportAccounts                = 10000
-	credentialImportChunkSize                  = 100
-	maxQuotaResetAccounts                      = 10000
-	quotaResetChunkSize                        = 500
-	maxBuildConversionAccounts                 = 1000
-	maxWebConsoleSyncAccounts                  = 1000
-	accountTaskBatchSize                       = 1000
-	buildBotFlagCacheTTL         time.Duration = 30 * time.Second
+	estimatedFreeTokenLimit         int64         = 1_000_000
+	freeUsageWindow                 time.Duration = 24 * time.Hour
+	forcedRefreshMinInterval        time.Duration = 30 * time.Second
+	paidProbeRetryInterval          time.Duration = 15 * time.Minute
+	credentialRefreshAdvance        time.Duration = 3 * time.Minute
+	credentialRefreshSafetyPoll     time.Duration = time.Minute
+	credentialRefreshTimeout        time.Duration = 30 * time.Second
+	credentialRefreshStateTTL       time.Duration = 5 * time.Second
+	credentialStateWriteTimeout     time.Duration = 5 * time.Second
+	credentialRefreshBatchSize                    = 100
+	managedTaskWorkerCeiling                      = 50
+	webQuotaRefreshQueueSize                      = 4096
+	webQuotaRefreshTimeout                        = 30 * time.Second
+	webQuotaRefreshDirtyTTL                       = 24 * time.Hour
+	webQuotaRefreshRetryInterval                  = 500 * time.Millisecond
+	webQuotaRefreshSharedPoll                     = time.Second
+	observedModelPersistInterval                  = 30 * time.Minute
+	observedModelLocalCacheTTL                    = 5 * time.Second
+	observedModelLockShards                       = 64
+	maxCredentialExportAccounts                   = 10000
+	maxCredentialImportAccounts                   = 10000
+	credentialImportChunkSize                     = 100
+	maxQuotaResetAccounts                         = 10000
+	quotaResetChunkSize                           = 500
+	maxBuildConversionAccounts                    = 1000
+	maxWebConsoleSyncAccounts                     = 1000
+	accountTaskBatchSize                          = 1000
+	buildBotFlagCacheTTL            time.Duration = 30 * time.Second
+	linkedDeleteRuntimeCleanupLimit               = 3 * time.Second
 )
 
 const permanentRefreshExpiredReason = "OAuth refresh token 已永久失效且 access token 已过期"
@@ -224,8 +225,8 @@ type ListFilter struct {
 	Risk      string
 	// Agreement applies only to grok_web accounts.
 	Agreement string
-	// Association 按号池取值：grok_web 支持 build/console/all 六项；
-	// grok_build 与 grok_console 仅支持 webLinked / webUnlinked。
+	// Association values are provider-specific: Web supports build, console, and combined filters;
+	// Build and Console support only webLinked and webUnlinked.
 	Association string
 	Sort        repository.SortQuery
 }
@@ -537,8 +538,8 @@ func oneOf(value string, allowed ...string) bool {
 	return false
 }
 
-// validAssociationFilter 校验关联筛选值与号池的合法组合。
-// grok_web 沿用 build/console/all 六项；grok_build、grok_console 仅支持按 Web 绑定筛选。
+// validAssociationFilter validates association filters against the selected provider.
+// Web keeps its six Build/Console/combined values; Build and Console filter only by Web links.
 func validAssociationFilter(providerValue, association string) bool {
 	if association == "" {
 		return true
@@ -589,7 +590,7 @@ type AccountDeleteResult struct {
 	DeletedByProvider map[accountdomain.Provider]int64
 }
 
-// accountDeleteResultFromOutcome 把仓储 outcome 换算为对外结果（计数基于实际删除行）。
+// accountDeleteResultFromOutcome converts repository results using rows actually deleted.
 func accountDeleteResultFromOutcome(providerValue accountdomain.Provider, outcome repository.LinkedDeleteOutcome) AccountDeleteResult {
 	out := AccountDeleteResult{
 		Deleted:           outcome.Deleted,
@@ -607,29 +608,55 @@ func accountDeleteResultFromOutcome(providerValue accountdomain.Provider, outcom
 	return out
 }
 
-// finishLinkedDelete 在库删成功后清理运行态（sticky / 凭据刷新状态）。
-func (s *Service) finishLinkedDelete(ctx context.Context, deletedIDs []uint64) {
-	for _, id := range deletedIDs {
-		if s.sticky != nil {
-			_ = s.sticky.DeleteByAccount(ctx, id)
+// deleteStickyAccounts uses the optional batch capability and falls back for custom stores.
+func (s *Service) deleteStickyAccounts(ctx context.Context, accountIDs []uint64) (int, error) {
+	if s.sticky == nil || len(accountIDs) == 0 {
+		return 0, nil
+	}
+	if batchDeleter, ok := s.sticky.(repository.StickySessionBatchDeleter); ok {
+		if err := batchDeleter.DeleteByAccounts(ctx, accountIDs); err != nil {
+			return len(accountIDs), err
 		}
+		return 0, nil
+	}
+	failures := 0
+	var firstErr error
+	for _, id := range accountIDs {
+		if err := s.sticky.DeleteByAccount(ctx, id); err != nil {
+			failures++
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return failures, firstErr
+}
+
+// finishLinkedDelete clears runtime state after the database transaction commits.
+func (s *Service) finishLinkedDelete(ctx context.Context, deletedIDs []uint64) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), linkedDeleteRuntimeCleanupLimit)
+	defer cancel()
+	if failures, err := s.deleteStickyAccounts(cleanupCtx, deletedIDs); err != nil && s.logger != nil {
+		s.logger.Warn("linked_account_runtime_cleanup_failed", "accounts", len(deletedIDs), "failures", failures, "error", err)
+	}
+	for _, id := range deletedIDs {
 		s.clearRefreshState(id)
 	}
 }
 
-// BatchDelete 原子删除一组账号及其额度状态（不扩展关联；批量语义=媒体组跳过）。
+// BatchDelete atomically removes roots and quota state without expanding linked accounts.
 func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) {
 	result, err := s.batchDeleteWithLinkedMode(ctx, accountdomain.Provider(""), ids, nil, true)
 	return result.Deleted, err
 }
 
 // BatchDeleteWithLinked deletes root accounts and optional linked peers resolved from binding tables.
-// 批量语义：带活动视频任务的根连同其关联整组跳过，其余照删（Skipped 汇报）。
+// Roots with active video jobs are skipped together with their linked group; other groups are deleted.
 func (s *Service) BatchDeleteWithLinked(ctx context.Context, providerValue accountdomain.Provider, ids []uint64, targets []accountdomain.Provider) (AccountDeleteResult, error) {
 	return s.batchDeleteWithLinkedMode(ctx, providerValue, ids, targets, true)
 }
 
-// batchDeleteWithLinkedMode 是单删/批删共用的原子删除入口；skipMedia 区分整次拒绝与整组跳过。
+// batchDeleteWithLinkedMode is the shared atomic path; skipMedia selects reject-all or skip-group behavior.
 func (s *Service) batchDeleteWithLinkedMode(ctx context.Context, providerValue accountdomain.Provider, ids []uint64, targets []accountdomain.Provider, skipMedia bool) (AccountDeleteResult, error) {
 	var out AccountDeleteResult
 	ids, err := normalizeBatchIDs(ids)
@@ -671,7 +698,7 @@ func (s *Service) AccountsBelongToProvider(ctx context.Context, ids []uint64, pr
 	return count == int64(len(values)), nil
 }
 
-// CleanupResult 汇总一次账号清理的实际结果（含关联删除与跳过组）。
+// CleanupResult summarizes rows deleted and root groups skipped by one cleanup operation.
 type CleanupResult struct {
 	Deleted           int64
 	RootsDeleted      int64
@@ -680,7 +707,7 @@ type CleanupResult struct {
 	DeletedByProvider map[accountdomain.Provider]int64
 }
 
-// validateCleanupSelection 校验清理状态集合与关联目标的合法性。
+// validateCleanupSelection validates cleanup states and linked target providers.
 func validateCleanupSelection(providerValue accountdomain.Provider, statuses []CleanupStatus, targets []accountdomain.Provider) (map[CleanupStatus]struct{}, error) {
 	if !providerValue.IsValid() {
 		return nil, invalidInput("账号来源无效")
@@ -708,9 +735,9 @@ func validateCleanupSelection(providerValue accountdomain.Provider, statuses []C
 	return selected, nil
 }
 
-// CleanupAccounts 按管理端状态清理指定 Provider 账号；正常、待重置和检测中的账号不在清理范围内。
-// targets 非空时沿绑定表一并删除关联账号（不限对端状态）；带活动视频任务的根组整组跳过。
-// 游标按 id 推进，跳过组不会导致批次死循环。
+// CleanupAccounts deletes accounts in selected admin states; healthy, waiting-reset, and probing accounts are excluded.
+// Linked targets are resolved from binding tables regardless of peer state, and active-media groups are skipped whole.
+// The ID cursor always advances, so skipped groups cannot stall a cleanup batch.
 func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdomain.Provider, statuses []CleanupStatus, targets []accountdomain.Provider) (CleanupResult, error) {
 	out := CleanupResult{DeletedByProvider: map[accountdomain.Provider]int64{}}
 	selected, err := validateCleanupSelection(providerValue, statuses, targets)
@@ -753,8 +780,8 @@ func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdoma
 	return out, nil
 }
 
-// PreviewCleanup 返回清理弹窗的 COUNT 预览（根按状态计数 + 关联对端计数）。
-// 仅供展示；实际删除由批内事务重校验，不信任预览快照。
+// PreviewCleanup returns root and linked-peer counts for the cleanup confirmation dialog.
+// The preview is informational; deletion revalidates state inside each transaction.
 func (s *Service) PreviewCleanup(ctx context.Context, providerValue accountdomain.Provider, statuses []CleanupStatus, targets []accountdomain.Provider) (repository.CleanupPreview, error) {
 	selected, err := validateCleanupSelection(providerValue, statuses, targets)
 	if err != nil {
@@ -1804,7 +1831,7 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 }
 
 // DeleteWithLinked deletes one account and optional linked peers.
-// 单删语义：final 集内任一活动视频任务 → 整次拒绝（不跳过）。
+// A single delete is rejected if any account in the final group has an active video job.
 func (s *Service) DeleteWithLinked(ctx context.Context, providerValue accountdomain.Provider, id uint64, targets []accountdomain.Provider) (AccountDeleteResult, error) {
 	if id == 0 {
 		return AccountDeleteResult{}, invalidInput("账号 ID 无效")

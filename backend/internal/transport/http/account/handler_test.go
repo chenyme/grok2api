@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/gin-gonic/gin"
 )
 
@@ -114,6 +116,32 @@ func TestNewAccountDeleteResponseShape(t *testing.T) {
 	byProvider, ok := payload["deletedByProvider"].(gin.H)
 	if !ok || byProvider["grok_web"] != int64(1) {
 		t.Fatalf("byProvider = %#v", payload["deletedByProvider"])
+	}
+}
+
+func TestLinkedDeleteMissingAccountReturnsNotFound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "linked-delete-not-found.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service := accountapp.NewService(relational.NewAccountRepository(database), nil, nil, nil, nil, nil, nil)
+	handler := NewHandler(service, nil)
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Params = []gin.Param{{Key: "id", Value: "999999"}}
+	ginContext.Request = httptest.NewRequest("DELETE", "/api/admin/v1/accounts/999999", strings.NewReader(`{"provider":"grok_web","linkedDeleteTargets":["grok_build"]}`))
+	ginContext.Request.Header.Set("Content-Type", "application/json")
+
+	handler.delete(ginContext)
+
+	if recorder.Code != 404 || !strings.Contains(recorder.Body.String(), `"code":"accountNotFound"`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 

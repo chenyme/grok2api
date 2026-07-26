@@ -25,24 +25,24 @@ type LinkedDeleteResolution struct {
 	RootIDs          []uint64
 	FinalIDs         []uint64
 	LinkedByProvider map[account.Provider]int
-	// RootGroups[rootID] = 该根展开出的对端 id（两跳时为最终对端）；跳过媒体组时按整组剔除。
+	// RootGroups maps each root to its final peers and defines the media-skip group boundary.
 	RootGroups map[uint64][]uint64
-	// PeerProviders 记录每个对端 id 所属号池，用于删除后按池计数。
+	// PeerProviders records each peer provider for post-delete accounting.
 	PeerProviders map[uint64]account.Provider
 }
 
-// LinkedDeleteOutcome 汇总一次原子关联删除的实际结果（含跳过组）。
+// LinkedDeleteOutcome contains actual rows deleted and root groups skipped atomically.
 type LinkedDeleteOutcome struct {
 	Resolution              LinkedDeleteResolution
 	DeletedIDs              []uint64
 	Deleted                 int64
 	RootsDeleted            int64
 	LinkedDeletedByProvider map[account.Provider]int64
-	// SkippedRoots：因根或其关联对端存在排队/进行中视频任务而整组跳过的根 id。
+	// SkippedRoots identifies groups protected by queued or in-progress video jobs.
 	SkippedRoots []uint64
 }
 
-// CleanupPreview 是账号清理弹窗的 COUNT 预览结果（纯计数，不物化 id 列表）。
+// CleanupPreview contains COUNT-only values for the cleanup confirmation dialog.
 type CleanupPreview struct {
 	RootsByStatus    map[string]int64
 	RootCount        int64
@@ -94,12 +94,12 @@ type AccountRepository interface {
 	ResolveLinkedDeleteIDs(ctx context.Context, provider account.Provider, rootIDs []uint64, targets []account.Provider) (LinkedDeleteResolution, error)
 	// DeleteManyWithLinked locks roots, resolves linked peers, checks media jobs, and deletes
 	// the final set inside a single DB transaction (avoids resolve/delete TOCTOU).
-	// skipMedia=false（单删）：任一活动视频任务 → 整体报错；skipMedia=true（批量）：该根组整组跳过。
+	// skipMedia=false rejects on active media; skipMedia=true skips the complete root group.
 	DeleteManyWithLinked(ctx context.Context, provider account.Provider, rootIDs []uint64, targets []account.Provider, skipMedia bool) (LinkedDeleteOutcome, error)
-	// DeleteAccountStatusBatchWithLinked 是清理批原语：事务内按状态 + id 游标取 ≤limit 根，
-	// 展开关联并整组跳过媒体后删除；返回 outcome、候选数与最大候选 id（游标推进用）。
+	// DeleteAccountStatusBatchWithLinked selects at most limit roots by state and ID cursor,
+	// expands links, skips protected groups, and returns the candidate count and next cursor.
 	DeleteAccountStatusBatchWithLinked(ctx context.Context, provider account.Provider, status string, now time.Time, afterID uint64, limit int, targets []account.Provider) (LinkedDeleteOutcome, int, uint64, error)
-	// CountCleanupWithLinked 返回清理预览计数：各状态根数 + 关联对端数（纯 SQL COUNT）。
+	// CountCleanupWithLinked returns root and linked-peer counts using SQL COUNT queries only.
 	CountCleanupWithLinked(ctx context.Context, provider account.Provider, statuses []string, now time.Time, targets []account.Provider) (CleanupPreview, error)
 	// ListAutoCleanReauthCandidates 以 ID 游标列出达到清理年龄的 reauthRequired 账号。
 	ListAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, error)

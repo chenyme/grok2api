@@ -286,6 +286,29 @@ func (s *StickyStore) DeleteByAccount(_ context.Context, accountID uint64) error
 	return nil
 }
 
+func (s *StickyStore) DeleteByAccounts(_ context.Context, accountIDs []uint64) error {
+	ids := make(map[uint64]struct{}, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID != 0 {
+			ids[accountID] = struct{}{}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	for index := range s.shards {
+		shard := &s.shards[index]
+		shard.mu.Lock()
+		for key, binding := range shard.bindings {
+			if _, remove := ids[binding.accountID]; remove {
+				delete(shard.bindings, key)
+			}
+		}
+		shard.mu.Unlock()
+	}
+	return nil
+}
+
 func shardIndex(key string) uint32 {
 	const offset32 = uint32(2166136261)
 	const prime32 = uint32(16777619)

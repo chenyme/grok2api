@@ -25,6 +25,8 @@ const (
 	maxQuotaRecoveryEvents      = 100000
 	maxQuotaRefreshDirty        = 100000
 	observedModelStateTTL       = 30 * time.Minute
+	// At the per-account cap, one pipeline processes at most 80,000 members.
+	stickyDeletePipelineSize = 8
 )
 
 var rateScript = redisclient.NewScript(`
@@ -530,6 +532,38 @@ func (s *Store) Set(ctx context.Context, key string, accountID uint64, expiresAt
 func (s *Store) DeleteByAccount(ctx context.Context, accountID uint64) error {
 	id := strconv.FormatUint(accountID, 10)
 	return deleteStickyByAccountScript.Run(ctx, s.client, []string{s.key("sticky-account", id)}, id).Err()
+}
+
+func (s *Store) DeleteByAccounts(ctx context.Context, accountIDs []uint64) error {
+	seen := make(map[uint64]struct{}, len(accountIDs))
+	ids := make([]uint64, 0, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID == 0 {
+			continue
+		}
+		if _, exists := seen[accountID]; exists {
+			continue
+		}
+		seen[accountID] = struct{}{}
+		ids = append(ids, accountID)
+	}
+	for start := 0; start < len(ids); start += stickyDeletePipelineSize {
+		end := min(start+stickyDeletePipelineSize, len(ids))
+		_, err := s.client.Pipelined(ctx, func(pipe redisclient.Pipeliner) error {
+			for _, accountID := range ids[start:end] {
+				id := strconv.FormatUint(accountID, 10)
+				// EVAL avoids a NOSCRIPT fallback round trip inside the pipeline. Each
+				// script remains bounded to one account so bulk maintenance cannot
+				// monopolize the shared Redis event loop with one large Lua call.
+				deleteStickyByAccountScript.Eval(ctx, pipe, []string{s.key("sticky-account", id)}, id)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ScheduleQuotaRecovery(ctx context.Context, value account.QuotaRecoveryEvent) error {

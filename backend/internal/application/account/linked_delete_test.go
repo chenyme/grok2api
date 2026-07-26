@@ -142,6 +142,31 @@ func TestDeleteMissingAccountReturnsNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteWithLinkedRejectsRootFromAnotherProvider(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repo, service := newLinkedDeleteTestService(t, "svc-delete-provider-mismatch.db")
+	web, _, _ := seedLinkedTrio(t, repo, strings.Repeat("9", 64), "u-provider-mismatch")
+
+	_, err := service.DeleteWithLinked(ctx, accountdomain.ProviderBuild, web.ID, []accountdomain.Provider{accountdomain.ProviderConsole})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("provider mismatch error = %v", err)
+	}
+	assertAccountPresent(t, repo, web.ID)
+}
+
+func TestFinishLinkedDeleteUsesBatchStickyCleanup(t *testing.T) {
+	sticky := &stickyBatchStub{}
+	service := &Service{sticky: sticky}
+	service.finishLinkedDelete(context.Background(), []uint64{3, 5, 8})
+	if sticky.singleCalls != 0 {
+		t.Fatalf("single-account cleanup calls = %d", sticky.singleCalls)
+	}
+	if len(sticky.batchCalls) != 1 || len(sticky.batchCalls[0]) != 3 || sticky.batchCalls[0][0] != 3 || sticky.batchCalls[0][2] != 8 {
+		t.Fatalf("batch cleanup calls = %#v", sticky.batchCalls)
+	}
+}
+
 func newLinkedDeleteTestService(t *testing.T, dbName string) (*relational.AccountRepository, *Service) {
 	t.Helper()
 	ctx := context.Background()
@@ -216,3 +241,24 @@ func (stickyStub) Bind(context.Context, string, uint64, time.Time, time.Time) (u
 }
 func (stickyStub) Set(context.Context, string, uint64, time.Time) error { return nil }
 func (stickyStub) DeleteByAccount(context.Context, uint64) error        { return nil }
+
+type stickyBatchStub struct {
+	singleCalls int
+	batchCalls  [][]uint64
+}
+
+func (*stickyBatchStub) Get(context.Context, string, time.Time) (uint64, bool, error) {
+	return 0, false, nil
+}
+func (*stickyBatchStub) Bind(context.Context, string, uint64, time.Time, time.Time) (uint64, error) {
+	return 0, nil
+}
+func (*stickyBatchStub) Set(context.Context, string, uint64, time.Time) error { return nil }
+func (s *stickyBatchStub) DeleteByAccount(context.Context, uint64) error {
+	s.singleCalls++
+	return nil
+}
+func (s *stickyBatchStub) DeleteByAccounts(_ context.Context, ids []uint64) error {
+	s.batchCalls = append(s.batchCalls, append([]uint64(nil), ids...))
+	return nil
+}

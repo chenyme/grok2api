@@ -254,17 +254,8 @@ func (s *Service) excludeAccountsWithActiveLeases(ctx context.Context, ids []uin
 func (s *Service) clearDeletedAccountRuntimeState(ctx context.Context, ids []uint64) (int, error) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), autoCleanRuntimeWriteLimit)
 	defer cancel()
-	failures := 0
-	var firstErr error
+	failures, firstErr := s.deleteStickyAccounts(cleanupCtx, ids)
 	for _, id := range ids {
-		if s.sticky != nil {
-			if err := s.sticky.DeleteByAccount(cleanupCtx, id); err != nil {
-				failures++
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
-		}
 		s.clearRefreshState(id)
 	}
 	if failures == 0 {

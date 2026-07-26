@@ -592,7 +592,7 @@ func (h *Handler) cleanup(c *gin.Context) {
 	})
 }
 
-// cleanupPreview 返回清理弹窗的 COUNT 预览：各状态根数 + 关联对端数。
+// cleanupPreview returns root and linked-peer counts for the cleanup dialog.
 func (h *Handler) cleanupPreview(c *gin.Context) {
 	var request accountCleanupRequest
 	if c.ShouldBindJSON(&request) != nil {
@@ -1162,9 +1162,6 @@ func (h *Handler) delete(c *gin.Context) {
 	if len(targets) > 0 {
 		if request.Provider == "" {
 			response.Error(c, http.StatusBadRequest, "invalidProvider", "删除关联账号时必须指定 provider")
-			return
-		}
-		if !h.validateProviderIDs(c, []uint64{id}, request.Provider) {
 			return
 		}
 		result, err := h.service.DeleteWithLinked(c.Request.Context(), accountdomain.Provider(request.Provider), id, targets)

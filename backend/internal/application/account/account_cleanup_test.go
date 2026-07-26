@@ -88,7 +88,7 @@ func TestCleanupAccountsRequiresStatus(t *testing.T) {
 	if _, err := service.CleanupAccounts(context.Background(), accountdomain.ProviderBuild, nil, nil); err == nil {
 		t.Fatal("empty cleanup status unexpectedly succeeded")
 	}
-	// 关联目标不能包含当前号池 / 非法值。
+	// Linked targets cannot include the root provider or an invalid provider.
 	if _, err := service.CleanupAccounts(context.Background(), accountdomain.ProviderBuild, []CleanupStatus{CleanupStatusDisabled}, []accountdomain.Provider{accountdomain.ProviderBuild}); err == nil {
 		t.Fatal("self-target cleanup unexpectedly succeeded")
 	}
@@ -97,7 +97,7 @@ func TestCleanupAccountsRequiresStatus(t *testing.T) {
 	}
 }
 
-// 清理 + 关联：删除异常根时一并删除对端（不限对端状态），并汇报计数。
+// Cleanup with linked targets removes peers regardless of peer state and reports exact counts.
 func TestCleanupAccountsWithLinkedTargets(t *testing.T) {
 	ctx := context.Background()
 	repo, service := newLinkedDeleteTestService(t, "svc-cleanup-linked.db")
@@ -105,7 +105,7 @@ func TestCleanupAccountsWithLinkedTargets(t *testing.T) {
 	service.now = func() time.Time { return now }
 
 	web, build, console := seedLinkedTrio(t, repo, strings.Repeat("7", 64), "u-cleanup")
-	// 根 Web 置为失效；对端保持 active（验证对端不看状态被带走）。
+	// Mark the Web root invalid while keeping active peers to verify peer state is ignored.
 	web.AuthStatus = accountdomain.AuthStatusReauthRequired
 	if _, err := repo.Update(ctx, web); err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestCleanupAccountsWithLinkedTargets(t *testing.T) {
 	assertAccountPresent(t, repo, healthyWeb.ID)
 }
 
-// 清理预览：按状态与关联目标计数，不删除任何行。
+// Cleanup preview counts roots and linked targets without deleting rows.
 func TestPreviewCleanupCountsWithoutDeleting(t *testing.T) {
 	ctx := context.Background()
 	repo, service := newLinkedDeleteTestService(t, "svc-cleanup-preview.db")

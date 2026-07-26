@@ -265,7 +265,6 @@ export function AccountsPage() {
     onError: showError,
   });
 
-  
   useEffect(() => {
     if (!deleting && !batchDeleteOpen) return;
     const ids = deleting ? [deleting.id] : (selectedIdsKey ? selectedIdsKey.split(",") : []);
