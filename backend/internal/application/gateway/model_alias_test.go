@@ -11,6 +11,7 @@ import (
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/console"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -37,6 +38,10 @@ func TestRewriteAliasedModelAppliesOperationEffort(t *testing.T) {
 			if config["effort"] != "high" {
 				t.Fatalf("output_config = %#v", config)
 			}
+			thinking, _ := payload["thinking"].(map[string]any)
+			if thinking["type"] != "adaptive" {
+				t.Fatalf("thinking = %#v", thinking)
+			}
 		}},
 	}
 	for _, test := range tests {
@@ -54,6 +59,56 @@ func TestRewriteAliasedModelAppliesOperationEffort(t *testing.T) {
 			}
 			test.assert(t, payload)
 		})
+	}
+}
+
+func TestRewriteAliasedMessagesPinsAndDisablesReasoningEndToEnd(t *testing.T) {
+	request := []byte(`{
+		"model":"grok-4.3-high",
+		"max_tokens":64,
+		"messages":[{"role":"user","content":"hello"}],
+		"thinking":{"type":"disabled"},
+		"output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}
+	}`)
+	rewritten, err := rewriteAliasedModel(request, "grok-4.3", "high", audit.OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, options, err := conversation.ConvertRequestWithOptions(rewritten, "grok-4.3", conversation.OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatal(err)
+	}
+	reasoning, _ := payload["reasoning"].(map[string]any)
+	if reasoning["effort"] != "high" || !options.AnthropicThinking {
+		t.Fatalf("reasoning = %#v, options = %#v", reasoning, options)
+	}
+	text, _ := payload["text"].(map[string]any)
+	if text["format"] == nil {
+		t.Fatalf("output format was not preserved: %#v", payload)
+	}
+
+	rewritten, err = rewriteAliasedModel(rewritten, "grok-4.3", "none", audit.OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, options, err = conversation.ConvertRequestWithOptions(rewritten, "grok-4.3", conversation.OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = nil
+	if err := json.Unmarshal(converted, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["reasoning"] != nil || options.AnthropicThinking {
+		t.Fatalf("reasoning should be disabled: payload = %#v, options = %#v", payload, options)
+	}
+	text, _ = payload["text"].(map[string]any)
+	if text["format"] == nil {
+		t.Fatalf("output format was not preserved after disabling reasoning: %#v", payload)
 	}
 }
 
@@ -87,7 +142,7 @@ func (r *aliasRouteResolver) GetByProviderUpstream(_ context.Context, providerVa
 	return modeldomain.Route{}, repository.ErrNotFound
 }
 
-func TestResolvePublicModelRoutesGatesEffortAliases(t *testing.T) {
+func TestResolvePublicModelRoutesGatesDynamicAliasesAndPreservesCompatibility(t *testing.T) {
 	route := modeldomain.Route{
 		ID: 1, PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5",
 		Capability: modeldomain.CapabilityResponses, Enabled: true,
@@ -119,7 +174,7 @@ func TestResolvePublicModelRoutesGatesEffortAliases(t *testing.T) {
 		t.Fatal("grok-4.5-none must be rejected: grok-4.5 cannot disable reasoning")
 	}
 
-	// Console registered effort alias also gated.
+	// Registered aliases existed before the per-key switch and remain callable for compatibility.
 	consoleRoute := modeldomain.Route{
 		ID: 2, PublicID: "Console/grok-4.3", Provider: account.ProviderConsole, UpstreamModel: "grok-4.3",
 		Capability: modeldomain.CapabilityResponses, Enabled: true,
@@ -128,11 +183,17 @@ func TestResolvePublicModelRoutesGatesEffortAliases(t *testing.T) {
 		byPublic: map[string][]modeldomain.Route{"Console/grok-4.3": {consoleRoute}},
 		byUp:     map[string]modeldomain.Route{string(account.ProviderConsole) + "/grok-4.3": consoleRoute},
 	}
-	if _, _, err := service.resolvePublicModelRoutes(context.Background(), "grok-4.3-high", false); !errors.Is(err, repository.ErrNotFound) {
-		t.Fatalf("console effort alias should be gated, got %v", err)
-	}
-	routes, effort, err = service.resolvePublicModelRoutes(context.Background(), "grok-4.3-high", true)
+	routes, effort, err = service.resolvePublicModelRoutes(context.Background(), "grok-4.3-high", false)
 	if err != nil || len(routes) != 1 || effort != "high" {
-		t.Fatalf("console alias resolve = %#v, %q, %v", routes, effort, err)
+		t.Fatalf("legacy console alias resolve = %#v, %q, %v", routes, effort, err)
+	}
+
+	// Newly generated aliases still require an opted-in key.
+	if _, _, err := service.resolvePublicModelRoutes(context.Background(), "grok-4.3-none", false); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("dynamic console alias should be gated, got %v", err)
+	}
+	routes, effort, err = service.resolvePublicModelRoutes(context.Background(), "grok-4.3-none", true)
+	if err != nil || len(routes) != 1 || effort != "none" {
+		t.Fatalf("dynamic console alias resolve = %#v, %q, %v", routes, effort, err)
 	}
 }

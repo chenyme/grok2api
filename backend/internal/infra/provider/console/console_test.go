@@ -46,8 +46,8 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 		}
 	}
 	aliases := Aliases()
-	if len(aliases) != 17 {
-		t.Fatalf("aliases = %d, want 17", len(aliases))
+	if len(aliases) != 13 {
+		t.Fatalf("aliases = %d, want 13", len(aliases))
 	}
 	registry := provider.NewRegistry(NewAdapter(Config{}, nil, nil))
 	if registry.SupportsStoredResponses(account.ProviderConsole) {
@@ -56,8 +56,7 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 	for _, name := range []string{
 		"grok-4.3-console", "grok-4.20-0309-console", "grok-4.20-0309-reasoning-console",
 		"grok-4.20-0309-non-reasoning-console", "grok-4.20-multi-agent-console", "grok-build-console",
-		"grok-4.3-none", "grok-4.3-low", "grok-4.3-medium", "grok-4.3-high",
-		"grok-4.20-0309-reasoning-low", "grok-4.20-0309-reasoning-medium", "grok-4.20-0309-reasoning-high",
+		"grok-4.3-low", "grok-4.3-medium", "grok-4.3-high",
 		"grok-4.20-multi-agent-low", "grok-4.20-multi-agent-medium", "grok-4.20-multi-agent-high", "grok-4.20-multi-agent-xhigh",
 	} {
 		alias, ok := registry.ResolveModelAlias(name)
@@ -222,6 +221,44 @@ func TestNormalizeReasoningPreservesReferenceEfforts(t *testing.T) {
 		if got := normalizeEffort(input); got != want {
 			t.Fatalf("normalizeEffort(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestNormalizeRequestPreservesGrok420ReasoningEffort(t *testing.T) {
+	spec, ok := Resolve("grok-4.20-0309-reasoning")
+	if !ok {
+		t.Fatal("grok-4.20-0309-reasoning missing")
+	}
+	body, err := normalizeRequest([]byte(`{
+		"model":"grok-4.20-0309-reasoning",
+		"input":"hello",
+		"reasoning":{"effort":"low"}
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	reasoning, _ := payload["reasoning"].(map[string]any)
+	if reasoning["effort"] != "low" {
+		t.Fatalf("reasoning = %#v", reasoning)
+	}
+
+	withoutEffort, err := normalizeRequest([]byte(`{
+		"model":"grok-4.20-0309-reasoning",
+		"input":"hello"
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = nil
+	if err := json.Unmarshal(withoutEffort, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["reasoning"] != nil {
+		t.Fatalf("base model request should retain the upstream default: %#v", payload)
 	}
 }
 

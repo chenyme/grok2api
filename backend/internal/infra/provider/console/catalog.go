@@ -24,7 +24,7 @@ type ModelSpec struct {
 var catalog = []ModelSpec{
 	{PublicID: "grok-4.3", UpstreamModel: "grok-4.3", SupportsReasoning: true, DefaultReasoningEffort: "medium", MaxOutputTokens: 1_000_000, SearchTools: true},
 	{PublicID: "grok-4.20-0309", UpstreamModel: "grok-4.20-0309", MaxOutputTokens: 1_000_000, SearchTools: true},
-	{PublicID: "grok-4.20-0309-reasoning", UpstreamModel: "grok-4.20-0309-reasoning", MaxOutputTokens: 1_000_000, SearchTools: true},
+	{PublicID: "grok-4.20-0309-reasoning", UpstreamModel: "grok-4.20-0309-reasoning", SupportsReasoning: true, MaxOutputTokens: 1_000_000, SearchTools: true},
 	{PublicID: "grok-4.20-0309-non-reasoning", UpstreamModel: "grok-4.20-0309-non-reasoning", MaxOutputTokens: 1_000_000, SearchTools: true},
 	{PublicID: "grok-4.20-multi-agent-0309", UpstreamModel: "grok-4.20-multi-agent-0309", SupportsReasoning: true, DefaultReasoningEffort: "medium", MaxOutputTokens: 2_000_000, SearchTools: true},
 	{PublicID: "grok-build-0.1", UpstreamModel: "grok-build-0.1", MaxOutputTokens: 256_000, SearchTools: true},
@@ -39,16 +39,9 @@ var aliases = []provider.ModelAlias{
 	consoleAlias("grok-4.20-0309-non-reasoning-console", "grok-4.20-0309-non-reasoning", "grok-4.20-0309-non-reasoning", ""),
 	consoleAlias("grok-4.20-multi-agent-console", "grok-4.20-multi-agent-0309", "grok-4.20-multi-agent-0309", ""),
 	consoleAlias("grok-build-console", "grok-build-0.1", "grok-build-0.1", ""),
-	// grok-4.3: none / low / medium / high
-	consoleAlias("grok-4.3-none", "grok-4.3", "grok-4.3", "none"),
 	consoleAlias("grok-4.3-low", "grok-4.3", "grok-4.3", "low"),
 	consoleAlias("grok-4.3-medium", "grok-4.3", "grok-4.3", "medium"),
 	consoleAlias("grok-4.3-high", "grok-4.3", "grok-4.3", "high"),
-	// grok-4.20-0309-reasoning: low / medium / high (no none, no xhigh)
-	consoleAlias("grok-4.20-0309-reasoning-low", "grok-4.20-0309-reasoning", "grok-4.20-0309-reasoning", "low"),
-	consoleAlias("grok-4.20-0309-reasoning-medium", "grok-4.20-0309-reasoning", "grok-4.20-0309-reasoning", "medium"),
-	consoleAlias("grok-4.20-0309-reasoning-high", "grok-4.20-0309-reasoning", "grok-4.20-0309-reasoning", "high"),
-	// multi-agent: low / medium / high / xhigh (effort controls agent count)
 	consoleAlias("grok-4.20-multi-agent-low", "grok-4.20-multi-agent-0309", "grok-4.20-multi-agent-0309", "low"),
 	consoleAlias("grok-4.20-multi-agent-medium", "grok-4.20-multi-agent-0309", "grok-4.20-multi-agent-0309", "medium"),
 	consoleAlias("grok-4.20-multi-agent-high", "grok-4.20-multi-agent-0309", "grok-4.20-multi-agent-0309", "high"),

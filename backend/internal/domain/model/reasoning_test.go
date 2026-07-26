@@ -10,6 +10,7 @@ func TestSupportedReasoningEffortsPerModel(t *testing.T) {
 		{model: "grok-4.5", want: []string{"low", "medium", "high"}},
 		{model: "Build/grok-4.5", want: []string{"low", "medium", "high"}},
 		{model: "grok-4.3", want: []string{"none", "low", "medium", "high"}},
+		{model: "grok-4.20-0309-reasoning", want: []string{"low", "medium", "high"}},
 		{model: "grok-4.20-multi-agent-0309", want: []string{"low", "medium", "high", "xhigh"}},
 		{model: "grok-build-0.1", want: []string{"none"}},
 		{model: "unknown-model", want: []string{"none"}},

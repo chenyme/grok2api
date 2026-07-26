@@ -424,23 +424,6 @@ export function ClientKeysPage() {
                   {form.formState.errors.expiresAt ? <p className="text-xs text-destructive">{form.formState.errors.expiresAt.message}</p> : null}
                 </div>
               </div>
-              <section className="flex items-center justify-between gap-4 rounded-lg bg-muted/25 px-3 py-2.5">
-                <div className="min-w-0">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <Label htmlFor="key-model-aliases">{t("keys.modelAliases")}</Label>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("keys.modelAliasesDescription")}>
-                          <CircleHelp className="size-3.5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-72">{t("keys.modelAliasesDescription")}</TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{allowModelAliases ? t("keys.modelAliasesOn") : t("keys.modelAliasesOff")}</p>
-                </div>
-                <Switch className="shrink-0" id="key-model-aliases" checked={allowModelAliases} onCheckedChange={(checked) => form.setValue("allowModelAliases", checked, { shouldDirty: true })} />
-              </section>
               <fieldset className="min-w-0 space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <legend className="text-xs font-medium">{t("keys.models")}</legend>
@@ -469,6 +452,30 @@ export function ClientKeysPage() {
                   {modelsQuery.data && modelsQuery.data.total > modelsQuery.data.pageSize ? <ModelOptionPagination page={modelsQuery.data.page} pageSize={modelsQuery.data.pageSize} total={modelsQuery.data.total} onPageChange={setModelOptionsPage} /> : null}
                 </div>
               </fieldset>
+              <section className="flex items-center justify-between gap-4 rounded-lg bg-muted/25 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <Label htmlFor="key-model-aliases">{t("keys.modelAliases")}</Label>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("keys.modelAliasesDescription")}>
+                          <CircleHelp className="size-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-96 space-y-2 py-2 text-left leading-relaxed">
+                        <p>{t("keys.modelAliasesDescription")}</p>
+                        <ul className="list-disc space-y-1 pl-4 text-primary-foreground/80">
+                          <li>{t("keys.modelAliasesBuildSupport")}</li>
+                          <li>{t("keys.modelAliasesConsoleSupport")}</li>
+                          <li>{t("keys.modelAliasesUnsupported")}</li>
+                        </ul>
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{allowModelAliases ? t("keys.modelAliasesOn") : t("keys.modelAliasesOff")}</p>
+                </div>
+                <Switch className="shrink-0" id="key-model-aliases" checked={allowModelAliases} onCheckedChange={(checked) => form.setValue("allowModelAliases", checked, { shouldDirty: true })} />
+              </section>
               <section className="flex items-center justify-between gap-4 rounded-lg bg-muted/25 px-3 py-2.5">
                 <div className="min-w-0">
                   <Label htmlFor="key-enabled">{keyEnabled ? t("common.enabled") : t("common.disabled")}</Label>

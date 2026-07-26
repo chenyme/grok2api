@@ -352,8 +352,8 @@ func (s *Service) CompactResponse(ctx context.Context, input Input) (*Result, er
 }
 
 // resolvePublicModelRoutes supports both unprefixed downstream model names and explicitly sourced compatibility names.
-// When allowModelAliases is false, thinking-level suffix aliases (and provider aliases that fix reasoning effort)
-// are rejected so only base model names remain usable.
+// Registered Provider aliases are stable compatibility contracts. allowModelAliases gates only dynamically generated
+// reasoning-effort aliases so existing clients keep working after the per-key discovery switch is introduced.
 func (s *Service) resolvePublicModelRoutes(ctx context.Context, publicModel string, allowModelAliases bool) ([]modeldomain.Route, string, error) {
 	routes, err := s.models.GetByPublicIDCandidates(ctx, publicModel)
 	if err == nil {
@@ -361,9 +361,6 @@ func (s *Service) resolvePublicModelRoutes(ctx context.Context, publicModel stri
 	}
 	if s.providers != nil {
 		if alias, ok := s.providers.ResolveModelAlias(publicModel); ok {
-			if alias.ReasoningEffort != "" && !allowModelAliases {
-				return nil, "", err
-			}
 			if alias.Provider != "" && alias.UpstreamModel != "" {
 				route, routeErr := s.models.GetByProviderUpstream(ctx, alias.Provider, alias.UpstreamModel)
 				if routeErr != nil {
@@ -1128,11 +1125,24 @@ func rewriteAliasedModel(body []byte, publicModel, reasoningEffort string, opera
 			payload["reasoning_effort"] = reasoningEffort
 		case audit.OperationMessages:
 			config, _ := payload["output_config"].(map[string]any)
+			if reasoningEffort == modeldomain.ReasoningEffortNone {
+				if config != nil {
+					delete(config, "effort")
+				}
+				if len(config) == 0 {
+					delete(payload, "output_config")
+				} else {
+					payload["output_config"] = config
+				}
+				payload["thinking"] = map[string]any{"type": "disabled"}
+				break
+			}
 			if config == nil {
 				config = make(map[string]any)
 			}
 			config["effort"] = reasoningEffort
 			payload["output_config"] = config
+			payload["thinking"] = map[string]any{"type": "adaptive"}
 		default:
 			reasoning, _ := payload["reasoning"].(map[string]any)
 			if reasoning == nil {
