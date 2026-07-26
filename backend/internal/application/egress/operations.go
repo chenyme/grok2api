@@ -300,7 +300,7 @@ func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult
 		}
 		ids = make([]uint64, 0, len(nodes))
 		for _, node := range nodes {
-			if node.Enabled && node.EncryptedProxyURL != "" {
+			if node.EncryptedProxyURL != "" {
 				ids = append(ids, node.ID)
 			}
 		}

@@ -55,6 +55,50 @@ func TestEgressOperationsAutoAssignRespectsNodeCapacity(t *testing.T) {
 	}
 }
 
+func TestEgressOperationsManualProbeIncludesDisabledConfiguredNodes(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	enabled := createHealthyEgressNode(t, ctx, nodes, cipher, "enabled", 0)
+	disabled := createHealthyEgressNode(t, ctx, nodes, cipher, "disabled", 0)
+	disabled.Enabled = false
+	disabled.ProbeStatus = egress.ProbeStatusUnknown
+	disabled.LastProbedAt = nil
+	if _, err := nodes.UpdateEgressNode(ctx, disabled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodes.CreateEgressNode(ctx, egress.Node{
+		Name: "direct", Scope: egress.ScopeBuild, Enabled: false, Health: 1, ProbeStatus: egress.ProbeStatusUnknown,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+	testedAt := time.Date(2026, time.July, 26, 6, 0, 0, 0, time.UTC)
+	service.SetNodeProber(egressProbeStub{result: egress.ProbeResult{
+		Status: egress.ProbeStatusHealthy, TestedAt: testedAt, LatencyMS: 42, ExitIP: "203.0.113.10", ExitCountry: "US",
+	}})
+
+	result, err := service.TestNodes(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Requested != 2 || result.Healthy != 2 || result.Unhealthy != 0 {
+		t.Fatalf("manual probe result = %#v", result)
+	}
+	actual, err := nodes.GetEgressNode(ctx, disabled.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.ProbeStatus != egress.ProbeStatusHealthy || actual.LastProbedAt == nil || !actual.LastProbedAt.Equal(testedAt) {
+		t.Fatalf("disabled node was not probed: %#v", actual)
+	}
+	if _, err := nodes.GetEgressNode(ctx, enabled.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEgressOperationsAutoAssignMovesAccountOffUnhealthyNode(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
