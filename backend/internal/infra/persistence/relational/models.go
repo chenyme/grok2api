@@ -520,7 +520,7 @@ func (egressNodeModel) TableName() string { return "egress_nodes" }
 
 type egressOperationsConfigModel struct {
 	ID                        uint64    `gorm:"primaryKey;check:chk_egress_operations_config_id,id = 1"`
-	ProbeProvider             string    `gorm:"size:16;not null;default:ipinfo;check:chk_egress_operations_config_probe_provider,probe_provider IN ('ipinfo','cloudflare')"`
+	ProbeProvider             string    `gorm:"size:16;not null;default:cloudflare;check:chk_egress_operations_config_probe_provider,probe_provider IN ('ipinfo','cloudflare')"`
 	ProbeIntervalSeconds      int       `gorm:"not null;default:900;check:chk_egress_operations_config_probe_interval,probe_interval_seconds BETWEEN 60 AND 86400"`
 	AutoAssignEnabled         bool      `gorm:"not null;default:false"`
 	AutoBalanceEnabled        bool      `gorm:"not null;default:false"`

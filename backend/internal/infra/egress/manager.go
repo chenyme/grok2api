@@ -300,7 +300,7 @@ func (m *Manager) AcquireIfConfigured(ctx context.Context, scope domain.Scope, a
 	return m.acquire(ctx, scope, affinity, false, "", egressNodeFromContext(ctx))
 }
 
-// ProbeEgressNode verifies IPv4 and IPv6 independently through fixed IPinfo
+// ProbeEgressNode verifies IPv4 and IPv6 independently through fixed provider
 // endpoints. The targets are intentionally not caller-controlled, so management
 // APIs cannot turn proxy tests into an internal-network request primitive.
 func (m *Manager) ProbeEgressNode(ctx context.Context, nodeID uint64) (domain.ProbeResult, error) {
@@ -309,7 +309,7 @@ func (m *Manager) ProbeEgressNode(ctx context.Context, nodeID uint64) (domain.Pr
 		result domain.ProbeFamilyResult
 		err    error
 	}
-	provider := domain.ProbeProviderIPInfo
+	provider := domain.ProbeProviderCloudflare
 	config, supported, configErr := m.loadOperationsConfig(ctx, time.Now().UTC())
 	if configErr != nil {
 		return domain.ProbeResult{

@@ -198,7 +198,7 @@ func (value ProbeProvider) IsValid() bool {
 
 func (value ProbeProvider) Normalized() ProbeProvider {
 	if !value.IsValid() {
-		return ProbeProviderIPInfo
+		return ProbeProviderCloudflare
 	}
 	return value
 }
@@ -218,7 +218,7 @@ type OperationsConfig struct {
 
 func DefaultOperationsConfig() OperationsConfig {
 	return OperationsConfig{
-		ProbeProvider:             ProbeProviderIPInfo,
+		ProbeProvider:             ProbeProviderCloudflare,
 		ProbeIntervalSeconds:      900,
 		AssignmentIntervalSeconds: 300,
 		Fallbacks: map[Scope]FallbackConfig{

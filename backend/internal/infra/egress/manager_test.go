@@ -156,7 +156,7 @@ func TestProbeEgressNodeKeepsIPv4AndIPv6ResultsSeparate(t *testing.T) {
 	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
 		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
 			payload := `{"ip":"198.51.100.9"}`
-			if request.URL.Host == "v6.ipinfo.io" {
+			if request.URL.Hostname() == "2606:4700:4700::1111" {
 				payload = `{"ip":"2001:db8::9"}`
 			}
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload))}, nil
@@ -184,7 +184,7 @@ func TestProbeEgressNodeIsHealthyWhenOnlyIPv4Works(t *testing.T) {
 	manager := NewManager(&mutableEgressRepository{node: domain.Node{ID: 10, Name: "v4-only", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}}, cipher)
 	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
 		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
-			if request.URL.Host == "v6.ipinfo.io" {
+			if request.URL.Hostname() == "2606:4700:4700::1111" {
 				return nil, errors.New("network is unreachable")
 			}
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ip":"198.51.100.10"}`))}, nil
@@ -239,6 +239,12 @@ func TestProbeEgressNodeUsesConfiguredCloudflareEndpoints(t *testing.T) {
 		if _, ok := requested.Load(endpoint); !ok {
 			t.Fatalf("Cloudflare endpoint %q was not requested", endpoint)
 		}
+	}
+}
+
+func TestProbeEndpointsDefaultToCloudflare(t *testing.T) {
+	if ipv4, ipv6 := probeEndpoints(""); ipv4 != cloudflareIPv4ProbeEndpoint || ipv6 != cloudflareIPv6ProbeEndpoint {
+		t.Fatalf("default probe endpoints = %q, %q", ipv4, ipv6)
 	}
 }
 
