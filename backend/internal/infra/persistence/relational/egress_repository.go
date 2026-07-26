@@ -554,6 +554,7 @@ func fromEgressSubscriptionSourceDomain(value egress.SubscriptionSource) egressS
 
 func toEgressOperationsConfigDomain(row egressOperationsConfigModel) egress.OperationsConfig {
 	return egress.OperationsConfig{
+		ProbeProvider:        egress.ProbeProvider(row.ProbeProvider).Normalized(),
 		ProbeIntervalSeconds: row.ProbeIntervalSeconds, AutoAssignEnabled: row.AutoAssignEnabled, AutoBalanceEnabled: row.AutoBalanceEnabled,
 		AssignmentIntervalSeconds: row.AssignmentIntervalSeconds,
 		Fallbacks: map[egress.Scope]egress.FallbackConfig{
@@ -572,7 +573,7 @@ func fromEgressOperationsConfigDomain(value egress.OperationsConfig) egressOpera
 	consoleFallback := value.FallbackFor(egress.ScopeConsole)
 	webAssetFallback := value.FallbackFor(egress.ScopeWebAsset)
 	return egressOperationsConfigModel{
-		ID: 1, ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
+		ID: 1, ProbeProvider: string(value.ProbeProvider.Normalized()), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
 		BuildFallbackMode: string(buildFallback.Mode), BuildFallbackNodeID: buildFallback.NodeID,
 		WebFallbackMode: string(webFallback.Mode), WebFallbackNodeID: webFallback.NodeID,

@@ -66,7 +66,7 @@ function defaultFallbacks(): Record<EgressScope, EgressFallbackConfigDTO> {
 }
 
 const defaultOperationsForm: Omit<EgressOperationsConfigDTO, "updatedAt"> = {
-  probeIntervalSeconds: 900, autoAssignEnabled: false, autoBalanceEnabled: false, assignmentIntervalSeconds: 300, fallbacks: defaultFallbacks(),
+  probeProvider: "ipinfo", probeIntervalSeconds: 900, autoAssignEnabled: false, autoBalanceEnabled: false, assignmentIntervalSeconds: 300, fallbacks: defaultFallbacks(),
 };
 
 function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOperationsConfigDTO, "updatedAt"> {
@@ -74,6 +74,7 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOpera
 
   const defaults = defaultFallbacks();
   return {
+    probeProvider: value.probeProvider,
     probeIntervalSeconds: value.probeIntervalSeconds,
     autoAssignEnabled: value.autoAssignEnabled,
     autoBalanceEnabled: value.autoBalanceEnabled,
@@ -195,6 +196,15 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
 
         {operationsQuery.isError ? <ErrorState message={operationsQuery.error.message} onRetry={() => void operationsQuery.refetch()} /> : operationsQuery.isPending ? <LoadingState /> : (
           <div className="space-y-0">
+            <AutomationRow controlId="egress-probe-provider" label={t("settings.egress.probeProvider")} description={t("settings.egress.probeProviderHelp")}>
+              <Select value={operationsForm.probeProvider} onValueChange={(probeProvider: "ipinfo" | "cloudflare") => setOperationsDraft({ ...operationsForm, probeProvider })}>
+                <SelectTrigger id="egress-probe-provider" className="h-8 w-44"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ipinfo">IPinfo</SelectItem>
+                  <SelectItem value="cloudflare">Cloudflare</SelectItem>
+                </SelectContent>
+              </Select>
+            </AutomationRow>
             <AutomationRow controlId="egress-probe-interval" label={t("settings.egress.probeInterval")} description={t("settings.egress.probeIntervalHelp")}>
               <IntervalInput id="egress-probe-interval" value={operationsForm.probeIntervalSeconds} unit={t("settings.units.seconds")} onChange={(probeIntervalSeconds) => setOperationsDraft({ ...operationsForm, probeIntervalSeconds })} />
             </AutomationRow>

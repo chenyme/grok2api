@@ -64,7 +64,7 @@ export type EgressSourceInput = {
   refreshIntervalSeconds: number; defaultAccountCapacity: number;
 };
 export type EgressOperationsConfigDTO = {
-  probeIntervalSeconds: number; autoAssignEnabled: boolean; autoBalanceEnabled: boolean;
+  probeProvider: "ipinfo" | "cloudflare"; probeIntervalSeconds: number; autoAssignEnabled: boolean; autoBalanceEnabled: boolean;
   assignmentIntervalSeconds: number; fallbacks: Record<EgressScope, EgressFallbackConfigDTO>; updatedAt: string;
 };
 export type EgressImportResultDTO = { imported: number; skipped: number };
@@ -195,7 +195,7 @@ const decodeEgressProbeBatchResult = createObjectDecoder<EgressProbeBatchResultD
 const decodeEgressRebalanceResult = createObjectDecoder<EgressRebalanceResultDTO>("egress rebalance result", { assigned: isNumber, rebalanced: isNumber, unplaced: isNumber });
 const egressFallbackConfigValidator = hasShape({ mode: isOneOf("none", "direct", "fixed"), nodeId: isOptional(isString) });
 const decodeEgressOperationsConfig = createObjectDecoder<EgressOperationsConfigDTO>("egress operations config", {
-  probeIntervalSeconds: isNumber, autoAssignEnabled: isBoolean, autoBalanceEnabled: isBoolean, assignmentIntervalSeconds: isNumber,
+  probeProvider: isOneOf("ipinfo", "cloudflare"), probeIntervalSeconds: isNumber, autoAssignEnabled: isBoolean, autoBalanceEnabled: isBoolean, assignmentIntervalSeconds: isNumber,
   fallbacks: isRecordOf(egressFallbackConfigValidator), updatedAt: isString,
 });
 

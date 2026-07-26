@@ -185,10 +185,29 @@ type FallbackConfig struct {
 	NodeID uint64
 }
 
+type ProbeProvider string
+
+const (
+	ProbeProviderIPInfo     ProbeProvider = "ipinfo"
+	ProbeProviderCloudflare ProbeProvider = "cloudflare"
+)
+
+func (value ProbeProvider) IsValid() bool {
+	return value == ProbeProviderIPInfo || value == ProbeProviderCloudflare
+}
+
+func (value ProbeProvider) Normalized() ProbeProvider {
+	if !value.IsValid() {
+		return ProbeProviderIPInfo
+	}
+	return value
+}
+
 // OperationsConfig controls background probe, account assignment, and egress
 // fallback work. It defaults to a conservative disabled state for mutations
 // and fallback routing.
 type OperationsConfig struct {
+	ProbeProvider             ProbeProvider
 	ProbeIntervalSeconds      int
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
@@ -199,6 +218,7 @@ type OperationsConfig struct {
 
 func DefaultOperationsConfig() OperationsConfig {
 	return OperationsConfig{
+		ProbeProvider:             ProbeProviderIPInfo,
 		ProbeIntervalSeconds:      900,
 		AssignmentIntervalSeconds: 300,
 		Fallbacks: map[Scope]FallbackConfig{

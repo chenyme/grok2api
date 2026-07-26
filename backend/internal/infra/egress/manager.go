@@ -45,6 +45,8 @@ const maxCachedClearances = 16384
 const clearanceCacheEvictionBatch = 256
 const egressIPv4ProbeEndpoint = "https://ipinfo.io/json"
 const egressIPv6ProbeEndpoint = "https://v6.ipinfo.io/json"
+const cloudflareIPv4ProbeEndpoint = "https://1.1.1.1/cdn-cgi/trace"
+const cloudflareIPv6ProbeEndpoint = "https://[2606:4700:4700::1111]/cdn-cgi/trace"
 const egressProbeTimeout = 15 * time.Second
 const clientCreationRetryLimit = 3
 const maxClientVersionEntries = 4096
@@ -307,11 +309,22 @@ func (m *Manager) ProbeEgressNode(ctx context.Context, nodeID uint64) (domain.Pr
 		result domain.ProbeFamilyResult
 		err    error
 	}
+	provider := domain.ProbeProviderIPInfo
+	config, supported, configErr := m.loadOperationsConfig(ctx, time.Now().UTC())
+	if configErr != nil {
+		return domain.ProbeResult{
+			Status: domain.ProbeStatusUnhealthy, TestedAt: time.Now().UTC(), Error: "读取代理探测服务配置失败",
+		}, configErr
+	}
+	if supported {
+		provider = config.ProbeProvider.Normalized()
+	}
+	ipv4Endpoint, ipv6Endpoint := probeEndpoints(provider)
 	outcomes := make(chan outcome, 2)
-	for family, endpoint := range map[string]string{"ipv4": egressIPv4ProbeEndpoint, "ipv6": egressIPv6ProbeEndpoint} {
+	for _, target := range []struct{ family, endpoint string }{{"ipv4", ipv4Endpoint}, {"ipv6", ipv6Endpoint}} {
 		go func() {
-			result, err := m.probeEgressNode(ctx, nodeID, family, endpoint)
-			outcomes <- outcome{family: family, result: result, err: err}
+			result, err := m.probeEgressNode(ctx, nodeID, provider, target.family, target.endpoint)
+			outcomes <- outcome{family: target.family, result: result, err: err}
 		}()
 	}
 	var ipv4Err, ipv6Err error
@@ -348,7 +361,14 @@ func (m *Manager) ProbeEgressNode(ctx context.Context, nodeID uint64) (domain.Pr
 	return result, errors.Join(ipv4Err, ipv6Err, errors.New(result.Error))
 }
 
-func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, family, targetURL string) (result domain.ProbeFamilyResult, probeErr error) {
+func probeEndpoints(provider domain.ProbeProvider) (string, string) {
+	if provider.Normalized() == domain.ProbeProviderCloudflare {
+		return cloudflareIPv4ProbeEndpoint, cloudflareIPv6ProbeEndpoint
+	}
+	return egressIPv4ProbeEndpoint, egressIPv6ProbeEndpoint
+}
+
+func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, provider domain.ProbeProvider, family, targetURL string) (result domain.ProbeFamilyResult, probeErr error) {
 	startedAt := time.Now().UTC()
 	result = domain.ProbeFamilyResult{Status: domain.ProbeStatusUnhealthy, TestedAt: startedAt}
 	stage := "validate_node"
@@ -373,6 +393,7 @@ func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, family, ta
 			"node_id", nodeID,
 			"node_name", nodeName,
 			"scope", nodeScope,
+			"probe_provider", provider,
 			"address_family", family,
 			"endpoint", targetURL,
 			"stage", stage,
@@ -505,16 +526,14 @@ func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, family, ta
 		result.Error = fmt.Sprintf("探测服务返回 HTTP %d", response.StatusCode)
 		return result, errors.New(result.Error)
 	}
-	var payload struct {
-		IP string `json:"ip"`
-	}
 	stage = "decode_response"
-	if err := json.Unmarshal(body, &payload); err != nil {
+	exitIP, err := decodeProbeIP(body)
+	if err != nil {
 		result.Error = "探测服务响应格式无效"
 		return result, err
 	}
 	stage = "validate_exit_ip"
-	address, err := netip.ParseAddr(strings.TrimSpace(payload.IP))
+	address, err := netip.ParseAddr(exitIP)
 	if err != nil || (family == "ipv4" && !address.Is4()) || (family == "ipv6" && !address.Is6()) {
 		result.Error = fmt.Sprintf("探测服务未返回有效 %s 出口 IP", strings.ToUpper(family))
 		if err == nil {
@@ -529,6 +548,22 @@ func (m *Manager) probeEgressNode(ctx context.Context, nodeID uint64, family, ta
 	result.Error = ""
 	stage = "complete"
 	return result, nil
+}
+
+func decodeProbeIP(body []byte) (string, error) {
+	var payload struct {
+		IP string `json:"ip"`
+	}
+	if json.Unmarshal(body, &payload) == nil && strings.TrimSpace(payload.IP) != "" {
+		return strings.TrimSpace(payload.IP), nil
+	}
+	for line := range strings.SplitSeq(string(body), "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
+		if found && key == "ip" && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value), nil
+		}
+	}
+	return "", errors.New("probe response does not contain an IP address")
 }
 
 func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, boundNodeID uint64) (*Lease, bool, error) {

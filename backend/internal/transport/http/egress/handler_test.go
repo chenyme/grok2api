@@ -27,7 +27,7 @@ func TestNewNodeResponseIncludesIPv4AndIPv6ProbeDetails(t *testing.T) {
 
 func TestOperationsConfigRequestParsesFallbacks(t *testing.T) {
 	input, err := (operationsConfigRequest{
-		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+		ProbeProvider: "cloudflare", ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
 		Fallbacks: map[string]operationsFallbackRequest{
 			"grok_build": {Mode: "fixed", NodeID: "42"},
 			"grok_web":   {Mode: "direct"},
@@ -41,6 +41,9 @@ func TestOperationsConfigRequestParsesFallbacks(t *testing.T) {
 	}
 	if fallback := input.Fallbacks[egressdomain.ScopeWeb]; fallback.Mode != egressdomain.FallbackModeDirect || fallback.NodeID != 0 {
 		t.Fatalf("Web fallback = %#v", fallback)
+	}
+	if input.ProbeProvider != egressdomain.ProbeProviderCloudflare {
+		t.Fatalf("probe provider = %q", input.ProbeProvider)
 	}
 }
 

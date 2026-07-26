@@ -98,7 +98,7 @@ func TestProbeEgressNodeLogsSuccessWithoutProxyCredentials(t *testing.T) {
 	var output bytes.Buffer
 	manager.SetLogger(slog.New(slog.NewTextHandler(&output, nil)))
 
-	result, err := manager.probeEgressNode(context.Background(), 42, "ipv4", "https://probe.example/ip")
+	result, err := manager.probeEgressNode(context.Background(), 42, "test", "ipv4", "https://probe.example/ip")
 	if err != nil || result.Status != domain.ProbeStatusHealthy || result.ExitIP != "203.0.113.8" {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -130,7 +130,7 @@ func TestProbeEgressNodeLogsSanitizedFailureStage(t *testing.T) {
 	var output bytes.Buffer
 	manager.SetLogger(slog.New(slog.NewTextHandler(&output, nil)))
 
-	result, err := manager.probeEgressNode(context.Background(), 7, "ipv4", "https://probe.example/ip")
+	result, err := manager.probeEgressNode(context.Background(), 7, "test", "ipv4", "https://probe.example/ip")
 	if err == nil || result.Error != "代理连接失败" {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -197,6 +197,62 @@ func TestProbeEgressNodeIsHealthyWhenOnlyIPv4Works(t *testing.T) {
 	}
 	if result.Status != domain.ProbeStatusHealthy || result.IPv4.Status != domain.ProbeStatusHealthy || result.IPv6.Status != domain.ProbeStatusUnhealthy || result.IPv6.Error == "" {
 		t.Fatalf("IPv4-only result = %#v", result)
+	}
+}
+
+func TestProbeEgressNodeUsesConfiguredCloudflareEndpoints(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("http://proxy.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := domain.DefaultOperationsConfig()
+	config.ProbeProvider = domain.ProbeProviderCloudflare
+	repository := fallbackEgressRepository{
+		egressRepositoryTestStub: egressRepositoryTestStub{nodes: []domain.Node{{ID: 11, Name: "cloudflare", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}}},
+		config:                   config,
+	}
+	manager := NewManager(repository, cipher)
+	var requested sync.Map
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
+			requested.Store(request.URL.String(), true)
+			exitIP := "198.51.100.11"
+			if request.URL.Hostname() == "2606:4700:4700::1111" {
+				exitIP = "2001:db8::11"
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("fl=test\nip=" + exitIP + "\ncolo=SJC\n"))}, nil
+		}}, nil
+	}
+
+	result, err := manager.ProbeEgressNode(context.Background(), 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IPv4.ExitIP != "198.51.100.11" || result.IPv6.ExitIP != "2001:db8::11" {
+		t.Fatalf("Cloudflare probe result = %#v", result)
+	}
+	for _, endpoint := range []string{cloudflareIPv4ProbeEndpoint, cloudflareIPv6ProbeEndpoint} {
+		if _, ok := requested.Load(endpoint); !ok {
+			t.Fatalf("Cloudflare endpoint %q was not requested", endpoint)
+		}
+	}
+}
+
+func TestDecodeProbeIPSupportsJSONAndCloudflareTrace(t *testing.T) {
+	for name, body := range map[string]string{
+		"json":             `{"ip":"203.0.113.12"}`,
+		"cloudflare trace": "fl=test\nip=2001:db8::12\ncolo=SJC\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			value, err := decodeProbeIP([]byte(body))
+			if err != nil || (value != "203.0.113.12" && value != "2001:db8::12") {
+				t.Fatalf("decodeProbeIP() = %q, %v", value, err)
+			}
+		})
 	}
 }
 

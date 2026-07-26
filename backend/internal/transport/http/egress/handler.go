@@ -355,6 +355,7 @@ type probeBatchRequest struct {
 }
 
 type operationsConfigRequest struct {
+	ProbeProvider             string                               `json:"probeProvider"`
 	ProbeIntervalSeconds      int                                  `json:"probeIntervalSeconds"`
 	AutoAssignEnabled         bool                                 `json:"autoAssignEnabled"`
 	AutoBalanceEnabled        bool                                 `json:"autoBalanceEnabled"`
@@ -368,6 +369,7 @@ type operationsFallbackRequest struct {
 }
 
 type operationsConfigResponse struct {
+	ProbeProvider             string                                `json:"probeProvider"`
 	ProbeIntervalSeconds      int                                   `json:"probeIntervalSeconds"`
 	AutoAssignEnabled         bool                                  `json:"autoAssignEnabled"`
 	AutoBalanceEnabled        bool                                  `json:"autoBalanceEnabled"`
@@ -383,7 +385,7 @@ type operationsFallbackResponse struct {
 
 func (value operationsConfigRequest) input() (egressapp.OperationsConfigInput, error) {
 	result := egressapp.OperationsConfigInput{
-		ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
+		ProbeProvider: egressdomain.ProbeProvider(strings.TrimSpace(value.ProbeProvider)), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
 	}
 	if value.Fallbacks == nil {
@@ -432,7 +434,7 @@ func newOperationsConfigResponse(value egressdomain.OperationsConfig) operations
 		fallbacks[string(scope)] = item
 	}
 	return operationsConfigResponse{
-		ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
+		ProbeProvider: string(value.ProbeProvider.Normalized()), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
 		Fallbacks: fallbacks, UpdatedAt: value.UpdatedAt,
 	}

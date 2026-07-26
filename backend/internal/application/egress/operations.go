@@ -80,6 +80,7 @@ type ProbeBatchResult struct {
 }
 
 type OperationsConfigInput struct {
+	ProbeProvider             domain.ProbeProvider
 	ProbeIntervalSeconds      int
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
@@ -361,6 +362,13 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 	if err != nil {
 		return domain.OperationsConfig{}, err
 	}
+	probeProvider := input.ProbeProvider
+	if probeProvider == "" {
+		probeProvider = current.ProbeProvider.Normalized()
+	}
+	if !probeProvider.IsValid() {
+		return domain.OperationsConfig{}, fmt.Errorf("%w: 不支持的代理探测服务", ErrInvalidInput)
+	}
 	fallbacks := current.Fallbacks
 	if input.Fallbacks != nil {
 		fallbacks, err = s.validateFallbacks(ctx, current, input.Fallbacks)
@@ -369,7 +377,7 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 		}
 	}
 	saved, err := operations.SaveEgressOperationsConfig(ctx, domain.OperationsConfig{
-		ProbeIntervalSeconds: input.ProbeIntervalSeconds, AutoAssignEnabled: input.AutoAssignEnabled,
+		ProbeProvider: probeProvider, ProbeIntervalSeconds: input.ProbeIntervalSeconds, AutoAssignEnabled: input.AutoAssignEnabled,
 		AutoBalanceEnabled: input.AutoBalanceEnabled, AssignmentIntervalSeconds: input.AssignmentIntervalSeconds,
 		Fallbacks: fallbacks, UpdatedAt: time.Now().UTC(),
 	})

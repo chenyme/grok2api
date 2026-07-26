@@ -591,7 +591,7 @@ func TestEgressOperationsConfigPersistsFixedFallback(t *testing.T) {
 	service := egressapp.NewService(nodes, cipher, "test-browser")
 
 	saved, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
-		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+		ProbeProvider: egress.ProbeProviderCloudflare, ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
 		Fallbacks: map[egress.Scope]egressapp.FallbackConfigInput{
 			egress.ScopeBuild: {Mode: egress.FallbackModeFixed, NodeID: fixed.ID},
 			egress.ScopeWeb:   {Mode: egress.FallbackModeDirect},
@@ -602,6 +602,9 @@ func TestEgressOperationsConfigPersistsFixedFallback(t *testing.T) {
 	}
 	if fallback := saved.FallbackFor(egress.ScopeBuild); fallback.Mode != egress.FallbackModeFixed || fallback.NodeID != fixed.ID {
 		t.Fatalf("saved Build fallback = %#v", fallback)
+	}
+	if saved.ProbeProvider != egress.ProbeProviderCloudflare {
+		t.Fatalf("saved probe provider = %q", saved.ProbeProvider)
 	}
 	if fallback := saved.FallbackFor(egress.ScopeWeb); fallback.Mode != egress.FallbackModeDirect || fallback.NodeID != 0 {
 		t.Fatalf("saved Web fallback = %#v", fallback)
@@ -619,6 +622,9 @@ func TestEgressOperationsConfigPersistsFixedFallback(t *testing.T) {
 	}
 	if fallback := stored.FallbackFor(egress.ScopeWeb); fallback.Mode != egress.FallbackModeDirect || fallback.NodeID != 0 {
 		t.Fatalf("stored Web fallback = %#v", fallback)
+	}
+	if stored.ProbeProvider != egress.ProbeProviderCloudflare {
+		t.Fatalf("stored probe provider = %q", stored.ProbeProvider)
 	}
 	updated, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
 		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
