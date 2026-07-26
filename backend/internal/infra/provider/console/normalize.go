@@ -141,6 +141,10 @@ func normalizeReasoning(payload map[string]any, spec ModelSpec) {
 	}
 	reasoning, _ := payload["reasoning"].(map[string]any)
 	if reasoning == nil {
+		if spec.DefaultReasoningEffort == "" {
+			delete(payload, "reasoning")
+			return
+		}
 		reasoning = make(map[string]any)
 	}
 	effort, _ := reasoning["effort"].(string)

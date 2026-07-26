@@ -80,7 +80,7 @@ func (r *ClientKeyRepository) UpdateManyEnabled(ctx context.Context, ids []uint6
 }
 
 func (r *ClientKeyRepository) Create(ctx context.Context, value clientkey.Key) (clientkey.Key, error) {
-	row := clientKeyModel{Name: value.Name, Prefix: value.Prefix, SecretHash: value.SecretHash, EncryptedSecret: value.EncryptedSecret, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt, RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent, BillingLimitUSDTicks: value.BillingLimitUSDTicks, BilledUsageUSDTicks: value.BilledUsageUSDTicks, ReservedUsageUSDTicks: value.ReservedUsageUSDTicks}
+	row := clientKeyModel{Name: value.Name, Prefix: value.Prefix, SecretHash: value.SecretHash, EncryptedSecret: value.EncryptedSecret, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt, RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent, BillingLimitUSDTicks: value.BillingLimitUSDTicks, BilledUsageUSDTicks: value.BilledUsageUSDTicks, ReservedUsageUSDTicks: value.ReservedUsageUSDTicks, AllowModelAliases: value.AllowModelAliases}
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&row).Error; err != nil {
 			return err
@@ -138,7 +138,8 @@ func (r *ClientKeyRepository) Update(ctx context.Context, value clientkey.Key) (
 		result := tx.Model(&clientKeyModel{}).Where("id = ?", value.ID).Updates(map[string]any{
 			"name": value.Name, "enabled": value.Enabled, "expires_at": value.ExpiresAt,
 			"rpm_limit": value.RPMLimit, "max_concurrent": value.MaxConcurrent,
-			"billing_limit_usd_ticks": value.BillingLimitUSDTicks, "updated_at": time.Now().UTC(),
+			"billing_limit_usd_ticks": value.BillingLimitUSDTicks, "allow_model_aliases": value.AllowModelAliases,
+			"updated_at": time.Now().UTC(),
 		})
 		if result.Error != nil {
 			return result.Error

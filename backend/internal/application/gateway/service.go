@@ -468,27 +468,39 @@ func (s *Service) CompactResponse(ctx context.Context, input Input) (*Result, er
 }
 
 // resolvePublicModelRoutes supports both unprefixed downstream model names and explicitly sourced compatibility names.
-func (s *Service) resolvePublicModelRoutes(ctx context.Context, publicModel string) ([]modeldomain.Route, string, error) {
+// Registered Provider aliases are stable compatibility contracts. allowModelAliases gates only dynamically generated
+// reasoning-effort aliases so existing clients keep working after the per-key discovery switch is introduced.
+func (s *Service) resolvePublicModelRoutes(ctx context.Context, publicModel string, allowModelAliases bool) ([]modeldomain.Route, string, error) {
 	routes, err := s.models.GetByPublicIDCandidates(ctx, publicModel)
 	if err == nil {
 		return routes, "", nil
 	}
-	if s.providers == nil {
-		return nil, "", err
-	}
-	alias, ok := s.providers.ResolveModelAlias(publicModel)
-	if !ok {
-		return nil, "", err
-	}
-	if alias.Provider != "" && alias.UpstreamModel != "" {
-		route, routeErr := s.models.GetByProviderUpstream(ctx, alias.Provider, alias.UpstreamModel)
-		if routeErr != nil {
-			return nil, "", routeErr
+	if s.providers != nil {
+		if alias, ok := s.providers.ResolveModelAlias(publicModel); ok {
+			if alias.Provider != "" && alias.UpstreamModel != "" {
+				route, routeErr := s.models.GetByProviderUpstream(ctx, alias.Provider, alias.UpstreamModel)
+				if routeErr != nil {
+					return nil, "", routeErr
+				}
+				return []modeldomain.Route{route}, alias.ReasoningEffort, nil
+			}
+			routes, resolveErr := s.models.GetByPublicIDCandidates(ctx, alias.PublicModel)
+			return routes, alias.ReasoningEffort, resolveErr
 		}
-		return []modeldomain.Route{route}, alias.ReasoningEffort, nil
 	}
-	routes, err = s.models.GetByPublicIDCandidates(ctx, alias.PublicModel)
-	return routes, alias.ReasoningEffort, err
+	// Dynamic effort-suffix aliases (e.g. grok-4.5-low) for any provider that exposes the base model.
+	// Only levels the base model truly supports are accepted.
+	if base, effort, ok := modeldomain.ParseReasoningModelAlias(publicModel); ok {
+		if !allowModelAliases {
+			return nil, "", err
+		}
+		routes, resolveErr := s.models.GetByPublicIDCandidates(ctx, base)
+		if resolveErr != nil {
+			return nil, "", resolveErr
+		}
+		return routes, effort, nil
+	}
+	return nil, "", err
 }
 
 // selectConversationRoute selects a route for the named model that satisfies permissions, protocol, and session affinity.
@@ -578,7 +590,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	if operation == "" {
 		operation = audit.OperationResponses
 	}
-	routes, aliasEffort, err := s.resolvePublicModelRoutes(ctx, input.PublicModel)
+	routes, aliasEffort, err := s.resolvePublicModelRoutes(ctx, input.PublicModel, input.ClientKey.AllowModelAliases)
 	if err != nil {
 		return nil, ErrModelNotFound
 	}
@@ -1268,11 +1280,24 @@ func rewriteAliasedModel(body []byte, publicModel, reasoningEffort string, opera
 			payload["reasoning_effort"] = reasoningEffort
 		case audit.OperationMessages:
 			config, _ := payload["output_config"].(map[string]any)
+			if reasoningEffort == modeldomain.ReasoningEffortNone {
+				if config != nil {
+					delete(config, "effort")
+				}
+				if len(config) == 0 {
+					delete(payload, "output_config")
+				} else {
+					payload["output_config"] = config
+				}
+				payload["thinking"] = map[string]any{"type": "disabled"}
+				break
+			}
 			if config == nil {
 				config = make(map[string]any)
 			}
 			config["effort"] = reasoningEffort
 			payload["output_config"] = config
+			payload["thinking"] = map[string]any{"type": "adaptive"}
 		default:
 			reasoning, _ := payload["reasoning"].(map[string]any)
 			if reasoning == nil {

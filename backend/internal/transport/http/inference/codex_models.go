@@ -78,47 +78,40 @@ var codexReasoningDescriptions = map[string]string{
 }
 
 type grokModelCapability struct {
-	contextWindow   int
-	reasoningLevels []string
-	description     string
-	imageInput      bool
+	contextWindow int
+	description   string
+	imageInput    bool
 }
 
+// Metadata besides reasoning levels. Reasoning levels come from domain/model so aliases and
+// Codex catalogs never diverge from the levels each model actually supports.
 var grokCapabilities = map[string]grokModelCapability{
-	"grok-4.5":                     {500000, []string{"low", "medium", "high"}, "xAI Grok 4.5 frontier model with reasoning and vision.", true},
-	"grok-4.3":                     {1000000, []string{"none", "low", "medium", "high"}, "xAI Grok 4.3 high-capacity reasoning model.", true},
-	"grok-build-0.1":               {256000, []string{"none"}, "xAI Grok Build 0.1 coding model.", false},
-	"grok-4.20-0309-reasoning":     {2000000, []string{"low", "medium", "high"}, "xAI Grok 4.20 reasoning model.", true},
-	"grok-4.20-0309-non-reasoning": {2000000, []string{"none"}, "xAI Grok 4.20 non-reasoning model.", true},
-	"grok-4.20-multi-agent-0309":   {2000000, []string{"low", "medium", "high"}, "xAI Grok 4.20 multi-agent model.", true},
-	"grok-3-mini":                  {131072, []string{"low", "medium", "high"}, "xAI Grok 3 Mini model.", false},
-	"grok-3-mini-fast":             {131072, []string{"low", "medium", "high"}, "xAI Grok 3 Mini Fast model.", false},
-	"grok-composer-2.5-fast":       {200000, []string{"none"}, "xAI Grok Composer 2.5 model.", false},
+	"grok-4.5":                     {500000, "xAI Grok 4.5 frontier model with reasoning and vision.", true},
+	"grok-4.3":                     {1000000, "xAI Grok 4.3 high-capacity reasoning model.", true},
+	"grok-build-0.1":               {256000, "xAI Grok Build 0.1 coding model.", false},
+	"grok-4.20-0309-reasoning":     {2000000, "xAI Grok 4.20 reasoning model.", true},
+	"grok-4.20-0309-non-reasoning": {2000000, "xAI Grok 4.20 non-reasoning model.", true},
+	"grok-4.20-multi-agent-0309":   {2000000, "xAI Grok 4.20 multi-agent model.", true},
+	"grok-3-mini":                  {131072, "xAI Grok 3 Mini model.", false},
+	"grok-3-mini-fast":             {131072, "xAI Grok 3 Mini Fast model.", false},
+	"grok-composer-2.5-fast":       {200000, "xAI Grok Composer 2.5 model.", false},
 }
 
 var grokDefaultCapability = grokModelCapability{
-	contextWindow:   128000,
-	reasoningLevels: []string{"none"},
-	description:     "Grok model served via grok2api.",
+	contextWindow: 128000,
+	description:   "Grok model served via grok2api.",
 }
 
-func lookupGrokCapability(slug string) grokModelCapability {
+func lookupGrokCapability(slug string) (grokModelCapability, []string) {
+	// Effort-suffixed aliases inherit the base model's metadata.
+	if base, _, ok := modeldomain.ParseReasoningModelAlias(slug); ok {
+		slug = base
+	}
+	levels := modeldomain.SupportedReasoningEfforts(slug)
 	if capability, ok := grokCapabilities[slug]; ok {
-		return capability
+		return capability, levels
 	}
-	return grokDefaultCapability
-}
-
-func defaultReasoningLevel(levels []string) string {
-	for _, level := range levels {
-		if level == "medium" {
-			return level
-		}
-	}
-	if len(levels) > 0 {
-		return levels[0]
-	}
-	return "none"
+	return grokDefaultCapability, levels
 }
 
 func codexVisibilityForCapability(capability modeldomain.Capability) string {
@@ -154,7 +147,13 @@ func codexReasoningSupported(levels []string) bool {
 func newCodexModelCatalog(items []modelListItem) codexModelCatalog {
 	models := make([]codexModelEntry, 0, len(items))
 	for index, item := range items {
-		capability := lookupGrokCapability(item.ID)
+		capability, reasoningLevels := lookupGrokCapability(item.ID)
+		defaultLevel := modeldomain.DefaultReasoningEffort(item.ID)
+		// Alias entries pin a single effort; advertise only that level for client UX.
+		if _, effort, ok := modeldomain.ParseReasoningModelAlias(item.ID); ok {
+			reasoningLevels = []string{effort}
+			defaultLevel = effort
+		}
 		modalities := []string{"text"}
 		if capability.imageInput {
 			modalities = append(modalities, "image")
@@ -165,13 +164,13 @@ func newCodexModelCatalog(items []modelListItem) codexModelCatalog {
 			value := "freeform"
 			applyPatchToolType = &value
 		}
-		reasoningSupported := codexReasoningSupported(capability.reasoningLevels)
+		reasoningSupported := codexReasoningSupported(reasoningLevels)
 		models = append(models, codexModelEntry{
 			Slug:                              item.ID,
 			DisplayName:                       codexDisplayName(item.ID),
 			Description:                       capability.description,
-			DefaultReasoningLevel:             defaultReasoningLevel(capability.reasoningLevels),
-			SupportedReasoningLevels:          codexReasoningLevelsFor(capability.reasoningLevels),
+			DefaultReasoningLevel:             defaultLevel,
+			SupportedReasoningLevels:          codexReasoningLevelsFor(reasoningLevels),
 			ShellType:                         "shell_command",
 			Visibility:                        codexVisibilityForCapability(item.Capability),
 			MinimalClientVersion:              "0.0.0",

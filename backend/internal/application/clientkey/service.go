@@ -39,6 +39,7 @@ type CreateInput struct {
 	MaxConcurrent        int
 	ConcurrencyUnlimited bool
 	BillingLimitUSDTicks int64
+	AllowModelAliases    bool
 	AllowedModels        []uint64
 }
 
@@ -50,6 +51,7 @@ type UpdateInput struct {
 	RPMLimit             *int
 	MaxConcurrent        *int
 	BillingLimitUSDTicks *int64
+	AllowModelAliases    *bool
 	AllowedModels        *[]uint64
 }
 
@@ -158,7 +160,11 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Created, error
 	if input.RPMLimit < 0 || input.MaxConcurrent < 0 {
 		return Created{}, invalidInput("RPM 和最大并发不能小于零")
 	}
-	value, err := s.keys.Create(ctx, clientkeydomain.Key{Name: strings.TrimSpace(input.Name), Prefix: prefix, SecretHash: security.HashToken(raw), EncryptedSecret: encryptedSecret, Enabled: input.Enabled, ExpiresAt: input.ExpiresAt, RPMLimit: input.RPMLimit, MaxConcurrent: input.MaxConcurrent, BillingLimitUSDTicks: input.BillingLimitUSDTicks, AllowedModels: input.AllowedModels})
+	value, err := s.keys.Create(ctx, clientkeydomain.Key{
+		Name: strings.TrimSpace(input.Name), Prefix: prefix, SecretHash: security.HashToken(raw), EncryptedSecret: encryptedSecret,
+		Enabled: input.Enabled, ExpiresAt: input.ExpiresAt, RPMLimit: input.RPMLimit, MaxConcurrent: input.MaxConcurrent,
+		BillingLimitUSDTicks: input.BillingLimitUSDTicks, AllowModelAliases: input.AllowModelAliases, AllowedModels: input.AllowedModels,
+	})
 	return Created{Key: value, Secret: raw}, mapRepositoryError(err)
 }
 
@@ -218,6 +224,9 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (cli
 			return clientkeydomain.Key{}, invalidInput("billingLimitUsdTicks 超出允许范围")
 		}
 		value.BillingLimitUSDTicks = *input.BillingLimitUSDTicks
+	}
+	if input.AllowModelAliases != nil {
+		value.AllowModelAliases = *input.AllowModelAliases
 	}
 	if input.AllowedModels != nil {
 		value.AllowedModels = *input.AllowedModels
