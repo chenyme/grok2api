@@ -91,7 +91,7 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 		}
 	}
 	query = applyWebAgreementFilter(query, input.Filter.Agreement)
-	query = applyWebAssociationFilter(query, input.Filter.Association)
+	query = applyAssociationFilter(query, input.Filter.Provider, input.Filter.Association)
 	if input.Filter.RestrictIDs {
 		if len(input.Filter.AccountIDs) == 0 {
 			query = query.Where("1 = 0")
@@ -617,6 +617,9 @@ func (r *AccountRepository) LinkWebToBuild(ctx context.Context, webAccountID, bu
 		return repository.ErrConflict
 	}
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
 		var webAccount, buildAccount accountModel
 		if err := tx.Select("id", "provider").First(&webAccount, webAccountID).Error; err != nil {
 			return err
@@ -1271,6 +1274,9 @@ func (r *AccountRepository) listEgressBindingProviders(query *gorm.DB) ([]accoun
 
 func (r *AccountRepository) Delete(ctx context.Context, id uint64) error {
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
 		var lockedID uint64
 		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Pluck("id", &lockedID).Error; err != nil {
 			return err
@@ -1295,6 +1301,9 @@ func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64
 	}
 	var deleted int64
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
 		var lockedIDs []uint64
 		if err := tx.Model(&accountModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", ids).Pluck("id", &lockedIDs).Error; err != nil {
 			return err
@@ -1337,6 +1346,9 @@ func (r *AccountRepository) DeleteAutoCleanReauthCandidates(ctx context.Context,
 	}
 	deletedIDs := make([]uint64, 0, len(candidateIDs))
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountLinkMutation(tx); err != nil {
+			return err
+		}
 		deletable, err := excludeAccountsWithActiveMediaJobs(tx, candidateIDs)
 		if err != nil {
 			return err
@@ -1426,12 +1438,17 @@ func excludeAccountsWithActiveMediaJobs(db *gorm.DB, ids []uint64) ([]uint64, er
 	return out, nil
 }
 
+// activeMediaJobStatuses lists video states that still require the account and block deletion.
+func activeMediaJobStatuses() []string {
+	return []string{string(media.StatusQueued), string(media.StatusInProgress)}
+}
+
 // rejectAccountsWithMediaJobs 仅保护仍需账号继续执行的活动视频任务。
 // completed/failed 已保存账号名称等快照，删除账号后由外键 SET NULL 保留历史。
 func rejectAccountsWithMediaJobs(db *gorm.DB, ids []uint64) error {
 	var count int64
 	if err := db.Model(&mediaJobModel{}).
-		Where("account_id IN ? AND status IN ?", ids, []string{string(media.StatusQueued), string(media.StatusInProgress)}).
+		Where("account_id IN ? AND status IN ?", ids, activeMediaJobStatuses()).
 		Count(&count).Error; err != nil {
 		return err
 	}
@@ -1439,54 +1456,6 @@ func rejectAccountsWithMediaJobs(db *gorm.DB, ids []uint64) error {
 		return fmt.Errorf("%w: 账号仍关联 %d 条排队中或进行中的视频任务，请等待任务结束后重试", repository.ErrConflict, count)
 	}
 	return nil
-}
-
-func (r *AccountRepository) DeleteAccountStatusBatch(ctx context.Context, providerValue account.Provider, status string, now time.Time, limit int) ([]uint64, int, error) {
-	if limit < 1 {
-		return []uint64{}, 0, nil
-	}
-	if status != "disabled" && status != "reauthRequired" && status != "cooldown" {
-		return nil, 0, fmt.Errorf("不支持清理账号状态 %q", status)
-	}
-	deletedIDs := make([]uint64, 0, limit)
-	candidateCount := 0
-	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var candidates []uint64
-		selection := applyAccountStatusFilter(tx.Model(&accountModel{}).Where("provider = ?", providerValue), status, now)
-		if err := selection.Order("id ASC").Limit(limit).Pluck("id", &candidates).Error; err != nil || len(candidates) == 0 {
-			return err
-		}
-		candidateCount = len(candidates)
-		if err := rejectAccountsWithMediaJobs(tx, candidates); err != nil {
-			return err
-		}
-		deletion := applyAccountStatusFilter(tx.Where("id IN ?", candidates), status, now).Delete(&accountModel{})
-		if deletion.Error != nil {
-			return deletion.Error
-		}
-		if deletion.RowsAffected == int64(len(candidates)) {
-			deletedIDs = append(deletedIDs, candidates...)
-			return nil
-		}
-		var remaining []uint64
-		if err := tx.Model(&accountModel{}).Where("id IN ?", candidates).Pluck("id", &remaining).Error; err != nil {
-			return err
-		}
-		remainingSet := make(map[uint64]struct{}, len(remaining))
-		for _, id := range remaining {
-			remainingSet[id] = struct{}{}
-		}
-		for _, id := range candidates {
-			if _, exists := remainingSet[id]; !exists {
-				deletedIDs = append(deletedIDs, id)
-			}
-		}
-		return nil
-	})
-	if err == nil && len(deletedIDs) > 0 {
-		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: providerValue})
-	}
-	return deletedIDs, candidateCount, err
 }
 
 func applyAccountStatusFilter(query *gorm.DB, status string, now time.Time) *gorm.DB {
@@ -1515,6 +1484,9 @@ const (
 	webTermsAcceptedPredicate = "EXISTS (SELECT 1 FROM web_account_profiles profile WHERE profile.account_id = provider_accounts.id AND profile.terms_accepted_at IS NOT NULL AND profile.terms_accepted_version >= ?)"
 	webBuildLinkedPredicate   = "EXISTS (SELECT 1 FROM account_provider_links link WHERE link.web_account_id = provider_accounts.id)"
 	webConsoleLinkedPredicate = "EXISTS (SELECT 1 FROM web_console_account_links link WHERE link.web_account_id = provider_accounts.id)"
+	// Build and Console filter by whether a Web link exists.
+	buildWebLinkedPredicate   = "EXISTS (SELECT 1 FROM account_provider_links link WHERE link.build_account_id = provider_accounts.id)"
+	consoleWebLinkedPredicate = "EXISTS (SELECT 1 FROM web_console_account_links link WHERE link.console_account_id = provider_accounts.id)"
 )
 
 func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
@@ -1536,7 +1508,10 @@ func applyWebAgreementFilter(query *gorm.DB, agreement string) *gorm.DB {
 	}
 }
 
-func applyWebAssociationFilter(query *gorm.DB, association string) *gorm.DB {
+// applyAssociationFilter applies provider-specific association predicates.
+// Web supports Build, Console, and combined filters; Build and Console use
+// provider-specific foreign keys for webLinked and webUnlinked.
+func applyAssociationFilter(query *gorm.DB, providerValue, association string) *gorm.DB {
 	switch association {
 	case "buildLinked":
 		return query.Where(webBuildLinkedPredicate)
@@ -1550,6 +1525,16 @@ func applyWebAssociationFilter(query *gorm.DB, association string) *gorm.DB {
 		return query.Where(webBuildLinkedPredicate).Where(webConsoleLinkedPredicate)
 	case "allUnlinked":
 		return query.Where("NOT " + webBuildLinkedPredicate).Where("NOT " + webConsoleLinkedPredicate)
+	case "webLinked":
+		if providerValue == string(account.ProviderConsole) {
+			return query.Where(consoleWebLinkedPredicate)
+		}
+		return query.Where(buildWebLinkedPredicate)
+	case "webUnlinked":
+		if providerValue == string(account.ProviderConsole) {
+			return query.Where("NOT " + consoleWebLinkedPredicate)
+		}
+		return query.Where("NOT " + buildWebLinkedPredicate)
 	default:
 		return query
 	}

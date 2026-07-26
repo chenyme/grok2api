@@ -20,6 +20,36 @@ type AccountUpsertResult struct {
 	Created bool
 }
 
+// LinkedDeleteResolution is the server-side expansion of root deletes with optional linked peers.
+type LinkedDeleteResolution struct {
+	RootIDs          []uint64
+	FinalIDs         []uint64
+	LinkedByProvider map[account.Provider]int
+	// RootGroups maps each root to its final peers and defines the media-skip group boundary.
+	RootGroups map[uint64][]uint64
+	// PeerProviders records each peer provider for post-delete accounting.
+	PeerProviders map[uint64]account.Provider
+}
+
+// LinkedDeleteOutcome contains actual rows deleted and root groups skipped atomically.
+type LinkedDeleteOutcome struct {
+	Resolution              LinkedDeleteResolution
+	DeletedIDs              []uint64
+	Deleted                 int64
+	RootsDeleted            int64
+	LinkedDeletedByProvider map[account.Provider]int64
+	// SkippedRoots identifies groups protected by queued or in-progress video jobs.
+	SkippedRoots []uint64
+}
+
+// CleanupPreview contains COUNT-only values for the cleanup confirmation dialog.
+type CleanupPreview struct {
+	RootsByStatus    map[string]int64
+	RootCount        int64
+	LinkedByProvider map[account.Provider]int64
+	Total            int64
+}
+
 // ObservedModelWriter reports whether an observed model update changed the authoritative row.
 type ObservedModelWriter interface {
 	UpdateObservedModelIfNewer(ctx context.Context, id uint64, model string, observedAt time.Time) (bool, error)
@@ -59,12 +89,22 @@ type AccountRepository interface {
 	UpdateMany(ctx context.Context, ids []uint64, updates AccountUpdates) (int64, error)
 	Delete(ctx context.Context, id uint64) error
 	DeleteMany(ctx context.Context, ids []uint64) (int64, error)
+	// ResolveLinkedDeleteIDs expands root account IDs with one-hop (or Build/Console two-hop via Web)
+	// peers from link tables for optional linked deletion. It never guesses by email/name/userId.
+	ResolveLinkedDeleteIDs(ctx context.Context, provider account.Provider, rootIDs []uint64, targets []account.Provider) (LinkedDeleteResolution, error)
+	// DeleteManyWithLinked locks roots, resolves linked peers, checks media jobs, and deletes
+	// the final set inside a single DB transaction (avoids resolve/delete TOCTOU).
+	// skipMedia=false rejects on active media; skipMedia=true skips the complete root group.
+	DeleteManyWithLinked(ctx context.Context, provider account.Provider, rootIDs []uint64, targets []account.Provider, skipMedia bool) (LinkedDeleteOutcome, error)
+	// DeleteAccountStatusBatchWithLinked selects at most limit roots by state and ID cursor,
+	// expands links, skips protected groups, and returns the candidate count and next cursor.
+	DeleteAccountStatusBatchWithLinked(ctx context.Context, provider account.Provider, status string, now time.Time, afterID uint64, limit int, targets []account.Provider) (LinkedDeleteOutcome, int, uint64, error)
+	// CountCleanupWithLinked returns root and linked-peer counts using SQL COUNT queries only.
+	CountCleanupWithLinked(ctx context.Context, provider account.Provider, statuses []string, now time.Time, targets []account.Provider) (CleanupPreview, error)
 	// ListAutoCleanReauthCandidates 以 ID 游标列出达到清理年龄的 reauthRequired 账号。
 	ListAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, error)
 	// DeleteAutoCleanReauthCandidates 在事务内重新校验状态与年龄并跳过活动视频任务，返回实际删除 ID。
 	DeleteAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, candidateIDs []uint64) ([]uint64, error)
-	// DeleteAccountStatusBatch 删除当前仍匹配指定管理端状态的一批账号，并返回实际删除的 ID。
-	DeleteAccountStatusBatch(ctx context.Context, provider account.Provider, status string, now time.Time, limit int) ([]uint64, int, error)
 	UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time) (account.Credential, error)
 	BackfillCredentialRefreshSchedules(ctx context.Context, now time.Time, limit int) (int, error)
 	ListCriticalCredentialRefreshIDs(ctx context.Context, now, expiresBefore time.Time, limit int) ([]uint64, error)
