@@ -3,6 +3,7 @@ package relational
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -471,12 +472,15 @@ func TestDeleteManyWithLinkedAtomicWebBothAndMediaBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resolution, deleted, err := repo.DeleteManyWithLinked(ctx, account.ProviderWeb, []uint64{web.ID}, []account.Provider{account.ProviderBuild, account.ProviderConsole})
+	outcome, err := repo.DeleteManyWithLinked(ctx, account.ProviderWeb, []uint64{web.ID}, []account.Provider{account.ProviderBuild, account.ProviderConsole}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 3 || len(resolution.FinalIDs) != 3 {
-		t.Fatalf("deleted=%d resolution=%#v", deleted, resolution)
+	if outcome.Deleted != 3 || len(outcome.Resolution.FinalIDs) != 3 || outcome.RootsDeleted != 1 {
+		t.Fatalf("outcome=%#v", outcome)
+	}
+	if outcome.LinkedDeletedByProvider[account.ProviderBuild] != 1 || outcome.LinkedDeletedByProvider[account.ProviderConsole] != 1 {
+		t.Fatalf("linked by provider = %#v", outcome.LinkedDeletedByProvider)
 	}
 	if _, err := repo.Get(ctx, web.ID); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("web should be gone: %v", err)
@@ -516,7 +520,8 @@ func TestDeleteManyWithLinkedAtomicWebBothAndMediaBlock(t *testing.T) {
 	if err := database.db.WithContext(ctx).Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repo.DeleteManyWithLinked(ctx, account.ProviderWeb, []uint64{web2.ID}, []account.Provider{account.ProviderBuild}); err == nil {
+	// 单删语义（skipMedia=false）：对端活动媒体 → 整次拒绝，全部保留。
+	if _, err := repo.DeleteManyWithLinked(ctx, account.ProviderWeb, []uint64{web2.ID}, []account.Provider{account.ProviderBuild}, false); err == nil {
 		t.Fatal("expected media job to block DeleteManyWithLinked")
 	}
 	if _, err := repo.Get(ctx, web2.ID); err != nil {
@@ -524,6 +529,217 @@ func TestDeleteManyWithLinkedAtomicWebBothAndMediaBlock(t *testing.T) {
 	}
 	if _, err := repo.Get(ctx, build2.ID); err != nil {
 		t.Fatalf("build2 should remain: %v", err)
+	}
+
+	// 批量语义（skipMedia=true）：命中媒体的根组整组跳过，其余组照删。
+	digest3 := strings.Repeat("x", 64)
+	web3 := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web-clean3", SourceKey: "sso:" + digest3, UserID: "u-clean3",
+	})
+	build3 := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "build-clean3", SourceKey: "build-clean3", UserID: "u-clean3",
+	})
+	if err := repo.LinkWebToBuild(ctx, web3.ID, build3.ID); err != nil {
+		t.Fatal(err)
+	}
+	skipOutcome, err := repo.DeleteManyWithLinked(ctx, account.ProviderWeb, []uint64{web2.ID, web3.ID}, []account.Provider{account.ProviderBuild}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipOutcome.Deleted != 2 || skipOutcome.RootsDeleted != 1 || len(skipOutcome.SkippedRoots) != 1 || skipOutcome.SkippedRoots[0] != web2.ID {
+		t.Fatalf("skip outcome = %#v", skipOutcome)
+	}
+	if _, err := repo.Get(ctx, web2.ID); err != nil {
+		t.Fatalf("media group web2 should be skipped: %v", err)
+	}
+	if _, err := repo.Get(ctx, build2.ID); err != nil {
+		t.Fatalf("media group build2 should be skipped: %v", err)
+	}
+	if _, err := repo.Get(ctx, web3.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("web3 should be deleted: %v", err)
+	}
+	if _, err := repo.Get(ctx, build3.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("build3 should be deleted: %v", err)
+	}
+}
+
+// 清理批原语：状态选根、关联展开、媒体整组跳过、游标推进。
+func TestDeleteAccountStatusBatchWithLinkedCursorAndSkip(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "cleanup-linked-batch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAccountRepository(database)
+	now := time.Now().UTC()
+
+	disable := func(id uint64) {
+		if err := database.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Update("enabled", false).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 三组 disabled Web+Build 链 + 一个 active Web（不应入选）。
+	type trio struct{ web, build uint64 }
+	var trios []trio
+	for i := 0; i < 3; i++ {
+		digest := strings.Repeat(string(rune('a'+i)), 64)
+		web := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: fmt.Sprintf("cl-web-%d", i), SourceKey: "sso:" + digest, UserID: fmt.Sprintf("cl-%d", i),
+		})
+		build := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+			Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: fmt.Sprintf("cl-build-%d", i), SourceKey: fmt.Sprintf("cl-build-%d", i), UserID: fmt.Sprintf("cl-%d", i),
+		})
+		if err := repo.LinkWebToBuild(ctx, web.ID, build.ID); err != nil {
+			t.Fatal(err)
+		}
+		disable(web.ID)
+		trios = append(trios, trio{web.ID, build.ID})
+	}
+	activeWeb := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "cl-active", SourceKey: "sso:" + strings.Repeat("d", 64),
+	})
+
+	// 第 1 组的 Build 挂活动媒体：该组整组跳过。
+	key := clientKeyModel{Name: "cl-media-key", Prefix: "cl-media-key", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	blockedBuild := trios[0].build
+	job := mediaJobModel{
+		ID: "media_job_cleanup", RequestID: "req_cleanup",
+		ClientKeyID: key.ID, ClientKeyName: "key", AccountID: &blockedBuild, AccountName: "cl-build-0",
+		EgressScope: "grok_build", EgressMode: "direct", Provider: string(account.ProviderBuild),
+		Model: "video", ModelRouteID: 1, UpstreamModel: "video", Prompt: "x", Seconds: 1, Size: "16:9",
+		Quality: "720p", Status: string(media.StatusQueued), Progress: 0, InputJSON: "{}",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := database.db.WithContext(ctx).Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// limit=2 分两批扫：批 1 命中 trio0(跳过)+trio1(删)；批 2 命中 trio2(删)。
+	targets := []account.Provider{account.ProviderBuild}
+	outcome1, candidates1, maxID1, err := repo.DeleteAccountStatusBatchWithLinked(ctx, account.ProviderWeb, "disabled", now, 0, 2, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidates1 != 2 || outcome1.Deleted != 2 || outcome1.RootsDeleted != 1 || len(outcome1.SkippedRoots) != 1 {
+		t.Fatalf("batch1 outcome=%#v candidates=%d", outcome1, candidates1)
+	}
+	outcome2, candidates2, _, err := repo.DeleteAccountStatusBatchWithLinked(ctx, account.ProviderWeb, "disabled", now, maxID1, 2, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidates2 != 1 || outcome2.Deleted != 2 || outcome2.RootsDeleted != 1 || len(outcome2.SkippedRoots) != 0 {
+		t.Fatalf("batch2 outcome=%#v candidates=%d", outcome2, candidates2)
+	}
+	// 跳过组仍在；其余两组（web+build）已删；active 保留。
+	if _, err := repo.Get(ctx, trios[0].web); err != nil {
+		t.Fatalf("skipped web should remain: %v", err)
+	}
+	if _, err := repo.Get(ctx, trios[0].build); err != nil {
+		t.Fatalf("skipped build should remain: %v", err)
+	}
+	for _, index := range []int{1, 2} {
+		if _, err := repo.Get(ctx, trios[index].web); !errors.Is(err, repository.ErrNotFound) {
+			t.Fatalf("web %d should be deleted: %v", index, err)
+		}
+		if _, err := repo.Get(ctx, trios[index].build); !errors.Is(err, repository.ErrNotFound) {
+			t.Fatalf("build %d should be deleted: %v", index, err)
+		}
+	}
+	if _, err := repo.Get(ctx, activeWeb.ID); err != nil {
+		t.Fatalf("active web should remain: %v", err)
+	}
+}
+
+// 清理预览：各状态根计数 + 一跳/两跳关联计数（纯 COUNT）。
+func TestCountCleanupWithLinked(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "cleanup-preview.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAccountRepository(database)
+	now := time.Now().UTC()
+
+	setStatus := func(id uint64, updates map[string]any) {
+		if err := database.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// disabled Web + Build/Console 双关联；reauth Web 无关联；cooldown Web + Console；active Web + Build。
+	digestA := strings.Repeat("p", 64)
+	webA := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "pv-a", SourceKey: "sso:" + digestA, UserID: "pv-a"})
+	buildA := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "pv-a-build", SourceKey: "pv-a-build", UserID: "pv-a"})
+	consoleA := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "pv-a-console", SourceKey: "console-sso:" + digestA, UserID: "pv-a"})
+	if err := repo.LinkWebToBuild(ctx, webA.ID, buildA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReconcileProviderLinks(ctx, webA.ID); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(webA.ID, map[string]any{"enabled": false})
+
+	webB := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "pv-b", SourceKey: "sso:" + strings.Repeat("q", 64)})
+	setStatus(webB.ID, map[string]any{"auth_status": "reauthRequired"})
+
+	digestC := strings.Repeat("r", 64)
+	webC := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "pv-c", SourceKey: "sso:" + digestC, UserID: "pv-c"})
+	consoleC := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "pv-c-console", SourceKey: "console-sso:" + digestC, UserID: "pv-c"})
+	if err := repo.ReconcileProviderLinks(ctx, webC.ID); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(webC.ID, map[string]any{"cooldown_until": now.Add(time.Hour)})
+
+	digestD := strings.Repeat("s", 64)
+	webD := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "pv-d", SourceKey: "sso:" + digestD, UserID: "pv-d"})
+	buildD := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "pv-d-build", SourceKey: "pv-d-build", UserID: "pv-d"})
+	if err := repo.LinkWebToBuild(ctx, webD.ID, buildD.ID); err != nil {
+		t.Fatal(err)
+	}
+	_ = consoleA
+	_ = consoleC
+
+	preview, err := repo.CountCleanupWithLinked(ctx, account.ProviderWeb, []string{"disabled", "reauthRequired", "cooldown"}, now, []account.Provider{account.ProviderBuild, account.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.RootsByStatus["disabled"] != 1 || preview.RootsByStatus["reauthRequired"] != 1 || preview.RootsByStatus["cooldown"] != 1 {
+		t.Fatalf("roots by status = %#v", preview.RootsByStatus)
+	}
+	// disabled webA: build+console；cooldown webC: console；reauth webB: 无 → build 1, console 2。
+	if preview.RootCount != 3 || preview.LinkedByProvider[account.ProviderBuild] != 1 || preview.LinkedByProvider[account.ProviderConsole] != 2 || preview.Total != 6 {
+		t.Fatalf("preview = %#v", preview)
+	}
+
+	// 两跳预览：disabled Build 根 → Console。
+	setStatus(buildD.ID, map[string]any{"enabled": false})
+	digestE := strings.Repeat("t", 64)
+	consoleD := createLinkedAccountTestCredential(t, ctx, repo, account.Credential{Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "pv-d-console", SourceKey: "console-sso:" + digestD, UserID: "pv-d"})
+	if err := repo.ReconcileProviderLinks(ctx, webD.ID); err != nil {
+		t.Fatal(err)
+	}
+	_ = digestE
+	_ = consoleD
+	buildPreview, err := repo.CountCleanupWithLinked(ctx, account.ProviderBuild, []string{"disabled"}, now, []account.Provider{account.ProviderWeb, account.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if buildPreview.RootCount != 1 || buildPreview.LinkedByProvider[account.ProviderWeb] != 1 || buildPreview.LinkedByProvider[account.ProviderConsole] != 1 || buildPreview.Total != 3 {
+		t.Fatalf("build preview = %#v", buildPreview)
 	}
 }
 

@@ -585,18 +585,52 @@ type AccountDeleteResult struct {
 	Deleted           int64
 	RootsDeleted      int64
 	LinkedDeleted     int64
+	Skipped           int64
 	DeletedByProvider map[accountdomain.Provider]int64
 }
 
-// BatchDelete 原子删除一组账号及其额度状态（不扩展关联）。
+// accountDeleteResultFromOutcome 把仓储 outcome 换算为对外结果（计数基于实际删除行）。
+func accountDeleteResultFromOutcome(providerValue accountdomain.Provider, outcome repository.LinkedDeleteOutcome) AccountDeleteResult {
+	out := AccountDeleteResult{
+		Deleted:           outcome.Deleted,
+		RootsDeleted:      outcome.RootsDeleted,
+		LinkedDeleted:     outcome.Deleted - outcome.RootsDeleted,
+		Skipped:           int64(len(outcome.SkippedRoots)),
+		DeletedByProvider: map[accountdomain.Provider]int64{},
+	}
+	if providerValue.IsValid() && outcome.RootsDeleted > 0 {
+		out.DeletedByProvider[providerValue] = outcome.RootsDeleted
+	}
+	for provider, count := range outcome.LinkedDeletedByProvider {
+		out.DeletedByProvider[provider] += count
+	}
+	return out
+}
+
+// finishLinkedDelete 在库删成功后清理运行态（sticky / 凭据刷新状态）。
+func (s *Service) finishLinkedDelete(ctx context.Context, deletedIDs []uint64) {
+	for _, id := range deletedIDs {
+		if s.sticky != nil {
+			_ = s.sticky.DeleteByAccount(ctx, id)
+		}
+		s.clearRefreshState(id)
+	}
+}
+
+// BatchDelete 原子删除一组账号及其额度状态（不扩展关联；批量语义=媒体组跳过）。
 func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) {
-	result, err := s.BatchDeleteWithLinked(ctx, accountdomain.Provider(""), ids, nil)
+	result, err := s.batchDeleteWithLinkedMode(ctx, accountdomain.Provider(""), ids, nil, true)
 	return result.Deleted, err
 }
 
 // BatchDeleteWithLinked deletes root accounts and optional linked peers resolved from binding tables.
-// Resolve + media check + delete run in one DB transaction (DeleteManyWithLinked) to avoid TOCTOU.
+// 批量语义：带活动视频任务的根连同其关联整组跳过，其余照删（Skipped 汇报）。
 func (s *Service) BatchDeleteWithLinked(ctx context.Context, providerValue accountdomain.Provider, ids []uint64, targets []accountdomain.Provider) (AccountDeleteResult, error) {
+	return s.batchDeleteWithLinkedMode(ctx, providerValue, ids, targets, true)
+}
+
+// batchDeleteWithLinkedMode 是单删/批删共用的原子删除入口；skipMedia 区分整次拒绝与整组跳过。
+func (s *Service) batchDeleteWithLinkedMode(ctx context.Context, providerValue accountdomain.Provider, ids []uint64, targets []accountdomain.Provider, skipMedia bool) (AccountDeleteResult, error) {
 	var out AccountDeleteResult
 	ids, err := normalizeBatchIDs(ids)
 	if err != nil {
@@ -608,35 +642,16 @@ func (s *Service) BatchDeleteWithLinked(ctx context.Context, providerValue accou
 	if len(targets) > 0 && !providerValue.IsValid() {
 		return out, invalidInput("账号来源无效")
 	}
-	// Atomic path: lock roots → expand links → lock final → media reject → delete.
-	resolution, deleted, err := s.accounts.DeleteManyWithLinked(ctx, providerValue, ids, targets)
+	// Atomic path: lock roots → expand links → lock final → media handling → delete.
+	outcome, err := s.accounts.DeleteManyWithLinked(ctx, providerValue, ids, targets, skipMedia)
 	if err != nil {
 		return out, mapLinkedDeleteError(err)
 	}
-	finalIDs := resolution.FinalIDs
-	for _, id := range finalIDs {
-		if s.sticky != nil {
-			_ = s.sticky.DeleteByAccount(ctx, id)
-		}
-		s.clearRefreshState(id)
-	}
-	if deleted > 0 {
+	s.finishLinkedDelete(ctx, outcome.DeletedIDs)
+	if outcome.Deleted > 0 {
 		s.invalidateBuildBotFlagCache()
 	}
-	out.Deleted = deleted
-	out.RootsDeleted = int64(len(resolution.RootIDs))
-	if deleted >= out.RootsDeleted {
-		out.LinkedDeleted = deleted - out.RootsDeleted
-	}
-	out.DeletedByProvider = map[accountdomain.Provider]int64{}
-	// Best-effort breakdown: count roots as current provider when known; linked counts from resolution.
-	if providerValue.IsValid() {
-		out.DeletedByProvider[providerValue] = out.RootsDeleted
-	}
-	for provider, count := range resolution.LinkedByProvider {
-		out.DeletedByProvider[provider] += int64(count)
-	}
-	return out, nil
+	return accountDeleteResultFromOutcome(providerValue, outcome), nil
 }
 
 // AccountsBelongToProvider 校验批量账号是否全部属于指定号池。
@@ -656,10 +671,19 @@ func (s *Service) AccountsBelongToProvider(ctx context.Context, ids []uint64, pr
 	return count == int64(len(values)), nil
 }
 
-// CleanupAccounts 按管理端状态清理指定 Provider 账号；正常、待重置和检测中的账号不在清理范围内。
-func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdomain.Provider, statuses []CleanupStatus) (int64, error) {
+// CleanupResult 汇总一次账号清理的实际结果（含关联删除与跳过组）。
+type CleanupResult struct {
+	Deleted           int64
+	RootsDeleted      int64
+	LinkedDeleted     int64
+	Skipped           int64
+	DeletedByProvider map[accountdomain.Provider]int64
+}
+
+// validateCleanupSelection 校验清理状态集合与关联目标的合法性。
+func validateCleanupSelection(providerValue accountdomain.Provider, statuses []CleanupStatus, targets []accountdomain.Provider) (map[CleanupStatus]struct{}, error) {
 	if !providerValue.IsValid() {
-		return 0, invalidInput("账号来源无效")
+		return nil, invalidInput("账号来源无效")
 	}
 	selected := make(map[CleanupStatus]struct{}, len(statuses))
 	for _, status := range statuses {
@@ -667,41 +691,86 @@ func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdoma
 		case CleanupStatusCooldown, CleanupStatusDisabled, CleanupStatusReauthRequired:
 			selected[status] = struct{}{}
 		default:
-			return 0, invalidInput("账号清理状态无效")
+			return nil, invalidInput("账号清理状态无效")
 		}
 	}
 	if len(selected) == 0 {
-		return 0, invalidInput("至少选择一种账号状态")
+		return nil, invalidInput("至少选择一种账号状态")
+	}
+	for _, target := range targets {
+		if !target.IsValid() {
+			return nil, invalidInput("关联删除目标无效")
+		}
+		if target == providerValue {
+			return nil, invalidInput("关联删除目标不能包含当前号池")
+		}
+	}
+	return selected, nil
+}
+
+// CleanupAccounts 按管理端状态清理指定 Provider 账号；正常、待重置和检测中的账号不在清理范围内。
+// targets 非空时沿绑定表一并删除关联账号（不限对端状态）；带活动视频任务的根组整组跳过。
+// 游标按 id 推进，跳过组不会导致批次死循环。
+func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdomain.Provider, statuses []CleanupStatus, targets []accountdomain.Provider) (CleanupResult, error) {
+	out := CleanupResult{DeletedByProvider: map[accountdomain.Provider]int64{}}
+	selected, err := validateCleanupSelection(providerValue, statuses, targets)
+	if err != nil {
+		return out, err
 	}
 
 	const cleanupBatchSize = 500
 	now := s.now()
-	var deleted int64
 	for _, status := range []CleanupStatus{CleanupStatusDisabled, CleanupStatusReauthRequired, CleanupStatusCooldown} {
 		if _, ok := selected[status]; !ok {
 			continue
 		}
+		var afterID uint64
 		for {
-			ids, candidates, err := s.accounts.DeleteAccountStatusBatch(ctx, providerValue, string(status), now, cleanupBatchSize)
+			outcome, candidates, maxID, err := s.accounts.DeleteAccountStatusBatchWithLinked(ctx, providerValue, string(status), now, afterID, cleanupBatchSize, targets)
 			if err != nil {
-				return deleted, mapRepositoryError(err)
+				return out, mapLinkedDeleteError(err)
 			}
-			for _, id := range ids {
-				if s.sticky != nil {
-					_ = s.sticky.DeleteByAccount(ctx, id)
-				}
-				s.clearRefreshState(id)
+			s.finishLinkedDelete(ctx, outcome.DeletedIDs)
+			out.Deleted += outcome.Deleted
+			out.RootsDeleted += outcome.RootsDeleted
+			out.LinkedDeleted += outcome.Deleted - outcome.RootsDeleted
+			out.Skipped += int64(len(outcome.SkippedRoots))
+			if outcome.RootsDeleted > 0 {
+				out.DeletedByProvider[providerValue] += outcome.RootsDeleted
 			}
-			deleted += int64(len(ids))
+			for provider, count := range outcome.LinkedDeletedByProvider {
+				out.DeletedByProvider[provider] += count
+			}
 			if candidates < cleanupBatchSize {
 				break
 			}
+			afterID = maxID
 		}
 	}
-	if deleted > 0 {
+	if out.Deleted > 0 {
 		s.invalidateBuildBotFlagCache()
 	}
-	return deleted, nil
+	return out, nil
+}
+
+// PreviewCleanup 返回清理弹窗的 COUNT 预览（根按状态计数 + 关联对端计数）。
+// 仅供展示；实际删除由批内事务重校验，不信任预览快照。
+func (s *Service) PreviewCleanup(ctx context.Context, providerValue accountdomain.Provider, statuses []CleanupStatus, targets []accountdomain.Provider) (repository.CleanupPreview, error) {
+	selected, err := validateCleanupSelection(providerValue, statuses, targets)
+	if err != nil {
+		return repository.CleanupPreview{}, err
+	}
+	raw := make([]string, 0, len(selected))
+	for _, status := range []CleanupStatus{CleanupStatusDisabled, CleanupStatusReauthRequired, CleanupStatusCooldown} {
+		if _, ok := selected[status]; ok {
+			raw = append(raw, string(status))
+		}
+	}
+	preview, err := s.accounts.CountCleanupWithLinked(ctx, providerValue, raw, s.now(), targets)
+	if err != nil {
+		return repository.CleanupPreview{}, mapLinkedDeleteError(err)
+	}
+	return preview, nil
 }
 
 func (s *Service) Get(ctx context.Context, id uint64) (View, error) {
@@ -1735,11 +1804,12 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 }
 
 // DeleteWithLinked deletes one account and optional linked peers.
+// 单删语义：final 集内任一活动视频任务 → 整次拒绝（不跳过）。
 func (s *Service) DeleteWithLinked(ctx context.Context, providerValue accountdomain.Provider, id uint64, targets []accountdomain.Provider) (AccountDeleteResult, error) {
 	if id == 0 {
 		return AccountDeleteResult{}, invalidInput("账号 ID 无效")
 	}
-	result, err := s.BatchDeleteWithLinked(ctx, providerValue, []uint64{id}, targets)
+	result, err := s.batchDeleteWithLinkedMode(ctx, providerValue, []uint64{id}, targets, false)
 	if err != nil {
 		return result, err
 	}
@@ -3079,7 +3149,7 @@ func mapLinkedDeleteError(err error) error {
 		return nil
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "关联删除目标") || strings.Contains(msg, "账号来源无效") {
+	if strings.Contains(msg, "关联删除目标") || strings.Contains(msg, "账号来源无效") || strings.Contains(msg, "不支持清理账号状态") {
 		return invalidInput(msg)
 	}
 	return mapRepositoryError(err)

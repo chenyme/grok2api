@@ -153,6 +153,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/reset-quota", h.resetAllBuildQuota)
 	router.POST("/accounts/refresh-tokens", h.refreshAllTokens)
 	router.POST("/accounts/cleanup", h.cleanup)
+	router.POST("/accounts/cleanup-preview", h.cleanupPreview)
 	router.POST("/accounts/batch/refresh-billing", h.batchRefreshBilling)
 	router.POST("/accounts/batch/reset-quota", h.batchResetQuota)
 	router.POST("/accounts/batch/refresh-quotas", h.batchRefreshQuotas)
@@ -201,8 +202,9 @@ type deletionPreviewRequest struct {
 }
 
 type accountCleanupRequest struct {
-	Provider string                     `json:"provider" binding:"required"`
-	Statuses []accountapp.CleanupStatus `json:"statuses" binding:"required"`
+	Provider            string                     `json:"provider" binding:"required"`
+	Statuses            []accountapp.CleanupStatus `json:"statuses" binding:"required"`
+	LinkedDeleteTargets []string                   `json:"linkedDeleteTargets"`
 }
 
 type buildConversionRequest struct {
@@ -567,12 +569,60 @@ func (h *Handler) cleanup(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	deleted, err := h.service.CleanupAccounts(c.Request.Context(), accountdomain.Provider(request.Provider), request.Statuses)
+	targets, err := parseLinkedDeleteTargets(request.LinkedDeleteTargets)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidLinkedDeleteTargets", err.Error())
+		return
+	}
+	result, err := h.service.CleanupAccounts(c.Request.Context(), accountdomain.Provider(request.Provider), request.Statuses, targets)
 	if err != nil {
 		h.writeServiceError(c, "accountCleanupFailed", err, http.StatusInternalServerError, "清理账号失败")
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
+	byProvider := gin.H{}
+	for provider, count := range result.DeletedByProvider {
+		byProvider[string(provider)] = count
+	}
+	response.Success(c, http.StatusOK, gin.H{
+		"deleted":           result.Deleted,
+		"rootsDeleted":      result.RootsDeleted,
+		"linkedDeleted":     result.LinkedDeleted,
+		"skipped":           result.Skipped,
+		"deletedByProvider": byProvider,
+	})
+}
+
+// cleanupPreview 返回清理弹窗的 COUNT 预览：各状态根数 + 关联对端数。
+func (h *Handler) cleanupPreview(c *gin.Context) {
+	var request accountCleanupRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	targets, err := parseLinkedDeleteTargets(request.LinkedDeleteTargets)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidLinkedDeleteTargets", err.Error())
+		return
+	}
+	preview, err := h.service.PreviewCleanup(c.Request.Context(), accountdomain.Provider(request.Provider), request.Statuses, targets)
+	if err != nil {
+		h.writeServiceError(c, "accountCleanupPreviewFailed", err, http.StatusInternalServerError, "预览清理账号失败")
+		return
+	}
+	rootsByStatus := gin.H{}
+	for status, count := range preview.RootsByStatus {
+		rootsByStatus[status] = count
+	}
+	linked := gin.H{}
+	for provider, count := range preview.LinkedByProvider {
+		linked[string(provider)] = count
+	}
+	response.Success(c, http.StatusOK, gin.H{
+		"rootsByStatus":    rootsByStatus,
+		"rootCount":        preview.RootCount,
+		"linkedByProvider": linked,
+		"total":            preview.Total,
+	})
 }
 
 func (h *Handler) batchRefreshQuotas(c *gin.Context) {
@@ -1161,6 +1211,7 @@ func newAccountDeleteResponse(result accountapp.AccountDeleteResult) gin.H {
 		"deleted":           result.Deleted,
 		"rootsDeleted":      result.RootsDeleted,
 		"linkedDeleted":     result.LinkedDeleted,
+		"skipped":           result.Skipped,
 		"deletedByProvider": byProvider,
 	}
 }

@@ -1426,12 +1426,17 @@ func excludeAccountsWithActiveMediaJobs(db *gorm.DB, ids []uint64) ([]uint64, er
 	return out, nil
 }
 
+// activeMediaJobStatuses 是仍需账号继续执行的视频任务状态（删除保护范围）。
+func activeMediaJobStatuses() []string {
+	return []string{string(media.StatusQueued), string(media.StatusInProgress)}
+}
+
 // rejectAccountsWithMediaJobs 仅保护仍需账号继续执行的活动视频任务。
 // completed/failed 已保存账号名称等快照，删除账号后由外键 SET NULL 保留历史。
 func rejectAccountsWithMediaJobs(db *gorm.DB, ids []uint64) error {
 	var count int64
 	if err := db.Model(&mediaJobModel{}).
-		Where("account_id IN ? AND status IN ?", ids, []string{string(media.StatusQueued), string(media.StatusInProgress)}).
+		Where("account_id IN ? AND status IN ?", ids, activeMediaJobStatuses()).
 		Count(&count).Error; err != nil {
 		return err
 	}
@@ -1439,54 +1444,6 @@ func rejectAccountsWithMediaJobs(db *gorm.DB, ids []uint64) error {
 		return fmt.Errorf("%w: 账号仍关联 %d 条排队中或进行中的视频任务，请等待任务结束后重试", repository.ErrConflict, count)
 	}
 	return nil
-}
-
-func (r *AccountRepository) DeleteAccountStatusBatch(ctx context.Context, providerValue account.Provider, status string, now time.Time, limit int) ([]uint64, int, error) {
-	if limit < 1 {
-		return []uint64{}, 0, nil
-	}
-	if status != "disabled" && status != "reauthRequired" && status != "cooldown" {
-		return nil, 0, fmt.Errorf("不支持清理账号状态 %q", status)
-	}
-	deletedIDs := make([]uint64, 0, limit)
-	candidateCount := 0
-	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var candidates []uint64
-		selection := applyAccountStatusFilter(tx.Model(&accountModel{}).Where("provider = ?", providerValue), status, now)
-		if err := selection.Order("id ASC").Limit(limit).Pluck("id", &candidates).Error; err != nil || len(candidates) == 0 {
-			return err
-		}
-		candidateCount = len(candidates)
-		if err := rejectAccountsWithMediaJobs(tx, candidates); err != nil {
-			return err
-		}
-		deletion := applyAccountStatusFilter(tx.Where("id IN ?", candidates), status, now).Delete(&accountModel{})
-		if deletion.Error != nil {
-			return deletion.Error
-		}
-		if deletion.RowsAffected == int64(len(candidates)) {
-			deletedIDs = append(deletedIDs, candidates...)
-			return nil
-		}
-		var remaining []uint64
-		if err := tx.Model(&accountModel{}).Where("id IN ?", candidates).Pluck("id", &remaining).Error; err != nil {
-			return err
-		}
-		remainingSet := make(map[uint64]struct{}, len(remaining))
-		for _, id := range remaining {
-			remainingSet[id] = struct{}{}
-		}
-		for _, id := range candidates {
-			if _, exists := remainingSet[id]; !exists {
-				deletedIDs = append(deletedIDs, id)
-			}
-		}
-		return nil
-	})
-	if err == nil && len(deletedIDs) > 0 {
-		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: providerValue})
-	}
-	return deletedIDs, candidateCount, err
 }
 
 func applyAccountStatusFilter(query *gorm.DB, status string, now time.Time) *gorm.DB {
