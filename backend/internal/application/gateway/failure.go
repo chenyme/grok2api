@@ -25,13 +25,16 @@ type UpstreamFailure struct {
 	AccountScoped          bool
 	AccountBlocked         bool
 	PermanentAccountDenial bool
-	QuotaExhausted         bool
-	FreeQuotaExhausted     bool
-	ModelQuotaExhausted    bool
-	CredentialRejected     bool
-	Fingerprint            string
-	RetryAfter             time.Duration
-	Cause                  error
+	// SafetyRejection marks a request-level content safety denial. It must not
+	// refresh OAuth, retry, switch accounts, cool down, or invalidate credentials.
+	SafetyRejection     bool
+	QuotaExhausted      bool
+	FreeQuotaExhausted  bool
+	ModelQuotaExhausted bool
+	CredentialRejected  bool
+	Fingerprint         string
+	RetryAfter          time.Duration
+	Cause               error
 }
 
 func (e *UpstreamFailure) Error() string {
@@ -115,8 +118,14 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 	case http.StatusForbidden:
 		failure.Code = "upstream_forbidden"
 		failure.PublicMessage = "上游拒绝了该请求"
+		// Safety denials are request-scoped: inspect both structured metadata and the raw body
+		// so SAFETY_CHECK_TYPE_* markers still match when they only appear in nested text.
+		if isSafetyRejection(metadataText) || isSafetyRejection(string(body)) {
+			failure.SafetyRejection = true
+			break
+		}
 		failure.AccountBlocked = isDefinitiveAccountBlock(metadataText)
-		failure.PermanentAccountDenial = isPermanentAccountDenial(metadataText)
+		failure.PermanentAccountDenial = isPermanentAccountDenial(upstreamMessage)
 		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
 		failure.FreeQuotaExhausted = failure.ModelQuotaExhausted || isFreeQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
@@ -126,8 +135,10 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.Code = "upstream_rate_limited"
 		failure.PublicMessage = "上游请求频率受限"
 		failure.AccountScoped = true
+		// Subscription-level free usage and explicit per-model free usage are
+		// distinct so the gateway can preserve their different recovery scopes.
+		failure.FreeQuotaExhausted = isFreeQuotaExhaustion(metadataText)
 		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
-		failure.FreeQuotaExhausted = failure.ModelQuotaExhausted || isFreeQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
 	default:
 		failure.Code = "upstream_server_error"
@@ -185,14 +196,28 @@ func extractUpstreamErrorMetadata(body []byte) (string, string, string) {
 }
 
 func isAccountScopedForbidden(text string) bool {
-	return containsAny(text, "quota", "billing", "subscription", "entitlement", "permission", "unauthorized", "authentication", "token", "usage-exhausted", "insufficient", "spending-limit")
+	// Do not match bare "permission" / permission-denied alone: those codes are shared by
+	// request-level policy denials. Account scope requires quota/billing/auth wording.
+	return containsAny(text, "quota", "billing", "subscription", "entitlement", "unauthorized", "authentication", "invalid token", "token expired", "usage-exhausted", "insufficient", "spending-limit")
 }
 
+// isPermanentAccountDenial requires explicit account/model permission text.
+// A bare permission-denied code without access-denied wording is not enough:
+// content safety rejections and other policy 403s share that code.
 func isPermanentAccountDenial(text string) bool {
-	if containsAny(text, "permission-denied", "permission_denied", "access to the chat endpoint is denied") {
-		return true
+	text = strings.ToLower(strings.Trim(strings.TrimSpace(text), " .!\t\r\n"))
+	return strings.Contains(text, "access to the chat endpoint is denied") || text == "access denied"
+}
+
+// isSafetyRejection identifies request-level content safety denials that must
+// be returned to the client without account rotation or invalidation.
+func isSafetyRejection(text string) bool {
+	if text == "" {
+		return false
 	}
-	return strings.Trim(strings.TrimSpace(text), " .!\t\r\n") == "access denied"
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "content violates usage guidelines") ||
+		strings.Contains(lower, "safety_check_type_")
 }
 
 func isDefinitiveAccountBlock(text string) bool {

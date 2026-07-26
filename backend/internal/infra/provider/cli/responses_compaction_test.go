@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -59,6 +60,50 @@ func TestGatewayCompactionLifecycle(t *testing.T) {
 	mismatched, unusable, err := expandGatewayCompactionHistory([]byte(`{"input":[{"type":"compaction","encrypted_content":`+mustJSONString(blob)+`}]} `), codec, "other-session")
 	if err != nil || unusable != 1 || strings.Contains(string(mismatched), blob) || !strings.Contains(string(mismatched), "could not be decoded") {
 		t.Fatalf("session mismatch fallback = %s, unusable = %d, err = %v", mismatched, unusable, err)
+	}
+}
+
+func TestGatewayCompactionHTTPFailureHonorsRetryVetoAndRateLimitMetadata(t *testing.T) {
+	body := `{"code":"resource-exhausted","error":"Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.5. Requests per Second (actual/limit): 2/2."}`
+	response, transient, err := gatewayCompactionHTTPFailure(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Status:     "429 Too Many Requests",
+		Header: http.Header{
+			"X-Should-Retry": {"false"},
+			"Retry-After":    {"17"},
+		},
+		Body: io.NopCloser(strings.NewReader(body)),
+	}, "https://build.test/v1/responses", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if transient {
+		t.Fatal("x-should-retry:false must suppress same-account compaction retries")
+	}
+	if response.RateLimit == nil || response.RateLimit.TeamID != "00000000-0000-0000-0000-000000000013" || response.RateLimit.Model != "grok-4.5" || response.RateLimit.RetryAfter != 17*time.Second {
+		t.Fatalf("rate limit = %#v", response.RateLimit)
+	}
+}
+
+func TestGatewayCompactionRetryVetoStopsSameAccountRetries(t *testing.T) {
+	adapter, encrypted := newCompactionTestAdapter(t)
+	var attempts atomic.Int32
+	body := `{"code":"subscription:free-usage-exhausted","error":"You have used all your free usage"}`
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts.Add(1)
+		response := sseResponse(http.StatusTooManyRequests, body, request)
+		response.Header.Set("X-Should-Retry", "false")
+		return response, nil
+	})
+	request := compactionProviderRequest(encrypted)
+	response, err := adapter.forwardGatewayCompactionWithPolicy(t.Context(), request, "access-token", request.Body, "", 3, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if attempts.Load() != 1 || response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("attempts=%d status=%d", attempts.Load(), response.StatusCode)
 	}
 }
 

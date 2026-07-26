@@ -27,21 +27,16 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 		database = parsed
 	}
 	ctx := context.Background()
+	keyPrefix := "grok2api:test:" + time.Now().UTC().Format("150405.000000") + ":"
 	store, err := Open(ctx, Config{
 		Address: address, Username: os.Getenv("TEST_REDIS_USERNAME"), Password: os.Getenv("TEST_REDIS_PASSWORD"), Database: database,
-		KeyPrefix: "grok2api:test:" + time.Now().UTC().Format("150405.000000") + ":", ConcurrencyLease: time.Minute,
+		KeyPrefix: keyPrefix, ConcurrencyLease: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if os.Getenv("TEST_REDIS_FLUSH_DATABASE") == "1" {
-		defer func() {
-			if err := store.client.FlushDB(ctx).Err(); err != nil {
-				t.Errorf("flush Redis test database: %v", err)
-			}
-		}()
-	}
+	defer cleanupRedisTestPrefix(t, ctx, store.client, keyPrefix)
 
 	if allowed, err := store.Allow(ctx, "key", 1, time.Now()); err != nil || !allowed {
 		t.Fatalf("first rate allowance = %v, err = %v", allowed, err)
@@ -93,6 +88,32 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 	}
 	if _, ok, err := store.Get(ctx, "sticky", time.Now().UTC()); err != nil || ok {
 		t.Fatalf("deleted sticky remains available: ok=%v err=%v", ok, err)
+	}
+	batchIDs := make([]uint64, 0, stickyDeletePipelineSize+2)
+	batchKeys := make([]string, 0, stickyDeletePipelineSize+2)
+	for index := range stickyDeletePipelineSize + 2 {
+		accountID := uint64(100 + index)
+		key := "sticky-batch-" + strconv.Itoa(index)
+		batchIDs = append(batchIDs, accountID)
+		batchKeys = append(batchKeys, key)
+		if err := store.Set(ctx, key, accountID, time.Now().UTC().Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Set(ctx, "sticky-batch-keep", 9, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	batchIDs = append(batchIDs, batchIDs[0], 0)
+	if err := store.DeleteByAccounts(ctx, batchIDs); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range batchKeys {
+		if _, ok, err := store.Get(ctx, key, time.Now().UTC()); err != nil || ok {
+			t.Fatalf("batch-deleted sticky %q remains: ok=%v err=%v", key, ok, err)
+		}
+	}
+	if id, ok, err := store.Get(ctx, "sticky-batch-keep", time.Now().UTC()); err != nil || !ok || id != 9 {
+		t.Fatalf("unrelated batch sticky = %d, ok=%v err=%v", id, ok, err)
 	}
 
 	observedAt := time.Now().UTC()
@@ -277,6 +298,28 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 	}
 }
 
+func cleanupRedisTestPrefix(t *testing.T, ctx context.Context, client *redisclient.Client, prefix string) {
+	t.Helper()
+	var cursor uint64
+	for {
+		keys, next, err := client.Scan(ctx, cursor, prefix+"*", 256).Result()
+		if err != nil {
+			t.Errorf("scan Redis test keys: %v", err)
+			return
+		}
+		if len(keys) > 0 {
+			if err := client.Unlink(ctx, keys...).Err(); err != nil {
+				t.Errorf("delete Redis test keys: %v", err)
+				return
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			return
+		}
+	}
+}
+
 func TestRedisInvalidationBusIntegration(t *testing.T) {
 	address := os.Getenv("TEST_REDIS_ADDRESS")
 	if address == "" {
@@ -291,21 +334,16 @@ func TestRedisInvalidationBusIntegration(t *testing.T) {
 		database = parsed
 	}
 	ctx := context.Background()
+	keyPrefix := "grok2api:invalidation-test:" + time.Now().UTC().Format("150405.000000") + ":"
 	store, err := Open(ctx, Config{
 		Address: address, Username: os.Getenv("TEST_REDIS_USERNAME"), Password: os.Getenv("TEST_REDIS_PASSWORD"), Database: database,
-		KeyPrefix: "grok2api:invalidation-test:" + time.Now().UTC().Format("150405.000000") + ":", ConcurrencyLease: time.Minute,
+		KeyPrefix: keyPrefix, ConcurrencyLease: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if os.Getenv("TEST_REDIS_FLUSH_DATABASE") == "1" {
-		defer func() {
-			if err := store.client.FlushDB(ctx).Err(); err != nil {
-				t.Errorf("flush Redis test database: %v", err)
-			}
-		}()
-	}
+	defer cleanupRedisTestPrefix(t, ctx, store.client, keyPrefix)
 
 	listenerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

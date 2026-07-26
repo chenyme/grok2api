@@ -139,6 +139,130 @@ func TestPostgresConcurrentSchemaInitializationUsesMigrationLock(t *testing.T) {
 	}
 }
 
+func TestPostgresAccountLinkMutationLockSerializesTransactions(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	database, err := OpenPostgres(ctx, dsn, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	first := database.db.WithContext(ctx).Begin()
+	if first.Error != nil {
+		t.Fatal(first.Error)
+	}
+	defer first.Rollback()
+	if err := lockAccountLinkMutation(first); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		second := database.db.WithContext(ctx).Begin()
+		if second.Error != nil {
+			result <- second.Error
+			return
+		}
+		close(started)
+		err := lockAccountLinkMutation(second)
+		if rollbackErr := second.Rollback().Error; err == nil {
+			err = rollbackErr
+		}
+		result <- err
+	}()
+	<-started
+	select {
+	case err := <-result:
+		t.Fatalf("second account-link mutation was not serialized: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := first.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(accountLinkLockTimeout + time.Second):
+		t.Fatal("account-link mutation did not resume after advisory lock release")
+	}
+}
+
+func TestPostgresAccountLinkMutationLockHasBoundedWait(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	database, err := OpenPostgres(ctx, dsn, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	first := database.db.WithContext(ctx).Begin()
+	if first.Error != nil {
+		t.Fatal(first.Error)
+	}
+	defer first.Rollback()
+	if err := lockAccountLinkMutation(first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := database.db.WithContext(ctx).Begin()
+	if second.Error != nil {
+		t.Fatal(second.Error)
+	}
+	defer second.Rollback()
+	startedAt := time.Now()
+	err = lockAccountLinkMutationWithTimeout(second, 100*time.Millisecond)
+	if !errors.Is(err, repository.ErrConflict) {
+		t.Fatalf("bounded link-mutation lock error = %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed < 75*time.Millisecond || elapsed > time.Second {
+		t.Fatalf("bounded link-mutation lock elapsed = %s", elapsed)
+	}
+}
+
+func assertPostgresAccountLinkMutationWaits(t *testing.T, ctx context.Context, database *Database, operation func() error) {
+	t.Helper()
+	guard := database.db.WithContext(ctx).Begin()
+	if guard.Error != nil {
+		t.Fatal(guard.Error)
+	}
+	defer guard.Rollback()
+	if err := lockAccountLinkMutation(guard); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(chan error, 1)
+	go func() { result <- operation() }()
+	select {
+	case err := <-result:
+		t.Fatalf("account-link mutation bypassed advisory lock: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := guard.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(accountLinkLockTimeout + time.Second):
+		t.Fatal("account-link mutation did not resume after advisory lock release")
+	}
+}
+
 func TestPostgresRepositoriesIntegration(t *testing.T) {
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn == "" {
@@ -196,9 +320,12 @@ func TestPostgresRepositoriesIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.ReconcileProviderLinks(ctx, web.ID); err != nil {
-		t.Fatal(err)
-	}
+	assertPostgresAccountLinkMutationWaits(t, ctx, database, func() error {
+		return repository.ReconcileProviderLinks(ctx, web.ID)
+	})
+	assertPostgresAccountLinkMutationWaits(t, ctx, database, func() error {
+		return repository.LinkWebToBuild(ctx, web.ID, build.ID)
+	})
 	web, err = repository.Get(ctx, web.ID)
 	if err != nil || len(web.LinkedAccounts) != 2 {
 		t.Fatalf("postgres linked accounts = %#v, err = %v", web.LinkedAccounts, err)
