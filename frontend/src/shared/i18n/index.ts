@@ -867,7 +867,7 @@ const resources = {
       },
       settingsRoutingSegmented: { enabled: "启用分段选号", enabledHelp: "仅对达到阈值且没有会话粘性的账号池生效；连续四个窗口满载后自动回退完整池选号。", minCandidates: "启用账号数阈值", minCandidatesHelp: "可用候选账号达到该数量后启用分段选号。", windowSize: "选号窗口大小", windowSizeHelp: "每个分段窗口检查的候选账号数量。" },
       settingsRoutingAttempts: {
-        help: "有限模式范围为 1–200；无限制模式会在账号级可切换失败时遍历当前可用账号。",
+        help: "有限模式可使用任意正整数；无限制模式会在账号级可切换失败时遍历当前可用账号。",
         unlimited: "无限制",
         unlimitedTitle: "启用无限尝试？",
         unlimitedDescription: "单次请求可能依次访问账号池中的全部可用账号，显著增加请求时长和上游压力。请求取消、超时以及重复的请求级或网络故障仍会提前停止。",
@@ -1375,7 +1375,7 @@ const resources = {
       settingsBuildForbidden: { markInvalid: "Invalidate matching error codes", markInvalidHelp: "When enabled, a Grok Build 403 with a matching error code marks the account invalid and removes it from scheduling.", codes: "Invalidation error codes", codesHelp: "Enter one code per line. Codes match the complete code or error.code value case-insensitively, up to 32 entries.", codesInvalid: "Enter 1–32 valid codes using letters, numbers, dots, underscores, colons, or hyphens.", codesPlaceholder: "permission-denied" },
       settingsRoutingSegmented: { enabled: "Enable segmented selection", enabledHelp: "Applies only above the threshold without session affinity and falls back to full-pool selection after four saturated windows.", minCandidates: "Account threshold", minCandidatesHelp: "Enables segmented selection when the eligible account pool reaches this size.", windowSize: "Selection window", windowSizeHelp: "Number of candidate accounts inspected in each segmented window." },
       settingsRoutingAttempts: {
-        help: "Set a finite limit from 1 to 200, or allow account-scoped failures to traverse all currently eligible accounts.",
+        help: "Set any positive finite limit, or allow account-scoped failures to traverse all currently eligible accounts.",
         unlimited: "Unlimited",
         unlimitedTitle: "Enable unlimited attempts?",
         unlimitedDescription: "A single request may try every eligible account in the pool, significantly increasing latency and upstream load. Cancellation, timeouts, and repeated request-level or network failures still stop processing early.",

@@ -177,10 +177,10 @@ func TestValidateMaxAttemptsRange(t *testing.T) {
 		{name: "unlimited", value: -1},
 		{name: "minimum", value: 1},
 		{name: "above former cap", value: 11},
-		{name: "maximum", value: 200},
+		{name: "large finite value", value: 999},
+		{name: "very large finite value", value: 1_000_000},
 		{name: "zero", value: 0, wantErr: true},
 		{name: "below unlimited", value: -2, wantErr: true},
-		{name: "above maximum", value: 201, wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
