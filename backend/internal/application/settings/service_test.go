@@ -115,20 +115,20 @@ func TestUpdateRejectsBuildResponseHeaderTimeoutOutsideSafeRange(t *testing.T) {
 	}
 }
 
-func TestUpdateValidatesMaxAttemptsRange(t *testing.T) {
+func TestUpdateValidatesMaxAttemptsMode(t *testing.T) {
 	cfg := testConfig(t)
 	repository := &runtimeSettingsRepositoryStub{}
 	var applied config.Config
 	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
 
 	input := service.Get().Config
-	input.Routing.MaxAttempts = 200
+	input.Routing.MaxAttempts = 999
 	snapshot, err := service.Update(context.Background(), 0, input)
 	if err != nil {
-		t.Fatalf("maximum maxAttempts was rejected: %v", err)
+		t.Fatalf("large finite maxAttempts was rejected: %v", err)
 	}
-	if applied.Routing.MaxAttempts != 200 || snapshot.Config.Routing.MaxAttempts != 200 {
-		t.Fatalf("maximum maxAttempts was not applied: applied=%d snapshot=%d", applied.Routing.MaxAttempts, snapshot.Config.Routing.MaxAttempts)
+	if applied.Routing.MaxAttempts != 999 || snapshot.Config.Routing.MaxAttempts != 999 {
+		t.Fatalf("large finite maxAttempts was not applied: applied=%d snapshot=%d", applied.Routing.MaxAttempts, snapshot.Config.Routing.MaxAttempts)
 	}
 
 	input = snapshot.Config
@@ -142,12 +142,27 @@ func TestUpdateValidatesMaxAttemptsRange(t *testing.T) {
 	}
 
 	input = snapshot.Config
-	input.Routing.MaxAttempts = 201
+	input.Routing.MaxAttempts = -2
 	if _, err := service.Update(context.Background(), snapshot.Revision, input); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("maxAttempts above maximum error = %v", err)
+		t.Fatalf("invalid maxAttempts error = %v", err)
 	}
 	if repository.value.Routing.MaxAttempts != -1 {
 		t.Fatalf("invalid maxAttempts was persisted: %d", repository.value.Routing.MaxAttempts)
+	}
+}
+
+func TestLoadPersistedAllowsHistoricalLargeMaxAttempts(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.Routing.MaxAttempts = 999
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Routing.MaxAttempts != 999 {
+		t.Fatalf("maxAttempts = %d, want 999", loaded.Routing.MaxAttempts)
 	}
 }
 

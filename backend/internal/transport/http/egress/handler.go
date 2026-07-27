@@ -87,6 +87,7 @@ type nodeResponse struct {
 	LastProbedAt         *time.Time          `json:"lastProbedAt,omitempty"`
 	ProbeLatencyMS       int                 `json:"probeLatencyMs"`
 	ExitIP               string              `json:"exitIp,omitempty"`
+	ExitCountry          string              `json:"exitCountry,omitempty"`
 	ProbeError           string              `json:"probeError,omitempty"`
 	ProbeProvider        string              `json:"probeProvider,omitempty"`
 	IPv4Probe            probeFamilyResponse `json:"ipv4Probe"`
@@ -95,11 +96,12 @@ type nodeResponse struct {
 }
 
 type probeFamilyResponse struct {
-	Status    string     `json:"status"`
-	TestedAt  *time.Time `json:"testedAt,omitempty"`
-	LatencyMS int        `json:"latencyMs"`
-	ExitIP    string     `json:"exitIp,omitempty"`
-	Error     string     `json:"error,omitempty"`
+	Status      string     `json:"status"`
+	TestedAt    *time.Time `json:"testedAt,omitempty"`
+	LatencyMS   int        `json:"latencyMs"`
+	ExitIP      string     `json:"exitIp,omitempty"`
+	ExitCountry string     `json:"exitCountry,omitempty"`
+	Error       string     `json:"error,omitempty"`
 }
 
 type accountAssignmentRequest struct {
@@ -247,7 +249,8 @@ func newNodeResponse(value egressdomain.PublicNode) nodeResponse {
 		AccountBoundProxy: value.AccountBoundProxy,
 		SourceID:          value.SourceID, AccountCapacity: value.AccountCapacity,
 		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
-		ProbeStatus: string(value.ProbeStatus), LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS, ExitIP: value.ExitIP, ProbeError: value.ProbeError,
+		ProbeStatus: string(value.ProbeStatus), LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS,
+		ExitIP: value.ExitIP, ExitCountry: value.ExitCountry, ProbeError: value.ProbeError,
 		ProbeProvider: string(value.ProbeProvider),
 		IPv4Probe:     newProbeFamilyResponse(value.IPv4Probe), IPv6Probe: newProbeFamilyResponse(value.IPv6Probe),
 		AssignedAccountCount: value.AssignedAccountCount,
@@ -265,7 +268,7 @@ func newProbeFamilyResponse(value egressdomain.ProbeFamilyResult) probeFamilyRes
 		testedAt = &canonical
 	}
 	return probeFamilyResponse{
-		Status: string(status), TestedAt: testedAt, LatencyMS: value.LatencyMS, ExitIP: value.ExitIP, Error: value.Error,
+		Status: string(status), TestedAt: testedAt, LatencyMS: value.LatencyMS, ExitIP: value.ExitIP, ExitCountry: value.ExitCountry, Error: value.Error,
 	}
 }
 
@@ -322,38 +325,52 @@ func (h *Handler) delete(c *gin.Context) {
 }
 
 type sourceRequest struct {
-	Name                   string  `json:"name"`
-	Scope                  string  `json:"scope"`
-	Enabled                bool    `json:"enabled"`
-	URL                    *string `json:"url"`
-	ClearURL               bool    `json:"clearUrl"`
-	RefreshIntervalSeconds *int    `json:"refreshIntervalSeconds"`
-	DefaultAccountCapacity *int    `json:"defaultAccountCapacity"`
+	Name                   string               `json:"name"`
+	Scope                  string               `json:"scope"`
+	Enabled                bool                 `json:"enabled"`
+	URL                    *string              `json:"url"`
+	ClearURL               bool                 `json:"clearUrl"`
+	RefreshIntervalSeconds *int                 `json:"refreshIntervalSeconds"`
+	DefaultAccountCapacity *int                 `json:"defaultAccountCapacity"`
+	ImportFilter           *importFilterRequest `json:"importFilter"`
 }
 
 type sourceResponse struct {
-	ID                     uint64     `json:"id,string"`
-	Name                   string     `json:"name"`
-	Scope                  string     `json:"scope"`
-	Enabled                bool       `json:"enabled"`
-	URLConfigured          bool       `json:"urlConfigured"`
-	RefreshIntervalSeconds int        `json:"refreshIntervalSeconds"`
-	DefaultAccountCapacity int        `json:"defaultAccountCapacity"`
-	LastSyncedAt           *time.Time `json:"lastSyncedAt,omitempty"`
-	NextSyncAt             *time.Time `json:"nextSyncAt,omitempty"`
-	LastSyncImported       int        `json:"lastSyncImported"`
-	LastSyncError          string     `json:"lastSyncError,omitempty"`
+	ID                     uint64               `json:"id,string"`
+	Name                   string               `json:"name"`
+	Scope                  string               `json:"scope"`
+	Enabled                bool                 `json:"enabled"`
+	URLConfigured          bool                 `json:"urlConfigured"`
+	RefreshIntervalSeconds int                  `json:"refreshIntervalSeconds"`
+	DefaultAccountCapacity int                  `json:"defaultAccountCapacity"`
+	ImportFilter           importFilterResponse `json:"importFilter"`
+	LastSyncedAt           *time.Time           `json:"lastSyncedAt,omitempty"`
+	NextSyncAt             *time.Time           `json:"nextSyncAt,omitempty"`
+	LastSyncImported       int                  `json:"lastSyncImported"`
+	LastSyncError          string               `json:"lastSyncError,omitempty"`
 }
 
 type importRequest struct {
-	Name            string `json:"name"`
-	Scope           string `json:"scope"`
-	AccountCapacity int    `json:"accountCapacity"`
-	Content         string `json:"content"`
+	Name            string              `json:"name"`
+	Scope           string              `json:"scope"`
+	AccountCapacity int                 `json:"accountCapacity"`
+	Content         string              `json:"content"`
+	ImportFilter    importFilterRequest `json:"importFilter"`
+}
+
+type importFilterRequest struct {
+	MaxLatencyMS int      `json:"maxLatencyMs"`
+	Countries    []string `json:"countries"`
+}
+
+type importFilterResponse struct {
+	MaxLatencyMS int      `json:"maxLatencyMs"`
+	Countries    []string `json:"countries"`
 }
 
 type probeBatchRequest struct {
-	IDs []string `json:"ids"`
+	IDs             []string `json:"ids"`
+	RemoveUnhealthy bool     `json:"removeUnhealthy"`
 }
 
 type operationsConfigRequest struct {
@@ -411,18 +428,34 @@ func (value operationsConfigRequest) input() (egressapp.OperationsConfigInput, e
 }
 
 func (value sourceRequest) input() egressapp.SubscriptionSourceInput {
-	return egressapp.SubscriptionSourceInput{
+	result := egressapp.SubscriptionSourceInput{
 		Name: value.Name, Scope: egressdomain.Scope(value.Scope), Enabled: value.Enabled, URL: value.URL, ClearURL: value.ClearURL,
 		RefreshIntervalSeconds: value.RefreshIntervalSeconds, DefaultAccountCapacity: value.DefaultAccountCapacity,
 	}
+	if value.ImportFilter != nil {
+		result.ImportFilter = &egressapp.SubscriptionImportFilterInput{
+			MaxLatencyMS: value.ImportFilter.MaxLatencyMS, Countries: value.ImportFilter.Countries,
+		}
+	}
+	return result
 }
 
 func newSourceResponse(value egressdomain.PublicSubscriptionSource) sourceResponse {
 	return sourceResponse{
 		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled, URLConfigured: value.URLConfigured,
 		RefreshIntervalSeconds: value.RefreshIntervalSeconds, DefaultAccountCapacity: value.DefaultAccountCapacity,
+		ImportFilter: newImportFilterResponse(value.ImportFilter),
 		LastSyncedAt: value.LastSyncedAt, NextSyncAt: value.NextSyncAt, LastSyncImported: value.LastSyncImported, LastSyncError: value.LastSyncError,
 	}
+}
+
+func newImportFilterResponse(value egressdomain.SubscriptionImportFilter) importFilterResponse {
+	// The frontend decoder deliberately requires an array. Sources created
+	// before import filters have a nil Countries slice, so preserve the stable
+	// JSON contract as [] rather than null.
+	countries := make([]string, len(value.Countries))
+	copy(countries, value.Countries)
+	return importFilterResponse{MaxLatencyMS: value.MaxLatencyMS, Countries: countries}
 }
 
 func newOperationsConfigResponse(value egressdomain.OperationsConfig) operationsConfigResponse {
@@ -509,7 +542,7 @@ func (h *Handler) syncSource(c *gin.Context) {
 		h.writeError(c, err)
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"imported": value.Imported, "skipped": value.Skipped})
+	response.Success(c, http.StatusOK, gin.H{"imported": value.Imported, "skipped": value.Skipped, "filtered": value.Filtered})
 }
 
 func (h *Handler) importText(c *gin.Context) {
@@ -520,12 +553,13 @@ func (h *Handler) importText(c *gin.Context) {
 	}
 	value, err := h.service.ImportText(c.Request.Context(), egressapp.ImportInput{
 		Name: request.Name, Scope: egressdomain.Scope(request.Scope), AccountCapacity: request.AccountCapacity, Content: request.Content,
+		ImportFilter: egressapp.SubscriptionImportFilterInput{MaxLatencyMS: request.ImportFilter.MaxLatencyMS, Countries: request.ImportFilter.Countries},
 	})
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
-	response.Success(c, http.StatusCreated, gin.H{"imported": value.Imported, "skipped": value.Skipped})
+	response.Success(c, http.StatusCreated, gin.H{"imported": value.Imported, "skipped": value.Skipped, "filtered": value.Filtered})
 }
 
 func (h *Handler) testNode(c *gin.Context) {
@@ -539,7 +573,8 @@ func (h *Handler) testNode(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{
-		"status": value.Status, "testedAt": value.TestedAt, "latencyMs": value.LatencyMS, "exitIp": value.ExitIP, "error": value.Error,
+		"status": value.Status, "testedAt": value.TestedAt, "latencyMs": value.LatencyMS,
+		"exitIp": value.ExitIP, "exitCountry": value.ExitCountry, "error": value.Error,
 		"probeProvider": value.Provider,
 		"ipv4":          newProbeFamilyResponse(value.IPv4), "ipv6": newProbeFamilyResponse(value.IPv6),
 	})
@@ -556,12 +591,17 @@ func (h *Handler) testNodes(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidId", "账号 ID 无效")
 		return
 	}
-	value, err := h.service.TestNodes(c.Request.Context(), ids)
+	var value egressapp.ProbeBatchResult
+	if request.RemoveUnhealthy {
+		value, err = h.service.TestNodesAndRemoveUnhealthy(c.Request.Context(), ids)
+	} else {
+		value, err = h.service.TestNodes(c.Request.Context(), ids)
+	}
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"requested": value.Requested, "healthy": value.Healthy, "unhealthy": value.Unhealthy})
+	response.Success(c, http.StatusOK, gin.H{"requested": value.Requested, "healthy": value.Healthy, "unhealthy": value.Unhealthy, "removed": value.Removed})
 }
 
 func (h *Handler) operationsConfig(c *gin.Context) {
@@ -598,12 +638,16 @@ func (h *Handler) rebalance(c *gin.Context) {
 		h.writeError(c, err)
 		return
 	}
-	value, err := h.service.RebalanceAccounts(c.Request.Context(), true, true, time.Duration(config.ProbeIntervalSeconds)*time.Second)
+	value, err := h.service.RebalanceAccountsAllowCapacityOverflow(c.Request.Context(), true, true, time.Duration(config.ProbeIntervalSeconds)*time.Second)
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"assigned": value.Assigned, "rebalanced": value.Rebalanced, "unplaced": value.Unplaced})
+	unplacedByProvider := make(map[string]int, len(value.UnplacedByProvider))
+	for provider, count := range value.UnplacedByProvider {
+		unplacedByProvider[string(provider)] = count
+	}
+	response.Success(c, http.StatusOK, gin.H{"assigned": value.Assigned, "rebalanced": value.Rebalanced, "overflowed": value.Overflowed, "unplaced": value.Unplaced, "unplacedByProvider": unplacedByProvider})
 }
 
 func parseOptionalAccountIDs(values []string) ([]uint64, error) {

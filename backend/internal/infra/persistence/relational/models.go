@@ -469,6 +469,8 @@ type egressSubscriptionSourceModel struct {
 	EncryptedURL           string `gorm:"type:text;not null;default:'';check:chk_egress_subscription_sources_url,length(encrypted_url) <= 65536"`
 	RefreshIntervalSeconds int    `gorm:"not null;default:900;check:chk_egress_subscription_sources_refresh,refresh_interval_seconds BETWEEN 60 AND 86400"`
 	DefaultAccountCapacity int    `gorm:"not null;default:0;check:chk_egress_subscription_sources_capacity,default_account_capacity BETWEEN 0 AND 100000"`
+	ImportMaxLatencyMS     int    `gorm:"not null;default:0"`
+	ImportCountries        string `gorm:"size:512;not null;default:''"`
 	LastSyncedAt           *time.Time
 	NextSyncAt             *time.Time `gorm:"index:idx_egress_subscription_sources_due"`
 	LastSyncImported       int        `gorm:"not null;default:0;check:chk_egress_subscription_sources_imported,last_sync_imported >= 0"`
@@ -502,6 +504,7 @@ type egressNodeModel struct {
 	LastProbedAt                *time.Time
 	ProbeLatencyMS              int                            `gorm:"not null;default:0;check:chk_egress_nodes_probe_latency,probe_latency_ms >= 0"`
 	ExitIP                      string                         `gorm:"size:64;not null;default:'';check:chk_egress_nodes_exit_ip,length(exit_ip) <= 64"`
+	ExitCountry                 string                         `gorm:"size:8;not null;default:'';check:chk_egress_nodes_exit_country,length(exit_country) <= 8"`
 	ProbeError                  string                         `gorm:"size:512;not null;default:'';check:chk_egress_nodes_probe_error,length(probe_error) <= 512"`
 	ProbeProvider               string                         `gorm:"size:16;not null;default:'';check:chk_egress_nodes_probe_provider,probe_provider IN ('','ipinfo','cloudflare')"`
 	IPv4ProbeStatus             string                         `gorm:"column:ipv4_probe_status;size:16;not null;default:unknown;check:chk_egress_nodes_ipv4_probe_status,ipv4_probe_status IN ('unknown','healthy','unhealthy')"`

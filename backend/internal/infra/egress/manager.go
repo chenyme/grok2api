@@ -314,24 +314,13 @@ type preparedEgressProbe struct {
 // endpoints. Both requests share one immutable node snapshot so a concurrent
 // administrator edit cannot mix results from different proxy configurations.
 func (m *Manager) ProbeEgressNode(ctx context.Context, node domain.Node) (domain.ProbeResult, error) {
-	type outcome struct {
-		family string
-		result domain.ProbeFamilyResult
-		err    error
-	}
 	startedAt := time.Now().UTC()
-	var provider domain.ProbeProvider
-	config, supported, configErr := m.loadOperationsConfig(ctx, time.Now().UTC())
-	if configErr != nil {
+	provider, err := m.probeProvider(ctx)
+	if err != nil {
 		message := "读取代理探测服务配置失败"
 		result := failedEgressProbeResult(provider, message, startedAt)
-		m.logProbeSetupFailure(ctx, node, provider, "load_probe_config", message, configErr, result.LatencyMS)
-		return result, configErr
-	}
-	if supported {
-		provider = config.ProbeProvider.Normalized()
-	} else {
-		provider = domain.ProbeProviderCloudflare
+		m.logProbeSetupFailure(ctx, node, provider, "load_probe_config", message, err, result.LatencyMS)
+		return result, err
 	}
 	target, stage, message, prepareErr := m.prepareEgressProbe(node)
 	if prepareErr != nil {
@@ -339,13 +328,54 @@ func (m *Manager) ProbeEgressNode(ctx context.Context, node domain.Node) (domain
 		m.logProbeSetupFailure(ctx, node, provider, stage, message, prepareErr, result.LatencyMS)
 		return result, prepareErr
 	}
+	return m.probePreparedEgress(ctx, target, provider, startedAt)
+}
+
+// ProbeEgressProxy verifies a subscription import candidate before it is
+// persisted. The destination remains fixed by the configured probe provider.
+func (m *Manager) ProbeEgressProxy(ctx context.Context, proxyURL string) (domain.ProbeResult, error) {
+	startedAt := time.Now().UTC()
+	probeNode := domain.Node{Name: "subscription-import", Scope: domain.ScopeBuild}
+	provider, err := m.probeProvider(ctx)
+	if err != nil {
+		message := "读取代理探测服务配置失败"
+		result := failedEgressProbeResult(provider, message, startedAt)
+		m.logProbeSetupFailure(ctx, probeNode, provider, "load_probe_config", message, err, result.LatencyMS)
+		return result, err
+	}
+	target, stage, message, prepareErr := m.prepareEgressProxy(proxyURL)
+	if prepareErr != nil {
+		result := failedEgressProbeResult(provider, message, startedAt)
+		m.logProbeSetupFailure(ctx, probeNode, provider, stage, message, prepareErr, result.LatencyMS)
+		return result, prepareErr
+	}
+	return m.probePreparedEgress(ctx, target, provider, startedAt)
+}
+
+func (m *Manager) probeProvider(ctx context.Context) (domain.ProbeProvider, error) {
+	config, supported, err := m.loadOperationsConfig(ctx, time.Now().UTC())
+	if err != nil {
+		return "", err
+	}
+	if supported {
+		return config.ProbeProvider.Normalized(), nil
+	}
+	return domain.ProbeProviderCloudflare, nil
+}
+
+func (m *Manager) probePreparedEgress(ctx context.Context, target preparedEgressProbe, provider domain.ProbeProvider, startedAt time.Time) (domain.ProbeResult, error) {
+	type outcome struct {
+		family string
+		result domain.ProbeFamilyResult
+		err    error
+	}
 	ipv4Endpoint, ipv6Endpoint := probeEndpoints(provider)
 	outcomes := make(chan outcome, 2)
 	for _, probe := range []struct{ family, endpoint string }{{"ipv4", ipv4Endpoint}, {"ipv6", ipv6Endpoint}} {
-		go func() {
-			result, err := m.probeEgressEndpoint(ctx, target, provider, probe.family, probe.endpoint)
-			outcomes <- outcome{family: probe.family, result: result, err: err}
-		}()
+		go func(family, endpoint string) {
+			result, err := m.probeEgressEndpoint(ctx, target, provider, family, endpoint)
+			outcomes <- outcome{family: family, result: result, err: err}
+		}(probe.family, probe.endpoint)
 	}
 	var ipv4Err, ipv6Err error
 	result := domain.ProbeResult{Status: domain.ProbeStatusUnhealthy, Provider: provider}
@@ -360,9 +390,9 @@ func (m *Manager) ProbeEgressNode(ctx context.Context, node domain.Node) (domain
 	result.TestedAt = time.Now().UTC()
 	result.LatencyMS = max(result.IPv4.LatencyMS, result.IPv6.LatencyMS)
 	if result.IPv4.Status == domain.ProbeStatusHealthy {
-		result.Status, result.ExitIP = domain.ProbeStatusHealthy, result.IPv4.ExitIP
+		result.Status, result.ExitIP, result.ExitCountry = domain.ProbeStatusHealthy, result.IPv4.ExitIP, result.IPv4.ExitCountry
 	} else if result.IPv6.Status == domain.ProbeStatusHealthy {
-		result.Status, result.ExitIP = domain.ProbeStatusHealthy, result.IPv6.ExitIP
+		result.Status, result.ExitIP, result.ExitCountry = domain.ProbeStatusHealthy, result.IPv6.ExitIP, result.IPv6.ExitCountry
 	}
 	if result.Status == domain.ProbeStatusHealthy {
 		return result, nil
@@ -406,6 +436,26 @@ func (m *Manager) prepareEgressProbe(node domain.Node) (preparedEgressProbe, str
 		}
 	}
 	target.proxyURL = proxyURL
+	return target, "", "", nil
+}
+
+func (m *Manager) prepareEgressProxy(proxyURL string) (preparedEgressProbe, string, string, error) {
+	target := preparedEgressProbe{nodeName: "subscription-import", nodeScope: domain.ScopeBuild}
+	normalized, err := application.NormalizeProxyURL(proxyURL)
+	if err != nil {
+		return target, "normalize_proxy", "代理地址无效", err
+	}
+	if normalized == "" {
+		message := "未配置代理地址"
+		return target, "normalize_proxy", message, errors.New(message)
+	}
+	if strings.Contains(normalized, application.ProxyAccountPlaceholder) {
+		normalized, err = renderAccountProxyURL(normalized, "egress_probe")
+		if err != nil {
+			return target, "render_proxy_identity", "账号代理模板无效", err
+		}
+	}
+	target.proxyURL = normalized
 	return target, "", "", nil
 }
 
@@ -494,7 +544,7 @@ func (m *Manager) probeEgressEndpoint(ctx context.Context, target preparedEgress
 			m.log().WarnContext(ctx, "egress_probe_failed", attributes...)
 			return
 		}
-		attributes = append(attributes, "latency_ms", result.LatencyMS, "exit_ip", result.ExitIP)
+		attributes = append(attributes, "latency_ms", result.LatencyMS, "exit_ip", result.ExitIP, "exit_country", result.ExitCountry)
 		m.log().InfoContext(ctx, "egress_probe_succeeded", attributes...)
 	}()
 	clientFactory := m.newBuildClient
@@ -590,13 +640,7 @@ func (m *Manager) probeEgressEndpoint(ctx context.Context, target preparedEgress
 		return result, errors.New(result.Error)
 	}
 	stage = "decode_response"
-	exitIP, err := decodeProbeIP(body)
-	if err != nil {
-		result.Error = "探测服务响应格式无效"
-		return result, err
-	}
-	stage = "validate_exit_ip"
-	address, err := netip.ParseAddr(exitIP)
+	address, country, err := parseEgressProbeTrace(body)
 	if err != nil || (family == "ipv4" && !address.Is4()) || (family == "ipv6" && !address.Is6()) {
 		result.Error = fmt.Sprintf("探测服务未返回有效 %s 出口 IP", strings.ToUpper(family))
 		if err == nil {
@@ -607,25 +651,54 @@ func (m *Manager) probeEgressEndpoint(ctx context.Context, target preparedEgress
 	result.Status = domain.ProbeStatusHealthy
 	result.LatencyMS = max(1, int(time.Since(startedAt).Milliseconds()))
 	result.ExitIP = address.String()
+	result.ExitCountry = country
 	result.Error = ""
 	stage = "complete"
 	return result, nil
 }
 
 func decodeProbeIP(body []byte) (string, error) {
+	address, _, err := parseEgressProbeTrace(body)
+	if err != nil {
+		return "", err
+	}
+	return address.String(), nil
+}
+
+// parseEgressProbeTrace supports Cloudflare's key/value trace and IPInfo's
+// JSON response so country metadata remains available for either provider.
+func parseEgressProbeTrace(body []byte) (netip.Addr, string, error) {
 	var payload struct {
-		IP string `json:"ip"`
+		IP      string `json:"ip"`
+		Country string `json:"country"`
 	}
 	if json.Unmarshal(body, &payload) == nil && strings.TrimSpace(payload.IP) != "" {
-		return strings.TrimSpace(payload.IP), nil
+		address, err := netip.ParseAddr(strings.TrimSpace(payload.IP))
+		if err != nil {
+			return netip.Addr{}, "", fmt.Errorf("解析出口 IP: %w", err)
+		}
+		return address.Unmap(), normalizeProbeCountry(payload.Country), nil
 	}
+	values := make(map[string]string)
 	for line := range strings.SplitSeq(string(body), "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
-		if found && key == "ip" && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value), nil
+		if found {
+			values[key] = strings.TrimSpace(value)
 		}
 	}
-	return "", errors.New("probe response does not contain an IP address")
+	address, err := netip.ParseAddr(values["ip"])
+	if err != nil {
+		return netip.Addr{}, "", fmt.Errorf("解析出口 IP: %w", err)
+	}
+	return address.Unmap(), normalizeProbeCountry(values["loc"]), nil
+}
+
+func normalizeProbeCountry(value string) string {
+	country := strings.ToUpper(strings.TrimSpace(value))
+	if len(country) != 2 {
+		return ""
+	}
+	return country
 }
 
 func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, boundNodeID uint64) (*Lease, bool, error) {

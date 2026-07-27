@@ -55,6 +55,106 @@ func TestEgressOperationsAutoAssignRespectsNodeCapacity(t *testing.T) {
 	}
 }
 
+func TestEgressOperationsImmediateRebalanceAllowsCapacityOverflow(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	first := createHealthyEgressNode(t, ctx, nodes, cipher, "overflow-first", 1)
+	second := createHealthyEgressNode(t, ctx, nodes, cipher, "overflow-second", 1)
+	credentials := []account.Credential{
+		createEgressOperationsAccount(t, ctx, accounts, "overflow-one"),
+		createEgressOperationsAccount(t, ctx, accounts, "overflow-two"),
+		createEgressOperationsAccount(t, ctx, accounts, "overflow-three"),
+	}
+
+	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
+	result, err := service.RebalanceAccountsAllowCapacityOverflow(ctx, true, true, 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Assigned != 3 || result.Rebalanced != 0 || result.Overflowed != 1 || result.Unplaced != 0 {
+		t.Fatalf("rebalance result = %#v", result)
+	}
+
+	loads := map[uint64]int{}
+	for _, value := range credentials {
+		stored, err := accounts.Get(ctx, value.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loads[stored.EgressNodeID]++
+	}
+	if loads[first.ID] != 2 || loads[second.ID] != 1 {
+		t.Fatalf("overflow assignments = %#v", loads)
+	}
+}
+
+func TestEgressOperationsReportsProviderWithoutCompatibleHealthyNode(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	_ = createHealthyEgressNode(t, ctx, nodes, cipher, "build-only", 0)
+	_ = createEgressOperationsProviderAccount(t, ctx, accounts, account.ProviderWeb, "web-without-node")
+	_ = createEgressOperationsProviderAccount(t, ctx, accounts, account.ProviderConsole, "console-without-node")
+
+	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
+	result, err := service.RebalanceAccountsAllowCapacityOverflow(ctx, true, true, 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Unplaced != 2 || result.UnplacedByProvider[account.ProviderWeb] != 1 || result.UnplacedByProvider[account.ProviderConsole] != 1 {
+		t.Fatalf("unplaced result = %#v", result)
+	}
+}
+
+func TestEgressOperationsManualProbeIncludesDisabledConfiguredNodes(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	enabled := createHealthyEgressNode(t, ctx, nodes, cipher, "enabled", 0)
+	disabled := createHealthyEgressNode(t, ctx, nodes, cipher, "disabled", 0)
+	disabled.Enabled = false
+	disabled.ProbeStatus = egress.ProbeStatusUnknown
+	disabled.LastProbedAt = nil
+	if _, err := nodes.UpdateEgressNode(ctx, disabled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodes.CreateEgressNode(ctx, egress.Node{
+		Name: "direct", Scope: egress.ScopeBuild, Enabled: false, Health: 1, ProbeStatus: egress.ProbeStatusUnknown,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+	testedAt := time.Date(2026, time.July, 26, 6, 0, 0, 0, time.UTC)
+	service.SetNodeProber(egressProbeStub{result: egress.ProbeResult{
+		Status: egress.ProbeStatusHealthy, TestedAt: testedAt, LatencyMS: 42, ExitIP: "203.0.113.10", ExitCountry: "US",
+	}})
+
+	result, err := service.TestNodes(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Requested != 2 || result.Healthy != 2 || result.Unhealthy != 0 {
+		t.Fatalf("manual probe result = %#v", result)
+	}
+	actual, err := nodes.GetEgressNode(ctx, disabled.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.ProbeStatus != egress.ProbeStatusHealthy || actual.LastProbedAt == nil || !actual.LastProbedAt.Equal(testedAt) {
+		t.Fatalf("disabled node was not probed: %#v", actual)
+	}
+	if _, err := nodes.GetEgressNode(ctx, enabled.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEgressOperationsAutoAssignMovesAccountOffUnhealthyNode(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
@@ -441,9 +541,9 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	probedAt := time.Now().UTC().Truncate(time.Millisecond)
 	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
 	service.SetNodeProber(egressProbeStub{result: egress.ProbeResult{
-		Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "1.1.1.1",
+		Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "1.1.1.1", ExitCountry: "US",
 		Provider: egress.ProbeProviderCloudflare,
-		IPv4:     egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 40, ExitIP: "1.1.1.1"},
+		IPv4:     egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 40, ExitIP: "1.1.1.1", ExitCountry: "US"},
 		IPv6:     egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "2606:4700:4700::1111"},
 	}})
 
@@ -451,14 +551,14 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != egress.ProbeStatusHealthy || result.ExitIP != "1.1.1.1" {
+	if result.Status != egress.ProbeStatusHealthy || result.ExitIP != "1.1.1.1" || result.ExitCountry != "US" {
 		t.Fatalf("probe result = %#v", result)
 	}
 	stored, err := nodes.GetEgressNode(ctx, node.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.ProbeStatus != egress.ProbeStatusHealthy || stored.ProbeProvider != egress.ProbeProviderCloudflare || stored.ProbeLatencyMS != 42 || stored.ExitIP != "1.1.1.1" || stored.LastProbedAt == nil {
+	if stored.ProbeStatus != egress.ProbeStatusHealthy || stored.ProbeProvider != egress.ProbeProviderCloudflare || stored.ProbeLatencyMS != 42 || stored.ExitIP != "1.1.1.1" || stored.ExitCountry != "US" || stored.LastProbedAt == nil {
 		t.Fatalf("stored probe = %#v", stored)
 	}
 	if stored.IPv4Probe.ExitIP != "1.1.1.1" || stored.IPv6Probe.ExitIP != "2606:4700:4700::1111" || stored.IPv6Probe.Status != egress.ProbeStatusHealthy {
@@ -541,6 +641,58 @@ func TestEgressOperationsReturnsPersistedUnhealthyProbeAsResult(t *testing.T) {
 	}
 }
 
+func TestEgressOperationsBulkCheckRemovesUnhealthyNodeAndRedistributesAccounts(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	unhealthy := createHealthyEgressNode(t, ctx, nodes, cipher, "remove-unhealthy", 1)
+	healthy := createHealthyEgressNode(t, ctx, nodes, cipher, "keep-healthy", 1)
+	credential := createEgressOperationsAccount(t, ctx, accounts, "reassign-after-check")
+	if _, err := accounts.UpdateEgressBindings(ctx, account.ProviderBuild, []uint64{credential.ID}, &unhealthy.ID, account.EgressAssignmentManual, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
+	service.SetNodeProber(egressProbeByNodeStub{results: map[uint64]egress.ProbeResult{
+		unhealthy.ID: {Status: egress.ProbeStatusUnhealthy, TestedAt: time.Now().UTC(), Error: "connection refused"},
+		healthy.ID:   {Status: egress.ProbeStatusHealthy, TestedAt: time.Now().UTC(), LatencyMS: 42},
+	}})
+	checked, err := service.TestNodesAndRemoveUnhealthy(ctx, []uint64{unhealthy.ID, healthy.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked.Requested != 2 || checked.Healthy != 1 || checked.Unhealthy != 1 || checked.Removed != 1 {
+		t.Fatalf("check result = %#v", checked)
+	}
+	if _, err := nodes.GetEgressNode(ctx, unhealthy.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("unhealthy node error = %v", err)
+	}
+	cleared, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.EgressNodeID != 0 || cleared.EgressAssignmentMode != "" {
+		t.Fatalf("deleted-node binding was not cleared: %#v", cleared)
+	}
+
+	rebalanced, err := service.RebalanceAccountsAllowCapacityOverflow(ctx, true, true, 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebalanced.Assigned != 1 || rebalanced.Unplaced != 0 {
+		t.Fatalf("rebalance result = %#v", rebalanced)
+	}
+	stored, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EgressNodeID != healthy.ID || stored.EgressAssignmentMode != account.EgressAssignmentAuto {
+		t.Fatalf("account was not redistributed: %#v", stored)
+	}
+}
+
 func TestEgressOperationsStoresSubscriptionURLEncrypted(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
@@ -567,6 +719,127 @@ func TestEgressOperationsStoresSubscriptionURLEncrypted(t *testing.T) {
 	}
 	if stored.EncryptedURL == url || strings.Contains(stored.EncryptedURL, "subscription-token") {
 		t.Fatalf("subscription URL stored in plaintext: %q", stored.EncryptedURL)
+	}
+}
+
+func TestEgressOperationsNormalizesSubscriptionImportFilter(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+	url := "https://subscription.example/proxies"
+	filter := egressapp.SubscriptionImportFilterInput{MaxLatencyMS: 300, Countries: []string{" sg ", "US", "sg"}}
+	created, err := service.CreateSource(ctx, egressapp.SubscriptionSourceInput{
+		Name: "filtered-source", Scope: egress.ScopeBuild, Enabled: true, URL: &url, ImportFilter: &filter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ImportFilter.MaxLatencyMS != 300 || strings.Join(created.ImportFilter.Countries, ",") != "SG,US" {
+		t.Fatalf("public import filter = %#v", created.ImportFilter)
+	}
+	stored, err := nodes.GetEgressSource(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ImportFilter.MaxLatencyMS != created.ImportFilter.MaxLatencyMS || strings.Join(stored.ImportFilter.Countries, ",") != strings.Join(created.ImportFilter.Countries, ",") {
+		t.Fatalf("stored import filter = %#v, want %#v", stored.ImportFilter, created.ImportFilter)
+	}
+	updated, err := service.UpdateSource(ctx, created.ID, egressapp.SubscriptionSourceInput{
+		Name: created.Name, Scope: created.Scope, Enabled: created.Enabled,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ImportFilter.MaxLatencyMS != created.ImportFilter.MaxLatencyMS || strings.Join(updated.ImportFilter.Countries, ",") != strings.Join(created.ImportFilter.Countries, ",") {
+		t.Fatalf("omitted import filter was not preserved: %#v", updated.ImportFilter)
+	}
+	invalid := egressapp.SubscriptionImportFilterInput{Countries: []string{"USA"}}
+	if _, err := service.UpdateSource(ctx, created.ID, egressapp.SubscriptionSourceInput{
+		Name: created.Name, Scope: created.Scope, Enabled: created.Enabled, ImportFilter: &invalid,
+	}); !errors.Is(err, egressapp.ErrInvalidInput) {
+		t.Fatalf("invalid country filter error = %v", err)
+	}
+}
+
+func TestEgressOperationsFiltersTextImportBeforePersistence(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+	service.SetNodeProber(subscriptionImportProbeStub{results: map[string]egress.ProbeResult{
+		"fast-v4":       {Status: egress.ProbeStatusHealthy, TestedAt: time.Now().UTC(), LatencyMS: 30, ExitIP: "1.1.1.1", ExitCountry: "US"},
+		"fast-v6":       {Status: egress.ProbeStatusHealthy, TestedAt: time.Now().UTC(), LatencyMS: 31, ExitIP: "2606:4700:4700::1111", ExitCountry: "US"},
+		"wrong-country": {Status: egress.ProbeStatusHealthy, TestedAt: time.Now().UTC(), LatencyMS: 20, ExitIP: "8.8.8.8", ExitCountry: "DE"},
+		"slow":          {Status: egress.ProbeStatusHealthy, TestedAt: time.Now().UTC(), LatencyMS: 51, ExitIP: "8.8.4.4", ExitCountry: "US"},
+		"unhealthy":     {Status: egress.ProbeStatusUnhealthy, TestedAt: time.Now().UTC(), Error: "connection refused"},
+	}})
+
+	result, err := service.ImportText(ctx, egressapp.ImportInput{
+		Name: "filtered", Scope: egress.ScopeBuild, Content: strings.Join([]string{
+			"http://fast-v4.example:8080", "http://fast-v6.example:8080", "http://wrong-country.example:8080",
+			"http://slow.example:8080", "http://unhealthy.example:8080",
+		}, "\n"),
+		ImportFilter: egressapp.SubscriptionImportFilterInput{MaxLatencyMS: 50, Countries: []string{"US"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Imported != 2 || result.Skipped != 0 || result.Filtered != 3 {
+		t.Fatalf("import result = %#v", result)
+	}
+	stored, err := nodes.ListEgressNodes(ctx, egress.ScopeBuild, repository.SortQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored nodes = %#v", stored)
+	}
+	for _, node := range stored {
+		if node.ProbeStatus != egress.ProbeStatusHealthy || node.LastProbedAt == nil || node.ExitCountry != "US" || node.ProbeLatencyMS > 50 {
+			t.Fatalf("preflight metadata was not persisted: %#v", node)
+		}
+	}
+}
+
+func TestEgressOperationsUnfilteredSourceRefreshPreservesProbeMetadata(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	source, err := nodes.CreateEgressSource(ctx, egress.SubscriptionSource{Name: "metadata-source", Scope: egress.ScopeBuild, Enabled: true, RefreshIntervalSeconds: 900})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := cipher.Encrypt("http://metadata.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probedAt := time.Now().UTC().Truncate(time.Millisecond)
+	value := egress.Node{
+		Name: "metadata", Scope: egress.ScopeBuild, Enabled: true, SourceID: source.ID, SourceKey: "metadata",
+		EncryptedProxyURL: proxy, Health: 1, ProbeStatus: egress.ProbeStatusHealthy, LastProbedAt: &probedAt,
+		ProbeLatencyMS: 42, ExitIP: "1.1.1.1", ExitCountry: "US",
+	}
+	if _, err := nodes.UpsertEgressNodesFromSource(ctx, source.ID, []egress.Node{value}); err != nil {
+		t.Fatal(err)
+	}
+	value.ProbeStatus = egress.ProbeStatusUnknown
+	value.LastProbedAt = nil
+	value.ProbeLatencyMS = 0
+	value.ExitIP = ""
+	value.ExitCountry = ""
+	if _, err := nodes.UpsertEgressNodesFromSource(ctx, source.ID, []egress.Node{value}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := nodes.ListEgressNodes(ctx, egress.ScopeBuild, repository.SortQuery{})
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("stored nodes = %#v, err=%v", stored, err)
+	}
+	if stored[0].ProbeStatus != egress.ProbeStatusHealthy || stored[0].LastProbedAt == nil || !stored[0].LastProbedAt.Equal(probedAt) || stored[0].ProbeLatencyMS != 42 || stored[0].ExitCountry != "US" {
+		t.Fatalf("probe metadata was overwritten: %#v", stored[0])
 	}
 }
 
@@ -822,6 +1095,7 @@ func (stub mutatingEgressProbeStub) ProbeEgressNode(ctx context.Context, node eg
 	node.LastProbedAt = nil
 	node.ProbeLatencyMS = 0
 	node.ExitIP = ""
+	node.ExitCountry = ""
 	node.ProbeError = ""
 	node.ProbeProvider = ""
 	node.IPv4Probe = egress.ProbeFamilyResult{Status: egress.ProbeStatusUnknown}
@@ -834,6 +1108,30 @@ func (stub mutatingEgressProbeStub) ProbeEgressNode(ctx context.Context, node eg
 
 func (stub egressProbeStub) ProbeEgressNode(context.Context, egress.Node) (egress.ProbeResult, error) {
 	return stub.result, stub.err
+}
+
+type egressProbeByNodeStub struct{ results map[uint64]egress.ProbeResult }
+
+func (stub egressProbeByNodeStub) ProbeEgressNode(_ context.Context, node egress.Node) (egress.ProbeResult, error) {
+	return stub.results[node.ID], nil
+}
+
+type subscriptionImportProbeStub struct{ results map[string]egress.ProbeResult }
+
+func (stub subscriptionImportProbeStub) ProbeEgressNode(context.Context, egress.Node) (egress.ProbeResult, error) {
+	return egress.ProbeResult{}, errors.New("unexpected persisted node probe")
+}
+
+func (stub subscriptionImportProbeStub) ProbeEgressProxy(_ context.Context, proxyURL string) (egress.ProbeResult, error) {
+	for key, result := range stub.results {
+		if strings.Contains(proxyURL, key) {
+			if result.Status == egress.ProbeStatusUnhealthy {
+				return result, errors.New(result.Error)
+			}
+			return result, nil
+		}
+	}
+	return egress.ProbeResult{Status: egress.ProbeStatusUnhealthy, Error: "unknown proxy"}, errors.New("unknown proxy")
 }
 
 func egressOperationsCipher(t *testing.T) *security.Cipher {

@@ -47,6 +47,14 @@ type NodeProber interface {
 	ProbeEgressNode(context.Context, domain.Node) (domain.ProbeResult, error)
 }
 
+// ProxyProber is an optional capability for validating a subscription
+// candidate before it has a database node ID. The manager implements both
+// probe interfaces; keeping this separate preserves compatibility with
+// existing node-only probe adapters.
+type ProxyProber interface {
+	ProbeEgressProxy(context.Context, string) (domain.ProbeResult, error)
+}
+
 type OperationsConfigInvalidator interface {
 	InvalidateOperationsConfig()
 }
@@ -59,6 +67,7 @@ type SubscriptionSourceInput struct {
 	ClearURL               bool
 	RefreshIntervalSeconds *int
 	DefaultAccountCapacity *int
+	ImportFilter           *SubscriptionImportFilterInput
 }
 
 type ImportInput struct {
@@ -66,17 +75,25 @@ type ImportInput struct {
 	Scope           domain.Scope
 	AccountCapacity int
 	Content         string
+	ImportFilter    SubscriptionImportFilterInput
 }
 
 type ImportResult struct {
 	Imported int
 	Skipped  int
+	Filtered int
+}
+
+type SubscriptionImportFilterInput struct {
+	MaxLatencyMS int
+	Countries    []string
 }
 
 type ProbeBatchResult struct {
 	Requested int
 	Healthy   int
 	Unhealthy int
+	Removed   int
 }
 
 type OperationsConfigInput struct {
@@ -226,27 +243,39 @@ func (s *Service) ImportText(ctx context.Context, input ImportInput) (ImportResu
 	if err := validateImportInput(input); err != nil {
 		return ImportResult{}, err
 	}
+	filter, err := normalizeSubscriptionImportFilter(input.ImportFilter)
+	if err != nil {
+		return ImportResult{}, err
+	}
 	entries, skipped, err := parseProxySubscription(input.Content)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	nodes := make([]domain.Node, 0, len(entries))
-	for index, entry := range entries {
-		encryptedProxy, encryptErr := s.cipher.Encrypt(entry.ProxyURL)
+	screened, filtered, err := s.screenSubscriptionEntries(ctx, entries, filter)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	nodes := make([]domain.Node, 0, len(screened))
+	for index, candidate := range screened {
+		encryptedProxy, encryptErr := s.cipher.Encrypt(candidate.Entry.ProxyURL)
 		if encryptErr != nil {
 			return ImportResult{}, encryptErr
 		}
-		nodes = append(nodes, domain.Node{
+		node := domain.Node{
 			Name: sourceNodeName(input.Name, index), Scope: input.Scope, Enabled: true,
 			AccountCapacity: input.AccountCapacity, EncryptedProxyURL: encryptedProxy, Health: 1,
 			ProbeStatus: domain.ProbeStatusUnknown,
-		})
+		}
+		if candidate.Probe != nil {
+			applyProbeResult(&node, *candidate.Probe)
+		}
+		nodes = append(nodes, node)
 	}
 	created, err := operations.CreateEgressNodes(ctx, nodes)
 	if err != nil {
 		return ImportResult{}, err
 	}
-	return ImportResult{Imported: created, Skipped: skipped}, nil
+	return ImportResult{Imported: created, Skipped: skipped, Filtered: filtered}, nil
 }
 
 func (s *Service) TestNode(ctx context.Context, id uint64) (domain.ProbeResult, error) {
@@ -293,27 +322,49 @@ func (s *Service) TestNode(ctx context.Context, id uint64) (domain.ProbeResult, 
 }
 
 func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult, error) {
+	result, _, err := s.testNodes(ctx, ids)
+	return result, err
+}
+
+// TestNodesAndRemoveUnhealthy only removes nodes whose probe result was
+// persisted as unhealthy during this invocation. It intentionally does not
+// turn a repository or context error into a destructive delete.
+func (s *Service) TestNodesAndRemoveUnhealthy(ctx context.Context, ids []uint64) (ProbeBatchResult, error) {
+	result, unhealthyIDs, err := s.testNodes(ctx, ids)
+	if err != nil || len(unhealthyIDs) == 0 {
+		return result, err
+	}
+	deleted, err := s.DeleteMany(ctx, unhealthyIDs)
+	if err != nil {
+		return result, err
+	}
+	result.Removed = deleted
+	return result, nil
+}
+
+func (s *Service) testNodes(ctx context.Context, ids []uint64) (ProbeBatchResult, []uint64, error) {
 	if len(ids) == 0 {
 		nodes, err := s.repository.ListEgressNodes(ctx, "", repository.SortQuery{})
 		if err != nil {
-			return ProbeBatchResult{}, err
+			return ProbeBatchResult{}, nil, err
 		}
 		ids = make([]uint64, 0, len(nodes))
 		for _, node := range nodes {
-			if node.Enabled && node.EncryptedProxyURL != "" {
+			if node.EncryptedProxyURL != "" {
 				ids = append(ids, node.ID)
 			}
 		}
 	}
 	ids = uniqueIDs(ids)
 	if len(ids) > maxManualProbeNodes {
-		return ProbeBatchResult{}, fmt.Errorf("%w: 单次最多测试 %d 个代理", ErrInvalidInput, maxManualProbeNodes)
+		return ProbeBatchResult{}, nil, fmt.Errorf("%w: 单次最多测试 %d 个代理", ErrInvalidInput, maxManualProbeNodes)
 	}
 	result := ProbeBatchResult{Requested: len(ids)}
 	if len(ids) == 0 {
-		return result, nil
+		return result, nil, nil
 	}
 	var mu sync.Mutex
+	unhealthyIDs := make([]uint64, 0)
 	jobs := make(chan uint64)
 	var workers sync.WaitGroup
 	for range min(maxConcurrentProbes, len(ids)) {
@@ -327,6 +378,9 @@ func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult
 					result.Healthy++
 				} else {
 					result.Unhealthy++
+					if err == nil && probe.Status == domain.ProbeStatusUnhealthy {
+						unhealthyIDs = append(unhealthyIDs, id)
+					}
 				}
 				mu.Unlock()
 			}
@@ -338,12 +392,12 @@ func (s *Service) TestNodes(ctx context.Context, ids []uint64) (ProbeBatchResult
 		case <-ctx.Done():
 			close(jobs)
 			workers.Wait()
-			return result, ctx.Err()
+			return result, unhealthyIDs, ctx.Err()
 		}
 	}
 	close(jobs)
 	workers.Wait()
-	return result, nil
+	return result, unhealthyIDs, nil
 }
 
 func (s *Service) OperationsConfig(ctx context.Context) (domain.OperationsConfig, error) {
@@ -480,6 +534,13 @@ func (s *Service) applySourceInput(value domain.SubscriptionSource, input Subscr
 		}
 		value.DefaultAccountCapacity = *input.DefaultAccountCapacity
 	}
+	if input.ImportFilter != nil {
+		filter, err := normalizeSubscriptionImportFilter(*input.ImportFilter)
+		if err != nil {
+			return domain.SubscriptionSource{}, err
+		}
+		value.ImportFilter = filter
+	}
 	if input.ClearURL {
 		value.EncryptedURL = ""
 	} else if input.URL != nil {
@@ -506,7 +567,7 @@ func (s *Service) applySourceInput(value domain.SubscriptionSource, input Subscr
 func publicSource(value domain.SubscriptionSource) domain.PublicSubscriptionSource {
 	return domain.PublicSubscriptionSource{
 		ID: value.ID, Name: value.Name, Scope: value.Scope, Enabled: value.Enabled, URLConfigured: value.EncryptedURL != "",
-		RefreshIntervalSeconds: value.RefreshIntervalSeconds, DefaultAccountCapacity: value.DefaultAccountCapacity,
+		RefreshIntervalSeconds: value.RefreshIntervalSeconds, DefaultAccountCapacity: value.DefaultAccountCapacity, ImportFilter: value.ImportFilter,
 		LastSyncedAt: value.LastSyncedAt, NextSyncAt: value.NextSyncAt, LastSyncImported: value.LastSyncImported, LastSyncError: value.LastSyncError,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}

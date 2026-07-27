@@ -68,7 +68,8 @@ import {
   syncWebAccountsToConsole,
   updateAccount,
   updateAccountsEnabled,
-  type AccountDTO,
+	  type AccountDTO,
+	  type AccountProviderSummaryDTO,
   type AccountCleanupStatus,
   type AccountProvider,
   type CleanupPreviewDTO,
@@ -1009,9 +1010,9 @@ export function AccountsPage() {
   const invalidAccounts = summary?.issues.reauthRequired ?? 0;
   const riskAccounts = summary?.risk ?? 0;
   const abnormalAccounts = recoveringAccounts + disabledAccounts + invalidAccounts;
-  const buildSummary = summary?.providers.grok_build ?? { total: 0, available: 0 };
-  const webSummary = summary?.providers.grok_web ?? { total: 0, available: 0 };
-  const consoleSummary = summary?.providers.grok_console ?? { total: 0, available: 0 };
+	  const buildSummary = summary?.providers.grok_build ?? emptyAccountProviderSummary;
+	  const webSummary = summary?.providers.grok_web ?? emptyAccountProviderSummary;
+	  const consoleSummary = summary?.providers.grok_console ?? emptyAccountProviderSummary;
   const summaryLoading = summaryQuery.isPending;
   const summaryUnavailable = summaryQuery.isError;
   const providerAccountTotal = provider === "grok_build" ? buildSummary.total : provider === "grok_web" ? webSummary.total : consoleSummary.total;
@@ -1041,21 +1042,16 @@ export function AccountsPage() {
         <p className="sr-only">{t("console.accountsDescription")}</p>
       </header>
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <AccountMetricPanel tone="text-quota-product-1" icon={<SquareTerminal />} loading={summaryLoading} label={t("accounts.buildAccountCount")} value={summaryUnavailable ? "-" : formatNumber(buildSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(buildSummary.available, i18n.language, 0) })} />
-        <AccountMetricPanel tone="text-quota-product-2" icon={<Compass />} loading={summaryLoading} label={t("accounts.webAccountCount")} value={summaryUnavailable ? "-" : formatNumber(webSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(webSummary.available, i18n.language, 0) })} />
-        <AccountMetricPanel tone="text-quota-product-4" icon={<Webhook />} loading={summaryLoading} label={t("accounts.consoleAccountCount")} value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(consoleSummary.available, i18n.language, 0) })} />
+	        <AccountMetricPanel tone="text-quota-product-1" icon={<SquareTerminal />} loading={summaryLoading} label={t("accounts.buildAccountCount")} value={summaryUnavailable ? "-" : formatNumber(buildSummary.total, i18n.language, 0)} detail={<ProviderAccountMetricDetail summary={buildSummary} />} />
+	        <AccountMetricPanel tone="text-quota-product-2" icon={<Compass />} loading={summaryLoading} label={t("accounts.webAccountCount")} value={summaryUnavailable ? "-" : formatNumber(webSummary.total, i18n.language, 0)} detail={<ProviderAccountMetricDetail summary={webSummary} />} />
+	        <AccountMetricPanel tone="text-quota-product-4" icon={<Webhook />} loading={summaryLoading} label={t("accounts.consoleAccountCount")} value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)} detail={<ProviderAccountMetricDetail summary={consoleSummary} />} />
         <AccountMetricPanel
           tone={abnormalAccounts > 0 ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}
           icon={<TriangleAlert />}
           loading={summaryLoading}
           label={t("accounts.abnormalAccountCount")}
           value={summaryUnavailable ? "-" : formatNumber(abnormalAccounts, i18n.language, 0)}
-          detail={[
-            `${t("accounts.statusCooldown")} ${formatNumber(recoveringAccounts, i18n.language, 0)}`,
-            `${t("accounts.riskAccountCount", { count: formatNumber(riskAccounts, i18n.language, 0) })}`,
-            `${t("accounts.statusDisabled")} ${formatNumber(disabledAccounts, i18n.language, 0)}`,
-            `${t("accounts.statusReauthRequired")} ${formatNumber(invalidAccounts, i18n.language, 0)}`,
-          ].join(" · ")}
+	          detail={<AccountAbnormalMetricDetail recovering={recoveringAccounts} risk={riskAccounts} disabled={disabledAccounts} invalid={invalidAccounts} />}
         />
       </section>
       <div className="space-y-5">
@@ -1905,17 +1901,44 @@ function scopeSupportsAccountProvider(scope: EgressScope, provider: AccountProvi
   return scope === "grok_web" || scope === "grok_console";
 }
 
-function AccountMetricPanel({ icon, label, value, detail, loading, tone }: { icon: ReactNode; label: string; value: string; detail: string; loading: boolean; tone: string }) {
+const emptyAccountProviderSummary: AccountProviderSummaryDTO = {
+	total: 0, available: 0, risk: 0,
+	recovery: { cooldown: 0, waitingReset: 0, probing: 0 },
+	issues: { disabled: 0, reauthRequired: 0 },
+};
+
+function AccountMetricPanel({ icon, label, value, detail, loading, tone }: { icon: ReactNode; label: string; value: string; detail: ReactNode; loading: boolean; tone: string }) {
   return (
-    <div className="min-h-28 rounded-lg bg-card p-4" aria-busy={loading}>
+	  <div className="min-h-36 rounded-lg bg-card p-4" aria-busy={loading}>
       <div className="flex min-h-5 items-center justify-between gap-3">
         <span className="text-xs text-muted-foreground">{label}</span>
         <span className={cn("flex size-5 items-center justify-center [&_svg]:size-4", tone)}>{icon}</span>
       </div>
       <div className="mt-3 flex min-h-8 items-center text-2xl font-medium tracking-tight tabular-nums">{loading ? <Spinner /> : value}</div>
-      <p className={cn("mt-1.5 min-h-4 truncate text-[11px] text-muted-foreground", loading && "invisible")} title={detail}>{detail}</p>
+	      <div className={cn("mt-1.5 min-h-10", loading && "invisible")}>{detail}</div>
     </div>
   );
+}
+
+function ProviderAccountMetricDetail({ summary }: { summary: AccountProviderSummaryDTO }) {
+	const recovering = summary.recovery.cooldown + summary.recovery.waitingReset + summary.recovery.probing;
+	return <AccountAbnormalMetricDetail available={summary.available} recovering={recovering} risk={summary.risk} disabled={summary.issues.disabled} invalid={summary.issues.reauthRequired} />;
+}
+
+function AccountAbnormalMetricDetail({ available, recovering, risk, disabled, invalid }: { available?: number; recovering: number; risk: number; disabled: number; invalid: number }) {
+	const { t, i18n } = useTranslation();
+	const format = (value: number) => formatNumber(value, i18n.language, 0);
+	return (
+	  <div className="space-y-1 text-[11px] leading-4 text-muted-foreground">
+	    {available !== undefined ? <span className="block">{t("accounts.routableAccountCount", { count: format(available) })}</span> : null}
+	    <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 tabular-nums">
+	      <span>{t("accounts.statusCooldown")} {format(recovering)}</span>
+	      <span>{t("accounts.riskAccountCount", { count: format(risk) })}</span>
+	      <span>{t("accounts.statusDisabled")} {format(disabled)}</span>
+	      <span>{t("accounts.statusReauthRequired")} {format(invalid)}</span>
+	    </div>
+	  </div>
+	);
 }
 
 function WebAccountType({ tier }: { tier?: AccountDTO["webTier"] }) {

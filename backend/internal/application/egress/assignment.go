@@ -17,15 +17,30 @@ const (
 )
 
 type RebalanceResult struct {
-	Assigned   int
-	Rebalanced int
-	Unplaced   int
+	Assigned           int
+	Rebalanced         int
+	Overflowed         int
+	Unplaced           int
+	UnplacedByProvider map[accountdomain.Provider]int
 }
 
 // RebalanceAccounts allocates only accounts that are either unbound or
 // explicitly marked auto. Manual bindings are never changed, even when their
 // node is unhealthy or over capacity.
 func (s *Service) RebalanceAccounts(ctx context.Context, autoAssign, autoBalance bool, probeInterval time.Duration) (RebalanceResult, error) {
+	return s.rebalanceAccounts(ctx, autoAssign, autoBalance, probeInterval, false)
+}
+
+// RebalanceAccountsAllowCapacityOverflow uses every eligible node before
+// leaving an automatic binding unplaced. Account capacity remains the primary
+// placement preference; once every eligible finite-capacity node is full, the
+// least-loaded node receives the overflow. This is intended for an operator's
+// immediate recovery action after a proxy outage.
+func (s *Service) RebalanceAccountsAllowCapacityOverflow(ctx context.Context, autoAssign, autoBalance bool, probeInterval time.Duration) (RebalanceResult, error) {
+	return s.rebalanceAccounts(ctx, autoAssign, autoBalance, probeInterval, true)
+}
+
+func (s *Service) rebalanceAccounts(ctx context.Context, autoAssign, autoBalance bool, probeInterval time.Duration, allowCapacityOverflow bool) (RebalanceResult, error) {
 	if s.accounts == nil {
 		return RebalanceResult{}, ErrOperationsUnavailable
 	}
@@ -47,10 +62,17 @@ func (s *Service) RebalanceAccounts(ctx context.Context, autoAssign, autoBalance
 		if err != nil {
 			return result, err
 		}
-		providerResult, providerErr := s.rebalanceProvider(ctx, provider, nodes, autoAssign, autoBalance, probeInterval, now)
+		providerResult, providerErr := s.rebalanceProvider(ctx, provider, nodes, autoAssign, autoBalance, probeInterval, now, allowCapacityOverflow)
 		result.Assigned += providerResult.Assigned
 		result.Rebalanced += providerResult.Rebalanced
+		result.Overflowed += providerResult.Overflowed
 		result.Unplaced += providerResult.Unplaced
+		for unplacedProvider, count := range providerResult.UnplacedByProvider {
+			if result.UnplacedByProvider == nil {
+				result.UnplacedByProvider = make(map[accountdomain.Provider]int)
+			}
+			result.UnplacedByProvider[unplacedProvider] += count
+		}
 		if providerErr != nil {
 			return result, providerErr
 		}
@@ -58,14 +80,19 @@ func (s *Service) RebalanceAccounts(ctx context.Context, autoAssign, autoBalance
 	return result, nil
 }
 
-func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.Provider, allNodes []domain.Node, autoAssign, autoBalance bool, probeInterval time.Duration, now time.Time) (RebalanceResult, error) {
+func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.Provider, allNodes []domain.Node, autoAssign, autoBalance bool, probeInterval time.Duration, now time.Time, allowCapacityOverflow bool) (RebalanceResult, error) {
 	accounts, err := s.accounts.ListEgressAssignments(ctx, provider)
 	if err != nil {
 		return RebalanceResult{}, err
 	}
 	nodes := s.eligibleNodesForProvider(allNodes, provider, probeInterval, now)
 	if len(nodes) == 0 {
-		return RebalanceResult{Unplaced: countAutoAssignable(accounts, autoAssign, autoBalance)}, nil
+		unplaced := countAutoAssignable(accounts, autoAssign, autoBalance)
+		result := RebalanceResult{Unplaced: unplaced}
+		if unplaced > 0 {
+			result.UnplacedByProvider = map[accountdomain.Provider]int{provider: unplaced}
+		}
+		return result, nil
 	}
 	loads := make(map[uint64]int, len(nodes))
 	byID := make(map[uint64]domain.Node, len(nodes))
@@ -96,6 +123,11 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 			continue
 		}
 		target, found := leastLoadedNode(nodes, loads)
+		overflowed := false
+		if !found && allowCapacityOverflow {
+			target, found = leastLoadedNodeIgnoringCapacity(nodes, loads)
+			overflowed = found
+		}
 		if !found {
 			result.Unplaced++
 			continue
@@ -107,6 +139,9 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 			result.Assigned++
 		} else {
 			result.Rebalanced++
+		}
+		if overflowed {
+			result.Overflowed++
 		}
 	}
 
@@ -224,6 +259,17 @@ func leastLoadedNodeExcept(values []domain.Node, loads map[uint64]int, excludedI
 		if value.AccountCapacity > 0 && loads[value.ID] >= value.AccountCapacity {
 			continue
 		}
+		if !found || loads[value.ID] < loads[selected.ID] || (loads[value.ID] == loads[selected.ID] && value.ID < selected.ID) {
+			selected, found = value, true
+		}
+	}
+	return selected, found
+}
+
+func leastLoadedNodeIgnoringCapacity(values []domain.Node, loads map[uint64]int) (domain.Node, bool) {
+	var selected domain.Node
+	found := false
+	for _, value := range values {
 		if !found || loads[value.ID] < loads[selected.ID] || (loads[value.ID] == loads[selected.ID] && value.ID < selected.ID) {
 			selected, found = value, true
 		}

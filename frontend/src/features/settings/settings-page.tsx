@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { EgressNodes } from "@/features/settings/egress-nodes";
 import { VersionUpdateSection } from "@/features/system/version-update";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { isByteSizeUnit, isDurationUnit, MAX_ROUTING_ATTEMPTS, type ByteSizeValue, type DurationValue, UNLIMITED_ROUTING_ATTEMPTS } from "@/features/settings/settings-model";
+import { isByteSizeUnit, isDurationUnit, type ByteSizeValue, type DurationValue, UNLIMITED_ROUTING_ATTEMPTS } from "@/features/settings/settings-model";
 import { useSettings } from "@/features/settings/use-settings";
 import { ErrorState } from "@/shared/components/data-state";
 import { cn } from "@/shared/lib/cn";
@@ -242,7 +242,6 @@ export function SettingsPage() {
                         name={field.name}
                         type="number"
                         min={1}
-                        max={MAX_ROUTING_ATTEMPTS}
                         disabled={unlimited}
                         value={unlimited || !Number.isFinite(field.value) ? "" : field.value}
                         placeholder={t("settingsRoutingAttempts.unlimited")}
