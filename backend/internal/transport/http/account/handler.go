@@ -1088,23 +1088,38 @@ func (h *Handler) refreshWebQuota(c *gin.Context) {
 
 func (h *Handler) exportCredentials(c *gin.Context) {
 	providerValue := accountdomain.Provider(c.DefaultQuery("provider", string(accountdomain.ProviderBuild)))
-	var result accountapp.ExportResult
-	var err error
-	if limitText, paged := c.GetQuery("limit"); paged {
-		limit, parseErr := strconv.Atoi(strings.TrimSpace(limitText))
-		if parseErr != nil {
+	if limitText, pagedExport := c.GetQuery("limit"); pagedExport {
+		if _, usesOffset := c.GetQuery("offset"); usesOffset {
+			response.Error(c, http.StatusBadRequest, "accountExportFailed", "分批导出不支持 offset，请使用服务端返回的 afterId")
+			return
+		}
+		limit, err := strconv.Atoi(strings.TrimSpace(limitText))
+		if err != nil {
 			response.Error(c, http.StatusBadRequest, "accountExportFailed", "导出数量必须为整数")
 			return
 		}
-		offset, parseErr := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("offset", "0")))
-		if parseErr != nil {
-			response.Error(c, http.StatusBadRequest, "accountExportFailed", "导出偏移量必须为整数")
+		afterID, err := strconv.ParseUint(strings.TrimSpace(c.DefaultQuery("afterId", "0")), 10, 64)
+		if err != nil {
+			response.Error(c, http.StatusBadRequest, "accountExportFailed", "导出游标必须为非负整数")
 			return
 		}
-		result, err = h.service.ExportProviderCredentialsPage(c.Request.Context(), providerValue, offset, limit)
-	} else {
-		result, err = h.service.ExportProviderCredentials(c.Request.Context(), providerValue)
+		snapshotMaxID, err := strconv.ParseUint(strings.TrimSpace(c.DefaultQuery("snapshotMaxId", "0")), 10, 64)
+		if err != nil {
+			response.Error(c, http.StatusBadRequest, "accountExportFailed", "导出快照上界必须为非负整数")
+			return
+		}
+		result, exportErr := h.service.ExportProviderCredentialsCursor(c.Request.Context(), providerValue, afterID, snapshotMaxID, limit)
+		if exportErr != nil {
+			h.writeServiceError(c, "accountExportFailed", exportErr, http.StatusInternalServerError, "导出账号失败")
+			return
+		}
+		c.Header("X-Export-Next-ID", strconv.FormatUint(result.NextID, 10))
+		c.Header("X-Export-Snapshot-Max-ID", strconv.FormatUint(result.SnapshotMaxID, 10))
+		c.Header("X-Export-Has-More", strconv.FormatBool(result.HasMore))
+		h.writeCredentialExport(c, providerValue, result.ExportResult)
+		return
 	}
+	result, err := h.service.ExportProviderCredentials(c.Request.Context(), providerValue)
 	if err != nil {
 		h.writeServiceError(c, "accountExportFailed", err, http.StatusInternalServerError, "导出账号失败")
 		return
@@ -1136,6 +1151,7 @@ func (h *Handler) writeCredentialExport(c *gin.Context, providerValue accountdom
 	filename := "grok2api-" + string(providerValue) + "-accounts-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
 	c.Header("Cache-Control", "no-store")
 	c.Header("Pragma", "no-cache")
+	c.Header("Access-Control-Expose-Headers", "Content-Disposition, X-Exported-Accounts, X-Export-Next-ID, X-Export-Snapshot-Max-ID, X-Export-Has-More")
 	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("X-Exported-Accounts", strconv.Itoa(result.Count))

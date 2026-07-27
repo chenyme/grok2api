@@ -56,10 +56,6 @@ func TestExportCredentialsRoundTripsImportFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pagedResult, err := service.ExportProviderCredentialsPage(ctx, accountdomain.ProviderBuild, 0, 1)
-	if err != nil || pagedResult.Count != 1 {
-		t.Fatalf("paged export result = %#v, error = %v", pagedResult, err)
-	}
 	selectedResult, err := service.ExportProviderCredentialsByIDs(ctx, accountdomain.ProviderBuild, []uint64{created.ID})
 	if err != nil || selectedResult.Count != 1 {
 		t.Fatalf("selected export result = %#v, error = %v", selectedResult, err)
@@ -67,10 +63,7 @@ func TestExportCredentialsRoundTripsImportFormat(t *testing.T) {
 	if _, err := service.ExportProviderCredentialsByIDs(ctx, accountdomain.ProviderWeb, []uint64{created.ID}); err == nil {
 		t.Fatal("expected cross-provider selected export to fail")
 	}
-	if _, err := service.ExportProviderCredentialsPage(ctx, accountdomain.ProviderBuild, -1, 1); err == nil {
-		t.Fatal("expected negative export offset to fail")
-	}
-	if _, err := service.ExportProviderCredentialsPage(ctx, accountdomain.ProviderBuild, 0, maxCredentialExportAccounts+1); err == nil {
+	if _, err := service.ExportProviderCredentialsCursor(ctx, accountdomain.ProviderBuild, 0, 0, maxCredentialExportAccounts+1); err == nil {
 		t.Fatal("expected oversized export page to fail")
 	}
 	values, err := adapter.ParseImportedCredentials(result.Data)
@@ -112,6 +105,91 @@ func TestExportCredentialsRoundTripsImportFormat(t *testing.T) {
 	}
 	if len(multiProgress) != 3 || multiProgress[0] != [2]int{0, 2} || multiProgress[2] != [2]int{2, 2} {
 		t.Fatalf("multi-file import progress = %#v", multiProgress)
+	}
+}
+
+func TestExportProviderCredentialsCursorKeepsStableSnapshot(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "cursor-export.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessToken, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	createAccount := func(name string) accountdomain.Credential {
+		t.Helper()
+		value, _, createErr := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+			Provider: accountdomain.ProviderBuild, Name: name, SourceKey: "cursor-" + name,
+			UserID: name, EncryptedAccessToken: accessToken, Enabled: true,
+			AuthStatus: accountdomain.AuthStatusActive, Priority: 1, MaxConcurrent: 8,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return value
+	}
+	first := createAccount("first")
+	second := createAccount("second")
+	third := createAccount("third")
+	adapter := cliprovider.NewAdapter(cliprovider.Config{}, cipher)
+	service := NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), cipher, nil)
+
+	pageOne, err := service.ExportProviderCredentialsCursor(ctx, accountdomain.ProviderBuild, 0, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageOne.Count != 2 || !pageOne.HasMore || pageOne.NextID != second.ID || pageOne.SnapshotMaxID != third.ID {
+		t.Fatalf("first cursor page = %#v", pageOne)
+	}
+	createAccount("new-after-snapshot")
+	pageTwo, err := service.ExportProviderCredentialsCursor(ctx, accountdomain.ProviderBuild, pageOne.NextID, pageOne.SnapshotMaxID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := adapter.ParseImportedCredentials(pageTwo.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageTwo.Count != 1 || pageTwo.HasMore || pageTwo.NextID != third.ID || len(values) != 1 || values[0].Name != "third" {
+		t.Fatalf("second cursor page = %#v, values = %#v", pageTwo, values)
+	}
+	if first.ID >= second.ID || second.ID >= third.ID {
+		t.Fatalf("test account IDs are not monotonic: %d, %d, %d", first.ID, second.ID, third.ID)
+	}
+	if _, err := service.ExportProviderCredentialsCursor(ctx, accountdomain.ProviderBuild, second.ID, 0, 2); err == nil {
+		t.Fatal("expected continuation without snapshot boundary to fail")
+	}
+}
+
+func TestValidateCredentialExportCountRejectsPartialReads(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		expected int
+		total    int64
+		actual   int
+		wantErr  bool
+	}{
+		{name: "exact", expected: 2, total: 2, actual: 2},
+		{name: "missing at count", expected: 2, total: 1, actual: 1, wantErr: true},
+		{name: "deleted after count", expected: 2, total: 2, actual: 1, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateCredentialExportCount(test.expected, test.total, test.actual)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateCredentialExportCount() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
 	}
 }
 
