@@ -81,6 +81,50 @@ func TestResponseHeaderTimeoutRetainsWebEgressFeedback(t *testing.T) {
 	}
 }
 
+func TestCanceledRequestDoesNotPenalizeEgress(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		transportErr error
+	}{
+		{name: "canceled transport", transportErr: context.Canceled},
+		{name: "wrapped canceled transport", transportErr: fmt.Errorf("request failed: %w", context.Canceled)},
+		{name: "client closed status", status: clientClosedRequestStatus},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "fixed", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+			manager := NewManager(repository, nil)
+			manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, test.status, test.transportErr)
+			if repository.updates != 0 || repository.node.Health != 1 || repository.node.FailureCount != 0 || repository.node.CooldownUntil != nil {
+				t.Fatalf("canceled request changed node health: updates=%d node=%#v", repository.updates, repository.node)
+			}
+		})
+	}
+}
+
+func TestCanceledRequestDoesNotInvalidateDirectClient(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		transportErr error
+	}{
+		{name: "canceled transport", transportErr: context.Canceled},
+		{name: "client closed status", status: clientClosedRequestStatus},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := NewManager(egressRepositoryTestStub{}, nil)
+			key := clientCacheKey{nodeID: 0, scope: domain.ScopeBuild, fingerprint: "direct"}
+			manager.clients[key] = cachedClient{client: &scriptedRequestClient{}}
+			manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 0, test.status, test.transportErr)
+			if _, exists := manager.clients[key]; !exists {
+				t.Fatal("canceled request invalidated the direct Build client")
+			}
+		})
+	}
+}
+
 func TestProbeEgressNodeLogsSuccessWithoutProxyCredentials(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
