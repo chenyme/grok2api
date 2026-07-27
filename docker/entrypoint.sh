@@ -35,4 +35,3 @@ if command -v su-exec >/dev/null 2>&1 && id grok2api >/dev/null 2>&1; then
   exec su-exec grok2api:grok2api /app/grok2api --config "$CONFIG_DEST" --listen "$LISTEN_ADDR"
 fi
 exec /app/grok2api --config "$CONFIG_DEST" --listen "$LISTEN_ADDR"
-
