@@ -118,9 +118,6 @@ func (flaresolverrSolver) Solve(ctx context.Context, cfg ClearanceConfig, proxyU
 		}
 	}
 	cookies := application.SanitizeCloudflareCookies(strings.Join(parts, "; "))
-	if cookies == "" {
-		return clearanceSolution{}, errors.New("FlareSolverr 未返回可用的 Cloudflare Cookie")
-	}
 	userAgent := strings.TrimSpace(result.Solution.UserAgent)
 	if userAgent == "" || len(userAgent) > 512 || strings.IndexFunc(userAgent, func(character rune) bool { return character < 0x20 || character == 0x7f }) >= 0 {
 		return clearanceSolution{}, errors.New("FlareSolverr 返回的 User-Agent 无效")

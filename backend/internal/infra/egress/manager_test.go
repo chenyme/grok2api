@@ -1789,6 +1789,96 @@ func TestPersistedClearancePreventsDuplicateInstanceRefresh(t *testing.T) {
 	}
 }
 
+func TestNoChallengeClearanceDoesNotBlockOrRefreshRepeatedly(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}
+	solver := &clearanceSolverStub{noCookies: true}
+	config := ClearanceConfig{Mode: "flaresolverr", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com", Timeout: time.Second, RefreshInterval: time.Hour}
+	firstManager := NewManager(repository, cipher)
+	firstManager.solver = solver
+	firstManager.UpdateClearanceConfig(config)
+	for range 2 {
+		lease, acquireErr := firstManager.Acquire(context.Background(), domain.ScopeWeb, "account")
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		if lease.CFCookies != "" || lease.UserAgent != "Chrome/146 test" {
+			t.Fatalf("cookie-less lease = %#v", lease)
+		}
+		lease.Release()
+	}
+
+	secondManager := NewManager(repository, cipher)
+	secondManager.solver = solver
+	secondManager.UpdateClearanceConfig(config)
+	lease, err := secondManager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	if solver.calls != 1 || repository.node.ClearanceRefreshedAt == nil || repository.node.UserAgent != "Chrome/146 test" {
+		t.Fatalf("cookie-less clearance was not reused: calls=%d node=%#v", solver.calls, repository.node)
+	}
+}
+
+func TestRejectedNoChallengeClearanceForcesRefreshWithDistributedLock(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}
+	solver := &clearanceSolverStub{noCookies: true}
+	manager := NewManager(repository, cipher)
+	manager.solver = solver
+	manager.SetClearanceLock(alwaysAcquiredDistributedLock{})
+	manager.UpdateClearanceConfig(ClearanceConfig{Mode: "flaresolverr", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com", Timeout: time.Second, RefreshInterval: time.Hour})
+
+	first, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.InvalidateClearance()
+	first.Release()
+
+	second, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Release()
+	if solver.calls != 2 {
+		t.Fatalf("rejected cookie-less clearance reused persisted state: calls=%d", solver.calls)
+	}
+}
+
+func TestBackgroundRefreshDoesNotReuseRejectedNoChallengeClearance(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}
+	solver := &clearanceSolverStub{noCookies: true}
+	manager := NewManager(repository, cipher)
+	manager.solver = solver
+	manager.SetClearanceLock(alwaysAcquiredDistributedLock{})
+	manager.UpdateClearanceConfig(ClearanceConfig{Mode: "flaresolverr", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com", Timeout: time.Second, RefreshInterval: time.Hour})
+
+	lease, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.InvalidateClearance()
+	lease.Release()
+	if err := manager.RefreshDueClearances(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if solver.calls != 2 {
+		t.Fatalf("background refresh reused rejected cookie-less clearance: calls=%d", solver.calls)
+	}
+}
+
 func TestWebAssetCredentialFallsBackToWebWithSameResinIdentity(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
@@ -1944,9 +2034,16 @@ type blockingEgressRepository struct {
 }
 
 type clearanceSolverStub struct {
-	calls    int
-	proxyURL string
-	err      error
+	calls     int
+	proxyURL  string
+	err       error
+	noCookies bool
+}
+
+type alwaysAcquiredDistributedLock struct{}
+
+func (alwaysAcquiredDistributedLock) Acquire(context.Context, string, time.Duration) (func(), bool, error) {
+	return func() {}, true, nil
 }
 
 func (s *clearanceSolverStub) Solve(_ context.Context, _ ClearanceConfig, proxyURL string) (clearanceSolution, error) {
@@ -1954,6 +2051,9 @@ func (s *clearanceSolverStub) Solve(_ context.Context, _ ClearanceConfig, proxyU
 	s.proxyURL = proxyURL
 	if s.err != nil {
 		return clearanceSolution{}, s.err
+	}
+	if s.noCookies {
+		return clearanceSolution{UserAgent: "Chrome/146 test"}, nil
 	}
 	return clearanceSolution{Cookies: fmt.Sprintf("cf_clearance=value-%d", s.calls), UserAgent: "Chrome/146 test"}, nil
 }
