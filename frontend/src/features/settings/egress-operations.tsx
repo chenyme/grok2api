@@ -198,7 +198,7 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
           <div className="space-y-0">
             <AutomationRow controlId="egress-probe-provider" label={t("settings.egress.probeProvider")} description={t("settings.egress.probeProviderHelp")}>
               <Select value={operationsForm.probeProvider} onValueChange={(probeProvider: "ipinfo" | "cloudflare") => setOperationsDraft({ ...operationsForm, probeProvider })}>
-                <SelectTrigger id="egress-probe-provider" className="h-8 w-44"><SelectValue /></SelectTrigger>
+                <SelectTrigger id="egress-probe-provider" className="h-8 w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="ipinfo">IPinfo</SelectItem>
                   <SelectItem value="cloudflare">Cloudflare</SelectItem>

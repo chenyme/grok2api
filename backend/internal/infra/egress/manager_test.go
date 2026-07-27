@@ -3,11 +3,13 @@ package egress
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,7 +100,9 @@ func TestProbeEgressNodeLogsSuccessWithoutProxyCredentials(t *testing.T) {
 	var output bytes.Buffer
 	manager.SetLogger(slog.New(slog.NewTextHandler(&output, nil)))
 
-	result, err := manager.probeEgressNode(context.Background(), 42, "test", "ipv4", "https://probe.example/ip")
+	result, err := manager.probeEgressEndpoint(context.Background(), preparedEgressProbe{
+		nodeID: 42, nodeName: "web-us", nodeScope: domain.ScopeWeb, proxyURL: "socks5://user:secret@proxy.example:1080",
+	}, "test", "ipv4", "https://probe.example/ip")
 	if err != nil || result.Status != domain.ProbeStatusHealthy || result.ExitIP != "203.0.113.8" {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -123,23 +127,103 @@ func TestProbeEgressNodeLogsSanitizedFailureStage(t *testing.T) {
 	repository := &mutableEgressRepository{node: domain.Node{ID: 7, Name: "web-jp", Scope: domain.ScopeWeb, EncryptedProxyURL: encryptedProxy}}
 	manager := NewManager(repository, cipher)
 	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
-		return &scriptedRequestClient{do: func(int, *http.Request) (*http.Response, error) {
+		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
+			trace := httptrace.ContextClientTrace(request.Context())
+			trace.ConnectStart("tcp", "proxy.example:1080")
+			trace.ConnectDone("tcp", "proxy.example:1080", errors.New("connection refused"))
 			return nil, errors.New("dial socks5://user:secret@proxy.example:1080 failed; token=abc123")
 		}}, nil
 	}
 	var output bytes.Buffer
 	manager.SetLogger(slog.New(slog.NewTextHandler(&output, nil)))
 
-	result, err := manager.probeEgressNode(context.Background(), 7, "test", "ipv4", "https://probe.example/ip")
-	if err == nil || result.Error != "代理连接失败" {
+	result, err := manager.probeEgressEndpoint(context.Background(), preparedEgressProbe{
+		nodeID: 7, nodeName: "web-jp", nodeScope: domain.ScopeWeb, proxyURL: "socks5://user:secret@proxy.example:1080",
+	}, "test", "ipv4", "https://probe.example/ip")
+	if err == nil || result.Error != "代理连接失败" || result.LatencyMS < 1 {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 	logOutput := output.String()
-	if !strings.Contains(logOutput, "egress_probe_failed") || !strings.Contains(logOutput, "stage=execute_request") || !strings.Contains(logOutput, "token=[redacted]") || !strings.Contains(logOutput, "socks5://***:***@") {
+	if !strings.Contains(logOutput, "egress_probe_failed") || !strings.Contains(logOutput, "stage=connect") || !strings.Contains(logOutput, "token=[redacted]") || !strings.Contains(logOutput, "socks5://***:***@") {
 		t.Fatalf("probe failure log missing fields or redaction: %s", logOutput)
 	}
 	if strings.Contains(logOutput, "secret") || strings.Contains(logOutput, "abc123") {
 		t.Fatalf("probe failure log leaked credentials: %s", logOutput)
+	}
+}
+
+func TestProbeEgressNodeClassifiesTLSFailure(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
+			trace := httptrace.ContextClientTrace(request.Context())
+			trace.ConnectStart("tcp", "proxy.example:1080")
+			trace.ConnectDone("tcp", "proxy.example:1080", nil)
+			trace.TLSHandshakeStart()
+			trace.TLSHandshakeDone(tls.ConnectionState{}, errors.New("certificate rejected"))
+			return nil, errors.New("TLS handshake failed")
+		}}, nil
+	}
+	var output bytes.Buffer
+	manager.SetLogger(slog.New(slog.NewTextHandler(&output, nil)))
+
+	result, err := manager.probeEgressEndpoint(context.Background(), preparedEgressProbe{
+		nodeID: 8, nodeName: "tls-failure", nodeScope: domain.ScopeBuild, proxyURL: "http://proxy.example:1080",
+	}, domain.ProbeProviderCloudflare, "ipv4", cloudflareIPv4ProbeEndpoint)
+	if err == nil || result.Error != "代理连接失败" || result.LatencyMS < 1 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	logOutput := output.String()
+	if !strings.Contains(logOutput, "stage=tls") || strings.Contains(logOutput, "tls_ms=0") {
+		t.Fatalf("TLS failure log missing stage or duration: %s", logOutput)
+	}
+}
+
+func TestProbeEgressNodeClassifiesFirstByteFailure(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
+			trace := httptrace.ContextClientTrace(request.Context())
+			trace.ConnectStart("tcp", "proxy.example:1080")
+			trace.ConnectDone("tcp", "proxy.example:1080", nil)
+			trace.TLSHandshakeStart()
+			trace.TLSHandshakeDone(tls.ConnectionState{}, nil)
+			return nil, errors.New("timeout awaiting response headers")
+		}}, nil
+	}
+	var output bytes.Buffer
+	manager.SetLogger(slog.New(slog.NewTextHandler(&output, nil)))
+
+	result, err := manager.probeEgressEndpoint(context.Background(), preparedEgressProbe{
+		nodeID: 9, nodeName: "first-byte-failure", nodeScope: domain.ScopeBuild, proxyURL: "http://proxy.example:1080",
+	}, domain.ProbeProviderCloudflare, "ipv4", cloudflareIPv4ProbeEndpoint)
+	if err == nil || result.Error != "代理连接失败" || result.LatencyMS < 1 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	logOutput := output.String()
+	if !strings.Contains(logOutput, "stage=first_byte") || strings.Contains(logOutput, "first_byte_ms=0") {
+		t.Fatalf("first-byte failure log missing stage or duration: %s", logOutput)
+	}
+}
+
+func TestProbeEgressNodeKeepsUntracedFailureAtExecuteRequest(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{do: func(_ int, _ *http.Request) (*http.Response, error) {
+			return nil, errors.New("request execution failed")
+		}}, nil
+	}
+	var output bytes.Buffer
+	manager.SetLogger(slog.New(slog.NewTextHandler(&output, nil)))
+
+	_, err := manager.probeEgressEndpoint(context.Background(), preparedEgressProbe{
+		nodeID: 10, nodeName: "untraced-failure", nodeScope: domain.ScopeBuild, proxyURL: "http://proxy.example:1080",
+	}, domain.ProbeProviderCloudflare, "ipv4", cloudflareIPv4ProbeEndpoint)
+	if err == nil {
+		t.Fatal("expected probe failure")
+	}
+	if logOutput := output.String(); !strings.Contains(logOutput, "stage=execute_request") {
+		t.Fatalf("untraced failure was misclassified: %s", logOutput)
 	}
 }
 
@@ -152,7 +236,8 @@ func TestProbeEgressNodeKeepsIPv4AndIPv6ResultsSeparate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(&mutableEgressRepository{node: domain.Node{ID: 9, Name: "dual", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}}, cipher)
+	node := domain.Node{ID: 9, Name: "dual", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}
+	manager := NewManager(&mutableEgressRepository{node: node}, cipher)
 	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
 		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
 			payload := `{"ip":"198.51.100.9"}`
@@ -163,7 +248,7 @@ func TestProbeEgressNodeKeepsIPv4AndIPv6ResultsSeparate(t *testing.T) {
 		}}, nil
 	}
 
-	result, err := manager.ProbeEgressNode(context.Background(), 9)
+	result, err := manager.ProbeEgressNode(context.Background(), node)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +266,8 @@ func TestProbeEgressNodeIsHealthyWhenOnlyIPv4Works(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(&mutableEgressRepository{node: domain.Node{ID: 10, Name: "v4-only", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}}, cipher)
+	node := domain.Node{ID: 10, Name: "v4-only", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}
+	manager := NewManager(&mutableEgressRepository{node: node}, cipher)
 	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
 		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
 			if request.URL.Hostname() == "2606:4700:4700::1111" {
@@ -191,7 +277,7 @@ func TestProbeEgressNodeIsHealthyWhenOnlyIPv4Works(t *testing.T) {
 		}}, nil
 	}
 
-	result, err := manager.ProbeEgressNode(context.Background(), 10)
+	result, err := manager.ProbeEgressNode(context.Background(), node)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,8 +297,9 @@ func TestProbeEgressNodeUsesConfiguredCloudflareEndpoints(t *testing.T) {
 	}
 	config := domain.DefaultOperationsConfig()
 	config.ProbeProvider = domain.ProbeProviderCloudflare
+	node := domain.Node{ID: 11, Name: "cloudflare", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}
 	repository := fallbackEgressRepository{
-		egressRepositoryTestStub: egressRepositoryTestStub{nodes: []domain.Node{{ID: 11, Name: "cloudflare", Scope: domain.ScopeBuild, EncryptedProxyURL: encryptedProxy}}},
+		egressRepositoryTestStub: egressRepositoryTestStub{nodes: []domain.Node{node}},
 		config:                   config,
 	}
 	manager := NewManager(repository, cipher)
@@ -228,11 +315,11 @@ func TestProbeEgressNodeUsesConfiguredCloudflareEndpoints(t *testing.T) {
 		}}, nil
 	}
 
-	result, err := manager.ProbeEgressNode(context.Background(), 11)
+	result, err := manager.ProbeEgressNode(context.Background(), node)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.IPv4.ExitIP != "198.51.100.11" || result.IPv6.ExitIP != "2001:db8::11" {
+	if result.Provider != domain.ProbeProviderCloudflare || result.IPv4.ExitIP != "198.51.100.11" || result.IPv6.ExitIP != "2001:db8::11" {
 		t.Fatalf("Cloudflare probe result = %#v", result)
 	}
 	for _, endpoint := range []string{cloudflareIPv4ProbeEndpoint, cloudflareIPv6ProbeEndpoint} {

@@ -43,6 +43,7 @@ type Node struct {
 	ProbeLatencyMS              int
 	ExitIP                      string
 	ProbeError                  string
+	ProbeProvider               ProbeProvider
 	IPv4Probe                   ProbeFamilyResult
 	IPv6Probe                   ProbeFamilyResult
 	AssignedAccountCount        int
@@ -71,6 +72,7 @@ type PublicNode struct {
 	ProbeLatencyMS       int
 	ExitIP               string
 	ProbeError           string
+	ProbeProvider        ProbeProvider
 	IPv4Probe            ProbeFamilyResult
 	IPv6Probe            ProbeFamilyResult
 	AssignedAccountCount int
@@ -103,6 +105,7 @@ type ProbeResult struct {
 	LatencyMS int
 	ExitIP    string
 	Error     string
+	Provider  ProbeProvider
 	IPv4      ProbeFamilyResult
 	IPv6      ProbeFamilyResult
 }

@@ -501,6 +501,7 @@ type egressNodeModel struct {
 	ProbeLatencyMS              int                            `gorm:"not null;default:0;check:chk_egress_nodes_probe_latency,probe_latency_ms >= 0"`
 	ExitIP                      string                         `gorm:"size:64;not null;default:'';check:chk_egress_nodes_exit_ip,length(exit_ip) <= 64"`
 	ProbeError                  string                         `gorm:"size:512;not null;default:'';check:chk_egress_nodes_probe_error,length(probe_error) <= 512"`
+	ProbeProvider               string                         `gorm:"size:16;not null;default:'';check:chk_egress_nodes_probe_provider,probe_provider IN ('','ipinfo','cloudflare')"`
 	IPv4ProbeStatus             string                         `gorm:"column:ipv4_probe_status;size:16;not null;default:unknown;check:chk_egress_nodes_ipv4_probe_status,ipv4_probe_status IN ('unknown','healthy','unhealthy')"`
 	IPv4LastProbedAt            *time.Time                     `gorm:"column:ipv4_last_probed_at"`
 	IPv4ProbeLatencyMS          int                            `gorm:"column:ipv4_probe_latency_ms;not null;default:0;check:chk_egress_nodes_ipv4_probe_latency,ipv4_probe_latency_ms >= 0"`

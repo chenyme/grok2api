@@ -88,6 +88,7 @@ type nodeResponse struct {
 	ProbeLatencyMS       int                 `json:"probeLatencyMs"`
 	ExitIP               string              `json:"exitIp,omitempty"`
 	ProbeError           string              `json:"probeError,omitempty"`
+	ProbeProvider        string              `json:"probeProvider,omitempty"`
 	IPv4Probe            probeFamilyResponse `json:"ipv4Probe"`
 	IPv6Probe            probeFamilyResponse `json:"ipv6Probe"`
 	AssignedAccountCount int                 `json:"assignedAccountCount"`
@@ -247,7 +248,8 @@ func newNodeResponse(value egressdomain.PublicNode) nodeResponse {
 		SourceID:          value.SourceID, AccountCapacity: value.AccountCapacity,
 		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
 		ProbeStatus: string(value.ProbeStatus), LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS, ExitIP: value.ExitIP, ProbeError: value.ProbeError,
-		IPv4Probe: newProbeFamilyResponse(value.IPv4Probe), IPv6Probe: newProbeFamilyResponse(value.IPv6Probe),
+		ProbeProvider: string(value.ProbeProvider),
+		IPv4Probe:     newProbeFamilyResponse(value.IPv4Probe), IPv6Probe: newProbeFamilyResponse(value.IPv6Probe),
 		AssignedAccountCount: value.AssignedAccountCount,
 	}
 }
@@ -538,7 +540,8 @@ func (h *Handler) testNode(c *gin.Context) {
 	}
 	response.Success(c, http.StatusOK, gin.H{
 		"status": value.Status, "testedAt": value.TestedAt, "latencyMs": value.LatencyMS, "exitIp": value.ExitIP, "error": value.Error,
-		"ipv4": newProbeFamilyResponse(value.IPv4), "ipv6": newProbeFamilyResponse(value.IPv6),
+		"probeProvider": value.Provider,
+		"ipv4":          newProbeFamilyResponse(value.IPv4), "ipv6": newProbeFamilyResponse(value.IPv6),
 	})
 }
 
@@ -616,6 +619,8 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 		response.Error(c, http.StatusBadRequest, "invalidEgressNode", err.Error())
 	case errors.Is(err, egressapp.ErrNotFound):
 		response.Error(c, http.StatusNotFound, "egressNodeNotFound", err.Error())
+	case errors.Is(err, egressapp.ErrProbeStale):
+		response.Error(c, http.StatusConflict, "egressProbeStale", err.Error())
 	case errors.Is(err, repository.ErrConflict):
 		response.Error(c, http.StatusConflict, "egressConflict", "名称已存在")
 	case errors.Is(err, egressapp.ErrOperationsUnavailable):

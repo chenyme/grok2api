@@ -442,8 +442,9 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
 	service.SetNodeProber(egressProbeStub{result: egress.ProbeResult{
 		Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "1.1.1.1",
-		IPv4: egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 40, ExitIP: "1.1.1.1"},
-		IPv6: egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "2606:4700:4700::1111"},
+		Provider: egress.ProbeProviderCloudflare,
+		IPv4:     egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 40, ExitIP: "1.1.1.1"},
+		IPv6:     egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 42, ExitIP: "2606:4700:4700::1111"},
 	}})
 
 	result, err := service.TestNode(ctx, node.ID)
@@ -457,11 +458,60 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.ProbeStatus != egress.ProbeStatusHealthy || stored.ProbeLatencyMS != 42 || stored.ExitIP != "1.1.1.1" || stored.LastProbedAt == nil {
+	if stored.ProbeStatus != egress.ProbeStatusHealthy || stored.ProbeProvider != egress.ProbeProviderCloudflare || stored.ProbeLatencyMS != 42 || stored.ExitIP != "1.1.1.1" || stored.LastProbedAt == nil {
 		t.Fatalf("stored probe = %#v", stored)
 	}
 	if stored.IPv4Probe.ExitIP != "1.1.1.1" || stored.IPv6Probe.ExitIP != "2606:4700:4700::1111" || stored.IPv6Probe.Status != egress.ProbeStatusHealthy {
 		t.Fatalf("stored family probes = ipv4:%#v ipv6:%#v", stored.IPv4Probe, stored.IPv6Probe)
+	}
+	updatedConfig, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
+		ProbeProvider: egress.ProbeProviderIPInfo, ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+	})
+	if err != nil || updatedConfig.ProbeProvider != egress.ProbeProviderIPInfo {
+		t.Fatalf("updated probe provider = %#v, err=%v", updatedConfig, err)
+	}
+	stored, err = nodes.GetEgressNode(ctx, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ProbeProvider != egress.ProbeProviderCloudflare {
+		t.Fatalf("stored result provider changed with future probe configuration: %q", stored.ProbeProvider)
+	}
+}
+
+func TestEgressOperationsDiscardsProbeAfterProxyConfigurationChanges(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	node := createHealthyEgressNode(t, ctx, nodes, cipher, "probe-stale", 0)
+	replacementProxy, err := cipher.Encrypt("http://replacement.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probedAt := time.Now().UTC().Truncate(time.Millisecond)
+	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
+	service.SetNodeProber(mutatingEgressProbeStub{
+		repository:  nodes,
+		replacement: replacementProxy,
+		result: egress.ProbeResult{
+			Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 10, ExitIP: "198.51.100.20", Provider: egress.ProbeProviderCloudflare,
+			IPv4: egress.ProbeFamilyResult{Status: egress.ProbeStatusHealthy, TestedAt: probedAt, LatencyMS: 10, ExitIP: "198.51.100.20"},
+			IPv6: egress.ProbeFamilyResult{Status: egress.ProbeStatusUnhealthy, TestedAt: probedAt, LatencyMS: 10, Error: "代理连接失败"},
+		},
+	})
+
+	_, err = service.TestNode(ctx, node.ID)
+	if !errors.Is(err, egressapp.ErrProbeStale) {
+		t.Fatalf("stale probe error = %v", err)
+	}
+	stored, err := nodes.GetEgressNode(ctx, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EncryptedProxyURL != replacementProxy || stored.ProbeStatus != egress.ProbeStatusUnknown || stored.ProbeProvider != "" || stored.IPv4Probe.Status != egress.ProbeStatusUnknown {
+		t.Fatalf("stale probe overwrote edited node: %#v", stored)
 	}
 }
 
@@ -760,7 +810,29 @@ type egressProbeStub struct {
 	err    error
 }
 
-func (stub egressProbeStub) ProbeEgressNode(context.Context, uint64) (egress.ProbeResult, error) {
+type mutatingEgressProbeStub struct {
+	repository  *EgressRepository
+	replacement string
+	result      egress.ProbeResult
+}
+
+func (stub mutatingEgressProbeStub) ProbeEgressNode(ctx context.Context, node egress.Node) (egress.ProbeResult, error) {
+	node.EncryptedProxyURL = stub.replacement
+	node.ProbeStatus = egress.ProbeStatusUnknown
+	node.LastProbedAt = nil
+	node.ProbeLatencyMS = 0
+	node.ExitIP = ""
+	node.ProbeError = ""
+	node.ProbeProvider = ""
+	node.IPv4Probe = egress.ProbeFamilyResult{Status: egress.ProbeStatusUnknown}
+	node.IPv6Probe = egress.ProbeFamilyResult{Status: egress.ProbeStatusUnknown}
+	if _, err := stub.repository.UpdateEgressNode(ctx, node); err != nil {
+		return egress.ProbeResult{}, err
+	}
+	return stub.result, nil
+}
+
+func (stub egressProbeStub) ProbeEgressNode(context.Context, egress.Node) (egress.ProbeResult, error) {
 	return stub.result, stub.err
 }
 

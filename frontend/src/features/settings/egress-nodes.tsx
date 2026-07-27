@@ -205,7 +205,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
         </div>
         {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : <div className="overflow-hidden rounded-md border">
           <Table className="min-w-[800px] table-fixed">
-          <TableHeader><TableRow><TableHead className="w-10 px-2"><Checkbox checked={allVisibleSelected ? true : selectedVisible.length > 0 ? "indeterminate" : false} disabled={filteredNodes.length === 0} onCheckedChange={(checked) => toggleVisible(checked === true)} aria-label={t("settings.egress.selectVisible")} /></TableHead><SortableTableHead className="w-20" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-24" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-16" field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="w-28" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-14 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-24" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" title={t("settings.egress.healthHelp")} onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="w-52"><div className="flex items-center justify-center gap-1"><span>{t("settings.egress.probe")}</span><Tooltip><TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("settings.egress.probeHelp")}><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-80">{t("settings.egress.probeHelp")}</TooltipContent></Tooltip></div></TableHead><TableActionHead /></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead className="w-10 px-2"><Checkbox checked={allVisibleSelected ? true : selectedVisible.length > 0 ? "indeterminate" : false} disabled={filteredNodes.length === 0} onCheckedChange={(checked) => toggleVisible(checked === true)} aria-label={t("settings.egress.selectVisible")} /></TableHead><SortableTableHead className="w-18" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-24" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-16" field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="w-28" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-14 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-24" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" title={t("settings.egress.healthHelp")} onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="w-52"><div className="flex items-center justify-center gap-1"><span>{t("settings.egress.probe")}</span><Tooltip><TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("settings.egress.probeHelp")}><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-80">{t("settings.egress.probeHelp")}</TooltipContent></Tooltip></div></TableHead><TableActionHead /></TableRow></TableHeader>
           <TableBody>
             {query.isPending ? <TableLoadingRow colSpan={9} /> : null}
             {!query.isPending && filteredNodes.length === 0 ? <TableRow><TableCell colSpan={9} className="h-24 text-center text-xs text-muted-foreground">{nodes.length === 0 ? t("settings.egress.directFallback") : t("settings.egress.noMatches")}</TableCell></TableRow> : filteredNodes.map((node) => (
@@ -362,28 +362,36 @@ function HealthMeter({ value }: { value: number }) {
 
 function ProbeSummary({ node }: { node: EgressNodeDTO }) {
   return (
-    <div className="mx-auto grid w-full gap-1 py-1 text-xs">
-      <ProbeFamilySummary family="IPv4" probe={node.ipv4Probe} />
-      <ProbeFamilySummary family="IPv6" probe={node.ipv6Probe} />
+    <div className="mx-auto grid w-fit max-w-full grid-cols-[2rem_auto] grid-rows-2 items-center gap-x-2 gap-y-1 py-1 text-xs">
+      <ProbeFamilySummary family="IPv4" probe={node.ipv4Probe} row={1} />
+      <ProbeFamilySummary family="IPv6" probe={node.ipv6Probe} row={2} />
     </div>
   );
 }
 
-function ProbeFamilySummary({ family, probe }: { family: "IPv4" | "IPv6"; probe: EgressIPProbeDTO }) {
+function ProbeFamilySummary({ family, probe, row }: { family: "IPv4" | "IPv6"; probe: EgressIPProbeDTO; row: 1 | 2 }) {
   const { t } = useTranslation();
   const healthy = probe.status === "healthy";
   const unhealthy = probe.status === "unhealthy";
+  const rowClass = row === 1 ? "row-start-1" : "row-start-2";
+  const stateContent = <span className="flex min-w-0 items-center gap-1.5">
+    <span className={cn("size-1.5 shrink-0 rounded-full", healthy ? "bg-emerald-500" : unhealthy ? "bg-destructive" : "bg-muted-foreground/35")} />
+    <span className={cn("truncate", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")} title={healthy ? probe.exitIp : undefined}>
+      {healthy ? probe.exitIp || t("settings.egress.healthy") : unhealthy ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}
+    </span>
+  </span>;
   return (
-    <div className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)_3rem] items-center gap-1.5">
-      <span className="text-[10px] font-medium text-muted-foreground">{family}</span>
-      <span className="flex min-w-0 items-center gap-1.5 text-left">
-        <span className={cn("size-1.5 shrink-0 rounded-full", healthy ? "bg-emerald-500" : unhealthy ? "bg-destructive" : "bg-muted-foreground/35")} />
-        <span className={cn("truncate", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")} title={healthy ? probe.exitIp : undefined}>
-          {healthy ? probe.exitIp || t("settings.egress.healthy") : unhealthy ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}
-        </span>
+    <div className="contents">
+      <span className={cn("col-start-1 text-[10px] font-medium text-muted-foreground", rowClass)}>{family}</span>
+      <span className={cn("col-start-2 flex min-w-0 max-w-[10rem] items-center gap-1.5 text-left", rowClass)}>
+        {probe.status === "unknown" ? stateContent : (
+          <Tooltip>
+            <TooltipTrigger asChild><span className="min-w-0 cursor-help">{stateContent}</span></TooltipTrigger>
+            <TooltipContent>{t("settings.egress.probeLatency", { latency: probe.latencyMs })}</TooltipContent>
+          </Tooltip>
+        )}
         {unhealthy && probe.error ? <ErrorTooltip message={probe.error} /> : null}
       </span>
-      <span className="text-right tabular-nums text-muted-foreground">{healthy ? `${probe.latencyMs} ms` : ""}</span>
     </div>
   );
 }

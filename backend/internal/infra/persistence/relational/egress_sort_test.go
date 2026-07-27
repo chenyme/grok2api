@@ -148,7 +148,7 @@ func TestInitializeSchemaAddsProxyPoolWithoutChangingExistingRows(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if existing.ProxyPool || existing.Name != "existing" {
+	if existing.ProxyPool || existing.Name != "existing" || existing.ProbeProvider != "" || existing.IPv4Probe.Status != egress.ProbeStatusUnknown || existing.IPv6Probe.Status != egress.ProbeStatusUnknown {
 		t.Fatalf("legacy row changed during migration: %#v", existing)
 	}
 	existing.ProxyPool = true

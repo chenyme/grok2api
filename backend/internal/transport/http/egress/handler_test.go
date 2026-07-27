@@ -12,7 +12,8 @@ import (
 func TestNewNodeResponseIncludesIPv4AndIPv6ProbeDetails(t *testing.T) {
 	testedAt := time.Now().UTC().Truncate(time.Second)
 	response := newNodeResponse(egressdomain.PublicNode{
-		ProbeStatus: egressdomain.ProbeStatusHealthy,
+		ProbeStatus:   egressdomain.ProbeStatusHealthy,
+		ProbeProvider: egressdomain.ProbeProviderCloudflare,
 		IPv4Probe: egressdomain.ProbeFamilyResult{
 			Status: egressdomain.ProbeStatusHealthy, TestedAt: testedAt, LatencyMS: 21, ExitIP: "198.51.100.2",
 		},
@@ -20,7 +21,7 @@ func TestNewNodeResponseIncludesIPv4AndIPv6ProbeDetails(t *testing.T) {
 			Status: egressdomain.ProbeStatusUnhealthy, TestedAt: testedAt, LatencyMS: 48, Error: "代理连接失败",
 		},
 	})
-	if response.IPv4Probe.ExitIP != "198.51.100.2" || response.IPv4Probe.TestedAt == nil || response.IPv6Probe.Status != "unhealthy" || response.IPv6Probe.Error == "" {
+	if response.ProbeProvider != "cloudflare" || response.IPv4Probe.ExitIP != "198.51.100.2" || response.IPv4Probe.TestedAt == nil || response.IPv6Probe.Status != "unhealthy" || response.IPv6Probe.Error == "" {
 		t.Fatalf("node response = %#v", response)
 	}
 }

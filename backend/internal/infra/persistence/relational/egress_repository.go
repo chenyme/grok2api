@@ -132,21 +132,30 @@ func (r *EgressRepository) UpdateEgressNodeLastError(ctx context.Context, id uin
 
 // UpdateEgressNodeProbe persists the result of a direct proxy probe without
 // affecting request health or Cloudflare clearance state.
-func (r *EgressRepository) UpdateEgressNodeProbe(ctx context.Context, id uint64, value egress.ProbeResult) error {
-	result := r.db.db.WithContext(ctx).Model(&egressNodeModel{}).Where("id = ?", id).Updates(map[string]any{
-		"probe_status": value.Status, "last_probed_at": value.TestedAt.UTC(),
-		"probe_latency_ms": value.LatencyMS, "exit_ip": value.ExitIP, "probe_error": value.Error,
-		"ipv4_probe_status": normalizedProbeStatus(value.IPv4.Status), "ipv4_last_probed_at": probeTestedAt(value.IPv4),
-		"ipv4_probe_latency_ms": value.IPv4.LatencyMS, "ipv4_exit_ip": value.IPv4.ExitIP, "ipv4_probe_error": value.IPv4.Error,
-		"ipv6_probe_status": normalizedProbeStatus(value.IPv6.Status), "ipv6_last_probed_at": probeTestedAt(value.IPv6),
-		"ipv6_probe_latency_ms": value.IPv6.LatencyMS, "ipv6_exit_ip": value.IPv6.ExitIP, "ipv6_probe_error": value.IPv6.Error,
-		"updated_at": time.Now().UTC(),
-	})
+func (r *EgressRepository) UpdateEgressNodeProbe(ctx context.Context, id uint64, expectedEncryptedProxyURL string, value egress.ProbeResult) error {
+	result := r.db.db.WithContext(ctx).Model(&egressNodeModel{}).
+		Where("id = ? AND encrypted_proxy_url = ?", id, expectedEncryptedProxyURL).
+		Updates(map[string]any{
+			"probe_status": value.Status, "last_probed_at": value.TestedAt.UTC(),
+			"probe_latency_ms": value.LatencyMS, "exit_ip": value.ExitIP, "probe_error": value.Error, "probe_provider": storedProbeProvider(value.Provider),
+			"ipv4_probe_status": normalizedProbeStatus(value.IPv4.Status), "ipv4_last_probed_at": probeTestedAt(value.IPv4),
+			"ipv4_probe_latency_ms": value.IPv4.LatencyMS, "ipv4_exit_ip": value.IPv4.ExitIP, "ipv4_probe_error": value.IPv4.Error,
+			"ipv6_probe_status": normalizedProbeStatus(value.IPv6.Status), "ipv6_last_probed_at": probeTestedAt(value.IPv6),
+			"ipv6_probe_latency_ms": value.IPv6.LatencyMS, "ipv6_exit_ip": value.IPv6.ExitIP, "ipv6_probe_error": value.IPv6.Error,
+			"updated_at": time.Now().UTC(),
+		})
 	if result.Error != nil {
 		return mapError(result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return repository.ErrNotFound
+		var count int64
+		if err := r.db.db.WithContext(ctx).Model(&egressNodeModel{}).Where("id = ?", id).Count(&count).Error; err != nil {
+			return mapError(err)
+		}
+		if count == 0 {
+			return repository.ErrNotFound
+		}
+		return repository.ErrConflict
 	}
 	return nil
 }
@@ -305,7 +314,7 @@ func (r *EgressRepository) UpsertEgressNodesFromSource(ctx context.Context, sour
 			stale = stale.Where("source_key NOT IN ?", keys)
 		}
 		if err := stale.Updates(map[string]any{
-			"enabled": false, "probe_status": string(egress.ProbeStatusUnknown), "probe_error": "subscription entry removed",
+			"enabled": false, "probe_status": string(egress.ProbeStatusUnknown), "probe_error": "subscription entry removed", "probe_provider": "",
 			"ipv4_probe_status": string(egress.ProbeStatusUnknown), "ipv4_last_probed_at": nil, "ipv4_probe_latency_ms": 0, "ipv4_exit_ip": "", "ipv4_probe_error": "subscription entry removed",
 			"ipv6_probe_status": string(egress.ProbeStatusUnknown), "ipv6_last_probed_at": nil, "ipv6_probe_latency_ms": 0, "ipv6_exit_ip": "", "ipv6_probe_error": "subscription entry removed",
 			"updated_at": time.Now().UTC(),
@@ -480,9 +489,10 @@ func toEgressDomain(row egressNodeModel) egress.Node {
 		ClearanceBindingFingerprint: row.ClearanceBindingFingerprint,
 		Health:                      row.Health, FailureCount: row.FailureCount, CooldownUntil: row.CooldownUntil, LastError: row.LastError,
 		ProbeStatus: egress.ProbeStatus(row.ProbeStatus), LastProbedAt: row.LastProbedAt, ProbeLatencyMS: row.ProbeLatencyMS, ExitIP: row.ExitIP, ProbeError: row.ProbeError,
-		IPv4Probe: probeFamilyFromRow(row.IPv4ProbeStatus, row.IPv4LastProbedAt, row.IPv4ProbeLatencyMS, row.IPv4ExitIP, row.IPv4ProbeError),
-		IPv6Probe: probeFamilyFromRow(row.IPv6ProbeStatus, row.IPv6LastProbedAt, row.IPv6ProbeLatencyMS, row.IPv6ExitIP, row.IPv6ProbeError),
-		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		ProbeProvider: storedProbeProvider(egress.ProbeProvider(row.ProbeProvider)),
+		IPv4Probe:     probeFamilyFromRow(row.IPv4ProbeStatus, row.IPv4LastProbedAt, row.IPv4ProbeLatencyMS, row.IPv4ExitIP, row.IPv4ProbeError),
+		IPv6Probe:     probeFamilyFromRow(row.IPv6ProbeStatus, row.IPv6LastProbedAt, row.IPv6ProbeLatencyMS, row.IPv6ExitIP, row.IPv6ProbeError),
+		CreatedAt:     row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
 }
 
@@ -503,6 +513,7 @@ func fromEgressDomain(value egress.Node) egressNodeModel {
 		ClearanceBindingFingerprint: value.ClearanceBindingFingerprint,
 		Health:                      health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
 		ProbeStatus: string(probeStatus), LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS, ExitIP: value.ExitIP, ProbeError: value.ProbeError,
+		ProbeProvider:   string(storedProbeProvider(value.ProbeProvider)),
 		IPv4ProbeStatus: string(normalizedProbeStatus(value.IPv4Probe.Status)), IPv4LastProbedAt: probeTestedAt(value.IPv4Probe), IPv4ProbeLatencyMS: value.IPv4Probe.LatencyMS, IPv4ExitIP: value.IPv4Probe.ExitIP, IPv4ProbeError: value.IPv4Probe.Error,
 		IPv6ProbeStatus: string(normalizedProbeStatus(value.IPv6Probe.Status)), IPv6LastProbedAt: probeTestedAt(value.IPv6Probe), IPv6ProbeLatencyMS: value.IPv6Probe.LatencyMS, IPv6ExitIP: value.IPv6Probe.ExitIP, IPv6ProbeError: value.IPv6Probe.Error,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
@@ -514,6 +525,13 @@ func normalizedProbeStatus(value egress.ProbeStatus) egress.ProbeStatus {
 		return value
 	}
 	return egress.ProbeStatusUnknown
+}
+
+func storedProbeProvider(value egress.ProbeProvider) egress.ProbeProvider {
+	if value.IsValid() {
+		return value
+	}
+	return ""
 }
 
 func probeTestedAt(value egress.ProbeFamilyResult) *time.Time {
