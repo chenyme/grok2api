@@ -34,6 +34,7 @@ const (
 	maxReadTimeout        = time.Hour
 	maxRoutingTTL         = 30 * 24 * time.Hour
 	maxRoutingCooldown    = 24 * time.Hour
+	maxRoutingAttempts    = 200
 	minAuditFlushInterval = 10 * time.Millisecond
 	maxAuditFlushInterval = time.Minute
 	minAuditCommitDelay   = time.Millisecond
@@ -42,6 +43,8 @@ const (
 	maxAuditBatchSize     = 4096
 	maxDeploymentReplicas = 1024
 )
+
+const unlimitedRoutingAttempts = -1
 
 var buildForbiddenCodePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
@@ -526,7 +529,7 @@ func (c Config) Validate() error {
 	if c.Provider.Web.RecoveryBackoffBase.Value() < 5*time.Second || c.Provider.Web.RecoveryBackoffMax.Value() < c.Provider.Web.RecoveryBackoffBase.Value() || c.Provider.Web.RecoveryBackoffMax.Value() > 6*time.Hour {
 		return errors.New("provider.web 恢复退避配置无效")
 	}
-	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > 5*time.Second || c.Routing.MaxAttempts < 1 || c.Routing.MaxAttempts > 10 {
+	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > 5*time.Second || c.Routing.MaxAttempts < unlimitedRoutingAttempts || c.Routing.MaxAttempts == 0 || c.Routing.MaxAttempts > maxRoutingAttempts {
 		return errors.New("routing 配置无效")
 	}
 	if c.Routing.SegmentedMinCandidates < 100 || c.Routing.SegmentedMinCandidates > 1000000 ||

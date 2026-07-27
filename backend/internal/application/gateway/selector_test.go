@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -14,6 +15,29 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
+
+func TestSelectionUnavailableErrorClassification(t *testing.T) {
+	tests := []struct {
+		reason SelectionUnavailableReason
+		status int
+		code   string
+	}{
+		{reason: SelectionNoAccounts, status: http.StatusServiceUnavailable, code: "upstream_unavailable"},
+		{reason: SelectionUnsupportedModel, status: http.StatusServiceUnavailable, code: "upstream_model_unavailable"},
+		{reason: SelectionCooling, status: http.StatusTooManyRequests, code: "upstream_cooling"},
+		{reason: SelectionModelCooling, status: http.StatusTooManyRequests, code: "upstream_model_cooling"},
+		{reason: SelectionQuotaExhausted, status: http.StatusTooManyRequests, code: "upstream_quota_exhausted"},
+		{reason: SelectionSaturated, status: http.StatusServiceUnavailable, code: "upstream_saturated"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.reason), func(t *testing.T) {
+			failure := &SelectionUnavailableError{Reason: test.reason}
+			if failure.HTTPStatus() != test.status || failure.Code() != test.code {
+				t.Fatalf("status=%d code=%q", failure.HTTPStatus(), failure.Code())
+			}
+		})
+	}
+}
 
 func TestSelectorPrioritizesDueQuotaProbeOnce(t *testing.T) {
 	ctx := context.Background()
@@ -223,6 +247,64 @@ func TestSelectorModelQuotaUsesFixedFreeAndUpstreamPaidDelay(t *testing.T) {
 		t.Fatalf("paid candidates = %#v, err = %v", paidCandidates, err)
 	}
 	assertTimeDelay(t, paidCandidates[0].ModelQuotaBlock.CooldownUntil, paidStarted, 2*time.Hour)
+}
+
+func TestSelectorModelQuotaPreservesSessionAffinity(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-quota-sticky.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "build", SourceKey: "build", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "fallback", SourceKey: "fallback", EncryptedAccessToken: "encrypted-fallback",
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 50, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sticky := memory.NewStickyStore()
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	for _, key := range []string{"model-a-session", "model-b-session"} {
+		if err := sticky.Set(ctx, stickySessionKey(key), credential.ID, expiresAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), sticky, nil, time.Hour, time.Second, time.Minute)
+	selector.MarkModelQuotaExhausted(ctx, credential, nil, "model-a", time.Hour)
+
+	for _, key := range []string{"model-a-session", "model-b-session"} {
+		accountID, ok, err := sticky.Get(ctx, stickySessionKey(key), time.Now().UTC())
+		if err != nil || !ok || accountID != credential.ID {
+			t.Fatalf("sticky %q = account %d, ok=%v, err=%v", key, accountID, ok, err)
+		}
+	}
+
+	lease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "model-a", "", "model-a-session", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.Credential.ID != fallback.ID {
+		t.Fatalf("blocked model session selected account %d, want fallback %d", lease.Credential.ID, fallback.ID)
+	}
+	lease.Release()
+	if accountID, ok, err := sticky.Get(ctx, stickySessionKey("model-a-session"), time.Now().UTC()); err != nil || !ok || accountID != fallback.ID {
+		t.Fatalf("affected sticky binding was not rebuilt: id=%d ok=%v err=%v", accountID, ok, err)
+	}
+	if accountID, ok, err := sticky.Get(ctx, stickySessionKey("model-b-session"), time.Now().UTC()); err != nil || !ok || accountID != credential.ID {
+		t.Fatalf("unrelated sticky binding changed: id=%d ok=%v err=%v", accountID, ok, err)
+	}
 }
 
 func requireQuotaRecovery(t *testing.T, ctx context.Context, accounts repository.AccountRepository, accountID uint64) account.QuotaRecovery {

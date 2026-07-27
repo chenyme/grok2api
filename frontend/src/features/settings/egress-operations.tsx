@@ -46,8 +46,9 @@ const emptySource: SourceForm = {
   name: "", scope: "grok_build", enabled: true, url: "", refreshIntervalSeconds: 900, defaultAccountCapacity: 0,
 };
 const emptyImport: ImportForm = { name: "", scope: "grok_build", accountCapacity: 0, content: "" };
-// Eight probes run concurrently and each can take up to 15 seconds. Keeping a
-// request to 32 nodes leaves enough headroom for the admin HTTP timeout.
+// Eight nodes run concurrently; each checks IPv4 and IPv6 in parallel with a
+// 15-second ceiling. Keeping a request to 32 nodes leaves enough headroom for
+// the admin HTTP timeout.
 const egressProbeBatchSize = 32;
 const fallbackScopes: EgressScope[] = ["grok_build", "grok_web", "grok_console", "grok_web_asset"];
 const fallbackDescriptionKeys: Record<EgressScope, string> = {
@@ -65,7 +66,7 @@ function defaultFallbacks(): Record<EgressScope, EgressFallbackConfigDTO> {
 }
 
 const defaultOperationsForm: Omit<EgressOperationsConfigDTO, "updatedAt"> = {
-  probeIntervalSeconds: 900, autoAssignEnabled: false, autoBalanceEnabled: false, assignmentIntervalSeconds: 300, fallbacks: defaultFallbacks(),
+  probeProvider: "cloudflare", probeIntervalSeconds: 900, autoAssignEnabled: false, autoBalanceEnabled: false, assignmentIntervalSeconds: 300, fallbacks: defaultFallbacks(),
 };
 
 function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOperationsConfigDTO, "updatedAt"> {
@@ -73,6 +74,7 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOpera
 
   const defaults = defaultFallbacks();
   return {
+    probeProvider: value.probeProvider,
     probeIntervalSeconds: value.probeIntervalSeconds,
     autoAssignEnabled: value.autoAssignEnabled,
     autoBalanceEnabled: value.autoBalanceEnabled,
@@ -194,6 +196,15 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
 
         {operationsQuery.isError ? <ErrorState message={operationsQuery.error.message} onRetry={() => void operationsQuery.refetch()} /> : operationsQuery.isPending ? <LoadingState /> : (
           <div className="space-y-0">
+            <AutomationRow controlId="egress-probe-provider" label={t("settings.egress.probeProvider")} description={t("settings.egress.probeProviderHelp")}>
+              <Select value={operationsForm.probeProvider} onValueChange={(probeProvider: "ipinfo" | "cloudflare") => setOperationsDraft({ ...operationsForm, probeProvider })}>
+                <SelectTrigger id="egress-probe-provider" className="h-8 w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ipinfo">IPinfo</SelectItem>
+                  <SelectItem value="cloudflare">Cloudflare</SelectItem>
+                </SelectContent>
+              </Select>
+            </AutomationRow>
             <AutomationRow controlId="egress-probe-interval" label={t("settings.egress.probeInterval")} description={t("settings.egress.probeIntervalHelp")}>
               <IntervalInput id="egress-probe-interval" value={operationsForm.probeIntervalSeconds} unit={t("settings.units.seconds")} onChange={(probeIntervalSeconds) => setOperationsDraft({ ...operationsForm, probeIntervalSeconds })} />
             </AutomationRow>

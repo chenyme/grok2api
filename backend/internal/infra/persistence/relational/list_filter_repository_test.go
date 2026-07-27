@@ -164,6 +164,20 @@ func TestListFilters(t *testing.T) {
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", Association: "consoleUnlinked", Now: now}, 2)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", Association: "allLinked", Now: now}, 1)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_web", Association: "allUnlinked", Now: now}, 1)
+	// Seed an orphan Console account so the Build/Console Web-link filters have an unlinked result.
+	orphanConsole := accountModel{IdentityKey: testIdentityKey("orphan-console"), Provider: "grok_console", Name: "orphan-console", SourceKey: "orphan-console", Enabled: true, AuthStatus: "active", Priority: 1}
+	if err := database.db.WithContext(ctx).Create(&orphanConsole).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Four Build accounts are unlinked; link-build and both-build are linked.
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_build", Association: "webLinked", Now: now}, 2)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_build", Association: "webUnlinked", Now: now}, 4)
+	// link-console and both-console are linked; orphan-console is unlinked.
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_console", Association: "webLinked", Now: now}, 2)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_console", Association: "webUnlinked", Now: now}, 1)
+	// Combine association and state filters: the disabled Build account is unlinked and both linked accounts are active.
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_build", Association: "webLinked", Status: "active", Now: now}, 2)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Provider: "grok_build", Association: "webUnlinked", Status: "disabled", Now: now}, 1)
 	accountValues, _, err := accounts.List(ctx, repository.AccountListQuery{Page: repository.PageQuery{Limit: 20, Sort: repository.SortQuery{Field: "name", Direction: repository.SortAscending}}, Filter: repository.AccountListFilter{Provider: "grok_build", Now: now}})
 	if err != nil || len(accountValues) < 4 || accountValues[0].Name != "both-build" || accountValues[len(accountValues)-1].Name != "paid" {
 		t.Fatalf("account name sort = %#v, err = %v", accountValues, err)

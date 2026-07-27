@@ -43,6 +43,9 @@ type Node struct {
 	ProbeLatencyMS              int
 	ExitIP                      string
 	ProbeError                  string
+	ProbeProvider               ProbeProvider
+	IPv4Probe                   ProbeFamilyResult
+	IPv6Probe                   ProbeFamilyResult
 	AssignedAccountCount        int
 	CreatedAt                   time.Time
 	UpdatedAt                   time.Time
@@ -69,6 +72,9 @@ type PublicNode struct {
 	ProbeLatencyMS       int
 	ExitIP               string
 	ProbeError           string
+	ProbeProvider        ProbeProvider
+	IPv4Probe            ProbeFamilyResult
+	IPv6Probe            ProbeFamilyResult
 	AssignedAccountCount int
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
@@ -94,6 +100,19 @@ func (value ProbeStatus) IsValid() bool {
 // ProbeResult contains only operational metadata. It never stores or exposes
 // proxy credentials.
 type ProbeResult struct {
+	Status    ProbeStatus
+	TestedAt  time.Time
+	LatencyMS int
+	ExitIP    string
+	Error     string
+	Provider  ProbeProvider
+	IPv4      ProbeFamilyResult
+	IPv6      ProbeFamilyResult
+}
+
+// ProbeFamilyResult stores one address family's independent connectivity
+// result. A zero TestedAt represents a family that has not been tested yet.
+type ProbeFamilyResult struct {
 	Status    ProbeStatus
 	TestedAt  time.Time
 	LatencyMS int
@@ -169,10 +188,29 @@ type FallbackConfig struct {
 	NodeID uint64
 }
 
+type ProbeProvider string
+
+const (
+	ProbeProviderIPInfo     ProbeProvider = "ipinfo"
+	ProbeProviderCloudflare ProbeProvider = "cloudflare"
+)
+
+func (value ProbeProvider) IsValid() bool {
+	return value == ProbeProviderIPInfo || value == ProbeProviderCloudflare
+}
+
+func (value ProbeProvider) Normalized() ProbeProvider {
+	if !value.IsValid() {
+		return ProbeProviderCloudflare
+	}
+	return value
+}
+
 // OperationsConfig controls background probe, account assignment, and egress
 // fallback work. It defaults to a conservative disabled state for mutations
 // and fallback routing.
 type OperationsConfig struct {
+	ProbeProvider             ProbeProvider
 	ProbeIntervalSeconds      int
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
@@ -183,6 +221,7 @@ type OperationsConfig struct {
 
 func DefaultOperationsConfig() OperationsConfig {
 	return OperationsConfig{
+		ProbeProvider:             ProbeProviderCloudflare,
 		ProbeIntervalSeconds:      900,
 		AssignmentIntervalSeconds: 300,
 		Fallbacks: map[Scope]FallbackConfig{

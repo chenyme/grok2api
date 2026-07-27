@@ -73,6 +73,7 @@ export function ClientKeysPage() {
     maxConcurrent: z.number().int().min(1, t("errors.positive")).max(1_024),
     billingUnlimited: z.boolean(),
     billingLimitUsd: z.number().min(0.01, t("errors.positive")).max(MAX_BILLING_LIMIT_USD),
+    allowModelAliases: z.boolean(),
     allowedModelIds: z.array(z.string()),
   }).superRefine((value, context) => {
     if (!value.expiryUnlimited && !value.expiresAt) {
@@ -82,9 +83,10 @@ export function ClientKeysPage() {
   type KeyForm = z.infer<typeof schema>;
   const form = useForm<KeyForm>({
     resolver: zodResolver(schema),
-    defaultValues: { name: "", enabled: true, expiryUnlimited: true, expiresAt: "", rpmUnlimited: false, rpmLimit: 120, concurrencyUnlimited: false, maxConcurrent: 8, billingUnlimited: true, billingLimitUsd: 10, allowedModelIds: [] },
+    defaultValues: { name: "", enabled: true, expiryUnlimited: true, expiresAt: "", rpmUnlimited: false, rpmLimit: 120, concurrencyUnlimited: false, maxConcurrent: 8, billingUnlimited: true, billingLimitUsd: 10, allowModelAliases: false, allowedModelIds: [] },
   });
   const keyEnabled = useWatch({ control: form.control, name: "enabled" });
+  const allowModelAliases = useWatch({ control: form.control, name: "allowModelAliases" });
   const selectedModels = useWatch({ control: form.control, name: "allowedModelIds" });
   const expiryUnlimited = useWatch({ control: form.control, name: "expiryUnlimited" });
   const rpmUnlimited = useWatch({ control: form.control, name: "rpmUnlimited" });
@@ -109,6 +111,7 @@ export function ClientKeysPage() {
         rpmLimit: values.rpmUnlimited ? 0 : values.rpmLimit,
         maxConcurrent: values.concurrencyUnlimited ? 0 : values.maxConcurrent,
         billingLimitUsdTicks: values.billingUnlimited ? 0 : Math.round(values.billingLimitUsd * USD_TICKS),
+        allowModelAliases: values.allowModelAliases,
         allowedModelIds: values.allowedModelIds,
         expiresAt: values.expiryUnlimited ? "" : new Date(values.expiresAt).toISOString(),
       };
@@ -176,7 +179,7 @@ export function ClientKeysPage() {
     setEditing("new");
     setModelOptionsPage(1);
     setModelOptionsSearch("");
-    form.reset({ name: "", enabled: true, expiryUnlimited: true, expiresAt: "", rpmUnlimited: false, rpmLimit: 120, concurrencyUnlimited: false, maxConcurrent: 8, billingUnlimited: true, billingLimitUsd: 10, allowedModelIds: [] });
+    form.reset({ name: "", enabled: true, expiryUnlimited: true, expiresAt: "", rpmUnlimited: false, rpmLimit: 120, concurrencyUnlimited: false, maxConcurrent: 8, billingUnlimited: true, billingLimitUsd: 10, allowModelAliases: false, allowedModelIds: [] });
   }
 
   function beginEdit(key: ClientKeyDTO): void {
@@ -194,6 +197,7 @@ export function ClientKeysPage() {
       maxConcurrent: key.maxConcurrent > 0 ? key.maxConcurrent : 8,
       billingUnlimited: key.billingLimitUsdTicks === 0,
       billingLimitUsd: key.billingLimitUsdTicks > 0 ? key.billingLimitUsdTicks / USD_TICKS : 10,
+      allowModelAliases: key.allowModelAliases,
       allowedModelIds: key.allowedModelIds,
     });
   }
@@ -311,6 +315,7 @@ export function ClientKeysPage() {
                     <span className="block truncate font-medium" title={key.name}>{key.name}</span>
                     <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
                       {key.allowedModelIds.length === 0 ? t("keys.allModels") : t("keys.selectedModels", { count: key.allowedModelIds.length })}
+                      {key.allowModelAliases ? ` · ${t("keys.modelAliases")}` : ""}
                     </span>
                   </TableCell>
                   <TableCell className="overflow-hidden">
@@ -447,6 +452,30 @@ export function ClientKeysPage() {
                   {modelsQuery.data && modelsQuery.data.total > modelsQuery.data.pageSize ? <ModelOptionPagination page={modelsQuery.data.page} pageSize={modelsQuery.data.pageSize} total={modelsQuery.data.total} onPageChange={setModelOptionsPage} /> : null}
                 </div>
               </fieldset>
+              <section className="flex items-center justify-between gap-4 rounded-lg bg-muted/25 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <Label htmlFor="key-model-aliases">{t("keys.modelAliases")}</Label>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("keys.modelAliasesDescription")}>
+                          <CircleHelp className="size-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-96 space-y-2 py-2 text-left leading-relaxed">
+                        <p>{t("keys.modelAliasesDescription")}</p>
+                        <ul className="list-disc space-y-1 pl-4 text-primary-foreground/80">
+                          <li>{t("keys.modelAliasesBuildSupport")}</li>
+                          <li>{t("keys.modelAliasesConsoleSupport")}</li>
+                          <li>{t("keys.modelAliasesUnsupported")}</li>
+                        </ul>
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{allowModelAliases ? t("keys.modelAliasesOn") : t("keys.modelAliasesOff")}</p>
+                </div>
+                <Switch className="shrink-0" id="key-model-aliases" checked={allowModelAliases} onCheckedChange={(checked) => form.setValue("allowModelAliases", checked, { shouldDirty: true })} />
+              </section>
               <section className="flex items-center justify-between gap-4 rounded-lg bg-muted/25 px-3 py-2.5">
                 <div className="min-w-0">
                   <Label htmlFor="key-enabled">{keyEnabled ? t("common.enabled") : t("common.disabled")}</Label>

@@ -181,11 +181,21 @@ func (h *Handler) listModels(c *gin.Context) {
 		writeOpenAIError(c, http.StatusInternalServerError, "model_list_failed", "读取模型列表失败")
 		return
 	}
+	allowAliases := false
+	if clientValue, exists := c.Get(middleware.ClientKey); exists {
+		if clientKey, ok := clientValue.(clientkeydomain.Key); ok {
+			allowAliases = clientKey.AllowModelAliases
+		}
+	}
+	items := newModelListItems(values)
+	if allowAliases {
+		items = appendReasoningModelAliases(items)
+	}
 	if clientVersion := strings.TrimSpace(c.Query("client_version")); clientVersion != "" {
-		writeCodexModelCatalog(c, newCodexModelCatalog(newModelListItems(values)))
+		writeCodexModelCatalog(c, newCodexModelCatalog(items))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"object": "list", "data": newModelListItems(values)})
+	c.JSON(http.StatusOK, gin.H{"object": "list", "data": items})
 }
 
 // newModelListItems deduplicates by downstream public name and hides Provider prefixes used only for internal routing.
@@ -201,6 +211,33 @@ func newModelListItems(values []modeldomain.Route) []modelListItem {
 		data = append(data, modelListItem{ID: publicID, Object: "model", Created: value.CreatedAt.Unix(), OwnedBy: "grok2api", Provider: value.Provider, Capability: value.Capability})
 	}
 	return data
+}
+
+// appendReasoningModelAliases expands base models into effort-suffixed aliases using only
+// levels each model actually supports (never a blanket none/low/medium/high/xhigh/max template).
+func appendReasoningModelAliases(items []modelListItem) []modelListItem {
+	if len(items) == 0 {
+		return items
+	}
+	seen := make(map[string]bool, len(items)*2)
+	result := make([]modelListItem, 0, len(items)*2)
+	for _, item := range items {
+		seen[item.ID] = true
+		result = append(result, item)
+	}
+	for _, item := range items {
+		for _, aliasID := range modeldomain.ReasoningAliasPublicIDs(item.ID) {
+			if seen[aliasID] {
+				continue
+			}
+			seen[aliasID] = true
+			result = append(result, modelListItem{
+				ID: aliasID, Object: "model", Created: item.Created, OwnedBy: item.OwnedBy,
+				Provider: item.Provider, Capability: item.Capability,
+			})
+		}
+	}
+	return result
 }
 
 func (h *Handler) createResponse(c *gin.Context) {
@@ -1606,17 +1643,18 @@ func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailabl
 	if failure == nil {
 		return status, code, message
 	}
+	status, code = failure.HTTPStatus(), failure.Code()
 	switch failure.Reason {
 	case gateway.SelectionCooling:
-		status, code, message = http.StatusTooManyRequests, "upstream_cooling", "上游账号正在冷却"
+		message = "上游账号正在冷却"
 	case gateway.SelectionModelCooling:
-		status, code, message = http.StatusTooManyRequests, "upstream_model_cooling", "上游账号的目标模型正在冷却"
+		message = "上游账号的目标模型正在冷却"
 	case gateway.SelectionQuotaExhausted:
-		status, code, message = http.StatusTooManyRequests, "upstream_quota_exhausted", "上游账号额度等待恢复"
+		message = "上游账号额度等待恢复"
 	case gateway.SelectionSaturated:
-		code, message = "upstream_saturated", "上游账号当前均达到并发上限"
+		message = "上游账号当前均达到并发上限"
 	case gateway.SelectionUnsupportedModel:
-		code, message = "upstream_model_unavailable", "当前账号池不支持该模型"
+		message = "当前账号池不支持该模型"
 	}
 	if failure.RetryAfter > 0 {
 		seconds := max(int64(1), int64((failure.RetryAfter+time.Second-1)/time.Second))

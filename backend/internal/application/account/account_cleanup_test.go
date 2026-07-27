@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,12 +64,12 @@ func TestCleanupAccountsDeletesOnlySelectedCurrentStatuses(t *testing.T) {
 	expiredCooldownID := create("expired-cooldown", accountdomain.ProviderBuild, func(value *accountdomain.Credential) { until := now.Add(-time.Hour); value.CooldownUntil = &until })
 	otherProviderID := create("web-disabled", accountdomain.ProviderWeb, func(value *accountdomain.Credential) { value.Enabled = false })
 
-	deleted, err := service.CleanupAccounts(ctx, accountdomain.ProviderBuild, []CleanupStatus{CleanupStatusDisabled, CleanupStatusReauthRequired, CleanupStatusCooldown, CleanupStatusDisabled})
+	result, err := service.CleanupAccounts(ctx, accountdomain.ProviderBuild, []CleanupStatus{CleanupStatusDisabled, CleanupStatusReauthRequired, CleanupStatusCooldown, CleanupStatusDisabled}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 3 {
-		t.Fatalf("deleted = %d", deleted)
+	if result.Deleted != 3 || result.RootsDeleted != 3 || result.LinkedDeleted != 0 || result.Skipped != 0 {
+		t.Fatalf("result = %#v", result)
 	}
 	for _, id := range []uint64{disabledID, invalidID, coolingID} {
 		if _, err := repo.Get(ctx, id); err == nil {
@@ -84,7 +85,73 @@ func TestCleanupAccountsDeletesOnlySelectedCurrentStatuses(t *testing.T) {
 
 func TestCleanupAccountsRequiresStatus(t *testing.T) {
 	service := NewService(nil, nil, nil, nil, nil, nil, nil)
-	if _, err := service.CleanupAccounts(context.Background(), accountdomain.ProviderBuild, nil); err == nil {
+	if _, err := service.CleanupAccounts(context.Background(), accountdomain.ProviderBuild, nil, nil); err == nil {
 		t.Fatal("empty cleanup status unexpectedly succeeded")
+	}
+	// Linked targets cannot include the root provider or an invalid provider.
+	if _, err := service.CleanupAccounts(context.Background(), accountdomain.ProviderBuild, []CleanupStatus{CleanupStatusDisabled}, []accountdomain.Provider{accountdomain.ProviderBuild}); err == nil {
+		t.Fatal("self-target cleanup unexpectedly succeeded")
+	}
+	if _, err := service.CleanupAccounts(context.Background(), accountdomain.ProviderBuild, []CleanupStatus{CleanupStatusDisabled}, []accountdomain.Provider{accountdomain.Provider("nope")}); err == nil {
+		t.Fatal("invalid target cleanup unexpectedly succeeded")
+	}
+}
+
+// Cleanup with linked targets removes peers regardless of peer state and reports exact counts.
+func TestCleanupAccountsWithLinkedTargets(t *testing.T) {
+	ctx := context.Background()
+	repo, service := newLinkedDeleteTestService(t, "svc-cleanup-linked.db")
+	now := time.Now().UTC()
+	service.now = func() time.Time { return now }
+
+	web, build, console := seedLinkedTrio(t, repo, strings.Repeat("7", 64), "u-cleanup")
+	// Mark the Web root invalid while keeping active peers to verify peer state is ignored.
+	web.AuthStatus = accountdomain.AuthStatusReauthRequired
+	if _, err := repo.Update(ctx, web); err != nil {
+		t.Fatal(err)
+	}
+	healthyWeb := mustUpsertLinked(t, repo, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO, Name: "healthy", SourceKey: "sso:" + strings.Repeat("8", 64),
+	})
+
+	result, err := service.CleanupAccounts(ctx, accountdomain.ProviderWeb, []CleanupStatus{CleanupStatusReauthRequired}, []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Deleted != 3 || result.RootsDeleted != 1 || result.LinkedDeleted != 2 || result.Skipped != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	assertAccountMissing(t, repo, web.ID)
+	assertAccountMissing(t, repo, build.ID)
+	assertAccountMissing(t, repo, console.ID)
+	assertAccountPresent(t, repo, healthyWeb.ID)
+}
+
+// Cleanup preview counts roots and linked targets without deleting rows.
+func TestPreviewCleanupCountsWithoutDeleting(t *testing.T) {
+	ctx := context.Background()
+	repo, service := newLinkedDeleteTestService(t, "svc-cleanup-preview.db")
+	now := time.Now().UTC()
+	service.now = func() time.Time { return now }
+
+	web, build, console := seedLinkedTrio(t, repo, strings.Repeat("9", 64), "u-preview")
+	web.Enabled = false
+	if _, err := repo.Update(ctx, web); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := service.PreviewCleanup(ctx, accountdomain.ProviderWeb, []CleanupStatus{CleanupStatusDisabled, CleanupStatusCooldown}, []accountdomain.Provider{accountdomain.ProviderBuild, accountdomain.ProviderConsole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.RootsByStatus["disabled"] != 1 || preview.RootsByStatus["cooldown"] != 0 || preview.RootCount != 1 || preview.Total != 3 {
+		t.Fatalf("preview = %#v", preview)
+	}
+	assertAccountPresent(t, repo, web.ID)
+	assertAccountPresent(t, repo, build.ID)
+	assertAccountPresent(t, repo, console.ID)
+
+	if _, err := service.PreviewCleanup(ctx, accountdomain.ProviderWeb, nil, nil); err == nil {
+		t.Fatal("empty statuses preview unexpectedly succeeded")
 	}
 }

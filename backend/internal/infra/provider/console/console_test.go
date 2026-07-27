@@ -224,6 +224,44 @@ func TestNormalizeReasoningPreservesReferenceEfforts(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequestPreservesGrok420ReasoningEffort(t *testing.T) {
+	spec, ok := Resolve("grok-4.20-0309-reasoning")
+	if !ok {
+		t.Fatal("grok-4.20-0309-reasoning missing")
+	}
+	body, err := normalizeRequest([]byte(`{
+		"model":"grok-4.20-0309-reasoning",
+		"input":"hello",
+		"reasoning":{"effort":"low"}
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	reasoning, _ := payload["reasoning"].(map[string]any)
+	if reasoning["effort"] != "low" {
+		t.Fatalf("reasoning = %#v", reasoning)
+	}
+
+	withoutEffort, err := normalizeRequest([]byte(`{
+		"model":"grok-4.20-0309-reasoning",
+		"input":"hello"
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = nil
+	if err := json.Unmarshal(withoutEffort, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["reasoning"] != nil {
+		t.Fatalf("base model request should retain the upstream default: %#v", payload)
+	}
+}
+
 func TestConsoleImportAcceptsJSONPlainTextAndCookieFormat(t *testing.T) {
 	values, err := parseImportedCredentials([]byte("sso=token-one; sso-rw=token-one\ntoken-two\ntoken-two\n"))
 	if err != nil {
