@@ -792,6 +792,102 @@ func assertPostgresAuditSettlement(t *testing.T, ctx context.Context, database *
 	}
 }
 
+func TestPostgresRoutingProjectionAndCredentialHydration(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	database, err := OpenPostgres(ctx, dsn, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Errorf("close PostgreSQL routing projection database: %v", err)
+		}
+	})
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accounts := NewAccountRepository(database)
+	now := time.Now().UTC().Truncate(time.Second)
+	unique := strconv.FormatInt(now.UnixNano(), 10)
+	created, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "postgres routing projection",
+		SourceKey: "postgres-routing-projection-" + unique, OIDCClientID: "postgres-client",
+		EncryptedAccessToken: "postgres-access-secret", EncryptedCloudflareCookie: "postgres-cookie-secret",
+		ExpiresAt: now.Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+		Priority: 7, MaxConcurrent: 3, MinimumRemaining: 1.5, WebTier: account.WebTierSuper,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if err := accounts.Delete(cleanupCtx, created.ID); err != nil && !errors.Is(err, repository.ErrNotFound) {
+			t.Errorf("delete PostgreSQL routing projection account: %v", err)
+		}
+	})
+	if err := accounts.SaveBilling(ctx, account.Billing{
+		AccountID: created.ID, PlanCode: "super", MonthlyLimit: 100, Used: 12, SyncedAt: now,
+		History: []account.BillingHistoryEntry{{Year: 2026, Month: 7, IncludedUsed: 12}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resetAt := now.Add(time.Hour)
+	if err := accounts.SaveQuotaWindows(ctx, created.ID, account.WebTierSuper, now, []account.QuotaWindow{{
+		AccountID: created.ID, Mode: "weekly", Remaining: 10, Total: 20, UsagePercent: 50,
+		Breakdown:     []account.QuotaBreakdown{{ProductCode: account.QuotaProductChat, UsagePercent: 50}},
+		WindowSeconds: 3600, ResetAt: &resetAt, SyncedAt: &now, Source: account.QuotaSourceUpstream,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	bases, err := accounts.ListRoutingAccountBases(ctx, account.ProviderWeb, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projected *account.RoutingAccountBase
+	for index := range bases {
+		if bases[index].Credential.ID == created.ID {
+			projected = &bases[index]
+			break
+		}
+	}
+	if projected == nil {
+		t.Fatalf("routing projection account %d not found", created.ID)
+	}
+	assertRoutingProjection(t, projected.Credential, created)
+	if projected.Billing == nil || projected.Billing.PlanCode != "super" || len(projected.Billing.History) != 0 {
+		t.Fatalf("routing billing = %#v, want scalar billing without history", projected.Billing)
+	}
+	if projected.QuotaWindow == nil || projected.QuotaWindow.Remaining != 10 || len(projected.QuotaWindow.Breakdown) != 0 {
+		t.Fatalf("routing quota = %#v, want scalar quota without breakdown", projected.QuotaWindow)
+	}
+
+	material, err := accounts.GetCredentialMaterial(ctx, created.ID, account.ProviderWeb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if material.Provider != account.ProviderWeb || material.EncryptedAccessToken != "postgres-access-secret" || material.EncryptedCloudflareCookie != "postgres-cookie-secret" {
+		t.Fatalf("credential material = %#v", material)
+	}
+	if _, err := accounts.GetCredentialMaterial(ctx, created.ID, account.ProviderBuild); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("cross-provider credential error = %v, want ErrNotFound", err)
+	}
+	disabled := false
+	if _, err := accounts.UpdateMany(ctx, []uint64{created.ID}, repository.AccountUpdates{Enabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accounts.GetCredentialMaterial(ctx, created.ID, account.ProviderWeb); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("disabled credential error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestPostgresP1RouteLookupAndBoundedResponseCleanup(t *testing.T) {
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn == "" {

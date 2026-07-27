@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
 
@@ -18,6 +19,12 @@ type segmentedSelectorActiveRequest struct {
 type segmentedSelectorCohortBucket struct {
 	cohort  segmentedSelectorCohort
 	indexes []int
+}
+
+type segmentedClaimResult struct {
+	lease          *accountLease
+	staleClaims    int
+	capacityMisses int
 }
 
 const segmentedWindowsBeforeFullFallback = 4
@@ -55,14 +62,18 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 				observeSegmentedActive(request.provider, "error", "full_fallback", startedAt, windowsScanned, candidatesScanned)
 				return nil, err
 			}
-			lease, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, "full_fallback")
+			claim, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, "full_fallback")
 			if err != nil {
 				observeSegmentedActive(request.provider, "error", "full_fallback", startedAt, windowsScanned, candidatesScanned)
 				return nil, err
 			}
-			if lease != nil {
+			if claim.lease != nil {
 				observeSegmentedActive(request.provider, "selected", "full_fallback", startedAt, windowsScanned, candidatesScanned)
-				return lease, nil
+				return claim.lease, nil
+			}
+			if claim.staleClaims > 0 && claim.capacityMisses == 0 {
+				observeSegmentedActive(request.provider, "unavailable", "full_fallback", startedAt, windowsScanned, candidatesScanned)
+				return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
 			}
 		} else {
 			concurrencyHints := make([]int, len(values))
@@ -81,14 +92,14 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 						return nil, err
 					}
 					stage := segmentedActiveSelectionStage(cohortIndex, windowOffset)
-					lease, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, stage)
+					claim, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, stage)
 					if err != nil {
 						observeSegmentedActive(request.provider, "error", "claim", startedAt, windowsScanned, candidatesScanned)
 						return nil, err
 					}
-					if lease != nil {
+					if claim.lease != nil {
 						observeSegmentedActive(request.provider, "selected", stage, startedAt, windowsScanned, candidatesScanned)
-						return lease, nil
+						return claim.lease, nil
 					}
 					if roundWindows >= segmentedWindowsBeforeFullFallback {
 						fallbackToFull = true
@@ -110,14 +121,18 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 					observeSegmentedActive(request.provider, "error", "full_fallback", startedAt, windowsScanned, candidatesScanned)
 					return nil, err
 				}
-				lease, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, "full_fallback")
+				claim, err := s.claimSegmentedPlan(ctx, plan, request.provider, quotaMode, "full_fallback")
 				if err != nil {
 					observeSegmentedActive(request.provider, "error", "full_fallback", startedAt, windowsScanned, candidatesScanned)
 					return nil, err
 				}
-				if lease != nil {
+				if claim.lease != nil {
 					observeSegmentedActive(request.provider, "selected", "full_fallback", startedAt, windowsScanned, candidatesScanned)
-					return lease, nil
+					return claim.lease, nil
+				}
+				if claim.staleClaims > 0 && claim.capacityMisses == 0 {
+					observeSegmentedActive(request.provider, "unavailable", "full_fallback", startedAt, windowsScanned, candidatesScanned)
+					return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
 				}
 			}
 			fullPlannerOnly = true
@@ -138,21 +153,28 @@ func (s *Selector) acquireSegmentedCandidates(ctx context.Context, values []acco
 	}
 }
 
-func (s *Selector) claimSegmentedPlan(ctx context.Context, plan *candidatePlan, provider account.Provider, quotaMode, stage string) (*accountLease, error) {
+func (s *Selector) claimSegmentedPlan(ctx context.Context, plan *candidatePlan, provider account.Provider, quotaMode, stage string) (segmentedClaimResult, error) {
+	result := segmentedClaimResult{}
 	for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
 		lease, err := s.claimAccountSlot(ctx, candidate.Credential)
 		if err != nil {
-			return nil, err
+			if errors.Is(err, errRoutingCredentialStale) {
+				result.staleClaims++
+				continue
+			}
+			return segmentedClaimResult{}, err
 		}
 		if lease == nil {
+			result.capacityMisses++
 			continue
 		}
 		lease.Billing = candidate.Billing
 		lease.QuotaMode = effectiveQuotaMode(candidate, quotaMode)
 		lease.selectorObservation = &selectorLeaseObservation{provider: provider, stage: stage}
-		return lease, nil
+		result.lease = lease
+		return result, nil
 	}
-	return nil, nil
+	return result, nil
 }
 
 func segmentedCandidateCohorts(values []account.RoutingCandidate, indexes []int, now time.Time, tierOrder []account.WebTier, preferFreeBuild bool) []segmentedSelectorCohortBucket {

@@ -14,17 +14,22 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/pkg/perfmetrics"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	redisclient "github.com/redis/go-redis/v9"
 )
 
 const (
-	concurrencyLeaseGrace       = time.Minute
-	maxStickyBindingsPerAccount = 10000
-	maxDeviceSessions           = 1000
-	maxQuotaRecoveryEvents      = 100000
-	maxQuotaRefreshDirty        = 100000
-	observedModelStateTTL       = 30 * time.Minute
+	concurrencyLeaseGrace                = time.Minute
+	concurrencyReleaseRetryInterval      = 250 * time.Millisecond
+	concurrencyReleaseRetryTimeout       = 3 * time.Second
+	concurrencyReleaseRetryBatchSize     = 512
+	concurrencyReleaseRetryQueueCapacity = 16384
+	maxStickyBindingsPerAccount          = 10000
+	maxDeviceSessions                    = 1000
+	maxQuotaRecoveryEvents               = 100000
+	maxQuotaRefreshDirty                 = 100000
+	observedModelStateTTL                = 30 * time.Minute
 	// At the per-account cap, one pipeline processes at most 80,000 members.
 	stickyDeletePipelineSize = 8
 )
@@ -276,9 +281,20 @@ type Config struct {
 
 // Store 实现多实例共享的限流、并发租约、粘滞路由、Device OAuth 会话和分布式锁。
 type Store struct {
-	client           *redisclient.Client
-	prefix           string
-	concurrencyLease time.Duration
+	client                  *redisclient.Client
+	prefix                  string
+	concurrencyLease        time.Duration
+	concurrencyReleaseQueue chan concurrencyReleaseRetry
+	concurrencyReleaseStop  chan struct{}
+	concurrencyReleaseDone  chan struct{}
+	closeOnce               sync.Once
+	closeErr                error
+}
+
+type concurrencyReleaseRetry struct {
+	redisKey  string
+	token     string
+	expiresAt time.Time
 }
 
 // Open 连接 Redis；选中的 Redis 不可用时直接返回启动错误。
@@ -296,10 +312,23 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if lease <= 0 {
 		lease = 3 * time.Hour
 	}
-	return &Store{client: client, prefix: cfg.KeyPrefix, concurrencyLease: lease}, nil
+	store := &Store{
+		client: client, prefix: cfg.KeyPrefix, concurrencyLease: lease,
+		concurrencyReleaseQueue: make(chan concurrencyReleaseRetry, concurrencyReleaseRetryQueueCapacity),
+		concurrencyReleaseStop:  make(chan struct{}), concurrencyReleaseDone: make(chan struct{}),
+	}
+	go store.runConcurrencyReleaseRetries()
+	return store, nil
 }
 
-func (s *Store) Close() error { return s.client.Close() }
+func (s *Store) Close() error {
+	s.closeOnce.Do(func() {
+		close(s.concurrencyReleaseStop)
+		s.closeErr = s.client.Close()
+		<-s.concurrencyReleaseDone
+	})
+	return s.closeErr
+}
 
 func (s *Store) Ping(ctx context.Context) error { return s.client.Ping(ctx).Err() }
 
@@ -438,11 +467,102 @@ func (s *Store) acquireConcurrency(ctx context.Context, key string, limit int) (
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			releaseCtx, cancel := context.WithTimeout(context.Background(), concurrencyReleaseRetryTimeout)
 			defer cancel()
-			_ = releaseLeaseScript.Run(releaseCtx, s.client, []string{redisKey}, token).Err()
+			if err := releaseLeaseScript.Run(releaseCtx, s.client, []string{redisKey}, token).Err(); err != nil {
+				s.enqueueConcurrencyReleaseRetry(concurrencyReleaseRetry{redisKey: redisKey, token: token, expiresAt: expiresAt})
+			}
 		})
 	}, true, nil
+}
+
+func (s *Store) enqueueConcurrencyReleaseRetry(value concurrencyReleaseRetry) {
+	select {
+	case <-s.concurrencyReleaseStop:
+		observeConcurrencyRelease("shutdown", 1)
+		return
+	default:
+	}
+	select {
+	case s.concurrencyReleaseQueue <- value:
+		observeConcurrencyRelease("queued", 1)
+	case <-s.concurrencyReleaseStop:
+		observeConcurrencyRelease("shutdown", 1)
+	default:
+		observeConcurrencyRelease("dropped", 1)
+	}
+}
+
+func (s *Store) runConcurrencyReleaseRetries() {
+	defer close(s.concurrencyReleaseDone)
+	ticker := time.NewTicker(concurrencyReleaseRetryInterval)
+	defer ticker.Stop()
+	pending := make(map[string]concurrencyReleaseRetry)
+	for {
+		select {
+		case value := <-s.concurrencyReleaseQueue:
+			pending[value.token] = value
+		case <-ticker.C:
+			s.retryConcurrencyReleases(pending)
+		case <-s.concurrencyReleaseStop:
+			observeConcurrencyRelease("shutdown", len(pending)+len(s.concurrencyReleaseQueue))
+			return
+		}
+	}
+}
+
+func (s *Store) retryConcurrencyReleases(pending map[string]concurrencyReleaseRetry) {
+	if len(pending) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	expired := 0
+	ctx, cancel := context.WithTimeout(context.Background(), concurrencyReleaseRetryTimeout)
+	defer cancel()
+	pipeline := s.client.Pipeline()
+	type queuedRelease struct {
+		token   string
+		command *redisclient.IntCmd
+	}
+	commands := make([]queuedRelease, 0, min(len(pending), concurrencyReleaseRetryBatchSize))
+	for token, value := range pending {
+		if !now.Before(value.expiresAt) {
+			delete(pending, token)
+			expired++
+			continue
+		}
+		commands = append(commands, queuedRelease{token: token, command: pipeline.ZRem(ctx, value.redisKey, value.token)})
+		if len(commands) >= concurrencyReleaseRetryBatchSize {
+			break
+		}
+	}
+	if len(commands) == 0 {
+		observeConcurrencyRelease("expired", expired)
+		return
+	}
+	_, _ = pipeline.Exec(ctx)
+	recovered := 0
+	failed := 0
+	for _, value := range commands {
+		if value.command.Err() == nil {
+			delete(pending, value.token)
+			recovered++
+		} else {
+			failed++
+		}
+	}
+	observeConcurrencyRelease("expired", expired)
+	observeConcurrencyRelease("recovered", recovered)
+	observeConcurrencyRelease("retry_failed", failed)
+}
+
+func observeConcurrencyRelease(outcome string, count int) {
+	if count <= 0 {
+		return
+	}
+	perfmetrics.Default.Add("runtime_concurrency_release_total", perfmetrics.Labels{
+		Subsystem: "runtime", Operation: "concurrency_lease", Stage: "release", Outcome: outcome,
+	}, int64(count))
 }
 
 func (s *Store) Current(ctx context.Context, key string) (int, error) {

@@ -1057,14 +1057,15 @@ attemptLoop:
 			once.Do(func() {
 				successful := response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == ""
 				lease.completeSelectorObservation(successful)
-				lease.Release()
 				budget := newFinalizationBudget(string(operation), string(route.Provider))
 				if isUpstreamStreamFailure(errorCode) {
-					_ = budget.run("account_health", finalizationHealthBudget, func(stageCtx context.Context) error {
-						s.selector.MarkFailure(stageCtx, credential, http.StatusBadGateway, 0)
-						return nil
-					})
+					if err := budget.run("account_health", finalizationHealthBudget, func(stageCtx context.Context) error {
+						return s.selector.MarkFailureAfterSuccess(stageCtx, credential, http.StatusBadGateway, 0)
+					}); err != nil {
+						s.logger.Warn("stream_failure_health_write_failed", "account_id", credential.ID, "provider", credential.Provider, "error", err)
+					}
 				}
+				lease.Release()
 				now := time.Now().UTC()
 				record := auditBase
 				record.AccountID = &accountID

@@ -87,6 +87,21 @@ func toAccountDomain(value accountModel) account.Credential {
 	}
 }
 
+func toCredentialMaterialDomain(value accountCredentialModel, provider account.Provider) account.CredentialMaterial {
+	var expiresAt time.Time
+	if value.ExpiresAt != nil {
+		expiresAt = *value.ExpiresAt
+	}
+	return account.CredentialMaterial{
+		AccountID: value.AccountID, Provider: provider, AuthType: account.AuthType(value.AuthType), OIDCClientID: value.ClientID,
+		EncryptedAccessToken: value.EncryptedPrimary, EncryptedRefreshToken: value.EncryptedRefresh,
+		EncryptedCloudflareCookie: value.EncryptedCloudflareCookie, ExpiresAt: expiresAt,
+		RefreshDueAt: value.RefreshDueAt, LastRefreshAt: value.LastRefreshAt,
+		RefreshFailureCount: value.RefreshFailures, LastRefreshErrorCode: value.LastRefreshError,
+		RefreshPermanent: value.RefreshPermanent, UpdatedAt: value.UpdatedAt,
+	}
+}
+
 func fromAccountDomain(value account.Credential) accountModel {
 	// entitlement、推理地址与 XAI 回退标记仅对 grok_build 有意义。
 	buildAPIFallback := value.BuildAPIFallback && value.Provider == account.ProviderBuild
@@ -181,7 +196,13 @@ func accountIdentity(value account.Credential) string {
 func toBillingDomain(value billingModel) account.Billing {
 	var history []account.BillingHistoryEntry
 	_ = json.Unmarshal([]byte(value.HistoryJSON), &history)
-	return account.Billing{AccountID: value.AccountID, PlanCode: value.PlanCode, PlanName: value.PlanName, MonthlyLimit: value.MonthlyLimit, Used: value.Used, OnDemandCap: value.OnDemandCap, OnDemandUsed: value.OnDemandUsed, PrepaidBalance: value.PrepaidBalance, CreditUsagePercent: value.CreditUsagePercent, IsUnifiedBillingUser: value.IsUnifiedBillingUser, OnDemandEnabled: value.OnDemandEnabled, TopUpMethod: value.TopUpMethod, UsagePeriodType: value.UsagePeriodType, UsagePeriodStart: value.UsagePeriodStart, UsagePeriodEnd: value.UsagePeriodEnd, BillingPeriodStart: value.BillingPeriodStart, BillingPeriodEnd: value.BillingPeriodEnd, History: history, SyncedAt: value.SyncedAt}
+	result := toRoutingBillingDomain(value)
+	result.History = history
+	return result
+}
+
+func toRoutingBillingDomain(value billingModel) account.Billing {
+	return account.Billing{AccountID: value.AccountID, PlanCode: value.PlanCode, PlanName: value.PlanName, MonthlyLimit: value.MonthlyLimit, Used: value.Used, OnDemandCap: value.OnDemandCap, OnDemandUsed: value.OnDemandUsed, PrepaidBalance: value.PrepaidBalance, CreditUsagePercent: value.CreditUsagePercent, IsUnifiedBillingUser: value.IsUnifiedBillingUser, OnDemandEnabled: value.OnDemandEnabled, TopUpMethod: value.TopUpMethod, UsagePeriodType: value.UsagePeriodType, UsagePeriodStart: value.UsagePeriodStart, UsagePeriodEnd: value.UsagePeriodEnd, BillingPeriodStart: value.BillingPeriodStart, BillingPeriodEnd: value.BillingPeriodEnd, SyncedAt: value.SyncedAt}
 }
 
 func toModelDomain(value modelRouteModel) model.Route {

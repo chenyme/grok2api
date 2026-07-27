@@ -273,20 +273,69 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 
 	adapter.resetAttempts()
+	expiredCooldown := time.Now().UTC().Add(-time.Minute)
+	for _, accountID := range []uint64{first.ID, second.ID} {
+		if err := accountRepo.UpdateHealth(ctx, accountID, 3, &expiredCooldown, "previous upstream failures", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selector.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: account.ProviderBuild})
 	interrupted, err := service.CreateResponse(ctx, Input{RequestID: "req-stream-cut", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`), PromptCacheSeed: "other-session"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, _ = io.ReadAll(interrupted.Body)
-	interrupted.Finalize(Usage{}, "", "upstream_stream_incomplete")
-	_ = interrupted.Body.Close()
+	healthBlocker := &blockingHealthAccountRepository{
+		AccountRepository: accountRepo, started: make(chan struct{}), release: make(chan struct{}),
+	}
+	selector.accounts = healthBlocker
+	finalized := make(chan struct{})
+	go func() {
+		interrupted.Finalize(Usage{}, "", "upstream_stream_incomplete")
+		close(finalized)
+	}()
+	select {
+	case <-healthBlocker.started:
+	case <-time.After(time.Second):
+		t.Fatal("stream failure health update did not start")
+	}
 	if len(adapter.attempts) != 1 {
 		t.Fatalf("interrupted attempts = %#v", adapter.attempts)
 	}
+	selectedAccountID := adapter.attempts[0]
+	if current, currentErr := concurrency.Current(ctx, accountConcurrencyKey(selectedAccountID)); currentErr != nil || current != 1 {
+		t.Fatalf("account lease was released before stream failure cooldown: current=%d err=%v", current, currentErr)
+	}
+	close(healthBlocker.release)
+	select {
+	case <-finalized:
+	case <-time.After(time.Second):
+		t.Fatal("stream failure finalization did not finish")
+	}
+	_ = interrupted.Body.Close()
 	interruptedAccount, err := accountRepo.Get(ctx, adapter.attempts[0])
 	if err != nil || interruptedAccount.FailureCount != 1 || interruptedAccount.CooldownUntil == nil {
 		t.Fatalf("interrupted account health = %#v, err=%v", interruptedAccount, err)
 	}
+}
+
+type blockingHealthAccountRepository struct {
+	repository.AccountRepository
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingHealthAccountRepository) UpdateHealth(ctx context.Context, id uint64, failureCount int, cooldownUntil *time.Time, lastError string, success bool) error {
+	if !success {
+		r.once.Do(func() { close(r.started) })
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return r.AccountRepository.UpdateHealth(ctx, id, failureCount, cooldownUntil, lastError, success)
 }
 
 func TestRoutingAttemptPolicy(t *testing.T) {
