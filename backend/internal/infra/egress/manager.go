@@ -43,6 +43,9 @@ const clearanceCacheCleanupInterval = time.Minute
 const clearanceCacheMinIdleTTL = 30 * time.Minute
 const maxCachedClearances = 16384
 const clearanceCacheEvictionBatch = 256
+
+// clientClosedRequestStatus is the conventional proxy status for a client-aborted request.
+const clientClosedRequestStatus = 499
 const egressIPv4ProbeEndpoint = "https://ipinfo.io/json"
 const egressIPv6ProbeEndpoint = "https://v6.ipinfo.io/json"
 const cloudflareIPv4ProbeEndpoint = "https://1.1.1.1/cdn-cgi/trace"
@@ -1341,6 +1344,9 @@ func (m *Manager) Feedback(ctx context.Context, nodeID uint64, status int, trans
 }
 
 func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, nodeID uint64, status int, transportErr error) {
+	if status == clientClosedRequestStatus || errors.Is(transportErr, context.Canceled) {
+		return
+	}
 	if scope == domain.ScopeBuild && neterrorpkg.IsResponseHeaderTimeout(transportErr) {
 		return
 	}

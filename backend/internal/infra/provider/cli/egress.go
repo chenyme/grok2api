@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 
@@ -33,7 +34,9 @@ func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	}
 	response, err := lease.Do(request)
 	if err != nil {
-		t.manager.FeedbackForScope(context.WithoutCancel(request.Context()), domainegress.ScopeBuild, lease.NodeID, 0, err)
+		if shouldReportEgressFailure(request.Context(), err) {
+			t.manager.FeedbackForScope(context.WithoutCancel(request.Context()), domainegress.ScopeBuild, lease.NodeID, 0, err)
+		}
 		lease.Release()
 		return nil, err
 	}
@@ -44,6 +47,13 @@ func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	}
 	response.Body = &egressResponseBody{ReadCloser: response.Body, release: lease.Release}
 	return response, nil
+}
+
+func shouldReportEgressFailure(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	return !errors.Is(err, context.Canceled)
 }
 
 type egressResponseBody struct {
