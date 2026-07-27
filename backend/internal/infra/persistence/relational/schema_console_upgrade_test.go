@@ -68,6 +68,7 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 	assertSQLiteUniqueIndexes(t, database, "model_routes", "idx_model_routes_public_id")
 	assertSQLiteIndexes(t, database, "model_routes", "idx_model_routes_provider_upstream")
 	assertSQLiteMissingIndexes(t, database, "model_routes", "uidx_provider_upstream")
+	assertTableColumns(t, database, "request_audits", []string{"first_token_ms"}, nil)
 	assertTableColumns(t, database, "response_ownership", []string{"prompt_cache_key", "reasoning_replay_key"}, nil)
 }
 

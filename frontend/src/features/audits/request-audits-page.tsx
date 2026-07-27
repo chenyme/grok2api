@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { listModels } from "@/entities/model/model-api";
 import { RequestAuditDetailDialog } from "@/features/audits/request-audit-detail-dialog";
-import { getRequestAudits, getRequestAuditSummary, type AuditDTO, type AuditPeriod } from "@/features/audits/request-audits-api";
+import { getRequestAudits, getRequestAuditSummary, type AuditBillingBreakdownDTO, type AuditBillingComponentDTO, type AuditDTO, type AuditPeriod } from "@/features/audits/request-audits-api";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -189,26 +189,26 @@ export function RequestAuditsPage() {
         {auditsQuery.isError ? <ErrorState message={auditsQuery.error.message} onRetry={() => void auditsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {auditsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table viewportRows={20} rowHeight={72} aria-busy={auditsQuery.isFetching} className={cn("min-w-[1136px] table-fixed text-xs transition-opacity", auditsQuery.isPlaceholderData && "pointer-events-none opacity-60")}>
+          <Table viewportRows={20} rowHeight={72} aria-busy={auditsQuery.isFetching} className={cn("min-w-[1184px] table-fixed text-xs transition-opacity", auditsQuery.isPlaceholderData && "pointer-events-none opacity-60")}>
             <colgroup>
-              <col className="w-36" />
               <col className="w-44" />
-              <col className="w-20" />
+              <col className="w-36" />
+              <col className="w-24" />
               <col className="w-24" />
               <col className="w-76" />
-              <col className="w-20" />
-              <col className="w-20" />
-              <col className="w-44" />
+              <col className="w-24" />
+              <col className="w-40" />
+              <col className="w-28" />
             </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <SortableTableHead field="request" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("audits.request")}</SortableTableHead>
                 <SortableTableHead field="model" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("audits.model")}</SortableTableHead>
-                <TableHead>{t("audits.egress")}</TableHead>
+                <TableHead className="text-center">{t("audits.egress")}</TableHead>
                 <SortableTableHead field="billing" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.billing")}</SortableTableHead>
                 <SortableTableHead field="tokens" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" className="px-3" onSort={changeSort}>{t("audits.tokens")}</SortableTableHead>
                 <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("audits.status")}</SortableTableHead>
-                <SortableTableHead field="duration" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.duration")}</SortableTableHead>
+                <SortableTableHead field="duration" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.responsePerformance")}</SortableTableHead>
                 <SortableTableHead field="createdAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.createdAt")}</SortableTableHead>
               </TableRow>
             </TableHeader>
@@ -237,15 +237,44 @@ const AuditRow = memo(function AuditRow({ audit, locale, onOpen }: { audit: Audi
           clientKey={audit.clientKeyName || `#${audit.clientKeyId}`}
         />
       </TableCell>
-      <TableCell><EgressValue audit={audit} /></TableCell>
+      <TableCell className="text-center"><EgressValue audit={audit} /></TableCell>
       <TableCell><BillingValue audit={audit} /></TableCell>
       <TableCell className="px-3"><UsageDetails audit={audit} locale={locale} /></TableCell>
       <TableCell className="text-center"><AuditStatus audit={audit} onOpen={() => onOpen(audit)} /></TableCell>
-      <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatDuration(audit.durationMs)}</TableCell>
-      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(audit.createdAt, locale)}</TableCell>
+      <TableCell><ResponsePerformance audit={audit} locale={locale} /></TableCell>
+      <TableCell className="truncate whitespace-nowrap text-xs text-muted-foreground" title={formatDateTime(audit.createdAt, locale)}>{formatDateTime(audit.createdAt, locale)}</TableCell>
     </TableRow>
   );
 });
+
+function ResponsePerformance({ audit, locale }: { audit: AuditDTO; locale: string }) {
+  const { t } = useTranslation();
+  const duration = splitDuration(formatDuration(audit.durationMs));
+  const firstToken = audit.firstTokenMs === undefined ? { value: "—", unit: "" } : splitDuration(formatDuration(audit.firstTokenMs));
+  const throughput = audit.outputTokensPerSecond === undefined ? "—" : formatNumber(audit.outputTokensPerSecond, locale, 1);
+  return (
+    <div className="grid w-fit max-w-full grid-cols-[auto_auto] gap-x-2.5 gap-y-0.5 whitespace-nowrap text-[11px] leading-4 tabular-nums">
+      <span className="text-muted-foreground">{t("audits.durationMetric")}</span>
+      <PerformanceValue value={duration.value} unit={duration.unit} />
+      <span className="text-muted-foreground">{t("audits.firstTokenMetric")}</span>
+      <PerformanceValue value={firstToken.value} unit={firstToken.unit} />
+      <span className="text-muted-foreground">{t("audits.throughputMetric")}</span>
+      <PerformanceValue value={throughput} unit={t("audits.tokensPerSecondUnit")} />
+    </div>
+  );
+}
+
+function PerformanceValue({ value, unit }: { value: string; unit: string }) {
+  return <span className="font-medium">{value}{unit ? <> <span className="font-normal">{unit}</span></> : null}</span>;
+}
+
+function splitDuration(value: string): { value: string; unit: string } {
+  const separator = value.lastIndexOf(" ");
+  if (separator < 0) {
+    return { value, unit: "" };
+  }
+  return { value: value.slice(0, separator), unit: value.slice(separator + 1) };
+}
 
 function RequestValue({ audit }: { audit: AuditDTO }) {
   const { t } = useTranslation();
@@ -268,14 +297,14 @@ function EgressValue({ audit }: { audit: AuditDTO }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" className="block min-w-0 max-w-full cursor-help text-left" aria-label={`${proxied ? t("audits.egressProxy") : t("audits.egressDirect")}: ${node}`}>
+        <button type="button" className="inline-block min-w-0 max-w-full cursor-help text-center" aria-label={`${proxied ? t("audits.egressProxy") : t("audits.egressDirect")}: ${node}`}>
           <span className={cn("inline-flex items-center gap-1.5 text-xs", proxied ? "text-emerald-700 dark:text-emerald-300" : "text-muted-foreground")}>
             <span className={cn("size-1.5 rounded-full", proxied ? "bg-emerald-500" : "bg-muted-foreground/50")} />
             {proxied ? t("audits.egressProxy") : t("audits.egressDirect")}
           </span>
         </button>
       </TooltipTrigger>
-      <TooltipContent className="max-w-72" side="top" align="start">
+      <TooltipContent className="max-w-72" side="top" align="center">
         <div>{node}</div>
         {details ? <div className="mt-1 text-primary-foreground/65">{details}</div> : null}
       </TooltipContent>
@@ -284,18 +313,17 @@ function EgressValue({ audit }: { audit: AuditDTO }) {
 }
 
 function BillingValue({ audit }: { audit: AuditDTO }) {
-  const { t } = useTranslation();
-  const upstreamReported = audit.costInUsdTicks > 0;
-  const priced = upstreamReported || Boolean(audit.pricingModel);
-  const ticks = upstreamReported ? audit.costInUsdTicks : audit.estimatedCostInUsdTicks;
-  const amount = priced ? formatUSDCost(ticks, 2) : "-";
-  const fullAmount = priced ? formatUSDCost(ticks, 10) : "";
+  const { t, i18n } = useTranslation();
+  const billing = audit.billing ?? fallbackBillingBreakdown(audit);
+  const amount = billing ? formatUSDCost(billing.totalInUsdTicks, 2) : "-";
   return (
     <div className="max-w-full text-left">
-      {priced ? (
+      {billing ? (
         <Tooltip>
           <TooltipTrigger asChild><span className="block cursor-help whitespace-nowrap text-xs tabular-nums" tabIndex={0}>{amount}</span></TooltipTrigger>
-          <TooltipContent side="top"><span className="text-primary-foreground/65">{t("audits.exactBilling")}</span> <span className="font-mono">{fullAmount}</span></TooltipContent>
+          <TooltipContent className="w-96 max-w-[calc(100vw-2rem)] p-3" side="top" align="start">
+            <BillingBreakdown billing={billing} locale={i18n.language} />
+          </TooltipContent>
         </Tooltip>
       ) : <span className="block text-xs text-muted-foreground">-</span>}
       {audit.numServerSideToolsUsed > 0 ? (
@@ -303,6 +331,78 @@ function BillingValue({ audit }: { audit: AuditDTO }) {
           {t("audits.serverTools", { count: audit.numServerSideToolsUsed })}
         </span>
       ) : null}
+    </div>
+  );
+}
+
+function fallbackBillingBreakdown(audit: AuditDTO): AuditBillingBreakdownDTO | undefined {
+  if (audit.costInUsdTicks > 0) {
+    return { source: "upstream", method: "upstream_reported", components: [], totalInUsdTicks: audit.costInUsdTicks };
+  }
+  if (!audit.pricingModel) {
+    return undefined;
+  }
+  return {
+    source: "official",
+    method: "stored_estimate",
+    model: audit.pricingModel,
+    version: audit.pricingVersion,
+    components: [],
+    totalInUsdTicks: audit.estimatedCostInUsdTicks,
+  };
+}
+
+function BillingBreakdown({ billing, locale }: { billing: AuditBillingBreakdownDTO; locale: string }) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-2.5 text-xs leading-5">
+      <div className="space-y-1">
+        <BillingDetailRow label={t("audits.billingSource")} value={billing.source === "upstream" ? t("audits.billingSourceUpstream") : t("audits.billingSourceOfficial")} />
+        {billing.model ? <BillingDetailRow label={t("audits.billingModel")} value={billing.model} mono /> : null}
+        {billing.version ? <BillingDetailRow label={t("audits.billingVersion")} value={billing.version} /> : null}
+        {billing.tier === "long_context" ? <BillingDetailRow label={t("audits.billingRateTier")} value={t("audits.billingLongContextTier")} /> : null}
+      </div>
+      <div className="border-t border-primary-foreground/15 pt-2">
+        <div className="mb-1 text-primary-foreground/65">{t("audits.billingFormula")}</div>
+        {billing.method === "upstream_reported" ? (
+          <p>{t("audits.billingUpstreamFormula")}</p>
+        ) : billing.method === "stored_estimate" ? (
+          <p>{t("audits.billingStoredFormulaUnavailable")}</p>
+        ) : billing.components.length === 0 ? (
+          <p>{t("audits.billingZeroFormula")}</p>
+        ) : (
+          <div className="space-y-1">
+            {billing.components.map((component) => <BillingFormula key={component.kind} component={component} locale={locale} />)}
+          </div>
+        )}
+      </div>
+      <div className="flex items-baseline justify-between gap-4 border-t border-primary-foreground/15 pt-2 font-medium">
+        <span>{t("audits.billingConclusion")}</span>
+        <span className="font-mono tabular-nums">{formatUSDCost(billing.totalInUsdTicks, 10)}</span>
+      </div>
+    </div>
+  );
+}
+
+function BillingDetailRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3">
+      <span className="text-primary-foreground/65">{label}</span>
+      <span className={cn("break-all text-right", mono && "font-mono")}>{value}</span>
+    </div>
+  );
+}
+
+function BillingFormula({ component, locale }: { component: AuditBillingComponentDTO; locale: string }) {
+  const { t } = useTranslation();
+  const quantity = formatNumber(component.quantity, locale, 0);
+  const formula = component.unit === "token"
+    ? `${quantity} / 1M × ${formatUSDCostCompact(component.unitPriceInUsdTicks * 1_000_000)}`
+    : `${quantity} × ${formatUSDCostCompact(component.unitPriceInUsdTicks)} / ${t(`audits.billingUnits.${component.unit}`)}`;
+  return (
+    <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3">
+      <span className="text-primary-foreground/65">{t(`audits.billingComponents.${component.kind}`)}</span>
+      <span className="break-words text-right font-mono tabular-nums">{formula} = {formatUSDCost(component.subtotalInUsdTicks, 10)}</span>
     </div>
   );
 }
@@ -358,7 +458,11 @@ function ModelRouteValue({ model, upstreamModel, account, clientKey }: { model: 
           </span>
         </button>
       </TooltipTrigger>
-      <TooltipContent className="w-64 space-y-1.5 py-2" side="top" align="start">
+      <TooltipContent className="w-72 max-w-[calc(100vw-2rem)] space-y-1.5 py-2" side="top" align="start">
+        <div className="grid grid-cols-[auto_1fr] items-start gap-x-3">
+          <span className="text-primary-foreground/65">{t("audits.actualModel")}</span>
+          <span className="break-all text-right">{upstreamModel}</span>
+        </div>
         <div className="grid grid-cols-[auto_1fr] gap-x-3">
           <span className="text-primary-foreground/65">{t("audits.owningAccount")}</span>
           <span className="truncate text-right" title={account}>{account}</span>
@@ -485,4 +589,9 @@ function providerLabel(provider: AuditDTO["provider"]): string {
 
 function formatUSDCost(ticks: number, fractionDigits: number): string {
   return `$${(ticks / 10_000_000_000).toFixed(fractionDigits)}`;
+}
+
+function formatUSDCostCompact(ticks: number): string {
+  const value = (ticks / 10_000_000_000).toFixed(10).replace(/0+$/, "").replace(/\.$/, "");
+  return `$${value}`;
 }

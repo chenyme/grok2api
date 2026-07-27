@@ -1,5 +1,5 @@
 import { apiRequest } from "@/shared/api/client";
-import { createObjectDecoder, hasShape, isArrayOf, isNumber, isOneOf, isString } from "@/shared/api/decoder";
+import { createObjectDecoder, hasShape, isArrayOf, isNumber, isOneOf, isOptional, isString } from "@/shared/api/decoder";
 import type { PeriodValue } from "@/shared/lib/period";
 
 export type DashboardPeriod = PeriodValue;
@@ -15,6 +15,10 @@ export type DashboardUsageDTO = {
   tokens: number;
   billedCostUsdTicks: number;
   successRate: number;
+  averageFirstTokenMs?: number;
+  outputTokensPerSecond?: number;
+  firstTokenSamples?: number;
+  throughputSamples?: number;
 };
 
 export type DashboardDTO = {
@@ -46,7 +50,8 @@ const dashboardSeriesItem = hasShape({
 const dashboardUsage = hasShape({
   requests: isNumber, successfulRequests: isNumber, failedRequests: isNumber, inputTokens: isNumber,
   cachedInputTokens: isNumber, outputTokens: isNumber, reasoningTokens: isNumber, tokens: isNumber,
-  billedCostUsdTicks: isNumber, successRate: isNumber,
+  billedCostUsdTicks: isNumber, successRate: isNumber, averageFirstTokenMs: isOptional(isNumber),
+  outputTokensPerSecond: isOptional(isNumber), firstTokenSamples: isOptional(isNumber), throughputSamples: isOptional(isNumber),
 });
 const dashboardModelItem = hasShape({
   model: isString, requests: isNumber, inputTokens: isNumber, cachedInputTokens: isNumber,

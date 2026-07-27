@@ -7,13 +7,57 @@ import (
 )
 
 const (
-	OfficialPricingSource = "https://docs.x.ai/developers/pricing"
-	OfficialPricingAsOf   = "2026-07-14"
+	OfficialPricingSource             = "https://docs.x.ai/developers/pricing"
+	OfficialPricingAsOf               = "2026-07-14"
+	officialImageEditInputTicks int64 = 100_000_000
 )
 
 type PricingResult struct {
 	Model          string
 	CostInUSDTicks int64
+}
+
+// PricingBreakdown describes the exact rate components used to reconstruct a stored estimate.
+type PricingBreakdown struct {
+	Model          string
+	CostInUSDTicks int64
+	Tier           PricingTier
+	Components     []PricingComponent
+}
+
+type PricingTier string
+
+const (
+	PricingTierStandard    PricingTier = "standard"
+	PricingTierLongContext PricingTier = "long_context"
+	PricingTierMedia       PricingTier = "media"
+)
+
+type PricingComponentKind string
+
+const (
+	PricingComponentUncachedInput PricingComponentKind = "uncached_input"
+	PricingComponentCachedInput   PricingComponentKind = "cached_input"
+	PricingComponentOutput        PricingComponentKind = "output"
+	PricingComponentInputImage    PricingComponentKind = "input_image"
+	PricingComponentOutputImage   PricingComponentKind = "output_image"
+	PricingComponentOutputSecond  PricingComponentKind = "output_second"
+)
+
+type PricingUnit string
+
+const (
+	PricingUnitToken  PricingUnit = "token"
+	PricingUnitImage  PricingUnit = "image"
+	PricingUnitSecond PricingUnit = "second"
+)
+
+type PricingComponent struct {
+	Kind                PricingComponentKind
+	Unit                PricingUnit
+	Quantity            int64
+	UnitPriceInUSDTicks int64
+	CostInUSDTicks      int64
 }
 
 type tokenPrice struct {
@@ -234,7 +278,7 @@ func EstimateOfficialImageEditCost(model, resolution string, outputCount, inputC
 	}
 	return PricingResult{
 		Model:          "grok-imagine-image-edit-" + resolution,
-		CostInUSDTicks: int64(outputCount)*outputTicks + int64(inputCount)*100_000_000,
+		CostInUSDTicks: int64(outputCount)*outputTicks + int64(inputCount)*officialImageEditInputTicks,
 	}, true
 }
 
@@ -262,6 +306,117 @@ func EstimateOfficialVideoCost(model, resolution string, seconds int) (PricingRe
 		Model:          baseModel + "-" + resolution,
 		CostInUSDTicks: int64(seconds) * ticksPerSecond,
 	}, true
+}
+
+// ReconstructOfficialCost builds an admin-facing formula without adding work to the request settlement path.
+func ReconstructOfficialCost(model string, inputTokens, cachedInputTokens, outputTokens, contextInputTokens, inputImages, outputImages, outputSeconds int64) (PricingBreakdown, bool) {
+	normalized := normalizePricingModel(model)
+	switch normalized {
+	case "grok-imagine-image":
+		return reconstructImageCost(normalized, "", outputImages)
+	case "grok-imagine-image-quality-1k":
+		return reconstructImageCost("grok-imagine-image-quality", "1k", outputImages)
+	case "grok-imagine-image-quality-2k":
+		return reconstructImageCost("grok-imagine-image-quality", "2k", outputImages)
+	case "grok-imagine-image-edit-1k":
+		return reconstructImageEditCost("1k", inputImages, outputImages)
+	case "grok-imagine-image-edit-2k":
+		return reconstructImageEditCost("2k", inputImages, outputImages)
+	case "grok-imagine-video-480p":
+		return reconstructVideoCost("grok-imagine-video", "480p", outputSeconds)
+	case "grok-imagine-video-720p":
+		return reconstructVideoCost("grok-imagine-video", "720p", outputSeconds)
+	case "grok-imagine-video-1.5-480p":
+		return reconstructVideoCost("grok-imagine-video-1.5", "480p", outputSeconds)
+	case "grok-imagine-video-1.5-720p":
+		return reconstructVideoCost("grok-imagine-video-1.5", "720p", outputSeconds)
+	default:
+		return reconstructTextCost(normalized, inputTokens, cachedInputTokens, outputTokens, contextInputTokens)
+	}
+}
+
+func reconstructTextCost(model string, inputTokens, cachedInputTokens, outputTokens, contextInputTokens int64) (PricingBreakdown, bool) {
+	price, ok := resolveOfficialTokenPrice(model)
+	if !ok {
+		return PricingBreakdown{}, false
+	}
+	inputPrice, cachedPrice, outputPrice := price.InputTicks, price.CachedInputTicks, price.OutputTicks
+	tier := PricingTierStandard
+	contextTokens := contextInputTokens
+	if contextTokens <= 0 {
+		contextTokens = inputTokens
+	}
+	if price.LongContextTokens > 0 && contextTokens > price.LongContextTokens {
+		inputPrice, cachedPrice, outputPrice = price.LongInputTicks, price.LongCachedTicks, price.LongOutputTicks
+		tier = PricingTierLongContext
+	}
+	cachedTokens := max(int64(0), min(cachedInputTokens, inputTokens))
+	return newPricingBreakdown(price.CanonicalModel, tier,
+		newPricingComponent(PricingComponentUncachedInput, PricingUnitToken, max(int64(0), inputTokens-cachedTokens), inputPrice),
+		newPricingComponent(PricingComponentOutput, PricingUnitToken, outputTokens, outputPrice),
+		newPricingComponent(PricingComponentCachedInput, PricingUnitToken, cachedTokens, cachedPrice),
+	), true
+}
+
+func reconstructImageCost(model, resolution string, count int64) (PricingBreakdown, bool) {
+	if count <= 0 || int64(int(count)) != count {
+		return PricingBreakdown{}, false
+	}
+	result, ok := EstimateOfficialImageCost(model, resolution, int(count))
+	if !ok {
+		return PricingBreakdown{}, false
+	}
+	return newPricingBreakdown(result.Model, PricingTierMedia,
+		newPricingComponent(PricingComponentOutputImage, PricingUnitImage, count, result.CostInUSDTicks/count),
+	), true
+}
+
+func reconstructImageEditCost(resolution string, inputCount, outputCount int64) (PricingBreakdown, bool) {
+	if inputCount <= 0 || outputCount <= 0 || int64(int(inputCount)) != inputCount || int64(int(outputCount)) != outputCount {
+		return PricingBreakdown{}, false
+	}
+	result, ok := EstimateOfficialImageEditCost("grok-imagine-image-edit", resolution, int(outputCount), int(inputCount))
+	if !ok {
+		return PricingBreakdown{}, false
+	}
+	outputCost := result.CostInUSDTicks - inputCount*officialImageEditInputTicks
+	if outputCost < 0 || outputCost%outputCount != 0 {
+		return PricingBreakdown{}, false
+	}
+	return newPricingBreakdown(result.Model, PricingTierMedia,
+		newPricingComponent(PricingComponentOutputImage, PricingUnitImage, outputCount, outputCost/outputCount),
+		newPricingComponent(PricingComponentInputImage, PricingUnitImage, inputCount, officialImageEditInputTicks),
+	), true
+}
+
+func reconstructVideoCost(model, resolution string, seconds int64) (PricingBreakdown, bool) {
+	if seconds <= 0 || int64(int(seconds)) != seconds {
+		return PricingBreakdown{}, false
+	}
+	result, ok := EstimateOfficialVideoCost(model, resolution, int(seconds))
+	if !ok {
+		return PricingBreakdown{}, false
+	}
+	return newPricingBreakdown(result.Model, PricingTierMedia,
+		newPricingComponent(PricingComponentOutputSecond, PricingUnitSecond, seconds, result.CostInUSDTicks/seconds),
+	), true
+}
+
+func newPricingComponent(kind PricingComponentKind, unit PricingUnit, quantity, unitPriceInUSDTicks int64) PricingComponent {
+	quantity = max(int64(0), quantity)
+	unitPriceInUSDTicks = max(int64(0), unitPriceInUSDTicks)
+	return PricingComponent{
+		Kind: kind, Unit: unit, Quantity: quantity, UnitPriceInUSDTicks: unitPriceInUSDTicks,
+		CostInUSDTicks: quantity * unitPriceInUSDTicks,
+	}
+}
+
+func newPricingBreakdown(model string, tier PricingTier, components ...PricingComponent) PricingBreakdown {
+	result := PricingBreakdown{Model: model, Tier: tier, Components: components}
+	for _, component := range components {
+		result.CostInUSDTicks += component.CostInUSDTicks
+	}
+	return result
 }
 
 func officialVideoPricingModel(model string) (string, bool) {

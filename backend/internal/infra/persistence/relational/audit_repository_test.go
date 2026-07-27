@@ -444,14 +444,15 @@ func TestAuditRepositoryNormalizesUntrustedUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository := NewAuditRepository(database)
-	if err := repository.Create(ctx, audit.Record{RequestID: "normalize", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, MediaInputImages: -1, MediaOutputImages: -2, MediaOutputSeconds: -3, InputTokens: -1, TotalTokens: -2, DurationMS: -3, CreatedAt: time.Now().UTC()}); err != nil {
+	negativeFirstToken := int64(-4)
+	if err := repository.Create(ctx, audit.Record{RequestID: "normalize", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, Streaming: true, MediaInputImages: -1, MediaOutputImages: -2, MediaOutputSeconds: -3, InputTokens: -1, TotalTokens: -2, FirstTokenMS: &negativeFirstToken, DurationMS: -3, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	values, _, err := repository.List(ctx, 0, 1)
 	if err != nil || len(values) != 1 {
 		t.Fatalf("values = %#v, err = %v", values, err)
 	}
-	if values[0].MediaInputImages != 0 || values[0].MediaOutputImages != 0 || values[0].MediaOutputSeconds != 0 || values[0].InputTokens != 0 || values[0].TotalTokens != 0 || values[0].DurationMS != 0 {
+	if values[0].MediaInputImages != 0 || values[0].MediaOutputImages != 0 || values[0].MediaOutputSeconds != 0 || values[0].InputTokens != 0 || values[0].TotalTokens != 0 || values[0].FirstTokenMS == nil || *values[0].FirstTokenMS != 0 || values[0].DurationMS != 0 {
 		t.Fatalf("normalized audit = %#v", values[0])
 	}
 }

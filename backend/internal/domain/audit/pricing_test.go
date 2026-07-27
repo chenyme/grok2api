@@ -156,3 +156,22 @@ func TestEstimateOfficialVideoCost(t *testing.T) {
 		t.Fatalf("unknown video model was priced = %#v, ok = %v", result, ok)
 	}
 }
+
+func TestReconstructOfficialCostReturnsExactStoredFormulaInputs(t *testing.T) {
+	textResult, ok := ReconstructOfficialCost("grok-build-0.1", 100, 20, 50, 100, 0, 0, 0)
+	if !ok || textResult.Tier != PricingTierStandard || textResult.CostInUSDTicks != 1_840_000 || len(textResult.Components) != 3 {
+		t.Fatalf("text reconstruction = %#v, %v", textResult, ok)
+	}
+	longResult, ok := ReconstructOfficialCost("grok-build-0.1", 100, 20, 50, 200_001, 0, 0, 0)
+	if !ok || longResult.Tier != PricingTierLongContext || longResult.CostInUSDTicks != 3_680_000 {
+		t.Fatalf("long-context reconstruction = %#v, %v", longResult, ok)
+	}
+	imageResult, ok := ReconstructOfficialCost("grok-imagine-image-edit-2k", 0, 0, 0, 0, 2, 3, 0)
+	if !ok || imageResult.CostInUSDTicks != 2_300_000_000 || len(imageResult.Components) != 2 || imageResult.Components[1].Kind != PricingComponentInputImage {
+		t.Fatalf("image reconstruction = %#v, %v", imageResult, ok)
+	}
+	videoResult, ok := ReconstructOfficialCost("grok-imagine-video-1.5-720p", 0, 0, 0, 0, 1, 0, 6)
+	if !ok || videoResult.CostInUSDTicks != 8_400_000_000 || videoResult.Components[0].Unit != PricingUnitSecond {
+		t.Fatalf("video reconstruction = %#v, %v", videoResult, ok)
+	}
+}

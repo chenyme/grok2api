@@ -113,6 +113,7 @@ type Result struct {
 	Status              string
 	Header              http.Header
 	Body                io.ReadCloser
+	MarkFirstToken      func()
 	RecordStreamFailure func(StreamFailureDiagnostic)
 	Finalize            func(usage Usage, responseID, errorCode string)
 }
@@ -585,6 +586,10 @@ func (s *Service) selectMediaRoute(routes []modeldomain.Route, key clientkey.Key
 func (s *Service) createResponseAt(ctx context.Context, input Input, path string) (*Result, error) {
 	ctx, egressTrace := infraegress.WithTrace(ctx)
 	startedAt := time.Now()
+	var firstToken *firstTokenTimer
+	if input.Streaming {
+		firstToken = newFirstTokenTimer(startedAt)
+	}
 	eventID := newAuditEventID()
 	operation := input.Operation
 	if operation == "" {
@@ -1095,6 +1100,9 @@ attemptLoop:
 				record.NumServerSideToolsUsed = usage.NumServerSideToolsUsed
 				record.ContextInputTokens = usage.ContextInputTokens
 				record.ContextOutputTokens = usage.ContextOutputTokens
+				if successful && input.Streaming {
+					record.FirstTokenMS = firstToken.milliseconds()
+				}
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
 				attempts := failureAttempts.snapshot()
@@ -1153,8 +1161,12 @@ attemptLoop:
 		recordStreamFailure := func(diagnostic StreamFailureDiagnostic) {
 			failureAttempts.captureStreamFailure(credential, responseStartedAt, response, diagnostic)
 		}
+		var markFirstToken func()
+		if firstToken != nil {
+			markFirstToken = firstToken.mark
+		}
 		timingHandedOff = true
-		return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, RecordStreamFailure: recordStreamFailure, Finalize: finalize}, nil
+		return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, MarkFirstToken: markFirstToken, RecordStreamFailure: recordStreamFailure, Finalize: finalize}, nil
 	}
 	if lastFailure != nil {
 		record := auditBase

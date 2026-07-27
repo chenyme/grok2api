@@ -295,6 +295,25 @@ func TestPostgresRepositoriesIntegration(t *testing.T) {
 	if err := repository.Delete(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
+	firstTokenMS := int64(100)
+	auditCreatedAt := time.Now().UTC()
+	auditRepository := NewAuditRepository(database)
+	if err := auditRepository.Create(ctx, audit.Record{
+		RequestID: "postgres-first-token-" + auditCreatedAt.Format("150405.000000000"), ClientKeyID: 1, ModelRouteID: 1,
+		Provider: "grok_build", Operation: audit.OperationResponses, UsageSource: audit.UsageSourceUpstream,
+		StatusCode: 200, Streaming: true, OutputTokens: 100, TotalTokens: 100, FirstTokenMS: &firstTokenMS, DurationMS: 1100, CreatedAt: auditCreatedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	auditRows, _, err := auditRepository.List(ctx, 0, 1)
+	if err != nil || len(auditRows) != 1 || auditRows[0].FirstTokenMS == nil || *auditRows[0].FirstTokenMS != firstTokenMS {
+		t.Fatalf("postgres first-token audit = %#v, err = %v", auditRows, err)
+	}
+	boundaries := testDashboardBoundaries(auditCreatedAt.Add(-time.Hour), time.Hour, 2)
+	dashboardSnapshot, err := NewDashboardRepository(database).Snapshot(ctx, testDashboardWindow(boundaries), auditCreatedAt.Add(time.Hour))
+	if err != nil || dashboardSnapshot.Usage.FirstTokenSamples != 1 || dashboardSnapshot.Usage.ThroughputTokens != 100 || dashboardSnapshot.Usage.GenerationTotalMS != 1000 {
+		t.Fatalf("postgres performance aggregate = %#v, err = %v", dashboardSnapshot.Usage, err)
+	}
 
 	unique := time.Now().UTC().Format("20060102150405.000000000")
 	digestBytes := sha256.Sum256([]byte(unique))

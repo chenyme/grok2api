@@ -26,44 +26,65 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 }
 
 type auditResponse struct {
-	ID                      uint64    `json:"id,string"`
-	RequestID               string    `json:"requestId"`
-	ClientKeyID             uint64    `json:"clientKeyId,string"`
-	ClientKeyName           string    `json:"clientKeyName,omitempty"`
-	ModelRouteID            uint64    `json:"modelRouteId,string"`
-	ModelPublicID           string    `json:"modelPublicId,omitempty"`
-	ModelUpstreamModel      string    `json:"modelUpstreamModel,omitempty"`
-	Provider                string    `json:"provider"`
-	Operation               string    `json:"operation"`
-	UsageSource             string    `json:"usageSource"`
-	AccountID               *uint64   `json:"accountId,string,omitempty"`
-	AccountName             string    `json:"accountName,omitempty"`
-	EgressNodeID            *uint64   `json:"egressNodeId,string,omitempty"`
-	EgressNodeName          string    `json:"egressNodeName,omitempty"`
-	EgressScope             string    `json:"egressScope,omitempty"`
-	EgressMode              string    `json:"egressMode,omitempty"`
-	StatusCode              int       `json:"statusCode"`
-	Streaming               bool      `json:"streaming"`
-	MediaInputImages        int64     `json:"mediaInputImages"`
-	MediaOutputImages       int64     `json:"mediaOutputImages"`
-	MediaOutputSeconds      int64     `json:"mediaOutputSeconds"`
-	InputTokens             int64     `json:"inputTokens"`
-	CachedInputTokens       int64     `json:"cachedInputTokens"`
-	OutputTokens            int64     `json:"outputTokens"`
-	ReasoningTokens         int64     `json:"reasoningTokens"`
-	TotalTokens             int64     `json:"totalTokens"`
-	CostInUSDTicks          int64     `json:"costInUsdTicks"`
-	EstimatedCostInUSDTicks int64     `json:"estimatedCostInUsdTicks"`
-	PricingModel            string    `json:"pricingModel,omitempty"`
-	PricingVersion          string    `json:"pricingVersion,omitempty"`
-	NumSourcesUsed          int64     `json:"numSourcesUsed"`
-	NumServerSideToolsUsed  int64     `json:"numServerSideToolsUsed"`
-	ContextInputTokens      int64     `json:"contextInputTokens"`
-	ContextOutputTokens     int64     `json:"contextOutputTokens"`
-	DurationMS              int64     `json:"durationMs"`
-	ErrorCode               string    `json:"errorCode,omitempty"`
-	AttemptCount            int       `json:"attemptCount"`
-	CreatedAt               time.Time `json:"createdAt"`
+	ID                      uint64                    `json:"id,string"`
+	RequestID               string                    `json:"requestId"`
+	ClientKeyID             uint64                    `json:"clientKeyId,string"`
+	ClientKeyName           string                    `json:"clientKeyName,omitempty"`
+	ModelRouteID            uint64                    `json:"modelRouteId,string"`
+	ModelPublicID           string                    `json:"modelPublicId,omitempty"`
+	ModelUpstreamModel      string                    `json:"modelUpstreamModel,omitempty"`
+	Provider                string                    `json:"provider"`
+	Operation               string                    `json:"operation"`
+	UsageSource             string                    `json:"usageSource"`
+	AccountID               *uint64                   `json:"accountId,string,omitempty"`
+	AccountName             string                    `json:"accountName,omitempty"`
+	EgressNodeID            *uint64                   `json:"egressNodeId,string,omitempty"`
+	EgressNodeName          string                    `json:"egressNodeName,omitempty"`
+	EgressScope             string                    `json:"egressScope,omitempty"`
+	EgressMode              string                    `json:"egressMode,omitempty"`
+	StatusCode              int                       `json:"statusCode"`
+	Streaming               bool                      `json:"streaming"`
+	MediaInputImages        int64                     `json:"mediaInputImages"`
+	MediaOutputImages       int64                     `json:"mediaOutputImages"`
+	MediaOutputSeconds      int64                     `json:"mediaOutputSeconds"`
+	InputTokens             int64                     `json:"inputTokens"`
+	CachedInputTokens       int64                     `json:"cachedInputTokens"`
+	OutputTokens            int64                     `json:"outputTokens"`
+	ReasoningTokens         int64                     `json:"reasoningTokens"`
+	TotalTokens             int64                     `json:"totalTokens"`
+	CostInUSDTicks          int64                     `json:"costInUsdTicks"`
+	EstimatedCostInUSDTicks int64                     `json:"estimatedCostInUsdTicks"`
+	PricingModel            string                    `json:"pricingModel,omitempty"`
+	PricingVersion          string                    `json:"pricingVersion,omitempty"`
+	Billing                 *billingBreakdownResponse `json:"billing,omitempty"`
+	NumSourcesUsed          int64                     `json:"numSourcesUsed"`
+	NumServerSideToolsUsed  int64                     `json:"numServerSideToolsUsed"`
+	ContextInputTokens      int64                     `json:"contextInputTokens"`
+	ContextOutputTokens     int64                     `json:"contextOutputTokens"`
+	FirstTokenMS            *int64                    `json:"firstTokenMs,omitempty"`
+	OutputTokensPerSecond   *float64                  `json:"outputTokensPerSecond,omitempty"`
+	DurationMS              int64                     `json:"durationMs"`
+	ErrorCode               string                    `json:"errorCode,omitempty"`
+	AttemptCount            int                       `json:"attemptCount"`
+	CreatedAt               time.Time                 `json:"createdAt"`
+}
+
+type billingBreakdownResponse struct {
+	Source          string                     `json:"source"`
+	Method          string                     `json:"method"`
+	Model           string                     `json:"model,omitempty"`
+	Version         string                     `json:"version,omitempty"`
+	Tier            string                     `json:"tier,omitempty"`
+	Components      []billingComponentResponse `json:"components"`
+	TotalInUSDTicks int64                      `json:"totalInUsdTicks"`
+}
+
+type billingComponentResponse struct {
+	Kind                string `json:"kind"`
+	Unit                string `json:"unit"`
+	Quantity            int64  `json:"quantity"`
+	UnitPriceInUSDTicks int64  `json:"unitPriceInUsdTicks"`
+	SubtotalInUSDTicks  int64  `json:"subtotalInUsdTicks"`
 }
 
 type auditAttemptResponse struct {
@@ -275,8 +296,60 @@ func newAuditResponse(value auditdomain.Record) auditResponse {
 		InputTokens: value.InputTokens, CachedInputTokens: value.CachedInputTokens, OutputTokens: value.OutputTokens,
 		ReasoningTokens: value.ReasoningTokens, TotalTokens: value.TotalTokens, CostInUSDTicks: value.CostInUSDTicks,
 		EstimatedCostInUSDTicks: value.EstimatedCostInUSDTicks, PricingModel: value.PricingModel, PricingVersion: value.PricingVersion,
+		Billing:        newBillingBreakdown(value),
 		NumSourcesUsed: value.NumSourcesUsed, NumServerSideToolsUsed: value.NumServerSideToolsUsed,
-		ContextInputTokens: value.ContextInputTokens, ContextOutputTokens: value.ContextOutputTokens, DurationMS: value.DurationMS,
+		ContextInputTokens: value.ContextInputTokens, ContextOutputTokens: value.ContextOutputTokens,
+		FirstTokenMS: value.FirstTokenMS, OutputTokensPerSecond: auditOutputTokensPerSecond(value), DurationMS: value.DurationMS,
 		ErrorCode: value.ErrorCode, AttemptCount: value.AttemptCount, CreatedAt: value.CreatedAt,
 	}
+}
+
+func newBillingBreakdown(value auditdomain.Record) *billingBreakdownResponse {
+	if value.CostInUSDTicks > 0 {
+		return &billingBreakdownResponse{
+			Source: "upstream", Method: "upstream_reported", Components: []billingComponentResponse{}, TotalInUSDTicks: value.CostInUSDTicks,
+		}
+	}
+	if value.PricingModel == "" {
+		return nil
+	}
+	breakdown := &billingBreakdownResponse{
+		Source: "official", Method: "stored_estimate", Model: value.PricingModel, Version: value.PricingVersion,
+		Components: []billingComponentResponse{}, TotalInUSDTicks: value.EstimatedCostInUSDTicks,
+	}
+	if value.PricingVersion != auditdomain.OfficialPricingAsOf {
+		return breakdown
+	}
+	pricing, ok := auditdomain.ReconstructOfficialCost(
+		value.PricingModel,
+		value.InputTokens,
+		value.CachedInputTokens,
+		value.OutputTokens,
+		value.ContextInputTokens,
+		value.MediaInputImages,
+		value.MediaOutputImages,
+		value.MediaOutputSeconds,
+	)
+	if !ok || pricing.CostInUSDTicks != value.EstimatedCostInUSDTicks {
+		return breakdown
+	}
+	breakdown.Method = "official_rates"
+	breakdown.Model = pricing.Model
+	breakdown.Tier = string(pricing.Tier)
+	breakdown.Components = make([]billingComponentResponse, 0, len(pricing.Components))
+	for _, component := range pricing.Components {
+		breakdown.Components = append(breakdown.Components, billingComponentResponse{
+			Kind: string(component.Kind), Unit: string(component.Unit), Quantity: component.Quantity,
+			UnitPriceInUSDTicks: component.UnitPriceInUSDTicks, SubtotalInUSDTicks: component.CostInUSDTicks,
+		})
+	}
+	return breakdown
+}
+
+func auditOutputTokensPerSecond(value auditdomain.Record) *float64 {
+	if !value.Streaming || value.StatusCode < 200 || value.StatusCode >= 300 || value.ErrorCode != "" || value.FirstTokenMS == nil || value.OutputTokens <= 0 || value.DurationMS <= *value.FirstTokenMS {
+		return nil
+	}
+	throughput := float64(value.OutputTokens) * 1000 / float64(value.DurationMS-*value.FirstTokenMS)
+	return &throughput
 }

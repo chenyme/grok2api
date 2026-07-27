@@ -53,10 +53,12 @@ func TestDashboardRepositorySnapshot(t *testing.T) {
 	if err := database.db.WithContext(ctx).Create(&quotaRecoveryModel{AccountID: exhausted.ID, Kind: "free", Status: "exhausted", NextProbeAt: timePointer(now.Add(24 * time.Hour)), UpdatedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
+	firstTokenOne := int64(100)
+	firstTokenTwo := int64(300)
 	audits := []requestAuditModel{
-		{RequestID: "success-1", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-primary", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 100, CreatedAt: now.Add(-23 * time.Hour)},
-		{RequestID: "success-2", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-secondary", Provider: "grok_web", Operation: "responses", UsageSource: "upstream", StatusCode: 201, TotalTokens: 50, CreatedAt: now.Add(-time.Hour)},
-		{RequestID: "failed", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-primary", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 500, TotalTokens: 10, CreatedAt: now.Add(-2 * time.Hour)},
+		{RequestID: "success-1", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-primary", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, Streaming: true, OutputTokens: 90, TotalTokens: 100, FirstTokenMS: &firstTokenOne, DurationMS: 1100, CreatedAt: now.Add(-23 * time.Hour)},
+		{RequestID: "success-2", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-secondary", Provider: "grok_web", Operation: "responses", UsageSource: "upstream", StatusCode: 201, Streaming: true, OutputTokens: 10, TotalTokens: 50, FirstTokenMS: &firstTokenTwo, DurationMS: 1300, CreatedAt: now.Add(-time.Hour)},
+		{RequestID: "failed", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "grok-primary", Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 500, Streaming: true, OutputTokens: 100, TotalTokens: 10, DurationMS: 550, CreatedAt: now.Add(-2 * time.Hour)},
 		{RequestID: "outside", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 999, CreatedAt: now.Add(-25 * time.Hour)},
 	}
 	for index := range audits {
@@ -75,6 +77,9 @@ func TestDashboardRepositorySnapshot(t *testing.T) {
 	}
 	if snapshot.Usage.Requests != 3 || snapshot.Usage.SuccessfulRequests != 2 || snapshot.Usage.FailedRequests != 1 || snapshot.Usage.Tokens != 160 {
 		t.Fatalf("usage = %#v", snapshot.Usage)
+	}
+	if snapshot.Usage.FirstTokenSamples != 2 || snapshot.Usage.FirstTokenTotalMS != 400 || snapshot.Usage.ThroughputSamples != 2 || snapshot.Usage.ThroughputTokens != 100 || snapshot.Usage.GenerationTotalMS != 2000 {
+		t.Fatalf("performance usage = %#v", snapshot.Usage)
 	}
 	var bucketRequests int64
 	var bucketTokens int64
@@ -103,6 +108,67 @@ func TestDashboardRepositorySnapshot(t *testing.T) {
 	if activityRequests != 3 {
 		t.Fatalf("activity buckets = %#v", snapshot.ActivityBuckets)
 	}
+}
+
+func BenchmarkDashboardUsageAggregate(b *testing.B) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(b.TempDir(), "dashboard-benchmark.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		b.Fatal(err)
+	}
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	audits := make([]requestAuditModel, 50_000)
+	for index := range audits {
+		firstTokenMS := int64(100 + index%900)
+		audits[index] = requestAuditModel{
+			RequestID: fmt.Sprintf("benchmark-%d", index), ClientKeyID: 1, ModelRouteID: 1,
+			Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200,
+			Streaming: true, InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100,
+			FirstTokenMS: &firstTokenMS, DurationMS: firstTokenMS + 2000, CreatedAt: now.Add(-time.Duration(index%3600) * time.Second),
+		}
+	}
+	if err := database.db.WithContext(ctx).CreateInBatches(audits, 100).Error; err != nil {
+		b.Fatal(err)
+	}
+	start := now.Add(-24 * time.Hour)
+	legacySelect := "COUNT(*) AS requests, COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END), 0) AS successful_requests, COALESCE(SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END), 0) AS failed_requests, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, COALESCE(SUM(total_tokens), 0) AS tokens, COALESCE(SUM(CASE WHEN cost_in_usd_ticks > 0 THEN cost_in_usd_ticks ELSE estimated_cost_in_usd_ticks END), 0) AS billed_cost_usd_ticks"
+	b.Run("legacy", func(b *testing.B) {
+		for b.Loop() {
+			var usage dashboardBenchmarkUsage
+			if err := database.db.WithContext(ctx).Model(&requestAuditModel{}).Select(legacySelect).Where("created_at >= ? AND created_at < ?", start, now.Add(time.Second)).Scan(&usage).Error; err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("performance", func(b *testing.B) {
+		for b.Loop() {
+			var usage dashboardBenchmarkUsage
+			if err := database.db.WithContext(ctx).Model(&requestAuditModel{}).Select(dashboardUsageAggregateSelect).Where("created_at >= ? AND created_at < ?", start, now.Add(time.Second)).Scan(&usage).Error; err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+type dashboardBenchmarkUsage struct {
+	Requests           int64
+	SuccessfulRequests int64
+	FailedRequests     int64
+	InputTokens        int64
+	CachedInputTokens  int64
+	OutputTokens       int64
+	ReasoningTokens    int64
+	Tokens             int64
+	BilledCostUSDTicks int64
+	FirstTokenSamples  int64
+	FirstTokenTotalMS  int64
+	ThroughputSamples  int64
+	ThroughputTokens   int64
+	GenerationTotalMS  int64
 }
 
 func TestDashboardRepositoryRanksTopModels(t *testing.T) {
