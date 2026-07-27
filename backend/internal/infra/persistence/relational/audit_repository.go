@@ -356,7 +356,7 @@ func toAuditModels(value audit.Record) (requestAuditModel, []requestAuditAttempt
 		ReasoningTokens: nonNegative(value.ReasoningTokens), TotalTokens: nonNegative(value.TotalTokens), CostInUSDTicks: nonNegative(value.CostInUSDTicks),
 		EstimatedCostInUSDTicks: nonNegative(value.EstimatedCostInUSDTicks), PricingModel: truncate(value.PricingModel, 100), PricingVersion: truncate(value.PricingVersion, 20),
 		NumSourcesUsed: nonNegative(value.NumSourcesUsed), NumServerSideToolsUsed: nonNegative(value.NumServerSideToolsUsed),
-		ContextInputTokens: nonNegative(value.ContextInputTokens), ContextOutputTokens: nonNegative(value.ContextOutputTokens), DurationMS: nonNegative(value.DurationMS),
+		ContextInputTokens: nonNegative(value.ContextInputTokens), ContextOutputTokens: nonNegative(value.ContextOutputTokens), FirstTokenMS: normalizedFirstToken(value), DurationMS: nonNegative(value.DurationMS),
 		ErrorCode: truncate(value.ErrorCode, 100), AttemptCount: len(value.Attempts), CreatedAt: value.CreatedAt,
 	}
 	attempts := make([]requestAuditAttemptModel, 0, len(value.Attempts))
@@ -524,6 +524,17 @@ func nonNegative(value int64) int64 {
 		return 0
 	}
 	return value
+}
+
+func normalizedFirstToken(value audit.Record) *int64 {
+	if value.FirstTokenMS == nil || !value.Streaming || value.StatusCode < 200 || value.StatusCode >= 300 || value.ErrorCode != "" {
+		return nil
+	}
+	normalized := nonNegative(*value.FirstTokenMS)
+	if normalized > nonNegative(value.DurationMS) {
+		return nil
+	}
+	return &normalized
 }
 
 func (r *AuditRepository) SumTokensByAccountsSince(ctx context.Context, accountIDs []uint64, since time.Time) (map[uint64]int64, error) {

@@ -5,6 +5,24 @@ import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type AuditPeriod = PeriodValue;
 
+export type AuditBillingComponentDTO = {
+  kind: "uncached_input" | "cached_input" | "output" | "input_image" | "output_image" | "output_second";
+  unit: "token" | "image" | "second";
+  quantity: number;
+  unitPriceInUsdTicks: number;
+  subtotalInUsdTicks: number;
+};
+
+export type AuditBillingBreakdownDTO = {
+  source: "upstream" | "official";
+  method: "upstream_reported" | "official_rates" | "stored_estimate";
+  model?: string;
+  version?: string;
+  tier?: "standard" | "long_context" | "media";
+  components: AuditBillingComponentDTO[];
+  totalInUsdTicks: number;
+};
+
 export type AuditDTO = {
   id: string;
   requestId: string;
@@ -36,10 +54,13 @@ export type AuditDTO = {
   estimatedCostInUsdTicks: number;
   pricingModel?: string;
   pricingVersion?: string;
+  billing?: AuditBillingBreakdownDTO;
   numSourcesUsed: number;
   numServerSideToolsUsed: number;
   contextInputTokens: number;
   contextOutputTokens: number;
+  firstTokenMs?: number;
+  outputTokensPerSecond?: number;
   durationMs: number;
   errorCode?: string;
   attemptCount: number;
@@ -107,6 +128,15 @@ export type AuditSummaryDTO = {
   };
 };
 
+const auditBillingComponentValidator = hasShape({
+  kind: isOneOf("uncached_input", "cached_input", "output", "input_image", "output_image", "output_second"),
+  unit: isOneOf("token", "image", "second"), quantity: isNumber, unitPriceInUsdTicks: isNumber, subtotalInUsdTicks: isNumber,
+});
+const auditBillingValidator = hasShape({
+  source: isOneOf("upstream", "official"), method: isOneOf("upstream_reported", "official_rates", "stored_estimate"),
+  model: isOptional(isString), version: isOptional(isString), tier: isOptional(isOneOf("standard", "long_context", "media")),
+  components: isArrayOf(auditBillingComponentValidator), totalInUsdTicks: isNumber,
+});
 const auditValidator = hasShape({
   id: isString, requestId: isString, clientKeyId: isString, clientKeyName: isOptional(isString), modelRouteId: isString,
   modelPublicId: isOptional(isString), modelUpstreamModel: isOptional(isString), provider: isOneOf("grok_build", "grok_web", "grok_console"),
@@ -117,8 +147,9 @@ const auditValidator = hasShape({
   statusCode: isNumber, streaming: isBoolean,
   mediaInputImages: isNumber, mediaOutputImages: isNumber, mediaOutputSeconds: isNumber, inputTokens: isNumber,
   cachedInputTokens: isNumber, outputTokens: isNumber, reasoningTokens: isNumber, totalTokens: isNumber,
-  costInUsdTicks: isNumber, estimatedCostInUsdTicks: isNumber, pricingModel: isOptional(isString), pricingVersion: isOptional(isString),
+  costInUsdTicks: isNumber, estimatedCostInUsdTicks: isNumber, pricingModel: isOptional(isString), pricingVersion: isOptional(isString), billing: isOptional(auditBillingValidator),
   numSourcesUsed: isNumber, numServerSideToolsUsed: isNumber, contextInputTokens: isNumber, contextOutputTokens: isNumber,
+  firstTokenMs: isOptional(isNumber), outputTokensPerSecond: isOptional(isNumber),
   durationMs: isNumber, errorCode: isOptional(isString), attemptCount: isNumber, createdAt: isString,
 });
 const auditAttemptValidator = hasShape({

@@ -102,6 +102,7 @@ type Record struct {
 	NumServerSideToolsUsed  int64
 	ContextInputTokens      int64
 	ContextOutputTokens     int64
+	FirstTokenMS            *int64
 	DurationMS              int64
 	ErrorCode               string
 	AttemptCount            int

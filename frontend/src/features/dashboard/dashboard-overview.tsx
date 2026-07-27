@@ -1,4 +1,4 @@
-import { Activity, CircleDollarSign, UsersRound, WholeWord, type LucideIcon } from "lucide-react";
+import { Activity, CircleDollarSign, Gauge, UsersRound, WholeWord, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Pie, PieChart } from "recharts";
 
@@ -8,7 +8,7 @@ import type { DashboardDTO } from "@/features/dashboard/dashboard-api";
 import { formatUSD, formatUSDValue, usdTicksToValue } from "@/features/dashboard/dashboard-format";
 import { DashboardPanel } from "@/features/dashboard/dashboard-panel";
 import { cn } from "@/shared/lib/cn";
-import { formatNumber } from "@/shared/lib/format";
+import { formatDuration, formatNumber } from "@/shared/lib/format";
 
 type DashboardDataProps = {
   dashboard?: DashboardDTO;
@@ -22,10 +22,15 @@ export function DashboardOverview({ dashboard, locale, loading }: DashboardDataP
   const usage = dashboard?.usage;
   const cacheHitRate = (usage?.inputTokens ?? 0) > 0 ? (usage?.cachedInputTokens ?? 0) / (usage?.inputTokens ?? 1) * 100 : 0;
   const averageRequestCost = (usage?.requests ?? 0) > 0 ? usdTicksToValue(usage?.billedCostUsdTicks ?? 0) / (usage?.requests ?? 1) : 0;
+  const hasFirstTokenSamples = (usage?.firstTokenSamples ?? 0) > 0;
+  const hasThroughputSamples = (usage?.throughputSamples ?? 0) > 0;
+  const performanceDetail = hasThroughputSamples
+    ? t("audits.averageOutputSpeed", { speed: formatNumber(usage?.outputTokensPerSecond ?? 0, locale, 1), count: formatNumber(usage?.throughputSamples ?? 0, locale) })
+    : t(hasFirstTokenSamples ? "audits.throughputPending" : "audits.performancePending");
 
   return (
     <section aria-label={t("dashboard.usage")}>
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
         <DashboardMetric
           icon={UsersRound}
           label={t("dashboard.accountCount")}
@@ -52,6 +57,13 @@ export function DashboardOverview({ dashboard, locale, loading }: DashboardDataP
           label={t("dashboard.billing")}
           value={formatUSD(usage?.billedCostUsdTicks ?? 0, locale)}
           detail={t("dashboard.averageRequestCost", { cost: formatUSDValue(averageRequestCost, locale) })}
+          loading={loading}
+        />
+        <DashboardMetric
+          icon={Gauge}
+          label={t("audits.averageFirstToken")}
+          value={hasFirstTokenSamples ? formatDuration(usage?.averageFirstTokenMs ?? 0) : "—"}
+          detail={performanceDetail}
           loading={loading}
         />
       </div>

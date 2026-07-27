@@ -31,3 +31,21 @@ func TestGenerationTimingLogsOnlyPhaseMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestFirstTokenTimerMarksOnce(t *testing.T) {
+	timer := newFirstTokenTimer(time.Now().Add(-25 * time.Millisecond))
+	if timer.milliseconds() != nil {
+		t.Fatal("unmarked timer returned a value")
+	}
+	timer.mark()
+	first := timer.milliseconds()
+	if first == nil || *first < 20 {
+		t.Fatalf("first token milliseconds = %v", first)
+	}
+	time.Sleep(time.Millisecond)
+	timer.mark()
+	second := timer.milliseconds()
+	if second == nil || *second != *first {
+		t.Fatalf("timer changed after second mark: first=%v second=%v", first, second)
+	}
+}

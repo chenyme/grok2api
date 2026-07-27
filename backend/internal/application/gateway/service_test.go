@@ -184,10 +184,14 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = io.ReadAll(compacted.Body)
+	if compacted.MarkFirstToken == nil {
+		t.Fatal("first token marker is nil")
+	}
+	compacted.MarkFirstToken()
 	compacted.Finalize(Usage{}, "resp-compact", "")
 	_ = compacted.Body.Close()
 	logs, total, err = auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 2 || logs[0].Operation != audit.OperationCompaction || !logs[0].Streaming {
+	if err != nil || total != 2 || logs[0].Operation != audit.OperationCompaction || !logs[0].Streaming || logs[0].FirstTokenMS == nil {
 		t.Fatalf("compaction audit = %#v, total=%d, err=%v", logs, total, err)
 	}
 	if _, err := responseRepo.Get(ctx, "resp-compact", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {

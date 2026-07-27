@@ -80,3 +80,49 @@ func TestAuditDetailReturnsCompleteTextAndBinaryBodies(t *testing.T) {
 		t.Fatalf("missing status = %d, body = %s", missing.Code, missing.Body.String())
 	}
 }
+
+func TestAuditResponseDerivesOutputThroughput(t *testing.T) {
+	firstTokenMS := int64(250)
+	response := newAuditResponse(auditdomain.Record{StatusCode: http.StatusOK, Streaming: true, FirstTokenMS: &firstTokenMS, DurationMS: 1250, OutputTokens: 80})
+	if response.FirstTokenMS == nil || *response.FirstTokenMS != 250 || response.OutputTokensPerSecond == nil || *response.OutputTokensPerSecond != 80 {
+		t.Fatalf("response = %#v", response)
+	}
+
+	unmeasured := newAuditResponse(auditdomain.Record{DurationMS: 1250, OutputTokens: 80})
+	if unmeasured.OutputTokensPerSecond != nil {
+		t.Fatalf("unmeasured throughput = %v", *unmeasured.OutputTokensPerSecond)
+	}
+}
+
+func TestAuditResponseExplainsBillingWithoutChangingStoredTotal(t *testing.T) {
+	estimated := newAuditResponse(auditdomain.Record{
+		InputTokens: 100, CachedInputTokens: 20, OutputTokens: 50, ContextInputTokens: 100,
+		EstimatedCostInUSDTicks: 1_840_000, PricingModel: "grok-build-0.1", PricingVersion: auditdomain.OfficialPricingAsOf,
+	})
+	if estimated.Billing == nil || estimated.Billing.Source != "official" || estimated.Billing.Method != "official_rates" || estimated.Billing.TotalInUSDTicks != 1_840_000 || len(estimated.Billing.Components) != 3 {
+		t.Fatalf("estimated billing = %#v", estimated.Billing)
+	}
+	if estimated.Billing.Components[0].Kind != "uncached_input" || estimated.Billing.Components[1].Kind != "output" || estimated.Billing.Components[2].Kind != "cached_input" {
+		t.Fatalf("billing component order = %#v", estimated.Billing.Components)
+	}
+	var componentTotal int64
+	for _, component := range estimated.Billing.Components {
+		componentTotal += component.SubtotalInUSDTicks
+	}
+	if componentTotal != estimated.Billing.TotalInUSDTicks {
+		t.Fatalf("component total = %d, billing = %#v", componentTotal, estimated.Billing)
+	}
+
+	upstream := newAuditResponse(auditdomain.Record{CostInUSDTicks: 2_500_000})
+	if upstream.Billing == nil || upstream.Billing.Source != "upstream" || upstream.Billing.Method != "upstream_reported" || upstream.Billing.TotalInUSDTicks != 2_500_000 || len(upstream.Billing.Components) != 0 {
+		t.Fatalf("upstream billing = %#v", upstream.Billing)
+	}
+
+	historical := newAuditResponse(auditdomain.Record{
+		InputTokens: 100, CachedInputTokens: 20, OutputTokens: 50,
+		EstimatedCostInUSDTicks: 1_840_000, PricingModel: "grok-build-0.1", PricingVersion: "2026-07-11",
+	})
+	if historical.Billing == nil || historical.Billing.Method != "stored_estimate" || len(historical.Billing.Components) != 0 || historical.Billing.TotalInUSDTicks != 1_840_000 {
+		t.Fatalf("historical billing = %#v", historical.Billing)
+	}
+}

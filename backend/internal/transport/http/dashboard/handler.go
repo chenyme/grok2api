@@ -47,16 +47,20 @@ type resourcesDTO struct {
 }
 
 type usageDTO struct {
-	Requests           int64   `json:"requests"`
-	SuccessfulRequests int64   `json:"successfulRequests"`
-	FailedRequests     int64   `json:"failedRequests"`
-	InputTokens        int64   `json:"inputTokens"`
-	CachedInputTokens  int64   `json:"cachedInputTokens"`
-	OutputTokens       int64   `json:"outputTokens"`
-	ReasoningTokens    int64   `json:"reasoningTokens"`
-	Tokens             int64   `json:"tokens"`
-	BilledCostUSDTicks int64   `json:"billedCostUsdTicks"`
-	SuccessRate        float64 `json:"successRate"`
+	Requests              int64   `json:"requests"`
+	SuccessfulRequests    int64   `json:"successfulRequests"`
+	FailedRequests        int64   `json:"failedRequests"`
+	InputTokens           int64   `json:"inputTokens"`
+	CachedInputTokens     int64   `json:"cachedInputTokens"`
+	OutputTokens          int64   `json:"outputTokens"`
+	ReasoningTokens       int64   `json:"reasoningTokens"`
+	Tokens                int64   `json:"tokens"`
+	BilledCostUSDTicks    int64   `json:"billedCostUsdTicks"`
+	SuccessRate           float64 `json:"successRate"`
+	AverageFirstTokenMS   float64 `json:"averageFirstTokenMs"`
+	OutputTokensPerSecond float64 `json:"outputTokensPerSecond"`
+	FirstTokenSamples     int64   `json:"firstTokenSamples"`
+	ThroughputSamples     int64   `json:"throughputSamples"`
 }
 
 type seriesDTO struct {
@@ -157,15 +161,33 @@ func toUsageDTO(usage dashboarddomain.Usage) usageDTO {
 		successRate = float64(usage.SuccessfulRequests) / float64(usage.Requests) * 100
 	}
 	return usageDTO{
-		Requests:           usage.Requests,
-		SuccessfulRequests: usage.SuccessfulRequests,
-		FailedRequests:     usage.FailedRequests,
-		InputTokens:        usage.InputTokens,
-		CachedInputTokens:  usage.CachedInputTokens,
-		OutputTokens:       usage.OutputTokens,
-		ReasoningTokens:    usage.ReasoningTokens,
-		Tokens:             usage.Tokens,
-		BilledCostUSDTicks: usage.BilledCostUSDTicks,
-		SuccessRate:        successRate,
+		Requests:              usage.Requests,
+		SuccessfulRequests:    usage.SuccessfulRequests,
+		FailedRequests:        usage.FailedRequests,
+		InputTokens:           usage.InputTokens,
+		CachedInputTokens:     usage.CachedInputTokens,
+		OutputTokens:          usage.OutputTokens,
+		ReasoningTokens:       usage.ReasoningTokens,
+		Tokens:                usage.Tokens,
+		BilledCostUSDTicks:    usage.BilledCostUSDTicks,
+		SuccessRate:           successRate,
+		AverageFirstTokenMS:   averageFirstTokenMS(usage),
+		OutputTokensPerSecond: outputTokensPerSecond(usage),
+		FirstTokenSamples:     usage.FirstTokenSamples,
+		ThroughputSamples:     usage.ThroughputSamples,
 	}
+}
+
+func averageFirstTokenMS(usage dashboarddomain.Usage) float64 {
+	if usage.FirstTokenSamples <= 0 {
+		return 0
+	}
+	return float64(usage.FirstTokenTotalMS) / float64(usage.FirstTokenSamples)
+}
+
+func outputTokensPerSecond(usage dashboarddomain.Usage) float64 {
+	if usage.ThroughputTokens <= 0 || usage.GenerationTotalMS <= 0 {
+		return 0
+	}
+	return float64(usage.ThroughputTokens) * 1000 / float64(usage.GenerationTotalMS)
 }

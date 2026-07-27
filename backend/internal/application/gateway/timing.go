@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -99,6 +100,38 @@ type firstByteReadCloser struct {
 	io.ReadCloser
 	once sync.Once
 	mark func()
+}
+
+type firstTokenTimer struct {
+	started time.Time
+	once    sync.Once
+	encoded atomic.Int64
+}
+
+func newFirstTokenTimer(started time.Time) *firstTokenTimer {
+	return &firstTokenTimer{started: started}
+}
+
+func (t *firstTokenTimer) mark() {
+	if t == nil {
+		return
+	}
+	t.once.Do(func() {
+		elapsedMS := max(int64(0), time.Since(t.started).Milliseconds())
+		t.encoded.Store(elapsedMS + 1)
+	})
+}
+
+func (t *firstTokenTimer) milliseconds() *int64 {
+	if t == nil {
+		return nil
+	}
+	encoded := t.encoded.Load()
+	if encoded == 0 {
+		return nil
+	}
+	value := encoded - 1
+	return &value
 }
 
 func (r *firstByteReadCloser) Read(buffer []byte) (int, error) {
