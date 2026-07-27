@@ -135,6 +135,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/accounts", h.list)
 	router.GET("/accounts/summary", h.summary)
 	router.GET("/accounts/export", h.exportCredentials)
+	router.POST("/accounts/export", h.exportSelectedCredentials)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
 	router.POST("/accounts/device/:sessionId/poll", h.pollDevice)
@@ -193,6 +194,11 @@ type batchDeleteRequest struct {
 	IDs                 []string `json:"ids" binding:"required"`
 	Provider            string   `json:"provider" binding:"required"`
 	LinkedDeleteTargets []string `json:"linkedDeleteTargets"`
+}
+
+type credentialExportRequest struct {
+	IDs      []string `json:"ids" binding:"required"`
+	Provider string   `json:"provider" binding:"required"`
 }
 
 type deletionPreviewRequest struct {
@@ -1082,11 +1088,51 @@ func (h *Handler) refreshWebQuota(c *gin.Context) {
 
 func (h *Handler) exportCredentials(c *gin.Context) {
 	providerValue := accountdomain.Provider(c.DefaultQuery("provider", string(accountdomain.ProviderBuild)))
-	result, err := h.service.ExportProviderCredentials(c.Request.Context(), providerValue)
+	var result accountapp.ExportResult
+	var err error
+	if limitText, paged := c.GetQuery("limit"); paged {
+		limit, parseErr := strconv.Atoi(strings.TrimSpace(limitText))
+		if parseErr != nil {
+			response.Error(c, http.StatusBadRequest, "accountExportFailed", "导出数量必须为整数")
+			return
+		}
+		offset, parseErr := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("offset", "0")))
+		if parseErr != nil {
+			response.Error(c, http.StatusBadRequest, "accountExportFailed", "导出偏移量必须为整数")
+			return
+		}
+		result, err = h.service.ExportProviderCredentialsPage(c.Request.Context(), providerValue, offset, limit)
+	} else {
+		result, err = h.service.ExportProviderCredentials(c.Request.Context(), providerValue)
+	}
 	if err != nil {
 		h.writeServiceError(c, "accountExportFailed", err, http.StatusInternalServerError, "导出账号失败")
 		return
 	}
+	h.writeCredentialExport(c, providerValue, result)
+}
+
+func (h *Handler) exportSelectedCredentials(c *gin.Context) {
+	var request credentialExportRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	ids, err := parseIDs(request.IDs)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
+		return
+	}
+	providerValue := accountdomain.Provider(request.Provider)
+	result, err := h.service.ExportProviderCredentialsByIDs(c.Request.Context(), providerValue, ids)
+	if err != nil {
+		h.writeServiceError(c, "accountExportFailed", err, http.StatusInternalServerError, "导出账号失败")
+		return
+	}
+	h.writeCredentialExport(c, providerValue, result)
+}
+
+func (h *Handler) writeCredentialExport(c *gin.Context, providerValue accountdomain.Provider, result accountapp.ExportResult) {
 	filename := "grok2api-" + string(providerValue) + "-accounts-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
 	c.Header("Cache-Control", "no-store")
 	c.Header("Pragma", "no-cache")

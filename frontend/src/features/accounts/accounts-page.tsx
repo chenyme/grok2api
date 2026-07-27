@@ -44,6 +44,7 @@ import {
   enableWebAccountNSFW,
   convertWebAccountsToBuild,
   exportAccounts,
+  exportSelectedAccounts,
   getAccountSummary,
   importAccounts,
   importConsoleAccounts,
@@ -146,6 +147,7 @@ export function AccountsPage() {
   const [cleanupPreview, setCleanupPreview] = useState<{ key: string; data: CleanupPreviewDTO } | null>(null);
   const [cleanupPreviewError, setCleanupPreviewError] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [exportLimit, setExportLimit] = useState("1000");
   const [syncAllOpen, setSyncAllOpen] = useState(false);
   const [allQuotaTask, setAllQuotaTask] = useState<BuildQuotaTask>("sync");
   const [quotaSyncProgress, setQuotaSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
@@ -600,7 +602,7 @@ export function AccountsPage() {
   });
 
   const exportMutation = useMutation({
-    mutationFn: () => exportAccounts(provider),
+    mutationFn: () => selected.size > 0 ? exportSelectedAccounts(provider, [...selected]) : exportAccounts(provider, Number(exportLimit)),
     onSuccess: (blob) => {
       downloadAccountExport(blob, provider);
       setExportOpen(false);
@@ -1041,7 +1043,7 @@ export function AccountsPage() {
               {hasProviderAccounts ? (
                 <>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => setExportOpen(true)}><Download />{t("accounts.exportAuth")}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { clearSelection(); setExportOpen(true); }}><Download />{t("accounts.exportAuth")}</DropdownMenuItem>
                 </>
               ) : null}
             </DropdownMenuContent>
@@ -1125,6 +1127,7 @@ export function AccountsPage() {
             {selected.size > 0 ? (
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
+                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setExportOpen(true)}><Download />{t("accounts.exportAuth")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
@@ -1336,7 +1339,12 @@ export function AccountsPage() {
       <AlertDialog open={exportOpen} onOpenChange={setExportOpen}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.exportTitle", { provider: provider === "grok_build" ? "Grok Build" : provider === "grok_web" ? "Grok Web" : "Grok Console" })}</AlertDialogTitle><AlertDialogDescription>{t("accounts.exportDescription")}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction disabled={exportMutation.isPending} onClick={() => exportMutation.mutate()}>{t("accounts.exportAuth")}</AlertDialogAction></AlertDialogFooter>
+          {selected.size > 0 ? <p className="text-sm text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</p> : <div className="grid gap-2">
+            <Label htmlFor="account-export-limit">{t("accounts.exportCount")}</Label>
+            <Input id="account-export-limit" type="number" min={1} max={10000} value={exportLimit} onChange={(event) => setExportLimit(event.target.value)} />
+            <p className="text-xs text-muted-foreground">{t("accounts.exportCountDescription")}</p>
+          </div>}
+          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction disabled={exportMutation.isPending || (selected.size === 0 && (!Number.isInteger(Number(exportLimit)) || Number(exportLimit) < 1 || Number(exportLimit) > 10000))} onClick={() => exportMutation.mutate()}>{t("accounts.exportAuth")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 

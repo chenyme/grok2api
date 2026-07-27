@@ -255,16 +255,12 @@ async function readEventStreamChunk(reader: ReadableStreamDefaultReader<Uint8Arr
   }
 }
 
-export async function apiDownload(path: string, retryAuth = true): Promise<Blob> {
-  const headers = new Headers();
-  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
-  const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
-    credentials: "include",
-    headers,
-  });
-  if (response.status === 401 && retryAuth) {
+export async function apiDownload(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const { authenticated = true, retryAuth = true } = options;
+  const response = await sendApiRequest(path, options);
+  if (response.status === 401 && authenticated && retryAuth) {
     const refreshResult = await refreshAccessToken();
-    if (refreshResult === "refreshed") return apiDownload(path, false);
+    if (refreshResult === "refreshed") return apiDownload(path, { ...options, retryAuth: false });
     if (refreshResult === "unavailable") {
       throw new ApiError(503, "sessionRefreshUnavailable", localizedErrorMessage("sessionRefreshUnavailable", "Unable to refresh the session. Please retry."));
     }

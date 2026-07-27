@@ -40,12 +40,13 @@ func TestExportCredentialsRoundTripsImportFormat(t *testing.T) {
 	}
 	expiresAt := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	repository := relational.NewAccountRepository(database)
-	if _, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+	created, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
 		Provider: accountdomain.ProviderBuild, Name: "primary", Email: "user@example.com", UserID: "user-1",
 		SourceKey: "export-test", OIDCClientID: "client-1", EncryptedAccessToken: accessToken,
 		EncryptedRefreshToken: refreshToken, ExpiresAt: expiresAt, Enabled: false,
 		AuthStatus: accountdomain.AuthStatusActive, Priority: 1, MaxConcurrent: 8,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	adapter := cliprovider.NewAdapter(cliprovider.Config{}, cipher)
@@ -54,6 +55,23 @@ func TestExportCredentialsRoundTripsImportFormat(t *testing.T) {
 	result, err := service.ExportCredentials(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	pagedResult, err := service.ExportProviderCredentialsPage(ctx, accountdomain.ProviderBuild, 0, 1)
+	if err != nil || pagedResult.Count != 1 {
+		t.Fatalf("paged export result = %#v, error = %v", pagedResult, err)
+	}
+	selectedResult, err := service.ExportProviderCredentialsByIDs(ctx, accountdomain.ProviderBuild, []uint64{created.ID})
+	if err != nil || selectedResult.Count != 1 {
+		t.Fatalf("selected export result = %#v, error = %v", selectedResult, err)
+	}
+	if _, err := service.ExportProviderCredentialsByIDs(ctx, accountdomain.ProviderWeb, []uint64{created.ID}); err == nil {
+		t.Fatal("expected cross-provider selected export to fail")
+	}
+	if _, err := service.ExportProviderCredentialsPage(ctx, accountdomain.ProviderBuild, -1, 1); err == nil {
+		t.Fatal("expected negative export offset to fail")
+	}
+	if _, err := service.ExportProviderCredentialsPage(ctx, accountdomain.ProviderBuild, 0, maxCredentialExportAccounts+1); err == nil {
+		t.Fatal("expected oversized export page to fail")
 	}
 	values, err := adapter.ParseImportedCredentials(result.Data)
 	if err != nil {

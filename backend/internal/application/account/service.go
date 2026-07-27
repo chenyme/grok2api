@@ -1670,6 +1670,41 @@ func (s *Service) ExportCredentials(ctx context.Context) (ExportResult, error) {
 
 // ExportProviderCredentials 导出可由对应 Provider 导入接口重新读取的凭据文档。
 func (s *Service) ExportProviderCredentials(ctx context.Context, providerValue accountdomain.Provider) (ExportResult, error) {
+	return s.exportProviderCredentials(ctx, providerValue, repository.AccountListQuery{
+		Page:   repository.PageQuery{Limit: maxCredentialExportAccounts + 1},
+		Filter: repository.AccountListFilter{Provider: string(providerValue), Now: s.now()},
+	}, true, 0)
+}
+
+// ExportProviderCredentialsPage 导出指定分页的 Provider 凭据，供超大账号池分批导出。
+func (s *Service) ExportProviderCredentialsPage(ctx context.Context, providerValue accountdomain.Provider, offset, limit int) (ExportResult, error) {
+	if offset < 0 {
+		return ExportResult{}, invalidInput("导出偏移量不能小于 0")
+	}
+	if limit < 1 || limit > maxCredentialExportAccounts {
+		return ExportResult{}, invalidInput("单批导出数量必须在 1 到 10000 之间")
+	}
+	return s.exportProviderCredentials(ctx, providerValue, repository.AccountListQuery{
+		Page:   repository.PageQuery{Offset: offset, Limit: limit},
+		Filter: repository.AccountListFilter{Provider: string(providerValue), Now: s.now()},
+	}, false, 0)
+}
+
+// ExportProviderCredentialsByIDs 只导出管理端明确选择且属于指定 Provider 的账号。
+func (s *Service) ExportProviderCredentialsByIDs(ctx context.Context, providerValue accountdomain.Provider, ids []uint64) (ExportResult, error) {
+	values, err := normalizeIDs(ids, maxCredentialExportAccounts)
+	if err != nil {
+		return ExportResult{}, err
+	}
+	return s.exportProviderCredentials(ctx, providerValue, repository.AccountListQuery{
+		Page: repository.PageQuery{Limit: len(values)},
+		Filter: repository.AccountListFilter{
+			Provider: string(providerValue), AccountIDs: values, RestrictIDs: true, Now: s.now(),
+		},
+	}, false, len(values))
+}
+
+func (s *Service) exportProviderCredentials(ctx context.Context, providerValue accountdomain.Provider, query repository.AccountListQuery, enforceTotalLimit bool, expectedCount int) (ExportResult, error) {
 	if !providerValue.IsValid() {
 		return ExportResult{}, invalidInput("账号来源无效")
 	}
@@ -1680,15 +1715,15 @@ func (s *Service) ExportProviderCredentials(ctx context.Context, providerValue a
 	if !ok {
 		return ExportResult{}, fmt.Errorf("Provider %s 不支持凭据导出", providerValue)
 	}
-	values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
-		Page:   repository.PageQuery{Limit: maxCredentialExportAccounts + 1},
-		Filter: repository.AccountListFilter{Provider: string(providerValue), Now: s.now()},
-	})
+	values, total, err := s.accounts.List(ctx, query)
 	if err != nil {
 		return ExportResult{}, err
 	}
-	if total > maxCredentialExportAccounts {
+	if enforceTotalLimit && total > maxCredentialExportAccounts {
 		return ExportResult{}, fmt.Errorf("%w: 单次最多导出 10000 个账号", ErrExportLimit)
+	}
+	if expectedCount > 0 && total != int64(expectedCount) {
+		return ExportResult{}, invalidInput("所选账号包含不存在或不属于当前号池的账号")
 	}
 	seeds := make([]provider.CredentialSeed, 0, len(values))
 	for _, value := range values {

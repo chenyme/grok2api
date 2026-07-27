@@ -493,8 +493,17 @@ export function refreshAccountQuota(id: string): Promise<AccountDTO> {
   return apiRequest(`/api/admin/v1/accounts/${id}/refresh-quota`, { method: "POST" }, decodeAccount);
 }
 
-export function exportAccounts(provider: AccountProvider): Promise<Blob> {
-  return apiDownload(`/api/admin/v1/accounts/export?provider=${encodeURIComponent(provider)}`);
+export function exportAccounts(provider: AccountProvider, limit?: number, offset = 0): Promise<Blob> {
+  const query = new URLSearchParams({ provider });
+  if (limit !== undefined) {
+    query.set("limit", String(limit));
+    query.set("offset", String(offset));
+  }
+  return apiDownload(`/api/admin/v1/accounts/export?${query}`);
+}
+
+export function exportSelectedAccounts(provider: AccountProvider, ids: string[]): Promise<Blob> {
+  return apiDownload("/api/admin/v1/accounts/export", { method: "POST", body: { provider, ids } });
 }
 
 export function updateAccountsEnabled(ids: string[], enabled: boolean, provider: AccountProvider): Promise<{ updated: number }> {
