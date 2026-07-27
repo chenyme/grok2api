@@ -24,10 +24,13 @@ type Key struct {
 	BillingLimitUSDTicks  int64
 	BilledUsageUSDTicks   int64
 	ReservedUsageUSDTicks int64
-	AllowedModels         []uint64
-	LastUsedAt            *time.Time
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// AllowModelAliases enables discovery and use of dynamically generated reasoning-effort aliases.
+	// Registered compatibility aliases remain available to avoid breaking existing clients.
+	AllowModelAliases bool
+	AllowedModels     []uint64
+	LastUsedAt        *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // IsAvailable 判断客户端 Key 当前是否可用。

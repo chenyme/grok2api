@@ -24,6 +24,30 @@ func TestNewModelListItemsDeduplicatesSharedPublicName(t *testing.T) {
 	}
 }
 
+func TestAppendReasoningModelAliasesUsesRealSupportedLevels(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	base := newModelListItems([]modeldomain.Route{
+		{PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
+		{PublicID: "Console/grok-4.3", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
+		{PublicID: "Build/grok-build-0.1", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
+	})
+	expanded := appendReasoningModelAliases(base)
+	ids := make(map[string]bool, len(expanded))
+	for _, item := range expanded {
+		ids[item.ID] = true
+	}
+	for _, want := range []string{"grok-4.5", "grok-4.5-low", "grok-4.5-medium", "grok-4.5-high", "grok-4.3-none", "grok-4.3-low", "grok-4.3-medium", "grok-4.3-high", "grok-build-0.1"} {
+		if !ids[want] {
+			t.Fatalf("missing model %q in %#v", want, expanded)
+		}
+	}
+	for _, reject := range []string{"grok-4.5-none", "grok-4.5-xhigh", "grok-4.5-max", "grok-4.3-xhigh", "grok-build-0.1-none"} {
+		if ids[reject] {
+			t.Fatalf("unexpected unsupported alias %q", reject)
+		}
+	}
+}
+
 func TestNewCodexModelCatalogIncludesRequiredProtocolFields(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	items := newModelListItems([]modeldomain.Route{

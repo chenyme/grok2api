@@ -40,6 +40,12 @@ type StickySessionRepository interface {
 	DeleteByAccount(ctx context.Context, accountID uint64) error
 }
 
+// StickySessionBatchDeleter removes bindings for many accounts using bounded remote
+// batches or a single in-memory scan.
+type StickySessionBatchDeleter interface {
+	DeleteByAccounts(ctx context.Context, accountIDs []uint64) error
+}
+
 // ReasoningReplayRepository 保存无状态多轮所需的上一轮可回放 output items。
 // key 边界为 model + sessionKey；sessionKey 应使用已隔离的 PromptCacheKey。
 type ReasoningReplayRepository interface {

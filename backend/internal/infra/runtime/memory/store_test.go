@@ -105,6 +105,32 @@ func TestStickyStoreBindPreservesExistingAccountAndRefreshesExpiry(t *testing.T)
 	}
 }
 
+func TestStickyStoreDeleteByAccountsScansEachShardOnce(t *testing.T) {
+	ctx := context.Background()
+	store := NewStickyStore()
+	expiresAt := time.Now().UTC().Add(time.Minute)
+	if err := store.Set(ctx, "first", 7, expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(ctx, "second", 8, expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(ctx, "keep", 9, expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteByAccounts(ctx, []uint64{7, 8, 8, 0}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"first", "second"} {
+		if _, ok, err := store.Get(ctx, key, time.Now().UTC()); err != nil || ok {
+			t.Fatalf("deleted binding %q remains: ok=%v err=%v", key, ok, err)
+		}
+	}
+	if id, ok, err := store.Get(ctx, "keep", time.Now().UTC()); err != nil || !ok || id != 9 {
+		t.Fatalf("unrelated binding = %d, ok=%v err=%v", id, ok, err)
+	}
+}
+
 func TestDeviceSessionStoreCleansExpiredAndStaysBounded(t *testing.T) {
 	ctx := context.Background()
 	store := NewDeviceSessionStore()

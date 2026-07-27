@@ -168,6 +168,34 @@ routing:
 	}
 }
 
+func TestValidateMaxAttemptsRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{name: "unlimited", value: -1},
+		{name: "minimum", value: 1},
+		{name: "above former cap", value: 11},
+		{name: "maximum", value: 200},
+		{name: "zero", value: 0, wantErr: true},
+		{name: "below unlimited", value: -2, wantErr: true},
+		{name: "above maximum", value: 201, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
+			cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+			cfg.Routing.MaxAttempts = test.value
+			err := cfg.Validate()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr = %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsInvalidSegmentedSelectorConfig(t *testing.T) {
 	tests := []func(*RoutingConfig){
 		func(value *RoutingConfig) { value.SegmentedMinCandidates = 99 },

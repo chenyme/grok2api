@@ -247,8 +247,49 @@ export function updateAccount(id: string, input: AccountUpdateInput): Promise<Ac
   return apiRequest(`/api/admin/v1/accounts/${id}`, { method: "PATCH", body: input }, decodeAccount);
 }
 
-export function deleteAccount(id: string): Promise<{ deleted: boolean }> {
+export type LinkedDeleteTarget = AccountProvider;
+
+export type AccountDeletionPreviewDTO = {
+  rootCount: number;
+  linkedByProvider: Partial<Record<AccountProvider, number>>;
+  total: number;
+};
+
+export type AccountDeleteResultDTO = {
+  deleted: number;
+  rootsDeleted?: number;
+  linkedDeleted?: number;
+  // Batch paths skip whole groups that still have active media jobs.
+  skipped?: number;
+  deletedByProvider?: Partial<Record<AccountProvider, number>>;
+};
+
+export function deleteAccount(id: string, input?: { provider?: AccountProvider; linkedDeleteTargets?: LinkedDeleteTarget[] }): Promise<AccountDeleteResultDTO | { deleted: boolean }> {
+  if (input?.linkedDeleteTargets?.length) {
+    return apiRequest(
+      `/api/admin/v1/accounts/${id}`,
+      { method: "DELETE", body: { provider: input.provider, linkedDeleteTargets: input.linkedDeleteTargets } },
+      createObjectDecoder("account delete", {
+        deleted: isNumber,
+        rootsDeleted: isOptional(isNumber),
+        linkedDeleted: isOptional(isNumber),
+        deletedByProvider: isOptional(isRecordOf(isNumber)),
+      }),
+    );
+  }
   return apiRequest(`/api/admin/v1/accounts/${id}`, { method: "DELETE" }, decodeBooleanResult<{ deleted: boolean }>("deleted"));
+}
+
+export function previewAccountDeletion(ids: string[], provider: AccountProvider, linkedDeleteTargets: LinkedDeleteTarget[] = []): Promise<AccountDeletionPreviewDTO> {
+  return apiRequest(
+    "/api/admin/v1/accounts/deletion-preview",
+    { method: "POST", body: { ids, provider, linkedDeleteTargets } },
+    createObjectDecoder("account deletion preview", {
+      rootCount: isNumber,
+      linkedByProvider: isRecordOf(isNumber),
+      total: isNumber,
+    }),
+  );
 }
 
 export function refreshAccountBilling(id: string): Promise<BillingDTO> {
@@ -476,12 +517,75 @@ export function refreshAccountsTokens(ids: string[], provider: AccountProvider):
   return apiRequest("/api/admin/v1/accounts/batch/refresh-tokens", { method: "POST", body: { ids, provider } }, createObjectDecoder("account token refresh batch", { succeeded: isNumber, failed: isNumber, skipped: isNumber }));
 }
 
-export function cleanupAccounts(provider: AccountProvider, statuses: AccountCleanupStatus[]): Promise<{ deleted: number }> {
-  return apiRequest("/api/admin/v1/accounts/cleanup", { method: "POST", body: { provider, statuses } }, decodeCountResult<{ deleted: number }>("deleted"));
+export type CleanupResultDTO = {
+  deleted: number;
+  rootsDeleted?: number;
+  linkedDeleted?: number;
+  skipped?: number;
+  deletedByProvider?: Partial<Record<AccountProvider, number>>;
+};
+
+export type CleanupPreviewDTO = {
+  rootsByStatus: Partial<Record<AccountCleanupStatus, number>>;
+  rootCount: number;
+  linkedByProvider: Partial<Record<AccountProvider, number>>;
+  total: number;
+};
+
+export function cleanupAccounts(provider: AccountProvider, statuses: AccountCleanupStatus[], linkedDeleteTargets: LinkedDeleteTarget[] = []): Promise<CleanupResultDTO> {
+  return apiRequest(
+    "/api/admin/v1/accounts/cleanup",
+    {
+      method: "POST",
+      body: {
+        provider,
+        statuses,
+        ...(linkedDeleteTargets.length ? { linkedDeleteTargets } : {}),
+      },
+    },
+    createObjectDecoder("account cleanup", {
+      deleted: isNumber,
+      rootsDeleted: isOptional(isNumber),
+      linkedDeleted: isOptional(isNumber),
+      skipped: isOptional(isNumber),
+      deletedByProvider: isOptional(isRecordOf(isNumber)),
+    }),
+  );
 }
 
-export function deleteAccounts(ids: string[], provider: AccountProvider): Promise<{ deleted: number }> {
-  return apiRequest("/api/admin/v1/accounts", { method: "DELETE", body: { ids, provider } }, decodeCountResult<{ deleted: number }>("deleted"));
+export function previewCleanup(provider: AccountProvider, statuses: AccountCleanupStatus[], linkedDeleteTargets: LinkedDeleteTarget[] = []): Promise<CleanupPreviewDTO> {
+  return apiRequest(
+    "/api/admin/v1/accounts/cleanup-preview",
+    { method: "POST", body: { provider, statuses, ...(linkedDeleteTargets.length ? { linkedDeleteTargets } : {}) } },
+    createObjectDecoder("account cleanup preview", {
+      rootsByStatus: isRecordOf(isNumber),
+      rootCount: isNumber,
+      linkedByProvider: isRecordOf(isNumber),
+      total: isNumber,
+    }),
+  );
+}
+
+export function deleteAccounts(ids: string[], provider: AccountProvider, linkedDeleteTargets: LinkedDeleteTarget[] = []): Promise<AccountDeleteResultDTO> {
+  // Batch delete must forward linkedDeleteTargets; omitting them falls back to root-only deletion.
+  return apiRequest(
+    "/api/admin/v1/accounts",
+    {
+      method: "DELETE",
+      body: {
+        ids,
+        provider,
+        ...(linkedDeleteTargets.length ? { linkedDeleteTargets } : {}),
+      },
+    },
+    createObjectDecoder("account batch delete", {
+      deleted: isNumber,
+      rootsDeleted: isOptional(isNumber),
+      linkedDeleted: isOptional(isNumber),
+      skipped: isOptional(isNumber),
+      deletedByProvider: isOptional(isRecordOf(isNumber)),
+    }),
+  );
 }
 
 export function startDeviceAuthorization(): Promise<DeviceSessionDTO> {

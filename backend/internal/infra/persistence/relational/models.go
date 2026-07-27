@@ -251,9 +251,11 @@ type clientKeyModel struct {
 	BillingLimitUSDTicks  int64 `gorm:"not null;default:0;check:chk_client_keys_billing_limit,billing_limit_usd_ticks BETWEEN 0 AND 9000000000000000"`
 	BilledUsageUSDTicks   int64 `gorm:"not null;default:0;check:chk_client_keys_billed_usage,billed_usage_usd_ticks >= 0"`
 	ReservedUsageUSDTicks int64 `gorm:"not null;default:0;check:chk_client_keys_reserved_usage,reserved_usage_usd_ticks >= 0"`
-	LastUsedAt            *time.Time
-	CreatedAt             time.Time `gorm:"not null"`
-	UpdatedAt             time.Time `gorm:"not null"`
+	// AllowModelAliases defaults false so existing keys keep a clean base-model list.
+	AllowModelAliases bool `gorm:"not null;default:false"`
+	LastUsedAt        *time.Time
+	CreatedAt         time.Time `gorm:"not null"`
+	UpdatedAt         time.Time `gorm:"not null"`
 }
 
 func (clientKeyModel) TableName() string { return "client_keys" }

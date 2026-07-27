@@ -946,3 +946,58 @@ func TestForwardResponseInjectsPromptCacheKeyAfterChatConversion(t *testing.T) {
 		t.Fatalf("chat response = %#v", payload)
 	}
 }
+
+func TestShouldSkipXAIFallbackForSafetyAndBlocked(t *testing.T) {
+	if !shouldSkipXAIFallback([]byte(`{"code":"permission-denied","error":"Content violates usage guidelines. SAFETY_CHECK_TYPE_VIOLENCE"}`)) {
+		t.Fatal("safety body must skip XAI fallback")
+	}
+	if !shouldSkipXAIFallback([]byte(`{"code":"unauthorized:blocked-user","error":"User is blocked"}`)) {
+		t.Fatal("blocked body must skip XAI fallback")
+	}
+	if shouldSkipXAIFallback([]byte(`{"code":"permission-denied","error":"Access to the chat endpoint is denied"}`)) {
+		t.Fatal("ordinary permission denial may still probe XAI for Super Auto accounts")
+	}
+}
+
+func TestParseBuildTeamRPSRateLimitMetadata(t *testing.T) {
+	body := []byte(`{"code":"resource-exhausted","error":"Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20. Requests per Second (actual/limit): 2/2."}`)
+	metadata := provider.ParseRateLimitMetadata(body)
+	if metadata == nil {
+		t.Fatal("expected rate limit metadata")
+	}
+	if metadata.Scope != provider.RateLimitScopeRPS || metadata.TeamID != "00000000-0000-0000-0000-000000000013" || metadata.Model != "grok-4.20" || metadata.Actual != 2 || metadata.Limit != 2 {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestForwardResponsePreservesTruncatedRateLimitDiagnostic(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, cipher)
+	body := `{"code":"resource-exhausted","error":"Too many requests"}` + strings.Repeat("x", provider.MaxDiagnosticBodyBytes)
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(body)), Request: request,
+		}, nil
+	})
+
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", NormalizeBody: true,
+		Body: []byte(`{"model":"grok-4.5","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.Diagnostic == nil || !response.Diagnostic.BodyTruncated || len(response.Diagnostic.Body) != provider.MaxDiagnosticBodyBytes {
+		t.Fatalf("diagnostic = %#v", response.Diagnostic)
+	}
+}
