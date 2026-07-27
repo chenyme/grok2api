@@ -1643,17 +1643,18 @@ func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailabl
 	if failure == nil {
 		return status, code, message
 	}
+	status, code = failure.HTTPStatus(), failure.Code()
 	switch failure.Reason {
 	case gateway.SelectionCooling:
-		status, code, message = http.StatusTooManyRequests, "upstream_cooling", "上游账号正在冷却"
+		message = "上游账号正在冷却"
 	case gateway.SelectionModelCooling:
-		status, code, message = http.StatusTooManyRequests, "upstream_model_cooling", "上游账号的目标模型正在冷却"
+		message = "上游账号的目标模型正在冷却"
 	case gateway.SelectionQuotaExhausted:
-		status, code, message = http.StatusTooManyRequests, "upstream_quota_exhausted", "上游账号额度等待恢复"
+		message = "上游账号额度等待恢复"
 	case gateway.SelectionSaturated:
-		code, message = "upstream_saturated", "上游账号当前均达到并发上限"
+		message = "上游账号当前均达到并发上限"
 	case gateway.SelectionUnsupportedModel:
-		code, message = "upstream_model_unavailable", "当前账号池不支持该模型"
+		message = "当前账号池不支持该模型"
 	}
 	if failure.RetryAfter > 0 {
 		seconds := max(int64(1), int64((failure.RetryAfter+time.Second-1)/time.Second))

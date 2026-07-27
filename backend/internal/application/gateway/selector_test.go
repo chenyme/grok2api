@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -14,6 +15,29 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
+
+func TestSelectionUnavailableErrorClassification(t *testing.T) {
+	tests := []struct {
+		reason SelectionUnavailableReason
+		status int
+		code   string
+	}{
+		{reason: SelectionNoAccounts, status: http.StatusServiceUnavailable, code: "upstream_unavailable"},
+		{reason: SelectionUnsupportedModel, status: http.StatusServiceUnavailable, code: "upstream_model_unavailable"},
+		{reason: SelectionCooling, status: http.StatusTooManyRequests, code: "upstream_cooling"},
+		{reason: SelectionModelCooling, status: http.StatusTooManyRequests, code: "upstream_model_cooling"},
+		{reason: SelectionQuotaExhausted, status: http.StatusTooManyRequests, code: "upstream_quota_exhausted"},
+		{reason: SelectionSaturated, status: http.StatusServiceUnavailable, code: "upstream_saturated"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.reason), func(t *testing.T) {
+			failure := &SelectionUnavailableError{Reason: test.reason}
+			if failure.HTTPStatus() != test.status || failure.Code() != test.code {
+				t.Fatalf("status=%d code=%q", failure.HTTPStatus(), failure.Code())
+			}
+		})
+	}
+}
 
 func TestSelectorPrioritizesDueQuotaProbeOnce(t *testing.T) {
 	ctx := context.Background()

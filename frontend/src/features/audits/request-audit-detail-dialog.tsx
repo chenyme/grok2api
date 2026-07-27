@@ -13,6 +13,15 @@ import { cn } from "@/shared/lib/cn";
 import { formatDateTime, formatNumber } from "@/shared/lib/format";
 
 const AUDIT_DETAIL_CACHE_TIME_MS = 60_000;
+const PRE_UPSTREAM_ERROR_CODES = new Set([
+  "model_not_allowed",
+  "upstream_cooling",
+  "upstream_model_cooling",
+  "upstream_model_unavailable",
+  "upstream_quota_exhausted",
+  "upstream_saturated",
+  "upstream_unavailable",
+]);
 
 export function RequestAuditDetailDialog({ audit, open, onOpenChange }: { audit: AuditDTO | null; open: boolean; onOpenChange: (open: boolean) => void }) {
   const { t, i18n } = useTranslation();
@@ -61,7 +70,7 @@ export function RequestAuditDetailDialog({ audit, open, onOpenChange }: { audit:
           ) : (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-muted-foreground">
               <TriangleAlert className="size-7 stroke-1" />
-              <p>{t("audits.noFailureAttempts")}</p>
+              <p>{t(detailQuery.data.audit.errorCode && PRE_UPSTREAM_ERROR_CODES.has(detailQuery.data.audit.errorCode) ? "audits.noUpstreamAttempt" : "audits.noFailureAttempts")}</p>
               {detailQuery.data.audit.errorCode ? <span className="max-w-full break-words">{detailQuery.data.audit.errorCode}</span> : null}
             </div>
           )
