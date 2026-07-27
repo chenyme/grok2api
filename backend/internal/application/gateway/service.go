@@ -1182,6 +1182,11 @@ attemptLoop:
 	record.StatusCode = http.StatusServiceUnavailable
 	record.DurationMS = time.Since(startedAt).Milliseconds()
 	record.ErrorCode = "upstream_unavailable"
+	var selectionFailure *SelectionUnavailableError
+	if errors.As(lastErr, &selectionFailure) {
+		record.StatusCode = selectionFailure.HTTPStatus()
+		record.ErrorCode = selectionFailure.Code()
+	}
 	record.Attempts = failureAttempts.snapshot()
 	record.CreatedAt = time.Now().UTC()
 	applyAuditEgress(&record, egressTrace, route.Provider)

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -126,6 +127,36 @@ func (e *SelectionUnavailableError) Error() string {
 	default:
 		return "没有可用上游账号"
 	}
+}
+
+// HTTPStatus returns the client-facing status for a routing refusal.
+func (e *SelectionUnavailableError) HTTPStatus() int {
+	if e != nil {
+		switch e.Reason {
+		case SelectionCooling, SelectionModelCooling, SelectionQuotaExhausted:
+			return http.StatusTooManyRequests
+		}
+	}
+	return http.StatusServiceUnavailable
+}
+
+// Code returns the stable diagnostic code for a routing refusal.
+func (e *SelectionUnavailableError) Code() string {
+	if e != nil {
+		switch e.Reason {
+		case SelectionCooling:
+			return "upstream_cooling"
+		case SelectionModelCooling:
+			return "upstream_model_cooling"
+		case SelectionQuotaExhausted:
+			return "upstream_quota_exhausted"
+		case SelectionSaturated:
+			return "upstream_saturated"
+		case SelectionUnsupportedModel:
+			return "upstream_model_unavailable"
+		}
+	}
+	return "upstream_unavailable"
 }
 
 func (l *accountLease) Release() {
