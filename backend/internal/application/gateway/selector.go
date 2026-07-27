@@ -789,7 +789,17 @@ func (s *Selector) ConsumeQuota(provider account.Provider, accountID uint64, mod
 }
 
 func (s *Selector) MarkFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) {
-	failureCount := credential.FailureCount + 1
+	_ = s.markFailure(ctx, credential, credential.FailureCount+1, status, retryAfter)
+}
+
+// MarkFailureAfterSuccess records a stream failure from a fresh health baseline.
+// The upstream already returned a successful response header, so failures that
+// preceded this request must not be carried into the new cooldown calculation.
+func (s *Selector) MarkFailureAfterSuccess(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) error {
+	return s.markFailure(ctx, credential, 1, status, retryAfter)
+}
+
+func (s *Selector) markFailure(ctx context.Context, credential account.Credential, failureCount, status int, retryAfter time.Duration) error {
 	_, cooldownBase, cooldownMax, _ := s.routingConfig()
 	cooldown := cooldownBase
 	for i := 1; i < failureCount && cooldown < cooldownMax; i++ {
@@ -802,11 +812,12 @@ func (s *Selector) MarkFailure(ctx context.Context, credential account.Credentia
 		cooldown = retryAfter
 	}
 	until := time.Now().UTC().Add(cooldown)
-	_ = s.accounts.UpdateHealth(ctx, credential.ID, failureCount, &until, fmt.Sprintf("upstream status %d", status), false)
+	healthErr := s.accounts.UpdateHealth(ctx, credential.ID, failureCount, &until, fmt.Sprintf("upstream status %d", status), false)
 	s.invalidateCandidates(credential.Provider)
 	if status == 401 || status == 402 || status == 403 || status == 429 {
 		_ = s.sticky.DeleteByAccount(ctx, credential.ID)
 	}
+	return healthErr
 }
 
 func (s *Selector) loadCandidates(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
