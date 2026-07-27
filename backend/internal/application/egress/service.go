@@ -17,6 +17,7 @@ import (
 
 var (
 	ErrInvalidInput         = errors.New("代理节点参数无效")
+	ErrInvalidFilter        = errors.New("出口代理筛选条件无效")
 	ErrInvalidSort          = errors.New("代理节点排序条件无效")
 	ErrNotFound             = errors.New("代理节点不存在")
 	ErrProbeStale           = errors.New("代理配置在探测期间已更新，请重新测试")
@@ -43,8 +44,21 @@ type Input struct {
 	ClearCookies      bool
 }
 
+type ListFilter struct {
+	Scope       domain.Scope
+	Enabled     string
+	ProbeStatus string
+	Assignment  string
+	Sort        repository.SortQuery
+}
+
+type ServiceRepository interface {
+	repository.EgressRepository
+	repository.EgressNodePageRepository
+}
+
 type Service struct {
-	repository        repository.EgressRepository
+	repository        ServiceRepository
 	accounts          AccountBindingRepository
 	operations        OperationsRepository
 	cipher            *security.Cipher
@@ -72,6 +86,12 @@ type AssignmentResult struct {
 	Assigned int
 }
 
+type UnhealthyCleanupPreview struct {
+	Nodes               int64
+	BoundAccounts       int64
+	SubscriptionManaged int64
+}
+
 // BatchNodeDeleter is optional so lightweight repository adapters only need
 // the single-node contract unless they can provide an atomic bulk operation.
 type BatchNodeDeleter interface {
@@ -83,7 +103,7 @@ type ClearanceManager interface {
 	ForgetClearance(uint64)
 }
 
-func NewService(repository repository.EgressRepository, cipher *security.Cipher, browserUA string, accounts ...AccountBindingRepository) *Service {
+func NewService(repository ServiceRepository, cipher *security.Cipher, browserUA string, accounts ...AccountBindingRepository) *Service {
 	service := &Service{repository: repository, cipher: cipher, browserUA: strings.TrimSpace(browserUA)}
 	if operations, ok := repository.(OperationsRepository); ok {
 		service.operations = operations
@@ -115,7 +135,37 @@ func (s *Service) DefaultUserAgents() map[string]string {
 	}
 }
 
-func (s *Service) List(ctx context.Context, scope domain.Scope, sort repository.SortQuery) ([]domain.PublicNode, error) {
+func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]domain.PublicNode, int64, error) {
+	page, pageSize = repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
+	if !validListScope(filter.Scope) || !validListValue(filter.Enabled, "enabled", "disabled") ||
+		!validListValue(filter.ProbeStatus, string(domain.ProbeStatusHealthy), string(domain.ProbeStatusUnhealthy), string(domain.ProbeStatusUnknown)) ||
+		!validListValue(filter.Assignment, "bound", "unbound") {
+		return nil, 0, ErrInvalidFilter
+	}
+	if !repository.IsValidSort(filter.Sort, "name", "scope", "proxy", "clearance", "health") {
+		return nil, 0, ErrInvalidSort
+	}
+	var enabled *bool
+	if filter.Enabled != "" {
+		value := filter.Enabled == "enabled"
+		enabled = &value
+	}
+	values, total, err := s.repository.ListEgressNodePage(ctx, repository.EgressNodeListQuery{
+		Page: repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: strings.TrimSpace(search), Sort: filter.Sort},
+		Filter: repository.EgressNodeListFilter{
+			Scope: filter.Scope, Enabled: enabled, ProbeStatus: domain.ProbeStatus(filter.ProbeStatus), Assignment: filter.Assignment,
+		},
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return s.publicNodes(values), total, nil
+}
+
+func (s *Service) ListAll(ctx context.Context, scope domain.Scope, sort repository.SortQuery) ([]domain.PublicNode, error) {
+	if !validListScope(scope) {
+		return nil, ErrInvalidFilter
+	}
 	if !repository.IsValidSort(sort, "name", "scope", "proxy", "clearance", "health") {
 		return nil, ErrInvalidSort
 	}
@@ -123,11 +173,31 @@ func (s *Service) List(ctx context.Context, scope domain.Scope, sort repository.
 	if err != nil {
 		return nil, err
 	}
+	return s.publicNodes(values), nil
+}
+
+func (s *Service) publicNodes(values []domain.Node) []domain.PublicNode {
 	result := make([]domain.PublicNode, 0, len(values))
 	for _, value := range values {
 		result = append(result, s.publicNode(value))
 	}
-	return result, nil
+	return result
+}
+
+func validListScope(scope domain.Scope) bool {
+	return scope == "" || scope == domain.ScopeBuild || scope == domain.ScopeWeb || scope == domain.ScopeConsole || scope == domain.ScopeWebAsset
+}
+
+func validListValue(value string, allowed ...string) bool {
+	if value == "" {
+		return true
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) Create(ctx context.Context, input Input) (domain.PublicNode, error) {
@@ -233,6 +303,61 @@ func (s *Service) DeleteMany(ctx context.Context, nodeIDs []uint64) (int, error)
 		deleted++
 	}
 	return deleted, nil
+}
+
+func (s *Service) PreviewUnhealthyCleanup(ctx context.Context) (UnhealthyCleanupPreview, error) {
+	if cleaner, ok := s.repository.(repository.EgressNodeUnhealthyCleaner); ok {
+		value, err := cleaner.PreviewUnhealthyEgressNodes(ctx)
+		return UnhealthyCleanupPreview{
+			Nodes: value.Nodes, BoundAccounts: value.BoundAccounts, SubscriptionManaged: value.SubscriptionManaged,
+		}, err
+	}
+	values, err := s.repository.ListEgressNodes(ctx, "", repository.SortQuery{})
+	if err != nil {
+		return UnhealthyCleanupPreview{}, err
+	}
+	result := UnhealthyCleanupPreview{}
+	for _, value := range values {
+		if value.IPv4Probe.Status != domain.ProbeStatusUnhealthy || value.IPv6Probe.Status != domain.ProbeStatusUnhealthy {
+			continue
+		}
+		result.Nodes++
+		result.BoundAccounts += int64(value.AssignedAccountCount)
+		if value.SourceID != 0 {
+			result.SubscriptionManaged++
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) DeleteUnhealthy(ctx context.Context) (int, error) {
+	if cleaner, ok := s.repository.(repository.EgressNodeUnhealthyCleaner); ok {
+		ids, err := cleaner.DeleteUnhealthyEgressNodes(ctx)
+		if err != nil {
+			return 0, err
+		}
+		for _, id := range ids {
+			s.forgetClearance(id)
+		}
+		if len(ids) > 0 {
+			s.invalidateOperationsConfig()
+		}
+		return len(ids), nil
+	}
+	values, err := s.repository.ListEgressNodes(ctx, "", repository.SortQuery{})
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]uint64, 0)
+	for _, value := range values {
+		if value.IPv4Probe.Status == domain.ProbeStatusUnhealthy && value.IPv6Probe.Status == domain.ProbeStatusUnhealthy {
+			ids = append(ids, value.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	return s.DeleteMany(ctx, ids)
 }
 
 func (s *Service) RefreshClearance(ctx context.Context, id uint64) error {

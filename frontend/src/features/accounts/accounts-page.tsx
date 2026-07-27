@@ -87,7 +87,7 @@ import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/accoun
 import { AccountNameCell } from "@/features/accounts/account-name-cell";
 import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
 import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
-import { assignEgressAccounts, listEgressNodes, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
+import { assignEgressAccounts, listAllEgressNodes, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -232,7 +232,7 @@ export function AccountsPage() {
   });
   const egressNodesQuery = useQuery({
     queryKey: ["egress-nodes", "account-binding"],
-    queryFn: () => listEgressNodes(),
+    queryFn: () => listAllEgressNodes(),
     enabled: egressConfigurationOpen && egressConfigurationTask === "bind",
   });
 

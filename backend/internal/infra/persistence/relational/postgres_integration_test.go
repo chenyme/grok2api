@@ -18,9 +18,11 @@ import (
 	"time"
 
 	auditapp "github.com/chenyme/grok2api/backend/internal/application/audit"
+	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -364,6 +366,64 @@ func TestPostgresRepositoriesIntegration(t *testing.T) {
 		if err := repository.Delete(ctx, id); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestPostgresUnhealthyEgressCleanupUsesBothAddressFamilies(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, err := OpenPostgres(ctx, dsn, 5, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx := database.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	testDatabase := &Database{db: tx, dialect: database.dialect}
+
+	nodes := NewEgressRepository(testDatabase)
+	accounts := NewAccountRepository(testDatabase)
+	cipher := egressOperationsCipher(t)
+	prefix := "postgres-cleanup-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+	dualStackFailure := createHealthyEgressNode(t, ctx, nodes, cipher, prefix+"-dual", 0)
+	singleStackAvailable := createHealthyEgressNode(t, ctx, nodes, cipher, prefix+"-single", 0)
+	setEgressProbeFamilies(t, ctx, nodes, dualStackFailure, egressdomain.ProbeStatusUnhealthy, egressdomain.ProbeStatusUnhealthy)
+	setEgressProbeFamilies(t, ctx, nodes, singleStackAvailable, egressdomain.ProbeStatusHealthy, egressdomain.ProbeStatusUnhealthy)
+
+	credential := createEgressOperationsAccount(t, ctx, accounts, prefix+"-account")
+	if _, err := accounts.UpdateEgressBindings(ctx, account.ProviderBuild, []uint64{credential.ID}, &dualStackFailure.ID, account.EgressAssignmentManual, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
+	deleted, err := service.DeleteUnhealthy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted < 1 {
+		t.Fatalf("deleted = %d", deleted)
+	}
+	if _, err := nodes.GetEgressNode(ctx, dualStackFailure.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("dual-stack unhealthy node still exists: %v", err)
+	}
+	if _, err := nodes.GetEgressNode(ctx, singleStackAvailable.ID); err != nil {
+		t.Fatalf("single-stack available node was deleted: %v", err)
+	}
+	stored, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EgressNodeID != 0 || stored.EgressAssignmentMode != "" || stored.EgressAssignedAt != nil {
+		t.Fatalf("account binding not cleared: %#v", stored)
 	}
 }
 

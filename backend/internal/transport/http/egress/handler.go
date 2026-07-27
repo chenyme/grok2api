@@ -24,6 +24,8 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/egress-nodes", h.list)
 	router.POST("/egress-nodes", h.create)
 	router.DELETE("/egress-nodes", h.deleteMany)
+	router.GET("/egress-nodes/cleanup-preview", h.cleanupPreview)
+	router.POST("/egress-nodes/cleanup", h.cleanup)
 	router.POST("/egress-nodes/test", h.testNodes)
 	router.POST("/egress-nodes/:id/test", h.testNode)
 	router.POST("/egress-nodes/:id/accounts", h.assignAccounts)
@@ -40,6 +42,26 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/egress-operations", h.operationsConfig)
 	router.PUT("/egress-operations", h.updateOperationsConfig)
 	router.POST("/egress-operations/rebalance", h.rebalance)
+}
+
+func (h *Handler) cleanupPreview(c *gin.Context) {
+	value, err := h.service.PreviewUnhealthyCleanup(c.Request.Context())
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{
+		"nodes": value.Nodes, "boundAccounts": value.BoundAccounts, "subscriptionManaged": value.SubscriptionManaged,
+	})
+}
+
+func (h *Handler) cleanup(c *gin.Context) {
+	deleted, err := h.service.DeleteUnhealthy(c.Request.Context())
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
 }
 
 func (h *Handler) refreshClearance(c *gin.Context) {
@@ -188,24 +210,66 @@ func (value nodeRequest) input() egressapp.Input {
 
 func (h *Handler) list(c *gin.Context) {
 	scope := egressdomain.Scope(c.Query("scope"))
-	if scope != "" && scope != egressdomain.ScopeBuild && scope != egressdomain.ScopeWeb && scope != egressdomain.ScopeConsole && scope != egressdomain.ScopeWebAsset {
-		response.Error(c, http.StatusBadRequest, "invalidEgressScope", "scope 必须是 grok_build、grok_web、grok_console 或 grok_web_asset")
+	sort := repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))}
+	if legacyEgressListRequest(c) {
+		values, err := h.service.ListAll(c.Request.Context(), scope, sort)
+		if h.writeListError(c, err) {
+			return
+		}
+		items := make([]nodeResponse, 0, len(values))
+		for _, value := range values {
+			items = append(items, newNodeResponse(value))
+		}
+		pageSize := len(items)
+		if pageSize == 0 {
+			pageSize = repository.DefaultPageSize
+		}
+		response.Success(c, http.StatusOK, gin.H{"items": items, "page": 1, "pageSize": pageSize, "total": len(items), "defaultUserAgents": h.service.DefaultUserAgents()})
 		return
 	}
-	values, err := h.service.List(c.Request.Context(), scope, repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))})
-	if errors.Is(err, egressapp.ErrInvalidSort) {
-		response.Error(c, http.StatusBadRequest, "invalidSort", err.Error())
-		return
-	}
-	if err != nil {
-		response.Error(c, http.StatusInternalServerError, "egressNodeListFailed", "读取代理节点失败")
+	page, pageSize := nodePagination(c)
+	values, total, err := h.service.List(c.Request.Context(), page, pageSize, c.Query("search"), egressapp.ListFilter{
+		Scope: scope, Enabled: c.Query("enabled"), ProbeStatus: c.Query("probe"), Assignment: c.Query("assignment"),
+		Sort: sort,
+	})
+	if h.writeListError(c, err) {
 		return
 	}
 	items := make([]nodeResponse, 0, len(values))
 	for _, value := range values {
 		items = append(items, newNodeResponse(value))
 	}
-	response.Success(c, http.StatusOK, gin.H{"items": items, "defaultUserAgents": h.service.DefaultUserAgents()})
+	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total, "defaultUserAgents": h.service.DefaultUserAgents()})
+}
+
+func legacyEgressListRequest(c *gin.Context) bool {
+	if _, exists := c.GetQuery("page"); exists {
+		return false
+	}
+	if _, exists := c.GetQuery("pageSize"); exists {
+		return false
+	}
+	return c.Query("search") == "" && c.Query("enabled") == "" && c.Query("probe") == "" && c.Query("assignment") == ""
+}
+
+func (h *Handler) writeListError(c *gin.Context, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, egressapp.ErrInvalidFilter):
+		response.Error(c, http.StatusBadRequest, "invalidFilter", err.Error())
+	case errors.Is(err, egressapp.ErrInvalidSort):
+		response.Error(c, http.StatusBadRequest, "invalidSort", err.Error())
+	default:
+		response.Error(c, http.StatusInternalServerError, "egressNodeListFailed", "读取代理节点失败")
+	}
+	return true
+}
+
+func nodePagination(c *gin.Context) (int, int) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	return repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
 }
 
 func (h *Handler) create(c *gin.Context) {
