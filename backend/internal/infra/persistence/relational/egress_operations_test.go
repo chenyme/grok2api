@@ -1095,6 +1095,7 @@ func (stub mutatingEgressProbeStub) ProbeEgressNode(ctx context.Context, node eg
 	node.LastProbedAt = nil
 	node.ProbeLatencyMS = 0
 	node.ExitIP = ""
+	node.ExitCountry = ""
 	node.ProbeError = ""
 	node.ProbeProvider = ""
 	node.IPv4Probe = egress.ProbeFamilyResult{Status: egress.ProbeStatusUnknown}
@@ -1111,13 +1112,13 @@ func (stub egressProbeStub) ProbeEgressNode(context.Context, egress.Node) (egres
 
 type egressProbeByNodeStub struct{ results map[uint64]egress.ProbeResult }
 
-func (stub egressProbeByNodeStub) ProbeEgressNode(_ context.Context, id uint64) (egress.ProbeResult, error) {
-	return stub.results[id], nil
+func (stub egressProbeByNodeStub) ProbeEgressNode(_ context.Context, node egress.Node) (egress.ProbeResult, error) {
+	return stub.results[node.ID], nil
 }
 
 type subscriptionImportProbeStub struct{ results map[string]egress.ProbeResult }
 
-func (stub subscriptionImportProbeStub) ProbeEgressNode(context.Context, uint64) (egress.ProbeResult, error) {
+func (stub subscriptionImportProbeStub) ProbeEgressNode(context.Context, egress.Node) (egress.ProbeResult, error) {
 	return egress.ProbeResult{}, errors.New("unexpected persisted node probe")
 }
 

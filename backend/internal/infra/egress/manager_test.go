@@ -301,6 +301,30 @@ func TestProbeEgressNodeKeepsIPv4AndIPv6ResultsSeparate(t *testing.T) {
 	}
 }
 
+func TestProbeEgressProxyKeepsDualStackCountryMetadata(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
+			payload := "ip=198.51.100.19\nloc=US\n"
+			if request.URL.Hostname() == "2606:4700:4700::1111" {
+				payload = "ip=2001:db8::19\nloc=DE\n"
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload))}, nil
+		}}, nil
+	}
+
+	result, err := manager.ProbeEgressProxy(context.Background(), "http://proxy.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.ProbeStatusHealthy || result.Provider != domain.ProbeProviderCloudflare || result.ExitIP != "198.51.100.19" || result.ExitCountry != "US" {
+		t.Fatalf("proxy probe result = %#v", result)
+	}
+	if result.IPv4.ExitCountry != "US" || result.IPv6.ExitCountry != "DE" || result.IPv6.ExitIP != "2001:db8::19" {
+		t.Fatalf("proxy probe families = ipv4:%#v ipv6:%#v", result.IPv4, result.IPv6)
+	}
+}
+
 func TestProbeEgressNodeIsHealthyWhenOnlyIPv4Works(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
