@@ -81,6 +81,8 @@ type AccountListFilter struct {
 	AccountIDs  []uint64
 	RestrictIDs bool
 	ExcludeIDs  []uint64
+	AfterID     uint64
+	ThroughID   uint64
 	Now         time.Time
 }
 

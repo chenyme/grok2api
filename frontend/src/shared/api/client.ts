@@ -255,16 +255,17 @@ async function readEventStreamChunk(reader: ReadableStreamDefaultReader<Uint8Arr
   }
 }
 
-export async function apiDownload(path: string, retryAuth = true): Promise<Blob> {
-  const headers = new Headers();
-  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
-  const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
-    credentials: "include",
-    headers,
-  });
-  if (response.status === 401 && retryAuth) {
+export type ApiDownloadResult = {
+  blob: Blob;
+  headers: Headers;
+};
+
+export async function apiDownloadResponse(path: string, options: RequestOptions = {}): Promise<ApiDownloadResult> {
+  const { authenticated = true, retryAuth = true } = options;
+  const response = await sendApiRequest(path, options);
+  if (response.status === 401 && authenticated && retryAuth) {
     const refreshResult = await refreshAccessToken();
-    if (refreshResult === "refreshed") return apiDownload(path, false);
+    if (refreshResult === "refreshed") return apiDownloadResponse(path, { ...options, retryAuth: false });
     if (refreshResult === "unavailable") {
       throw new ApiError(503, "sessionRefreshUnavailable", localizedErrorMessage("sessionRefreshUnavailable", "Unable to refresh the session. Please retry."));
     }
@@ -273,7 +274,11 @@ export async function apiDownload(path: string, retryAuth = true): Promise<Blob>
     await parseResponse(response, decodeNever);
     throw new ApiError(response.status, "requestFailed", localizedErrorMessage("requestFailed", "The request failed"));
   }
-  return response.blob();
+  return { blob: await response.blob(), headers: response.headers };
+}
+
+export async function apiDownload(path: string, options: RequestOptions = {}): Promise<Blob> {
+  return (await apiDownloadResponse(path, options)).blob;
 }
 
 export type AdminDTO = {

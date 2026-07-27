@@ -135,6 +135,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/accounts", h.list)
 	router.GET("/accounts/summary", h.summary)
 	router.GET("/accounts/export", h.exportCredentials)
+	router.POST("/accounts/export", h.exportSelectedCredentials)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
 	router.POST("/accounts/device/:sessionId/poll", h.pollDevice)
@@ -193,6 +194,11 @@ type batchDeleteRequest struct {
 	IDs                 []string `json:"ids" binding:"required"`
 	Provider            string   `json:"provider" binding:"required"`
 	LinkedDeleteTargets []string `json:"linkedDeleteTargets"`
+}
+
+type credentialExportRequest struct {
+	IDs      []string `json:"ids" binding:"required"`
+	Provider string   `json:"provider" binding:"required"`
 }
 
 type deletionPreviewRequest struct {
@@ -1082,14 +1088,70 @@ func (h *Handler) refreshWebQuota(c *gin.Context) {
 
 func (h *Handler) exportCredentials(c *gin.Context) {
 	providerValue := accountdomain.Provider(c.DefaultQuery("provider", string(accountdomain.ProviderBuild)))
+	if limitText, pagedExport := c.GetQuery("limit"); pagedExport {
+		if _, usesOffset := c.GetQuery("offset"); usesOffset {
+			response.Error(c, http.StatusBadRequest, "accountExportFailed", "分批导出不支持 offset，请使用服务端返回的 afterId")
+			return
+		}
+		limit, err := strconv.Atoi(strings.TrimSpace(limitText))
+		if err != nil {
+			response.Error(c, http.StatusBadRequest, "accountExportFailed", "导出数量必须为整数")
+			return
+		}
+		afterID, err := strconv.ParseUint(strings.TrimSpace(c.DefaultQuery("afterId", "0")), 10, 64)
+		if err != nil {
+			response.Error(c, http.StatusBadRequest, "accountExportFailed", "导出游标必须为非负整数")
+			return
+		}
+		snapshotMaxID, err := strconv.ParseUint(strings.TrimSpace(c.DefaultQuery("snapshotMaxId", "0")), 10, 64)
+		if err != nil {
+			response.Error(c, http.StatusBadRequest, "accountExportFailed", "导出快照上界必须为非负整数")
+			return
+		}
+		result, exportErr := h.service.ExportProviderCredentialsCursor(c.Request.Context(), providerValue, afterID, snapshotMaxID, limit)
+		if exportErr != nil {
+			h.writeServiceError(c, "accountExportFailed", exportErr, http.StatusInternalServerError, "导出账号失败")
+			return
+		}
+		c.Header("X-Export-Next-ID", strconv.FormatUint(result.NextID, 10))
+		c.Header("X-Export-Snapshot-Max-ID", strconv.FormatUint(result.SnapshotMaxID, 10))
+		c.Header("X-Export-Has-More", strconv.FormatBool(result.HasMore))
+		h.writeCredentialExport(c, providerValue, result.ExportResult)
+		return
+	}
 	result, err := h.service.ExportProviderCredentials(c.Request.Context(), providerValue)
 	if err != nil {
 		h.writeServiceError(c, "accountExportFailed", err, http.StatusInternalServerError, "导出账号失败")
 		return
 	}
+	h.writeCredentialExport(c, providerValue, result)
+}
+
+func (h *Handler) exportSelectedCredentials(c *gin.Context) {
+	var request credentialExportRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	ids, err := parseIDs(request.IDs)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
+		return
+	}
+	providerValue := accountdomain.Provider(request.Provider)
+	result, err := h.service.ExportProviderCredentialsByIDs(c.Request.Context(), providerValue, ids)
+	if err != nil {
+		h.writeServiceError(c, "accountExportFailed", err, http.StatusInternalServerError, "导出账号失败")
+		return
+	}
+	h.writeCredentialExport(c, providerValue, result)
+}
+
+func (h *Handler) writeCredentialExport(c *gin.Context, providerValue accountdomain.Provider, result accountapp.ExportResult) {
 	filename := "grok2api-" + string(providerValue) + "-accounts-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
 	c.Header("Cache-Control", "no-store")
 	c.Header("Pragma", "no-cache")
+	c.Header("Access-Control-Expose-Headers", "Content-Disposition, X-Exported-Accounts, X-Export-Next-ID, X-Export-Snapshot-Max-ID, X-Export-Has-More")
 	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("X-Exported-Accounts", strconv.Itoa(result.Count))

@@ -43,7 +43,8 @@ import {
   previewCleanup,
   enableWebAccountNSFW,
   convertWebAccountsToBuild,
-  exportAccounts,
+  exportAccountBatch,
+  exportSelectedAccounts,
   getAccountSummary,
   importAccounts,
   importConsoleAccounts,
@@ -146,6 +147,11 @@ export function AccountsPage() {
   const [cleanupPreview, setCleanupPreview] = useState<{ key: string; data: CleanupPreviewDTO } | null>(null);
   const [cleanupPreviewError, setCleanupPreviewError] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [exportLimit, setExportLimit] = useState("1000");
+  const [exportCursor, setExportCursor] = useState("0");
+  const [exportSnapshotMaxId, setExportSnapshotMaxId] = useState("0");
+  const [exportBatchNumber, setExportBatchNumber] = useState(1);
+  const [exportCompletedCount, setExportCompletedCount] = useState(0);
   const [syncAllOpen, setSyncAllOpen] = useState(false);
   const [allQuotaTask, setAllQuotaTask] = useState<BuildQuotaTask>("sync");
   const [quotaSyncProgress, setQuotaSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
@@ -600,11 +606,31 @@ export function AccountsPage() {
   });
 
   const exportMutation = useMutation({
-    mutationFn: () => exportAccounts(provider),
-    onSuccess: (blob) => {
-      downloadAccountExport(blob, provider);
+    mutationFn: async (input: { kind: "selected"; ids: string[] } | { kind: "batch"; limit: number; afterId: string; snapshotMaxId: string; batchNumber: number }) => {
+      if (input.kind === "selected") {
+        return { kind: input.kind, blob: await exportSelectedAccounts(provider, input.ids) } as const;
+      }
+      return { kind: input.kind, batchNumber: input.batchNumber, batch: await exportAccountBatch(provider, input.limit, input.afterId, input.snapshotMaxId) } as const;
+    },
+    onSuccess: (result) => {
+      if (result.kind === "selected") {
+        downloadAccountExport(result.blob, provider, "selected");
+        setExportOpen(false);
+        toast.success(t("accounts.exported"));
+        return;
+      }
+      downloadAccountExport(result.batch.blob, provider, `batch-${String(result.batchNumber).padStart(4, "0")}`);
+      const completed = exportCompletedCount + result.batch.count;
+      if (result.batch.hasMore) {
+        setExportCursor(result.batch.nextId);
+        setExportSnapshotMaxId(result.batch.snapshotMaxId);
+        setExportBatchNumber(result.batchNumber + 1);
+        setExportCompletedCount(completed);
+        toast.success(t("accountExport.batchCompleted", { count: result.batch.count }));
+        return;
+      }
       setExportOpen(false);
-      toast.success(t("accounts.exported"));
+      toast.success(t("accountExport.completed", { count: completed }));
     },
     onError: showError,
   });
@@ -934,6 +960,24 @@ export function AccountsPage() {
     setSelection((current) => ({ provider: current.provider, ids: new Set() }));
   }
 
+  function resetExportProgress(): void {
+    setExportCursor("0");
+    setExportSnapshotMaxId("0");
+    setExportBatchNumber(1);
+    setExportCompletedCount(0);
+  }
+
+  function openProviderExport(): void {
+    clearSelection();
+    resetExportProgress();
+    setExportOpen(true);
+  }
+
+  function openSelectedExport(): void {
+    resetExportProgress();
+    setExportOpen(true);
+  }
+
   function togglePage(checked: boolean): void {
     setSelection((current) => {
       const next = new Set(current.provider === provider ? current.ids : []);
@@ -1041,7 +1085,7 @@ export function AccountsPage() {
               {hasProviderAccounts ? (
                 <>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => setExportOpen(true)}><Download />{t("accounts.exportAuth")}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={openProviderExport}><Download />{t("accounts.exportAuth")}</DropdownMenuItem>
                 </>
               ) : null}
             </DropdownMenuContent>
@@ -1125,6 +1169,7 @@ export function AccountsPage() {
             {selected.size > 0 ? (
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
+                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={openSelectedExport}><Download />{t("accounts.exportAuth")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
@@ -1333,10 +1378,32 @@ export function AccountsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={exportOpen} onOpenChange={setExportOpen}>
+      <AlertDialog open={exportOpen} onOpenChange={(open) => { if (!open && !exportMutation.isPending) setExportOpen(false); }}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.exportTitle", { provider: provider === "grok_build" ? "Grok Build" : provider === "grok_web" ? "Grok Web" : "Grok Console" })}</AlertDialogTitle><AlertDialogDescription>{t("accounts.exportDescription")}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction disabled={exportMutation.isPending} onClick={() => exportMutation.mutate()}>{t("accounts.exportAuth")}</AlertDialogAction></AlertDialogFooter>
+          {selected.size > 0 ? <p className="text-sm text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</p> : <div className="grid gap-2">
+            <Label htmlFor="account-export-limit">{t("accounts.exportCount")}</Label>
+            <Input id="account-export-limit" type="number" min={1} max={10000} value={exportLimit} disabled={exportSnapshotMaxId !== "0"} onChange={(event) => setExportLimit(event.target.value)} />
+            <p className="text-xs text-muted-foreground">{t("accountExport.countDescription")}</p>
+            {exportCompletedCount > 0 ? <p className="text-sm text-muted-foreground">{t("accountExport.batchProgress", { count: exportCompletedCount, batch: exportBatchNumber })}</p> : null}
+          </div>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={exportMutation.isPending}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={exportMutation.isPending || (selected.size === 0 && (!Number.isInteger(Number(exportLimit)) || Number(exportLimit) < 1 || Number(exportLimit) > 10000))}
+              onClick={(event) => {
+                event.preventDefault();
+                if (selected.size > 0) {
+                  exportMutation.mutate({ kind: "selected", ids: [...selected] });
+                  return;
+                }
+                exportMutation.mutate({ kind: "batch", limit: Number(exportLimit), afterId: exportCursor, snapshotMaxId: exportSnapshotMaxId, batchNumber: exportBatchNumber });
+              }}
+            >
+              {exportMutation.isPending ? <Spinner /> : null}
+              {selected.size === 0 && exportCompletedCount > 0 ? t("accountExport.nextBatch") : t("accounts.exportAuth")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
@@ -1823,11 +1890,11 @@ export function AccountsPage() {
   );
 }
 
-function downloadAccountExport(blob: Blob, provider: AccountProvider): void {
+function downloadAccountExport(blob: Blob, provider: AccountProvider, suffix: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `grok2api-${provider.replaceAll("_", "-")}-accounts-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.download = `grok2api-${provider.replaceAll("_", "-")}-accounts-${suffix}-${new Date().toISOString().slice(0, 10)}.json`;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }

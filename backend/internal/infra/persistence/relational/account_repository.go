@@ -102,11 +102,18 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 	if len(input.Filter.ExcludeIDs) > 0 {
 		query = query.Where("provider_accounts.id NOT IN ?", input.Filter.ExcludeIDs)
 	}
+	if input.Filter.AfterID > 0 {
+		query = query.Where("provider_accounts.id > ?", input.Filter.AfterID)
+	}
+	if input.Filter.ThroughID > 0 {
+		query = query.Where("provider_accounts.id <= ?", input.Filter.ThroughID)
+	}
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 	var rows []accountModel
 	query = applyStableSort(query, input.Page.Sort, map[string]sortSpec{
+		"id":        {expression: "provider_accounts.id"},
 		"name":      {expression: "LOWER(provider_accounts.name)"},
 		"type":      {expression: accountTypeSortExpression},
 		"status":    {expression: accountStatusSortExpression},

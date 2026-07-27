@@ -87,6 +87,31 @@ func TestWriteServiceErrorUsesCredentialLimitCodes(t *testing.T) {
 	}
 }
 
+func TestCredentialExportRejectsOffsetPagination(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest("GET", "/api/admin/v1/accounts/export?provider=grok_build&limit=1000&offset=1000", nil)
+	new(Handler).exportCredentials(ctx)
+	if recorder.Code != 400 || !strings.Contains(recorder.Body.String(), "afterId") {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCredentialExportExposesBatchMetadataHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	new(Handler).writeCredentialExport(ctx, accountdomain.ProviderBuild, accountapp.ExportResult{Data: []byte(`[]`)})
+
+	exposed := recorder.Header().Get("Access-Control-Expose-Headers")
+	for _, header := range []string{"X-Exported-Accounts", "X-Export-Next-ID", "X-Export-Snapshot-Max-ID", "X-Export-Has-More"} {
+		if !strings.Contains(exposed, header) {
+			t.Fatalf("exposed headers %q do not include %s", exposed, header)
+		}
+	}
+}
+
 func TestParseLinkedDeleteTargets(t *testing.T) {
 	targets, err := parseLinkedDeleteTargets([]string{"grok_build", "grok_console", "grok_build"})
 	if err != nil || len(targets) != 2 || targets[0] != accountdomain.ProviderBuild || targets[1] != accountdomain.ProviderConsole {
