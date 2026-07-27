@@ -1256,6 +1256,11 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 	fallbackAllowed := known && !state.invalid && state.userAgent != "" &&
 		(state.bindingFingerprint == "" || state.bindingFingerprint == bindingFingerprint)
 	fallback := clearanceSolution{Cookies: state.cookies, UserAgent: state.userAgent}
+	forceRefresh := known && state.invalid
+	refreshAfter := time.Time{}
+	if forceRefresh {
+		refreshAfter = state.refreshedAt
+	}
 	if fallbackAllowed {
 		state.lastUsedAt = now
 		m.clearances[key] = state
@@ -1267,7 +1272,7 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 	m.clearanceMu.Unlock()
 
 	result, err, _ := m.clearanceLoads.Do(key, func() (any, error) {
-		return m.refreshNode(ctx, node, proxyURL, key, persist, false, !fallbackAllowed)
+		return m.refreshNode(ctx, node, proxyURL, key, persist, forceRefresh, !fallbackAllowed, refreshAfter)
 	})
 	if err != nil {
 		if fallbackAllowed {
@@ -1279,7 +1284,7 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 	return solution.Cookies, solution.UserAgent, nil
 }
 
-func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, key string, persist, force, waitForPeer bool) (clearanceSolution, error) {
+func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, key string, persist, force, waitForPeer bool, refreshAfter time.Time) (clearanceSolution, error) {
 	m.clearanceMu.Lock()
 	cfg := m.clearanceConfig
 	solveVersion := m.clearanceVersion
@@ -1302,12 +1307,14 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 			return clearanceSolution{}, fmt.Errorf("协调 Clearance 刷新: %w", err)
 		}
 		if !acquired {
-			if solution, refreshedAt, ok := m.loadPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval); ok {
-				m.cacheClearance(key, solution, refreshedAt, solveVersion, fingerprint, bindingFingerprint, interval)
-				return solution, nil
+			if !force {
+				if solution, refreshedAt, ok := m.loadPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval); ok {
+					m.cacheClearance(key, solution, refreshedAt, solveVersion, fingerprint, bindingFingerprint, interval)
+					return solution, nil
+				}
 			}
 			if waitForPeer {
-				if solution, refreshedAt, ok := m.waitPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval, timeout); ok {
+				if solution, refreshedAt, ok := m.waitPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval, timeout, refreshAfter); ok {
 					m.cacheClearance(key, solution, refreshedAt, solveVersion, fingerprint, bindingFingerprint, interval)
 					return solution, nil
 				}
@@ -1360,7 +1367,7 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 	return solution, nil
 }
 
-func (m *Manager) waitPersistedClearance(ctx context.Context, nodeID uint64, fingerprint, bindingFingerprint string, interval, timeout time.Duration) (clearanceSolution, time.Time, bool) {
+func (m *Manager) waitPersistedClearance(ctx context.Context, nodeID uint64, fingerprint, bindingFingerprint string, interval, timeout time.Duration, refreshAfter time.Time) (clearanceSolution, time.Time, bool) {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -1370,7 +1377,8 @@ func (m *Manager) waitPersistedClearance(ctx context.Context, nodeID uint64, fin
 		case <-waitCtx.Done():
 			return clearanceSolution{}, time.Time{}, false
 		case <-ticker.C:
-			if solution, refreshedAt, ok := m.loadPersistedClearance(waitCtx, nodeID, fingerprint, bindingFingerprint, interval); ok {
+			if solution, refreshedAt, ok := m.loadPersistedClearance(waitCtx, nodeID, fingerprint, bindingFingerprint, interval); ok &&
+				(refreshAfter.IsZero() || refreshedAt.After(refreshAfter)) {
 				return solution, refreshedAt, true
 			}
 		}
@@ -1498,7 +1506,7 @@ func (m *Manager) recordClearanceError(ctx context.Context, node domain.Node, pe
 func (m *Manager) RefreshClearance(ctx context.Context, nodeID uint64) error {
 	if nodeID == 0 {
 		_, err, _ := m.clearanceLoads.Do("direct", func() (any, error) {
-			return m.refreshNode(ctx, domain.Node{Name: "direct", Scope: domain.ScopeWeb, Enabled: true}, "", "direct", false, true, true)
+			return m.refreshNode(ctx, domain.Node{Name: "direct", Scope: domain.ScopeWeb, Enabled: true}, "", "direct", false, true, true, time.Time{})
 		})
 		return err
 	}
@@ -1522,7 +1530,7 @@ func (m *Manager) RefreshClearance(ctx context.Context, nodeID uint64) error {
 	}
 	key := clearanceCacheKey(node.ID, proxyURL, false)
 	_, err, _ = m.clearanceLoads.Do(key, func() (any, error) {
-		return m.refreshNode(ctx, node, proxyURL, key, true, true, true)
+		return m.refreshNode(ctx, node, proxyURL, key, true, true, true, time.Time{})
 	})
 	return err
 }
@@ -1638,12 +1646,17 @@ func (m *Manager) RefreshDueClearances(ctx context.Context, force bool) error {
 		m.clearanceMu.Unlock()
 		fingerprint := clearanceFingerprint(cfg, proxyURL)
 		memoryFresh := known && !state.invalid && state.version == version && state.fingerprint == fingerprint && now.Sub(state.refreshedAt) < interval
-		persistedFresh := node.ClearanceRefreshedAt != nil && node.ClearanceFingerprint == fingerprint && now.Sub(*node.ClearanceRefreshedAt) < interval
+		persistedFresh := (!known || !state.invalid) && node.ClearanceRefreshedAt != nil && node.ClearanceFingerprint == fingerprint && now.Sub(*node.ClearanceRefreshedAt) < interval
 		if !force && (memoryFresh || persistedFresh) {
 			continue
 		}
+		refreshForce := force || (known && state.invalid)
+		refreshAfter := time.Time{}
+		if refreshForce && known && state.invalid {
+			refreshAfter = state.refreshedAt
+		}
 		_, refreshErr, _ := m.clearanceLoads.Do(key, func() (any, error) {
-			return m.refreshNode(ctx, node, proxyURL, key, true, force, false)
+			return m.refreshNode(ctx, node, proxyURL, key, true, refreshForce, false, refreshAfter)
 		})
 		if refreshErr != nil {
 			refreshErrors = append(refreshErrors, refreshErr)
@@ -1652,7 +1665,7 @@ func (m *Manager) RefreshDueClearances(ctx context.Context, force bool) error {
 	shouldUseDirect := direct.used || force && webNodeCount == 0
 	if shouldUseDirect && (force || direct.invalid || direct.userAgent == "" || direct.version != version || now.Sub(direct.refreshedAt) >= interval) {
 		_, err, _ := m.clearanceLoads.Do("direct", func() (any, error) {
-			return m.refreshNode(ctx, domain.Node{Name: "direct", Scope: domain.ScopeWeb, Enabled: true}, "", "direct", false, force, false)
+			return m.refreshNode(ctx, domain.Node{Name: "direct", Scope: domain.ScopeWeb, Enabled: true}, "", "direct", false, force, false, time.Time{})
 		})
 		if err != nil {
 			refreshErrors = append(refreshErrors, err)

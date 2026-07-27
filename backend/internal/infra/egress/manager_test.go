@@ -1507,6 +1507,61 @@ func TestNoChallengeClearanceDoesNotBlockOrRefreshRepeatedly(t *testing.T) {
 	}
 }
 
+func TestRejectedNoChallengeClearanceForcesRefreshWithDistributedLock(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}
+	solver := &clearanceSolverStub{noCookies: true}
+	manager := NewManager(repository, cipher)
+	manager.solver = solver
+	manager.SetClearanceLock(alwaysAcquiredDistributedLock{})
+	manager.UpdateClearanceConfig(ClearanceConfig{Mode: "flaresolverr", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com", Timeout: time.Second, RefreshInterval: time.Hour})
+
+	first, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.InvalidateClearance()
+	first.Release()
+
+	second, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Release()
+	if solver.calls != 2 {
+		t.Fatalf("rejected cookie-less clearance reused persisted state: calls=%d", solver.calls)
+	}
+}
+
+func TestBackgroundRefreshDoesNotReuseRejectedNoChallengeClearance(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}
+	solver := &clearanceSolverStub{noCookies: true}
+	manager := NewManager(repository, cipher)
+	manager.solver = solver
+	manager.SetClearanceLock(alwaysAcquiredDistributedLock{})
+	manager.UpdateClearanceConfig(ClearanceConfig{Mode: "flaresolverr", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com", Timeout: time.Second, RefreshInterval: time.Hour})
+
+	lease, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.InvalidateClearance()
+	lease.Release()
+	if err := manager.RefreshDueClearances(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if solver.calls != 2 {
+		t.Fatalf("background refresh reused rejected cookie-less clearance: calls=%d", solver.calls)
+	}
+}
+
 func TestWebAssetCredentialFallsBackToWebWithSameResinIdentity(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
@@ -1666,6 +1721,12 @@ type clearanceSolverStub struct {
 	proxyURL  string
 	err       error
 	noCookies bool
+}
+
+type alwaysAcquiredDistributedLock struct{}
+
+func (alwaysAcquiredDistributedLock) Acquire(context.Context, string, time.Duration) (func(), bool, error) {
+	return func() {}, true, nil
 }
 
 func (s *clearanceSolverStub) Solve(_ context.Context, _ ClearanceConfig, proxyURL string) (clearanceSolution, error) {
