@@ -406,6 +406,97 @@ func TestEgressOperationsBatchDeleteClearsAccountBindings(t *testing.T) {
 	}
 }
 
+func TestEgressOperationsCleanupDeletesOnlyDualStackUnhealthyNodes(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+
+	source, err := nodes.CreateEgressSource(ctx, egress.SubscriptionSource{
+		Name: "cleanup-source", Scope: egress.ScopeBuild, Enabled: true, RefreshIntervalSeconds: 900,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual := createHealthyEgressNode(t, ctx, nodes, cipher, "cleanup-manual", 0)
+	managed := createHealthyEgressNode(t, ctx, nodes, cipher, "cleanup-managed", 0)
+	managed.SourceID = source.ID
+	managed.SourceKey = "managed"
+	if managed, err = nodes.UpdateEgressNode(ctx, managed); err != nil {
+		t.Fatal(err)
+	}
+	v4Healthy := createHealthyEgressNode(t, ctx, nodes, cipher, "cleanup-v4-healthy", 0)
+	v6Healthy := createHealthyEgressNode(t, ctx, nodes, cipher, "cleanup-v6-healthy", 0)
+	untested := createHealthyEgressNode(t, ctx, nodes, cipher, "cleanup-untested", 0)
+
+	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
+	if _, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
+		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+		Fallbacks: map[egress.Scope]egressapp.FallbackConfigInput{
+			egress.ScopeBuild: {Mode: egress.FallbackModeFixed, NodeID: manual.ID},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	setEgressProbeFamilies(t, ctx, nodes, manual, egress.ProbeStatusUnhealthy, egress.ProbeStatusUnhealthy)
+	setEgressProbeFamilies(t, ctx, nodes, managed, egress.ProbeStatusUnhealthy, egress.ProbeStatusUnhealthy)
+	setEgressProbeFamilies(t, ctx, nodes, v4Healthy, egress.ProbeStatusHealthy, egress.ProbeStatusUnhealthy)
+	setEgressProbeFamilies(t, ctx, nodes, v6Healthy, egress.ProbeStatusUnhealthy, egress.ProbeStatusHealthy)
+	setEgressProbeFamilies(t, ctx, nodes, untested, egress.ProbeStatusUnknown, egress.ProbeStatusUnknown)
+
+	firstAccount := createEgressOperationsAccount(t, ctx, accounts, "cleanup-manual-account")
+	secondAccount := createEgressOperationsAccount(t, ctx, accounts, "cleanup-managed-account")
+	if _, err := accounts.UpdateEgressBindings(ctx, account.ProviderBuild, []uint64{firstAccount.ID}, &manual.ID, account.EgressAssignmentManual, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accounts.UpdateEgressBindings(ctx, account.ProviderBuild, []uint64{secondAccount.ID}, &managed.ID, account.EgressAssignmentAuto, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := service.PreviewUnhealthyCleanup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Nodes != 2 || preview.BoundAccounts != 2 || preview.SubscriptionManaged != 1 {
+		t.Fatalf("cleanup preview = %#v", preview)
+	}
+	deleted, err := service.DeleteUnhealthy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d", deleted)
+	}
+	for _, id := range []uint64{manual.ID, managed.ID} {
+		if _, err := nodes.GetEgressNode(ctx, id); !errors.Is(err, repository.ErrNotFound) {
+			t.Fatalf("dual-stack unhealthy node %d still exists: %v", id, err)
+		}
+	}
+	for _, id := range []uint64{v4Healthy.ID, v6Healthy.ID, untested.ID} {
+		if _, err := nodes.GetEgressNode(ctx, id); err != nil {
+			t.Fatalf("preserved node %d: %v", id, err)
+		}
+	}
+	for _, value := range []account.Credential{firstAccount, secondAccount} {
+		stored, err := accounts.Get(ctx, value.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.EgressNodeID != 0 || stored.EgressAssignmentMode != "" || stored.EgressAssignedAt != nil {
+			t.Fatalf("account binding not cleared: %#v", stored)
+		}
+	}
+	config, err := nodes.GetEgressOperationsConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback := config.FallbackFor(egress.ScopeBuild); fallback.Mode != egress.FallbackModeNone || fallback.NodeID != 0 {
+		t.Fatalf("cleanup fallback reference = %#v", fallback)
+	}
+}
+
 func TestEgressOperationsRejectsManualBindingsToDisabledOrDirectNodes(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
@@ -864,6 +955,18 @@ func createHealthyEgressNodeForScope(t *testing.T, ctx context.Context, reposito
 		t.Fatal(err)
 	}
 	return created
+}
+
+func setEgressProbeFamilies(t *testing.T, ctx context.Context, repository *EgressRepository, node egress.Node, ipv4, ipv6 egress.ProbeStatus) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := repository.UpdateEgressNodeProbe(ctx, node.ID, node.EncryptedProxyURL, egress.ProbeResult{
+		Status: egress.ProbeStatusUnhealthy, TestedAt: now, Error: "probe failed",
+		IPv4: egress.ProbeFamilyResult{Status: ipv4, TestedAt: now},
+		IPv6: egress.ProbeFamilyResult{Status: ipv6, TestedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func createEgressOperationsAccount(t *testing.T, ctx context.Context, repository *AccountRepository, sourceKey string) account.Credential {

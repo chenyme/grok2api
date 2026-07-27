@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, CircleHelp, MoreHorizontal, Network, Pencil, Plus, RefreshCw, Shuffle, Trash2, Upload } from "lucide-react";
+import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Shuffle, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -14,18 +14,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   createEgressSource,
   deleteEgressSource,
   getEgressOperationsConfig,
-  importEgressText,
-  listEgressNodes,
+  listAllEgressNodes,
   listEgressSources,
   rebalanceEgressAccounts,
   syncEgressSource,
-  testEgressNodes,
   updateEgressOperationsConfig,
   updateEgressSource,
   type EgressFallbackConfigDTO,
@@ -38,18 +35,15 @@ import {
 } from "@/features/settings/settings-api";
 import { formatDateTime } from "@/shared/lib/format";
 import { ErrorState, LoadingState, TableLoadingRow } from "@/shared/components/data-state";
+import { DataTableFilters } from "@/shared/components/data-table-filters";
+import { DataTableShell } from "@/shared/components/data-table-shell";
+import { Pagination } from "@/shared/components/pagination";
+import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 
 type SourceForm = EgressSourceInput & { url: string };
-type ImportForm = { name: string; scope: EgressScope; accountCapacity: number; content: string };
-
 const emptySource: SourceForm = {
   name: "", scope: "grok_build", enabled: true, url: "", refreshIntervalSeconds: 900, defaultAccountCapacity: 0,
 };
-const emptyImport: ImportForm = { name: "", scope: "grok_build", accountCapacity: 0, content: "" };
-// Eight nodes run concurrently; each checks IPv4 and IPv6 in parallel with a
-// 15-second ceiling. Keeping a request to 32 nodes leaves enough headroom for
-// the admin HTTP timeout.
-const egressProbeBatchSize = 32;
 const fallbackScopes: EgressScope[] = ["grok_build", "grok_web", "grok_console", "grok_web_asset"];
 const fallbackDescriptionKeys: Record<EgressScope, string> = {
   grok_build: "settings.egress.fallbackBuildHelp",
@@ -88,65 +82,18 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOpera
   };
 }
 
-async function testAllEgressNodes() {
-  const nodes = await listEgressNodes();
-  const ids = nodes.items.filter((node) => node.enabled && node.proxyConfigured).map((node) => node.id);
-  const result = { requested: 0, healthy: 0, unhealthy: 0 };
-  for (let index = 0; index < ids.length; index += egressProbeBatchSize) {
-    const batch = await testEgressNodes(ids.slice(index, index + egressProbeBatchSize));
-    result.requested += batch.requested;
-    result.healthy += batch.healthy;
-    result.unhealthy += batch.unhealthy;
-  }
-  return result;
-}
-
-export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressScope) => string }) {
-  const { t, i18n } = useTranslation();
+export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressScope) => string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [sourceEditing, setSourceEditing] = useState<EgressSourceDTO | null | undefined>(undefined);
-  const [sourceForm, setSourceForm] = useState<SourceForm>(emptySource);
-  const [importOpen, setImportOpen] = useState(false);
-  const [importForm, setImportForm] = useState<ImportForm>(emptyImport);
   const [operationsDraft, setOperationsDraft] = useState<Omit<EgressOperationsConfigDTO, "updatedAt"> | null>(null);
-  const sourcesQuery = useQuery({ queryKey: ["egress-sources"], queryFn: listEgressSources });
   const operationsQuery = useQuery({ queryKey: ["egress-operations"], queryFn: getEgressOperationsConfig });
-  const nodesQuery = useQuery({ queryKey: ["egress-nodes", "fallback-options"], queryFn: () => listEgressNodes() });
+  const nodesQuery = useQuery({ queryKey: ["egress-nodes", "fallback-options"], queryFn: () => listAllEgressNodes() });
   const operationsForm = operationsDraft ?? operationsFormFrom(operationsQuery.data);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
-    void queryClient.invalidateQueries({ queryKey: ["egress-sources"] });
     void queryClient.invalidateQueries({ queryKey: ["egress-operations"] });
   };
-  const saveSource = useMutation({
-    mutationFn: () => {
-      const input: EgressSourceInput = { ...sourceForm, url: sourceForm.url.trim() || undefined };
-      return sourceEditing ? updateEgressSource(sourceEditing.id, input) : createEgressSource(input);
-    },
-    onSuccess: () => { invalidate(); setSourceEditing(undefined); toast.success(t("settings.egress.sourceSaved")); },
-    onError: showError,
-  });
-  const removeSource = useMutation({
-    mutationFn: deleteEgressSource,
-    onSuccess: () => { invalidate(); toast.success(t("settings.egress.sourceDeleted")); },
-    onError: showError,
-  });
-  const syncSource = useMutation({
-    mutationFn: syncEgressSource,
-    onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.sourceSynced", value)); },
-    onError: showError,
-  });
-  const importText = useMutation({
-    mutationFn: () => importEgressText(importForm),
-    onSuccess: (value) => { invalidate(); setImportOpen(false); toast.success(t("settings.egress.imported", value)); },
-    onError: showError,
-  });
-  const testAll = useMutation({
-    mutationFn: testAllEgressNodes,
-    onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.tested", value)); },
-    onError: showError,
-  });
   const rebalance = useMutation({
     mutationFn: rebalanceEgressAccounts,
     onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.rebalanced", value)); },
@@ -157,19 +104,6 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
     onSuccess: () => { setOperationsDraft(null); invalidate(); toast.success(t("settings.egress.automationSaved")); },
     onError: showError,
   });
-
-  function openSource(value?: EgressSourceDTO) {
-    if (!value) {
-      setSourceForm(emptySource);
-      setSourceEditing(null);
-      return;
-    }
-    setSourceForm({
-      name: value.name, scope: value.scope, enabled: value.enabled, url: "", refreshIntervalSeconds: value.refreshIntervalSeconds,
-      defaultAccountCapacity: value.defaultAccountCapacity,
-    });
-    setSourceEditing(value);
-  }
 
   function setFallback(scope: EgressScope, fallback: EgressFallbackConfigDTO) {
     setOperationsDraft({ ...operationsForm, fallbacks: { ...operationsForm.fallbacks, [scope]: fallback } });
@@ -189,7 +123,6 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
     <section className="space-y-8">
       <div className="space-y-3">
         <OperationSectionHeader title={t("settings.egress.automation")} help={t("settings.egress.automationHelp")}>
-          <ActionTooltip label={t("settings.egress.testAllHelp")}><Button type="button" size="sm" variant="secondary" disabled={testAll.isPending} onClick={() => testAll.mutate()}>{testAll.isPending ? <Spinner /> : <Network />}{t("settings.egress.testAll")}</Button></ActionTooltip>
           <ActionTooltip label={t("settings.egress.rebalanceHelp")}><Button type="button" size="sm" variant="secondary" disabled={rebalance.isPending} onClick={() => rebalance.mutate()}>{rebalance.isPending ? <Spinner /> : <Shuffle />}{t("settings.egress.rebalance")}</Button></ActionTooltip>
           <ActionTooltip label={t("settings.egress.saveAutomationHelp")}><Button type="button" size="sm" disabled={operationsDraft === null || saveOperations.isPending} onClick={() => saveOperations.mutate()}>{saveOperations.isPending ? <Spinner /> : null}{t("common.save")}</Button></ActionTooltip>
         </OperationSectionHeader>
@@ -264,40 +197,117 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
         )}
       </div>
 
-      <div className="space-y-3">
-        <OperationSectionHeader title={t("settings.egress.subscriptions")} help={t("settings.egress.subscriptionsHelp")}>
-          <ActionTooltip label={t("settings.egress.importTextHelp")}><Button type="button" size="sm" variant="secondary" onClick={() => { setImportForm(emptyImport); setImportOpen(true); }}><Upload />{t("settings.egress.importText")}</Button></ActionTooltip>
-          <ActionTooltip label={t("settings.egress.addSourceHelp")}><Button type="button" size="sm" variant="secondary" onClick={() => openSource()}><Plus />{t("settings.egress.addSource")}</Button></ActionTooltip>
-        </OperationSectionHeader>
+    </section>
+  );
+}
 
-        {sourcesQuery.isError ? <ErrorState message={sourcesQuery.error.message} onRetry={() => void sourcesQuery.refetch()} /> : (
-          <div className="overflow-hidden rounded-md border">
-            <Table className="min-w-[640px]">
-              <TableHeader><TableRow><TableHead className="min-w-48">{t("settings.egress.source")}</TableHead><TableHead className="w-32 text-center">{t("settings.egress.scope")}</TableHead><TableHead className="min-w-44">{t("settings.egress.lastSync")}</TableHead><TableHead className="w-28 text-center">{t("settings.egress.capacity")}</TableHead><TableActionHead /></TableRow></TableHeader>
-              <TableBody>
-                {sourcesQuery.isPending ? <TableLoadingRow colSpan={5} /> : null}
-                {!sourcesQuery.isPending && (sourcesQuery.data?.items.length ?? 0) === 0 ? <TableRow><TableCell colSpan={5} className="h-24 text-center text-xs text-muted-foreground">{t("settings.egress.noSources")}</TableCell></TableRow> : null}
-                {sourcesQuery.data?.items.map((source) => (
-                  <TableRow className="group h-12" key={source.id}>
-                    <TableCell><div className="flex min-w-0 items-center gap-2"><span className={source.enabled ? "size-1.5 shrink-0 rounded-full bg-emerald-500" : "size-1.5 shrink-0 rounded-full bg-muted-foreground/35"} /><span className="truncate text-xs font-medium">{source.name}</span>{source.lastSyncError ? <SourceError message={source.lastSyncError} /> : null}</div></TableCell>
-                    <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(source.scope)}</Badge></TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{source.lastSyncedAt ? formatDateTime(source.lastSyncedAt, i18n.language) : t("settings.egress.never")}</TableCell>
-                    <TableCell className="text-center text-xs tabular-nums">{source.defaultAccountCapacity || t("settings.egress.unlimited")}</TableCell>
-                    <TableActionCell>
-                      <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon" variant="ghost" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
-                        <DropdownMenuItem disabled={syncSource.isPending} onClick={() => syncSource.mutate(source.id)}><RefreshCw />{t("settings.egress.sync")}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => openSource(source)}><Pencil />{t("common.edit")}</DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem className="text-destructive focus:text-destructive" disabled={removeSource.isPending} onClick={() => removeSource.mutate(source.id)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
-                      </DropdownMenuContent></DropdownMenu>
-                    </TableActionCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+export function EgressSources({ scopeLabel }: { scopeLabel: (scope: EgressScope) => string }) {
+  const { t, i18n } = useTranslation();
+  const queryClient = useQueryClient();
+  const [sourceEditing, setSourceEditing] = useState<EgressSourceDTO | null | undefined>(undefined);
+  const [sourceForm, setSourceForm] = useState<SourceForm>(emptySource);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [search, setSearch] = useState("");
+  const [scopeFilter, setScopeFilter] = useState("");
+  const sourcesQuery = useQuery({ queryKey: ["egress-sources"], queryFn: listEgressSources });
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+    void queryClient.invalidateQueries({ queryKey: ["egress-sources"] });
+  };
+  const saveSource = useMutation({
+    mutationFn: () => {
+      const input: EgressSourceInput = { ...sourceForm, url: sourceForm.url.trim() || undefined };
+      return sourceEditing ? updateEgressSource(sourceEditing.id, input) : createEgressSource(input);
+    },
+    onSuccess: () => { if (!sourceEditing) setPage(1); invalidate(); setSourceEditing(undefined); toast.success(t("settings.egress.sourceSaved")); },
+    onError: showError,
+  });
+  const removeSource = useMutation({
+    mutationFn: deleteEgressSource,
+    onSuccess: () => { if (page > 1 && pagedSources.length === 1) setPage(page - 1); invalidate(); toast.success(t("settings.egress.sourceDeleted")); },
+    onError: showError,
+  });
+  const syncSource = useMutation({
+    mutationFn: syncEgressSource,
+    onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.sourceSynced", value)); },
+    onError: showError,
+  });
+
+  function openSource(value?: EgressSourceDTO) {
+    if (!value) {
+      setSourceForm(emptySource);
+      setSourceEditing(null);
+      return;
+    }
+    setSourceForm({
+      name: value.name, scope: value.scope, enabled: value.enabled, url: "", refreshIntervalSeconds: value.refreshIntervalSeconds,
+      defaultAccountCapacity: value.defaultAccountCapacity,
+    });
+    setSourceEditing(value);
+  }
+
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const sources = sourcesQuery.data?.items ?? [];
+  const filteredSources = sources.filter((source) => {
+    if (normalizedSearch && !source.name.toLocaleLowerCase().includes(normalizedSearch)) return false;
+    return !scopeFilter || source.scope === scopeFilter;
+  });
+  const pageCount = Math.max(1, Math.ceil(filteredSources.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const pagedSources = filteredSources.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const hasActiveFilters = Boolean(normalizedSearch || scopeFilter);
+
+  return (
+    <section className="space-y-3">
+      <OperationSectionHeader title={t("settings.egress.subscriptions")} help={t("settings.egress.subscriptionsHelp")} />
+
+      <DataTableShell
+        toolbar={(
+          <>
+            <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+              <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={t("settings.egress.searchSubscriptions")} aria-label={t("settings.egress.searchSubscriptions")} />
+              </div>
+              <DataTableFilters filters={[{
+                id: "subscription-scope", label: t("settings.egress.scope"), value: scopeFilter, onChange: (value) => { setScopeFilter(value); setPage(1); }, options: [
+                  { value: "grok_build", label: scopeLabel("grok_build") },
+                  { value: "grok_web", label: scopeLabel("grok_web") },
+                  { value: "grok_console", label: scopeLabel("grok_console") },
+                  { value: "grok_web_asset", label: scopeLabel("grok_web_asset") },
+                ],
+              }]} />
+            </div>
+            <ActionTooltip label={t("settings.egress.addSourceHelp")}><Button type="button" size="sm" variant="secondary" onClick={() => openSource()}><Plus />{t("settings.egress.addSource")}</Button></ActionTooltip>
+          </>
         )}
-      </div>
+        footer={filteredSources.length > 0 ? <Pagination page={currentPage} pageSize={pageSize} total={filteredSources.length} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} /> : undefined}
+      >
+        {sourcesQuery.isError ? <ErrorState message={sourcesQuery.error.message} onRetry={() => void sourcesQuery.refetch()} /> : null}
+        {!sourcesQuery.isError ? <Table viewportRows={10} rowHeight={48} className="min-w-[640px] table-fixed">
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-[24%]">{t("settings.egress.source")}</TableHead><TableHead className="w-[18%] text-center">{t("settings.egress.scope")}</TableHead><TableHead className="w-[38%]">{t("settings.egress.lastSync")}</TableHead><TableHead className="w-[15%] text-center">{t("settings.egress.capacity")}</TableHead><TableActionHead /></TableRow></TableHeader>
+          {sourcesQuery.isPending ? <TableBody><TableLoadingRow colSpan={5} /></TableBody> : null}
+          {!sourcesQuery.isPending && pagedSources.length === 0 ? <TableBody><TableRow><TableCell colSpan={5} className="h-24 text-center text-xs text-muted-foreground">{hasActiveFilters ? t("settings.egress.noSubscriptionMatches") : t("settings.egress.noSources")}</TableCell></TableRow></TableBody> : null}
+          {!sourcesQuery.isPending && pagedSources.length > 0 ? <VirtualTableBody items={pagedSources} colSpan={5} rowHeight={48} renderRow={(source) => (
+            <TableRow className="group h-12" key={source.id}>
+              <TableCell><div className="flex min-w-0 items-center gap-2"><span className={source.enabled ? "size-1.5 shrink-0 rounded-full bg-emerald-500" : "size-1.5 shrink-0 rounded-full bg-muted-foreground/35"} /><span className="truncate text-xs font-medium">{source.name}</span>{source.lastSyncError ? <SourceError message={source.lastSyncError} /> : null}</div></TableCell>
+              <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(source.scope)}</Badge></TableCell>
+              <TableCell className="text-xs text-muted-foreground">{source.lastSyncedAt ? formatDateTime(source.lastSyncedAt, i18n.language) : t("settings.egress.never")}</TableCell>
+              <TableCell className="text-center text-xs tabular-nums">{source.defaultAccountCapacity || t("settings.egress.unlimited")}</TableCell>
+              <TableActionCell>
+                <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon" variant="ghost" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
+                  <DropdownMenuItem disabled={syncSource.isPending} onClick={() => syncSource.mutate(source.id)}><RefreshCw />{t("settings.egress.sync")}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => openSource(source)}><Pencil />{t("common.edit")}</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="text-destructive focus:text-destructive" disabled={removeSource.isPending} onClick={() => removeSource.mutate(source.id)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
+                </DropdownMenuContent></DropdownMenu>
+              </TableActionCell>
+            </TableRow>
+          )} /> : null}
+        </Table> : null}
+      </DataTableShell>
 
       <Dialog open={sourceEditing !== undefined} onOpenChange={(open) => { if (!open) setSourceEditing(undefined); }}>
         <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-[520px]">
@@ -312,18 +322,6 @@ export function EgressOperations({ scopeLabel }: { scopeLabel: (scope: EgressSco
               <Control label={t("settings.egress.capacity")}><Input type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={sourceForm.defaultAccountCapacity || ""} onChange={(event) => setSourceForm({ ...sourceForm, defaultAccountCapacity: Number(event.target.value) })} /></Control>
             </div>
             <DialogFooter><Button type="button" size="sm" variant="secondary" onClick={() => setSourceEditing(undefined)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={!sourceForm.name.trim() || (!sourceEditing && !sourceForm.url.trim()) || saveSource.isPending}>{saveSource.isPending ? <Spinner /> : null}{t("common.save")}</Button></DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={importOpen} onOpenChange={setImportOpen}>
-        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-[620px]">
-          <DialogHeader className="pr-8"><DialogTitle>{t("settings.egress.importText")}</DialogTitle><DialogDescription>{t("settings.egress.importDialogDescription")}</DialogDescription></DialogHeader>
-          <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); event.stopPropagation(); importText.mutate(); }}>
-            <div className="grid gap-3 sm:grid-cols-2"><Control label={t("settings.egress.name")}><Input value={importForm.name} onChange={(event) => setImportForm({ ...importForm, name: event.target.value })} /></Control><Control label={t("settings.egress.scope")}><ScopeSelect value={importForm.scope} onChange={(scope) => setImportForm({ ...importForm, scope })} scopeLabel={scopeLabel} /></Control></div>
-            <Control label={t("settings.egress.capacity")}><Input type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={importForm.accountCapacity || ""} onChange={(event) => setImportForm({ ...importForm, accountCapacity: Number(event.target.value) })} /></Control>
-            <Control label={t("settings.egress.proxyList")}><Textarea className="min-h-52 font-mono text-xs" value={importForm.content} onChange={(event) => setImportForm({ ...importForm, content: event.target.value })} /></Control>
-            <DialogFooter><Button type="button" size="sm" variant="secondary" onClick={() => setImportOpen(false)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={!importForm.name.trim() || !importForm.content.trim() || importText.isPending}>{importText.isPending ? <Spinner /> : null}{t("settings.egress.importText")}</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
@@ -347,7 +345,7 @@ function ScopeSelect({ value, onChange, scopeLabel }: { value: EgressScope; onCh
   return <Select value={value} onValueChange={(next) => onChange(next as EgressScope)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{(["grok_build", "grok_web", "grok_console", "grok_web_asset"] as EgressScope[]).map((scope) => <SelectItem key={scope} value={scope}>{scopeLabel(scope)}</SelectItem>)}</SelectContent></Select>;
 }
 
-function OperationSectionHeader({ title, help, children }: { title: string; help: string; children: ReactNode }) {
+function OperationSectionHeader({ title, help, children }: { title: string; help: string; children?: ReactNode }) {
   return (
     <div className="flex min-h-8 flex-wrap items-center justify-between gap-3 px-1">
       <div className="flex items-center gap-1.5">
@@ -357,7 +355,7 @@ function OperationSectionHeader({ title, help, children }: { title: string; help
           <TooltipContent className="max-w-80">{help}</TooltipContent>
         </Tooltip>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5">{children}</div>
+      {children ? <div className="flex flex-wrap items-center gap-1.5">{children}</div> : null}
     </div>
   );
 }

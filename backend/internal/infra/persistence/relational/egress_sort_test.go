@@ -65,6 +65,73 @@ func TestEgressRepositorySortsInDatabase(t *testing.T) {
 	}
 }
 
+func TestEgressRepositoryPaginatesAndFiltersManagementList(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "egress-page.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewEgressRepository(database)
+	created := make(map[string]egress.Node)
+	for _, value := range []egress.Node{
+		{Name: "alpha", Scope: egress.ScopeBuild, Enabled: true, Health: 0.9, ProbeStatus: egress.ProbeStatusHealthy},
+		{Name: "beta", Scope: egress.ScopeWeb, Enabled: false, Health: 0.4, ProbeStatus: egress.ProbeStatusUnhealthy},
+		{Name: "gamma", Scope: egress.ScopeBuild, Enabled: true, Health: 0.7, ProbeStatus: egress.ProbeStatusUnknown},
+	} {
+		node, createErr := repo.CreateEgressNode(ctx, value)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		created[node.Name] = node
+	}
+	if err := database.db.WithContext(ctx).Model(&egressNodeModel{}).Where("id = ?", created["beta"].ID).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	alphaID := created["alpha"].ID
+	if err := database.db.WithContext(ctx).Create(&accountModel{
+		IdentityKey: strings.Repeat("a", 64), Provider: "grok_build", Name: "bound", SourceKey: "bound-source",
+		Enabled: true, AuthStatus: "active", Priority: 1, MaxConcurrent: 8, EgressNodeID: &alphaID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	values, total, err := repo.ListEgressNodePage(ctx, repository.EgressNodeListQuery{
+		Page: repository.PageQuery{Limit: 2, Sort: repository.SortQuery{Field: "name", Direction: repository.SortAscending}},
+	})
+	if err != nil || total != 3 || len(values) != 2 || values[0].Name != "alpha" || values[1].Name != "beta" || values[0].AssignedAccountCount != 1 {
+		t.Fatalf("first page = %#v, total=%d, err=%v", values, total, err)
+	}
+	values, total, err = repo.ListEgressNodePage(ctx, repository.EgressNodeListQuery{
+		Page: repository.PageQuery{Offset: 2, Limit: 2, Sort: repository.SortQuery{Field: "name", Direction: repository.SortAscending}},
+	})
+	if err != nil || total != 3 || len(values) != 1 || values[0].Name != "gamma" {
+		t.Fatalf("second page = %#v, total=%d, err=%v", values, total, err)
+	}
+
+	bound := "bound"
+	values, total, err = repo.ListEgressNodePage(ctx, repository.EgressNodeListQuery{
+		Page: repository.PageQuery{Limit: 20, Search: "ALP"},
+		Filter: repository.EgressNodeListFilter{
+			Scope: egress.ScopeBuild, ProbeStatus: egress.ProbeStatusHealthy, Assignment: bound,
+		},
+	})
+	if err != nil || total != 1 || len(values) != 1 || values[0].Name != "alpha" || values[0].AssignedAccountCount != 1 {
+		t.Fatalf("filtered page = %#v, total=%d, err=%v", values, total, err)
+	}
+
+	disabled := false
+	values, total, err = repo.ListEgressNodePage(ctx, repository.EgressNodeListQuery{
+		Page: repository.PageQuery{Limit: 20}, Filter: repository.EgressNodeListFilter{Enabled: &disabled, Assignment: "unbound"},
+	})
+	if err != nil || total != 1 || len(values) != 1 || values[0].Name != "beta" {
+		t.Fatalf("disabled unbound page = %#v, total=%d, err=%v", values, total, err)
+	}
+}
+
 func TestEgressStateUpdatesDoNotOverwriteClearanceOrHealth(t *testing.T) {
 	ctx := context.Background()
 	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "egress-state.db"))

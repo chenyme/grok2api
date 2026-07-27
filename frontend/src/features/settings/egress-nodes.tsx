@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -16,31 +16,50 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { EgressOperations } from "@/features/settings/egress-operations";
-import { createEgressNode, deleteEgressNode, deleteEgressNodes, listEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { EgressAutomation, EgressSources } from "@/features/settings/egress-operations";
+import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { ErrorState, TableLoadingRow } from "@/shared/components/data-state";
+import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
+import { Pagination } from "@/shared/components/pagination";
 import { SortableTableHead } from "@/shared/components/sortable-table-head";
+import { VirtualTableBody } from "@/shared/components/virtual-table-body";
+import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { cn } from "@/shared/lib/cn";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
 const emptyInput: EgressNodeInput = { name: "", scope: "grok_build", enabled: true, proxyPool: false, accountCapacity: 0, proxyURL: "", userAgent: "", cloudflareCookies: "" };
+type ImportForm = { name: string; scope: EgressScope; accountCapacity: number; content: string };
+const emptyImport: ImportForm = { name: "", scope: "grok_build", accountCapacity: 0, content: "" };
 
 export function EgressNodes({ title, clearanceMode }: { title: string; clearanceMode: "manual" | "flaresolverr" }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<EgressNodeDTO | null | undefined>(undefined);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importForm, setImportForm] = useState<ImportForm>(emptyImport);
   const [form, setForm] = useState<EgressNodeInput>(emptyInput);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [sort, setSort] = useState<TableSort>({ field: "", order: "asc" });
   const [search, setSearch] = useState("");
   const [scopeFilter, setScopeFilter] = useState("");
   const [enabledFilter, setEnabledFilter] = useState("");
   const [probeFilter, setProbeFilter] = useState("");
   const [assignmentFilter, setAssignmentFilter] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [selected, setSelected] = useState<Map<string, EgressNodeDTO>>(() => new Map());
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
-  const query = useQuery({ queryKey: ["egress-nodes", sort.field, sort.order], queryFn: () => listEgressNodes({ sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined }) });
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const debouncedSearch = useDebouncedValue(search);
+  const query = useQuery({
+    queryKey: ["egress-nodes", "page", page, pageSize, debouncedSearch, scopeFilter, enabledFilter, probeFilter, assignmentFilter, sort.field, sort.order],
+    queryFn: () => listEgressNodes({
+      page, pageSize, search: debouncedSearch, scope: scopeFilter as EgressScope | "", enabled: enabledFilter,
+      probe: probeFilter, assignment: assignmentFilter, sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined,
+    }),
+  });
   const save = useMutation({
     mutationFn: () => {
       const input = {
@@ -54,11 +73,17 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); setEditing(undefined); toast.success(t("settings.egress.saved")); },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
+  const importText = useMutation({
+    mutationFn: () => importEgressText(importForm),
+    onSuccess: (value) => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); setImportOpen(false); toast.success(t("settings.egress.imported", value)); },
+    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+  });
   const remove = useMutation({
     mutationFn: deleteEgressNode,
     onSuccess: (_, id) => {
+      if (page > 1 && query.data?.items.length === 1) setPage(page - 1);
       setSelected((current) => {
-        const next = new Set(current);
+        const next = new Map(current);
         next.delete(id);
         return next;
       });
@@ -68,12 +93,29 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
   const removeMany = useMutation({
-    mutationFn: () => deleteEgressNodes([...selected]),
+    mutationFn: () => deleteEgressNodes([...selected.keys()]),
     onSuccess: (value) => {
-      setSelected(new Set());
+      const selectedOnCurrentPage = query.data?.items.filter((node) => selected.has(node.id)).length ?? 0;
+      if (page > 1 && query.data && query.data.items.length > 0 && selectedOnCurrentPage === query.data.items.length) setPage(page - 1);
+      setSelected(new Map());
       setBatchDeleteOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("settings.egress.batchDeleted", value));
+    },
+    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+  });
+  const cleanupPreview = useMutation({
+    mutationFn: previewUnhealthyEgressNodes,
+  });
+  const cleanupUnhealthy = useMutation({
+    mutationFn: cleanupUnhealthyEgressNodes,
+    onSuccess: (value) => {
+      setPage(1);
+      setSelected(new Map());
+      setCleanupOpen(false);
+      cleanupPreview.reset();
+      void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+      toast.success(t("settings.egress.cleanupUnavailableComplete", value));
     },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
@@ -95,6 +137,12 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   function openCreate() {
     setForm(emptyInput);
     setEditing(null);
+  }
+
+  function openCleanup() {
+    cleanupPreview.reset();
+    setCleanupOpen(true);
+    cleanupPreview.mutate();
   }
 
   function openEdit(node: EgressNodeDTO) {
@@ -122,95 +170,103 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
 
   function changeSort(field: string, initialOrder: SortOrder): void {
     setSort((current) => nextTableSort(current, field, initialOrder));
+    setPage(1);
   }
 
-  function toggleVisible(checked: boolean): void {
+  function togglePage(checked: boolean): void {
     setSelected((current) => {
-      const next = new Set(current);
-      for (const node of filteredNodes) {
-        if (checked) next.add(node.id);
+      const next = new Map(current);
+      for (const node of nodes) {
+        if (checked) next.set(node.id, node);
         else next.delete(node.id);
       }
       return next;
     });
   }
 
-  function toggleNode(id: string, checked: boolean): void {
+  function toggleNode(node: EgressNodeDTO, checked: boolean): void {
     setSelected((current) => {
-      const next = new Set(current);
-      if (checked) next.add(id);
-      else next.delete(id);
+      const next = new Map(current);
+      if (checked) next.set(node.id, node);
+      else next.delete(node.id);
       return next;
     });
   }
 
   const nodes = query.data?.items ?? [];
-  const normalizedSearch = search.trim().toLocaleLowerCase();
-  const filteredNodes = nodes.filter((node) => {
-    if (normalizedSearch && !node.name.toLocaleLowerCase().includes(normalizedSearch)) return false;
-    if (scopeFilter && node.scope !== scopeFilter) return false;
-    if (enabledFilter === "enabled" && !node.enabled) return false;
-    if (enabledFilter === "disabled" && node.enabled) return false;
-    if (probeFilter && node.probeStatus !== probeFilter) return false;
-    if (assignmentFilter === "bound" && node.assignedAccountCount === 0) return false;
-    if (assignmentFilter === "unbound" && node.assignedAccountCount > 0) return false;
-    return true;
-  });
-  const selectedVisible = filteredNodes.filter((node) => selected.has(node.id));
-  const allVisibleSelected = filteredNodes.length > 0 && selectedVisible.length === filteredNodes.length;
-  const selectedAssignedAccounts = nodes.filter((node) => selected.has(node.id)).reduce((total, node) => total + node.assignedAccountCount, 0);
-  const selectedSourceNodes = nodes.filter((node) => selected.has(node.id) && node.sourceId).length;
+  const selectedOnPage = nodes.filter((node) => selected.has(node.id));
+  const allPageSelected = nodes.length > 0 && selectedOnPage.length === nodes.length;
+  const selectedNodes = [...selected.values()];
+  const selectedAssignedAccounts = selectedNodes.reduce((total, node) => total + node.assignedAccountCount, 0);
+  const selectedSourceNodes = selectedNodes.filter((node) => node.sourceId).length;
+  const hasActiveFilters = Boolean(debouncedSearch || scopeFilter || enabledFilter || probeFilter || assignmentFilter);
 
   return (
     <div className="space-y-8">
+      <EgressSources scopeLabel={scopeLabel} />
+
       <section className="space-y-3">
-        <div className="flex min-h-8 items-center justify-between gap-3 px-1">
+        <div className="flex min-h-8 items-center px-1">
           <h2 className="text-sm font-medium tracking-tight">{title}</h2>
-          <Button type="button" size="sm" variant="secondary" onClick={openCreate}><Plus />{t("settings.egress.add")}</Button>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-          <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
-            <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setSelected(new Set()); }} placeholder={t("settings.egress.search")} aria-label={t("settings.egress.search")} />
-            </div>
-            <DataTableFilters filters={[
-              { id: "scope", label: t("settings.egress.scope"), value: scopeFilter, onChange: (value) => { setScopeFilter(value); setSelected(new Set()); }, options: [
-                { value: "grok_build", label: scopeLabel("grok_build") },
-                { value: "grok_web", label: scopeLabel("grok_web") },
-                { value: "grok_console", label: scopeLabel("grok_console") },
-                { value: "grok_web_asset", label: scopeLabel("grok_web_asset") },
-              ] },
-              { id: "enabled", label: t("settings.egress.enabled"), value: enabledFilter, onChange: (value) => { setEnabledFilter(value); setSelected(new Set()); }, options: [
-                { value: "enabled", label: t("common.enable") },
-                { value: "disabled", label: t("common.disable") },
-              ] },
-              { id: "probe", label: t("settings.egress.probe"), value: probeFilter, onChange: (value) => { setProbeFilter(value); setSelected(new Set()); }, options: [
-                { value: "healthy", label: t("settings.egress.healthy") },
-                { value: "unhealthy", label: t("settings.egress.unhealthy") },
-                { value: "unknown", label: t("settings.egress.notTested") },
-              ] },
-              { id: "assignment", label: t("settings.egress.accounts"), value: assignmentFilter, onChange: (value) => { setAssignmentFilter(value); setSelected(new Set()); }, options: [
-                { value: "bound", label: t("settings.egress.assigned") },
-                { value: "unbound", label: t("settings.egress.unassigned") },
-              ] },
-            ]} />
-          </div>
-          {selected.size > 0 ? (
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
-              <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
-            </div>
-          ) : null}
-        </div>
-        {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : <div className="overflow-hidden rounded-md border">
-          <Table className="min-w-[800px] table-fixed">
-          <TableHeader><TableRow><TableHead className="w-10 px-2"><Checkbox checked={allVisibleSelected ? true : selectedVisible.length > 0 ? "indeterminate" : false} disabled={filteredNodes.length === 0} onCheckedChange={(checked) => toggleVisible(checked === true)} aria-label={t("settings.egress.selectVisible")} /></TableHead><SortableTableHead className="w-18" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-24" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-16" field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="w-28" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-14 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-24" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" title={t("settings.egress.healthHelp")} onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="w-52"><div className="flex items-center justify-center gap-1"><span>{t("settings.egress.probe")}</span><Tooltip><TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("settings.egress.probeHelp")}><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-80">{t("settings.egress.probeHelp")}</TooltipContent></Tooltip></div></TableHead><TableActionHead /></TableRow></TableHeader>
-          <TableBody>
-            {query.isPending ? <TableLoadingRow colSpan={9} /> : null}
-            {!query.isPending && filteredNodes.length === 0 ? <TableRow><TableCell colSpan={9} className="h-24 text-center text-xs text-muted-foreground">{nodes.length === 0 ? t("settings.egress.directFallback") : t("settings.egress.noMatches")}</TableCell></TableRow> : filteredNodes.map((node) => (
+        <DataTableShell
+          toolbar={(
+            <>
+              <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+                <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); setSelected(new Map()); }} placeholder={t("settings.egress.search")} aria-label={t("settings.egress.search")} />
+                </div>
+                <DataTableFilters filters={[
+                  { id: "scope", label: t("settings.egress.scope"), value: scopeFilter, onChange: (value) => { setScopeFilter(value); setPage(1); setSelected(new Map()); }, options: [
+                    { value: "grok_build", label: scopeLabel("grok_build") },
+                    { value: "grok_web", label: scopeLabel("grok_web") },
+                    { value: "grok_console", label: scopeLabel("grok_console") },
+                    { value: "grok_web_asset", label: scopeLabel("grok_web_asset") },
+                  ] },
+                  { id: "enabled", label: t("settings.egress.enabled"), value: enabledFilter, onChange: (value) => { setEnabledFilter(value); setPage(1); setSelected(new Map()); }, options: [
+                    { value: "enabled", label: t("common.enable") },
+                    { value: "disabled", label: t("common.disable") },
+                  ] },
+                  { id: "probe", label: t("settings.egress.probe"), value: probeFilter, onChange: (value) => { setProbeFilter(value); setPage(1); setSelected(new Map()); }, options: [
+                    { value: "healthy", label: t("settings.egress.healthy") },
+                    { value: "unhealthy", label: t("settings.egress.unhealthy") },
+                    { value: "unknown", label: t("settings.egress.notTested") },
+                  ] },
+                  { id: "assignment", label: t("settings.egress.accounts"), value: assignmentFilter, onChange: (value) => { setAssignmentFilter(value); setPage(1); setSelected(new Map()); }, options: [
+                    { value: "bound", label: t("settings.egress.assigned") },
+                    { value: "unbound", label: t("settings.egress.unassigned") },
+                  ] },
+                ]} />
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {selected.size > 0 ? (
+                  <>
+                    <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
+                    <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
+                  </>
+                ) : null}
+                <Button type="button" size="sm" variant="secondary" disabled={cleanupUnhealthy.isPending} onClick={openCleanup}><Trash2 />{t("settings.egress.cleanupUnavailable")}</Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild><Button type="button" size="sm" variant="secondary"><Plus />{t("settings.egress.add")}</Button></DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={openCreate}><Plus />{t("settings.egress.addManually")}</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => { setImportForm(emptyImport); setImportOpen(true); }}><Upload />{t("settings.egress.importText")}</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </>
+          )}
+          footer={query.data && query.data.total > 0 ? <Pagination page={query.data.page} pageSize={query.data.pageSize} total={query.data.total} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} /> : undefined}
+        >
+          {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : null}
+          {!query.isError ? <Table viewportRows={10} rowHeight={48} className="min-w-[800px] table-fixed">
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-10 px-2"><Checkbox checked={allPageSelected ? true : selectedOnPage.length > 0 ? "indeterminate" : false} disabled={nodes.length === 0} onCheckedChange={(checked) => togglePage(checked === true)} aria-label={t("common.selectPage")} /></TableHead><SortableTableHead className="w-18" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-24" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-16" field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="w-28" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-14 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-24" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" title={t("settings.egress.healthHelp")} onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="w-52"><div className="flex items-center justify-center gap-1"><span>{t("settings.egress.probe")}</span><Tooltip><TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("settings.egress.probeHelp")}><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-80">{t("settings.egress.probeHelp")}</TooltipContent></Tooltip></div></TableHead><TableActionHead /></TableRow></TableHeader>
+          {query.isPending ? <TableBody><TableLoadingRow colSpan={9} /></TableBody> : null}
+          {!query.isPending && nodes.length === 0 ? <TableBody><TableRow><TableCell colSpan={9} className="h-24 text-center text-xs text-muted-foreground">{hasActiveFilters ? t("settings.egress.noMatches") : t("settings.egress.directFallback")}</TableCell></TableRow></TableBody> : null}
+          {!query.isPending && nodes.length > 0 ? <VirtualTableBody items={nodes} colSpan={9} rowHeight={48} renderRow={(node) => (
               <TableRow className="group h-12" key={node.id} data-state={selected.has(node.id) ? "selected" : undefined}>
-                <TableCell className="px-2"><Checkbox checked={selected.has(node.id)} onCheckedChange={(checked) => toggleNode(node.id, checked === true)} aria-label={t("common.selectItem", { name: node.name })} /></TableCell>
+                <TableCell className="px-2"><Checkbox checked={selected.has(node.id)} onCheckedChange={(checked) => toggleNode(node, checked === true)} aria-label={t("common.selectItem", { name: node.name })} /></TableCell>
                 <TableCell>
                   <div className="flex min-w-0 items-center gap-2">
                     <span className={cn("size-1.5 shrink-0 rounded-full", node.enabled ? "bg-emerald-500" : "bg-muted-foreground/35")} />
@@ -237,13 +293,13 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                   </DropdownMenu>
                 </TableActionCell>
               </TableRow>
-            ))}
-          </TableBody>
+            )} /> : null}
           </Table>
-        </div>}
+          : null}
+        </DataTableShell>
       </section>
 
-      <EgressOperations scopeLabel={scopeLabel} />
+      <EgressAutomation scopeLabel={scopeLabel} />
 
       <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
         <AlertDialogContent>
@@ -255,6 +311,44 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel disabled={removeMany.isPending}>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={removeMany.isPending} onClick={(event) => { event.preventDefault(); removeMany.mutate(); }}>{removeMany.isPending ? <Spinner /> : null}{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={cleanupOpen} onOpenChange={(open) => {
+        if (!open && cleanupUnhealthy.isPending) return;
+        if (!open) cleanupPreview.reset();
+        setCleanupOpen(open);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("settings.egress.cleanupUnavailableTitle")}</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span className="block">{t("settings.egress.cleanupUnavailableDescription")}</span>
+              <span className="block">{t("settings.egress.cleanupUnavailableImpact")}</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="min-h-20 rounded-md bg-muted/45 p-3 text-xs">
+            {cleanupPreview.isPending ? <div className="flex h-14 items-center justify-center gap-2 text-muted-foreground"><Spinner />{t("settings.egress.cleanupPreviewLoading")}</div> : null}
+            {cleanupPreview.isError ? <div className="flex h-14 items-center justify-center text-center text-destructive">{t("settings.egress.cleanupPreviewFailed")}</div> : null}
+            {cleanupPreview.data ? (
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <CleanupPreviewValue label={t("settings.egress.cleanupNodeCount")} value={cleanupPreview.data.nodes} />
+                <CleanupPreviewValue label={t("settings.egress.cleanupAccountCount")} value={cleanupPreview.data.boundAccounts} />
+                <CleanupPreviewValue label={t("settings.egress.cleanupSubscriptionCount")} value={cleanupPreview.data.subscriptionManaged} />
+              </div>
+            ) : null}
+          </div>
+          {cleanupPreview.data && cleanupPreview.data.subscriptionManaged > 0 ? <p className="text-xs leading-5 text-amber-700 dark:text-amber-300">{t("settings.egress.cleanupSubscriptionHint")}</p> : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cleanupUnhealthy.isPending}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              disabled={cleanupUnhealthy.isPending || !cleanupPreview.data || cleanupPreview.data.nodes === 0}
+              onClick={(event) => { event.preventDefault(); cleanupUnhealthy.mutate(); }}
+            >
+              {cleanupUnhealthy.isPending ? <Spinner /> : null}{t("settings.egress.cleanupUnavailableConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
@@ -324,6 +418,40 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
           </form>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-[620px]">
+          <DialogHeader className="pr-8"><DialogTitle>{t("settings.egress.importText")}</DialogTitle><DialogDescription>{t("settings.egress.importDialogDescription")}</DialogDescription></DialogHeader>
+          <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); event.stopPropagation(); importText.mutate(); }}>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label={t("settings.egress.name")} controlId="egress-import-name"><Input id="egress-import-name" value={importForm.name} onChange={(event) => setImportForm({ ...importForm, name: event.target.value })} /></Field>
+              <Field label={t("settings.egress.scope")} controlId="egress-import-scope">
+                <Select value={importForm.scope} onValueChange={(value) => setImportForm({ ...importForm, scope: value as EgressScope })}>
+                  <SelectTrigger id="egress-import-scope"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="grok_build">{t("settings.egress.scopeBuild")}</SelectItem>
+                    <SelectItem value="grok_web">{t("settings.egress.scopeWeb")}</SelectItem>
+                    <SelectItem value="grok_console">{t("console.name")}</SelectItem>
+                    <SelectItem value="grok_web_asset">{t("settings.egress.scopeWebAsset")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+            <Field label={t("settings.egress.capacity")} controlId="egress-import-capacity"><Input id="egress-import-capacity" type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={importForm.accountCapacity || ""} onChange={(event) => setImportForm({ ...importForm, accountCapacity: Number(event.target.value) })} /></Field>
+            <Field label={t("settings.egress.proxyList")} controlId="egress-import-list"><Textarea className="min-h-52 font-mono text-xs" id="egress-import-list" value={importForm.content} onChange={(event) => setImportForm({ ...importForm, content: event.target.value })} /></Field>
+            <DialogFooter><Button type="button" size="sm" variant="secondary" onClick={() => setImportOpen(false)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={!importForm.name.trim() || !importForm.content.trim() || importText.isPending}>{importText.isPending ? <Spinner /> : null}{t("settings.egress.importText")}</Button></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function CleanupPreviewValue({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-base font-medium tabular-nums text-foreground">{value}</div>
+      <div className="text-muted-foreground">{label}</div>
     </div>
   );
 }
@@ -362,9 +490,11 @@ function HealthMeter({ value }: { value: number }) {
 
 function ProbeSummary({ node }: { node: EgressNodeDTO }) {
   return (
-    <div className="mx-auto grid w-fit max-w-full grid-cols-[2rem_auto] grid-rows-2 items-center gap-x-2 gap-y-1 py-1 text-xs">
-      <ProbeFamilySummary family="IPv4" probe={node.ipv4Probe} row={1} />
-      <ProbeFamilySummary family="IPv6" probe={node.ipv6Probe} row={2} />
+    <div className="flex w-full justify-center">
+      <div className="grid w-fit max-w-full grid-cols-[2rem_auto] grid-rows-2 items-center gap-x-2 gap-y-1 py-1 text-left text-xs">
+        <ProbeFamilySummary family="IPv4" probe={node.ipv4Probe} row={1} />
+        <ProbeFamilySummary family="IPv6" probe={node.ipv6Probe} row={2} />
+      </div>
     </div>
   );
 }
@@ -376,14 +506,14 @@ function ProbeFamilySummary({ family, probe, row }: { family: "IPv4" | "IPv6"; p
   const rowClass = row === 1 ? "row-start-1" : "row-start-2";
   const stateContent = <span className="flex min-w-0 items-center gap-1.5">
     <span className={cn("size-1.5 shrink-0 rounded-full", healthy ? "bg-emerald-500" : unhealthy ? "bg-destructive" : "bg-muted-foreground/35")} />
-    <span className={cn("truncate", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")} title={healthy ? probe.exitIp : undefined}>
+    <span className={cn("truncate text-[10px]", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")} title={healthy ? probe.exitIp : undefined}>
       {healthy ? probe.exitIp || t("settings.egress.healthy") : unhealthy ? t("settings.egress.unhealthy") : t("settings.egress.notTested")}
     </span>
   </span>;
   return (
     <div className="contents">
       <span className={cn("col-start-1 text-[10px] font-medium text-muted-foreground", rowClass)}>{family}</span>
-      <span className={cn("col-start-2 flex min-w-0 max-w-[10rem] items-center gap-1.5 text-left", rowClass)}>
+      <span className={cn("col-start-2 flex min-w-0 max-w-[10rem] items-center gap-1.5", rowClass)}>
         {probe.status === "unknown" ? stateContent : (
           <Tooltip>
             <TooltipTrigger asChild><span className="min-w-0 cursor-help">{stateContent}</span></TooltipTrigger>
