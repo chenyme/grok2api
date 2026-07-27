@@ -19,6 +19,7 @@ var (
 	ErrInvalidInput         = errors.New("代理节点参数无效")
 	ErrInvalidSort          = errors.New("代理节点排序条件无效")
 	ErrNotFound             = errors.New("代理节点不存在")
+	ErrProbeStale           = errors.New("代理配置在探测期间已更新，请重新测试")
 	ErrClearanceUnavailable = errors.New("Clearance 刷新不可用")
 )
 
@@ -457,6 +458,9 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 		value.ProbeLatencyMS = 0
 		value.ExitIP = ""
 		value.ProbeError = ""
+		value.ProbeProvider = ""
+		value.IPv4Probe = domain.ProbeFamilyResult{Status: domain.ProbeStatusUnknown}
+		value.IPv6Probe = domain.ProbeFamilyResult{Status: domain.ProbeStatusUnknown}
 	}
 	// Any administrator edit invalidates freshness. Keep the binding fingerprint:
 	// managed mode may use the existing cookie as last-known-good only when the
@@ -486,6 +490,8 @@ func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 		AccountBoundProxy: accountBoundProxy,
 		Health:            health, FailureCount: failureCount, CooldownUntil: cooldownUntil, LastError: lastError,
 		ProbeStatus: value.ProbeStatus, LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS, ExitIP: value.ExitIP, ProbeError: value.ProbeError,
+		ProbeProvider: value.ProbeProvider,
+		IPv4Probe:     value.IPv4Probe, IPv6Probe: value.IPv6Probe,
 		AssignedAccountCount: value.AssignedAccountCount,
 		CreatedAt:            value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}

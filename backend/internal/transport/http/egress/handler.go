@@ -68,27 +68,38 @@ type nodeRequest struct {
 }
 
 type nodeResponse struct {
-	ID                   uint64     `json:"id,string"`
-	Name                 string     `json:"name"`
-	Scope                string     `json:"scope"`
-	Enabled              bool       `json:"enabled"`
-	ProxyConfigured      bool       `json:"proxyConfigured"`
-	ProxyPool            bool       `json:"proxyPool"`
-	SourceID             uint64     `json:"sourceId,omitempty,string"`
-	AccountCapacity      int        `json:"accountCapacity"`
-	UserAgent            string     `json:"userAgent"`
-	CookieConfigured     bool       `json:"cookieConfigured"`
-	AccountBoundProxy    bool       `json:"accountBoundProxy"`
-	Health               float64    `json:"health"`
-	FailureCount         int        `json:"failureCount"`
-	CooldownUntil        *time.Time `json:"cooldownUntil,omitempty"`
-	LastError            string     `json:"lastError,omitempty"`
-	ProbeStatus          string     `json:"probeStatus"`
-	LastProbedAt         *time.Time `json:"lastProbedAt,omitempty"`
-	ProbeLatencyMS       int        `json:"probeLatencyMs"`
-	ExitIP               string     `json:"exitIp,omitempty"`
-	ProbeError           string     `json:"probeError,omitempty"`
-	AssignedAccountCount int        `json:"assignedAccountCount"`
+	ID                   uint64              `json:"id,string"`
+	Name                 string              `json:"name"`
+	Scope                string              `json:"scope"`
+	Enabled              bool                `json:"enabled"`
+	ProxyConfigured      bool                `json:"proxyConfigured"`
+	ProxyPool            bool                `json:"proxyPool"`
+	SourceID             uint64              `json:"sourceId,omitempty,string"`
+	AccountCapacity      int                 `json:"accountCapacity"`
+	UserAgent            string              `json:"userAgent"`
+	CookieConfigured     bool                `json:"cookieConfigured"`
+	AccountBoundProxy    bool                `json:"accountBoundProxy"`
+	Health               float64             `json:"health"`
+	FailureCount         int                 `json:"failureCount"`
+	CooldownUntil        *time.Time          `json:"cooldownUntil,omitempty"`
+	LastError            string              `json:"lastError,omitempty"`
+	ProbeStatus          string              `json:"probeStatus"`
+	LastProbedAt         *time.Time          `json:"lastProbedAt,omitempty"`
+	ProbeLatencyMS       int                 `json:"probeLatencyMs"`
+	ExitIP               string              `json:"exitIp,omitempty"`
+	ProbeError           string              `json:"probeError,omitempty"`
+	ProbeProvider        string              `json:"probeProvider,omitempty"`
+	IPv4Probe            probeFamilyResponse `json:"ipv4Probe"`
+	IPv6Probe            probeFamilyResponse `json:"ipv6Probe"`
+	AssignedAccountCount int                 `json:"assignedAccountCount"`
+}
+
+type probeFamilyResponse struct {
+	Status    string     `json:"status"`
+	TestedAt  *time.Time `json:"testedAt,omitempty"`
+	LatencyMS int        `json:"latencyMs"`
+	ExitIP    string     `json:"exitIp,omitempty"`
+	Error     string     `json:"error,omitempty"`
 }
 
 type accountAssignmentRequest struct {
@@ -237,7 +248,24 @@ func newNodeResponse(value egressdomain.PublicNode) nodeResponse {
 		SourceID:          value.SourceID, AccountCapacity: value.AccountCapacity,
 		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
 		ProbeStatus: string(value.ProbeStatus), LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS, ExitIP: value.ExitIP, ProbeError: value.ProbeError,
+		ProbeProvider: string(value.ProbeProvider),
+		IPv4Probe:     newProbeFamilyResponse(value.IPv4Probe), IPv6Probe: newProbeFamilyResponse(value.IPv6Probe),
 		AssignedAccountCount: value.AssignedAccountCount,
+	}
+}
+
+func newProbeFamilyResponse(value egressdomain.ProbeFamilyResult) probeFamilyResponse {
+	status := value.Status
+	if !status.IsValid() {
+		status = egressdomain.ProbeStatusUnknown
+	}
+	var testedAt *time.Time
+	if !value.TestedAt.IsZero() {
+		canonical := value.TestedAt.UTC()
+		testedAt = &canonical
+	}
+	return probeFamilyResponse{
+		Status: string(status), TestedAt: testedAt, LatencyMS: value.LatencyMS, ExitIP: value.ExitIP, Error: value.Error,
 	}
 }
 
@@ -329,6 +357,7 @@ type probeBatchRequest struct {
 }
 
 type operationsConfigRequest struct {
+	ProbeProvider             string                               `json:"probeProvider"`
 	ProbeIntervalSeconds      int                                  `json:"probeIntervalSeconds"`
 	AutoAssignEnabled         bool                                 `json:"autoAssignEnabled"`
 	AutoBalanceEnabled        bool                                 `json:"autoBalanceEnabled"`
@@ -342,6 +371,7 @@ type operationsFallbackRequest struct {
 }
 
 type operationsConfigResponse struct {
+	ProbeProvider             string                                `json:"probeProvider"`
 	ProbeIntervalSeconds      int                                   `json:"probeIntervalSeconds"`
 	AutoAssignEnabled         bool                                  `json:"autoAssignEnabled"`
 	AutoBalanceEnabled        bool                                  `json:"autoBalanceEnabled"`
@@ -357,7 +387,7 @@ type operationsFallbackResponse struct {
 
 func (value operationsConfigRequest) input() (egressapp.OperationsConfigInput, error) {
 	result := egressapp.OperationsConfigInput{
-		ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
+		ProbeProvider: egressdomain.ProbeProvider(strings.TrimSpace(value.ProbeProvider)), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
 	}
 	if value.Fallbacks == nil {
@@ -406,7 +436,7 @@ func newOperationsConfigResponse(value egressdomain.OperationsConfig) operations
 		fallbacks[string(scope)] = item
 	}
 	return operationsConfigResponse{
-		ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
+		ProbeProvider: string(value.ProbeProvider.Normalized()), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
 		Fallbacks: fallbacks, UpdatedAt: value.UpdatedAt,
 	}
@@ -508,7 +538,11 @@ func (h *Handler) testNode(c *gin.Context) {
 		h.writeError(c, err)
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"status": value.Status, "testedAt": value.TestedAt, "latencyMs": value.LatencyMS, "exitIp": value.ExitIP, "error": value.Error})
+	response.Success(c, http.StatusOK, gin.H{
+		"status": value.Status, "testedAt": value.TestedAt, "latencyMs": value.LatencyMS, "exitIp": value.ExitIP, "error": value.Error,
+		"probeProvider": value.Provider,
+		"ipv4":          newProbeFamilyResponse(value.IPv4), "ipv6": newProbeFamilyResponse(value.IPv6),
+	})
 }
 
 func (h *Handler) testNodes(c *gin.Context) {
@@ -585,6 +619,8 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 		response.Error(c, http.StatusBadRequest, "invalidEgressNode", err.Error())
 	case errors.Is(err, egressapp.ErrNotFound):
 		response.Error(c, http.StatusNotFound, "egressNodeNotFound", err.Error())
+	case errors.Is(err, egressapp.ErrProbeStale):
+		response.Error(c, http.StatusConflict, "egressProbeStale", err.Error())
 	case errors.Is(err, repository.ErrConflict):
 		response.Error(c, http.StatusConflict, "egressConflict", "名称已存在")
 	case errors.Is(err, egressapp.ErrOperationsUnavailable):

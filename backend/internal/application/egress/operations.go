@@ -35,7 +35,7 @@ type OperationsRepository interface {
 	UpdateEgressSourceSync(context.Context, uint64, time.Time, time.Time, int, string) error
 	UpsertEgressNodesFromSource(context.Context, uint64, []domain.Node) (int, error)
 	CreateEgressNodes(context.Context, []domain.Node) (int, error)
-	UpdateEgressNodeProbe(context.Context, uint64, domain.ProbeResult) error
+	UpdateEgressNodeProbe(context.Context, uint64, string, domain.ProbeResult) error
 	ListDueEgressNodes(context.Context, time.Time, time.Duration, int) ([]domain.Node, error)
 	GetEgressOperationsConfig(context.Context) (domain.OperationsConfig, error)
 	SaveEgressOperationsConfig(context.Context, domain.OperationsConfig) (domain.OperationsConfig, error)
@@ -44,7 +44,7 @@ type OperationsRepository interface {
 // NodeProber is implemented by the infrastructure egress manager. Its fixed
 // probe endpoint prevents admin input from controlling the outbound target.
 type NodeProber interface {
-	ProbeEgressNode(context.Context, uint64) (domain.ProbeResult, error)
+	ProbeEgressNode(context.Context, domain.Node) (domain.ProbeResult, error)
 }
 
 type OperationsConfigInvalidator interface {
@@ -80,6 +80,7 @@ type ProbeBatchResult struct {
 }
 
 type OperationsConfigInput struct {
+	ProbeProvider             domain.ProbeProvider
 	ProbeIntervalSeconds      int
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
@@ -253,7 +254,8 @@ func (s *Service) TestNode(ctx context.Context, id uint64) (domain.ProbeResult, 
 	if err != nil {
 		return domain.ProbeResult{}, err
 	}
-	if _, err := s.repository.GetEgressNode(ctx, id); errors.Is(err, repository.ErrNotFound) {
+	node, err := s.repository.GetEgressNode(ctx, id)
+	if errors.Is(err, repository.ErrNotFound) {
 		return domain.ProbeResult{}, ErrNotFound
 	} else if err != nil {
 		return domain.ProbeResult{}, err
@@ -262,7 +264,7 @@ func (s *Service) TestNode(ctx context.Context, id uint64) (domain.ProbeResult, 
 	if prober == nil {
 		return domain.ProbeResult{}, ErrOperationsUnavailable
 	}
-	result, probeErr := prober.ProbeEgressNode(ctx, id)
+	result, probeErr := prober.ProbeEgressNode(ctx, node)
 	if result.TestedAt.IsZero() {
 		result.TestedAt = time.Now().UTC()
 	}
@@ -275,9 +277,12 @@ func (s *Service) TestNode(ctx context.Context, id uint64) (domain.ProbeResult, 
 			result.Error = "代理探测失败"
 		}
 	}
-	if updateErr := operations.UpdateEgressNodeProbe(ctx, id, result); updateErr != nil {
+	if updateErr := operations.UpdateEgressNodeProbe(ctx, id, node.EncryptedProxyURL, result); updateErr != nil {
 		if errors.Is(updateErr, repository.ErrNotFound) {
 			return result, ErrNotFound
+		}
+		if errors.Is(updateErr, repository.ErrConflict) {
+			return result, ErrProbeStale
 		}
 		return result, updateErr
 	}
@@ -361,6 +366,13 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 	if err != nil {
 		return domain.OperationsConfig{}, err
 	}
+	probeProvider := input.ProbeProvider
+	if probeProvider == "" {
+		probeProvider = current.ProbeProvider.Normalized()
+	}
+	if !probeProvider.IsValid() {
+		return domain.OperationsConfig{}, fmt.Errorf("%w: 不支持的代理探测服务", ErrInvalidInput)
+	}
 	fallbacks := current.Fallbacks
 	if input.Fallbacks != nil {
 		fallbacks, err = s.validateFallbacks(ctx, current, input.Fallbacks)
@@ -369,7 +381,7 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 		}
 	}
 	saved, err := operations.SaveEgressOperationsConfig(ctx, domain.OperationsConfig{
-		ProbeIntervalSeconds: input.ProbeIntervalSeconds, AutoAssignEnabled: input.AutoAssignEnabled,
+		ProbeProvider: probeProvider, ProbeIntervalSeconds: input.ProbeIntervalSeconds, AutoAssignEnabled: input.AutoAssignEnabled,
 		AutoBalanceEnabled: input.AutoBalanceEnabled, AssignmentIntervalSeconds: input.AssignmentIntervalSeconds,
 		Fallbacks: fallbacks, UpdatedAt: time.Now().UTC(),
 	})
