@@ -197,6 +197,46 @@ type Credential struct {
 	UpdatedAt          time.Time
 }
 
+// CredentialMaterial contains the encrypted provider secrets and refresh
+// metadata loaded only after routing selects an account.
+type CredentialMaterial struct {
+	AccountID                 uint64
+	Provider                  Provider
+	AuthType                  AuthType
+	OIDCClientID              string
+	EncryptedAccessToken      string
+	EncryptedRefreshToken     string
+	EncryptedCloudflareCookie string
+	ExpiresAt                 time.Time
+	RefreshDueAt              *time.Time
+	LastRefreshAt             *time.Time
+	RefreshFailureCount       int
+	LastRefreshErrorCode      string
+	RefreshPermanent          bool
+	UpdatedAt                 time.Time
+}
+
+// ApplyTo merges credential material into the matching routing account.
+// A mismatch leaves the value unchanged so callers cannot attach one
+// account's secrets to another account.
+func (m CredentialMaterial) ApplyTo(value Credential) (Credential, bool) {
+	if m.AccountID == 0 || value.ID != m.AccountID || m.Provider == "" || value.Provider != m.Provider {
+		return value, false
+	}
+	value.AuthType = m.AuthType
+	value.OIDCClientID = m.OIDCClientID
+	value.EncryptedAccessToken = m.EncryptedAccessToken
+	value.EncryptedRefreshToken = m.EncryptedRefreshToken
+	value.EncryptedCloudflareCookie = m.EncryptedCloudflareCookie
+	value.ExpiresAt = m.ExpiresAt
+	value.RefreshDueAt = m.RefreshDueAt
+	value.LastRefreshAt = m.LastRefreshAt
+	value.RefreshFailureCount = m.RefreshFailureCount
+	value.LastRefreshErrorCode = m.LastRefreshErrorCode
+	value.RefreshPermanent = m.RefreshPermanent
+	return value, true
+}
+
 // CredentialRefreshDueAt 将账号稳定地分散到到期前 5~8 分钟，避免同批导入账号同时刷新。
 func CredentialRefreshDueAt(accountID uint64, expiresAt time.Time) time.Time {
 	if expiresAt.IsZero() {
@@ -353,7 +393,7 @@ type RoutingCandidate struct {
 }
 
 // RoutingAccountBase contains provider-level routing state reusable across
-// models. Credentials remain encrypted until the provider adapter uses them.
+// models. Credential material is hydrated only after an account is selected.
 type RoutingAccountBase struct {
 	Credential    Credential
 	Billing       *Billing

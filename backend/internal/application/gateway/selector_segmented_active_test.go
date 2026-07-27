@@ -252,6 +252,22 @@ func TestSegmentedActiveScansEveryCandidateBeforeSaturated(t *testing.T) {
 	}
 }
 
+func TestSegmentedActiveReportsNoAccountsWhenEveryCredentialIsStale(t *testing.T) {
+	selector := newSegmentedActiveTestSelector(8, newSegmentedSelectiveLimiter(), nil)
+	selector.UpdateSegmentedSelector(true, 8, 4)
+	repo := selector.accounts.(*layeredAccountRepository)
+	repo.materialErrors = make(map[uint64]error, 8)
+	for accountID := uint64(1); accountID <= 8; accountID++ {
+		repo.materialErrors[accountID] = repository.ErrNotFound
+	}
+
+	_, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionNoAccounts {
+		t.Fatalf("error = %v, want no accounts", err)
+	}
+}
+
 func TestSegmentedActiveFallsBackToFullPlannerAfterBoundedWindows(t *testing.T) {
 	limiter := newSegmentedSelectiveLimiter()
 	priorities := make(map[uint64]int)
