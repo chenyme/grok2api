@@ -3,12 +3,15 @@ package cli
 import (
 	"encoding/json"
 	"io"
-	"math"
 	"strconv"
 	"strings"
 )
 
-const maxExactJSONInteger = float64(1<<53 - 1)
+const (
+	maxExactJSONInteger      int64 = 1<<53 - 1
+	maxNormalizedNumberBytes       = 256
+	maxExactJSONIntegerText        = "9007199254740991"
+)
 
 // normalizeFunctionArguments repairs semantically integral JSON numbers that strict
 // downstream decoders reject for integer fields. Grok Build can emit 60000.0 where
@@ -133,36 +136,128 @@ func schemaRequiresInteger(schema map[string]any) bool {
 
 func normalizeIntegralNumber(number json.Number) (json.Number, bool) {
 	raw := number.String()
-	if !strings.ContainsAny(raw, ".eE") {
+	if len(raw) > maxNormalizedNumberBytes || !strings.ContainsAny(raw, ".eE") {
 		return number, false
 	}
-	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil || math.IsInf(value, 0) || math.IsNaN(value) || math.Trunc(value) != value || math.Abs(value) > maxExactJSONInteger {
+	mantissa := raw
+	exponentText := ""
+	if index := strings.IndexAny(mantissa, "eE"); index >= 0 {
+		exponentText = mantissa[index+1:]
+		mantissa = mantissa[:index]
+	}
+	negative := strings.HasPrefix(mantissa, "-")
+	if negative {
+		mantissa = strings.TrimPrefix(mantissa, "-")
+	}
+	whole, fraction, hasFraction := strings.Cut(mantissa, ".")
+	if !hasFraction {
+		fraction = ""
+	}
+	digits := strings.TrimLeft(whole+fraction, "0")
+	if digits == "" {
+		return json.Number("0"), raw != "0"
+	}
+	exponent, ok := parseBoundedDecimalExponent(exponentText)
+	if !ok {
 		return number, false
 	}
-	normalized := strconv.FormatFloat(value, 'f', -1, 64)
-	if normalized == "-0" {
-		normalized = "0"
+	decimalShift := exponent - len(fraction)
+	if decimalShift < 0 {
+		fractionalDigits := -decimalShift
+		if fractionalDigits > len(digits) || strings.Trim(digits[len(digits)-fractionalDigits:], "0") != "" {
+			return number, false
+		}
+		digits = strings.TrimLeft(digits[:len(digits)-fractionalDigits], "0")
+		if digits == "" {
+			return json.Number("0"), true
+		}
+	} else if decimalShift > 0 {
+		if decimalShift > len(maxExactJSONIntegerText)-len(digits) {
+			return number, false
+		}
+		digits += strings.Repeat("0", decimalShift)
+	}
+	if len(digits) > len(maxExactJSONIntegerText) || len(digits) == len(maxExactJSONIntegerText) && digits > maxExactJSONIntegerText {
+		return number, false
+	}
+	normalized := digits
+	if negative {
+		normalized = "-" + normalized
 	}
 	return json.Number(normalized), normalized != raw
 }
 
+func parseBoundedDecimalExponent(raw string) (int, bool) {
+	if raw == "" {
+		return 0, true
+	}
+	sign := 1
+	if raw[0] == '+' || raw[0] == '-' {
+		if raw[0] == '-' {
+			sign = -1
+		}
+		raw = raw[1:]
+		if raw == "" {
+			return 0, false
+		}
+	}
+	raw = strings.TrimLeft(raw, "0")
+	if raw == "" {
+		return 0, true
+	}
+	if len(raw) > 9 {
+		return 0, false
+	}
+	exponent, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return sign * exponent, true
+}
+
 func schemaContainsInteger(value any) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		if schemaRequiresInteger(typed) {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	return schemaContainsReachableInteger(root, root, make(map[string]struct{}), 0)
+}
+
+func schemaContainsReachableInteger(schema, root map[string]any, visitedRefs map[string]struct{}, depth int) bool {
+	if depth > 64 || schema == nil {
+		return false
+	}
+	if schemaRequiresInteger(schema) {
+		return true
+	}
+	if ref, ok := schema["$ref"].(string); ok {
+		if _, visited := visitedRefs[ref]; !visited {
+			visitedRefs[ref] = struct{}{}
+			if resolved, resolvedOK := resolveLocalSchemaRef(root, ref); resolvedOK && schemaContainsReachableInteger(resolved, root, visitedRefs, depth+1) {
+				return true
+			}
+		}
+	}
+	for _, keyword := range []string{"allOf", "anyOf", "oneOf", "prefixItems"} {
+		branches, _ := schema[keyword].([]any)
+		for _, rawBranch := range branches {
+			branch, ok := rawBranch.(map[string]any)
+			if ok && schemaContainsReachableInteger(branch, root, visitedRefs, depth+1) {
+				return true
+			}
+		}
+	}
+	for _, keyword := range []string{"items", "additionalProperties"} {
+		child, _ := schema[keyword].(map[string]any)
+		if schemaContainsReachableInteger(child, root, visitedRefs, depth+1) {
 			return true
 		}
-		for _, child := range typed {
-			if schemaContainsInteger(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if schemaContainsInteger(child) {
-				return true
-			}
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	for _, rawProperty := range properties {
+		property, ok := rawProperty.(map[string]any)
+		if ok && schemaContainsReachableInteger(property, root, visitedRefs, depth+1) {
+			return true
 		}
 	}
 	return false

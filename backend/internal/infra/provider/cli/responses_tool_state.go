@@ -43,6 +43,9 @@ type responsesToolCompatibility struct {
 	clientSearchParam   string
 	serverSearchEager   bool
 	streamCalls         map[string]*responsesStreamCall
+	streamArgumentBytes int
+	streamSequenceNext  int64
+	streamSequenceSet   bool
 	legacyLocalShell    bool
 	nativeShell         bool
 	webSearchDisabled   bool
