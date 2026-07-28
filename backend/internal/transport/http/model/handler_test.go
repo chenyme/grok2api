@@ -16,3 +16,22 @@ func TestNewModelResponseSeparatesPublicAndUpstreamNames(t *testing.T) {
 		t.Fatalf("model response = %#v", response)
 	}
 }
+
+func TestParseOptionalBoolRejectsAmbiguousValues(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		value bool
+		valid bool
+	}{
+		{input: "", valid: true},
+		{input: "false", valid: true},
+		{input: "true", value: true, valid: true},
+		{input: "1", valid: false},
+		{input: "yes", valid: false},
+	} {
+		value, valid := parseOptionalBool(test.input)
+		if value != test.value || valid != test.valid {
+			t.Fatalf("parseOptionalBool(%q) = (%v, %v), want (%v, %v)", test.input, value, valid, test.value, test.valid)
+		}
+	}
+}

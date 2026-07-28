@@ -46,6 +46,8 @@ func TestCreateDistinguishesOmittedLimitsFromExplicitZero(t *testing.T) {
 	}
 	assertCreate(`{"name":"defaults"}`)
 	assertCreate(`{"name":"unlimited","rpmLimit":0,"maxConcurrent":0}`)
+	assertCreate(`{"name":"free-pool","accountPool":"free"}`)
+	assertCreate(`{"name":"mixed-scope","providerScope":["grok_build","grok_web"],"tierScope":["free","super"]}`)
 
 	defaults, total, err := service.List(ctx, 1, 20, "defaults", clientkeyapp.ListFilter{})
 	if err != nil || total != 1 || len(defaults) != 1 {
@@ -60,5 +62,40 @@ func TestCreateDistinguishesOmittedLimitsFromExplicitZero(t *testing.T) {
 	}
 	if unlimited[0].RPMLimit != 0 || unlimited[0].MaxConcurrent != 0 {
 		t.Fatalf("explicit zero limits = rpm %d, concurrency %d", unlimited[0].RPMLimit, unlimited[0].MaxConcurrent)
+	}
+	freePool, total, err := service.List(ctx, 1, 20, "free-pool", clientkeyapp.ListFilter{})
+	if err != nil || total != 1 || len(freePool) != 1 || freePool[0].ProviderScope != 7 || freePool[0].TierScope != 1 {
+		t.Fatalf("free-pool key list = %#v, total = %d, err = %v", freePool, total, err)
+	}
+	mixedScope, total, err := service.List(ctx, 1, 20, "mixed-scope", clientkeyapp.ListFilter{})
+	if err != nil || total != 1 || len(mixedScope) != 1 || mixedScope[0].ProviderScope != 3 || mixedScope[0].TierScope != 3 {
+		t.Fatalf("mixed-scope key list = %#v, total = %d, err = %v", mixedScope, total, err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/client-keys", bytes.NewBufferString(`{"name":"invalid-pool","accountPool":"unknown"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid pool response = %d %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/client-keys", bytes.NewBufferString(`{"name":"ambiguous","accountPool":"free","tierScope":["super"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("ambiguous scope response = %d %s", response.Code, response.Body.String())
+	}
+	for _, body := range []string{
+		`{"name":"empty-providers","providerScope":[]}`,
+		`{"name":"empty-tiers","tierScope":[]}`,
+		`{"name":"empty-legacy-pool","accountPool":""}`,
+	} {
+		request = httptest.NewRequest(http.MethodPost, "/api/client-keys", bytes.NewBufferString(body))
+		request.Header.Set("Content-Type", "application/json")
+		response = httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("empty scope response = %d %s", response.Code, response.Body.String())
+		}
 	}
 }

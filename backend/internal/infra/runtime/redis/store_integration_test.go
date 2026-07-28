@@ -452,6 +452,18 @@ func TestRedisInvalidationBusIntegration(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("second invalidation notification was not delivered")
 	}
+	clientKeyEvent := repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged, ClientKeyID: 42, SourceInstance: "instance-a"}
+	if err := store.PublishInvalidation(ctx, clientKeyEvent); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case clientKeyInvalidation := <-received:
+		if clientKeyInvalidation.Layer() != repository.InvalidationLayerClientKey || clientKeyInvalidation.ClientKeyID != 42 || clientKeyInvalidation.Revision == 0 {
+			t.Fatalf("client-key invalidation = %#v", clientKeyInvalidation)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client-key invalidation notification was not delivered")
+	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)

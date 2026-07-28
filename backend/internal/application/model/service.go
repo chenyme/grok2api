@@ -10,6 +10,7 @@ import (
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
@@ -48,9 +49,12 @@ type AccountOption struct {
 }
 
 type ListFilter struct {
-	Provider string
-	Status   string
-	Sort     repository.SortQuery
+	Provider    string
+	Providers   []string
+	Tiers       []string
+	Status      string
+	ActiveScope bool
+	Sort        repository.SortQuery
 }
 
 // Service 负责上游模型发现、内部来源路由与对外模型名称维护。
@@ -82,7 +86,7 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 
 func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]modeldomain.Route, int64, error) {
 	page, pageSize = normalizePage(page, pageSize)
-	if !validProviderFilter(filter.Provider) || !validModelFilter(filter.Status, "", "enabled", "disabled") || !repository.IsValidSort(filter.Sort, "publicId", "upstreamModel", "status", "provider", "accountSupport", "lastSyncedAt") {
+	if !validProviderFilter(filter.Provider) || !validProviderFilters(filter.Providers) || !validTierFilters(filter.Tiers) || !validModelFilter(filter.Status, "", "enabled", "disabled") || !repository.IsValidSort(filter.Sort, "publicId", "upstreamModel", "status", "provider", "accountSupport", "lastSyncedAt") {
 		return nil, 0, ErrInvalidFilter
 	}
 	var enabled *bool
@@ -90,11 +94,39 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		value := filter.Status == "enabled"
 		enabled = &value
 	}
-	return s.models.List(ctx, repository.ModelListQuery{Page: repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: search, Sort: filter.Sort}, Filter: repository.ModelListFilter{Provider: filter.Provider, Enabled: enabled}})
+	return s.models.List(ctx, repository.ModelListQuery{Page: repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: search, Sort: filter.Sort}, Filter: repository.ModelListFilter{Provider: filter.Provider, Providers: filter.Providers, Tiers: filter.Tiers, Enabled: enabled, ActiveScope: filter.ActiveScope}})
 }
 
 func validProviderFilter(value string) bool {
 	return value == "" || account.Provider(value).IsValid()
+}
+
+func validProviderFilters(values []string) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if !account.Provider(value).IsValid() {
+			return false
+		}
+		if _, exists := seen[value]; exists {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
+}
+
+func validTierFilters(values []string) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value != "free" && value != "super" {
+			return false
+		}
+		if _, exists := seen[value]; exists {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
 }
 
 func validModelFilter(value string, allowed ...string) bool {
@@ -108,6 +140,25 @@ func validModelFilter(value string, allowed ...string) bool {
 
 func (s *Service) ListEnabled(ctx context.Context) ([]modeldomain.Route, error) {
 	return s.models.ListEnabled(ctx)
+}
+
+func (s *Service) ListEnabledForClientKey(ctx context.Context, key clientkeydomain.Key) ([]modeldomain.Route, error) {
+	scope, valid := clientkeydomain.NormalizeAccountScope(clientkeydomain.AccountScope{Providers: key.ProviderScope, Tiers: key.TierScope})
+	if !valid {
+		return nil, ErrInvalidFilter
+	}
+	if !scope.IsRestricted() {
+		return s.models.ListEnabled(ctx)
+	}
+	providers := scope.Providers.Values()
+	if len(providers) == 1 && providers[0] == "all" {
+		providers = nil
+	}
+	tiers := scope.Tiers.Values()
+	if len(tiers) == 1 && tiers[0] == "all" {
+		tiers = nil
+	}
+	return s.models.ListEnabledForScope(ctx, repository.ModelListFilter{Providers: providers, Tiers: tiers})
 }
 
 func (s *Service) Get(ctx context.Context, id uint64) (modeldomain.Route, error) {

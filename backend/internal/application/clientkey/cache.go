@@ -94,6 +94,12 @@ func (c *authKeyCache) deleteIDs(ids []uint64) {
 	}
 }
 
+func (c *authKeyCache) clear() {
+	c.mu.Lock()
+	clear(c.byPrefix)
+	c.mu.Unlock()
+}
+
 // touchTracker 合并非关键的最近使用时间写入。
 type touchTracker struct {
 	mu          sync.Mutex

@@ -98,20 +98,23 @@ const (
 	InvalidationAccountQuotaChanged      InvalidationKind = "account_quota_changed"
 	InvalidationAccountRecoveryChanged   InvalidationKind = "account_recovery_changed"
 	InvalidationAccountModelQuotaChanged InvalidationKind = "account_model_quota_changed"
+	InvalidationClientKeyChanged         InvalidationKind = "client_key_changed"
 )
 
 type InvalidationLayer string
 
 const (
-	InvalidationLayerRoute   InvalidationLayer = "route"
-	InvalidationLayerBase    InvalidationLayer = "account_base"
-	InvalidationLayerOverlay InvalidationLayer = "account_overlay"
+	InvalidationLayerRoute     InvalidationLayer = "route"
+	InvalidationLayerBase      InvalidationLayer = "account_base"
+	InvalidationLayerOverlay   InvalidationLayer = "account_overlay"
+	InvalidationLayerClientKey InvalidationLayer = "client_key"
 )
 
 type InvalidationEvent struct {
 	Kind           InvalidationKind `json:"kind"`
 	Provider       account.Provider `json:"provider,omitempty"`
 	AccountID      uint64           `json:"accountId,omitempty"`
+	ClientKeyID    uint64           `json:"clientKeyId,omitempty"`
 	UpstreamModel  string           `json:"upstreamModel,omitempty"`
 	Revision       uint64           `json:"revision,omitempty"`
 	SourceInstance string           `json:"sourceInstance,omitempty"`
@@ -126,14 +129,20 @@ func (e InvalidationEvent) Layer() InvalidationLayer {
 		return InvalidationLayerOverlay
 	case InvalidationAccountStateChanged, InvalidationAccountCredentialChanged, InvalidationAccountBillingChanged, InvalidationAccountQuotaChanged, InvalidationAccountRecoveryChanged:
 		return InvalidationLayerBase
+	case InvalidationClientKeyChanged:
+		return InvalidationLayerClientKey
 	default:
 		return ""
 	}
 }
 
 func (e InvalidationEvent) Valid() bool {
-	if e.Layer() == "" {
+	layer := e.Layer()
+	if layer == "" {
 		return false
+	}
+	if layer == InvalidationLayerClientKey {
+		return e.Provider == "" && e.AccountID == 0 && e.UpstreamModel == ""
 	}
 	switch e.Provider {
 	case "", account.ProviderBuild, account.ProviderWeb, account.ProviderConsole:
