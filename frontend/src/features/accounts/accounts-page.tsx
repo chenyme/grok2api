@@ -68,6 +68,7 @@ import {
   syncWebAccountsToConsole,
   updateAccount,
   updateAccountsEnabled,
+  updateAccountsMaxConcurrent,
   type AccountDTO,
   type AccountCleanupStatus,
   type AccountProvider,
@@ -133,6 +134,8 @@ export function AccountsPage() {
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selection, setSelection] = useState<AccountSelection>(() => ({ provider: "grok_build", ids: new Set() }));
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [batchConcurrencyOpen, setBatchConcurrencyOpen] = useState(false);
+  const [batchMaxConcurrent, setBatchMaxConcurrent] = useState("1");
   const [batchQuotaTaskOpen, setBatchQuotaTaskOpen] = useState(false);
   const [batchQuotaTask, setBatchQuotaTask] = useState<BuildQuotaTask>("sync");
   const [egressConfigurationOpen, setEgressConfigurationOpen] = useState(false);
@@ -645,6 +648,17 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const batchConcurrencyMutation = useMutation({
+    mutationFn: (maxConcurrent: number) => updateAccountsMaxConcurrent([...selected], maxConcurrent, provider),
+    onSuccess: () => {
+      setBatchConcurrencyOpen(false);
+      clearSelection();
+      invalidateAccountData();
+      toast.success(t("accounts.batchConcurrencyUpdated"));
+    },
+    onError: showError,
+  });
+
   const batchBillingMutation = useMutation({
     mutationFn: () => refreshAccountsQuota([...selected], provider),
     onSuccess: (result) => {
@@ -1024,6 +1038,7 @@ export function AccountsPage() {
     || webConsoleSyncMutation.isPending
     || importMutation.isPending
     || batchUpdateMutation.isPending
+    || batchConcurrencyMutation.isPending
     || batchBillingMutation.isPending
     || batchQuotaResetMutation.isPending
     || batchTokenMutation.isPending
@@ -1172,6 +1187,10 @@ export function AccountsPage() {
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={openSelectedExport}><Download />{t("accounts.exportAuth")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
+                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
+                  setBatchMaxConcurrent("1");
+                  setBatchConcurrencyOpen(true);
+                }}>{t("accounts.batchSetConcurrency")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
                   setEgressNodeID("");
                   setEgressConfigurationTask("bind");
@@ -1612,6 +1631,42 @@ export function AccountsPage() {
             }}>{t("accounts.deleteConfirm")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={batchConcurrencyOpen} onOpenChange={(open) => {
+        if (!open && batchConcurrencyMutation.isPending) return;
+        setBatchConcurrencyOpen(open);
+      }}>
+        <DialogContent className="sm:max-w-[460px]">
+          <DialogHeader>
+            <DialogTitle>{t("accounts.batchConcurrencyTitle", { count: selected.size })}</DialogTitle>
+            <DialogDescription>{t("accounts.batchConcurrencyDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="batch-account-concurrency">{t("accounts.maxConcurrent")}</Label>
+            <Input
+              id="batch-account-concurrency"
+              type="number"
+              min="1"
+              max="256"
+              value={batchMaxConcurrent}
+              disabled={batchConcurrencyMutation.isPending}
+              onChange={(event) => setBatchMaxConcurrent(event.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="secondary" size="sm" disabled={batchConcurrencyMutation.isPending} onClick={() => setBatchConcurrencyOpen(false)}>{t("common.cancel")}</Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={batchConcurrencyMutation.isPending || !Number.isInteger(Number(batchMaxConcurrent)) || Number(batchMaxConcurrent) < 1 || Number(batchMaxConcurrent) > 256}
+              onClick={() => batchConcurrencyMutation.mutate(Number(batchMaxConcurrent))}
+            >
+              {batchConcurrencyMutation.isPending ? <Spinner /> : null}
+              {t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={batchDeleteOpen} onOpenChange={(open) => {
         if (!open && batchDeleteMutation.isPending) return;
