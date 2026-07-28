@@ -36,12 +36,16 @@ func (i responsesToolIdentity) key() string {
 type responsesToolCompatibility struct {
 	aliases             map[string]responsesToolIdentity
 	identityAliases     map[string]string
+	functionSchemas     map[string]any
 	visibleTools        []any
 	deferredSurfaces    []string
 	clientSearchTool    map[string]any
 	clientSearchParam   string
 	serverSearchEager   bool
 	streamCalls         map[string]*responsesStreamCall
+	streamArgumentBytes int
+	streamSequenceNext  int64
+	streamSequenceSet   bool
 	legacyLocalShell    bool
 	nativeShell         bool
 	webSearchDisabled   bool
@@ -64,6 +68,7 @@ func newResponsesToolCompatibility() *responsesToolCompatibility {
 	return &responsesToolCompatibility{
 		aliases:         make(map[string]responsesToolIdentity),
 		identityAliases: make(map[string]string),
+		functionSchemas: make(map[string]any),
 		streamCalls:     make(map[string]*responsesStreamCall),
 		warningSet:      make(map[string]struct{}),
 	}
