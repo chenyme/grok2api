@@ -672,7 +672,7 @@ func TestLiteModelResponseCardAttachmentsFallback(t *testing.T) {
 func TestBuildDirectFileUploadBodyMatchesImagineMultipartProtocol(t *testing.T) {
 	raw := []byte("png-binary")
 	body, contentType, err := buildDirectFileUploadBody(provider.ImageInput{
-		Filename: "reference.png", MIMEType: "image/png", Data: raw,
+		Filename: "输入图-4 (1).png", MIMEType: "image/png", Data: raw,
 	}, imagineSelfUploadSource)
 	if err != nil {
 		t.Fatal(err)
@@ -681,13 +681,16 @@ func TestBuildDirectFileUploadBodyMatchesImagineMultipartProtocol(t *testing.T) 
 	if err != nil || mediaType != "multipart/form-data" || parameters["boundary"] == "" {
 		t.Fatalf("content type=%q parameters=%#v err=%v", contentType, parameters, err)
 	}
+	if !bytes.Contains(body, []byte(`Content-Disposition: form-data; name="file"; filename="输入图-4 (1).png"`)) || bytes.Contains(body, []byte("filename*=")) {
+		t.Fatalf("multipart disposition does not match browser format: %q", body)
+	}
 	reader := multipart.NewReader(bytes.NewReader(body), parameters["boundary"])
 	filePart, err := reader.NextPart()
 	if err != nil {
 		t.Fatal(err)
 	}
 	fileData, err := io.ReadAll(filePart)
-	if err != nil || filePart.FormName() != "file" || filePart.FileName() != "reference.png" || filePart.Header.Get("Content-Type") != "image/png" || !bytes.Equal(fileData, raw) {
+	if err != nil || filePart.FormName() != "file" || filePart.FileName() != "输入图-4 (1).png" || filePart.Header.Get("Content-Type") != "image/png" || !bytes.Equal(fileData, raw) {
 		t.Fatalf("file name=%q filename=%q content-type=%q data=%q err=%v", filePart.FormName(), filePart.FileName(), filePart.Header.Get("Content-Type"), fileData, err)
 	}
 	sourcePart, err := reader.NextPart()

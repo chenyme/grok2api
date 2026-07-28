@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -1183,9 +1182,8 @@ func (a *Adapter) uploadFileV2Direct(ctx context.Context, cfg Config, lease *egr
 func buildDirectFileUploadBody(file provider.ImageInput, fileSource string) ([]byte, string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	disposition := mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": file.Filename})
 	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", disposition)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, browserMultipartFilename(file.Filename)))
 	header.Set("Content-Type", file.MIMEType)
 	part, err := writer.CreatePart(header)
 	if err != nil {
@@ -1203,6 +1201,10 @@ func buildDirectFileUploadBody(file provider.ImageInput, fileSource string) ([]b
 		return nil, "", err
 	}
 	return body.Bytes(), writer.FormDataContentType(), nil
+}
+
+func browserMultipartFilename(value string) string {
+	return strings.NewReplacer("\\", "\\\\", `"`, `\"`, "\r", "", "\n", "").Replace(value)
 }
 
 func decodeDirectFileUploadResponse(source io.Reader) (uploadedFile, error) {
