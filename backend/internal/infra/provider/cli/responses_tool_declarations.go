@@ -69,7 +69,7 @@ func normalizeResponsesTools(payload map[string]json.RawMessage) (*responsesTool
 	if err := compatibility.normalizeToolChoice(payload, normalizedTools); err != nil {
 		return nil, err
 	}
-	if !compatibility.changed {
+	if !compatibility.changed && len(compatibility.functionSchemas) == 0 {
 		return nil, nil
 	}
 	return compatibility, nil
@@ -184,6 +184,9 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 		}
 		identity := responsesToolIdentity{Kind: responsesFunctionTool, Namespace: namespace, Name: name}
 		alias := c.alias(identity)
+		if parameters, exists := tool["parameters"]; exists && schemaContainsInteger(parameters) {
+			c.functionSchemas[alias] = cloneJSONValue(parameters)
+		}
 		converted["name"] = alias
 		if namespace != "" || alias != name {
 			c.changed = true

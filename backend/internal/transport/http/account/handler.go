@@ -438,10 +438,7 @@ func (h *Handler) batchUpdate(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
 		return
 	}
-	if !h.validateProviderIDs(c, ids, request.Provider) {
-		return
-	}
-	updated, err := h.service.BatchUpdate(c.Request.Context(), ids, accountapp.UpdateInput{Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining})
+	updated, err := h.service.BatchUpdate(c.Request.Context(), accountdomain.Provider(request.Provider), ids, accountapp.UpdateInput{Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining})
 	if err != nil {
 		h.writeServiceError(c, "accountBatchUpdateFailed", err, http.StatusInternalServerError, "批量更新账号失败")
 		return
@@ -1284,6 +1281,8 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error, fall
 		response.Error(c, http.StatusBadRequest, "accountExportLimitExceeded", err.Error())
 	case errors.Is(err, accountapp.ErrInvalidInput), errors.Is(err, accountapp.ErrInvalidImport):
 		response.Error(c, http.StatusBadRequest, code, err.Error())
+	case errors.Is(err, accountapp.ErrAccountPoolMismatch):
+		response.Error(c, http.StatusConflict, "accountPoolMismatch", err.Error())
 	case errors.Is(err, accountapp.ErrConflict):
 		response.Error(c, http.StatusConflict, code, err.Error())
 	case errors.Is(err, accountapp.ErrNotFound):

@@ -146,7 +146,7 @@ func TestGetCredentialMaterialHydratesOneAccountAndMapsNotFound(t *testing.T) {
 		t.Fatalf("cross-provider credential material error = %v, want ErrNotFound", err)
 	}
 	disabled := false
-	if _, err := accounts.UpdateMany(ctx, []uint64{created.ID}, repository.AccountUpdates{Enabled: &disabled}); err != nil {
+	if _, err := accounts.UpdateMany(ctx, account.ProviderBuild, []uint64{created.ID}, repository.AccountUpdates{Enabled: &disabled}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := accounts.GetCredentialMaterial(ctx, created.ID, account.ProviderBuild); !errors.Is(err, repository.ErrNotFound) {
