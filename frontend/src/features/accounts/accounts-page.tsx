@@ -1636,7 +1636,7 @@ export function AccountsPage() {
         if (!open && batchConcurrencyMutation.isPending) return;
         setBatchConcurrencyOpen(open);
       }}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-[460px]">
           <DialogHeader>
             <DialogTitle>{t("accounts.batchConcurrencyTitle", { count: selected.size })}</DialogTitle>
             <DialogDescription>{t("accounts.batchConcurrencyDescription")}</DialogDescription>
@@ -1654,9 +1654,10 @@ export function AccountsPage() {
             />
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={batchConcurrencyMutation.isPending} onClick={() => setBatchConcurrencyOpen(false)}>{t("common.cancel")}</Button>
+            <Button type="button" variant="secondary" size="sm" disabled={batchConcurrencyMutation.isPending} onClick={() => setBatchConcurrencyOpen(false)}>{t("common.cancel")}</Button>
             <Button
               type="button"
+              size="sm"
               disabled={batchConcurrencyMutation.isPending || !Number.isInteger(Number(batchMaxConcurrent)) || Number(batchMaxConcurrent) < 1 || Number(batchMaxConcurrent) > 256}
               onClick={() => batchConcurrencyMutation.mutate(Number(batchMaxConcurrent))}
             >

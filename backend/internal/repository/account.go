@@ -87,7 +87,7 @@ type AccountRepository interface {
 	GetQuotaRecoveries(ctx context.Context, accountIDs []uint64) (map[uint64]account.QuotaRecovery, error)
 	UpsertByIdentity(ctx context.Context, value account.Credential) (account.Credential, bool, error)
 	Update(ctx context.Context, value account.Credential) (account.Credential, error)
-	UpdateMany(ctx context.Context, ids []uint64, updates AccountUpdates) (int64, error)
+	UpdateMany(ctx context.Context, provider account.Provider, ids []uint64, updates AccountUpdates) (int64, error)
 	Delete(ctx context.Context, id uint64) error
 	DeleteMany(ctx context.Context, ids []uint64) (int64, error)
 	// ResolveLinkedDeleteIDs expands root account IDs with one-hop (or Build/Console two-hop via Web)
