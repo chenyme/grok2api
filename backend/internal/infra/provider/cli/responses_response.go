@@ -80,6 +80,7 @@ type responsesStreamOutput struct {
 
 type responsesStreamCall struct {
 	identity     responsesToolIdentity
+	schema       any
 	arguments    strings.Builder
 	lastDelta    map[string]any
 	addedPayload map[string]any
@@ -117,6 +118,11 @@ func (c *responsesToolCompatibility) rewriteStreamData(event string, data []byte
 	}
 	if kind == "response.function_call_arguments.delta" {
 		identity, state, found := c.streamIdentity(payload)
+		if found && identity.Kind == responsesFunctionTool && state.schema != nil {
+			state.arguments.WriteString(stringField(payload, "delta"))
+			state.lastDelta = cloneJSONObject(payload)
+			return nil, nil
+		}
 		if found && (identity.Kind == responsesToolSearch || identity.Kind == responsesCustomTool || identity.Kind == responsesApplyPatchTool) {
 			state.arguments.WriteString(stringField(payload, "delta"))
 			if identity.Kind == responsesCustomTool {
@@ -127,6 +133,31 @@ func (c *responsesToolCompatibility) rewriteStreamData(event string, data []byte
 	}
 	if kind == "response.function_call_arguments.done" {
 		identity, state, found := c.streamIdentity(payload)
+		if found && identity.Kind == responsesFunctionTool && state.schema != nil {
+			arguments := stringField(payload, "arguments")
+			if arguments == "" {
+				arguments = state.arguments.String()
+			}
+			normalized, _ := normalizeFunctionArguments(arguments, state.schema)
+			outputs := make([]responsesStreamOutput, 0, 2)
+			if state.lastDelta != nil {
+				delta := cloneJSONObject(state.lastDelta)
+				delta["delta"] = normalized
+				encoded, err := json.Marshal(delta)
+				if err != nil {
+					return nil, fmt.Errorf("编码 function arguments delta: %w", err)
+				}
+				outputs = append(outputs, responsesStreamOutput{Event: "response.function_call_arguments.delta", Data: encoded})
+			}
+			done := cloneJSONObject(payload)
+			done["arguments"] = normalized
+			encoded, err := json.Marshal(done)
+			if err != nil {
+				return nil, fmt.Errorf("编码 function arguments done: %w", err)
+			}
+			outputs = append(outputs, responsesStreamOutput{Event: "response.function_call_arguments.done", Data: encoded})
+			return outputs, nil
+		}
 		if found && (identity.Kind == responsesToolSearch || identity.Kind == responsesApplyPatchTool) {
 			// Tool Search 的 arguments 是结构化对象；等 output_item.done 带齐参数后再对下游可见。
 			return nil, nil
@@ -184,7 +215,7 @@ func (c *responsesToolCompatibility) rememberStreamCall(item map[string]any) *re
 	if !exists {
 		return nil
 	}
-	state := &responsesStreamCall{identity: identity}
+	state := &responsesStreamCall{identity: identity, schema: c.functionSchemas[stringField(item, "name")]}
 	for _, key := range []string{stringField(item, "id"), stringField(item, "call_id")} {
 		if key != "" {
 			c.streamCalls[key] = state
@@ -203,7 +234,7 @@ func (c *responsesToolCompatibility) streamIdentity(payload map[string]any) (res
 	if !exists {
 		return responsesToolIdentity{}, nil, false
 	}
-	state := &responsesStreamCall{identity: identity}
+	state := &responsesStreamCall{identity: identity, schema: c.functionSchemas[stringField(payload, "name")]}
 	for _, key := range []string{stringField(payload, "item_id"), stringField(payload, "call_id")} {
 		if key != "" {
 			c.streamCalls[key] = state
@@ -241,12 +272,21 @@ func (c *responsesToolCompatibility) rewriteResponseValue(value any) error {
 }
 
 func (c *responsesToolCompatibility) rewriteFunctionCall(call map[string]any) error {
-	identity, exists := c.aliases[stringField(call, "name")]
+	alias := stringField(call, "name")
+	identity, exists := c.aliases[alias]
 	if !exists {
 		return nil
 	}
 	switch identity.Kind {
 	case responsesFunctionTool:
+		if schema := c.functionSchemas[alias]; schema != nil {
+			if arguments, ok := call["arguments"].(string); ok {
+				normalized, changed := normalizeFunctionArguments(arguments, schema)
+				if changed {
+					call["arguments"] = normalized
+				}
+			}
+		}
 		call["name"] = identity.Name
 		if identity.Namespace != "" {
 			call["namespace"] = identity.Namespace
