@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -794,6 +795,39 @@ func TestWebMediaStreamErrorRedactsSensitiveValues(t *testing.T) {
 	for _, secret := range []string{"sensitive-token", "owner@example.com", "token=secret"} {
 		if strings.Contains(err.Error(), secret) {
 			t.Fatalf("stream error exposed %q: %v", secret, err)
+		}
+	}
+}
+
+func TestWebMediaUpstreamDiagnosticLogsStageHeadersAndRedactedPreview(t *testing.T) {
+	var output bytes.Buffer
+	adapter := &Adapter{logger: slog.New(slog.NewTextHandler(&output, nil))}
+	body := []byte(`<html><title>Forbidden</title><p>access_token=secret owner@example.com https://grok.com/private?token=secret</p></html>` + strings.Repeat("A", 1024))
+	upstreamErr := newWebMediaUpstreamError(http.StatusForbidden, body, true)
+	response := &http.Response{
+		StatusCode:    http.StatusForbidden,
+		ContentLength: 70000,
+		Header: http.Header{
+			"Content-Type": []string{"text/html; charset=UTF-8"},
+			"Server":       []string{"cloudflare"},
+			"Cf-Ray":       []string{"test-ray-SIN"},
+		},
+	}
+
+	adapter.logWebMediaUpstreamRejection("video_reference_upload", response, upstreamErr)
+	logLine := output.String()
+	for _, expected := range []string{
+		"msg=web_media_upstream_rejected", "stage=video_reference_upload", "status=403",
+		"body_truncated=true", "body_prefix_sha256=", "Forbidden", "content_type=\"text/html; charset=UTF-8\"",
+		"server=cloudflare", "cf_ray=test-ray-SIN",
+	} {
+		if !strings.Contains(logLine, expected) {
+			t.Fatalf("log missing %q: %s", expected, logLine)
+		}
+	}
+	for _, secret := range []string{"access_token=secret", "owner@example.com", "token=secret", strings.Repeat("A", 256)} {
+		if strings.Contains(logLine, secret) {
+			t.Fatalf("log exposed %q: %s", secret, logLine)
 		}
 	}
 }

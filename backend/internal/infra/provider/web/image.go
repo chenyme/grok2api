@@ -752,7 +752,7 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 			return nil, fmt.Errorf("上传图片成功但上游未返回 fileUri")
 		}
 		refs = append(refs, uploaded.URI)
-		postID, postErr := a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_IMAGE", uploaded.URI, "")
+		postID, postErr := a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_IMAGE", uploaded.URI, "", "image_edit_media_post")
 		if postErr != nil {
 			return nil, postErr
 		}
@@ -1256,6 +1256,10 @@ func directFileUploadFallbackStatus(statusCode int) bool {
 }
 
 func (a *Adapter) uploadFileLegacy(ctx context.Context, cfg Config, lease *egress.Lease, token string, file provider.ImageInput, referer string) (uploadedFile, error) {
+	return a.uploadFileLegacyForStage(ctx, cfg, lease, token, file, referer, "legacy_file_upload")
+}
+
+func (a *Adapter) uploadFileLegacyForStage(ctx context.Context, cfg Config, lease *egress.Lease, token string, file provider.ImageInput, referer, stage string) (uploadedFile, error) {
 	payload := map[string]any{"fileName": file.Filename, "fileMimeType": file.MIMEType, "content": base64.StdEncoding.EncodeToString(file.Data)}
 	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/upload-file", payload, time.Minute, referer)
 	if err != nil {
@@ -1271,7 +1275,9 @@ func (a *Adapter) uploadFileLegacy(ctx context.Context, cfg Config, lease *egres
 		if truncated {
 			body = body[:webMediaDiagnosticBodyLimit]
 		}
-		return uploadedFile{}, newWebMediaUpstreamError(response.StatusCode, body, truncated)
+		upstreamErr := newWebMediaUpstreamError(response.StatusCode, body, truncated)
+		a.logWebMediaUpstreamRejection(stage, response, upstreamErr)
+		return uploadedFile{}, upstreamErr
 	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
 	if readErr != nil {
@@ -1308,7 +1314,7 @@ func decodeLegacyFileUploadResponse(statusCode int, body []byte) (uploadedFile, 
 	return uploadedFile{ID: value.FileMetadataID, URI: fileURI}, nil
 }
 
-func (a *Adapter) createMediaPost(ctx context.Context, cfg Config, lease *egress.Lease, token, mediaType, mediaURL, prompt string) (string, error) {
+func (a *Adapter) createMediaPost(ctx context.Context, cfg Config, lease *egress.Lease, token, mediaType, mediaURL, prompt, stage string) (string, error) {
 	payload := map[string]any{"mediaType": mediaType}
 	if mediaURL != "" {
 		payload["mediaUrl"] = mediaURL
@@ -1321,10 +1327,16 @@ func (a *Adapter) createMediaPost(ctx context.Context, cfg Config, lease *egress
 		return "", err
 	}
 	defer response.Body.Close()
-	return parseMediaPostResponse(response)
+	return parseMediaPostResponseWithDiagnostics(response, func(upstreamErr *webMediaUpstreamError) {
+		a.logWebMediaUpstreamRejection(stage, response, upstreamErr)
+	})
 }
 
 func parseMediaPostResponse(response *http.Response) (string, error) {
+	return parseMediaPostResponseWithDiagnostics(response, nil)
+}
+
+func parseMediaPostResponseWithDiagnostics(response *http.Response, onUpstreamError func(*webMediaUpstreamError)) (string, error) {
 	const responseLimit = 2 << 20
 	readLimit := responseLimit
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -1345,7 +1357,11 @@ func parseMediaPostResponse(response *http.Response) (string, error) {
 		return "", provider.ErrUnauthorized
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", newWebMediaUpstreamError(response.StatusCode, body, truncated)
+		upstreamErr := newWebMediaUpstreamError(response.StatusCode, body, truncated)
+		if onUpstreamError != nil {
+			onUpstreamError(upstreamErr)
+		}
+		return "", upstreamErr
 	}
 	var value struct {
 		Post struct {
