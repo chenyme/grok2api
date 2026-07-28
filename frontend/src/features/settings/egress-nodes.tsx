@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -19,7 +19,7 @@ import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHea
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EgressAutomation, EgressSources } from "@/features/settings/egress-operations";
-import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, updateEgressNodesEnabled, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -101,6 +101,15 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       setBatchDeleteOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("settings.egress.batchDeleted", value));
+    },
+    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+  });
+  const updateManyEnabled = useMutation({
+    mutationFn: (enabled: boolean) => updateEgressNodesEnabled([...selected.keys()], enabled),
+    onSuccess: (value, enabled) => {
+      setSelected(new Map());
+      void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+      toast.success(t(enabled ? "settings.egress.batchEnabled" : "settings.egress.batchDisabled", value));
     },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
@@ -243,7 +252,9 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                 {selected.size > 0 ? (
                   <>
                     <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
-                    <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
+                    <Button type="button" size="sm" variant="secondary" disabled={updateManyEnabled.isPending || selectedNodes.every((node) => node.enabled)} onClick={() => updateManyEnabled.mutate(true)}><Power />{t("common.enable")}</Button>
+                    <Button type="button" size="sm" variant="secondary" disabled={updateManyEnabled.isPending || selectedNodes.every((node) => !node.enabled)} onClick={() => updateManyEnabled.mutate(false)}><PowerOff />{t("common.disable")}</Button>
+                    <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending || updateManyEnabled.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
                   </>
                 ) : null}
                 <Button type="button" size="sm" variant="secondary" disabled={cleanupUnhealthy.isPending} onClick={openCleanup}><Trash2 />{t("settings.egress.cleanupUnavailable")}</Button>
@@ -504,6 +515,7 @@ function ProbeFamilySummary({ family, probe, row }: { family: "IPv4" | "IPv6"; p
   const healthy = probe.status === "healthy";
   const unhealthy = probe.status === "unhealthy";
   const rowClass = row === 1 ? "row-start-1" : "row-start-2";
+  const latencyText = probe.status === "unknown" || probe.latencyMs <= 0 ? "" : `${probe.latencyMs}ms`;
   const stateContent = <span className="flex min-w-0 items-center gap-1.5">
     <span className={cn("size-1.5 shrink-0 rounded-full", healthy ? "bg-emerald-500" : unhealthy ? "bg-destructive" : "bg-muted-foreground/35")} />
     <span className={cn("truncate text-[10px]", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")} title={healthy ? probe.exitIp : undefined}>
@@ -520,6 +532,7 @@ function ProbeFamilySummary({ family, probe, row }: { family: "IPv4" | "IPv6"; p
             <TooltipContent>{t("settings.egress.probeLatency", { latency: probe.latencyMs })}</TooltipContent>
           </Tooltip>
         )}
+        {latencyText ? <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{latencyText}</span> : null}
         {unhealthy && probe.error ? <ErrorTooltip message={probe.error} /> : null}
       </span>
     </div>

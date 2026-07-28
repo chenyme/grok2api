@@ -23,6 +23,7 @@ func NewHandler(service *egressapp.Service) *Handler { return &Handler{service: 
 func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/egress-nodes", h.list)
 	router.POST("/egress-nodes", h.create)
+	router.PATCH("/egress-nodes/batch", h.updateMany)
 	router.DELETE("/egress-nodes", h.deleteMany)
 	router.GET("/egress-nodes/cleanup-preview", h.cleanupPreview)
 	router.POST("/egress-nodes/cleanup", h.cleanup)
@@ -132,6 +133,30 @@ type accountAssignmentRequest struct {
 
 type batchNodeDeleteRequest struct {
 	IDs []string `json:"ids" binding:"required"`
+}
+
+type batchNodeUpdateRequest struct {
+	IDs     []string `json:"ids" binding:"required"`
+	Enabled bool     `json:"enabled"`
+}
+
+func (h *Handler) updateMany(c *gin.Context) {
+	var request batchNodeUpdateRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	ids, err := parseEgressNodeIDs(request.IDs)
+	if err != nil || len(ids) > 5000 {
+		response.Error(c, http.StatusBadRequest, "invalidId", "代理节点 ID 无效")
+		return
+	}
+	updated, err := h.service.UpdateManyEnabled(c.Request.Context(), ids, request.Enabled)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"updated": updated})
 }
 
 func (h *Handler) deleteMany(c *gin.Context) {

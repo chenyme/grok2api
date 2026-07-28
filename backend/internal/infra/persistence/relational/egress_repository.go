@@ -146,6 +146,16 @@ func (r *EgressRepository) UpdateEgressNode(ctx context.Context, value egress.No
 	return toEgressDomain(row), nil
 }
 
+func (r *EgressRepository) UpdateEgressNodesEnabled(ctx context.Context, ids []uint64, enabled bool) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := r.db.db.WithContext(ctx).Model(&egressNodeModel{}).
+		Where("id IN ? AND enabled <> ?", ids, enabled).
+		Updates(map[string]any{"enabled": enabled, "updated_at": time.Now().UTC()})
+	return int(result.RowsAffected), mapError(result.Error)
+}
+
 func (r *EgressRepository) UpdateEgressNodeClearance(ctx context.Context, id uint64, encryptedCookie, userAgent, fingerprint, bindingFingerprint string, refreshedAt time.Time) error {
 	result := r.db.db.WithContext(ctx).Model(&egressNodeModel{}).Where("id = ?", id).Updates(map[string]any{
 		"encrypted_cloudflare_cookie": encryptedCookie, "user_agent": userAgent,

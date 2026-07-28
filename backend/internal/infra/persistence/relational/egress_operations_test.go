@@ -406,6 +406,69 @@ func TestEgressOperationsBatchDeleteClearsAccountBindings(t *testing.T) {
 	}
 }
 
+func TestEgressOperationsBatchUpdatesEnabledState(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	first := createHealthyEgressNode(t, ctx, nodes, cipher, "batch-enable-first", 0)
+	second := createHealthyEgressNode(t, ctx, nodes, cipher, "batch-enable-second", 0)
+	second.Enabled = false
+	if _, err := nodes.UpdateEgressNode(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+	updated, err := service.UpdateManyEnabled(ctx, []uint64{first.ID, second.ID, first.ID}, false)
+	if err != nil || updated != 1 {
+		t.Fatalf("disable updated = %d, err = %v", updated, err)
+	}
+	updated, err = service.UpdateManyEnabled(ctx, []uint64{first.ID, second.ID}, true)
+	if err != nil || updated != 2 {
+		t.Fatalf("enable updated = %d, err = %v", updated, err)
+	}
+	for _, id := range []uint64{first.ID, second.ID} {
+		stored, err := nodes.GetEgressNode(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !stored.Enabled {
+			t.Fatalf("node %d remained disabled", id)
+		}
+	}
+}
+
+func TestEgressOperationsBatchDisableRejectsFixedFallback(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	fallbackNode := createHealthyEgressNode(t, ctx, nodes, cipher, "batch-fallback", 0)
+	otherNode := createHealthyEgressNode(t, ctx, nodes, cipher, "batch-other", 0)
+	service := egressapp.NewService(nodes, cipher, "test-browser")
+	if _, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
+		ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
+		Fallbacks: map[egress.Scope]egressapp.FallbackConfigInput{
+			egress.ScopeBuild: {Mode: egress.FallbackModeFixed, NodeID: fallbackNode.ID},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.UpdateManyEnabled(ctx, []uint64{otherNode.ID, fallbackNode.ID}, false); err == nil {
+		t.Fatal("expected fixed fallback disable to fail")
+	}
+	for _, id := range []uint64{fallbackNode.ID, otherNode.ID} {
+		stored, err := nodes.GetEgressNode(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !stored.Enabled {
+			t.Fatalf("node %d changed despite rejected batch", id)
+		}
+	}
+}
+
 func TestEgressOperationsCleanupDeletesOnlyDualStackUnhealthyNodes(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
