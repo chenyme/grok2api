@@ -231,7 +231,6 @@ func TestRemoteChatImageHeadersNeverLeakCredentials(t *testing.T) {
 func TestChatImageUploadFeedsFileMetadataIntoConversation(t *testing.T) {
 	dataURI := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 	var uploadUserAgent string
-	legacyUploadCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/http/upload-file-v2/direct":
@@ -258,21 +257,8 @@ func TestChatImageUploadFeedsFileMetadataIntoConversation(t *testing.T) {
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(writer, `{"uploadId":"upload_1","fileMetadata":{"fileMetadataId":"file_meta_1","fileUri":"users/test/file_meta_1/content"}}`)
 		case "/rest/app-chat/upload-file":
-			legacyUploadCalled = true
-			uploadUserAgent = request.Header.Get("User-Agent")
-			if !strings.Contains(request.Header.Get("Cookie"), "sso=test-sso") {
-				t.Errorf("upload cookie = %q", request.Header.Get("Cookie"))
-			}
-			var payload struct {
-				FileName string `json:"fileName"`
-				MIMEType string `json:"fileMimeType"`
-				Content  string `json:"content"`
-			}
-			if json.NewDecoder(request.Body).Decode(&payload) != nil || payload.FileName != "image.png" || payload.MIMEType != "image/png" || payload.Content == "" {
-				t.Errorf("upload payload = %#v", payload)
-			}
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(writer, `{"fileMetadataId":"file_meta_1","fileUri":"https://assets.grok.com/file.png"}`)
+			t.Error("不应调用旧版 Base64 上传接口")
+			writer.WriteHeader(http.StatusInternalServerError)
 		case "/rest/app-chat/conversations/new":
 			if request.Header.Get("User-Agent") != uploadUserAgent {
 				t.Errorf("chat user-agent %q differs from upload %q", request.Header.Get("User-Agent"), uploadUserAgent)
@@ -323,9 +309,6 @@ func TestChatImageUploadFeedsFileMetadataIntoConversation(t *testing.T) {
 	result, err := io.ReadAll(response.Body)
 	if err != nil || response.StatusCode != http.StatusOK || !bytes.Contains(result, []byte(`"content":"seen"`)) {
 		t.Fatalf("status=%d body=%s err=%v", response.StatusCode, result, err)
-	}
-	if legacyUploadCalled {
-		t.Fatal("Chat V2 上传成功后不应调用旧上传接口")
 	}
 }
 
@@ -742,6 +725,58 @@ func TestBuildDirectFileUploadBodyOmitsSourceForChat(t *testing.T) {
 	}
 }
 
+func TestVideoReferenceUsesV2DirectUpload(t *testing.T) {
+	dataURI := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/http/upload-file-v2/direct" {
+			t.Errorf("unexpected upload path %q", request.URL.Path)
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := request.ParseMultipartForm(2 << 20); err != nil {
+			t.Errorf("multipart: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		file, header, err := request.FormFile("file")
+		if err != nil {
+			t.Errorf("file part: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		content, _ := io.ReadAll(file)
+		if header.Filename != "image.png" || header.Header.Get("Content-Type") != "image/png" || len(content) == 0 {
+			t.Errorf("upload filename=%q content-type=%q bytes=%d", header.Filename, header.Header.Get("Content-Type"), len(content))
+		}
+		if request.FormValue("file_source") != imagineSelfUploadSource {
+			t.Errorf("file_source = %q", request.FormValue("file_source"))
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"uploadId":"upload-1","fileMetadata":{"fileMetadataId":"metadata-1","fileUri":"users/test/reference/content"}}`)
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
+	lease, err := manager.Acquire(context.Background(), egressdomain.ScopeWeb, "video-reference-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	adapter := NewAdapter(Config{BaseURL: server.URL}, manager, cipher, nil, nil)
+	uri, err := adapter.prepareVideoReference(context.Background(), adapter.config(), lease, "test-sso", dataURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uri != "https://assets.grok.com/users/test/reference/content" {
+		t.Fatalf("uri = %q", uri)
+	}
+}
+
 func TestDecodeDirectFileUploadResponse(t *testing.T) {
 	uploaded, err := decodeDirectFileUploadResponse(strings.NewReader(`{
 		"uploadId":"upload-1",
@@ -752,39 +787,6 @@ func TestDecodeDirectFileUploadResponse(t *testing.T) {
 	}
 	if _, err := decodeDirectFileUploadResponse(strings.NewReader(`{"uploadId":"upload-1","fileMetadata":{}}`)); err == nil {
 		t.Fatal("incomplete V2 upload response was accepted")
-	}
-}
-
-func TestDecodeLegacyFileUploadResponseDiagnostics(t *testing.T) {
-	uploaded, err := decodeLegacyFileUploadResponse(http.StatusOK, []byte(`{"fileId":"file-1","fileUri":"users/test/file-1/content"}`))
-	if err != nil || uploaded.ID != "file-1" || uploaded.URI != "https://assets.grok.com/users/test/file-1/content" {
-		t.Fatalf("uploaded=%#v err=%v", uploaded, err)
-	}
-
-	_, err = decodeLegacyFileUploadResponse(http.StatusRequestEntityTooLarge, []byte(`{"error":{"code":8,"message":"payload too large"}}`))
-	var upstreamErr *webMediaUpstreamError
-	if !errors.As(err, &upstreamErr) || upstreamErr.status != http.StatusRequestEntityTooLarge ||
-		!strings.Contains(err.Error(), ": 8: payload too large") {
-		t.Fatalf("upstream error = %v", err)
-	}
-
-	_, err = decodeLegacyFileUploadResponse(http.StatusOK, []byte("<html>bad gateway</html>"))
-	if err == nil || !strings.Contains(err.Error(), "上传文件响应无效") || strings.Contains(err.Error(), "<html>bad gateway</html>") {
-		t.Fatalf("invalid response error = %v", err)
-	}
-
-	_, err = decodeLegacyFileUploadResponse(http.StatusBadGateway, nil)
-	if !errors.As(err, &upstreamErr) || !strings.Contains(err.Error(), "<empty>") {
-		t.Fatalf("empty upstream error = %v", err)
-	}
-
-	secret := "eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiMTIzNDU2In0.signaturevalue"
-	_, err = decodeLegacyFileUploadResponse(http.StatusBadGateway, []byte(`{"error":{"code":"upload_failed","message":"access_token=`+secret+` user@example.com https://assets.grok.com/file?id=secret"}}`))
-	if !errors.As(err, &upstreamErr) || !strings.Contains(err.Error(), "upload_failed") ||
-		!strings.Contains(err.Error(), "[REDACTED]") || !strings.Contains(err.Error(), "[REDACTED_EMAIL]") ||
-		!strings.Contains(err.Error(), "[REDACTED_URL]") || strings.Contains(err.Error(), secret) ||
-		strings.Contains(err.Error(), "user@example.com") || strings.Contains(err.Error(), "id=secret") {
-		t.Fatalf("unsafe upstream diagnostic = %v", err)
 	}
 }
 
@@ -828,19 +830,6 @@ func TestWebMediaUpstreamDiagnosticLogsStageHeadersAndRedactedPreview(t *testing
 	for _, secret := range []string{"access_token=secret", "owner@example.com", "token=secret", strings.Repeat("A", 256)} {
 		if strings.Contains(logLine, secret) {
 			t.Fatalf("log exposed %q: %s", secret, logLine)
-		}
-	}
-}
-
-func TestDirectFileUploadFallbackOnlyForUnsupportedEndpoint(t *testing.T) {
-	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone, http.StatusNotImplemented} {
-		if !directFileUploadFallbackStatus(status) {
-			t.Fatalf("status %d must allow legacy fallback", status)
-		}
-	}
-	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusUnsupportedMediaType, http.StatusTooManyRequests, http.StatusInternalServerError} {
-		if directFileUploadFallbackStatus(status) {
-			t.Fatalf("status %d must not allow ambiguous legacy fallback", status)
 		}
 	}
 }

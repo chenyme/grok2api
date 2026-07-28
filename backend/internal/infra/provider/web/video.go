@@ -245,7 +245,7 @@ func (a *Adapter) prepareVideoReference(ctx context.Context, cfg Config, lease *
 	if err != nil {
 		return "", err
 	}
-	uploaded, err := a.uploadFileLegacyForStage(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", "video_reference_upload")
+	uploaded, err := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "video_reference_upload")
 	if err != nil {
 		return "", err
 	}
