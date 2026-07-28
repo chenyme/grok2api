@@ -8,6 +8,8 @@ import (
 	"net/http/httptrace"
 	"strings"
 	"testing"
+
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 )
 
 type scriptedRequestClient struct {
@@ -22,6 +24,53 @@ func (c *scriptedRequestClient) Do(request *http.Request) (*http.Response, error
 }
 
 func (c *scriptedRequestClient) CloseIdleConnections() { c.closedIdle++ }
+
+func TestBuildProxyPoolLeaseForcesFreshTunnel(t *testing.T) {
+	client := &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
+		if !request.Close {
+			t.Fatal("Build proxy-pool request must disable connection reuse")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+	}}
+	lease := &Lease{client: client, Scope: egressdomain.ScopeBuild, proxyPool: true, freshTunnel: true}
+	request, err := http.NewRequest(http.MethodPost, "https://example.com/generate", bytes.NewReader([]byte("payload")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lease.Do(request); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFixedBuildWebAndAccountBoundProxyKeepConnectionReuse(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		scope       egressdomain.Scope
+		proxyPool   bool
+		freshTunnel bool
+	}{
+		{name: "fixed Build proxy", scope: egressdomain.ScopeBuild},
+		{name: "Web proxy pool", scope: egressdomain.ScopeWeb, proxyPool: true, freshTunnel: true},
+		{name: "account-bound Build proxy", scope: egressdomain.ScopeBuild, proxyPool: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &scriptedRequestClient{do: func(_ int, request *http.Request) (*http.Response, error) {
+				if request.Close {
+					t.Fatal("request unexpectedly disabled connection reuse")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+			}}
+			lease := &Lease{client: client, Scope: test.scope, proxyPool: test.proxyPool, freshTunnel: test.freshTunnel}
+			request, err := http.NewRequest(http.MethodGet, "https://example.com/models", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := lease.Do(request); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func TestStickyLeaseRetriesSafeProxyConnectFailure(t *testing.T) {
 	client := &scriptedRequestClient{do: func(call int, _ *http.Request) (*http.Response, error) {
