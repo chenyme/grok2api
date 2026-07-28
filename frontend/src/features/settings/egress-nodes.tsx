@@ -501,8 +501,8 @@ function HealthMeter({ value }: { value: number }) {
 
 function ProbeSummary({ node }: { node: EgressNodeDTO }) {
   return (
-    <div className="flex w-full justify-center">
-      <div className="grid w-fit max-w-full grid-cols-[2rem_auto] grid-rows-2 items-center gap-x-2 gap-y-1 py-1 text-left text-xs">
+    <div className="w-full">
+      <div className="grid w-full grid-cols-[2rem_minmax(0,1fr)] grid-rows-2 items-center gap-x-2 gap-y-1 py-1 text-left text-xs">
         <ProbeFamilySummary family="IPv4" probe={node.ipv4Probe} row={1} />
         <ProbeFamilySummary family="IPv6" probe={node.ipv6Probe} row={2} />
       </div>
