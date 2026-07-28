@@ -38,6 +38,7 @@ type quotaBreakdownJSON struct {
 }
 
 const (
+	accountUpdateBatchSize      = 500
 	accountPaidPlanSignal       = `(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_code), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('super', 'supergrok', 'supergrokpro', 'supergrokheavy', 'supergroklite', 'grokpro', 'xpremium', 'xpremiumplus', 'apikey') OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_name), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('super', 'supergrok', 'supergrokpro', 'supergrokheavy', 'supergroklite', 'grokpro', 'xpremium', 'xpremiumplus', 'apikey'))`
 	accountFreePlanSignal       = `(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_code), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('free', 'grokfree', 'freetier', 'basic', 'grokbasic', 'xbasic') OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_name), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('free', 'grokfree', 'freetier', 'basic', 'grokbasic', 'xbasic'))`
 	accountPaidBillingSignals   = `(` + accountPaidPlanSignal + ` OR billing.monthly_limit > 0 OR billing.on_demand_cap > 0 OR billing.on_demand_used > 0 OR billing.prepaid_balance > 0)`
@@ -1255,7 +1256,7 @@ func (r *AccountRepository) markWebProfileTimestamp(ctx context.Context, id uint
 	}))
 }
 
-func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, updates repository.AccountUpdates) (int64, error) {
+func (r *AccountRepository) UpdateMany(ctx context.Context, providerValue account.Provider, ids []uint64, updates repository.AccountUpdates) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
@@ -1275,11 +1276,40 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, update
 	if len(values) == 0 {
 		return 0, nil
 	}
-	result := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id IN ?", ids).Updates(values)
-	if result.Error == nil && result.RowsAffected > 0 {
+	var updated int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for start := 0; start < len(ids); start += accountUpdateBatchSize {
+			end := min(start+accountUpdateBatchSize, len(ids))
+			var rows []accountModel
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "provider").Where("id IN ?", ids[start:end]).Order("id ASC").Find(&rows).Error; err != nil {
+				return err
+			}
+			if len(rows) != end-start {
+				return repository.ErrAccountPoolMismatch
+			}
+			for _, row := range rows {
+				if account.Provider(row.Provider) != providerValue {
+					return repository.ErrAccountPoolMismatch
+				}
+			}
+		}
+		for start := 0; start < len(ids); start += accountUpdateBatchSize {
+			end := min(start+accountUpdateBatchSize, len(ids))
+			result := tx.Model(&accountModel{}).Where("provider = ? AND id IN ?", providerValue, ids[start:end]).Updates(values)
+			if result.Error != nil {
+				return result.Error
+			}
+			updated += result.RowsAffected
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if updated > 0 {
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged})
 	}
-	return result.RowsAffected, result.Error
+	return updated, nil
 }
 
 // UpdateEgressBindings assigns one egress node to multiple accounts of one
