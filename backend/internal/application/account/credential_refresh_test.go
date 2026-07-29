@@ -14,6 +14,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 func TestEnsureCredentialReusesRotatedTokenAndThrottlesForcedRefresh(t *testing.T) {
@@ -324,7 +325,7 @@ func TestCredentialRefreshFailureDistinguishesTransientAndPermanent(t *testing.T
 	service, credential, adapter := newCredentialRefreshTestService(t, now)
 	service.now = func() time.Time { return now }
 
-	adapter.refreshErr = &provider.CredentialRefreshError{Status: 503, Code: "oauth_unavailable"}
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 503, Code: "oauth_unavailable", Message: "Please retry later", Response: `{"error":"oauth_unavailable","message":"Please retry later"}`}
 	if _, err := service.EnsureCredential(ctx, credential, true); err == nil {
 		t.Fatal("transient refresh unexpectedly succeeded")
 	}
@@ -332,12 +333,12 @@ func TestCredentialRefreshFailureDistinguishesTransientAndPermanent(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transient.AuthStatus != accountdomain.AuthStatusActive || transient.RefreshFailureCount != 1 || transient.LastRefreshErrorCode != "oauth_unavailable" || transient.RefreshPermanent || transient.RefreshDueAt == nil || !transient.RefreshDueAt.After(now) {
+	if transient.AuthStatus != accountdomain.AuthStatusActive || transient.RefreshFailureCount != 1 || transient.LastRefreshErrorStatus != 503 || transient.LastRefreshErrorCode != "oauth_unavailable" || transient.LastRefreshErrorMessage != "Please retry later" || transient.LastRefreshErrorResponse == "" || transient.RefreshPermanent || transient.RefreshDueAt == nil || !transient.RefreshDueAt.After(now) {
 		t.Fatalf("transient state = %#v", transient)
 	}
 
 	service.clearRefreshState(credential.ID)
-	adapter.refreshErr = &provider.CredentialRefreshError{Status: 400, Code: "invalid_grant", Permanent: true}
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 400, Code: "invalid_grant", Message: "Refresh token has expired", Response: `{"error":"invalid_grant","error_description":"Refresh token has expired"}`, Permanent: true}
 	if _, err := service.EnsureCredential(ctx, transient, true); err == nil {
 		t.Fatal("permanent refresh unexpectedly succeeded")
 	}
@@ -345,7 +346,7 @@ func TestCredentialRefreshFailureDistinguishesTransientAndPermanent(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if permanent.AuthStatus != accountdomain.AuthStatusActive || permanent.RefreshFailureCount != 2 || permanent.LastRefreshErrorCode != "invalid_grant" || !permanent.RefreshPermanent || permanent.RefreshDueAt == nil || !permanent.RefreshDueAt.Equal(permanent.ExpiresAt) {
+	if permanent.AuthStatus != accountdomain.AuthStatusActive || permanent.RefreshFailureCount != 2 || permanent.LastRefreshErrorStatus != 400 || permanent.LastRefreshErrorCode != "invalid_grant" || permanent.LastRefreshErrorMessage != "Refresh token has expired" || permanent.LastRefreshErrorResponse == "" || !permanent.RefreshPermanent || permanent.RefreshDueAt == nil || !permanent.RefreshDueAt.Equal(permanent.ExpiresAt) {
 		t.Fatalf("permanent with valid token should stay active: %#v", permanent)
 	}
 	dueIDs, err := service.accounts.ListDueCredentialRefreshIDs(ctx, now, credentialRefreshBatchSize)
@@ -413,7 +414,7 @@ func TestCredentialDecryptFailedAllowsRetryAfterKeyRecovery(t *testing.T) {
 	service.now = func() time.Time { return now }
 
 	// 旧行为会把 decrypt_failed 标 permanent；模拟已落库的 permanent 状态。
-	if err := service.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, 1, now.Add(time.Hour), "credential_decrypt_failed", true); err != nil {
+	if err := service.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, repository.CredentialRefreshFailure{Count: 1, RetryAt: now.Add(time.Hour), Code: "credential_decrypt_failed", Message: "Stored credential could not be decrypted", Permanent: true}); err != nil {
 		t.Fatal(err)
 	}
 	stuck, err := service.accounts.Get(ctx, credential.ID)
@@ -428,7 +429,7 @@ func TestCredentialDecryptFailedAllowsRetryAfterKeyRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("force refresh after decrypt_failed should retry: %v", err)
 	}
-	if recovered.RefreshPermanent || recovered.LastRefreshErrorCode != "" || adapter.refreshCount.Load() < 1 {
+	if recovered.RefreshPermanent || recovered.LastRefreshErrorStatus != 0 || recovered.LastRefreshErrorCode != "" || recovered.LastRefreshErrorMessage != "" || recovered.LastRefreshErrorResponse != "" || adapter.refreshCount.Load() < 1 {
 		t.Fatalf("decrypt_failed was not cleared after successful refresh: %#v count=%d", recovered, adapter.refreshCount.Load())
 	}
 

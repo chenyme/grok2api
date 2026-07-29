@@ -1311,7 +1311,7 @@ func TestGatewayRefreshesAndRetriesBuildUnauthorizedOnce(t *testing.T) {
 	if updated.EncryptedAccessToken != "access-new" || updated.AuthStatus != account.AuthStatusActive || updated.RefreshFailureCount != 0 {
 		t.Fatalf("updated credential = %#v", updated)
 	}
-	if err := accountRepo.UpdateCredentialRefreshFailure(ctx, credential.ID, 1, updated.ExpiresAt, "invalid_grant", true); err != nil {
+	if err := accountRepo.UpdateCredentialRefreshFailure(ctx, credential.ID, repository.CredentialRefreshFailure{Count: 1, RetryAt: updated.ExpiresAt, Status: 400, Code: "invalid_grant", Message: "Refresh token has expired", Permanent: true}); err != nil {
 		t.Fatal(err)
 	}
 	adapter.rejectAll.Store(true)

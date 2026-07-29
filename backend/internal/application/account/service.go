@@ -2184,6 +2184,9 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 	}
 	failureCount := credential.RefreshFailureCount + 1
 	errorCode := "oauth_transport_error"
+	errorMessage := "OAuth request failed"
+	errorStatus := 0
+	errorResponse := ""
 	permanent := false
 	retryAfter := time.Duration(0)
 	var typed *provider.CredentialRefreshError
@@ -2192,10 +2195,16 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 		if errorCode == "" {
 			errorCode = "oauth_refresh_error"
 		}
+		errorStatus = typed.Status
 		permanent = typed.Permanent
 		retryAfter = typed.RetryAfter
+		if message := normalizeCredentialRefreshErrorMessage(typed.Message); message != "" {
+			errorMessage = message
+		}
+		errorResponse = normalizeCredentialRefreshErrorResponse(typed.Response)
 	} else if errors.Is(refreshErr, context.DeadlineExceeded) {
 		errorCode = "oauth_timeout"
+		errorMessage = "OAuth request timed out"
 	}
 	// 真正的 OAuth 永久失败（invalid_grant 等）只能由成功换 token 清除。
 	// credential_decrypt_failed 是可恢复本地错误：不得被旧 permanent 粘住，也不得把本次可恢复失败抬升为永久。
@@ -2214,7 +2223,10 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 	} else if permanent {
 		retryAt = now
 	}
-	if err := s.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, failureCount, retryAt, errorCode, permanent); err != nil {
+	if err := s.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, repository.CredentialRefreshFailure{
+		Count: failureCount, RetryAt: retryAt, Status: errorStatus, Code: errorCode,
+		Message: errorMessage, Response: errorResponse, Permanent: permanent,
+	}); err != nil {
 		s.logger.Warn("credential_refresh_state_write_failed", "account_id", credential.ID, "error", err)
 	}
 	if permanent && accessTokenAlive {
@@ -2230,6 +2242,39 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 	}
 	s.logger.Warn("credential_refresh_deferred", "account_id", credential.ID, "failure_count", failureCount, "retry_at", retryAt, "error_code", errorCode)
 	s.WakeCredentialRefresh()
+}
+
+func normalizeCredentialRefreshErrorMessage(value string) string {
+	value = strings.Map(func(char rune) rune {
+		switch char {
+		case '\r', '\n', '\t':
+			return ' '
+		}
+		if char < 0x20 || char == 0x7f {
+			return -1
+		}
+		return char
+	}, strings.TrimSpace(value))
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) > 512 {
+		value = string(runes[:511]) + "…"
+	}
+	return value
+}
+
+func normalizeCredentialRefreshErrorResponse(value string) string {
+	value = strings.Map(func(char rune) rune {
+		if char < 0x20 || char == 0x7f {
+			return ' '
+		}
+		return char
+	}, strings.TrimSpace(value))
+	runes := []rune(value)
+	if len(runes) > 4096 {
+		value = string(runes[:4095]) + "…"
+	}
+	return value
 }
 
 // resolvePermanentRefreshFailure 阻止再次请求已确认失效的 refresh token，并在 access token 到期后收敛账号状态。

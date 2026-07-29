@@ -83,8 +83,12 @@ func IsMediaPostProcessingError(err error) bool {
 
 // CredentialRefreshError distinguishes permanent OAuth errors requiring reauthorization from temporary errors that can retry with backoff.
 type CredentialRefreshError struct {
-	Status     int
-	Code       string
+	Status  int
+	Code    string
+	Message string
+	// Response is a bounded, redacted representation of the upstream OAuth
+	// response. It is diagnostic only and must never contain credentials.
+	Response   string
 	Permanent  bool
 	RetryAfter time.Duration
 	Cause      error
@@ -95,7 +99,13 @@ func (e *CredentialRefreshError) Error() string {
 		return "credential refresh failed"
 	}
 	if e.Code != "" {
+		if e.Message != "" {
+			return "credential refresh failed: " + e.Code + ": " + e.Message
+		}
 		return "credential refresh failed: " + e.Code
+	}
+	if e.Message != "" {
+		return "credential refresh failed: " + e.Message
 	}
 	if e.Cause != nil {
 		return "credential refresh failed: " + e.Cause.Error()

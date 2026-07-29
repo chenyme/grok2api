@@ -50,6 +50,15 @@ func TestNewAccountResponseExposesAllLinkedAccounts(t *testing.T) {
 	}
 }
 
+func TestNewAccountResponseExposesCredentialRefreshError(t *testing.T) {
+	response := newAccountResponse(accountapp.View{Credential: accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, LastRefreshErrorStatus: 400, LastRefreshErrorCode: "invalid_grant", LastRefreshErrorMessage: "Refresh token has expired", LastRefreshErrorResponse: `{"error":"invalid_grant"}`,
+	}})
+	if response.LastRefreshErrorStatus != 400 || response.LastRefreshError != "invalid_grant" || response.LastRefreshErrorMessage != "Refresh token has expired" || response.LastRefreshErrorResponse == "" {
+		t.Fatalf("refresh error = %#v", response)
+	}
+}
+
 type accountSynchronizerStub struct {
 	accountIDs []uint64
 }
