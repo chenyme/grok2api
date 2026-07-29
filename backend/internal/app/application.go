@@ -397,7 +397,7 @@ func webProviderConfig(cfg config.Config) webprovider.Config {
 func clearanceConfig(cfg config.Config) infraegress.ClearanceConfig {
 	return infraegress.ClearanceConfig{
 		Mode: cfg.Provider.Web.ClearanceMode, FlareSolverrURL: cfg.Provider.Web.FlareSolverrURL,
-		TargetURL: strings.TrimRight(cfg.Provider.Web.BaseURL, "/") + "/imagine", Timeout: cfg.Provider.Web.ClearanceTimeout.Value(),
+		TargetURL: cfg.Provider.Web.BaseURL, Timeout: cfg.Provider.Web.ClearanceTimeout.Value(),
 		RefreshInterval: cfg.Provider.Web.ClearanceRefresh.Value(),
 	}
 }
