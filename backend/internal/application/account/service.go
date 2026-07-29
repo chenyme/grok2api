@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,24 +23,27 @@ import (
 )
 
 var (
-	ErrDevicePending  = errors.New("Device OAuth 等待用户授权")
-	ErrDeviceSlowDown = errors.New("Device OAuth 轮询过快")
-	ErrDeviceDenied   = errors.New("Device OAuth 已拒绝或过期")
-	ErrInvalidFilter  = errors.New("账号筛选条件无效")
-	ErrInvalidInput   = errors.New("账号参数无效")
-	ErrInvalidImport  = errors.New("账号凭据格式无效")
-	ErrImportLimit    = errors.New("导入账号数量超过限制")
-	ErrExportLimit    = errors.New("导出账号数量超过限制")
-	ErrNotFound       = errors.New("账号不存在")
-	ErrUnsupported    = errors.New("账号来源不支持该操作")
-	ErrConversionBusy = errors.New("账号正在转换为 Grok Build")
-	ErrConflict       = errors.New("账号操作存在冲突")
+	ErrDevicePending       = errors.New("Device OAuth 等待用户授权")
+	ErrDeviceSlowDown      = errors.New("Device OAuth 轮询过快")
+	ErrDeviceDenied        = errors.New("Device OAuth 已拒绝或过期")
+	ErrInvalidFilter       = errors.New("账号筛选条件无效")
+	ErrInvalidInput        = errors.New("账号参数无效")
+	ErrInvalidImport       = errors.New("账号凭据格式无效")
+	ErrImportLimit         = errors.New("导入账号数量超过限制")
+	ErrExportLimit         = errors.New("导出账号数量超过限制")
+	ErrNotFound            = errors.New("账号不存在")
+	ErrUnsupported         = errors.New("账号来源不支持该操作")
+	ErrConversionBusy      = errors.New("账号正在转换为 Grok Build")
+	ErrConflict            = errors.New("账号操作存在冲突")
+	ErrAccountPoolMismatch = errors.New("批量操作包含不属于当前号池的账号")
 )
 
 var ErrCredentialRefreshPermanent = errors.New("OAuth refresh token 已永久失效")
 
 const (
-	estimatedFreeTokenLimit         int64         = 1_000_000
+	// estimatedFreeTokenLimit is only a fallback until an upstream exhaustion
+	// response supplies the account-specific actual/limit pair.
+	estimatedFreeTokenLimit         int64         = 500_000
 	freeUsageWindow                 time.Duration = 24 * time.Hour
 	forcedRefreshMinInterval        time.Duration = 30 * time.Second
 	paidProbeRetryInterval          time.Duration = 15 * time.Minute
@@ -63,6 +67,7 @@ const (
 	credentialImportChunkSize                     = 100
 	maxQuotaResetAccounts                         = 10000
 	quotaResetChunkSize                           = 500
+	maxBatchUpdateAccounts                        = 10000
 	maxBuildConversionAccounts                    = 1000
 	maxWebConsoleSyncAccounts                     = 1000
 	accountTaskBatchSize                          = 1000
@@ -561,12 +566,16 @@ func validAssociationFilter(providerValue, association string) bool {
 	}
 }
 
-// BatchUpdate 对一组账号应用同一组路由参数，单次最多处理一个管理端最大分页。
-func (s *Service) BatchUpdate(ctx context.Context, ids []uint64, input UpdateInput) (int64, error) {
-	ids, err := normalizeBatchIDs(ids)
+// BatchUpdate 对同一号池的一组账号应用相同路由参数。
+func (s *Service) BatchUpdate(ctx context.Context, providerValue accountdomain.Provider, ids []uint64, input UpdateInput) (int64, error) {
+	ids, err := normalizeIDs(ids, maxBatchUpdateAccounts)
 	if err != nil {
 		return 0, err
 	}
+	if !providerValue.IsValid() {
+		return 0, invalidInput("账号来源无效")
+	}
+	slices.Sort(ids)
 	if input.MaxConcurrent != nil && (*input.MaxConcurrent < 1 || *input.MaxConcurrent > accountdomain.MaxConcurrent) {
 		return 0, invalidInput("maxConcurrent 必须在 1 到 256 之间")
 	}
@@ -576,13 +585,17 @@ func (s *Service) BatchUpdate(ctx context.Context, ids []uint64, input UpdateInp
 	if input.Name != nil {
 		return 0, invalidInput("批量更新不支持修改账号名称")
 	}
-	updated, err := s.accounts.UpdateMany(ctx, ids, repository.AccountUpdates{Enabled: input.Enabled, Priority: input.Priority, MaxConcurrent: input.MaxConcurrent, MinimumRemaining: input.MinimumRemaining})
+	updated, err := s.accounts.UpdateMany(ctx, providerValue, ids, repository.AccountUpdates{Enabled: input.Enabled, Priority: input.Priority, MaxConcurrent: input.MaxConcurrent, MinimumRemaining: input.MinimumRemaining})
 	if err != nil {
-		return 0, err
+		return 0, mapRepositoryError(err)
 	}
-	if input.Enabled != nil && !*input.Enabled {
-		for _, id := range ids {
-			_ = s.sticky.DeleteByAccount(ctx, id)
+	if input.Enabled != nil && !*input.Enabled && s.sticky != nil {
+		if batchDeleter, ok := s.sticky.(repository.StickySessionBatchDeleter); ok {
+			_ = batchDeleter.DeleteByAccounts(ctx, ids)
+		} else {
+			for _, id := range ids {
+				_ = s.sticky.DeleteByAccount(ctx, id)
+			}
 		}
 	}
 	return updated, nil
@@ -3277,6 +3290,9 @@ func mapLinkedDeleteError(err error) error {
 }
 
 func mapRepositoryError(err error) error {
+	if errors.Is(err, repository.ErrAccountPoolMismatch) {
+		return ErrAccountPoolMismatch
+	}
 	if errors.Is(err, repository.ErrNotFound) {
 		return ErrNotFound
 	}

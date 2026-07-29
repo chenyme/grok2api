@@ -97,3 +97,12 @@ func TestRunPublisherDoesNotStopAfterPublishFailure(t *testing.T) {
 		t.Fatalf("publish failures = %d", service.failures.Load())
 	}
 }
+
+func TestEventKeyKeepsClientKeyInvalidationsDistinct(t *testing.T) {
+	first := eventKey(repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged, ClientKeyID: 1})
+	second := eventKey(repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged, ClientKeyID: 2})
+	global := eventKey(repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged})
+	if first == second || first == global || second == global {
+		t.Fatalf("client-key invalidation keys were coalesced: first=%#v second=%#v global=%#v", first, second, global)
+	}
+}

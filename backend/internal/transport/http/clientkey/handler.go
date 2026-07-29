@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
@@ -29,14 +30,17 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 }
 
 type createRequest struct {
-	Name                 string   `json:"name" binding:"required"`
-	Enabled              *bool    `json:"enabled"`
-	ExpiresAt            string   `json:"expiresAt"`
-	RPMLimit             *int     `json:"rpmLimit"`
-	MaxConcurrent        *int     `json:"maxConcurrent"`
-	BillingLimitUSDTicks int64    `json:"billingLimitUsdTicks"`
-	AllowModelAliases    *bool    `json:"allowModelAliases"`
-	AllowedModelIDs      []string `json:"allowedModelIds"`
+	Name                 string    `json:"name" binding:"required"`
+	Enabled              *bool     `json:"enabled"`
+	ExpiresAt            string    `json:"expiresAt"`
+	RPMLimit             *int      `json:"rpmLimit"`
+	MaxConcurrent        *int      `json:"maxConcurrent"`
+	BillingLimitUSDTicks int64     `json:"billingLimitUsdTicks"`
+	AllowModelAliases    *bool     `json:"allowModelAliases"`
+	AllowedModelIDs      []string  `json:"allowedModelIds"`
+	ProviderScope        *[]string `json:"providerScope"`
+	TierScope            *[]string `json:"tierScope"`
+	AccountPool          *string   `json:"accountPool"`
 }
 
 type updateRequest struct {
@@ -48,6 +52,9 @@ type updateRequest struct {
 	BillingLimitUSDTicks *int64    `json:"billingLimitUsdTicks"`
 	AllowModelAliases    *bool     `json:"allowModelAliases"`
 	AllowedModelIDs      *[]string `json:"allowedModelIds"`
+	ProviderScope        *[]string `json:"providerScope"`
+	TierScope            *[]string `json:"tierScope"`
+	AccountPool          *string   `json:"accountPool"`
 }
 
 type batchUpdateRequest struct {
@@ -71,6 +78,8 @@ type keyResponse struct {
 	BilledUsageUSDTicks  int64      `json:"billedUsageUsdTicks"`
 	AllowModelAliases    bool       `json:"allowModelAliases"`
 	AllowedModelIDs      []string   `json:"allowedModelIds"`
+	ProviderScope        []string   `json:"providerScope"`
+	TierScope            []string   `json:"tierScope"`
 	LastUsedAt           *time.Time `json:"lastUsedAt,omitempty"`
 }
 
@@ -150,7 +159,18 @@ func (h *Handler) create(c *gin.Context) {
 	if request.Enabled != nil {
 		enabled = *request.Enabled
 	}
+	providerScope, tierScope, err := parseRequestedScopes(request.ProviderScope, request.TierScope, request.AccountPool)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidAccountScope", err.Error())
+		return
+	}
 	input := clientkeyapp.CreateInput{Name: request.Name, Enabled: enabled, ExpiresAt: expiresAt, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowedModels: modelIDs}
+	if providerScope != nil {
+		input.ProviderScope = *providerScope
+	}
+	if tierScope != nil {
+		input.TierScope = *tierScope
+	}
 	if request.AllowModelAliases != nil {
 		input.AllowModelAliases = *request.AllowModelAliases
 	}
@@ -180,7 +200,12 @@ func (h *Handler) update(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	input := clientkeyapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, RPMLimit: request.RPMLimit, MaxConcurrent: request.MaxConcurrent, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowModelAliases: request.AllowModelAliases}
+	providerScope, tierScope, err := parseRequestedScopes(request.ProviderScope, request.TierScope, request.AccountPool)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidAccountScope", err.Error())
+		return
+	}
+	input := clientkeyapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, RPMLimit: request.RPMLimit, MaxConcurrent: request.MaxConcurrent, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowModelAliases: request.AllowModelAliases, ProviderScope: providerScope, TierScope: tierScope}
 	if request.ExpiresAt != nil {
 		if *request.ExpiresAt == "" {
 			input.ClearExpiresAt = true
@@ -260,8 +285,47 @@ func newKeyResponse(value clientkeydomain.Key) keyResponse {
 	return keyResponse{
 		ID: value.ID, Name: value.Name, Prefix: value.Prefix, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent, BillingLimitUSDTicks: value.BillingLimitUSDTicks,
-		BilledUsageUSDTicks: value.BilledUsageUSDTicks, AllowModelAliases: value.AllowModelAliases, AllowedModelIDs: ids, LastUsedAt: value.LastUsedAt,
+		BilledUsageUSDTicks: value.BilledUsageUSDTicks, AllowModelAliases: value.AllowModelAliases, AllowedModelIDs: ids,
+		ProviderScope: value.ProviderScope.Values(), TierScope: value.TierScope.Values(), LastUsedAt: value.LastUsedAt,
 	}
+}
+
+func parseRequestedScopes(providerValues, tierValues *[]string, legacyPool *string) (*clientkeydomain.ProviderScope, *clientkeydomain.TierScope, error) {
+	if legacyPool != nil && (providerValues != nil || tierValues != nil) {
+		return nil, nil, errors.New("accountPool 不能与 providerScope 或 tierScope 同时设置")
+	}
+	if legacyPool != nil {
+		providers := clientkeydomain.ProviderScopeAll
+		var tiers clientkeydomain.TierScope
+		switch strings.TrimSpace(*legacyPool) {
+		case "all":
+			tiers = clientkeydomain.TierScopeAll
+		case "free":
+			tiers = clientkeydomain.TierScopeFree
+		case "super":
+			tiers = clientkeydomain.TierScopeSuper
+		default:
+			return nil, nil, errors.New("accountPool 必须是 all、free 或 super")
+		}
+		return &providers, &tiers, nil
+	}
+	var providers *clientkeydomain.ProviderScope
+	if providerValues != nil {
+		value, valid := clientkeydomain.ParseProviderScopeValues(*providerValues)
+		if !valid {
+			return nil, nil, errors.New("providerScope 必须是 all，或 grok_build、grok_web、grok_console 的组合")
+		}
+		providers = &value
+	}
+	var tiers *clientkeydomain.TierScope
+	if tierValues != nil {
+		value, valid := clientkeydomain.ParseTierScopeValues(*tierValues)
+		if !valid {
+			return nil, nil, errors.New("tierScope 必须是 all，或 free、super 的组合")
+		}
+		tiers = &value
+	}
+	return providers, tiers, nil
 }
 
 func parseTime(value string) (*time.Time, error) {
