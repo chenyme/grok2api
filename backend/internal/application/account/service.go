@@ -2006,29 +2006,39 @@ func (s *Service) markSSOCredentialRejected(ctx context.Context, value accountdo
 
 // EnsureCredential 在即将过期时刷新 token，同一账号并发请求只执行一次刷新。
 func (s *Service) EnsureCredential(ctx context.Context, value accountdomain.Credential, force bool) (accountdomain.Credential, error) {
-	return s.ensureCredential(ctx, value, force, false, false)
+	return s.ensureCredential(ctx, value, ensureCredentialOptions{force: force})
 }
 
-func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Credential, force, bypassCooldown, respectSchedule bool) (accountdomain.Credential, error) {
+type ensureCredentialOptions struct {
+	force              bool
+	bypassCooldown     bool
+	respectSchedule    bool
+	retryPermanentOnce bool
+}
+
+func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Credential, options ensureCredentialOptions) (accountdomain.Credential, error) {
 	if s.providers == nil || !s.providers.SupportsCredentialRefresh(value.Provider) {
-		if force {
+		if options.force {
 			return accountdomain.Credential{}, ErrUnsupported
 		}
 		return value, nil
 	}
 	now := s.now()
-	if credential, err, handled := s.resolvePermanentRefreshFailure(ctx, value, now, force); handled {
+	if credential, err, handled := s.resolvePermanentRefreshFailure(ctx, value, now, options.force, options.retryPermanentOnce); handled {
 		return credential, err
 	}
-	if !force && value.ExpiresAt.IsZero() && value.EncryptedAccessToken != "" {
+	if !options.force && value.ExpiresAt.IsZero() && value.EncryptedAccessToken != "" {
 		return value, nil
 	}
-	if !force && value.EncryptedAccessToken != "" && !value.ExpiresAt.IsZero() && now.Add(credentialRefreshAdvance).Before(value.ExpiresAt) {
+	if !options.force && value.EncryptedAccessToken != "" && !value.ExpiresAt.IsZero() && now.Add(credentialRefreshAdvance).Before(value.ExpiresAt) {
 		return value, nil
 	}
 	refreshKey := strconv.FormatUint(value.ID, 10)
-	if respectSchedule {
+	if options.respectSchedule {
 		refreshKey += ":scheduled"
+	}
+	if options.retryPermanentOnce {
+		refreshKey += ":manual-retry"
 	}
 	result, err, _ := s.refreshes.Do(refreshKey, func() (any, error) {
 		latest, err := s.accounts.Get(ctx, value.ID)
@@ -2036,22 +2046,22 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 			return nil, err
 		}
 		currentTime := s.now()
-		if credential, err, handled := s.resolvePermanentRefreshFailure(ctx, latest, currentTime, force); handled {
+		if credential, err, handled := s.resolvePermanentRefreshFailure(ctx, latest, currentTime, options.force, options.retryPermanentOnce); handled {
 			if err != nil {
 				return nil, err
 			}
 			return credential, nil
 		}
-		if respectSchedule && latest.RefreshDueAt != nil && latest.RefreshDueAt.After(currentTime) {
+		if options.respectSchedule && latest.RefreshDueAt != nil && latest.RefreshDueAt.After(currentTime) {
 			return latest, nil
 		}
-		if force && latest.EncryptedAccessToken != "" && latest.EncryptedAccessToken != value.EncryptedAccessToken {
+		if options.force && latest.EncryptedAccessToken != "" && latest.EncryptedAccessToken != value.EncryptedAccessToken {
 			return latest, nil
 		}
-		if !force && latest.EncryptedAccessToken != "" && !latest.ExpiresAt.IsZero() && currentTime.Add(credentialRefreshAdvance).Before(latest.ExpiresAt) {
+		if !options.force && latest.EncryptedAccessToken != "" && !latest.ExpiresAt.IsZero() && currentTime.Add(credentialRefreshAdvance).Before(latest.ExpiresAt) {
 			return latest, nil
 		}
-		if force && !bypassCooldown && s.credentialRefreshCoolingDown(latest, currentTime) {
+		if options.force && !options.bypassCooldown && s.credentialRefreshCoolingDown(latest, currentTime) {
 			return latest, nil
 		}
 		release, err := s.acquireRefreshLock(ctx, latest.ID)
@@ -2065,22 +2075,22 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 				return nil, err
 			}
 			currentTime = s.now()
-			if credential, err, handled := s.resolvePermanentRefreshFailure(ctx, latest, currentTime, force); handled {
+			if credential, err, handled := s.resolvePermanentRefreshFailure(ctx, latest, currentTime, options.force, options.retryPermanentOnce); handled {
 				if err != nil {
 					return nil, err
 				}
 				return credential, nil
 			}
-			if respectSchedule && latest.RefreshDueAt != nil && latest.RefreshDueAt.After(currentTime) {
+			if options.respectSchedule && latest.RefreshDueAt != nil && latest.RefreshDueAt.After(currentTime) {
 				return latest, nil
 			}
-			if force && !bypassCooldown && s.credentialRefreshCoolingDown(latest, currentTime) {
+			if options.force && !options.bypassCooldown && s.credentialRefreshCoolingDown(latest, currentTime) {
 				return latest, nil
 			}
 			if latest.EncryptedAccessToken != "" && latest.EncryptedAccessToken != value.EncryptedAccessToken {
 				return latest, nil
 			}
-			if !force && latest.EncryptedAccessToken != "" && !latest.ExpiresAt.IsZero() && currentTime.Add(credentialRefreshAdvance).Before(latest.ExpiresAt) {
+			if !options.force && latest.EncryptedAccessToken != "" && !latest.ExpiresAt.IsZero() && currentTime.Add(credentialRefreshAdvance).Before(latest.ExpiresAt) {
 				return latest, nil
 			}
 		}
@@ -2091,7 +2101,7 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 		refreshed, err := adapter.RefreshCredential(ctx, latest)
 		if err != nil {
 			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialRefreshStateTTL)
-			s.recordCredentialRefreshFailure(persistCtx, latest, err)
+			s.recordCredentialRefreshFailure(persistCtx, latest, err, !options.retryPermanentOnce)
 			cancel()
 			return nil, err
 		}
@@ -2143,7 +2153,7 @@ func (s *Service) RefreshToken(ctx context.Context, id uint64) (View, error) {
 	if err != nil {
 		return View{}, mapRepositoryError(err)
 	}
-	if _, err := s.ensureCredential(ctx, value, true, true, false); err != nil {
+	if _, err := s.ensureCredential(ctx, value, ensureCredentialOptions{force: true, bypassCooldown: true, retryPermanentOnce: true}); err != nil {
 		return View{}, err
 	}
 	return s.Get(ctx, id)
@@ -2178,7 +2188,7 @@ func (s *Service) clearRefreshState(accountID uint64) {
 	s.refreshMu.Unlock()
 }
 
-func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential accountdomain.Credential, refreshErr error) {
+func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential accountdomain.Credential, refreshErr error, preservePermanent bool) {
 	if errors.Is(refreshErr, context.Canceled) || errors.Is(refreshErr, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.Canceled) {
 		return
 	}
@@ -2211,7 +2221,7 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 	if permanent && isRecoverableRefreshErrorCode(errorCode) {
 		permanent = false
 	}
-	if credential.RefreshPermanent && !isRecoverableRefreshErrorCode(credential.LastRefreshErrorCode) && !isRecoverableRefreshErrorCode(errorCode) {
+	if preservePermanent && credential.RefreshPermanent && !isRecoverableRefreshErrorCode(credential.LastRefreshErrorCode) && !isRecoverableRefreshErrorCode(errorCode) {
 		permanent = true
 	}
 	now := s.now()
@@ -2277,15 +2287,18 @@ func normalizeCredentialRefreshErrorResponse(value string) string {
 	return value
 }
 
-// resolvePermanentRefreshFailure 阻止再次请求已确认失效的 refresh token，并在 access token 到期后收敛账号状态。
-// credential_decrypt_failed 属于本地密钥问题，允许手动 force / 调度重试（密钥恢复后可自愈）；
-// invalid_grant 等真正 OAuth 永久失败仍保持阻断。
-func (s *Service) resolvePermanentRefreshFailure(ctx context.Context, credential accountdomain.Credential, now time.Time, force bool) (accountdomain.Credential, error, bool) {
+// resolvePermanentRefreshFailure 阻止自动链路再次请求已确认失效的 refresh token，
+// 并在 access token 到期后收敛账号状态。管理员显式刷新可通过
+// retryPermanentOnce 绕过一次；credential_decrypt_failed 等可恢复本地错误不受阻断。
+func (s *Service) resolvePermanentRefreshFailure(ctx context.Context, credential accountdomain.Credential, now time.Time, force, retryPermanentOnce bool) (accountdomain.Credential, error, bool) {
 	if !credential.RefreshPermanent {
 		return accountdomain.Credential{}, nil, false
 	}
 	if isRecoverableRefreshErrorCode(credential.LastRefreshErrorCode) {
 		// 允许 force 或到期调度再次尝试解密/刷新；成功后会 clear permanent 标记。
+		return accountdomain.Credential{}, nil, false
+	}
+	if retryPermanentOnce {
 		return accountdomain.Credential{}, nil, false
 	}
 	accessTokenAlive := credential.EncryptedAccessToken != "" && !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(now)
@@ -3073,11 +3086,11 @@ func (s *Service) RefreshAllTokensWithProgress(ctx context.Context, progress Bat
 		if !s.providers.SupportsCredentialRefresh(providerValue) {
 			continue
 		}
-		providerIDs, err := s.accounts.ListEnabledAccountIDs(ctx, providerValue, false)
+		providerIDs, err := s.accounts.ListEnabledCredentialRefreshAccountIDs(ctx, providerValue, false)
 		if err != nil {
 			return 0, 0, 0, err
 		}
-		refreshableIDs, err := s.accounts.ListEnabledAccountIDs(ctx, providerValue, true)
+		refreshableIDs, err := s.accounts.ListEnabledCredentialRefreshAccountIDs(ctx, providerValue, true)
 		if err != nil {
 			return 0, 0, 0, err
 		}
@@ -3093,13 +3106,14 @@ func (s *Service) refreshTokens(ctx context.Context, ids []uint64, progress Batc
 	return s.runAccountBatch(ctx, "credential_refresh", ids, s.refreshPool, progress, func(workCtx context.Context, id uint64) error {
 		value, err := s.accounts.Get(workCtx, id)
 		if err == nil {
-			_, err = s.ensureCredential(workCtx, value, true, true, false)
+			_, err = s.ensureCredential(workCtx, value, ensureCredentialOptions{force: true, bypassCooldown: true, retryPermanentOnce: true})
 		}
 		return err
 	})
 }
 
-// BatchRefreshTokens 续期指定账号的凭据；停用、失效或缺少刷新凭据的账号会被跳过。
+// BatchRefreshTokens 续期指定账号的凭据；失效账号会强制向上游重试一次，
+// 停用、Provider 不支持或缺少刷新凭据的账号会被跳过。
 func (s *Service) BatchRefreshTokens(ctx context.Context, ids []uint64) (int, int, int, error) {
 	values, err := normalizeBatchIDs(ids)
 	if err != nil {
@@ -3114,7 +3128,7 @@ func (s *Service) BatchRefreshTokens(ctx context.Context, ids []uint64) (int, in
 		if getErr != nil {
 			return 0, 0, 0, getErr
 		}
-		if !s.providers.SupportsCredentialRefresh(value.Provider) || !value.Enabled || value.AuthStatus != accountdomain.AuthStatusActive || value.EncryptedRefreshToken == "" {
+		if !s.providers.SupportsCredentialRefresh(value.Provider) || !value.Enabled || value.EncryptedRefreshToken == "" {
 			continue
 		}
 		refreshableIDs = append(refreshableIDs, id)

@@ -56,7 +56,7 @@ func TestEnsureCredentialReusesRotatedTokenAndThrottlesForcedRefresh(t *testing.
 		t.Fatalf("refresh after cooldown = %#v, count = %d", afterCooldown, adapter.refreshCount.Load())
 	}
 
-	manual, err := service.ensureCredential(ctx, afterCooldown, true, true, false)
+	manual, err := service.ensureCredential(ctx, afterCooldown, ensureCredentialOptions{force: true, bypassCooldown: true, retryPermanentOnce: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,6 +405,26 @@ func TestCredentialRefreshFailureDistinguishesTransientAndPermanent(t *testing.T
 	if finalState.AuthStatus != accountdomain.AuthStatusReauthRequired {
 		t.Fatalf("permanent with expired token should be reauthRequired: %#v", finalState)
 	}
+	manualCount := adapter.refreshCount.Load()
+	manualOptions := ensureCredentialOptions{force: true, bypassCooldown: true, retryPermanentOnce: true}
+	if _, err := service.ensureCredential(ctx, finalState, manualOptions); err == nil {
+		t.Fatal("manual retry should surface the repeated invalid_grant")
+	}
+	if adapter.refreshCount.Load() != manualCount+1 {
+		t.Fatalf("manual retry did not issue exactly one oauth request: before=%d after=%d", manualCount, adapter.refreshCount.Load())
+	}
+	adapter.refreshErr = nil
+	latest, err := service.accounts.Get(ctx, finalState.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := service.ensureCredential(ctx, latest, manualOptions)
+	if err != nil {
+		t.Fatalf("manual retry did not recover credential: %v", err)
+	}
+	if recovered.AuthStatus != accountdomain.AuthStatusActive || recovered.RefreshPermanent || recovered.LastRefreshErrorCode != "" {
+		t.Fatalf("manual recovery state = %#v", recovered)
+	}
 }
 
 func TestCredentialDecryptFailedAllowsRetryAfterKeyRecovery(t *testing.T) {
@@ -466,8 +486,19 @@ func TestRefreshAllTokensSkipsUnrefreshableAccounts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	invalid, _, err := service.accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "invalid-refreshable", SourceKey: "invalid-refreshable",
+		EncryptedAccessToken: "access-invalid", EncryptedRefreshToken: "refresh-invalid", ExpiresAt: now.Add(time.Hour), Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid.AuthStatus = accountdomain.AuthStatusReauthRequired
+	if _, err := service.accounts.Update(ctx, invalid); err != nil {
+		t.Fatal(err)
+	}
 
-	progress := make([][2]int, 0, 3)
+	progress := make([][2]int, 0, 4)
 	succeeded, failed, skipped, err := service.RefreshAllTokensWithProgress(ctx, func(completed, total int) error {
 		progress = append(progress, [2]int{completed, total})
 		return nil
@@ -475,11 +506,15 @@ func TestRefreshAllTokensSkipsUnrefreshableAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if succeeded != 2 || failed != 0 || skipped != 1 || adapter.refreshCount.Load() != 2 {
+	if succeeded != 3 || failed != 0 || skipped != 1 || adapter.refreshCount.Load() != 3 {
 		t.Fatalf("result = %d/%d/%d, refresh count = %d", succeeded, failed, skipped, adapter.refreshCount.Load())
 	}
-	if len(progress) != 3 || progress[0] != [2]int{0, 2} || progress[1] != [2]int{1, 2} || progress[2] != [2]int{2, 2} {
+	if len(progress) != 4 || progress[0] != [2]int{0, 3} || progress[1] != [2]int{1, 3} || progress[2] != [2]int{2, 3} || progress[3] != [2]int{3, 3} {
 		t.Fatalf("progress = %#v", progress)
+	}
+	recovered, err := service.accounts.Get(ctx, invalid.ID)
+	if err != nil || recovered.AuthStatus != accountdomain.AuthStatusActive {
+		t.Fatalf("invalid account was not recovered: %#v err=%v", recovered, err)
 	}
 }
 
@@ -489,6 +524,7 @@ func TestBatchRefreshTokensRefreshesOnlySelectedEligibleAccounts(t *testing.T) {
 	service, refreshable, adapter := newCredentialRefreshTestService(t, now)
 	service.now = func() time.Time { return now }
 	selected := []uint64{refreshable.ID}
+	var invalidID uint64
 	for _, value := range []accountdomain.Credential{
 		{Provider: accountdomain.ProviderBuild, Name: "missing-refresh", SourceKey: "missing-refresh", EncryptedAccessToken: "access", Enabled: true, AuthStatus: accountdomain.AuthStatusActive},
 		{Provider: accountdomain.ProviderBuild, Name: "disabled", SourceKey: "disabled", EncryptedAccessToken: "access", EncryptedRefreshToken: "refresh", Enabled: true, AuthStatus: accountdomain.AuthStatusActive},
@@ -505,6 +541,7 @@ func TestBatchRefreshTokensRefreshesOnlySelectedEligibleAccounts(t *testing.T) {
 		}
 		if value.Name == "invalid" {
 			created.AuthStatus = accountdomain.AuthStatusReauthRequired
+			invalidID = created.ID
 			needsUpdate = true
 		}
 		if needsUpdate {
@@ -520,15 +557,19 @@ func TestBatchRefreshTokensRefreshesOnlySelectedEligibleAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if succeeded != 1 || failed != 0 || skipped != 3 || adapter.refreshCount.Load() != 1 {
+	if succeeded != 2 || failed != 0 || skipped != 2 || adapter.refreshCount.Load() != 2 {
 		t.Fatalf("result = %d/%d/%d, refresh count = %d", succeeded, failed, skipped, adapter.refreshCount.Load())
 	}
 	updated, err := service.accounts.Get(ctx, refreshable.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.EncryptedAccessToken != "access-1" {
+	if updated.EncryptedAccessToken == "" || updated.EncryptedAccessToken == "access-0" {
 		t.Fatalf("refreshed access token = %q", updated.EncryptedAccessToken)
+	}
+	recovered, err := service.accounts.Get(ctx, invalidID)
+	if err != nil || recovered.AuthStatus != accountdomain.AuthStatusActive {
+		t.Fatalf("selected invalid account was not recovered: %#v err=%v", recovered, err)
 	}
 }
 
