@@ -90,12 +90,22 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOpera
 async function testAllEgressNodes() {
   const nodes = await listAllEgressNodes();
   const ids = nodes.items.filter((node) => node.enabled && node.proxyConfigured).map((node) => node.id);
-  const result = { requested: 0, healthy: 0, unhealthy: 0 };
+  const result = { requested: 0, healthy: 0, unhealthy: 0, failed: 0 };
+  let firstError: unknown;
   for (let index = 0; index < ids.length; index += egressProbeBatchSize) {
-    const batch = await testEgressNodes(ids.slice(index, index + egressProbeBatchSize));
-    result.requested += batch.requested;
-    result.healthy += batch.healthy;
-    result.unhealthy += batch.unhealthy;
+    const batchIDs = ids.slice(index, index + egressProbeBatchSize);
+    try {
+      const batch = await testEgressNodes(batchIDs);
+      result.requested += batch.requested;
+      result.healthy += batch.healthy;
+      result.unhealthy += batch.unhealthy;
+    } catch (error) {
+      firstError ??= error;
+      result.failed += batchIDs.length;
+    }
+  }
+  if (result.requested === 0 && result.failed > 0) {
+    throw firstError;
   }
   return result;
 }
@@ -114,8 +124,12 @@ export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressSco
   };
   const testAll = useMutation({
     mutationFn: testAllEgressNodes,
-    onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.tested", value)); },
+    onSuccess: (value) => {
+      if (value.failed > 0) toast.warning(t("settings.egress.testedPartial", value));
+      else toast.success(t("settings.egress.tested", value));
+    },
     onError: showError,
+    onSettled: invalidate,
   });
   const rebalance = useMutation({
     mutationFn: rebalanceEgressAccounts,

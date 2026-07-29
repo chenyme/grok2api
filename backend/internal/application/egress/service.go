@@ -107,6 +107,10 @@ type ClearanceManager interface {
 	ForgetClearance(uint64)
 }
 
+type BatchClearanceManager interface {
+	ForgetClearances([]uint64)
+}
+
 func NewService(repository ServiceRepository, cipher *security.Cipher, browserUA string, accounts ...AccountBindingRepository) *Service {
 	service := &Service{repository: repository, cipher: cipher, browserUA: strings.TrimSpace(browserUA)}
 	if operations, ok := repository.(OperationsRepository); ok {
@@ -314,13 +318,14 @@ func (s *Service) UpdateManyEnabled(ctx context.Context, nodeIDs []uint64, enabl
 
 	if batch, ok := s.repository.(BatchNodeEnabledUpdater); ok {
 		updated, err := batch.UpdateEgressNodesEnabled(ctx, ids, enabled)
+		if errors.Is(err, repository.ErrEgressFallbackInUse) {
+			return 0, fmt.Errorf("%w: 固定回退节点不能被批量禁用", ErrInvalidInput)
+		}
 		if err != nil {
 			return 0, err
 		}
 		if updated > 0 {
-			for _, id := range ids {
-				s.forgetClearance(id)
-			}
+			s.forgetClearances(ids)
 		}
 		return updated, nil
 	}
@@ -587,6 +592,22 @@ func (s *Service) forgetClearance(id uint64) {
 	manager := s.clearance
 	s.mu.RUnlock()
 	if manager != nil {
+		manager.ForgetClearance(id)
+	}
+}
+
+func (s *Service) forgetClearances(ids []uint64) {
+	s.mu.RLock()
+	manager := s.clearance
+	s.mu.RUnlock()
+	if manager == nil {
+		return
+	}
+	if batch, ok := manager.(BatchClearanceManager); ok {
+		batch.ForgetClearances(ids)
+		return
+	}
+	for _, id := range ids {
 		manager.ForgetClearance(id)
 	}
 }

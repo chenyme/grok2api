@@ -469,6 +469,31 @@ func TestEgressOperationsBatchDisableRejectsFixedFallback(t *testing.T) {
 	}
 }
 
+func TestEgressOperationsConfigRechecksFallbackNodeInsideTransaction(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	fallbackNode := createHealthyEgressNode(t, ctx, nodes, cipher, "transaction-fallback", 0)
+
+	if _, err := nodes.UpdateEgressNodesEnabled(ctx, []uint64{fallbackNode.ID}, false); err != nil {
+		t.Fatal(err)
+	}
+	config := egress.DefaultOperationsConfig()
+	config.Fallbacks[egress.ScopeBuild] = egress.FallbackConfig{Mode: egress.FallbackModeFixed, NodeID: fallbackNode.ID}
+	config.UpdatedAt = time.Now().UTC()
+	if _, err := nodes.SaveEgressOperationsConfig(ctx, config); !errors.Is(err, repository.ErrEgressFallbackInUse) {
+		t.Fatalf("disabled fallback save error = %v", err)
+	}
+	stored, err := nodes.GetEgressOperationsConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback := stored.FallbackFor(egress.ScopeBuild); fallback.Mode != egress.FallbackModeNone || fallback.NodeID != 0 {
+		t.Fatalf("rejected fallback was persisted: %#v", fallback)
+	}
+}
+
 func TestEgressOperationsCleanupDeletesOnlyDualStackUnhealthyNodes(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

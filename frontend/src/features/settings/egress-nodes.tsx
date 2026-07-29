@@ -208,6 +208,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   const selectedNodes = [...selected.values()];
   const selectedAssignedAccounts = selectedNodes.reduce((total, node) => total + node.assignedAccountCount, 0);
   const selectedSourceNodes = selectedNodes.filter((node) => node.sourceId).length;
+  const batchPending = removeMany.isPending || updateManyEnabled.isPending;
   const hasActiveFilters = Boolean(debouncedSearch || scopeFilter || enabledFilter || probeFilter || assignmentFilter);
 
   return (
@@ -252,9 +253,9 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                 {selected.size > 0 ? (
                   <>
                     <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
-                    <Button type="button" size="sm" variant="secondary" disabled={updateManyEnabled.isPending || selectedNodes.every((node) => node.enabled)} onClick={() => updateManyEnabled.mutate(true)}><Power />{t("common.enable")}</Button>
-                    <Button type="button" size="sm" variant="secondary" disabled={updateManyEnabled.isPending || selectedNodes.every((node) => !node.enabled)} onClick={() => updateManyEnabled.mutate(false)}><PowerOff />{t("common.disable")}</Button>
-                    <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending || updateManyEnabled.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
+                    <Button type="button" size="sm" variant="secondary" disabled={batchPending || selectedNodes.every((node) => node.enabled)} onClick={() => updateManyEnabled.mutate(true)}><Power />{t("common.enable")}</Button>
+                    <Button type="button" size="sm" variant="secondary" disabled={batchPending || selectedNodes.every((node) => !node.enabled)} onClick={() => updateManyEnabled.mutate(false)}><PowerOff />{t("common.disable")}</Button>
+                    <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={batchPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
                   </>
                 ) : null}
                 <Button type="button" size="sm" variant="secondary" disabled={cleanupUnhealthy.isPending} onClick={openCleanup}><Trash2 />{t("settings.egress.cleanupUnavailable")}</Button>
@@ -501,8 +502,8 @@ function HealthMeter({ value }: { value: number }) {
 
 function ProbeSummary({ node }: { node: EgressNodeDTO }) {
   return (
-    <div className="w-full">
-      <div className="grid w-full grid-cols-[2rem_minmax(0,1fr)] grid-rows-2 items-center gap-x-2 gap-y-1 py-1 text-left text-xs">
+    <div className="flex w-full justify-center">
+      <div className="grid w-fit max-w-full grid-cols-[2rem_auto] grid-rows-2 items-center gap-x-2 gap-y-1 py-1 text-left text-xs">
         <ProbeFamilySummary family="IPv4" probe={node.ipv4Probe} row={1} />
         <ProbeFamilySummary family="IPv6" probe={node.ipv6Probe} row={2} />
       </div>
@@ -515,7 +516,6 @@ function ProbeFamilySummary({ family, probe, row }: { family: "IPv4" | "IPv6"; p
   const healthy = probe.status === "healthy";
   const unhealthy = probe.status === "unhealthy";
   const rowClass = row === 1 ? "row-start-1" : "row-start-2";
-  const latencyText = probe.status === "unknown" || probe.latencyMs <= 0 ? "" : `${probe.latencyMs}ms`;
   const stateContent = <span className="flex min-w-0 items-center gap-1.5">
     <span className={cn("size-1.5 shrink-0 rounded-full", healthy ? "bg-emerald-500" : unhealthy ? "bg-destructive" : "bg-muted-foreground/35")} />
     <span className={cn("truncate text-[10px]", healthy ? "text-foreground" : unhealthy ? "text-destructive" : "text-muted-foreground")} title={healthy ? probe.exitIp : undefined}>
@@ -532,7 +532,6 @@ function ProbeFamilySummary({ family, probe, row }: { family: "IPv4" | "IPv6"; p
             <TooltipContent>{t("settings.egress.probeLatency", { latency: probe.latencyMs })}</TooltipContent>
           </Tooltip>
         )}
-        {latencyText ? <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{latencyText}</span> : null}
         {unhealthy && probe.error ? <ErrorTooltip message={probe.error} /> : null}
       </span>
     </div>

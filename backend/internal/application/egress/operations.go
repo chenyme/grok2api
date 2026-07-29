@@ -385,6 +385,9 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 		AutoBalanceEnabled: input.AutoBalanceEnabled, AssignmentIntervalSeconds: input.AssignmentIntervalSeconds,
 		Fallbacks: fallbacks, UpdatedAt: time.Now().UTC(),
 	})
+	if errors.Is(err, repository.ErrEgressFallbackInUse) {
+		return domain.OperationsConfig{}, fmt.Errorf("%w: 固定回退节点必须保持启用且可用", ErrInvalidInput)
+	}
 	if err == nil {
 		s.invalidateOperationsConfig()
 	}

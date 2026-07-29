@@ -11,6 +11,7 @@ var (
 	ErrLimitExceeded       = errors.New("repository: limit exceeded")
 	ErrInvalidRecord       = errors.New("repository: invalid record")
 	ErrAccountPoolMismatch = errors.New("repository: account pool mismatch")
+	ErrEgressFallbackInUse = errors.New("repository: egress fallback node in use")
 )
 
 // InvalidBatchRecordError identifies a deterministic invalid record without

@@ -137,7 +137,7 @@ type batchNodeDeleteRequest struct {
 
 type batchNodeUpdateRequest struct {
 	IDs     []string `json:"ids" binding:"required"`
-	Enabled bool     `json:"enabled"`
+	Enabled *bool    `json:"enabled" binding:"required"`
 }
 
 func (h *Handler) updateMany(c *gin.Context) {
@@ -146,12 +146,12 @@ func (h *Handler) updateMany(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	ids, err := parseEgressNodeIDs(request.IDs)
-	if err != nil || len(ids) > 5000 {
+	ids, err := parseBoundedEgressNodeIDs(request.IDs, 5000)
+	if err != nil {
 		response.Error(c, http.StatusBadRequest, "invalidId", "代理节点 ID 无效")
 		return
 	}
-	updated, err := h.service.UpdateManyEnabled(c.Request.Context(), ids, request.Enabled)
+	updated, err := h.service.UpdateManyEnabled(c.Request.Context(), ids, *request.Enabled)
 	if err != nil {
 		h.writeError(c, err)
 		return
@@ -165,8 +165,8 @@ func (h *Handler) deleteMany(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
-	ids, err := parseEgressNodeIDs(request.IDs)
-	if err != nil || len(ids) > 5000 {
+	ids, err := parseBoundedEgressNodeIDs(request.IDs, 5000)
+	if err != nil {
 		response.Error(c, http.StatusBadRequest, "invalidId", "代理节点 ID 无效")
 		return
 	}
@@ -396,6 +396,13 @@ func parseEgressNodeIDs(values []string) ([]uint64, error) {
 		return nil, errors.New("no ids")
 	}
 	return result, nil
+}
+
+func parseBoundedEgressNodeIDs(values []string, limit int) ([]uint64, error) {
+	if len(values) == 0 || limit < 1 || len(values) > limit {
+		return nil, errors.New("invalid id count")
+	}
+	return parseEgressNodeIDs(values)
 }
 
 func (h *Handler) delete(c *gin.Context) {
