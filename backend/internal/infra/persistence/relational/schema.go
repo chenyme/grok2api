@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	"gorm.io/gorm"
@@ -114,6 +115,10 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 
 func (d *Database) initializeSchema(ctx context.Context) error {
 	db := d.db.WithContext(ctx)
+	hadClientKeys := db.Migrator().HasTable(&clientKeyModel{})
+	hadProviderScope := hadClientKeys && db.Migrator().HasColumn(&clientKeyModel{}, "ProviderScopeMask")
+	hadTierScope := hadClientKeys && db.Migrator().HasColumn(&clientKeyModel{}, "TierScopeMask")
+	hadLegacyAccountPool := hadClientKeys && db.Migrator().HasColumn("client_keys", "account_pool")
 	// all 作用域会让 Build 与 Web 共用 UA、健康度和冷却状态，升级时直接移除旧节点。
 	if db.Migrator().HasTable(&egressNodeModel{}) {
 		if err := db.Where("scope = ?", "all").Delete(&egressNodeModel{}).Error; err != nil {
@@ -133,6 +138,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	}
 	if migrateErr != nil {
 		return fmt.Errorf("初始化数据库表: %w", migrateErr)
+	}
+	if err := d.migrateClientKeyAccountScopes(ctx, hadLegacyAccountPool, !hadProviderScope, !hadTierScope); err != nil {
+		return fmt.Errorf("迁移客户端 Key 调用范围: %w", err)
 	}
 	if err := d.migrateBuildResponseHeaderTimeout(ctx); err != nil {
 		return fmt.Errorf("迁移 Grok Build 响应头超时: %w", err)
@@ -187,6 +195,22 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 		return fmt.Errorf("迁移模型 Provider 命名空间: %w", err)
 	}
 	return nil
+}
+
+// migrateClientKeyAccountScopes translates the short-lived account_pool
+// representation only when the corresponding scope columns are first added.
+func (d *Database) migrateClientKeyAccountScopes(ctx context.Context, hadLegacyAccountPool, providerScopeAdded, tierScopeAdded bool) error {
+	if !hadLegacyAccountPool || (!providerScopeAdded && !tierScopeAdded) {
+		return nil
+	}
+	updates := make(map[string]any, 2)
+	if providerScopeAdded {
+		updates["provider_scope_mask"] = uint8(clientkeydomain.ProviderScopeAll)
+	}
+	if tierScopeAdded {
+		updates["tier_scope_mask"] = gorm.Expr("CASE account_pool WHEN 'free' THEN 1 WHEN 'super' THEN 2 ELSE 7 END")
+	}
+	return d.db.WithContext(ctx).Table("client_keys").Where("1 = 1").Updates(updates).Error
 }
 
 // migrateBuildResponseHeaderTimeout persists the runtime default for settings

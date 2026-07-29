@@ -233,16 +233,22 @@ export function AppShell() {
         </aside>
 
         <div className="flex min-h-screen flex-col lg:pl-[288px]">
-          <header className="flex h-12 items-center justify-between border-b px-4 lg:hidden">
+          <header className="sticky top-0 z-40 flex h-12 items-center justify-between border-b bg-background px-4 lg:hidden">
             <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
               <SheetTrigger asChild><Button variant="ghost" size="icon" className="size-8" aria-label={t("shell.openNavigation")}><Menu className="size-4" /></Button></SheetTrigger>
-              <SheetContent side="left" className="flex w-72 flex-col gap-0 bg-sidebar px-3 py-4 [&>button]:right-2 [&>button]:top-3.5 [&>button]:flex [&>button]:size-7 [&>button]:items-center [&>button]:justify-center [&>nav]:mt-5 [&>nav]:pr-1">
+              <SheetContent side="left" className="flex h-dvh max-h-dvh w-72 flex-col gap-0 overflow-hidden bg-sidebar px-3 py-4 [&>button]:right-2 [&>button]:top-3.5 [&>button]:flex [&>button]:size-7 [&>button]:items-center [&>button]:justify-center">
                 <SheetHeader className="h-7 shrink-0 px-2.5 text-left">
                   <SheetTitle className="flex h-7 items-center text-base">{t("appName")}</SheetTitle>
                   <SheetDescription className="sr-only">{t("shell.navigation")}</SheetDescription>
                 </SheetHeader>
-                {navigationContent}
-                <div className="relative z-10 mt-3 shrink-0 bg-sidebar pt-3">{accountControl}</div>
+                <nav className="mt-5 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 pb-2" aria-label={t("shell.navigation")}>
+                  <div className="space-y-1">{navigationLinks()}</div>
+                  <div className="mt-7">
+                    <div className="px-2.5 pb-2 text-xs font-normal text-foreground">{t("nav.docs")}</div>
+                    <div className="space-y-1">{documentationLinks()}</div>
+                  </div>
+                </nav>
+                <div className="relative z-10 mt-3 shrink-0 border-t border-sidebar-border/60 bg-sidebar pt-3">{accountControl}</div>
               </SheetContent>
             </Sheet>
             <span className="flex items-baseline gap-2 text-sm font-semibold"><span>{t("appName")}</span><CurrentVersionLabel /></span>

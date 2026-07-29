@@ -252,7 +252,9 @@ type clientKeyModel struct {
 	BilledUsageUSDTicks   int64 `gorm:"not null;default:0;check:chk_client_keys_billed_usage,billed_usage_usd_ticks >= 0"`
 	ReservedUsageUSDTicks int64 `gorm:"not null;default:0;check:chk_client_keys_reserved_usage,reserved_usage_usd_ticks >= 0"`
 	// AllowModelAliases defaults false so existing keys keep a clean base-model list.
-	AllowModelAliases bool `gorm:"not null;default:false"`
+	AllowModelAliases bool  `gorm:"not null;default:false"`
+	ProviderScopeMask uint8 `gorm:"not null;default:7;check:chk_client_keys_provider_scope,provider_scope_mask BETWEEN 1 AND 7"`
+	TierScopeMask     uint8 `gorm:"not null;default:7;check:chk_client_keys_tier_scope,tier_scope_mask IN (1,2,3,7)"`
 	LastUsedAt        *time.Time
 	CreatedAt         time.Time `gorm:"not null"`
 	UpdatedAt         time.Time `gorm:"not null"`

@@ -68,6 +68,7 @@ type Lease struct {
 	browser          *browserClient
 	sticky           bool
 	proxyPool        bool
+	freshTunnel      bool
 	clearanceKey     string
 	clearanceManager *Manager
 	release          func()
@@ -91,6 +92,14 @@ func (l *Lease) DoDeferredForbidden(request *http.Request) (*http.Response, erro
 func (l *Lease) doRequest(request *http.Request, invalidateForbidden bool) (*http.Response, error) {
 	if l == nil || l.client == nil {
 		return nil, errors.New("出口客户端未初始化")
+	}
+	// Rotating proxy endpoints choose an exit when a new CONNECT tunnel is
+	// established. Reusing a Build keep-alive/HTTP2 connection would pin many
+	// otherwise independent requests to one exit and defeat proxy-pool
+	// rotation. Proxy-pool mode is explicit, so trade the extra handshake for a
+	// fresh tunnel without changing fixed-proxy, direct, Web, or Console paths.
+	if l.Scope == domain.ScopeBuild && l.freshTunnel {
+		request.Close = true
 	}
 	response, err := l.do(request)
 	recordPhysicalCall(request.Context(), response, err)
@@ -891,6 +900,7 @@ func (m *Manager) leaseForNode(ctx context.Context, scope domain.Scope, affinity
 	}
 	sticky := strings.Contains(proxyURL, application.ProxyAccountPlaceholder)
 	proxyPool := selected.ProxyPool || sticky
+	freshTunnel := selected.ProxyPool && !sticky
 	if sticky {
 		accountKey := accountFromContext(ctx)
 		if accountKey == "" && strings.TrimSpace(affinity) != "" {
@@ -942,7 +952,7 @@ func (m *Manager) leaseForNode(ctx context.Context, scope domain.Scope, affinity
 	m.incrementInflight(selected.ID)
 	recordSelection(ctx, Selection{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, Proxied: proxyURL != ""})
 	var once sync.Once
-	return &Lease{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, sticky: sticky, proxyPool: proxyPool, clearanceKey: clearanceKey, clearanceManager: m, release: func() {
+	return &Lease{NodeID: selected.ID, NodeName: selected.Name, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, sticky: sticky, proxyPool: proxyPool, freshTunnel: freshTunnel, clearanceKey: clearanceKey, clearanceManager: m, release: func() {
 		once.Do(func() {
 			m.decrementInflight(selected.ID)
 		})

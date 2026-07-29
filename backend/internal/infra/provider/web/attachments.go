@@ -90,10 +90,8 @@ func (a *Adapter) prepareChatAttachments(ctx context.Context, cfg Config, lease 
 		pending = append(pending, file)
 	}
 	attachments := make([]string, 0, len(pending))
-	directUploadAvailable := true
 	for _, file := range pending {
-		uploaded, directAvailable, err := a.uploadFileWithFallback(ctx, cfg, lease, token, file, cfg.BaseURL+"/", "", directUploadAvailable)
-		directUploadAvailable = directAvailable
+		uploaded, err := a.uploadFileV2Direct(ctx, cfg, lease, token, file, cfg.BaseURL+"/", "", "chat_attachment_upload")
 		if err != nil {
 			return nil, err
 		}

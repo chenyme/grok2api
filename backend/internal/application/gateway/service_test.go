@@ -218,6 +218,16 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 
 	adapter.resetAttempts()
+	blockedKey := clientKey
+	blockedKey.ProviderScope = clientkey.ProviderScopeConsole
+	if _, err := service.GetResponse(ctx, ResourceInput{ClientKey: blockedKey, ResponseID: "resp-test"}); err == nil {
+		t.Fatal("owned response should be rejected after its provider leaves the key scope")
+	} else {
+		var unavailable *SelectionUnavailableError
+		if !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" || len(adapter.attempts) != 0 {
+			t.Fatalf("scoped owned response error = %#v, attempts = %#v, err = %v", unavailable, adapter.attempts, err)
+		}
+	}
 	resource, err := service.GetResponse(ctx, ResourceInput{ClientKey: clientKey, ResponseID: "resp-test", RawQuery: "include=reasoning.encrypted_content"})
 	if err != nil {
 		t.Fatal(err)
@@ -707,18 +717,37 @@ func TestGatewayTeamModelRateLimitOnlySkipsMatchingTeam(t *testing.T) {
 }
 
 func TestSelectConversationRouteRespectsClientKeyAcrossSharedPublicModel(t *testing.T) {
-	registry := provider.NewRegistry(&failoverAdapter{}, statelessConsoleAdapter{})
+	registry := provider.NewRegistry(&failoverAdapter{}, webStoredResponseAdapter{}, statelessConsoleAdapter{})
 	service := &Service{
 		clientKeys: clientkeyapp.NewService(nil, nil, nil, 60, 4, nil),
 		providers:  registry,
 	}
 	routes := []modeldomain.Route{
 		{ID: 10, PublicID: "Build/grok-shared", Provider: account.ProviderBuild, UpstreamModel: "grok-shared"},
+		{ID: 15, PublicID: "Web/grok-shared", Provider: account.ProviderWeb, UpstreamModel: "grok-shared"},
 		{ID: 20, PublicID: "Console/grok-shared", Provider: account.ProviderConsole, UpstreamModel: "grok-shared"},
 	}
-	selected, err := service.selectConversationRoute(routes, clientkey.Key{AllowedModels: []uint64{20}}, audit.OperationResponses, "/responses", false, nil)
+	selected, err := service.selectConversationRoute(routes, clientkey.Key{ProviderScope: clientkey.ProviderScopeWeb | clientkey.ProviderScopeConsole}, audit.OperationResponses, "/responses", false, nil)
+	if err != nil || selected.ID != 15 {
+		t.Fatalf("provider-scoped route = %#v, err = %v", selected, err)
+	}
+	selected, err = service.selectConversationRoute(routes, clientkey.Key{ProviderScope: clientkey.ProviderScopeConsole, AllowedModels: []uint64{20}}, audit.OperationResponses, "/responses", false, nil)
 	if err != nil || selected.ID != 20 {
 		t.Fatalf("selected route = %#v, err = %v", selected, err)
+	}
+	_, err = service.selectConversationRoute(routes, clientkey.Key{ProviderScope: clientkey.ProviderScopeBuild, AllowedModels: []uint64{20}}, audit.OperationResponses, "/responses", false, nil)
+	if !errors.Is(err, clientkeyapp.ErrModelNotAllowed) {
+		t.Fatalf("scope and model intersection should reject the request: %v", err)
+	}
+	_, err = service.selectConversationRoute(routes[1:], clientkey.Key{ProviderScope: clientkey.ProviderScopeBuild}, audit.OperationResponses, "/responses", false, nil)
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" {
+		t.Fatalf("provider scope must not fall back: %#v, err = %v", unavailable, err)
+	}
+	ownership := &inferencedomain.ResponseOwnership{Provider: account.ProviderWeb}
+	_, err = service.selectConversationRoute(routes, clientkey.Key{ProviderScope: clientkey.ProviderScopeBuild}, audit.OperationResponses, "/responses", true, ownership)
+	if !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" {
+		t.Fatalf("owned response must remain inside the updated provider scope: %#v, err = %v", unavailable, err)
 	}
 }
 
@@ -738,6 +767,14 @@ func TestSelectMediaRouteSkipsSameNamedConversationRoute(t *testing.T) {
 	})
 	if err != nil || selected.ID != 20 {
 		t.Fatalf("selected route = %#v, err = %v", selected, err)
+	}
+	_, err = service.selectMediaRoute(routes, clientkey.Key{ProviderScope: clientkey.ProviderScopeBuild}, modeldomain.CapabilityImage, func(providerValue account.Provider) bool {
+		_, ok := registry.ImageGeneration(providerValue)
+		return ok
+	})
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" {
+		t.Fatalf("media route must not leave provider scope: %#v, err = %v", unavailable, err)
 	}
 }
 

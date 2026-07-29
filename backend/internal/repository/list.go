@@ -103,8 +103,11 @@ type AccountSummary struct {
 }
 
 type ModelListFilter struct {
-	Provider string
-	Enabled  *bool
+	Provider    string
+	Providers   []string
+	Tiers       []string
+	Enabled     *bool
+	ActiveScope bool
 }
 
 type ModelListQuery struct {

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -173,9 +174,14 @@ func (s *Service) executeImage(
 	var lastCredentialFailure *accountdomain.Credential
 	var lastCredentialError error
 	for attempt := 0; attemptPolicy.allows(attempt); attempt++ {
-		lease, err = s.selector.Acquire(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false)
+		lease, err = s.selector.AcquireForKey(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, key.AccountScope())
 		if err != nil {
-			writeFailureAudit(http.StatusServiceUnavailable, "upstream_unavailable", lastCredentialFailure)
+			errorCode := "upstream_unavailable"
+			var selectionFailure *SelectionUnavailableError
+			if errors.As(err, &selectionFailure) {
+				errorCode = selectionFailure.Code()
+			}
+			writeFailureAudit(http.StatusServiceUnavailable, errorCode, lastCredentialFailure)
 			return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 		}
 		excluded[lease.Credential.ID] = true

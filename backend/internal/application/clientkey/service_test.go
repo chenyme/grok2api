@@ -243,6 +243,86 @@ func TestAuthenticateCachesUnlimitedKeyAndInvalidatesOnDisable(t *testing.T) {
 	}
 }
 
+func TestAccountScopePersistsAndAuthCacheInvalidatesOnChange(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "account-pool-auth-cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	base := relational.NewClientKeyRepository(database)
+	service := NewService(base, successfulRateLimiter{}, successfulConcurrencyLimiter{}, 60, 5, testCipher(t))
+	created, err := service.Create(ctx, CreateInput{Name: "scoped", Enabled: true, ProviderScope: clientkeydomain.ProviderScopeBuild | clientkeydomain.ProviderScopeWeb, TierScope: clientkeydomain.TierScopeFree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, release, err := service.Authenticate(ctx, created.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if value.ProviderScope != clientkeydomain.ProviderScopeBuild|clientkeydomain.ProviderScopeWeb || value.TierScope != clientkeydomain.TierScopeFree {
+		t.Fatalf("authenticated account scope = %+v", value.AccountScope())
+	}
+	consoleScope := clientkeydomain.ProviderScopeConsole
+	superTier := clientkeydomain.TierScopeSuper
+	if _, err := service.Update(ctx, created.Key.ID, UpdateInput{ProviderScope: &consoleScope, TierScope: &superTier}); err != nil {
+		t.Fatal(err)
+	}
+	value, release, err = service.Authenticate(ctx, created.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if value.ProviderScope != clientkeydomain.ProviderScopeConsole || value.TierScope != clientkeydomain.TierScopeSuper {
+		t.Fatalf("account scope after cache invalidation = %+v", value.AccountScope())
+	}
+	stored, err := base.Get(ctx, created.Key.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.ProviderScope = clientkeydomain.ProviderScopeWeb
+	stored.TierScope = clientkeydomain.TierScopeFree
+	if _, err := base.Update(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	value, release, err = service.Authenticate(ctx, created.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if value.ProviderScope != clientkeydomain.ProviderScopeConsole || value.TierScope != clientkeydomain.TierScopeSuper {
+		t.Fatalf("cache unexpectedly changed before remote invalidation = %+v", value.AccountScope())
+	}
+	service.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged, ClientKeyID: created.Key.ID})
+	value, release, err = service.Authenticate(ctx, created.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if value.ProviderScope != clientkeydomain.ProviderScopeWeb || value.TierScope != clientkeydomain.TierScopeFree {
+		t.Fatalf("account scope after remote invalidation = %+v", value.AccountScope())
+	}
+	service.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged})
+	service.authCache.mu.RLock()
+	cacheEntries := len(service.authCache.byPrefix)
+	service.authCache.mu.RUnlock()
+	if cacheEntries != 0 {
+		t.Fatalf("batch invalidation retained %d auth cache entries", cacheEntries)
+	}
+	invalid := clientkeydomain.ProviderScope(8)
+	if _, err := service.Update(ctx, created.Key.ID, UpdateInput{ProviderScope: &invalid}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("invalid account scope error = %v", err)
+	}
+	all, err := service.Create(ctx, CreateInput{Name: "legacy-default", Enabled: true})
+	if err != nil || all.Key.ProviderScope != clientkeydomain.ProviderScopeAll || all.Key.TierScope != clientkeydomain.TierScopeAll {
+		t.Fatalf("default account scope = %+v, err = %v", all.Key.AccountScope(), err)
+	}
+}
+
 func testCipher(t *testing.T) *security.Cipher {
 	t.Helper()
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))

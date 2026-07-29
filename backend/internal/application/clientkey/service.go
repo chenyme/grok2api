@@ -41,6 +41,8 @@ type CreateInput struct {
 	BillingLimitUSDTicks int64
 	AllowModelAliases    bool
 	AllowedModels        []uint64
+	ProviderScope        clientkeydomain.ProviderScope
+	TierScope            clientkeydomain.TierScope
 }
 
 type UpdateInput struct {
@@ -53,6 +55,8 @@ type UpdateInput struct {
 	BillingLimitUSDTicks *int64
 	AllowModelAliases    *bool
 	AllowedModels        *[]uint64
+	ProviderScope        *clientkeydomain.ProviderScope
+	TierScope            *clientkeydomain.TierScope
 }
 
 type Created struct {
@@ -97,6 +101,19 @@ func (s *Service) UpdateDefaults(defaultRPM, defaultMax int) {
 	s.defaultMax.Store(int64(defaultMax))
 }
 
+// ApplyInvalidation removes cached authorization policy after a local or remote
+// client-key mutation. A zero ID represents a batch-wide invalidation.
+func (s *Service) ApplyInvalidation(event repository.InvalidationEvent) {
+	if event.Kind != repository.InvalidationClientKeyChanged {
+		return
+	}
+	if event.ClientKeyID == 0 {
+		s.authCache.clear()
+		return
+	}
+	s.authCache.deleteID(event.ClientKeyID)
+}
+
 func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]clientkeydomain.Key, int64, error) {
 	page, pageSize = normalizePage(page, pageSize)
 	if !validListFilter(filter.Status, "", "active", "disabled", "expired") || !validListFilter(filter.ModelScope, "", "all", "restricted") || !repository.IsValidSort(filter.Sort, "name", "prefix", "status", "rpmLimit", "maxConcurrent", "billingLimit", "expiresAt", "lastUsedAt") {
@@ -131,6 +148,11 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Created, error
 	if input.BillingLimitUSDTicks < 0 || input.BillingLimitUSDTicks > clientkeydomain.MaxBillingLimitTicks {
 		return Created{}, invalidInput("billingLimitUsdTicks 超出允许范围")
 	}
+	providerScope, providerScopeValid := clientkeydomain.NormalizeProviderScope(input.ProviderScope)
+	tierScope, tierScopeValid := clientkeydomain.NormalizeTierScope(input.TierScope)
+	if !providerScopeValid || !tierScopeValid {
+		return Created{}, invalidInput("providerScope 或 tierScope 无效")
+	}
 	prefix, err := security.NewHexToken(6)
 	if err != nil {
 		return Created{}, err
@@ -164,6 +186,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Created, error
 		Name: strings.TrimSpace(input.Name), Prefix: prefix, SecretHash: security.HashToken(raw), EncryptedSecret: encryptedSecret,
 		Enabled: input.Enabled, ExpiresAt: input.ExpiresAt, RPMLimit: input.RPMLimit, MaxConcurrent: input.MaxConcurrent,
 		BillingLimitUSDTicks: input.BillingLimitUSDTicks, AllowModelAliases: input.AllowModelAliases, AllowedModels: input.AllowedModels,
+		ProviderScope: providerScope, TierScope: tierScope,
 	})
 	return Created{Key: value, Secret: raw}, mapRepositoryError(err)
 }
@@ -230,6 +253,20 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (cli
 	}
 	if input.AllowedModels != nil {
 		value.AllowedModels = *input.AllowedModels
+	}
+	if input.ProviderScope != nil {
+		providerScope, valid := clientkeydomain.NormalizeProviderScope(*input.ProviderScope)
+		if !valid {
+			return clientkeydomain.Key{}, invalidInput("providerScope 无效")
+		}
+		value.ProviderScope = providerScope
+	}
+	if input.TierScope != nil {
+		tierScope, valid := clientkeydomain.NormalizeTierScope(*input.TierScope)
+		if !valid {
+			return clientkeydomain.Key{}, invalidInput("tierScope 无效")
+		}
+		value.TierScope = tierScope
 	}
 	updated, err := s.keys.Update(ctx, value)
 	if err == nil {
@@ -336,15 +373,7 @@ func (s *Service) Authenticate(ctx context.Context, raw string) (clientkeydomain
 
 // CanUseModel 判断空权限列表代表全部模型，否则要求显式授权。
 func (s *Service) CanUseModel(value clientkeydomain.Key, modelID uint64) bool {
-	if len(value.AllowedModels) == 0 {
-		return true
-	}
-	for _, allowed := range value.AllowedModels {
-		if allowed == modelID {
-			return true
-		}
-	}
-	return false
+	return value.AllowsModel(modelID)
 }
 
 // ReserveBilling 为有限额 Key 原子预留本次请求的预计费用。
