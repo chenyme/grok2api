@@ -146,6 +146,39 @@ func (r *EgressRepository) UpdateEgressNode(ctx context.Context, value egress.No
 	return toEgressDomain(row), nil
 }
 
+func (r *EgressRepository) UpdateEgressNodesEnabled(ctx context.Context, ids []uint64, enabled bool) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if enabled {
+		result := r.db.db.WithContext(ctx).Model(&egressNodeModel{}).
+			Where("id IN ? AND enabled <> ?", ids, true).
+			Updates(map[string]any{"enabled": true, "updated_at": time.Now().UTC()})
+		return int(result.RowsAffected), mapError(result.Error)
+	}
+	var updated int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		config, err := lockEgressOperationsConfig(tx)
+		if err != nil {
+			return err
+		}
+		var lockedIDs []uint64
+		if err := tx.Model(&egressNodeModel{}).Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id IN ?", ids).Order("id ASC").Pluck("id", &lockedIDs).Error; err != nil {
+			return err
+		}
+		if configReferencesAnyFallbackNode(config, lockedIDs) {
+			return repository.ErrEgressFallbackInUse
+		}
+		result := tx.Model(&egressNodeModel{}).
+			Where("id IN ? AND enabled <> ?", lockedIDs, false).
+			Updates(map[string]any{"enabled": false, "updated_at": time.Now().UTC()})
+		updated = result.RowsAffected
+		return result.Error
+	})
+	return int(updated), mapError(err)
+}
+
 func (r *EgressRepository) UpdateEgressNodeClearance(ctx context.Context, id uint64, encryptedCookie, userAgent, fingerprint, bindingFingerprint string, refreshedAt time.Time) error {
 	result := r.db.db.WithContext(ctx).Model(&egressNodeModel{}).Where("id = ?", id).Updates(map[string]any{
 		"encrypted_cloudflare_cookie": encryptedCookie, "user_agent": userAgent,
@@ -401,10 +434,97 @@ func (r *EgressRepository) GetEgressOperationsConfig(ctx context.Context) (egres
 func (r *EgressRepository) SaveEgressOperationsConfig(ctx context.Context, value egress.OperationsConfig) (egress.OperationsConfig, error) {
 	row := fromEgressOperationsConfigDomain(value)
 	row.ID = 1
-	if err := r.db.db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if _, err := lockEgressOperationsConfig(tx); err != nil {
+			return err
+		}
+		if err := validateLockedEgressFallbackNodes(tx, row); err != nil {
+			return err
+		}
+		return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error
+	})
+	if err != nil {
 		return egress.OperationsConfig{}, mapError(err)
 	}
 	return toEgressOperationsConfigDomain(row), nil
+}
+
+func lockEgressOperationsConfig(tx *gorm.DB) (egressOperationsConfigModel, error) {
+	defaults := fromEgressOperationsConfigDomain(egress.DefaultOperationsConfig())
+	defaults.ID = 1
+	defaults.UpdatedAt = time.Now().UTC()
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&defaults).Error; err != nil {
+		return egressOperationsConfigModel{}, err
+	}
+	var row egressOperationsConfigModel
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, 1).Error; err != nil {
+		return egressOperationsConfigModel{}, err
+	}
+	return row, nil
+}
+
+func configReferencesAnyFallbackNode(config egressOperationsConfigModel, ids []uint64) bool {
+	selected := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		selected[id] = struct{}{}
+	}
+	for _, fallback := range []struct {
+		mode   string
+		nodeID uint64
+	}{
+		{config.BuildFallbackMode, config.BuildFallbackNodeID},
+		{config.WebFallbackMode, config.WebFallbackNodeID},
+		{config.ConsoleFallbackMode, config.ConsoleFallbackNodeID},
+		{config.WebAssetFallbackMode, config.WebAssetFallbackNodeID},
+	} {
+		if egress.FallbackMode(fallback.mode).Normalized() != egress.FallbackModeFixed {
+			continue
+		}
+		if _, exists := selected[fallback.nodeID]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+func validateLockedEgressFallbackNodes(tx *gorm.DB, config egressOperationsConfigModel) error {
+	fallbacks := []struct {
+		scope  egress.Scope
+		mode   string
+		nodeID uint64
+	}{
+		{egress.ScopeBuild, config.BuildFallbackMode, config.BuildFallbackNodeID},
+		{egress.ScopeWeb, config.WebFallbackMode, config.WebFallbackNodeID},
+		{egress.ScopeConsole, config.ConsoleFallbackMode, config.ConsoleFallbackNodeID},
+		{egress.ScopeWebAsset, config.WebAssetFallbackMode, config.WebAssetFallbackNodeID},
+	}
+	ids := make([]uint64, 0, len(fallbacks))
+	for _, fallback := range fallbacks {
+		if egress.FallbackMode(fallback.mode).Normalized() == egress.FallbackModeFixed && fallback.nodeID != 0 {
+			ids = append(ids, fallback.nodeID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var rows []egressNodeModel
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", ids).Order("id ASC").Find(&rows).Error; err != nil {
+		return err
+	}
+	byID := make(map[uint64]egressNodeModel, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	for _, fallback := range fallbacks {
+		if egress.FallbackMode(fallback.mode).Normalized() != egress.FallbackModeFixed {
+			continue
+		}
+		node, exists := byID[fallback.nodeID]
+		if !exists || !node.Enabled || node.ProxyPool || node.EncryptedProxyURL == "" || !egress.SupportsScope(egress.Scope(node.Scope), fallback.scope) {
+			return repository.ErrEgressFallbackInUse
+		}
+	}
+	return nil
 }
 
 func (r *EgressRepository) DeleteEgressNode(ctx context.Context, id uint64) error {

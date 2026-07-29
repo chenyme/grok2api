@@ -98,9 +98,17 @@ type BatchNodeDeleter interface {
 	DeleteEgressNodes(context.Context, []uint64) (int, error)
 }
 
+type BatchNodeEnabledUpdater interface {
+	UpdateEgressNodesEnabled(context.Context, []uint64, bool) (int, error)
+}
+
 type ClearanceManager interface {
 	RefreshClearance(context.Context, uint64) error
 	ForgetClearance(uint64)
+}
+
+type BatchClearanceManager interface {
+	ForgetClearances([]uint64)
 }
 
 func NewService(repository ServiceRepository, cipher *security.Cipher, browserUA string, accounts ...AccountBindingRepository) *Service {
@@ -248,6 +256,10 @@ func (s *Service) validateFallbackNodeUpdate(ctx context.Context, node domain.No
 	if err != nil {
 		return err
 	}
+	return s.validateFallbackNodeUpdateWithConfig(node, config)
+}
+
+func (s *Service) validateFallbackNodeUpdateWithConfig(node domain.Node, config domain.OperationsConfig) error {
 	for _, scope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
 		fallback := config.FallbackFor(scope)
 		if fallback.Mode != domain.FallbackModeFixed || fallback.NodeID != node.ID {
@@ -258,6 +270,86 @@ func (s *Service) validateFallbackNodeUpdate(ctx context.Context, node domain.No
 		}
 	}
 	return nil
+}
+
+// UpdateManyEnabled changes only the scheduling state, leaving proxy secrets,
+// health, probes, and account bindings untouched.
+func (s *Service) UpdateManyEnabled(ctx context.Context, nodeIDs []uint64, enabled bool) (int, error) {
+	ids := uniqueIDs(nodeIDs)
+	if len(ids) == 0 {
+		return 0, fmt.Errorf("%w: 代理节点参数无效", ErrInvalidInput)
+	}
+
+	// Disabling a fixed fallback would make the persisted routing policy
+	// invalid. At most four fallback nodes need point lookups, regardless of
+	// the batch size.
+	if !enabled && s.operations != nil {
+		config, err := s.operations.GetEgressOperationsConfig(ctx)
+		if err != nil {
+			return 0, err
+		}
+		selected := make(map[uint64]struct{}, len(ids))
+		for _, id := range ids {
+			selected[id] = struct{}{}
+		}
+		fallbackNodeIDs := make(map[uint64]struct{}, 4)
+		for _, scope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
+			fallback := config.FallbackFor(scope)
+			if fallback.Mode == domain.FallbackModeFixed {
+				if _, exists := selected[fallback.NodeID]; exists {
+					fallbackNodeIDs[fallback.NodeID] = struct{}{}
+				}
+			}
+		}
+		for id := range fallbackNodeIDs {
+			node, err := s.repository.GetEgressNode(ctx, id)
+			if errors.Is(err, repository.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return 0, err
+			}
+			node.Enabled = false
+			if err := s.validateFallbackNodeUpdateWithConfig(node, config); err != nil {
+				return 0, err
+			}
+		}
+	}
+
+	if batch, ok := s.repository.(BatchNodeEnabledUpdater); ok {
+		updated, err := batch.UpdateEgressNodesEnabled(ctx, ids, enabled)
+		if errors.Is(err, repository.ErrEgressFallbackInUse) {
+			return 0, fmt.Errorf("%w: 固定回退节点不能被批量禁用", ErrInvalidInput)
+		}
+		if err != nil {
+			return 0, err
+		}
+		if updated > 0 {
+			s.forgetClearances(ids)
+		}
+		return updated, nil
+	}
+
+	updated := 0
+	for _, id := range ids {
+		node, err := s.repository.GetEgressNode(ctx, id)
+		if errors.Is(err, repository.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return updated, err
+		}
+		if node.Enabled == enabled {
+			continue
+		}
+		node.Enabled = enabled
+		if _, err := s.repository.UpdateEgressNode(ctx, node); err != nil {
+			return updated, err
+		}
+		s.forgetClearance(id)
+		updated++
+	}
+	return updated, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id uint64) error {
@@ -500,6 +592,22 @@ func (s *Service) forgetClearance(id uint64) {
 	manager := s.clearance
 	s.mu.RUnlock()
 	if manager != nil {
+		manager.ForgetClearance(id)
+	}
+}
+
+func (s *Service) forgetClearances(ids []uint64) {
+	s.mu.RLock()
+	manager := s.clearance
+	s.mu.RUnlock()
+	if manager == nil {
+		return
+	}
+	if batch, ok := manager.(BatchClearanceManager); ok {
+		batch.ForgetClearances(ids)
+		return
+	}
+	for _, id := range ids {
 		manager.ForgetClearance(id)
 	}
 }

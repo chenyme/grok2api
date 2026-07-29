@@ -311,6 +311,10 @@ export function deleteEgressNodes(ids: string[]): Promise<{ deleted: number }> {
   return apiRequest("/api/admin/v1/egress-nodes", { method: "DELETE", body: { ids } }, createObjectDecoder<{ deleted: number }>("egress node batch delete", { deleted: isNumber }));
 }
 
+export function updateEgressNodesEnabled(ids: string[], enabled: boolean): Promise<{ updated: number }> {
+  return apiRequest("/api/admin/v1/egress-nodes/batch", { method: "PATCH", body: { ids, enabled } }, createObjectDecoder<{ updated: number }>("egress node batch update", { updated: isNumber }));
+}
+
 export function previewUnhealthyEgressNodes(): Promise<EgressUnhealthyCleanupPreviewDTO> {
   return apiRequest("/api/admin/v1/egress-nodes/cleanup-preview", {}, createObjectDecoder<EgressUnhealthyCleanupPreviewDTO>("egress node cleanup preview", {
     nodes: isNumber, boundAccounts: isNumber, subscriptionManaged: isNumber,

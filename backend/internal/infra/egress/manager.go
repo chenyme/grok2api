@@ -1833,15 +1833,43 @@ func (m *Manager) InvalidateClearance(nodeID uint64) {
 // last-known-good cookie as invalid; ensureClearance will still verify its
 // binding before using it as a solver-failure fallback.
 func (m *Manager) ForgetClearance(nodeID uint64) {
+	m.ForgetClearances([]uint64{nodeID})
+}
+
+// ForgetClearances evicts a batch of node-scoped runtime state with one cache
+// scan and one lock acquisition. Administrative bulk updates can contain
+// thousands of nodes, so repeating the global snapshot invalidation per ID
+// would add avoidable lock contention and CPU work.
+func (m *Manager) ForgetClearances(nodeIDs []uint64) {
+	ids := make(map[uint64]struct{}, len(nodeIDs))
+	prefixes := make(map[string]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		if _, exists := ids[nodeID]; exists {
+			continue
+		}
+		ids[nodeID] = struct{}{}
+		prefix := "node:" + strconv.FormatUint(nodeID, 10)
+		if nodeID == 0 {
+			prefix = "direct"
+		}
+		prefixes[prefix] = struct{}{}
+	}
+	if len(ids) == 0 {
+		return
+	}
 	m.clearanceMu.Lock()
 	m.nodeMu.Lock()
 	m.clientMu.Lock()
-	prefix := "node:" + strconv.FormatUint(nodeID, 10)
-	if nodeID == 0 {
-		prefix = "direct"
-	}
 	for key := range m.clearances {
-		if key == prefix || strings.HasPrefix(key, prefix+":") {
+		prefix := key
+		if strings.HasPrefix(key, "node:") {
+			if separator := strings.IndexByte(key[len("node:"):], ':'); separator >= 0 {
+				prefix = key[:len("node:")+separator]
+			}
+		} else if strings.HasPrefix(key, "direct:") {
+			prefix = "direct"
+		}
+		if _, selected := prefixes[prefix]; selected {
 			delete(m.clearances, key)
 		}
 	}
@@ -1856,7 +1884,17 @@ func (m *Manager) ForgetClearance(nodeID uint64) {
 	}
 	clear(m.nodes)
 	clear(m.healthyNodes)
-	stale := m.invalidateClientLocked(nodeID)
+	var stale []requestClient
+	for nodeID := range ids {
+		m.invalidateClientVersionLocked(nodeID)
+	}
+	for key, cached := range m.clients {
+		if _, selected := ids[key.nodeID]; !selected {
+			continue
+		}
+		delete(m.clients, key)
+		stale = append(stale, cached.client)
+	}
 	m.clientMu.Unlock()
 	m.nodeMu.Unlock()
 	m.clearanceMu.Unlock()
