@@ -1297,33 +1297,36 @@ func (a *Adapter) postJSON(ctx context.Context, cfg Config, lease *egress.Lease,
 
 func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *egress.Lease, token, endpoint string, payload any, timeout time.Duration, referer string) (*http.Response, error) {
 	data, _ := json.Marshal(payload)
-	for attempt := 0; attempt < 2; attempt++ {
-		requestCtx, cancel := context.WithTimeout(ctx, timeout)
-		request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(data))
-		if err != nil {
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	request.Header = buildHeaders(token, lease, "application/json")
+	applyAppHeaders(request.Header, cfg.BaseURL, referer)
+	a.applySignedStatsig(requestCtx, request, token, lease)
+	response, err := lease.DoDeferredForbidden(request)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if response.StatusCode == http.StatusForbidden {
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, webMediaDiagnosticBodyLimit+1))
+		_ = response.Body.Close()
+		if readErr != nil {
 			cancel()
-			return nil, err
+			return nil, readErr
 		}
-		request.Header = buildHeaders(token, lease, "application/json")
-		applyAppHeaders(request.Header, cfg.BaseURL, referer)
-		a.applySignedStatsig(requestCtx, request, token, lease)
-		response, err := lease.Do(request)
-		if err != nil {
-			cancel()
-			return nil, err
-		}
-		if response.StatusCode == http.StatusForbidden {
-			if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, endpoint) {
-				_ = response.Body.Close()
-				cancel()
-				continue
-			}
+		response.Body = io.NopCloser(bytes.NewReader(body))
+		if !provider.IsDefinitiveAccountBlockBody(body) {
+			lease.InvalidateClearance()
+			a.invalidateSignedStatsig(http.MethodPost, endpoint)
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, http.StatusForbidden, nil)
 		}
-		response.Body = &cancelBody{ReadCloser: response.Body, cancel: cancel}
-		return response, nil
 	}
-	return nil, fmt.Errorf("Grok Web Statsig 刷新失败")
+	response.Body = &cancelBody{ReadCloser: response.Body, cancel: cancel}
+	return response, nil
 }
 
 func (a *Adapter) imageResponse(ctx context.Context, credential account.Credential, urls, blobs []string, count int, format string) (*provider.Response, error) {

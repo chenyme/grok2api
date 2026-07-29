@@ -15,7 +15,9 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
@@ -72,6 +74,41 @@ func TestParseMediaPostResponsePreservesStatusAndPostID(t *testing.T) {
 	var upstreamErr *webMediaUpstreamError
 	if !errors.As(err, &upstreamErr) || upstreamErr.status != http.StatusForbidden || !strings.Contains(err.Error(), "challenge") {
 		t.Fatalf("error = %#v", err)
+	}
+}
+
+func TestPostJSONDoesNotReplayForbiddenMediaRequest(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/rest/media/post/create" {
+			calls.Add(1)
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusForbidden)
+			_, _ = writer.Write([]byte(`{"error":{"code":7,"message":"Request rejected by anti-bot rules."}}`))
+			return
+		}
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
+	lease, err := manager.Acquire(context.Background(), egressdomain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "url", StatsigSignerURL: server.URL + "/sign"}, manager, cipher, nil, nil)
+	response, err := adapter.postJSON(context.Background(), adapter.config(), lease, "token", server.URL+"/rest/media/post/create", map[string]any{"mediaType": "video"}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || calls.Load() != 1 {
+		t.Fatalf("status=%d calls=%d", response.StatusCode, calls.Load())
 	}
 }
 

@@ -160,6 +160,14 @@ type clearanceState struct {
 	lastUsedAt         time.Time
 }
 
+type clearanceRefreshOptions struct {
+	persist                bool
+	force                  bool
+	waitForPeer            bool
+	requireClearanceCookie bool
+	refreshAfter           time.Time
+}
+
 type egressStateRepository interface {
 	UpdateEgressNodeClearance(context.Context, uint64, string, string, string, string, time.Time) error
 	UpdateEgressNodeHealth(context.Context, uint64, float64, int, *time.Time, string) error
@@ -1535,7 +1543,10 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 	m.clearanceMu.Unlock()
 
 	result, err, _ := m.clearanceLoads.Do(key, func() (any, error) {
-		return m.refreshNode(ctx, node, proxyURL, key, persist, forceRefresh, !fallbackAllowed, refreshAfter)
+		return m.refreshNode(ctx, node, proxyURL, key, clearanceRefreshOptions{
+			persist: persist, force: forceRefresh, waitForPeer: !fallbackAllowed,
+			requireClearanceCookie: forceRefresh, refreshAfter: refreshAfter,
+		})
 	})
 	if err != nil {
 		if fallbackAllowed {
@@ -1547,7 +1558,7 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 	return solution.Cookies, solution.UserAgent, nil
 }
 
-func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, key string, persist, force, waitForPeer bool, refreshAfter time.Time) (clearanceSolution, error) {
+func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, key string, options clearanceRefreshOptions) (clearanceSolution, error) {
 	m.clearanceMu.Lock()
 	cfg := m.clearanceConfig
 	solveVersion := m.clearanceVersion
@@ -1564,20 +1575,23 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 	fingerprint := clearanceFingerprint(cfg, proxyURL)
 	bindingFingerprint := clearanceBindingFingerprint(cfg, proxyURL)
 	interval := clearanceRefreshInterval(cfg)
-	if persist && node.ID != 0 && lock != nil {
+	if options.persist && node.ID != 0 && lock != nil {
 		release, acquired, err := lock.Acquire(ctx, "egress-clearance:"+strconv.FormatUint(node.ID, 10), timeout+clearanceLockGrace)
 		if err != nil {
 			return clearanceSolution{}, fmt.Errorf("协调 Clearance 刷新: %w", err)
 		}
 		if !acquired {
-			if !force {
+			if !options.force {
 				if solution, refreshedAt, ok := m.loadPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval); ok {
+					if options.requireClearanceCookie && !hasClearanceCookie(solution.Cookies) {
+						return clearanceSolution{}, errors.New("持久化的 Cloudflare Clearance 不包含 cf_clearance")
+					}
 					m.cacheClearance(key, solution, refreshedAt, solveVersion, fingerprint, bindingFingerprint, interval)
 					return solution, nil
 				}
 			}
-			if waitForPeer {
-				if solution, refreshedAt, ok := m.waitPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval, timeout, refreshAfter); ok {
+			if options.waitForPeer {
+				if solution, refreshedAt, ok := m.waitPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval, timeout, options.refreshAfter, options.requireClearanceCookie); ok {
 					m.cacheClearance(key, solution, refreshedAt, solveVersion, fingerprint, bindingFingerprint, interval)
 					return solution, nil
 				}
@@ -1585,8 +1599,11 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 			return clearanceSolution{}, errors.New("另一个实例正在刷新 Cloudflare Clearance")
 		}
 		defer release()
-		if !force {
+		if !options.force {
 			if solution, refreshedAt, ok := m.loadPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval); ok {
+				if options.requireClearanceCookie && !hasClearanceCookie(solution.Cookies) {
+					return clearanceSolution{}, errors.New("持久化的 Cloudflare Clearance 不包含 cf_clearance")
+				}
 				m.cacheClearance(key, solution, refreshedAt, solveVersion, fingerprint, bindingFingerprint, interval)
 				return solution, nil
 			}
@@ -1596,11 +1613,15 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 	defer cancel()
 	solution, err := solver.Solve(solveCtx, cfg, proxyURL)
 	if err != nil {
-		m.recordClearanceError(ctx, node, persist)
+		m.recordClearanceError(ctx, node, options.persist)
 		return clearanceSolution{}, fmt.Errorf("刷新出口 %q 的 Cloudflare Clearance: %w", node.Name, err)
 	}
+	if options.requireClearanceCookie && !hasClearanceCookie(solution.Cookies) {
+		m.recordClearanceError(ctx, node, options.persist)
+		return clearanceSolution{}, fmt.Errorf("刷新出口 %q 的 Cloudflare Clearance: FlareSolverr 在 anti-bot 拒绝后未返回 cf_clearance", node.Name)
+	}
 	now := time.Now().UTC()
-	if persist && node.ID != 0 {
+	if options.persist && node.ID != 0 {
 		encryptedCookies, encryptErr := m.cipher.Encrypt(solution.Cookies)
 		if encryptErr != nil {
 			return clearanceSolution{}, encryptErr
@@ -1630,7 +1651,7 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 	return solution, nil
 }
 
-func (m *Manager) waitPersistedClearance(ctx context.Context, nodeID uint64, fingerprint, bindingFingerprint string, interval, timeout time.Duration, refreshAfter time.Time) (clearanceSolution, time.Time, bool) {
+func (m *Manager) waitPersistedClearance(ctx context.Context, nodeID uint64, fingerprint, bindingFingerprint string, interval, timeout time.Duration, refreshAfter time.Time, requireClearanceCookie bool) (clearanceSolution, time.Time, bool) {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -1641,7 +1662,8 @@ func (m *Manager) waitPersistedClearance(ctx context.Context, nodeID uint64, fin
 			return clearanceSolution{}, time.Time{}, false
 		case <-ticker.C:
 			if solution, refreshedAt, ok := m.loadPersistedClearance(waitCtx, nodeID, fingerprint, bindingFingerprint, interval); ok &&
-				(refreshAfter.IsZero() || refreshedAt.After(refreshAfter)) {
+				(refreshAfter.IsZero() || refreshedAt.After(refreshAfter)) &&
+				(!requireClearanceCookie || hasClearanceCookie(solution.Cookies)) {
 				return solution, refreshedAt, true
 			}
 		}
@@ -1665,6 +1687,16 @@ func (m *Manager) loadPersistedClearance(ctx context.Context, nodeID uint64, fin
 		return clearanceSolution{}, time.Time{}, false
 	}
 	return clearanceSolution{Cookies: cookies, UserAgent: userAgent}, *latest.ClearanceRefreshedAt, true
+}
+
+func hasClearanceCookie(cookies string) bool {
+	for part := range strings.SplitSeq(cookies, ";") {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if ok && strings.EqualFold(strings.TrimSpace(name), "cf_clearance") && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) cacheClearance(key string, solution clearanceSolution, refreshedAt time.Time, version uint64, fingerprint, bindingFingerprint string, interval time.Duration) {
@@ -1769,7 +1801,9 @@ func (m *Manager) recordClearanceError(ctx context.Context, node domain.Node, pe
 func (m *Manager) RefreshClearance(ctx context.Context, nodeID uint64) error {
 	if nodeID == 0 {
 		_, err, _ := m.clearanceLoads.Do("direct", func() (any, error) {
-			return m.refreshNode(ctx, domain.Node{Name: "direct", Scope: domain.ScopeWeb, Enabled: true}, "", "direct", false, true, true, time.Time{})
+			return m.refreshNode(ctx, domain.Node{Name: "direct", Scope: domain.ScopeWeb, Enabled: true}, "", "direct", clearanceRefreshOptions{
+				force: true, waitForPeer: true,
+			})
 		})
 		return err
 	}
@@ -1793,7 +1827,9 @@ func (m *Manager) RefreshClearance(ctx context.Context, nodeID uint64) error {
 	}
 	key := clearanceCacheKey(node.ID, proxyURL, false)
 	_, err, _ = m.clearanceLoads.Do(key, func() (any, error) {
-		return m.refreshNode(ctx, node, proxyURL, key, true, true, true, time.Time{})
+		return m.refreshNode(ctx, node, proxyURL, key, clearanceRefreshOptions{
+			persist: true, force: true, waitForPeer: true,
+		})
 	})
 	return err
 }
@@ -1919,7 +1955,10 @@ func (m *Manager) RefreshDueClearances(ctx context.Context, force bool) error {
 			refreshAfter = state.refreshedAt
 		}
 		_, refreshErr, _ := m.clearanceLoads.Do(key, func() (any, error) {
-			return m.refreshNode(ctx, node, proxyURL, key, true, refreshForce, false, refreshAfter)
+			return m.refreshNode(ctx, node, proxyURL, key, clearanceRefreshOptions{
+				persist: true, force: refreshForce, requireClearanceCookie: known && state.invalid,
+				refreshAfter: refreshAfter,
+			})
 		})
 		if refreshErr != nil {
 			refreshErrors = append(refreshErrors, refreshErr)
@@ -1928,7 +1967,9 @@ func (m *Manager) RefreshDueClearances(ctx context.Context, force bool) error {
 	shouldUseDirect := direct.used || force && webNodeCount == 0
 	if shouldUseDirect && (force || direct.invalid || direct.userAgent == "" || direct.version != version || now.Sub(direct.refreshedAt) >= interval) {
 		_, err, _ := m.clearanceLoads.Do("direct", func() (any, error) {
-			return m.refreshNode(ctx, domain.Node{Name: "direct", Scope: domain.ScopeWeb, Enabled: true}, "", "direct", false, force, false, time.Time{})
+			return m.refreshNode(ctx, domain.Node{Name: "direct", Scope: domain.ScopeWeb, Enabled: true}, "", "direct", clearanceRefreshOptions{
+				force: force || direct.invalid, requireClearanceCookie: direct.invalid,
+			})
 		})
 		if err != nil {
 			refreshErrors = append(refreshErrors, err)
