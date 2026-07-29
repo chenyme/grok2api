@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
@@ -20,12 +21,13 @@ import (
 )
 
 type webMediaUpstreamError struct {
-	status           int
-	summary          string
-	bodyPreview      string
-	bodyBytes        int
-	bodyTruncated    bool
-	bodyPrefixSHA256 string
+	status              int
+	summary             string
+	bodyBytes           int
+	bodyTruncated       bool
+	bodyPrefixSHA256    string
+	bodyKind            string
+	cloudflareChallenge bool
 }
 
 func (e *webMediaUpstreamError) Error() string {
@@ -46,7 +48,6 @@ const (
 	webMediaDiagnosticBodyLimit    = 64 << 10
 	webMediaDiagnosticSummaryLimit = 256
 	webMediaDiagnosticFieldLimit   = 160
-	webMediaDiagnosticPreviewLimit = 1024
 )
 
 var (
@@ -60,25 +61,50 @@ var (
 )
 
 // newWebMediaUpstreamError keeps the HTTP status while exposing only a
-// bounded, redacted summary to logs, persisted jobs, and API responses.
+// bounded, redacted summary through the error. Structured logs retain only
+// body metadata and a prefix hash, never the upstream response body itself.
 func newWebMediaUpstreamError(status int, body []byte, truncated bool) *webMediaUpstreamError {
 	digest := sha256.Sum256(body)
 	return &webMediaUpstreamError{
-		status:           status,
-		summary:          summarizeWebMediaUpstreamError(status, body, truncated),
-		bodyPreview:      webMediaDiagnosticPreview(body),
-		bodyBytes:        len(body),
-		bodyTruncated:    truncated,
-		bodyPrefixSHA256: fmt.Sprintf("%x", digest),
+		status:              status,
+		summary:             summarizeWebMediaUpstreamError(status, body, truncated),
+		bodyBytes:           len(body),
+		bodyTruncated:       truncated,
+		bodyPrefixSHA256:    fmt.Sprintf("%x", digest),
+		bodyKind:            classifyWebMediaDiagnosticBody(body),
+		cloudflareChallenge: isCloudflareChallengeBody(body),
 	}
 }
 
-func webMediaDiagnosticPreview(body []byte) string {
-	value := safeWebMediaDiagnostic(string(body), webMediaDiagnosticPreviewLimit)
-	if value == "" {
-		return "<empty>"
+func classifyWebMediaDiagnosticBody(body []byte) string {
+	if !utf8.Valid(body) {
+		return "binary"
 	}
-	return value
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return "empty"
+	}
+	if json.Valid(body) {
+		return "json"
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") {
+		return "html"
+	}
+	for _, value := range trimmed {
+		if value < 0x20 && value != '\t' && value != '\r' && value != '\n' {
+			return "binary"
+		}
+	}
+	return "text"
+}
+
+func isCloudflareChallengeBody(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "just a moment") ||
+		strings.Contains(lower, "challenge-platform") ||
+		strings.Contains(lower, "__cf_chl") ||
+		strings.Contains(lower, "cf-chl-")
 }
 
 func (a *Adapter) logWebMediaUpstreamRejection(stage string, response *http.Response, upstreamErr *webMediaUpstreamError) {
@@ -91,7 +117,8 @@ func (a *Adapter) logWebMediaUpstreamRejection(stage string, response *http.Resp
 		"body_bytes_captured", upstreamErr.bodyBytes,
 		"body_truncated", upstreamErr.bodyTruncated,
 		"body_prefix_sha256", upstreamErr.bodyPrefixSHA256,
-		"body_preview", upstreamErr.bodyPreview,
+		"body_kind", upstreamErr.bodyKind,
+		"cloudflare_challenge", upstreamErr.cloudflareChallenge,
 	}
 	if response != nil {
 		attributes = append(attributes,

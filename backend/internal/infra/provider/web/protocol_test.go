@@ -706,6 +706,46 @@ func TestBuildDirectFileUploadBodyMatchesImagineMultipartProtocol(t *testing.T) 
 	}
 }
 
+func TestBrowserMultipartFilenameEscapesAndSanitizesUnsafeValues(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "quote and backslash", value: "a\\b\"c.png", want: `a\\b\"c.png`},
+		{name: "line breaks", value: "a\r\nb.png", want: "ab.png"},
+		{name: "control characters", value: "a\x00\tb.png", want: "a__b.png"},
+		{name: "empty after cleanup", value: "\r\n", want: "upload.bin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := browserMultipartFilename(test.value); got != test.want {
+				t.Fatalf("filename = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildDirectFileUploadBodySanitizesUnsafeFilename(t *testing.T) {
+	body, contentType, err := buildDirectFileUploadBody(provider.ImageInput{
+		Filename: "a\\b\"c\r\n\x00.png", MIMEType: "image/png", Data: []byte("png"),
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, parameters, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), parameters["boundary"])
+	part, err := reader.NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.FormName() != "file" || part.FileName() != "a\\b\"c_.png" {
+		t.Fatalf("form name=%q filename=%q", part.FormName(), part.FileName())
+	}
+}
+
 func TestBuildDirectFileUploadBodyOmitsSourceForChat(t *testing.T) {
 	body, contentType, err := buildDirectFileUploadBody(provider.ImageInput{Filename: "chat.png", MIMEType: "image/png", Data: []byte("png")}, "")
 	if err != nil {
@@ -804,10 +844,10 @@ func TestWebMediaStreamErrorRedactsSensitiveValues(t *testing.T) {
 	}
 }
 
-func TestWebMediaUpstreamDiagnosticLogsStageHeadersAndRedactedPreview(t *testing.T) {
+func TestWebMediaUpstreamDiagnosticLogsStageHeadersWithoutBodyPreview(t *testing.T) {
 	var output bytes.Buffer
 	adapter := &Adapter{logger: slog.New(slog.NewTextHandler(&output, nil))}
-	body := []byte(`<html><title>Forbidden</title><p>access_token=secret owner@example.com https://grok.com/private?token=secret</p></html>` + strings.Repeat("A", 1024))
+	body := []byte(`<html><title>Just a moment...</title><script>window.__cf_chl_token="challenge-secret"</script><p>access_token=secret owner@example.com https://grok.com/private?token=secret</p></html>` + strings.Repeat("A", 1024))
 	upstreamErr := newWebMediaUpstreamError(http.StatusForbidden, body, true)
 	response := &http.Response{
 		StatusCode:    http.StatusForbidden,
@@ -823,14 +863,15 @@ func TestWebMediaUpstreamDiagnosticLogsStageHeadersAndRedactedPreview(t *testing
 	logLine := output.String()
 	for _, expected := range []string{
 		"msg=web_media_upstream_rejected", "stage=video_reference_upload", "status=403",
-		"body_truncated=true", "body_prefix_sha256=", "Forbidden", "content_type=\"text/html; charset=UTF-8\"",
+		"body_truncated=true", "body_prefix_sha256=", "body_kind=html", "cloudflare_challenge=true",
+		"content_type=\"text/html; charset=UTF-8\"",
 		"server=cloudflare", "cf_ray=test-ray-SIN",
 	} {
 		if !strings.Contains(logLine, expected) {
 			t.Fatalf("log missing %q: %s", expected, logLine)
 		}
 	}
-	for _, secret := range []string{"access_token=secret", "owner@example.com", "token=secret", strings.Repeat("A", 256)} {
+	for _, secret := range []string{"Just a moment", "challenge-secret", "access_token=secret", "owner@example.com", "token=secret", strings.Repeat("A", 256)} {
 		if strings.Contains(logLine, secret) {
 			t.Fatalf("log exposed %q: %s", secret, logLine)
 		}
