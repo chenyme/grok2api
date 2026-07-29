@@ -20,6 +20,19 @@ type AccountUpsertResult struct {
 	Created bool
 }
 
+// CredentialRefreshFailure is the bounded diagnostic state persisted for the
+// latest failed OAuth refresh. Response must already be redacted by the
+// provider adapter before it reaches persistence.
+type CredentialRefreshFailure struct {
+	Count     int
+	RetryAt   time.Time
+	Status    int
+	Code      string
+	Message   string
+	Response  string
+	Permanent bool
+}
+
 // LinkedDeleteResolution is the server-side expansion of root deletes with optional linked peers.
 type LinkedDeleteResolution struct {
 	RootIDs          []uint64
@@ -111,7 +124,7 @@ type AccountRepository interface {
 	ListCriticalCredentialRefreshIDs(ctx context.Context, now, expiresBefore time.Time, limit int) ([]uint64, error)
 	ListDueCredentialRefreshIDs(ctx context.Context, now time.Time, limit int) ([]uint64, error)
 	NextCredentialRefreshDueAt(ctx context.Context) (*time.Time, error)
-	UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string, permanent bool) error
+	UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failure CredentialRefreshFailure) error
 	UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error
 	UpdateHealth(ctx context.Context, id uint64, failureCount int, cooldownUntil *time.Time, lastError string, success bool) error
 	// MarkBuildAPIFallback 幂等写入 Build 账号的 XAI 推理回退标记；非 Build 账号返回错误。

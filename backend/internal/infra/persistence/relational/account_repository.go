@@ -1655,7 +1655,7 @@ func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessT
 	refreshDueAt := account.CredentialRefreshDueAt(id, expiresAt)
 	updates := map[string]any{
 		"encrypted_primary": accessToken, "expires_at": expiresAt, "refresh_due_at": refreshDueAt,
-		"last_refresh_at": now, "refresh_failures": 0, "last_refresh_error": "", "refresh_permanent": false, "updated_at": now,
+		"last_refresh_at": now, "refresh_failures": 0, "last_refresh_error_status": 0, "last_refresh_error": "", "last_refresh_error_message": "", "last_refresh_error_response": "", "refresh_permanent": false, "updated_at": now,
 	}
 	if refreshToken != "" {
 		updates["encrypted_refresh"] = refreshToken
@@ -1764,12 +1764,14 @@ func (r *AccountRepository) NextCredentialRefreshDueAt(ctx context.Context) (*ti
 	return &value, nil
 }
 
-func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string, permanent bool) error {
+func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failure repository.CredentialRefreshFailure) error {
 	err := r.db.db.WithContext(ctx).Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(map[string]any{
-		"refresh_due_at": retryAt.UTC(), "refresh_failures": max(0, failureCount),
-		"last_refresh_error": truncate(errorCode, 100), "refresh_permanent": permanent, "updated_at": time.Now().UTC(),
+		"refresh_due_at": failure.RetryAt.UTC(), "refresh_failures": max(0, failure.Count),
+		"last_refresh_error_status": max(0, failure.Status), "last_refresh_error": truncate(failure.Code, 100),
+		"last_refresh_error_message": truncate(failure.Message, 512), "last_refresh_error_response": truncate(failure.Response, 4096),
+		"refresh_permanent": failure.Permanent, "updated_at": time.Now().UTC(),
 	}).Error
-	if err == nil && permanent {
+	if err == nil && failure.Permanent {
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged, AccountID: id})
 	}
 	return err
