@@ -1120,6 +1120,14 @@ func TestParseFreeQuotaExhaustion(t *testing.T) {
 	}
 }
 
+func TestParseFreeQuotaExhaustionCurrentBuildFreeLimit(t *testing.T) {
+	body := []byte(`{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage for model grok-4.5-build-free for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 537365/500000."}`)
+	used, limit, exhausted := parseFreeQuotaExhaustion(body)
+	if !exhausted || used != 537_365 || limit != 500_000 {
+		t.Fatalf("exhausted=%v used=%d limit=%d", exhausted, used, limit)
+	}
+}
+
 func TestGatewayCoolsFreeBuildAccountsAfterForbidden(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "systemic-forbidden.db"))
