@@ -446,7 +446,7 @@ const resources = {
         syncAllDescription: "将重新获取所有已启用 Grok Build 账号的额度数据。",
         syncAllWebDescription: "将重新获取所有已启用 Grok Web 账号的真实额度数据。",
         renewAllTitle: "续期所有账号？",
-        renewAllDescription: "将刷新所有支持自动续期的 Grok Build 凭据，不可自动续期的账号会被跳过。",
+        renewAllDescription: "将刷新所有具备刷新凭据的启用 Grok Build 账号；失效账号也会强制请求上游一次，缺少刷新凭据的账号会被跳过。",
         search: "搜索账号",
         deviceLogin: "Device OAuth",
         importAuth: "导入账号文件",
@@ -1792,6 +1792,7 @@ Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<strin
 
 Object.assign(resources.en.translation.accounts as unknown as Record<string, string>, {
   refreshErrorStatus: "HTTP status", refreshErrorCode: "Code", refreshErrorMessage: "Message", refreshErrorResponse: "Details",
+  renewAllDescription: "Refresh every enabled Grok Build account with a refresh credential. Invalid accounts are forced to contact the upstream once; accounts without refresh credentials are skipped.",
   egressConfiguration: "Proxy configuration", egressConfigurationTitle: "Configure proxy for {{count}} accounts", egressConfigurationDescription: "Choose whether to bind or unbind a fixed egress proxy for the selected accounts.",
   bindEgress: "Bind proxy", unbindEgress: "Unbind proxy", unbindEgressDescription: "Remove fixed proxy bindings from the selected accounts. They will return to the current egress routing policy.",
   bindEgressNode: "Proxy node", bindEgressEmpty: "Select a proxy node", bindEgressNoNodes: "No compatible proxy nodes are available for this account pool", egressBound: "Proxy bound", egressUnbound: "Proxy unbound", egressFilter: "Proxy binding",
