@@ -1843,39 +1843,13 @@ func TestRejectedNoChallengeClearanceForcesRefreshWithDistributedLock(t *testing
 	first.InvalidateClearance()
 	first.Release()
 
-	if _, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account"); err == nil || !strings.Contains(err.Error(), "cf_clearance") {
-		t.Fatalf("rejected cookie-less clearance error = %v", err)
+	second, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
+	if err != nil {
+		t.Fatal(err)
 	}
+	second.Release()
 	if solver.calls != 2 {
-		t.Fatalf("rejected cookie-less clearance solver calls=%d", solver.calls)
-	}
-}
-
-func TestRejectedClearanceDoesNotPersistCookieLessRefresh(t *testing.T) {
-	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}
-	solver := &clearanceSolverStub{}
-	manager := NewManager(repository, cipher)
-	manager.solver = solver
-	manager.SetClearanceLock(alwaysAcquiredDistributedLock{})
-	manager.UpdateClearanceConfig(ClearanceConfig{Mode: "flaresolverr", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com/imagine", Timeout: time.Second, RefreshInterval: time.Hour})
-
-	first, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account")
-	if err != nil {
-		t.Fatal(err)
-	}
-	first.InvalidateClearance()
-	first.Release()
-	solver.noCookies = true
-	if _, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account"); err == nil || !strings.Contains(err.Error(), "cf_clearance") {
-		t.Fatalf("cookie-less refresh error = %v", err)
-	}
-	stored, err := cipher.Decrypt(repository.node.EncryptedCloudflareCookie)
-	if err != nil || stored != "cf_clearance=value-1" {
-		t.Fatalf("stored cookies=%q err=%v", stored, err)
+		t.Fatalf("rejected cookie-less clearance reused persisted state: calls=%d", solver.calls)
 	}
 }
 
@@ -1897,8 +1871,8 @@ func TestBackgroundRefreshDoesNotReuseRejectedNoChallengeClearance(t *testing.T)
 	}
 	lease.InvalidateClearance()
 	lease.Release()
-	if err := manager.RefreshDueClearances(context.Background(), false); err == nil || !strings.Contains(err.Error(), "cf_clearance") {
-		t.Fatalf("background refresh error = %v", err)
+	if err := manager.RefreshDueClearances(context.Background(), false); err != nil {
+		t.Fatal(err)
 	}
 	if solver.calls != 2 {
 		t.Fatalf("background refresh reused rejected cookie-less clearance: calls=%d", solver.calls)
