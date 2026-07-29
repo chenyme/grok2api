@@ -617,6 +617,37 @@ func TestBuildImageEditPayloadMatchesCapturedAspectRatioShape(t *testing.T) {
 	}
 }
 
+func TestBuildVideoPayloadMatchesCapturedImageToVideoShape(t *testing.T) {
+	payload := videoCreatePayload("打招呼", "", "2:3", "720p", 10, []string{"asset-1"})
+	if payload["modelName"] != "imagine-video-gen" || payload["message"] != "打招呼 --mode=custom" || payload["kind"] != "CONVERSATION_KIND_IMAGINE" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	for _, field := range []string{"enableImageStreaming", "enableSideBySide", "sendFinalMetadata"} {
+		if payload[field] != true {
+			t.Fatalf("%s = %#v", field, payload[field])
+		}
+	}
+	mediaGenInput, _ := payload["mediaGenInput"].(map[string]any)
+	imageToVideo, _ := mediaGenInput["imageToVideo"].(map[string]any)
+	if imageToVideo["prompt"] != "打招呼" || imageToVideo["aspectRatio"] != "2:3" || imageToVideo["duration"] != 10 || imageToVideo["resolutionName"] != "720p" || imageToVideo["mode"] != "custom" {
+		t.Fatalf("imageToVideo = %#v", imageToVideo)
+	}
+	if !slices.Equal(imageToVideo["inputAssets"].([]string), []string{"asset-1"}) {
+		t.Fatalf("inputAssets = %#v", imageToVideo["inputAssets"])
+	}
+	metadata, _ := payload["responseMetadata"].(map[string]any)
+	override, _ := metadata["modelConfigOverride"].(map[string]any)
+	modelMap, _ := override["modelMap"].(map[string]any)
+	if len(modelMap) != 0 {
+		t.Fatalf("modelMap = %#v", modelMap)
+	}
+	for _, obsolete := range []string{"temporary", "videoGenModelConfig"} {
+		if _, exists := payload[obsolete]; exists {
+			t.Fatalf("obsolete field %q leaked into payload", obsolete)
+		}
+	}
+}
+
 func TestImageEditAspectRatioSupportsOpenAISize(t *testing.T) {
 	for _, test := range []struct {
 		aspectRatio string
@@ -765,35 +796,51 @@ func TestBuildDirectFileUploadBodyOmitsSourceForChat(t *testing.T) {
 	}
 }
 
-func TestVideoReferenceUsesV2DirectUpload(t *testing.T) {
+func TestVideoReferenceUsesV2DirectUploadAndCapturedPayload(t *testing.T) {
 	dataURI := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/http/upload-file-v2/direct" {
-			t.Errorf("unexpected upload path %q", request.URL.Path)
-			writer.WriteHeader(http.StatusNotFound)
-			return
+		switch request.URL.Path {
+		case "/http/upload-file-v2/direct":
+			if err := request.ParseMultipartForm(2 << 20); err != nil {
+				t.Errorf("multipart: %v", err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			file, header, err := request.FormFile("file")
+			if err != nil {
+				t.Errorf("file part: %v", err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			defer file.Close()
+			content, _ := io.ReadAll(file)
+			if header.Filename != "image.png" || header.Header.Get("Content-Type") != "image/png" || len(content) == 0 {
+				t.Errorf("upload filename=%q content-type=%q bytes=%d", header.Filename, header.Header.Get("Content-Type"), len(content))
+			}
+			if request.FormValue("file_source") != imagineSelfUploadSource {
+				t.Errorf("file_source = %q", request.FormValue("file_source"))
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"uploadId":"upload-1","fileMetadata":{"fileMetadataId":"metadata-1","fileUri":"users/test/reference/content"}}`)
+		case "/rest/app-chat/conversations/new":
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Errorf("video payload: %v", err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			mediaGenInput, _ := payload["mediaGenInput"].(map[string]any)
+			imageToVideo, _ := mediaGenInput["imageToVideo"].(map[string]any)
+			inputAssets, _ := imageToVideo["inputAssets"].([]any)
+			if len(inputAssets) != 1 || inputAssets[0] != "metadata-1" {
+				t.Errorf("inputAssets = %#v", imageToVideo["inputAssets"])
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(writer, `data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post-1","videoUrl":"users/test/generated/video.mp4"}}}}`+"\n")
+		default:
+			t.Errorf("unexpected path %q", request.URL.Path)
+			http.NotFound(writer, request)
 		}
-		if err := request.ParseMultipartForm(2 << 20); err != nil {
-			t.Errorf("multipart: %v", err)
-			writer.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		file, header, err := request.FormFile("file")
-		if err != nil {
-			t.Errorf("file part: %v", err)
-			writer.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		defer file.Close()
-		content, _ := io.ReadAll(file)
-		if header.Filename != "image.png" || header.Header.Get("Content-Type") != "image/png" || len(content) == 0 {
-			t.Errorf("upload filename=%q content-type=%q bytes=%d", header.Filename, header.Header.Get("Content-Type"), len(content))
-		}
-		if request.FormValue("file_source") != imagineSelfUploadSource {
-			t.Errorf("file_source = %q", request.FormValue("file_source"))
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, `{"uploadId":"upload-1","fileMetadata":{"fileMetadataId":"metadata-1","fileUri":"users/test/reference/content"}}`)
 	}))
 	defer server.Close()
 
@@ -801,19 +848,24 @@ func TestVideoReferenceUsesV2DirectUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
-	lease, err := manager.Acquire(context.Background(), egressdomain.ScopeWeb, "video-reference-test")
+	encrypted, err := cipher.Encrypt("test-sso")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Release()
-	adapter := NewAdapter(Config{BaseURL: server.URL}, manager, cipher, nil, nil)
-	uri, err := adapter.prepareVideoReference(context.Background(), adapter.config(), lease, "test-sso", dataURI)
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual"}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential:    account.Credential{ID: 1, EncryptedAccessToken: encrypted},
+		Prompt:        "打招呼",
+		Duration:      10,
+		AspectRatio:   "2:3",
+		Resolution:    "720p",
+		ReferenceURLs: []string{dataURI},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uri != "https://assets.grok.com/users/test/reference/content" {
-		t.Fatalf("uri = %q", uri)
+	if result.URL != "https://assets.grok.com/users/test/generated/video.mp4" {
+		t.Fatalf("video URL = %q", result.URL)
 	}
 }
 

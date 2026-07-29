@@ -192,21 +192,19 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	defer lease.Release()
 	parentID := ""
-	references := make([]string, 0, len(request.ReferenceURLs))
+	referenceAssetIDs := make([]string, 0, len(request.ReferenceURLs))
 	for _, rawReference := range request.ReferenceURLs {
-		reference, referenceErr := a.prepareVideoReference(ctx, cfg, lease, token, rawReference)
+		assetID, referenceErr := a.prepareVideoReference(ctx, cfg, lease, token, rawReference)
 		if referenceErr != nil {
 			return provider.VideoResult{}, referenceErr
 		}
-		references = append(references, reference)
+		referenceAssetIDs = append(referenceAssetIDs, assetID)
 	}
-	if len(references) > 0 {
-		parentID, err = a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_IMAGE", references[0], "", "video_reference_media_post")
-	} else {
+	if len(referenceAssetIDs) == 0 {
 		parentID, err = a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_VIDEO", "", request.Prompt, "video_prompt_media_post")
-	}
-	if err != nil {
-		return provider.VideoResult{}, err
+		if err != nil {
+			return provider.VideoResult{}, err
+		}
 	}
 	segments := videoSegments(request.Duration)
 	if len(segments) == 0 {
@@ -217,7 +215,7 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if resolution == "" {
 		resolution = "720p"
 	}
-	payload := videoCreatePayload(request.Prompt, parentID, ratio, resolution, segments[0], references)
+	payload := videoCreatePayload(request.Prompt, parentID, ratio, resolution, segments[0], referenceAssetIDs)
 	response, err := a.postJSON(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.VideoTimeoutSeconds)*time.Second)
 	if err != nil {
 		return provider.VideoResult{}, err
@@ -249,10 +247,10 @@ func (a *Adapter) prepareVideoReference(ctx context.Context, cfg Config, lease *
 	if err != nil {
 		return "", err
 	}
-	if uploaded.URI == "" {
-		return "", fmt.Errorf("上传视频参考图片后未返回 fileUri")
+	if uploaded.ID == "" {
+		return "", fmt.Errorf("上传视频参考图片后未返回 fileMetadataId")
 	}
-	return uploaded.URI, nil
+	return uploaded.ID, nil
 }
 
 type videoContentReadCloser struct {
@@ -480,13 +478,22 @@ func videoSegments(seconds int) []int {
 	return []int{seconds}
 }
 
-func videoCreatePayload(prompt, parentID, ratio, resolution string, seconds int, references []string) map[string]any {
-	config := map[string]any{"parentPostId": parentID, "aspectRatio": ratio, "videoLength": seconds, "resolutionName": resolution}
-	if len(references) > 0 {
-		config["isVideoEdit"] = false
-		config["isReferenceToVideo"] = true
-		config["imageReferences"] = references
+func videoCreatePayload(prompt, parentID, ratio, resolution string, seconds int, referenceAssetIDs []string) map[string]any {
+	if len(referenceAssetIDs) > 0 {
+		return map[string]any{
+			"modelName": "imagine-video-gen", "message": prompt + " --mode=custom",
+			"enableImageStreaming": true, "enableSideBySide": true, "sendFinalMetadata": true,
+			"responseMetadata": map[string]any{
+				"experiments": []any{}, "modelConfigOverride": map[string]any{"modelMap": map[string]any{}},
+			},
+			"mediaGenInput": map[string]any{"imageToVideo": map[string]any{
+				"prompt": prompt, "inputAssets": referenceAssetIDs, "aspectRatio": ratio,
+				"duration": seconds, "resolutionName": resolution, "mode": "custom",
+			}},
+			"kind": "CONVERSATION_KIND_IMAGINE",
+		}
 	}
+	config := map[string]any{"parentPostId": parentID, "aspectRatio": ratio, "videoLength": seconds, "resolutionName": resolution}
 	return map[string]any{
 		"temporary": true, "modelName": "imagine-video-gen", "message": prompt + " --mode=custom", "enableSideBySide": true,
 		"responseMetadata": map[string]any{"experiments": []any{}, "modelConfigOverride": map[string]any{"modelMap": map[string]any{"videoGenModelConfig": config}}},
