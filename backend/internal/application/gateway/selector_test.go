@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -532,6 +533,92 @@ func TestSelectorHonorsWebTierPoolOrderBeforeAccountPriority(t *testing.T) {
 	defer lease.Release()
 	if lease.Credential.WebTier != account.WebTierHeavy {
 		t.Fatalf("selected tier = %s", lease.Credential.WebTier)
+	}
+}
+
+func TestSelectorEnforcesClientKeyAccountScopeAcrossProvidersAndTiers(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-client-key-pool.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	create := func(value account.Credential) account.Credential {
+		t.Helper()
+		created, _, createErr := accounts.UpsertByIdentity(ctx, value)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return created
+	}
+	buildFree := create(account.Credential{Provider: account.ProviderBuild, Name: "build-free", SourceKey: "build-free", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 2})
+	buildSuper := create(account.Credential{Provider: account.ProviderBuild, Name: "build-super", SourceKey: "build-super", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 20, MaxConcurrent: 2})
+	buildUnknown := create(account.Credential{Provider: account.ProviderBuild, Name: "build-unknown", SourceKey: "build-unknown", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 2})
+	now := time.Now().UTC()
+	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: buildFree.ID, PlanName: "Free", SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveBilling(ctx, account.Billing{AccountID: buildSuper.ID, PlanName: "SuperGrok", SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	webFree := create(account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierBasic, Name: "web-free", SourceKey: "web-free", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 2})
+	webSuper := create(account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper, Name: "web-super", SourceKey: "web-super", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 20, MaxConcurrent: 2})
+	webHeavy := create(account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierHeavy, Name: "web-heavy", SourceKey: "web-heavy", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 2})
+	_ = create(account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierAuto, Name: "web-unknown", SourceKey: "web-unknown", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 2})
+	console := create(account.Credential{Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "console", SourceKey: "console", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 2})
+
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}}, time.Hour, time.Second, time.Minute)
+	providerScope := func(provider account.Provider) clientkeydomain.ProviderScope {
+		switch provider {
+		case account.ProviderBuild:
+			return clientkeydomain.ProviderScopeBuild
+		case account.ProviderWeb:
+			return clientkeydomain.ProviderScopeWeb
+		default:
+			return clientkeydomain.ProviderScopeConsole
+		}
+	}
+	assertSelected := func(provider account.Provider, tiers clientkeydomain.TierScope, excluded map[uint64]bool, want uint64) {
+		t.Helper()
+		scope := clientkeydomain.AccountScope{Providers: providerScope(provider), Tiers: tiers}
+		lease, acquireErr := selector.AcquireForKey(ctx, provider, 0, "", "", "", excluded, false, scope)
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		defer lease.Release()
+		if lease.Credential.ID != want {
+			t.Fatalf("provider %s tiers %d selected %d, want %d", provider, tiers, lease.Credential.ID, want)
+		}
+	}
+	assertSelected(account.ProviderBuild, clientkeydomain.TierScopeFree, nil, buildFree.ID)
+	assertSelected(account.ProviderBuild, clientkeydomain.TierScopeSuper, nil, buildSuper.ID)
+	assertSelected(account.ProviderWeb, clientkeydomain.TierScopeFree, nil, webFree.ID)
+	assertSelected(account.ProviderWeb, clientkeydomain.TierScopeSuper, nil, webSuper.ID)
+	assertSelected(account.ProviderWeb, clientkeydomain.TierScopeSuper, map[uint64]bool{webSuper.ID: true}, webHeavy.ID)
+	assertSelected(account.ProviderConsole, clientkeydomain.TierScopeFree, nil, console.ID)
+
+	freeBuildScope := clientkeydomain.AccountScope{Providers: clientkeydomain.ProviderScopeBuild, Tiers: clientkeydomain.TierScopeFree}
+	_, err = selector.AcquireForKey(ctx, account.ProviderBuild, 0, "", "", "", map[uint64]bool{buildFree.ID: true}, false, freeBuildScope)
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" || unavailable.Scope != freeBuildScope {
+		t.Fatalf("scoped exhaustion error = %#v, err = %v", unavailable, err)
+	}
+	superBuildScope := clientkeydomain.AccountScope{Providers: clientkeydomain.ProviderScopeBuild, Tiers: clientkeydomain.TierScopeSuper}
+	if _, err := selector.AcquirePinnedForKey(ctx, account.ProviderBuild, buildUnknown.ID, 0, "", "", true, superBuildScope); !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" {
+		t.Fatalf("out-of-pool pinned error = %#v, err = %v", unavailable, err)
+	}
+	allKnownBuildTiers := clientkeydomain.AccountScope{Providers: clientkeydomain.ProviderScopeBuild, Tiers: clientkeydomain.TierScopeFree | clientkeydomain.TierScopeSuper}
+	if _, err := selector.AcquirePinnedForKey(ctx, account.ProviderBuild, buildUnknown.ID, 0, "", "", true, allKnownBuildTiers); !errors.As(err, &unavailable) {
+		t.Fatalf("unknown Build tier should be excluded: %v", err)
+	}
+	buildOnlyScope := clientkeydomain.AccountScope{Providers: clientkeydomain.ProviderScopeBuild, Tiers: clientkeydomain.TierScopeAll}
+	if _, err := selector.AcquireForKey(ctx, account.ProviderWeb, 0, "", "", "", nil, false, buildOnlyScope); !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" {
+		t.Fatalf("provider scope should fail closed: %#v, err = %v", unavailable, err)
 	}
 }
 

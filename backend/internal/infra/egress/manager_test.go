@@ -1396,6 +1396,9 @@ func TestProxyPoolTransportFailureDoesNotCreateGlobalCooldown(t *testing.T) {
 	if err != nil || !configured || lease == nil {
 		t.Fatalf("pool lease blocked by stale cooldown: configured=%v lease=%#v err=%v", configured, lease, err)
 	}
+	if !lease.freshTunnel {
+		t.Fatal("explicit proxy-pool lease must request a fresh Build tunnel")
+	}
 	lease.Release()
 	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("connection refused"))
 	if repository.updates != 0 || repository.node.FailureCount != 3 || repository.node.CooldownUntil == nil {
@@ -1439,8 +1442,8 @@ func TestAccountTemplateIsAnEffectiveProxyPool(t *testing.T) {
 		t.Fatalf("account-template lease blocked by stale cooldown: configured=%v lease=%#v err=%v", configured, lease, err)
 	}
 	defer lease.Release()
-	if !lease.sticky || !lease.proxyPool {
-		t.Fatalf("account-template lease flags: sticky=%v proxyPool=%v", lease.sticky, lease.proxyPool)
+	if !lease.sticky || !lease.proxyPool || lease.freshTunnel {
+		t.Fatalf("account-template lease flags: sticky=%v proxyPool=%v freshTunnel=%v", lease.sticky, lease.proxyPool, lease.freshTunnel)
 	}
 }
 

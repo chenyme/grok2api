@@ -55,7 +55,7 @@ export function SettingsPage() {
 
   return (
     <form className="w-full space-y-5" onSubmit={form.handleSubmit((values) => updateMutation.mutate(values))}>
-      <header className="relative sticky top-8 z-40 -mx-2 flex min-h-12 items-center justify-between gap-3 bg-background px-2 py-2 before:pointer-events-none before:absolute before:inset-x-0 before:-top-[100vh] before:h-[100vh] before:bg-background before:content-[''] lg:top-20">
+      <header className="relative sticky top-12 z-30 -mx-2 flex min-h-12 items-center justify-between gap-3 bg-background px-2 py-2 lg:top-20 lg:z-40 lg:before:pointer-events-none lg:before:absolute lg:before:inset-x-0 lg:before:-top-[100vh] lg:before:h-[100vh] lg:before:bg-background lg:before:content-['']">
         <div className="min-w-0">
           <h1 className="text-xl font-medium">{t("settings.title")}</h1>
           <p className="sr-only">{t("settings.description")}</p>
@@ -77,15 +77,15 @@ export function SettingsPage() {
 
       {loading ? <div className="flex min-h-64 items-center justify-center"><Spinner /></div> : null}
       {snapshot ? (
-        <Tabs defaultValue="build" className="flex flex-col gap-7 lg:flex-row lg:items-start">
-          <TabsList className="flex h-auto w-full shrink-0 justify-start gap-1 overflow-visible rounded-none bg-transparent p-0 [&>span]:rounded-md [&>span]:bg-muted/70 [&>span]:shadow-none lg:sticky lg:top-[148px] lg:w-56 lg:flex-col lg:items-stretch">
-            <TabsTrigger className="h-9 w-full shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium" value="build">{t("models.providerGrokBuild")}</TabsTrigger>
-            <TabsTrigger className="h-9 w-full shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium" value="web">{t("settings.web.title")}</TabsTrigger>
-            <TabsTrigger className="h-9 w-full shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium" value="console">{t("console.name")}</TabsTrigger>
-            <TabsTrigger className="h-9 w-full shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium" value="delivery">{t("settings.groups.delivery")}</TabsTrigger>
-            <TabsTrigger className="h-9 w-full shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium" value="policies">{t("settings.groups.policies")}</TabsTrigger>
-            <TabsTrigger className="h-9 w-full shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium" value="accounts">{t("settings.accounts.title")}</TabsTrigger>
-            <TabsTrigger className="h-9 w-full shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium" value="about">{t("updates.title")}</TabsTrigger>
+        <Tabs defaultValue="build" className="flex min-w-0 flex-col gap-7 lg:flex-row lg:items-start">
+          <TabsList className="flex h-auto w-full max-w-full shrink-0 justify-start gap-1 overflow-x-auto overscroll-x-contain rounded-none bg-transparent p-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden [&>span]:rounded-md [&>span]:bg-muted/70 [&>span]:shadow-none lg:sticky lg:top-[148px] lg:w-56 lg:flex-col lg:items-stretch lg:overflow-visible">
+            <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="build">{t("models.providerGrokBuild")}</TabsTrigger>
+            <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="web">{t("settings.web.title")}</TabsTrigger>
+            <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="console">{t("console.name")}</TabsTrigger>
+            <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="delivery">{t("settings.groups.delivery")}</TabsTrigger>
+            <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="policies">{t("settings.groups.policies")}</TabsTrigger>
+            <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="accounts">{t("settings.accounts.title")}</TabsTrigger>
+            <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="about">{t("updates.title")}</TabsTrigger>
           </TabsList>
 
           <div className="min-w-0 flex-1">

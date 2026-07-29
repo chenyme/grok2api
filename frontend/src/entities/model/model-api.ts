@@ -9,6 +9,9 @@ type ListModelsInput = {
   search?: string;
   status?: string;
   provider?: "grok_build" | "grok_web" | "grok_console" | "";
+  providerScope?: Array<"grok_build" | "grok_web" | "grok_console">;
+  tierScope?: Array<"free" | "super">;
+  activeScope?: boolean;
   sortBy?: string;
   sortOrder?: SortOrder;
 };
@@ -45,6 +48,9 @@ export function listModels(input: ListModelsInput): Promise<PaginatedDTO<ModelRo
   if (input.search) query.set("search", input.search);
   if (input.status) query.set("status", input.status);
   if (input.provider) query.set("provider", input.provider);
+  for (const value of input.providerScope ?? []) query.append("providerScope", value);
+  for (const value of input.tierScope ?? []) query.append("tierScope", value);
+  if (input.activeScope) query.set("activeScope", "true");
   if (input.sortBy && input.sortOrder) {
     query.set("sortBy", input.sortBy);
     query.set("sortOrder", input.sortOrder);

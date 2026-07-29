@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
@@ -79,7 +80,12 @@ type accountOptionResponse struct {
 
 func (h *Handler) list(c *gin.Context) {
 	page, pageSize := pagination(c)
-	values, total, err := h.service.List(c.Request.Context(), page, pageSize, c.Query("search"), modelapp.ListFilter{Provider: c.Query("provider"), Status: c.Query("status"), Sort: repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))}})
+	activeScope, ok := parseOptionalBool(c.Query("activeScope"))
+	if !ok {
+		response.Error(c, http.StatusBadRequest, "invalidFilter", "activeScope 必须是 true 或 false")
+		return
+	}
+	values, total, err := h.service.List(c.Request.Context(), page, pageSize, c.Query("search"), modelapp.ListFilter{Provider: c.Query("provider"), Providers: splitScopeQuery(c.QueryArray("providerScope")), Tiers: splitScopeQuery(c.QueryArray("tierScope")), Status: c.Query("status"), ActiveScope: activeScope, Sort: repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))}})
 	if errors.Is(err, modelapp.ErrInvalidFilter) {
 		response.Error(c, http.StatusBadRequest, "invalidFilter", err.Error())
 		return
@@ -93,6 +99,33 @@ func (h *Handler) list(c *gin.Context) {
 		items = append(items, newModelResponse(value))
 	}
 	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
+}
+
+func splitScopeQuery(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				result = append(result, item)
+			}
+		}
+	}
+	return result
+}
+
+func parseOptionalBool(value string) (bool, bool) {
+	switch strings.TrimSpace(value) {
+	case "", "false":
+		return false, true
+	case "true":
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 func (h *Handler) listAccounts(c *gin.Context) {

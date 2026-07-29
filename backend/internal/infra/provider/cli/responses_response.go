@@ -10,8 +10,10 @@ import (
 )
 
 const (
-	maxCompatibleResponseBytes = 128 << 20
-	maxCompatibleSSEEventBytes = 8 << 20
+	maxCompatibleResponseBytes        = 128 << 20
+	maxCompatibleSSEEventBytes        = 8 << 20
+	maxBufferedFunctionArgumentsBytes = 1 << 20
+	maxTotalBufferedFunctionArgsBytes = 4 << 20
 )
 
 // normalizeResponseJSON 将上游普通函数别名恢复为下游 namespace 和 Tool Search 输出项。
@@ -51,6 +53,15 @@ func (c *responsesToolCompatibility) normalizeResponseStream(source io.ReadClose
 				return rewriteErr
 			}
 			for index, output := range outputs {
+				outputData := output.Data
+				if output.Payload != nil {
+					c.resequenceStreamPayload(output.Payload)
+					encoded, encodeErr := json.Marshal(output.Payload)
+					if encodeErr != nil {
+						return fmt.Errorf("编码兼容 Responses SSE: %w", encodeErr)
+					}
+					outputData = encoded
+				}
 				current := event
 				if output.Event != "" {
 					current.Event = output.Event
@@ -61,7 +72,7 @@ func (c *responsesToolCompatibility) normalizeResponseStream(source io.ReadClose
 					current.Comments = nil
 					current.Other = nil
 				}
-				current.SetData(output.Data)
+				current.SetData(outputData)
 				if err := current.writeTo(writer); err != nil {
 					return err
 				}
@@ -74,13 +85,16 @@ func (c *responsesToolCompatibility) normalizeResponseStream(source io.ReadClose
 }
 
 type responsesStreamOutput struct {
-	Event string
-	Data  []byte
+	Event   string
+	Data    []byte
+	Payload map[string]any
 }
 
 type responsesStreamCall struct {
 	identity     responsesToolIdentity
+	schema       any
 	arguments    strings.Builder
+	passthrough  bool
 	lastDelta    map[string]any
 	addedPayload map[string]any
 }
@@ -117,6 +131,30 @@ func (c *responsesToolCompatibility) rewriteStreamData(event string, data []byte
 	}
 	if kind == "response.function_call_arguments.delta" {
 		identity, state, found := c.streamIdentity(payload)
+		if found && identity.Kind == responsesFunctionTool && state.schema != nil {
+			delta := stringField(payload, "delta")
+			callLimitExceeded := state.arguments.Len()+len(delta) > maxBufferedFunctionArgumentsBytes
+			totalLimitExceeded := c.streamArgumentBytes+len(delta) > maxTotalBufferedFunctionArgsBytes
+			if !state.passthrough && (callLimitExceeded || totalLimitExceeded) {
+				buffered := state.arguments.String()
+				c.releaseBufferedFunctionArguments(state)
+				state.passthrough = true
+				outputs := make([]responsesStreamOutput, 0, 2)
+				if buffered != "" {
+					flushed := cloneJSONObject(payload)
+					flushed["delta"] = buffered
+					outputs = append(outputs, responsesStreamOutput{Event: "response.function_call_arguments.delta", Payload: flushed})
+				}
+				outputs = append(outputs, responsesStreamOutput{Event: "response.function_call_arguments.delta", Payload: payload})
+				return outputs, nil
+			}
+			if !state.passthrough {
+				state.arguments.WriteString(delta)
+				c.streamArgumentBytes += len(delta)
+				state.lastDelta = cloneJSONObject(payload)
+				return nil, nil
+			}
+		}
 		if found && (identity.Kind == responsesToolSearch || identity.Kind == responsesCustomTool || identity.Kind == responsesApplyPatchTool) {
 			state.arguments.WriteString(stringField(payload, "delta"))
 			if identity.Kind == responsesCustomTool {
@@ -127,6 +165,29 @@ func (c *responsesToolCompatibility) rewriteStreamData(event string, data []byte
 	}
 	if kind == "response.function_call_arguments.done" {
 		identity, state, found := c.streamIdentity(payload)
+		if found && identity.Kind == responsesFunctionTool && state.schema != nil {
+			arguments := stringField(payload, "arguments")
+			if arguments == "" {
+				arguments = state.arguments.String()
+			}
+			normalized, _ := normalizeFunctionArguments(arguments, state.schema)
+			if state.passthrough {
+				done := cloneJSONObject(payload)
+				done["arguments"] = normalized
+				return []responsesStreamOutput{{Event: "response.function_call_arguments.done", Payload: done}}, nil
+			}
+			outputs := make([]responsesStreamOutput, 0, 2)
+			if state.lastDelta != nil {
+				delta := cloneJSONObject(state.lastDelta)
+				delta["delta"] = normalized
+				outputs = append(outputs, responsesStreamOutput{Event: "response.function_call_arguments.delta", Payload: delta})
+			}
+			done := cloneJSONObject(payload)
+			done["arguments"] = normalized
+			outputs = append(outputs, responsesStreamOutput{Event: "response.function_call_arguments.done", Payload: done})
+			c.releaseBufferedFunctionArguments(state)
+			return outputs, nil
+		}
 		if found && (identity.Kind == responsesToolSearch || identity.Kind == responsesApplyPatchTool) {
 			// Tool Search 的 arguments 是结构化对象；等 output_item.done 带齐参数后再对下游可见。
 			return nil, nil
@@ -140,18 +201,10 @@ func (c *responsesToolCompatibility) rewriteStreamData(event string, data []byte
 			outputs := make([]responsesStreamOutput, 0, 2)
 			if state.lastDelta != nil {
 				delta := customToolStreamPayload(state.lastDelta, "response.custom_tool_call_input.delta", "delta", input)
-				encoded, err := json.Marshal(delta)
-				if err != nil {
-					return nil, fmt.Errorf("编码 custom tool delta: %w", err)
-				}
-				outputs = append(outputs, responsesStreamOutput{Event: "response.custom_tool_call_input.delta", Data: encoded})
+				outputs = append(outputs, responsesStreamOutput{Event: "response.custom_tool_call_input.delta", Payload: delta})
 			}
 			done := customToolStreamPayload(payload, "response.custom_tool_call_input.done", "input", input)
-			encoded, err := json.Marshal(done)
-			if err != nil {
-				return nil, fmt.Errorf("编码 custom tool done: %w", err)
-			}
-			outputs = append(outputs, responsesStreamOutput{Event: "response.custom_tool_call_input.done", Data: encoded})
+			outputs = append(outputs, responsesStreamOutput{Event: "response.custom_tool_call_input.done", Payload: done})
 			return outputs, nil
 		}
 	}
@@ -169,11 +222,47 @@ func (c *responsesToolCompatibility) rewriteStreamData(event string, data []byte
 	if response, ok := payload["response"].(map[string]any); ok {
 		c.restoreVisibleTools(response)
 	}
-	converted, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("编码兼容 Responses SSE: %w", err)
+	return []responsesStreamOutput{{Payload: payload}}, nil
+}
+
+func (c *responsesToolCompatibility) releaseBufferedFunctionArguments(state *responsesStreamCall) {
+	if c == nil || state == nil {
+		return
 	}
-	return []responsesStreamOutput{{Data: converted}}, nil
+	c.streamArgumentBytes -= state.arguments.Len()
+	if c.streamArgumentBytes < 0 {
+		c.streamArgumentBytes = 0
+	}
+	state.arguments.Reset()
+	state.lastDelta = nil
+}
+
+func (c *responsesToolCompatibility) resequenceStreamPayload(payload map[string]any) {
+	if c == nil || payload == nil {
+		return
+	}
+	rawSequence, exists := payload["sequence_number"]
+	if !exists {
+		return
+	}
+	if !c.streamSequenceSet {
+		sequence, ok := exactJSONInt64(rawSequence)
+		if !ok {
+			return
+		}
+		c.streamSequenceNext = sequence
+		c.streamSequenceSet = true
+	}
+	payload["sequence_number"] = c.streamSequenceNext
+	c.streamSequenceNext++
+}
+
+func exactJSONInt64(value any) (int64, bool) {
+	number, ok := value.(float64)
+	if !ok || number < 0 || number > float64(maxExactJSONInteger) || number != float64(int64(number)) {
+		return 0, false
+	}
+	return int64(number), true
 }
 
 func (c *responsesToolCompatibility) rememberStreamCall(item map[string]any) *responsesStreamCall {
@@ -184,7 +273,7 @@ func (c *responsesToolCompatibility) rememberStreamCall(item map[string]any) *re
 	if !exists {
 		return nil
 	}
-	state := &responsesStreamCall{identity: identity}
+	state := &responsesStreamCall{identity: identity, schema: c.functionSchemas[stringField(item, "name")]}
 	for _, key := range []string{stringField(item, "id"), stringField(item, "call_id")} {
 		if key != "" {
 			c.streamCalls[key] = state
@@ -203,7 +292,7 @@ func (c *responsesToolCompatibility) streamIdentity(payload map[string]any) (res
 	if !exists {
 		return responsesToolIdentity{}, nil, false
 	}
-	state := &responsesStreamCall{identity: identity}
+	state := &responsesStreamCall{identity: identity, schema: c.functionSchemas[stringField(payload, "name")]}
 	for _, key := range []string{stringField(payload, "item_id"), stringField(payload, "call_id")} {
 		if key != "" {
 			c.streamCalls[key] = state
@@ -241,12 +330,21 @@ func (c *responsesToolCompatibility) rewriteResponseValue(value any) error {
 }
 
 func (c *responsesToolCompatibility) rewriteFunctionCall(call map[string]any) error {
-	identity, exists := c.aliases[stringField(call, "name")]
+	alias := stringField(call, "name")
+	identity, exists := c.aliases[alias]
 	if !exists {
 		return nil
 	}
 	switch identity.Kind {
 	case responsesFunctionTool:
+		if schema := c.functionSchemas[alias]; schema != nil {
+			if arguments, ok := call["arguments"].(string); ok {
+				normalized, changed := normalizeFunctionArguments(arguments, schema)
+				if changed {
+					call["arguments"] = normalized
+				}
+			}
+		}
 		call["name"] = identity.Name
 		if identity.Namespace != "" {
 			call["namespace"] = identity.Namespace
@@ -315,17 +413,9 @@ func (c *responsesToolCompatibility) rewriteApplyPatchDoneEvent(payload, item ma
 	addedItem := cloneJSONObject(doneItem)
 	addedItem["status"] = "in_progress"
 	added["item"] = addedItem
-	addedData, err := json.Marshal(added)
-	if err != nil {
-		return nil, fmt.Errorf("编码 apply_patch added event: %w", err)
-	}
-	doneData, err := json.Marshal(done)
-	if err != nil {
-		return nil, fmt.Errorf("编码 apply_patch done event: %w", err)
-	}
 	return []responsesStreamOutput{
-		{Event: "response.output_item.added", Data: addedData},
-		{Event: "response.output_item.done", Data: doneData},
+		{Event: "response.output_item.added", Payload: added},
+		{Event: "response.output_item.done", Payload: done},
 	}, nil
 }
 

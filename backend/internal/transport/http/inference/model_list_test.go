@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/gin-gonic/gin"
 )
@@ -21,6 +22,19 @@ func TestNewModelListItemsDeduplicatesSharedPublicName(t *testing.T) {
 	})
 	if len(items) != 2 || items[0].ID != "grok-shared" || items[1].ID != "grok-chat-fast" {
 		t.Fatalf("model list = %#v", items)
+	}
+}
+
+func TestFilterModelRoutesForClientKeyUsesProviderAndModelIntersection(t *testing.T) {
+	routes := []modeldomain.Route{
+		{ID: 1, Provider: account.ProviderBuild, PublicID: "Build/grok-shared"},
+		{ID: 2, Provider: account.ProviderWeb, PublicID: "Web/grok-shared"},
+		{ID: 3, Provider: account.ProviderConsole, PublicID: "Console/grok-shared"},
+	}
+	key := clientkeydomain.Key{ProviderScope: clientkeydomain.ProviderScopeWeb | clientkeydomain.ProviderScopeConsole, AllowedModels: []uint64{2, 3}}
+	filtered := filterModelRoutesForClientKey(routes, key)
+	if len(filtered) != 2 || filtered[0].ID != 2 || filtered[1].ID != 3 {
+		t.Fatalf("filtered routes = %#v", filtered)
 	}
 }
 
