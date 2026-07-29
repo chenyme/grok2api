@@ -1798,6 +1798,55 @@ Object.assign(resources.en.translation.accounts as unknown as Record<string, str
   bindEgressNode: "Proxy node", bindEgressEmpty: "Select a proxy node", bindEgressNoNodes: "No compatible proxy nodes are available for this account pool", egressBound: "Proxy bound", egressUnbound: "Proxy unbound", egressFilter: "Proxy binding",
 });
 
+Object.assign(resources["zh-CN"].translation.accountCredential as unknown as Record<string, string>, {
+  detectAction: "检测账号",
+});
+Object.assign(resources.en.translation.accountCredential as unknown as Record<string, string>, {
+  detectAction: "Detect accounts",
+});
+Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<string, unknown>, {
+  detectAllTitle: "检测全部 Grok Build 账号？",
+  detectAllDescription: "将对每个启用且状态正常的 Grok Build 账号发起一次 grok-4.5 探测请求。已确认失效的账号会被标记并移出号池。",
+  detectSelectedTitle: "检测选中的 {{count}} 个 Grok Build 账号？",
+  detectSelectedDescription: "逐个验证所选账号，并显示正常、失效和检测失败结果。",
+  detectAll: "开始检测",
+  detectProgressLabel: "检测进度",
+  detectInvalidCount: "已发现 {{count}} 个失效账号",
+  detectSelectedSummary: "正常 {{ok}} · 失效 {{invalid}} · 失败 {{failed}}",
+  detectWaitingInvalid: "正在检测；这里只增量显示已确认失效的账号。",
+  detectWaitingResults: "正在等待账号检测结果。",
+  detectNoInvalid: "未发现失效账号。",
+  detectNoResults: "暂无检测结果。",
+  detectOutcome: { ok: "正常", invalid: "失效", failed: "失败" },
+  batchDetected: "账号检测完成：成功 {{succeeded}}，失败 {{failed}}",
+  allDetected: "全量检测完成：成功 {{succeeded}}，失败 {{failed}}",
+});
+Object.assign(resources.en.translation.accounts as unknown as Record<string, unknown>, {
+  detectAllTitle: "Detect all Grok Build accounts?",
+  detectAllDescription: "Probe each enabled and healthy Grok Build account with grok-4.5. Confirmed invalid accounts are marked and removed from routing.",
+  detectSelectedTitle: "Detect {{count}} selected Grok Build accounts?",
+  detectSelectedDescription: "Validate the selected accounts and show healthy, invalid, and failed results.",
+  detectAll: "Start detection",
+  detectProgressLabel: "Detection progress",
+  detectInvalidCount: "{{count}} invalid accounts found",
+  detectSelectedSummary: "Healthy {{ok}} · Invalid {{invalid}} · Failed {{failed}}",
+  detectWaitingInvalid: "Detection is running; confirmed invalid accounts appear here.",
+  detectWaitingResults: "Waiting for account detection results.",
+  detectNoInvalid: "No invalid accounts found.",
+  detectNoResults: "No detection results.",
+  detectOutcome: { ok: "Healthy", invalid: "Invalid", failed: "Failed" },
+  batchDetected: "Detection complete: {{succeeded}} succeeded, {{failed}} failed",
+  allDetected: "Full detection complete: {{succeeded}} succeeded, {{failed}} failed",
+});
+Object.assign(resources["zh-CN"].translation.settings.routing as unknown as Record<string, string>, {
+  markBuildChatDeniedAsReauth: "Build Chat 权限拒绝标记重授权",
+  markBuildChatDeniedAsReauthHelp: "开启后，Build Chat 请求遇到权限拒绝时将账号标记为需要重新授权并移出号池。",
+});
+Object.assign(resources.en.translation.settings.routing as unknown as Record<string, string>, {
+  markBuildChatDeniedAsReauth: "Mark Build Chat denied as reauth",
+  markBuildChatDeniedAsReauthHelp: "Mark accounts that receive a Build Chat permission denial for reauthorization and remove them from routing.",
+});
+
 function readStoredLanguage(): string | null {
   if (typeof window === "undefined") return null;
   try {
