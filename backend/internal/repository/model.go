@@ -12,6 +12,7 @@ import (
 type ModelRepository interface {
 	List(ctx context.Context, query ModelListQuery) ([]model.Route, int64, error)
 	ListEnabled(ctx context.Context) ([]model.Route, error)
+	ListEnabledForScope(ctx context.Context, filter ModelListFilter) ([]model.Route, error)
 	ListConfiguredEnabled(ctx context.Context) ([]model.Route, error)
 	Get(ctx context.Context, id uint64) (model.Route, error)
 	GetByPublicID(ctx context.Context, publicID string) (model.Route, error)

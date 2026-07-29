@@ -102,14 +102,17 @@ export function CreativeConsolePage() {
     queryFn: () => listAllPaginatedItems((page, pageSize) => listClientKeys({ page, pageSize, status: "active" })),
     staleTime: 30_000,
   });
-  const modelsQuery = useQuery({
-    queryKey: ["creative-console", "models"],
-    queryFn: () => listAllPaginatedItems((page, pageSize) => listModels({ page, pageSize, status: "enabled" })),
-    staleTime: 30_000,
-  });
   const activeKeys = useMemo(() => (keysQuery.data ?? []).filter(isUsableKey), [keysQuery.data]);
   const effectiveKeyId = activeKeys.some((key) => key.id === selectedKeyId) ? selectedKeyId : activeKeys[0]?.id ?? "";
   const selectedKey = activeKeys.find((key) => key.id === effectiveKeyId);
+  const modelProviderScope = (selectedKey?.providerScope ?? ["all"]).filter((value) => value !== "all");
+  const modelTierScope = (selectedKey?.tierScope ?? ["all"]).filter((value) => value !== "all");
+  const modelsQuery = useQuery({
+    queryKey: ["creative-console", "models", modelProviderScope.join(","), modelTierScope.join(",")],
+    queryFn: () => listAllPaginatedItems((page, pageSize) => listModels({ page, pageSize, status: "enabled", providerScope: modelProviderScope, tierScope: modelTierScope, activeScope: true })),
+    enabled: Boolean(selectedKey),
+    staleTime: 30_000,
+  });
   const availableModels = useMemo(() => (modelsQuery.data ?? []).filter((model) => model.enabled && model.available), [modelsQuery.data]);
   const permittedModels = useMemo(() => {
     if (!selectedKey || selectedKey.allowedModelIds.length === 0) return availableModels;

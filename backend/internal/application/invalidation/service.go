@@ -99,12 +99,17 @@ func (s *Service) RunPublisher(ctx context.Context) error {
 }
 
 type invalidationKey struct {
-	layer    repository.InvalidationLayer
-	provider string
+	layer       repository.InvalidationLayer
+	provider    string
+	clientKeyID uint64
 }
 
 func eventKey(event repository.InvalidationEvent) invalidationKey {
-	return invalidationKey{layer: event.Layer(), provider: string(event.Provider)}
+	key := invalidationKey{layer: event.Layer(), provider: string(event.Provider)}
+	if key.layer == repository.InvalidationLayerClientKey {
+		key.clientKeyID = event.ClientKeyID
+	}
+	return key
 }
 
 // RunSubscriber consumes remote events. Pub/Sub delivery is best effort; the
