@@ -548,6 +548,21 @@ func (r *AccountRepository) ListEnabledAccountIDs(ctx context.Context, provider 
 	return ids, err
 }
 
+func (r *AccountRepository) ListEnabledCredentialRefreshAccountIDs(ctx context.Context, provider account.Provider, refreshableOnly bool) ([]uint64, error) {
+	query := r.db.db.WithContext(ctx).
+		Table("provider_accounts AS account").
+		Select("account.id").
+		Where("account.provider = ? AND account.enabled = ? AND account.auth_status IN ?", provider, true, []account.AuthStatus{account.AuthStatusActive, account.AuthStatusReauthRequired})
+	if refreshableOnly {
+		query = query.
+			Joins("JOIN account_credentials AS credential ON credential.account_id = account.id").
+			Where("credential.encrypted_refresh <> ''")
+	}
+	var ids []uint64
+	err := query.Order("account.id ASC").Scan(&ids).Error
+	return ids, err
+}
+
 func (r *AccountRepository) FilterMissingBuildConversionIDs(ctx context.Context, ids []uint64) ([]uint64, error) {
 	if len(ids) == 0 {
 		return []uint64{}, nil
