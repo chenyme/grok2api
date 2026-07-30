@@ -1788,6 +1788,7 @@ Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<strin
   egressConfiguration: "代理配置", egressConfigurationTitle: "配置 {{count}} 个账号的代理", egressConfigurationDescription: "选择绑定或解绑所选账号的固定出口代理。",
   bindEgress: "绑定代理", unbindEgress: "解绑代理", unbindEgressDescription: "移除所选账号的固定代理绑定；账号随后按当前出口策略重新参与调度。",
   bindEgressNode: "代理节点", bindEgressEmpty: "请选择代理节点", bindEgressNoNodes: "当前账号池没有可绑定的代理节点", egressBound: "代理已绑定", egressUnbound: "代理已解绑", egressFilter: "代理绑定",
+  egressNodeGroup: "代理出口", egressNodeGroupEmpty: "当前账号池没有代理出口", egressSourceGroup: "代理来源", egressSourceGroupEmpty: "当前账号池没有代理来源",
 });
 
 Object.assign(resources.en.translation.accounts as unknown as Record<string, string>, {
@@ -1796,6 +1797,7 @@ Object.assign(resources.en.translation.accounts as unknown as Record<string, str
   egressConfiguration: "Proxy configuration", egressConfigurationTitle: "Configure proxy for {{count}} accounts", egressConfigurationDescription: "Choose whether to bind or unbind a fixed egress proxy for the selected accounts.",
   bindEgress: "Bind proxy", unbindEgress: "Unbind proxy", unbindEgressDescription: "Remove fixed proxy bindings from the selected accounts. They will return to the current egress routing policy.",
   bindEgressNode: "Proxy node", bindEgressEmpty: "Select a proxy node", bindEgressNoNodes: "No compatible proxy nodes are available for this account pool", egressBound: "Proxy bound", egressUnbound: "Proxy unbound", egressFilter: "Proxy binding",
+  egressNodeGroup: "Proxy egress", egressNodeGroupEmpty: "No proxy egress for this account pool", egressSourceGroup: "Proxy source", egressSourceGroupEmpty: "No proxy source for this account pool",
 });
 
 function readStoredLanguage(): string | null {

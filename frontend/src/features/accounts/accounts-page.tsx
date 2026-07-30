@@ -88,7 +88,7 @@ import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/accoun
 import { AccountNameCell } from "@/features/accounts/account-name-cell";
 import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
 import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
-import { assignEgressAccounts, listAllEgressNodes, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
+import { assignEgressAccounts, listAllEgressNodes, listEgressSources, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -233,10 +233,17 @@ export function AccountsPage() {
     queryKey: ["accounts", "summary"],
     queryFn: getAccountSummary,
   });
+  // Nodes back both the binding dialog and the "proxy bound" filter's third level,
+  // so they load with the page instead of only when the dialog opens.
   const egressNodesQuery = useQuery({
     queryKey: ["egress-nodes", "account-binding"],
     queryFn: () => listAllEgressNodes(),
-    enabled: egressConfigurationOpen && egressConfigurationTask === "bind",
+    staleTime: 60_000,
+  });
+  const egressSourcesQuery = useQuery({
+    queryKey: ["egress-sources", "account-filter"],
+    queryFn: listEgressSources,
+    staleTime: 60_000,
   });
 
   const invalidateAccountData = useCallback(() => {
@@ -855,6 +862,9 @@ export function AccountsPage() {
     setSelection({ provider: value, ids: new Set() });
     setTypeFilter("");
     setStatusFilter("");
+    // A node or subscription narrowing belongs to the previous pool's scope;
+    // keep the plain bound filter and drop the target.
+    setEgressFilter((current) => (current.includes(":") ? "bound" : current));
     setRenewalFilter("");
     setRiskFilter("");
     setAgreementFilter("");
@@ -1031,6 +1041,14 @@ export function AccountsPage() {
   const providerAccountTotal = provider === "grok_build" ? buildSummary.total : provider === "grok_web" ? webSummary.total : consoleSummary.total;
   const hasProviderAccounts = providerAccountTotal > 0 || (result?.total ?? 0) > 0;
   const bindableEgressNodes = (egressNodesQuery.data?.items ?? []).filter((node) => node.enabled && node.proxyConfigured && scopeSupportsAccountProvider(node.scope, provider));
+  // The bound-proxy filter only lists egress nodes and subscriptions whose scope
+  // can serve the current account pool, so switching pools re-scopes the menu.
+  const scopedEgressNodes = (egressNodesQuery.data?.items ?? []).filter((node) => scopeSupportsAccountProvider(node.scope, provider));
+  const scopedEgressSources = (egressSourcesQuery.data?.items ?? []).filter((source) => scopeSupportsAccountProvider(source.scope, provider));
+  const egressBoundGroups = [
+    { id: "nodes", label: t("accounts.egressNodeGroup"), emptyLabel: t("accounts.egressNodeGroupEmpty"), options: scopedEgressNodes.map((node) => ({ value: `node:${node.id}`, label: node.name })) },
+    { id: "sources", label: t("accounts.egressSourceGroup"), emptyLabel: t("accounts.egressSourceGroupEmpty"), options: scopedEgressSources.map((source) => ({ value: `source:${source.id}`, label: source.name })) },
+  ];
   const bulkTaskPending = quotaSyncMutation.isPending
     || allQuotaResetMutation.isPending
     || allTokenMutation.isPending
@@ -1149,7 +1167,7 @@ export function AccountsPage() {
                   { value: "probing", label: t("accounts.probing") },
                 ] },
                 { id: "egress", label: t("accounts.egressFilter"), value: egressFilter, onChange: (value) => { setEgressFilter(value); setPage(1); }, options: [
-                  { value: "bound", label: t("accounts.egressBound") },
+                  { value: "bound", label: t("accounts.egressBound"), groups: egressBoundGroups },
                   { value: "unbound", label: t("accounts.egressUnbound") },
                 ] },
                 ...(provider === "grok_build" ? [{ id: "renewal", label: t("accountCredential.label"), value: renewalFilter, onChange: (value: string) => { setRenewalFilter(value); setPage(1); }, options: [

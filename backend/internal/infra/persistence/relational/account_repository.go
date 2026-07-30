@@ -81,6 +81,12 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 	switch input.Filter.Egress {
 	case "bound":
 		query = query.Where("egress_node_id IS NOT NULL")
+		if nodeID := input.Filter.EgressNodeID; nodeID > 0 {
+			query = query.Where("egress_node_id = ?", nodeID)
+		}
+		if sourceID := input.Filter.EgressSourceID; sourceID > 0 {
+			query = query.Where("EXISTS (SELECT 1 FROM egress_nodes node WHERE node.id = provider_accounts.egress_node_id AND node.source_id = ?)", sourceID)
+		}
 	case "unbound":
 		query = query.Where("egress_node_id IS NULL")
 	}

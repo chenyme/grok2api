@@ -426,10 +426,11 @@ func (s *Service) ProviderDefinition(value accountdomain.Provider) (provider.Def
 
 func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]View, int64, error) {
 	page, pageSize = normalizePage(page, pageSize)
+	egressMode, egressNodeID, egressSourceID, egressValid := parseEgressFilter(filter.Egress)
 	if (filter.Provider != "" && !accountdomain.Provider(filter.Provider).IsValid()) ||
 		!oneOf(filter.QuotaType, "", "free", "paid", "unknown", "auto", "basic", "super", "heavy") ||
 		!oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") ||
-		!oneOf(filter.Egress, "", "bound", "unbound") ||
+		!egressValid ||
 		!oneOf(filter.Renewal, "", "refreshable", "unrefreshable") ||
 		!oneOf(filter.Risk, "", "flagged", "normal") ||
 		(filter.Risk != "" && filter.Provider != string(accountdomain.ProviderBuild)) ||
@@ -445,7 +446,8 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		refreshable = &value
 	}
 	repositoryFilter := repository.AccountListFilter{
-		Provider: filter.Provider, QuotaType: filter.QuotaType, Status: filter.Status, Egress: filter.Egress,
+		Provider: filter.Provider, QuotaType: filter.QuotaType, Status: filter.Status, Egress: egressMode,
+		EgressNodeID: egressNodeID, EgressSourceID: egressSourceID,
 		Refreshable: refreshable, Agreement: filter.Agreement, Association: filter.Association, Now: s.now(),
 	}
 	if filter.Risk != "" {
@@ -538,6 +540,32 @@ func (s *Service) loadBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, 
 func (s *Service) invalidateBuildBotFlagCache() {
 	if s.buildBotFlagCache != nil {
 		s.buildBotFlagCache.Delete(buildBotFlagCacheKey)
+	}
+}
+
+// parseEgressFilter splits the account egress filter into its bound/unbound mode
+// and an optional narrowing target. Accepted values are "", "bound", "unbound",
+// "node:<id>" and "source:<id>"; the last two are "bound" narrowed to one egress
+// node or to every node owned by one subscription source.
+func parseEgressFilter(value string) (mode string, nodeID uint64, sourceID uint64, ok bool) {
+	if oneOf(value, "", "bound", "unbound") {
+		return value, 0, 0, true
+	}
+	prefix, raw, found := strings.Cut(value, ":")
+	if !found {
+		return "", 0, 0, false
+	}
+	id, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || id == 0 {
+		return "", 0, 0, false
+	}
+	switch prefix {
+	case "node":
+		return "bound", id, 0, true
+	case "source":
+		return "bound", 0, id, true
+	default:
+		return "", 0, 0, false
 	}
 }
 
