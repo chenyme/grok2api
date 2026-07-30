@@ -278,7 +278,10 @@ type accountResponse struct {
 	RefreshDueAt               *time.Time              `json:"refreshDueAt,omitempty"`
 	LastRefreshAt              *time.Time              `json:"lastRefreshAt,omitempty"`
 	RefreshFailures            int                     `json:"refreshFailureCount"`
+	LastRefreshErrorStatus     int                     `json:"lastRefreshErrorStatus,omitempty"`
 	LastRefreshError           string                  `json:"lastRefreshErrorCode,omitempty"`
+	LastRefreshErrorMessage    string                  `json:"lastRefreshErrorMessage,omitempty"`
+	LastRefreshErrorResponse   string                  `json:"lastRefreshErrorResponse,omitempty"`
 	Priority                   int                     `json:"priority"`
 	MaxConcurrent              int                     `json:"maxConcurrent"`
 	MinimumRemaining           float64                 `json:"minimumRemaining"`
@@ -438,10 +441,7 @@ func (h *Handler) batchUpdate(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
 		return
 	}
-	if !h.validateProviderIDs(c, ids, request.Provider) {
-		return
-	}
-	updated, err := h.service.BatchUpdate(c.Request.Context(), ids, accountapp.UpdateInput{Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining})
+	updated, err := h.service.BatchUpdate(c.Request.Context(), accountdomain.Provider(request.Provider), ids, accountapp.UpdateInput{Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining})
 	if err != nil {
 		h.writeServiceError(c, "accountBatchUpdateFailed", err, http.StatusInternalServerError, "批量更新账号失败")
 		return
@@ -1284,6 +1284,8 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error, fall
 		response.Error(c, http.StatusBadRequest, "accountExportLimitExceeded", err.Error())
 	case errors.Is(err, accountapp.ErrInvalidInput), errors.Is(err, accountapp.ErrInvalidImport):
 		response.Error(c, http.StatusBadRequest, code, err.Error())
+	case errors.Is(err, accountapp.ErrAccountPoolMismatch):
+		response.Error(c, http.StatusConflict, "accountPoolMismatch", err.Error())
 	case errors.Is(err, accountapp.ErrConflict):
 		response.Error(c, http.StatusConflict, code, err.Error())
 	case errors.Is(err, accountapp.ErrNotFound):
@@ -1416,7 +1418,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		WebTierSyncedAt: c.WebTierSyncedAt, WebNSFWEnabledAt: c.WebNSFWEnabledAt, WebTermsAcceptedAt: c.WebTermsAcceptedAt, Name: c.Name, Email: c.Email, UserID: c.UserID, TeamID: c.TeamID,
 		Enabled: c.Enabled, AuthStatus: string(c.AuthStatus), Refreshable: c.EncryptedRefreshToken != "",
 		RefreshDueAt: c.RefreshDueAt, LastRefreshAt: c.LastRefreshAt,
-		RefreshFailures: c.RefreshFailureCount, LastRefreshError: c.LastRefreshErrorCode,
+		RefreshFailures: c.RefreshFailureCount, LastRefreshErrorStatus: c.LastRefreshErrorStatus, LastRefreshError: c.LastRefreshErrorCode, LastRefreshErrorMessage: c.LastRefreshErrorMessage, LastRefreshErrorResponse: c.LastRefreshErrorResponse,
 		Priority: c.Priority, MaxConcurrent: c.MaxConcurrent, MinimumRemaining: c.MinimumRemaining,
 		FailureCount: c.FailureCount, CooldownUntil: c.CooldownUntil, LastError: c.LastError,
 		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),

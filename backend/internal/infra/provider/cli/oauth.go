@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,12 @@ const (
 	defaultDeviceURL     = "https://auth.x.ai/oauth2/device/code"
 	defaultTokenURL      = "https://auth.x.ai/oauth2/token"
 	deviceClientSurface  = "ui"
+)
+
+var (
+	oauthBearerPattern        = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+`)
+	oauthJWTPattern           = regexp.MustCompile(`[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`)
+	oauthSensitivePairPattern = regexp.MustCompile(`(?i)(access_token|refresh_token|id_token|token|authorization|cookie|secret|password|credential)=([^&\s"'<>]+)`)
 )
 
 type oauthClient struct {
@@ -70,7 +77,7 @@ func (c *oauthClient) refresh(ctx context.Context, refreshToken string) (tokenPa
 	form := url.Values{"grant_type": {"refresh_token"}, "client_id": {c.clientID}, "refresh_token": {refreshToken}}
 	value, err := c.exchange(ctx, form, refreshToken, false)
 	if errors.Is(err, provider.ErrAuthorizationDenied) {
-		return tokenPayload{}, &provider.CredentialRefreshError{Code: "refresh_denied", Permanent: true, Cause: err}
+		return tokenPayload{}, &provider.CredentialRefreshError{Code: "refresh_denied", Message: "OAuth authorization was denied", Permanent: true, Cause: err}
 	}
 	return value, err
 }
@@ -101,40 +108,182 @@ func (c *oauthClient) exchange(ctx context.Context, form url.Values, fallbackRef
 	if err != nil {
 		return tokenPayload{}, err
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		oauthError := parseOAuthErrorResponse(body, resp.StatusCode)
+		switch oauthError.Code {
+		case "authorization_pending":
+			if deviceFlow {
+				return tokenPayload{}, provider.ErrAuthorizationPending
+			}
+		case "slow_down":
+			if deviceFlow {
+				return tokenPayload{}, provider.ErrSlowDown
+			}
+		case "access_denied", "expired_token":
+			if deviceFlow {
+				return tokenPayload{}, provider.ErrAuthorizationDenied
+			}
+		}
+		return tokenPayload{}, &provider.CredentialRefreshError{
+			Status: resp.StatusCode, Code: oauthError.Code, Message: oauthError.Message, Response: oauthError.Response,
+			Permanent:  resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized,
+			RetryAfter: parseOAuthRetryAfter(resp.Header.Get("Retry-After")),
+		}
+	}
 	var value struct {
-		AccessToken      string `json:"access_token"`
-		RefreshToken     string `json:"refresh_token"`
-		ExpiresIn        int    `json:"expires_in"`
-		IDToken          string `json:"id_token"`
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		IDToken      string `json:"id_token"`
 	}
 	if err := json.Unmarshal(body, &value); err != nil {
 		return tokenPayload{}, fmt.Errorf("解析 xAI OAuth 响应: %w", err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		switch value.Error {
-		case "authorization_pending":
-			return tokenPayload{}, provider.ErrAuthorizationPending
-		case "slow_down":
-			return tokenPayload{}, provider.ErrSlowDown
-		case "access_denied", "expired_token":
-			return tokenPayload{}, provider.ErrAuthorizationDenied
-		default:
-			return tokenPayload{}, &provider.CredentialRefreshError{
-				Status: resp.StatusCode, Code: firstNonEmpty(value.Error, "oauth_http_"+strconv.Itoa(resp.StatusCode)),
-				Permanent:  resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized,
-				RetryAfter: parseOAuthRetryAfter(resp.Header.Get("Retry-After")),
-			}
-		}
-	}
 	if value.AccessToken == "" {
-		return tokenPayload{}, &provider.CredentialRefreshError{Status: resp.StatusCode, Code: "missing_access_token", Permanent: true}
+		return tokenPayload{}, &provider.CredentialRefreshError{Status: resp.StatusCode, Code: "missing_access_token", Message: "OAuth response did not contain access_token", Permanent: true}
 	}
 	if value.ExpiresIn <= 0 {
 		value.ExpiresIn = 3600
 	}
 	return tokenPayload{AccessToken: value.AccessToken, RefreshToken: firstNonEmpty(value.RefreshToken, fallbackRefresh), ExpiresAt: time.Now().UTC().Add(time.Duration(value.ExpiresIn) * time.Second), IDToken: value.IDToken}, nil
+}
+
+type oauthErrorDetails struct {
+	Code     string
+	Message  string
+	Response string
+}
+
+func parseOAuthErrorResponse(body []byte, status int) oauthErrorDetails {
+	result := oauthErrorDetails{Code: "oauth_http_" + strconv.Itoa(status)}
+	var payload any
+	if json.Unmarshal(body, &payload) != nil {
+		redacted := redactOAuthDiagnosticText(string(body))
+		result.Message = normalizeOAuthErrorMessage(redacted, 512)
+		result.Response = normalizeOAuthErrorMessage(redacted, 4096)
+		return result
+	}
+
+	result.Code = firstNonEmpty(
+		jsonStringAt(payload, "error"),
+		jsonStringAt(payload, "error", "code"),
+		jsonStringAt(payload, "error_code"),
+		jsonStringAt(payload, "code"),
+		result.Code,
+	)
+	rootMessage, _ := payload.(string)
+	messages := []string{
+		rootMessage,
+		jsonStringAt(payload, "error_description"),
+		jsonStringAt(payload, "message"),
+		jsonStringAt(payload, "detail"),
+		jsonStringAt(payload, "description"),
+		jsonStringAt(payload, "title"),
+		jsonStringAt(payload, "error", "message"),
+		jsonStringAt(payload, "error", "error_description"),
+		jsonStringAt(payload, "error", "detail"),
+		jsonStringAt(payload, "error", "description"),
+	}
+	seen := make(map[string]struct{}, len(messages))
+	for _, message := range messages {
+		message = normalizeOAuthErrorMessage(message, 512)
+		if message == "" {
+			continue
+		}
+		if _, exists := seen[message]; exists {
+			continue
+		}
+		seen[message] = struct{}{}
+		if result.Message != "" {
+			result.Message += " · "
+		}
+		result.Message += message
+	}
+	redacted, err := json.Marshal(redactOAuthDiagnosticValue("", payload))
+	if err == nil {
+		result.Response = truncateOAuthDiagnostic(string(redacted), 4096)
+	}
+	return result
+}
+
+func jsonStringAt(value any, path ...string) string {
+	current := value
+	for _, key := range path {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+		current, ok = object[key]
+		if !ok {
+			return ""
+		}
+	}
+	text, _ := current.(string)
+	return text
+}
+
+func redactOAuthDiagnosticValue(key string, value any) any {
+	if isSensitiveOAuthDiagnosticKey(key) {
+		return "[REDACTED]"
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for childKey, child := range typed {
+			result[childKey] = redactOAuthDiagnosticValue(childKey, child)
+		}
+		return result
+	case []any:
+		result := make([]any, len(typed))
+		for index, child := range typed {
+			result[index] = redactOAuthDiagnosticValue(key, child)
+		}
+		return result
+	case string:
+		return redactOAuthDiagnosticText(typed)
+	default:
+		return value
+	}
+}
+
+func isSensitiveOAuthDiagnosticKey(key string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", "_"), " ", "_"))
+	for _, part := range []string{"token", "authorization", "cookie", "secret", "password", "credential", "assertion", "code_verifier", "device_code"} {
+		if strings.Contains(normalized, part) {
+			return true
+		}
+	}
+	return false
+}
+
+func redactOAuthDiagnosticText(value string) string {
+	value = oauthBearerPattern.ReplaceAllString(value, "Bearer [REDACTED]")
+	value = oauthJWTPattern.ReplaceAllString(value, "[REDACTED]")
+	value = oauthSensitivePairPattern.ReplaceAllString(value, "$1=[REDACTED]")
+	fields := strings.Fields(value)
+	for index := range fields {
+		trimmed := strings.Trim(fields[index], `"'(),;`)
+		if len(trimmed) >= 80 && !strings.ContainsAny(trimmed, "{}[]<>") {
+			fields[index] = strings.Replace(fields[index], trimmed, "[REDACTED]", 1)
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
+func normalizeOAuthErrorMessage(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	return truncateOAuthDiagnostic(value, limit)
+}
+
+func truncateOAuthDiagnostic(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) > limit {
+		if limit <= 1 {
+			return "…"
+		}
+		return string(runes[:limit-1]) + "…"
+	}
+	return value
 }
 
 func parseOAuthRetryAfter(value string) time.Duration {

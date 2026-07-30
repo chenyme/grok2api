@@ -1204,7 +1204,20 @@ func buildDirectFileUploadBody(file provider.ImageInput, fileSource string) ([]b
 }
 
 func browserMultipartFilename(value string) string {
-	return strings.NewReplacer("\\", "\\\\", `"`, `\"`, "\r", "", "\n", "").Replace(value)
+	value = strings.Map(func(character rune) rune {
+		switch {
+		case character == '\r' || character == '\n':
+			return -1
+		case character < 0x20 || character == 0x7f:
+			return '_'
+		default:
+			return character
+		}
+	}, value)
+	if strings.TrimSpace(value) == "" {
+		value = "upload.bin"
+	}
+	return strings.NewReplacer("\\", "\\\\", `"`, `\"`).Replace(value)
 }
 
 func decodeDirectFileUploadResponse(source io.Reader) (uploadedFile, error) {

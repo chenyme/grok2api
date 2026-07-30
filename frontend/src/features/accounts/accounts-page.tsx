@@ -68,6 +68,7 @@ import {
   syncWebAccountsToConsole,
   updateAccount,
   updateAccountsEnabled,
+  updateAccountsMaxConcurrent,
   type AccountDTO,
   type AccountCleanupStatus,
   type AccountProvider,
@@ -133,6 +134,8 @@ export function AccountsPage() {
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selection, setSelection] = useState<AccountSelection>(() => ({ provider: "grok_build", ids: new Set() }));
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [batchConcurrencyOpen, setBatchConcurrencyOpen] = useState(false);
+  const [batchMaxConcurrent, setBatchMaxConcurrent] = useState("1");
   const [batchQuotaTaskOpen, setBatchQuotaTaskOpen] = useState(false);
   const [batchQuotaTask, setBatchQuotaTask] = useState<BuildQuotaTask>("sync");
   const [egressConfigurationOpen, setEgressConfigurationOpen] = useState(false);
@@ -645,6 +648,17 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const batchConcurrencyMutation = useMutation({
+    mutationFn: (maxConcurrent: number) => updateAccountsMaxConcurrent([...selected], maxConcurrent, provider),
+    onSuccess: () => {
+      setBatchConcurrencyOpen(false);
+      clearSelection();
+      invalidateAccountData();
+      toast.success(t("accounts.batchConcurrencyUpdated"));
+    },
+    onError: showError,
+  });
+
   const batchBillingMutation = useMutation({
     mutationFn: () => refreshAccountsQuota([...selected], provider),
     onSuccess: (result) => {
@@ -1024,6 +1038,7 @@ export function AccountsPage() {
     || webConsoleSyncMutation.isPending
     || importMutation.isPending
     || batchUpdateMutation.isPending
+    || batchConcurrencyMutation.isPending
     || batchBillingMutation.isPending
     || batchQuotaResetMutation.isPending
     || batchTokenMutation.isPending
@@ -1172,6 +1187,10 @@ export function AccountsPage() {
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={openSelectedExport}><Download />{t("accounts.exportAuth")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
+                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
+                  setBatchMaxConcurrent("1");
+                  setBatchConcurrencyOpen(true);
+                }}>{t("accounts.batchSetConcurrency")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
                   setEgressNodeID("");
                   setEgressConfigurationTask("bind");
@@ -1613,6 +1632,42 @@ export function AccountsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
+      <Dialog open={batchConcurrencyOpen} onOpenChange={(open) => {
+        if (!open && batchConcurrencyMutation.isPending) return;
+        setBatchConcurrencyOpen(open);
+      }}>
+        <DialogContent className="sm:max-w-[460px]">
+          <DialogHeader>
+            <DialogTitle>{t("accounts.batchConcurrencyTitle", { count: selected.size })}</DialogTitle>
+            <DialogDescription>{t("accounts.batchConcurrencyDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="batch-account-concurrency">{t("accounts.maxConcurrent")}</Label>
+            <Input
+              id="batch-account-concurrency"
+              type="number"
+              min="1"
+              max="256"
+              value={batchMaxConcurrent}
+              disabled={batchConcurrencyMutation.isPending}
+              onChange={(event) => setBatchMaxConcurrent(event.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="secondary" size="sm" disabled={batchConcurrencyMutation.isPending} onClick={() => setBatchConcurrencyOpen(false)}>{t("common.cancel")}</Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={batchConcurrencyMutation.isPending || !Number.isInteger(Number(batchMaxConcurrent)) || Number(batchMaxConcurrent) < 1 || Number(batchMaxConcurrent) > 256}
+              onClick={() => batchConcurrencyMutation.mutate(Number(batchMaxConcurrent))}
+            >
+              {batchConcurrencyMutation.isPending ? <Spinner /> : null}
+              {t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog open={batchDeleteOpen} onOpenChange={(open) => {
         if (!open && batchDeleteMutation.isPending) return;
         setBatchDeleteOpen(open);
@@ -1948,7 +2003,21 @@ function AccountStatus({ account }: { account: AccountDTO }) {
     return <Badge variant="outline" className="text-muted-foreground">{t("accounts.statusDisabled")}</Badge>;
   }
   if (account.authStatus === "reauthRequired") {
-    return <Badge variant="destructive">{t("accounts.statusReauthRequired")}</Badge>;
+    const refreshErrorDetails = formatAdditionalRefreshErrorDetails(account);
+    const hasRefreshError = Boolean(account.lastRefreshErrorStatus || account.lastRefreshErrorCode || account.lastRefreshErrorMessage || refreshErrorDetails);
+    if (!hasRefreshError) return <Badge variant="destructive">{t("accounts.statusReauthRequired")}</Badge>;
+    return (
+      <StatusTooltip content={(
+        <div className="grid w-72 max-w-[calc(100vw-2rem)] grid-cols-[4.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs font-normal leading-5">
+          {account.lastRefreshErrorStatus ? <><span className="text-primary-foreground/60">{t("accounts.refreshErrorStatus")}</span><span>{account.lastRefreshErrorStatus}</span></> : null}
+          {account.lastRefreshErrorCode ? <><span className="text-primary-foreground/60">{t("accounts.refreshErrorCode")}</span><span className="break-all">{account.lastRefreshErrorCode}</span></> : null}
+          {account.lastRefreshErrorMessage ? <><span className="text-primary-foreground/60">{t("accounts.refreshErrorMessage")}</span><span className="break-words">{account.lastRefreshErrorMessage}</span></> : null}
+          {refreshErrorDetails ? <><span className="text-primary-foreground/60">{t("accounts.refreshErrorResponse")}</span><span className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{refreshErrorDetails}</span></> : null}
+        </div>
+      )}>
+        <Badge variant="destructive">{t("accounts.statusReauthRequired")}</Badge>
+      </StatusTooltip>
+    );
   }
   const consoleWindow = account.provider === "grok_console"
     ? account.quotaWindows?.find((window) => window.mode === "console" && window.remaining <= 0)
@@ -1986,13 +2055,41 @@ function AccountStatus({ account }: { account: AccountDTO }) {
   return <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("accounts.statusActive")}</Badge>;
 }
 
-function StatusTooltip({ children, content }: { children: ReactNode; content: string }) {
+function formatAdditionalRefreshErrorDetails(account: AccountDTO): string | undefined {
+  const response = account.lastRefreshErrorResponse?.trim();
+  if (!response) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(response);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return response;
+    const details = { ...(parsed as Record<string, unknown>) };
+    const messages = new Set((account.lastRefreshErrorMessage ?? "").split(" · ").map((value) => value.trim()).filter(Boolean));
+    if (typeof details.error === "string" && details.error === account.lastRefreshErrorCode) delete details.error;
+    for (const key of ["error_description", "message", "detail", "description", "title"]) {
+      if (typeof details[key] === "string" && messages.has(details[key])) delete details[key];
+    }
+    if (details.error && typeof details.error === "object" && !Array.isArray(details.error)) {
+      const nested = { ...(details.error as Record<string, unknown>) };
+      if (typeof nested.code === "string" && nested.code === account.lastRefreshErrorCode) delete nested.code;
+      for (const key of ["error_description", "message", "detail", "description"]) {
+        if (typeof nested[key] === "string" && messages.has(nested[key])) delete nested[key];
+      }
+      if (Object.keys(nested).length === 0) delete details.error;
+      else details.error = nested;
+    }
+    if (Object.keys(details).length === 0) return undefined;
+    return JSON.stringify(details, null, 2);
+  } catch {
+    return response;
+  }
+}
+
+function StatusTooltip({ children, content }: { children: ReactNode; content: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span tabIndex={0} className="inline-flex cursor-help">{children}</span>
       </TooltipTrigger>
-      <TooltipContent className="max-w-72">{content}</TooltipContent>
+      <TooltipContent className="w-max max-w-sm">{content}</TooltipContent>
     </Tooltip>
   );
 }

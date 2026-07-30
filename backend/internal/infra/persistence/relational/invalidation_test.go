@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -78,6 +79,61 @@ func TestRoutingMutationsNotifyAfterCommit(t *testing.T) {
 	}
 	if len(events) != before {
 		t.Fatalf("failed transaction emitted invalidation: %#v", events[before:])
+	}
+}
+
+func TestClientKeyMutationsNotifyAfterCommit(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "client-key-invalidation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	keys := NewClientKeyRepository(database)
+	created, err := keys.Create(ctx, clientkeydomain.Key{
+		Name: "scoped", Prefix: "scoped", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken,
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4, ProviderScope: clientkeydomain.ProviderScopeBuild, TierScope: clientkeydomain.TierScopeFree,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []repository.InvalidationEvent
+	keys.SetInvalidationObserver(func(_ context.Context, event repository.InvalidationEvent) {
+		events = append(events, event)
+	})
+
+	created.ProviderScope = clientkeydomain.ProviderScopeWeb
+	created.TierScope = clientkeydomain.TierScopeSuper
+	if _, err := keys.Update(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Kind != repository.InvalidationClientKeyChanged || events[0].ClientKeyID != created.ID || !events[0].Valid() {
+		t.Fatalf("client-key update events = %#v", events)
+	}
+
+	missing := created
+	missing.ID = created.ID + 999
+	if _, err := keys.Update(ctx, missing); err == nil {
+		t.Fatal("missing client-key update should fail")
+	}
+	if len(events) != 1 {
+		t.Fatalf("failed update emitted invalidation: %#v", events[1:])
+	}
+
+	if _, err := keys.UpdateManyEnabled(ctx, []uint64{created.ID}, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[1].ClientKeyID != 0 || !events[1].Valid() {
+		t.Fatalf("client-key batch events = %#v", events)
+	}
+	if err := keys.Delete(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 || events[2].ClientKeyID != created.ID || !events[2].Valid() {
+		t.Fatalf("client-key delete events = %#v", events)
 	}
 }
 

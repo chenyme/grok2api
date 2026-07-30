@@ -87,7 +87,10 @@ export type AccountDTO = {
   refreshDueAt?: string;
   lastRefreshAt?: string;
   refreshFailureCount: number;
+  lastRefreshErrorStatus?: number;
   lastRefreshErrorCode?: string;
+  lastRefreshErrorMessage?: string;
+  lastRefreshErrorResponse?: string;
   priority: number;
   maxConcurrent: number;
   minimumRemaining: number;
@@ -183,7 +186,7 @@ const accountValidator = hasShape({
   enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean, cloudflareCookieConfigured: isBoolean,
   buildSuperEntitled: isBoolean, buildRouteMode: isOneOf("auto", "build", "xai"), buildBotFlagged: isBoolean, modelSyncFailed: isOptional(isBoolean), refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   egressNodeId: isOptional(isString), egressAssignmentMode: isOptional(isOneOf("manual", "auto")),
-  lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
+  lastRefreshErrorStatus: isOptional(isNumber), lastRefreshErrorCode: isOptional(isString), lastRefreshErrorMessage: isOptional(isString), lastRefreshErrorResponse: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")), linkedAccounts: isOptional(isArrayOf(linkedAccountValidator)),
   createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
@@ -539,6 +542,10 @@ export function exportSelectedAccounts(provider: AccountProvider, ids: string[])
 
 export function updateAccountsEnabled(ids: string[], enabled: boolean, provider: AccountProvider): Promise<{ updated: number }> {
   return apiRequest("/api/admin/v1/accounts/batch", { method: "PATCH", body: { ids, enabled, provider } }, decodeCountResult<{ updated: number }>("updated"));
+}
+
+export function updateAccountsMaxConcurrent(ids: string[], maxConcurrent: number, provider: AccountProvider): Promise<{ updated: number }> {
+  return apiRequest("/api/admin/v1/accounts/batch", { method: "PATCH", body: { ids, maxConcurrent, provider } }, decodeCountResult<{ updated: number }>("updated"));
 }
 
 export function refreshAccountsQuota(ids: string[], provider: AccountProvider): Promise<{ succeeded: number; failed: number }> {

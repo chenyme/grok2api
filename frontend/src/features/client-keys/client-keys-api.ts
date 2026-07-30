@@ -1,5 +1,5 @@
 import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
-import { createObjectDecoder, createPaginatedDecoder, decodeBooleanResult, decodeCountResult, hasShape, isArrayOf, isBoolean, isNumber, isOptional, isString } from "@/shared/api/decoder";
+import { createObjectDecoder, createPaginatedDecoder, decodeBooleanResult, decodeCountResult, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isString } from "@/shared/api/decoder";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type ClientKeyDTO = {
@@ -14,6 +14,8 @@ export type ClientKeyDTO = {
   billedUsageUsdTicks: number;
   allowModelAliases: boolean;
   allowedModelIds: string[];
+  providerScope?: ProviderScopeValue[];
+  tierScope?: TierScopeValue[];
   lastUsedAt?: string;
 };
 
@@ -26,19 +28,24 @@ export type ClientKeyInput = {
   billingLimitUsdTicks: number;
   allowModelAliases: boolean;
   allowedModelIds: string[];
+  providerScope: ProviderScopeValue[];
+  tierScope: TierScopeValue[];
 };
+
+export type ProviderScopeValue = "all" | "grok_build" | "grok_web" | "grok_console";
+export type TierScopeValue = "all" | "free" | "super";
 
 export type CreateKeyResponseDTO = { key: ClientKeyDTO; secret: string };
 
 const clientKeyValidator = hasShape({
   id: isString, name: isString, prefix: isString, enabled: isBoolean, expiresAt: isOptional(isString),
   rpmLimit: isNumber, maxConcurrent: isNumber, billingLimitUsdTicks: isNumber, billedUsageUsdTicks: isNumber,
-  allowModelAliases: isBoolean, allowedModelIds: isArrayOf(isString), lastUsedAt: isOptional(isString),
+  allowModelAliases: isBoolean, allowedModelIds: isArrayOf(isString), providerScope: isOptional(isArrayOf(isOneOf("all", "grok_build", "grok_web", "grok_console"))), tierScope: isOptional(isArrayOf(isOneOf("all", "free", "super"))), lastUsedAt: isOptional(isString),
 });
 const decodeClientKey = createObjectDecoder<ClientKeyDTO>("client key", {
   id: isString, name: isString, prefix: isString, enabled: isBoolean, expiresAt: isOptional(isString),
   rpmLimit: isNumber, maxConcurrent: isNumber, billingLimitUsdTicks: isNumber, billedUsageUsdTicks: isNumber,
-  allowModelAliases: isBoolean, allowedModelIds: isArrayOf(isString), lastUsedAt: isOptional(isString),
+  allowModelAliases: isBoolean, allowedModelIds: isArrayOf(isString), providerScope: isOptional(isArrayOf(isOneOf("all", "grok_build", "grok_web", "grok_console"))), tierScope: isOptional(isArrayOf(isOneOf("all", "free", "super"))), lastUsedAt: isOptional(isString),
 });
 const decodeClientKeyPage = createPaginatedDecoder<ClientKeyDTO>(clientKeyValidator);
 const decodeCreatedClientKey = createObjectDecoder<CreateKeyResponseDTO>("created client key", { key: clientKeyValidator, secret: isString });

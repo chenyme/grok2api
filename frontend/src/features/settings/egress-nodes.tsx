@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -19,7 +19,7 @@ import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHea
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EgressAutomation, EgressSources } from "@/features/settings/egress-operations";
-import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, updateEgressNodesEnabled, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -101,6 +101,15 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       setBatchDeleteOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("settings.egress.batchDeleted", value));
+    },
+    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+  });
+  const updateManyEnabled = useMutation({
+    mutationFn: (enabled: boolean) => updateEgressNodesEnabled([...selected.keys()], enabled),
+    onSuccess: (value, enabled) => {
+      setSelected(new Map());
+      void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+      toast.success(t(enabled ? "settings.egress.batchEnabled" : "settings.egress.batchDisabled", value));
     },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
@@ -199,6 +208,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   const selectedNodes = [...selected.values()];
   const selectedAssignedAccounts = selectedNodes.reduce((total, node) => total + node.assignedAccountCount, 0);
   const selectedSourceNodes = selectedNodes.filter((node) => node.sourceId).length;
+  const batchPending = removeMany.isPending || updateManyEnabled.isPending;
   const hasActiveFilters = Boolean(debouncedSearch || scopeFilter || enabledFilter || probeFilter || assignmentFilter);
 
   return (
@@ -243,7 +253,9 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                 {selected.size > 0 ? (
                   <>
                     <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
-                    <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
+                    <Button type="button" size="sm" variant="secondary" disabled={batchPending || selectedNodes.every((node) => node.enabled)} onClick={() => updateManyEnabled.mutate(true)}><Power />{t("common.enable")}</Button>
+                    <Button type="button" size="sm" variant="secondary" disabled={batchPending || selectedNodes.every((node) => !node.enabled)} onClick={() => updateManyEnabled.mutate(false)}><PowerOff />{t("common.disable")}</Button>
+                    <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={batchPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
                   </>
                 ) : null}
                 <Button type="button" size="sm" variant="secondary" disabled={cleanupUnhealthy.isPending} onClick={openCleanup}><Trash2 />{t("settings.egress.cleanupUnavailable")}</Button>

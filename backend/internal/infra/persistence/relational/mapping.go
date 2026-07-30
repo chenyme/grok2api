@@ -26,7 +26,10 @@ func toAccountDomain(value accountModel) account.Credential {
 	var expiresAt time.Time
 	var refreshDueAt, lastRefreshAt *time.Time
 	var refreshFailures int
+	var lastRefreshErrorStatus int
 	var lastRefreshError string
+	var lastRefreshErrorMessage string
+	var lastRefreshErrorResponse string
 	var refreshPermanent bool
 	var authType account.AuthType
 	var clientID, encryptedPrimary, encryptedRefresh, encryptedCloudflareCookie string
@@ -44,7 +47,10 @@ func toAccountDomain(value accountModel) account.Credential {
 		refreshDueAt = value.Credential.RefreshDueAt
 		lastRefreshAt = value.Credential.LastRefreshAt
 		refreshFailures = value.Credential.RefreshFailures
+		lastRefreshErrorStatus = value.Credential.LastRefreshErrorStatus
 		lastRefreshError = value.Credential.LastRefreshError
+		lastRefreshErrorMessage = value.Credential.LastRefreshErrorMessage
+		lastRefreshErrorResponse = value.Credential.LastRefreshErrorResponse
 		refreshPermanent = value.Credential.RefreshPermanent
 	}
 	var webTier account.WebTier
@@ -74,7 +80,7 @@ func toAccountDomain(value accountModel) account.Credential {
 		UserID: value.UserID, TeamID: value.TeamID, SourceKey: value.SourceKey, OIDCClientID: clientID,
 		EncryptedAccessToken: encryptedPrimary, EncryptedRefreshToken: encryptedRefresh, EncryptedCloudflareCookie: encryptedCloudflareCookie,
 		ExpiresAt: expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: lastRefreshAt,
-		RefreshFailureCount: refreshFailures, LastRefreshErrorCode: lastRefreshError, RefreshPermanent: refreshPermanent,
+		RefreshFailureCount: refreshFailures, LastRefreshErrorStatus: lastRefreshErrorStatus, LastRefreshErrorCode: lastRefreshError, LastRefreshErrorMessage: lastRefreshErrorMessage, LastRefreshErrorResponse: lastRefreshErrorResponse, RefreshPermanent: refreshPermanent,
 		Enabled: value.Enabled, AuthStatus: account.AuthStatus(value.AuthStatus), ReauthMarkedAt: value.ReauthMarkedAt, Priority: value.Priority,
 		MaxConcurrent: value.MaxConcurrent, MinimumRemaining: value.MinimumRemaining, FailureCount: value.FailureCount,
 		CooldownUntil: value.CooldownUntil, LastError: value.LastError, LastUsedAt: value.LastUsedAt,
@@ -97,7 +103,7 @@ func toCredentialMaterialDomain(value accountCredentialModel, provider account.P
 		EncryptedAccessToken: value.EncryptedPrimary, EncryptedRefreshToken: value.EncryptedRefresh,
 		EncryptedCloudflareCookie: value.EncryptedCloudflareCookie, ExpiresAt: expiresAt,
 		RefreshDueAt: value.RefreshDueAt, LastRefreshAt: value.LastRefreshAt,
-		RefreshFailureCount: value.RefreshFailures, LastRefreshErrorCode: value.LastRefreshError,
+		RefreshFailureCount: value.RefreshFailures, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshErrorCode: value.LastRefreshError, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse,
 		RefreshPermanent: value.RefreshPermanent, UpdatedAt: value.UpdatedAt,
 	}
 }
@@ -162,7 +168,7 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 		EncryptedPrimary: value.EncryptedAccessToken, EncryptedRefresh: value.EncryptedRefreshToken,
 		EncryptedCloudflareCookie: value.EncryptedCloudflareCookie,
 		ExpiresAt:                 expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: value.LastRefreshAt,
-		RefreshFailures: value.RefreshFailureCount, LastRefreshError: value.LastRefreshErrorCode, RefreshPermanent: value.RefreshPermanent,
+		RefreshFailures: value.RefreshFailureCount, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshError: value.LastRefreshErrorCode, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse, RefreshPermanent: value.RefreshPermanent,
 		UpdatedAt: time.Now().UTC(),
 	}
 }
@@ -210,11 +216,15 @@ func toModelDomain(value modelRouteModel) model.Route {
 }
 
 func toClientKeyDomain(value clientKeyModel, allowedModels []uint64) clientkey.Key {
+	providerScope, _ := clientkey.NormalizeProviderScope(clientkey.ProviderScope(value.ProviderScopeMask))
+	tierScope, _ := clientkey.NormalizeTierScope(clientkey.TierScope(value.TierScopeMask))
 	return clientkey.Key{
 		ID: value.ID, Name: value.Name, Prefix: value.Prefix, SecretHash: value.SecretHash, EncryptedSecret: value.EncryptedSecret,
 		Enabled: value.Enabled, ExpiresAt: value.ExpiresAt, RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent,
 		BillingLimitUSDTicks: value.BillingLimitUSDTicks, BilledUsageUSDTicks: value.BilledUsageUSDTicks, ReservedUsageUSDTicks: value.ReservedUsageUSDTicks,
-		AllowModelAliases: value.AllowModelAliases, AllowedModels: allowedModels, LastUsedAt: value.LastUsedAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		AllowModelAliases: value.AllowModelAliases, AllowedModels: allowedModels,
+		ProviderScope: providerScope, TierScope: tierScope,
+		LastUsedAt: value.LastUsedAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 

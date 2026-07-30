@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/pkg/resultcache"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"golang.org/x/sync/singleflight"
@@ -109,24 +110,47 @@ const (
 type SelectionUnavailableError struct {
 	Reason     SelectionUnavailableReason
 	RetryAfter time.Duration
+	Scope      clientkeydomain.AccountScope
 }
 
 func (e *SelectionUnavailableError) Error() string {
 	if e == nil {
 		return "没有可用上游账号"
 	}
+	prefix := ""
+	if e.Scope.IsRestricted() {
+		prefix = "Client Key 限定范围"
+	}
 	switch e.Reason {
 	case SelectionUnsupportedModel:
+		if prefix != "" {
+			return prefix + "不支持该模型"
+		}
 		return "当前账号池不支持该模型"
 	case SelectionCooling:
+		if prefix != "" {
+			return prefix + "中的可用账号正在冷却"
+		}
 		return "可用上游账号正在冷却"
 	case SelectionModelCooling:
+		if prefix != "" {
+			return prefix + "中可用账号的目标模型正在冷却"
+		}
 		return "可用上游账号的目标模型正在冷却"
 	case SelectionQuotaExhausted:
+		if prefix != "" {
+			return prefix + "中的可用账号额度等待恢复"
+		}
 		return "可用上游账号额度等待恢复"
 	case SelectionSaturated:
+		if prefix != "" {
+			return prefix + "中的可用账号均达到并发上限"
+		}
 		return "可用上游账号均达到并发上限"
 	default:
+		if prefix != "" {
+			return prefix + "当前没有可用上游账号"
+		}
 		return "没有可用上游账号"
 	}
 }
@@ -156,6 +180,10 @@ func (e *SelectionUnavailableError) Code() string {
 			return "upstream_saturated"
 		case SelectionUnsupportedModel:
 			return "upstream_model_unavailable"
+		case SelectionNoAccounts:
+			if e.Scope.IsRestricted() {
+				return "client_key_account_scope_unavailable"
+			}
 		}
 	}
 	return "upstream_unavailable"
@@ -270,6 +298,19 @@ func (s *Selector) preferFreeBuildEnabled() bool {
 }
 
 func (s *Selector) Acquire(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*accountLease, error) {
+	return s.acquire(ctx, provider, modelRouteID, upstreamModel, quotaMode, affinityKey, excluded, allowQuotaProbe, clientkeydomain.AccountScope{})
+}
+
+func (s *Selector) AcquireForKey(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool, scope clientkeydomain.AccountScope) (*accountLease, error) {
+	return s.acquire(ctx, provider, modelRouteID, upstreamModel, quotaMode, affinityKey, excluded, allowQuotaProbe, scope)
+}
+
+func (s *Selector) acquire(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool, requestedScope clientkeydomain.AccountScope) (lease *accountLease, err error) {
+	accountScope, scopeValid := clientkeydomain.NormalizeAccountScope(requestedScope)
+	defer annotateSelectionAccountScope(&err, accountScope)
+	if !scopeValid || !accountScope.AllowsProvider(provider) {
+		return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts, Scope: accountScope}
+	}
 	now := time.Now().UTC()
 	stickyKey := stickySessionKey(affinityKey)
 	values, err := s.loadCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now)
@@ -287,6 +328,9 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, model
 	var earliestRetry time.Time
 	for index, candidate := range values {
 		value := candidate.Credential
+		if !accountScopeAllowsCandidate(provider, accountScope, candidate) {
+			continue
+		}
 		if excluded[value.ID] || value.AuthStatus != account.AuthStatusActive {
 			continue
 		}
@@ -552,6 +596,19 @@ func isSelectionUnavailable(err error, reason SelectionUnavailableReason) bool {
 
 // AcquirePinned 为 previous_response_id 等账号归属请求获取指定账号租约。
 func (s *Selector) AcquirePinned(ctx context.Context, provider account.Provider, accountID, modelRouteID uint64, upstreamModel, quotaMode string, inference bool) (*accountLease, error) {
+	return s.acquirePinned(ctx, provider, accountID, modelRouteID, upstreamModel, quotaMode, inference, clientkeydomain.AccountScope{})
+}
+
+func (s *Selector) AcquirePinnedForKey(ctx context.Context, provider account.Provider, accountID, modelRouteID uint64, upstreamModel, quotaMode string, inference bool, scope clientkeydomain.AccountScope) (*accountLease, error) {
+	return s.acquirePinned(ctx, provider, accountID, modelRouteID, upstreamModel, quotaMode, inference, scope)
+}
+
+func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider, accountID, modelRouteID uint64, upstreamModel, quotaMode string, inference bool, requestedScope clientkeydomain.AccountScope) (lease *accountLease, err error) {
+	accountScope, scopeValid := clientkeydomain.NormalizeAccountScope(requestedScope)
+	defer annotateSelectionAccountScope(&err, accountScope)
+	if !scopeValid || !accountScope.AllowsProvider(provider) {
+		return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts, Scope: accountScope}
+	}
 	now := time.Now().UTC()
 	values, err := s.loadCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now)
 	if err != nil {
@@ -561,6 +618,9 @@ func (s *Selector) AcquirePinned(ctx context.Context, provider account.Provider,
 		value := candidate.Credential
 		if value.ID != accountID {
 			continue
+		}
+		if !accountScopeAllowsCandidate(provider, accountScope, candidate) {
+			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
 		}
 		if !value.Enabled || value.AuthStatus != account.AuthStatusActive {
 			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
@@ -626,6 +686,46 @@ func (s *Selector) AcquirePinned(ctx context.Context, provider account.Provider,
 		return lease, nil
 	}
 	return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+}
+
+func accountScopeAllowsCandidate(provider account.Provider, scope clientkeydomain.AccountScope, candidate account.RoutingCandidate) bool {
+	if provider == account.ProviderConsole {
+		return true
+	}
+	tier := clientkeydomain.AccountTierUnknown
+	switch provider {
+	case account.ProviderBuild:
+		if candidate.IsKnownFreeBuild() {
+			tier = clientkeydomain.AccountTierFree
+		} else if account.IsBuildSuper(candidate.Credential, candidate.Billing) {
+			tier = clientkeydomain.AccountTierSuper
+		}
+	case account.ProviderWeb:
+		switch candidate.Credential.WebTier {
+		case account.WebTierBasic:
+			tier = clientkeydomain.AccountTierFree
+		case account.WebTierSuper, account.WebTierHeavy:
+			tier = clientkeydomain.AccountTierSuper
+		}
+	}
+	switch tier {
+	case clientkeydomain.AccountTierFree:
+		return scope.Tiers&clientkeydomain.TierScopeFree != 0
+	case clientkeydomain.AccountTierSuper:
+		return scope.Tiers&clientkeydomain.TierScopeSuper != 0
+	default:
+		return scope.Tiers&clientkeydomain.TierScopeUnknown != 0
+	}
+}
+
+func annotateSelectionAccountScope(err *error, scope clientkeydomain.AccountScope) {
+	if err == nil || *err == nil || !scope.IsRestricted() {
+		return
+	}
+	var unavailable *SelectionUnavailableError
+	if errors.As(*err, &unavailable) {
+		unavailable.Scope = scope
+	}
 }
 
 func effectiveQuotaMode(candidate account.RoutingCandidate, fallback string) string {
@@ -1031,6 +1131,10 @@ func (s *Selector) ApplyInvalidation(event repository.InvalidationEvent) {
 	if !event.Valid() {
 		return
 	}
+	layer := event.Layer()
+	if layer != repository.InvalidationLayerRoute && layer != repository.InvalidationLayerBase && layer != repository.InvalidationLayerOverlay {
+		return
+	}
 	s.candidateMu.Lock()
 	provider := event.Provider
 	if provider == "" && event.AccountID != 0 {
@@ -1044,8 +1148,8 @@ func (s *Selector) ApplyInvalidation(event repository.InvalidationEvent) {
 			}
 		}
 	}
-	base := event.Layer() == repository.InvalidationLayerBase
-	overlay := event.Layer() == repository.InvalidationLayerOverlay || event.Layer() == repository.InvalidationLayerRoute
+	base := layer == repository.InvalidationLayerBase
+	overlay := layer == repository.InvalidationLayerOverlay || layer == repository.InvalidationLayerRoute
 	if base {
 		if provider == "" {
 			s.baseGlobalVersion++

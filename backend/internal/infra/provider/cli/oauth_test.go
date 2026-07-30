@@ -85,9 +85,12 @@ func TestOAuthRefreshClassifiesPermanentAndTransientFailures(t *testing.T) {
 		retryAfter string
 		permanent  bool
 		code       string
+		message    string
+		response   string
 	}{
 		{name: "transient upstream", status: http.StatusServiceUnavailable, body: `{"error":"temporarily_unavailable"}`, retryAfter: "7", code: "temporarily_unavailable"},
-		{name: "invalid grant", status: http.StatusBadRequest, body: `{"error":"invalid_grant"}`, permanent: true, code: "invalid_grant"},
+		{name: "invalid grant", status: http.StatusBadRequest, body: `{"error":"invalid_grant","error_description":"Refresh token has expired","message":"Access denied","request_id":"req-123","refresh_token":"must-not-leak"}`, permanent: true, code: "invalid_grant", message: "Refresh token has expired · Access denied", response: `"refresh_token":"[REDACTED]"`},
+		{name: "nested error", status: http.StatusBadRequest, body: `{"error":{"code":"invalid_client","message":"Client rejected","detail":"Application disabled"}}`, permanent: true, code: "invalid_client", message: "Client rejected · Application disabled", response: `"detail":"Application disabled"`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -108,8 +111,14 @@ func TestOAuthRefreshClassifiesPermanentAndTransientFailures(t *testing.T) {
 			client.tokenURL = "https://auth.x.ai/oauth2/token"
 			_, err := client.refresh(context.Background(), "refresh")
 			var refreshErr *provider.CredentialRefreshError
-			if !errors.As(err, &refreshErr) || refreshErr.Permanent != test.permanent || refreshErr.Code != test.code {
+			if !errors.As(err, &refreshErr) || refreshErr.Status != test.status || refreshErr.Permanent != test.permanent || refreshErr.Code != test.code || refreshErr.Message != test.message {
 				t.Fatalf("error = %#v", err)
+			}
+			if test.response != "" && !strings.Contains(refreshErr.Response, test.response) {
+				t.Fatalf("response = %q, want substring %q", refreshErr.Response, test.response)
+			}
+			if strings.Contains(refreshErr.Response, "must-not-leak") {
+				t.Fatalf("response leaked refresh token: %q", refreshErr.Response)
 			}
 			if test.retryAfter != "" && refreshErr.RetryAfter != 7*time.Second {
 				t.Fatalf("retry after = %s", refreshErr.RetryAfter)

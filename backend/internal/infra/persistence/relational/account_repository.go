@@ -38,6 +38,7 @@ type quotaBreakdownJSON struct {
 }
 
 const (
+	accountUpdateBatchSize      = 500
 	accountPaidPlanSignal       = `(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_code), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('super', 'supergrok', 'supergrokpro', 'supergrokheavy', 'supergroklite', 'grokpro', 'xpremium', 'xpremiumplus', 'apikey') OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_name), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('super', 'supergrok', 'supergrokpro', 'supergrokheavy', 'supergroklite', 'grokpro', 'xpremium', 'xpremiumplus', 'apikey'))`
 	accountFreePlanSignal       = `(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_code), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('free', 'grokfree', 'freetier', 'basic', 'grokbasic', 'xbasic') OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(billing.plan_name), ' ', ''), '_', ''), '-', ''), '+', 'plus')) IN ('free', 'grokfree', 'freetier', 'basic', 'grokbasic', 'xbasic'))`
 	accountPaidBillingSignals   = `(` + accountPaidPlanSignal + ` OR billing.monthly_limit > 0 OR billing.on_demand_cap > 0 OR billing.on_demand_used > 0 OR billing.prepaid_balance > 0)`
@@ -544,6 +545,21 @@ func (r *AccountRepository) ListEnabledAccountIDs(ctx context.Context, provider 
 	}
 	var ids []uint64
 	err := query.Order("account.priority DESC, account.id ASC").Scan(&ids).Error
+	return ids, err
+}
+
+func (r *AccountRepository) ListEnabledCredentialRefreshAccountIDs(ctx context.Context, provider account.Provider, refreshableOnly bool) ([]uint64, error) {
+	query := r.db.db.WithContext(ctx).
+		Table("provider_accounts AS account").
+		Select("account.id").
+		Where("account.provider = ? AND account.enabled = ? AND account.auth_status IN ?", provider, true, []account.AuthStatus{account.AuthStatusActive, account.AuthStatusReauthRequired})
+	if refreshableOnly {
+		query = query.
+			Joins("JOIN account_credentials AS credential ON credential.account_id = account.id").
+			Where("credential.encrypted_refresh <> ''")
+	}
+	var ids []uint64
+	err := query.Order("account.id ASC").Scan(&ids).Error
 	return ids, err
 }
 
@@ -1255,7 +1271,7 @@ func (r *AccountRepository) markWebProfileTimestamp(ctx context.Context, id uint
 	}))
 }
 
-func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, updates repository.AccountUpdates) (int64, error) {
+func (r *AccountRepository) UpdateMany(ctx context.Context, providerValue account.Provider, ids []uint64, updates repository.AccountUpdates) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
@@ -1275,11 +1291,40 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, ids []uint64, update
 	if len(values) == 0 {
 		return 0, nil
 	}
-	result := r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id IN ?", ids).Updates(values)
-	if result.Error == nil && result.RowsAffected > 0 {
+	var updated int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for start := 0; start < len(ids); start += accountUpdateBatchSize {
+			end := min(start+accountUpdateBatchSize, len(ids))
+			var rows []accountModel
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "provider").Where("id IN ?", ids[start:end]).Order("id ASC").Find(&rows).Error; err != nil {
+				return err
+			}
+			if len(rows) != end-start {
+				return repository.ErrAccountPoolMismatch
+			}
+			for _, row := range rows {
+				if account.Provider(row.Provider) != providerValue {
+					return repository.ErrAccountPoolMismatch
+				}
+			}
+		}
+		for start := 0; start < len(ids); start += accountUpdateBatchSize {
+			end := min(start+accountUpdateBatchSize, len(ids))
+			result := tx.Model(&accountModel{}).Where("provider = ? AND id IN ?", providerValue, ids[start:end]).Updates(values)
+			if result.Error != nil {
+				return result.Error
+			}
+			updated += result.RowsAffected
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if updated > 0 {
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged})
 	}
-	return result.RowsAffected, result.Error
+	return updated, nil
 }
 
 // UpdateEgressBindings assigns one egress node to multiple accounts of one
@@ -1625,7 +1670,7 @@ func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessT
 	refreshDueAt := account.CredentialRefreshDueAt(id, expiresAt)
 	updates := map[string]any{
 		"encrypted_primary": accessToken, "expires_at": expiresAt, "refresh_due_at": refreshDueAt,
-		"last_refresh_at": now, "refresh_failures": 0, "last_refresh_error": "", "refresh_permanent": false, "updated_at": now,
+		"last_refresh_at": now, "refresh_failures": 0, "last_refresh_error_status": 0, "last_refresh_error": "", "last_refresh_error_message": "", "last_refresh_error_response": "", "refresh_permanent": false, "updated_at": now,
 	}
 	if refreshToken != "" {
 		updates["encrypted_refresh"] = refreshToken
@@ -1734,12 +1779,14 @@ func (r *AccountRepository) NextCredentialRefreshDueAt(ctx context.Context) (*ti
 	return &value, nil
 }
 
-func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failureCount int, retryAt time.Time, errorCode string, permanent bool) error {
+func (r *AccountRepository) UpdateCredentialRefreshFailure(ctx context.Context, id uint64, failure repository.CredentialRefreshFailure) error {
 	err := r.db.db.WithContext(ctx).Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(map[string]any{
-		"refresh_due_at": retryAt.UTC(), "refresh_failures": max(0, failureCount),
-		"last_refresh_error": truncate(errorCode, 100), "refresh_permanent": permanent, "updated_at": time.Now().UTC(),
+		"refresh_due_at": failure.RetryAt.UTC(), "refresh_failures": max(0, failure.Count),
+		"last_refresh_error_status": max(0, failure.Status), "last_refresh_error": truncate(failure.Code, 100),
+		"last_refresh_error_message": truncate(failure.Message, 512), "last_refresh_error_response": truncate(failure.Response, 4096),
+		"refresh_permanent": failure.Permanent, "updated_at": time.Now().UTC(),
 	}).Error
-	if err == nil && permanent {
+	if err == nil && failure.Permanent {
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged, AccountID: id})
 	}
 	return err

@@ -35,10 +35,10 @@ func (r *quotaResetRepository) ResetQuotaState(_ context.Context, provider accou
 
 func TestNewQuotaViewFreeUsesObservedRollingTokens(t *testing.T) {
 	quota := newQuotaView(&accountdomain.Billing{IsUnifiedBillingUser: true}, 250_000, nil, "grok-4.5-build-free", false)
-	if quota.Type != QuotaTypeFree || quota.Unit != "tokens" || quota.Limit != 1_000_000 || quota.LimitKnown || quota.Confidence != "observed" {
+	if quota.Type != QuotaTypeFree || quota.Unit != "tokens" || quota.Limit != 500_000 || quota.LimitKnown || quota.Confidence != "observed" {
 		t.Fatalf("quota = %#v", quota)
 	}
-	if quota.Used != 250_000 || quota.Remaining != 750_000 || quota.UsagePercent != 25 || quota.WindowHours != 24 || !quota.Observed {
+	if quota.Used != 250_000 || quota.Remaining != 250_000 || quota.UsagePercent != 50 || quota.WindowHours != 24 || !quota.Observed {
 		t.Fatalf("quota = %#v", quota)
 	}
 }
@@ -74,7 +74,7 @@ func TestNewQuotaViewUnknownWithoutBillingSnapshot(t *testing.T) {
 
 func TestNewQuotaViewEstimatesFreeFromObservedZeroBillingProfile(t *testing.T) {
 	quota := newQuotaView(&accountdomain.Billing{PlanName: "Free", IsUnifiedBillingUser: true, TopUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD"}, 100, nil, "", false)
-	if quota.Type != QuotaTypeFree || quota.Source != "billingProfile" || quota.Confidence != "estimated" || quota.Limit != 1_000_000 || quota.LimitKnown {
+	if quota.Type != QuotaTypeFree || quota.Source != "billingProfile" || quota.Confidence != "estimated" || quota.Limit != 500_000 || quota.LimitKnown {
 		t.Fatalf("quota = %#v", quota)
 	}
 }

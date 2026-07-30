@@ -706,10 +706,10 @@ func (a *Adapter) RefreshCredential(ctx context.Context, credential account.Cred
 		// Decryption failures are usually temporary or mismatched local encryption keys and are recoverable;
 		// do not mark them permanent, or manual/batch refresh will never retry after the key is fixed.
 		// True permanent OAuth failures such as invalid_grant are returned by oauth.refresh with Permanent=true.
-		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "credential_decrypt_failed", Permanent: false, Cause: err}
+		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "credential_decrypt_failed", Message: "Stored refresh credential could not be decrypted", Permanent: false, Cause: err}
 	}
 	if strings.TrimSpace(refreshToken) == "" {
-		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "missing_refresh_token", Permanent: true}
+		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "missing_refresh_token", Message: "Refresh token is missing", Permanent: true}
 	}
 	refreshCtx := infraegress.WithCredential(ctx, credential)
 	tokens, err := a.oauth.refresh(refreshCtx, refreshToken)

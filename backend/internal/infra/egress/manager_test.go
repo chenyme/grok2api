@@ -31,6 +31,42 @@ func (responseHeaderTimeoutError) Error() string   { return "http2: timeout awai
 func (responseHeaderTimeoutError) Timeout() bool   { return true }
 func (responseHeaderTimeoutError) Temporary() bool { return true }
 
+func TestForgetClearancesEvictsSelectedNodesInOneBatch(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	first := &scriptedRequestClient{}
+	second := &scriptedRequestClient{}
+	untouched := &scriptedRequestClient{}
+	manager.clients[clientCacheKey{nodeID: 1, scope: domain.ScopeBuild}] = cachedClient{client: first}
+	manager.clients[clientCacheKey{nodeID: 2, scope: domain.ScopeWeb}] = cachedClient{client: second}
+	manager.clients[clientCacheKey{nodeID: 3, scope: domain.ScopeConsole}] = cachedClient{client: untouched}
+	manager.clearances["node:1"] = clearanceState{cookies: "one"}
+	manager.clearances["node:2:sticky"] = clearanceState{cookies: "two"}
+	manager.clearances["node:3"] = clearanceState{cookies: "three"}
+	manager.nodes[domain.ScopeBuild] = cachedNodeSnapshot{values: []domain.Node{{ID: 1}}}
+	manager.healthyNodes[1] = time.Now().UTC()
+
+	manager.ForgetClearances([]uint64{1, 2, 1})
+
+	if _, exists := manager.clearances["node:1"]; exists {
+		t.Fatal("node 1 clearance was retained")
+	}
+	if _, exists := manager.clearances["node:2:sticky"]; exists {
+		t.Fatal("node 2 clearance was retained")
+	}
+	if _, exists := manager.clearances["node:3"]; !exists {
+		t.Fatal("unselected clearance was removed")
+	}
+	if len(manager.clients) != 1 || first.closedIdle != 1 || second.closedIdle != 1 || untouched.closedIdle != 0 {
+		t.Fatalf("clients=%d closed=(%d,%d,%d)", len(manager.clients), first.closedIdle, second.closedIdle, untouched.closedIdle)
+	}
+	if len(manager.nodes) != 0 || len(manager.healthyNodes) != 0 {
+		t.Fatalf("node snapshots were not invalidated: nodes=%d healthy=%d", len(manager.nodes), len(manager.healthyNodes))
+	}
+	if manager.clientVersions[1] != 1 || manager.clientVersions[2] != 1 || manager.clientVersions[3] != 0 {
+		t.Fatalf("client versions = %#v", manager.clientVersions)
+	}
+}
+
 func TestBuildResponseHeaderTimeoutHotUpdateRebuildsCachedClients(t *testing.T) {
 	manager := NewManager(egressRepositoryTestStub{}, nil)
 	var observed []time.Duration
@@ -1396,6 +1432,9 @@ func TestProxyPoolTransportFailureDoesNotCreateGlobalCooldown(t *testing.T) {
 	if err != nil || !configured || lease == nil {
 		t.Fatalf("pool lease blocked by stale cooldown: configured=%v lease=%#v err=%v", configured, lease, err)
 	}
+	if !lease.freshTunnel {
+		t.Fatal("explicit proxy-pool lease must request a fresh Build tunnel")
+	}
 	lease.Release()
 	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("connection refused"))
 	if repository.updates != 0 || repository.node.FailureCount != 3 || repository.node.CooldownUntil == nil {
@@ -1439,8 +1478,8 @@ func TestAccountTemplateIsAnEffectiveProxyPool(t *testing.T) {
 		t.Fatalf("account-template lease blocked by stale cooldown: configured=%v lease=%#v err=%v", configured, lease, err)
 	}
 	defer lease.Release()
-	if !lease.sticky || !lease.proxyPool {
-		t.Fatalf("account-template lease flags: sticky=%v proxyPool=%v", lease.sticky, lease.proxyPool)
+	if !lease.sticky || !lease.proxyPool || lease.freshTunnel {
+		t.Fatalf("account-template lease flags: sticky=%v proxyPool=%v freshTunnel=%v", lease.sticky, lease.proxyPool, lease.freshTunnel)
 	}
 }
 
