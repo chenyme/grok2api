@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
@@ -27,6 +28,34 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return fn(request)
+}
+
+func TestResponseRequestForcedEgressOverridesCredentialBinding(t *testing.T) {
+	var gotNodeID uint64
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, nil)
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		gotNodeID = infraegress.EgressNodeFromContext(request.Context())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Request:    request,
+		}, nil
+	})
+	response, _, err := adapter.doResponseRequest(context.Background(), provider.ResponseResourceRequest{
+		Credential:         account.Credential{ID: 7, Provider: account.ProviderBuild, EgressNodeID: 11},
+		ForcedEgressNodeID: 22,
+		Method:             http.MethodPost,
+		Path:               "/responses",
+	}, "access-token", nil, "https://cli-chat-proxy.grok.com/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if gotNodeID != 22 {
+		t.Fatalf("egress node=%d, want forced node=22", gotNodeID)
+	}
 }
 
 func TestAdapterHotUpdatesDirectResponseHeaderTimeout(t *testing.T) {

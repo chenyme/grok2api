@@ -147,6 +147,51 @@ func TestSelectorQualityProbePinsAccountToRequestedEgressNode(t *testing.T) {
 	}
 }
 
+func TestSelectorQualityProbeBorrowsHealthyAccountForUnavailableNode(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-egress-fallback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	egressNodes := relational.NewEgressRepository(database)
+	targetNode, err := egressNodes.CreateEgressNode(ctx, egressdomain.Node{Name: "target", Scope: egressdomain.ScopeBuild, Enabled: false, EncryptedProxyURL: "target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthyNode, err := egressNodes.CreateEgressNode(ctx, egressdomain.Node{Name: "healthy", Scope: egressdomain.ScopeBuild, Enabled: true, EncryptedProxyURL: "healthy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	_, _, err = accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "target-reauth", SourceKey: "target-reauth", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusReauthRequired, MaxConcurrent: 1, EgressNodeID: targetNode.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "healthy", SourceKey: "healthy", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1, EgressNodeID: healthyNode.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	lease, err := selector.AcquireForKeyOnEgressNode(ctx, account.ProviderBuild, 0, "grok-test", "", "ordinary-affinity", nil, false, clientkeydomain.AccountScope{}, targetNode.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != healthy.ID {
+		t.Fatalf("selected account=%d, want borrowed healthy account=%d", lease.Credential.ID, healthy.ID)
+	}
+}
+
 func BenchmarkSelectorCandidatePlanning(b *testing.B) {
 	ctx := context.Background()
 	limiter := memory.NewConcurrencyLimiter()

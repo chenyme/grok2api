@@ -21,6 +21,7 @@ def config(**overrides):
         passive_poll_seconds=5, passive_page_size=200, passive_max_pages=10, jitter_seconds=0,
         request_timeout_seconds=120, soft_tps=500.0, hard_tps=1000.0,
         consecutive_soft=2, consecutive_errors=2, quarantine_seconds=300,
+        no_account_backoff_seconds=300,
         min_healthy_nodes=3, max_output_tokens=384, prompt="probe", expected="QUALITY_OK",
         fail_closed=False, min_generation_ms=1000, rotation_url="", rotation_token="",
         rotation_timeout_seconds=45, rotatable_node_ids=(),
@@ -287,17 +288,23 @@ class GuardTests(unittest.TestCase):
             guard.run_active_cycle()
             self.assertEqual(api.enabled_calls, [])
             self.assertEqual(api.rotation_calls, [])
+            self.assertEqual(api.quality_calls, ["1"])
             self.assertEqual(guard.state["nodes"]["1"]["error_strikes"], 0)
             self.assertEqual(guard.state["nodes"]["1"]["last_reason"], "probe_no_account")
+
+            guard.run_active_cycle()
+            self.assertEqual(api.quality_calls, ["1"])
 
             api.nodes[0]["enabled"] = False
             state = guard.state["nodes"]["1"]
             state["disabled_by_guard"] = True
-            guard._recover_quarantined(api.nodes[0], 10.0, rotate=False)
+            recovery_at = state["quarantined_until"]
+            guard._recover_quarantined(api.nodes[0], recovery_at, rotate=False)
             self.assertEqual(api.enabled_calls, [])
             self.assertEqual(api.rotation_calls, [])
             self.assertEqual(state["last_reason"], "probe_no_account")
             self.assertTrue(state["disabled_by_guard"])
+            self.assertEqual(state["quarantined_until"], recovery_at + cfg.no_account_backoff_seconds)
 
     def test_fail_closed_buffered_burst_restores_same_ip_after_one_good_probe(self):
         with tempfile.TemporaryDirectory() as directory:

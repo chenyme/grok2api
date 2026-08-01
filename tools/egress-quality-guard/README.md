@@ -24,8 +24,9 @@ your own traffic before allowing automatic quarantine.
    `output` intentionally includes reasoning tokens.
 2. Active mode calls the administrator-only
    `POST /api/admin/v1/egress-nodes/{id}/quality-test` endpoint.
-3. grok2api selects only an account explicitly bound to that node and sends a
-   fixed streaming prompt.
+3. grok2api prefers an account bound to that node. If none is schedulable, it
+   borrows any healthy account while still forcing the physical request through
+   the node under test, then sends a fixed streaming prompt.
 4. The fixed probe checks output tokens, chunk cadence, first-token time,
    instruction-marker compliance, and panel-equivalent output-token throughput.
 5. A high-TPS production request at the hard threshold quarantines the node
@@ -75,10 +76,11 @@ pass before restoration. The optional `session_rotator.py` implements this
 contract for 1024Proxy-style usernames containing `sid-...-t-...`.
 
 Probe failures require `QUALITY_GUARD_CONSECUTIVE_ERRORS` consecutive attempts
-before quarantine. Account-selection failures are reported separately: if no
-account assigned to a node is currently schedulable, the guard defers recovery
-without counting a proxy failure or rotating the IP. The node remains isolated
-until a real model-quality probe can pass.
+before quarantine. Account-selection failures are reported separately: if the
+entire Grok Build pool has no schedulable account, the guard backs off for
+`QUALITY_GUARD_NO_ACCOUNT_BACKOFF_SECONDS` and suppresses duplicate logs without
+counting a proxy failure or rotating the IP. The node remains isolated until a
+real model-quality probe can pass.
 
 ## Admin UI
 

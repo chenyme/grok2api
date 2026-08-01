@@ -123,6 +123,9 @@ func (e *CredentialRefreshError) Unwrap() error {
 // ResponseResourceRequest describes a common upstream request to a Responses resource endpoint.
 type ResponseResourceRequest struct {
 	Credential account.Credential
+	// ForcedEgressNodeID is set only by administrator quality probes. It lets a
+	// healthy credential test a quarantined node without changing its binding.
+	ForcedEgressNodeID uint64
 	// Billing is used only to determine XAI eligibility in Build auto mode; nil means the account tier is unknown.
 	Billing        *account.Billing
 	Method         string

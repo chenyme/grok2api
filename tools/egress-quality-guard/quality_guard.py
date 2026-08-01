@@ -99,6 +99,7 @@ class Config:
     consecutive_soft: int
     consecutive_errors: int
     quarantine_seconds: int
+    no_account_backoff_seconds: int
     min_healthy_nodes: int
     max_output_tokens: int
     fail_closed: bool
@@ -148,6 +149,7 @@ class Config:
             consecutive_soft=_env_int("QUALITY_GUARD_CONSECUTIVE_SOFT", 2, 1),
             consecutive_errors=_env_int("QUALITY_GUARD_CONSECUTIVE_ERRORS", 2, 1),
             quarantine_seconds=_env_int("QUALITY_GUARD_QUARANTINE_SECONDS", 300, 30),
+            no_account_backoff_seconds=_env_int("QUALITY_GUARD_NO_ACCOUNT_BACKOFF_SECONDS", 300, 30),
             min_healthy_nodes=_env_int("QUALITY_GUARD_MIN_HEALTHY_NODES", 3, 1),
             max_output_tokens=_env_int("QUALITY_GUARD_MAX_OUTPUT_TOKENS", 384, 32),
             fail_closed=_env_bool("QUALITY_GUARD_FAIL_CLOSED", False),
@@ -190,6 +192,8 @@ class Config:
             raise ValueError("quality guard consecutive strike limits must not exceed 20")
         if self.quarantine_seconds > 86400:
             raise ValueError("QUALITY_GUARD_QUARANTINE_SECONDS must not exceed 86400")
+        if self.no_account_backoff_seconds > 86400:
+            raise ValueError("QUALITY_GUARD_NO_ACCOUNT_BACKOFF_SECONDS must not exceed 86400")
         if self.min_healthy_nodes < 1 or (self.node_ids and self.min_healthy_nodes > len(self.node_ids)):
             raise ValueError("QUALITY_GUARD_MIN_HEALTHY_NODES must fit the configured node count")
         if self.min_generation_ms > self.request_timeout_seconds * 1000:
@@ -438,6 +442,7 @@ def default_node_state() -> dict[str, Any]:
         "last_rotation_at": 0.0,
         "last_rotation_exit_ip": "",
         "rotation_failures": 0,
+        "last_no_account_log_at": 0.0,
     }
 
 
@@ -552,6 +557,7 @@ class Guard:
             "consecutive_soft": self.config.consecutive_soft,
             "consecutive_errors": self.config.consecutive_errors,
             "quarantine_seconds": self.config.quarantine_seconds,
+            "no_account_backoff_seconds": self.config.no_account_backoff_seconds,
             "min_healthy_nodes": self.config.min_healthy_nodes,
             "max_output_tokens": self.config.max_output_tokens,
             "fail_closed": self.config.fail_closed,
@@ -576,6 +582,18 @@ class Guard:
         for key, value in default_node_state().items():
             current.setdefault(key, value)
         return current
+
+    def _defer_no_account(self, state: dict[str, Any], node: dict[str, Any], now: float, event: str, **fields: Any) -> None:
+        state["last_probe_at"] = now
+        state["last_reason"] = "probe_no_account"
+        state["quarantined_until"] = max(
+            float(state.get("quarantined_until", 0.0)),
+            now + self.config.no_account_backoff_seconds,
+        )
+        last_logged = float(state.get("last_no_account_log_at", 0.0))
+        if last_logged <= 0 or now - last_logged >= self.config.no_account_backoff_seconds:
+            state["last_no_account_log_at"] = now
+            log_event(event, node_id=str(node["id"]), node_name=node.get("name"), reason="probe_no_account", **fields)
 
     def _eligible_nodes(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         configured = set(self.config.node_ids)
@@ -687,14 +705,14 @@ class Guard:
     def _probe_active(self, nodes: list[dict[str, Any]], node: dict[str, Any], now: float, trigger: str = "scheduled") -> None:
         node_id = str(node["id"])
         state = self._state_for(node_id)
+        if state.get("last_reason") == "probe_no_account" and now < float(state.get("quarantined_until", 0.0)):
+            return
         self._bump_statistic("active", "total")
         try:
             result = self.api.quality_test(node_id)
         except Exception as exc:
             if self._probe_account_unavailable(exc):
-                state["last_probe_at"] = now
-                state["last_reason"] = "probe_no_account"
-                log_event("quality_probe_deferred", node_id=node_id, node_name=node.get("name"), trigger=trigger, reason="probe_no_account")
+                self._defer_no_account(state, node, now, "quality_probe_deferred", trigger=trigger)
                 return
             self._bump_statistic("active", "errors")
             state["error_strikes"] = int(state.get("error_strikes", 0)) + 1
@@ -754,9 +772,7 @@ class Guard:
             self._record_probe(node, result, classification, reason, now)
         except Exception as exc:
             if self._probe_account_unavailable(exc):
-                state["quarantined_until"] = now + self.config.quarantine_seconds
-                state["last_reason"] = "probe_no_account"
-                log_event("recovery_probe_deferred", node_id=node_id, node_name=node.get("name"), reason="probe_no_account")
+                self._defer_no_account(state, node, now, "recovery_probe_deferred")
                 return
             self._bump_statistic("active", "errors")
             state["quarantined_until"] = now + self.config.quarantine_seconds

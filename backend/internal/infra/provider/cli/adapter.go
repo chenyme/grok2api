@@ -455,6 +455,9 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 		bodyReader = bytes.NewReader(body)
 	}
 	requestCtx := infraegress.WithCredential(ctx, request.Credential)
+	if request.ForcedEgressNodeID != 0 {
+		requestCtx = infraegress.WithEgressNode(requestCtx, request.ForcedEgressNodeID)
+	}
 	plane := "build"
 	if fallback := a.fallbackBaseURL(); fallback != "" && strings.EqualFold(strings.TrimRight(base, "/"), fallback) {
 		plane = "xai"
