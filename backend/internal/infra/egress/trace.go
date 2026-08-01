@@ -29,6 +29,7 @@ type Trace struct {
 type traceContextKey struct{}
 type accountContextKey struct{}
 type egressNodeContextKey struct{}
+type qualityProbeContextKey struct{}
 
 // WithAccount passes a stable Provider account identity to the egress layer. It is used only to render
 // authentication usernames for sticky proxies such as Resin and is never written to upstream headers or audit.
@@ -73,6 +74,24 @@ func egressNodeFromContext(ctx context.Context) uint64 {
 // EgressNodeFromContext exposes a non-sensitive binding identifier to the
 // Build transport without exposing the context key itself.
 func EgressNodeFromContext(ctx context.Context) uint64 { return egressNodeFromContext(ctx) }
+
+// WithQualityProbe marks an administrator-initiated probe. It permits the
+// selected fixed node to be tested while disabled or cooling without making
+// that node eligible for ordinary inference traffic.
+func WithQualityProbe(ctx context.Context) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, qualityProbeContextKey{}, true)
+}
+
+func qualityProbeFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(qualityProbeContextKey{}).(bool)
+	return value
+}
 
 // WithAccountIdentity attaches the stable, non-sensitive identity used by
 // account-bound proxy templates such as Resin. Providers that represent the

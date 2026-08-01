@@ -1458,6 +1458,234 @@ func TestFixedProxyTransportFailureStillCreatesCooldown(t *testing.T) {
 	}
 }
 
+func TestQualityProbeCanUseDisabledCoolingBoundNode(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("http://127.0.0.1:18888")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cooldown := time.Now().UTC().Add(time.Hour)
+	repository := &synchronizedEgressRepository{node: domain.Node{
+		ID: 1, Name: "quarantined", Scope: domain.ScopeBuild, Enabled: false,
+		Health: 0, CooldownUntil: &cooldown, EncryptedProxyURL: encryptedProxy,
+	}}
+	manager := NewManager(repository, cipher)
+	ordinary := WithEgressNode(context.Background(), 1)
+	if lease, _, err := manager.AcquireIfConfigured(ordinary, domain.ScopeBuild, "ordinary"); err == nil {
+		if lease != nil {
+			lease.Release()
+		}
+		t.Fatal("ordinary request acquired a disabled node")
+	}
+	probe := WithQualityProbe(WithEgressNode(context.Background(), 1))
+	lease, configured, err := manager.AcquireIfConfigured(probe, domain.ScopeBuild, "probe")
+	if err != nil || !configured || lease == nil {
+		t.Fatalf("quality probe acquire: configured=%v lease=%#v err=%v", configured, lease, err)
+	}
+	lease.Release()
+}
+
+func TestFixedProxyTransportFailureCoalescesRunningProbe(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "fixed", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+	manager := NewManager(repository, cipher)
+	called := make(chan uint64, 1)
+	release := make(chan struct{})
+	manager.SetFailureProber(func(_ context.Context, id uint64) (domain.ProbeResult, error) {
+		called <- id
+		<-release
+		return domain.ProbeResult{Status: domain.ProbeStatusHealthy}, nil
+	})
+
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("connection refused"))
+	select {
+	case id := <-called:
+		if id != 1 {
+			t.Fatalf("probed node = %d", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transport failure did not schedule an immediate probe")
+	}
+
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("connection reset"))
+	select {
+	case <-called:
+		t.Fatal("concurrent transport failures scheduled duplicate probes")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	if _, err := manager.waitForFailureProbe(waitCtx, 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBoundFixedProxyWaitsForHealthyFailureProbe(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("http://127.0.0.1:18888")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &synchronizedEgressRepository{node: domain.Node{
+		ID: 1, Name: "fixed", Scope: domain.ScopeBuild, Enabled: true, Health: 1, EncryptedProxyURL: encryptedProxy,
+	}}
+	manager := NewManager(repository, cipher)
+	probeStarted := make(chan struct{})
+	probeRelease := make(chan struct{})
+	manager.SetFailureProber(func(_ context.Context, _ uint64) (domain.ProbeResult, error) {
+		close(probeStarted)
+		<-probeRelease
+		repository.recoverTransportFailure()
+		return domain.ProbeResult{Status: domain.ProbeStatusHealthy}, nil
+	})
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("unexpected EOF"))
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("failure probe did not start")
+	}
+
+	type acquireResult struct {
+		lease      *Lease
+		configured bool
+		err        error
+	}
+	acquired := make(chan acquireResult, 1)
+	go func() {
+		lease, configured, acquireErr := manager.AcquireIfConfigured(WithEgressNode(context.Background(), 1), domain.ScopeBuild, "account-2")
+		acquired <- acquireResult{lease: lease, configured: configured, err: acquireErr}
+	}()
+	select {
+	case result := <-acquired:
+		if result.lease != nil {
+			result.lease.Release()
+		}
+		t.Fatalf("bound retry returned before probe completed: configured=%v err=%v", result.configured, result.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(probeRelease)
+	select {
+	case result := <-acquired:
+		if result.err != nil || !result.configured || result.lease == nil {
+			t.Fatalf("bound retry after healthy probe: configured=%v lease=%#v err=%v", result.configured, result.lease, result.err)
+		}
+		result.lease.Release()
+	case <-time.After(time.Second):
+		t.Fatal("bound retry did not resume after healthy probe")
+	}
+}
+
+func TestBoundFixedProxyKeepsCooldownAfterUnhealthyFailureProbe(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("http://127.0.0.1:18888")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &synchronizedEgressRepository{node: domain.Node{
+		ID: 1, Name: "fixed", Scope: domain.ScopeBuild, Enabled: true, Health: 1, EncryptedProxyURL: encryptedProxy,
+	}}
+	manager := NewManager(repository, cipher)
+	probeStarted := make(chan struct{})
+	probeRelease := make(chan struct{})
+	manager.SetFailureProber(func(_ context.Context, _ uint64) (domain.ProbeResult, error) {
+		close(probeStarted)
+		<-probeRelease
+		return domain.ProbeResult{Status: domain.ProbeStatusUnhealthy}, nil
+	})
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("connection refused"))
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("failure probe did not start")
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		lease, _, acquireErr := manager.AcquireIfConfigured(WithEgressNode(context.Background(), 1), domain.ScopeBuild, "account-2")
+		if lease != nil {
+			lease.Release()
+		}
+		result <- acquireErr
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("bound retry returned before probe completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(probeRelease)
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "正在冷却") {
+			t.Fatalf("bound retry after unhealthy probe error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bound retry did not resume after unhealthy probe")
+	}
+}
+
+func TestBoundFixedProxyProbeWaitHonorsRequestCancellation(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("http://127.0.0.1:18888")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &synchronizedEgressRepository{node: domain.Node{
+		ID: 1, Name: "fixed", Scope: domain.ScopeBuild, Enabled: true, Health: 1, EncryptedProxyURL: encryptedProxy,
+	}}
+	manager := NewManager(repository, cipher)
+	probeStarted := make(chan struct{})
+	probeRelease := make(chan struct{})
+	manager.SetFailureProber(func(_ context.Context, _ uint64) (domain.ProbeResult, error) {
+		close(probeStarted)
+		<-probeRelease
+		return domain.ProbeResult{Status: domain.ProbeStatusUnhealthy}, nil
+	})
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, 0, errors.New("connection refused"))
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("failure probe did not start")
+	}
+
+	ctx, cancel := context.WithCancel(WithEgressNode(context.Background(), 1))
+	result := make(chan error, 1)
+	go func() {
+		_, _, acquireErr := manager.AcquireIfConfigured(ctx, domain.ScopeBuild, "account-2")
+		result <- acquireErr
+	}()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled bound retry error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled bound retry stayed blocked on probe")
+	}
+	close(probeRelease)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	if _, err := manager.waitForFailureProbe(waitCtx, 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAccountTemplateIsAnEffectiveProxyPool(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
@@ -2063,6 +2291,12 @@ type mutableEgressRepository struct {
 	updates int
 }
 
+type synchronizedEgressRepository struct {
+	egressRepositoryTestStub
+	mu   sync.Mutex
+	node domain.Node
+}
+
 type blockingEgressRepository struct {
 	egressRepositoryTestStub
 	mu          sync.Mutex
@@ -2129,6 +2363,40 @@ func (r *mutableEgressRepository) DeleteEgressNode(_ context.Context, id uint64)
 	}
 	r.node = domain.Node{}
 	return nil
+}
+
+func (r *synchronizedEgressRepository) ListEgressNodes(_ context.Context, scope domain.Scope, _ repository.SortQuery) ([]domain.Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if scope != "" && r.node.Scope != scope {
+		return nil, nil
+	}
+	return []domain.Node{r.node}, nil
+}
+
+func (r *synchronizedEgressRepository) GetEgressNode(_ context.Context, id uint64) (domain.Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.node.ID != id {
+		return domain.Node{}, errors.New("not found")
+	}
+	return r.node, nil
+}
+
+func (r *synchronizedEgressRepository) UpdateEgressNode(_ context.Context, value domain.Node) (domain.Node, error) {
+	r.mu.Lock()
+	r.node = value
+	r.mu.Unlock()
+	return value, nil
+}
+
+func (r *synchronizedEgressRepository) recoverTransportFailure() {
+	r.mu.Lock()
+	r.node.Health = 1
+	r.node.FailureCount = 0
+	r.node.CooldownUntil = nil
+	r.node.LastError = ""
+	r.mu.Unlock()
 }
 
 func (r *blockingEgressRepository) ListEgressNodes(_ context.Context, scope domain.Scope, _ repository.SortQuery) ([]domain.Node, error) {

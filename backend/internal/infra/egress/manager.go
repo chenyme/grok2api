@@ -51,6 +51,9 @@ const egressIPv6ProbeEndpoint = "https://v6.ipinfo.io/json"
 const cloudflareIPv4ProbeEndpoint = "https://1.1.1.1/cdn-cgi/trace"
 const cloudflareIPv6ProbeEndpoint = "https://[2606:4700:4700::1111]/cdn-cgi/trace"
 const egressProbeTimeout = 15 * time.Second
+const failureProbeCompletionGrace = 5 * time.Second
+const failureProbeTimeout = 20 * time.Second
+const failureProbeWaitTimeout = 5 * time.Second
 const clientCreationRetryLimit = 3
 const maxClientVersionEntries = 4096
 
@@ -77,6 +80,14 @@ type Lease struct {
 type requestClient interface {
 	Do(*http.Request) (*http.Response, error)
 	CloseIdleConnections()
+}
+
+type FailureProber func(context.Context, uint64) (domain.ProbeResult, error)
+
+type failureProbeState struct {
+	running       bool
+	lastCompleted time.Time
+	done          chan struct{}
 }
 
 func (l *Lease) Do(request *http.Request) (*http.Response, error) {
@@ -145,6 +156,9 @@ type Manager struct {
 	operationsConfig     cachedOperationsConfig
 	operationsConfigLoad singleflight.Group
 	operationsConfigVer  uint64
+	failureProbeMu       sync.Mutex
+	failureProber        FailureProber
+	failureProbes        map[uint64]failureProbeState
 	lastClientCleanup    time.Time
 	clearanceLoads       singleflight.Group
 	clearanceConfig      ClearanceConfig
@@ -210,6 +224,7 @@ func NewManager(repository repository.EgressRepository, cipher *security.Cipher)
 		clients: make(map[clientCacheKey]cachedClient),
 		nodes:   make(map[domain.Scope]cachedNodeSnapshot), healthyNodes: make(map[uint64]time.Time),
 		nodeVersions: make(map[domain.Scope]uint64), clientVersions: make(map[uint64]uint64), clearances: make(map[string]clearanceState),
+		failureProbes:  make(map[uint64]failureProbeState),
 		newBuildClient: newBuildRequestClient, newBrowserClient: newBrowserClient,
 		solver:          flaresolverrSolver{},
 		clearanceConfig: ClearanceConfig{Mode: "manual", TargetURL: "https://grok.com", Timeout: time.Minute, RefreshInterval: 10 * time.Minute},
@@ -230,6 +245,85 @@ func (m *Manager) log() *slog.Logger {
 		return slog.Default()
 	}
 	return m.logger
+}
+
+// SetFailureProber enables an immediate, deduplicated connectivity probe after
+// a fixed proxy reports a transport failure. The callback persists the probe
+// result; it must not depend on the failed request context.
+func (m *Manager) SetFailureProber(value FailureProber) {
+	m.failureProbeMu.Lock()
+	m.failureProber = value
+	if value == nil {
+		clear(m.failureProbes)
+	}
+	m.failureProbeMu.Unlock()
+}
+
+func (m *Manager) scheduleFailureProbe(node domain.Node) {
+	m.failureProbeMu.Lock()
+	prober := m.failureProber
+	state := m.failureProbes[node.ID]
+	if prober == nil || state.running {
+		m.failureProbeMu.Unlock()
+		return
+	}
+	state.running = true
+	state.done = make(chan struct{})
+	m.failureProbes[node.ID] = state
+	done := state.done
+	m.failureProbeMu.Unlock()
+
+	m.log().Info("egress_failure_probe_scheduled", "node_id", node.ID, "node_name", node.Name, "scope", node.Scope)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), failureProbeTimeout)
+		result, err := prober(ctx, node.ID)
+		cancel()
+
+		m.failureProbeMu.Lock()
+		state := m.failureProbes[node.ID]
+		if state.done == done {
+			state.running = false
+			state.lastCompleted = time.Now().UTC()
+			m.failureProbes[node.ID] = state
+		}
+		close(done)
+		m.failureProbeMu.Unlock()
+
+		if err != nil {
+			m.log().Warn("egress_failure_probe_failed", "node_id", node.ID, "node_name", node.Name, "scope", node.Scope, "error", err)
+			return
+		}
+		if result.Status == domain.ProbeStatusHealthy {
+			m.invalidateNodes(node.Scope)
+		}
+		m.log().Info("egress_failure_probe_completed", "node_id", node.ID, "node_name", node.Name, "scope", node.Scope, "probe_status", result.Status, "latency_ms", result.LatencyMS)
+	}()
+}
+
+func (m *Manager) waitForFailureProbe(ctx context.Context, nodeID uint64) (bool, error) {
+	now := time.Now().UTC()
+	m.failureProbeMu.Lock()
+	state, exists := m.failureProbes[nodeID]
+	m.failureProbeMu.Unlock()
+	if !exists {
+		return false, nil
+	}
+	if !state.running {
+		return !state.lastCompleted.IsZero() && now.Sub(state.lastCompleted) < failureProbeCompletionGrace, nil
+	}
+	if state.done == nil {
+		return false, nil
+	}
+	timer := time.NewTimer(failureProbeWaitTimeout)
+	defer timer.Stop()
+	select {
+	case <-state.done:
+		return true, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C:
+		return false, nil
+	}
 }
 
 // UpdateBuildResponseHeaderTimeout rebuilds only cached Build clients. Active
@@ -643,28 +737,43 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	configured := false
 	var available []domain.Node
 	if boundNodeID != 0 {
-		selected, err := m.repository.GetEgressNode(ctx, boundNodeID)
-		if err != nil {
-			primaryErr := fmt.Errorf("读取绑定出口节点: %w", err)
-			if !errors.Is(err, repository.ErrNotFound) {
-				return nil, true, primaryErr
+		waitedForProbe := false
+		qualityProbe := qualityProbeFromContext(ctx)
+		for {
+			now = time.Now().UTC()
+			selected, err := m.repository.GetEgressNode(ctx, boundNodeID)
+			if err != nil {
+				primaryErr := fmt.Errorf("读取绑定出口节点: %w", err)
+				if !errors.Is(err, repository.ErrNotFound) {
+					return nil, true, primaryErr
+				}
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr)
 			}
-			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr)
+			if !domain.SupportsScope(selected.Scope, scope) {
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 与 %s 作用域不兼容", boundNodeID, scope))
+			}
+			if !selected.Enabled && !qualityProbe {
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID))
+			}
+			if strings.TrimSpace(selected.EncryptedProxyURL) == "" {
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 未配置代理地址", boundNodeID))
+			}
+			proxyPool := m.isProxyPoolNode(selected)
+			if !qualityProbe && !proxyPool && selected.CooldownUntil != nil && now.Before(*selected.CooldownUntil) {
+				if !waitedForProbe && selected.LastError == domain.LastErrorTransport {
+					completed, waitErr := m.waitForFailureProbe(ctx, boundNodeID)
+					if waitErr != nil {
+						return nil, true, waitErr
+					}
+					if completed {
+						waitedForProbe = true
+						continue
+					}
+				}
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 正在冷却", boundNodeID))
+			}
+			return m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected)
 		}
-		if !domain.SupportsScope(selected.Scope, scope) {
-			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 与 %s 作用域不兼容", boundNodeID, scope))
-		}
-		if !selected.Enabled {
-			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID))
-		}
-		if strings.TrimSpace(selected.EncryptedProxyURL) == "" {
-			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 未配置代理地址", boundNodeID))
-		}
-		proxyPool := m.isProxyPoolNode(selected)
-		if !proxyPool && selected.CooldownUntil != nil && now.Before(*selected.CooldownUntil) {
-			return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 正在冷却", boundNodeID))
-		}
-		return m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected)
 	}
 	fallbackConfig, fallbackSupported, fallbackConfigErr := m.loadOperationsConfig(ctx, now)
 	fallback := domain.FallbackConfig{Mode: domain.FallbackModeNone}
@@ -1439,7 +1548,7 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		cooldown := min(10*time.Minute, 30*time.Second*time.Duration(1<<min(value.FailureCount-1, 4)))
 		until := now.Add(cooldown)
 		value.CooldownUntil = &until
-		value.LastError = "transport error"
+		value.LastError = domain.LastErrorTransport
 		m.clientMu.Lock()
 		stale = m.invalidateClientLocked(nodeID)
 		m.clientMu.Unlock()
@@ -1452,11 +1561,17 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 	if stateRepository, ok := m.repository.(egressStateRepository); ok {
 		if err := stateRepository.UpdateEgressNodeHealth(ctx, value.ID, value.Health, value.FailureCount, value.CooldownUntil, value.LastError); err == nil {
 			m.invalidateNodes(value.Scope)
+			if transportErr != nil {
+				m.scheduleFailureProbe(value)
+			}
 		}
 		return
 	}
 	if _, err := m.repository.UpdateEgressNode(ctx, value); err == nil {
 		m.invalidateNodes(value.Scope)
+		if transportErr != nil {
+			m.scheduleFailureProbe(value)
+		}
 	}
 }
 

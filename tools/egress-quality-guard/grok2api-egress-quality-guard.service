@@ -1,0 +1,27 @@
+[Unit]
+Description=grok2api egress quality guard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=grok-quality-guard
+Group=grok-quality-guard
+EnvironmentFile=/etc/grok2api-egress-quality-guard.env
+ExecStart=/opt/grok2api-egress-quality-guard/quality_guard.py
+Restart=on-failure
+RestartSec=10s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/grok2api-quality-guard
+
+[Install]
+WantedBy=multi-user.target
