@@ -467,6 +467,7 @@ class Guard:
         self.config = config
         self.api = api
         self.state = load_state(config.state_file)
+        self._resolved_node_ids = list(config.node_ids)
         self.state.setdefault("started_at", time.time())
         self.state.setdefault("recent_events", [])
         ensure_statistics(self.state)
@@ -482,7 +483,7 @@ class Guard:
             "mode": self.config.mode,
             "model": self.config.model,
             "client_key_id": self.config.client_key_id,
-            "node_ids": list(self.config.node_ids),
+            "node_ids": list(self.config.node_ids) if self.config.node_ids else self._resolved_node_ids,
             "active_interval_seconds": self.config.active_interval_seconds,
             "passive_poll_seconds": self.config.passive_poll_seconds,
             "soft_tps": self.config.soft_tps,
@@ -663,6 +664,8 @@ class Guard:
 
     def _prepare_nodes(self, now: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[str]]:
         all_nodes = self.api.list_nodes()
+        if not self.config.node_ids:
+            self._resolved_node_ids = [str(node["id"]) for node in all_nodes if node.get("id") and node.get("proxyConfigured")]
         nodes = self._eligible_nodes(all_nodes)
         skip_ids: set[str] = set()
         if not nodes:

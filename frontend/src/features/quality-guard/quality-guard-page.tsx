@@ -1,28 +1,38 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient, type UseMutationResult } from "@tanstack/react-query";
-import { Activity, AlertTriangle, BarChart3, Bot, Coins, Eye, Gauge, Pencil, RefreshCw, RotateCcw, RotateCw, Shield, ShieldCheck, ShieldX, TimerReset, Zap } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, Bot, Coins, Eye, Gauge, MoreHorizontal, Pencil, Plus, Power, PowerOff, RefreshCw, RotateCcw, RotateCw, Shield, ShieldCheck, ShieldX, TimerReset, Trash2, Zap } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getQualityGuardStatus, runQualityTest, updateQualityGuardPolicy, type QualityGuardEvent, type QualityGuardNodeState, type QualityGuardPolicy, type QualityGuardStatistics, type QualityGuardStatus, type QualityTestResult } from "@/features/quality-guard/quality-guard-api";
-import { listAllEgressNodes, type EgressNodeDTO } from "@/features/settings/settings-api";
+import { createEgressNode, deleteEgressNodes, listAllEgressNodes, updateEgressNode, updateEgressNodesEnabled, type EgressNodeDTO, type EgressNodeInput } from "@/features/settings/settings-api";
 import { ErrorState } from "@/shared/components/data-state";
 import { PageHeader } from "@/shared/components/page-header";
 import { cn } from "@/shared/lib/cn";
 
 export function QualityGuardPage() {
   const { t, i18n } = useTranslation();
+  const queryClient = useQueryClient();
   const [manualResults, setManualResults] = useState<Record<string, QualityGuardNodeState>>({});
   const [policyOpen, setPolicyOpen] = useState(false);
+  const [editingNode, setEditingNode] = useState<EgressNodeDTO | null | undefined>(undefined);
+  const [nodeForm, setNodeForm] = useState<EgressNodeInput>(emptyNodeInput());
+  const [deletingNodes, setDeletingNodes] = useState<EgressNodeDTO[]>([]);
+  const [selectedNodeIDs, setSelectedNodeIDs] = useState<Set<string>>(() => new Set());
   const statusQuery = useQuery({
     queryKey: ["quality-guard"],
     queryFn: getQualityGuardStatus,
@@ -42,12 +52,90 @@ export function QualityGuardPage() {
     onError: (error) => toast.error(error instanceof Error ? error.message : t("errors.generic")),
   });
 
+  const refreshNodeQueries = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["quality-guard"] }),
+    queryClient.invalidateQueries({ queryKey: ["quality-guard-egress-nodes"] }),
+    queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }),
+  ]);
+  const saveNodeMutation = useMutation({
+    mutationFn: () => {
+      const input: EgressNodeInput = {
+        ...nodeForm,
+        name: nodeForm.name.trim(),
+        scope: "grok_build",
+        proxyURL: nodeForm.proxyURL?.trim() || undefined,
+        userAgent: "",
+        cloudflareCookies: undefined,
+      };
+      return editingNode ? updateEgressNode(editingNode.id, input) : createEgressNode(input);
+    },
+    onSuccess: () => {
+      setEditingNode(undefined);
+      void refreshNodeQueries();
+      toast.success(t("settings.egress.saved"));
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
+  });
+  const toggleNodeMutation = useMutation({
+    mutationFn: ({ node, enabled }: { node: EgressNodeDTO; enabled: boolean }) => updateEgressNodesEnabled([node.id], enabled),
+    onSuccess: (_, { enabled }) => {
+      void refreshNodeQueries();
+      toast.success(t(enabled ? "qualityGuard.nodeEnabled" : "qualityGuard.nodeDisabled"));
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
+  });
+  const batchToggleMutation = useMutation({
+    mutationFn: ({ nodes, enabled }: { nodes: EgressNodeDTO[]; enabled: boolean }) => updateEgressNodesEnabled(nodes.map((node) => node.id), enabled),
+    onSuccess: (_, { enabled }) => {
+      setSelectedNodeIDs(new Set());
+      void refreshNodeQueries();
+      toast.success(t(enabled ? "qualityGuard.nodesEnabled" : "qualityGuard.nodesDisabled"));
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
+  });
+  const deleteNodeMutation = useMutation({
+    mutationFn: (nodes: EgressNodeDTO[]) => deleteEgressNodes(nodes.map((node) => node.id)),
+    onSuccess: () => {
+      setDeletingNodes([]);
+      setSelectedNodeIDs(new Set());
+      void refreshNodeQueries();
+      toast.success(t("settings.egress.deleted"));
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
+  });
+
+  const openCreateNode = () => {
+    setNodeForm(emptyNodeInput());
+    setEditingNode(null);
+  };
+  const openEditNode = (node: EgressNodeDTO) => {
+    setNodeForm({
+      name: node.name,
+      scope: "grok_build",
+      enabled: node.enabled,
+      proxyPool: node.proxyPool,
+      accountCapacity: node.accountCapacity,
+      proxyURL: "",
+      userAgent: "",
+      cloudflareCookies: "",
+    });
+    setEditingNode(node);
+  };
+
   const refresh = () => void Promise.all([statusQuery.refetch(), nodesQuery.refetch()]);
   if (statusQuery.isError && !statusQuery.data) return <ErrorState message={statusQuery.error.message} onRetry={refresh} />;
 
   const status = statusQuery.data;
-  const configuredNodeIDs = new Set(status?.config?.node_ids ?? []);
-  const nodes = (nodesQuery.data?.items ?? []).filter((node) => !status?.config || configuredNodeIDs.has(node.id));
+  const nodes = nodesQuery.data?.items ?? [];
+  const selectedNodes = nodes.filter((node) => selectedNodeIDs.has(node.id));
+  const allNodesSelected = nodes.length > 0 && selectedNodes.length === nodes.length;
+  const toggleAllNodes = (checked: boolean) => setSelectedNodeIDs(checked ? new Set(nodes.map((node) => node.id)) : new Set());
+  const toggleSelectedNode = (node: EgressNodeDTO, checked: boolean) => setSelectedNodeIDs((current) => {
+    const next = new Set(current);
+    if (checked) next.add(node.id);
+    else next.delete(node.id);
+    return next;
+  });
   const fresh = isFresh(status);
   const guardedNodes = status?.nodes ?? {};
   const quarantined = Object.values(guardedNodes).filter((node) => node.disabled_by_guard).length;
@@ -83,18 +171,29 @@ export function QualityGuardPage() {
                 <h2 id="guard-nodes-title" className="text-sm font-medium">{t("qualityGuard.nodes")}</h2>
                 <p className="mt-1 text-xs text-muted-foreground">{t("qualityGuard.nodesHelp")}</p>
               </div>
-              <span className="text-xs text-muted-foreground">{t("qualityGuard.updatedAt", { time: formatTime(status.updatedAt, i18n.language) })}</span>
+              <div className="flex flex-wrap items-center gap-1.5 self-start sm:self-auto sm:justify-end">
+                <span className="mr-1 hidden text-xs text-muted-foreground lg:inline">{t("qualityGuard.updatedAt", { time: formatTime(status.updatedAt, i18n.language) })}</span>
+                {selectedNodes.length > 0 ? <>
+                  <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selectedNodes.length })}</span>
+                  <Button type="button" variant="secondary" size="sm" disabled={batchToggleMutation.isPending || selectedNodes.every((node) => node.enabled)} onClick={() => batchToggleMutation.mutate({ nodes: selectedNodes, enabled: true })}><Power />{t("common.enable")}</Button>
+                  <Button type="button" variant="secondary" size="sm" disabled={batchToggleMutation.isPending || selectedNodes.every((node) => !node.enabled)} onClick={() => batchToggleMutation.mutate({ nodes: selectedNodes, enabled: false })}><PowerOff />{t("common.disable")}</Button>
+                  <Button type="button" variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={deleteNodeMutation.isPending} onClick={() => setDeletingNodes(selectedNodes)}><Trash2 />{t("common.delete")}</Button>
+                </> : null}
+                <Button type="button" variant="ghost" size="icon" className="size-8" onClick={() => void nodesQuery.refetch()} disabled={nodesQuery.isFetching} aria-label={t("qualityGuard.refreshNodes")} title={t("qualityGuard.refreshNodes")}><RefreshCw className={cn("size-4", nodesQuery.isFetching && "animate-spin")} /></Button>
+                <Button type="button" size="sm" onClick={openCreateNode}><Plus />{t("settings.egress.add")}</Button>
+              </div>
             </div>
             <div className="overflow-x-auto">
-              <Table className="min-w-[900px]">
+              <Table className="min-w-[960px]">
                 <TableHeader><TableRow>
+                  <TableHead className="w-10 px-3"><Checkbox checked={allNodesSelected ? true : selectedNodes.length > 0 ? "indeterminate" : false} disabled={nodes.length === 0} onCheckedChange={(checked) => toggleAllNodes(checked === true)} aria-label={t("common.selectPage")} /></TableHead>
                   <TableHead>{t("qualityGuard.node")}</TableHead><TableHead>{t("qualityGuard.state")}</TableHead>
                   <TableHead className="text-right">{t("qualityGuard.outputTPS")}</TableHead><TableHead className="text-right">{t("qualityGuard.firstToken")}</TableHead>
                   <TableHead>{t("qualityGuard.source")}</TableHead><TableHead>{t("qualityGuard.strikes")}</TableHead>
-                  <TableHead>{t("qualityGuard.lastObserved")}</TableHead><TableHead className="w-28 text-right">{t("common.actions")}</TableHead>
+                  <TableHead>{t("qualityGuard.lastObserved")}</TableHead><TableHead className="w-48 text-right">{t("common.actions")}</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
-                  {nodes.map((node) => <NodeRow key={node.id} node={node} state={manualResults[node.id] ?? guardedNodes[node.id]} locale={i18n.language} status={status} mutation={testMutation} />)}
+                  {nodes.map((node) => <NodeRow key={node.id} node={node} selected={selectedNodeIDs.has(node.id)} onSelect={(checked) => toggleSelectedNode(node, checked)} state={manualResults[node.id] ?? guardedNodes[node.id]} locale={i18n.language} status={status} testMutation={testMutation} toggleMutation={toggleNodeMutation} onEdit={openEditNode} onDelete={(value) => setDeletingNodes([value])} />)}
                 </TableBody>
               </Table>
             </div>
@@ -105,6 +204,19 @@ export function QualityGuardPage() {
             <Policy status={status} onEdit={() => setPolicyOpen(true)} />
           </div>
           {policyOpen ? <PolicyEditor open onOpenChange={setPolicyOpen} status={status} /> : null}
+          <NodeEditor open={editingNode !== undefined} editingNode={editingNode} form={nodeForm} onFormChange={setNodeForm} onOpenChange={(open) => { if (!open && !saveNodeMutation.isPending) setEditingNode(undefined); }} onSave={() => saveNodeMutation.mutate()} saving={saveNodeMutation.isPending} />
+          <AlertDialog open={deletingNodes.length > 0} onOpenChange={(open) => { if (!open && !deleteNodeMutation.isPending) setDeletingNodes([]); }}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>{deletingNodes.length > 1 ? t("qualityGuard.deleteNodesTitle", { count: deletingNodes.length }) : t("qualityGuard.deleteNodeTitle")}</AlertDialogTitle>
+                <AlertDialogDescription>{deletingNodes.length > 1 ? t("qualityGuard.deleteNodesDescription", { count: deletingNodes.length }) : t("qualityGuard.deleteNodeDescription", { name: deletingNodes[0]?.name ?? "" })}</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={deleteNodeMutation.isPending}>{t("common.cancel")}</AlertDialogCancel>
+                <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={deleteNodeMutation.isPending || deletingNodes.length === 0} onClick={(event) => { event.preventDefault(); if (deletingNodes.length > 0) deleteNodeMutation.mutate(deletingNodes); }}>{deleteNodeMutation.isPending ? <Spinner /> : null}{t("common.delete")}</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </>
       )}
     </div>
@@ -144,11 +256,13 @@ function Metric({ icon: Icon, label, value, tone }: { icon: typeof Activity; lab
   </div>;
 }
 
-function NodeRow({ node, state, locale, status, mutation }: { node: EgressNodeDTO; state?: QualityGuardNodeState; locale: string; status: QualityGuardStatus; mutation: UseMutationResult<QualityTestResult, Error, { nodeId: string; status: QualityGuardStatus }> }) {
+function NodeRow({ node, selected, onSelect, state, locale, status, testMutation, toggleMutation, onEdit, onDelete }: { node: EgressNodeDTO; selected: boolean; onSelect: (checked: boolean) => void; state?: QualityGuardNodeState; locale: string; status: QualityGuardStatus; testMutation: UseMutationResult<QualityTestResult, Error, { nodeId: string; status: QualityGuardStatus }>; toggleMutation: UseMutationResult<{ updated: number }, Error, { node: EgressNodeDTO; enabled: boolean }>; onEdit: (node: EgressNodeDTO) => void; onDelete: (node: EgressNodeDTO) => void }) {
   const { t } = useTranslation();
-  const testing = mutation.isPending && mutation.variables?.nodeId === node.id;
+  const testing = testMutation.isPending && testMutation.variables?.nodeId === node.id;
+  const toggling = toggleMutation.isPending && toggleMutation.variables?.node.id === node.id;
   const classification = state?.last_classification || "unknown";
   return <TableRow>
+    <TableCell className="px-3"><Checkbox checked={selected} onCheckedChange={(checked) => onSelect(checked === true)} aria-label={t("common.selectItem", { name: node.name })} /></TableCell>
     <TableCell><div className="font-medium">{node.name}</div><div className="mt-0.5 text-[11px] text-muted-foreground">ID {node.id}</div></TableCell>
     <TableCell><StateBadge node={node} state={state} /></TableCell>
     <TableCell className={cn("text-right font-mono text-xs tabular-nums", classification === "hard" && "font-medium text-destructive", classification === "soft" && "text-amber-600 dark:text-amber-400")}>{state?.last_observed_at ? formatTPS(state.last_output_tps) : "-"}</TableCell>
@@ -156,8 +270,77 @@ function NodeRow({ node, state, locale, status, mutation }: { node: EgressNodeDT
     <TableCell className="text-xs text-muted-foreground">{state?.last_source ? t(`qualityGuard.sources.${state.last_source}`) : "-"}</TableCell>
     <TableCell className="text-xs tabular-nums">{state ? `${state.passive_soft_strikes} / ${state.active_soft_strikes} / ${state.error_strikes}` : "-"}</TableCell>
     <TableCell className="text-xs text-muted-foreground">{formatTime(state?.last_observed_at, locale)}</TableCell>
-    <TableCell className="text-right"><Button variant="ghost" size="sm" disabled={testing || !status.config} onClick={() => mutation.mutate({ nodeId: node.id, status })}><RotateCw className={cn(testing && "animate-spin")} />{t("qualityGuard.test")}</Button></TableCell>
+    <TableCell className="text-right"><div className="flex items-center justify-end gap-1">
+      <Switch checked={node.enabled} disabled={toggling} onCheckedChange={(enabled) => toggleMutation.mutate({ node, enabled })} aria-label={t(node.enabled ? "qualityGuard.disableNode" : "qualityGuard.enableNode", { name: node.name })} />
+      <Button variant="ghost" size="sm" disabled={testing || !status.config || !node.enabled} onClick={() => testMutation.mutate({ nodeId: node.id, status })}><RotateCw className={cn(testing && "animate-spin")} />{t("qualityGuard.test")}</Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => onEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem>
+          <DropdownMenuItem disabled={toggling} onClick={() => toggleMutation.mutate({ node, enabled: !node.enabled })}>{node.enabled ? <PowerOff /> : <Power />}{t(node.enabled ? "common.disable" : "common.enable")}</DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => onDelete(node)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div></TableCell>
   </TableRow>;
+}
+
+function NodeEditor({ open, editingNode, form, onFormChange, onOpenChange, onSave, saving }: { open: boolean; editingNode: EgressNodeDTO | null | undefined; form: EgressNodeInput; onFormChange: (form: EgressNodeInput) => void; onOpenChange: (open: boolean) => void; onSave: () => void; saving: boolean }) {
+  const { t } = useTranslation();
+  const proxyConfigured = Boolean(editingNode?.proxyConfigured || form.proxyURL?.trim());
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-[520px]">
+      <DialogHeader className="pr-8">
+        <DialogTitle>{editingNode ? t("settings.egress.editTitle") : t("settings.egress.addTitle")}</DialogTitle>
+        <DialogDescription>{t("qualityGuard.nodeEditorDescription")}</DialogDescription>
+      </DialogHeader>
+      <form className="space-y-3.5" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
+        <div className="flex items-center justify-between gap-4 rounded-md bg-muted/45 px-3 py-2.5">
+          <Label htmlFor="quality-node-enabled">{t("settings.egress.enabled")}</Label>
+          <Switch id="quality-node-enabled" checked={form.enabled} onCheckedChange={(enabled) => onFormChange({ ...form, enabled })} />
+        </div>
+        <NodeField label={t("settings.egress.name")} controlId="quality-node-name">
+          <Input id="quality-node-name" autoFocus value={form.name} onChange={(event) => onFormChange({ ...form, name: event.target.value })} />
+        </NodeField>
+        <NodeField label={t("settings.egress.scope")} controlId="quality-node-scope">
+          <div id="quality-node-scope" className="flex h-9 items-center rounded-md border bg-muted/30 px-3 text-sm text-muted-foreground">{t("settings.egress.scopeBuild")}</div>
+        </NodeField>
+        <NodeField label={t("settings.egress.capacity")} controlId="quality-node-capacity" help={t("qualityGuard.nodeCapacityHelp")}>
+          <Input id="quality-node-capacity" type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={form.accountCapacity || ""} onChange={(event) => onFormChange({ ...form, accountCapacity: Number(event.target.value) })} />
+        </NodeField>
+        <NodeField label={t("settings.egress.proxyURL")} controlId="quality-node-proxy" help={t("settings.egress.proxyProtocols")}>
+          <Input id="quality-node-proxy" type="password" autoComplete="new-password" placeholder={editingNode?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL ?? ""} onChange={(event) => {
+            const proxyURL = event.target.value;
+            onFormChange({ ...form, proxyURL, proxyPool: editingNode?.proxyConfigured || proxyURL.trim() ? form.proxyPool : false });
+          }} />
+        </NodeField>
+        <div className="flex items-start justify-between gap-4 rounded-md bg-muted/45 px-3 py-2.5">
+          <div className="space-y-1">
+            <Label htmlFor="quality-node-proxy-pool">{t("settings.egress.proxyPool")}</Label>
+            <p className="max-w-[390px] text-xs leading-5 text-muted-foreground">{t("settings.egress.proxyPoolHelp")}</p>
+          </div>
+          <Switch id="quality-node-proxy-pool" className="mt-0.5" checked={form.proxyPool} disabled={!proxyConfigured} onCheckedChange={(proxyPool) => onFormChange({ ...form, proxyPool })} />
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="secondary" size="sm" disabled={saving} onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>
+          <Button type="submit" size="sm" disabled={!form.name.trim() || saving}>{saving ? <Spinner /> : null}{t("common.save")}</Button>
+        </DialogFooter>
+      </form>
+    </DialogContent>
+  </Dialog>;
+}
+
+function NodeField({ label, controlId, help, children }: { label: string; controlId: string; help?: string; children: ReactNode }) {
+  return <div className="space-y-2">
+    <Label htmlFor={controlId}>{label}</Label>
+    {children}
+    {help ? <p className="whitespace-pre-line text-xs leading-5 text-muted-foreground">{help}</p> : null}
+  </div>;
+}
+
+function emptyNodeInput(): EgressNodeInput {
+  return { name: "", scope: "grok_build", enabled: true, proxyPool: false, accountCapacity: 0, proxyURL: "", userAgent: "", cloudflareCookies: "" };
 }
 
 function StateBadge({ node, state }: { node: EgressNodeDTO; state?: QualityGuardNodeState }) {

@@ -167,6 +167,17 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(guard.state["statistics"]["actions"]["quarantined"], 1)
             self.assertEqual(guard.state["statistics"]["actions"]["restored"], 1)
 
+    def test_auto_discovery_publishes_resolved_node_ids_for_status_consumers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", mode="passive")
+            nodes = self.nodes(3)
+            nodes[1]["enabled"] = False
+            nodes.append({"id": "4", "name": "direct", "enabled": True, "proxyConfigured": False})
+            api = FakeApi(nodes, [], [{"items": [], "hasMore": False, "nextCursor": ""}])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_passive_cycle()
+            self.assertEqual(guard.state["guard"]["node_ids"], ["1", "2", "3"])
+
     def test_minimum_healthy_nodes_suppresses_quarantine(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg = config(
