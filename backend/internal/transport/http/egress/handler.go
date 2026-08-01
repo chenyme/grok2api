@@ -349,7 +349,7 @@ func (h *Handler) testQualityGuardNode(c *gin.Context) {
 		Expected: state.Guard.Expected, MaxOutputTokens: state.Guard.MaxOutputTokens,
 	})
 	if err != nil {
-		h.writeError(c, err)
+		h.writeQualityProbeError(c, err)
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{
@@ -487,7 +487,7 @@ func (h *Handler) testQuality(c *gin.Context) {
 		Expected: request.Expected, MaxOutputTokens: request.MaxOutputTokens,
 	})
 	if err != nil {
-		h.writeError(c, err)
+		h.writeQualityProbeError(c, err)
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{
@@ -1093,6 +1093,19 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 		response.Error(c, http.StatusBadGateway, "clearanceRefreshFailed", err.Error())
 	default:
 		response.Error(c, http.StatusInternalServerError, "egressNodeOperationFailed", "代理节点操作失败")
+	}
+}
+
+func (h *Handler) writeQualityProbeError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, egressapp.ErrQualityProbeNoAccount):
+		response.Error(c, http.StatusServiceUnavailable, "egressQualityProbeNoAccount", "质量检测暂无可调度账号，请稍后重试")
+	case errors.Is(err, egressapp.ErrInvalidInput),
+		errors.Is(err, egressapp.ErrNotFound),
+		errors.Is(err, egressapp.ErrQualityProbeUnavailable):
+		h.writeError(c, err)
+	default:
+		response.Error(c, http.StatusBadGateway, "egressQualityProbeFailed", "质量检测暂不可用，请稍后重试")
 	}
 }
 

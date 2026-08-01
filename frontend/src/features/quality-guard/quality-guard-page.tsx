@@ -24,6 +24,8 @@ import { ErrorState } from "@/shared/components/data-state";
 import { PageHeader } from "@/shared/components/page-header";
 import { cn } from "@/shared/lib/cn";
 
+const NODE_ACTION_TOAST_ID = "quality-guard-node-action";
+
 export function QualityGuardPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -45,11 +47,12 @@ export function QualityGuardPage() {
   });
   const testMutation = useMutation({
     mutationFn: ({ nodeId, status }: { nodeId: string; status: QualityGuardStatus }) => runQualityTest(nodeId, status),
+    onMutate: () => toast.loading(t("qualityGuard.testing"), { id: NODE_ACTION_TOAST_ID }),
     onSuccess: (result, variables) => {
       setManualResults((current) => ({ ...current, [variables.nodeId]: qualityTestState(result, variables.status) }));
-      toast.success(t("qualityGuard.testComplete", { speed: formatTPS(result.outputTokensPerSecond) }));
+      toast.success(t("qualityGuard.testComplete", { speed: formatTPS(result.outputTokensPerSecond) }), { id: NODE_ACTION_TOAST_ID });
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : t("errors.generic")),
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("qualityGuard.testFailed"), { id: NODE_ACTION_TOAST_ID }),
   });
 
   const refreshNodeQueries = () => Promise.all([
@@ -72,26 +75,26 @@ export function QualityGuardPage() {
     onSuccess: () => {
       setEditingNode(undefined);
       void refreshNodeQueries();
-      toast.success(t("settings.egress.saved"));
+      toast.success(t("settings.egress.saved"), { id: NODE_ACTION_TOAST_ID });
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed"), { id: NODE_ACTION_TOAST_ID }),
   });
   const toggleNodeMutation = useMutation({
     mutationFn: ({ node, enabled }: { node: EgressNodeDTO; enabled: boolean }) => updateEgressNodesEnabled([node.id], enabled),
     onSuccess: (_, { enabled }) => {
       void refreshNodeQueries();
-      toast.success(t(enabled ? "qualityGuard.nodeEnabled" : "qualityGuard.nodeDisabled"));
+      toast.success(t(enabled ? "qualityGuard.nodeEnabled" : "qualityGuard.nodeDisabled"), { id: NODE_ACTION_TOAST_ID });
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed"), { id: NODE_ACTION_TOAST_ID }),
   });
   const batchToggleMutation = useMutation({
     mutationFn: ({ nodes, enabled }: { nodes: EgressNodeDTO[]; enabled: boolean }) => updateEgressNodesEnabled(nodes.map((node) => node.id), enabled),
     onSuccess: (_, { enabled }) => {
       setSelectedNodeIDs(new Set());
       void refreshNodeQueries();
-      toast.success(t(enabled ? "qualityGuard.nodesEnabled" : "qualityGuard.nodesDisabled"));
+      toast.success(t(enabled ? "qualityGuard.nodesEnabled" : "qualityGuard.nodesDisabled"), { id: NODE_ACTION_TOAST_ID });
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed"), { id: NODE_ACTION_TOAST_ID }),
   });
   const deleteNodeMutation = useMutation({
     mutationFn: (nodes: EgressNodeDTO[]) => deleteEgressNodes(nodes.map((node) => node.id)),
@@ -99,9 +102,9 @@ export function QualityGuardPage() {
       setDeletingNodes([]);
       setSelectedNodeIDs(new Set());
       void refreshNodeQueries();
-      toast.success(t("settings.egress.deleted"));
+      toast.success(t("settings.egress.deleted"), { id: NODE_ACTION_TOAST_ID });
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed")),
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("settings.egress.operationFailed"), { id: NODE_ACTION_TOAST_ID }),
   });
 
   const openCreateNode = () => {
@@ -272,7 +275,7 @@ function NodeRow({ node, selected, onSelect, state, locale, status, testMutation
     <TableCell className="text-xs text-muted-foreground">{formatTime(state?.last_observed_at, locale)}</TableCell>
     <TableCell className="text-right"><div className="flex items-center justify-end gap-1">
       <Switch checked={node.enabled} disabled={toggling} onCheckedChange={(enabled) => toggleMutation.mutate({ node, enabled })} aria-label={t(node.enabled ? "qualityGuard.disableNode" : "qualityGuard.enableNode", { name: node.name })} />
-      <Button variant="ghost" size="sm" disabled={testing || !status.config || !node.enabled} onClick={() => testMutation.mutate({ nodeId: node.id, status })}><RotateCw className={cn(testing && "animate-spin")} />{t("qualityGuard.test")}</Button>
+      <Button variant="ghost" size="sm" disabled={testing || !status.config || !node.enabled || state?.disabled_by_guard} onClick={() => testMutation.mutate({ nodeId: node.id, status })}><RotateCw className={cn(testing && "animate-spin")} />{t("qualityGuard.test")}</Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">

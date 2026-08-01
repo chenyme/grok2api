@@ -60,6 +60,26 @@ Generic IP/Cloudflare probes are intentionally not recovery gates: some
 residential exits can reach Grok normally while a probe endpoint is blocked.
 The model-quality request is the authoritative recovery signal.
 
+## Strict quarantine and IP rotation
+
+With `QUALITY_GUARD_FAIL_CLOSED=true`, soft, hard, and indeterminate samples
+leave scheduling before confirmation. The minimum healthy-node floor no longer
+suppresses quarantine. A short buffered burst is first retested on the same IP
+and is restored immediately when that one real-model probe is healthy, avoiding
+an unnecessary rotation for a measurement artifact.
+
+`QUALITY_GUARD_ROTATION_URL` enables a trusted internal rotation webhook scoped
+by `QUALITY_GUARD_ROTATABLE_NODE_IDS`. Confirmed suspect nodes are rotated, the
+exit-IP change is verified by the webhook, and one real-model quality probe must
+pass before restoration. The optional `session_rotator.py` implements this
+contract for 1024Proxy-style usernames containing `sid-...-t-...`.
+
+Probe failures require `QUALITY_GUARD_CONSECUTIVE_ERRORS` consecutive attempts
+before quarantine. Account-selection failures are reported separately: if no
+account assigned to a node is currently schedulable, the guard defers recovery
+without counting a proxy failure or rotating the IP. The node remains isolated
+until a real model-quality probe can pass.
+
 ## Admin UI
 
 The admin sidebar includes a Quality guard page showing service freshness, mode, per-node panel-equivalent output Token/s, time to first token, strike counts, quarantine state, and recent events. Operators can also run one real model quality test against a selected node.
@@ -89,6 +109,7 @@ If the state path is not configured, the page reports that the guard is not conn
 - Never deletes a node or changes account bindings.
 - Never restores a node disabled by an operator.
 - Refuses to quarantine below `QUALITY_GUARD_MIN_HEALTHY_NODES`.
+- Strict mode overrides that floor rather than scheduling an unverified exit.
 - Uses an exclusive process lock to prevent duplicate guards.
 - Writes state atomically with mode `0600`.
 - Logs metrics and node metadata, never credentials, proxy URLs, or response text.

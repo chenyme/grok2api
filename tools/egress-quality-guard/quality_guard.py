@@ -101,6 +101,12 @@ class Config:
     quarantine_seconds: int
     min_healthy_nodes: int
     max_output_tokens: int
+    fail_closed: bool
+    min_generation_ms: int
+    rotation_url: str
+    rotation_token: str
+    rotation_timeout_seconds: int
+    rotatable_node_ids: tuple[str, ...]
     prompt: str
     expected: str
     state_file: Path
@@ -112,6 +118,8 @@ class Config:
     def from_env(cls) -> "Config":
         raw_nodes = os.getenv("QUALITY_GUARD_NODE_IDS", "")
         node_ids = tuple(dict.fromkeys(value.strip() for value in raw_nodes.split(",") if value.strip()))
+        raw_rotatable_nodes = os.getenv("QUALITY_GUARD_ROTATABLE_NODE_IDS", "")
+        rotatable_node_ids = tuple(dict.fromkeys(value.strip() for value in raw_rotatable_nodes.split(",") if value.strip()))
         password = os.getenv("GROK2API_ADMIN_PASSWORD", "")
         password_file = os.getenv("GROK2API_ADMIN_PASSWORD_FILE", "").strip()
         if password_file:
@@ -142,6 +150,12 @@ class Config:
             quarantine_seconds=_env_int("QUALITY_GUARD_QUARANTINE_SECONDS", 300, 30),
             min_healthy_nodes=_env_int("QUALITY_GUARD_MIN_HEALTHY_NODES", 3, 1),
             max_output_tokens=_env_int("QUALITY_GUARD_MAX_OUTPUT_TOKENS", 384, 32),
+            fail_closed=_env_bool("QUALITY_GUARD_FAIL_CLOSED", False),
+            min_generation_ms=_env_int("QUALITY_GUARD_MIN_GENERATION_MS", 1000, 1),
+            rotation_url=os.getenv("QUALITY_GUARD_ROTATION_URL", "").strip(),
+            rotation_token=os.getenv("QUALITY_GUARD_ROTATION_TOKEN", "").strip(),
+            rotation_timeout_seconds=_env_int("QUALITY_GUARD_ROTATION_TIMEOUT_SECONDS", 45, 5),
+            rotatable_node_ids=rotatable_node_ids,
             prompt=os.getenv("QUALITY_GUARD_PROMPT", DEFAULT_PROMPT).strip(),
             expected=os.getenv("QUALITY_GUARD_EXPECTED", "QUALITY_OK").strip(),
             state_file=Path(os.getenv("QUALITY_GUARD_STATE_FILE", "/var/lib/grok2api-quality-guard/state.json")),
@@ -178,6 +192,16 @@ class Config:
             raise ValueError("QUALITY_GUARD_QUARANTINE_SECONDS must not exceed 86400")
         if self.min_healthy_nodes < 1 or (self.node_ids and self.min_healthy_nodes > len(self.node_ids)):
             raise ValueError("QUALITY_GUARD_MIN_HEALTHY_NODES must fit the configured node count")
+        if self.min_generation_ms > self.request_timeout_seconds * 1000:
+            raise ValueError("QUALITY_GUARD_MIN_GENERATION_MS must fit the request timeout")
+        if self.rotation_url:
+            rotation_url = urllib.parse.urlparse(self.rotation_url)
+            if rotation_url.scheme not in {"http", "https"} or not rotation_url.netloc:
+                raise ValueError("QUALITY_GUARD_ROTATION_URL must be an absolute HTTP(S) URL")
+        elif self.rotatable_node_ids:
+            raise ValueError("QUALITY_GUARD_ROTATION_URL is required when rotatable nodes are configured")
+        if any(not value.isdigit() or int(value) < 1 for value in self.rotatable_node_ids):
+            raise ValueError("QUALITY_GUARD_ROTATABLE_NODE_IDS must contain positive integers")
         if self.passive_page_size > 2000:
             raise ValueError("QUALITY_GUARD_PASSIVE_PAGE_SIZE must not exceed 2000")
 
@@ -321,6 +345,33 @@ class ApiClient:
         result = self._request("PATCH", "/api/admin/v1/egress-nodes/batch", {"ids": [node_id], "enabled": enabled})
         return int(result.get("updated") or 0)
 
+    def rotate_node(self, node_id: str, old_exit_ip: str = "") -> dict[str, Any]:
+        if not self.config.rotation_url:
+            raise RuntimeError("rotation endpoint is not configured")
+        data = json.dumps({"nodeId": node_id, "oldExitIp": old_exit_ip}, separators=(",", ":")).encode()
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if self.config.rotation_token:
+            headers["Authorization"] = f"Bearer {self.config.rotation_token}"
+        request = urllib.request.Request(self.config.rotation_url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=self.config.rotation_timeout_seconds,
+                context=self.ssl_context,
+            ) as response:
+                payload = json.load(response)
+        except urllib.error.HTTPError as exc:
+            try:
+                payload = json.loads(exc.read().decode("utf-8", "replace"))
+            except (ValueError, OSError):
+                payload = {}
+            raise RuntimeError(f"rotation failed: HTTP {exc.code} {payload.get('error', 'request failed')}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            raise RuntimeError(f"rotation failed: {type(exc).__name__}") from exc
+        if not isinstance(payload, dict) or not bool(payload.get("changed")):
+            raise RuntimeError("rotation did not confirm an exit IP change")
+        return payload
+
 
 def classify_result(result: dict[str, Any], config: Config) -> tuple[str, str]:
     if not bool(result.get("expectedMatched")):
@@ -331,8 +382,13 @@ def classify_result(result: dict[str, Any], config: Config) -> tuple[str, str]:
         # Rolling upgrades may still expose panel-equivalent TPS under the legacy name.
         speed_value = result.get("visibleTokensPerSecond")
     speed = float(speed_value or 0.0)
+    generation_ms = int(result.get("generationMs") or 0)
+    if generation_ms <= 0:
+        generation_ms = max(0, int(result.get("durationMs") or 0) - int(result.get("firstTokenMs") or 0))
     if output_tokens < 32:
         return "soft", "insufficient_output_tokens"
+    if config.fail_closed and generation_ms < config.min_generation_ms:
+        return "soft", "insufficient_generation_window"
     if speed >= config.hard_tps:
         return "hard", "hard_tps"
     if speed >= config.soft_tps:
@@ -354,6 +410,8 @@ def classify_audit(value: dict[str, Any], config: Config) -> tuple[str, str, flo
     if generation_ms <= 0 or output_tokens < 32:
         return "ignored", "insufficient_output_tokens", 0.0, output_tokens
     speed = float(output_tokens) * 1000 / float(generation_ms)
+    if config.fail_closed and generation_ms < config.min_generation_ms and speed >= config.soft_tps:
+        return "hard", "buffered_burst", speed, output_tokens
     if speed >= config.hard_tps:
         return "hard", "hard_tps", speed, output_tokens
     if speed >= config.soft_tps:
@@ -377,6 +435,9 @@ def default_node_state() -> dict[str, Any]:
         "last_output_tokens": 0,
         "last_first_token_ms": 0,
         "last_duration_ms": 0,
+        "last_rotation_at": 0.0,
+        "last_rotation_exit_ip": "",
+        "rotation_failures": 0,
     }
 
 
@@ -493,6 +554,9 @@ class Guard:
             "quarantine_seconds": self.config.quarantine_seconds,
             "min_healthy_nodes": self.config.min_healthy_nodes,
             "max_output_tokens": self.config.max_output_tokens,
+            "fail_closed": self.config.fail_closed,
+            "min_generation_ms": self.config.min_generation_ms,
+            "rotatable_node_ids": list(self.config.rotatable_node_ids),
             "prompt": self.config.prompt,
             "expected": self.config.expected,
         }
@@ -531,7 +595,24 @@ class Guard:
     def _can_quarantine(self, nodes: list[dict[str, Any]], node_id: str) -> bool:
         enabled = sum(1 for node in nodes if bool(node.get("enabled")))
         target_enabled = any(str(node.get("id")) == node_id and bool(node.get("enabled")) for node in nodes)
+        if self.config.fail_closed:
+            return target_enabled
         return target_enabled and enabled - 1 >= self.config.min_healthy_nodes
+
+    def _should_rotate(self, node_id: str, reason: str) -> bool:
+        return (
+            bool(self.config.rotation_url)
+            and node_id in set(self.config.rotatable_node_ids)
+            and reason in {
+                "hard_tps", "soft_tps", "buffered_burst", "expected_marker_missing",
+                "insufficient_output_tokens", "insufficient_generation_window", "probe_errors",
+                "recovery_probe_error", "rotation_error",
+            }
+        )
+
+    @staticmethod
+    def _probe_account_unavailable(exc: Exception) -> bool:
+        return isinstance(exc, ApiError) and exc.code == "egressQualityProbeNoAccount"
 
     def _quarantine(self, nodes: list[dict[str, Any]], node: dict[str, Any], reason: str, now: float) -> None:
         node_id = str(node["id"])
@@ -556,6 +637,10 @@ class Guard:
         self._bump_statistic("actions", "quarantined")
         append_state_event(self.state, "node_quarantined", node_id=node_id, node_name=node.get("name"), reason=reason)
         log_event("node_quarantined", node_id=node_id, node_name=node.get("name"), reason=reason, quarantine_seconds=self.config.quarantine_seconds)
+        if reason == "buffered_burst":
+            self._recover_quarantined(node, time.time(), rotate=False, rotate_on_failure=True)
+        elif self._should_rotate(node_id, reason):
+            self._recover_quarantined(node, time.time(), rotate=True)
 
     def _record_probe(self, node: dict[str, Any], result: dict[str, Any], classification: str, reason: str, now: float) -> None:
         node_id = str(node["id"])
@@ -606,6 +691,11 @@ class Guard:
         try:
             result = self.api.quality_test(node_id)
         except Exception as exc:
+            if self._probe_account_unavailable(exc):
+                state["last_probe_at"] = now
+                state["last_reason"] = "probe_no_account"
+                log_event("quality_probe_deferred", node_id=node_id, node_name=node.get("name"), trigger=trigger, reason="probe_no_account")
+                return
             self._bump_statistic("active", "errors")
             state["error_strikes"] = int(state.get("error_strikes", 0)) + 1
             state["last_probe_at"] = now
@@ -615,14 +705,42 @@ class Guard:
             return
         classification, reason = classify_result(result, self.config)
         self._record_probe(node, result, classification, reason, now)
-        if classification == "hard" or int(state.get("active_soft_strikes", 0)) >= self.config.consecutive_soft:
+        if classification == "hard" or (
+            classification == "soft" and self.config.fail_closed
+        ) or int(state.get("active_soft_strikes", 0)) >= self.config.consecutive_soft:
             self._quarantine(nodes, node, reason, now)
 
-    def _probe_quarantined(self, node: dict[str, Any], now: float) -> None:
+    def _recover_quarantined(
+        self,
+        node: dict[str, Any],
+        now: float,
+        rotate: bool,
+        rotate_on_failure: bool = False,
+    ) -> None:
         node_id = str(node["id"])
         state = self._state_for(node_id)
-        if now < float(state.get("quarantined_until", 0.0)):
-            return
+        if rotate:
+            try:
+                rotation = self.api.rotate_node(node_id, str(node.get("exitIp") or ""))
+            except Exception as exc:
+                state["rotation_failures"] = int(state.get("rotation_failures", 0)) + 1
+                state["quarantined_until"] = now + self.config.quarantine_seconds
+                state["last_reason"] = "rotation_error"
+                log_event("node_rotation_failed", node_id=node_id, node_name=node.get("name"), error_type=type(exc).__name__)
+                return
+            state.update({
+                "last_rotation_at": time.time(),
+                "last_rotation_exit_ip": str(rotation.get("newExitIp") or ""),
+                "rotation_failures": 0,
+            })
+            append_state_event(
+                self.state,
+                "node_rotated",
+                node_id=node_id,
+                node_name=node.get("name"),
+                exit_ip=str(rotation.get("newExitIp") or ""),
+            )
+            log_event("node_rotated", node_id=node_id, node_name=node.get("name"), exit_ip=str(rotation.get("newExitIp") or ""))
         try:
             try:
                 connectivity = self.api.connectivity_test(node_id)
@@ -635,6 +753,11 @@ class Guard:
             classification, reason = classify_result(result, self.config)
             self._record_probe(node, result, classification, reason, now)
         except Exception as exc:
+            if self._probe_account_unavailable(exc):
+                state["quarantined_until"] = now + self.config.quarantine_seconds
+                state["last_reason"] = "probe_no_account"
+                log_event("recovery_probe_deferred", node_id=node_id, node_name=node.get("name"), reason="probe_no_account")
+                return
             self._bump_statistic("active", "errors")
             state["quarantined_until"] = now + self.config.quarantine_seconds
             state["last_reason"] = "recovery_probe_error"
@@ -644,6 +767,8 @@ class Guard:
             state["quarantined_until"] = now + self.config.quarantine_seconds
             state["last_reason"] = reason
             log_event("quarantine_extended", node_id=node_id, node_name=node.get("name"), reason=reason)
+            if rotate_on_failure and self._should_rotate(node_id, reason):
+                self._recover_quarantined(node, time.time(), rotate=True)
             return
         updated = self.api.set_enabled(node_id, True)
         if updated != 1:
@@ -662,6 +787,19 @@ class Guard:
         append_state_event(self.state, "node_restored", node_id=node_id, node_name=node.get("name"), reason="quality_probe_healthy")
         log_event("node_restored", node_id=node_id, node_name=node.get("name"), connectivity_status=connectivity_status)
 
+    def _probe_quarantined(self, node: dict[str, Any], now: float) -> None:
+        node_id = str(node["id"])
+        state = self._state_for(node_id)
+        if now < float(state.get("quarantined_until", 0.0)):
+            return
+        reason = str(state.get("last_reason") or "")
+        self._recover_quarantined(
+            node,
+            now,
+            rotate=self._should_rotate(node_id, reason) and reason != "buffered_burst",
+            rotate_on_failure=reason == "buffered_burst",
+        )
+
     def _prepare_nodes(self, now: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[str]]:
         all_nodes = self.api.list_nodes()
         if not self.config.node_ids:
@@ -675,6 +813,21 @@ class Guard:
             node_id = str(node["id"])
             state = self._state_for(node_id)
             if state.get("disabled_by_guard") and node.get("enabled"):
+                if self.config.fail_closed:
+                    updated = self.api.set_enabled(node_id, False)
+                    if updated == 1:
+                        node["enabled"] = False
+                        state["quarantined_until"] = now + self.config.quarantine_seconds
+                        log_event("operator_reenable_requires_probe", node_id=node_id, node_name=node.get("name"))
+                        reason = str(state.get("last_reason") or "")
+                        self._recover_quarantined(
+                            node,
+                            now,
+                            rotate=self._should_rotate(node_id, reason) and reason != "buffered_burst",
+                            rotate_on_failure=reason == "buffered_burst",
+                        )
+                    skip_ids.add(node_id)
+                    continue
                 state.update({
                     "active_soft_strikes": 0,
                     "passive_soft_strikes": 0,
@@ -796,6 +949,9 @@ class Guard:
             strikes=int(state.get("passive_soft_strikes", 0)),
         )
         if classification == "hard":
+            self._quarantine(all_nodes, node, reason, now)
+            return
+        if self.config.fail_closed:
             self._quarantine(all_nodes, node, reason, now)
             return
         self._probe_active(all_nodes, node, now, trigger="passive_confirmation")

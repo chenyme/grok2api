@@ -22,6 +22,8 @@ def config(**overrides):
         request_timeout_seconds=120, soft_tps=500.0, hard_tps=1000.0,
         consecutive_soft=2, consecutive_errors=2, quarantine_seconds=300,
         min_healthy_nodes=3, max_output_tokens=384, prompt="probe", expected="QUALITY_OK",
+        fail_closed=False, min_generation_ms=1000, rotation_url="", rotation_token="",
+        rotation_timeout_seconds=45, rotatable_node_ids=(),
         state_file=Path("/tmp/state.json"), lock_file=Path("/tmp/lock"), insecure_tls=False,
         runtime_config_file=Path("/tmp/runtime-config.json"),
     )
@@ -109,6 +111,7 @@ class FakeApi:
         self.audit_pages = list(audit_pages or [])
         self.enabled_calls = []
         self.quality_calls = []
+        self.rotation_calls = []
 
     def list_nodes(self):
         return self.nodes
@@ -130,6 +133,10 @@ class FakeApi:
                 node["enabled"] = enabled
                 return 1
         return 0
+
+    def rotate_node(self, node_id, old_exit_ip=""):
+        self.rotation_calls.append((node_id, old_exit_ip))
+        return {"changed": True, "oldExitIp": old_exit_ip, "newExitIp": "203.0.113.10"}
 
     def list_audits(self, _cursor=""):
         if self.audit_pages:
@@ -192,6 +199,181 @@ class GuardTests(unittest.TestCase):
             guard.run_cycle()
             self.assertEqual(api.enabled_calls, [])
             self.assertFalse(guard.state["nodes"]["1"]["disabled_by_guard"])
+
+    def test_fail_closed_rotates_soft_signal_and_restores_after_one_good_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                fail_closed=True,
+                rotation_url="http://127.0.0.1:19099/rotate",
+                rotatable_node_ids=("1",),
+            )
+            good = {
+                "expectedMatched": True,
+                "outputTokens": 128,
+                "outputTokensPerSecond": 100,
+                "generationMs": 1500,
+            }
+            audit = self.audit("user", "1", 600)
+            audit.update({"durationMs": 2500, "outputTokens": 900})
+            api = FakeApi(self.nodes(3), [good], [
+                {"items": [], "hasMore": False, "nextCursor": ""},
+                {"items": [audit], "hasMore": False, "nextCursor": ""},
+            ])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_passive_cycle()
+            guard.run_passive_cycle()
+            self.assertEqual(api.enabled_calls, [("1", False), ("1", True)])
+            self.assertEqual(api.rotation_calls, [("1", "")])
+            self.assertEqual(api.quality_calls, ["1"])
+            self.assertFalse(guard.state["nodes"]["1"]["disabled_by_guard"])
+
+    def test_fail_closed_requires_consecutive_probe_errors_then_rotates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                fail_closed=True,
+                consecutive_errors=2,
+                rotation_url="http://127.0.0.1:19099/rotate",
+                rotatable_node_ids=("1",),
+            )
+            good = {
+                "expectedMatched": True,
+                "outputTokens": 128,
+                "outputTokensPerSecond": 100,
+                "generationMs": 1500,
+            }
+            api = FakeApi(self.nodes(3), [
+                RuntimeError("temporary"), RuntimeError("still failing"),
+                RuntimeError("new IP still failing"), good,
+            ])
+            guard = quality_guard.Guard(cfg, api)
+
+            guard.run_active_cycle()
+            self.assertEqual(api.enabled_calls, [])
+            self.assertEqual(guard.state["nodes"]["1"]["error_strikes"], 1)
+
+            guard.run_active_cycle()
+            self.assertEqual(api.enabled_calls, [("1", False)])
+            self.assertEqual(api.rotation_calls, [("1", "")])
+            self.assertTrue(guard.state["nodes"]["1"]["disabled_by_guard"])
+            self.assertEqual(guard.state["nodes"]["1"]["last_reason"], "recovery_probe_error")
+
+            guard.state["nodes"]["1"]["quarantined_until"] = 0
+            guard.run_active_cycle()
+            self.assertEqual(api.enabled_calls, [("1", False), ("1", True)])
+            self.assertEqual(api.rotation_calls, [("1", ""), ("1", "")])
+            self.assertFalse(guard.state["nodes"]["1"]["disabled_by_guard"])
+
+    def test_probe_without_schedulable_account_is_deferred_without_rotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                fail_closed=True,
+                consecutive_errors=1,
+                rotation_url="http://127.0.0.1:19099/rotate",
+                rotatable_node_ids=("1",),
+            )
+            unavailable = lambda: quality_guard.ApiError(503, "egressQualityProbeNoAccount", "no account")
+            api = FakeApi(self.nodes(3), [unavailable(), unavailable()])
+            guard = quality_guard.Guard(cfg, api)
+
+            guard.run_active_cycle()
+            self.assertEqual(api.enabled_calls, [])
+            self.assertEqual(api.rotation_calls, [])
+            self.assertEqual(guard.state["nodes"]["1"]["error_strikes"], 0)
+            self.assertEqual(guard.state["nodes"]["1"]["last_reason"], "probe_no_account")
+
+            api.nodes[0]["enabled"] = False
+            state = guard.state["nodes"]["1"]
+            state["disabled_by_guard"] = True
+            guard._recover_quarantined(api.nodes[0], 10.0, rotate=False)
+            self.assertEqual(api.enabled_calls, [])
+            self.assertEqual(api.rotation_calls, [])
+            self.assertEqual(state["last_reason"], "probe_no_account")
+            self.assertTrue(state["disabled_by_guard"])
+
+    def test_fail_closed_buffered_burst_restores_same_ip_after_one_good_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                fail_closed=True,
+                rotation_url="http://127.0.0.1:19099/rotate",
+                rotatable_node_ids=("1",),
+            )
+            good = {
+                "expectedMatched": True,
+                "outputTokens": 128,
+                "outputTokensPerSecond": 100,
+                "generationMs": 1500,
+            }
+            api = FakeApi(self.nodes(3), [good], [
+                {"items": [], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("burst", "1", 2500)], "hasMore": False, "nextCursor": ""},
+            ])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_passive_cycle()
+            guard.run_passive_cycle()
+            self.assertEqual(api.enabled_calls, [("1", False), ("1", True)])
+            self.assertEqual(api.rotation_calls, [])
+            self.assertEqual(api.quality_calls, ["1"])
+
+    def test_fail_closed_keeps_node_isolated_when_rotated_ip_probe_is_ambiguous(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                fail_closed=True,
+                rotation_url="http://127.0.0.1:19099/rotate",
+                rotatable_node_ids=("1",),
+                min_healthy_nodes=3,
+            )
+            ambiguous = {
+                "expectedMatched": True,
+                "outputTokens": 128,
+                "outputTokensPerSecond": 100,
+                "generationMs": 50,
+            }
+            api = FakeApi(self.nodes(3), [ambiguous, ambiguous.copy()])
+            guard = quality_guard.Guard(cfg, api)
+            guard._probe_active(api.nodes, api.nodes[0], 1.0)
+            self.assertEqual(api.enabled_calls, [("1", False)])
+            self.assertEqual(api.rotation_calls, [("1", "")])
+            self.assertTrue(guard.state["nodes"]["1"]["disabled_by_guard"])
+            self.assertEqual(guard.state["nodes"]["1"]["last_reason"], "insufficient_generation_window")
+
+    def test_fail_closed_manual_reenable_requires_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                fail_closed=True,
+            )
+            good = {
+                "expectedMatched": True,
+                "outputTokens": 128,
+                "outputTokensPerSecond": 100,
+                "generationMs": 1500,
+            }
+            nodes = self.nodes()
+            api = FakeApi(nodes, [good])
+            guard = quality_guard.Guard(cfg, api)
+            state = guard._state_for("1")
+            state.update({"disabled_by_guard": True, "last_reason": "hard_tps"})
+            guard.run_active_cycle()
+            self.assertEqual(api.enabled_calls, [("1", False), ("1", True)])
+            self.assertEqual(api.quality_calls, ["1"])
+            self.assertFalse(state["disabled_by_guard"])
 
     def test_model_probe_can_restore_when_generic_connectivity_probe_is_unhealthy(self):
         with tempfile.TemporaryDirectory() as directory:

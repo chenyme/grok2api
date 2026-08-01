@@ -73,7 +73,7 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 		Streaming: true, Operation: audit.OperationChat, ForcedEgressNodeID: nodeID,
 	})
 	if err != nil {
-		return egressapp.QualityProbeResult{}, err
+		return egressapp.QualityProbeResult{}, normalizeQualityProbeRequestError(err)
 	}
 	defer result.Body.Close()
 
@@ -180,6 +180,13 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 		VisibleTokens: visibleTokens, VisibleCharacters: visibleCharacters, OutputTokensPerSecond: outputTokensPerSecond,
 		ExpectedMatched: strings.Contains(text, input.Expected), ResponseSHA256: hex.EncodeToString(digest[:]),
 	}, nil
+}
+
+func normalizeQualityProbeRequestError(err error) error {
+	if errors.Is(err, ErrNoAvailableAccount) {
+		return egressapp.ErrQualityProbeNoAccount
+	}
+	return err
 }
 
 func qualityProbeOutputTokensPerSecond(outputTokens, durationMS, firstTokenMS int64) float64 {

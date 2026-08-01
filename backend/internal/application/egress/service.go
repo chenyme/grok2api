@@ -22,6 +22,7 @@ var (
 	ErrNotFound                = errors.New("代理节点不存在")
 	ErrProbeStale              = errors.New("代理配置在探测期间已更新，请重新测试")
 	ErrQualityProbeUnavailable = errors.New("出口质量探测不可用")
+	ErrQualityProbeNoAccount   = errors.New("质量检测暂无可调度账号")
 	ErrClearanceUnavailable    = errors.New("Clearance 刷新不可用")
 )
 
