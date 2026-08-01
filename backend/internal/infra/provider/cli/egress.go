@@ -25,9 +25,20 @@ func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, erro
 		return nil, err
 	}
 	if !configured {
-		response, requestErr := t.fallback.RoundTrip(request)
-		infraegress.RecordDirectPhysicalCall(request.Context(), response, requestErr)
-		return response, requestErr
+		// When account-isolated pools are enabled, still go through the manager's
+		// direct node so different accounts do not share the process-wide fallback
+		// HTTP transport / TCP connection pool.
+		if t.manager.AccountIsolatedConnections() {
+			lease, err = t.manager.Acquire(request.Context(), domainegress.ScopeBuild, affinity)
+			if err != nil {
+				return nil, err
+			}
+			configured = true
+		} else {
+			response, requestErr := t.fallback.RoundTrip(request)
+			infraegress.RecordDirectPhysicalCall(request.Context(), response, requestErr)
+			return response, requestErr
+		}
 	}
 	if lease.UserAgent != "" {
 		request.Header.Set("User-Agent", lease.UserAgent)

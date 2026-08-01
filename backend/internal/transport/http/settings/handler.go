@@ -101,6 +101,7 @@ type routingConfigDTO struct {
 	MaxAttempts                 int                         `json:"maxAttempts"`
 	PreferFreeBuild             bool                        `json:"preferFreeBuild"`
 	MarkBuildChatDeniedAsReauth *bool                       `json:"markBuildChatDeniedAsReauth,omitempty"`
+	AccountIsolatedConnections  bool                        `json:"accountIsolatedConnections"`
 	SegmentedSelector           *segmentedSelectorConfigDTO `json:"segmentedSelector,omitempty"`
 }
 
@@ -219,6 +220,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			PreferFreeBuild:                     value.Routing.PreferFreeBuild,
 			MarkBuildChatDeniedAsReauth:         boolValue(value.Routing.MarkBuildChatDeniedAsReauth),
 			MarkBuildChatDeniedAsReauthProvided: value.Routing.MarkBuildChatDeniedAsReauth != nil,
+			AccountIsolatedConnections:          value.Routing.AccountIsolatedConnections,
 		},
 		Audit: settingsapp.AuditConfig{
 			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval, CommitDelayMS: value.Audit.CommitDelayMS,
@@ -293,6 +295,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				CooldownMax: config.Routing.CooldownMax, CapacityWait: config.Routing.CapacityWait, MaxAttempts: config.Routing.MaxAttempts,
 				MarkBuildChatDeniedAsReauth: boolPointer(config.Routing.MarkBuildChatDeniedAsReauth),
 				PreferFreeBuild:             config.Routing.PreferFreeBuild,
+				AccountIsolatedConnections:  config.Routing.AccountIsolatedConnections,
 				SegmentedSelector: &segmentedSelectorConfigDTO{
 					Enabled: config.Routing.SegmentedSelector.Enabled, MinCandidates: config.Routing.SegmentedSelector.MinCandidates,
 					WindowSize: config.Routing.SegmentedSelector.WindowSize,
