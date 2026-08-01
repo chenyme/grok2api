@@ -32,24 +32,24 @@ def config(**overrides):
 class ClassificationTests(unittest.TestCase):
     def test_healthy_soft_and_hard_thresholds(self):
         cfg = config()
-        self.assertEqual(quality_guard.classify_result({"expectedMatched": True, "visibleTokens": 100, "visibleTokensPerSecond": 499}, cfg)[0], "healthy")
-        self.assertEqual(quality_guard.classify_result({"expectedMatched": True, "visibleTokens": 100, "visibleTokensPerSecond": 500}, cfg)[0], "soft")
-        self.assertEqual(quality_guard.classify_result({"expectedMatched": True, "visibleTokens": 100, "visibleTokensPerSecond": 1000}, cfg)[0], "hard")
+        self.assertEqual(quality_guard.classify_result({"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 499}, cfg)[0], "healthy")
+        self.assertEqual(quality_guard.classify_result({"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 500}, cfg)[0], "soft")
+        self.assertEqual(quality_guard.classify_result({"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 1000}, cfg)[0], "hard")
 
     def test_missing_marker_and_short_response_are_soft_failures(self):
         cfg = config()
-        self.assertEqual(quality_guard.classify_result({"expectedMatched": False, "visibleTokens": 100, "visibleTokensPerSecond": 10}, cfg), ("soft", "expected_marker_missing"))
-        self.assertEqual(quality_guard.classify_result({"expectedMatched": True, "visibleTokens": 12, "visibleTokensPerSecond": 10}, cfg), ("soft", "insufficient_visible_tokens"))
+        self.assertEqual(quality_guard.classify_result({"expectedMatched": False, "outputTokens": 100, "outputTokensPerSecond": 10}, cfg), ("soft", "expected_marker_missing"))
+        self.assertEqual(quality_guard.classify_result({"expectedMatched": True, "outputTokens": 12, "outputTokensPerSecond": 10}, cfg), ("soft", "insufficient_output_tokens"))
 
-    def test_passive_speed_excludes_reasoning_tokens(self):
+    def test_passive_speed_matches_panel_and_includes_reasoning_tokens(self):
         cfg = config()
-        classification, reason, speed, visible = quality_guard.classify_audit({
+        classification, reason, speed, output = quality_guard.classify_audit({
             "provider": "grok_build", "streaming": True, "statusCode": 200,
             "firstTokenMs": 1000, "durationMs": 1100,
             "outputTokens": 1050, "reasoningTokens": 950,
         }, cfg)
-        self.assertEqual((classification, reason, visible), ("hard", "hard_tps", 100))
-        self.assertEqual(speed, 1000)
+        self.assertEqual((classification, reason, output), ("hard", "hard_tps", 1050))
+        self.assertEqual(speed, 10500)
 
     def test_passive_ignores_short_and_failed_requests(self):
         cfg = config()
@@ -108,11 +108,13 @@ class FakeApi:
         self.results = list(results)
         self.audit_pages = list(audit_pages or [])
         self.enabled_calls = []
+        self.quality_calls = []
 
     def list_nodes(self):
         return self.nodes
 
-    def quality_test(self, _node_id):
+    def quality_test(self, node_id):
+        self.quality_calls.append(node_id)
         value = self.results.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -147,8 +149,8 @@ class GuardTests(unittest.TestCase):
                 lock_file=Path(directory) / "lock",
                 node_ids=("1",),
             )
-            bad = {"expectedMatched": True, "visibleTokens": 100, "visibleTokensPerSecond": 1200}
-            good = {"expectedMatched": True, "visibleTokens": 100, "visibleTokensPerSecond": 100}
+            bad = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 1200}
+            good = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 100}
             api = FakeApi(self.nodes(), [bad, good])
             guard = quality_guard.Guard(cfg, api)
             guard.run_cycle()
@@ -160,7 +162,7 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(api.enabled_calls, [("1", False), ("1", True)])
             self.assertFalse(state["disabled_by_guard"])
             self.assertEqual(guard.state["statistics"]["active"], {
-                "total": 2, "healthy": 1, "soft": 0, "hard": 1, "errors": 0, "visible_tokens": 200,
+                "total": 2, "healthy": 1, "soft": 0, "hard": 1, "errors": 0, "output_tokens": 200,
             })
             self.assertEqual(guard.state["statistics"]["actions"]["quarantined"], 1)
             self.assertEqual(guard.state["statistics"]["actions"]["restored"], 1)
@@ -173,7 +175,7 @@ class GuardTests(unittest.TestCase):
                 node_ids=("1",),
                 min_healthy_nodes=3,
             )
-            bad = {"expectedMatched": True, "visibleTokens": 100, "visibleTokensPerSecond": 1200}
+            bad = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 1200}
             api = FakeApi(self.nodes(3), [bad])
             guard = quality_guard.Guard(cfg, api)
             guard.run_cycle()
@@ -185,7 +187,7 @@ class GuardTests(unittest.TestCase):
             cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", node_ids=("1",))
             nodes = self.nodes()
             nodes[0]["enabled"] = False
-            api = FakeApi(nodes, [{"expectedMatched": True, "visibleTokens": 100, "visibleTokensPerSecond": 100}])
+            api = FakeApi(nodes, [{"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 100}])
             api.connectivity_test = lambda _node_id: {"status": "unhealthy"}
             guard = quality_guard.Guard(cfg, api)
             state = guard._state_for("1")
@@ -206,31 +208,99 @@ class GuardTests(unittest.TestCase):
             self.assertTrue(guard.state["passive_initialized"])
             self.assertIn("old", guard.state["seen_audit_ids"])
 
-    def test_passive_hard_signal_quarantines_but_ignores_guard_key(self):
+    def test_passive_hard_signal_requires_active_confirmation_and_ignores_guard_key(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", mode="passive")
-            api = FakeApi(self.nodes(), [], [
+            healthy = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 100}
+            api = FakeApi(self.nodes(), [healthy], [
                 {"items": [], "hasMore": False, "nextCursor": ""},
                 {"items": [self.audit("guard", "1", 1200, client_key_id="1"), self.audit("user", "2", 1200)], "hasMore": False, "nextCursor": ""},
             ])
             guard = quality_guard.Guard(cfg, api)
             guard.run_passive_cycle()
             guard.run_passive_cycle()
-            self.assertEqual(api.enabled_calls, [("2", False)])
+            self.assertEqual(api.quality_calls, ["2"])
+            self.assertEqual(api.enabled_calls, [])
             self.assertFalse(guard.state["nodes"].get("1", {}).get("disabled_by_guard", False))
-            self.assertTrue(guard.state["nodes"]["2"]["disabled_by_guard"])
+            self.assertFalse(guard.state["nodes"]["2"]["disabled_by_guard"])
+            self.assertEqual(guard.state["nodes"]["2"]["passive_soft_strikes"], 0)
             self.assertEqual(guard.state["statistics"]["passive"]["total"], 1)
             self.assertEqual(guard.state["statistics"]["passive"]["hard"], 1)
 
+    def test_passive_hard_signal_quarantines_after_active_hard_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", mode="passive")
+            hard = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 1200}
+            api = FakeApi(self.nodes(), [hard], [
+                {"items": [], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("user", "2", 1200)], "hasMore": False, "nextCursor": ""},
+            ])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_passive_cycle()
+            guard.run_passive_cycle()
+            self.assertEqual(api.quality_calls, ["2"])
+            self.assertEqual(api.enabled_calls, [("2", False)])
+            self.assertTrue(guard.state["nodes"]["2"]["disabled_by_guard"])
+
+    def test_passive_signals_quarantine_only_after_consecutive_active_soft_confirmations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", mode="passive")
+            soft = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 600}
+            api = FakeApi(self.nodes(), [soft, soft], [
+                {"items": [], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("user-1", "2", 1200)], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("user-2", "2", 1200)], "hasMore": False, "nextCursor": ""},
+            ])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_passive_cycle()
+            guard.run_passive_cycle()
+            self.assertEqual(api.enabled_calls, [])
+            self.assertEqual(guard.state["nodes"]["2"]["active_soft_strikes"], 1)
+            guard.run_passive_cycle()
+            self.assertEqual(api.quality_calls, ["2", "2"])
+            self.assertEqual(api.enabled_calls, [("2", False)])
+            self.assertTrue(guard.state["nodes"]["2"]["disabled_by_guard"])
+
+    def test_multiple_passive_hard_signals_each_require_healthy_active_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", mode="passive")
+            healthy = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 100}
+            api = FakeApi(self.nodes(), [healthy, healthy], [
+                {"items": [], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("user-1", "2", 1200), self.audit("user-2", "2", 1500)], "hasMore": False, "nextCursor": ""},
+            ])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_passive_cycle()
+            guard.run_passive_cycle()
+            self.assertEqual(api.quality_calls, ["2", "2"])
+            self.assertEqual(api.enabled_calls, [])
+            self.assertEqual(guard.state["nodes"]["2"]["passive_soft_strikes"], 0)
+
+    def test_passive_confirmation_errors_do_not_quarantine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock",
+                mode="passive", consecutive_errors=1,
+            )
+            api = FakeApi(self.nodes(), [RuntimeError("probe unavailable")], [
+                {"items": [], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("user", "2", 1200)], "hasMore": False, "nextCursor": ""},
+            ])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_passive_cycle()
+            guard.run_passive_cycle()
+            self.assertEqual(api.enabled_calls, [])
+            self.assertEqual(guard.state["nodes"]["2"]["error_strikes"], 1)
+
     @staticmethod
-    def audit(audit_id, node_id, visible_tps, client_key_id="99"):
+    def audit(audit_id, node_id, output_tps, client_key_id="99"):
         generation_ms = 100
-        visible_tokens = int(visible_tps * generation_ms / 1000)
+        output_tokens = int(output_tps * generation_ms / 1000)
         return {
             "id": audit_id, "requestId": f"request-{audit_id}", "clientKeyId": client_key_id,
             "clientKeyName": "user", "provider": "grok_build", "streaming": True,
             "statusCode": 200, "firstTokenMs": 1000, "durationMs": 1000 + generation_ms,
-            "outputTokens": visible_tokens + 100, "reasoningTokens": 100,
+            "outputTokens": output_tokens, "reasoningTokens": min(100, max(0, output_tokens - 1)),
             "egressNodeId": node_id, "errorCode": None,
         }
 

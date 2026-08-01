@@ -90,12 +90,12 @@ type qualityGuardStatistics struct {
 }
 
 type qualityGuardDetectionStats struct {
-	Total         uint64 `json:"total"`
-	Healthy       uint64 `json:"healthy"`
-	Soft          uint64 `json:"soft"`
-	Hard          uint64 `json:"hard"`
-	Errors        uint64 `json:"errors"`
-	VisibleTokens uint64 `json:"visible_tokens"`
+	Total        uint64 `json:"total"`
+	Healthy      uint64 `json:"healthy"`
+	Soft         uint64 `json:"soft"`
+	Hard         uint64 `json:"hard"`
+	Errors       uint64 `json:"errors"`
+	OutputTokens uint64 `json:"output_tokens"`
 }
 
 type qualityGuardActionStats struct {
@@ -133,8 +133,8 @@ type qualityGuardNodeState struct {
 	LastObservedAt     float64 `json:"last_observed_at"`
 	LastSource         string  `json:"last_source"`
 	LastClassification string  `json:"last_classification"`
-	LastVisibleTPS     float64 `json:"last_visible_tps"`
-	LastVisibleTokens  int     `json:"last_visible_tokens"`
+	LastOutputTPS      float64 `json:"last_output_tps"`
+	LastOutputTokens   int     `json:"last_output_tokens"`
 	LastFirstTokenMS   int     `json:"last_first_token_ms"`
 	LastDurationMS     int     `json:"last_duration_ms"`
 }
@@ -146,7 +146,7 @@ type qualityGuardEvent struct {
 	NodeName       string  `json:"node_name"`
 	Reason         string  `json:"reason"`
 	Classification string  `json:"classification"`
-	VisibleTPS     float64 `json:"visible_tps"`
+	OutputTPS      float64 `json:"output_tps"`
 }
 
 func (h *Handler) qualityGuardStatus(c *gin.Context) {
@@ -358,7 +358,8 @@ func (h *Handler) testQualityGuardNode(c *gin.Context) {
 		"generationMs": value.GenerationMS, "chunkCount": value.ChunkCount,
 		"outputTokens": value.OutputTokens, "reasoningTokens": value.ReasoningTokens,
 		"visibleTokens": value.VisibleTokens, "visibleCharacters": value.VisibleCharacters,
-		"visibleTokensPerSecond": value.VisibleTokensPerSecond, "expectedMatched": value.ExpectedMatched,
+		"outputTokensPerSecond":  value.OutputTokensPerSecond,
+		"visibleTokensPerSecond": value.OutputTokensPerSecond, "expectedMatched": value.ExpectedMatched,
 		"responseSha256": value.ResponseSHA256,
 	})
 }
@@ -495,7 +496,8 @@ func (h *Handler) testQuality(c *gin.Context) {
 		"generationMs": value.GenerationMS, "chunkCount": value.ChunkCount,
 		"outputTokens": value.OutputTokens, "reasoningTokens": value.ReasoningTokens,
 		"visibleTokens": value.VisibleTokens, "visibleCharacters": value.VisibleCharacters,
-		"visibleTokensPerSecond": value.VisibleTokensPerSecond, "expectedMatched": value.ExpectedMatched,
+		"outputTokensPerSecond":  value.OutputTokensPerSecond,
+		"visibleTokensPerSecond": value.OutputTokensPerSecond, "expectedMatched": value.ExpectedMatched,
 		"responseSha256": value.ResponseSHA256,
 	})
 }

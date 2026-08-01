@@ -37,7 +37,7 @@ export function QualityGuardPage() {
     mutationFn: ({ nodeId, status }: { nodeId: string; status: QualityGuardStatus }) => runQualityTest(nodeId, status),
     onSuccess: (result, variables) => {
       setManualResults((current) => ({ ...current, [variables.nodeId]: qualityTestState(result, variables.status) }));
-      toast.success(t("qualityGuard.testComplete", { speed: formatTPS(result.visibleTokensPerSecond) }));
+      toast.success(t("qualityGuard.testComplete", { speed: formatTPS(result.outputTokensPerSecond) }));
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : t("errors.generic")),
   });
@@ -89,7 +89,7 @@ export function QualityGuardPage() {
               <Table className="min-w-[900px]">
                 <TableHeader><TableRow>
                   <TableHead>{t("qualityGuard.node")}</TableHead><TableHead>{t("qualityGuard.state")}</TableHead>
-                  <TableHead className="text-right">{t("qualityGuard.visibleTPS")}</TableHead><TableHead className="text-right">{t("qualityGuard.firstToken")}</TableHead>
+                  <TableHead className="text-right">{t("qualityGuard.outputTPS")}</TableHead><TableHead className="text-right">{t("qualityGuard.firstToken")}</TableHead>
                   <TableHead>{t("qualityGuard.source")}</TableHead><TableHead>{t("qualityGuard.strikes")}</TableHead>
                   <TableHead>{t("qualityGuard.lastObserved")}</TableHead><TableHead className="w-28 text-right">{t("common.actions")}</TableHead>
                 </TableRow></TableHeader>
@@ -119,7 +119,7 @@ function StatisticsPanel({ statistics, locale }: { statistics: QualityGuardStati
     { icon: BarChart3, label: t("qualityGuard.statisticsChecks"), value: formatCount(checks, locale), detail: t("qualityGuard.statisticsChecksHelp") },
     { icon: Bot, label: t("qualityGuard.statisticsActive"), value: formatCount(statistics.active.total, locale), detail: t("qualityGuard.statisticsActiveDetail", { healthy: formatCount(statistics.active.healthy, locale), errors: formatCount(statistics.active.errors, locale) }) },
     { icon: Eye, label: t("qualityGuard.statisticsPassive"), value: formatCount(statistics.passive.total, locale), detail: t("qualityGuard.statisticsPassiveDetail", { healthy: formatCount(statistics.passive.healthy, locale) }) },
-    { icon: Coins, label: t("qualityGuard.statisticsTokens"), value: formatCount(statistics.active.visible_tokens, locale), detail: t("qualityGuard.statisticsTokensHelp") },
+    { icon: Coins, label: t("qualityGuard.statisticsTokens"), value: formatCount(statistics.active.output_tokens, locale), detail: t("qualityGuard.statisticsTokensHelp") },
     { icon: AlertTriangle, label: t("qualityGuard.statisticsAnomalies"), value: formatCount(anomalies, locale), detail: t("qualityGuard.statisticsAnomalyDetail", { soft: formatCount(statistics.active.soft + statistics.passive.soft, locale), hard: formatCount(statistics.active.hard + statistics.passive.hard, locale) }) },
     { icon: Shield, label: t("qualityGuard.statisticsQuarantines"), value: formatCount(statistics.actions.quarantined, locale), detail: t("qualityGuard.statisticsActionDetail", { restored: formatCount(statistics.actions.restored, locale), suppressed: formatCount(statistics.actions.suppressed, locale) }) },
   ];
@@ -151,7 +151,7 @@ function NodeRow({ node, state, locale, status, mutation }: { node: EgressNodeDT
   return <TableRow>
     <TableCell><div className="font-medium">{node.name}</div><div className="mt-0.5 text-[11px] text-muted-foreground">ID {node.id}</div></TableCell>
     <TableCell><StateBadge node={node} state={state} /></TableCell>
-    <TableCell className={cn("text-right font-mono text-xs tabular-nums", classification === "hard" && "font-medium text-destructive", classification === "soft" && "text-amber-600 dark:text-amber-400")}>{state?.last_observed_at ? formatTPS(state.last_visible_tps) : "-"}</TableCell>
+    <TableCell className={cn("text-right font-mono text-xs tabular-nums", classification === "hard" && "font-medium text-destructive", classification === "soft" && "text-amber-600 dark:text-amber-400")}>{state?.last_observed_at ? formatTPS(state.last_output_tps) : "-"}</TableCell>
     <TableCell className="text-right font-mono text-xs tabular-nums">{state?.last_first_token_ms ? `${state.last_first_token_ms} ms` : "-"}</TableCell>
     <TableCell className="text-xs text-muted-foreground">{state?.last_source ? t(`qualityGuard.sources.${state.last_source}`) : "-"}</TableCell>
     <TableCell className="text-xs tabular-nums">{state ? `${state.passive_soft_strikes} / ${state.active_soft_strikes} / ${state.error_strikes}` : "-"}</TableCell>
@@ -176,7 +176,7 @@ function EventList({ events, locale }: { events: QualityGuardEvent[]; locale: st
     <h2 id="guard-events-title" className="text-sm font-medium">{t("qualityGuard.events")}</h2>
     {events.length === 0 ? <p className="mt-8 text-center text-xs text-muted-foreground">{t("qualityGuard.noEvents")}</p> : <div className="mt-3 space-y-1">
       {[...events].reverse().slice(0, 10).map((event, index) => <div key={`${event.ts}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 rounded-md px-2 py-2 hover:bg-secondary/40">
-        <div className="min-w-0"><p className="truncate text-xs font-medium">{event.node_name || `ID ${event.node_id}`} · {t(`qualityGuard.eventTypes.${event.event}`)}</p><p className="mt-1 truncate text-[11px] text-muted-foreground">{t(`qualityGuard.reasons.${event.reason || "unknown"}`)}{event.visible_tps ? ` · ${formatTPS(event.visible_tps)}` : ""}</p></div>
+        <div className="min-w-0"><p className="truncate text-xs font-medium">{event.node_name || `ID ${event.node_id}`} · {t(`qualityGuard.eventTypes.${event.event}`)}</p><p className="mt-1 truncate text-[11px] text-muted-foreground">{t(`qualityGuard.reasons.${event.reason || "unknown"}`)}{event.output_tps ? ` · ${formatTPS(event.output_tps)}` : ""}</p></div>
         <time className="text-[11px] text-muted-foreground">{formatTime(event.ts, locale)}</time>
       </div>)}
     </div>}
@@ -306,16 +306,16 @@ function qualityTestState(result: QualityTestResult, status: QualityGuardStatus)
   let classification = "healthy";
   let reason = "within_threshold";
   if (!result.expectedMatched) { classification = "soft"; reason = "expected_marker_missing"; }
-  else if (result.visibleTokens < 32) { classification = "soft"; reason = "insufficient_visible_tokens"; }
-  else if (result.visibleTokensPerSecond >= hardTPS) { classification = "hard"; reason = "hard_tps"; }
-  else if (result.visibleTokensPerSecond >= softTPS) { classification = "soft"; reason = "soft_tps"; }
+  else if (result.outputTokens < 32) { classification = "soft"; reason = "insufficient_output_tokens"; }
+  else if (result.outputTokensPerSecond >= hardTPS) { classification = "hard"; reason = "hard_tps"; }
+  else if (result.outputTokensPerSecond >= softTPS) { classification = "soft"; reason = "soft_tps"; }
   const now = Date.now() / 1000;
   return {
     active_soft_strikes: classification === "soft" ? 1 : classification === "hard" ? (status.config?.consecutive_soft ?? 2) : 0,
     passive_soft_strikes: 0, error_strikes: 0, quarantined_until: 0, disabled_by_guard: false,
     last_reason: reason, last_probe_at: now, last_observed_at: now, last_source: "active",
-    last_classification: classification, last_visible_tps: result.visibleTokensPerSecond,
-    last_visible_tokens: result.visibleTokens, last_first_token_ms: result.firstTokenMs, last_duration_ms: result.durationMs,
+    last_classification: classification, last_output_tps: result.outputTokensPerSecond,
+    last_output_tokens: result.outputTokens, last_first_token_ms: result.firstTokenMs, last_duration_ms: result.durationMs,
   };
 }
 function formatTPS(value: number): string { return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)} Token/s`; }

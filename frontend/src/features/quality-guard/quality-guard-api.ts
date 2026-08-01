@@ -24,8 +24,8 @@ export type QualityGuardNodeState = {
   last_observed_at: number;
   last_source: string;
   last_classification: string;
-  last_visible_tps: number;
-  last_visible_tokens: number;
+  last_output_tps: number;
+  last_output_tokens: number;
   last_first_token_ms: number;
   last_duration_ms: number;
 };
@@ -37,7 +37,7 @@ export type QualityGuardEvent = {
   node_name: string;
   reason: string;
   classification: string;
-  visible_tps: number;
+  output_tps: number;
 };
 
 export type QualityGuardDetectionStats = {
@@ -46,7 +46,7 @@ export type QualityGuardDetectionStats = {
   soft: number;
   hard: number;
   errors: number;
-  visible_tokens: number;
+  output_tokens: number;
 };
 
 export type QualityGuardStatistics = {
@@ -88,8 +88,9 @@ export type QualityTestResult = {
   statusCode: number;
   firstTokenMs: number;
   durationMs: number;
+  outputTokens: number;
   visibleTokens: number;
-  visibleTokensPerSecond: number;
+  outputTokensPerSecond: number;
   expectedMatched: boolean;
 };
 
@@ -97,12 +98,12 @@ const nodeStateValidator = hasShape({
   active_soft_strikes: isNumber, passive_soft_strikes: isNumber, error_strikes: isNumber,
   quarantined_until: isNumber, disabled_by_guard: isBoolean, last_reason: isString,
   last_probe_at: isNumber, last_observed_at: isNumber, last_source: isString,
-  last_classification: isString, last_visible_tps: isNumber, last_visible_tokens: isNumber,
+  last_classification: isString, last_output_tps: isNumber, last_output_tokens: isNumber,
   last_first_token_ms: isNumber, last_duration_ms: isNumber,
 });
 const eventValidator = hasShape({
   ts: isNumber, event: isString, node_id: isString, node_name: isString,
-  reason: isString, classification: isString, visible_tps: isNumber,
+  reason: isString, classification: isString, output_tps: isNumber,
 });
 const configValidator = hasShape({
   mode: isOneOf("active", "passive", "hybrid"), model: isString, client_key_id: isString,
@@ -112,7 +113,7 @@ const configValidator = hasShape({
 });
 const detectionStatsValidator = hasShape({
   total: isNumber, healthy: isNumber, soft: isNumber, hard: isNumber,
-  errors: isNumber, visible_tokens: isNumber,
+  errors: isNumber, output_tokens: isNumber,
 });
 const statisticsValidator = hasShape({
   started_at: isNumber,
@@ -134,7 +135,7 @@ const decodeStatus = (value: unknown): QualityGuardStatus => {
 
 const decodeQualityTest = createObjectDecoder<QualityTestResult>("quality test", {
   nodeId: isString, statusCode: isNumber, firstTokenMs: isNumber, durationMs: isNumber,
-  visibleTokens: isNumber, visibleTokensPerSecond: isNumber, expectedMatched: isBoolean,
+  outputTokens: isNumber, visibleTokens: isNumber, outputTokensPerSecond: isNumber, expectedMatched: isBoolean,
 });
 
 export function getQualityGuardStatus(): Promise<QualityGuardStatus> {

@@ -88,7 +88,6 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 	}
 
 	var firstGeneratedAt time.Time
-	var firstVisibleAt time.Time
 	var visible strings.Builder
 	chunkCount := 0
 	totalBytes := 0
@@ -135,9 +134,6 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 				}
 			}
 			if delta.Content != "" {
-				if firstVisibleAt.IsZero() {
-					firstVisibleAt = time.Now()
-				}
 				visible.WriteString(delta.Content)
 				chunkCount++
 			}
@@ -155,6 +151,7 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 	completedAt := time.Now()
 	text := visible.String()
 	visibleCharacters := utf8.RuneCountInString(text)
+	// Visible tokens are diagnostic only; TPS intentionally uses total output tokens to match the audit panel.
 	visibleTokens := usage.OutputTokens - usage.ReasoningTokens
 	if visibleTokens <= 0 && visibleCharacters > 0 {
 		visibleTokens = int64((visibleCharacters + 3) / 4)
@@ -163,23 +160,32 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 	if !firstGeneratedAt.IsZero() {
 		firstTokenMS = firstGeneratedAt.Sub(startedAt).Milliseconds()
 	}
+	durationMS := completedAt.Sub(startedAt).Milliseconds()
 	var generationMS int64
-	if !firstVisibleAt.IsZero() {
-		generationMS = completedAt.Sub(firstVisibleAt).Milliseconds()
+	if !firstGeneratedAt.IsZero() {
+		generationMS = durationMS - firstTokenMS
 		if generationMS < 1 {
 			generationMS = 1
 		}
 	}
-	var visibleTokensPerSecond float64
-	if visibleTokens > 0 && generationMS > 0 {
-		visibleTokensPerSecond = float64(visibleTokens) * 1000 / float64(generationMS)
+	var outputTokensPerSecond float64
+	if !firstGeneratedAt.IsZero() {
+		outputTokensPerSecond = qualityProbeOutputTokensPerSecond(usage.OutputTokens, durationMS, firstTokenMS)
 	}
 	digest := sha256.Sum256([]byte(text))
 	return egressapp.QualityProbeResult{
 		RequestID: requestID, NodeID: nodeID, Model: input.Model, StatusCode: result.StatusCode,
-		FirstTokenMS: firstTokenMS, DurationMS: completedAt.Sub(startedAt).Milliseconds(), GenerationMS: generationMS,
+		FirstTokenMS: firstTokenMS, DurationMS: durationMS, GenerationMS: generationMS,
 		ChunkCount: chunkCount, OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens,
-		VisibleTokens: visibleTokens, VisibleCharacters: visibleCharacters, VisibleTokensPerSecond: visibleTokensPerSecond,
+		VisibleTokens: visibleTokens, VisibleCharacters: visibleCharacters, OutputTokensPerSecond: outputTokensPerSecond,
 		ExpectedMatched: strings.Contains(text, input.Expected), ResponseSHA256: hex.EncodeToString(digest[:]),
 	}, nil
+}
+
+func qualityProbeOutputTokensPerSecond(outputTokens, durationMS, firstTokenMS int64) float64 {
+	generationMS := durationMS - firstTokenMS
+	if outputTokens <= 0 || generationMS <= 0 {
+		return 0
+	}
+	return float64(outputTokens) * 1000 / float64(generationMS)
 }

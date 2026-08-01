@@ -43,21 +43,21 @@ type QualityProbeInput struct {
 }
 
 type QualityProbeResult struct {
-	RequestID              string
-	NodeID                 uint64
-	Model                  string
-	StatusCode             int
-	FirstTokenMS           int64
-	DurationMS             int64
-	GenerationMS           int64
-	ChunkCount             int
-	OutputTokens           int64
-	ReasoningTokens        int64
-	VisibleTokens          int64
-	VisibleCharacters      int
-	VisibleTokensPerSecond float64
-	ExpectedMatched        bool
-	ResponseSHA256         string
+	RequestID             string
+	NodeID                uint64
+	Model                 string
+	StatusCode            int
+	FirstTokenMS          int64
+	DurationMS            int64
+	GenerationMS          int64
+	ChunkCount            int
+	OutputTokens          int64
+	ReasoningTokens       int64
+	VisibleTokens         int64
+	VisibleCharacters     int
+	OutputTokensPerSecond float64
+	ExpectedMatched       bool
+	ResponseSHA256        string
 }
 
 type QualityProber interface {

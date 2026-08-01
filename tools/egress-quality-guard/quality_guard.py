@@ -325,10 +325,14 @@ class ApiClient:
 def classify_result(result: dict[str, Any], config: Config) -> tuple[str, str]:
     if not bool(result.get("expectedMatched")):
         return "soft", "expected_marker_missing"
-    speed = float(result.get("visibleTokensPerSecond") or 0.0)
-    visible_tokens = int(result.get("visibleTokens") or 0)
-    if visible_tokens < 32:
-        return "soft", "insufficient_visible_tokens"
+    output_tokens = int(result.get("outputTokens") or result.get("visibleTokens") or 0)
+    speed_value = result.get("outputTokensPerSecond")
+    if speed_value is None:
+        # Rolling upgrades may still expose panel-equivalent TPS under the legacy name.
+        speed_value = result.get("visibleTokensPerSecond")
+    speed = float(speed_value or 0.0)
+    if output_tokens < 32:
+        return "soft", "insufficient_output_tokens"
     if speed >= config.hard_tps:
         return "hard", "hard_tps"
     if speed >= config.soft_tps:
@@ -346,15 +350,15 @@ def classify_audit(value: dict[str, Any], config: Config) -> tuple[str, str, flo
     if first_token_ms is None:
         return "ignored", "missing_first_token", 0.0, 0
     generation_ms = int(value.get("durationMs") or 0) - int(first_token_ms)
-    visible_tokens = max(0, int(value.get("outputTokens") or 0) - int(value.get("reasoningTokens") or 0))
-    if generation_ms <= 0 or visible_tokens < 32:
-        return "ignored", "insufficient_visible_tokens", 0.0, visible_tokens
-    speed = float(visible_tokens) * 1000 / float(generation_ms)
+    output_tokens = max(0, int(value.get("outputTokens") or 0))
+    if generation_ms <= 0 or output_tokens < 32:
+        return "ignored", "insufficient_output_tokens", 0.0, output_tokens
+    speed = float(output_tokens) * 1000 / float(generation_ms)
     if speed >= config.hard_tps:
-        return "hard", "hard_tps", speed, visible_tokens
+        return "hard", "hard_tps", speed, output_tokens
     if speed >= config.soft_tps:
-        return "soft", "soft_tps", speed, visible_tokens
-    return "healthy", "within_threshold", speed, visible_tokens
+        return "soft", "soft_tps", speed, output_tokens
+    return "healthy", "within_threshold", speed, output_tokens
 
 
 def default_node_state() -> dict[str, Any]:
@@ -369,8 +373,8 @@ def default_node_state() -> dict[str, Any]:
         "last_observed_at": 0.0,
         "last_source": "",
         "last_classification": "",
-        "last_visible_tps": 0.0,
-        "last_visible_tokens": 0,
+        "last_output_tps": 0.0,
+        "last_output_tokens": 0,
         "last_first_token_ms": 0,
         "last_duration_ms": 0,
     }
@@ -379,8 +383,8 @@ def default_node_state() -> dict[str, Any]:
 def default_statistics() -> dict[str, Any]:
     return {
         "started_at": time.time(),
-        "active": {"total": 0, "healthy": 0, "soft": 0, "hard": 0, "errors": 0, "visible_tokens": 0},
-        "passive": {"total": 0, "healthy": 0, "soft": 0, "hard": 0, "visible_tokens": 0},
+        "active": {"total": 0, "healthy": 0, "soft": 0, "hard": 0, "errors": 0, "output_tokens": 0},
+        "passive": {"total": 0, "healthy": 0, "soft": 0, "hard": 0, "errors": 0, "output_tokens": 0},
         "actions": {"quarantined": 0, "restored": 0, "suppressed": 0},
     }
 
@@ -395,6 +399,9 @@ def ensure_statistics(state: dict[str, Any]) -> dict[str, Any]:
         group = statistics.setdefault(group_name, {})
         if not isinstance(group, dict):
             raise RuntimeError("invalid quality guard statistics")
+        if group_name in {"active", "passive"}:
+            legacy_tokens = int(group.pop("visible_tokens", 0))
+            group.setdefault("output_tokens", legacy_tokens)
         for field, default in defaults[group_name].items():
             group.setdefault(field, default)
             if isinstance(group[field], bool) or not isinstance(group[field], int) or group[field] < 0:
@@ -499,6 +506,8 @@ class Guard:
         legacy_strikes = int(current.pop("soft_strikes", 0))
         current.setdefault("active_soft_strikes", legacy_strikes)
         current.setdefault("passive_soft_strikes", 0)
+        current.setdefault("last_output_tps", float(current.pop("last_visible_tps", 0.0)))
+        current.setdefault("last_output_tokens", int(current.pop("last_visible_tokens", 0)))
         for key, value in default_node_state().items():
             current.setdefault(key, value)
         return current
@@ -550,21 +559,27 @@ class Guard:
     def _record_probe(self, node: dict[str, Any], result: dict[str, Any], classification: str, reason: str, now: float) -> None:
         node_id = str(node["id"])
         state = self._state_for(node_id)
+        output_tokens = int(result.get("outputTokens") or result.get("visibleTokens") or 0)
+        output_tps_value = result.get("outputTokensPerSecond")
+        if output_tps_value is None:
+            output_tps_value = result.get("visibleTokensPerSecond")
+        output_tps = float(output_tps_value or 0.0)
         state["last_probe_at"] = now
         state.update({
             "last_observed_at": now,
             "last_source": "active",
             "last_classification": classification,
-            "last_visible_tps": round(float(result.get("visibleTokensPerSecond") or 0.0), 3),
-            "last_visible_tokens": int(result.get("visibleTokens") or 0),
+            "last_output_tps": round(output_tps, 3),
+            "last_output_tokens": output_tokens,
             "last_first_token_ms": int(result.get("firstTokenMs") or 0),
             "last_duration_ms": int(result.get("durationMs") or 0),
         })
         state["error_strikes"] = 0
         self._bump_statistic("active", classification)
-        self._bump_statistic("active", "visible_tokens", int(result.get("visibleTokens") or 0))
+        self._bump_statistic("active", "output_tokens", output_tokens)
         if classification == "healthy":
             state["active_soft_strikes"] = 0
+            state["passive_soft_strikes"] = 0
         elif classification == "soft":
             state["active_soft_strikes"] = int(state.get("active_soft_strikes", 0)) + 1
         else:
@@ -575,15 +590,15 @@ class Guard:
             node_name=node.get("name"),
             classification=classification,
             reason=reason,
-            visible_tps=round(float(result.get("visibleTokensPerSecond") or 0.0), 3),
-            visible_tokens=int(result.get("visibleTokens") or 0),
+            output_tps=round(output_tps, 3),
+            output_tokens=output_tokens,
             first_token_ms=int(result.get("firstTokenMs") or 0),
             duration_ms=int(result.get("durationMs") or 0),
             chunk_count=int(result.get("chunkCount") or 0),
             expected_matched=bool(result.get("expectedMatched")),
         )
 
-    def _probe_active(self, nodes: list[dict[str, Any]], node: dict[str, Any], now: float) -> None:
+    def _probe_active(self, nodes: list[dict[str, Any]], node: dict[str, Any], now: float, trigger: str = "scheduled") -> None:
         node_id = str(node["id"])
         state = self._state_for(node_id)
         self._bump_statistic("active", "total")
@@ -593,8 +608,8 @@ class Guard:
             self._bump_statistic("active", "errors")
             state["error_strikes"] = int(state.get("error_strikes", 0)) + 1
             state["last_probe_at"] = now
-            log_event("quality_probe_failed", node_id=node_id, node_name=node.get("name"), error_type=type(exc).__name__, strikes=state["error_strikes"])
-            if state["error_strikes"] >= self.config.consecutive_errors:
+            log_event("quality_probe_failed", node_id=node_id, node_name=node.get("name"), trigger=trigger, error_type=type(exc).__name__, strikes=state["error_strikes"])
+            if trigger == "scheduled" and state["error_strikes"] >= self.config.consecutive_errors:
                 self._quarantine(nodes, node, "probe_errors", now)
             return
         classification, reason = classify_result(result, self.config)
@@ -733,18 +748,18 @@ class Guard:
     def _record_passive_audit(self, all_nodes: list[dict[str, Any]], node: dict[str, Any], audit_value: dict[str, Any], now: float) -> None:
         node_id = str(node["id"])
         state = self._state_for(node_id)
-        classification, reason, speed, visible_tokens = classify_audit(audit_value, self.config)
+        classification, reason, speed, output_tokens = classify_audit(audit_value, self.config)
         if classification == "ignored":
             return
         self._bump_statistic("passive", "total")
         self._bump_statistic("passive", classification)
-        self._bump_statistic("passive", "visible_tokens", visible_tokens)
+        self._bump_statistic("passive", "output_tokens", output_tokens)
         state.update({
             "last_observed_at": now,
             "last_source": "passive",
             "last_classification": classification,
-            "last_visible_tps": round(speed, 3),
-            "last_visible_tokens": visible_tokens,
+            "last_output_tps": round(speed, 3),
+            "last_output_tokens": output_tokens,
             "last_first_token_ms": int(audit_value.get("firstTokenMs") or 0),
             "last_duration_ms": int(audit_value.get("durationMs") or 0),
         })
@@ -762,7 +777,7 @@ class Guard:
             node_name=node.get("name"),
             reason=reason,
             classification=classification,
-            visible_tps=round(speed, 3),
+            output_tps=round(speed, 3),
         )
         log_event(
             "passive_audit_anomaly",
@@ -771,14 +786,13 @@ class Guard:
             node_name=node.get("name"),
             classification=classification,
             reason=reason,
-            visible_tps=round(speed, 3),
-            visible_tokens=visible_tokens,
+            output_tps=round(speed, 3),
+            output_tokens=output_tokens,
             first_token_ms=int(audit_value.get("firstTokenMs") or 0),
             duration_ms=int(audit_value.get("durationMs") or 0),
             strikes=int(state.get("passive_soft_strikes", 0)),
         )
-        if classification == "hard" or int(state.get("passive_soft_strikes", 0)) >= self.config.consecutive_soft:
-            self._quarantine(all_nodes, node, "passive_" + reason, now)
+        self._probe_active(all_nodes, node, now, trigger="passive_confirmation")
 
     def run_passive_cycle(self) -> None:
         now = time.time()

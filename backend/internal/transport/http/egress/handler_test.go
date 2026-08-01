@@ -16,7 +16,7 @@ import (
 
 func TestQualityGuardStatusReadsOnlyPublicState(t *testing.T) {
 	path := t.TempDir() + "/state.json"
-	state := `{"version":1,"started_at":10,"updated_at":20,"last_active_cycle_at":15,"last_passive_poll_at":19,"password":"must-not-leak","guard":{"mode":"hybrid","model":"grok-4.5","client_key_id":"6","node_ids":["8"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":3,"max_output_tokens":384,"prompt":"private-probe-prompt","expected":"private-marker"},"nodes":{"8":{"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":0,"disabled_by_guard":false,"last_reason":"","last_probe_at":15,"last_observed_at":19,"last_source":"passive","last_classification":"healthy","last_visible_tps":42.5,"last_visible_tokens":100,"last_first_token_ms":900,"last_duration_ms":4000}},"statistics":{"started_at":11,"active":{"total":7,"healthy":6,"soft":1,"hard":0,"errors":0,"visible_tokens":1400},"passive":{"total":9,"healthy":8,"soft":0,"hard":1,"errors":0,"visible_tokens":1800},"actions":{"quarantined":1,"restored":0,"suppressed":0}}}`
+	state := `{"version":1,"started_at":10,"updated_at":20,"last_active_cycle_at":15,"last_passive_poll_at":19,"password":"must-not-leak","guard":{"mode":"hybrid","model":"grok-4.5","client_key_id":"6","node_ids":["8"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":3,"max_output_tokens":384,"prompt":"private-probe-prompt","expected":"private-marker"},"nodes":{"8":{"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":0,"disabled_by_guard":false,"last_reason":"","last_probe_at":15,"last_observed_at":19,"last_source":"passive","last_classification":"healthy","last_output_tps":42.5,"last_output_tokens":100,"last_first_token_ms":900,"last_duration_ms":4000}},"statistics":{"started_at":11,"active":{"total":7,"healthy":6,"soft":1,"hard":0,"errors":0,"output_tokens":1400},"passive":{"total":9,"healthy":8,"soft":0,"hard":1,"errors":0,"output_tokens":1800},"actions":{"quarantined":1,"restored":0,"suppressed":0}}}`
 	if err := os.WriteFile(path, []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestQualityGuardStatusReadsOnlyPublicState(t *testing.T) {
 	context, _ := gin.CreateTestContext(recorder)
 	context.Request = httptest.NewRequest("GET", "/egress-quality-guard", nil)
 	NewHandler(nil, path).qualityGuardStatus(context)
-	if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), `"available":true`) || !strings.Contains(recorder.Body.String(), `"last_visible_tps":42.5`) || !strings.Contains(recorder.Body.String(), `"visible_tokens":1400`) {
+	if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), `"available":true`) || !strings.Contains(recorder.Body.String(), `"last_output_tps":42.5`) || !strings.Contains(recorder.Body.String(), `"output_tokens":1400`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	if strings.Contains(recorder.Body.String(), "must-not-leak") || strings.Contains(recorder.Body.String(), "private-probe-prompt") || strings.Contains(recorder.Body.String(), "private-marker") || !strings.Contains(recorder.Body.String(), `"recentEvents":[]`) {
