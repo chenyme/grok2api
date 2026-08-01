@@ -46,21 +46,23 @@ type Dependencies struct {
 	PublicAPIBaseURL   string
 	FrontendStaticPath string
 	// Readiness 返回可观测的分层就绪状态。Ready 仅为旧调用方保留。
-	Readiness    func(context.Context) ReadinessSnapshot
-	Ready        func(context.Context) bool
-	TrafficReady func() bool
-	AdminAuth    *adminauthapp.Service
-	Accounts     *accountapp.Service
-	AccountSync  *accountsyncapp.Service
-	Models       *modelapp.Service
-	ClientKeys   *clientkeyapp.Service
-	Audits       *auditapp.Service
-	Dashboard    *dashboardapp.Service
-	Gateway      *gateway.Service
-	Media        *mediaapp.Service
-	Settings     *settingsapp.Service
-	Egress       *egressapp.Service
-	Updates      *updatecheckapp.Service
+	Readiness              func(context.Context) ReadinessSnapshot
+	Ready                  func(context.Context) bool
+	TrafficReady           func() bool
+	AdminAuth              *adminauthapp.Service
+	Accounts               *accountapp.Service
+	AccountSync            *accountsyncapp.Service
+	Models                 *modelapp.Service
+	ClientKeys             *clientkeyapp.Service
+	Audits                 *auditapp.Service
+	Dashboard              *dashboardapp.Service
+	Gateway                *gateway.Service
+	Media                  *mediaapp.Service
+	Settings               *settingsapp.Service
+	Egress                 *egressapp.Service
+	QualityGuardStatePath  string
+	QualityGuardConfigPath string
+	Updates                *updatecheckapp.Service
 }
 
 type ReadinessComponent struct {
@@ -148,7 +150,7 @@ func New(deps Dependencies) *gin.Engine {
 	dashboardhttp.NewHandler(deps.Dashboard).Register(adminProtected)
 	mediaHandler.RegisterAdmin(adminProtected)
 	settingshttp.NewHandler(deps.Settings).Register(adminProtected)
-	egresshttp.NewHandler(deps.Egress).Register(adminProtected)
+	egresshttp.NewHandler(deps.Egress, deps.QualityGuardStatePath, deps.QualityGuardConfigPath).Register(adminProtected)
 	systemhttp.NewHandler(func() string {
 		if deps.Settings != nil {
 			return deps.Settings.PublicAPIBaseURL()

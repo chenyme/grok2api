@@ -617,6 +617,10 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	nodes := NewEgressRepository(database)
 	cipher := egressOperationsCipher(t)
 	node := createHealthyEgressNode(t, ctx, nodes, cipher, "probe", 0)
+	cooldown := time.Now().UTC().Add(time.Minute)
+	if err := nodes.UpdateEgressNodeHealth(ctx, node.ID, 0.7, 1, &cooldown, egress.LastErrorTransport); err != nil {
+		t.Fatal(err)
+	}
 	probedAt := time.Now().UTC().Truncate(time.Millisecond)
 	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
 	service.SetNodeProber(egressProbeStub{result: egress.ProbeResult{
@@ -642,6 +646,22 @@ func TestEgressOperationsPersistsProbeResult(t *testing.T) {
 	}
 	if stored.IPv4Probe.ExitIP != "1.1.1.1" || stored.IPv6Probe.ExitIP != "2606:4700:4700::1111" || stored.IPv6Probe.Status != egress.ProbeStatusHealthy {
 		t.Fatalf("stored family probes = ipv4:%#v ipv6:%#v", stored.IPv4Probe, stored.IPv6Probe)
+	}
+	if stored.Health != 1 || stored.FailureCount != 0 || stored.CooldownUntil != nil || stored.LastError != "" {
+		t.Fatalf("healthy probe did not recover transport failure: %#v", stored)
+	}
+	if err := nodes.UpdateEgressNodeHealth(ctx, node.ID, 0.7, 1, &cooldown, "anti-bot rejection"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.TestNode(ctx, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = nodes.GetEgressNode(ctx, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Health != 0.7 || stored.FailureCount != 1 || stored.CooldownUntil == nil || stored.LastError != "anti-bot rejection" {
+		t.Fatalf("healthy probe cleared a non-transport failure: %#v", stored)
 	}
 	updatedConfig, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
 		ProbeProvider: egress.ProbeProviderIPInfo, ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,

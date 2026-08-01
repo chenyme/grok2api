@@ -1,0 +1,25 @@
+# Merge this file with the repository's main docker-compose.yml.
+# Keep the real environment file outside the repository with mode 0600.
+services:
+  grok2api:
+    environment:
+      QUALITY_GUARD_STATE_FILE: /var/lib/grok2api-quality-guard/state.json
+      QUALITY_GUARD_RUNTIME_CONFIG_FILE: /var/lib/grok2api-quality-guard/runtime-config.json
+    volumes:
+      - quality_guard_state:/var/lib/grok2api-quality-guard
+
+  egress-quality-guard:
+    build:
+      context: .
+      dockerfile: tools/egress-quality-guard/Dockerfile
+    depends_on:
+      grok2api:
+        condition: service_healthy
+    env_file:
+      - ${QUALITY_GUARD_ENV_FILE:-/etc/grok2api-egress-quality-guard.env}
+    volumes:
+      - quality_guard_state:/var/lib/grok2api-quality-guard
+    restart: unless-stopped
+
+volumes:
+  quality_guard_state:

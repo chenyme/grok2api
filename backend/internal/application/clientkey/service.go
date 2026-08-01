@@ -125,6 +125,16 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 	return s.keys.List(ctx, repository.ClientKeyListQuery{Page: repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: search, Sort: filter.Sort}, Filter: repository.ClientKeyListFilter{Status: filter.Status, ModelScope: filter.ModelScope, Now: time.Now().UTC()}})
 }
 
+// Get returns one client key policy for trusted application services. It does
+// not reveal the plaintext secret and must not be exposed by public handlers.
+func (s *Service) Get(ctx context.Context, id uint64) (clientkeydomain.Key, error) {
+	if id == 0 {
+		return clientkeydomain.Key{}, ErrNotFound
+	}
+	value, err := s.keys.Get(ctx, id)
+	return value, mapRepositoryError(err)
+}
+
 func validListFilter(value string, allowed ...string) bool {
 	for _, candidate := range allowed {
 		if value == candidate {
