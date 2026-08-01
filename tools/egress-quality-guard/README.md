@@ -1,8 +1,9 @@
 # Egress Quality Guard
 
 Egress Quality Guard combines passive production-audit monitoring with active
-Grok Build probes through each fixed egress node. Passive anomalies are candidate
-signals; only a fixed active probe can confirm them and quarantine a node.
+Grok Build probes through each fixed egress node. A passive hard-threshold
+anomaly quarantines the node immediately; a soft anomaly is confirmed by a
+fixed active probe.
 
 This is a heuristic circuit breaker, not a model-quality oracle. Very high
 reported throughput can be caused by upstream or intermediary buffering. Start
@@ -27,9 +28,10 @@ your own traffic before allowing automatic quarantine.
    fixed streaming prompt.
 4. The fixed probe checks output tokens, chunk cadence, first-token time,
    instruction-marker compliance, and panel-equivalent output-token throughput.
-5. A high-TPS production request only triggers an immediate fixed-prompt probe;
-   it never quarantines a node by itself. An active hard result quarantines
-   immediately, while active soft results must reach the configured strike count.
+5. A high-TPS production request at the hard threshold quarantines the node
+   immediately. A soft result triggers a fixed-prompt probe; active hard results
+   quarantine immediately, while active soft results must reach the configured
+   strike count.
 6. Quarantined nodes remain available only to administrator probes. Recovery
    records a generic connectivity probe for diagnosis, then uses the real
    model-quality probe as the authority before re-enabling the node.
@@ -42,8 +44,9 @@ disabled node. This capability is confined to the authenticated admin route.
 `QUALITY_GUARD_MODE` accepts:
 
 - `passive`: inspect ordinary request audits every few seconds. Routine polling
-  adds no model requests, but a candidate anomaly triggers one active confirmation
-  probe. Recovery probes still run for nodes quarantined by the guard.
+  adds no model requests. Hard anomalies quarantine immediately; soft anomalies
+  trigger one active confirmation probe. Recovery probes still run for nodes
+  quarantined by the guard.
 - `active`: run only fixed per-node probes at the configured interval.
 - `hybrid`: enable both detectors. This is the recommended default.
 
@@ -154,7 +157,7 @@ Verify the managed nodes, dedicated client key, model, and minimum healthy-node 
 - HTTPS/SSE audits cannot provide reliable proxy transfer-byte counts. The UI reports active-probe output Tokens and does not label them as network traffic.
 - Intermediary buffering can produce unusually high instantaneous Token/s, so thresholds require calibration for each route.
 - Passive monitoring processes only complete successful streaming requests with enough output to calculate speed. Short and failed requests are ignored.
-- A real request may legitimately return cached content, an existing file, or a long constant. Passive high TPS therefore only starts a fixed-prompt confirmation and cannot directly quarantine the node.
+- A real request may legitimately return cached content, an existing file, or a long constant. Immediate quarantine at the passive hard threshold is therefore intentionally aggressive; raise `hard_tps` when false positives are more costly. Soft anomalies still require a fixed-prompt confirmation.
 - The first run establishes an audit baseline. Cumulative statistics also begin when this version first writes state.
 - Manual quality tests are diagnostic. They are excluded from automatic statistics and do not directly change quarantine state.
 

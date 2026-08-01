@@ -208,9 +208,9 @@ class GuardTests(unittest.TestCase):
             self.assertTrue(guard.state["passive_initialized"])
             self.assertIn("old", guard.state["seen_audit_ids"])
 
-    def test_passive_hard_signal_requires_active_confirmation_and_ignores_guard_key(self):
+    def test_passive_hard_signal_quarantines_immediately_and_ignores_guard_key(self):
         with tempfile.TemporaryDirectory() as directory:
-            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", mode="passive")
+            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", mode="passive", node_ids=("2",))
             healthy = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 100}
             api = FakeApi(self.nodes(), [healthy], [
                 {"items": [], "hasMore": False, "nextCursor": ""},
@@ -219,21 +219,26 @@ class GuardTests(unittest.TestCase):
             guard = quality_guard.Guard(cfg, api)
             guard.run_passive_cycle()
             guard.run_passive_cycle()
-            self.assertEqual(api.quality_calls, ["2"])
-            self.assertEqual(api.enabled_calls, [])
+            self.assertEqual(api.quality_calls, [])
+            self.assertEqual(api.enabled_calls, [("2", False)])
             self.assertFalse(guard.state["nodes"].get("1", {}).get("disabled_by_guard", False))
-            self.assertFalse(guard.state["nodes"]["2"]["disabled_by_guard"])
+            self.assertTrue(guard.state["nodes"]["2"]["disabled_by_guard"])
             self.assertEqual(guard.state["nodes"]["2"]["passive_soft_strikes"], 0)
             self.assertEqual(guard.state["statistics"]["passive"]["total"], 1)
             self.assertEqual(guard.state["statistics"]["passive"]["hard"], 1)
+            guard.state["nodes"]["2"]["quarantined_until"] = 0
+            guard.run_active_cycle()
+            self.assertEqual(api.quality_calls, ["2"])
+            self.assertEqual(api.enabled_calls, [("2", False), ("2", True)])
+            self.assertFalse(guard.state["nodes"]["2"]["disabled_by_guard"])
 
-    def test_passive_hard_signal_quarantines_after_active_hard_confirmation(self):
+    def test_passive_soft_signal_still_requires_active_confirmation(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", mode="passive")
             hard = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 1200}
             api = FakeApi(self.nodes(), [hard], [
                 {"items": [], "hasMore": False, "nextCursor": ""},
-                {"items": [self.audit("user", "2", 1200)], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("user", "2", 600)], "hasMore": False, "nextCursor": ""},
             ])
             guard = quality_guard.Guard(cfg, api)
             guard.run_passive_cycle()
@@ -248,8 +253,8 @@ class GuardTests(unittest.TestCase):
             soft = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 600}
             api = FakeApi(self.nodes(), [soft, soft], [
                 {"items": [], "hasMore": False, "nextCursor": ""},
-                {"items": [self.audit("user-1", "2", 1200)], "hasMore": False, "nextCursor": ""},
-                {"items": [self.audit("user-2", "2", 1200)], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("user-1", "2", 600)], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("user-2", "2", 600)], "hasMore": False, "nextCursor": ""},
             ])
             guard = quality_guard.Guard(cfg, api)
             guard.run_passive_cycle()
@@ -261,19 +266,18 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(api.enabled_calls, [("2", False)])
             self.assertTrue(guard.state["nodes"]["2"]["disabled_by_guard"])
 
-    def test_multiple_passive_hard_signals_each_require_healthy_active_confirmation(self):
+    def test_multiple_passive_hard_signals_only_quarantine_once(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", mode="passive")
-            healthy = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 100}
-            api = FakeApi(self.nodes(), [healthy, healthy], [
+            api = FakeApi(self.nodes(), [], [
                 {"items": [], "hasMore": False, "nextCursor": ""},
                 {"items": [self.audit("user-1", "2", 1200), self.audit("user-2", "2", 1500)], "hasMore": False, "nextCursor": ""},
             ])
             guard = quality_guard.Guard(cfg, api)
             guard.run_passive_cycle()
             guard.run_passive_cycle()
-            self.assertEqual(api.quality_calls, ["2", "2"])
-            self.assertEqual(api.enabled_calls, [])
+            self.assertEqual(api.quality_calls, [])
+            self.assertEqual(api.enabled_calls, [("2", False)])
             self.assertEqual(guard.state["nodes"]["2"]["passive_soft_strikes"], 0)
 
     def test_passive_confirmation_errors_do_not_quarantine(self):
@@ -284,7 +288,7 @@ class GuardTests(unittest.TestCase):
             )
             api = FakeApi(self.nodes(), [RuntimeError("probe unavailable")], [
                 {"items": [], "hasMore": False, "nextCursor": ""},
-                {"items": [self.audit("user", "2", 1200)], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("user", "2", 600)], "hasMore": False, "nextCursor": ""},
             ])
             guard = quality_guard.Guard(cfg, api)
             guard.run_passive_cycle()

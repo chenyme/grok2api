@@ -792,6 +792,9 @@ class Guard:
             duration_ms=int(audit_value.get("durationMs") or 0),
             strikes=int(state.get("passive_soft_strikes", 0)),
         )
+        if classification == "hard":
+            self._quarantine(all_nodes, node, reason, now)
+            return
         self._probe_active(all_nodes, node, now, trigger="passive_confirmation")
 
     def run_passive_cycle(self) -> None:
