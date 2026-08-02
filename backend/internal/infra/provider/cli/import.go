@@ -41,6 +41,17 @@ type importedCredentialEntry struct {
 	TeamID       string `json:"team_id"`
 }
 
+type grok2APIAuthEntry struct {
+	Key          string `json:"key"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresAt    string `json:"expires_at"`
+	Email        string `json:"email"`
+	UserID       string `json:"user_id"`
+	PrincipalID  string `json:"principal_id"`
+	OIDCClientID string `json:"oidc_client_id"`
+}
+
 func marshalCredentials(values []provider.CredentialSeed) ([]byte, error) {
 	document := credentialImportDocument{Accounts: make([]importedCredentialEntry, 0, len(values))}
 	for _, value := range values {
@@ -84,6 +95,9 @@ func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
 
 func parseImportedCredentialEntries(data []byte) ([]importedCredentialEntry, error) {
 	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
+	if entries, recognized, err := parseGrok2APIAuthDocument(data); recognized {
+		return entries, err
+	}
 	entries, sequenceErr := parseImportedCredentialJSONSequence(data)
 	if sequenceErr == nil {
 		return entries, nil
@@ -95,6 +109,50 @@ func parseImportedCredentialEntries(data []byte) ([]importedCredentialEntry, err
 		return entries, err
 	}
 	return nil, sequenceErr
+}
+
+// parseGrok2APIAuthDocument accepts the nested auth.json files emitted by
+// grok-register-panel, where each top-level issuer::client key contains the
+// access token under "key" rather than "access_token".
+func parseGrok2APIAuthDocument(data []byte) ([]importedCredentialEntry, bool, error) {
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil || len(document) == 0 {
+		return nil, false, nil
+	}
+
+	entries := make([]importedCredentialEntry, 0, len(document))
+	for authKey, rawEntry := range document {
+		parts := strings.Split(authKey, "::")
+		if len(parts) < 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return nil, false, nil
+		}
+
+		var source grok2APIAuthEntry
+		if err := json.Unmarshal(rawEntry, &source); err != nil {
+			return nil, true, fmt.Errorf("解析 Grok2API auth %q: %w", authKey, err)
+		}
+		accessToken := firstNonEmpty(source.Key, source.AccessToken)
+		if accessToken == "" && source.RefreshToken == "" {
+			return nil, true, fmt.Errorf("Grok2API auth %q 缺少 key/access_token 或 refresh_token", authKey)
+		}
+		clientID := firstNonEmpty(source.OIDCClientID, parts[1])
+		entries = append(entries, importedCredentialEntry{
+			Provider:     credentialImportProvider,
+			Name:         firstNonEmpty(source.Email, source.UserID, authKey),
+			ClientID:     clientID,
+			AccessToken:  accessToken,
+			RefreshToken: source.RefreshToken,
+			TokenType:    "Bearer",
+			ExpiresAt:    source.ExpiresAt,
+			Email:        source.Email,
+			UserID:       source.UserID,
+			PrincipalID:  source.PrincipalID,
+		})
+	}
+	if len(entries) > maxCredentialImportAccounts {
+		return nil, true, fmt.Errorf("%w: 单次最多导入 %d 个账号", provider.ErrCredentialLimit, maxCredentialImportAccounts)
+	}
+	return entries, true, nil
 }
 
 func parseImportedCredentialJSONSequence(data []byte) ([]importedCredentialEntry, error) {

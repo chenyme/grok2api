@@ -224,7 +224,9 @@ pnpm dev
 | Web | 粘贴/TXT SSO、JSON/JSONL | 可重新导入的账号文件 |
 | Console | 粘贴/TXT SSO、JSON/JSONL | 可重新导入的账号文件 |
 
-导入兼容 UTF-8 BOM。批量额度同步、Build 凭据续期、Web→Build/Console 转换、账号工具和账号清理均显示实时进度。
+导入兼容 UTF-8 BOM。Grok Build 还可以直接导入 `grok-register-panel` 的
+`grok2api_auth/` 目录生成的嵌套 `g2a-*.json`：选择“Grok Build → 导入账号文件”后一次
+选择一个或多个文件即可。批量额度同步、Build 凭据续期、Web→Build/Console 转换、账号工具和账号清理均显示实时进度。
 
 Web 账号工具支持接受协议、设置对应 20–40 岁的随机生日和开启 NSFW；已完成步骤会记录并在后续执行时跳过。
 

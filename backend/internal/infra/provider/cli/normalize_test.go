@@ -223,9 +223,13 @@ func TestParseImportedCredentialsOfficialOAuthResponse(t *testing.T) {
 	}
 }
 
-func TestParseImportedCredentialsRejectsUnsupportedMap(t *testing.T) {
-	_, err := parseImportedCredentials([]byte(`{"https://auth.x.ai::client":{"key":"access","refresh_token":"refresh"}}`))
-	if err == nil {
-		t.Fatal("旧 Map 格式不应继续被接受")
+func TestParseImportedCredentialsGrok2APIAuth(t *testing.T) {
+	data := []byte(`{"https://auth.x.ai::client":{"key":"access","auth_mode":"oidc","user_id":"user-1","email":"user@example.com","refresh_token":"refresh","expires_at":"2026-07-12T00:00:00.000000000Z","oidc_client_id":"client"}}`)
+	values, err := parseImportedCredentials(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].AccessToken != "access" || values[0].RefreshToken != "refresh" || values[0].UserID != "user-1" || values[0].Email != "user@example.com" || values[0].OIDCClientID != "client" {
+		t.Fatalf("Grok2API auth import = %#v", values)
 	}
 }

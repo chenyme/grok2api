@@ -223,7 +223,10 @@ After first sign-in, change the administrator password and remove `bootstrapAdmi
 | Web | Pasted/TXT SSO, JSON/JSONL | Re-importable account file |
 | Console | Pasted/TXT SSO, JSON/JSONL | Re-importable account file |
 
-Imports accept UTF-8 BOM. Bulk quota sync, Build credential renewal, Web→Build/Console conversion, account tools, and cleanup report live progress.
+Imports accept UTF-8 BOM. Grok Build imports also accept nested `g2a-*.json` files from the
+`grok-register-panel` `grok2api_auth/` directory; select **Grok Build → Import account files**
+and choose one or more files. Bulk quota sync, Build credential renewal, Web→Build/Console
+conversion, account tools, and cleanup report live progress.
 
 Web account tools can accept the terms, set a random birthday corresponding to an age of 20–40, and enable NSFW. Completed steps are recorded and skipped on later runs.
 
