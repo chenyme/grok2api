@@ -98,10 +98,11 @@ sudo install -m 0600 \
 sudo editor /etc/grok2api-egress-quality-guard.env
 
 QUALITY_GUARD_ENV_FILE=/etc/grok2api-egress-quality-guard.env \
-  docker compose config --quiet
-QUALITY_GUARD_ENV_FILE=/etc/grok2api-egress-quality-guard.env \
-  docker compose --profile quality-guard up -d --build
+  sh docker/quality-guard-up.sh
 ```
+
+首次部署也可以直接运行这个脚本：它会创建仓库内的私密配置并询问三个部署参数。
+如果 `.env` 已将 `QUALITY_GUARD_ENV_FILE` 指向上面的外部文件，脚本会校验并复用它。
 
 默认镜像是仓库工作流发布的 `ghcr.io/hengxin666/grok2api:latest`。
 执行 `docker compose up -d --build` 会始终构建当前工作树，因此管理页面和质量守护接口都会进入镜像。

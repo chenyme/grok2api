@@ -182,14 +182,13 @@ docker compose logs -f grok2api
 
 访问 `http://127.0.0.1:8000`。镜像已经包含 React 管理端和“质量守护”页面；SQLite 数据库、本地媒体与质量守护状态保存在 Compose 数据卷中。如果要直接构建当前检出的源码，执行 `docker compose up -d --build`。
 
-要启用自动出口检测，先创建 sidecar 私密配置，填入管理员密码、探测 Client Key ID 和探测模型，再执行：
+要启用自动出口检测，执行下面的一键命令。它会询问管理员密码、探测 Client Key ID 和探测模型，自动创建权限为 `0600` 的 sidecar 私密配置、校验配置，并启动两个容器：
 
 ```bash
-cp tools/egress-quality-guard/egress-quality-guard.env.example \
-  tools/egress-quality-guard/egress-quality-guard.env
-chmod 600 tools/egress-quality-guard/egress-quality-guard.env
-docker compose --profile quality-guard up -d --build
+sh docker/quality-guard-up.sh
 ```
+
+主服务的 guard 状态卷会由 Compose 自动挂载。以后再次执行会复用已有私密配置，只构建或重启整套服务。
 
 ### 源码运行
 

@@ -181,14 +181,13 @@ docker compose logs -f grok2api
 
 Open `http://127.0.0.1:8000`. The image includes the React admin console, including the **Quality Guard** page; SQLite data, local media, and quality-guard state are stored in Compose volumes. To build the exact checked-out source instead of pulling GHCR, use `docker compose up -d --build`.
 
-To enable automatic egress monitoring, create the private sidecar environment file, set the administrator password, client key ID, and probe model, then run:
+To enable automatic egress monitoring, run the one-time setup command below. It asks for the administrator password, probe Client Key ID, and model, creates the private sidecar environment with mode `0600`, validates it, and starts both containers:
 
 ```bash
-cp tools/egress-quality-guard/egress-quality-guard.env.example \
-  tools/egress-quality-guard/egress-quality-guard.env
-chmod 600 tools/egress-quality-guard/egress-quality-guard.env
-docker compose --profile quality-guard up -d --build
+sh docker/quality-guard-up.sh
 ```
+
+The main service mounts the guard state volume automatically. Later runs reuse the existing private configuration and only rebuild or restart the stack.
 
 ### Run from source
 

@@ -277,14 +277,7 @@ QUALITY_GUARD_NODE_IDS=1,2,3
 
 ~~~bash
 cd /opt/grok2api
-
-docker compose config --quiet
-
-docker compose --profile quality-guard up -d --build
-
-docker compose --profile quality-guard ps
-
-docker compose --profile quality-guard logs --tail=100 egress-quality-guard
+sh docker/quality-guard-up.sh
 ~~~
 
 进入管理端左侧“质量守护”：

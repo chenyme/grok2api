@@ -143,10 +143,12 @@ sudo install -m 0600 \
 sudo editor /etc/grok2api-egress-quality-guard.env
 
 QUALITY_GUARD_ENV_FILE=/etc/grok2api-egress-quality-guard.env \
-  docker compose config --quiet
-QUALITY_GUARD_ENV_FILE=/etc/grok2api-egress-quality-guard.env \
-  docker compose --profile quality-guard up -d --build
+  sh docker/quality-guard-up.sh
 ```
+
+For a new installation, the script creates the local private env file and
+prompts for the three deployment-specific values. If an existing `.env` sets
+`QUALITY_GUARD_ENV_FILE` to the file above, the script validates and reuses it.
 
 The default image is `ghcr.io/hengxin666/grok2api:latest`, published by the
 repository workflow. `docker compose up -d --build` always builds the current
