@@ -1,0 +1,9 @@
+[project]
+name = "grok2api-egress-quality-guard"
+version = "0.1.0"
+description = "Standard-library quality guard sidecar for grok2api egress nodes"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false

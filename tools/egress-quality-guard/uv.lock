@@ -1,0 +1,8 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "grok2api-egress-quality-guard"
+version = "0.1.0"
+source = { virtual = "." }

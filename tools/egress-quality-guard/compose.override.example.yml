@@ -2,6 +2,10 @@
 # Keep the real environment file outside the repository with mode 0600.
 services:
   grok2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: "${GROK2API_IMAGE:-grok2api-egress-enhanced:local}"
     environment:
       QUALITY_GUARD_STATE_FILE: /var/lib/grok2api-quality-guard/state.json
       QUALITY_GUARD_RUNTIME_CONFIG_FILE: /var/lib/grok2api-quality-guard/runtime-config.json

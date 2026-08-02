@@ -150,6 +150,11 @@ docker compose \
   up -d --build grok2api egress-quality-guard
 ```
 
+The override builds the patched grok2api image from the current worktree and
+runs it as `grok2api-egress-enhanced:local`. Do not use only
+`docker compose pull` with the base file, or the service may run an official
+image without the quality-guard endpoints.
+
 Verify the managed nodes, dedicated client key, model, and minimum healthy-node count before leaving the sidecar running. Never commit the private environment file, state volume, or production logs.
 
 ## Known limitations
@@ -163,14 +168,23 @@ Verify the managed nodes, dedicated client key, model, and minimum healthy-node 
 
 ## Run
 
+From the repository root, create the isolated `uv` environment. The sidecar
+uses only the Python standard library:
+
+```sh
+uv sync --project tools/egress-quality-guard
+```
+
 Validate configuration and execute one cycle:
 
 ```sh
 set -a
 . /etc/grok2api-egress-quality-guard.env
 set +a
-python3 quality_guard.py --check-config
-python3 quality_guard.py --once
+uv run --project tools/egress-quality-guard \
+  python tools/egress-quality-guard/quality_guard.py --check-config
+uv run --project tools/egress-quality-guard \
+  python tools/egress-quality-guard/quality_guard.py --once
 ```
 
 For systemd, install the script under
@@ -201,7 +215,8 @@ See [`SECURITY.md`](./SECURITY.md) before deploying the guard outside a developm
 ## Tests
 
 ```sh
-python3 -m unittest -v tools/egress-quality-guard/quality_guard_test.py
+uv run --project tools/egress-quality-guard \
+  python -m unittest -v tools/egress-quality-guard/quality_guard_test.py
 ```
 
 The tests cover active and passive threshold classification, audit baselining

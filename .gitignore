@@ -37,6 +37,7 @@ Thumbs.db
 # Python
 __pycache__/
 *.py[cod]
+/tools/egress-quality-guard/.venv/
 
 # Frontend
 /.pnpm-store/

@@ -106,6 +106,10 @@ docker compose \
   up -d --build grok2api egress-quality-guard
 ```
 
+这个 override 会构建当前工作树里的已打补丁 Grok2API，并以
+`grok2api-egress-enhanced:local` 运行；不要只执行基础 Compose 文件的
+`docker compose pull`，否则可能启动未包含质量守护接口的官方镜像。
+
 先确认受管节点、专用 Client Key、模型和最低健康节点数正确，再允许 sidecar 长期运行。不要把 `/etc/grok2api-egress-quality-guard.env`、状态卷或生产日志提交到仓库。
 
 ## 已知限制
@@ -119,12 +123,20 @@ docker compose \
 
 ## 运行
 
+从仓库根目录使用 `uv` 创建隔离环境（sidecar 仅使用 Python 标准库）：
+
+```sh
+uv sync --project tools/egress-quality-guard
+```
+
 ```sh
 set -a
 . /etc/grok2api-egress-quality-guard.env
 set +a
-python3 quality_guard.py --check-config
-python3 quality_guard.py --once
+uv run --project tools/egress-quality-guard \
+  python tools/egress-quality-guard/quality_guard.py --check-config
+uv run --project tools/egress-quality-guard \
+  python tools/egress-quality-guard/quality_guard.py --once
 ```
 
 可使用仓库内的 systemd 单元，也可以用 `Dockerfile` 构建独立 sidecar。完整环境变量和容器示例见英文 README。
@@ -134,5 +146,6 @@ python3 quality_guard.py --once
 运行测试：
 
 ```sh
-python3 -m unittest -v tools/egress-quality-guard/quality_guard_test.py
+uv run --project tools/egress-quality-guard \
+  python -m unittest -v tools/egress-quality-guard/quality_guard_test.py
 ```
