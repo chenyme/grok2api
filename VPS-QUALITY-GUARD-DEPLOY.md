@@ -36,18 +36,19 @@ VPS 需要能够访问 Grok 上游和你配置的 HTTP/SOCKS 代理。域名的 
 
 ## 3. 把增强版源码放到 VPS
 
-当前质量守护代码位于 egress-enhancements 分支。基础仓库的 main 或官方镜像不一定包含本功能。
+当前质量守护代码和管理页面位于你仓库的 `main` 分支。Compose 默认使用
+`ghcr.io/hengxin666/grok2api:latest`；这个镜像由仓库的 GitHub Actions 发布。
 
 推荐把当前分支推送到你自己的 GitHub 私有仓库，然后在 VPS 执行：
 
 ~~~bash
-# 在本机项目目录执行；remote-name 换成你自己的远程仓库名
-git push remote-name egress-enhancements
+# 在本机项目目录执行
+git push origin HEAD:main
 
 # 在 VPS 执行
 sudo mkdir -p /opt/grok2api
 sudo chown "$USER":"$USER" /opt/grok2api
-git clone -b egress-enhancements https://github.com/你的用户名/你的仓库.git /opt/grok2api
+git clone -b main https://github.com/HengXin666/grok2api.git /opt/grok2api
 cd /opt/grok2api
 ~~~
 
@@ -95,10 +96,12 @@ bootstrapAdmin 段。
 
 ## 5. 配置 Compose
 
-在仓库根目录创建或编辑 .env：
+在仓库根目录创建或编辑 `.env`（可以先复制仓库内的 `.env.example`）：
 
 ~~~dotenv
+GROK2API_IMAGE=ghcr.io/hengxin666/grok2api:latest
 GROK2API_PORT=127.0.0.1:8000
+GROK2API_CONFIG=./config.yaml
 QUALITY_GUARD_ENV_FILE=/etc/grok2api-egress-quality-guard.env
 TZ=Asia/Shanghai
 ~~~
@@ -148,21 +151,16 @@ sidecar 容器；容器里的 127.0.0.1 指向 sidecar 自己。
 
 ~~~bash
 cd /opt/grok2api
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  config --quiet
+docker compose config --quiet
 
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  up -d --build grok2api
+docker compose up -d --build grok2api
 
 curl -fsS http://127.0.0.1:8000/healthz
 ~~~
 
-第一次构建会在 VPS 上编译 Go 后端和 React 前端，耗时可能较长。这里使用的是当前工作树构建的
-grok2api-egress-enhanced:local，不要用只有基础 Compose 文件的 docker compose pull 替代它。
+第一次构建会在 VPS 上编译 Go 后端和 React 前端，耗时可能较长。若要直接使用仓库已经发布的
+多架构镜像，可执行 `docker compose pull && docker compose up -d grok2api`；需要确认当前源码时则保留
+上面的 `--build`。
 
 ## 7. 首次登录和 HTTPS
 
@@ -208,10 +206,7 @@ sudo certbot --nginx -d api.example.com
 HTTPS 正常后，回到 config.yaml 把 auth.secureCookies 改为 true，删除 bootstrapAdmin，然后重启主服务：
 
 ~~~bash
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  up -d grok2api
+docker compose up -d grok2api
 ~~~
 
 首次登录后在管理端修改管理员密码。修改密码后，必须同步修改
@@ -283,25 +278,13 @@ QUALITY_GUARD_NODE_IDS=1,2,3
 ~~~bash
 cd /opt/grok2api
 
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  config --quiet
+docker compose config --quiet
 
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  up -d --build grok2api egress-quality-guard
+docker compose --profile quality-guard up -d --build
 
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  ps
+docker compose --profile quality-guard ps
 
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  logs --tail=100 egress-quality-guard
+docker compose --profile quality-guard logs --tail=100 egress-quality-guard
 ~~~
 
 进入管理端左侧“质量守护”：
@@ -318,10 +301,7 @@ docker compose \
 
 ~~~bash
 dc() {
-  docker compose \
-    -f docker-compose.yml \
-    -f tools/egress-quality-guard/compose.override.example.yml \
-    "$@"
+  docker compose "$@"
 }
 ~~~
 
@@ -339,7 +319,7 @@ dc restart egress-quality-guard
 ~~~bash
 git pull
 dc config --quiet
-dc up -d --build grok2api egress-quality-guard
+dc --profile quality-guard up -d --build
 ~~~
 
 不要执行 docker compose down -v，它会删除数据库、媒体和质量守护状态卷。
@@ -348,7 +328,7 @@ dc up -d --build grok2api egress-quality-guard
 
 ### 页面显示“质量守护尚未连接”
 
-检查主服务是否使用了增强版 Compose override，以及主服务环境变量和 sidecar 是否指向同一个状态卷：
+检查主服务和 sidecar 是否由同一个根 Compose 文件启动，并且指向同一个状态卷：
 
 ~~~bash
 dc config | sed -n '/grok2api:/,/^[^ ]/p'
@@ -385,8 +365,8 @@ QUALITY_GUARD_RUNTIME_CONFIG_FILE=/var/lib/grok2api-quality-guard/runtime-config
 
 ### 为什么不能只执行 docker compose pull
 
-基础 Compose 文件使用官方镜像。质量守护接口、管理页面和状态卷接入需要当前增强源码构建的主镜像，
-所以要使用本文的两个 Compose 文件并执行 up -d --build。
+根 Compose 文件默认使用你仓库的 GHCR 镜像，并且已经包含质量守护管理页面、接口和共享状态卷。
+需要验证当前工作树时使用 `docker compose up -d --build`；不需要额外套 override 文件。
 
 ## 13. 安全边界
 

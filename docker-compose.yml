@@ -3,17 +3,51 @@ name: grok2api
 services:
   grok2api:
     container_name: grok2api
-    image: "${GROK2API_IMAGE:-ghcr.io/chenyme/grok2api:latest}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Published by .github/workflows/ghcr-image.yml for this repository.
+    image: "${GROK2API_IMAGE:-ghcr.io/hengxin666/grok2api:latest}"
+    pull_policy: missing
     ports:
       - "${GROK2API_PORT:-8000}:8000"
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
+      QUALITY_GUARD_STATE_FILE: /var/lib/grok2api-quality-guard/state.json
+      QUALITY_GUARD_RUNTIME_CONFIG_FILE: /var/lib/grok2api-quality-guard/runtime-config.json
     volumes:
       - "${GROK2API_CONFIG:-./config.yaml}:/run/grok2api/config.yaml:ro"
       - grok2api-data:/app/data
+      - quality_guard_state:/var/lib/grok2api-quality-guard
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+  # Start after creating the private env file and a dedicated probe client key:
+  # docker compose --profile quality-guard up -d --build
+  egress-quality-guard:
+    profiles: ["quality-guard"]
+    build:
+      context: .
+      dockerfile: tools/egress-quality-guard/Dockerfile
+    image: "${QUALITY_GUARD_IMAGE:-grok2api-egress-quality-guard:local}"
+    depends_on:
+      grok2api:
+        condition: service_healthy
+    env_file:
+      - path: "${QUALITY_GUARD_ENV_FILE:-./tools/egress-quality-guard/egress-quality-guard.env}"
+        required: false
+    environment:
+      GROK2API_BASE_URL: http://grok2api:8000
+      QUALITY_GUARD_STATE_FILE: /var/lib/grok2api-quality-guard/state.json
+      QUALITY_GUARD_LOCK_FILE: /var/lib/grok2api-quality-guard/guard.lock
+      QUALITY_GUARD_RUNTIME_CONFIG_FILE: /var/lib/grok2api-quality-guard/runtime-config.json
+    volumes:
+      - quality_guard_state:/var/lib/grok2api-quality-guard
+    restart: unless-stopped
+    init: true
     security_opt:
       - no-new-privileges:true
 
@@ -49,3 +83,4 @@ services:
 
 volumes:
   grok2api-data:
+  quality_guard_state:

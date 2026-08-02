@@ -145,12 +145,13 @@ Each Provider keeps its own credentials, quota, health, cooldown, concurrency, a
 
 ## Quick start
 
-Official images support `linux/amd64` and `linux/arm64`.
+The repository publishes its own `linux/amd64` and `linux/arm64` image to GHCR.
 
 ```bash
-git clone https://github.com/chenyme/grok2api.git
+git clone https://github.com/HengXin666/grok2api.git
 cd grok2api
 cp config.example.yaml config.yaml
+cp .env.example .env
 ```
 
 Generate secrets and place them in `config.yaml`:
@@ -178,7 +179,16 @@ docker compose up -d
 docker compose logs -f grok2api
 ```
 
-Open `http://127.0.0.1:8000`. The image already includes the frontend; SQLite data and local media are stored in the Compose volume.
+Open `http://127.0.0.1:8000`. The image includes the React admin console, including the **Quality Guard** page; SQLite data, local media, and quality-guard state are stored in Compose volumes. To build the exact checked-out source instead of pulling GHCR, use `docker compose up -d --build`.
+
+To enable automatic egress monitoring, create the private sidecar environment file, set the administrator password, client key ID, and probe model, then run:
+
+```bash
+cp tools/egress-quality-guard/egress-quality-guard.env.example \
+  tools/egress-quality-guard/egress-quality-guard.env
+chmod 600 tools/egress-quality-guard/egress-quality-guard.env
+docker compose --profile quality-guard up -d --build
+```
 
 ### Run from source
 
@@ -284,6 +294,8 @@ Egress nodes are scoped to Build, Web, Console, or Web assets. The admin console
 - Proxy-pool mode without global cooldown after one connection failure
 - Immediate recovery probes after fixed-proxy transport failures, with per-node coalescing and bounded waiting for fast retry
 - Optional [Egress Quality Guard](./tools/egress-quality-guard/README.md) for active per-node model probes, guarded quarantine, and recovery
+
+The admin console exposes this feature at **Quality Guard**. The page is part of the main image; the optional `quality-guard` Compose profile runs the sidecar that performs the automatic checks and shares its state with the gateway.
 
 Resin usernames can contain `{account}`:
 

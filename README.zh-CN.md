@@ -146,12 +146,13 @@ flowchart LR
 
 ## 快速部署
 
-官方镜像支持 `linux/amd64` 和 `linux/arm64`。
+本仓库会把自己的 `linux/amd64` 和 `linux/arm64` 镜像发布到 GHCR。
 
 ```bash
-git clone https://github.com/chenyme/grok2api.git
+git clone https://github.com/HengXin666/grok2api.git
 cd grok2api
 cp config.example.yaml config.yaml
+cp .env.example .env
 ```
 
 生成密钥并写入 `config.yaml`：
@@ -179,7 +180,16 @@ docker compose up -d
 docker compose logs -f grok2api
 ```
 
-访问 `http://127.0.0.1:8000`。镜像已包含前端，SQLite 数据库与本地媒体保存在 Compose 数据卷中。
+访问 `http://127.0.0.1:8000`。镜像已经包含 React 管理端和“质量守护”页面；SQLite 数据库、本地媒体与质量守护状态保存在 Compose 数据卷中。如果要直接构建当前检出的源码，执行 `docker compose up -d --build`。
+
+要启用自动出口检测，先创建 sidecar 私密配置，填入管理员密码、探测 Client Key ID 和探测模型，再执行：
+
+```bash
+cp tools/egress-quality-guard/egress-quality-guard.env.example \
+  tools/egress-quality-guard/egress-quality-guard.env
+chmod 600 tools/egress-quality-guard/egress-quality-guard.env
+docker compose --profile quality-guard up -d --build
+```
 
 ### 源码运行
 
@@ -285,6 +295,8 @@ curl http://127.0.0.1:8000/v1/responses \
 - 代理池模式，单次连接失败不会触发全局冷却
 - 固定代理传输失败后立即复测；同节点复测自动合并，后续绑定请求限时等待并在恢复后快速重试
 - 可选的[出口质量守护程序](./tools/egress-quality-guard/README.zh-CN.md)，支持逐节点模型探测、防误杀隔离和自动恢复
+
+管理端左侧的“质量守护”页面属于主镜像的一部分；`quality-guard` Compose profile 负责运行自动检测 sidecar，并通过共享状态卷把实时状态显示到页面上。
 
 Resin 用户名支持 `{account}`：
 

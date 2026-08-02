@@ -132,7 +132,9 @@ traffic. Choose a longer active interval when upstream quota is limited.
 
 ## Docker Compose quick start
 
-Run from the repository root:
+Run from the repository root. The main Compose file now builds or pulls the
+user repository image, mounts the shared state volume, and includes the
+quality-guard sidecar under the `quality-guard` profile:
 
 ```sh
 sudo install -m 0600 \
@@ -140,20 +142,17 @@ sudo install -m 0600 \
   /etc/grok2api-egress-quality-guard.env
 sudo editor /etc/grok2api-egress-quality-guard.env
 
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  config --quiet
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  up -d --build grok2api egress-quality-guard
+QUALITY_GUARD_ENV_FILE=/etc/grok2api-egress-quality-guard.env \
+  docker compose config --quiet
+QUALITY_GUARD_ENV_FILE=/etc/grok2api-egress-quality-guard.env \
+  docker compose --profile quality-guard up -d --build
 ```
 
-The override builds the patched grok2api image from the current worktree and
-runs it as `grok2api-egress-enhanced:local`. Do not use only
-`docker compose pull` with the base file, or the service may run an official
-image without the quality-guard endpoints.
+The default image is `ghcr.io/hengxin666/grok2api:latest`, published by the
+repository workflow. `docker compose up -d --build` always builds the current
+worktree and includes the management page and quality-guard endpoints. The
+older `compose.override.example.yml` remains only as a compatibility example
+for deployments that already reference it.
 
 Verify the managed nodes, dedicated client key, model, and minimum healthy-node count before leaving the sidecar running. Never commit the private environment file, state volume, or production logs.
 

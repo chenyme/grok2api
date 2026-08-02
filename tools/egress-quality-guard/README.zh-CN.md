@@ -88,7 +88,8 @@ services:
 
 ## Docker Compose 快速接入
 
-从仓库根目录执行：
+从仓库根目录执行。现在根目录的 Compose 文件会构建或拉取你仓库的主镜像，
+挂载共享状态卷，并通过 `quality-guard` profile 启动 sidecar：
 
 ```sh
 sudo install -m 0600 \
@@ -96,19 +97,15 @@ sudo install -m 0600 \
   /etc/grok2api-egress-quality-guard.env
 sudo editor /etc/grok2api-egress-quality-guard.env
 
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  config --quiet
-docker compose \
-  -f docker-compose.yml \
-  -f tools/egress-quality-guard/compose.override.example.yml \
-  up -d --build grok2api egress-quality-guard
+QUALITY_GUARD_ENV_FILE=/etc/grok2api-egress-quality-guard.env \
+  docker compose config --quiet
+QUALITY_GUARD_ENV_FILE=/etc/grok2api-egress-quality-guard.env \
+  docker compose --profile quality-guard up -d --build
 ```
 
-这个 override 会构建当前工作树里的已打补丁 Grok2API，并以
-`grok2api-egress-enhanced:local` 运行；不要只执行基础 Compose 文件的
-`docker compose pull`，否则可能启动未包含质量守护接口的官方镜像。
+默认镜像是仓库工作流发布的 `ghcr.io/hengxin666/grok2api:latest`。
+执行 `docker compose up -d --build` 会始终构建当前工作树，因此管理页面和质量守护接口都会进入镜像。
+旧的 `compose.override.example.yml` 仅为已经引用它的部署保留兼容示例。
 
 先确认受管节点、专用 Client Key、模型和最低健康节点数正确，再允许 sidecar 长期运行。不要把 `/etc/grok2api-egress-quality-guard.env`、状态卷或生产日志提交到仓库。
 
