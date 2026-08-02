@@ -11,6 +11,15 @@ services:
     pull_policy: missing
     ports:
       - "${GROK2API_PORT:-8000}:8000"
+    # Keep container DNS independent from a stale Docker resolver snapshot.
+    # Override these with resolvers reachable from the deployment host when
+    # public DNS is unavailable.
+    dns:
+      - "${GROK2API_DNS_PRIMARY:-1.1.1.1}"
+      - "${GROK2API_DNS_SECONDARY:-8.8.8.8}"
+    # Proxy URLs targeting the host must use host.docker.internal, not 127.0.0.1.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
       QUALITY_GUARD_STATE_FILE: /var/lib/grok2api-quality-guard/state.json
@@ -36,6 +45,11 @@ services:
     depends_on:
       grok2api:
         condition: service_healthy
+    dns:
+      - "${GROK2API_DNS_PRIMARY:-1.1.1.1}"
+      - "${GROK2API_DNS_SECONDARY:-8.8.8.8}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - path: "${QUALITY_GUARD_ENV_FILE:-./tools/egress-quality-guard/egress-quality-guard.env}"
         required: false

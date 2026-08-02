@@ -182,6 +182,18 @@ docker compose logs -f grok2api
 
 访问 `http://127.0.0.1:8000`。镜像已经包含 React 管理端和“质量守护”页面；SQLite 数据库、本地媒体与质量守护状态保存在 Compose 数据卷中。如果要直接构建当前检出的源码，执行 `docker compose up -d --build`。
 
+### Docker 网络与宿主机代理
+
+Compose 会为主服务和质量守护 sidecar 配置独立的外部 DNS，并映射 `host.docker.internal` 到 Docker 宿主机。若部署环境不能访问默认的 Cloudflare 或 Google DNS，请在 `.env` 中将 `GROK2API_DNS_PRIMARY` 和 `GROK2API_DNS_SECONDARY` 改为宿主机可访问的 DNS 服务器。
+
+如果容器是在宿主机 DNS 尚未就绪时创建的，仅执行 `docker restart` 不会刷新容器内的 DNS 配置。修改 `.env` 或更新 Compose 后需要重建容器：
+
+```bash
+docker compose up -d --force-recreate
+```
+
+管理端配置宿主机上的 HTTP/SOCKS 代理时，代理地址不要使用 `127.0.0.1`；应使用 `host.docker.internal`，例如 `http://host.docker.internal:2334`。Docker daemon 的代理配置不会自动传递给 `grok2api` 的出站请求。
+
 要启用自动出口检测，执行下面的一键命令。它会询问管理员密码、探测 Client Key ID 和探测模型，自动创建权限为 `0600` 的 sidecar 私密配置、校验配置，并启动两个容器：
 
 ```bash
