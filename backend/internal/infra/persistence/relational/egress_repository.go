@@ -283,6 +283,30 @@ func (r *EgressRepository) ListEgressSources(ctx context.Context) ([]egress.Subs
 	return values, nil
 }
 
+func (r *EgressRepository) ListEgressSourcePage(ctx context.Context, input repository.EgressSourceListQuery) ([]egress.SubscriptionSource, int64, error) {
+	query := r.db.db.WithContext(ctx).Model(&egressSubscriptionSourceModel{})
+	if search := strings.TrimSpace(input.Page.Search); search != "" {
+		query = query.Where("LOWER(egress_subscription_sources.name) LIKE ?", "%"+strings.ToLower(search)+"%")
+	}
+	if input.Filter.Scope != "" {
+		query = query.Where("egress_subscription_sources.scope = ?", input.Filter.Scope)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, mapError(err)
+	}
+	var rows []egressSubscriptionSourceModel
+	if err := query.Order("LOWER(egress_subscription_sources.name) ASC, egress_subscription_sources.id ASC").
+		Offset(input.Page.Offset).Limit(input.Page.Limit).Find(&rows).Error; err != nil {
+		return nil, 0, mapError(err)
+	}
+	values := make([]egress.SubscriptionSource, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, toEgressSubscriptionSourceDomain(row))
+	}
+	return values, total, nil
+}
+
 func (r *EgressRepository) ListDueEgressSources(ctx context.Context, now time.Time, limit int) ([]egress.SubscriptionSource, error) {
 	if limit < 1 {
 		return []egress.SubscriptionSource{}, nil

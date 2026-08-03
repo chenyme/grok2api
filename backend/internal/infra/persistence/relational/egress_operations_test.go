@@ -309,6 +309,48 @@ func TestEgressOperationsRejectsIncompatibleSourceScopeChangeWithBindings(t *tes
 	}
 }
 
+func TestEgressOperationsListsSourcePagesByScopeAndSearch(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	nodes := NewEgressRepository(database)
+	service := egressapp.NewService(nodes, egressOperationsCipher(t), "test-browser")
+	url := "https://subscription.example/proxies"
+	for _, input := range []egressapp.SubscriptionSourceInput{
+		{Name: "Alpha Build", Scope: egress.ScopeBuild, Enabled: true, URL: &url},
+		{Name: "beta build", Scope: egress.ScopeBuild, Enabled: true, URL: &url},
+		{Name: "Alpha Web", Scope: egress.ScopeWeb, Enabled: true, URL: &url},
+	} {
+		if _, err := service.CreateSource(ctx, input); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, total, err := service.ListSourcePage(ctx, 1, 1, "BUILD", egressapp.SourceListFilter{Scope: egress.ScopeBuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(first) != 1 || first[0].Name != "Alpha Build" {
+		t.Fatalf("first page = %#v, total = %d", first, total)
+	}
+	second, total, err := service.ListSourcePage(ctx, 2, 1, "build", egressapp.SourceListFilter{Scope: egress.ScopeBuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(second) != 1 || second[0].Name != "beta build" {
+		t.Fatalf("second page = %#v, total = %d", second, total)
+	}
+	web, total, err := service.ListSourcePage(ctx, 1, 100, "alpha", egressapp.SourceListFilter{Scope: egress.ScopeWeb})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(web) != 1 || web[0].Name != "Alpha Web" {
+		t.Fatalf("web page = %#v, total = %d", web, total)
+	}
+	if _, _, err := service.ListSourcePage(ctx, 1, 20, "", egressapp.SourceListFilter{Scope: egress.Scope("invalid")}); !errors.Is(err, egressapp.ErrInvalidFilter) {
+		t.Fatalf("invalid scope error = %v", err)
+	}
+}
+
 func TestEgressOperationsAutoAssignSkipsCoolingFixedNode(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
