@@ -235,7 +235,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	conversionPool := batch.NewSharedChildPool(cfg.Batch.ConversionConcurrency, concurrency, "bulk:conversion", bulkPool)
 	syncPool := batch.NewSharedChildPool(cfg.Batch.SyncConcurrency, concurrency, "bulk:sync", bulkPool)
 	refreshPool := batch.NewSharedChildPool(cfg.Batch.RefreshConcurrency, concurrency, "bulk:refresh", bulkPool)
-	for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool} {
+	// detectPool 固定 32 并发，与额度同步/续期隔离，避免全量探测挤占维护任务。
+	detectPool := batch.NewSharedChildPool(32, concurrency, "bulk:detect", bulkPool)
+	for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool, detectPool} {
 		pool.UpdateJitter(cfg.Batch.RandomDelay.Value())
 	}
 	accountService := accountapp.NewService(accountRepo, auditRepo, deviceSessions, sticky, providers, cipher, refreshLock)
@@ -247,6 +249,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	accountService.SetQuotaRefreshCoordinator(quotaRefreshState)
 	accountService.SetObservedModelStore(observedModelStore)
 	accountService.SetTaskPools(conversionPool, syncPool, refreshPool)
+	accountService.SetDetectPool(detectPool)
 	windows, err := accountRepo.ListQuotaRecoveryWindows(ctx, 100000)
 	if err != nil {
 		if runtimeStore != nil {
@@ -308,6 +311,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	modelRepo.SetInvalidationObserver(invalidationService.Notify)
 	clientKeyRepo.SetInvalidationObserver(invalidationService.Notify)
 	gatewayService := gateway.NewService(modelService, auditService, accountService, clientKeyService, providers, selector, responseRepo, cfg.Routing.MaxAttempts)
+	gatewayService.UpdateMarkBuildChatDeniedAsReauth(cfg.Routing.MarkBuildChatDeniedAsReauth)
 	gatewayService.SetLogger(logger)
 	gatewayService.UpdateBuildForbiddenReauthPolicy(cfg.Accounts.MarkBuildForbiddenReauth, cfg.Accounts.BuildForbiddenReauthCodes)
 	gatewayService.UpdateRequestTimeout(cfg.Server.RequestTimeout.Value())
@@ -333,7 +337,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		conversionPool.UpdateLimit(next.Batch.ConversionConcurrency)
 		syncPool.UpdateLimit(next.Batch.SyncConcurrency)
 		refreshPool.UpdateLimit(next.Batch.RefreshConcurrency)
-		for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool} {
+		detectPool.UpdateLimit(32)
+		for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool, detectPool} {
 			pool.UpdateJitter(next.Batch.RandomDelay.Value())
 		}
 		cliAdapter.UpdateConfig(cliprovider.Config{
@@ -354,6 +359,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		selector.UpdateSegmentedSelector(next.Routing.SegmentedSelectorEnabled, next.Routing.SegmentedMinCandidates, next.Routing.SegmentedWindowSize)
 		reasoningReplay.UpdateConfig(reasoningreplay.Config{Enabled: next.Routing.ReasoningReplayEnabled, TTL: next.Routing.ReasoningReplayTTL.Value()})
 		gatewayService.UpdateMaxAttempts(next.Routing.MaxAttempts)
+		gatewayService.UpdateMarkBuildChatDeniedAsReauth(next.Routing.MarkBuildChatDeniedAsReauth)
 		gatewayService.UpdateBuildForbiddenReauthPolicy(next.Accounts.MarkBuildForbiddenReauth, next.Accounts.BuildForbiddenReauthCodes)
 		auditService.UpdateWriterConfig(next.Audit.BatchSize, next.Audit.FlushInterval.Value(), next.Audit.CommitDelay.Value())
 		auditService.UpdateLedgerConfig(auditLedgerConfig(next.Audit))

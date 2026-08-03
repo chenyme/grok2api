@@ -159,6 +159,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/batch/reset-quota", h.batchResetQuota)
 	router.POST("/accounts/batch/refresh-quotas", h.batchRefreshQuotas)
 	router.POST("/accounts/batch/refresh-tokens", h.batchRefreshTokens)
+	router.POST("/accounts/detect", h.detectBuildAccounts)
 	router.PATCH("/accounts/batch", h.batchUpdate)
 	router.POST("/accounts/deletion-preview", h.previewDeletion)
 	router.DELETE("/accounts", h.batchDelete)
@@ -219,6 +220,13 @@ type buildConversionRequest struct {
 	Strategy accountapp.BuildConversionStrategy `json:"strategy"`
 }
 
+// detectBuildAccountsRequest 要求显式选择全部账号或提供非空 id 集合。
+type detectBuildAccountsRequest struct {
+	IDs      []string `json:"ids"`
+	All      bool     `json:"all"`
+	Provider string   `json:"provider"`
+}
+
 type webConsoleSyncRequest struct {
 	IDs      []string                          `json:"ids"`
 	All      bool                              `json:"all"`
@@ -238,6 +246,16 @@ type accountTaskProgressResponse struct {
 	Completed int    `json:"completed"`
 	Total     int    `json:"total"`
 	Phase     string `json:"phase,omitempty"`
+}
+
+// accountDetectItemResponse 是检测任务的单账号增量事件；全量检测仅推送 invalid。
+type accountDetectItemResponse struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Email      string `json:"email,omitempty"`
+	Outcome    string `json:"outcome"`
+	Reason     string `json:"reason,omitempty"`
+	HTTPStatus int    `json:"httpStatus,omitempty"`
 }
 
 type accountBatchResponse struct {
@@ -535,6 +553,55 @@ func (h *Handler) batchRefreshBilling(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"succeeded": succeeded, "failed": failed})
+}
+
+func (h *Handler) detectBuildAccounts(c *gin.Context) {
+	var request detectBuildAccountsRequest
+	if c.Request.Body != nil {
+		if err := json.NewDecoder(c.Request.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+			response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+			return
+		}
+	}
+	if request.Provider != "" && request.Provider != string(accountdomain.ProviderBuild) {
+		response.Error(c, http.StatusBadRequest, "invalidProvider", "仅 Grok Build 账号支持可用性检测")
+		return
+	}
+	hasIDs := len(request.IDs) > 0
+	if request.All == hasIDs {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "必须明确选择全部账号或提供非空账号 ID")
+		return
+	}
+	var ids []uint64
+	if hasIDs {
+		parsed, err := parseIDs(request.IDs)
+		if err != nil {
+			response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
+			return
+		}
+		if !h.validateProviderIDs(c, parsed, string(accountdomain.ProviderBuild)) {
+			return
+		}
+		ids = parsed
+	}
+	stream := newAccountEventStream(c)
+	defer stream.Close()
+	itemObserver := func(item accountapp.BuildDetectItemResult) error {
+		return stream.Write("item", accountDetectItemResponse{
+			ID:         strconv.FormatUint(item.AccountID, 10),
+			Name:       item.Name,
+			Email:      item.Email,
+			Outcome:    string(item.Outcome),
+			Reason:     item.Reason,
+			HTTPStatus: item.HTTPStatus,
+		})
+	}
+	succeeded, failed, err := h.service.DetectBuildAccountsWithProgress(c.Request.Context(), ids, request.All, stream.ProgressObserver(), itemObserver)
+	if err != nil {
+		stream.WriteError("accountDetectFailed", "检测 Grok Build 账号失败")
+		return
+	}
+	_ = stream.Write("complete", accountBatchResponse{Succeeded: succeeded, Failed: failed})
 }
 
 func (h *Handler) batchResetQuota(c *gin.Context) {

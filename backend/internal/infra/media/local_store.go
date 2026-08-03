@@ -88,7 +88,11 @@ func (s *LocalStore) CommitVideoUpload(ctx context.Context, tempPath, storageKey
 		return err
 	}
 	// 确保临时文件已落盘。
-	file, err := os.Open(tempPath)
+	// 必须以 O_RDWR 打开：Windows 的 FlushFileBuffers 要求句柄具有写访问权限，
+	// 对 O_RDONLY 句柄调用 Sync 会返回 Access is denied；
+	// Linux 的 fsync 对只读/读写 fd 行为一致，此举不改变 POSIX 平台语义。
+	// O_RDWR 不含 O_TRUNC，不会改动文件内容。
+	file, err := os.OpenFile(tempPath, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("打开视频临时文件: %w", err)
 	}
