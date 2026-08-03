@@ -76,6 +76,28 @@ func TestSegmentedActiveReadsOnlyFirstAvailableWindow(t *testing.T) {
 	}
 }
 
+func TestSelectionSessionUsesSegmentedActiveWindow(t *testing.T) {
+	limiter := newSegmentedSelectiveLimiter()
+	selector := newSegmentedActiveTestSelector(100, limiter, nil)
+	selector.UpdateSegmentedSelector(true, 100, 8)
+
+	session, err := selector.beginSelectionSession(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := session.Acquire(context.Background(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if sizes := limiter.BatchSizes(); fmt.Sprint(sizes) != "[8]" {
+		t.Fatalf("selection session concurrency batch sizes = %v, want one window", sizes)
+	}
+	if observation := lease.selectorObservation; observation == nil || observation.stage != "first_window" {
+		t.Fatalf("selection session active observation = %#v", observation)
+	}
+}
+
 func TestSegmentedActiveCursorIsIndependentPerRouteShard(t *testing.T) {
 	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute)
 	selector.UpdateSegmentedSelector(true, 100, 8)

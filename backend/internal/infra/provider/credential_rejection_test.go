@@ -35,3 +35,14 @@ func TestClassifyCredentialRejectionPermanentDenial(t *testing.T) {
 		t.Fatalf("permanent denial = %#v", result)
 	}
 }
+
+func TestClassifyCredentialRejectionQuotaScopes(t *testing.T) {
+	free := ClassifyCredentialRejection(http.StatusTooManyRequests, []byte(`{"code":"subscription:free-usage-exhausted","error":"tokens (actual/limit): 10/10"}`), nil)
+	if !free.QuotaExhausted || !free.FreeQuotaExhausted || free.ModelQuotaExhausted || free.Rejected {
+		t.Fatalf("free quota classification = %#v", free)
+	}
+	model := ClassifyCredentialRejection(http.StatusForbidden, []byte(`{"error":"You've used all the included free usage for model grok-4.5"}`), nil)
+	if !model.QuotaExhausted || !model.FreeQuotaExhausted || !model.ModelQuotaExhausted || model.Rejected {
+		t.Fatalf("model quota classification = %#v", model)
+	}
+}

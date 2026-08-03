@@ -94,13 +94,13 @@ type batchConfigDTO struct {
 }
 
 type routingConfigDTO struct {
-	StickyTTL         string                      `json:"stickyTTL"`
-	CooldownBase      string                      `json:"cooldownBase"`
-	CooldownMax       string                      `json:"cooldownMax"`
-	CapacityWait      string                      `json:"capacityWait"`
-	MaxAttempts       int                         `json:"maxAttempts"`
+	StickyTTL                   string                      `json:"stickyTTL"`
+	CooldownBase                string                      `json:"cooldownBase"`
+	CooldownMax                 string                      `json:"cooldownMax"`
+	CapacityWait                string                      `json:"capacityWait"`
+	MaxAttempts                 int                         `json:"maxAttempts"`
 	PreferFreeBuild             bool                        `json:"preferFreeBuild"`
-	MarkBuildChatDeniedAsReauth bool                        `json:"markBuildChatDeniedAsReauth"`
+	MarkBuildChatDeniedAsReauth *bool                       `json:"markBuildChatDeniedAsReauth,omitempty"`
 	SegmentedSelector           *segmentedSelectorConfigDTO `json:"segmentedSelector,omitempty"`
 }
 
@@ -216,8 +216,9 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		Routing: settingsapp.RoutingConfig{
 			StickyTTL: value.Routing.StickyTTL, CooldownBase: value.Routing.CooldownBase,
 			CooldownMax: value.Routing.CooldownMax, CapacityWait: value.Routing.CapacityWait, MaxAttempts: value.Routing.MaxAttempts,
-			PreferFreeBuild:             value.Routing.PreferFreeBuild,
-			MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
+			PreferFreeBuild:                     value.Routing.PreferFreeBuild,
+			MarkBuildChatDeniedAsReauth:         boolValue(value.Routing.MarkBuildChatDeniedAsReauth),
+			MarkBuildChatDeniedAsReauthProvided: value.Routing.MarkBuildChatDeniedAsReauth != nil,
 		},
 		Audit: settingsapp.AuditConfig{
 			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval, CommitDelayMS: value.Audit.CommitDelayMS,
@@ -290,8 +291,8 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			Routing: routingConfigDTO{
 				StickyTTL: config.Routing.StickyTTL, CooldownBase: config.Routing.CooldownBase,
 				CooldownMax: config.Routing.CooldownMax, CapacityWait: config.Routing.CapacityWait, MaxAttempts: config.Routing.MaxAttempts,
-				MarkBuildChatDeniedAsReauth: config.Routing.MarkBuildChatDeniedAsReauth,
-		PreferFreeBuild: config.Routing.PreferFreeBuild,
+				MarkBuildChatDeniedAsReauth: boolPointer(config.Routing.MarkBuildChatDeniedAsReauth),
+				PreferFreeBuild:             config.Routing.PreferFreeBuild,
 				SegmentedSelector: &segmentedSelectorConfigDTO{
 					Enabled: config.Routing.SegmentedSelector.Enabled, MinCandidates: config.Routing.SegmentedSelector.MinCandidates,
 					WindowSize: config.Routing.SegmentedSelector.WindowSize,

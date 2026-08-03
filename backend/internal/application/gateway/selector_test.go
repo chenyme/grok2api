@@ -983,6 +983,75 @@ func TestSelectorStickySessionWaitsForBoundAccountCapacity(t *testing.T) {
 	}
 }
 
+func TestSelectionSessionStickyWaitsForBoundAccountCapacity(t *testing.T) {
+	ctx := context.Background()
+	sticky := memory.NewStickyStore()
+	selector, primary, _ := newStickySelectorFixture(t, sticky, 300*time.Millisecond, true)
+	firstSession, err := selector.beginSelectionSession(ctx, account.ProviderBuild, 0, "model", "", "stable-affinity", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := firstSession.Acquire(ctx, nil, false)
+	if err != nil || first.Credential.ID != primary.ID {
+		t.Fatalf("first lease = %#v, err = %v", first, err)
+	}
+	secondSession, err := selector.beginSelectionSession(ctx, account.ProviderBuild, 0, "model", "", "stable-affinity", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		lease *accountLease
+		err   error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		lease, acquireErr := secondSession.Acquire(ctx, nil, false)
+		resultCh <- result{lease: lease, err: acquireErr}
+	}()
+	select {
+	case value := <-resultCh:
+		t.Fatalf("selection session bypassed the sticky account before capacity returned: %#v", value)
+	case <-time.After(30 * time.Millisecond):
+	}
+	first.Release()
+	select {
+	case value := <-resultCh:
+		if value.err != nil || value.lease == nil || value.lease.Credential.ID != primary.ID {
+			t.Fatalf("sticky lease = %#v, err = %v", value.lease, value.err)
+		}
+		value.lease.Release()
+	case <-time.After(time.Second):
+		t.Fatal("selection session did not wake after sticky capacity returned")
+	}
+}
+
+func TestSelectionSessionStickyFallbackDoesNotRebind(t *testing.T) {
+	ctx := context.Background()
+	sticky := memory.NewStickyStore()
+	selector, primary, fallback := newStickySelectorFixture(t, sticky, 20*time.Millisecond, true)
+	firstSession, err := selector.beginSelectionSession(ctx, account.ProviderBuild, 0, "model", "", "stable-affinity", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := firstSession.Acquire(ctx, nil, false)
+	if err != nil || first.Credential.ID != primary.ID {
+		t.Fatalf("first lease = %#v, err = %v", first, err)
+	}
+	secondSession, err := selector.beginSelectionSession(ctx, account.ProviderBuild, 0, "model", "", "stable-affinity", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	temporary, err := secondSession.Acquire(ctx, nil, false)
+	if err != nil || temporary.Credential.ID != fallback.ID {
+		t.Fatalf("temporary lease = %#v, err = %v", temporary, err)
+	}
+	if boundID, ok, err := sticky.Get(ctx, stickySessionKey("stable-affinity"), time.Now().UTC()); err != nil || !ok || boundID != primary.ID {
+		t.Fatalf("sticky binding changed after temporary fallback: id=%d ok=%v err=%v", boundID, ok, err)
+	}
+	temporary.Release()
+	first.Release()
+}
+
 func TestSelectorStickySessionTemporaryFallbackDoesNotRebind(t *testing.T) {
 	ctx := context.Background()
 	sticky := memory.NewStickyStore()

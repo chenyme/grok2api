@@ -91,15 +91,16 @@ type FrontendConfig struct {
 
 // RoutingConfig 是管理接口使用的路由可编辑输入。
 type RoutingConfig struct {
-	StickyTTL                   string
-	CooldownBase                string
-	CooldownMax                 string
-	CapacityWait                string
-	MaxAttempts                 int
-	PreferFreeBuild             bool
-	MarkBuildChatDeniedAsReauth bool
-	SegmentedSelector           SegmentedSelectorConfig
-	SegmentedSelectorProvided   bool
+	StickyTTL                           string
+	CooldownBase                        string
+	CooldownMax                         string
+	CapacityWait                        string
+	MaxAttempts                         int
+	PreferFreeBuild                     bool
+	MarkBuildChatDeniedAsReauth         bool
+	MarkBuildChatDeniedAsReauthProvided bool
+	SegmentedSelector                   SegmentedSelectorConfig
+	SegmentedSelectorProvided           bool
 }
 
 type SegmentedSelectorConfig struct {
@@ -525,7 +526,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		next.Routing.SegmentedMinCandidates = input.Routing.SegmentedSelector.MinCandidates
 		next.Routing.SegmentedWindowSize = input.Routing.SegmentedSelector.WindowSize
 	}
-	next.Routing.MarkBuildChatDeniedAsReauth = input.Routing.MarkBuildChatDeniedAsReauth
+	if input.Routing.MarkBuildChatDeniedAsReauthProvided {
+		next.Routing.MarkBuildChatDeniedAsReauth = input.Routing.MarkBuildChatDeniedAsReauth
+	}
 	next.Audit.BufferSize = input.Audit.BufferSize
 	next.Audit.BatchSize = input.Audit.BatchSize
 	if input.Audit.CommitDelayMS > 0 {
@@ -631,8 +634,9 @@ func toEditable(cfg config.Config) EditableConfig {
 		Routing: RoutingConfig{
 			StickyTTL: cfg.Routing.StickyTTL.String(), CooldownBase: cfg.Routing.CooldownBase.String(),
 			CooldownMax: cfg.Routing.CooldownMax.String(), CapacityWait: cfg.Routing.CapacityWait.String(), MaxAttempts: cfg.Routing.MaxAttempts,
-			MarkBuildChatDeniedAsReauth: cfg.Routing.MarkBuildChatDeniedAsReauth,
-			PreferFreeBuild:             cfg.Routing.PreferFreeBuild,
+			MarkBuildChatDeniedAsReauth:         cfg.Routing.MarkBuildChatDeniedAsReauth,
+			MarkBuildChatDeniedAsReauthProvided: true,
+			PreferFreeBuild:                     cfg.Routing.PreferFreeBuild,
 			SegmentedSelector: SegmentedSelectorConfig{
 				Enabled: cfg.Routing.SegmentedSelectorEnabled, MinCandidates: cfg.Routing.SegmentedMinCandidates,
 				WindowSize: cfg.Routing.SegmentedWindowSize,

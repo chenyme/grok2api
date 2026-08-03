@@ -151,6 +151,24 @@ func TestUpdateValidatesMaxAttemptsRange(t *testing.T) {
 	}
 }
 
+func TestUpdatePreservesBuildChatDeniedPolicyWhenFieldIsOmitted(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Routing.MarkBuildChatDeniedAsReauth = true
+	repository := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Routing.MarkBuildChatDeniedAsReauth = false
+	input.Routing.MarkBuildChatDeniedAsReauthProvided = false
+
+	if _, err := service.Update(context.Background(), 0, input); err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Routing.MarkBuildChatDeniedAsReauth || !repository.value.Routing.MarkBuildChatDeniedAsReauth {
+		t.Fatalf("omitted Build chat denied policy was overwritten: applied=%t persisted=%t", applied.Routing.MarkBuildChatDeniedAsReauth, repository.value.Routing.MarkBuildChatDeniedAsReauth)
+	}
+}
+
 func TestLoadPersistedKeepsSegmentedSelectorDefaultsForOlderPayload(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Routing.SegmentedSelectorEnabled = true

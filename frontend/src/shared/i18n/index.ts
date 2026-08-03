@@ -905,7 +905,7 @@ const resources = {
       },
       settingsRoutingSegmented: { enabled: "启用分段选号", enabledHelp: "仅对达到阈值且没有会话粘性的账号池生效；连续四个窗口满载后自动回退完整池选号。", minCandidates: "启用账号数阈值", minCandidatesHelp: "可用候选账号达到该数量后启用分段选号。", windowSize: "选号窗口大小", windowSizeHelp: "每个分段窗口检查的候选账号数量。" },
       settingsRoutingAttempts: {
-        help: "有限模式范围为 1–200；无限制模式会在账号级可切换失败时遍历当前可用账号。",
+        help: "有限模式控制单次请求的路由尝试轮次：初次选择计 1 次，切号或出口重试各增加 1 次，范围为 1–65535；无限制模式会在账号级可切换失败时遍历当前可用账号。",
         unlimited: "无限制",
         unlimitedTitle: "启用无限尝试？",
         unlimitedDescription: "单次请求可能依次访问账号池中的全部可用账号，显著增加请求时长和上游压力。请求取消、超时以及重复的请求级或网络故障仍会提前停止。",
@@ -1437,7 +1437,7 @@ const resources = {
       settingsBuildForbidden: { markInvalid: "Invalidate matching error codes", markInvalidHelp: "When enabled, a Grok Build 403 with a matching error code marks the account invalid and removes it from scheduling.", codes: "Invalidation error codes", codesHelp: "Enter one code per line. Codes match the complete code or error.code value case-insensitively, up to 32 entries.", codesInvalid: "Enter 1–32 valid codes using letters, numbers, dots, underscores, colons, or hyphens.", codesPlaceholder: "permission-denied" },
       settingsRoutingSegmented: { enabled: "Enable segmented selection", enabledHelp: "Applies only above the threshold without session affinity and falls back to full-pool selection after four saturated windows.", minCandidates: "Account threshold", minCandidatesHelp: "Enables segmented selection when the eligible account pool reaches this size.", windowSize: "Selection window", windowSizeHelp: "Number of candidate accounts inspected in each segmented window." },
       settingsRoutingAttempts: {
-        help: "Set a finite limit from 1 to 200, or allow account-scoped failures to traverse all currently eligible accounts.",
+        help: "A finite value limits routing-attempt rounds: initial selection counts as one, and account failover or egress retry adds another. Range: 1–65535. Unlimited mode can traverse all currently eligible accounts after account-scoped failures.",
         unlimited: "Unlimited",
         unlimitedTitle: "Enable unlimited attempts?",
         unlimitedDescription: "A single request may try every eligible account in the pool, significantly increasing latency and upstream load. Cancellation, timeouts, and repeated request-level or network failures still stop processing early.",
@@ -1813,6 +1813,7 @@ Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<strin
   detectProgressLabel: "检测进度",
   detectInvalidCount: "已发现 {{count}} 个失效账号",
   detectSelectedSummary: "正常 {{ok}} · 失效 {{invalid}} · 失败 {{failed}}",
+  detectResultsLimited: "结果列表仅保留最近 {{count}} 条；上方累计统计不受影响。",
   detectWaitingInvalid: "正在检测；这里只增量显示已确认失效的账号。",
   detectWaitingResults: "正在等待账号检测结果。",
   detectNoInvalid: "未发现失效账号。",
@@ -1830,6 +1831,7 @@ Object.assign(resources.en.translation.accounts as unknown as Record<string, unk
   detectProgressLabel: "Detection progress",
   detectInvalidCount: "{{count}} invalid accounts found",
   detectSelectedSummary: "Healthy {{ok}} · Invalid {{invalid}} · Failed {{failed}}",
+  detectResultsLimited: "Only the latest {{count}} results are retained; cumulative totals above remain complete.",
   detectWaitingInvalid: "Detection is running; confirmed invalid accounts appear here.",
   detectWaitingResults: "Waiting for account detection results.",
   detectNoInvalid: "No invalid accounts found.",
@@ -1839,14 +1841,15 @@ Object.assign(resources.en.translation.accounts as unknown as Record<string, unk
   allDetected: "Full detection complete: {{succeeded}} succeeded, {{failed}} failed",
 });
 Object.assign(resources["zh-CN"].translation.settings.routing as unknown as Record<string, string>, {
+  maxAttemptsHelp: "单次请求的最大路由尝试轮次；初次选择计 1 次，切号或出口重试各增加 1 次。范围为 1–65535。",
   markBuildChatDeniedAsReauth: "Build Chat 权限拒绝标记重授权",
   markBuildChatDeniedAsReauthHelp: "开启后，Build Chat 请求遇到权限拒绝时将账号标记为需要重新授权并移出号池。",
 });
 Object.assign(resources.en.translation.settings.routing as unknown as Record<string, string>, {
+  maxAttemptsHelp: "Maximum routing-attempt rounds per client request. Initial selection counts as one; account failover or egress retry adds another. Range: 1–65535.",
   markBuildChatDeniedAsReauth: "Mark Build Chat denied as reauth",
   markBuildChatDeniedAsReauthHelp: "Mark accounts that receive a Build Chat permission denial for reauthorization and remove them from routing.",
 });
-
 function readStoredLanguage(): string | null {
   if (typeof window === "undefined") return null;
   try {

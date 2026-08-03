@@ -217,6 +217,7 @@ func (session *selectionSession) acquireNormal(ctx context.Context, excluded map
 	if len(session.normalCandidates) == 0 {
 		return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
 	}
+	_, _, _, capacityWait := session.selector.routingConfig()
 	if !session.stickyTried && session.stickyKey != "" && session.selector.sticky != nil {
 		session.stickyTried = true
 		stickyID, ok, err := session.selector.sticky.Get(ctx, session.stickyKey, time.Now().UTC())
@@ -229,24 +230,33 @@ func (session *selectionSession) acquireNormal(ctx context.Context, excluded map
 				if candidate.Credential.ID != stickyID {
 					continue
 				}
-				lease, err := session.selector.claimAccountSlot(ctx, candidate.Credential)
+				lease, err := session.selector.acquirePinnedCapacity(ctx, candidate.Credential)
 				if err != nil {
 					if errors.Is(err, errRoutingCredentialStale) {
 						session.markCandidateStale(stickyID)
 						_ = session.selector.sticky.DeleteByAccount(ctx, stickyID)
 						break
 					}
-					return nil, err
+					if !isSelectionUnavailable(err, SelectionSaturated) {
+						return nil, err
+					}
+					// The sticky account already consumed this request's bounded capacity wait.
+					// Try an available fallback immediately without waiting for the whole pool again.
+					capacityWait = 0
+					break
 				}
-				if lease != nil {
-					return session.completeNormalLease(ctx, lease, candidate, excluded)
-				}
-				break
+				return session.completeNormalLease(ctx, lease, candidate, excluded)
 			}
 		}
 	}
+	if session.stickyKey == "" {
+		indexes := session.unexcludedNormalIndexes(excluded)
+		activeRequest := session.selector.nextSegmentedActiveRequest(session.provider, session.upstreamModel, session.quotaMode, len(indexes))
+		if activeRequest != nil {
+			return session.selector.acquireSegmentedCandidates(ctx, session.values, indexes, session.quotaMode, session.selector.resolveTierOrder(session.provider, session.upstreamModel), *activeRequest)
+		}
+	}
 
-	_, _, _, capacityWait := session.selector.routingConfig()
 	deadline := time.Now().Add(capacityWait)
 	for {
 		if session.normalPlan == nil {
@@ -337,6 +347,16 @@ func (session *selectionSession) hasUnexcludedNormal(excluded map[uint64]bool) b
 		}
 	}
 	return false
+}
+
+func (session *selectionSession) unexcludedNormalIndexes(excluded map[uint64]bool) []int {
+	indexes := make([]int, 0, len(session.normalCandidates))
+	for _, index := range session.normalCandidates {
+		if !session.candidateExcluded(excluded, session.values[index].Credential.ID) {
+			indexes = append(indexes, index)
+		}
+	}
+	return indexes
 }
 
 func (session *selectionSession) candidateExcluded(excluded map[uint64]bool, accountID uint64) bool {

@@ -104,6 +104,9 @@ type BuildConversionProgressState = {
 type WebConversionTarget = "build" | "console";
 type BuildQuotaTask = "sync" | "reset";
 type EgressConfigurationTask = "bind" | "unbind";
+type BuildDetectCounts = Record<BuildDetectItemDTO["outcome"], number>;
+
+const emptyBuildDetectCounts = (): BuildDetectCounts => ({ ok: 0, invalid: 0, failed: 0 });
 
 type AccountSelection = {
   provider: AccountProvider;
@@ -117,6 +120,7 @@ export function AccountsPage() {
   const quickImportFileInputRef = useRef<HTMLInputElement>(null);
   const quotaSyncAbortRef = useRef<AbortController | null>(null);
   const detectAbortRef = useRef<AbortController | null>(null);
+  const detectOutcomeByIDRef = useRef(new Map<string, BuildDetectItemDTO["outcome"]>());
   const renewalAbortRef = useRef<AbortController | null>(null);
   const conversionAbortRef = useRef<AbortController | null>(null);
   const webConsoleSyncAbortRef = useRef<AbortController | null>(null);
@@ -165,6 +169,7 @@ export function AccountsPage() {
   const [quotaSyncProgress, setQuotaSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [detectProgress, setDetectProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [detectItems, setDetectItems] = useState<BuildDetectItemDTO[]>([]);
+  const [detectCounts, setDetectCounts] = useState<BuildDetectCounts>(emptyBuildDetectCounts);
   const [webConversionTargets, setWebConversionTargets] = useState<string[] | "all" | null>(null);
   const [webConversionTarget, setWebConversionTarget] = useState<WebConversionTarget>("build");
   const [webConversionStrategy, setWebConversionStrategy] = useState<BuildConversionStrategy>("missing");
@@ -679,6 +684,15 @@ export function AccountsPage() {
   });
 
   const appendDetectItem = useCallback((item: BuildDetectItemDTO) => {
+    const previousOutcome = detectOutcomeByIDRef.current.get(item.id);
+    detectOutcomeByIDRef.current.set(item.id, item.outcome);
+    if (previousOutcome !== item.outcome) {
+      setDetectCounts((previous) => ({
+        ...previous,
+        ...(previousOutcome ? { [previousOutcome]: Math.max(0, previous[previousOutcome] - 1) } : {}),
+        [item.outcome]: previous[item.outcome] + 1,
+      }));
+    }
     setDetectItems((prev) => {
       const next = prev.filter((entry) => entry.id !== item.id);
       next.unshift(item);
@@ -691,6 +705,8 @@ export function AccountsPage() {
       const controller = new AbortController();
       detectAbortRef.current = controller;
       setDetectProgress(null);
+      detectOutcomeByIDRef.current.clear();
+      setDetectCounts(emptyBuildDetectCounts());
       setDetectItems([]);
       const handlers = {
         onProgress: setDetectProgress,
@@ -715,6 +731,8 @@ export function AccountsPage() {
   const openDetectDialog = (mode: "selected" | "all") => {
     setDetectMode(mode);
     setDetectProgress(null);
+    detectOutcomeByIDRef.current.clear();
+    setDetectCounts(emptyBuildDetectCounts());
     setDetectItems([]);
     setDetectDialogOpen(true);
   };
@@ -1435,17 +1453,20 @@ export function AccountsPage() {
                   {detectProgress ? `${detectProgress.completed} / ${detectProgress.total}` : detectMutation.isPending ? t("common.loading") : "—"}
                 </span>
               </div>
-              {detectMode === "all" && detectInvalidItems.length > 0 ? (
-                <p className="text-xs text-muted-foreground">{t("accounts.detectInvalidCount", { count: detectInvalidItems.length })}</p>
+              {detectMode === "all" && detectCounts.invalid > 0 ? (
+                <p className="text-xs text-muted-foreground">{t("accounts.detectInvalidCount", { count: detectCounts.invalid })}</p>
               ) : null}
-              {detectMode === "selected" && detectItems.length > 0 ? (
+              {detectMode === "selected" && (detectCounts.ok + detectCounts.invalid + detectCounts.failed) > 0 ? (
                 <p className="text-xs text-muted-foreground">
                   {t("accounts.detectSelectedSummary", {
-                    ok: detectItems.filter((item) => item.outcome === "ok").length,
-                    invalid: detectItems.filter((item) => item.outcome === "invalid").length,
-                    failed: detectItems.filter((item) => item.outcome === "failed").length,
+                    ok: detectCounts.ok,
+                    invalid: detectCounts.invalid,
+                    failed: detectCounts.failed,
                   })}
                 </p>
+              ) : null}
+              {(detectCounts.ok + detectCounts.invalid + detectCounts.failed) > detectVisibleItems.length ? (
+                <p className="text-xs text-muted-foreground">{t("accounts.detectResultsLimited", { count: 200 })}</p>
               ) : null}
               <div className="max-h-64 overflow-y-auto rounded-md border">
                 {detectVisibleItems.length === 0 ? (

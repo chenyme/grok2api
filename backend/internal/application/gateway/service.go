@@ -850,6 +850,9 @@ attemptLoop:
 				continue
 			}
 			lastFailure = newTransportUpstreamFailure(err, credential.ID, credential.Name)
+			if !isRetryableTransportFailure(credential.Provider, err) {
+				break
+			}
 			s.selector.MarkFailure(ctx, credential, 0, 0)
 			if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 				break

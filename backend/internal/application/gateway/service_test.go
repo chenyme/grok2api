@@ -333,6 +333,66 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 }
 
+func TestGatewayBuildResponseHeaderTimeoutDoesNotSwitchAccounts(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway-build-header-timeout.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"timeout", "fallback"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: "encrypted-" + name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index*100, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	const model = "grok-build-header-timeout"
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adapter := &failoverAdapter{transportErrorIDs: map[uint64]error{credentials[0].ID: responseHeaderTimeoutTestError{}}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	if _, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-build-header-timeout", ClientKey: clientkey.Key{ID: 1, Name: "build-key"}, PublicModel: model,
+		Body: []byte(`{"model":"grok-build-header-timeout","input":"hello"}`),
+	}); err == nil {
+		t.Fatal("expected response-header timeout")
+	}
+	if len(adapter.attempts) != 1 || adapter.attempts[0] != credentials[0].ID {
+		t.Fatalf("attempts = %#v, want only account %d", adapter.attempts, credentials[0].ID)
+	}
+	latest, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.FailureCount != 0 || latest.CooldownUntil != nil {
+		t.Fatalf("ambiguous response-header timeout changed account health: %#v", latest)
+	}
+}
+
 type blockingHealthAccountRepository struct {
 	repository.AccountRepository
 	started chan struct{}
@@ -2044,6 +2104,7 @@ type failoverAdapter struct {
 	lastReasoningReplayKey string
 	lastGrokTurnIndex      string
 	resourceStatus         int
+	transportErrorIDs      map[uint64]error
 }
 
 type ssoFailureAdapter struct {
@@ -3501,7 +3562,11 @@ func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.Re
 	a.lastReasoningReplayKey = request.ReasoningReplayKey
 	a.lastGrokTurnIndex = request.GrokTurnIndex
 	resourceStatus := a.resourceStatus
+	transportErr := a.transportErrorIDs[request.Credential.ID]
 	a.mu.Unlock()
+	if transportErr != nil {
+		return nil, transportErr
+	}
 	status, body := http.StatusOK, "ok"
 	header := make(http.Header)
 	if request.Method != http.MethodPost && resourceStatus != 0 {

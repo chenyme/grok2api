@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -38,6 +39,50 @@ func TestDetectBuildAccountsRequiresExplicitScope(t *testing.T) {
 	}
 	if _, _, err := service.DetectBuildAccountsWithProgress(context.Background(), []uint64{}, false, nil, nil); err == nil {
 		t.Fatal("empty ids should not imply all accounts")
+	}
+}
+
+func TestFinishBuildDetectCredentialErrorClassifiesPermanentRefreshAsInvalid(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "detect-refresh-error.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessToken, err := cipher.Encrypt("expired-access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := relational.NewAccountRepository(database)
+	credential, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "expired-refresh", SourceKey: "expired-refresh",
+		EncryptedAccessToken: accessToken, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(repo, nil, nil, nil, provider.NewRegistry(detectResponsesAdapter{}), cipher, nil)
+
+	for _, refreshErr := range []error{
+		ErrCredentialRefreshPermanent,
+		&provider.CredentialRefreshError{Code: "invalid_grant", Permanent: true},
+	} {
+		item := service.finishBuildDetectCredentialError(ctx, credential, refreshErr)
+		if item.Outcome != BuildDetectOutcomeInvalid {
+			t.Fatalf("error %v produced outcome %s, want invalid", refreshErr, item.Outcome)
+		}
+	}
+
+	item := service.finishBuildDetectCredentialError(ctx, credential, errors.New("temporary OAuth outage"))
+	if item.Outcome != BuildDetectOutcomeFailed {
+		t.Fatalf("temporary error outcome = %s, want failed", item.Outcome)
 	}
 }
 
@@ -128,6 +173,56 @@ func TestFinishBuildDetectResponseUsesScopedFailureState(t *testing.T) {
 	}
 	if deniedCandidate == nil || deniedCandidate.ModelQuotaBlock == nil || deniedCandidate.ModelQuotaBlock.Reason != "model_access_denied" {
 		t.Fatalf("model-scoped denial was not persisted: %#v", candidates)
+	}
+
+	freeAccount, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "free-exhausted", UserID: "user-3",
+		SourceKey: "detect-free-exhausted", EncryptedAccessToken: accessToken,
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: 1, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = service.finishBuildDetectResponse(ctx, &provider.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"code":"subscription:free-usage-exhausted","error":"tokens (actual/limit): 10/10"}`))),
+	}, freeAccount, nil)
+	if item.Outcome != BuildDetectOutcomeFailed {
+		t.Fatalf("free quota outcome = %s, want failed", item.Outcome)
+	}
+	freeRecovery, err := repo.GetQuotaRecovery(ctx, freeAccount.ID)
+	if err != nil || freeRecovery.Kind != accountdomain.QuotaRecoveryKindFree || freeRecovery.Status != accountdomain.QuotaRecoveryStatusExhausted {
+		t.Fatalf("free quota recovery = %#v, err = %v", freeRecovery, err)
+	}
+
+	modelQuotaAccount, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "model-quota", UserID: "user-4",
+		SourceKey: "detect-model-quota", EncryptedAccessToken: accessToken,
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: 1, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = service.finishBuildDetectResponse(ctx, &provider.Response{
+		StatusCode: http.StatusForbidden,
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"You've used all the included free usage for model grok-4.5"}`))),
+	}, modelQuotaAccount, nil)
+	if item.Outcome != BuildDetectOutcomeFailed {
+		t.Fatalf("model quota outcome = %s, want failed", item.Outcome)
+	}
+	candidates, err = repo.ListRoutingCandidates(ctx, accountdomain.ProviderBuild, 0, buildDetectModel, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modelQuotaCandidate *accountdomain.RoutingCandidate
+	for index := range candidates {
+		if candidates[index].Credential.ID == modelQuotaAccount.ID {
+			modelQuotaCandidate = &candidates[index]
+			break
+		}
+	}
+	if modelQuotaCandidate == nil || modelQuotaCandidate.ModelQuotaBlock == nil || modelQuotaCandidate.ModelQuotaBlock.Reason != "model_quota_depleted" {
+		t.Fatalf("model quota block was not persisted: %#v", modelQuotaCandidate)
 	}
 }
 

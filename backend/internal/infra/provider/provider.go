@@ -826,11 +826,17 @@ type CredentialRejection struct {
 	Rejected bool
 	// PermanentAccountDenial 表示上游明确拒绝该账号访问聊天端点（非凭据本身失效）。
 	// Build 账号此类拒绝按现有网关逻辑是 model-scoped，不应标 reauth；仅 Rejected 为真时才标。
-	// 管理端 detect 路径会额外把此类拒绝标 reauth，便于清理死号。
+	// 管理端 detect 路径同样仅持久化模型阻断，避免把仍可用于其他模型的账号移出号池。
 	PermanentAccountDenial bool
 	// SpendingLimitBlocked 表示付费账号被 spending-limit 永久阻断（402/403 personal-team-blocked:spending-limit），
-	// 账单周期内不会自动恢复，适合直接标 reauthRequired 出池。
+	// 由调用方写入额度恢复状态，不应误判为 OAuth 凭据失效。
 	SpendingLimitBlocked bool
+	// QuotaExhausted 表示请求被账号级或模型级额度限制拒绝。
+	QuotaExhausted bool
+	// FreeQuotaExhausted 表示免费额度已经耗尽。
+	FreeQuotaExhausted bool
+	// ModelQuotaExhausted 表示额度限制只针对当前模型。
+	ModelQuotaExhausted bool
 }
 
 // ClassifyCredentialRejection 按上游 HTTP 状态码与错误体判定凭据是否被拒。
@@ -850,21 +856,20 @@ func ClassifyCredentialRejection(status int, body []byte, err error) CredentialR
 	switch status {
 	case http.StatusUnauthorized:
 		result.Rejected = true
-	case http.StatusPaymentRequired:
+	case http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
 		upstreamCode, upstreamType, upstreamMessage := ExtractUpstreamErrorMetadata(body)
 		metadataText := strings.ToLower(strings.Join([]string{upstreamCode, upstreamType, upstreamMessage}, " "))
 		result.SpendingLimitBlocked = strings.Contains(metadataText, "personal-team-blocked:spending-limit")
-	case http.StatusForbidden:
-		upstreamCode, upstreamType, upstreamMessage := ExtractUpstreamErrorMetadata(body)
-		metadataText := strings.ToLower(strings.Join([]string{upstreamCode, upstreamType, upstreamMessage}, " "))
-		result.SpendingLimitBlocked = strings.Contains(metadataText, "personal-team-blocked:spending-limit")
-		quotaExhausted := ContainsAny(metadataText,
-			"subscription:free-usage-exhausted", "used all the included free usage for model",
-			"personal-team-blocked:spending-limit")
+		result.ModelQuotaExhausted = strings.Contains(metadataText, "used all the included free usage for model")
+		result.FreeQuotaExhausted = result.ModelQuotaExhausted || strings.Contains(metadataText, "subscription:free-usage-exhausted")
+		creditExhausted := ContainsAny(metadataText, "run out of credits", "out of credits", "usage balance exhausted", "usage limit reached")
+		result.QuotaExhausted = status == http.StatusPaymentRequired || result.SpendingLimitBlocked || result.FreeQuotaExhausted || creditExhausted
 		permanentDenial := IsPermanentAccountDenial(metadataText)
 		result.PermanentAccountDenial = permanentDenial
-		result.Rejected = !quotaExhausted && !permanentDenial && ContainsAny(metadataText,
-			"authentication", "unauthorized", "invalid token", "token expired")
+		if status == http.StatusForbidden {
+			result.Rejected = !result.QuotaExhausted && !permanentDenial && ContainsAny(metadataText,
+				"authentication", "unauthorized", "invalid token", "token expired")
+		}
 	}
 	return result
 }

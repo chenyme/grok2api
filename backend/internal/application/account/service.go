@@ -3230,7 +3230,7 @@ func (s *Service) DetectBuildAccountsWithProgress(ctx context.Context, ids []uin
 	completed := 0
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	results, summary, err := batch.MapObserved(runCtx, ids, batch.Options{Workers: pool.Limit(), Pool: pool}, func(workCtx context.Context, id uint64) (BuildDetectItemResult, error) {
+	summary, err := batch.ForEachObserved(runCtx, ids, batch.Options{Workers: pool.Limit(), Pool: pool}, func(workCtx context.Context, id uint64) (BuildDetectItemResult, error) {
 		item := s.detectBuildAccount(workCtx, id)
 		if itemObserver != nil && (selectedMode || item.Outcome == BuildDetectOutcomeInvalid) {
 			if notifyErr := itemObserver(item); notifyErr != nil {
@@ -3244,7 +3244,11 @@ func (s *Service) DetectBuildAccountsWithProgress(ctx context.Context, ids []uin
 			return item, fmt.Errorf("%s", item.Reason)
 		}
 		return item, fmt.Errorf("账号检测失败")
-	}, func(_ int, _ batch.Result[BuildDetectItemResult]) {
+	}, func(index int, result batch.Result[BuildDetectItemResult]) {
+		var panicErr *batch.PanicError
+		if errors.As(result.Err, &panicErr) {
+			s.logger.Error("account_bulk_task_panicked", "operation", "build_detect", "account_id", ids[index], "error", panicErr, "stack", string(panicErr.Stack))
+		}
 		progressMu.Lock()
 		defer progressMu.Unlock()
 		completed++
@@ -3255,12 +3259,6 @@ func (s *Service) DetectBuildAccountsWithProgress(ctx context.Context, ids []uin
 			}
 		}
 	})
-	for index, result := range results {
-		var panicErr *batch.PanicError
-		if errors.As(result.Err, &panicErr) {
-			s.logger.Error("account_bulk_task_panicked", "operation", "build_detect", "account_id", ids[index], "error", panicErr, "stack", string(panicErr.Stack))
-		}
-	}
 	s.logBatchSummary("build_detect", pool, summary, err)
 	return summary.Succeeded, summary.Failed, errors.Join(err, progressErr)
 }
@@ -3358,6 +3356,17 @@ func (s *Service) finishBuildDetectCredentialError(ctx context.Context, value ac
 		Outcome:   BuildDetectOutcomeFailed,
 		Reason:    err.Error(),
 	}
+	var refreshErr *provider.CredentialRefreshError
+	if errors.Is(err, ErrCredentialRefreshPermanent) || errors.As(err, &refreshErr) && refreshErr.Permanent {
+		reason := fmt.Sprintf("%s OAuth refresh credential permanently rejected", value.Provider)
+		if markErr := s.markBuildDetectReauth(ctx, value.ID, reason); markErr != nil {
+			item.Reason = errors.Join(err, markErr).Error()
+			return item
+		}
+		item.Outcome = BuildDetectOutcomeInvalid
+		item.Reason = reason
+		return item
+	}
 	if rejection := provider.ClassifyCredentialRejection(0, nil, err); rejection.Rejected {
 		reason := fmt.Sprintf("%s OAuth credential rejected", value.Provider)
 		if markErr := s.markBuildDetectReauth(ctx, value.ID, reason); markErr != nil {
@@ -3442,6 +3451,24 @@ func (s *Service) finishBuildDetectResponse(ctx context.Context, response *provi
 		item.Reason = reason
 		return item
 	}
+	if rejection.ModelQuotaExhausted {
+		reason := fmt.Sprintf("%s model quota exhausted for %s", credential.Provider, buildDetectModel)
+		if markErr := s.markBuildDetectModelQuotaExhausted(ctx, credential, reason); markErr != nil {
+			item.Reason = errors.Join(errors.New(reason), markErr).Error()
+			return item
+		}
+		item.Reason = reason
+		return item
+	}
+	if rejection.QuotaExhausted {
+		reason := fmt.Sprintf("%s quota exhausted", credential.Provider)
+		if markErr := s.markBuildDetectQuotaExhausted(ctx, credential, billing); markErr != nil {
+			item.Reason = errors.Join(errors.New(reason), markErr).Error()
+			return item
+		}
+		item.Reason = reason
+		return item
+	}
 	if rejection.PermanentAccountDenial {
 		reason := fmt.Sprintf("%s chat endpoint access denied for %s", credential.Provider, buildDetectModel)
 		if markErr := s.markBuildDetectModelDenied(ctx, credential, reason); markErr != nil {
@@ -3489,14 +3516,22 @@ func (s *Service) markBuildDetectQuotaExhausted(ctx context.Context, credential 
 }
 
 func (s *Service) markBuildDetectModelDenied(ctx context.Context, credential accountdomain.Credential, reason string) error {
+	return s.markBuildDetectModelBlock(ctx, credential, "model_access_denied", buildDetectModelDeniedCooldown, reason)
+}
+
+func (s *Service) markBuildDetectModelQuotaExhausted(ctx context.Context, credential accountdomain.Credential, reason string) error {
+	return s.markBuildDetectModelBlock(ctx, credential, "model_quota_depleted", buildDetectQuotaRecoveryPause, reason)
+}
+
+func (s *Service) markBuildDetectModelBlock(ctx context.Context, credential accountdomain.Credential, blockReason string, cooldown time.Duration, diagnostic string) error {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialStateWriteTimeout)
 	defer cancel()
 	now := s.now()
 	if err := s.accounts.UpsertModelQuotaBlock(writeCtx, accountdomain.ModelQuotaBlock{
-		AccountID: credential.ID, UpstreamModel: buildDetectModel, Reason: "model_access_denied",
-		CooldownUntil: now.Add(buildDetectModelDeniedCooldown), UpdatedAt: now,
+		AccountID: credential.ID, UpstreamModel: buildDetectModel, Reason: blockReason,
+		CooldownUntil: now.Add(cooldown), UpdatedAt: now,
 	}); err != nil {
-		s.logger.Error("account_model_access_denied_write_failed", "account_id", credential.ID, "provider", credential.Provider, "model", buildDetectModel, "reason", reason, "error", err)
+		s.logger.Error("account_model_block_write_failed", "account_id", credential.ID, "provider", credential.Provider, "model", buildDetectModel, "reason", diagnostic, "block_reason", blockReason, "error", err)
 		return err
 	}
 	return nil
