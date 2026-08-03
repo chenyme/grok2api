@@ -63,6 +63,26 @@ func TestSettingsResponseIncludesPreferFreeBuild(t *testing.T) {
 	}
 }
 
+func TestSettingsResponseIncludesMarkBuildChatDeniedAsReauth(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{
+		Routing: settingsapp.RoutingConfig{MarkBuildChatDeniedAsReauth: true},
+	}})
+	if response.Config.Routing.MarkBuildChatDeniedAsReauth == nil || !*response.Config.Routing.MarkBuildChatDeniedAsReauth {
+		t.Fatal("markBuildChatDeniedAsReauth was lost from settings response")
+	}
+}
+
+func TestLegacySettingsRequestMayOmitMarkBuildChatDeniedAsReauth(t *testing.T) {
+	var dto settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"routing":{"stickyTTL":"1h"}}`), &dto); err != nil {
+		t.Fatal(err)
+	}
+	input := dto.toApplication()
+	if input.Routing.MarkBuildChatDeniedAsReauthProvided {
+		t.Fatal("missing markBuildChatDeniedAsReauth was treated as an explicit update")
+	}
+}
+
 func TestLegacySettingsRequestMayOmitAccounts(t *testing.T) {
 	var dto settingsConfigDTO
 	if err := json.Unmarshal([]byte(`{"server":{"maxConcurrentRequests":64}}`), &dto); err != nil {
