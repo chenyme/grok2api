@@ -263,6 +263,28 @@ func TestMapObservedReleasesPoolBeforeStartingDownstreamWork(t *testing.T) {
 	}
 }
 
+func TestForEachObservedReturnsSummaryWithoutCollectedResults(t *testing.T) {
+	pool := NewPool(2)
+	var observed atomic.Int64
+	summary, err := ForEachObserved(context.Background(), []int{1, 2, 3}, Options{Workers: 2, Pool: pool}, func(_ context.Context, value int) (int, error) {
+		if value == 2 {
+			return value, errors.New("rejected")
+		}
+		return value * 2, nil
+	}, func(_ int, result Result[int]) {
+		if !result.Completed {
+			t.Error("observer received incomplete result")
+		}
+		observed.Add(1)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Load() != 3 || summary.Completed != 3 || summary.Succeeded != 2 || summary.Failed != 1 {
+		t.Fatalf("observed = %d, summary = %#v", observed.Load(), summary)
+	}
+}
+
 func TestMapStopsSubmittingAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	_, summary, err := Run(ctx, make([]int, 100), Options{Workers: 2, QueueSize: 1}, func(context.Context, int) error {

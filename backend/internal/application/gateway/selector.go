@@ -36,6 +36,9 @@ const maxConcurrencySnapshots = 256
 
 const modelAccessDeniedCooldown = 5 * time.Minute
 
+// softNetworkCooldown 网络/超时/5xx 仅短暂隔离本号，避免指数冷却掏空热池。
+const softNetworkCooldown = 5 * time.Second
+
 const defaultFreeQuotaRecoveryPause = 24 * time.Hour
 
 var errRoutingCredentialStale = errors.New("routing credential is no longer available")
@@ -757,24 +760,27 @@ func (s *Selector) markSuccess(ctx context.Context, credential account.Credentia
 		_ = s.accounts.ClearQuotaRecovery(ctx, credential.ID)
 	}
 	if quotaProbe || credential.FailureCount > 0 || credential.CooldownUntil != nil || credential.LastError != "" {
-		s.invalidateCandidates(credential.Provider)
+		s.evictCandidate(credential.Provider, credential.ID)
 	}
 }
 
 func (s *Selector) MarkFreeQuotaExhausted(ctx context.Context, credential account.Credential, used, limit int64) {
 	now := time.Now().UTC()
 	nextProbeAt := now.Add(defaultFreeQuotaRecoveryPause)
-	s.markFreeQuotaExhaustedAt(ctx, credential, used, limit, now, nextProbeAt)
+	_ = s.markFreeQuotaExhaustedAt(ctx, credential, used, limit, now, nextProbeAt)
 }
 
-func (s *Selector) markFreeQuotaExhaustedAt(ctx context.Context, credential account.Credential, used, limit int64, now, nextProbeAt time.Time) {
-	_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
+func (s *Selector) markFreeQuotaExhaustedAt(ctx context.Context, credential account.Credential, used, limit int64, now, nextProbeAt time.Time) error {
+	if err := s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
 		AccountID: credential.ID, Kind: account.QuotaRecoveryKindFree, Status: account.QuotaRecoveryStatusExhausted,
 		ConfirmedUsed: used, ConfirmedLimit: limit, ExhaustedAt: &now,
 		NextProbeAt: &nextProbeAt, LastConfirmedAt: &now, UpdatedAt: now,
-	})
+	}); err != nil {
+		return err
+	}
 	_ = s.sticky.DeleteByAccount(ctx, credential.ID)
 	s.invalidateCandidates(credential.Provider)
+	return nil
 }
 
 func (s *Selector) MarkModelQuotaExhausted(ctx context.Context, credential account.Credential, billing *account.Billing, upstreamModel string, retryAfter time.Duration) {
@@ -799,43 +805,57 @@ func (s *Selector) MarkModelQuotaExhausted(ctx context.Context, credential accou
 // MarkModelAccessDenied isolates a permission failure to the rejected model.
 // Build OAuth accounts may still have valid video access when a chat endpoint
 // returns 403, so a model denial must not invalidate the whole credential.
-func (s *Selector) MarkModelAccessDenied(ctx context.Context, credential account.Credential, upstreamModel string, retryAfter time.Duration) {
+func (s *Selector) MarkModelAccessDenied(ctx context.Context, credential account.Credential, upstreamModel string, retryAfter time.Duration) error {
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	if upstreamModel == "" {
-		return
+		return nil
 	}
 	if retryAfter <= 0 {
 		retryAfter = modelAccessDeniedCooldown
 	}
 	now := time.Now().UTC()
-	_ = s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
+	if err := s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
 		AccountID: credential.ID, UpstreamModel: upstreamModel, Reason: "model_access_denied",
 		CooldownUntil: now.Add(retryAfter), UpdatedAt: now,
-	})
-	s.invalidateCandidates(credential.Provider)
+	}); err != nil {
+		return err
+	}
+	s.evictCandidate(credential.Provider, credential.ID)
+	return nil
 }
 
 // MarkPaymentQuotaExhausted removes a spending-limited account from routing.
 // Paid accounts follow their upstream billing period; Free or unknown accounts
 // use the fixed local recovery window.
-func (s *Selector) MarkPaymentQuotaExhausted(ctx context.Context, credential account.Credential, hints quotaRecoveryHints) {
+func (s *Selector) MarkPaymentQuotaExhausted(ctx context.Context, credential account.Credential, hints quotaRecoveryHints) error {
 	now := time.Now().UTC()
 	if hints.Billing != nil && hints.Billing.IsPaid() {
 		if periodEnd, ok := hints.Billing.PeriodEnd(); ok && periodEnd.After(now) {
-			_ = s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
+			if err := s.accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
 				AccountID: credential.ID, Kind: account.QuotaRecoveryKindPaid, Status: account.QuotaRecoveryStatusExhausted,
 				ExhaustedAt: &now, NextProbeAt: &periodEnd, LastConfirmedAt: &now, UpdatedAt: now,
-			})
+			}); err != nil {
+				return err
+			}
 			_ = s.sticky.DeleteByAccount(ctx, credential.ID)
 			s.invalidateCandidates(credential.Provider)
-			return
+			return nil
 		}
 	}
-	s.MarkFreeQuotaExhausted(ctx, credential, 0, 0)
+	return s.markFreeQuotaExhaustedAt(ctx, credential, 0, 0, now, now.Add(defaultFreeQuotaRecoveryPause))
 }
 
-// MarkQuotaStateChanged 在 Billing 探测改变持久化额度状态后立即失效候选快照。
-func (s *Selector) MarkQuotaStateChanged(provider account.Provider) { s.invalidateCandidates(provider) }
+// MarkQuotaStateChanged 在 Billing 探测改变持久化额度状态后更新对应账号的候选快照。
+// 未提供账号 ID 时保留全量失效语义，供无法确定变更范围的调用方使用。
+func (s *Selector) MarkQuotaStateChanged(provider account.Provider, accountIDs ...uint64) {
+	if len(accountIDs) == 0 {
+		s.invalidateCandidates(provider)
+		return
+	}
+	for _, accountID := range accountIDs {
+		s.evictCandidate(provider, accountID)
+	}
+}
 
 // ConsumeQuota 将成功请求的本地额度变化应用到候选快照，避免为单账号变化清空整个 Provider 缓存。
 func (s *Selector) ConsumeQuota(provider account.Provider, accountID uint64, mode string, amount int) {
@@ -901,18 +921,30 @@ func (s *Selector) MarkFailureAfterSuccess(ctx context.Context, credential accou
 
 func (s *Selector) markFailure(ctx context.Context, credential account.Credential, failureCount, status int, retryAfter time.Duration) error {
 	_, cooldownBase, cooldownMax, _ := s.routingConfig()
+	// 网络/超时（status 0）只短隔离本号，不累加失败次数，避免瞬时抖动把号池指数冻空。
+	// 上游返回的 4xx/5xx 仍按原指数冷却：那是上游明确给出的状态，不是本地网络抖动。
+	softNetwork := status == 0
+	effectiveFailureCount := failureCount
 	cooldown := cooldownBase
-	for i := 1; i < failureCount && cooldown < cooldownMax; i++ {
-		cooldown *= 2
-	}
-	if cooldown > cooldownMax {
-		cooldown = cooldownMax
-	}
-	if retryAfter > cooldown {
-		cooldown = retryAfter
+	if softNetwork {
+		effectiveFailureCount = credential.FailureCount
+		cooldown = softNetworkCooldown
+		if retryAfter > cooldown {
+			cooldown = retryAfter
+		}
+	} else {
+		for i := 1; i < effectiveFailureCount && cooldown < cooldownMax; i++ {
+			cooldown *= 2
+		}
+		if cooldown > cooldownMax {
+			cooldown = cooldownMax
+		}
+		if retryAfter > cooldown {
+			cooldown = retryAfter
+		}
 	}
 	until := time.Now().UTC().Add(cooldown)
-	healthErr := s.accounts.UpdateHealth(ctx, credential.ID, failureCount, &until, fmt.Sprintf("upstream status %d", status), false)
+	healthErr := s.accounts.UpdateHealth(ctx, credential.ID, effectiveFailureCount, &until, fmt.Sprintf("upstream status %d", status), false)
 	s.invalidateCandidates(credential.Provider)
 	if status == 401 || status == 402 || status == 403 || status == 429 {
 		_ = s.sticky.DeleteByAccount(ctx, credential.ID)
@@ -1240,6 +1272,44 @@ func assembleRoutingCandidates(provider account.Provider, bases []account.Routin
 func (s *Selector) invalidateCandidates(provider account.Provider) {
 	s.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: provider})
 	s.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountCapabilityChanged, Provider: provider})
+}
+
+// evictCandidate 从当前进程的候选快照中移除一个账号。持久化状态仍由调用方先写入；
+// 下一个缓存周期会以数据库中的新状态重新加载该账号，不会因单账号变化清空整个 Provider。
+func (s *Selector) evictCandidate(provider account.Provider, accountID uint64) {
+	if accountID == 0 {
+		return
+	}
+	s.candidateMu.Lock()
+	defer s.candidateMu.Unlock()
+	for key, snapshot := range s.candidates {
+		if key.provider != provider {
+			continue
+		}
+		// 候选快照会被并发请求的 selectionSession 只读复用；必须 copy-on-write，
+		// 不能复用底层数组，否则会改写正在执行的请求视图。
+		values := make([]account.RoutingCandidate, 0, len(snapshot.values))
+		removed := false
+		for _, candidate := range snapshot.values {
+			if candidate.Credential.ID == accountID {
+				removed = true
+				continue
+			}
+			values = append(values, candidate)
+		}
+		if removed {
+			// also update byAccount index if present
+			if snapshot.byAccount != nil {
+				byAccount := make(map[uint64]int, len(values))
+				for idx, candidate := range values {
+					byAccount[candidate.Credential.ID] = idx
+				}
+				snapshot.byAccount = byAccount
+			}
+			snapshot.values = values
+			s.candidates[key] = snapshot
+		}
+	}
 }
 
 func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credential) (*accountLease, error) {

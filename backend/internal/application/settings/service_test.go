@@ -122,12 +122,12 @@ func TestUpdateValidatesMaxAttemptsRange(t *testing.T) {
 	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
 
 	input := service.Get().Config
-	input.Routing.MaxAttempts = 200
+	input.Routing.MaxAttempts = 65535
 	snapshot, err := service.Update(context.Background(), 0, input)
 	if err != nil {
 		t.Fatalf("maximum maxAttempts was rejected: %v", err)
 	}
-	if applied.Routing.MaxAttempts != 200 || snapshot.Config.Routing.MaxAttempts != 200 {
+	if applied.Routing.MaxAttempts != 65535 || snapshot.Config.Routing.MaxAttempts != 65535 {
 		t.Fatalf("maximum maxAttempts was not applied: applied=%d snapshot=%d", applied.Routing.MaxAttempts, snapshot.Config.Routing.MaxAttempts)
 	}
 
@@ -142,12 +142,30 @@ func TestUpdateValidatesMaxAttemptsRange(t *testing.T) {
 	}
 
 	input = snapshot.Config
-	input.Routing.MaxAttempts = 201
+	input.Routing.MaxAttempts = 65536
 	if _, err := service.Update(context.Background(), snapshot.Revision, input); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("maxAttempts above maximum error = %v", err)
 	}
 	if repository.value.Routing.MaxAttempts != -1 {
 		t.Fatalf("invalid maxAttempts was persisted: %d", repository.value.Routing.MaxAttempts)
+	}
+}
+
+func TestUpdatePreservesBuildChatDeniedPolicyWhenFieldIsOmitted(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Routing.MarkBuildChatDeniedAsReauth = true
+	repository := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Routing.MarkBuildChatDeniedAsReauth = false
+	input.Routing.MarkBuildChatDeniedAsReauthProvided = false
+
+	if _, err := service.Update(context.Background(), 0, input); err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Routing.MarkBuildChatDeniedAsReauth || !repository.value.Routing.MarkBuildChatDeniedAsReauth {
+		t.Fatalf("omitted Build chat denied policy was overwritten: applied=%t persisted=%t", applied.Routing.MarkBuildChatDeniedAsReauth, repository.value.Routing.MarkBuildChatDeniedAsReauth)
 	}
 }
 
@@ -358,6 +376,30 @@ func TestLoadPersistedBackfillsMissingServerConcurrency(t *testing.T) {
 	}
 }
 
+func TestApplyDomainConfigPreservesExplicitCapacitySettings(t *testing.T) {
+	base := testConfig(t)
+	value := toDomainConfig(base)
+	value.Server.MaxConcurrentRequests = 1024
+	value.Routing.CapacityWait = 500 * time.Millisecond
+	value.ProviderWeb.ChatTimeout = 2 * time.Minute
+	value.ClientKeyDefaults.RPMLimit = 120
+	value.ClientKeyDefaults.MaxConcurrent = 8
+
+	applied := applyDomainConfig(base, value)
+	if applied.Server.MaxConcurrentRequests != 1024 {
+		t.Fatalf("maxConcurrentRequests = %d, want 1024", applied.Server.MaxConcurrentRequests)
+	}
+	if applied.Routing.CapacityWait.Value() != 500*time.Millisecond {
+		t.Fatalf("capacityWait = %s, want 500ms", applied.Routing.CapacityWait.Value())
+	}
+	if applied.Provider.Web.ChatTimeout.Value() != 2*time.Minute {
+		t.Fatalf("chatTimeout = %s, want 2m", applied.Provider.Web.ChatTimeout.Value())
+	}
+	if applied.ClientKeyDefaults.RPMLimit != 120 || applied.ClientKeyDefaults.MaxConcurrent != 8 {
+		t.Fatalf("client key defaults = %+v, want 120/8", applied.ClientKeyDefaults)
+	}
+}
+
 func TestLoadPersistedBackfillsMissingConsoleSection(t *testing.T) {
 	cfg := testConfig(t)
 	value := toDomainConfig(cfg)
@@ -505,6 +547,7 @@ func TestApplyDomainConfigAccountsDefaults(t *testing.T) {
 			StickyTTL: base.Routing.StickyTTL.Value(), CooldownBase: base.Routing.CooldownBase.Value(),
 			CooldownMax: base.Routing.CooldownMax.Value(), CapacityWait: base.Routing.CapacityWait.Value(),
 			MaxAttempts: base.Routing.MaxAttempts, PreferFreeBuild: base.Routing.PreferFreeBuild,
+			MarkBuildChatDeniedAsReauth: base.Routing.MarkBuildChatDeniedAsReauth,
 		},
 		Audit: settingsdomain.AuditConfig{
 			BufferSize: base.Audit.BufferSize, BatchSize: base.Audit.BatchSize, FlushInterval: base.Audit.FlushInterval.Value(),

@@ -155,13 +155,22 @@ func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []a
 	}
 
 	s.selectionMu.RLock()
-	scores := make([]candidateScore, length)
+	scores := make([]candidateScore, 0, length)
 	for position := range length {
 		index := position
 		if indexes != nil {
 			index = indexes[position]
 		}
 		candidate := values[index]
+		limit := candidate.Credential.MaxConcurrent
+		if limit <= 0 {
+			limit = account.DefaultMaxConcurrent
+		}
+		// 已知满载的账号不进入计划，避免高优先级满载账号逐个 claim 失败后
+		// 才轮到仍有容量的低优先级账号。
+		if inFlight[position] >= limit {
+			continue
+		}
 		score := candidateScore{
 			index: index, tier: tierOrderRank(tierOrder, candidate.Credential.WebTier),
 			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
@@ -171,7 +180,7 @@ func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []a
 			score.remaining = candidate.Billing.Remaining()
 			score.billingFresh = now.Sub(candidate.Billing.SyncedAt) <= 30*time.Minute
 		}
-		scores[position] = score
+		scores = append(scores, score)
 	}
 	s.selectionMu.RUnlock()
 	plan := &candidatePlan{values: values, scores: scores}

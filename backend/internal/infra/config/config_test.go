@@ -168,31 +168,48 @@ routing:
 	}
 }
 
-func TestValidateMaxAttemptsRange(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   int
-		wantErr bool
-	}{
-		{name: "unlimited", value: -1},
-		{name: "minimum", value: 1},
-		{name: "above former cap", value: 11},
-		{name: "maximum", value: 200},
-		{name: "zero", value: 0, wantErr: true},
-		{name: "below unlimited", value: -2, wantErr: true},
-		{name: "above maximum", value: 201, wantErr: true},
+func TestRoutingMaxAttemptsSupportsLargeCredentialPools(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
+	cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	if cfg.Routing.MaxAttempts != 999 {
+		t.Fatalf("default max attempts = %d, want 999", cfg.Routing.MaxAttempts)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := defaultConfig()
-			cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
-			cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-			cfg.Routing.MaxAttempts = test.value
-			err := cfg.Validate()
-			if (err != nil) != test.wantErr {
-				t.Fatalf("Validate() error = %v, wantErr = %v", err, test.wantErr)
-			}
-		})
+	if cfg.Routing.CapacityWait.Value() != 500*time.Millisecond {
+		t.Fatalf("default capacity wait = %s, want 500ms", cfg.Routing.CapacityWait.Value())
+	}
+	if cfg.Provider.Web.ChatTimeout.Value() != 2*time.Minute {
+		t.Fatalf("default web chat timeout = %s, want 2m", cfg.Provider.Web.ChatTimeout.Value())
+	}
+	cfg.Routing.MaxAttempts = 65535
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("65535 attempts should be valid: %v", err)
+	}
+	cfg.Routing.MaxAttempts = 65536
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("65536 attempts should be rejected")
+	}
+	cfg.Routing.MaxAttempts = 999
+	cfg.Routing.CapacityWait = Duration(30 * time.Second)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("30s capacity wait should be valid: %v", err)
+	}
+	cfg.Routing.CapacityWait = Duration(31 * time.Second)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("31s capacity wait should be rejected")
+	}
+	cfg.Routing.CapacityWait = Duration(500 * time.Millisecond)
+	cfg.Routing.MaxAttempts = -1
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unlimited attempts should be valid: %v", err)
+	}
+	cfg.Routing.MaxAttempts = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("zero attempts should be rejected")
+	}
+	cfg.Routing.MaxAttempts = -2
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("values below unlimited sentinel should be rejected")
 	}
 }
 

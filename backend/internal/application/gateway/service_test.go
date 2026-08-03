@@ -333,6 +333,66 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 }
 
+func TestGatewayBuildResponseHeaderTimeoutDoesNotSwitchAccounts(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway-build-header-timeout.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"timeout", "fallback"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: "encrypted-" + name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index*100, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	const model = "grok-build-header-timeout"
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adapter := &failoverAdapter{transportErrorIDs: map[uint64]error{credentials[0].ID: responseHeaderTimeoutTestError{}}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	if _, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-build-header-timeout", ClientKey: clientkey.Key{ID: 1, Name: "build-key"}, PublicModel: model,
+		Body: []byte(`{"model":"grok-build-header-timeout","input":"hello"}`),
+	}); err == nil {
+		t.Fatal("expected response-header timeout")
+	}
+	if len(adapter.attempts) != 1 || adapter.attempts[0] != credentials[0].ID {
+		t.Fatalf("attempts = %#v, want only account %d", adapter.attempts, credentials[0].ID)
+	}
+	latest, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.FailureCount != 0 || latest.CooldownUntil != nil {
+		t.Fatalf("ambiguous response-header timeout changed account health: %#v", latest)
+	}
+}
+
 type blockingHealthAccountRepository struct {
 	repository.AccountRepository
 	started chan struct{}
@@ -1165,7 +1225,7 @@ func TestParseFreeQuotaExhaustionCurrentBuildFreeLimit(t *testing.T) {
 	}
 }
 
-func TestGatewayCoolsFreeBuildAccountsAfterForbidden(t *testing.T) {
+func TestGatewayUnknownBuildForbiddenTraversesAllAccountsWithoutCooldown(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "systemic-forbidden.db"))
 	if err != nil {
@@ -1223,7 +1283,7 @@ func TestGatewayCoolsFreeBuildAccountsAfterForbidden(t *testing.T) {
 	if !errors.As(err, &upstreamFailure) || errors.Is(err, ErrNoAvailableAccount) {
 		t.Fatalf("error = %T %v", err, err)
 	}
-	if upstreamFailure.HTTPStatus != http.StatusForbidden || upstreamFailure.Code != "upstream_forbidden" || !upstreamFailure.AccountScoped {
+	if upstreamFailure.HTTPStatus != http.StatusForbidden || upstreamFailure.Code != "upstream_forbidden" || upstreamFailure.AccountScoped {
 		t.Fatalf("upstream failure = %#v", upstreamFailure)
 	}
 	attempts := adapter.Attempts()
@@ -1235,8 +1295,8 @@ func TestGatewayCoolsFreeBuildAccountsAfterForbidden(t *testing.T) {
 		if getErr != nil {
 			t.Fatal(getErr)
 		}
-		if observed.FailureCount != 1 || observed.CooldownUntil == nil || observed.AuthStatus != account.AuthStatusActive {
-			t.Fatalf("account %d was not cooled after 403: %#v", credential.ID, observed)
+		if observed.FailureCount != 0 || observed.CooldownUntil != nil || observed.AuthStatus != account.AuthStatusActive {
+			t.Fatalf("account %d was penalized after unknown 403: %#v", credential.ID, observed)
 		}
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
@@ -1428,6 +1488,147 @@ func TestBuildChatPermissionDenialDoesNotInvalidateVideoCredential(t *testing.T)
 	}
 	if adapter.refreshes.Load() != refreshesBefore {
 		t.Fatalf("opt-in denial performed a redundant refresh: before=%d after=%d", refreshesBefore, adapter.refreshes.Load())
+	}
+}
+
+func TestBuildChatPermissionDenialMarksReauthWhenEnabled(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "chat-denial-reauth.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "chat-denied-reauth", SourceKey: "chat-denied-reauth",
+		EncryptedAccessToken: "access-old", EncryptedRefreshToken: "refresh-old", ExpiresAt: time.Now().Add(time.Hour),
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-chat-denied"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-chat-denied"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "chat-denied-reauth-key", Prefix: "chat-denied-reauth", SecretHash: strings.Repeat("d", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &authRescueAdapter{}
+	adapter.denyChat.Store(true)
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
+	service.UpdateMarkBuildChatDeniedAsReauth(true)
+
+	if _, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-chat-denied-reauth", ClientKey: clientKey, PublicModel: "grok-chat-denied",
+		Body: []byte(`{"model":"grok-chat-denied","input":"hello"}`),
+	}); err == nil {
+		t.Fatal("chat permission denial unexpectedly succeeded")
+	}
+	updated, err := accountRepo.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AuthStatus != account.AuthStatusReauthRequired {
+		t.Fatalf("expected reauthRequired, got %#v", updated)
+	}
+	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "grok-chat-denied", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("reauth account should leave routing pool: %#v", candidates)
+	}
+}
+
+func TestSpendingLimitBlockedMarksQuotaRecovery(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "spending-limit-quota.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "spending-limit", SourceKey: "spending-limit",
+		EncryptedAccessToken: "access-old", EncryptedRefreshToken: "refresh-old", ExpiresAt: time.Now().Add(time.Hour),
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-paid"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-paid"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "spending-limit-key", Prefix: "spending-limit", SecretHash: strings.Repeat("s", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &spendingLimitAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
+
+	if _, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-spending-limit", ClientKey: clientKey, PublicModel: "grok-paid",
+		Body: []byte(`{"model":"grok-paid","input":"hello"}`),
+	}); err == nil {
+		t.Fatal("spending limit block unexpectedly succeeded")
+	}
+	updated, err := accountRepo.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AuthStatus != account.AuthStatusActive {
+		t.Fatalf("spending limit should not invalidate credentials, got %#v", updated)
+	}
+	recovery, err := accountRepo.GetQuotaRecovery(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery.Kind != account.QuotaRecoveryKindFree || recovery.Status != account.QuotaRecoveryStatusExhausted || recovery.NextProbeAt == nil {
+		t.Fatalf("unexpected quota recovery: %#v", recovery)
+	}
+
+	_, err = selector.beginSelectionSession(ctx, account.ProviderBuild, 0, "grok-paid", "", "", map[uint64]bool{}, false)
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("expected selection unavailable, got %v", err)
+	}
+	if unavailable.Reason != SelectionQuotaExhausted {
+		t.Fatalf("selection reason = %s, want %s", unavailable.Reason, SelectionQuotaExhausted)
 	}
 }
 
@@ -1903,6 +2104,7 @@ type failoverAdapter struct {
 	lastReasoningReplayKey string
 	lastGrokTurnIndex      string
 	resourceStatus         int
+	transportErrorIDs      map[uint64]error
 }
 
 type ssoFailureAdapter struct {
@@ -2570,7 +2772,7 @@ func (a *attemptCapturingAudit) Create(ctx context.Context, value audit.Record) 
 	return nil
 }
 
-func TestGatewayBarePermissionDeniedDoesNotPenalizeAccount(t *testing.T) {
+func TestGatewayExplicitPolicyRejectionDoesNotPenalizeOrRotateAccount(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "bare-permission.db"))
 	if err != nil {
@@ -2623,7 +2825,7 @@ func TestGatewayBarePermissionDeniedDoesNotPenalizeAccount(t *testing.T) {
 		Body: []byte(`{"model":"grok-bare","input":"hello"}`),
 	})
 	if err != nil {
-		t.Fatalf("bare permission-denied must return the original response: %v", err)
+		t.Fatalf("explicit policy rejection must return the original response: %v", err)
 	}
 	if result.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d", result.StatusCode)
@@ -2642,10 +2844,10 @@ func TestGatewayBarePermissionDeniedDoesNotPenalizeAccount(t *testing.T) {
 		t.Fatal(getErr)
 	}
 	if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount != 0 || observed.CooldownUntil != nil {
-		t.Fatalf("bare permission-denied penalized account: %#v", observed)
+		t.Fatalf("explicit policy rejection penalized account: %#v", observed)
 	}
 	if adapter.refreshes.Load() != 0 {
-		t.Fatalf("bare permission-denied refreshed OAuth: %d", adapter.refreshes.Load())
+		t.Fatalf("explicit policy rejection refreshed OAuth: %d", adapter.refreshes.Load())
 	}
 	candidates, listErr := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "grok-bare", "")
 	if listErr != nil {
@@ -2653,7 +2855,104 @@ func TestGatewayBarePermissionDeniedDoesNotPenalizeAccount(t *testing.T) {
 	}
 	for _, candidate := range candidates {
 		if candidate.Credential.ID == credential.ID && candidate.ModelQuotaBlock != nil {
-			t.Fatalf("bare permission-denied must not create model block: %#v", candidate.ModelQuotaBlock)
+			t.Fatalf("explicit policy rejection must not create model block: %#v", candidate.ModelQuotaBlock)
+		}
+	}
+}
+
+func TestGatewayUnknownBuildForbiddenRotatesWithoutPenalizingAccount(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "unknown-forbidden.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"unknown-a", "unknown-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			EncryptedRefreshToken: "refresh-" + name, ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	const model = "grok-unknown-forbidden"
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "unknown-forbidden-key", Prefix: "unknown403", SecretHash: strings.Repeat("a", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{
+			status: http.StatusForbidden,
+			body:   `{"code":"permission_denied","error":"denied"}`,
+			header: http.Header{"X-Should-Retry": {"false"}},
+		}},
+		credentials[1].ID: {{status: http.StatusOK, body: `{"id":"resp-after-403","status":"completed","output":[]}`}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
+	// A matching code alone must not invalidate an account.
+	service.UpdateBuildForbiddenReauthPolicy(true, []string{"permission-denied"})
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-unknown-forbidden", ClientKey: clientKey, PublicModel: model,
+		Body: []byte(`{"model":"grok-unknown-forbidden","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatalf("unknown 403 did not fail over to the next credential: %v", err)
+	}
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", result.StatusCode)
+	}
+	result.Finalize(Usage{}, "", "")
+	_ = result.Body.Close()
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+		t.Fatalf("credential traversal = %#v", attempts)
+	}
+	if adapter.refreshes.Load() != 0 {
+		t.Fatalf("unknown 403 refreshed OAuth: %d", adapter.refreshes.Load())
+	}
+	observed, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount != 0 || observed.CooldownUntil != nil {
+		t.Fatalf("unknown 403 penalized first account: %#v", observed)
+	}
+	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, model, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range candidates {
+		if candidate.Credential.ID == credentials[0].ID && candidate.ModelQuotaBlock != nil {
+			t.Fatalf("unknown 403 created model block: %#v", candidate.ModelQuotaBlock)
 		}
 	}
 }
@@ -2904,7 +3203,7 @@ func (a *barePermissionEgressAdapter) ForwardResponse(context.Context, provider.
 	if a.attempts.Add(1) == 1 {
 		return &provider.Response{
 			StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
-			Body: io.NopCloser(strings.NewReader(`{"code":"permission-denied","error":"request rejected by policy"}`)),
+			Body: io.NopCloser(strings.NewReader(`{"code":"permission-denied","error":"denied"}`)),
 		}, nil
 	}
 	return &provider.Response{
@@ -2967,6 +3266,19 @@ type systemicForbiddenAdapter struct {
 	attempts []uint64
 }
 
+type spendingLimitAdapter struct{}
+
+func (spendingLimitAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (spendingLimitAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderBuild)
+}
+func (spendingLimitAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
+	return &provider.Response{
+		StatusCode: http.StatusPaymentRequired, Status: "402 Payment Required", Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"code":"personal-team-blocked:spending-limit","error":"quota exhausted"}`)),
+	}, nil
+}
+
 type authRescueAdapter struct {
 	attempts      atomic.Int64
 	refreshes     atomic.Int64
@@ -3026,7 +3338,7 @@ func (a *systemicForbiddenAdapter) ForwardResponse(_ context.Context, request pr
 	a.mu.Unlock()
 	return &provider.Response{
 		StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
-		Body: io.NopCloser(strings.NewReader(`{"error":"upstream policy rejected request"}`)),
+		Body: io.NopCloser(strings.NewReader(`{"error":"forbidden"}`)),
 	}, nil
 }
 func (a *systemicForbiddenAdapter) Attempts() []uint64 {
@@ -3250,7 +3562,11 @@ func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.Re
 	a.lastReasoningReplayKey = request.ReasoningReplayKey
 	a.lastGrokTurnIndex = request.GrokTurnIndex
 	resourceStatus := a.resourceStatus
+	transportErr := a.transportErrorIDs[request.Credential.ID]
 	a.mu.Unlock()
+	if transportErr != nil {
+		return nil, transportErr
+	}
 	status, body := http.StatusOK, "ok"
 	header := make(http.Header)
 	if request.Method != http.MethodPost && resourceStatus != 0 {
