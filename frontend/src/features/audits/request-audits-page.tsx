@@ -21,7 +21,7 @@ import { SortableTableHead } from "@/shared/components/sortable-table-head";
 import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { cn } from "@/shared/lib/cn";
-import { formatDateTime, formatDuration, formatNumber } from "@/shared/lib/format";
+import { formatCompactDateTime, formatDateTime, formatDuration, formatNumber } from "@/shared/lib/format";
 import { toPeriodValue, type PeriodDays } from "@/shared/lib/period";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
@@ -195,10 +195,10 @@ export function RequestAuditsPage() {
               <col className="w-36" />
               <col className="w-24" />
               <col className="w-24" />
-              <col className="w-76" />
+              <col className="w-64" />
               <col className="w-24" />
               <col className="w-40" />
-              <col className="w-28" />
+              <col className="w-40" />
             </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
@@ -226,6 +226,8 @@ export function RequestAuditsPage() {
 }
 
 const AuditRow = memo(function AuditRow({ audit, locale, onOpen }: { audit: AuditDTO; locale: string; onOpen: (audit: AuditDTO) => void }) {
+  const createdAt = formatCompactDateTime(audit.createdAt, locale);
+  const createdAtLabel = formatDateTime(audit.createdAt, locale);
   return (
     <TableRow className="h-[72px]">
       <TableCell><RequestValue audit={audit} /></TableCell>
@@ -242,7 +244,9 @@ const AuditRow = memo(function AuditRow({ audit, locale, onOpen }: { audit: Audi
       <TableCell className="px-3"><UsageDetails audit={audit} locale={locale} /></TableCell>
       <TableCell className="text-center"><AuditStatus audit={audit} onOpen={() => onOpen(audit)} /></TableCell>
       <TableCell><ResponsePerformance audit={audit} locale={locale} /></TableCell>
-      <TableCell className="truncate whitespace-nowrap text-xs text-muted-foreground" title={formatDateTime(audit.createdAt, locale)}>{formatDateTime(audit.createdAt, locale)}</TableCell>
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+        <time dateTime={audit.createdAt} title={createdAtLabel}>{createdAt}</time>
+      </TableCell>
     </TableRow>
   );
 });
