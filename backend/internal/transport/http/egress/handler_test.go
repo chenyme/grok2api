@@ -61,6 +61,26 @@ func TestUpdateManyRejectsMissingEnabled(t *testing.T) {
 	}
 }
 
+func TestLegacyEgressSourceListRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		path string
+		want bool
+	}{
+		{path: "/egress-sources", want: true},
+		{path: "/egress-sources?page=1", want: false},
+		{path: "/egress-sources?pageSize=100", want: false},
+		{path: "/egress-sources?search=alpha", want: false},
+		{path: "/egress-sources?scope=grok_build", want: false},
+	} {
+		context, _ := gin.CreateTestContext(httptest.NewRecorder())
+		context.Request = httptest.NewRequest("GET", test.path, nil)
+		if got := legacyEgressSourceListRequest(context); got != test.want {
+			t.Fatalf("legacyEgressSourceListRequest(%q) = %v, want %v", test.path, got, test.want)
+		}
+	}
+}
+
 func TestParseBoundedEgressNodeIDsChecksRawInputLength(t *testing.T) {
 	values := make([]string, 5001)
 	for index := range values {

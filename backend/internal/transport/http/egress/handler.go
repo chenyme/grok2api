@@ -539,6 +539,21 @@ func newOperationsConfigResponse(value egressdomain.OperationsConfig) operations
 }
 
 func (h *Handler) listSources(c *gin.Context) {
+	if !legacyEgressSourceListRequest(c) {
+		page, pageSize := nodePagination(c)
+		values, total, err := h.service.ListSourcePage(c.Request.Context(), page, pageSize, c.Query("search"), egressapp.SourceListFilter{
+			Scope: egressdomain.Scope(c.Query("scope")),
+		})
+		if h.writeSourceListError(c, err) {
+			return
+		}
+		items := make([]sourceResponse, 0, len(values))
+		for _, value := range values {
+			items = append(items, newSourceResponse(value))
+		}
+		response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
+		return
+	}
 	values, err := h.service.ListSources(c.Request.Context())
 	if err != nil {
 		h.writeError(c, err)
@@ -549,6 +564,28 @@ func (h *Handler) listSources(c *gin.Context) {
 		items = append(items, newSourceResponse(value))
 	}
 	response.Success(c, http.StatusOK, gin.H{"items": items})
+}
+
+func legacyEgressSourceListRequest(c *gin.Context) bool {
+	if _, exists := c.GetQuery("page"); exists {
+		return false
+	}
+	if _, exists := c.GetQuery("pageSize"); exists {
+		return false
+	}
+	return c.Query("search") == "" && c.Query("scope") == ""
+}
+
+func (h *Handler) writeSourceListError(c *gin.Context, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, egressapp.ErrInvalidFilter):
+		response.Error(c, http.StatusBadRequest, "invalidFilter", err.Error())
+	default:
+		response.Error(c, http.StatusInternalServerError, "egressSourceListFailed", "读取代理订阅来源失败")
+	}
+	return true
 }
 
 func (h *Handler) createSource(c *gin.Context) {

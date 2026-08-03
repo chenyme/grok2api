@@ -76,6 +76,7 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_billing_reservations_expiry ON billing_reservations(expires_at, client_key_id)",
 	"CREATE INDEX IF NOT EXISTS idx_egress_nodes_scope_health ON egress_nodes(scope, enabled, health DESC, id ASC)",
 	"CREATE INDEX IF NOT EXISTS idx_egress_nodes_probe_due ON egress_nodes(enabled, last_probed_at, id)",
+	"CREATE INDEX IF NOT EXISTS idx_egress_sources_scope_name ON egress_subscription_sources(scope, LOWER(name), id)",
 	"CREATE INDEX IF NOT EXISTS idx_audits_created_id ON request_audits(created_at DESC, id DESC)",
 	"CREATE UNIQUE INDEX IF NOT EXISTS idx_audits_event_id ON request_audits(event_id) WHERE event_id <> ''",
 	"CREATE INDEX IF NOT EXISTS idx_audits_account_created_id ON request_audits(account_id, created_at DESC, id DESC)",

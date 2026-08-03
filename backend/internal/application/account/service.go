@@ -555,7 +555,10 @@ func parseEgressFilter(value string) (mode string, nodeID uint64, sourceID uint6
 	if !found {
 		return "", 0, 0, false
 	}
-	id, err := strconv.ParseUint(raw, 10, 64)
+	// Relational account and egress IDs are stored in signed BIGINT/INTEGER
+	// columns. Reject values outside that range here so malformed filters cannot
+	// reach database/sql as unsupported high-bit uint64 arguments and become 500s.
+	id, err := strconv.ParseUint(raw, 10, 63)
 	if err != nil || id == 0 {
 		return "", 0, 0, false
 	}

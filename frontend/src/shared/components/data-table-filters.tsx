@@ -12,9 +12,19 @@ type DataTableFilterOptionGroup = {
   label: string;
   options: Array<{ value: string; label: string }>;
   emptyLabel?: string;
+  loading?: boolean;
+  hasMore?: boolean;
+  actionLabel?: string;
+  onAction?: () => void;
 };
 
-type DataTableFilterOption = { value: string; label: string; groups?: DataTableFilterOptionGroup[] };
+type DataTableFilterOption = {
+  value: string;
+  label: string;
+  groups?: DataTableFilterOptionGroup[];
+  onGroupsOpenChange?: (open: boolean) => void;
+  groupSearch?: { value: string; placeholder: string; onChange: (value: string) => void };
+};
 
 type DataTableOptionFilter = {
   id: string;
@@ -22,6 +32,7 @@ type DataTableOptionFilter = {
   value: string;
   options: DataTableFilterOption[];
   onChange: (value: string) => void;
+  selectedLabel?: string;
 };
 
 type DataTableTextFilter = {
@@ -90,7 +101,7 @@ export function DataTableFilters({ filters }: { filters: DataTableFilter[] }) {
               </DropdownMenuSub>
             );
           }
-          const selectedLabel = findSelectedLabel(filter.options, filter.value);
+          const selectedLabel = filter.selectedLabel ?? findSelectedLabel(filter.options, filter.value);
           return (
             <DropdownMenuSub key={filter.id}>
               <DropdownMenuSubTrigger>
@@ -106,13 +117,24 @@ export function DataTableFilters({ filters }: { filters: DataTableFilter[] }) {
                     }
                     const narrowedLabel = option.value === filter.value ? null : findGroupLabel(option.groups, filter.value);
                     return (
-                      <DropdownMenuSub key={option.value}>
+                      <DropdownMenuSub key={option.value} onOpenChange={option.onGroupsOpenChange}>
                         <DropdownMenuSubTrigger className="pr-2">
                           <span className="shrink-0 whitespace-nowrap">{option.label}</span>
                           {narrowedLabel ? <span className="ml-auto max-w-16 truncate text-xs text-muted-foreground">{narrowedLabel}</span> : null}
                           {option.value === filter.value ? <Check className="ml-auto" /> : null}
                         </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent className="max-h-72 w-52 overflow-y-auto">
+                        <DropdownMenuSubContent className="max-h-72 w-60 overflow-y-auto">
+                          {option.groupSearch ? (
+                            <div className="sticky top-0 z-10 bg-popover p-2" onKeyDown={(event) => event.stopPropagation()}>
+                              <Input
+                                className="h-8 text-xs"
+                                value={option.groupSearch.value}
+                                placeholder={option.groupSearch.placeholder}
+                                aria-label={option.groupSearch.placeholder}
+                                onChange={(event) => option.groupSearch?.onChange(event.target.value)}
+                              />
+                            </div>
+                          ) : null}
                           <DropdownMenuRadioGroup value={filter.value} onValueChange={filter.onChange}>
                             <DropdownMenuRadioItem value={option.value}>{t("common.all")}</DropdownMenuRadioItem>
                             {option.groups.map((group) => (
@@ -122,6 +144,17 @@ export function DataTableFilters({ filters }: { filters: DataTableFilter[] }) {
                                 {group.options.length === 0
                                   ? <DropdownMenuItem disabled className="text-xs text-muted-foreground">{group.emptyLabel ?? t("common.noData")}</DropdownMenuItem>
                                   : group.options.map((entry) => <DropdownMenuRadioItem key={entry.value} value={entry.value}>{entry.label}</DropdownMenuRadioItem>)}
+                                {group.hasMore && group.onAction ? (
+                                  <DropdownMenuItem
+                                    disabled={group.loading}
+                                    onSelect={(event) => {
+                                      event.preventDefault();
+                                      group.onAction?.();
+                                    }}
+                                  >
+                                    {group.actionLabel ?? t("common.nextPage")}
+                                  </DropdownMenuItem>
+                                ) : null}
                               </div>
                             ))}
                           </DropdownMenuRadioGroup>

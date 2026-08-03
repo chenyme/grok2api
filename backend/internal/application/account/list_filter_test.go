@@ -78,10 +78,13 @@ func TestParseEgressFilter(t *testing.T) {
 		{value: "unbound", mode: "unbound", ok: true},
 		{value: "node:12", mode: "bound", nodeID: 12, ok: true},
 		{value: "source:7", mode: "bound", sourceID: 7, ok: true},
+		{value: "node:9223372036854775807", mode: "bound", nodeID: 9223372036854775807, ok: true},
 		{value: "node:0"},
 		{value: "node:"},
 		{value: "node:abc"},
 		{value: "node:-1"},
+		{value: "node:9223372036854775808"},
+		{value: "source:18446744073709551615"},
 		{value: "group:1"},
 		{value: "bound:1"},
 		{value: "node"},
@@ -97,7 +100,9 @@ func TestParseEgressFilter(t *testing.T) {
 
 func TestListRejectsInvalidEgressFilter(t *testing.T) {
 	service := &Service{}
-	if _, _, err := service.List(context.Background(), 1, 20, "", ListFilter{Egress: "node:abc"}); !errors.Is(err, ErrInvalidFilter) {
-		t.Fatalf("List() error = %v, want %v", err, ErrInvalidFilter)
+	for _, value := range []string{"node:abc", "node:9223372036854775808", "source:18446744073709551615"} {
+		if _, _, err := service.List(context.Background(), 1, 20, "", ListFilter{Egress: value}); !errors.Is(err, ErrInvalidFilter) {
+			t.Fatalf("List(egress=%q) error = %v, want %v", value, err, ErrInvalidFilter)
+		}
 	}
 }

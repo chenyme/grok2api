@@ -44,3 +44,12 @@ type EgressNodeListQuery struct {
 	Page   PageQuery
 	Filter EgressNodeListFilter
 }
+
+type EgressSourceListFilter struct {
+	Scope egress.Scope
+}
+
+type EgressSourceListQuery struct {
+	Page   PageQuery
+	Filter EgressSourceListFilter
+}

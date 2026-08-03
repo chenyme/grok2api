@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
@@ -88,7 +88,7 @@ import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/accoun
 import { AccountNameCell } from "@/features/accounts/account-name-cell";
 import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
 import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
-import { assignEgressAccounts, listAllEgressNodes, listEgressSources, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
+import { assignEgressAccounts, listAllEgressNodes, listEgressNodes, listEgressSources, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -102,6 +102,9 @@ type BuildConversionProgressState = {
 type WebConversionTarget = "build" | "console";
 type BuildQuotaTask = "sync" | "reset";
 type EgressConfigurationTask = "bind" | "unbind";
+
+const egressFilterNodePageSize = 100;
+const egressFilterSourcePageSize = 100;
 
 type AccountSelection = {
   provider: AccountProvider;
@@ -127,6 +130,9 @@ export function AccountsPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [egressFilter, setEgressFilter] = useState("");
+  const [egressFilterSelectedLabel, setEgressFilterSelectedLabel] = useState("");
+  const [egressFilterOptionsOpen, setEgressFilterOptionsOpen] = useState(false);
+  const [egressFilterOptionsSearch, setEgressFilterOptionsSearch] = useState("");
   const [renewalFilter, setRenewalFilter] = useState("");
   const [riskFilter, setRiskFilter] = useState("");
   const [agreementFilter, setAgreementFilter] = useState("");
@@ -180,6 +186,7 @@ export function AccountsPage() {
   const [quickImportTokens, setQuickImportTokens] = useState("");
   const [webConfirmationTarget, setWebConfirmationTarget] = useState<WebAccountConfirmationTarget | null>(null);
   const debouncedSearch = useDebouncedValue(search);
+  const debouncedEgressFilterOptionsSearch = useDebouncedValue(egressFilterOptionsSearch);
 
   useEffect(() => () => {
     quotaSyncAbortRef.current?.abort();
@@ -233,16 +240,69 @@ export function AccountsPage() {
     queryKey: ["accounts", "summary"],
     queryFn: getAccountSummary,
   });
-  // Nodes back both the binding dialog and the "proxy bound" filter's third level,
-  // so they load with the page instead of only when the dialog opens.
+  // The binding dialog still needs every compatible node, but only while open.
   const egressNodesQuery = useQuery({
     queryKey: ["egress-nodes", "account-binding"],
     queryFn: () => listAllEgressNodes(),
+    enabled: egressConfigurationOpen && egressConfigurationTask === "bind",
     staleTime: 60_000,
   });
-  const egressSourcesQuery = useQuery({
-    queryKey: ["egress-sources", "account-filter"],
-    queryFn: listEgressSources,
+  // Filter choices are loaded only when the third-level menu opens. Nodes and
+  // subscription sources use bounded pages so large pools do not flood the page.
+  const egressFilterPrimaryScope = accountProviderPrimaryEgressScope(provider);
+  const egressFilterNodesQuery = useInfiniteQuery({
+    queryKey: ["egress-nodes", "account-filter", egressFilterPrimaryScope, debouncedEgressFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listEgressNodes({
+      page: pageParam,
+      pageSize: egressFilterNodePageSize,
+      search: debouncedEgressFilterOptionsSearch,
+      scope: egressFilterPrimaryScope,
+    }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: egressFilterOptionsOpen,
+    staleTime: 60_000,
+  });
+  // Console routing supports both native Console exits and Grok Web exits. Keep
+  // the second scope independently paginated so unrelated Build/asset nodes can
+  // never consume the Console result pages.
+  const egressFilterConsoleWebNodesQuery = useInfiniteQuery({
+    queryKey: ["egress-nodes", "account-filter", "console-web", debouncedEgressFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listEgressNodes({
+      page: pageParam,
+      pageSize: egressFilterNodePageSize,
+      search: debouncedEgressFilterOptionsSearch,
+      scope: "grok_web",
+    }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: egressFilterOptionsOpen && provider === "grok_console",
+    staleTime: 60_000,
+  });
+  const egressFilterSourcesQuery = useInfiniteQuery({
+    queryKey: ["egress-sources", "account-filter", egressFilterPrimaryScope, debouncedEgressFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listEgressSources({
+      page: pageParam,
+      pageSize: egressFilterSourcePageSize,
+      search: debouncedEgressFilterOptionsSearch,
+      scope: egressFilterPrimaryScope,
+    }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: egressFilterOptionsOpen,
+    staleTime: 60_000,
+  });
+  const egressFilterConsoleWebSourcesQuery = useInfiniteQuery({
+    queryKey: ["egress-sources", "account-filter", "console-web", debouncedEgressFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listEgressSources({
+      page: pageParam,
+      pageSize: egressFilterSourcePageSize,
+      search: debouncedEgressFilterOptionsSearch,
+      scope: "grok_web",
+    }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: egressFilterOptionsOpen && provider === "grok_console",
     staleTime: 60_000,
   });
 
@@ -865,6 +925,9 @@ export function AccountsPage() {
     // A node or subscription narrowing belongs to the previous pool's scope;
     // keep the plain bound filter and drop the target.
     setEgressFilter((current) => (current.includes(":") ? "bound" : current));
+    setEgressFilterSelectedLabel("");
+    setEgressFilterOptionsOpen(false);
+    setEgressFilterOptionsSearch("");
     setRenewalFilter("");
     setRiskFilter("");
     setAgreementFilter("");
@@ -1041,13 +1104,55 @@ export function AccountsPage() {
   const providerAccountTotal = provider === "grok_build" ? buildSummary.total : provider === "grok_web" ? webSummary.total : consoleSummary.total;
   const hasProviderAccounts = providerAccountTotal > 0 || (result?.total ?? 0) > 0;
   const bindableEgressNodes = (egressNodesQuery.data?.items ?? []).filter((node) => node.enabled && node.proxyConfigured && scopeSupportsAccountProvider(node.scope, provider));
-  // The bound-proxy filter only lists egress nodes and subscriptions whose scope
-  // can serve the current account pool, so switching pools re-scopes the menu.
-  const scopedEgressNodes = (egressNodesQuery.data?.items ?? []).filter((node) => scopeSupportsAccountProvider(node.scope, provider));
-  const scopedEgressSources = (egressSourcesQuery.data?.items ?? []).filter((source) => scopeSupportsAccountProvider(source.scope, provider));
+  const egressFilterSearchTerm = egressFilterOptionsSearch.trim().toLocaleLowerCase();
+  const consoleWebNodePages = provider === "grok_console" ? (egressFilterConsoleWebNodesQuery.data?.pages ?? []) : [];
+  const scopedEgressNodes = [...(egressFilterNodesQuery.data?.pages ?? []), ...consoleWebNodePages]
+    .flatMap((nodePage) => nodePage.items)
+    .filter((node) => scopeSupportsAccountProvider(node.scope, provider))
+    .filter((node) => !egressFilterSearchTerm || node.name.toLocaleLowerCase().includes(egressFilterSearchTerm));
+  const consoleWebNodesEnabled = provider === "grok_console";
+  const consoleWebSourcePages = consoleWebNodesEnabled ? (egressFilterConsoleWebSourcesQuery.data?.pages ?? []) : [];
+  const scopedEgressSources = [...(egressFilterSourcesQuery.data?.pages ?? []), ...consoleWebSourcePages]
+    .flatMap((sourcePage) => sourcePage.items)
+    .filter((source) => scopeSupportsAccountProvider(source.scope, provider))
+    .filter((source) => !egressFilterSearchTerm || source.name.toLocaleLowerCase().includes(egressFilterSearchTerm));
+  const egressFilterNodesFailed = egressFilterNodesQuery.isError || (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.isError);
+  const egressFilterNodesFetching = egressFilterNodesQuery.isFetching || (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.isFetching);
+  const egressFilterNodesHaveMore = egressFilterNodesFailed || egressFilterNodesQuery.hasNextPage || (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.hasNextPage);
+  const loadMoreEgressFilterNodes = () => {
+    if (egressFilterNodesQuery.isError) void egressFilterNodesQuery.refetch();
+    if (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.isError) void egressFilterConsoleWebNodesQuery.refetch();
+    if (egressFilterNodesFailed) return;
+    if (egressFilterNodesQuery.hasNextPage) void egressFilterNodesQuery.fetchNextPage();
+    if (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.hasNextPage) void egressFilterConsoleWebNodesQuery.fetchNextPage();
+  };
+  const egressFilterSourcesFailed = egressFilterSourcesQuery.isError || (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.isError);
+  const egressFilterSourcesFetching = egressFilterSourcesQuery.isFetching || (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.isFetching);
+  const egressFilterSourcesHaveMore = egressFilterSourcesFailed || egressFilterSourcesQuery.hasNextPage || (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.hasNextPage);
+  const loadMoreEgressFilterSources = () => {
+    if (egressFilterSourcesQuery.isError) void egressFilterSourcesQuery.refetch();
+    if (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.isError) void egressFilterConsoleWebSourcesQuery.refetch();
+    if (egressFilterSourcesFailed) return;
+    if (egressFilterSourcesQuery.hasNextPage) void egressFilterSourcesQuery.fetchNextPage();
+    if (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.hasNextPage) void egressFilterConsoleWebSourcesQuery.fetchNextPage();
+  };
   const egressBoundGroups = [
-    { id: "nodes", label: t("accounts.egressNodeGroup"), emptyLabel: t("accounts.egressNodeGroupEmpty"), options: scopedEgressNodes.map((node) => ({ value: `node:${node.id}`, label: node.name })) },
-    { id: "sources", label: t("accounts.egressSourceGroup"), emptyLabel: t("accounts.egressSourceGroupEmpty"), options: scopedEgressSources.map((source) => ({ value: `source:${source.id}`, label: source.name })) },
+    {
+      id: "nodes", label: t("accounts.egressNodeGroup"),
+      emptyLabel: egressFilterNodesFailed ? t("accounts.egressFilterOptionsLoadFailed") : egressFilterNodesFetching ? t("common.loading") : t("accounts.egressNodeGroupEmpty"),
+      options: scopedEgressNodes.map((node) => ({ value: `node:${node.id}`, label: node.name })),
+      loading: egressFilterNodesFetching, hasMore: egressFilterNodesHaveMore,
+      actionLabel: egressFilterNodesFailed ? t("common.retry") : egressFilterNodesFetching ? t("common.loading") : t("accounts.egressFilterOptionsLoadMore"),
+      onAction: loadMoreEgressFilterNodes,
+    },
+    {
+      id: "sources", label: t("accounts.egressSourceGroup"),
+      emptyLabel: egressFilterSourcesFailed ? t("accounts.egressFilterOptionsLoadFailed") : egressFilterSourcesFetching ? t("common.loading") : t("accounts.egressSourceGroupEmpty"),
+      options: scopedEgressSources.map((source) => ({ value: `source:${source.id}`, label: source.name })),
+      loading: egressFilterSourcesFetching, hasMore: egressFilterSourcesHaveMore,
+      actionLabel: egressFilterSourcesFailed ? t("common.retry") : egressFilterSourcesFetching ? t("common.loading") : t("accounts.egressFilterSourcesLoadMore"),
+      onAction: loadMoreEgressFilterSources,
+    },
   ];
   const bulkTaskPending = quotaSyncMutation.isPending
     || allQuotaResetMutation.isPending
@@ -1166,8 +1271,20 @@ export function AccountsPage() {
                   { value: "waitingReset", label: t("accounts.waitingReset") },
                   { value: "probing", label: t("accounts.probing") },
                 ] },
-                { id: "egress", label: t("accounts.egressFilter"), value: egressFilter, onChange: (value) => { setEgressFilter(value); setPage(1); }, options: [
-                  { value: "bound", label: t("accounts.egressBound"), groups: egressBoundGroups },
+                { id: "egress", label: t("accounts.egressFilter"), value: egressFilter, selectedLabel: egressFilterSelectedLabel || undefined, onChange: (value) => {
+                  setEgressFilter(value);
+                  setEgressFilterSelectedLabel(value.includes(":")
+                    ? egressBoundGroups.flatMap((group) => group.options).find((option) => option.value === value)?.label ?? ""
+                    : "");
+                  setPage(1);
+                }, options: [
+                  {
+                    value: "bound", label: t("accounts.egressBound"), groups: egressBoundGroups,
+                    onGroupsOpenChange: setEgressFilterOptionsOpen,
+                    groupSearch: { value: egressFilterOptionsSearch, placeholder: t("accounts.egressFilterOptionsSearch"), onChange: (value) => {
+                      setEgressFilterOptionsSearch(value);
+                    } },
+                  },
                   { value: "unbound", label: t("accounts.egressUnbound") },
                 ] },
                 ...(provider === "grok_build" ? [{ id: "renewal", label: t("accountCredential.label"), value: renewalFilter, onChange: (value: string) => { setRenewalFilter(value); setPage(1); }, options: [
@@ -1976,6 +2093,10 @@ function scopeSupportsAccountProvider(scope: EgressScope, provider: AccountProvi
   if (provider === "grok_build") return scope === "grok_build";
   if (provider === "grok_web") return scope === "grok_web";
   return scope === "grok_web" || scope === "grok_console";
+}
+
+function accountProviderPrimaryEgressScope(provider: AccountProvider): EgressScope {
+  return provider;
 }
 
 function AccountMetricPanel({ icon, label, value, detail, loading, tone }: { icon: ReactNode; label: string; value: string; detail: string; loading: boolean; tone: string }) {
