@@ -187,10 +187,10 @@ export function QualityGuardPage() {
               </div>
             </div>
             <div className="overflow-x-auto">
-              <Table className="min-w-[960px]">
+              <Table className="min-w-[1040px]">
                 <TableHeader><TableRow>
                   <TableHead className="w-10 px-3"><Checkbox checked={allNodesSelected ? true : selectedNodes.length > 0 ? "indeterminate" : false} disabled={nodes.length === 0} onCheckedChange={(checked) => toggleAllNodes(checked === true)} aria-label={t("common.selectPage")} /></TableHead>
-                  <TableHead>{t("qualityGuard.node")}</TableHead><TableHead>{t("qualityGuard.state")}</TableHead>
+                  <TableHead>{t("qualityGuard.node")}</TableHead><TableHead>{t("qualityGuard.state")}</TableHead><TableHead className="text-right">{t("settings.egress.accounts")}</TableHead>
                   <TableHead className="text-right">{t("qualityGuard.outputTPS")}</TableHead><TableHead className="text-right">{t("qualityGuard.firstToken")}</TableHead>
                   <TableHead>{t("qualityGuard.source")}</TableHead><TableHead>{t("qualityGuard.strikes")}</TableHead>
                   <TableHead>{t("qualityGuard.lastObserved")}</TableHead><TableHead className="w-48 text-right">{t("common.actions")}</TableHead>
@@ -268,6 +268,7 @@ function NodeRow({ node, selected, onSelect, state, locale, status, testMutation
     <TableCell className="px-3"><Checkbox checked={selected} onCheckedChange={(checked) => onSelect(checked === true)} aria-label={t("common.selectItem", { name: node.name })} /></TableCell>
     <TableCell><div className="font-medium">{node.name}</div><div className="mt-0.5 text-[11px] text-muted-foreground">ID {node.id}</div></TableCell>
     <TableCell><StateBadge node={node} state={state} /></TableCell>
+    <TableCell className="text-right text-xs tabular-nums"><span className="font-medium">{node.assignedAccountCount}</span>{node.accountCapacity > 0 ? <span className="text-muted-foreground"> / {node.accountCapacity}</span> : null}</TableCell>
     <TableCell className={cn("text-right font-mono text-xs tabular-nums", classification === "hard" && "font-medium text-destructive", classification === "soft" && "text-amber-600 dark:text-amber-400")}>{state?.last_observed_at ? formatTPS(state.last_output_tps) : "-"}</TableCell>
     <TableCell className="text-right font-mono text-xs tabular-nums">{state?.last_first_token_ms ? `${state.last_first_token_ms} ms` : "-"}</TableCell>
     <TableCell className="text-xs text-muted-foreground">{state?.last_source ? t(`qualityGuard.sources.${state.last_source}`) : "-"}</TableCell>
