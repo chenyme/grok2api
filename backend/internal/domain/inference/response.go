@@ -11,6 +11,7 @@ type ResponseOwnership struct {
 	ResponseID         string
 	AccountID          uint64
 	ClientKeyID        uint64
+	ModelRouteID       uint64
 	Provider           account.Provider
 	PromptCacheKey     string
 	ReasoningReplayKey string

@@ -17,7 +17,7 @@ func NewResponseRepository(db *Database) *ResponseRepository { return &ResponseR
 func (r *ResponseRepository) Save(ctx context.Context, value inferencedomain.ResponseOwnership) error {
 	row := responseOwnershipModel{
 		ResponseID: value.ResponseID, AccountID: value.AccountID,
-		ClientKeyID: value.ClientKeyID, Provider: string(value.Provider),
+		ClientKeyID: value.ClientKeyID, ModelRouteID: value.ModelRouteID, Provider: string(value.Provider),
 		PromptCacheKey: value.PromptCacheKey, ReasoningReplayKey: value.ReasoningReplayKey,
 		ExpiresAt: value.ExpiresAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
@@ -31,7 +31,7 @@ func (r *ResponseRepository) Get(ctx context.Context, responseID string, clientK
 	}
 	return inferencedomain.ResponseOwnership{
 		ResponseID: row.ResponseID, AccountID: row.AccountID,
-		ClientKeyID: row.ClientKeyID, Provider: account.Provider(row.Provider),
+		ClientKeyID: row.ClientKeyID, ModelRouteID: row.ModelRouteID, Provider: account.Provider(row.Provider),
 		PromptCacheKey: row.PromptCacheKey, ReasoningReplayKey: row.ReasoningReplayKey,
 		ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil

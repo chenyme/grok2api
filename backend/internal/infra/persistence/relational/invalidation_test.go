@@ -68,6 +68,13 @@ func TestRoutingMutationsNotifyAfterCommit(t *testing.T) {
 	if err := models.UpsertDiscovered(ctx, account.ProviderBuild, []string{"model-a"}); err != nil {
 		t.Fatal(err)
 	}
+	if len(events) != 1 || events[0].Kind != repository.InvalidationRouteChanged {
+		t.Fatalf("managed route creation events = %#v", events)
+	}
+	events = events[:0]
+	if err := models.UpsertDiscovered(ctx, account.ProviderBuild, []string{"model-a"}); err != nil {
+		t.Fatal(err)
+	}
 	if len(events) != 0 {
 		t.Fatalf("unchanged discovered routes emitted invalidation: %#v", events)
 	}

@@ -2,13 +2,11 @@ package relational
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/model"
-	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 func TestMultiplePublicIDsCanShareUpstream(t *testing.T) {
@@ -48,11 +46,16 @@ func TestMultiplePublicIDsCanShareUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Create(ctx, model.Route{
+	duplicate, err := repo.Create(ctx, model.Route{
 		PublicID: "gpt-5.5", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5",
 		Capability: model.CapabilityResponses, Origin: model.OriginManual, Enabled: true,
-	}, nil); !errors.Is(err, repository.ErrConflict) {
-		t.Fatalf("duplicate public id error = %v, want conflict", err)
+	}, nil)
+	if err != nil || duplicate.ID == aliasB.ID {
+		t.Fatalf("duplicate manual target = %#v, err = %v", duplicate, err)
+	}
+	shared, err := repo.GetByPublicIDCandidates(ctx, "gpt-5.5")
+	if err != nil || len(shared) != 2 {
+		t.Fatalf("shared public candidates = %#v, err = %v", shared, err)
 	}
 
 	preferred, err := repo.GetByProviderUpstream(ctx, account.ProviderBuild, "grok-4.5")
@@ -161,6 +164,46 @@ func TestUpsertDiscoveredCreatesCanonicalWhenManualAliasExists(t *testing.T) {
 	}
 	if rows[1].PublicID != "Build/grok-4.5" || rows[1].Origin != string(model.OriginDiscovered) {
 		t.Fatalf("discovered route missing: %#v", rows[1])
+	}
+}
+
+func TestManualRouteTargetsMaySharePublicID(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewModelRepository(database)
+
+	for _, upstream := range []string{"grok-4.5", "grok-code-fast-1"} {
+		if _, err := repo.Create(ctx, model.Route{
+			PublicID: "shared-model", Provider: account.ProviderBuild, UpstreamModel: upstream,
+			Capability: model.CapabilityResponses, Origin: model.OriginManual, Enabled: true,
+		}, nil); err != nil {
+			t.Fatalf("create manual target %q: %v", upstream, err)
+		}
+	}
+	// The managed canonical route remains independently idempotent and may join
+	// the same target pool without being shadowed by a manual row.
+	if err := repo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"shared-model"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"shared-model"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var rows []modelRouteModel
+	if err := database.db.WithContext(ctx).Where("public_id = ?", "Build/shared-model").Order("id ASC").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("shared targets = %#v", rows)
+	}
+	managed := 0
+	for _, row := range rows {
+		if row.Origin != string(model.OriginManual) {
+			managed++
+		}
+	}
+	if managed != 1 {
+		t.Fatalf("managed targets = %d, rows %#v", managed, rows)
 	}
 }
 
