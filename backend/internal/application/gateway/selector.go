@@ -3,9 +3,13 @@ package gateway
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -30,7 +34,20 @@ type accountLease struct {
 
 const quotaProbeLease = 5 * time.Minute
 const successPersistInterval = 30 * time.Second
-const candidateCacheTTL = time.Second
+
+// Routing writes publish precise invalidation events, so the TTL is only a
+// safety net for out-of-process database changes and missed notifications.
+// Keeping a one-second TTL made large pools rebuild continuously under load.
+const candidateCacheTTL = 30 * time.Second
+const candidateCacheStaleTTL = 5 * time.Minute
+const candidateCacheRetryTTL = 5 * time.Second
+const candidateCacheStaleLogInterval = time.Minute
+const maxCandidateCacheSnapshots = 64
+const maxCandidateCacheValues = 100_000
+const maxRoutingBaseSnapshots = 8
+const maxRoutingBaseValues = 150_000
+const maxRoutingOverlaySnapshots = 64
+const maxRoutingOverlayValues = 250_000
 const concurrencySnapshotTTL = 25 * time.Millisecond
 const maxConcurrencySnapshots = 256
 
@@ -47,10 +64,23 @@ type quotaRecoveryHints struct {
 	Billing *account.Billing
 }
 
+type quotaConsumptionKey struct {
+	provider  account.Provider
+	accountID uint64
+	mode      string
+}
+
+type accountQuotaConsumptionKey struct {
+	accountID uint64
+	mode      string
+}
+
 type candidateSnapshot struct {
-	values    []account.RoutingCandidate
-	byAccount map[uint64]int
-	expiresAt time.Time
+	values     []account.RoutingCandidate
+	byAccount  map[uint64]int
+	expiresAt  time.Time
+	staleUntil time.Time
+	lastAccess time.Time
 }
 
 func newCandidateSnapshot(values []account.RoutingCandidate, expiresAt time.Time) candidateSnapshot {
@@ -60,7 +90,8 @@ func newCandidateSnapshot(values []account.RoutingCandidate, expiresAt time.Time
 			byAccount[value.Credential.ID] = index
 		}
 	}
-	return candidateSnapshot{values: values, byAccount: byAccount, expiresAt: expiresAt}
+	now := time.Now().UTC()
+	return candidateSnapshot{values: values, byAccount: byAccount, expiresAt: expiresAt, staleUntil: expiresAt.Add(candidateCacheStaleTTL), lastAccess: now}
 }
 
 type candidateCacheKey struct {
@@ -87,15 +118,19 @@ type routingLayerVersion struct {
 }
 
 type routingBaseSnapshot struct {
-	values    []account.RoutingAccountBase
-	version   routingLayerVersion
-	expiresAt time.Time
+	values     []account.RoutingAccountBase
+	version    routingLayerVersion
+	expiresAt  time.Time
+	staleUntil time.Time
+	lastAccess time.Time
 }
 
 type routingOverlaySnapshot struct {
-	value     account.RoutingOverlaySnapshot
-	version   routingLayerVersion
-	expiresAt time.Time
+	value      account.RoutingOverlaySnapshot
+	version    routingLayerVersion
+	expiresAt  time.Time
+	staleUntil time.Time
+	lastAccess time.Time
 }
 
 type SelectionUnavailableReason string
@@ -232,10 +267,15 @@ type Selector struct {
 	configMu               sync.RWMutex
 	candidateMu            sync.Mutex
 	selectionMu            sync.RWMutex
+	quotaMu                sync.RWMutex
+	staleLogMu             sync.Mutex
+	logger                 *slog.Logger
 	leaseWakeMu            sync.Mutex
 	leaseWake              chan struct{}
 	lastSelectedAt         map[uint64]time.Time
 	lastSuccessAt          map[uint64]time.Time
+	quotaConsumed          map[quotaConsumptionKey]int
+	staleFallbackLoggedAt  map[string]time.Time
 	candidates             map[candidateCacheKey]candidateSnapshot
 	routingBases           map[routingBaseCacheKey]routingBaseSnapshot
 	routingOverlays        map[routingOverlayCacheKey]routingOverlaySnapshot
@@ -258,7 +298,15 @@ func NewSelector(accounts repository.AccountRepository, concurrency repository.C
 	if len(capacityWait) > 0 && capacityWait[0] > 0 {
 		wait = capacityWait[0]
 	}
-	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, leaseWake: make(chan struct{}), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), candidates: make(map[candidateCacheKey]candidateSnapshot), routingBases: make(map[routingBaseCacheKey]routingBaseSnapshot), routingOverlays: make(map[routingOverlayCacheKey]routingOverlaySnapshot), routingAccountProvider: make(map[uint64]account.Provider), baseProviderVersion: make(map[account.Provider]uint64), overlayProviderVersion: make(map[account.Provider]uint64), concurrencySnapshots: resultcache.New[[32]byte, map[string]int](maxConcurrencySnapshots, concurrencySnapshotTTL)}
+	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, leaseWake: make(chan struct{}), logger: slog.Default(), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), quotaConsumed: make(map[quotaConsumptionKey]int), staleFallbackLoggedAt: make(map[string]time.Time), candidates: make(map[candidateCacheKey]candidateSnapshot), routingBases: make(map[routingBaseCacheKey]routingBaseSnapshot), routingOverlays: make(map[routingOverlayCacheKey]routingOverlaySnapshot), routingAccountProvider: make(map[uint64]account.Provider), baseProviderVersion: make(map[account.Provider]uint64), overlayProviderVersion: make(map[account.Provider]uint64), concurrencySnapshots: resultcache.New[[32]byte, map[string]int](maxConcurrencySnapshots, concurrencySnapshotTTL)}
+}
+
+// SetLogger wires the application logger into routing degradation diagnostics.
+// It is intended to be called during startup before the selector serves traffic.
+func (s *Selector) SetLogger(logger *slog.Logger) {
+	if logger != nil {
+		s.logger = logger
+	}
 }
 
 func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax time.Duration, capacityWait ...time.Duration) {
@@ -340,6 +388,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 	if err != nil {
 		return nil, err
 	}
+	quotaConsumed := s.quotaConsumptionSnapshot(provider)
 	// 仅保留候选下标，避免每个请求复制包含凭据、计费和额度结构的完整账号切片。
 	normalCandidates := make([]int, 0, len(values))
 	probeCandidates := make([]int, 0, len(values))
@@ -391,7 +440,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			quotaCandidates++
 			continue
 		}
-		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Remaining <= 0 {
+		if quotaWindowExhausted(candidate, quotaConsumed) {
 			quotaCandidates++
 			if candidate.QuotaWindow.ResetAt != nil {
 				earliestRetry = earlierFuture(earliestRetry, *candidate.QuotaWindow.ResetAt, now)
@@ -640,6 +689,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 	if err != nil {
 		return nil, err
 	}
+	quotaConsumed := s.quotaConsumptionSnapshot(provider)
 	for _, candidate := range values {
 		value := candidate.Credential
 		if value.ID != accountID {
@@ -692,7 +742,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 			if candidate.Billing != nil && candidate.Billing.IsExhausted(value.MinimumRemaining) {
 				return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted}
 			}
-			if candidate.QuotaWindow != nil && candidate.QuotaWindow.Remaining <= 0 {
+			if quotaWindowExhausted(candidate, quotaConsumed) {
 				var retryAfter time.Duration
 				if candidate.QuotaWindow.ResetAt != nil {
 					retryAfter = retryDelay(now, *candidate.QuotaWindow.ResetAt)
@@ -876,59 +926,73 @@ func (s *Selector) MarkQuotaStateChanged(provider account.Provider, accountIDs .
 		return
 	}
 	for _, accountID := range accountIDs {
+		s.clearQuotaConsumptionAccount(provider, accountID)
 		s.evictCandidate(provider, accountID)
 	}
 }
 
-// ConsumeQuota 将成功请求的本地额度变化应用到候选快照，避免为单账号变化清空整个 Provider 缓存。
+// ConsumeQuota records a small local delta instead of Copy-on-Write cloning
+// every cached candidate/base slice. Selection snapshots remain immutable for
+// concurrent requests, while the next request observes the consumed amount.
 func (s *Selector) ConsumeQuota(provider account.Provider, accountID uint64, mode string, amount int) {
 	if accountID == 0 || mode == "" || mode == "weekly" || amount <= 0 {
 		return
 	}
-	s.candidateMu.Lock()
-	defer s.candidateMu.Unlock()
-	for key, snapshot := range s.candidates {
-		if key.provider != provider {
-			continue
-		}
-		index, found := snapshot.byAccount[accountID]
-		if !found || index >= len(snapshot.values) {
-			continue
-		}
-		candidate := snapshot.values[index]
-		if candidate.QuotaWindow == nil || candidate.QuotaWindow.Mode != mode {
-			continue
-		}
-		next := append([]account.RoutingCandidate(nil), snapshot.values...)
-		window := *next[index].QuotaWindow
-		window.Remaining = max(0, window.Remaining-amount)
-		window.UpdatedAt = time.Now().UTC()
-		next[index].QuotaWindow = &window
-		snapshot.values = next
-		s.candidates[key] = snapshot
+	s.quotaMu.Lock()
+	if s.quotaConsumed == nil {
+		s.quotaConsumed = make(map[quotaConsumptionKey]int)
 	}
-	for key, snapshot := range s.routingBases {
-		if key.provider != provider {
-			continue
+	key := quotaConsumptionKey{provider: provider, accountID: accountID, mode: mode}
+	s.quotaConsumed[key] += amount
+	s.quotaMu.Unlock()
+}
+
+func (s *Selector) quotaConsumptionSnapshot(provider account.Provider) map[accountQuotaConsumptionKey]int {
+	s.quotaMu.RLock()
+	if len(s.quotaConsumed) == 0 {
+		s.quotaMu.RUnlock()
+		return nil
+	}
+	result := make(map[accountQuotaConsumptionKey]int)
+	for key, amount := range s.quotaConsumed {
+		if key.provider == provider {
+			result[accountQuotaConsumptionKey{accountID: key.accountID, mode: key.mode}] = amount
 		}
-		index := -1
-		for candidateIndex, base := range snapshot.values {
-			if base.Credential.ID == accountID {
-				index = candidateIndex
-				break
+	}
+	s.quotaMu.RUnlock()
+	return result
+}
+
+func quotaWindowExhausted(candidate account.RoutingCandidate, consumed map[accountQuotaConsumptionKey]int) bool {
+	if candidate.QuotaWindow == nil {
+		return false
+	}
+	remaining := candidate.QuotaWindow.Remaining - consumed[accountQuotaConsumptionKey{accountID: candidate.Credential.ID, mode: candidate.QuotaWindow.Mode}]
+	return remaining <= 0
+}
+
+func (s *Selector) clearQuotaConsumption(provider account.Provider) {
+	s.quotaMu.Lock()
+	if provider == "" {
+		clear(s.quotaConsumed)
+	} else {
+		for key := range s.quotaConsumed {
+			if key.provider == provider {
+				delete(s.quotaConsumed, key)
 			}
 		}
-		if index < 0 || snapshot.values[index].QuotaWindow == nil || snapshot.values[index].QuotaWindow.Mode != mode {
-			continue
-		}
-		next := append([]account.RoutingAccountBase(nil), snapshot.values...)
-		window := *next[index].QuotaWindow
-		window.Remaining = max(0, window.Remaining-amount)
-		window.UpdatedAt = time.Now().UTC()
-		next[index].QuotaWindow = &window
-		snapshot.values = next
-		s.routingBases[key] = snapshot
 	}
+	s.quotaMu.Unlock()
+}
+
+func (s *Selector) clearQuotaConsumptionAccount(provider account.Provider, accountID uint64) {
+	s.quotaMu.Lock()
+	for key := range s.quotaConsumed {
+		if key.provider == provider && key.accountID == accountID {
+			delete(s.quotaConsumed, key)
+		}
+	}
+	s.quotaMu.Unlock()
 }
 
 func (s *Selector) MarkFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) {
@@ -986,6 +1050,8 @@ func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.
 	key := candidateCacheKey{provider: provider, modelRouteID: modelRouteID, upstreamModel: upstreamModel, quotaMode: quotaMode}
 	s.candidateMu.Lock()
 	if snapshot, ok := s.candidates[key]; ok && now.Before(snapshot.expiresAt) {
+		snapshot.lastAccess = now
+		s.candidates[key] = snapshot
 		s.candidateMu.Unlock()
 		return snapshot.values, nil
 	}
@@ -993,18 +1059,36 @@ func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.
 	loadKey := fmt.Sprintf("%s\x00%d\x00%s\x00%s", provider, modelRouteID, upstreamModel, quotaMode)
 	loaded, err, _ := s.candidateLoads.Do(loadKey, func() (any, error) {
 		checkTime := time.Now().UTC()
+		var stale candidateSnapshot
+		hasStale := false
 		s.candidateMu.Lock()
-		if snapshot, ok := s.candidates[key]; ok && checkTime.Before(snapshot.expiresAt) {
-			s.candidateMu.Unlock()
-			return snapshot.values, nil
+		if snapshot, ok := s.candidates[key]; ok {
+			if checkTime.Before(snapshot.expiresAt) {
+				snapshot.lastAccess = checkTime
+				s.candidates[key] = snapshot
+				s.candidateMu.Unlock()
+				return snapshot.values, nil
+			}
+			if checkTime.Before(snapshot.staleUntil) {
+				stale, hasStale = snapshot, true
+			}
 		}
 		s.candidateMu.Unlock()
 		values, err := s.accounts.ListRoutingCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode)
 		if err != nil {
+			if hasStale && canUseStaleRoutingSnapshot(ctx, err) {
+				s.candidateMu.Lock()
+				stale.lastAccess = checkTime
+				stale.expiresAt = staleRetryExpiry(checkTime, stale.staleUntil)
+				s.storeCandidateSnapshotLocked(key, stale, checkTime)
+				s.candidateMu.Unlock()
+				s.logStaleRoutingFallback("combined", provider, checkTime, stale.staleUntil, err)
+				return stale.values, nil
+			}
 			return nil, err
 		}
 		s.candidateMu.Lock()
-		s.candidates[key] = newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL))
+		s.storeCandidateSnapshotLocked(key, newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL)), checkTime)
 		s.candidateMu.Unlock()
 		return values, nil
 	})
@@ -1018,6 +1102,8 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 	key := candidateCacheKey{provider: provider, modelRouteID: modelRouteID, upstreamModel: upstreamModel, quotaMode: quotaMode}
 	s.candidateMu.Lock()
 	if snapshot, ok := s.candidates[key]; ok && now.Before(snapshot.expiresAt) {
+		snapshot.lastAccess = now
+		s.candidates[key] = snapshot
 		s.candidateMu.Unlock()
 		return snapshot.values, nil
 	}
@@ -1027,6 +1113,8 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 		checkTime := time.Now().UTC()
 		s.candidateMu.Lock()
 		if snapshot, ok := s.candidates[key]; ok && checkTime.Before(snapshot.expiresAt) {
+			snapshot.lastAccess = checkTime
+			s.candidates[key] = snapshot
 			s.candidateMu.Unlock()
 			return snapshot.values, nil
 		}
@@ -1049,7 +1137,7 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 			s.candidateMu.Lock()
 			stable := baseVersion == s.routingBaseVersionLocked(provider) && overlayVersion == s.routingOverlayVersionLocked(provider)
 			if stable {
-				s.candidates[key] = newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL))
+				s.storeCandidateSnapshotLocked(key, newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL)), checkTime)
 			}
 			s.candidateMu.Unlock()
 			if stable {
@@ -1072,6 +1160,8 @@ func (s *Selector) loadRoutingBases(ctx context.Context, layered repository.Rout
 	version := s.routingBaseVersion(provider)
 	s.candidateMu.Lock()
 	if snapshot, ok := s.routingBases[key]; ok && now.Before(snapshot.expiresAt) && snapshot.version == version {
+		snapshot.lastAccess = now
+		s.routingBases[key] = snapshot
 		values := snapshot.values
 		s.candidateMu.Unlock()
 		return values, version, nil
@@ -1081,21 +1171,40 @@ func (s *Selector) loadRoutingBases(ctx context.Context, layered repository.Rout
 	loaded, err, _ := s.candidateLoads.Do(loadKey, func() (any, error) {
 		checkTime := time.Now().UTC()
 		checkVersion := s.routingBaseVersion(provider)
+		var stale routingBaseSnapshot
+		hasStale := false
 		s.candidateMu.Lock()
-		if snapshot, ok := s.routingBases[key]; ok && checkTime.Before(snapshot.expiresAt) && snapshot.version == checkVersion {
-			values := snapshot.values
-			s.candidateMu.Unlock()
-			return routingBaseLoadResult{values: values, version: checkVersion}, nil
+		if snapshot, ok := s.routingBases[key]; ok && snapshot.version == checkVersion {
+			if checkTime.Before(snapshot.expiresAt) {
+				snapshot.lastAccess = checkTime
+				s.routingBases[key] = snapshot
+				values := snapshot.values
+				s.candidateMu.Unlock()
+				return routingBaseLoadResult{values: values, version: checkVersion}, nil
+			}
+			if checkTime.Before(snapshot.staleUntil) {
+				stale, hasStale = snapshot, true
+			}
 		}
 		s.candidateMu.Unlock()
 		values, loadErr := layered.ListRoutingAccountBases(ctx, provider, quotaMode)
 		if loadErr != nil {
+			if hasStale && canUseStaleRoutingSnapshot(ctx, loadErr) {
+				s.candidateMu.Lock()
+				stale.lastAccess = checkTime
+				stale.expiresAt = staleRetryExpiry(checkTime, stale.staleUntil)
+				s.storeRoutingBaseSnapshotLocked(key, stale, checkTime)
+				s.candidateMu.Unlock()
+				s.logStaleRoutingFallback("base", provider, checkTime, stale.staleUntil, loadErr)
+				return routingBaseLoadResult{values: stale.values, version: checkVersion}, nil
+			}
 			return nil, loadErr
 		}
 		s.candidateMu.Lock()
 		currentVersion := s.routingBaseVersionLocked(provider)
 		if currentVersion == checkVersion {
-			s.routingBases[key] = routingBaseSnapshot{values: values, version: checkVersion, expiresAt: checkTime.Add(candidateCacheTTL)}
+			s.clearQuotaConsumption(provider)
+			s.storeRoutingBaseSnapshotLocked(key, routingBaseSnapshot{values: values, version: checkVersion, expiresAt: checkTime.Add(candidateCacheTTL)}, checkTime)
 			for accountID, cachedProvider := range s.routingAccountProvider {
 				if cachedProvider == provider {
 					delete(s.routingAccountProvider, accountID)
@@ -1120,6 +1229,8 @@ func (s *Selector) loadRoutingOverlay(ctx context.Context, layered repository.Ro
 	version := s.routingOverlayVersion(provider)
 	s.candidateMu.Lock()
 	if snapshot, ok := s.routingOverlays[key]; ok && now.Before(snapshot.expiresAt) && snapshot.version == version {
+		snapshot.lastAccess = now
+		s.routingOverlays[key] = snapshot
 		value := snapshot.value
 		s.candidateMu.Unlock()
 		return value, version, nil
@@ -1129,21 +1240,39 @@ func (s *Selector) loadRoutingOverlay(ctx context.Context, layered repository.Ro
 	loaded, err, _ := s.candidateLoads.Do(loadKey, func() (any, error) {
 		checkTime := time.Now().UTC()
 		checkVersion := s.routingOverlayVersion(provider)
+		var stale routingOverlaySnapshot
+		hasStale := false
 		s.candidateMu.Lock()
-		if snapshot, ok := s.routingOverlays[key]; ok && checkTime.Before(snapshot.expiresAt) && snapshot.version == checkVersion {
-			value := snapshot.value
-			s.candidateMu.Unlock()
-			return routingOverlayLoadResult{value: value, version: checkVersion}, nil
+		if snapshot, ok := s.routingOverlays[key]; ok && snapshot.version == checkVersion {
+			if checkTime.Before(snapshot.expiresAt) {
+				snapshot.lastAccess = checkTime
+				s.routingOverlays[key] = snapshot
+				value := snapshot.value
+				s.candidateMu.Unlock()
+				return routingOverlayLoadResult{value: value, version: checkVersion}, nil
+			}
+			if checkTime.Before(snapshot.staleUntil) {
+				stale, hasStale = snapshot, true
+			}
 		}
 		s.candidateMu.Unlock()
 		value, loadErr := layered.ListRoutingAccountOverlays(ctx, provider, modelRouteID, upstreamModel)
 		if loadErr != nil {
+			if hasStale && canUseStaleRoutingSnapshot(ctx, loadErr) {
+				s.candidateMu.Lock()
+				stale.lastAccess = checkTime
+				stale.expiresAt = staleRetryExpiry(checkTime, stale.staleUntil)
+				s.storeRoutingOverlaySnapshotLocked(key, stale, checkTime)
+				s.candidateMu.Unlock()
+				s.logStaleRoutingFallback("overlay", provider, checkTime, stale.staleUntil, loadErr)
+				return routingOverlayLoadResult{value: stale.value, version: checkVersion}, nil
+			}
 			return nil, loadErr
 		}
 		s.candidateMu.Lock()
 		currentVersion := s.routingOverlayVersionLocked(provider)
 		if currentVersion == checkVersion {
-			s.routingOverlays[key] = routingOverlaySnapshot{value: value, version: checkVersion, expiresAt: checkTime.Add(candidateCacheTTL)}
+			s.storeRoutingOverlaySnapshotLocked(key, routingOverlaySnapshot{value: value, version: checkVersion, expiresAt: checkTime.Add(candidateCacheTTL)}, checkTime)
 		}
 		s.candidateMu.Unlock()
 		return routingOverlayLoadResult{value: value, version: checkVersion}, nil
@@ -1206,6 +1335,7 @@ func (s *Selector) ApplyInvalidation(event repository.InvalidationEvent) {
 	base := layer == repository.InvalidationLayerBase
 	overlay := layer == repository.InvalidationLayerOverlay || layer == repository.InvalidationLayerRoute
 	if base {
+		s.clearQuotaConsumption(provider)
 		if provider == "" {
 			s.baseGlobalVersion++
 			clearRoutingBases(s.routingBases, "")
@@ -1245,6 +1375,169 @@ func clearRoutingOverlays(values map[routingOverlayCacheKey]routingOverlaySnapsh
 			delete(values, key)
 		}
 	}
+}
+
+func cacheSnapshotAccess(lastAccess, expiresAt time.Time) time.Time {
+	if !lastAccess.IsZero() {
+		return lastAccess
+	}
+	return expiresAt
+}
+
+func staleRetryExpiry(now, staleUntil time.Time) time.Time {
+	expiresAt := now.Add(candidateCacheRetryTTL)
+	if !staleUntil.IsZero() && expiresAt.After(staleUntil) {
+		return staleUntil
+	}
+	return expiresAt
+}
+
+// canUseStaleRoutingSnapshot deliberately accepts only errors that carry a
+// transient signal. Serving stale data for cancellations, schema/query bugs,
+// or repository validation failures would hide correctness problems.
+func canUseStaleRoutingSnapshot(ctx context.Context, err error) bool {
+	if err == nil || ctx != nil && ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, repository.ErrNotFound) || errors.Is(err, repository.ErrConflict) || errors.Is(err, repository.ErrLimitExceeded) || errors.Is(err, repository.ErrInvalidRecord) || errors.Is(err, repository.ErrAccountPoolMismatch) {
+		return false
+	}
+	if errors.Is(err, sql.ErrConnDone) || errors.Is(err, driver.ErrBadConn) {
+		return true
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary()) {
+		return true
+	}
+	var temporary interface{ Temporary() bool }
+	if errors.As(err, &temporary) && temporary.Temporary() {
+		return true
+	}
+	// modernc SQLite exposes the primary/extended result through Code().
+	// SQLITE_BUSY (5) and SQLITE_LOCKED (6) are safe to retry.
+	var sqliteError interface{ Code() int }
+	if errors.As(err, &sqliteError) {
+		switch sqliteError.Code() & 0xff {
+		case 5, 6:
+			return true
+		}
+	}
+	// pgx exposes SQLSTATE without requiring the application layer to depend on
+	// a concrete PostgreSQL driver type.
+	var postgresError interface{ SQLState() string }
+	if errors.As(err, &postgresError) {
+		switch state := postgresError.SQLState(); {
+		case strings.HasPrefix(state, "08"), strings.HasPrefix(state, "40"), state == "55P03", state == "57P01", state == "57P02", state == "57P03":
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Selector) logStaleRoutingFallback(layer string, provider account.Provider, now, staleUntil time.Time, err error) {
+	key := layer + "\x00" + string(provider)
+	s.staleLogMu.Lock()
+	if s.staleFallbackLoggedAt == nil {
+		s.staleFallbackLoggedAt = make(map[string]time.Time)
+	}
+	last := s.staleFallbackLoggedAt[key]
+	if !last.IsZero() && now.Sub(last) < candidateCacheStaleLogInterval {
+		s.staleLogMu.Unlock()
+		return
+	}
+	s.staleFallbackLoggedAt[key] = now
+	s.staleLogMu.Unlock()
+
+	staleFor := now.Sub(staleUntil.Add(-candidateCacheStaleTTL))
+	if staleFor < 0 {
+		staleFor = 0
+	}
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("routing_snapshot_stale_fallback",
+		"provider", provider,
+		"layer", layer,
+		"stale_for_ms", staleFor.Milliseconds(),
+		"retry_after_ms", candidateCacheRetryTTL.Milliseconds(),
+		"error_type", fmt.Sprintf("%T", err),
+	)
+}
+
+type snapshotCacheMetadata struct {
+	values     int
+	staleUntil time.Time
+	accessedAt time.Time
+}
+
+func pruneSnapshotCache[K comparable, V any](values map[K]V, protected K, now time.Time, maxSnapshots, maxValues int, metadata func(V) snapshotCacheMetadata) {
+	for key, value := range values {
+		entry := metadata(value)
+		if key != protected && !entry.staleUntil.IsZero() && !now.Before(entry.staleUntil) {
+			delete(values, key)
+		}
+	}
+	for {
+		total := 0
+		for _, value := range values {
+			total += metadata(value).values
+		}
+		// A single oversized provider pool must remain usable. The budget becomes
+		// a strict bound as soon as there is another evictable snapshot.
+		if len(values) <= maxSnapshots && (total <= maxValues || len(values) == 1) {
+			return
+		}
+		var oldestKey K
+		var oldestAt time.Time
+		found := false
+		for key, value := range values {
+			if key == protected {
+				continue
+			}
+			accessedAt := metadata(value).accessedAt
+			if !found || accessedAt.Before(oldestAt) {
+				oldestKey, oldestAt, found = key, accessedAt, true
+			}
+		}
+		if !found {
+			return
+		}
+		delete(values, oldestKey)
+	}
+}
+
+func (s *Selector) storeCandidateSnapshotLocked(key candidateCacheKey, snapshot candidateSnapshot, now time.Time) {
+	snapshot.lastAccess = now
+	if snapshot.staleUntil.IsZero() {
+		snapshot.staleUntil = snapshot.expiresAt.Add(candidateCacheStaleTTL)
+	}
+	s.candidates[key] = snapshot
+	pruneSnapshotCache(s.candidates, key, now, maxCandidateCacheSnapshots, maxCandidateCacheValues, func(value candidateSnapshot) snapshotCacheMetadata {
+		return snapshotCacheMetadata{values: len(value.values), staleUntil: value.staleUntil, accessedAt: cacheSnapshotAccess(value.lastAccess, value.expiresAt)}
+	})
+}
+
+func (s *Selector) storeRoutingBaseSnapshotLocked(key routingBaseCacheKey, snapshot routingBaseSnapshot, now time.Time) {
+	snapshot.lastAccess = now
+	if snapshot.staleUntil.IsZero() {
+		snapshot.staleUntil = snapshot.expiresAt.Add(candidateCacheStaleTTL)
+	}
+	s.routingBases[key] = snapshot
+	pruneSnapshotCache(s.routingBases, key, now, maxRoutingBaseSnapshots, maxRoutingBaseValues, func(value routingBaseSnapshot) snapshotCacheMetadata {
+		return snapshotCacheMetadata{values: len(value.values), staleUntil: value.staleUntil, accessedAt: cacheSnapshotAccess(value.lastAccess, value.expiresAt)}
+	})
+}
+
+func (s *Selector) storeRoutingOverlaySnapshotLocked(key routingOverlayCacheKey, snapshot routingOverlaySnapshot, now time.Time) {
+	snapshot.lastAccess = now
+	if snapshot.staleUntil.IsZero() {
+		snapshot.staleUntil = snapshot.expiresAt.Add(candidateCacheStaleTTL)
+	}
+	s.routingOverlays[key] = snapshot
+	pruneSnapshotCache(s.routingOverlays, key, now, maxRoutingOverlaySnapshots, maxRoutingOverlayValues, func(value routingOverlaySnapshot) snapshotCacheMetadata {
+		return snapshotCacheMetadata{values: len(value.value.Values), staleUntil: value.staleUntil, accessedAt: cacheSnapshotAccess(value.lastAccess, value.expiresAt)}
+	})
 }
 
 type routingBaseLoadResult struct {
