@@ -58,6 +58,70 @@ func TestCreateUsesG2AClientKeyFormat(t *testing.T) {
 	}
 }
 
+func TestQualityGuardIdentityIsStableHiddenAndSystemManaged(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quality-guard-identity.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewClientKeyRepository(database)
+	cipher := testCipher(t)
+	service := NewService(repository, successfulRateLimiter{}, successfulConcurrencyLimiter{}, 60, 5, cipher)
+	unused, err := service.EnsureQualityGuardIdentity(ctx, false)
+	if err != nil || unused.ID != 0 {
+		t.Fatalf("disabled fresh identity = %#v, err = %v", unused, err)
+	}
+
+	first, err := service.EnsureQualityGuardIdentity(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.EnsureQualityGuardIdentity(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == 0 || second.ID != first.ID || first.InternalKind != clientkeydomain.InternalKindQualityGuard || !first.Enabled || first.ProviderScope != clientkeydomain.ProviderScopeBuild {
+		t.Fatalf("first = %#v, second = %#v", first, second)
+	}
+	if values, total, listErr := service.List(ctx, 1, 20, "", ListFilter{}); listErr != nil || total != 0 || len(values) != 0 {
+		t.Fatalf("system identity leaked in list: values=%#v total=%d err=%v", values, total, listErr)
+	}
+	raw, err := cipher.Decrypt(first.EncryptedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, authErr := service.Authenticate(ctx, raw); !errors.Is(authErr, ErrInvalidKey) {
+		t.Fatalf("system identity authenticated externally: %v", authErr)
+	}
+	if _, revealErr := service.RevealSecret(ctx, first.ID); !errors.Is(revealErr, ErrSystemManaged) {
+		t.Fatalf("reveal error = %v", revealErr)
+	}
+	if _, updateErr := service.Update(ctx, first.ID, UpdateInput{}); !errors.Is(updateErr, ErrSystemManaged) {
+		t.Fatalf("update error = %v", updateErr)
+	}
+	if deleteErr := service.Delete(ctx, first.ID); !errors.Is(deleteErr, ErrSystemManaged) {
+		t.Fatalf("delete error = %v", deleteErr)
+	}
+	if _, batchErr := service.BatchSetEnabled(ctx, []uint64{first.ID}, false); !errors.Is(batchErr, ErrSystemManaged) {
+		t.Fatalf("batch update error = %v", batchErr)
+	}
+	if _, batchErr := service.BatchDelete(ctx, []uint64{first.ID}); !errors.Is(batchErr, ErrSystemManaged) {
+		t.Fatalf("batch delete error = %v", batchErr)
+	}
+	disabled, err := service.EnsureQualityGuardIdentity(ctx, false)
+	if err != nil || disabled.ID != first.ID || disabled.Enabled {
+		t.Fatalf("disabled = %#v, err = %v", disabled, err)
+	}
+	reenabled, err := service.EnsureQualityGuardIdentity(ctx, true)
+	if err != nil || reenabled.ID != first.ID || !reenabled.Enabled {
+		t.Fatalf("reenabled = %#v, err = %v", reenabled, err)
+	}
+}
+
 func TestUnlimitedRuntimeLimitsBypassLimiterStores(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "unlimited-runtime.db"))

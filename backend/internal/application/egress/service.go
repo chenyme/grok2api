@@ -16,13 +16,54 @@ import (
 )
 
 var (
-	ErrInvalidInput         = errors.New("代理节点参数无效")
-	ErrInvalidFilter        = errors.New("出口代理筛选条件无效")
-	ErrInvalidSort          = errors.New("代理节点排序条件无效")
-	ErrNotFound             = errors.New("代理节点不存在")
-	ErrProbeStale           = errors.New("代理配置在探测期间已更新，请重新测试")
-	ErrClearanceUnavailable = errors.New("Clearance 刷新不可用")
+	ErrInvalidInput            = errors.New("代理节点参数无效")
+	ErrInvalidFilter           = errors.New("出口代理筛选条件无效")
+	ErrInvalidSort             = errors.New("代理节点排序条件无效")
+	ErrNotFound                = errors.New("代理节点不存在")
+	ErrProbeStale              = errors.New("代理配置在探测期间已更新，请重新测试")
+	ErrQualityProbeUnavailable = errors.New("出口质量探测不可用")
+	ErrQualityProbeNoAccount   = errors.New("质量检测暂无可调度账号")
+	ErrClearanceUnavailable    = errors.New("Clearance 刷新不可用")
 )
+
+const (
+	DefaultQualityProbePrompt          = "Reply with exactly QUALITY_OK."
+	DefaultQualityProbeExpected        = "QUALITY_OK"
+	DefaultQualityProbeMaxOutputTokens = 64
+	MaxQualityProbePromptBytes         = 4096
+	MaxQualityProbeExpectedBytes       = 512
+	MaxQualityProbeOutputTokens        = 2048
+)
+
+type QualityProbeInput struct {
+	ClientKeyID     uint64
+	Model           string
+	Prompt          string
+	Expected        string
+	MaxOutputTokens int
+}
+
+type QualityProbeResult struct {
+	RequestID             string
+	NodeID                uint64
+	Model                 string
+	StatusCode            int
+	FirstTokenMS          int64
+	DurationMS            int64
+	GenerationMS          int64
+	ChunkCount            int
+	OutputTokens          int64
+	ReasoningTokens       int64
+	VisibleTokens         int64
+	VisibleCharacters     int
+	OutputTokensPerSecond float64
+	ExpectedMatched       bool
+	ResponseSHA256        string
+}
+
+type QualityProber interface {
+	ProbeEgressQuality(context.Context, uint64, QualityProbeInput) (QualityProbeResult, error)
+}
 
 const (
 	maxProxyURLBytes         = 8192
@@ -67,9 +108,60 @@ type Service struct {
 	clearance         ClearanceManager
 	prober            NodeProber
 	operationsCache   OperationsConfigInvalidator
+	qualityProber     QualityProber
 	assignmentMu      sync.Mutex
 	lastAssignmentRun time.Time
 	assignmentRunning bool
+}
+
+func (s *Service) SetQualityProber(value QualityProber) {
+	s.mu.Lock()
+	s.qualityProber = value
+	s.mu.Unlock()
+}
+
+func (s *Service) ProbeQuality(ctx context.Context, nodeID uint64, input QualityProbeInput) (QualityProbeResult, error) {
+	if nodeID == 0 || input.ClientKeyID == 0 {
+		return QualityProbeResult{}, fmt.Errorf("%w: nodeId 和 clientKeyId 必填", ErrInvalidInput)
+	}
+	input.Model = strings.TrimSpace(input.Model)
+	input.Prompt = strings.TrimSpace(input.Prompt)
+	input.Expected = strings.TrimSpace(input.Expected)
+	if input.Model == "" {
+		return QualityProbeResult{}, fmt.Errorf("%w: model 必填", ErrInvalidInput)
+	}
+	if input.Prompt == "" {
+		input.Prompt = DefaultQualityProbePrompt
+	}
+	if input.Expected == "" {
+		input.Expected = DefaultQualityProbeExpected
+	}
+	if len(input.Prompt) > MaxQualityProbePromptBytes || len(input.Expected) > MaxQualityProbeExpectedBytes {
+		return QualityProbeResult{}, fmt.Errorf("%w: 探测文本过长", ErrInvalidInput)
+	}
+	if input.MaxOutputTokens == 0 {
+		input.MaxOutputTokens = DefaultQualityProbeMaxOutputTokens
+	}
+	if input.MaxOutputTokens < 1 || input.MaxOutputTokens > MaxQualityProbeOutputTokens {
+		return QualityProbeResult{}, fmt.Errorf("%w: maxOutputTokens 必须在 1 到 %d 之间", ErrInvalidInput, MaxQualityProbeOutputTokens)
+	}
+	node, err := s.repository.GetEgressNode(ctx, nodeID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return QualityProbeResult{}, ErrNotFound
+	}
+	if err != nil {
+		return QualityProbeResult{}, err
+	}
+	if node.Scope != domain.ScopeBuild || strings.TrimSpace(node.EncryptedProxyURL) == "" {
+		return QualityProbeResult{}, fmt.Errorf("%w: 质量探测仅支持已配置代理的 grok_build 节点", ErrInvalidInput)
+	}
+	s.mu.RLock()
+	prober := s.qualityProber
+	s.mu.RUnlock()
+	if prober == nil {
+		return QualityProbeResult{}, ErrQualityProbeUnavailable
+	}
+	return prober.ProbeEgressQuality(ctx, nodeID, input)
 }
 
 // AccountBindingRepository is intentionally narrow so existing account

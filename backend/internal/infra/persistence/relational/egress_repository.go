@@ -221,20 +221,29 @@ func (r *EgressRepository) UpdateEgressNodeLastError(ctx context.Context, id uin
 	return nil
 }
 
-// UpdateEgressNodeProbe persists the result of a direct proxy probe without
-// affecting request health or Cloudflare clearance state.
+// UpdateEgressNodeProbe persists a direct proxy probe. A healthy result also
+// clears a transport-only request failure because the proxy has just been
+// verified independently; anti-bot and other request failures stay intact.
 func (r *EgressRepository) UpdateEgressNodeProbe(ctx context.Context, id uint64, expectedEncryptedProxyURL string, value egress.ProbeResult) error {
+	updates := map[string]any{
+		"probe_status": value.Status, "last_probed_at": value.TestedAt.UTC(),
+		"probe_latency_ms": value.LatencyMS, "exit_ip": value.ExitIP, "probe_error": value.Error, "probe_provider": storedProbeProvider(value.Provider),
+		"ipv4_probe_status": normalizedProbeStatus(value.IPv4.Status), "ipv4_last_probed_at": probeTestedAt(value.IPv4),
+		"ipv4_probe_latency_ms": value.IPv4.LatencyMS, "ipv4_exit_ip": value.IPv4.ExitIP, "ipv4_probe_error": value.IPv4.Error,
+		"ipv6_probe_status": normalizedProbeStatus(value.IPv6.Status), "ipv6_last_probed_at": probeTestedAt(value.IPv6),
+		"ipv6_probe_latency_ms": value.IPv6.LatencyMS, "ipv6_exit_ip": value.IPv6.ExitIP, "ipv6_probe_error": value.IPv6.Error,
+		"updated_at": time.Now().UTC(),
+	}
+	if value.Status == egress.ProbeStatusHealthy {
+		condition := "last_error = ?"
+		updates["health"] = gorm.Expr("CASE WHEN "+condition+" THEN ? ELSE health END", egress.LastErrorTransport, 1)
+		updates["failure_count"] = gorm.Expr("CASE WHEN "+condition+" THEN ? ELSE failure_count END", egress.LastErrorTransport, 0)
+		updates["cooldown_until"] = gorm.Expr("CASE WHEN "+condition+" THEN NULL ELSE cooldown_until END", egress.LastErrorTransport)
+		updates["last_error"] = gorm.Expr("CASE WHEN "+condition+" THEN ? ELSE last_error END", egress.LastErrorTransport, "")
+	}
 	result := r.db.db.WithContext(ctx).Model(&egressNodeModel{}).
 		Where("id = ? AND encrypted_proxy_url = ?", id, expectedEncryptedProxyURL).
-		Updates(map[string]any{
-			"probe_status": value.Status, "last_probed_at": value.TestedAt.UTC(),
-			"probe_latency_ms": value.LatencyMS, "exit_ip": value.ExitIP, "probe_error": value.Error, "probe_provider": storedProbeProvider(value.Provider),
-			"ipv4_probe_status": normalizedProbeStatus(value.IPv4.Status), "ipv4_last_probed_at": probeTestedAt(value.IPv4),
-			"ipv4_probe_latency_ms": value.IPv4.LatencyMS, "ipv4_exit_ip": value.IPv4.ExitIP, "ipv4_probe_error": value.IPv4.Error,
-			"ipv6_probe_status": normalizedProbeStatus(value.IPv6.Status), "ipv6_last_probed_at": probeTestedAt(value.IPv6),
-			"ipv6_probe_latency_ms": value.IPv6.LatencyMS, "ipv6_exit_ip": value.IPv6.ExitIP, "ipv6_probe_error": value.IPv6.Error,
-			"updated_at": time.Now().UTC(),
-		})
+		Updates(updates)
 	if result.Error != nil {
 		return mapError(result.Error)
 	}

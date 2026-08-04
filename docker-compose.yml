@@ -8,9 +8,11 @@ services:
       - "${GROK2API_PORT:-8000}:8000"
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
+      GROK2API_QUALITY_GUARD_DIR: /var/lib/grok2api-quality-guard
     volumes:
       - "${GROK2API_CONFIG:-./config.yaml}:/run/grok2api/config.yaml:ro"
       - grok2api-data:/app/data
+      - quality_guard_state:/var/lib/grok2api-quality-guard
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
@@ -47,5 +49,28 @@ services:
   #     LOG_LEVEL: info
   #   restart: unless-stopped
 
+  # ================================ EGRESS QUALITY GUARD ================================
+  # 可选的 Grok Build 出口质量守护 sidecar。默认不启动，也不会产生探测请求。
+  # 启用前在 config.yaml 中配置 qualityGuard，然后执行：
+  # docker compose --profile quality-guard up -d --build
+
+  egress-quality-guard:
+    container_name: grok2api-egress-quality-guard
+    profiles: ["quality-guard"]
+    build:
+      context: .
+      dockerfile: tools/egress-quality-guard/Dockerfile
+    depends_on:
+      grok2api:
+        condition: service_healthy
+    volumes:
+      - quality_guard_state:/var/lib/grok2api-quality-guard
+    restart: "on-failure:5"
+    init: true
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   grok2api-data:
+  quality_guard_state:

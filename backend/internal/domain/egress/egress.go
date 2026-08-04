@@ -10,6 +10,8 @@ const (
 	ModePool   Mode = "pool"
 )
 
+const LastErrorTransport = "transport error"
+
 type Scope string
 
 const (

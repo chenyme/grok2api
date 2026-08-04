@@ -1,0 +1,7 @@
+FROM python:3.12-alpine
+
+COPY tools/egress-quality-guard/session_rotator.py /usr/local/bin/grok2api-session-rotator
+RUN chmod 0755 /usr/local/bin/grok2api-session-rotator
+
+USER 1000:1000
+ENTRYPOINT ["/usr/local/bin/grok2api-session-rotator"]

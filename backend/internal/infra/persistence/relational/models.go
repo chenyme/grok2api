@@ -242,12 +242,13 @@ type accountModelQuotaBlockModel struct {
 func (accountModelQuotaBlockModel) TableName() string { return "account_model_quota_blocks" }
 
 type clientKeyModel struct {
-	ID                    uint64 `gorm:"primaryKey;autoIncrement"`
-	Name                  string `gorm:"size:160;not null;check:chk_client_keys_name,length(trim(name)) BETWEEN 1 AND 160"`
-	Prefix                string `gorm:"size:32;uniqueIndex;not null;check:chk_client_keys_prefix,length(prefix) BETWEEN 1 AND 32"`
-	SecretHash            string `gorm:"size:64;not null;check:chk_client_keys_secret_hash,length(secret_hash) = 64"`
-	EncryptedSecret       string `gorm:"type:text;not null;check:chk_client_keys_encrypted_secret,length(trim(encrypted_secret)) BETWEEN 1 AND 4096"`
-	Enabled               bool   `gorm:"not null"`
+	ID                    uint64  `gorm:"primaryKey;autoIncrement"`
+	Name                  string  `gorm:"size:160;not null;check:chk_client_keys_name,length(trim(name)) BETWEEN 1 AND 160"`
+	Prefix                string  `gorm:"size:32;uniqueIndex;not null;check:chk_client_keys_prefix,length(prefix) BETWEEN 1 AND 32"`
+	SecretHash            string  `gorm:"size:64;not null;check:chk_client_keys_secret_hash,length(secret_hash) = 64"`
+	EncryptedSecret       string  `gorm:"type:text;not null;check:chk_client_keys_encrypted_secret,length(trim(encrypted_secret)) BETWEEN 1 AND 4096"`
+	InternalKind          *string `gorm:"size:32"`
+	Enabled               bool    `gorm:"not null"`
 	ExpiresAt             *time.Time
 	RPMLimit              int   `gorm:"not null;default:120;check:chk_client_keys_rpm,rpm_limit BETWEEN 0 AND 100000"`
 	MaxConcurrent         int   `gorm:"not null;default:8;check:chk_client_keys_max_concurrent,max_concurrent BETWEEN 0 AND 1024"`

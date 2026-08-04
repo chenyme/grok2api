@@ -272,6 +272,8 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error) {
 		response.Error(c, http.StatusConflict, "clientKeyConflict", err.Error())
 	case errors.Is(err, clientkeyapp.ErrSecretUnavailable):
 		response.Error(c, http.StatusConflict, "clientKeySecretUnavailable", err.Error())
+	case errors.Is(err, clientkeyapp.ErrSystemManaged):
+		response.Error(c, http.StatusConflict, "clientKeySystemManaged", err.Error())
 	default:
 		response.Error(c, http.StatusInternalServerError, code, "客户端 Key 操作失败")
 	}

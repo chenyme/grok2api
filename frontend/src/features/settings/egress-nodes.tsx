@@ -59,6 +59,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       page, pageSize, search: debouncedSearch, scope: scopeFilter as EgressScope | "", enabled: enabledFilter,
       probe: probeFilter, assignment: assignmentFilter, sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined,
     }),
+    refetchInterval: 2_000,
+    refetchIntervalInBackground: false,
   });
   const save = useMutation({
     mutationFn: () => {

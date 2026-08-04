@@ -1,9 +1,14 @@
 package egress
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -16,9 +21,31 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type Handler struct{ service *egressapp.Service }
+type Handler struct {
+	service         *egressapp.Service
+	guardStatePath  string
+	guardConfigPath string
+	guardProbe      egressapp.QualityProbeInput
+}
 
-func NewHandler(service *egressapp.Service) *Handler { return &Handler{service: service} }
+func NewHandler(service *egressapp.Service, guardStatePath ...string) *Handler {
+	path := ""
+	if len(guardStatePath) > 0 {
+		path = strings.TrimSpace(guardStatePath[0])
+	}
+	configPath := ""
+	if len(guardStatePath) > 1 {
+		configPath = strings.TrimSpace(guardStatePath[1])
+	}
+	return &Handler{service: service, guardStatePath: path, guardConfigPath: configPath}
+}
+
+// WithQualityGuardProbe pins the sidecar probe to server-owned credentials and
+// payload. The internal caller can select only the physical egress node.
+func (h *Handler) WithQualityGuardProbe(input egressapp.QualityProbeInput) *Handler {
+	h.guardProbe = input
+	return h
+}
 
 func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/egress-nodes", h.list)
@@ -29,6 +56,10 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/egress-nodes/cleanup", h.cleanup)
 	router.POST("/egress-nodes/test", h.testNodes)
 	router.POST("/egress-nodes/:id/test", h.testNode)
+	router.POST("/egress-nodes/:id/quality-test", h.testQuality)
+	router.GET("/egress-quality-guard", h.qualityGuardStatus)
+	router.PUT("/egress-quality-guard/config", h.updateQualityGuardConfig)
+	router.POST("/egress-quality-guard/nodes/:id/test", h.testQualityGuardNode)
 	router.POST("/egress-nodes/:id/accounts", h.assignAccounts)
 	router.DELETE("/egress-nodes/accounts", h.unassignAccounts)
 	router.PUT("/egress-nodes/:id", h.update)
@@ -43,6 +74,309 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/egress-operations", h.operationsConfig)
 	router.PUT("/egress-operations", h.updateOperationsConfig)
 	router.POST("/egress-operations/rebalance", h.rebalance)
+}
+
+// RegisterQualityGuard exposes the minimum egress surface required by the
+// sidecar. Destructive node, source, binding, and credential operations remain
+// available only through administrator authentication.
+func (h *Handler) RegisterQualityGuard(router *gin.RouterGroup) {
+	router.GET("/egress-nodes", h.list)
+	router.PATCH("/egress-nodes/batch", h.updateMany)
+	router.POST("/egress-nodes/:id/test", h.testNode)
+	router.POST("/egress-nodes/:id/quality-test", h.testQualityGuardNode)
+	router.GET("/egress-operations", h.operationsConfig)
+}
+
+// A fully populated 2,000-node guard state is slightly larger than 1 MiB.
+// Keep a bounded limit while leaving headroom for audit cursors and events.
+const maxQualityGuardStateBytes = 8 << 20
+
+type qualityGuardState struct {
+	Version           int                              `json:"version"`
+	StartedAt         float64                          `json:"started_at"`
+	UpdatedAt         float64                          `json:"updated_at"`
+	LastActiveCycleAt float64                          `json:"last_active_cycle_at"`
+	LastPassivePollAt float64                          `json:"last_passive_poll_at"`
+	Guard             qualityGuardConfig               `json:"guard"`
+	ProtectedNodeIDs  []string                         `json:"protected_node_ids"`
+	Nodes             map[string]qualityGuardNodeState `json:"nodes"`
+	RecentEvents      []qualityGuardEvent              `json:"recent_events"`
+	Statistics        qualityGuardStatistics           `json:"statistics"`
+}
+
+type qualityGuardStatistics struct {
+	StartedAt float64                    `json:"started_at"`
+	Active    qualityGuardDetectionStats `json:"active"`
+	Passive   qualityGuardDetectionStats `json:"passive"`
+	Actions   qualityGuardActionStats    `json:"actions"`
+}
+
+type qualityGuardDetectionStats struct {
+	Total        uint64 `json:"total"`
+	Healthy      uint64 `json:"healthy"`
+	Soft         uint64 `json:"soft"`
+	Hard         uint64 `json:"hard"`
+	Errors       uint64 `json:"errors"`
+	OutputTokens uint64 `json:"output_tokens"`
+}
+
+type qualityGuardActionStats struct {
+	Quarantined uint64 `json:"quarantined"`
+	Restored    uint64 `json:"restored"`
+	Suppressed  uint64 `json:"suppressed"`
+}
+
+type qualityGuardConfig struct {
+	Mode                  string   `json:"mode"`
+	Model                 string   `json:"model"`
+	NodeIDs               []string `json:"node_ids"`
+	ActiveIntervalSeconds int      `json:"active_interval_seconds"`
+	PassivePollSeconds    int      `json:"passive_poll_seconds"`
+	SoftTPS               float64  `json:"soft_tps"`
+	HardTPS               float64  `json:"hard_tps"`
+	ConsecutiveSoft       int      `json:"consecutive_soft"`
+	ConsecutiveErrors     int      `json:"consecutive_errors"`
+	QuarantineSeconds     int      `json:"quarantine_seconds"`
+	MinHealthyNodes       int      `json:"min_healthy_nodes"`
+	MaxOutputTokens       int      `json:"max_output_tokens"`
+	Prompt                string   `json:"prompt"`
+	Expected              string   `json:"expected"`
+}
+
+type qualityGuardNodeState struct {
+	ActiveSoftStrikes  int     `json:"active_soft_strikes"`
+	PassiveSoftStrikes int     `json:"passive_soft_strikes"`
+	ErrorStrikes       int     `json:"error_strikes"`
+	QuarantinedUntil   float64 `json:"quarantined_until"`
+	DisabledByGuard    bool    `json:"disabled_by_guard"`
+	LastReason         string  `json:"last_reason"`
+	LastProbeAt        float64 `json:"last_probe_at"`
+	LastObservedAt     float64 `json:"last_observed_at"`
+	LastSource         string  `json:"last_source"`
+	LastClassification string  `json:"last_classification"`
+	LastOutputTPS      float64 `json:"last_output_tps"`
+	LastOutputTokens   int     `json:"last_output_tokens"`
+	LastFirstTokenMS   int     `json:"last_first_token_ms"`
+	LastDurationMS     int     `json:"last_duration_ms"`
+}
+
+type qualityGuardEvent struct {
+	TS             float64 `json:"ts"`
+	Event          string  `json:"event"`
+	NodeID         string  `json:"node_id"`
+	NodeName       string  `json:"node_name"`
+	Reason         string  `json:"reason"`
+	Classification string  `json:"classification"`
+	OutputTPS      float64 `json:"output_tps"`
+}
+
+func (h *Handler) qualityGuardStatus(c *gin.Context) {
+	state, available, err := h.readQualityGuardState()
+	if !available {
+		response.Success(c, http.StatusOK, gin.H{"available": false})
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "质量守护状态暂不可用")
+		return
+	}
+	payload := gin.H{
+		"available":         true,
+		"editable":          h.guardConfigPath != "",
+		"startedAt":         state.StartedAt,
+		"updatedAt":         state.UpdatedAt,
+		"lastActiveCycleAt": state.LastActiveCycleAt,
+		"lastPassivePollAt": state.LastPassivePollAt,
+		"config": gin.H{
+			"mode": state.Guard.Mode, "model": state.Guard.Model,
+			"node_ids": state.Guard.NodeIDs, "active_interval_seconds": state.Guard.ActiveIntervalSeconds,
+			"passive_poll_seconds": state.Guard.PassivePollSeconds, "soft_tps": state.Guard.SoftTPS,
+			"hard_tps": state.Guard.HardTPS, "consecutive_soft": state.Guard.ConsecutiveSoft,
+			"consecutive_errors": state.Guard.ConsecutiveErrors, "quarantine_seconds": state.Guard.QuarantineSeconds,
+			"min_healthy_nodes": state.Guard.MinHealthyNodes, "max_output_tokens": state.Guard.MaxOutputTokens,
+		},
+		"nodes": state.Nodes, "protectedNodeIds": state.ProtectedNodeIDs, "recentEvents": state.RecentEvents,
+	}
+	if state.Statistics.StartedAt > 0 {
+		payload["statistics"] = state.Statistics
+	}
+	response.Success(c, http.StatusOK, payload)
+}
+
+type qualityGuardConfigRequest struct {
+	Mode                  string  `json:"mode"`
+	ActiveIntervalSeconds int     `json:"activeIntervalSeconds"`
+	PassivePollSeconds    int     `json:"passivePollSeconds"`
+	SoftTPS               float64 `json:"softTPS"`
+	HardTPS               float64 `json:"hardTPS"`
+	ConsecutiveSoft       int     `json:"consecutiveSoft"`
+	ConsecutiveErrors     int     `json:"consecutiveErrors"`
+	QuarantineSeconds     int     `json:"quarantineSeconds"`
+	MinHealthyNodes       int     `json:"minHealthyNodes"`
+}
+
+type qualityGuardRuntimeConfigFile struct {
+	Version  int                               `json:"version"`
+	Settings qualityGuardRuntimeConfigSettings `json:"settings"`
+}
+
+type qualityGuardRuntimeConfigSettings struct {
+	Mode                  string  `json:"mode"`
+	ActiveIntervalSeconds int     `json:"active_interval_seconds"`
+	PassivePollSeconds    int     `json:"passive_poll_seconds"`
+	SoftTPS               float64 `json:"soft_tps"`
+	HardTPS               float64 `json:"hard_tps"`
+	ConsecutiveSoft       int     `json:"consecutive_soft"`
+	ConsecutiveErrors     int     `json:"consecutive_errors"`
+	QuarantineSeconds     int     `json:"quarantine_seconds"`
+	MinHealthyNodes       int     `json:"min_healthy_nodes"`
+}
+
+func (h *Handler) updateQualityGuardConfig(c *gin.Context) {
+	if h.guardConfigPath == "" {
+		response.Error(c, http.StatusServiceUnavailable, "qualityGuardReadOnly", "质量守护策略当前只读")
+		return
+	}
+	state, available, err := h.readQualityGuardState()
+	if err != nil || !available {
+		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "质量守护状态暂不可用")
+		return
+	}
+	var request qualityGuardConfigRequest
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	if err := request.validate(len(state.Guard.NodeIDs)); err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidQualityGuardConfig", err.Error())
+		return
+	}
+	value := qualityGuardRuntimeConfigFile{Version: 1, Settings: qualityGuardRuntimeConfigSettings{
+		Mode: request.Mode, ActiveIntervalSeconds: request.ActiveIntervalSeconds,
+		PassivePollSeconds: request.PassivePollSeconds, SoftTPS: request.SoftTPS, HardTPS: request.HardTPS,
+		ConsecutiveSoft: request.ConsecutiveSoft, ConsecutiveErrors: request.ConsecutiveErrors,
+		QuarantineSeconds: request.QuarantineSeconds, MinHealthyNodes: request.MinHealthyNodes,
+	}}
+	if err := saveQualityGuardRuntimeConfig(h.guardConfigPath, value); err != nil {
+		response.Error(c, http.StatusServiceUnavailable, "qualityGuardConfigWriteFailed", "质量守护策略保存失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"saved": true})
+}
+
+func (r qualityGuardConfigRequest) validate(nodeCount int) error {
+	if r.Mode != "active" && r.Mode != "passive" && r.Mode != "hybrid" {
+		return errors.New("检测模式无效")
+	}
+	if r.ActiveIntervalSeconds < 60 || r.ActiveIntervalSeconds > 86400 {
+		return errors.New("主动检测间隔必须在 60 到 86400 秒之间")
+	}
+	if r.PassivePollSeconds < 1 || r.PassivePollSeconds > 300 {
+		return errors.New("被动审计间隔必须在 1 到 300 秒之间")
+	}
+	if math.IsNaN(r.SoftTPS) || math.IsInf(r.SoftTPS, 0) || math.IsNaN(r.HardTPS) || math.IsInf(r.HardTPS, 0) || r.SoftTPS < 1 || r.HardTPS > 10000 || r.SoftTPS >= r.HardTPS {
+		return errors.New("Token/s 阈值无效，软阈值必须低于硬阈值")
+	}
+	if r.ConsecutiveSoft < 1 || r.ConsecutiveSoft > 20 || r.ConsecutiveErrors < 1 || r.ConsecutiveErrors > 20 {
+		return errors.New("连续命中次数必须在 1 到 20 之间")
+	}
+	if r.QuarantineSeconds < 30 || r.QuarantineSeconds > 86400 {
+		return errors.New("隔离时长必须在 30 到 86400 秒之间")
+	}
+	if r.MinHealthyNodes < 1 || r.MinHealthyNodes > nodeCount {
+		return errors.New("最少保留节点必须在受管节点数量范围内")
+	}
+	return nil
+}
+
+func saveQualityGuardRuntimeConfig(path string, value qualityGuardRuntimeConfigFile) error {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(directory, ".runtime-config-")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(append(data, '\n')); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+func (h *Handler) readQualityGuardState() (qualityGuardState, bool, error) {
+	if h.guardStatePath == "" {
+		return qualityGuardState{}, false, nil
+	}
+	file, err := os.Open(h.guardStatePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return qualityGuardState{}, false, nil
+		}
+		return qualityGuardState{}, true, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxQualityGuardStateBytes+1))
+	if err != nil || len(data) > maxQualityGuardStateBytes {
+		return qualityGuardState{}, true, errors.New("质量守护状态不可读")
+	}
+	var state qualityGuardState
+	if json.Unmarshal(data, &state) != nil || state.Version != 1 || state.Guard.Mode == "" || state.Nodes == nil {
+		return qualityGuardState{}, true, errors.New("质量守护状态格式无效")
+	}
+	if state.RecentEvents == nil {
+		state.RecentEvents = []qualityGuardEvent{}
+	}
+	if state.ProtectedNodeIDs == nil {
+		state.ProtectedNodeIDs = []string{}
+	}
+	return state, true, nil
+}
+
+func (h *Handler) testQualityGuardNode(c *gin.Context) {
+	nodeID, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if h.guardProbe.ClientKeyID == 0 || strings.TrimSpace(h.guardProbe.Model) == "" || h.guardProbe.Prompt == "" || h.guardProbe.Expected == "" {
+		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "质量守护配置暂不可用")
+		return
+	}
+	value, err := h.service.ProbeQuality(c.Request.Context(), nodeID, h.guardProbe)
+	if err != nil {
+		h.writeQualityProbeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{
+		"requestId": value.RequestID, "nodeId": strconv.FormatUint(value.NodeID, 10), "model": value.Model,
+		"statusCode": value.StatusCode, "firstTokenMs": value.FirstTokenMS, "durationMs": value.DurationMS,
+		"generationMs": value.GenerationMS, "chunkCount": value.ChunkCount,
+		"outputTokens": value.OutputTokens, "reasoningTokens": value.ReasoningTokens,
+		"visibleTokens": value.VisibleTokens, "visibleCharacters": value.VisibleCharacters,
+		"outputTokensPerSecond":  value.OutputTokensPerSecond,
+		"visibleTokensPerSecond": value.OutputTokensPerSecond, "expectedMatched": value.ExpectedMatched,
+		"responseSha256": value.ResponseSHA256,
+	})
 }
 
 func (h *Handler) cleanupPreview(c *gin.Context) {
@@ -138,6 +472,49 @@ type batchNodeDeleteRequest struct {
 type batchNodeUpdateRequest struct {
 	IDs     []string `json:"ids" binding:"required"`
 	Enabled *bool    `json:"enabled" binding:"required"`
+}
+
+type qualityProbeRequest struct {
+	ClientKeyID     string `json:"clientKeyId" binding:"required"`
+	Model           string `json:"model" binding:"required"`
+	Prompt          string `json:"prompt"`
+	Expected        string `json:"expected"`
+	MaxOutputTokens int    `json:"maxOutputTokens"`
+}
+
+func (h *Handler) testQuality(c *gin.Context) {
+	nodeID, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var request qualityProbeRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	clientKeyID, err := strconv.ParseUint(request.ClientKeyID, 10, 64)
+	if err != nil || clientKeyID == 0 {
+		response.Error(c, http.StatusBadRequest, "invalidClientKeyId", "Client Key ID 无效")
+		return
+	}
+	value, err := h.service.ProbeQuality(c.Request.Context(), nodeID, egressapp.QualityProbeInput{
+		ClientKeyID: clientKeyID, Model: request.Model, Prompt: request.Prompt,
+		Expected: request.Expected, MaxOutputTokens: request.MaxOutputTokens,
+	})
+	if err != nil {
+		h.writeQualityProbeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{
+		"requestId": value.RequestID, "nodeId": strconv.FormatUint(value.NodeID, 10), "model": value.Model,
+		"statusCode": value.StatusCode, "firstTokenMs": value.FirstTokenMS, "durationMs": value.DurationMS,
+		"generationMs": value.GenerationMS, "chunkCount": value.ChunkCount,
+		"outputTokens": value.OutputTokens, "reasoningTokens": value.ReasoningTokens,
+		"visibleTokens": value.VisibleTokens, "visibleCharacters": value.VisibleCharacters,
+		"outputTokensPerSecond":  value.OutputTokensPerSecond,
+		"visibleTokensPerSecond": value.OutputTokensPerSecond, "expectedMatched": value.ExpectedMatched,
+		"responseSha256": value.ResponseSHA256,
+	})
 }
 
 func (h *Handler) updateMany(c *gin.Context) {
@@ -762,10 +1139,25 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 		response.Error(c, http.StatusBadGateway, "egressSubscriptionSyncFailed", "代理订阅同步失败")
 	case errors.Is(err, egressapp.ErrClearanceUnavailable):
 		response.Error(c, http.StatusConflict, "clearanceRefreshUnavailable", err.Error())
+	case errors.Is(err, egressapp.ErrQualityProbeUnavailable):
+		response.Error(c, http.StatusServiceUnavailable, "egressQualityProbeUnavailable", err.Error())
 	case strings.Contains(err.Error(), "FlareSolverr") || strings.Contains(err.Error(), "Clearance"):
 		response.Error(c, http.StatusBadGateway, "clearanceRefreshFailed", err.Error())
 	default:
 		response.Error(c, http.StatusInternalServerError, "egressNodeOperationFailed", "代理节点操作失败")
+	}
+}
+
+func (h *Handler) writeQualityProbeError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, egressapp.ErrQualityProbeNoAccount):
+		response.Error(c, http.StatusServiceUnavailable, "egressQualityProbeNoAccount", "质量检测暂无可调度账号，请稍后重试")
+	case errors.Is(err, egressapp.ErrInvalidInput),
+		errors.Is(err, egressapp.ErrNotFound),
+		errors.Is(err, egressapp.ErrQualityProbeUnavailable):
+		h.writeError(c, err)
+	default:
+		response.Error(c, http.StatusBadGateway, "egressQualityProbeFailed", "质量检测暂不可用，请稍后重试")
 	}
 }
 

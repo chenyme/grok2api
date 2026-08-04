@@ -15,14 +15,71 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type Handler struct{ service *auditapp.Service }
+type Handler struct {
+	service                 *auditapp.Service
+	qualityGuardClientKeyID uint64
+}
 
 func NewHandler(service *auditapp.Service) *Handler { return &Handler{service: service} }
+
+func NewQualityGuardHandler(service *auditapp.Service, clientKeyID uint64) *Handler {
+	return &Handler{service: service, qualityGuardClientKeyID: clientKeyID}
+}
 
 func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/request-audits", h.list)
 	router.GET("/request-audits/summary", h.summary)
 	router.GET("/request-audits/:id", h.get)
+}
+
+// RegisterQualityGuard exposes only the audit cursor required by the sidecar.
+func (h *Handler) RegisterQualityGuard(router *gin.RouterGroup) {
+	router.GET("/request-audits", h.listQualityGuard)
+}
+
+type qualityGuardAuditResponse struct {
+	ID              uint64  `json:"id,string"`
+	RequestID       string  `json:"requestId"`
+	QualityProbe    bool    `json:"qualityProbe"`
+	Provider        string  `json:"provider"`
+	EgressNodeID    *uint64 `json:"egressNodeId,string,omitempty"`
+	EgressNodeName  string  `json:"egressNodeName,omitempty"`
+	StatusCode      int     `json:"statusCode"`
+	Streaming       bool    `json:"streaming"`
+	OutputTokens    int64   `json:"outputTokens"`
+	ReasoningTokens int64   `json:"reasoningTokens"`
+	FirstTokenMS    *int64  `json:"firstTokenMs,omitempty"`
+	DurationMS      int64   `json:"durationMs"`
+	ErrorCode       string  `json:"errorCode,omitempty"`
+}
+
+func (h *Handler) listQualityGuard(c *gin.Context) {
+	if h.qualityGuardClientKeyID == 0 {
+		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "质量守护配置暂不可用")
+		return
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "200"))
+	_, pageSize = repository.NormalizePage(1, pageSize, repository.DefaultCursorPageSize)
+	result, err := h.service.ListCursor(c.Request.Context(), c.Query("cursor"), pageSize, "", "24h", auditapp.ListFilter{})
+	if errors.Is(err, auditapp.ErrInvalidCursor) {
+		response.Error(c, http.StatusBadRequest, "invalidCursor", "审计游标无效")
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "auditListFailed", "读取审计记录失败")
+		return
+	}
+	items := make([]qualityGuardAuditResponse, 0, len(result.Items))
+	for _, value := range result.Items {
+		items = append(items, qualityGuardAuditResponse{
+			ID: value.ID, RequestID: value.RequestID, QualityProbe: value.ClientKeyID == h.qualityGuardClientKeyID,
+			Provider: value.Provider, EgressNodeID: value.EgressNodeID, EgressNodeName: value.EgressNodeName,
+			StatusCode: value.StatusCode, Streaming: value.Streaming, OutputTokens: value.OutputTokens,
+			ReasoningTokens: value.ReasoningTokens, FirstTokenMS: value.FirstTokenMS,
+			DurationMS: value.DurationMS, ErrorCode: value.ErrorCode,
+		})
+	}
+	response.Success(c, http.StatusOK, gin.H{"items": items, "pageSize": pageSize, "nextCursor": result.NextCursor, "hasMore": result.HasMore})
 }
 
 type auditResponse struct {

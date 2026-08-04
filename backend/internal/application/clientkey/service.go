@@ -28,6 +28,12 @@ var (
 	ErrNotFound           = errors.New("客户端 Key 不存在")
 	ErrConflict           = errors.New("客户端 Key 冲突")
 	ErrSecretUnavailable  = errors.New("客户端 Key 明文不可用")
+	ErrSystemManaged      = errors.New("系统托管 Client Key 不允许人工操作")
+)
+
+const (
+	qualityGuardInternalPrefix = "quality-guard-internal"
+	qualityGuardInternalName   = "[system] Egress Quality Guard"
 )
 
 type CreateInput struct {
@@ -90,6 +96,10 @@ type billingReservationRepository interface {
 	CleanupExpiredBillingReservations(ctx context.Context, now time.Time, limit int, protectedEventIDs ...[]string) (int, error)
 }
 
+type internalKeyInspector interface {
+	CountInternalKeys(context.Context, []uint64) (int64, error)
+}
+
 func NewService(keys repository.ClientKeyRepository, rateLimiter repository.RateLimiter, concurrency repository.ConcurrencyLimiter, defaultRPM, defaultMax int, cipher *security.Cipher) *Service {
 	service := &Service{keys: keys, rateLimiter: rateLimiter, concurrency: concurrency, authCache: newAuthKeyCache(), touches: newTouchTracker(), cipher: cipher, activeBilling: make(map[string]struct{})}
 	service.UpdateDefaults(defaultRPM, defaultMax)
@@ -123,6 +133,75 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		search = prefix
 	}
 	return s.keys.List(ctx, repository.ClientKeyListQuery{Page: repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: search, Sort: filter.Sort}, Filter: repository.ClientKeyListFilter{Status: filter.Status, ModelScope: filter.ModelScope, Now: time.Now().UTC()}})
+}
+
+// Get returns one client key policy for trusted application services. It does
+// not reveal the plaintext secret and must not be exposed by public handlers.
+func (s *Service) Get(ctx context.Context, id uint64) (clientkeydomain.Key, error) {
+	if id == 0 {
+		return clientkeydomain.Key{}, ErrNotFound
+	}
+	value, err := s.keys.Get(ctx, id)
+	return value, mapRepositoryError(err)
+}
+
+// EnsureQualityGuardIdentity creates or reconciles the non-exportable system
+// identity used to attribute quality probes. It is stable across restarts and
+// cannot authenticate through the public API even if its secret is exposed.
+func (s *Service) EnsureQualityGuardIdentity(ctx context.Context, enabled bool) (clientkeydomain.Key, error) {
+	value, err := s.keys.GetByPrefix(ctx, qualityGuardInternalPrefix)
+	if errors.Is(err, repository.ErrNotFound) {
+		if !enabled {
+			return clientkeydomain.Key{}, nil
+		}
+		value, err = s.createQualityGuardIdentity(ctx)
+		if errors.Is(err, repository.ErrConflict) {
+			value, err = s.keys.GetByPrefix(ctx, qualityGuardInternalPrefix)
+		}
+	}
+	if err != nil {
+		return clientkeydomain.Key{}, fmt.Errorf("读取系统质量探测身份: %w", err)
+	}
+	if value.InternalKind != clientkeydomain.InternalKindQualityGuard {
+		return clientkeydomain.Key{}, fmt.Errorf("%w: 保留前缀已被占用", ErrConflict)
+	}
+	value.Name = qualityGuardInternalName
+	value.Enabled = enabled
+	value.ExpiresAt = nil
+	value.RPMLimit = 0
+	value.MaxConcurrent = 0
+	value.BillingLimitUSDTicks = 0
+	value.AllowModelAliases = false
+	value.AllowedModels = nil
+	value.ProviderScope = clientkeydomain.ProviderScopeBuild
+	value.TierScope = clientkeydomain.TierScopeAll
+	updated, err := s.keys.Update(ctx, value)
+	if err != nil {
+		return clientkeydomain.Key{}, fmt.Errorf("更新系统质量探测身份: %w", err)
+	}
+	s.authCache.deleteID(updated.ID)
+	return updated, nil
+}
+
+func (s *Service) createQualityGuardIdentity(ctx context.Context) (clientkeydomain.Key, error) {
+	if s.cipher == nil {
+		return clientkeydomain.Key{}, errors.New("客户端 Key 加密器未配置")
+	}
+	secretPart, err := security.NewOpaqueToken(32)
+	if err != nil {
+		return clientkeydomain.Key{}, err
+	}
+	raw := security.FormatClientKey(qualityGuardInternalPrefix, secretPart)
+	encrypted, err := s.cipher.Encrypt(raw)
+	if err != nil {
+		return clientkeydomain.Key{}, fmt.Errorf("加密系统质量探测身份: %w", err)
+	}
+	return s.keys.Create(ctx, clientkeydomain.Key{
+		Name: qualityGuardInternalName, Prefix: qualityGuardInternalPrefix,
+		SecretHash: security.HashToken(raw), EncryptedSecret: encrypted,
+		InternalKind: clientkeydomain.InternalKindQualityGuard, Enabled: true,
+		ProviderScope: clientkeydomain.ProviderScopeBuild, TierScope: clientkeydomain.TierScopeAll,
+	})
 }
 
 func validListFilter(value string, allowed ...string) bool {
@@ -197,6 +276,9 @@ func (s *Service) RevealSecret(ctx context.Context, id uint64) (string, error) {
 	if err != nil {
 		return "", mapRepositoryError(err)
 	}
+	if value.InternalKind != "" {
+		return "", ErrSystemManaged
+	}
 	if s.cipher == nil || value.EncryptedSecret == "" {
 		return "", ErrSecretUnavailable
 	}
@@ -215,6 +297,9 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (cli
 	value, err := s.keys.Get(ctx, id)
 	if err != nil {
 		return clientkeydomain.Key{}, mapRepositoryError(err)
+	}
+	if value.InternalKind != "" {
+		return clientkeydomain.Key{}, ErrSystemManaged
 	}
 	if input.Name != nil {
 		value.Name = strings.TrimSpace(*input.Name)
@@ -276,6 +361,13 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (cli
 }
 
 func (s *Service) Delete(ctx context.Context, id uint64) error {
+	value, err := s.keys.Get(ctx, id)
+	if err != nil {
+		return mapRepositoryError(err)
+	}
+	if value.InternalKind != "" {
+		return ErrSystemManaged
+	}
 	if err := s.keys.Delete(ctx, id); err != nil {
 		return mapRepositoryError(err)
 	}
@@ -290,6 +382,9 @@ func (s *Service) BatchSetEnabled(ctx context.Context, ids []uint64, enabled boo
 	if err != nil {
 		return 0, err
 	}
+	if err := s.rejectInternalKeys(ctx, values); err != nil {
+		return 0, err
+	}
 	updated, err := s.keys.UpdateManyEnabled(ctx, values, enabled)
 	if err == nil {
 		s.touches.deleteIDs(values)
@@ -302,6 +397,9 @@ func (s *Service) BatchSetEnabled(ctx context.Context, ids []uint64, enabled boo
 func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) {
 	values, err := normalizeBatchIDs(ids)
 	if err != nil {
+		return 0, err
+	}
+	if err := s.rejectInternalKeys(ctx, values); err != nil {
 		return 0, err
 	}
 	deleted, err := s.keys.DeleteMany(ctx, values)
@@ -330,6 +428,9 @@ func (s *Service) Authenticate(ctx context.Context, raw string) (clientkeydomain
 			return clientkeydomain.Key{}, nil, ErrInvalidKey
 		}
 		s.authCache.put(prefix, value, now)
+	}
+	if value.InternalKind != "" {
+		return clientkeydomain.Key{}, nil, ErrInvalidKey
 	}
 	if !value.IsAvailable(now) {
 		return clientkeydomain.Key{}, nil, ErrInvalidKey
@@ -369,6 +470,21 @@ func (s *Service) Authenticate(ctx context.Context, raw string) (clientkeydomain
 		_ = s.keys.Touch(ctx, value.ID)
 	}
 	return value, release, nil
+}
+
+func (s *Service) rejectInternalKeys(ctx context.Context, ids []uint64) error {
+	inspector, ok := s.keys.(internalKeyInspector)
+	if !ok {
+		return nil
+	}
+	count, err := inspector.CountInternalKeys(ctx, ids)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrSystemManaged
+	}
+	return nil
 }
 
 // CanUseModel 判断空权限列表代表全部模型，否则要求显式授权。
