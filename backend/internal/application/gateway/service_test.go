@@ -809,6 +809,140 @@ func TestSelectConversationRouteRespectsClientKeyAcrossSharedPublicModel(t *test
 	if !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" {
 		t.Fatalf("owned response must remain inside the updated provider scope: %#v, err = %v", unavailable, err)
 	}
+	duplicateBuild := modeldomain.Route{ID: 11, PublicID: "Build/grok-shared", Provider: account.ProviderBuild, UpstreamModel: "grok-alternate"}
+	routes = append(routes, duplicateBuild)
+	eligible, _, err := service.eligibleConversationRoutes(routes, clientkey.Key{ProviderScope: clientkey.ProviderScopeBuild, AllowedModels: []uint64{duplicateBuild.ID}}, audit.OperationResponses, "/responses", false, nil)
+	if err != nil || len(eligible) != 1 || eligible[0].ID != duplicateBuild.ID {
+		t.Fatalf("target-scoped permission candidates = %#v, err = %v", eligible, err)
+	}
+	selected, err = service.selectConversationRoute(routes, clientkey.Key{ProviderScope: clientkey.ProviderScopeBuild}, audit.OperationResponses, "/responses", true, &inferencedomain.ResponseOwnership{Provider: account.ProviderBuild, ModelRouteID: duplicateBuild.ID})
+	if err != nil || selected.ID != duplicateBuild.ID {
+		t.Fatalf("route-owned response selected %#v, err = %v", selected, err)
+	}
+}
+
+func TestOrderConversationRouteTargetsIsSessionStableAndProviderScoped(t *testing.T) {
+	routes := []modeldomain.Route{
+		{ID: 10, Provider: account.ProviderBuild},
+		{ID: 20, Provider: account.ProviderBuild},
+		{ID: 30, Provider: account.ProviderWeb},
+	}
+	first := orderConversationRouteTargets(routes, "session-a")
+	repeated := orderConversationRouteTargets(routes, "session-a")
+	if first[0].ID != repeated[0].ID || first[1].ID != repeated[1].ID {
+		t.Fatalf("session order changed: %#v vs %#v", first, repeated)
+	}
+	if first[2].Provider != account.ProviderWeb {
+		t.Fatalf("provider priority changed: %#v", first)
+	}
+	seen := make(map[uint64]bool)
+	for index := 0; index < 64; index++ {
+		ordered := orderConversationRouteTargets(routes, fmt.Sprintf("session-%d", index))
+		seen[ordered[0].ID] = true
+	}
+	if !seen[10] || !seen[20] || seen[30] {
+		t.Fatalf("same-provider target distribution = %#v", seen)
+	}
+}
+
+func TestRouteTargetSeedUsesSessionSignalsAndSoftMessageAnchor(t *testing.T) {
+	base := Input{
+		RequestID: "request-a", ClientKey: clientkey.Key{ID: 17},
+		Body: []byte(`{"model":"pooled-model","instructions":"be concise","input":"hello"}`),
+	}
+	continued := base
+	continued.RequestID = "request-b"
+	continued.Body = []byte(`{"model":"pooled-model","instructions":"be concise","input":[{"type":"message","role":"user","content":"hello"},{"type":"message","role":"assistant","content":"hi"}]}`)
+	if first, second := routeTargetSeed(base), routeTargetSeed(continued); first != second {
+		t.Fatalf("soft route seed changed across session: %q != %q", first, second)
+	}
+	explicit := base
+	explicit.PromptCacheKey = "body-fallback"
+	explicit.PromptCacheSeed = "transport-session"
+	explicit.Body = []byte(`{"input":"different"}`)
+	if got, want := routeTargetSeed(explicit), "17:transport-session"; got != want {
+		t.Fatalf("explicit route seed = %q, want %q", got, want)
+	}
+}
+
+func TestCreateResponseFallsBackAcrossSameNameTargetsWithUnavailablePool(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "route-target-failover.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	models := relational.NewModelRepository(database)
+	audits := relational.NewAuditRepository(database)
+	responses := relational.NewResponseRepository(database)
+	keys := relational.NewClientKeyRepository(database)
+	coolingUntil := time.Now().UTC().Add(time.Hour)
+	cooling, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "cooling-target", SourceKey: "cooling-target",
+		EncryptedAccessToken: "cooling-token", Enabled: true, AuthStatus: account.AuthStatusActive,
+		CooldownUntil: &coolingUntil, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "healthy-target", SourceKey: "healthy-target",
+		EncryptedAccessToken: "healthy-token", Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coolingRoute, err := models.Create(ctx, modeldomain.Route{
+		PublicID: "pooled-model", Provider: account.ProviderBuild, UpstreamModel: "upstream-cooling",
+		Capability: modeldomain.CapabilityResponses, Enabled: true,
+	}, []uint64{cooling.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthyRoute, err := models.Create(ctx, modeldomain.Route{
+		PublicID: "pooled-model", Provider: account.ProviderBuild, UpstreamModel: "upstream-healthy",
+		Capability: modeldomain.CapabilityResponses, Enabled: true,
+	}, []uint64{healthy.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coolingRoute.PublicID != healthyRoute.PublicID {
+		t.Fatalf("target pool split: %#v %#v", coolingRoute, healthyRoute)
+	}
+	key, err := keys.Create(ctx, clientkey.Key{
+		Name: "target-pool", Prefix: "target-pool", SecretHash: strings.Repeat("a", 64),
+		EncryptedSecret: "encrypted", Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &failoverAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accounts, audits, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(models, audits, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responses, 3)
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "route-target-failover", ClientKey: key, PublicModel: "pooled-model",
+		PromptCacheSeed: "stable-target-session", Body: []byte(`{"model":"pooled-model","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "resp-target-pool", "")
+	_ = result.Body.Close()
+	if forwarded := adapter.ForwardedModels(); len(forwarded) != 1 || forwarded[0] != healthyRoute.UpstreamModel {
+		t.Fatalf("forwarded models = %#v, want %q", forwarded, healthyRoute.UpstreamModel)
+	}
+	ownership, err := responses.Get(ctx, "resp-target-pool", key.ID, time.Now().UTC())
+	if err != nil || ownership.ModelRouteID != healthyRoute.ID {
+		t.Fatalf("target ownership = %#v, err = %v", ownership, err)
+	}
 }
 
 func TestSelectMediaRouteSkipsSameNamedConversationRoute(t *testing.T) {
@@ -2103,6 +2237,7 @@ type failoverAdapter struct {
 	lastPromptCacheKey     string
 	lastReasoningReplayKey string
 	lastGrokTurnIndex      string
+	forwardedModels        []string
 	resourceStatus         int
 	transportErrorIDs      map[uint64]error
 }
@@ -3556,6 +3691,7 @@ func (a *failoverAdapter) Definition() provider.Definition {
 func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.mu.Lock()
 	a.attempts = append(a.attempts, request.Credential.ID)
+	a.forwardedModels = append(a.forwardedModels, request.Model)
 	a.lastMethod = request.Method
 	a.lastPath = request.Path
 	a.lastPromptCacheKey = request.PromptCacheKey
@@ -3595,11 +3731,18 @@ func (a *failoverAdapter) resetAttempts() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.attempts = nil
+	a.forwardedModels = nil
 	a.lastMethod = ""
 	a.lastPath = ""
 	a.lastPromptCacheKey = ""
 	a.lastReasoningReplayKey = ""
 	a.lastGrokTurnIndex = ""
+}
+
+func (a *failoverAdapter) ForwardedModels() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.forwardedModels...)
 }
 func (a *failoverAdapter) ListModels(context.Context, account.Credential) ([]string, error) {
 	return nil, nil

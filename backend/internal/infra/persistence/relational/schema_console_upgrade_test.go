@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 )
 
 func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
@@ -65,11 +66,12 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 		}
 	}
 	assertSQLiteUniqueIndexes(t, database, "provider_accounts", "idx_provider_accounts_identity_key")
-	assertSQLiteUniqueIndexes(t, database, "model_routes", "idx_model_routes_public_id")
-	assertSQLiteIndexes(t, database, "model_routes", "idx_model_routes_provider_upstream")
+	assertSQLiteUniqueIndexes(t, database, "model_routes", "uidx_model_routes_managed_public_id")
+	assertSQLiteIndexes(t, database, "model_routes", "idx_model_routes_public_id_lookup", "idx_model_routes_provider_upstream")
+	assertSQLiteMissingIndexes(t, database, "model_routes", "idx_model_routes_public_id")
 	assertSQLiteMissingIndexes(t, database, "model_routes", "uidx_provider_upstream")
 	assertTableColumns(t, database, "request_audits", []string{"first_token_ms"}, nil)
-	assertTableColumns(t, database, "response_ownership", []string{"prompt_cache_key", "reasoning_replay_key"}, nil)
+	assertTableColumns(t, database, "response_ownership", []string{"model_route_id", "prompt_cache_key", "reasoning_replay_key"}, nil)
 }
 
 func TestInitializeSchemaDropsRedundantResponseExpiryIndexes(t *testing.T) {
@@ -104,6 +106,45 @@ func TestInitializeSchemaDropsRedundantResponseExpiryIndexes(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestInitializeSchemaUpgradesPublicIDUniqueIndexForManualTargetPools(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-target-pool-upgrade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []string{"uidx_model_routes_managed_public_id", "idx_model_routes_public_id_lookup"} {
+		if err := database.db.Exec("DROP INDEX IF EXISTS " + index).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.db.Exec("CREATE UNIQUE INDEX idx_model_routes_public_id ON model_routes(public_id)").Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := NewModelRepository(database)
+	if _, err := repo.Create(ctx, modeldomain.Route{
+		PublicID: "shared-upgrade", Provider: account.ProviderBuild, UpstreamModel: "upstream-a",
+		Capability: modeldomain.CapabilityResponses, Enabled: true,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Create(ctx, modeldomain.Route{
+		PublicID: "shared-upgrade", Provider: account.ProviderBuild, UpstreamModel: "upstream-b",
+		Capability: modeldomain.CapabilityResponses, Enabled: true,
+	}, nil); err != nil {
+		t.Fatalf("create duplicate target after upgrade: %v", err)
+	}
+	assertSQLiteMissingIndexes(t, database, "model_routes", "idx_model_routes_public_id")
+	assertSQLiteIndexes(t, database, "model_routes", "idx_model_routes_public_id_lookup")
+	assertSQLiteUniqueIndexes(t, database, "model_routes", "uidx_model_routes_managed_public_id")
 }
 
 func assertSQLiteUniqueIndexes(t *testing.T, database *Database, table string, expected ...string) {

@@ -464,7 +464,9 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 		}
 		publicIDs := make(map[string]bool, len(existing))
 		for _, row := range existing {
-			publicIDs[row.PublicID] = true
+			if row.Origin != string(model.OriginManual) {
+				publicIDs[row.PublicID] = true
+			}
 		}
 		rows := make([]modelRouteModel, 0, len(upstreamModels))
 		for _, upstreamModel := range upstreamModels {
@@ -473,7 +475,8 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 			if !ok {
 				return fmt.Errorf("Provider %s 发现了无效模型 ID %q", provider, localID)
 			}
-			// 仅按规范 public_id 幂等；允许手动别名路由与发现路由共享同一上游。
+			// Managed routes are idempotent by canonical public_id. Manual targets
+			// with the same name remain independent pool members.
 			if publicIDs[publicID] {
 				continue
 			}
@@ -484,7 +487,7 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 			rows = append(rows, modelRouteModel{PublicID: publicID, Provider: string(provider), UpstreamModel: upstreamModel, Capability: string(capability), Origin: string(model.OriginDiscovered), Enabled: true})
 		}
 		if len(rows) > 0 {
-			// 多实例可能同时发现同一规范 public_id；public_id 唯一约束负责最终幂等。
+			// Concurrent discovery is guarded by the managed-route partial unique index.
 			result := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(rows, 200)
 			changed = result.Error == nil && result.RowsAffected > 0
 			return result.Error
@@ -538,7 +541,7 @@ func (r *ModelRepository) UpsertRoutes(ctx context.Context, values []model.Route
 				return fmt.Errorf("模型路由目录包含无效条目")
 			}
 			var existing modelRouteModel
-			err := tx.Where("public_id = ?", value.PublicID).First(&existing).Error
+			err := tx.Where("public_id = ? AND origin <> ?", value.PublicID, model.OriginManual).First(&existing).Error
 			if err == nil {
 				continue
 			}
@@ -591,9 +594,11 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 		byPublicID := make(map[string]modelRouteModel, len(existing))
 		byUpstreamNonManual := make(map[string][]modelRouteModel, len(existing))
 		for _, row := range existing {
-			byPublicID[row.PublicID] = row
 			if row.Origin == string(model.OriginManual) {
 				continue
+			}
+			if current, exists := byPublicID[row.PublicID]; !exists || row.ID < current.ID {
+				byPublicID[row.PublicID] = row
 			}
 			byUpstreamNonManual[row.UpstreamModel] = append(byUpstreamNonManual[row.UpstreamModel], row)
 		}

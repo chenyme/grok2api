@@ -68,7 +68,9 @@ func preserveModelRouteAlias(tx *gorm.DB, alias string, routeID uint64) error {
 	}
 	var route modelRouteModel
 	if err := tx.Where("public_id = ? AND id <> ?", alias, routeID).First(&route).Error; err == nil {
-		return fmt.Errorf("%w: 模型兼容名称 %q 与路由 %d 的规范名称冲突", repository.ErrConflict, alias, route.ID)
+		// Another target still owns the old public name, so the group remains
+		// reachable without creating a compatibility alias for this renamed target.
+		return nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}

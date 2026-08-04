@@ -30,10 +30,12 @@ var reasoningEffortSuffixes = []string{
 }
 
 // grokReasoningCapabilities maps external public model IDs to the reasoning levels
-// each model actually accepts. Values follow xAI docs and observed Build/Console behavior:
+// generally accepted by the model family. Provider-specific wire restrictions are
+// applied by providerReasoningEffortOverrides:
 //   - grok-4.5: low/medium/high (reasoning cannot be disabled; no xhigh/max)
 //   - grok-4.3: none/low/medium/high
 //   - grok-4.20-multi-agent: low/medium/high/xhigh (effort controls agent count)
+//
 // Unknown models default to none-only and never expand into effort aliases.
 var grokReasoningCapabilities = map[string][]string{
 	"grok-4.5":                     {ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh},
@@ -47,13 +49,51 @@ var grokReasoningCapabilities = map[string][]string{
 	"grok-composer-2.5-fast":       {ReasoningEffortNone},
 }
 
+// The Console reasoning variant has a fixed reasoning mode: it produces reasoning
+// but rejects the reasoningEffort parameter. Build may expose a different contract
+// for the same model slug, so this restriction must remain provider-scoped.
+var providerReasoningEffortOverrides = map[account.Provider]map[string][]string{
+	account.ProviderConsole: {
+		"grok-4.20-0309-reasoning": {},
+	},
+}
+
+var providerFixedReasoningModels = map[account.Provider]map[string]struct{}{
+	account.ProviderConsole: {
+		"grok-4.20-0309-reasoning": {},
+	},
+}
+
 // SupportedReasoningEfforts returns the reasoning levels a public model ID actually supports.
 // Provider prefixes are stripped; unknown models only advertise "none".
 // Effort-suffixed aliases (e.g. grok-4.5-low) inherit the base model's levels.
 func SupportedReasoningEfforts(publicModel string) []string {
+	providerValue, slug := splitProviderModel(publicModel)
+	if base, _, ok := parseReasoningModelAliasSlug(slug); ok {
+		slug = base
+	}
+	if providerValue != "" {
+		return supportedReasoningEffortsForProviderSlug(providerValue, slug)
+	}
+	return reasoningEffortsForSlug(slug)
+}
+
+// SupportedReasoningEffortsForProvider returns only effort values accepted by
+// the selected Provider's wire contract. An empty result means the model may
+// reason intrinsically but does not expose a configurable effort parameter.
+func SupportedReasoningEffortsForProvider(providerValue account.Provider, publicModel string) []string {
 	slug := externalModelSlug(publicModel)
 	if base, _, ok := parseReasoningModelAliasSlug(slug); ok {
 		slug = base
+	}
+	return supportedReasoningEffortsForProviderSlug(providerValue, slug)
+}
+
+func supportedReasoningEffortsForProviderSlug(providerValue account.Provider, slug string) []string {
+	if overrides, ok := providerReasoningEffortOverrides[providerValue]; ok {
+		if levels, exists := overrides[slug]; exists {
+			return append([]string(nil), levels...)
+		}
 	}
 	return reasoningEffortsForSlug(slug)
 }
@@ -63,6 +103,44 @@ func SupportsReasoningEffort(publicModel, effort string) bool {
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	for _, level := range SupportedReasoningEfforts(publicModel) {
 		if level == effort {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportsReasoningEffortForProvider reports whether a Provider accepts an
+// explicit effort value for the selected model.
+func SupportsReasoningEffortForProvider(providerValue account.Provider, publicModel, effort string) bool {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	for _, level := range SupportedReasoningEffortsForProvider(providerValue, publicModel) {
+		if level == effort {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportsReasoningForProvider reports whether a model produces reasoning even
+// when its Provider does not accept an explicit effort parameter.
+func SupportsReasoningForProvider(providerValue account.Provider, publicModel string) bool {
+	if IsFixedReasoningForProvider(providerValue, publicModel) {
+		return true
+	}
+	for _, effort := range SupportedReasoningEffortsForProvider(providerValue, publicModel) {
+		if effort != ReasoningEffortNone {
+			return true
+		}
+	}
+	return false
+}
+
+// IsFixedReasoningForProvider reports whether the model reasons intrinsically
+// while rejecting explicit effort controls on the selected Provider.
+func IsFixedReasoningForProvider(providerValue account.Provider, publicModel string) bool {
+	slug := externalModelSlug(publicModel)
+	if fixed, ok := providerFixedReasoningModels[providerValue]; ok {
+		if _, exists := fixed[slug]; exists {
 			return true
 		}
 	}
@@ -87,6 +165,24 @@ func DefaultReasoningEffort(publicModel string) string {
 	return ReasoningEffortNone
 }
 
+// DefaultReasoningEffortForProvider returns a configurable Provider default.
+// Fixed-reasoning models return none because clients must not send an effort.
+func DefaultReasoningEffortForProvider(providerValue account.Provider, publicModel string) string {
+	if _, effort, ok := ParseReasoningModelAlias(publicModel); ok && SupportsReasoningEffortForProvider(providerValue, publicModel, effort) {
+		return effort
+	}
+	levels := SupportedReasoningEffortsForProvider(providerValue, publicModel)
+	for _, level := range levels {
+		if level == ReasoningEffortMedium {
+			return level
+		}
+	}
+	if len(levels) > 0 {
+		return levels[0]
+	}
+	return ReasoningEffortNone
+}
+
 func reasoningEffortsForSlug(slug string) []string {
 	if levels, ok := grokReasoningCapabilities[slug]; ok {
 		return append([]string(nil), levels...)
@@ -98,11 +194,25 @@ func reasoningEffortsForSlug(slug string) []string {
 // Models with fewer than two controllable levels produce no aliases (base name is enough).
 // Only levels the model truly supports are included — never a blanket none/low/medium/high/xhigh/max template.
 func ReasoningAliasPublicIDs(publicModel string) []string {
+	providerValue, _ := splitProviderModel(publicModel)
+	if providerValue != "" {
+		return ReasoningAliasPublicIDsForProvider(providerValue, publicModel)
+	}
+	return reasoningAliasPublicIDs(publicModel, SupportedReasoningEfforts(publicModel))
+}
+
+// ReasoningAliasPublicIDsForProvider returns only aliases accepted by a concrete
+// Provider. It prevents fixed-reasoning Console models from advertising invalid
+// low/medium/high aliases while preserving Build capabilities for the same slug.
+func ReasoningAliasPublicIDsForProvider(providerValue account.Provider, publicModel string) []string {
+	return reasoningAliasPublicIDs(publicModel, SupportedReasoningEffortsForProvider(providerValue, publicModel))
+}
+
+func reasoningAliasPublicIDs(publicModel string, levels []string) []string {
 	base := strings.TrimSpace(publicModel)
 	if base == "" {
 		return nil
 	}
-	levels := SupportedReasoningEfforts(base)
 	if len(levels) < 2 {
 		return nil
 	}
@@ -119,7 +229,9 @@ func ReasoningAliasPublicIDs(publicModel string) []string {
 }
 
 // ParseReasoningModelAlias splits names like "grok-4.5-low" into base model + effort
-// only when the base model actually supports that effort.
+// when the model family defines that suffix. Provider-specific wire handling is
+// intentionally deferred so fixed-reasoning Providers can preserve compatibility
+// by accepting the alias and dropping the unsupported effort before forwarding.
 // Base retains any provider prefix present on the input (e.g. Build/grok-4.5).
 func ParseReasoningModelAlias(publicModel string) (baseModel, effort string, ok bool) {
 	name := strings.TrimSpace(publicModel)
@@ -128,8 +240,8 @@ func ParseReasoningModelAlias(publicModel string) (baseModel, effort string, ok 
 	}
 	providerPrefix := ""
 	local := name
-	for _, providerValue := range account.Providers() {
-		prefix := providerValue.ModelNamespace() + "/"
+	for _, candidate := range account.Providers() {
+		prefix := candidate.ModelNamespace() + "/"
 		if len(name) >= len(prefix) && strings.EqualFold(name[:len(prefix)], prefix) {
 			providerPrefix = name[:len(prefix)]
 			local = strings.TrimSpace(name[len(prefix):])
@@ -190,15 +302,20 @@ func IsReasoningModelAlias(publicModel string) bool {
 }
 
 func externalModelSlug(publicModel string) string {
+	_, slug := splitProviderModel(publicModel)
+	return slug
+}
+
+func splitProviderModel(publicModel string) (account.Provider, string) {
 	value := strings.TrimSpace(publicModel)
 	if value == "" {
-		return ""
+		return "", ""
 	}
 	for _, providerValue := range account.Providers() {
 		prefix := providerValue.ModelNamespace() + "/"
 		if len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix) {
-			return strings.TrimSpace(value[len(prefix):])
+			return providerValue, strings.TrimSpace(value[len(prefix):])
 		}
 	}
-	return value
+	return "", value
 }
