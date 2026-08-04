@@ -83,6 +83,32 @@ func TestLegacySettingsRequestMayOmitMarkBuildChatDeniedAsReauth(t *testing.T) {
 	}
 }
 
+func TestAccountIsolationSettingsPresenceIsPreserved(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{
+		Routing: settingsapp.RoutingConfig{AccountIsolatedConnections: true},
+	}})
+	if response.Config.Routing.AccountIsolatedConnections == nil || !*response.Config.Routing.AccountIsolatedConnections {
+		t.Fatal("accountIsolatedConnections was lost from settings response")
+	}
+
+	var legacy settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"routing":{"stickyTTL":"1h"}}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.toApplication().Routing.AccountIsolatedConnectionsProvided {
+		t.Fatal("missing accountIsolatedConnections was treated as an explicit update")
+	}
+
+	var explicit settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"routing":{"accountIsolatedConnections":false}}`), &explicit); err != nil {
+		t.Fatal(err)
+	}
+	input := explicit.toApplication()
+	if !input.Routing.AccountIsolatedConnectionsProvided || input.Routing.AccountIsolatedConnections {
+		t.Fatalf("explicit false account isolation setting was lost: %#v", input.Routing)
+	}
+}
+
 func TestLegacySettingsRequestMayOmitAccounts(t *testing.T) {
 	var dto settingsConfigDTO
 	if err := json.Unmarshal([]byte(`{"server":{"maxConcurrentRequests":64}}`), &dto); err != nil {
