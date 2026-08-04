@@ -705,7 +705,7 @@ func convertAnthropicWebSearchTool(tool map[string]json.RawMessage, index int) (
 			}
 			converted["filters"] = map[string]any{"allowed_domains": value}
 		case "max_uses", "blocked_domains", "user_location", "search_context_size":
-			// Build 0.2.110 supports only allowed_domains. Do not forward other optional Anthropic controls,
+			// The Build web-search wire contract supports only allowed_domains. Do not forward other optional Anthropic controls,
 			// preventing unknown parameters from causing the upstream to reject the request.
 			continue
 		default:

@@ -36,15 +36,20 @@ func (c *responsesToolCompatibility) normalizeResponseJSON(body []byte) ([]byte,
 	return converted, nil
 }
 
-// normalizeResponseStream 逐事件恢复 SSE 中的 namespace，并隐藏内部 Tool Search 函数参数事件。
+// normalizeResponseStream applies the Build-to-OpenAI SSE boundary for every
+// Responses stream. Tool rewriting is optional, while BOM removal and private
+// Grok control-event filtering always apply.
 func (c *responsesToolCompatibility) normalizeResponseStream(source io.ReadCloser) io.ReadCloser {
-	if c == nil {
-		return source
-	}
 	reader, writer := io.Pipe()
 	go func() {
 		defer source.Close()
 		err := consumeCompatibleSSE(source, func(event compatibleSSEEvent) error {
+			if isPrivateBuildControlEvent(event) {
+				return nil
+			}
+			if c == nil {
+				return event.writeTo(writer)
+			}
 			if !event.HasData() {
 				return event.writeTo(writer)
 			}
@@ -82,6 +87,19 @@ func (c *responsesToolCompatibility) normalizeResponseStream(source io.ReadClose
 		_ = writer.CloseWithError(err)
 	}()
 	return reader
+}
+
+func isPrivateBuildControlEvent(event compatibleSSEEvent) bool {
+	if strings.TrimSpace(event.Event) == "response.doom_loop_check" {
+		return true
+	}
+	if !event.HasData() {
+		return false
+	}
+	var payload struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(event.Data(), &payload) == nil && payload.Type == "response.doom_loop_check"
 }
 
 type responsesStreamOutput struct {
@@ -514,6 +532,7 @@ func consumeCompatibleSSE(source io.Reader, handle func(compatibleSSEEvent) erro
 	scanner.Buffer(make([]byte, 64<<10), maxCompatibleSSEEventBytes)
 	event := compatibleSSEEvent{}
 	eventBytes := 0
+	firstLine := true
 	flush := func() error {
 		if len(event.data) == 0 && len(event.Comments) == 0 && len(event.Other) == 0 && event.Event == "" && event.ID == "" && event.Retry == "" {
 			return nil
@@ -525,6 +544,10 @@ func consumeCompatibleSSE(source io.Reader, handle func(compatibleSSEEvent) erro
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if firstLine {
+			line = strings.TrimPrefix(line, "\uFEFF")
+			firstLine = false
+		}
 		if line == "" {
 			if err := flush(); err != nil {
 				return err

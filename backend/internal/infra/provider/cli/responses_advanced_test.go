@@ -349,7 +349,7 @@ func TestResponsesBuild02110NativeAndUnsupportedToolMatrix(t *testing.T) {
 			body := []byte(`{"model":"public","input":"hello","tools":[{"type":"` + kind + `"}]}`)
 			_, _, err := normalizeResponsesRequest(body, "grok-4.5")
 			requestErr, ok := err.(*responsesRequestError)
-			if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].type" || !strings.Contains(requestErr.Message, "0.2.110") {
+			if !ok || requestErr.Code != "unsupported_parameter" || requestErr.Param != "tools[0].type" || !strings.Contains(requestErr.Message, "Grok Build") {
 				t.Fatalf("error = %#v", err)
 			}
 		})
@@ -534,6 +534,30 @@ func TestResponsesStreamFiltersPrivateEventsAndPreservesSSEFields(t *testing.T) 
 	}
 	if strings.Contains(text, "xai.internal") || strings.Contains(text, "private") {
 		t.Fatalf("私有事件泄露:\n%s", text)
+	}
+}
+
+func TestResponsesStreamAlwaysStripsBOMAndDoomLoopControlEvents(t *testing.T) {
+	source := "\uFEFFevent: response.created\n" +
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n" +
+		"event: response.doom_loop_check\n" +
+		"data: {\"type\":\"response.doom_loop_check\",\"detected\":false}\n\n" +
+		"data: {\"type\":\"response.doom_loop_check\",\"detected\":true}\n\n" +
+		"event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n"
+	var compatibility *responsesToolCompatibility
+	converted, err := io.ReadAll(compatibility.normalizeResponseStream(io.NopCloser(strings.NewReader(source))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+	if strings.Contains(text, "\uFEFF") || strings.Contains(text, "doom_loop_check") {
+		t.Fatalf("Build private framing leaked downstream:\n%s", text)
+	}
+	for _, expected := range []string{"event: response.created", "event: response.completed", `"id":"resp_1"`} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("SSE missing %q:\n%s", expected, text)
+		}
 	}
 }
 

@@ -139,17 +139,39 @@ func TestBuildResponseHeaderTimeoutIsRuntimeOnly(t *testing.T) {
 
 func TestDefaultGrokBuildClientVersionMatchesLocalBaseline(t *testing.T) {
 	build := defaultConfig().Provider.Build
-	if RecommendedBuildClientVersion != "0.2.111" {
+	if RecommendedBuildClientVersion != "0.2.119" {
 		t.Fatalf("recommended clientVersion = %q", RecommendedBuildClientVersion)
 	}
 	if build.ClientVersion != RecommendedBuildClientVersion {
 		t.Fatalf("clientVersion = %q", build.ClientVersion)
 	}
-	if RecommendedBuildUserAgent != "grok-shell/0.2.111 (linux; x86_64)" {
+	if RecommendedBuildUserAgent != "grok-shell/0.2.119 (linux; x86_64)" {
 		t.Fatalf("recommended userAgent = %q", RecommendedBuildUserAgent)
 	}
 	if build.UserAgent != RecommendedBuildUserAgent {
 		t.Fatalf("userAgent = %q", build.UserAgent)
+	}
+}
+
+func TestLoadKeepsExplicitGrokBuildClientFingerprint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`provider:
+  build:
+    clientVersion: "0.2.111"
+    userAgent: "grok-shell/0.2.111 (linux; x86_64)"
+secrets:
+  jwtSecret: "12345678901234567890123456789012"
+  credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Build.ClientVersion != "0.2.111" || cfg.Provider.Build.UserAgent != "grok-shell/0.2.111 (linux; x86_64)" {
+		t.Fatalf("explicit Build fingerprint was overwritten: %#v", cfg.Provider.Build)
 	}
 }
 
