@@ -224,15 +224,18 @@ func TestNormalizeReasoningPreservesReferenceEfforts(t *testing.T) {
 	}
 }
 
-func TestNormalizeRequestPreservesGrok420ReasoningEffort(t *testing.T) {
+func TestNormalizeRequestStripsUnsupportedGrok420ReasoningEffort(t *testing.T) {
 	spec, ok := Resolve("grok-4.20-0309-reasoning")
 	if !ok {
 		t.Fatal("grok-4.20-0309-reasoning missing")
 	}
+	if !spec.SupportsReasoning || spec.SupportsReasoningEffort {
+		t.Fatalf("fixed reasoning capability = %#v", spec)
+	}
 	body, err := normalizeRequest([]byte(`{
 		"model":"grok-4.20-0309-reasoning",
 		"input":"hello",
-		"reasoning":{"effort":"low"}
+		"reasoning":{"effort":"low","summary":"auto"}
 	}`), spec)
 	if err != nil {
 		t.Fatal(err)
@@ -242,8 +245,21 @@ func TestNormalizeRequestPreservesGrok420ReasoningEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	reasoning, _ := payload["reasoning"].(map[string]any)
-	if reasoning["effort"] != "low" {
+	if reasoning["effort"] != nil || reasoning["summary"] != "auto" {
 		t.Fatalf("reasoning = %#v", reasoning)
+	}
+
+	effortOnly, err := normalizeRequest([]byte(`{
+		"model":"grok-4.20-0309-reasoning",
+		"input":"hello",
+		"reasoning":{"effort":"none"}
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = nil
+	if json.Unmarshal(effortOnly, &payload) != nil || payload["reasoning"] != nil {
+		t.Fatalf("effort-only reasoning must be removed: %#v", payload)
 	}
 
 	withoutEffort, err := normalizeRequest([]byte(`{
@@ -259,6 +275,49 @@ func TestNormalizeRequestPreservesGrok420ReasoningEffort(t *testing.T) {
 	}
 	if payload["reasoning"] != nil {
 		t.Fatalf("base model request should retain the upstream default: %#v", payload)
+	}
+}
+
+func TestGrok420FixedReasoningStripsEffortAfterProtocolConversion(t *testing.T) {
+	spec, ok := Resolve("grok-4.20-0309-reasoning")
+	if !ok {
+		t.Fatal("grok-4.20-0309-reasoning missing")
+	}
+	tests := []struct {
+		name      string
+		operation string
+		body      string
+	}{
+		{
+			name:      "chat completions reasoning_effort",
+			operation: conversation.OperationChat,
+			body:      `{"model":"public","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"high"}`,
+		},
+		{
+			name:      "anthropic adaptive thinking effort",
+			operation: conversation.OperationMessages,
+			body:      `{"model":"public","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			converted, err := conversation.ConvertRequest([]byte(test.body), spec.UpstreamModel, test.operation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			normalized, err := normalizeRequest(converted, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(normalized, &payload); err != nil {
+				t.Fatal(err)
+			}
+			reasoning, _ := payload["reasoning"].(map[string]any)
+			if reasoning["effort"] != nil {
+				t.Fatalf("unsupported effort reached Console upstream: %s", normalized)
+			}
+		})
 	}
 }
 

@@ -34,12 +34,12 @@ func TestResponseRepositoryScopesOwnershipByClientAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := NewResponseRepository(database)
-	value := inferencedomain.ResponseOwnership{ResponseID: "resp_1", AccountID: accountValue.ID, ClientKeyID: keyValue.ID, Provider: account.ProviderBuild, PromptCacheKey: "cache-key", ReasoningReplayKey: "replay-key", ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now}
+	value := inferencedomain.ResponseOwnership{ResponseID: "resp_1", AccountID: accountValue.ID, ClientKeyID: keyValue.ID, ModelRouteID: 42, Provider: account.ProviderBuild, PromptCacheKey: "cache-key", ReasoningReplayKey: "replay-key", ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now}
 	if err := repo.Save(ctx, value); err != nil {
 		t.Fatal(err)
 	}
 	got, err := repo.Get(ctx, value.ResponseID, value.ClientKeyID, now)
-	if err != nil || got.AccountID != value.AccountID || got.Provider != account.ProviderBuild || got.PromptCacheKey != value.PromptCacheKey || got.ReasoningReplayKey != value.ReasoningReplayKey {
+	if err != nil || got.AccountID != value.AccountID || got.ModelRouteID != value.ModelRouteID || got.Provider != account.ProviderBuild || got.PromptCacheKey != value.PromptCacheKey || got.ReasoningReplayKey != value.ReasoningReplayKey {
 		t.Fatalf("ownership = %#v, err = %v", got, err)
 	}
 	if _, err := repo.Get(ctx, value.ResponseID, 99, now); !errors.Is(err, repository.ErrNotFound) {

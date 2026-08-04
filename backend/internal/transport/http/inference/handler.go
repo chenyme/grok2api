@@ -250,7 +250,7 @@ func appendReasoningModelAliases(items []modelListItem) []modelListItem {
 		result = append(result, item)
 	}
 	for _, item := range items {
-		for _, aliasID := range modeldomain.ReasoningAliasPublicIDs(item.ID) {
+		for _, aliasID := range modeldomain.ReasoningAliasPublicIDsForProvider(item.Provider, item.ID) {
 			if seen[aliasID] {
 				continue
 			}

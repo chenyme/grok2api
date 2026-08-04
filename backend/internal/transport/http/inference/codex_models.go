@@ -102,12 +102,12 @@ var grokDefaultCapability = grokModelCapability{
 	description:   "Grok model served via grok2api.",
 }
 
-func lookupGrokCapability(slug string) (grokModelCapability, []string) {
+func lookupGrokCapability(providerValue account.Provider, slug string) (grokModelCapability, []string) {
 	// Effort-suffixed aliases inherit the base model's metadata.
 	if base, _, ok := modeldomain.ParseReasoningModelAlias(slug); ok {
 		slug = base
 	}
-	levels := modeldomain.SupportedReasoningEfforts(slug)
+	levels := modeldomain.SupportedReasoningEffortsForProvider(providerValue, slug)
 	if capability, ok := grokCapabilities[slug]; ok {
 		return capability, levels
 	}
@@ -135,20 +135,11 @@ func codexAgentToolsSupported(item modelListItem) bool {
 	return item.Provider == account.ProviderBuild && item.Capability == modeldomain.CapabilityResponses
 }
 
-func codexReasoningSupported(levels []string) bool {
-	for _, level := range levels {
-		if level != "none" {
-			return true
-		}
-	}
-	return false
-}
-
 func newCodexModelCatalog(items []modelListItem) codexModelCatalog {
 	models := make([]codexModelEntry, 0, len(items))
 	for index, item := range items {
-		capability, reasoningLevels := lookupGrokCapability(item.ID)
-		defaultLevel := modeldomain.DefaultReasoningEffort(item.ID)
+		capability, reasoningLevels := lookupGrokCapability(item.Provider, item.ID)
+		defaultLevel := modeldomain.DefaultReasoningEffortForProvider(item.Provider, item.ID)
 		// Alias entries pin a single effort; advertise only that level for client UX.
 		if _, effort, ok := modeldomain.ParseReasoningModelAlias(item.ID); ok {
 			reasoningLevels = []string{effort}
@@ -164,7 +155,7 @@ func newCodexModelCatalog(items []modelListItem) codexModelCatalog {
 			value := "freeform"
 			applyPatchToolType = &value
 		}
-		reasoningSupported := codexReasoningSupported(reasoningLevels)
+		reasoningSupported := modeldomain.SupportsReasoningForProvider(item.Provider, item.ID)
 		models = append(models, codexModelEntry{
 			Slug:                              item.ID,
 			DisplayName:                       codexDisplayName(item.ID),
