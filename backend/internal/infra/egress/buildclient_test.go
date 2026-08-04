@@ -25,6 +25,25 @@ func TestBuildClientUsesConfiguredResponseHeaderTimeout(t *testing.T) {
 	}
 }
 
+func TestBuildEnvironmentClientPreservesEnvironmentProxyLookup(t *testing.T) {
+	direct, err := newBuildClient("", 7*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := newBuildEnvironmentClient(7 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directTransport := direct.Transport.(*http.Transport)
+	environmentTransport := environment.Transport.(*http.Transport)
+	if directTransport.Proxy != nil {
+		t.Fatal("explicit Manager direct client unexpectedly uses environment proxy lookup")
+	}
+	if environmentTransport.Proxy == nil {
+		t.Fatal("isolated Build fallback client lost HTTP_PROXY/HTTPS_PROXY lookup")
+	}
+}
+
 func TestBuildClientResponseHeaderTimeoutDoesNotLimitResponseBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusOK)

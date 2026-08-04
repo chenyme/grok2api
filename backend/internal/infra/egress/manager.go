@@ -59,6 +59,7 @@ const maxClientVersionEntries = 4096
 
 var errNodeSnapshotInvalidated = errors.New("egress node snapshot invalidated")
 var errClientCacheInvalidated = errors.New("egress client cache invalidated")
+var errAccountConnectionIsolationDisabled = errors.New("egress account connection isolation disabled")
 
 type Lease struct {
 	NodeID           uint64
@@ -169,6 +170,7 @@ type Manager struct {
 	solver               clearanceSolver
 	clearanceLock        repository.DistributedLock
 	newBuildClient       func(string, time.Duration) (requestClient, error)
+	newBuildEnvClient    func(time.Duration) (requestClient, error)
 	newBrowserClient     func(string, string) (*browserClient, error)
 }
 
@@ -227,7 +229,7 @@ func NewManager(repository repository.EgressRepository, cipher *security.Cipher)
 		nodes:   make(map[domain.Scope]cachedNodeSnapshot), healthyNodes: make(map[uint64]time.Time),
 		nodeVersions: make(map[domain.Scope]uint64), clientVersions: make(map[uint64]uint64), clearances: make(map[string]clearanceState),
 		failureProbes:  make(map[uint64]failureProbeState),
-		newBuildClient: newBuildRequestClient, newBrowserClient: newBrowserClient,
+		newBuildClient: newBuildRequestClient, newBuildEnvClient: newBuildEnvironmentRequestClient, newBrowserClient: newBrowserClient,
 		solver:          flaresolverrSolver{},
 		clearanceConfig: ClearanceConfig{Mode: "manual", TargetURL: "https://grok.com", Timeout: time.Minute, RefreshInterval: 10 * time.Minute},
 	}
@@ -354,10 +356,14 @@ func (m *Manager) UpdateBuildResponseHeaderTimeout(value time.Duration) {
 // reuses its own pool. Changing the setting rebuilds cached clients without
 // interrupting in-flight requests.
 func (m *Manager) UpdateAccountIsolatedConnections(enabled bool) {
-	if m.accountIsolated.Swap(enabled) == enabled {
+	m.clientMu.Lock()
+	if m.accountIsolated.Load() == enabled {
+		m.clientMu.Unlock()
 		return
 	}
-	m.clientMu.Lock()
+	// Change the mode while holding the same lock used to validate client-cache
+	// keys. This makes the mode snapshot and cache invalidation one transition.
+	m.accountIsolated.Store(enabled)
 	stale := make([]requestClient, 0, len(m.clients))
 	for key, cached := range m.clients {
 		stale = append(stale, m.evictClientLocked(key, cached))
@@ -365,6 +371,7 @@ func (m *Manager) UpdateAccountIsolatedConnections(enabled bool) {
 	m.invalidateAllClientVersionsLocked()
 	m.clientMu.Unlock()
 	closeRequestClients(stale)
+	m.log().Info("egress_account_connection_isolation_updated", "enabled", enabled, "evicted_clients", len(stale))
 }
 
 // AccountIsolatedConnections reports whether upstream clients are partitioned by account.
@@ -413,6 +420,22 @@ func (m *Manager) UpdateClearanceConfig(value ClearanceConfig) {
 func (m *Manager) Acquire(ctx context.Context, scope domain.Scope, affinity string) (*Lease, error) {
 	lease, _, err := m.acquire(ctx, scope, affinity, true, "", egressNodeFromContext(ctx))
 	return lease, err
+}
+
+// AcquireBuildEnvironmentDirectIfIsolated creates an account-partitioned direct
+// Build lease while preserving the legacy direct transport's environment-proxy
+// semantics. The bool is false when isolation was disabled before the lease was
+// acquired, allowing the caller to retain its original fallback transport.
+func (m *Manager) AcquireBuildEnvironmentDirectIfIsolated(ctx context.Context, affinity string) (*Lease, bool, error) {
+	selected := domain.Node{ID: 0, Name: "direct", Scope: domain.ScopeBuild, Enabled: true, Health: 1}
+	lease, _, err := m.leaseForNodeWithOptions(ctx, domain.ScopeBuild, affinity, "", false, selected, clientOptions{
+		buildEnvironmentProxy:   true,
+		requireAccountIsolation: true,
+	})
+	if errors.Is(err, errAccountConnectionIsolationDisabled) {
+		return nil, false, nil
+	}
+	return lease, err == nil, err
 }
 
 // AcquireCredential binds the outbound proxy identity to one persisted
@@ -1028,7 +1051,16 @@ func fallbackError(primaryErr, fallbackErr error) error {
 	return fmt.Errorf("%w；出口回退不可用: %v", primaryErr, fallbackErr)
 }
 
+type clientOptions struct {
+	buildEnvironmentProxy   bool
+	requireAccountIsolation bool
+}
+
 func (m *Manager) leaseForNode(ctx context.Context, scope domain.Scope, affinity, encryptedCredentialCookies string, managedClearance bool, selected domain.Node) (*Lease, bool, error) {
+	return m.leaseForNodeWithOptions(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected, clientOptions{})
+}
+
+func (m *Manager) leaseForNodeWithOptions(ctx context.Context, scope domain.Scope, affinity, encryptedCredentialCookies string, managedClearance bool, selected domain.Node, options clientOptions) (*Lease, bool, error) {
 	credentialCookies := ""
 	if !managedClearance && scope != domain.ScopeBuild && strings.TrimSpace(encryptedCredentialCookies) != "" {
 		decryptedCookies, decryptErr := m.cipher.Decrypt(encryptedCredentialCookies)
@@ -1092,11 +1124,11 @@ func (m *Manager) leaseForNode(ctx context.Context, scope domain.Scope, affinity
 			return nil, false, err
 		}
 	}
-	accountIdentity := ""
-	if m.accountIsolated.Load() {
-		accountIdentity = isolationAccountIdentity(ctx, scope, affinity)
-	}
-	client, err := m.clientFor(selected.ID, scope, proxyURL, userAgent, cookies, sticky, accountIdentity)
+	// Derive identity independently of the current toggle. clientFor applies one
+	// authoritative toggle snapshot, so enabling isolation between these two
+	// stages cannot accidentally place an account request in the shared bucket.
+	accountIdentity := isolationAccountIdentity(ctx, scope, affinity)
+	client, err := m.clientForWithOptions(selected.ID, scope, proxyURL, userAgent, cookies, sticky, accountIdentity, options)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1300,6 +1332,10 @@ func (m *Manager) inflightCount(nodeID uint64) int64 {
 }
 
 func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, cookies string, sticky bool, accountIdentity string) (cachedClient, error) {
+	return m.clientForWithOptions(id, scope, proxyURL, userAgent, cookies, sticky, accountIdentity, clientOptions{})
+}
+
+func (m *Manager) clientForWithOptions(id uint64, scope domain.Scope, proxyURL, userAgent, cookies string, sticky bool, accountIdentity string, options clientOptions) (cachedClient, error) {
 	clientKind := "browser"
 	buildHeaderTimeout := time.Duration(0)
 	if scope == domain.ScopeBuild {
@@ -1309,13 +1345,8 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 			buildHeaderTimeout = settingsdomain.DefaultBuildResponseHeaderTimeout
 		}
 		clientKind += "\x00" + strconv.FormatInt(int64(buildHeaderTimeout), 10)
-	}
-	if !m.accountIsolated.Load() {
-		accountIdentity = ""
-	} else {
-		accountIdentity = strings.TrimSpace(accountIdentity)
-		if accountIdentity == "" {
-			accountIdentity = "shared"
+		if options.buildEnvironmentProxy {
+			clientKind += "\x00environment-proxy"
 		}
 	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(clientKind+"\x00"+proxyURL+"\x00"+userAgent+"\x00"+cookies)))
@@ -1323,9 +1354,20 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 	if cacheScope == domain.ScopeWebAsset {
 		cacheScope = domain.ScopeWeb
 	}
-	key := clientCacheKey{nodeID: id, scope: cacheScope, fingerprint: fingerprint, accountIdentity: accountIdentity}
-	loadKey := strconv.FormatUint(key.nodeID, 10) + "\x00" + string(key.scope) + "\x00" + key.fingerprint + "\x00" + key.accountIdentity
 	for attempt := 0; attempt < clientCreationRetryLimit; attempt++ {
+		isolated := m.accountIsolated.Load()
+		if options.requireAccountIsolation && !isolated {
+			return cachedClient{}, errAccountConnectionIsolationDisabled
+		}
+		keyAccountIdentity := ""
+		if isolated {
+			keyAccountIdentity = strings.TrimSpace(accountIdentity)
+			if keyAccountIdentity == "" {
+				keyAccountIdentity = "shared"
+			}
+		}
+		key := clientCacheKey{nodeID: id, scope: cacheScope, fingerprint: fingerprint, accountIdentity: keyAccountIdentity}
+		loadKey := strconv.FormatUint(key.nodeID, 10) + "\x00" + string(key.scope) + "\x00" + key.fingerprint + "\x00" + key.accountIdentity
 		now := time.Now().UTC()
 		m.clientMu.RLock()
 		cached, cachedOK := m.clients[key]
@@ -1349,7 +1391,7 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		closeRequestClients(stale)
 
 		loaded, err, _ := m.clientLoads.Do(loadKey, func() (any, error) {
-			return m.createAndCacheClient(key, id, scope, proxyURL, userAgent, sticky, buildHeaderTimeout)
+			return m.createAndCacheClient(key, id, scope, proxyURL, userAgent, sticky, buildHeaderTimeout, options)
 		})
 		if errors.Is(err, errClientCacheInvalidated) {
 			continue
@@ -1362,10 +1404,15 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 	return cachedClient{}, errClientCacheInvalidated
 }
 
-func (m *Manager) createAndCacheClient(key clientCacheKey, id uint64, scope domain.Scope, proxyURL, userAgent string, sticky bool, buildHeaderTimeout time.Duration) (cachedClient, error) {
+func (m *Manager) createAndCacheClient(key clientCacheKey, id uint64, scope domain.Scope, proxyURL, userAgent string, sticky bool, buildHeaderTimeout time.Duration, options clientOptions) (cachedClient, error) {
 	now := time.Now().UTC()
 	m.clientMu.Lock()
 	stale := m.cleanupClientCacheLocked(now)
+	if (key.accountIdentity != "") != m.accountIsolated.Load() {
+		m.clientMu.Unlock()
+		closeRequestClients(stale)
+		return cachedClient{}, errClientCacheInvalidated
+	}
 	if cached, ok := m.clients[key]; ok {
 		cached.lastUsed = now
 		m.clients[key] = cached
@@ -1377,7 +1424,7 @@ func (m *Manager) createAndCacheClient(key clientCacheKey, id uint64, scope doma
 	m.clientMu.Unlock()
 	closeRequestClients(stale)
 
-	value, err := m.buildCachedClient(scope, proxyURL, userAgent, buildHeaderTimeout)
+	value, err := m.buildCachedClient(scope, proxyURL, userAgent, buildHeaderTimeout, options)
 	if err != nil {
 		return cachedClient{}, err
 	}
@@ -1385,6 +1432,11 @@ func (m *Manager) createAndCacheClient(key clientCacheKey, id uint64, scope doma
 
 	m.clientMu.Lock()
 	stale = m.cleanupClientCacheLocked(value.lastUsed)
+	if (key.accountIdentity != "") != m.accountIsolated.Load() {
+		m.clientMu.Unlock()
+		closeRequestClients(append(stale, value.client))
+		return cachedClient{}, errClientCacheInvalidated
+	}
 	if cached, ok := m.clients[key]; ok {
 		cached.lastUsed = value.lastUsed
 		m.clients[key] = cached
@@ -1416,8 +1468,19 @@ func (m *Manager) createAndCacheClient(key clientCacheKey, id uint64, scope doma
 	return value, nil
 }
 
-func (m *Manager) buildCachedClient(scope domain.Scope, proxyURL, userAgent string, buildHeaderTimeout time.Duration) (cachedClient, error) {
+func (m *Manager) buildCachedClient(scope domain.Scope, proxyURL, userAgent string, buildHeaderTimeout time.Duration, options clientOptions) (cachedClient, error) {
 	if scope == domain.ScopeBuild {
+		if options.buildEnvironmentProxy {
+			factory := m.newBuildEnvClient
+			if factory == nil {
+				factory = newBuildEnvironmentRequestClient
+			}
+			client, err := factory(buildHeaderTimeout)
+			if err != nil {
+				return cachedClient{}, err
+			}
+			return cachedClient{client: client}, nil
+		}
 		factory := m.newBuildClient
 		if factory == nil {
 			factory = newBuildRequestClient
@@ -1441,6 +1504,10 @@ func (m *Manager) buildCachedClient(scope domain.Scope, proxyURL, userAgent stri
 
 func newBuildRequestClient(proxyURL string, responseHeaderTimeout time.Duration) (requestClient, error) {
 	return newBuildClient(proxyURL, responseHeaderTimeout)
+}
+
+func newBuildEnvironmentRequestClient(responseHeaderTimeout time.Duration) (requestClient, error) {
+	return newBuildEnvironmentClient(responseHeaderTimeout)
 }
 
 func (m *Manager) cleanupClientCacheLocked(now time.Time) []requestClient {

@@ -169,6 +169,68 @@ func TestUpdatePreservesBuildChatDeniedPolicyWhenFieldIsOmitted(t *testing.T) {
 	}
 }
 
+func TestUpdatePreservesAccountIsolationWhenFieldIsOmitted(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Routing.AccountIsolatedConnections = true
+	repository := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Routing.AccountIsolatedConnections = false
+	input.Routing.AccountIsolatedConnectionsProvided = false
+
+	snapshot, err := service.Update(context.Background(), 0, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Routing.AccountIsolatedConnections || repository.value.Routing.AccountIsolatedConnections == nil || !*repository.value.Routing.AccountIsolatedConnections {
+		t.Fatal("omitted account isolation setting was overwritten")
+	}
+
+	input = snapshot.Config
+	input.Routing.AccountIsolatedConnections = false
+	input.Routing.AccountIsolatedConnectionsProvided = true
+	if _, err := service.Update(context.Background(), snapshot.Revision, input); err != nil {
+		t.Fatal(err)
+	}
+	if applied.Routing.AccountIsolatedConnections || repository.value.Routing.AccountIsolatedConnections == nil || *repository.value.Routing.AccountIsolatedConnections {
+		t.Fatal("explicit account isolation update was ignored")
+	}
+}
+
+func TestLoadPersistedKeepsAccountIsolationDefaultForOlderPayload(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Routing.AccountIsolatedConnections = true
+	value := toDomainConfig(cfg)
+	value.Routing.AccountIsolatedConnections = nil
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Routing.AccountIsolatedConnections {
+		t.Fatal("older persisted payload disabled config.yaml account isolation")
+	}
+}
+
+func TestLoadPersistedPreservesExplicitlyDisabledAccountIsolation(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Routing.AccountIsolatedConnections = true
+	value := toDomainConfig(cfg)
+	disabled := false
+	value.Routing.AccountIsolatedConnections = &disabled
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Routing.AccountIsolatedConnections {
+		t.Fatal("explicitly disabled persisted account isolation was ignored")
+	}
+}
+
 func TestLoadPersistedKeepsSegmentedSelectorDefaultsForOlderPayload(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Routing.SegmentedSelectorEnabled = true
