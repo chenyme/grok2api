@@ -328,6 +328,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	auditService.SetDropObserver(clientKeyService.ReleaseBillingProtectionBatch)
 	dashboardService := dashboardapp.NewService(dashboardRepo)
 	selector := gateway.NewSelector(accountRepo, concurrency, sticky, providers, cfg.Routing.StickyTTL.Value(), cfg.Routing.CooldownBase.Value(), cfg.Routing.CooldownMax.Value(), cfg.Routing.CapacityWait.Value())
+	selector.SetLogger(logger)
 	selector.UpdatePreferFreeBuild(cfg.Routing.PreferFreeBuild)
 	selector.UpdateSegmentedSelector(cfg.Routing.SegmentedSelectorEnabled, cfg.Routing.SegmentedMinCandidates, cfg.Routing.SegmentedWindowSize)
 	egressManager.UpdateAccountIsolatedConnections(cfg.Routing.AccountIsolatedConnections)

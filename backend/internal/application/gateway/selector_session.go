@@ -20,6 +20,7 @@ type selectionSession struct {
 	quotaMode        string
 	stickyKey        string
 	values           []account.RoutingCandidate
+	quotaConsumed    map[accountQuotaConsumptionKey]int
 	normalCandidates []int
 	probeCandidates  []int
 	normalPlan       *candidatePlan
@@ -44,6 +45,7 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 	if err != nil {
 		return nil, err
 	}
+	quotaConsumed := s.quotaConsumptionSnapshot(provider)
 
 	session = &selectionSession{
 		selector:        s,
@@ -53,6 +55,7 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 		quotaMode:       quotaMode,
 		stickyKey:       stickySessionKey(affinityKey),
 		values:          values,
+		quotaConsumed:   quotaConsumed,
 		staleCandidates: make(map[uint64]bool),
 	}
 	consideredCandidates := 0
@@ -100,7 +103,7 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 			quotaCandidates++
 			continue
 		}
-		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Remaining <= 0 {
+		if quotaWindowExhausted(candidate, quotaConsumed) {
 			quotaCandidates++
 			if candidate.QuotaWindow.ResetAt != nil {
 				earliestRetry = earlierFuture(earliestRetry, *candidate.QuotaWindow.ResetAt, now)

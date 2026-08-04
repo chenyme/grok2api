@@ -983,12 +983,20 @@ func TestSelectorConsumesOnlyMatchingQuotaSnapshot(t *testing.T) {
 	selector := &Selector{candidates: map[candidateCacheKey]candidateSnapshot{key: newCandidateSnapshot(values, time.Now().UTC().Add(time.Minute))}}
 	original := selector.candidates[key].values
 	selector.ConsumeQuota(account.ProviderWeb, 7, "fast", 3)
-	window := selector.candidates[key].values[0].QuotaWindow
-	if window == nil || window.Remaining != 7 {
-		t.Fatalf("quota window = %#v", window)
-	}
 	if original[0].QuotaWindow == nil || original[0].QuotaWindow.Remaining != 10 {
 		t.Fatalf("published snapshot was mutated: %#v", original[0].QuotaWindow)
+	}
+	consumed := selector.quotaConsumptionSnapshot(account.ProviderWeb)
+	if quotaWindowExhausted(values[0], consumed) {
+		t.Fatal("partially consumed quota was treated as exhausted")
+	}
+	selector.ConsumeQuota(account.ProviderWeb, 7, "other", 100)
+	if quotaWindowExhausted(values[0], selector.quotaConsumptionSnapshot(account.ProviderWeb)) {
+		t.Fatal("a different quota mode affected the candidate")
+	}
+	selector.ConsumeQuota(account.ProviderWeb, 7, "fast", 7)
+	if !quotaWindowExhausted(values[0], selector.quotaConsumptionSnapshot(account.ProviderWeb)) {
+		t.Fatal("fully consumed quota remained schedulable")
 	}
 }
 
