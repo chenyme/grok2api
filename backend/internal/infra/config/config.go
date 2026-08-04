@@ -20,6 +20,7 @@ import (
 )
 
 const (
+	DatabaseURLEnv                = "GROK2API_DATABASE_URL"
 	StatsigModeManual             = "manual"
 	StatsigModeURL                = "url"
 	ClearanceModeManual           = "manual"
@@ -345,10 +346,45 @@ func Load(path string) (Config, error) {
 			return Config{}, err
 		}
 	}
+	if err := applyEnvironmentOverrides(&cfg); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// applyEnvironmentOverrides applies typed, application-owned environment
+// overrides after YAML and before CLI overrides. Empty values are ignored so
+// Compose can pass an optional variable without changing existing deployments.
+func applyEnvironmentOverrides(cfg *Config) error {
+	value := strings.TrimSpace(os.Getenv(DatabaseURLEnv))
+	if value == "" {
+		return nil
+	}
+	dsn, err := validatePostgresEnvironmentURL(value)
+	if err != nil {
+		return err
+	}
+	cfg.Database.Driver = "postgres"
+	cfg.Database.Postgres.DSN = dsn
+	return nil
+}
+
+func validatePostgresEnvironmentURL(value string) (string, error) {
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "postgresql+asyncpg://") {
+		return "", fmt.Errorf("%s 不支持 SQLAlchemy asyncpg URL；请将 postgresql+asyncpg:// 改为 postgresql://", DatabaseURLEnv)
+	}
+	if !strings.HasPrefix(lower, "postgres://") && !strings.HasPrefix(lower, "postgresql://") {
+		return "", fmt.Errorf("%s 必须使用 postgres:// 或 postgresql:// URL（连接信息已隐藏）", DatabaseURLEnv)
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Scheme == "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("%s 不是有效的 PostgreSQL URL（连接信息已隐藏）", DatabaseURLEnv)
+	}
+	return value, nil
 }
 
 func resolveRelativePaths(cfg *Config, configPath string) error {

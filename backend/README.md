@@ -36,6 +36,8 @@ go run ./cmd/grok2api --config /path/to/config.yaml --listen 0.0.0.0:8000
 
 启动配置统一由根目录 `config.yaml` 管理，启动阶段字段见 [`config.example.yaml`](../config.example.yaml)。Provider、服务容量、批量任务、路由、媒体、审计和客户端密钥默认限制由管理端设置页持久化；除页面明确标记“重启生效”的字段外均会热加载。
 
+PostgreSQL DSN 也可通过非空的 `GROK2API_DATABASE_URL` 注入；它的优先级高于 YAML，并会自动将数据库驱动切换为 `postgres`。空值不覆盖 YAML，程序不会隐式读取通用的 `DATABASE_URL`。
+
 | 场景 | 数据库 | 运行态存储 |
 | --- | --- | --- |
 | 本地开发 / 单实例 | SQLite | Memory |

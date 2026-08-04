@@ -8,6 +8,8 @@ services:
       - "${GROK2API_PORT:-8000}:8000"
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
+      # 非空时覆盖 config.yaml 的 PostgreSQL DSN，并自动启用 postgres。
+      GROK2API_DATABASE_URL: "${GROK2API_DATABASE_URL:-}"
       GROK2API_QUALITY_GUARD_DIR: /var/lib/grok2api-quality-guard
     volumes:
       - "${GROK2API_CONFIG:-./config.yaml}:/run/grok2api/config.yaml:ro"
