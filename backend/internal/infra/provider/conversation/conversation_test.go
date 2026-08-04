@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"strings"
@@ -559,6 +560,10 @@ func TestConvertResponsesJSONToChatAndMessages(t *testing.T) {
 	if messagesUsage["input_tokens"] != float64(8) || messagesUsage["cache_read_input_tokens"] != float64(2) {
 		t.Fatalf("messages cache usage = %#v", messagesUsage)
 	}
+	outputDetails, ok := messagesUsage["output_tokens_details"].(map[string]any)
+	if !ok || outputDetails["thinking_tokens"] != float64(1) {
+		t.Fatalf("messages thinking usage = %#v", messagesUsage)
+	}
 }
 
 func TestAnthropicUsageClampsCacheReadToTotalInput(t *testing.T) {
@@ -568,6 +573,20 @@ func TestAnthropicUsageClampsCacheReadToTotalInput(t *testing.T) {
 	converted := anthropicUsage(usage, 0)
 	if converted["input_tokens"] != int64(0) || converted["cache_read_input_tokens"] != int64(10) {
 		t.Fatalf("clamped messages usage = %#v", converted)
+	}
+	outputDetails, ok := converted["output_tokens_details"].(map[string]any)
+	if !ok || outputDetails["thinking_tokens"] != int64(0) {
+		t.Fatalf("non-reasoning messages usage = %#v", converted)
+	}
+}
+
+func TestAnthropicUsageClampsThinkingTokensToOutputTokens(t *testing.T) {
+	usage := responseUsage{OutputTokens: 5}
+	usage.OutputTokensDetails.ReasoningTokens = 8
+	converted := anthropicUsage(usage, 0)
+	outputDetails := converted["output_tokens_details"].(map[string]any)
+	if outputDetails["thinking_tokens"] != int64(5) {
+		t.Fatalf("clamped thinking usage = %#v", converted)
 	}
 }
 
@@ -921,7 +940,7 @@ func TestConvertResponsesStreamMergesPartialUsageFrames(t *testing.T) {
 		want      []string
 	}{
 		{operation: OperationChat, want: []string{`"prompt_tokens":120`, `"completion_tokens":30`, `"cached_tokens":80`, `"reasoning_tokens":12`, `"cost_in_usd_ticks":9000`}},
-		{operation: OperationMessages, want: []string{`"input_tokens":40`, `"output_tokens":30`, `"cache_read_input_tokens":80`, `"cost_in_usd_ticks":9000`}},
+		{operation: OperationMessages, want: []string{`"input_tokens":40`, `"output_tokens":30`, `"cache_read_input_tokens":80`, `"thinking_tokens":12`, `"cost_in_usd_ticks":9000`}},
 	}
 	for _, test := range tests {
 		converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), test.operation))
@@ -934,5 +953,52 @@ func TestConvertResponsesStreamMergesPartialUsageFrames(t *testing.T) {
 				t.Fatalf("%s partial usage lost %s:\n%s", test.operation, want, text)
 			}
 		}
+		if test.operation == OperationMessages {
+			assertAnthropicThinkingUsageEventPlacement(t, converted, 12)
+		}
+	}
+}
+
+func assertAnthropicThinkingUsageEventPlacement(t *testing.T, stream []byte, want int64) {
+	t.Helper()
+	seenStart := false
+	seenDelta := false
+	err := consumeSSE(bytes.NewReader(stream), func(event string, data []byte) error {
+		if event != "message_start" && event != "message_delta" {
+			return nil
+		}
+		var payload struct {
+			Message struct {
+				Usage map[string]json.RawMessage `json:"usage"`
+			} `json:"message"`
+			Usage map[string]json.RawMessage `json:"usage"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("decode %s event: %v", event, err)
+		}
+		if event == "message_start" {
+			seenStart = true
+			if _, exists := payload.Message.Usage["output_tokens_details"]; exists {
+				t.Fatalf("message_start unexpectedly contains output token details: %s", data)
+			}
+			return nil
+		}
+		seenDelta = true
+		var details struct {
+			ThinkingTokens int64 `json:"thinking_tokens"`
+		}
+		if err := json.Unmarshal(payload.Usage["output_tokens_details"], &details); err != nil {
+			t.Fatalf("decode message_delta output token details: %v", err)
+		}
+		if details.ThinkingTokens != want {
+			t.Fatalf("message_delta thinking_tokens = %d, want %d", details.ThinkingTokens, want)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !seenStart || !seenDelta {
+		t.Fatalf("missing Anthropic usage events: message_start=%t message_delta=%t", seenStart, seenDelta)
 	}
 }
