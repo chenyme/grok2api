@@ -6,11 +6,15 @@ import (
 )
 
 func (c *streamConverter) startMessages() error {
+	usage := anthropicUsage(c.usage, 0)
+	// Anthropic emits output-token breakdowns only on the terminal
+	// message_delta. Keep message_start limited to the initial usage shape.
+	delete(usage, "output_tokens_details")
 	return c.writeEvent("message_start", map[string]any{
 		"type": "message_start", "message": map[string]any{
 			"id": anthropicMessageID(c.id), "type": "message", "role": "assistant",
 			"model": c.model, "content": []any{}, "stop_reason": nil, "stop_sequence": nil,
-			"usage": anthropicUsage(c.usage, 0),
+			"usage": usage,
 		},
 	})
 }

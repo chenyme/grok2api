@@ -594,8 +594,8 @@ func TestExtractUsageFromCompletedEvent(t *testing.T) {
 }
 
 func TestExtractUsageFromAnthropicMessagesCaches(t *testing.T) {
-	metadata := normalizeMetadataUsage(extractMetadata([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"grok-4.5","usage":{"input_tokens":20,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":80,"cost_in_usd_ticks":1000}}`)), streamProtocolAnthropic)
-	if metadata.Usage.CachedInputTokens != 80 || metadata.Usage.InputTokens != 100 || metadata.Usage.OutputTokens != 20 {
+	metadata := normalizeMetadataUsage(extractMetadata([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"grok-4.5","usage":{"input_tokens":20,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":80,"output_tokens_details":{"thinking_tokens":12},"cost_in_usd_ticks":1000}}`)), streamProtocolAnthropic)
+	if metadata.Usage.CachedInputTokens != 80 || metadata.Usage.InputTokens != 100 || metadata.Usage.OutputTokens != 20 || metadata.Usage.ReasoningTokens != 12 {
 		t.Fatalf("anthropic usage = %#v", metadata.Usage)
 	}
 	if metadata.Usage.TotalTokens != 120 {
@@ -622,11 +622,11 @@ func TestExtractUsagePrefersResponsesCachedTokensOverAnthropicField(t *testing.T
 func TestStreamInspectorMergesCachedTokensAcrossFrames(t *testing.T) {
 	inspector := &responseInspector{protocol: streamProtocolAnthropic}
 	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":20,\"output_tokens\":20}}\n\n"))
-	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"cache_read_input_tokens\":80}}\n\n"))
+	inspector.Inspect([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"cache_read_input_tokens\":80,\"output_tokens_details\":{\"thinking_tokens\":12}}}\n\n"))
 	inspector.Inspect([]byte("data: {\"type\":\"message_stop\"}\n\n"))
 	inspector.Finish()
 	usage := inspector.Metadata().Usage
-	if usage.InputTokens != 100 || usage.OutputTokens != 20 || usage.CachedInputTokens != 80 || usage.TotalTokens != 120 {
+	if usage.InputTokens != 100 || usage.OutputTokens != 20 || usage.CachedInputTokens != 80 || usage.ReasoningTokens != 12 || usage.TotalTokens != 120 {
 		t.Fatalf("merged stream usage = %#v", usage)
 	}
 }

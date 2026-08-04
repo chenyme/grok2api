@@ -107,9 +107,15 @@ func nullableAnthropicString(value string) any {
 func anthropicUsage(value responseUsage, webSearchRequests int) map[string]any {
 	inputTokens := max(int64(0), value.InputTokens)
 	cacheReadInputTokens := min(inputTokens, max(int64(0), value.InputTokensDetails.CachedTokens))
+	outputTokens := max(int64(0), value.OutputTokens)
+	thinkingTokens := min(outputTokens, max(int64(0), value.OutputTokensDetails.ReasoningTokens))
 	usage := map[string]any{
-		"input_tokens": inputTokens - cacheReadInputTokens, "output_tokens": value.OutputTokens,
+		"input_tokens": inputTokens - cacheReadInputTokens, "output_tokens": outputTokens,
 		"cache_creation_input_tokens": 0, "cache_read_input_tokens": cacheReadInputTokens,
+		// Anthropic Messages names the internal-reasoning breakdown
+		// output_tokens_details.thinking_tokens. Grok Build Responses supplies the
+		// same quantity as output_tokens_details.reasoning_tokens.
+		"output_tokens_details":      map[string]any{"thinking_tokens": thinkingTokens},
 		"cost_in_usd_ticks":          value.CostInUSDTicks,
 		"num_sources_used":           value.NumSourcesUsed,
 		"num_server_side_tools_used": value.NumServerSideToolsUsed,
