@@ -20,7 +20,7 @@ export type SettingsConfigDTO = {
   };
   frontend: { publicApiBaseURL: string };
   routing: {
-    stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number; preferFreeBuild: boolean;
+    stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number; preferFreeBuild: boolean; markBuildChatDeniedAsReauth: boolean;
     segmentedSelector: { enabled: boolean; minCandidates: number; windowSize: number };
   };
   audit: { bufferSize: number; batchSize: number; flushInterval: string; commitDelayMS: number };
@@ -66,6 +66,12 @@ export type EgressSourceDTO = {
   refreshIntervalSeconds: number; defaultAccountCapacity: number;
   lastSyncedAt?: string; nextSyncAt?: string; lastSyncImported: number; lastSyncError?: string;
 };
+export type EgressSourceListDTO = {
+  items: EgressSourceDTO[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
 export type EgressSourceInput = {
   name: string; scope: EgressScope; enabled: boolean; url?: string; clearUrl?: boolean;
   refreshIntervalSeconds: number; defaultAccountCapacity: number;
@@ -103,7 +109,7 @@ const settingsConfigValidator = hasShape({
   media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),
   frontend: hasShape({ publicApiBaseURL: isString }),
   routing: hasShape({
-    stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber, preferFreeBuild: isBoolean,
+    stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber, preferFreeBuild: isBoolean, markBuildChatDeniedAsReauth: isBoolean,
     segmentedSelector: isOptional(hasShape({ enabled: isBoolean, minCandidates: isNumber, windowSize: isNumber })),
   }),
   audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString, commitDelayMS: isOptional(isNumber) }),
@@ -139,6 +145,7 @@ function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
       },
       routing: {
         ...snapshot.config.routing,
+        markBuildChatDeniedAsReauth: snapshot.config.routing.markBuildChatDeniedAsReauth ?? false,
         segmentedSelector: {
           enabled: segmentedSelector.enabled ?? false,
           minCandidates: segmentedSelector.minCandidates || 3000,
@@ -227,7 +234,24 @@ const decodeEgressSource = createObjectDecoder<EgressSourceDTO>("egress source",
   refreshIntervalSeconds: isNumber, defaultAccountCapacity: isNumber, lastSyncedAt: isOptional(isString), nextSyncAt: isOptional(isString),
   lastSyncImported: isNumber, lastSyncError: isOptional(isString),
 });
-const decodeEgressSourceList = createObjectDecoder<{ items: EgressSourceDTO[] }>("egress source list", { items: isArrayOf(egressSourceValidator) });
+type EgressSourceListWireDTO = {
+  items: EgressSourceDTO[];
+  page?: number;
+  pageSize?: number;
+  total?: number;
+};
+const decodeEgressSourceListRaw = createObjectDecoder<EgressSourceListWireDTO>("egress source list", {
+  items: isArrayOf(egressSourceValidator), page: isOptional(isNumber), pageSize: isOptional(isNumber), total: isOptional(isNumber),
+});
+const decodeEgressSourceList = (value: unknown): EgressSourceListDTO => {
+  const decoded = decodeEgressSourceListRaw(value);
+  return {
+    ...decoded,
+    page: decoded.page ?? 1,
+    pageSize: decoded.pageSize ?? Math.max(20, decoded.items.length),
+    total: decoded.total ?? decoded.items.length,
+  };
+};
 const decodeEgressImportResult = createObjectDecoder<EgressImportResultDTO>("egress import result", { imported: isNumber, skipped: isNumber });
 const decodeEgressProbeBatchResult = createObjectDecoder<EgressProbeBatchResultDTO>("egress probe result", { requested: isNumber, healthy: isNumber, unhealthy: isNumber });
 const decodeEgressRebalanceResult = createObjectDecoder<EgressRebalanceResultDTO>("egress rebalance result", { assigned: isNumber, rebalanced: isNumber, unplaced: isNumber });
@@ -337,8 +361,19 @@ export function testEgressNodes(ids?: string[]): Promise<EgressProbeBatchResultD
   return apiRequest("/api/admin/v1/egress-nodes/test", { method: "POST", body: { ids: ids ?? [] } }, decodeEgressProbeBatchResult);
 }
 
-export function listEgressSources(): Promise<{ items: EgressSourceDTO[] }> {
-  return apiRequest("/api/admin/v1/egress-sources", {}, decodeEgressSourceList);
+type ListEgressSourcesInput = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  scope?: EgressScope;
+};
+
+export function listEgressSources(input?: ListEgressSourcesInput): Promise<EgressSourceListDTO> {
+  if (!input) return apiRequest("/api/admin/v1/egress-sources", {}, decodeEgressSourceList);
+  const query = new URLSearchParams({ page: String(input.page ?? 1), pageSize: String(input.pageSize ?? 20) });
+  if (input.search) query.set("search", input.search);
+  if (input.scope) query.set("scope", input.scope);
+  return apiRequest(`/api/admin/v1/egress-sources?${query}`, {}, decodeEgressSourceList);
 }
 
 export function createEgressSource(input: EgressSourceInput): Promise<EgressSourceDTO> {

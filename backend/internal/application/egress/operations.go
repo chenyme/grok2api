@@ -27,6 +27,7 @@ var ErrOperationsUnavailable = errors.New("代理运营功能不可用")
 // provides this richer administrative surface.
 type OperationsRepository interface {
 	ListEgressSources(context.Context) ([]domain.SubscriptionSource, error)
+	ListEgressSourcePage(context.Context, repository.EgressSourceListQuery) ([]domain.SubscriptionSource, int64, error)
 	ListDueEgressSources(context.Context, time.Time, int) ([]domain.SubscriptionSource, error)
 	GetEgressSource(context.Context, uint64) (domain.SubscriptionSource, error)
 	CreateEgressSource(context.Context, domain.SubscriptionSource) (domain.SubscriptionSource, error)
@@ -59,6 +60,10 @@ type SubscriptionSourceInput struct {
 	ClearURL               bool
 	RefreshIntervalSeconds *int
 	DefaultAccountCapacity *int
+}
+
+type SourceListFilter struct {
+	Scope domain.Scope
 }
 
 type ImportInput struct {
@@ -141,6 +146,29 @@ func (s *Service) ListSources(ctx context.Context) ([]domain.PublicSubscriptionS
 		result = append(result, publicSource(value))
 	}
 	return result, nil
+}
+
+func (s *Service) ListSourcePage(ctx context.Context, page, pageSize int, search string, filter SourceListFilter) ([]domain.PublicSubscriptionSource, int64, error) {
+	page, pageSize = repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
+	if !validListScope(filter.Scope) {
+		return nil, 0, ErrInvalidFilter
+	}
+	operations, err := s.operationsRepository()
+	if err != nil {
+		return nil, 0, err
+	}
+	values, total, err := operations.ListEgressSourcePage(ctx, repository.EgressSourceListQuery{
+		Page:   repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: strings.TrimSpace(search)},
+		Filter: repository.EgressSourceListFilter{Scope: filter.Scope},
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	result := make([]domain.PublicSubscriptionSource, 0, len(values))
+	for _, value := range values {
+		result = append(result, publicSource(value))
+	}
+	return result, total, nil
 }
 
 func (s *Service) CreateSource(ctx context.Context, input SubscriptionSourceInput) (domain.PublicSubscriptionSource, error) {

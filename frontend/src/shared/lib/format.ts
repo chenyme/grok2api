@@ -1,4 +1,5 @@
 const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
+const compactDateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
 const numberFormatters = new Map<string, Intl.NumberFormat>();
 
 export function formatDateTime(value: string | null | undefined, locale: string): string {
@@ -18,6 +19,27 @@ export function formatDateTime(value: string | null | undefined, locale: string)
     dateTimeFormatters.set(locale, formatter);
   }
   return formatter.format(date);
+}
+
+export function formatCompactDateTime(value: string | null | undefined, locale: string): string {
+  if (!value) {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+  let formatter = compactDateTimeFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+    compactDateTimeFormatters.set(locale, formatter);
+  }
+  const parts = formatter.formatToParts(date);
+  return `${datePart(parts, "year")}/${datePart(parts, "month")}/${datePart(parts, "day")} ${datePart(parts, "hour")}:${datePart(parts, "minute")}:${datePart(parts, "second")}`;
+}
+
+function datePart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPartTypes): string {
+  return parts.find((part) => part.type === type)?.value ?? "--";
 }
 
 export function formatNumber(value: number, locale: string, maximumFractionDigits = 2): string {

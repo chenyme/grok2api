@@ -29,19 +29,20 @@ const (
 	RecommendedBuildClientVersion = "0.2.111"
 	RecommendedBuildUserAgent     = "grok-shell/" + RecommendedBuildClientVersion + " (linux; x86_64)"
 
-	maxServerBodyBytes    = 256 << 20
-	maxRequestTimeout     = 24 * time.Hour
-	maxReadTimeout        = time.Hour
-	maxRoutingTTL         = 30 * 24 * time.Hour
-	maxRoutingCooldown    = 24 * time.Hour
-	maxRoutingAttempts    = 200
-	minAuditFlushInterval = 10 * time.Millisecond
-	maxAuditFlushInterval = time.Minute
-	minAuditCommitDelay   = time.Millisecond
-	maxAuditCommitDelay   = 50 * time.Millisecond
-	maxAuditBufferSize    = 262144
-	maxAuditBatchSize     = 4096
-	maxDeploymentReplicas = 1024
+	maxServerBodyBytes     = 256 << 20
+	maxRequestTimeout      = 24 * time.Hour
+	maxReadTimeout         = time.Hour
+	maxRoutingTTL          = 30 * 24 * time.Hour
+	maxRoutingCooldown     = 24 * time.Hour
+	maxRoutingCapacityWait = 30 * time.Second
+	maxRoutingAttempts     = 65535
+	minAuditFlushInterval  = 10 * time.Millisecond
+	maxAuditFlushInterval  = time.Minute
+	maxAuditBufferSize     = 262144
+	maxAuditBatchSize      = 4096
+	minAuditCommitDelay    = time.Millisecond
+	maxAuditCommitDelay    = 50 * time.Millisecond
+	maxDeploymentReplicas  = 1024
 )
 
 const unlimitedRoutingAttempts = -1
@@ -205,18 +206,20 @@ type LocalMediaConfig struct {
 }
 
 type RoutingConfig struct {
-	StickyTTL                 Duration `yaml:"stickyTTL"`
-	CooldownBase              Duration `yaml:"cooldownBase"`
-	CooldownMax               Duration `yaml:"cooldownMax"`
-	CapacityWait              Duration `yaml:"capacityWait"`
-	MaxAttempts               int      `yaml:"maxAttempts"`
-	PreferFreeBuild           bool     `yaml:"preferFreeBuild"`
-	SegmentedSelectorEnabled  bool     `yaml:"segmentedSelectorEnabled"`
-	SegmentedMinCandidates    int      `yaml:"segmentedSelectorMinCandidates"`
-	SegmentedWindowSize       int      `yaml:"segmentedSelectorWindowSize"`
-	ReasoningReplayEnabled    bool     `yaml:"reasoningReplayEnabled"`
-	ReasoningReplayTTL        Duration `yaml:"reasoningReplayTTL"`
-	ReasoningReplayMaxEntries int      `yaml:"reasoningReplayMaxEntries"`
+	StickyTTL       Duration `yaml:"stickyTTL"`
+	CooldownBase    Duration `yaml:"cooldownBase"`
+	CooldownMax     Duration `yaml:"cooldownMax"`
+	CapacityWait    Duration `yaml:"capacityWait"`
+	MaxAttempts     int      `yaml:"maxAttempts"`
+	PreferFreeBuild bool     `yaml:"preferFreeBuild"`
+	// MarkBuildChatDeniedAsReauth 为 true 时，Build chat 权限拒绝标 reauthRequired，默认 false。
+	MarkBuildChatDeniedAsReauth bool     `yaml:"markBuildChatDeniedAsReauth"`
+	SegmentedSelectorEnabled    bool     `yaml:"segmentedSelectorEnabled"`
+	SegmentedMinCandidates      int      `yaml:"segmentedSelectorMinCandidates"`
+	SegmentedWindowSize         int      `yaml:"segmentedSelectorWindowSize"`
+	ReasoningReplayEnabled      bool     `yaml:"reasoningReplayEnabled"`
+	ReasoningReplayTTL          Duration `yaml:"reasoningReplayTTL"`
+	ReasoningReplayMaxEntries   int      `yaml:"reasoningReplayMaxEntries"`
 }
 
 type AuditConfig struct {
@@ -559,7 +562,7 @@ func (c Config) Validate() error {
 	if c.Provider.Web.RecoveryBackoffBase.Value() < 5*time.Second || c.Provider.Web.RecoveryBackoffMax.Value() < c.Provider.Web.RecoveryBackoffBase.Value() || c.Provider.Web.RecoveryBackoffMax.Value() > 6*time.Hour {
 		return errors.New("provider.web 恢复退避配置无效")
 	}
-	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > 5*time.Second || c.Routing.MaxAttempts < unlimitedRoutingAttempts || c.Routing.MaxAttempts == 0 || c.Routing.MaxAttempts > maxRoutingAttempts {
+	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > maxRoutingCapacityWait || c.Routing.MaxAttempts < unlimitedRoutingAttempts || c.Routing.MaxAttempts == 0 || c.Routing.MaxAttempts > maxRoutingAttempts {
 		return errors.New("routing 配置无效")
 	}
 	if c.Routing.SegmentedMinCandidates < 100 || c.Routing.SegmentedMinCandidates > 1000000 ||
@@ -763,18 +766,19 @@ func defaultConfig() Config {
 			Local: LocalMediaConfig{Path: "./data/media"},
 		},
 		Routing: RoutingConfig{
-			StickyTTL:                 Duration(time.Hour),
-			CooldownBase:              Duration(30 * time.Second),
-			CooldownMax:               Duration(30 * time.Minute),
-			CapacityWait:              Duration(500 * time.Millisecond),
-			MaxAttempts:               3,
-			PreferFreeBuild:           false,
-			SegmentedSelectorEnabled:  false,
-			SegmentedMinCandidates:    3000,
-			SegmentedWindowSize:       64,
-			ReasoningReplayEnabled:    true,
-			ReasoningReplayTTL:        Duration(time.Hour),
-			ReasoningReplayMaxEntries: 10240,
+			StickyTTL:                   Duration(time.Hour),
+			CooldownBase:                Duration(30 * time.Second),
+			CooldownMax:                 Duration(30 * time.Minute),
+			CapacityWait:                Duration(500 * time.Millisecond),
+			MaxAttempts:                 999,
+			MarkBuildChatDeniedAsReauth: false,
+			PreferFreeBuild:             false,
+			SegmentedSelectorEnabled:    false,
+			SegmentedMinCandidates:      3000,
+			SegmentedWindowSize:         64,
+			ReasoningReplayEnabled:      true,
+			ReasoningReplayTTL:          Duration(time.Hour),
+			ReasoningReplayMaxEntries:   10240,
 		},
 		Audit: AuditConfig{
 			BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond), CommitDelay: Duration(5 * time.Millisecond),

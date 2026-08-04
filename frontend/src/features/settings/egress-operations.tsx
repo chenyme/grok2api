@@ -248,7 +248,7 @@ export function EgressSources({ scopeLabel }: { scopeLabel: (scope: EgressScope)
   const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState("");
   const [scopeFilter, setScopeFilter] = useState("");
-  const sourcesQuery = useQuery({ queryKey: ["egress-sources"], queryFn: listEgressSources });
+  const sourcesQuery = useQuery({ queryKey: ["egress-sources"], queryFn: () => listEgressSources() });
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });

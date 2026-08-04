@@ -59,7 +59,11 @@ func TestListFilters(t *testing.T) {
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{ExcludeIDs: []uint64{free.ID}, Now: now}, 2)
 	refreshable := true
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Refreshable: &refreshable, Now: now}, 1)
-	boundNode := egressNodeModel{Name: "bound-filter", Scope: "grok_build", Enabled: true}
+	source := egressSubscriptionSourceModel{Name: "bound-source-filter", Scope: "grok_build", Enabled: true}
+	if err := database.db.WithContext(ctx).Create(&source).Error; err != nil {
+		t.Fatal(err)
+	}
+	boundNode := egressNodeModel{Name: "bound-filter", Scope: "grok_build", Enabled: true, SourceID: &source.ID, SourceKey: "first"}
 	if err := database.db.WithContext(ctx).Create(&boundNode).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +72,19 @@ func TestListFilters(t *testing.T) {
 	}
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Egress: "bound", Now: now}, 1)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Egress: "unbound", Now: now}, 2)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Egress: "bound", EgressNodeID: boundNode.ID, Now: now}, 1)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Egress: "bound", EgressSourceID: source.ID, Now: now}, 1)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Egress: "bound", EgressNodeID: boundNode.ID + 1000, Now: now}, 0)
+
+	secondSourceNode := egressNodeModel{Name: "bound-filter-second", Scope: "grok_build", Enabled: true, SourceID: &source.ID, SourceKey: "second"}
+	if err := database.db.WithContext(ctx).Create(&secondSourceNode).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", paid.ID).Update("egress_node_id", secondSourceNode.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Egress: "bound", EgressSourceID: source.ID, Now: now}, 2)
+	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{Egress: "bound", EgressNodeID: secondSourceNode.ID, Now: now}, 1)
 
 	// 零 Billing + build_super_entitled：paid 可查到，free 查不到。
 	entitled := accountModel{IdentityKey: testIdentityKey("entitled-zero"), Provider: "grok_build", Name: "entitled-zero", SourceKey: "entitled-zero", ObservedModel: "grok-build-free", Enabled: true, AuthStatus: "active", Priority: 1, BuildSuperEntitled: true}
