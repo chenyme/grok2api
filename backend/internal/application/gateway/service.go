@@ -505,8 +505,9 @@ func (s *Service) resolvePublicModelRoutes(ctx context.Context, publicModel stri
 			return routes, alias.ReasoningEffort, resolveErr
 		}
 	}
-	// Dynamic effort-suffix aliases (e.g. grok-4.5-low) for any provider that exposes the base model.
-	// Only levels the base model truly supports are accepted.
+	// Dynamic effort-suffix aliases (e.g. grok-4.5-low) for any Provider that
+	// exposes the base model. Fixed-reasoning Providers may compatibility-accept
+	// an alias while their wire normalizer drops the unsupported effort.
 	if base, effort, ok := modeldomain.ParseReasoningModelAlias(publicModel); ok {
 		if !allowModelAliases {
 			return nil, "", err
@@ -515,7 +516,17 @@ func (s *Service) resolvePublicModelRoutes(ctx context.Context, publicModel stri
 		if resolveErr != nil {
 			return nil, "", resolveErr
 		}
-		return routes, effort, nil
+		eligible := make([]modeldomain.Route, 0, len(routes))
+		for _, route := range routes {
+			if modeldomain.SupportsReasoningEffortForProvider(route.Provider, route.PublicID, effort) ||
+				modeldomain.IsFixedReasoningForProvider(route.Provider, route.PublicID) {
+				eligible = append(eligible, route)
+			}
+		}
+		if len(eligible) == 0 {
+			return nil, "", repository.ErrNotFound
+		}
+		return eligible, effort, nil
 	}
 	return nil, "", err
 }

@@ -43,6 +43,7 @@ func TestAppendReasoningModelAliasesUsesRealSupportedLevels(t *testing.T) {
 	base := newModelListItems([]modeldomain.Route{
 		{PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
 		{PublicID: "Console/grok-4.3", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
+		{PublicID: "Console/grok-4.20-0309-reasoning", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
 		{PublicID: "Build/grok-build-0.1", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
 	})
 	expanded := appendReasoningModelAliases(base)
@@ -55,7 +56,10 @@ func TestAppendReasoningModelAliasesUsesRealSupportedLevels(t *testing.T) {
 			t.Fatalf("missing model %q in %#v", want, expanded)
 		}
 	}
-	for _, reject := range []string{"grok-4.5-none", "grok-4.5-xhigh", "grok-4.5-max", "grok-4.3-xhigh", "grok-build-0.1-none"} {
+	for _, reject := range []string{
+		"grok-4.5-none", "grok-4.5-xhigh", "grok-4.5-max", "grok-4.3-xhigh", "grok-build-0.1-none",
+		"grok-4.20-0309-reasoning-low", "grok-4.20-0309-reasoning-medium", "grok-4.20-0309-reasoning-high",
+	} {
 		if ids[reject] {
 			t.Fatalf("unexpected unsupported alias %q", reject)
 		}
@@ -100,6 +104,18 @@ func TestNewCodexModelCatalogIncludesRequiredProtocolFields(t *testing.T) {
 	var envelope map[string]json.RawMessage
 	if err = json.Unmarshal(body, &envelope); err != nil || len(envelope) != 1 || envelope["models"] == nil {
 		t.Fatalf("catalog envelope = %s, err = %v", body, err)
+	}
+}
+
+func TestCodexCatalogMarksConsoleGrok420AsFixedReasoning(t *testing.T) {
+	entry := newCodexModelCatalog([]modelListItem{{
+		ID: "grok-4.20-0309-reasoning", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses,
+	}}).Models[0]
+	if entry.DefaultReasoningLevel != "none" || len(entry.SupportedReasoningLevels) != 0 {
+		t.Fatalf("fixed reasoning efforts = default %q, levels %#v", entry.DefaultReasoningLevel, entry.SupportedReasoningLevels)
+	}
+	if !entry.SupportsReasoningSummaryParameter || !entry.SupportsReasoningSummaries {
+		t.Fatalf("fixed reasoning model lost summary support: %#v", entry)
 	}
 }
 

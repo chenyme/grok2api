@@ -257,6 +257,10 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
   const requestSeqRef = useRef(0);
   const activeRequestSeqRef = useRef(0);
   const restoredInitialModelRef = useRef(false);
+  const selectedModelRoute = useMemo(() => modelOptions.find((option) => option.publicId === model), [model, modelOptions]);
+  const fixedReasoningModel = isFixedReasoningConsoleModel(selectedModelRoute);
+  const effectiveReasoningEffort: ReasoningEffort = fixedReasoningModel ? "auto" : reasoningEffort;
+  const reasoningEffortOptions: ReasoningEffort[] = fixedReasoningModel ? ["auto"] : ["auto", "none", "low", "medium", "high", "xhigh"];
 
   useEffect(() => {
     if (restoredInitialModelRef.current || modelOptions.length === 0) return;
@@ -276,7 +280,7 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
         updatedAt: currentTimestamp(),
         model,
         promptCacheKey,
-        reasoningEffort,
+        reasoningEffort: effectiveReasoningEffort,
         webSearch,
         xSearch,
         messages,
@@ -287,7 +291,7 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [messages, model, promptCacheKey, reasoningEffort, sessionCreatedAt, sessionId, storageScope, webSearch, xSearch]);
+  }, [effectiveReasoningEffort, messages, model, promptCacheKey, sessionCreatedAt, sessionId, storageScope, webSearch, xSearch]);
 
   useEffect(() => () => {
     cancelActiveRequest();
@@ -408,7 +412,7 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
     mutation.mutate({
       messages: requestMessages,
       promptCacheKey: params.cacheKey,
-      reasoningEffort,
+      reasoningEffort: effectiveReasoningEffort,
       webSearch,
       xSearch,
       assistantMessageId: params.assistantMessage.id,
@@ -605,7 +609,7 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
         updatedAt: currentTimestamp(),
         model,
         promptCacheKey,
-        reasoningEffort,
+        reasoningEffort: effectiveReasoningEffort,
         webSearch,
         xSearch,
         messages,
@@ -637,7 +641,7 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
         updatedAt: currentTimestamp(),
         model,
         promptCacheKey,
-        reasoningEffort,
+        reasoningEffort: effectiveReasoningEffort,
         webSearch,
         xSearch,
         messages,
@@ -774,12 +778,13 @@ function ChatPanel({ apiKey, model, modelOptions, onModelChange, storageScope, t
                 active={xSearch}
               />
               <CompactIconSelect
-                value={reasoningEffort}
-                options={(["auto", "none", "low", "medium", "high", "xhigh"] as ReasoningEffort[]).map((effort) => ({ value: effort, label: t(`creativeConsole.reasoning.${effort}`) }))}
+                value={effectiveReasoningEffort}
+                options={reasoningEffortOptions.map((effort) => ({ value: effort, label: t(`creativeConsole.reasoning.${effort}`) }))}
                 onChange={(value) => setReasoningEffort(value as ReasoningEffort)}
                 ariaLabel={t("creativeConsole.reasoningEffort")}
                 icon={<Sparkle />}
-                active={reasoningEffort !== "auto" && reasoningEffort !== "none"}
+                active={effectiveReasoningEffort !== "auto" && effectiveReasoningEffort !== "none"}
+                disabled={fixedReasoningModel}
               />
             </div>
             {mutation.isPending ? (
@@ -1053,10 +1058,10 @@ function CompactSelect({ value, options, onChange, ariaLabel, suffix, icon }: { 
   );
 }
 
-function CompactIconSelect({ value, options, onChange, ariaLabel, icon, active = false }: { value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void; ariaLabel: string; icon: ReactNode; active?: boolean }) {
+function CompactIconSelect({ value, options, onChange, ariaLabel, icon, active = false, disabled = false }: { value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void; ariaLabel: string; icon: ReactNode; active?: boolean; disabled?: boolean }) {
   const selectedLabel = options.find((option) => option.value === value)?.label ?? ariaLabel;
   return (
-    <Select value={value} onValueChange={onChange}>
+    <Select value={value} onValueChange={onChange} disabled={disabled}>
       <Tooltip>
         <TooltipTrigger asChild>
           <SelectTrigger className={cn("h-8 w-auto min-w-8 gap-1 bg-transparent px-2 shadow-none hover:bg-secondary/70 focus:bg-secondary/70 focus:ring-0", active && "bg-secondary/70 text-foreground")} aria-label={`${ariaLabel}: ${selectedLabel}`}>
@@ -1283,6 +1288,10 @@ function uniqueModelsByPublicID(models: ModelRouteDTO[]): ModelRouteDTO[] {
     seen.add(model.publicId);
     return true;
   });
+}
+
+function isFixedReasoningConsoleModel(model: ModelRouteDTO | undefined): boolean {
+  return model?.provider === "grok_console" && model.upstreamModel === "grok-4.20-0309-reasoning";
 }
 
 let fallbackMessageID = 0;
