@@ -1,6 +1,10 @@
 package model
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/chenyme/grok2api/backend/internal/domain/account"
+)
 
 func TestSupportedReasoningEffortsPerModel(t *testing.T) {
 	tests := []struct {
@@ -11,6 +15,7 @@ func TestSupportedReasoningEffortsPerModel(t *testing.T) {
 		{model: "Build/grok-4.5", want: []string{"low", "medium", "high"}},
 		{model: "grok-4.3", want: []string{"none", "low", "medium", "high"}},
 		{model: "grok-4.20-0309-reasoning", want: []string{"low", "medium", "high"}},
+		{model: "Console/grok-4.20-0309-reasoning", want: []string{}},
 		{model: "grok-4.20-multi-agent-0309", want: []string{"low", "medium", "high", "xhigh"}},
 		{model: "grok-build-0.1", want: []string{"none"}},
 		{model: "unknown-model", want: []string{"none"}},
@@ -32,6 +37,13 @@ func TestSupportedReasoningEffortsPerModel(t *testing.T) {
 	if !SupportsReasoningEffort("grok-4.3", "none") || SupportsReasoningEffort("grok-4.3", "xhigh") {
 		t.Fatal("grok-4.3 effort support mismatch")
 	}
+	if SupportsReasoningEffortForProvider(account.ProviderConsole, "grok-4.20-0309-reasoning", "low") ||
+		!SupportsReasoningEffortForProvider(account.ProviderBuild, "grok-4.20-0309-reasoning", "low") {
+		t.Fatal("grok-4.20 reasoning effort restriction must remain Console-specific")
+	}
+	if !SupportsReasoningForProvider(account.ProviderConsole, "grok-4.20-0309-reasoning") {
+		t.Fatal("fixed Console reasoning model must still advertise reasoning summaries")
+	}
 }
 
 func TestParseReasoningModelAlias(t *testing.T) {
@@ -51,6 +63,7 @@ func TestParseReasoningModelAlias(t *testing.T) {
 		{name: "prefixed base", input: "Build/grok-4.5-medium", wantBase: "Build/grok-4.5", wantLevel: "medium", wantOK: true},
 		{name: "base model not alias", input: "grok-4.5", wantOK: false},
 		{name: "single-level model no alias", input: "grok-build-0.1-none", wantOK: false},
+		{name: "fixed Console reasoning compatibility alias", input: "Console/grok-4.20-0309-reasoning-low", wantBase: "Console/grok-4.20-0309-reasoning", wantLevel: "low", wantOK: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -72,5 +85,11 @@ func TestReasoningAliasPublicIDs(t *testing.T) {
 	}
 	if got := ReasoningAliasPublicIDs("grok-build-0.1"); len(got) != 0 {
 		t.Fatalf("single-level model should not expand aliases: %#v", got)
+	}
+	if got := ReasoningAliasPublicIDsForProvider(account.ProviderConsole, "grok-4.20-0309-reasoning"); len(got) != 0 {
+		t.Fatalf("fixed Console reasoning model must not expand aliases: %#v", got)
+	}
+	if got := ReasoningAliasPublicIDsForProvider(account.ProviderBuild, "grok-4.20-0309-reasoning"); len(got) != 3 {
+		t.Fatalf("Console restriction leaked into Build aliases: %#v", got)
 	}
 }
