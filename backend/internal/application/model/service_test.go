@@ -135,7 +135,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 
 	// Super on primary Build: upstream exposes only grok-4.5 and fallback is disabled.
 	superPrimary, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
-		Provider: account.ProviderBuild, Name: "super-primary", SourceKey: "super-primary",
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "super-primary", SourceKey: "super-primary",
 		EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive,
 	})
 	if err != nil {
@@ -143,7 +143,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	}
 	// Super with fallback: the upstream catalog includes 1.5 and other models.
 	superFallback, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
-		Provider: account.ProviderBuild, Name: "super-fallback", SourceKey: "super-fallback",
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "super-fallback", SourceKey: "super-fallback",
 		EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive,
 		BuildAPIFallback: true,
 	})
@@ -152,7 +152,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	}
 	// Free: Billing has no paid signal, but the upstream catalog exposes 1.5.
 	freeAccount, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
-		Provider: account.ProviderBuild, Name: "free-fallback", SourceKey: "free-fallback",
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "free-fallback", SourceKey: "free-fallback",
 		EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive,
 		BuildAPIFallback: true,
 	})
@@ -161,7 +161,7 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	}
 	// Unknown: no Billing snapshot and the upstream catalog exposes 1.5.
 	unknownAccount, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
-		Provider: account.ProviderBuild, Name: "unknown", SourceKey: "unknown",
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "unknown", SourceKey: "unknown",
 		EncryptedAccessToken: encrypted, ExpiresAt: time.Now().Add(time.Hour), AuthStatus: account.AuthStatusActive,
 	})
 	if err != nil {
@@ -235,11 +235,18 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 	assertSupports(superPrimary.ID, "grok-4.5", true)
 	assertSupports(superFallback.ID, "grok-code-fast-1", true)
 	assertSupports(freeAccount.ID, "grok-4.5", true)
+	for _, accountID := range []uint64{superPrimary.ID, superFallback.ID, freeAccount.ID, unknownAccount.ID} {
+		assertSupports(accountID, modeldomain.GrokComposer25Fast, true)
+	}
 
 	// Build 1.5 routes default to the video capability.
 	route, err := modelRepo.GetByPublicID(ctx, "Build/"+video15)
 	if err != nil || route.Capability != modeldomain.CapabilityVideo {
 		t.Fatalf("build video route = %#v, err = %v", route, err)
+	}
+	composerRoute, err := modelRepo.GetByPublicID(ctx, modeldomain.GrokComposer25Fast)
+	if err != nil || composerRoute.Provider != account.ProviderBuild || composerRoute.Capability != modeldomain.CapabilityResponses {
+		t.Fatalf("Build Composer route = %#v, err = %v", composerRoute, err)
 	}
 	// Web does not use Build normalization and still supports its catalog models.
 	webCandidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderWeb, 0, "grok-imagine-video", "")
@@ -337,11 +344,13 @@ type buildCapabilityNormalizerAdapter struct {
 }
 
 func (a *buildCapabilityNormalizerAdapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string {
-	// Match cli.Adapter rules: Super (paid or entitlement) ensures 1.5; otherwise remove it exactly. Ignore BuildAPIFallback.
+	// Match cli.Adapter rules: Build OAuth adds Composer; Super (paid or
+	// entitlement) ensures 1.5; otherwise remove video 1.5 exactly.
 	const video15 = "grok-imagine-video-1.5"
 	super := account.IsBuildSuper(credential, billing)
-	result := make([]string, 0, len(models)+1)
-	seen := make(map[string]struct{}, len(models)+1)
+	composer := credential.Provider == account.ProviderBuild && credential.AuthType == account.AuthTypeOAuth
+	result := make([]string, 0, len(models)+2)
+	seen := make(map[string]struct{}, len(models)+2)
 	hasVideo15 := false
 	for _, modelName := range models {
 		if modelName == "" {
@@ -361,6 +370,11 @@ func (a *buildCapabilityNormalizerAdapter) NormalizeAccountModelCapabilities(mod
 	}
 	if super && !hasVideo15 {
 		result = append(result, video15)
+	}
+	if composer {
+		if _, exists := seen[modeldomain.GrokComposer25Fast]; !exists {
+			result = append(result, modeldomain.GrokComposer25Fast)
+		}
 	}
 	return result
 }

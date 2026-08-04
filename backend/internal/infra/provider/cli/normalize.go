@@ -128,6 +128,21 @@ func normalizeBuildReasoningEffortPayload(payload map[string]json.RawMessage, mo
 	if err := json.Unmarshal(raw, &reasoning); err != nil || reasoning == nil {
 		return false
 	}
+	// CPA and the current xAI model registry both treat Composer as a model
+	// without configurable thinking levels. Preserve other reasoning controls
+	// such as summary, but never forward reasoning.effort to Composer.
+	if modeldomain.IsGrokComposerModel(model) {
+		if _, exists := reasoning["effort"]; !exists {
+			return false
+		}
+		delete(reasoning, "effort")
+		if len(reasoning) == 0 {
+			delete(payload, "reasoning")
+		} else {
+			payload["reasoning"] = mustJSON(reasoning)
+		}
+		return true
+	}
 	var effort string
 	if err := json.Unmarshal(reasoning["effort"], &effort); err != nil {
 		return false

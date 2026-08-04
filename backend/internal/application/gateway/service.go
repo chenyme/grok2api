@@ -722,6 +722,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		firstToken = newFirstTokenTimer(startedAt)
 	}
 	eventID := newAuditEventID()
+	// Use a server-generated scope so repeated or absent client request IDs
+	// cannot accidentally join independent Composer conversations.
+	requestSessionScope := eventID
 	operation := input.Operation
 	if operation == "" {
 		operation = audit.OperationResponses
@@ -774,6 +777,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 					input.PromptCacheSeed,
 					input.Body,
 				)
+				identity = ensureBuildComposerSessionIdentity(identity, input.ClientKey.ID, candidate.Provider, candidate.UpstreamModel, requestSessionScope)
 				affinityKey = identity.affinityKey
 			}
 			candidateSession, selectionErr := s.selector.beginSelectionSessionForKey(
@@ -841,7 +845,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	ownershipPromptCacheKey := ""
 	reasoningReplayKey := ""
 	if route.Provider == accountdomain.ProviderBuild {
-		// Derive a stable identity from explicit session signals, message anchors, and model; never generate a random conv-id.
+		// Derive a stable identity from explicit session signals, message anchors,
+		// and model. Composer replaces message-only fallback identities with an
+		// isolated request identity that remains stable across retries.
 		identity := buildSessionIdentity{}
 		if ownership != nil && ownership.PromptCacheKey != "" {
 			// previous_response_id belongs to an existing Response chain and must inherit the root session identity;
@@ -858,6 +864,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				input.Body,
 			)
 		}
+		identity = ensureBuildComposerSessionIdentity(identity, input.ClientKey.ID, route.Provider, route.UpstreamModel, requestSessionScope)
 		input.PromptCacheKey = identity.upstreamID
 		affinityKey = identity.affinityKey
 		ownershipPromptCacheKey = identity.upstreamID
@@ -866,6 +873,8 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			s.logger.Debug("prompt_cache_session_empty", "request_id", input.RequestID, "model", route.UpstreamModel, "provider", route.Provider)
 		} else if identity.soft {
 			s.logger.Debug("prompt_cache_session_soft", "request_id", input.RequestID, "model", route.UpstreamModel)
+		} else if identity.isolated {
+			s.logger.Debug("prompt_cache_session_isolated", "request_id", input.RequestID, "model", route.UpstreamModel)
 		}
 	}
 	adapter, ok := s.providers.Responses(route.Provider)

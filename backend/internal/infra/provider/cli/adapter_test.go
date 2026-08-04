@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
@@ -395,6 +396,45 @@ func TestListModelsUsesOfficialMetadataHeaders(t *testing.T) {
 	}
 }
 
+func TestListModelsParsesOfficialIdentifierFallbacksAdditively(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, cipher)
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"data":[
+			{"id":"grok-4.5","model":"must-not-replace-id"},
+			{"model":"grok-composer-2.5-fast"},
+			{"modelId":"future-model"},
+			{"_meta":{"model":"meta-model"}},
+			{"_meta":{"modelId":"meta-id-model"}},
+			{"id":"hidden-model","hidden":true},
+			{"id":"meta-hidden-model","_meta":{"hidden":true}},
+			{"id":"grok-4.5"},
+			"malformed"
+		]}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	models, err := adapter.ListModels(context.Background(), account.Credential{EncryptedAccessToken: encrypted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"grok-4.5", modeldomain.GrokComposer25Fast, "future-model", "meta-model", "meta-id-model"}
+	if len(models) != len(want) {
+		t.Fatalf("models = %#v, want %#v", models, want)
+	}
+	for index := range want {
+		if models[index] != want[index] {
+			t.Fatalf("models = %#v, want %#v", models, want)
+		}
+	}
+}
+
 func TestModelCatalogETagSignalsMissingOrChangedCatalogBaseline(t *testing.T) {
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {
@@ -527,6 +567,28 @@ func TestNormalizeAccountModelCapabilitiesSuperAddsVideo15(t *testing.T) {
 	got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5"}, &account.Billing{IsUnifiedBillingUser: true}, entitled)
 	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != buildVideoModel {
 		t.Fatalf("entitled catalog = %#v", got)
+	}
+}
+
+func TestNormalizeAccountModelCapabilitiesAddsComposerOnlyForBuildOAuth(t *testing.T) {
+	adapter := &Adapter{}
+	oauth := account.Credential{Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth}
+	got := adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5"}, &account.Billing{PlanName: "free"}, oauth)
+	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != modeldomain.GrokComposer25Fast {
+		t.Fatalf("OAuth Free capabilities = %#v", got)
+	}
+	got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5", modeldomain.GrokComposer25Fast, modeldomain.GrokComposer25Fast}, nil, oauth)
+	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != modeldomain.GrokComposer25Fast {
+		t.Fatalf("Composer capability was not deduplicated: %#v", got)
+	}
+	for _, credential := range []account.Credential{
+		{Provider: account.ProviderBuild, AuthType: account.AuthTypeSSO},
+		{Provider: account.ProviderWeb, AuthType: account.AuthTypeOAuth},
+	} {
+		got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5"}, nil, credential)
+		if len(got) != 1 || got[0] != "grok-4.5" {
+			t.Fatalf("Composer leaked outside Build OAuth for %#v: %#v", credential, got)
+		}
 	}
 }
 

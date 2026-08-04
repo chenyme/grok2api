@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 )
 
 func TestResolveBuildSessionIdentityIsStableAndTenantIsolated(t *testing.T) {
@@ -19,6 +20,35 @@ func TestResolveBuildSessionIdentityIsStableAndTenantIsolated(t *testing.T) {
 		if value.upstreamID == base.upstreamID || value.affinityKey == base.affinityKey {
 			t.Fatalf("%s was not isolated: %#v vs %#v", name, value, base)
 		}
+	}
+}
+
+func TestEnsureBuildComposerSessionIdentityIsRequestStable(t *testing.T) {
+	empty := buildSessionIdentity{}
+	first := ensureBuildComposerSessionIdentity(empty, 7, accountdomain.ProviderBuild, modeldomain.GrokComposer25Fast, "request-1")
+	repeated := ensureBuildComposerSessionIdentity(empty, 7, accountdomain.ProviderBuild, modeldomain.GrokComposer25Fast, "request-1")
+	other := ensureBuildComposerSessionIdentity(empty, 7, accountdomain.ProviderBuild, modeldomain.GrokComposer25Fast, "request-2")
+	if first.upstreamID == "" || first.affinityKey == "" || !first.isolated || first.replayKey != "" || first != repeated {
+		t.Fatalf("Composer isolated identity unstable: first=%#v repeated=%#v", first, repeated)
+	}
+	if first.upstreamID == other.upstreamID || first.affinityKey == other.affinityKey {
+		t.Fatalf("different Composer requests shared identity: first=%#v other=%#v", first, other)
+	}
+	if got := ensureBuildComposerSessionIdentity(empty, 7, accountdomain.ProviderBuild, "grok-4.5", "request-1"); got != empty {
+		t.Fatalf("non-Composer request gained an identity: %#v", got)
+	}
+	explicit := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, modeldomain.GrokComposer25Fast, "client-session", "", nil)
+	if got := ensureBuildComposerSessionIdentity(explicit, 7, accountdomain.ProviderBuild, modeldomain.GrokComposer25Fast, "request-1"); got != explicit {
+		t.Fatalf("explicit Composer identity was overwritten: got=%#v want=%#v", got, explicit)
+	}
+	soft := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, modeldomain.GrokComposer25Fast, "", "", []byte(`{"input":"same opening message"}`))
+	isolated := ensureBuildComposerSessionIdentity(soft, 7, accountdomain.ProviderBuild, modeldomain.GrokComposer25Fast, "request-1")
+	if !soft.soft || isolated.upstreamID == soft.upstreamID || isolated.soft || !isolated.isolated {
+		t.Fatalf("soft Composer identity was not isolated: soft=%#v isolated=%#v", soft, isolated)
+	}
+	softNonComposer := resolveBuildSessionIdentity(7, accountdomain.ProviderBuild, "grok-4.5", "", "", []byte(`{"input":"same opening message"}`))
+	if got := ensureBuildComposerSessionIdentity(softNonComposer, 7, accountdomain.ProviderBuild, "grok-4.5", "request-1"); got != softNonComposer {
+		t.Fatalf("non-Composer soft identity was overwritten: got=%#v want=%#v", got, softNonComposer)
 	}
 }
 

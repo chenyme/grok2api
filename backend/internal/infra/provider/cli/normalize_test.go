@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 )
 
 func TestNormalizeResponsesRequest(t *testing.T) {
@@ -71,6 +73,63 @@ func TestNormalizeBuildReasoningEffort(t *testing.T) {
 				t.Fatalf("reasoning = %#v, want %q", payload["reasoning"], test.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeBuildComposerStripsReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "responses", body: []byte(`{"reasoning":{"effort":"high","summary":"auto"},"input":"hello"}`)},
+		{name: "chat conversion", body: func() []byte {
+			converted, _, err := conversation.ConvertRequestWithOptions(
+				[]byte(`{"model":"public","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"high"}`),
+				modeldomain.GrokComposer25Fast,
+				conversation.OperationChat,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return converted
+		}()},
+		{name: "messages conversion", body: func() []byte {
+			converted, _, err := conversation.ConvertRequestWithOptions(
+				[]byte(`{"model":"public","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"xhigh"}}`),
+				modeldomain.GrokComposer25Fast,
+				conversation.OperationMessages,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return converted
+		}()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			normalized, err := normalizeBuildRequest(test.body, modeldomain.GrokComposer25Fast)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if json.Unmarshal(normalized, &payload) != nil {
+				t.Fatalf("invalid normalized payload: %s", normalized)
+			}
+			if reasoning, ok := payload["reasoning"].(map[string]any); ok {
+				if _, exists := reasoning["effort"]; exists {
+					t.Fatalf("Composer reasoning effort leaked upstream: %#v", payload)
+				}
+			}
+		})
+	}
+
+	stripped, err := normalizeBuildRequest([]byte(`{"reasoning":{"effort":"medium"},"input":"hello"}`), modeldomain.GrokComposer25Fast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if json.Unmarshal(stripped, &payload) != nil || payload["reasoning"] != nil {
+		t.Fatalf("empty Composer reasoning object was not removed: %s", stripped)
 	}
 }
 

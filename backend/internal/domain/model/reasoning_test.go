@@ -18,6 +18,7 @@ func TestSupportedReasoningEffortsPerModel(t *testing.T) {
 		{model: "Console/grok-4.20-0309-reasoning", want: []string{}},
 		{model: "grok-4.20-multi-agent-0309", want: []string{"low", "medium", "high", "xhigh"}},
 		{model: "grok-build-0.1", want: []string{"none"}},
+		{model: GrokComposer25Fast, want: []string{"none"}},
 		{model: "unknown-model", want: []string{"none"}},
 	}
 	for _, test := range tests {
@@ -43,6 +44,19 @@ func TestSupportedReasoningEffortsPerModel(t *testing.T) {
 	}
 	if !SupportsReasoningForProvider(account.ProviderConsole, "grok-4.20-0309-reasoning") {
 		t.Fatal("fixed Console reasoning model must still advertise reasoning summaries")
+	}
+}
+
+func TestIsGrokComposerModel(t *testing.T) {
+	for _, value := range []string{GrokComposer25Fast, "Build/" + GrokComposer25Fast, "GROK-COMPOSER-FUTURE"} {
+		if !IsGrokComposerModel(value) {
+			t.Fatalf("Composer model not recognized: %q", value)
+		}
+	}
+	for _, value := range []string{"grok-4.5", "Console/grok-composerish", ""} {
+		if IsGrokComposerModel(value) {
+			t.Fatalf("non-Composer model recognized: %q", value)
+		}
 	}
 }
 

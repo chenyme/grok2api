@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 )
 
 const buildSessionIdentityVersion = "v3"
@@ -22,6 +23,9 @@ type buildSessionIdentity struct {
 	replayKey string
 	// soft indicates a fallback identity derived from message content when no explicit session is available.
 	soft bool
+	// isolated indicates a Composer-only request identity used when the client
+	// supplied no stable session.
+	isolated bool
 }
 
 // resolveBuildSessionIdentity derives a stable Grok Build session identity:
@@ -63,6 +67,33 @@ func resolveBuildSessionIdentity(clientKeyID uint64, provider accountdomain.Prov
 		affinityKey: hexDigest(affinitySource),
 		soft:        true,
 	}
+}
+
+// ensureBuildComposerSessionIdentity mirrors Composer's isolated-conversation
+// requirement without copying CPA's per-attempt random UUID behavior. The
+// request scope is stable across retries and route failover, while replay stays
+// disabled because this is not an explicit client conversation.
+func ensureBuildComposerSessionIdentity(identity buildSessionIdentity, clientKeyID uint64, provider accountdomain.Provider, upstreamModel, requestScope string) buildSessionIdentity {
+	// Explicit client sessions and previous-response ownership are authoritative.
+	// A soft message-prefix identity is intentionally replaced: two independent
+	// Composer requests may begin with the same text and must not share a
+	// conversation merely because their first message matches.
+	if (identity.upstreamID != "" && !identity.soft) || clientKeyID == 0 || provider != accountdomain.ProviderBuild || !modeldomain.IsGrokComposerModel(upstreamModel) {
+		return identity
+	}
+	requestScope = strings.TrimSpace(requestScope)
+	if requestScope == "" {
+		return identity
+	}
+	model := strings.ToLower(strings.TrimSpace(upstreamModel))
+	upstreamSource := fmt.Sprintf("grok2api:build-composer-isolated:v1:%d:%s:%s:%s", clientKeyID, provider, model, requestScope)
+	affinitySource := fmt.Sprintf("grok2api:build-composer-affinity:v1:%d:%s:%s:%s", clientKeyID, provider, model, requestScope)
+	identity.upstreamID = digestUUID(upstreamSource)
+	identity.affinityKey = hexDigest(affinitySource)
+	identity.replayKey = ""
+	identity.soft = false
+	identity.isolated = true
+	return identity
 }
 
 func digestUUID(source string) string {
