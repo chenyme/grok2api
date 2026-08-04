@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -1435,7 +1437,16 @@ func (s *Service) syncWebCredentialsToConsole(ctx context.Context, values []acco
 		if err != nil {
 			return ImportResult{}, fmt.Errorf("解密 Grok Web SSO: %w", err)
 		}
-		parsed, err := adapter.ParseImportedCredentials([]byte(token))
+		// 非法 UTF-8 会被 json.Marshal 静默改写为 U+FFFD，显式拒绝优于静默改动（不应回显 token 内容）。
+		if !utf8.ValidString(token) {
+			return ImportResult{}, fmt.Errorf("解密 Grok Web SSO: 凭据不是合法 UTF-8")
+		}
+		// 内部调用固定走 JSON 对象路径，避免 plain token 被格式嗅探（如「[」JSON 保留前缀）误判。
+		payload, err := json.Marshal(map[string]string{"sso_token": token})
+		if err != nil {
+			return ImportResult{}, fmt.Errorf("生成 Grok Console SSO 凭据: %w", err)
+		}
+		parsed, err := adapter.ParseImportedCredentials(payload)
 		if err != nil {
 			return ImportResult{}, fmt.Errorf("生成 Grok Console SSO 凭据: %w", err)
 		}

@@ -353,6 +353,35 @@ func TestConsoleImportAcceptsJSONLines(t *testing.T) {
 	}
 }
 
+// 「[」为 JSON 保留前缀：顶层裸数组必须走 JSON 解析，不得落入纯文本路径静默导入。
+func TestConsoleImportAcceptsBareArray(t *testing.T) {
+	values, err := parseImportedCredentials([]byte(`[{"name":"console-a","sso_token":"token-a","cloudflare_cookies":"cf_clearance=abc"},{"sso_token":"token-b"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0].Name != "console-a" || values[0].AccessToken != "token-a" || values[1].AccessToken != "token-b" {
+		t.Fatalf("bare array values = %#v", values)
+	}
+	if values[0].CloudflareCookies != "cf_clearance=abc" {
+		t.Fatalf("cloudflare cookies = %q", values[0].CloudflareCookies)
+	}
+}
+
+func TestConsoleImportBareArrayErrors(t *testing.T) {
+	// 空数组：JSON 路径解析出 0 个账号，而不是被当成空文本导入。
+	if _, err := parseImportedCredentials([]byte("[]")); err == nil || !strings.Contains(err.Error(), "没有 Grok Console 账号") {
+		t.Fatalf("empty array error = %v", err)
+	}
+	// null 元素：归一化阶段带账号序号报错。
+	if _, err := parseImportedCredentials([]byte(`[{"sso_token":"token-a"},null]`)); err == nil || !strings.Contains(err.Error(), "第 2 个账号缺少 sso_token") {
+		t.Fatalf("null element error = %v", err)
+	}
+	// 非法 [ 开头输入：明确 JSON 报错，禁止静默当纯文本导入。
+	if _, err := parseImportedCredentials([]byte("[not-json")); err == nil || !strings.Contains(err.Error(), "JSON") {
+		t.Fatalf("malformed array error = %v", err)
+	}
+}
+
 func TestConsoleRetryAfterParsesCompoundDuration(t *testing.T) {
 	if value := consoleRetryAfter([]byte(`Rate limit reached. Resets in: 1h 2m 3s`)); value != time.Hour+2*time.Minute+3*time.Second {
 		t.Fatalf("retry after = %s", value)
