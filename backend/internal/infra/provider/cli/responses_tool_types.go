@@ -22,7 +22,7 @@ var nativeHostedToolChoiceTypes = map[string]string{
 	"local_shell":                   "shell",
 }
 
-// webSearchCompatibilityFields lists newer Codex/OpenAI controls that Build 0.2.110 rejects.
+// webSearchCompatibilityFields lists newer Codex/OpenAI controls that the verified Build wire contract rejects.
 // The compatibility layer can only reduce them to Build's native minimal search tool.
 var webSearchCompatibilityFields = map[string]struct{}{
 	"external_web_access":  {},
@@ -34,7 +34,7 @@ var webSearchCompatibilityFields = map[string]struct{}{
 	"safe_search":          {},
 }
 
-// normalizeNativeTool preserves tools supported by Build 0.2.110 and removes Tool Search-only fields.
+// normalizeNativeTool preserves native Build tools and removes Tool Search-only fields.
 func (c *responsesToolCompatibility) normalizeNativeTool(tool map[string]any, _ string) ([]any, error) {
 	converted := cloneJSONObject(tool)
 	if _, exists := converted["defer_loading"]; exists {
@@ -84,7 +84,7 @@ func (c *responsesToolCompatibility) normalizeXSearchTool(tool map[string]any, p
 	return c.normalizeNativeTool(converted, param)
 }
 
-// normalizeWebSearchTool preserves Build 0.2.110's allowed_domains constraint and safely
+// normalizeWebSearchTool preserves Build's allowed_domains constraint and safely
 // reduces newer controls that cannot be represented with equivalent semantics.
 func (c *responsesToolCompatibility) normalizeWebSearchTool(tool map[string]any, kind, param string) ([]any, error) {
 	if external, exists := tool["external_web_access"]; exists {
@@ -248,7 +248,7 @@ func (c *responsesToolCompatibility) normalizeMCPTool(tool map[string]any, clien
 
 func unsupportedBuildToolError(kind, param string) error {
 	return &responsesRequestError{
-		Message: fmt.Sprintf("Grok Build 0.2.110 不支持 tools.type=%q", kind),
+		Message: fmt.Sprintf("Grok Build 不支持 tools.type=%q", kind),
 		Param:   param + ".type", Code: "unsupported_parameter",
 	}
 }

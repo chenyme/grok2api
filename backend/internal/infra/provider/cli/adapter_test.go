@@ -935,6 +935,10 @@ func TestForwardResponseInjectsPromptCacheKeyAfterChatConversion(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
+		includes, _ := payload["include"].([]any)
+		if payload["store"] != false || len(includes) != 1 || includes[0] != "reasoning.encrypted_content" {
+			t.Fatalf("Build defaults = %#v", payload)
+		}
 		expectedSessionID, err := grokSessionID("chat-cache-key")
 		if err != nil {
 			t.Fatal(err)
