@@ -66,6 +66,51 @@ class SessionRotatorTests(unittest.TestCase):
             self.assertIn("sid-new1111-t-10", credentials.read_text(encoding="utf-8"))
             self.assertIn("sid-new1111-t-10", mihomo.read_text(encoding="utf-8"))
 
+    def test_rotation_compares_against_live_pre_rotation_ip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            credentials = root / "credentials.list"
+            mihomo = root / "mihomo.yaml"
+            credentials.write_text("proxy.example:3000:user-sid-old1111-t-10:secret\n", encoding="utf-8")
+            mihomo.write_text("username: user-sid-old1111-t-10\n", encoding="utf-8")
+            cfg = session_rotator.Config(
+                listen="127.0.0.1", port=19099, token="", credentials_file=credentials,
+                mihomo_config_file=mihomo, mihomo_controller_url="http://127.0.0.1:9099",
+                mihomo_reload_path="/root/.config/mihomo/config.yaml", node_id_base=8,
+                listener_port_base=7951, sticky_minutes=10, max_attempts=1,
+                verify_timeout_seconds=5,
+            )
+            rotator = session_rotator.Rotator(cfg)
+            rotator._exit_ip = lambda _index: "203.0.113.20"
+            rotator._wait_for_exit_ip = lambda _index: "203.0.113.20"
+            rotator._update_session = lambda _index, _session: None
+            rotator._reload_mihomo = lambda: None
+            with self.assertRaisesRegex(RuntimeError, "same exit IP"):
+                rotator.rotate("8", expected_old_exit_ip="203.0.113.10")
+
+    def test_rotation_reports_live_old_ip_when_it_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            credentials = root / "credentials.list"
+            mihomo = root / "mihomo.yaml"
+            credentials.write_text("proxy.example:3000:user-sid-old1111-t-10:secret\n", encoding="utf-8")
+            mihomo.write_text("username: user-sid-old1111-t-10\n", encoding="utf-8")
+            cfg = session_rotator.Config(
+                listen="127.0.0.1", port=19099, token="", credentials_file=credentials,
+                mihomo_config_file=mihomo, mihomo_controller_url="http://127.0.0.1:9099",
+                mihomo_reload_path="/root/.config/mihomo/config.yaml", node_id_base=8,
+                listener_port_base=7951, sticky_minutes=10, max_attempts=1,
+                verify_timeout_seconds=5,
+            )
+            rotator = session_rotator.Rotator(cfg)
+            rotator._exit_ip = lambda _index: "203.0.113.20"
+            rotator._wait_for_exit_ip = lambda _index: "203.0.113.21"
+            rotator._update_session = lambda _index, _session: None
+            rotator._reload_mihomo = lambda: None
+            result = rotator.rotate("8", expected_old_exit_ip="203.0.113.10")
+            self.assertEqual(result["oldExitIp"], "203.0.113.20")
+            self.assertEqual(result["newExitIp"], "203.0.113.21")
+
 
 if __name__ == "__main__":
     unittest.main()

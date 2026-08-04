@@ -77,7 +77,7 @@ func (r *DashboardRepository) Snapshot(ctx context.Context, window repository.Da
 			Total  int64
 			Active int64
 		}
-		if err := tx.Model(&clientKeyModel{}).
+		if err := tx.Model(&clientKeyModel{}).Where("internal_kind IS NULL").
 			Select("COUNT(*) AS total, COALESCE(SUM(CASE WHEN enabled = ? AND (expires_at IS NULL OR expires_at > ?) THEN 1 ELSE 0 END), 0) AS active", true, snapshotAt).
 			Scan(&clientKeys).Error; err != nil {
 			return err

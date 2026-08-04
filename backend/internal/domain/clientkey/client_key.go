@@ -14,6 +14,8 @@ const (
 	MaxBillingLimitTicks = 9_000_000_000_000_000
 )
 
+const InternalKindQualityGuard = "quality_guard"
+
 type ProviderScope uint8
 
 const (
@@ -218,11 +220,14 @@ func (k Key) AccountScope() AccountScope {
 
 // Key 表示下游客户端调用凭据及其限制。
 type Key struct {
-	ID                    uint64
-	Name                  string
-	Prefix                string
-	SecretHash            string
-	EncryptedSecret       string
+	ID              uint64
+	Name            string
+	Prefix          string
+	SecretHash      string
+	EncryptedSecret string
+	// InternalKind marks server-managed identities that must never be exposed
+	// through the public client-key lifecycle or accepted by external auth.
+	InternalKind          string
 	Enabled               bool
 	ExpiresAt             *time.Time
 	RPMLimit              int

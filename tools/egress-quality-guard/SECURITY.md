@@ -1,19 +1,19 @@
 # Security notes
 
-Egress Quality Guard operates inside the grok2api administrator trust boundary. It can run real model requests and enable or disable configured egress nodes, so deploy it as an internal control-plane service.
+Egress Quality Guard is an internal control-plane sidecar. It can run real model requests and enable or disable configured egress nodes, but it does not receive administrator credentials or general administrator API access.
 
 ## Required controls
 
 - Never expose the sidecar directly to the public network. It does not listen on a port.
-- Keep the administrator password in a root-readable environment file with mode `0600`, or use `GROK2API_ADMIN_PASSWORD_FILE` with a mounted secret.
-- Use a dedicated client key for probes. Restrict it to the intended Build model and set explicit RPM and concurrency limits.
-- Keep the state volume private. State does not contain credentials or response bodies, but it contains node names, IDs, timing data, and operational history.
-- Keep both quality-guard endpoints behind the existing administrator authentication middleware.
-- Run the sidecar as an unprivileged user. The provided container and systemd unit do this by default.
+- The main service provisions a hidden, Build-only system identity for probes. It cannot authenticate through public `/v1` routes and cannot be listed, exported, edited, disabled, or deleted through Client Key administration.
+- Keep the shared volume private. Its bootstrap file contains a derived, quality-guard-only internal credential; state also contains node names, IDs, timing data, and operational history.
+- The internal credential must remain limited to the dedicated quality-guard route group. Never register the general administrator API under this middleware.
+- The passive-audit route exposes only performance metadata. It replaces Client Key identity with a server-computed `qualityProbe` marker, allowing the sidecar to ignore its own probes without learning other key IDs or names.
+- Run both containers as the matching unprivileged UID. The provided images use UID 10001 and directory mode `0700`.
 
 ## Data handling
 
-The status API deliberately omits the administrator password, client-key secret, proxy URLs, probe prompt, expected marker, and model response body. Logs contain classifications, timings, Token counts, node IDs, and node names only.
+The internal credential is derived from `secrets.jwtSecret` with domain separation, written atomically with mode `0600`, and checked in constant time. It is never returned by an HTTP API. The status API deliberately omits the client-key secret, proxy URLs, probe prompt, expected marker, and model response body. Logs contain classifications, timings, Token counts, node IDs, and node names only.
 
 The runtime policy file accepts only the documented strategy fields. It cannot edit credentials, proxy configuration, node membership, the probe model, or the probe prompt.
 

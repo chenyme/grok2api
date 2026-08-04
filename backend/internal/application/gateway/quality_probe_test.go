@@ -14,6 +14,16 @@ func TestQualityProbeSelectionFailureCanBeIdentifiedByCaller(t *testing.T) {
 	}
 }
 
+func TestQualityProbeModelIsPinnedToBuildNamespace(t *testing.T) {
+	got, ok := qualityProbeBuildPublicModel("grok-shared")
+	if !ok || got != "Build/grok-shared" {
+		t.Fatalf("Build probe model = %q, valid=%v", got, ok)
+	}
+	if _, ok := qualityProbeBuildPublicModel("Console/grok-shared"); ok {
+		t.Fatal("quality probe must reject an explicitly non-Build model")
+	}
+}
+
 func TestQualityProbeOutputTokensPerSecondMatchesAuditPanel(t *testing.T) {
 	got := qualityProbeOutputTokensPerSecond(1335, 17320, 17100)
 	want := float64(1335) * 1000 / 220

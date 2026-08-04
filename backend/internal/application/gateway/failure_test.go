@@ -254,7 +254,7 @@ func TestTerminalRequestForbiddenScopesBarePermissionDeniedToBuild(t *testing.T)
 func TestUnclassifiedFreeBuildForbiddenDoesNotOverrideKnownFailures(t *testing.T) {
 	credential := accountdomain.Credential{Provider: accountdomain.ProviderBuild}
 	unknown := &UpstreamFailure{HTTPStatus: http.StatusForbidden}
-	if !isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, unknown, false) {
+	if !isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, unknown, false, false) {
 		t.Fatal("unknown Free Build 403 must retain the short cooldown fallback")
 	}
 	known := []*UpstreamFailure{
@@ -266,14 +266,17 @@ func TestUnclassifiedFreeBuildForbiddenDoesNotOverrideKnownFailures(t *testing.T
 		{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission-denied"},
 	}
 	for _, failure := range known {
-		if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, failure, false) {
+		if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, failure, false, false) {
 			t.Fatalf("known failure was flattened into generic Free 403 handling: %#v", failure)
 		}
 	}
-	if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, unknown, true) {
+	if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, unknown, true, false) {
 		t.Fatal("configured invalidation must take precedence over generic Free 403 handling")
 	}
-	if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, accountdomain.Credential{Provider: accountdomain.ProviderBuild, BuildSuperEntitled: true}, nil, unknown, false) {
+	if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, accountdomain.Credential{Provider: accountdomain.ProviderBuild, BuildSuperEntitled: true}, nil, unknown, false, false) {
 		t.Fatal("Super Build 403 must not enter the Free fallback")
+	}
+	if isUnclassifiedFreeBuildForbidden(http.StatusForbidden, credential, nil, unknown, false, true) {
+		t.Fatal("quality probe egress failures must not cool borrowed accounts")
 	}
 }

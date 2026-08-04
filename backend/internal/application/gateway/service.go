@@ -742,6 +742,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
 	accountScope := input.ClientKey.AccountScope()
 	quotaProbeAttempted := false
+	qualityProbe := infraegress.QualityProbeFromContext(ctx)
 	var lastErr error
 	var lastFailure *UpstreamFailure
 	failureAttempts := newFailureAttemptRecorder(http.MethodPost, path)
@@ -961,7 +962,7 @@ attemptLoop:
 			// Unknown non-Super Build 403 responses retain the legacy short cooldown.
 			// Known quota, permission, block, and credential failures must reach their
 			// specific state transitions instead of being flattened into that fallback.
-			freeBuildForbidden := isUnclassifiedFreeBuildForbidden(response.StatusCode, credential, lease.Billing, lastFailure, buildForbiddenReauth)
+			freeBuildForbidden := isUnclassifiedFreeBuildForbidden(response.StatusCode, credential, lease.Billing, lastFailure, buildForbiddenReauth, qualityProbe)
 			if freeBuildForbidden {
 				lastFailure.AccountScoped = true
 			}
@@ -1559,11 +1560,11 @@ func isTerminalRequestForbidden(upstreamProvider accountdomain.Provider, failure
 		(upstreamProvider == accountdomain.ProviderBuild && isBarePermissionDenied(failure))
 }
 
-func isUnclassifiedFreeBuildForbidden(status int, credential accountdomain.Credential, billing *accountdomain.Billing, failure *UpstreamFailure, configuredInvalidation bool) bool {
+func isUnclassifiedFreeBuildForbidden(status int, credential accountdomain.Credential, billing *accountdomain.Billing, failure *UpstreamFailure, configuredInvalidation, qualityProbe bool) bool {
 	if status != http.StatusForbidden || credential.Provider != accountdomain.ProviderBuild || accountdomain.IsBuildSuper(credential, billing) || failure == nil {
 		return false
 	}
-	return !configuredInvalidation && !failure.SafetyRejection && !failure.AccountScoped && !isBarePermissionDenied(failure)
+	return !qualityProbe && !configuredInvalidation && !failure.SafetyRejection && !failure.AccountScoped && !isBarePermissionDenied(failure)
 }
 
 // forcesAccountFailover keeps Build account-scoped billing, permission, and rate-limit

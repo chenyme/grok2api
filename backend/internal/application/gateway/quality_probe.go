@@ -15,7 +15,9 @@ import (
 	"unicode/utf8"
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
@@ -67,9 +69,13 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 	}
 
 	startedAt := time.Now()
+	publicModel, ok := qualityProbeBuildPublicModel(input.Model)
+	if !ok {
+		return egressapp.QualityProbeResult{}, fmt.Errorf("%w: 质量探测模型必须属于 Grok Build", egressapp.ErrInvalidInput)
+	}
 	probeCtx := infraegress.WithQualityProbe(ctx)
 	result, err := s.CreateChatCompletion(probeCtx, Input{
-		RequestID: requestID, ClientKey: key, PublicModel: input.Model, Body: body,
+		RequestID: requestID, ClientKey: key, PublicModel: publicModel, Body: body,
 		Streaming: true, Operation: audit.OperationChat, ForcedEgressNodeID: nodeID,
 	})
 	if err != nil {
@@ -180,6 +186,10 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 		VisibleTokens: visibleTokens, VisibleCharacters: visibleCharacters, OutputTokensPerSecond: outputTokensPerSecond,
 		ExpectedMatched: strings.Contains(text, input.Expected), ResponseSHA256: hex.EncodeToString(digest[:]),
 	}, nil
+}
+
+func qualityProbeBuildPublicModel(value string) (string, bool) {
+	return modeldomain.NormalizePublicID(accountdomain.ProviderBuild, value)
 }
 
 func normalizeQualityProbeRequestError(err error) error {

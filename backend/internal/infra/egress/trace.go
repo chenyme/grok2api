@@ -85,6 +85,13 @@ func WithQualityProbe(ctx context.Context) context.Context {
 	return context.WithValue(ctx, qualityProbeContextKey{}, true)
 }
 
+// QualityProbeFromContext reports whether the request is an internal
+// administrator quality probe. Gateway retry policy uses this signal to keep
+// ambiguous egress failures from changing credential health.
+func QualityProbeFromContext(ctx context.Context) bool {
+	return qualityProbeFromContext(ctx)
+}
+
 func qualityProbeFromContext(ctx context.Context) bool {
 	if ctx == nil {
 		return false

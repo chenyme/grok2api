@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Active and passive quality guard for grok2api egress nodes.
 
-The guard calls the administrator-only quality-test endpoint, quarantines
-suspect nodes without deleting bindings, and restores only nodes it disabled.
-It uses only Python's standard library.
+The guard calls a scoped internal API, quarantines suspect nodes without
+deleting bindings, and restores only nodes it disabled. Configuration and the
+scoped internal credential are provided by grok2api through a private
+bootstrap file. The implementation uses only Python's standard library.
 """
 
 from __future__ import annotations
@@ -26,12 +27,6 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_PROMPT = (
-    "Write exactly 16 numbered lines about reliable distributed systems. "
-    "Each line must be one complete English sentence, with no markdown heading. "
-    "The final line must end with the exact marker QUALITY_OK."
-)
-
 RUNTIME_CONFIG_FIELDS = {
     "mode",
     "active_interval_seconds",
@@ -45,46 +40,19 @@ RUNTIME_CONFIG_FIELDS = {
 }
 
 
-def _env_int(name: str, default: int, minimum: int = 0) -> int:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-    if value < minimum:
-        raise ValueError(f"{name} must be >= {minimum}")
-    return value
+BOOTSTRAP_VERSION = 1
+BOOTSTRAP_FILE = Path("/var/lib/grok2api-quality-guard/bootstrap.json")
+INTERNAL_API_PREFIX = "/api/internal/v1/quality-guard"
 
 
-def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a number") from exc
-    if value < minimum:
-        raise ValueError(f"{name} must be >= {minimum}")
-    return value
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be true or false")
+class GuardDisabled(RuntimeError):
+    pass
 
 
 @dataclasses.dataclass(frozen=True)
 class Config:
     base_url: str
-    username: str
-    password: str
-    client_key_id: str
+    internal_token: str
     model: str
     node_ids: tuple[str, ...]
     mode: str
@@ -113,57 +81,57 @@ class Config:
     state_file: Path
     lock_file: Path
     runtime_config_file: Path
-    insecure_tls: bool
 
     @classmethod
-    def from_env(cls) -> "Config":
-        raw_nodes = os.getenv("QUALITY_GUARD_NODE_IDS", "")
-        node_ids = tuple(dict.fromkeys(value.strip() for value in raw_nodes.split(",") if value.strip()))
-        raw_rotatable_nodes = os.getenv("QUALITY_GUARD_ROTATABLE_NODE_IDS", "")
-        rotatable_node_ids = tuple(dict.fromkeys(value.strip() for value in raw_rotatable_nodes.split(",") if value.strip()))
-        password = os.getenv("GROK2API_ADMIN_PASSWORD", "")
-        password_file = os.getenv("GROK2API_ADMIN_PASSWORD_FILE", "").strip()
-        if password_file:
-            try:
-                password = Path(password_file).read_text(encoding="utf-8").rstrip("\r\n")
-            except OSError as exc:
-                raise ValueError("cannot read GROK2API_ADMIN_PASSWORD_FILE") from exc
-        legacy_interval = os.getenv("QUALITY_GUARD_INTERVAL_SECONDS", "").strip()
-        active_interval_default = int(legacy_interval) if legacy_interval else 1800
+    def from_bootstrap(cls, path: Path = BOOTSTRAP_FILE) -> "Config":
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError as exc:
+            raise ValueError("quality guard bootstrap file is missing; restart grok2api") from exc
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"cannot read quality guard bootstrap: {type(exc).__name__}") from exc
+        if not isinstance(payload, dict) or payload.get("version") != BOOTSTRAP_VERSION:
+            raise ValueError("unsupported quality guard bootstrap")
+        if not payload.get("enabled"):
+            raise GuardDisabled("qualityGuard.enabled is false in config.yaml")
+        values = payload.get("config")
+        if not isinstance(values, dict):
+            raise ValueError("quality guard bootstrap config is missing")
+        token = str(payload.get("internal_token") or "").strip()
+        node_ids = tuple(dict.fromkeys(str(value).strip() for value in values.get("node_ids", []) if str(value).strip()))
+        rotatable_node_ids = tuple(dict.fromkeys(str(value).strip() for value in values.get("rotatable_node_ids", []) if str(value).strip()))
         config = cls(
-            base_url=os.getenv("GROK2API_BASE_URL", "http://127.0.0.1:8000").strip().rstrip("/"),
-            username=os.getenv("GROK2API_ADMIN_USERNAME", "").strip(),
-            password=password,
-            client_key_id=os.getenv("QUALITY_GUARD_CLIENT_KEY_ID", "").strip(),
-            model=os.getenv("QUALITY_GUARD_MODEL", "grok-4.5").strip(),
+            base_url="http://grok2api:8000",
+            internal_token=token,
+            model=str(values.get("model") or "").strip(),
             node_ids=node_ids,
-            mode=os.getenv("QUALITY_GUARD_MODE", "hybrid").strip().lower(),
-            active_interval_seconds=_env_int("QUALITY_GUARD_ACTIVE_INTERVAL_SECONDS", active_interval_default, 60),
-            passive_poll_seconds=_env_int("QUALITY_GUARD_PASSIVE_POLL_SECONDS", 5, 1),
-            passive_page_size=_env_int("QUALITY_GUARD_PASSIVE_PAGE_SIZE", 200, 20),
-            passive_max_pages=_env_int("QUALITY_GUARD_PASSIVE_MAX_PAGES", 10, 1),
-            jitter_seconds=_env_int("QUALITY_GUARD_JITTER_SECONDS", 30, 0),
-            request_timeout_seconds=_env_int("QUALITY_GUARD_REQUEST_TIMEOUT_SECONDS", 120, 10),
-            soft_tps=_env_float("QUALITY_GUARD_SOFT_TPS", 500.0, 1.0),
-            hard_tps=_env_float("QUALITY_GUARD_HARD_TPS", 1000.0, 1.0),
-            consecutive_soft=_env_int("QUALITY_GUARD_CONSECUTIVE_SOFT", 2, 1),
-            consecutive_errors=_env_int("QUALITY_GUARD_CONSECUTIVE_ERRORS", 2, 1),
-            quarantine_seconds=_env_int("QUALITY_GUARD_QUARANTINE_SECONDS", 300, 30),
-            no_account_backoff_seconds=_env_int("QUALITY_GUARD_NO_ACCOUNT_BACKOFF_SECONDS", 300, 30),
-            min_healthy_nodes=_env_int("QUALITY_GUARD_MIN_HEALTHY_NODES", 3, 1),
-            max_output_tokens=_env_int("QUALITY_GUARD_MAX_OUTPUT_TOKENS", 384, 32),
-            fail_closed=_env_bool("QUALITY_GUARD_FAIL_CLOSED", False),
-            min_generation_ms=_env_int("QUALITY_GUARD_MIN_GENERATION_MS", 1000, 1),
-            rotation_url=os.getenv("QUALITY_GUARD_ROTATION_URL", "").strip(),
-            rotation_token=os.getenv("QUALITY_GUARD_ROTATION_TOKEN", "").strip(),
-            rotation_timeout_seconds=_env_int("QUALITY_GUARD_ROTATION_TIMEOUT_SECONDS", 45, 5),
+            mode=str(values.get("mode") or "").strip().lower(),
+            active_interval_seconds=int(values.get("active_interval_seconds") or 0),
+            passive_poll_seconds=int(values.get("passive_poll_seconds") or 0),
+            passive_page_size=200,
+            passive_max_pages=10,
+            jitter_seconds=30,
+            request_timeout_seconds=120,
+            soft_tps=float(values.get("soft_tps") or 0),
+            hard_tps=float(values.get("hard_tps") or 0),
+            consecutive_soft=int(values.get("consecutive_soft") or 0),
+            consecutive_errors=int(values.get("consecutive_errors") or 0),
+            quarantine_seconds=int(values.get("quarantine_seconds") or 0),
+            no_account_backoff_seconds=int(values.get("no_account_backoff_seconds") or 0),
+            min_healthy_nodes=int(values.get("min_healthy_nodes") or 0),
+            max_output_tokens=int(values.get("max_output_tokens") or 0),
+            fail_closed=bool(values.get("fail_closed")),
+            min_generation_ms=int(values.get("min_generation_ms") or 0),
+            rotation_url=str(values.get("rotation_url") or "").strip(),
+            rotation_token=str(values.get("rotation_token") or ""),
+            rotation_timeout_seconds=int(values.get("rotation_timeout_seconds") or 0),
             rotatable_node_ids=rotatable_node_ids,
-            prompt=os.getenv("QUALITY_GUARD_PROMPT", DEFAULT_PROMPT).strip(),
-            expected=os.getenv("QUALITY_GUARD_EXPECTED", "QUALITY_OK").strip(),
-            state_file=Path(os.getenv("QUALITY_GUARD_STATE_FILE", "/var/lib/grok2api-quality-guard/state.json")),
-            lock_file=Path(os.getenv("QUALITY_GUARD_LOCK_FILE", "/var/lib/grok2api-quality-guard/guard.lock")),
-            runtime_config_file=Path(os.getenv("QUALITY_GUARD_RUNTIME_CONFIG_FILE", "/var/lib/grok2api-quality-guard/runtime-config.json")),
-            insecure_tls=_env_bool("QUALITY_GUARD_INSECURE_TLS", False),
+            prompt=str(values.get("prompt") or "").strip(),
+            expected=str(values.get("expected") or "").strip(),
+            state_file=Path("/var/lib/grok2api-quality-guard/state.json"),
+            lock_file=Path("/var/lib/grok2api-quality-guard/guard.lock"),
+            runtime_config_file=Path("/var/lib/grok2api-quality-guard/runtime-config.json"),
         )
         config.validate()
         return config
@@ -172,42 +140,40 @@ class Config:
         parsed = urllib.parse.urlparse(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("GROK2API_BASE_URL must be an absolute HTTP(S) URL")
-        if not self.username or not self.password:
-            raise ValueError("GROK2API_ADMIN_USERNAME and GROK2API_ADMIN_PASSWORD are required")
-        if not self.client_key_id.isdigit() or int(self.client_key_id) < 1:
-            raise ValueError("QUALITY_GUARD_CLIENT_KEY_ID must be a positive integer")
+        if not self.internal_token:
+            raise ValueError("quality guard bootstrap internal token is missing")
         if not self.model or not self.prompt or not self.expected:
             raise ValueError("model, prompt, and expected marker must not be empty")
         if self.mode not in {"active", "passive", "hybrid"}:
-            raise ValueError("QUALITY_GUARD_MODE must be active, passive, or hybrid")
+            raise ValueError("qualityGuard.mode must be active, passive, or hybrid")
         if self.soft_tps >= self.hard_tps:
-            raise ValueError("QUALITY_GUARD_SOFT_TPS must be lower than QUALITY_GUARD_HARD_TPS")
+            raise ValueError("qualityGuard.softTPS must be lower than qualityGuard.hardTPS")
         if self.active_interval_seconds > 86400:
-            raise ValueError("QUALITY_GUARD_ACTIVE_INTERVAL_SECONDS must not exceed 86400")
+            raise ValueError("qualityGuard.activeInterval must not exceed 24 hours")
         if self.passive_poll_seconds > 300:
-            raise ValueError("QUALITY_GUARD_PASSIVE_POLL_SECONDS must not exceed 300")
+            raise ValueError("qualityGuard.passivePollInterval must not exceed 5 minutes")
         if self.soft_tps > 10000 or self.hard_tps > 10000:
             raise ValueError("quality guard Token/s thresholds must not exceed 10000")
         if self.consecutive_soft > 20 or self.consecutive_errors > 20:
             raise ValueError("quality guard consecutive strike limits must not exceed 20")
         if self.quarantine_seconds > 86400:
-            raise ValueError("QUALITY_GUARD_QUARANTINE_SECONDS must not exceed 86400")
+            raise ValueError("qualityGuard.quarantineDuration must not exceed 24 hours")
         if self.no_account_backoff_seconds > 86400:
-            raise ValueError("QUALITY_GUARD_NO_ACCOUNT_BACKOFF_SECONDS must not exceed 86400")
+            raise ValueError("qualityGuard.noAccountBackoff must not exceed 24 hours")
         if self.min_healthy_nodes < 1 or (self.node_ids and self.min_healthy_nodes > len(self.node_ids)):
-            raise ValueError("QUALITY_GUARD_MIN_HEALTHY_NODES must fit the configured node count")
+            raise ValueError("qualityGuard.minimumHealthyNodes must fit the configured node count")
         if self.min_generation_ms > self.request_timeout_seconds * 1000:
-            raise ValueError("QUALITY_GUARD_MIN_GENERATION_MS must fit the request timeout")
+            raise ValueError("qualityGuard.minimumGenerationWindow must fit the request timeout")
         if self.rotation_url:
             rotation_url = urllib.parse.urlparse(self.rotation_url)
             if rotation_url.scheme not in {"http", "https"} or not rotation_url.netloc:
-                raise ValueError("QUALITY_GUARD_ROTATION_URL must be an absolute HTTP(S) URL")
+                raise ValueError("qualityGuard.rotationURL must be an absolute HTTP(S) URL")
         elif self.rotatable_node_ids:
-            raise ValueError("QUALITY_GUARD_ROTATION_URL is required when rotatable nodes are configured")
+            raise ValueError("qualityGuard.rotationURL is required when rotatableNodeIDs are configured")
         if any(not value.isdigit() or int(value) < 1 for value in self.rotatable_node_ids):
-            raise ValueError("QUALITY_GUARD_ROTATABLE_NODE_IDS must contain positive integers")
+            raise ValueError("qualityGuard.rotatableNodeIDs must contain positive integers")
         if self.passive_page_size > 2000:
-            raise ValueError("QUALITY_GUARD_PASSIVE_PAGE_SIZE must not exceed 2000")
+            raise ValueError("internal passive page size must not exceed 2000")
 
 
 def load_runtime_config(base: Config, path: Path) -> Config:
@@ -278,19 +244,14 @@ class ApiError(RuntimeError):
 class ApiClient:
     def __init__(self, config: Config):
         self.config = config
-        self.token = ""
         self.ssl_context = ssl.create_default_context()
-        if config.insecure_tls:
-            self.ssl_context.check_hostname = False
-            self.ssl_context.verify_mode = ssl.CERT_NONE
 
-    def _request(self, method: str, path: str, body: dict[str, Any] | None = None, retry_auth: bool = True) -> Any:
+    def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
         headers = {"Accept": "application/json"}
         if data is not None:
             headers["Content-Type"] = "application/json"
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+        headers["Authorization"] = f"Bearer {self.config.internal_token}"
         request = urllib.request.Request(self.config.base_url + path, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=self.config.request_timeout_seconds, context=self.ssl_context) as response:
@@ -300,40 +261,52 @@ class ApiClient:
                 payload = json.loads(exc.read().decode("utf-8", "replace"))
             except (ValueError, OSError):
                 payload = {}
-            if exc.code == 401 and retry_auth and path != "/api/admin/v1/auth/login":
-                self.login()
-                return self._request(method, path, body, retry_auth=False)
             error = payload.get("error") or {}
             raise ApiError(exc.code, str(error.get("code", "request_failed")), str(error.get("message", "request failed"))) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(f"request failed: {type(exc).__name__}") from exc
         return payload.get("data", payload)
 
-    def login(self) -> None:
-        data = self._request("POST", "/api/admin/v1/auth/login", {
-            "username": self.config.username,
-            "password": self.config.password,
-        }, retry_auth=False)
-        token = ((data.get("tokens") or {}).get("accessToken") or "").strip()
-        if not token:
-            raise RuntimeError("login response did not contain access token")
-        self.token = token
-
     def list_nodes(self) -> list[dict[str, Any]]:
-        query = urllib.parse.urlencode({"page": 1, "pageSize": 2000, "scope": "grok_build"})
-        return list(self._request("GET", f"/api/admin/v1/egress-nodes?{query}").get("items") or [])
+        page_size = 2000
+        items: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        page = 1
+        while True:
+            query = urllib.parse.urlencode({"page": page, "pageSize": page_size, "scope": "grok_build"})
+            payload = self._request("GET", f"{INTERNAL_API_PREFIX}/egress-nodes?{query}")
+            batch = list(payload.get("items") or [])
+            total = max(0, int(payload.get("total") or 0))
+            added = 0
+            for node in batch:
+                node_id = str(node.get("id") or "")
+                if not node_id or node_id in seen_ids:
+                    continue
+                seen_ids.add(node_id)
+                items.append(node)
+                added += 1
+            if len(items) >= total or (total == 0 and len(batch) < page_size):
+                return items
+            if not batch or added == 0:
+                raise RuntimeError(f"egress node pagination stopped at {len(items)} of {total}")
+            page += 1
+
+    def fixed_fallback_node_ids(self) -> set[str]:
+        payload = self._request("GET", f"{INTERNAL_API_PREFIX}/egress-operations")
+        result: set[str] = set()
+        for fallback in (payload.get("fallbacks") or {}).values():
+            if not isinstance(fallback, dict) or fallback.get("mode") != "fixed":
+                continue
+            node_id = str(fallback.get("nodeId") or "")
+            if node_id:
+                result.add(node_id)
+        return result
 
     def quality_test(self, node_id: str) -> dict[str, Any]:
-        return self._request("POST", f"/api/admin/v1/egress-nodes/{node_id}/quality-test", {
-            "clientKeyId": self.config.client_key_id,
-            "model": self.config.model,
-            "prompt": self.config.prompt,
-            "expected": self.config.expected,
-            "maxOutputTokens": self.config.max_output_tokens,
-        })
+        return self._request("POST", f"{INTERNAL_API_PREFIX}/egress-nodes/{node_id}/quality-test")
 
     def connectivity_test(self, node_id: str) -> dict[str, Any]:
-        return self._request("POST", f"/api/admin/v1/egress-nodes/{node_id}/test")
+        return self._request("POST", f"{INTERNAL_API_PREFIX}/egress-nodes/{node_id}/test")
 
     def list_audits(self, cursor: str = "") -> dict[str, Any]:
         query = {
@@ -343,10 +316,10 @@ class ApiClient:
         }
         if cursor:
             query["cursor"] = cursor
-        return self._request("GET", f"/api/admin/v1/request-audits?{urllib.parse.urlencode(query)}")
+        return self._request("GET", f"{INTERNAL_API_PREFIX}/request-audits?{urllib.parse.urlencode(query)}")
 
     def set_enabled(self, node_id: str, enabled: bool) -> int:
-        result = self._request("PATCH", "/api/admin/v1/egress-nodes/batch", {"ids": [node_id], "enabled": enabled})
+        result = self._request("PATCH", f"{INTERNAL_API_PREFIX}/egress-nodes/batch", {"ids": [node_id], "enabled": enabled})
         return int(result.get("updated") or 0)
 
     def rotate_node(self, node_id: str, old_exit_ip: str = "") -> dict[str, Any]:
@@ -538,6 +511,7 @@ class Guard:
         self.state.setdefault("recent_events", [])
         ensure_statistics(self.state)
         self._update_guard_metadata()
+        self._save()
 
     def _bump_statistic(self, group: str, field: str, amount: int = 1) -> None:
         statistics = ensure_statistics(self.state)
@@ -548,7 +522,6 @@ class Guard:
         self.state["guard"] = {
             "mode": self.config.mode,
             "model": self.config.model,
-            "client_key_id": self.config.client_key_id,
             "node_ids": list(self.config.node_ids) if self.config.node_ids else self._resolved_node_ids,
             "active_interval_seconds": self.config.active_interval_seconds,
             "passive_poll_seconds": self.config.passive_poll_seconds,
@@ -595,7 +568,7 @@ class Guard:
             state["last_no_account_log_at"] = now
             log_event(event, node_id=str(node["id"]), node_name=node.get("name"), reason="probe_no_account", **fields)
 
-    def _eligible_nodes(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _eligible_nodes(self, nodes: list[dict[str, Any]], protected_node_ids: set[str]) -> list[dict[str, Any]]:
         configured = set(self.config.node_ids)
         state_nodes = self.state.get("nodes") or {}
         result = []
@@ -603,9 +576,14 @@ class Guard:
             node_id = str(node.get("id") or "")
             if not node_id or not node.get("proxyConfigured"):
                 continue
-            if configured and node_id not in configured:
-                continue
             tracked_quarantine = bool((state_nodes.get(node_id) or {}).get("disabled_by_guard"))
+            if node_id in protected_node_ids and not tracked_quarantine:
+                continue
+            # A node removed from the configured set while quarantined remains
+            # managed until it has passed recovery. Otherwise configuration
+            # changes could strand a guard-owned disabled node forever.
+            if configured and node_id not in configured and not tracked_quarantine:
+                continue
             if node.get("enabled") or tracked_quarantine:
                 result.append(node)
         return result
@@ -639,10 +617,7 @@ class Guard:
             self._bump_statistic("actions", "suppressed")
             log_event("quarantine_suppressed", node_id=node_id, node_name=node.get("name"), reason=reason, minimum_healthy=self.config.min_healthy_nodes)
             return
-        updated = self.api.set_enabled(node_id, False)
-        if updated != 1:
-            log_event("quarantine_not_applied", node_id=node_id, node_name=node.get("name"), reason=reason, updated=updated)
-            return
+        previous_state = dict(state)
         state.update({
             "active_soft_strikes": 0,
             "passive_soft_strikes": 0,
@@ -651,9 +626,27 @@ class Guard:
             "disabled_by_guard": True,
             "last_reason": reason,
         })
+        # Persist ownership before changing backend scheduling state. A crash
+        # after the API call can then be reconciled safely on restart.
+        self._save()
+        try:
+            updated = self.api.set_enabled(node_id, False)
+        except Exception as exc:
+            state.clear()
+            state.update(previous_state)
+            self._save()
+            log_event("quarantine_failed", node_id=node_id, node_name=node.get("name"), reason=reason, error_type=type(exc).__name__)
+            return
+        if updated != 1:
+            state.clear()
+            state.update(previous_state)
+            self._save()
+            log_event("quarantine_not_applied", node_id=node_id, node_name=node.get("name"), reason=reason, updated=updated)
+            return
         node["enabled"] = False
         self._bump_statistic("actions", "quarantined")
         append_state_event(self.state, "node_quarantined", node_id=node_id, node_name=node.get("name"), reason=reason)
+        self._save()
         log_event("node_quarantined", node_id=node_id, node_name=node.get("name"), reason=reason, quarantine_seconds=self.config.quarantine_seconds)
         if reason == "buffered_burst":
             self._recover_quarantined(node, time.time(), rotate=False, rotate_on_failure=True)
@@ -818,9 +811,43 @@ class Guard:
 
     def _prepare_nodes(self, now: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[str]]:
         all_nodes = self.api.list_nodes()
+        protected_node_ids = self.api.fixed_fallback_node_ids()
+        previous_protected = set(str(value) for value in self.state.get("protected_node_ids", []))
+        if protected_node_ids != previous_protected:
+            self.state["protected_node_ids"] = sorted(protected_node_ids)
+            for node_id in sorted(protected_node_ids - previous_protected):
+                log_event("fixed_fallback_node_skipped", node_id=node_id)
+        state_nodes = self.state.setdefault("nodes", {})
+        # Making an enabled node a fixed fallback is an explicit operator
+        # override. Relinquish stale guard ownership before eligibility checks
+        # so strict mode cannot repeatedly attempt an invalid disable. A
+        # protected node that is still disabled remains tracked until recovery.
+        for node in all_nodes:
+            node_id = str(node.get("id") or "")
+            state = state_nodes.get(node_id) or {}
+            if node_id not in protected_node_ids or not node.get("enabled") or not state.get("disabled_by_guard"):
+                continue
+            state.update({
+                "active_soft_strikes": 0,
+                "passive_soft_strikes": 0,
+                "error_strikes": 0,
+                "quarantined_until": 0.0,
+                "disabled_by_guard": False,
+                "last_reason": "",
+            })
+            log_event("fixed_fallback_guard_released", node_id=node_id, node_name=node.get("name"))
         if not self.config.node_ids:
-            self._resolved_node_ids = [str(node["id"]) for node in all_nodes if node.get("id") and node.get("proxyConfigured")]
-        nodes = self._eligible_nodes(all_nodes)
+            self._resolved_node_ids = [
+                str(node["id"]) for node in all_nodes
+                if node.get("id") and node.get("proxyConfigured") and str(node["id"]) not in protected_node_ids
+            ]
+        nodes = self._eligible_nodes(all_nodes, protected_node_ids)
+        present_ids = {str(node.get("id")) for node in all_nodes if node.get("id")}
+        managed_ids = {str(node.get("id")) for node in nodes if node.get("id")}
+        for stale_id in list(state_nodes):
+            tracked = bool((state_nodes.get(stale_id) or {}).get("disabled_by_guard"))
+            if stale_id not in present_ids or (stale_id not in managed_ids and not tracked):
+                del state_nodes[stale_id]
         skip_ids: set[str] = set()
         if not nodes:
             log_event("no_eligible_nodes")
@@ -979,7 +1006,7 @@ class Guard:
         node_by_id = {str(node["id"]): node for node in nodes}
         audits = self._fetch_new_audits()
         for value in audits:
-            if str(value.get("clientKeyId") or "") == self.config.client_key_id or value.get("clientKeyName") == "egress-quality-guard":
+            if bool(value.get("qualityProbe")):
                 continue
             node = node_by_id.get(str(value.get("egressNodeId") or ""))
             if node is None or not node.get("enabled"):
@@ -1007,14 +1034,17 @@ def acquire_lock(path: Path):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Active and passive quality guard for grok2api egress nodes")
     parser.add_argument("--once", action="store_true", help="run one cycle for each detector enabled by the selected mode")
-    parser.add_argument("--check-config", action="store_true", help="validate environment and exit")
+    parser.add_argument("--check-config", action="store_true", help="validate config.yaml bootstrap and exit")
     args = parser.parse_args(argv)
     try:
-        base_config = Config.from_env()
+        base_config = Config.from_bootstrap()
         reloader = RuntimeConfigReloader(base_config)
         config, _, runtime_error = reloader.reload(force=True)
         if runtime_error is not None:
             raise ValueError(str(runtime_error))
+    except GuardDisabled as exc:
+        print(str(exc))
+        return 0
     except ValueError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2

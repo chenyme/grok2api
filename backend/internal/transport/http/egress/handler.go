@@ -25,6 +25,7 @@ type Handler struct {
 	service         *egressapp.Service
 	guardStatePath  string
 	guardConfigPath string
+	guardProbe      egressapp.QualityProbeInput
 }
 
 func NewHandler(service *egressapp.Service, guardStatePath ...string) *Handler {
@@ -37,6 +38,13 @@ func NewHandler(service *egressapp.Service, guardStatePath ...string) *Handler {
 		configPath = strings.TrimSpace(guardStatePath[1])
 	}
 	return &Handler{service: service, guardStatePath: path, guardConfigPath: configPath}
+}
+
+// WithQualityGuardProbe pins the sidecar probe to server-owned credentials and
+// payload. The internal caller can select only the physical egress node.
+func (h *Handler) WithQualityGuardProbe(input egressapp.QualityProbeInput) *Handler {
+	h.guardProbe = input
+	return h
 }
 
 func (h *Handler) Register(router *gin.RouterGroup) {
@@ -68,7 +76,20 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/egress-operations/rebalance", h.rebalance)
 }
 
-const maxQualityGuardStateBytes = 1 << 20
+// RegisterQualityGuard exposes the minimum egress surface required by the
+// sidecar. Destructive node, source, binding, and credential operations remain
+// available only through administrator authentication.
+func (h *Handler) RegisterQualityGuard(router *gin.RouterGroup) {
+	router.GET("/egress-nodes", h.list)
+	router.PATCH("/egress-nodes/batch", h.updateMany)
+	router.POST("/egress-nodes/:id/test", h.testNode)
+	router.POST("/egress-nodes/:id/quality-test", h.testQualityGuardNode)
+	router.GET("/egress-operations", h.operationsConfig)
+}
+
+// A fully populated 2,000-node guard state is slightly larger than 1 MiB.
+// Keep a bounded limit while leaving headroom for audit cursors and events.
+const maxQualityGuardStateBytes = 8 << 20
 
 type qualityGuardState struct {
 	Version           int                              `json:"version"`
@@ -77,6 +98,7 @@ type qualityGuardState struct {
 	LastActiveCycleAt float64                          `json:"last_active_cycle_at"`
 	LastPassivePollAt float64                          `json:"last_passive_poll_at"`
 	Guard             qualityGuardConfig               `json:"guard"`
+	ProtectedNodeIDs  []string                         `json:"protected_node_ids"`
 	Nodes             map[string]qualityGuardNodeState `json:"nodes"`
 	RecentEvents      []qualityGuardEvent              `json:"recent_events"`
 	Statistics        qualityGuardStatistics           `json:"statistics"`
@@ -107,7 +129,6 @@ type qualityGuardActionStats struct {
 type qualityGuardConfig struct {
 	Mode                  string   `json:"mode"`
 	Model                 string   `json:"model"`
-	ClientKeyID           string   `json:"client_key_id"`
 	NodeIDs               []string `json:"node_ids"`
 	ActiveIntervalSeconds int      `json:"active_interval_seconds"`
 	PassivePollSeconds    int      `json:"passive_poll_seconds"`
@@ -167,14 +188,14 @@ func (h *Handler) qualityGuardStatus(c *gin.Context) {
 		"lastActiveCycleAt": state.LastActiveCycleAt,
 		"lastPassivePollAt": state.LastPassivePollAt,
 		"config": gin.H{
-			"mode": state.Guard.Mode, "model": state.Guard.Model, "client_key_id": state.Guard.ClientKeyID,
+			"mode": state.Guard.Mode, "model": state.Guard.Model,
 			"node_ids": state.Guard.NodeIDs, "active_interval_seconds": state.Guard.ActiveIntervalSeconds,
 			"passive_poll_seconds": state.Guard.PassivePollSeconds, "soft_tps": state.Guard.SoftTPS,
 			"hard_tps": state.Guard.HardTPS, "consecutive_soft": state.Guard.ConsecutiveSoft,
 			"consecutive_errors": state.Guard.ConsecutiveErrors, "quarantine_seconds": state.Guard.QuarantineSeconds,
 			"min_healthy_nodes": state.Guard.MinHealthyNodes, "max_output_tokens": state.Guard.MaxOutputTokens,
 		},
-		"nodes": state.Nodes, "recentEvents": state.RecentEvents,
+		"nodes": state.Nodes, "protectedNodeIds": state.ProtectedNodeIDs, "recentEvents": state.RecentEvents,
 	}
 	if state.Statistics.StartedAt > 0 {
 		payload["statistics"] = state.Statistics
@@ -326,6 +347,9 @@ func (h *Handler) readQualityGuardState() (qualityGuardState, bool, error) {
 	if state.RecentEvents == nil {
 		state.RecentEvents = []qualityGuardEvent{}
 	}
+	if state.ProtectedNodeIDs == nil {
+		state.ProtectedNodeIDs = []string{}
+	}
 	return state, true, nil
 }
 
@@ -334,20 +358,11 @@ func (h *Handler) testQualityGuardNode(c *gin.Context) {
 	if !ok {
 		return
 	}
-	state, available, err := h.readQualityGuardState()
-	if err != nil || !available {
-		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "质量守护状态暂不可用")
+	if h.guardProbe.ClientKeyID == 0 || strings.TrimSpace(h.guardProbe.Model) == "" || h.guardProbe.Prompt == "" || h.guardProbe.Expected == "" {
+		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "质量守护配置暂不可用")
 		return
 	}
-	clientKeyID, err := strconv.ParseUint(state.Guard.ClientKeyID, 10, 64)
-	if err != nil || clientKeyID == 0 || state.Guard.Prompt == "" || state.Guard.Expected == "" {
-		response.Error(c, http.StatusServiceUnavailable, "qualityGuardInvalidState", "质量守护状态格式无效")
-		return
-	}
-	value, err := h.service.ProbeQuality(c.Request.Context(), nodeID, egressapp.QualityProbeInput{
-		ClientKeyID: clientKeyID, Model: state.Guard.Model, Prompt: state.Guard.Prompt,
-		Expected: state.Guard.Expected, MaxOutputTokens: state.Guard.MaxOutputTokens,
-	})
+	value, err := h.service.ProbeQuality(c.Request.Context(), nodeID, h.guardProbe)
 	if err != nil {
 		h.writeQualityProbeError(c, err)
 		return

@@ -24,6 +24,7 @@ func TestDashboardRepositorySnapshot(t *testing.T) {
 	active := &accountModel{IdentityKey: testIdentityKey("active"), Provider: "grok_build", Name: "active", SourceKey: "active", Enabled: true, AuthStatus: "active", MaxConcurrent: 1}
 	exhausted := &accountModel{IdentityKey: testIdentityKey("exhausted"), Provider: "grok_build", Name: "exhausted", SourceKey: "exhausted", Enabled: true, AuthStatus: "active", MaxConcurrent: 1}
 	enabledRoute := &modelRouteModel{PublicID: "enabled", Provider: "grok_build", UpstreamModel: "enabled", Capability: "responses", Enabled: true}
+	internalKind := "quality_guard"
 	rows := []any{
 		active,
 		exhausted,
@@ -32,6 +33,7 @@ func TestDashboardRepositorySnapshot(t *testing.T) {
 		&modelRouteModel{PublicID: "disabled", Provider: "grok_build", UpstreamModel: "disabled", Capability: "responses", Enabled: false},
 		&clientKeyModel{Name: "active", Prefix: "gkp_active", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true},
 		&clientKeyModel{Name: "expired", Prefix: "gkp_expired", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, ExpiresAt: timePointer(now.Add(-time.Hour))},
+		&clientKeyModel{Name: "internal", Prefix: "quality-guard-internal", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, InternalKind: &internalKind, Enabled: true},
 	}
 	for _, row := range rows {
 		if err := database.db.WithContext(ctx).Create(row).Error; err != nil {

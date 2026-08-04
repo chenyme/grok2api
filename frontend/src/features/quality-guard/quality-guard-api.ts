@@ -66,7 +66,6 @@ export type QualityGuardStatus = {
   config?: {
     mode: "active" | "passive" | "hybrid";
     model: string;
-    client_key_id: string;
     node_ids: string[];
     active_interval_seconds: number;
     passive_poll_seconds: number;
@@ -79,6 +78,7 @@ export type QualityGuardStatus = {
     max_output_tokens: number;
   };
   nodes?: Record<string, QualityGuardNodeState>;
+  protectedNodeIds?: string[];
   recentEvents?: QualityGuardEvent[];
   statistics?: QualityGuardStatistics;
 };
@@ -106,7 +106,7 @@ const eventValidator = hasShape({
   reason: isString, classification: isString, output_tps: isNumber,
 });
 const configValidator = hasShape({
-  mode: isOneOf("active", "passive", "hybrid"), model: isString, client_key_id: isString,
+  mode: isOneOf("active", "passive", "hybrid"), model: isString,
   node_ids: isArrayOf(isString), active_interval_seconds: isNumber, passive_poll_seconds: isNumber,
   soft_tps: isNumber, hard_tps: isNumber, consecutive_soft: isNumber, consecutive_errors: isNumber,
   quarantine_seconds: isNumber, min_healthy_nodes: isNumber, max_output_tokens: isNumber,
@@ -129,6 +129,7 @@ const decodeStatus = (value: unknown): QualityGuardStatus => {
   return createObjectDecoder<QualityGuardStatus>("quality guard", {
     available: isBoolean, editable: isOptional(isBoolean), startedAt: isNumber, updatedAt: isNumber, lastActiveCycleAt: isNumber,
     lastPassivePollAt: isNumber, config: configValidator, nodes: isRecordOf(nodeStateValidator),
+    protectedNodeIds: isOptional(isArrayOf(isString)),
     recentEvents: isArrayOf(eventValidator), statistics: isOptional(statisticsValidator),
   })(value);
 };

@@ -62,6 +62,8 @@ type Dependencies struct {
 	Egress                 *egressapp.Service
 	QualityGuardStatePath  string
 	QualityGuardConfigPath string
+	QualityGuardToken      string
+	QualityGuardProbe      egressapp.QualityProbeInput
 	Updates                *updatecheckapp.Service
 }
 
@@ -146,17 +148,26 @@ func New(deps Dependencies) *gin.Engine {
 	accounthttp.NewHandler(deps.Accounts, deps.AccountSync).Register(adminProtected)
 	modelhttp.NewHandler(deps.Models).Register(adminProtected)
 	clientkeyhttp.NewHandler(deps.ClientKeys).Register(adminProtected)
-	audithttp.NewHandler(deps.Audits).Register(adminProtected)
+	auditHandler := audithttp.NewHandler(deps.Audits)
+	auditHandler.Register(adminProtected)
 	dashboardhttp.NewHandler(deps.Dashboard).Register(adminProtected)
 	mediaHandler.RegisterAdmin(adminProtected)
 	settingshttp.NewHandler(deps.Settings).Register(adminProtected)
-	egresshttp.NewHandler(deps.Egress, deps.QualityGuardStatePath, deps.QualityGuardConfigPath).Register(adminProtected)
+	egressHandler := egresshttp.NewHandler(deps.Egress, deps.QualityGuardStatePath, deps.QualityGuardConfigPath).WithQualityGuardProbe(deps.QualityGuardProbe)
+	egressHandler.Register(adminProtected)
 	systemhttp.NewHandler(func() string {
 		if deps.Settings != nil {
 			return deps.Settings.PublicAPIBaseURL()
 		}
 		return deps.PublicAPIBaseURL
 	}, deps.Updates).Register(adminProtected)
+
+	if deps.QualityGuardToken != "" {
+		qualityGuardInternal := router.Group("/api/internal/v1/quality-guard")
+		qualityGuardInternal.Use(middleware.QualityGuardAuth(deps.QualityGuardToken))
+		audithttp.NewQualityGuardHandler(deps.Audits, deps.QualityGuardProbe.ClientKeyID).RegisterQualityGuard(qualityGuardInternal)
+		egressHandler.RegisterQualityGuard(qualityGuardInternal)
+	}
 
 	v1 := router.Group("/v1")
 	v1.Use(deps.ConcurrencyGate.Middleware())

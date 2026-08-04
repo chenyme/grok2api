@@ -89,6 +89,44 @@ bootstrapAdmin:
 	}
 }
 
+func TestLoadQualityGuardFromYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`secrets:
+  jwtSecret: "12345678901234567890123456789012"
+  credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+bootstrapAdmin:
+  password: "password123"
+qualityGuard:
+  enabled: true
+  clientKeyID: 999
+  model: "grok-4.5"
+  nodeIDs: [2, 9]
+  minimumHealthyNodes: 1
+  activeInterval: 45m
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !value.QualityGuard.Enabled || value.QualityGuard.DeprecatedClientKeyID != 999 || value.QualityGuard.ActiveInterval.Value() != 45*time.Minute {
+		t.Fatalf("qualityGuard = %#v", value.QualityGuard)
+	}
+}
+
+func TestEnabledQualityGuardUsesManagedIdentity(t *testing.T) {
+	value := defaultConfig()
+	value.Secrets.JWTSecret = "12345678901234567890123456789012"
+	value.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	value.BootstrapAdmin.Password = "password123"
+	value.QualityGuard.Enabled = true
+	if err := value.Validate(); err != nil {
+		t.Fatalf("enabled quality guard should not require a client key ID: %v", err)
+	}
+}
+
 func TestBuildResponseHeaderTimeoutIsRuntimeOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("provider:\n  build:\n    responseHeaderTimeout: 10m\n"), 0o600); err != nil {

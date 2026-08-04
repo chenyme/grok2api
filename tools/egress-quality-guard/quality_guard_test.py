@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import stat
 import sys
 import tempfile
@@ -16,7 +17,7 @@ SPEC.loader.exec_module(quality_guard)
 
 def config(**overrides):
     values = dict(
-        base_url="http://127.0.0.1:8000", username="admin", password="secret", client_key_id="1",
+        base_url="http://grok2api:8000", internal_token="scoped-secret",
         model="grok-4.5", node_ids=(), mode="hybrid", active_interval_seconds=1800,
         passive_poll_seconds=5, passive_page_size=200, passive_max_pages=10, jitter_seconds=0,
         request_timeout_seconds=120, soft_tps=500.0, hard_tps=1000.0,
@@ -25,7 +26,7 @@ def config(**overrides):
         min_healthy_nodes=3, max_output_tokens=384, prompt="probe", expected="QUALITY_OK",
         fail_closed=False, min_generation_ms=1000, rotation_url="", rotation_token="",
         rotation_timeout_seconds=45, rotatable_node_ids=(),
-        state_file=Path("/tmp/state.json"), lock_file=Path("/tmp/lock"), insecure_tls=False,
+        state_file=Path("/tmp/state.json"), lock_file=Path("/tmp/lock"),
         runtime_config_file=Path("/tmp/runtime-config.json"),
     )
     values.update(overrides)
@@ -77,6 +78,34 @@ class StateTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_loads_private_bootstrap_without_admin_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bootstrap.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "enabled": True,
+                "internal_token": "scoped-secret",
+                "config": {
+                    "model": "grok-4.5", "node_ids": ["2", "9"], "mode": "hybrid",
+                    "prompt": "probe", "expected": "QUALITY_OK",
+                    "active_interval_seconds": 1800, "passive_poll_seconds": 5,
+                    "soft_tps": 500, "hard_tps": 1000, "consecutive_soft": 2, "consecutive_errors": 2,
+                    "quarantine_seconds": 300, "no_account_backoff_seconds": 300,
+                    "min_healthy_nodes": 1, "max_output_tokens": 384, "fail_closed": False,
+                    "min_generation_ms": 1000, "rotation_url": "", "rotation_token": "",
+                    "rotation_timeout_seconds": 45, "rotatable_node_ids": [],
+                },
+            }), encoding="utf-8")
+            loaded = quality_guard.Config.from_bootstrap(path)
+            self.assertEqual((loaded.node_ids, loaded.internal_token), (("2", "9"), "scoped-secret"))
+
+    def test_disabled_bootstrap_exits_cleanly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bootstrap.json"
+            path.write_text('{"version":1,"enabled":false,"config":{}}', encoding="utf-8")
+            with self.assertRaises(quality_guard.GuardDisabled):
+                quality_guard.Config.from_bootstrap(path)
+
     def test_rejects_reversed_thresholds(self):
         with self.assertRaises(ValueError):
             config(soft_tps=1000, hard_tps=500).validate()
@@ -88,7 +117,7 @@ class ConfigTests(unittest.TestCase):
             base = config(runtime_config_file=path, node_ids=("1", "2", "3"))
             loaded = quality_guard.load_runtime_config(base, path)
             self.assertEqual((loaded.mode, loaded.soft_tps, loaded.quarantine_seconds), ("passive", 400, 600))
-            self.assertEqual((loaded.model, loaded.client_key_id, loaded.node_ids), (base.model, base.client_key_id, base.node_ids))
+            self.assertEqual((loaded.model, loaded.node_ids), (base.model, base.node_ids))
 
     def test_runtime_config_reloader_keeps_last_valid_config(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,17 +134,56 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(loaded, base)
 
 
+class ApiClientTests(unittest.TestCase):
+    def test_list_nodes_reads_every_page(self):
+        client = quality_guard.ApiClient(config())
+        requested_pages = []
+
+        def request(_method, path, _body=None):
+            page = int(quality_guard.urllib.parse.parse_qs(quality_guard.urllib.parse.urlparse(path).query)["page"][0])
+            requested_pages.append(page)
+            if page == 1:
+                return {"items": [{"id": str(index)} for index in range(1, 2001)], "total": 2001}
+            return {"items": [{"id": "2001"}], "total": 2001}
+
+        client._request = request
+        nodes = client.list_nodes()
+        self.assertEqual(len(nodes), 2001)
+        self.assertEqual(requested_pages, [1, 2])
+
+    def test_list_nodes_rejects_incomplete_pagination(self):
+        client = quality_guard.ApiClient(config())
+        client._request = lambda *_args, **_kwargs: {"items": [], "total": 1}
+        with self.assertRaises(RuntimeError):
+            client.list_nodes()
+
+    def test_fixed_fallback_nodes_are_discovered_from_operations_policy(self):
+        client = quality_guard.ApiClient(config())
+        client._request = lambda *_args, **_kwargs: {
+            "fallbacks": {
+                "grok_build": {"mode": "fixed", "nodeId": "9"},
+                "grok_web": {"mode": "direct"},
+                "grok_console": {"mode": "fixed", "nodeId": "11"},
+            },
+        }
+        self.assertEqual(client.fixed_fallback_node_ids(), {"9", "11"})
+
+
 class FakeApi:
-    def __init__(self, nodes, results, audit_pages=None):
+    def __init__(self, nodes, results, audit_pages=None, fixed_fallback_ids=None):
         self.nodes = nodes
         self.results = list(results)
         self.audit_pages = list(audit_pages or [])
+        self.fixed_fallback_ids = set(fixed_fallback_ids or [])
         self.enabled_calls = []
         self.quality_calls = []
         self.rotation_calls = []
 
     def list_nodes(self):
         return self.nodes
+
+    def fixed_fallback_node_ids(self):
+        return set(self.fixed_fallback_ids)
 
     def quality_test(self, node_id):
         self.quality_calls.append(node_id)
@@ -185,6 +253,123 @@ class GuardTests(unittest.TestCase):
             guard = quality_guard.Guard(cfg, api)
             guard.run_passive_cycle()
             self.assertEqual(guard.state["guard"]["node_ids"], ["1", "2", "3"])
+
+    def test_fixed_fallback_node_is_excluded_without_aborting_other_nodes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1", "2"),
+            )
+            good = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 100}
+            api = FakeApi(self.nodes(3), [good], fixed_fallback_ids={"1"})
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_active_cycle()
+            self.assertEqual(api.quality_calls, ["2"])
+            self.assertEqual(guard.state["protected_node_ids"], ["1"])
+
+    def test_enabled_node_promoted_to_fixed_fallback_releases_guard_ownership(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                mode="passive",
+                fail_closed=True,
+            )
+            api = FakeApi(
+                self.nodes(3), [],
+                [{"items": [], "hasMore": False, "nextCursor": ""}],
+                fixed_fallback_ids={"1"},
+            )
+            guard = quality_guard.Guard(cfg, api)
+            guard._state_for("1")["disabled_by_guard"] = True
+            guard.run_passive_cycle()
+            self.assertEqual(api.enabled_calls, [])
+            self.assertNotIn("1", guard.state["nodes"])
+
+    def test_quarantine_ownership_is_persisted_before_backend_disable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            cfg = config(
+                state_file=state_path,
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                fail_closed=True,
+            )
+
+            class ObservingApi(FakeApi):
+                def set_enabled(self, node_id, enabled):
+                    persisted = quality_guard.load_state(state_path)
+                    self.assert_persisted = bool(persisted["nodes"][node_id]["disabled_by_guard"])
+                    return super().set_enabled(node_id, enabled)
+
+            bad = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 1200, "generationMs": 1500}
+            api = ObservingApi(self.nodes(3), [bad])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_active_cycle()
+            self.assertTrue(api.assert_persisted)
+            self.assertTrue(quality_guard.load_state(state_path)["nodes"]["1"]["disabled_by_guard"])
+
+    def test_quarantine_state_rolls_back_when_backend_disable_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            cfg = config(
+                state_file=state_path,
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                fail_closed=True,
+            )
+
+            class FailingApi(FakeApi):
+                def set_enabled(self, node_id, enabled):
+                    self.enabled_calls.append((node_id, enabled))
+                    raise RuntimeError("backend unavailable")
+
+            bad = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 1200, "generationMs": 1500}
+            api = FailingApi(self.nodes(3), [bad])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_active_cycle()
+            self.assertEqual(api.enabled_calls, [("1", False)])
+            self.assertTrue(api.nodes[0]["enabled"])
+            self.assertFalse(guard.state["nodes"]["1"]["disabled_by_guard"])
+            self.assertFalse(quality_guard.load_state(state_path)["nodes"]["1"]["disabled_by_guard"])
+
+    def test_removed_or_unmanaged_node_state_is_pruned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+                mode="passive",
+            )
+            api = FakeApi(self.nodes(2), [], [{"items": [], "hasMore": False, "nextCursor": ""}])
+            guard = quality_guard.Guard(cfg, api)
+            guard._state_for("2")
+            guard._state_for("3")["disabled_by_guard"] = True
+            guard.run_passive_cycle()
+            self.assertNotIn("2", guard.state["nodes"])
+            self.assertNotIn("3", guard.state["nodes"])
+
+    def test_quarantined_node_removed_from_config_is_recovered_before_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+            )
+            nodes = self.nodes(2)
+            nodes[0]["enabled"] = False
+            nodes[1]["enabled"] = False
+            good = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 100}
+            api = FakeApi(nodes, [good])
+            guard = quality_guard.Guard(cfg, api)
+            state = guard._state_for("2")
+            state.update({"disabled_by_guard": True, "quarantined_until": 0})
+            guard.run_active_cycle()
+            self.assertEqual(api.quality_calls, ["2"])
+            self.assertEqual(api.enabled_calls, [("2", True)])
+            self.assertFalse(state["disabled_by_guard"])
 
     def test_minimum_healthy_nodes_suppresses_quarantine(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -414,7 +599,7 @@ class GuardTests(unittest.TestCase):
             healthy = {"expectedMatched": True, "outputTokens": 100, "outputTokensPerSecond": 100}
             api = FakeApi(self.nodes(), [healthy], [
                 {"items": [], "hasMore": False, "nextCursor": ""},
-                {"items": [self.audit("guard", "1", 1200, client_key_id="1"), self.audit("user", "2", 1200)], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("guard", "1", 1200, quality_probe=True), self.audit("user", "2", 1200)], "hasMore": False, "nextCursor": ""},
             ])
             guard = quality_guard.Guard(cfg, api)
             guard.run_passive_cycle()
@@ -497,12 +682,12 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(guard.state["nodes"]["2"]["error_strikes"], 1)
 
     @staticmethod
-    def audit(audit_id, node_id, output_tps, client_key_id="99"):
+    def audit(audit_id, node_id, output_tps, quality_probe=False):
         generation_ms = 100
         output_tokens = int(output_tps * generation_ms / 1000)
         return {
-            "id": audit_id, "requestId": f"request-{audit_id}", "clientKeyId": client_key_id,
-            "clientKeyName": "user", "provider": "grok_build", "streaming": True,
+            "id": audit_id, "requestId": f"request-{audit_id}", "qualityProbe": quality_probe,
+            "provider": "grok_build", "streaming": True,
             "statusCode": 200, "firstTokenMs": 1000, "durationMs": 1000 + generation_ms,
             "outputTokens": output_tokens, "reasoningTokens": min(100, max(0, output_tokens - 1)),
             "egressNodeId": node_id, "errorCode": None,

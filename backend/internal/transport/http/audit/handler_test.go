@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +92,42 @@ func TestAuditResponseDerivesOutputThroughput(t *testing.T) {
 	unmeasured := newAuditResponse(auditdomain.Record{DurationMS: 1250, OutputTokens: 80})
 	if unmeasured.OutputTokensPerSecond != nil {
 		t.Fatalf("unmeasured throughput = %v", *unmeasured.OutputTokensPerSecond)
+	}
+}
+
+func TestQualityGuardAuditListMarksOwnProbeWithoutExposingKeyIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quality-guard-audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAuditRepository(database)
+	now := time.Now().UTC()
+	if err := repository.CreateBatch(ctx, []auditdomain.Record{
+		{RequestID: "guard-probe", ClientKeyID: 7, ClientKeyName: "secret-guard-name", ModelRouteID: 1, Provider: "grok_build", StatusCode: 200, CreatedAt: now},
+		{RequestID: "user-request", ClientKeyID: 8, ClientKeyName: "secret-user-name", ModelRouteID: 1, Provider: "grok_build", StatusCode: 200, CreatedAt: now.Add(-time.Second)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := auditapp.NewService(repository, slog.Default(), 8, 4, time.Second)
+	router := gin.New()
+	NewQualityGuardHandler(service, 7).RegisterQualityGuard(router.Group(""))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/request-audits?pageSize=20", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"requestId":"guard-probe","qualityProbe":true`) || !strings.Contains(body, `"requestId":"user-request","qualityProbe":false`) {
+		t.Fatalf("probe markers missing: %s", body)
+	}
+	if strings.Contains(body, "clientKeyId") || strings.Contains(body, "clientKeyName") || strings.Contains(body, "secret-") {
+		t.Fatalf("client key identity leaked: %s", body)
 	}
 }
 

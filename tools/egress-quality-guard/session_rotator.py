@@ -199,12 +199,18 @@ class Rotator:
         with self.lock:
             original_credentials = self.config.credentials_file.read_text(encoding="utf-8")
             original_mihomo = self.config.mihomo_config_file.read_text(encoding="utf-8")
-            old_exit_ip = expected_old_exit_ip.strip()
-            if not old_exit_ip:
-                try:
-                    old_exit_ip = self._exit_ip(proxy_index)
-                except Exception:
-                    old_exit_ip = ""
+            # The caller's value is historical node metadata and may be stale.
+            # A rotation can only be verified against an exit IP observed
+            # immediately before changing the session.
+            old_exit_ip = self._exit_ip(proxy_index)
+            expected_old_exit_ip = expected_old_exit_ip.strip()
+            if expected_old_exit_ip and expected_old_exit_ip != old_exit_ip:
+                log_event(
+                    "stale_expected_exit_ip",
+                    node_id=node_id,
+                    expected_exit_ip=expected_old_exit_ip,
+                    observed_exit_ip=old_exit_ip,
+                )
             try:
                 for attempt in range(1, self.config.max_attempts + 1):
                     self._update_session(proxy_index, self._new_session_id())
