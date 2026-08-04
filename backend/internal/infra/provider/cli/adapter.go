@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -563,7 +564,8 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 		return nil, err
 	}
 	// Always request the model catalog from the Build primary; do not preemptively switch to XAI because 1.5 or Super entitlement is absent.
-	// NormalizeAccountModelCapabilities fills 1.5 locally from Billing paid or BuildSuperEntitled.
+	// NormalizeAccountModelCapabilities fills session-contract capabilities such
+	// as Composer and paid video entitlement locally.
 	models, status, err := a.listModelsAt(ctx, credential, accessToken, a.primaryBaseURL())
 	if err != nil {
 		return nil, err
@@ -574,12 +576,16 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 	return nil, fmt.Errorf("上游模型接口返回 %d", status)
 }
 
-// NormalizeAccountModelCapabilities normalizes 1.5 video entitlement from Super (Billing paid or BuildSuperEntitled).
-// Super always includes grok-imagine-video-1.5; Free and Unknown remove it exactly. BuildAPIFallback is ignored.
+// NormalizeAccountModelCapabilities normalizes capabilities that the OAuth
+// session contract exposes independently of the account's sparse /models list.
+// Composer is available to Build OAuth sessions even though the live catalog can
+// return only grok-4.5. Super always includes video 1.5; Free and Unknown remove
+// video 1.5 exactly. BuildAPIFallback is ignored.
 func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string {
 	super := account.IsBuildSuper(credential, billing)
-	result := make([]string, 0, len(models)+1)
-	seen := make(map[string]struct{}, len(models)+1)
+	composer := credential.Provider == account.ProviderBuild && credential.AuthType == account.AuthTypeOAuth
+	result := make([]string, 0, len(models)+2)
+	seen := make(map[string]struct{}, len(models)+2)
 	hasVideo15 := false
 	for _, model := range models {
 		model = strings.TrimSpace(model)
@@ -601,7 +607,35 @@ func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *ac
 	if super && !hasVideo15 {
 		result = append(result, buildVideoModel)
 	}
+	if composer {
+		if _, exists := seen[modeldomain.GrokComposer25Fast]; !exists {
+			result = append(result, modeldomain.GrokComposer25Fast)
+		}
+	}
 	return result
+}
+
+type buildModelCatalogEntry struct {
+	ID      string `json:"id"`
+	Model   string `json:"model"`
+	ModelID string `json:"modelId"`
+	Hidden  bool   `json:"hidden"`
+	Meta    struct {
+		Model   string `json:"model"`
+		ModelID string `json:"modelId"`
+		Hidden  bool   `json:"hidden"`
+	} `json:"_meta"`
+}
+
+// modelIdentifier keeps the legacy top-level id authoritative and uses the
+// additional official Grok Build shapes only as fallbacks. This makes catalog
+// parsing additive: existing route IDs never change merely because model or
+// modelId metadata appears alongside id.
+func (e buildModelCatalogEntry) modelIdentifier() string {
+	if e.Hidden || e.Meta.Hidden {
+		return ""
+	}
+	return firstNonEmpty(e.ID, e.Model, e.ModelID, e.Meta.Model, e.Meta.ModelID)
 }
 
 func (a *Adapter) listModelsAt(ctx context.Context, credential account.Credential, accessToken, base string) ([]string, int, error) {
@@ -629,18 +663,27 @@ func (a *Adapter) listModelsAt(ctx context.Context, credential account.Credentia
 		return nil, resp.StatusCode, nil
 	}
 	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+		Data []json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, resp.StatusCode, err
 	}
 	models := make([]string, 0, len(payload.Data))
-	for _, item := range payload.Data {
-		if item.ID != "" {
-			models = append(models, item.ID)
+	seen := make(map[string]struct{}, len(payload.Data))
+	for _, raw := range payload.Data {
+		var item buildModelCatalogEntry
+		if json.Unmarshal(raw, &item) != nil {
+			continue
 		}
+		identifier := item.modelIdentifier()
+		if identifier == "" {
+			continue
+		}
+		if _, exists := seen[identifier]; exists {
+			continue
+		}
+		seen[identifier] = struct{}{}
+		models = append(models, identifier)
 	}
 	a.recordModelsETag(credential.ID, resp.Header.Get("ETag"))
 	return models, resp.StatusCode, nil

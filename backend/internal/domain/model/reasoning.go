@@ -19,6 +19,10 @@ const (
 	ReasoningEffortMax    ReasoningEffort = "max"
 )
 
+const GrokComposer25Fast = "grok-composer-2.5-fast"
+
+const grokComposerModelPrefix = "grok-composer-"
+
 // reasoningEffortSuffixes is ordered longest-first so "xhigh" wins over "high".
 var reasoningEffortSuffixes = []string{
 	ReasoningEffortXHigh,
@@ -46,7 +50,14 @@ var grokReasoningCapabilities = map[string][]string{
 	"grok-4.20-multi-agent-0309":   {ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh, ReasoningEffortXHigh},
 	"grok-3-mini":                  {ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh},
 	"grok-3-mini-fast":             {ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh},
-	"grok-composer-2.5-fast":       {ReasoningEffortNone},
+	GrokComposer25Fast:             {ReasoningEffortNone},
+}
+
+// IsGrokComposerModel reports whether value belongs to the Composer family.
+// Composer uses an isolated upstream conversation and does not accept a
+// configurable reasoning effort, including when addressed through Build/.
+func IsGrokComposerModel(value string) bool {
+	return strings.HasPrefix(strings.ToLower(externalModelSlug(value)), grokComposerModelPrefix)
 }
 
 // The Console reasoning variant has a fixed reasoning mode: it produces reasoning
