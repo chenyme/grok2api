@@ -47,6 +47,7 @@ database:
     path: "./data/backend.db"
   postgres:
     # [必须修改：仅 driver=postgres] 填写真实 DSN，并按需启用 sslmode。
+    # 也可通过 GROK2API_DATABASE_URL 注入；非空环境变量会覆盖本字段并自动启用 postgres。
     dsn: "postgres://user:password@127.0.0.1:5432/grok2api?sslmode=disable"
     # [按需修改] 根据数据库连接容量调整。
     maxOpenConns: 50

@@ -4,11 +4,111 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 )
+
+func TestLoadDatabaseURLOverridesYAMLAndSelectsPostgres(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`secrets:
+  jwtSecret: "12345678901234567890123456789012"
+  credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+bootstrapAdmin:
+  password: "password123"
+database:
+  driver: sqlite
+  sqlite:
+    path: "./yaml.db"
+  postgres:
+    dsn: "postgres://yaml:yaml@yaml.invalid/yaml"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const environmentDSN = "postgresql://env:secret@postgres.internal:5432/grok2api?sslmode=require"
+	t.Setenv(DatabaseURLEnv, environmentDSN)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.Driver != "postgres" || cfg.Database.Postgres.DSN != environmentDSN {
+		t.Fatalf("database config = %#v", cfg.Database)
+	}
+}
+
+func TestLoadEmptyDatabaseURLKeepsYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	const yamlDSN = "postgres://yaml:secret@postgres.internal:5432/grok2api"
+	if err := os.WriteFile(path, []byte(`secrets:
+  jwtSecret: "12345678901234567890123456789012"
+  credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+bootstrapAdmin:
+  password: "password123"
+database:
+  driver: postgres
+  postgres:
+    dsn: "`+yamlDSN+`"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(DatabaseURLEnv, "   ")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.Driver != "postgres" || cfg.Database.Postgres.DSN != yamlDSN {
+		t.Fatalf("database config = %#v", cfg.Database)
+	}
+}
+
+func TestLoadDoesNotImplicitlyReadGenericDatabaseURL(t *testing.T) {
+	t.Setenv(DatabaseURLEnv, "")
+	t.Setenv("DATABASE_URL", "postgres://generic:secret@postgres.internal/grok2api")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`secrets:
+  jwtSecret: "12345678901234567890123456789012"
+  credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+bootstrapAdmin:
+  password: "password123"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.Driver != "sqlite" {
+		t.Fatalf("generic DATABASE_URL unexpectedly selected %q", cfg.Database.Driver)
+	}
+}
+
+func TestLoadRejectsInvalidDatabaseEnvironmentURLWithoutLeakingCredentials(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		message string
+	}{
+		{name: "asyncpg", value: "postgresql+asyncpg://user:highly-secret@postgres.internal/grok2api", message: "改为 postgresql://"},
+		{name: "unsupported scheme", value: "mysql://user:highly-secret@mysql.internal/grok2api", message: "postgres:// 或 postgresql://"},
+		{name: "malformed URL", value: "postgres://user:highly-secret%zz@postgres.internal/grok2api", message: "不是有效的 PostgreSQL URL"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(DatabaseURLEnv, test.value)
+			_, err := Load("")
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("Load error = %v, want message containing %q", err, test.message)
+			}
+			if strings.Contains(err.Error(), "highly-secret") || strings.Contains(err.Error(), test.value) {
+				t.Fatalf("Load error leaked database credentials: %v", err)
+			}
+		})
+	}
+}
 
 func TestLoadDurationAndSecretsFromYAML(t *testing.T) {
 	dir := t.TempDir()
