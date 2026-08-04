@@ -181,7 +181,7 @@ func (quotaRecoveryModel) TableName() string { return "account_quota_recovery" }
 
 type modelRouteModel struct {
 	ID            uint64    `gorm:"primaryKey;autoIncrement"`
-	PublicID      string    `gorm:"size:255;uniqueIndex;not null;check:chk_model_routes_public_id,length(trim(public_id)) BETWEEN 1 AND 255"`
+	PublicID      string    `gorm:"size:255;index:idx_model_routes_public_id_lookup;not null;check:chk_model_routes_public_id,length(trim(public_id)) BETWEEN 1 AND 255"`
 	Provider      string    `gorm:"size:32;index:idx_model_routes_provider_upstream;not null;check:chk_model_routes_provider,provider IN ('grok_build','grok_web','grok_console')"`
 	UpstreamModel string    `gorm:"size:255;index:idx_model_routes_provider_upstream;not null;check:chk_model_routes_upstream_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
 	Capability    string    `gorm:"size:32;not null;check:chk_model_routes_capability,capability IN ('responses','chat','image','image_edit','video')"`
@@ -360,6 +360,7 @@ type responseOwnershipModel struct {
 	ResponseID         string          `gorm:"size:255;primaryKey;check:chk_response_ownership_id,length(response_id) BETWEEN 1 AND 255"`
 	AccountID          uint64          `gorm:"not null"`
 	ClientKeyID        uint64          `gorm:"not null"`
+	ModelRouteID       uint64          `gorm:"not null;default:0"`
 	Provider           string          `gorm:"size:32;not null;check:chk_response_ownership_provider,provider IN ('grok_build','grok_web','grok_console')"`
 	PromptCacheKey     string          `gorm:"size:64;not null;default:'';check:chk_response_ownership_cache_key,length(prompt_cache_key) <= 64"`
 	ReasoningReplayKey string          `gorm:"size:64;not null;default:'';check:chk_response_ownership_replay_key,length(reasoning_replay_key) <= 64"`

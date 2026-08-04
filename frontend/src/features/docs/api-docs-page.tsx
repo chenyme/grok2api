@@ -159,7 +159,7 @@ export function ApiDocsPage() {
 
   const publicApiBaseUrl = systemQuery.data?.publicApiBaseURL || runtimeConfig.publicApiBaseUrl;
   const baseUrl = `${publicApiBaseUrl.replace(/\/$/, "")}/v1`;
-  const availableModels = (modelsQuery.data?.items ?? []).filter((model) => model.enabled && model.available && definition.capabilities.includes(model.capability));
+  const availableModels = uniqueModelsByPublicID((modelsQuery.data?.items ?? []).filter((model) => model.enabled && model.available && definition.capabilities.includes(model.capability)));
   const selectedModelAvailable = availableModels.some((model) => model.publicId === selectedModel);
   const exampleModel = (selectedModelAvailable ? selectedModel : availableModels[0]?.publicId) || fallbackModel(definition.key);
   const examples = createExamples(definition, baseUrl, exampleModel);
@@ -217,6 +217,15 @@ export function ApiDocsPage() {
       </div>
     </div>
   );
+}
+
+function uniqueModelsByPublicID(models: ModelRouteDTO[]): ModelRouteDTO[] {
+  const seen = new Set<string>();
+  return models.filter((model) => {
+    if (seen.has(model.publicId)) return false;
+    seen.add(model.publicId);
+    return true;
+  });
 }
 
 function withExampleModel(response: Record<string, unknown>, model: string): Record<string, unknown> {
