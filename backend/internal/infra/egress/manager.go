@@ -153,6 +153,7 @@ type Manager struct {
 	clientVersions       map[uint64]uint64
 	clientGeneration     uint64
 	buildHeaderTimeout   atomic.Int64
+	accountIsolated      atomic.Bool
 	operationsConfig     cachedOperationsConfig
 	operationsConfigLoad singleflight.Group
 	operationsConfigVer  uint64
@@ -203,9 +204,10 @@ type cachedClient struct {
 }
 
 type clientCacheKey struct {
-	nodeID      uint64
-	scope       domain.Scope
-	fingerprint string
+	nodeID          uint64
+	scope           domain.Scope
+	fingerprint     string
+	accountIdentity string
 }
 
 type cachedNodeSnapshot struct {
@@ -344,6 +346,42 @@ func (m *Manager) UpdateBuildResponseHeaderTimeout(value time.Duration) {
 	}
 	m.clientMu.Unlock()
 	closeRequestClients(stale)
+}
+
+// UpdateAccountIsolatedConnections toggles per-account upstream connection pools.
+// When enabled, different accounts do not share TCP/HTTP clients so upstream
+// egress load balancers can spread traffic by connection; the same account still
+// reuses its own pool. Changing the setting rebuilds cached clients without
+// interrupting in-flight requests.
+func (m *Manager) UpdateAccountIsolatedConnections(enabled bool) {
+	if m.accountIsolated.Swap(enabled) == enabled {
+		return
+	}
+	m.clientMu.Lock()
+	stale := make([]requestClient, 0, len(m.clients))
+	for key, cached := range m.clients {
+		stale = append(stale, m.evictClientLocked(key, cached))
+	}
+	m.invalidateAllClientVersionsLocked()
+	m.clientMu.Unlock()
+	closeRequestClients(stale)
+}
+
+// AccountIsolatedConnections reports whether upstream clients are partitioned by account.
+func (m *Manager) AccountIsolatedConnections() bool {
+	return m != nil && m.accountIsolated.Load()
+}
+
+func isolationAccountIdentity(ctx context.Context, scope domain.Scope, affinity string) string {
+	identity := accountFromContext(ctx)
+	if identity != "" {
+		return identity
+	}
+	affinity = strings.TrimSpace(affinity)
+	if affinity != "" {
+		return string(scope) + "_" + affinity
+	}
+	return "shared"
 }
 
 // SetClearanceLock enables cross-instance coordination for shared, fixed egress
@@ -1054,7 +1092,11 @@ func (m *Manager) leaseForNode(ctx context.Context, scope domain.Scope, affinity
 			return nil, false, err
 		}
 	}
-	client, err := m.clientFor(selected.ID, scope, proxyURL, userAgent, cookies, sticky)
+	accountIdentity := ""
+	if m.accountIsolated.Load() {
+		accountIdentity = isolationAccountIdentity(ctx, scope, affinity)
+	}
+	client, err := m.clientFor(selected.ID, scope, proxyURL, userAgent, cookies, sticky, accountIdentity)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1257,7 +1299,7 @@ func (m *Manager) inflightCount(nodeID uint64) int64 {
 	return 0
 }
 
-func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, cookies string, sticky bool) (cachedClient, error) {
+func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, cookies string, sticky bool, accountIdentity string) (cachedClient, error) {
 	clientKind := "browser"
 	buildHeaderTimeout := time.Duration(0)
 	if scope == domain.ScopeBuild {
@@ -1268,13 +1310,21 @@ func (m *Manager) clientFor(id uint64, scope domain.Scope, proxyURL, userAgent, 
 		}
 		clientKind += "\x00" + strconv.FormatInt(int64(buildHeaderTimeout), 10)
 	}
+	if !m.accountIsolated.Load() {
+		accountIdentity = ""
+	} else {
+		accountIdentity = strings.TrimSpace(accountIdentity)
+		if accountIdentity == "" {
+			accountIdentity = "shared"
+		}
+	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(clientKind+"\x00"+proxyURL+"\x00"+userAgent+"\x00"+cookies)))
 	cacheScope := scope
 	if cacheScope == domain.ScopeWebAsset {
 		cacheScope = domain.ScopeWeb
 	}
-	key := clientCacheKey{nodeID: id, scope: cacheScope, fingerprint: fingerprint}
-	loadKey := strconv.FormatUint(key.nodeID, 10) + "\x00" + string(key.scope) + "\x00" + key.fingerprint
+	key := clientCacheKey{nodeID: id, scope: cacheScope, fingerprint: fingerprint, accountIdentity: accountIdentity}
+	loadKey := strconv.FormatUint(key.nodeID, 10) + "\x00" + string(key.scope) + "\x00" + key.fingerprint + "\x00" + key.accountIdentity
 	for attempt := 0; attempt < clientCreationRetryLimit; attempt++ {
 		now := time.Now().UTC()
 		m.clientMu.RLock()
@@ -1349,9 +1399,14 @@ func (m *Manager) createAndCacheClient(key clientCacheKey, id uint64, scope doma
 	}
 	if id != 0 && !sticky {
 		for previousKey, previous := range m.clients {
-			if previousKey.nodeID == id {
-				stale = append(stale, m.evictClientLocked(previousKey, previous))
+			if previousKey.nodeID != id {
+				continue
 			}
+			// Keep other accounts' pools when isolation is on.
+			if key.accountIdentity != "" && previousKey.accountIdentity != key.accountIdentity {
+				continue
+			}
+			stale = append(stale, m.evictClientLocked(previousKey, previous))
 		}
 	}
 	stale = append(stale, m.ensureClientCacheCapacityLocked()...)

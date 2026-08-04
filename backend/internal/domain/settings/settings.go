@@ -94,6 +94,7 @@ type RoutingConfig struct {
 	PreferFreeBuild             bool
 	// MarkBuildChatDeniedAsReauth 为 true 时，Build chat 权限拒绝标 reauthRequired，默认 false 保留模型级冷却。
 	MarkBuildChatDeniedAsReauth bool
+	AccountIsolatedConnections  bool
 	SegmentedSelector           *SegmentedSelectorConfig
 }
 

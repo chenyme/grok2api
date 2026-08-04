@@ -99,6 +99,7 @@ type RoutingConfig struct {
 	PreferFreeBuild                     bool
 	MarkBuildChatDeniedAsReauth         bool
 	MarkBuildChatDeniedAsReauthProvided bool
+	AccountIsolatedConnections          bool
 	SegmentedSelector                   SegmentedSelectorConfig
 	SegmentedSelectorProvided           bool
 }
@@ -364,6 +365,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts,
 		MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
 		PreferFreeBuild:             value.Routing.PreferFreeBuild,
+		AccountIsolatedConnections:  value.Routing.AccountIsolatedConnections,
 		SegmentedSelectorEnabled:    segmentedEnabled,
 		SegmentedMinCandidates:      segmentedMinCandidates,
 		SegmentedWindowSize:         segmentedWindowSize,
@@ -440,6 +442,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			CooldownMax: value.Routing.CooldownMax.Value(), CapacityWait: value.Routing.CapacityWait.Value(), MaxAttempts: value.Routing.MaxAttempts,
 			MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
 			PreferFreeBuild:             value.Routing.PreferFreeBuild,
+			AccountIsolatedConnections:  value.Routing.AccountIsolatedConnections,
 			SegmentedSelector: &settingsdomain.SegmentedSelectorConfig{
 				ActiveEnabled: value.Routing.SegmentedSelectorEnabled,
 				MinCandidates: value.Routing.SegmentedMinCandidates, WindowSize: value.Routing.SegmentedWindowSize,
@@ -521,6 +524,7 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(input.Frontend.PublicAPIBaseURL)
 	next.Routing.MaxAttempts = input.Routing.MaxAttempts
 	next.Routing.PreferFreeBuild = input.Routing.PreferFreeBuild
+	next.Routing.AccountIsolatedConnections = input.Routing.AccountIsolatedConnections
 	if input.Routing.SegmentedSelectorProvided {
 		next.Routing.SegmentedSelectorEnabled = input.Routing.SegmentedSelector.Enabled
 		next.Routing.SegmentedMinCandidates = input.Routing.SegmentedSelector.MinCandidates
@@ -637,6 +641,7 @@ func toEditable(cfg config.Config) EditableConfig {
 			MarkBuildChatDeniedAsReauth:         cfg.Routing.MarkBuildChatDeniedAsReauth,
 			MarkBuildChatDeniedAsReauthProvided: true,
 			PreferFreeBuild:                     cfg.Routing.PreferFreeBuild,
+			AccountIsolatedConnections:          cfg.Routing.AccountIsolatedConnections,
 			SegmentedSelector: SegmentedSelectorConfig{
 				Enabled: cfg.Routing.SegmentedSelectorEnabled, MinCandidates: cfg.Routing.SegmentedMinCandidates,
 				WindowSize: cfg.Routing.SegmentedWindowSize,
