@@ -99,8 +99,12 @@ type RoutingConfig struct {
 	PreferFreeBuild                     bool
 	MarkBuildChatDeniedAsReauth         bool
 	MarkBuildChatDeniedAsReauthProvided bool
-	SegmentedSelector                   SegmentedSelectorConfig
-	SegmentedSelectorProvided           bool
+	AccountIsolatedConnections          bool
+	// AccountIsolatedConnectionsProvided preserves the current value when an
+	// older management client omits the newly added field.
+	AccountIsolatedConnectionsProvided bool
+	SegmentedSelector                  SegmentedSelectorConfig
+	SegmentedSelectorProvided          bool
 }
 
 type SegmentedSelectorConfig struct {
@@ -354,6 +358,10 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	segmentedEnabled := base.Routing.SegmentedSelectorEnabled
 	segmentedMinCandidates := base.Routing.SegmentedMinCandidates
 	segmentedWindowSize := base.Routing.SegmentedWindowSize
+	accountIsolatedConnections := base.Routing.AccountIsolatedConnections
+	if value.Routing.AccountIsolatedConnections != nil {
+		accountIsolatedConnections = *value.Routing.AccountIsolatedConnections
+	}
 	if value.Routing.SegmentedSelector != nil {
 		segmentedEnabled = value.Routing.SegmentedSelector.ActiveEnabled
 		segmentedMinCandidates = value.Routing.SegmentedSelector.MinCandidates
@@ -364,6 +372,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts,
 		MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
 		PreferFreeBuild:             value.Routing.PreferFreeBuild,
+		AccountIsolatedConnections:  accountIsolatedConnections,
 		SegmentedSelectorEnabled:    segmentedEnabled,
 		SegmentedMinCandidates:      segmentedMinCandidates,
 		SegmentedWindowSize:         segmentedWindowSize,
@@ -401,6 +410,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 
 func toDomainConfig(value config.Config) settingsdomain.Config {
 	randomDelay := value.Batch.RandomDelay.Value()
+	accountIsolatedConnections := value.Routing.AccountIsolatedConnections
 	return settingsdomain.Config{
 		Server: settingsdomain.ServerConfig{MaxConcurrentRequests: value.Server.MaxConcurrentRequests},
 		ProviderBuild: settingsdomain.ProviderBuildConfig{
@@ -440,6 +450,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			CooldownMax: value.Routing.CooldownMax.Value(), CapacityWait: value.Routing.CapacityWait.Value(), MaxAttempts: value.Routing.MaxAttempts,
 			MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
 			PreferFreeBuild:             value.Routing.PreferFreeBuild,
+			AccountIsolatedConnections:  &accountIsolatedConnections,
 			SegmentedSelector: &settingsdomain.SegmentedSelectorConfig{
 				ActiveEnabled: value.Routing.SegmentedSelectorEnabled,
 				MinCandidates: value.Routing.SegmentedMinCandidates, WindowSize: value.Routing.SegmentedWindowSize,
@@ -521,6 +532,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(input.Frontend.PublicAPIBaseURL)
 	next.Routing.MaxAttempts = input.Routing.MaxAttempts
 	next.Routing.PreferFreeBuild = input.Routing.PreferFreeBuild
+	if input.Routing.AccountIsolatedConnectionsProvided {
+		next.Routing.AccountIsolatedConnections = input.Routing.AccountIsolatedConnections
+	}
 	if input.Routing.SegmentedSelectorProvided {
 		next.Routing.SegmentedSelectorEnabled = input.Routing.SegmentedSelector.Enabled
 		next.Routing.SegmentedMinCandidates = input.Routing.SegmentedSelector.MinCandidates
@@ -637,6 +651,8 @@ func toEditable(cfg config.Config) EditableConfig {
 			MarkBuildChatDeniedAsReauth:         cfg.Routing.MarkBuildChatDeniedAsReauth,
 			MarkBuildChatDeniedAsReauthProvided: true,
 			PreferFreeBuild:                     cfg.Routing.PreferFreeBuild,
+			AccountIsolatedConnections:          cfg.Routing.AccountIsolatedConnections,
+			AccountIsolatedConnectionsProvided:  true,
 			SegmentedSelector: SegmentedSelectorConfig{
 				Enabled: cfg.Routing.SegmentedSelectorEnabled, MinCandidates: cfg.Routing.SegmentedMinCandidates,
 				WindowSize: cfg.Routing.SegmentedWindowSize,

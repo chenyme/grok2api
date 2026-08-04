@@ -86,15 +86,18 @@ type ProviderBuildConfig struct {
 
 // RoutingConfig 定义会话粘性、冷却和故障切换边界。
 type RoutingConfig struct {
-	StickyTTL                   time.Duration
-	CooldownBase                time.Duration
-	CooldownMax                 time.Duration
-	CapacityWait                time.Duration
-	MaxAttempts                 int
-	PreferFreeBuild             bool
+	StickyTTL       time.Duration
+	CooldownBase    time.Duration
+	CooldownMax     time.Duration
+	CapacityWait    time.Duration
+	MaxAttempts     int
+	PreferFreeBuild bool
 	// MarkBuildChatDeniedAsReauth 为 true 时，Build chat 权限拒绝标 reauthRequired，默认 false 保留模型级冷却。
 	MarkBuildChatDeniedAsReauth bool
-	SegmentedSelector           *SegmentedSelectorConfig
+	// AccountIsolatedConnections is optional so persisted payloads written by
+	// older releases do not silently override a value supplied by config.yaml.
+	AccountIsolatedConnections *bool
+	SegmentedSelector          *SegmentedSelectorConfig
 }
 
 type SegmentedSelectorConfig struct {

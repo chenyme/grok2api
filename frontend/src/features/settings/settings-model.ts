@@ -128,6 +128,7 @@ export const settingsSchema = z.object({
     maxAttempts: z.union([z.literal(UNLIMITED_ROUTING_ATTEMPTS), positiveInteger.max(65535)]),
     preferFreeBuild: z.boolean(),
     markBuildChatDeniedAsReauth: z.boolean(),
+    accountIsolatedConnections: z.boolean(),
     segmentedSelector: z.object({
       enabled: z.boolean(),
       minCandidates: z.number().int().min(100).max(1_000_000),
@@ -188,6 +189,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       cooldownMax: parseDuration(config.routing.cooldownMax), capacityWait: parseDuration(config.routing.capacityWait), maxAttempts: config.routing.maxAttempts,
       preferFreeBuild: config.routing.preferFreeBuild,
       markBuildChatDeniedAsReauth: config.routing.markBuildChatDeniedAsReauth,
+      accountIsolatedConnections: config.routing.accountIsolatedConnections,
       segmentedSelector: config.routing.segmentedSelector,
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: parseDuration(config.audit.flushInterval), commitDelayMS: config.audit.commitDelayMS },
@@ -229,6 +231,7 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
       cooldownMax: formatDuration(config.routing.cooldownMax), capacityWait: formatDuration(config.routing.capacityWait), maxAttempts: config.routing.maxAttempts,
       preferFreeBuild: config.routing.preferFreeBuild,
       markBuildChatDeniedAsReauth: config.routing.markBuildChatDeniedAsReauth,
+      accountIsolatedConnections: config.routing.accountIsolatedConnections,
       segmentedSelector: config.routing.segmentedSelector,
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: formatDuration(config.audit.flushInterval), commitDelayMS: config.audit.commitDelayMS },

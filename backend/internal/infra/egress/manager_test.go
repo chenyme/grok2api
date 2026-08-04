@@ -21,6 +21,7 @@ import (
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -77,14 +78,14 @@ func TestBuildResponseHeaderTimeoutHotUpdateRebuildsCachedClients(t *testing.T) 
 		clients = append(clients, client)
 		return client, nil
 	}
-	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false, ""); err != nil {
 		t.Fatal(err)
 	}
 	manager.UpdateBuildResponseHeaderTimeout(7 * time.Minute)
 	if len(clients) != 1 || clients[0].closedIdle != 1 {
 		t.Fatalf("old clients=%d closed=%d", len(clients), clients[0].closedIdle)
 	}
-	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false, ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(observed) != 2 || observed[0] != 5*time.Minute || observed[1] != 7*time.Minute {
@@ -495,7 +496,7 @@ func TestClientCreationDoesNotHoldManagerLock(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false)
+		_, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false, "")
 		result <- err
 	}()
 	<-started
@@ -554,7 +555,7 @@ func TestClientCacheCoalescesLastUsedWrites(t *testing.T) {
 	manager := NewManager(egressRepositoryTestStub{}, nil)
 	client := &scriptedRequestClient{}
 	manager.newBuildClient = func(string, time.Duration) (requestClient, error) { return client, nil }
-	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -569,7 +570,7 @@ func TestClientCacheCoalescesLastUsedWrites(t *testing.T) {
 	manager.lastClientCleanup = base
 	manager.clientMu.Unlock()
 
-	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false, ""); err != nil {
 		t.Fatal(err)
 	}
 	manager.clientMu.RLock()
@@ -586,7 +587,7 @@ func TestClientCacheCoalescesLastUsedWrites(t *testing.T) {
 	manager.clients[key] = value
 	manager.lastClientCleanup = time.Now().UTC()
 	manager.clientMu.Unlock()
-	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false); err != nil {
+	if _, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false, ""); err != nil {
 		t.Fatal(err)
 	}
 	manager.clientMu.RLock()
@@ -615,7 +616,7 @@ func TestClientCreationDiscardsInvalidatedResult(t *testing.T) {
 	result := make(chan cachedClient, 1)
 	errorsCh := make(chan error, 1)
 	go func() {
-		value, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false)
+		value, err := manager.clientFor(1, domain.ScopeBuild, "", "", "", false, "")
 		if err != nil {
 			errorsCh <- err
 			return
@@ -2493,4 +2494,219 @@ func (egressRepositoryTestStub) UpdateEgressNode(context.Context, domain.Node) (
 }
 func (egressRepositoryTestStub) DeleteEgressNode(context.Context, uint64) error {
 	return errors.New("unsupported")
+}
+
+func TestAccountIsolatedConnectionsSeparatesDirectClientsByAccount(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{}, cipher)
+	manager.UpdateAccountIsolatedConnections(true)
+
+	firstCtx := WithAccountIdentity(context.Background(), "grok_web_1")
+	first, err := manager.AcquireCredential(firstCtx, domain.ScopeWeb, accountdomain.Credential{
+		ID: 1, Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+
+	secondCtx := WithAccountIdentity(context.Background(), "grok_web_2")
+	second, err := manager.AcquireCredential(secondCtx, domain.ScopeWeb, accountdomain.Credential{
+		ID: 2, Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+
+	if first.client == second.client {
+		t.Fatal("different accounts shared one TCP client pool while account isolation was enabled")
+	}
+
+	firstAgain, err := manager.AcquireCredential(firstCtx, domain.ScopeWeb, accountdomain.Credential{
+		ID: 1, Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstAgain.Release()
+	if firstAgain.client != first.client {
+		t.Fatal("same account did not reuse its isolated connection pool")
+	}
+}
+
+func TestAccountIsolatedConnectionsDisabledKeepsSharedDirectPool(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{}, cipher)
+	manager.UpdateAccountIsolatedConnections(false)
+
+	first, err := manager.AcquireCredential(context.Background(), domain.ScopeWeb, accountdomain.Credential{
+		ID: 1, Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	second, err := manager.AcquireCredential(context.Background(), domain.ScopeWeb, accountdomain.Credential{
+		ID: 2, Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	if first.client != second.client {
+		t.Fatal("shared direct pool was split while account isolation was disabled")
+	}
+}
+
+func TestAccountIsolatedBuildEnvironmentDirectUsesDedicatedFactoryAndPools(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{}, cipher)
+	manager.UpdateAccountIsolatedConnections(true)
+	var regularCalls, environmentCalls int
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		regularCalls++
+		return &scriptedRequestClient{}, nil
+	}
+	manager.newBuildEnvClient = func(time.Duration) (requestClient, error) {
+		environmentCalls++
+		return &scriptedRequestClient{}, nil
+	}
+
+	firstCtx := WithAccountIdentity(context.Background(), "grok_build_1")
+	first, configured, err := manager.AcquireBuildEnvironmentDirectIfIsolated(firstCtx, "1")
+	if err != nil || !configured {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	second, configured, err := manager.AcquireBuildEnvironmentDirectIfIsolated(WithAccountIdentity(context.Background(), "grok_build_2"), "2")
+	if err != nil || !configured {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	firstAgain, configured, err := manager.AcquireBuildEnvironmentDirectIfIsolated(firstCtx, "1")
+	if err != nil || !configured {
+		t.Fatal(err)
+	}
+	defer firstAgain.Release()
+
+	if regularCalls != 0 || environmentCalls != 2 {
+		t.Fatalf("Build client factories: regular=%d environment=%d", regularCalls, environmentCalls)
+	}
+	if first.client == second.client || first.client != firstAgain.client {
+		t.Fatal("environment-proxy Build pools were not isolated per account and reused within account")
+	}
+}
+
+func TestBuildEnvironmentDirectKeepsFallbackWhenIsolationDisabled(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	factoryCalls := 0
+	manager.newBuildEnvClient = func(time.Duration) (requestClient, error) {
+		factoryCalls++
+		return &scriptedRequestClient{}, nil
+	}
+
+	lease, configured, err := manager.AcquireBuildEnvironmentDirectIfIsolated(
+		WithAccountIdentity(context.Background(), "grok_build_1"), "1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured || lease != nil || factoryCalls != 0 {
+		t.Fatalf("disabled isolation created a manager direct pool: configured=%t lease=%v factoryCalls=%d", configured, lease, factoryCalls)
+	}
+}
+
+func TestCreateAndCacheClientRejectsStaleIsolationMode(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	manager.UpdateAccountIsolatedConnections(true)
+	factoryCalls := 0
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		factoryCalls++
+		return &scriptedRequestClient{}, nil
+	}
+
+	// An empty identity represents a cache key derived before isolation was
+	// enabled. It must not be accepted after the mode transition, even when it
+	// reaches creation after the transition's generation bump.
+	_, err := manager.createAndCacheClient(
+		clientCacheKey{nodeID: 0, scope: domain.ScopeBuild, fingerprint: "stale-shared"},
+		0, domain.ScopeBuild, "", "", false, settingsdomain.DefaultBuildResponseHeaderTimeout, clientOptions{},
+	)
+	if !errors.Is(err, errClientCacheInvalidated) {
+		t.Fatalf("stale isolation mode error = %v", err)
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("stale cache key created %d clients", factoryCalls)
+	}
+}
+
+func TestAccountIsolationIdentitySurvivesEnableBoundary(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	created := 0
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		created++
+		return &scriptedRequestClient{}, nil
+	}
+	firstIdentity := isolationAccountIdentity(WithAccountIdentity(context.Background(), "account-1"), domain.ScopeBuild, "1")
+	secondIdentity := isolationAccountIdentity(WithAccountIdentity(context.Background(), "account-2"), domain.ScopeBuild, "2")
+	manager.UpdateAccountIsolatedConnections(true)
+	first, err := manager.clientFor(0, domain.ScopeBuild, "", "", "", false, firstIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.clientFor(0, domain.ScopeBuild, "", "", "", false, secondIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != 2 || first.client == second.client {
+		t.Fatalf("enable-boundary identities shared a pool: created=%d", created)
+	}
+}
+
+func TestAccountIsolationHotUpdateEvictsOldPools(t *testing.T) {
+	manager := NewManager(egressRepositoryTestStub{}, nil)
+	manager.UpdateAccountIsolatedConnections(true)
+	manager.newBuildClient = func(string, time.Duration) (requestClient, error) {
+		return &scriptedRequestClient{}, nil
+	}
+	first, err := manager.clientFor(0, domain.ScopeBuild, "", "", "", false, "account-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.clientFor(0, domain.ScopeBuild, "", "", "", false, "account-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.UpdateAccountIsolatedConnections(false)
+	if first.client.(*scriptedRequestClient).closedIdle != 1 || second.client.(*scriptedRequestClient).closedIdle != 1 {
+		t.Fatal("hot update did not close both isolated idle pools")
+	}
+	manager.clientMu.RLock()
+	remaining := len(manager.clients)
+	manager.clientMu.RUnlock()
+	if remaining != 0 {
+		t.Fatalf("stale isolated pools remain after hot update: %d", remaining)
+	}
+
+	sharedFirst, err := manager.clientFor(0, domain.ScopeBuild, "", "", "", false, "account-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedSecond, err := manager.clientFor(0, domain.ScopeBuild, "", "", "", false, "account-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sharedFirst.client != sharedSecond.client {
+		t.Fatal("disabling isolation did not restore the shared pool")
+	}
 }
