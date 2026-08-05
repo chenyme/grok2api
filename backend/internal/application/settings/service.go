@@ -103,8 +103,14 @@ type RoutingConfig struct {
 	// AccountIsolatedConnectionsProvided preserves the current value when an
 	// older management client omits the newly added field.
 	AccountIsolatedConnectionsProvided bool
-	SegmentedSelector                  SegmentedSelectorConfig
-	SegmentedSelectorProvided          bool
+	BuildHighTokenSpeedAutoDisable          bool
+	BuildHighTokenSpeedAutoDisableProvided  bool
+	BuildHighTokenSpeedThreshold            float64
+	BuildHighTokenSpeedThresholdProvided    bool
+	BuildHighTokenSpeedModelIDs             []string
+	BuildHighTokenSpeedModelIDsProvided     bool
+	SegmentedSelector                       SegmentedSelectorConfig
+	SegmentedSelectorProvided               bool
 }
 
 type SegmentedSelectorConfig struct {
@@ -362,6 +368,18 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	if value.Routing.AccountIsolatedConnections != nil {
 		accountIsolatedConnections = *value.Routing.AccountIsolatedConnections
 	}
+	buildHighTokenSpeedAutoDisable := base.Routing.BuildHighTokenSpeedAutoDisable
+	if value.Routing.BuildHighTokenSpeedAutoDisable != nil {
+		buildHighTokenSpeedAutoDisable = *value.Routing.BuildHighTokenSpeedAutoDisable
+	}
+	buildHighTokenSpeedThreshold := base.Routing.BuildHighTokenSpeedThreshold
+	if value.Routing.BuildHighTokenSpeedThreshold != nil {
+		buildHighTokenSpeedThreshold = *value.Routing.BuildHighTokenSpeedThreshold
+	}
+	buildHighTokenSpeedModelIDs := append([]string(nil), base.Routing.BuildHighTokenSpeedModelIDs...)
+	if value.Routing.BuildHighTokenSpeedModelIDs != nil {
+		buildHighTokenSpeedModelIDs = append([]string(nil), value.Routing.BuildHighTokenSpeedModelIDs...)
+	}
 	if value.Routing.SegmentedSelector != nil {
 		segmentedEnabled = value.Routing.SegmentedSelector.ActiveEnabled
 		segmentedMinCandidates = value.Routing.SegmentedSelector.MinCandidates
@@ -370,13 +388,16 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.Routing = config.RoutingConfig{
 		StickyTTL: config.Duration(value.Routing.StickyTTL), CooldownBase: config.Duration(value.Routing.CooldownBase),
 		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts,
-		MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
-		PreferFreeBuild:             value.Routing.PreferFreeBuild,
-		AccountIsolatedConnections:  accountIsolatedConnections,
-		SegmentedSelectorEnabled:    segmentedEnabled,
-		SegmentedMinCandidates:      segmentedMinCandidates,
-		SegmentedWindowSize:         segmentedWindowSize,
-		ReasoningReplayEnabled:      base.Routing.ReasoningReplayEnabled, ReasoningReplayTTL: base.Routing.ReasoningReplayTTL,
+		MarkBuildChatDeniedAsReauth:        value.Routing.MarkBuildChatDeniedAsReauth,
+		PreferFreeBuild:                    value.Routing.PreferFreeBuild,
+		AccountIsolatedConnections:         accountIsolatedConnections,
+		BuildHighTokenSpeedAutoDisable:     buildHighTokenSpeedAutoDisable,
+		BuildHighTokenSpeedThreshold:       buildHighTokenSpeedThreshold,
+		BuildHighTokenSpeedModelIDs:        normalizeBuildHighTokenSpeedModelIDs(buildHighTokenSpeedModelIDs),
+		SegmentedSelectorEnabled:           segmentedEnabled,
+		SegmentedMinCandidates:             segmentedMinCandidates,
+		SegmentedWindowSize:                segmentedWindowSize,
+		ReasoningReplayEnabled:             base.Routing.ReasoningReplayEnabled, ReasoningReplayTTL: base.Routing.ReasoningReplayTTL,
 		ReasoningReplayMaxEntries: base.Routing.ReasoningReplayMaxEntries,
 	}
 	commitDelay := base.Audit.CommitDelay.Value()
@@ -411,6 +432,8 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 func toDomainConfig(value config.Config) settingsdomain.Config {
 	randomDelay := value.Batch.RandomDelay.Value()
 	accountIsolatedConnections := value.Routing.AccountIsolatedConnections
+	buildHighTokenSpeedAutoDisable := value.Routing.BuildHighTokenSpeedAutoDisable
+	buildHighTokenSpeedThreshold := value.Routing.BuildHighTokenSpeedThreshold
 	return settingsdomain.Config{
 		Server: settingsdomain.ServerConfig{MaxConcurrentRequests: value.Server.MaxConcurrentRequests},
 		ProviderBuild: settingsdomain.ProviderBuildConfig{
@@ -448,9 +471,12 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		Routing: settingsdomain.RoutingConfig{
 			StickyTTL: value.Routing.StickyTTL.Value(), CooldownBase: value.Routing.CooldownBase.Value(),
 			CooldownMax: value.Routing.CooldownMax.Value(), CapacityWait: value.Routing.CapacityWait.Value(), MaxAttempts: value.Routing.MaxAttempts,
-			MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
-			PreferFreeBuild:             value.Routing.PreferFreeBuild,
-			AccountIsolatedConnections:  &accountIsolatedConnections,
+			MarkBuildChatDeniedAsReauth:    value.Routing.MarkBuildChatDeniedAsReauth,
+			PreferFreeBuild:                value.Routing.PreferFreeBuild,
+			AccountIsolatedConnections:     &accountIsolatedConnections,
+			BuildHighTokenSpeedAutoDisable: &buildHighTokenSpeedAutoDisable,
+			BuildHighTokenSpeedThreshold:   &buildHighTokenSpeedThreshold,
+			BuildHighTokenSpeedModelIDs:    append([]string(nil), value.Routing.BuildHighTokenSpeedModelIDs...),
 			SegmentedSelector: &settingsdomain.SegmentedSelectorConfig{
 				ActiveEnabled: value.Routing.SegmentedSelectorEnabled,
 				MinCandidates: value.Routing.SegmentedMinCandidates, WindowSize: value.Routing.SegmentedWindowSize,
@@ -534,6 +560,15 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Routing.PreferFreeBuild = input.Routing.PreferFreeBuild
 	if input.Routing.AccountIsolatedConnectionsProvided {
 		next.Routing.AccountIsolatedConnections = input.Routing.AccountIsolatedConnections
+	}
+	if input.Routing.BuildHighTokenSpeedAutoDisableProvided {
+		next.Routing.BuildHighTokenSpeedAutoDisable = input.Routing.BuildHighTokenSpeedAutoDisable
+	}
+	if input.Routing.BuildHighTokenSpeedThresholdProvided {
+		next.Routing.BuildHighTokenSpeedThreshold = input.Routing.BuildHighTokenSpeedThreshold
+	}
+	if input.Routing.BuildHighTokenSpeedModelIDsProvided {
+		next.Routing.BuildHighTokenSpeedModelIDs = normalizeBuildHighTokenSpeedModelIDs(input.Routing.BuildHighTokenSpeedModelIDs)
 	}
 	if input.Routing.SegmentedSelectorProvided {
 		next.Routing.SegmentedSelectorEnabled = input.Routing.SegmentedSelector.Enabled
@@ -648,11 +683,17 @@ func toEditable(cfg config.Config) EditableConfig {
 		Routing: RoutingConfig{
 			StickyTTL: cfg.Routing.StickyTTL.String(), CooldownBase: cfg.Routing.CooldownBase.String(),
 			CooldownMax: cfg.Routing.CooldownMax.String(), CapacityWait: cfg.Routing.CapacityWait.String(), MaxAttempts: cfg.Routing.MaxAttempts,
-			MarkBuildChatDeniedAsReauth:         cfg.Routing.MarkBuildChatDeniedAsReauth,
-			MarkBuildChatDeniedAsReauthProvided: true,
-			PreferFreeBuild:                     cfg.Routing.PreferFreeBuild,
-			AccountIsolatedConnections:          cfg.Routing.AccountIsolatedConnections,
-			AccountIsolatedConnectionsProvided:  true,
+			MarkBuildChatDeniedAsReauth:             cfg.Routing.MarkBuildChatDeniedAsReauth,
+			MarkBuildChatDeniedAsReauthProvided:     true,
+			PreferFreeBuild:                         cfg.Routing.PreferFreeBuild,
+			AccountIsolatedConnections:              cfg.Routing.AccountIsolatedConnections,
+			AccountIsolatedConnectionsProvided:      true,
+			BuildHighTokenSpeedAutoDisable:          cfg.Routing.BuildHighTokenSpeedAutoDisable,
+			BuildHighTokenSpeedAutoDisableProvided:  true,
+			BuildHighTokenSpeedThreshold:            cfg.Routing.BuildHighTokenSpeedThreshold,
+			BuildHighTokenSpeedThresholdProvided:    true,
+			BuildHighTokenSpeedModelIDs:             append([]string(nil), cfg.Routing.BuildHighTokenSpeedModelIDs...),
+			BuildHighTokenSpeedModelIDsProvided:     true,
 			SegmentedSelector: SegmentedSelectorConfig{
 				Enabled: cfg.Routing.SegmentedSelectorEnabled, MinCandidates: cfg.Routing.SegmentedMinCandidates,
 				WindowSize: cfg.Routing.SegmentedWindowSize,
@@ -675,6 +716,27 @@ func toEditable(cfg config.Config) EditableConfig {
 		},
 		AccountsProvided: true,
 	}
+}
+
+func normalizeBuildHighTokenSpeedModelIDs(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func normalizeForbiddenCodes(values []string) []string {

@@ -216,12 +216,18 @@ type RoutingConfig struct {
 	// MarkBuildChatDeniedAsReauth 为 true 时，Build chat 权限拒绝标 reauthRequired，默认 false。
 	MarkBuildChatDeniedAsReauth bool `yaml:"markBuildChatDeniedAsReauth"`
 	AccountIsolatedConnections  bool `yaml:"accountIsolatedConnections"`
-	SegmentedSelectorEnabled    bool     `yaml:"segmentedSelectorEnabled"`
-	SegmentedMinCandidates      int      `yaml:"segmentedSelectorMinCandidates"`
-	SegmentedWindowSize         int      `yaml:"segmentedSelectorWindowSize"`
-	ReasoningReplayEnabled      bool     `yaml:"reasoningReplayEnabled"`
-	ReasoningReplayTTL          Duration `yaml:"reasoningReplayTTL"`
-	ReasoningReplayMaxEntries   int      `yaml:"reasoningReplayMaxEntries"`
+	// BuildHighTokenSpeedAutoDisable disables Build accounts when stream TPS exceeds the threshold.
+	BuildHighTokenSpeedAutoDisable bool `yaml:"buildHighTokenSpeedAutoDisable"`
+	// BuildHighTokenSpeedThreshold is tokens/sec; default 1000 when the feature is first enabled.
+	BuildHighTokenSpeedThreshold float64 `yaml:"buildHighTokenSpeedThreshold"`
+	// BuildHighTokenSpeedModelIDs lists public model IDs to watch; empty means no auto-disable.
+	BuildHighTokenSpeedModelIDs []string `yaml:"buildHighTokenSpeedModelIDs"`
+	SegmentedSelectorEnabled  bool     `yaml:"segmentedSelectorEnabled"`
+	SegmentedMinCandidates    int      `yaml:"segmentedSelectorMinCandidates"`
+	SegmentedWindowSize       int      `yaml:"segmentedSelectorWindowSize"`
+	ReasoningReplayEnabled    bool     `yaml:"reasoningReplayEnabled"`
+	ReasoningReplayTTL        Duration `yaml:"reasoningReplayTTL"`
+	ReasoningReplayMaxEntries int      `yaml:"reasoningReplayMaxEntries"`
 }
 
 type AuditConfig struct {
@@ -607,6 +613,17 @@ func (c Config) Validate() error {
 		c.Routing.SegmentedWindowSize > c.Routing.SegmentedMinCandidates {
 		return errors.New("routing segmented selector 配置无效")
 	}
+	if c.Routing.BuildHighTokenSpeedThreshold < 1 || c.Routing.BuildHighTokenSpeedThreshold > 100000 {
+		return errors.New("routing.buildHighTokenSpeedThreshold 必须在 1 到 100000 之间")
+	}
+	if len(c.Routing.BuildHighTokenSpeedModelIDs) > 64 {
+		return errors.New("routing.buildHighTokenSpeedModelIDs 最多支持 64 个模型")
+	}
+	for _, modelID := range c.Routing.BuildHighTokenSpeedModelIDs {
+		if strings.TrimSpace(modelID) == "" || len(strings.TrimSpace(modelID)) > 128 {
+			return errors.New("routing.buildHighTokenSpeedModelIDs 包含无效模型 ID")
+		}
+	}
 	if c.Routing.ReasoningReplayTTL.Value() <= 0 || c.Routing.ReasoningReplayTTL.Value() > 24*time.Hour {
 		return errors.New("routing.reasoningReplayTTL 必须在 1 纳秒到 24 小时之间")
 	}
@@ -803,20 +820,23 @@ func defaultConfig() Config {
 			Local: LocalMediaConfig{Path: "./data/media"},
 		},
 		Routing: RoutingConfig{
-			StickyTTL:                   Duration(time.Hour),
-			CooldownBase:                Duration(30 * time.Second),
-			CooldownMax:                 Duration(30 * time.Minute),
-			CapacityWait:                Duration(500 * time.Millisecond),
-			MaxAttempts:                 999,
-			MarkBuildChatDeniedAsReauth: false,
-			PreferFreeBuild:             false,
-			AccountIsolatedConnections:  false,
-			SegmentedSelectorEnabled:    false,
-			SegmentedMinCandidates:      3000,
-			SegmentedWindowSize:         64,
-			ReasoningReplayEnabled:      true,
-			ReasoningReplayTTL:          Duration(time.Hour),
-			ReasoningReplayMaxEntries:   10240,
+			StickyTTL:                      Duration(time.Hour),
+			CooldownBase:                   Duration(30 * time.Second),
+			CooldownMax:                    Duration(30 * time.Minute),
+			CapacityWait:                   Duration(500 * time.Millisecond),
+			MaxAttempts:                    999,
+			MarkBuildChatDeniedAsReauth:    false,
+			PreferFreeBuild:                false,
+			AccountIsolatedConnections:     false,
+			BuildHighTokenSpeedAutoDisable: false,
+			BuildHighTokenSpeedThreshold:   1000,
+			BuildHighTokenSpeedModelIDs:    nil,
+			SegmentedSelectorEnabled:       false,
+			SegmentedMinCandidates:         3000,
+			SegmentedWindowSize:            64,
+			ReasoningReplayEnabled:         true,
+			ReasoningReplayTTL:             Duration(time.Hour),
+			ReasoningReplayMaxEntries:      10240,
 		},
 		Audit: AuditConfig{
 			BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond), CommitDelay: Duration(5 * time.Millisecond),

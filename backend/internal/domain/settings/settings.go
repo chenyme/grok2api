@@ -97,7 +97,13 @@ type RoutingConfig struct {
 	// AccountIsolatedConnections is optional so persisted payloads written by
 	// older releases do not silently override a value supplied by config.yaml.
 	AccountIsolatedConnections *bool
-	SegmentedSelector          *SegmentedSelectorConfig
+	// BuildHighTokenSpeedAutoDisable 为 true 时，Build 渠道指定模型输出速度超阈值则自动禁用账号；默认关闭。
+	BuildHighTokenSpeedAutoDisable *bool
+	// BuildHighTokenSpeedThreshold 输出 Token/s 阈值；开启时默认 1000。
+	BuildHighTokenSpeedThreshold *float64
+	// BuildHighTokenSpeedModelIDs 需要监控的公开模型 ID（如 grok-4.20）；空列表表示不生效。
+	BuildHighTokenSpeedModelIDs []string
+	SegmentedSelector *SegmentedSelectorConfig
 }
 
 type SegmentedSelectorConfig struct {

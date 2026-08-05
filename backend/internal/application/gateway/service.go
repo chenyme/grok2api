@@ -188,6 +188,8 @@ type Service struct {
 	modelSyncMu                 sync.Mutex
 	modelSyncing                map[uint64]struct{}
 	markBuildChatDeniedAsReauth atomic.Bool
+	buildHighTokenSpeedMu       sync.RWMutex
+	buildHighTokenSpeedPolicy   buildHighTokenSpeedPolicy
 }
 
 type teamModelRateLimit struct {
@@ -203,6 +205,12 @@ type teamRateLimitObservation struct {
 type buildForbiddenReauthPolicy struct {
 	enabled bool
 	codes   map[string]struct{}
+}
+
+type buildHighTokenSpeedPolicy struct {
+	enabled   bool
+	threshold float64
+	models    map[string]struct{}
 }
 
 func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concurrency int) {
@@ -437,6 +445,29 @@ func (s *Service) UpdateMaxAttempts(maxAttempts int) { s.maxAttempts.Store(int64
 // 默认 false：仅模型级冷却；true 时按旧逻辑将账号标为失效并出池。
 func (s *Service) UpdateMarkBuildChatDeniedAsReauth(enabled bool) {
 	s.markBuildChatDeniedAsReauth.Store(enabled)
+}
+
+// UpdateBuildHighTokenSpeedAutoDisable 热更新 Build 渠道异常高输出速度自动禁用策略。
+// 默认关闭；开启后仅对指定公开模型 ID 生效，阈值默认 1000 Token/s。
+func (s *Service) UpdateBuildHighTokenSpeedAutoDisable(enabled bool, threshold float64, modelIDs []string) {
+	if threshold < 1 {
+		threshold = 1000
+	}
+	models := make(map[string]struct{}, len(modelIDs))
+	for _, raw := range modelIDs {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if value == "" {
+			continue
+		}
+		models[value] = struct{}{}
+	}
+	s.buildHighTokenSpeedMu.Lock()
+	s.buildHighTokenSpeedPolicy = buildHighTokenSpeedPolicy{
+		enabled:   enabled,
+		threshold: threshold,
+		models:    models,
+	}
+	s.buildHighTokenSpeedMu.Unlock()
 }
 
 func (s *Service) UpdateRequestTimeout(value time.Duration) {
@@ -1332,6 +1363,12 @@ attemptLoop:
 				}); err != nil {
 					s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
 				}
+				if successful {
+					_ = budget.run("high_tps_disable", finalizationMetadataBudget, func(stageCtx context.Context) error {
+						s.maybeDisableBuildAccountForHighTokenSpeed(stageCtx, record, credential, publicModel)
+						return nil
+					})
+				}
 				if usage.ResponseModel != "" {
 					_ = budget.run("observed_model", finalizationMetadataBudget, func(stageCtx context.Context) error {
 						return s.accounts.ObserveResponseModel(stageCtx, accountID, usage.ResponseModel)
@@ -1425,6 +1462,42 @@ func isSSOCredentialRejected(err error, credential accountdomain.Credential) boo
 	}
 	status, ok := provider.ErrorHTTPStatus(err)
 	return ok && status == http.StatusUnauthorized
+}
+
+func auditOutputTokensPerSecond(value audit.Record) (float64, bool) {
+	if !value.Streaming || value.StatusCode < 200 || value.StatusCode >= 300 || value.ErrorCode != "" || value.FirstTokenMS == nil || value.OutputTokens <= 0 || value.DurationMS <= *value.FirstTokenMS {
+		return 0, false
+	}
+	return float64(value.OutputTokens) * 1000 / float64(value.DurationMS-*value.FirstTokenMS), true
+}
+
+func (s *Service) maybeDisableBuildAccountForHighTokenSpeed(ctx context.Context, record audit.Record, credential accountdomain.Credential, publicModel string) {
+	if credential.Provider != accountdomain.ProviderBuild || record.AccountID == nil {
+		return
+	}
+	s.buildHighTokenSpeedMu.RLock()
+	policy := s.buildHighTokenSpeedPolicy
+	s.buildHighTokenSpeedMu.RUnlock()
+	if !policy.enabled || policy.threshold <= 0 || len(policy.models) == 0 {
+		return
+	}
+	modelID := strings.ToLower(strings.TrimSpace(publicModel))
+	if modelID == "" {
+		modelID = strings.ToLower(strings.TrimSpace(record.ModelPublicID))
+	}
+	if _, ok := policy.models[modelID]; !ok {
+		return
+	}
+	speed, ok := auditOutputTokensPerSecond(record)
+	if !ok || speed < policy.threshold {
+		return
+	}
+	reason := fmt.Sprintf("Build high token speed auto-disable: model=%s speed=%.1f tok/s threshold=%.1f", modelID, speed, policy.threshold)
+	if err := s.accounts.DisableForHighTokenSpeed(ctx, credential.ID, reason); err != nil {
+		s.logger.Warn("build_high_token_speed_disable_failed", "request_id", record.RequestID, "account_id", credential.ID, "model", modelID, "speed", speed, "threshold", policy.threshold, "error", err)
+		return
+	}
+	s.logger.Warn("build_high_token_speed_account_disabled", "request_id", record.RequestID, "account_id", credential.ID, "account_name", credential.Name, "model", modelID, "speed", speed, "threshold", policy.threshold)
 }
 
 func (s *Service) markSSOCredentialRejected(ctx context.Context, credential accountdomain.Credential, reason string) {

@@ -2091,6 +2091,32 @@ func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason stri
 	return nil
 }
 
+// DisableForHighTokenSpeed disables a Build account after anomalous output speed.
+// It is idempotent for already-disabled accounts and preserves LastError for operators.
+func (s *Service) DisableForHighTokenSpeed(ctx context.Context, id uint64, reason string) error {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialStateWriteTimeout)
+	defer cancel()
+	value, err := s.accounts.Get(writeCtx, id)
+	if err != nil {
+		return mapRepositoryError(err)
+	}
+	if !value.Enabled && strings.TrimSpace(value.LastError) == strings.TrimSpace(reason) {
+		return nil
+	}
+	value.Enabled = false
+	value.LastError = reason
+	if len(value.LastError) > 512 {
+		value.LastError = value.LastError[:512]
+	}
+	if _, err := s.accounts.Update(writeCtx, value); err != nil {
+		return mapRepositoryError(err)
+	}
+	if s.sticky != nil {
+		_ = s.sticky.DeleteByAccount(writeCtx, id)
+	}
+	return nil
+}
+
 // markSSOCredentialRejected 在上游明确返回 401 后可靠持久化失效状态。
 // 状态写入不继承客户端取消，避免已经确认失效的账号因请求断开继续留在号池。
 func (s *Service) markSSOCredentialRejected(ctx context.Context, value accountdomain.Credential, reason string) error {

@@ -22,6 +22,9 @@ export type SettingsConfigDTO = {
   routing: {
     stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number; preferFreeBuild: boolean; markBuildChatDeniedAsReauth: boolean;
     accountIsolatedConnections: boolean;
+    buildHighTokenSpeedAutoDisable: boolean;
+    buildHighTokenSpeedThreshold: number;
+    buildHighTokenSpeedModelIDs: string[];
     segmentedSelector: { enabled: boolean; minCandidates: number; windowSize: number };
   };
   audit: { bufferSize: number; batchSize: number; flushInterval: string; commitDelayMS: number };
@@ -112,6 +115,9 @@ const settingsConfigValidator = hasShape({
   routing: hasShape({
     stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber, preferFreeBuild: isBoolean, markBuildChatDeniedAsReauth: isBoolean,
     accountIsolatedConnections: isOptional(isBoolean),
+    buildHighTokenSpeedAutoDisable: isOptional(isBoolean),
+    buildHighTokenSpeedThreshold: isOptional(isNumber),
+    buildHighTokenSpeedModelIDs: isOptional(isArrayOf(isString)),
     segmentedSelector: isOptional(hasShape({ enabled: isBoolean, minCandidates: isNumber, windowSize: isNumber })),
   }),
   audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString, commitDelayMS: isOptional(isNumber) }),
@@ -149,6 +155,9 @@ function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
         ...snapshot.config.routing,
         markBuildChatDeniedAsReauth: snapshot.config.routing.markBuildChatDeniedAsReauth ?? false,
         accountIsolatedConnections: snapshot.config.routing.accountIsolatedConnections ?? false,
+        buildHighTokenSpeedAutoDisable: snapshot.config.routing.buildHighTokenSpeedAutoDisable ?? false,
+        buildHighTokenSpeedThreshold: snapshot.config.routing.buildHighTokenSpeedThreshold ?? 1000,
+        buildHighTokenSpeedModelIDs: snapshot.config.routing.buildHighTokenSpeedModelIDs ?? [],
         segmentedSelector: {
           enabled: segmentedSelector.enabled ?? false,
           minCandidates: segmentedSelector.minCandidates || 3000,

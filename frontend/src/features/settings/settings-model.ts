@@ -42,6 +42,20 @@ function parseForbiddenCodes(value: string): string[] {
   return result;
 }
 
+function parseModelIDs(value: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value.split(/[\n,]/)) {
+    const model = item.trim();
+    if (model === "") continue;
+    const key = model.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(model);
+  }
+  return result;
+}
+
 function validPublicAPIBaseURL(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed.length === 0) return true;
@@ -129,6 +143,14 @@ export const settingsSchema = z.object({
     preferFreeBuild: z.boolean(),
     markBuildChatDeniedAsReauth: z.boolean(),
     accountIsolatedConnections: z.boolean(),
+    buildHighTokenSpeedAutoDisable: z.boolean(),
+    buildHighTokenSpeedThreshold: z.number().min(1).max(100_000),
+    buildHighTokenSpeedModelIDs: z.string().superRefine((value, context) => {
+      const models = parseModelIDs(value);
+      if (models.length > 64 || models.some((model) => model.length === 0 || model.length > 128)) {
+        context.addIssue({ code: "custom", message: "invalid" });
+      }
+    }),
     segmentedSelector: z.object({
       enabled: z.boolean(),
       minCandidates: z.number().int().min(100).max(1_000_000),
@@ -190,6 +212,9 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       preferFreeBuild: config.routing.preferFreeBuild,
       markBuildChatDeniedAsReauth: config.routing.markBuildChatDeniedAsReauth,
       accountIsolatedConnections: config.routing.accountIsolatedConnections,
+      buildHighTokenSpeedAutoDisable: config.routing.buildHighTokenSpeedAutoDisable,
+      buildHighTokenSpeedThreshold: config.routing.buildHighTokenSpeedThreshold,
+      buildHighTokenSpeedModelIDs: config.routing.buildHighTokenSpeedModelIDs.join("\n"),
       segmentedSelector: config.routing.segmentedSelector,
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: parseDuration(config.audit.flushInterval), commitDelayMS: config.audit.commitDelayMS },
@@ -232,6 +257,9 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
       preferFreeBuild: config.routing.preferFreeBuild,
       markBuildChatDeniedAsReauth: config.routing.markBuildChatDeniedAsReauth,
       accountIsolatedConnections: config.routing.accountIsolatedConnections,
+      buildHighTokenSpeedAutoDisable: config.routing.buildHighTokenSpeedAutoDisable,
+      buildHighTokenSpeedThreshold: config.routing.buildHighTokenSpeedThreshold,
+      buildHighTokenSpeedModelIDs: parseModelIDs(config.routing.buildHighTokenSpeedModelIDs),
       segmentedSelector: config.routing.segmentedSelector,
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: formatDuration(config.audit.flushInterval), commitDelayMS: config.audit.commitDelayMS },
