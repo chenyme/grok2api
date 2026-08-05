@@ -280,6 +280,30 @@ func TestParseImportedCredentialsJSONSequence(t *testing.T) {
 	}
 }
 
+// 批量注册工具导出的顶层裸数组形态。
+func TestParseImportedCredentialsBareArray(t *testing.T) {
+	data := []byte(`[{"type":"xai","access_token":"access-1","refresh_token":"refresh-1","email":"user@example.com","user_id":"user-1","expires_at":"2026-08-01T00:00:00Z"}` +
+		`,{"type":"xai","refresh_token":"refresh-2"}]`)
+	values, err := parseImportedCredentials(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0].AccessToken != "access-1" || values[0].Email != "user@example.com" || values[0].UserID != "user-1" || values[0].ExpiresAt.IsZero() || values[1].RefreshToken != "refresh-2" {
+		t.Fatalf("bare array import = %#v", values)
+	}
+	if values[0].SourceKey == values[1].SourceKey {
+		t.Fatal("不同账号生成了相同来源标识")
+	}
+}
+
+// null 元素不在解码层拦截，归一化阶段须带账号序号报错。
+func TestParseImportedCredentialsBareArrayRejectsNullElement(t *testing.T) {
+	_, err := parseImportedCredentials([]byte(`[{"refresh_token":"refresh-1"},null]`))
+	if err == nil || !strings.Contains(err.Error(), "第 2 个账号") {
+		t.Fatalf("error = %v, want indexed normalize error", err)
+	}
+}
+
 func TestParseImportedCredentialsLooseAccountsDocument(t *testing.T) {
 	data := []byte("{\n  \"accounts\": [\n" +
 		"{\"access_token\":\"access-1\",\"sub\":\"user-1\"}\n" +
