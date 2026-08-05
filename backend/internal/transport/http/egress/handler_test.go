@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -120,7 +121,9 @@ func TestUpdateQualityGuardConfigWritesPrivateAtomicFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits: the os.WriteFile mode argument
+	// is ignored and files always report 0666-style permissions.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("runtime config mode = %o", info.Mode().Perm())
 	}
 }
