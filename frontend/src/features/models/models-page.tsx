@@ -1,7 +1,8 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
-import { useState } from "react";
+import type { TFunction } from "i18next";
+import { Clapperboard, Image as ImageIcon, MessagesSquare, MessageSquareText, MoreHorizontal, Paintbrush, Pencil, Plus, RefreshCw, Search, SquareTerminal, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -19,8 +20,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { createModel, deleteModel, deleteModels, listModelAccountOptions, listModels, syncModels, updateModel, updateModelsEnabled } from "@/entities/model/model-api";
-import type { ModelRouteDTO } from "@/entities/model/types";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { createModel, deleteModel, deleteModels, listModelAccountOptions, listModelGroups, syncModels, updateModel, updateModelsEnabled } from "@/entities/model/model-api";
+import type { ModelEndpointCapability, ModelRouteDTO, ModelRouteGroupDTO } from "@/entities/model/types";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -43,7 +45,7 @@ export function ModelsPage() {
   const [sort, setSort] = useState<TableSort>({ field: "", order: "asc" });
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [editing, setEditing] = useState<ModelRouteDTO | "new" | null>(null);
-  const [deleting, setDeleting] = useState<ModelRouteDTO | null>(null);
+  const [deleting, setDeleting] = useState<ModelRouteGroup | null>(null);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [accountSearch, setAccountSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
@@ -68,8 +70,8 @@ export function ModelsPage() {
   const selectedAccountIDs = useWatch({ control: form.control, name: "accountIds" });
 
   const modelsQuery = useQuery({
-    queryKey: ["models", page, pageSize, debouncedSearch, statusFilter, providerFilter, sort.field, sort.order],
-    queryFn: () => listModels({ page, pageSize, search: debouncedSearch, status: statusFilter, provider: providerFilter, sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined }),
+    queryKey: ["models", "grouped", page, pageSize, debouncedSearch, statusFilter, providerFilter, sort.field, sort.order],
+    queryFn: () => listModelGroups({ page, pageSize, search: debouncedSearch, status: statusFilter, provider: providerFilter, sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined }),
   });
 
   const accountOptionsQuery = useQuery({
@@ -86,6 +88,7 @@ export function ModelsPage() {
       return updateModel(editing.id, { publicId: input.publicId, enabled: input.enabled, accountIds: input.accountIds });
     },
     onSuccess: () => {
+      setSelected(new Set());
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       setEditing(null);
       toast.success(t(editing === "new" ? "models.created" : "models.updated"));
@@ -94,10 +97,15 @@ export function ModelsPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteModel(id),
+    mutationFn: async (routes: ModelRouteDTO[]) => {
+      if (routes.length === 1) await deleteModel(routes[0].id);
+      else await deleteModels(routes.map((route) => route.id));
+    },
     onSuccess: () => {
+      setSelected(new Set());
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       setDeleting(null);
+      setPage(1);
       toast.success(t("models.deleted"));
     },
     onError: showError,
@@ -108,6 +116,7 @@ export function ModelsPage() {
     onSuccess: (result) => {
       setSelected(new Set());
       setBatchDeleteOpen(false);
+      setPage(1);
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       toast.success(t("models.batchDeleted", { count: result.deleted }));
     },
@@ -118,6 +127,7 @@ export function ModelsPage() {
     mutationFn: (enabled: boolean) => updateModelsEnabled([...selected], enabled),
     onSuccess: () => {
       setSelected(new Set());
+      setPage(1);
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       toast.success(t("models.batchUpdated"));
     },
@@ -127,6 +137,8 @@ export function ModelsPage() {
   const syncMutation = useMutation({
     mutationFn: syncModels,
     onSuccess: (result) => {
+      setSelected(new Set());
+      setPage(1);
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       toast.success(t("models.synced", { count: result.synced }));
     },
@@ -168,10 +180,11 @@ export function ModelsPage() {
     ? accountOptions.filter((account) => account.name.toLocaleLowerCase().includes(normalizedAccountSearch) || account.id.includes(normalizedAccountSearch))
     : accountOptions;
 
-  const result = modelsQuery.data;
-  const pageIDs = result?.items.map((model) => model.id) ?? [];
+  const result = useMemo(() => modelsQuery.data ? { ...modelsQuery.data, items: modelsQuery.data.items.map((group) => newModelRouteGroup(group, t)) } : undefined, [modelsQuery.data, t]);
+  const pageIDs = result?.items.flatMap((group) => group.routes.map((route) => route.id)) ?? [];
   const selectedOnPage = pageIDs.filter((id) => selected.has(id));
   const allPageSelected = pageIDs.length > 0 && selectedOnPage.length === pageIDs.length;
+  const selectedGroupCount = result?.items.filter((group) => group.routes.some((route) => selected.has(route.id))).length ?? 0;
 
   function togglePage(checked: boolean): void {
     setSelected((current) => {
@@ -184,11 +197,13 @@ export function ModelsPage() {
     });
   }
 
-  function toggleModel(id: string, checked: boolean): void {
+  function toggleModelGroup(routes: ModelRouteDTO[], checked: boolean): void {
     setSelected((current) => {
       const next = new Set(current);
-      if (checked) next.add(id);
-      else next.delete(id);
+      for (const route of routes) {
+        if (checked) next.add(route.id);
+        else next.delete(route.id);
+      }
       return next;
     });
   }
@@ -196,6 +211,7 @@ export function ModelsPage() {
   function changeSort(field: string, initialOrder: SortOrder): void {
     setSort((current) => nextTableSort(current, field, initialOrder));
     setPage(1);
+    setSelected(new Set());
   }
 
   return (
@@ -211,15 +227,15 @@ export function ModelsPage() {
             <div className="flex w-full items-center gap-2 sm:w-auto">
               <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={t("models.search")} aria-label={t("models.search")} />
+                <Input className="h-8 pl-9 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); setSelected(new Set()); }} placeholder={t("models.search")} aria-label={t("models.search")} />
               </div>
               <DataTableFilters filters={[
-                { id: "provider", label: t("models.provider"), value: providerFilter, onChange: (value) => { setProviderFilter(value as ModelRouteDTO["provider"] | ""); setPage(1); }, options: [
+                { id: "provider", label: t("models.provider"), value: providerFilter, onChange: (value) => { setProviderFilter(value as ModelRouteDTO["provider"] | ""); setPage(1); setSelected(new Set()); }, options: [
                   { value: "grok_build", label: t("models.providerGrokBuild") },
                   { value: "grok_web", label: t("models.providerGrokWeb") },
                   { value: "grok_console", label: t("console.name") },
                 ] },
-                { id: "status", label: t("models.status"), value: statusFilter, onChange: (value) => { setStatusFilter(value); setPage(1); }, options: [
+                { id: "status", label: t("models.status"), value: statusFilter, onChange: (value) => { setStatusFilter(value); setPage(1); setSelected(new Set()); }, options: [
                   { value: "enabled", label: t("common.enabled") },
                   { value: "disabled", label: t("common.disabled") },
                 ] },
@@ -228,7 +244,7 @@ export function ModelsPage() {
             <div className="flex flex-wrap items-center gap-1.5">
               {selected.size > 0 ? (
                 <>
-                  <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
+                  <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selectedGroupCount })}</span>
                   <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                   <Button variant="secondary" size="sm" onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
                   <Button variant="secondary" size="sm" className="text-destructive hover:text-destructive" onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
@@ -242,15 +258,16 @@ export function ModelsPage() {
             </div>
           </>
         )}
-        footer={result && result.total > 0 ? <Pagination page={result.page} pageSize={result.pageSize} total={result.total} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} /> : undefined}
+        footer={result && result.total > 0 ? <Pagination page={result.page} pageSize={result.pageSize} total={result.total} onPageChange={(value) => { setPage(value); setSelected(new Set()); }} onPageSizeChange={(value) => { setPageSize(value); setPage(1); setSelected(new Set()); }} /> : undefined}
       >
         {modelsQuery.isError ? <ErrorState message={modelsQuery.error.message} onRetry={() => void modelsQuery.refetch()} /> : null}
-        {result && result.items.length === 0 ? <EmptyState /> : null}
+        {!modelsQuery.isPending && !modelsQuery.isError && result?.items.length === 0 ? <EmptyState /> : null}
         {modelsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table viewportRows={20} rowHeight={56} className="min-w-[1000px] table-fixed text-xs">
+          <Table viewportRows={20} rowHeight={56} className="min-w-[1120px] table-fixed text-xs">
             <colgroup>
               <col className="w-10" />
               <col className="w-56" />
+              <col className="w-32" />
               <col className="w-52" />
               <col className="w-24" />
               <col className="w-32" />
@@ -263,6 +280,7 @@ export function ModelsPage() {
                 <TableHead className="px-2 text-center"><Checkbox checked={allPageSelected ? true : selectedOnPage.length > 0 ? "indeterminate" : false} onCheckedChange={(checked) => togglePage(checked === true)} aria-label={t("common.selectPage")} /></TableHead>
                 <SortableTableHead field="publicId" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("models.model")}</SortableTableHead>
                 <SortableTableHead field="upstreamModel" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("models.upstream")}</SortableTableHead>
+                <TableHead className="text-center">{t("models.capability")}</TableHead>
                 <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("models.status")}</SortableTableHead>
                 <SortableTableHead field="provider" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("models.provider")}</SortableTableHead>
                 <SortableTableHead field="accountSupport" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" onSort={changeSort}>{t("models.accountSupport")}</SortableTableHead>
@@ -271,23 +289,26 @@ export function ModelsPage() {
               </TableRow>
             </TableHeader>
             {modelsQuery.isPending ? (
-              <TableBody><TableLoadingRow colSpan={8} /></TableBody>
+              <TableBody><TableLoadingRow colSpan={9} /></TableBody>
             ) : (
-              <VirtualTableBody items={result?.items ?? []} colSpan={8} rowHeight={56} renderRow={(model) => (
-                <TableRow className="group h-14" key={model.id} data-state={selected.has(model.id) ? "selected" : undefined}>
-                  <TableCell className="px-2 text-center"><Checkbox checked={selected.has(model.id)} onCheckedChange={(checked) => toggleModel(model.id, checked === true)} aria-label={t("common.selectItem", { name: model.publicId })} /></TableCell>
+              <VirtualTableBody items={result?.items ?? []} colSpan={9} rowHeight={56} renderRow={(model) => {
+                const selectedRoutes = model.routes.filter((route) => selected.has(route.id)).length;
+                return (
+                <TableRow className="group h-14" key={model.key} data-state={selectedRoutes > 0 ? "selected" : undefined}>
+                  <TableCell className="px-2 text-center"><Checkbox checked={selectedRoutes === model.routes.length ? true : selectedRoutes > 0 ? "indeterminate" : false} onCheckedChange={(checked) => toggleModelGroup(model.routes, checked === true)} aria-label={t("common.selectItem", { name: model.publicId })} /></TableCell>
                   <TableCell className="min-w-0">
                     <span className="block truncate text-xs font-medium" title={model.publicId}>{model.publicId}</span>
                   </TableCell>
                   <TableCell className="min-w-0">
                     <span className="block truncate text-xs text-muted-foreground" title={model.upstreamModel}>{model.upstreamModel}</span>
                   </TableCell>
-                  <TableCell className="text-center">{model.enabled ? <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("common.enabled")}</Badge> : <Badge variant="outline" className="text-muted-foreground">{t("common.disabled")}</Badge>}</TableCell>
+                  <TableCell className="text-center"><ModelCapabilities capabilities={model.capabilities} /></TableCell>
+                  <TableCell className="text-center">{model.enabledState === "enabled" ? <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("common.enabled")}</Badge> : model.enabledState === "disabled" ? <Badge variant="outline" className="text-muted-foreground">{t("common.disabled")}</Badge> : <Badge variant="outline" className="text-amber-700 dark:text-amber-300">{t("models.partiallyEnabled")}</Badge>}</TableCell>
                   <TableCell className="text-center"><ModelProvider provider={model.provider} /></TableCell>
                   <TableCell className="text-center text-xs">
-                    <div title={t("models.supportSummary", { supported: model.supportedAccounts, total: model.totalAccounts })}>
-                      <span className="inline-flex items-baseline gap-1 tabular-nums"><span className={cn("font-medium", model.supportedAccounts > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>{model.supportedAccounts}</span><span className="text-muted-foreground">/ {model.totalAccounts}</span></span>
-                      {model.bindingMode ? <span className="mt-0.5 block text-[10px] text-muted-foreground">{t("models.boundAccounts")}</span> : null}
+                    <div title={model.supportTitle}>
+                      <span className="inline-flex items-baseline gap-1 tabular-nums"><span className={cn("font-medium", model.supportedMax > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>{model.supportedLabel}</span><span className="text-muted-foreground">/ {model.totalLabel}</span></span>
+                      <span className="mt-0.5 block text-[10px] text-muted-foreground">{t(model.bindingState === "bound" ? "models.boundAccounts" : model.bindingState === "automatic" ? "models.automaticAccounts" : "models.mixedAccounts")}</span>
                     </div>
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(model.lastSyncedAt, i18n.language)}</TableCell>
@@ -295,13 +316,14 @@ export function ModelsPage() {
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => beginEdit(model)}><Pencil />{t("common.edit")}</DropdownMenuItem>
+                        {model.routes.map((route) => <DropdownMenuItem key={route.id} onClick={() => beginEdit(route)}><Pencil />{model.routes.length === 1 ? t("common.edit") : t("models.editCapability", { capability: capabilityLabel(route.capability, t) })}</DropdownMenuItem>)}
                         <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleting(model)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableActionCell>
                 </TableRow>
-              )} />
+                );
+              }} />
             )}
           </Table>
         ) : null}
@@ -389,14 +411,14 @@ export function ModelsPage() {
 
       <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => !open && setDeleting(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>{t("models.deleteTitle")}</AlertDialogTitle><AlertDialogDescription>{t("models.deleteDescription", { name: deleting?.publicId ?? "" })}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={deleteMutation.isPending} onClick={() => deleting && deleteMutation.mutate(deleting.id)}>{deleteMutation.isPending ? <Spinner /> : null}{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader><AlertDialogTitle>{t("models.deleteTitle")}</AlertDialogTitle><AlertDialogDescription>{t(deleting && deleting.routes.length > 1 ? "models.deleteGroupDescription" : "models.deleteDescription", { name: deleting?.publicId ?? "", count: deleting?.routes.length ?? 0 })}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={deleteMutation.isPending} onClick={() => deleting && deleteMutation.mutate(deleting.routes)}>{deleteMutation.isPending ? <Spinner /> : null}{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>{t("models.batchDeleteTitle", { count: selected.size })}</AlertDialogTitle><AlertDialogDescription>{t("models.batchDeleteDescription")}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogHeader><AlertDialogTitle>{t("models.batchDeleteTitle", { count: selectedGroupCount })}</AlertDialogTitle><AlertDialogDescription>{t("models.batchDeleteDescription")}</AlertDialogDescription></AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={batchDeleteMutation.isPending} onClick={() => batchDeleteMutation.mutate()}>{batchDeleteMutation.isPending ? <Spinner /> : null}{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -414,4 +436,102 @@ function ModelProvider({ provider }: { provider: ModelRouteDTO["provider"] }) {
       {label}
     </span>
   );
+}
+
+function ModelCapabilities({ capabilities }: { capabilities: ModelDisplayCapability[] }) {
+  const { t } = useTranslation();
+  return (
+    <span className="mx-auto inline-flex max-w-28 flex-wrap items-center justify-center gap-0.5">
+      {capabilities.map((capability) => {
+        const metadata = endpointCapabilityMetadata[capability];
+        const Icon = metadata.icon;
+        const label = displayCapabilityLabel(capability, t);
+        return (
+          <Tooltip key={capability}>
+            <TooltipTrigger asChild>
+              <span tabIndex={0} role="img" aria-label={label} className={cn("inline-flex size-5 cursor-help items-center justify-center rounded outline-none transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-ring/40", metadata.color)}>
+                <Icon className="size-3.5" strokeWidth={1.8} />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="space-y-0.5 text-left">
+              <div className="font-medium">{label}</div>
+              <code className="block text-[10px] text-primary-foreground/70">{metadata.method} {metadata.path}</code>
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </span>
+  );
+}
+
+type ModelDisplayCapability = ModelEndpointCapability;
+
+const endpointCapabilityMetadata = {
+  completions: { icon: MessageSquareText, method: "POST", path: "/v1/chat/completions", color: "text-sky-600 dark:text-sky-400" },
+  responses: { icon: SquareTerminal, method: "POST", path: "/v1/responses", color: "text-violet-600 dark:text-violet-400" },
+  messages: { icon: MessagesSquare, method: "POST", path: "/v1/messages", color: "text-orange-600 dark:text-orange-400" },
+  image: { icon: ImageIcon, method: "POST", path: "/v1/images/generations", color: "text-emerald-600 dark:text-emerald-400" },
+  image_edit: { icon: Paintbrush, method: "POST", path: "/v1/images/edits", color: "text-amber-700 dark:text-amber-400" },
+  video: { icon: Clapperboard, method: "POST", path: "/v1/videos/generations", color: "text-rose-600 dark:text-rose-400" },
+} as const;
+
+type ModelRouteGroup = {
+  key: string;
+  routes: ModelRouteDTO[];
+  publicId: string;
+  provider: ModelRouteDTO["provider"];
+  upstreamModel: string;
+  capabilities: ModelDisplayCapability[];
+  enabledState: "enabled" | "disabled" | "mixed";
+  bindingState: "automatic" | "bound" | "mixed";
+  supportedMax: number;
+  supportedLabel: string;
+  totalLabel: string;
+  supportTitle: string;
+  lastSyncedAt?: string;
+};
+
+function newModelRouteGroup(value: ModelRouteGroupDTO, t: TFunction): ModelRouteGroup {
+  const routes = value.routes;
+  const first = routes[0];
+  const enabledCount = routes.filter((route) => route.enabled).length;
+  const boundCount = routes.filter((route) => route.bindingMode).length;
+  const supportedValues = routes.map((route) => route.supportedAccounts);
+  const totalValues = routes.map((route) => route.totalAccounts);
+  const supportedMin = Math.min(...supportedValues);
+  const supportedMax = Math.max(...supportedValues);
+  const totalMin = Math.min(...totalValues);
+  const totalMax = Math.max(...totalValues);
+  const syncedTimes = routes.map((route) => route.lastSyncedAt).filter((value): value is string => Boolean(value)).sort();
+  return {
+    key: value.key,
+    routes,
+    publicId: first.publicId,
+    provider: first.provider,
+    upstreamModel: first.upstreamModel,
+    capabilities: value.endpointCapabilities,
+    enabledState: enabledCount === routes.length ? "enabled" : enabledCount === 0 ? "disabled" : "mixed",
+    bindingState: boundCount === routes.length ? "bound" : boundCount === 0 ? "automatic" : "mixed",
+    supportedMax,
+    supportedLabel: supportedMin === supportedMax ? String(supportedMax) : `${supportedMin}–${supportedMax}`,
+    totalLabel: totalMin === totalMax ? String(totalMax) : `${totalMin}–${totalMax}`,
+    supportTitle: routes.map((route) => `${capabilityLabel(route.capability, t)}: ${t("models.supportSummary", { supported: route.supportedAccounts, total: route.totalAccounts })}`).join("\n"),
+    lastSyncedAt: syncedTimes.at(-1),
+  };
+}
+
+function capabilityLabel(capability: ModelRouteDTO["capability"], t: TFunction): string {
+  if (capability === "responses" || capability === "chat") return t("models.capabilityConversation");
+  return displayCapabilityLabel(capability, t);
+}
+
+function displayCapabilityLabel(capability: ModelDisplayCapability, t: TFunction): string {
+  return {
+    completions: t("models.capabilityCompletions"),
+    responses: t("models.capabilityResponses"),
+    messages: t("models.capabilityMessages"),
+    image: t("models.capabilityImage"),
+    image_edit: t("models.capabilityImageEdit"),
+    video: t("models.capabilityVideo"),
+  }[capability];
 }

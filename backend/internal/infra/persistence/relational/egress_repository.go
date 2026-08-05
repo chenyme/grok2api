@@ -509,6 +509,7 @@ func configReferencesAnyFallbackNode(config egressOperationsConfigModel, ids []u
 		{config.WebFallbackMode, config.WebFallbackNodeID},
 		{config.ConsoleFallbackMode, config.ConsoleFallbackNodeID},
 		{config.WebAssetFallbackMode, config.WebAssetFallbackNodeID},
+		{config.ConsoleAssetFallbackMode, config.ConsoleAssetFallbackNodeID},
 	} {
 		if egress.FallbackMode(fallback.mode).Normalized() != egress.FallbackModeFixed {
 			continue
@@ -530,6 +531,7 @@ func validateLockedEgressFallbackNodes(tx *gorm.DB, config egressOperationsConfi
 		{egress.ScopeWeb, config.WebFallbackMode, config.WebFallbackNodeID},
 		{egress.ScopeConsole, config.ConsoleFallbackMode, config.ConsoleFallbackNodeID},
 		{egress.ScopeWebAsset, config.WebAssetFallbackMode, config.WebAssetFallbackNodeID},
+		{egress.ScopeConsoleAsset, config.ConsoleAssetFallbackMode, config.ConsoleAssetFallbackNodeID},
 	}
 	ids := make([]uint64, 0, len(fallbacks))
 	for _, fallback := range fallbacks {
@@ -667,6 +669,7 @@ func clearEgressFallbackNodeReferences(tx *gorm.DB, ids []uint64) error {
 		{"web_fallback_mode", "web_fallback_node_id"},
 		{"console_fallback_mode", "console_fallback_node_id"},
 		{"web_asset_fallback_mode", "web_asset_fallback_node_id"},
+		{"console_asset_fallback_mode", "console_asset_fallback_node_id"},
 	} {
 		if err := tx.Model(&egressOperationsConfigModel{}).
 			Where("id = ? AND "+columns[1]+" IN ?", 1, ids).
@@ -695,6 +698,7 @@ func clearInvalidEgressFallbackNodeReferences(tx *gorm.DB) error {
 		{egress.ScopeWeb, config.WebFallbackMode, config.WebFallbackNodeID, "web_fallback_mode", "web_fallback_node_id"},
 		{egress.ScopeConsole, config.ConsoleFallbackMode, config.ConsoleFallbackNodeID, "console_fallback_mode", "console_fallback_node_id"},
 		{egress.ScopeWebAsset, config.WebAssetFallbackMode, config.WebAssetFallbackNodeID, "web_asset_fallback_mode", "web_asset_fallback_node_id"},
+		{egress.ScopeConsoleAsset, config.ConsoleAssetFallbackMode, config.ConsoleAssetFallbackNodeID, "console_asset_fallback_mode", "console_asset_fallback_node_id"},
 	} {
 		if egress.FallbackMode(fallback.mode).Normalized() != egress.FallbackModeFixed {
 			continue
@@ -841,10 +845,11 @@ func toEgressOperationsConfigDomain(row egressOperationsConfigModel) egress.Oper
 		ProbeIntervalSeconds: row.ProbeIntervalSeconds, AutoAssignEnabled: row.AutoAssignEnabled, AutoBalanceEnabled: row.AutoBalanceEnabled,
 		AssignmentIntervalSeconds: row.AssignmentIntervalSeconds,
 		Fallbacks: map[egress.Scope]egress.FallbackConfig{
-			egress.ScopeBuild:    {Mode: egress.FallbackMode(row.BuildFallbackMode).Normalized(), NodeID: row.BuildFallbackNodeID},
-			egress.ScopeWeb:      {Mode: egress.FallbackMode(row.WebFallbackMode).Normalized(), NodeID: row.WebFallbackNodeID},
-			egress.ScopeConsole:  {Mode: egress.FallbackMode(row.ConsoleFallbackMode).Normalized(), NodeID: row.ConsoleFallbackNodeID},
-			egress.ScopeWebAsset: {Mode: egress.FallbackMode(row.WebAssetFallbackMode).Normalized(), NodeID: row.WebAssetFallbackNodeID},
+			egress.ScopeBuild:        {Mode: egress.FallbackMode(row.BuildFallbackMode).Normalized(), NodeID: row.BuildFallbackNodeID},
+			egress.ScopeWeb:          {Mode: egress.FallbackMode(row.WebFallbackMode).Normalized(), NodeID: row.WebFallbackNodeID},
+			egress.ScopeConsole:      {Mode: egress.FallbackMode(row.ConsoleFallbackMode).Normalized(), NodeID: row.ConsoleFallbackNodeID},
+			egress.ScopeWebAsset:     {Mode: egress.FallbackMode(row.WebAssetFallbackMode).Normalized(), NodeID: row.WebAssetFallbackNodeID},
+			egress.ScopeConsoleAsset: {Mode: egress.FallbackMode(row.ConsoleAssetFallbackMode).Normalized(), NodeID: row.ConsoleAssetFallbackNodeID},
 		},
 		UpdatedAt: row.UpdatedAt,
 	}
@@ -855,6 +860,7 @@ func fromEgressOperationsConfigDomain(value egress.OperationsConfig) egressOpera
 	webFallback := value.FallbackFor(egress.ScopeWeb)
 	consoleFallback := value.FallbackFor(egress.ScopeConsole)
 	webAssetFallback := value.FallbackFor(egress.ScopeWebAsset)
+	consoleAssetFallback := value.FallbackFor(egress.ScopeConsoleAsset)
 	return egressOperationsConfigModel{
 		ID: 1, ProbeProvider: string(value.ProbeProvider.Normalized()), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
@@ -862,6 +868,7 @@ func fromEgressOperationsConfigDomain(value egress.OperationsConfig) egressOpera
 		WebFallbackMode: string(webFallback.Mode), WebFallbackNodeID: webFallback.NodeID,
 		ConsoleFallbackMode: string(consoleFallback.Mode), ConsoleFallbackNodeID: consoleFallback.NodeID,
 		WebAssetFallbackMode: string(webAssetFallback.Mode), WebAssetFallbackNodeID: webAssetFallback.NodeID,
+		ConsoleAssetFallbackMode: string(consoleAssetFallback.Mode), ConsoleAssetFallbackNodeID: consoleAssetFallback.NodeID,
 		UpdatedAt: value.UpdatedAt,
 	}
 }

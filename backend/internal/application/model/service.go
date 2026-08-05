@@ -21,6 +21,8 @@ import (
 const defaultModelSyncWorkers = 25
 const syncFailurePersistTimeout = 5 * time.Second
 
+var maxModelBatchSize = repository.MaxPageSize * len(modeldomain.Capabilities())
+
 var (
 	ErrInvalidFilter = errors.New("模型筛选条件无效")
 	ErrInvalidInput  = errors.New("模型参数无效")
@@ -46,6 +48,11 @@ type CreateInput struct {
 type AccountOption struct {
 	ID   uint64
 	Name string
+}
+
+type RouteGroup struct {
+	Routes               []modeldomain.Route
+	EndpointCapabilities []string
 }
 
 type ListFilter struct {
@@ -95,6 +102,67 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		enabled = &value
 	}
 	return s.models.List(ctx, repository.ModelListQuery{Page: repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: search, Sort: filter.Sort}, Filter: repository.ModelListFilter{Provider: filter.Provider, Providers: filter.Providers, Tiers: filter.Tiers, Enabled: enabled, ActiveScope: filter.ActiveScope}})
+}
+
+func (s *Service) ListGroups(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]RouteGroup, int64, error) {
+	page, pageSize = normalizePage(page, pageSize)
+	if !validProviderFilter(filter.Provider) || !validModelFilter(filter.Status, "", "enabled", "disabled") || !repository.IsValidSort(filter.Sort, "publicId", "upstreamModel", "status", "provider", "accountSupport", "lastSyncedAt") {
+		return nil, 0, ErrInvalidFilter
+	}
+	var enabled *bool
+	if filter.Status != "" {
+		value := filter.Status == "enabled"
+		enabled = &value
+	}
+	values, total, err := s.models.ListGroups(ctx, repository.ModelListQuery{
+		Page:   repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: search, Sort: filter.Sort},
+		Filter: repository.ModelListFilter{Provider: filter.Provider, Enabled: enabled},
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	groups := make([]RouteGroup, 0, len(values))
+	for _, value := range values {
+		groups = append(groups, RouteGroup{Routes: value.Routes, EndpointCapabilities: s.endpointCapabilities(value.Routes)})
+	}
+	return groups, total, nil
+}
+
+func (s *Service) endpointCapabilities(routes []modeldomain.Route) []string {
+	if len(routes) == 0 || s.providers == nil {
+		return nil
+	}
+	definition, ok := s.providers.Definition(routes[0].Provider)
+	if !ok {
+		return nil
+	}
+	return endpointCapabilitiesForDefinition(routes, definition)
+}
+
+func endpointCapabilitiesForDefinition(routes []modeldomain.Route, definition provider.Definition) []string {
+	available := make(map[string]bool, 6)
+	for _, route := range routes {
+		switch route.Capability {
+		case modeldomain.CapabilityResponses, modeldomain.CapabilityChat:
+			available["completions"] = definition.Conversation.ChatCompletions
+			available["responses"] = definition.Conversation.Responses
+			available["messages"] = definition.Conversation.Messages
+		case modeldomain.CapabilityImage:
+			available["image"] = definition.Media.ImageGeneration
+		case modeldomain.CapabilityImageEdit:
+			available["image_edit"] = definition.Media.ImageEdit
+		case modeldomain.CapabilityVideo:
+			available["video"] = definition.Media.VideoGeneration
+		}
+	}
+	order := []string{"completions", "responses", "messages", "image", "image_edit", "video"}
+	result := make([]string, 0, len(order))
+	for _, capability := range order {
+		if available[capability] {
+			result = append(result, capability)
+		}
+	}
+	return result
 }
 
 func validProviderFilter(value string) bool {
@@ -241,7 +309,7 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 }
 
 func (s *Service) BatchDelete(ctx context.Context, ids []uint64) (int64, error) {
-	values, err := normalizeBatchIDs(ids)
+	values, err := normalizeModelRouteBatchIDs(ids)
 	if err != nil {
 		return 0, err
 	}
@@ -320,7 +388,7 @@ func (s *Service) validateBoundAccounts(ctx context.Context, providerValue accou
 
 // BatchSetEnabled 批量更新模型路由启停状态。
 func (s *Service) BatchSetEnabled(ctx context.Context, ids []uint64, enabled bool) (int64, error) {
-	values, err := normalizeBatchIDs(ids)
+	values, err := normalizeModelRouteBatchIDs(ids)
 	if err != nil {
 		return 0, err
 	}
@@ -533,11 +601,19 @@ func normalizePage(page, pageSize int) (int, int) {
 }
 
 func normalizeBatchIDs(ids []uint64) ([]uint64, error) {
+	return normalizeIDs(ids, repository.MaxPageSize, "模型")
+}
+
+func normalizeModelRouteBatchIDs(ids []uint64) ([]uint64, error) {
+	return normalizeIDs(ids, maxModelBatchSize, "模型能力路由")
+}
+
+func normalizeIDs(ids []uint64, limit int, label string) ([]uint64, error) {
 	if len(ids) == 0 {
 		return nil, invalidInput("至少选择一个模型")
 	}
-	if len(ids) > repository.MaxPageSize {
-		return nil, invalidInput(fmt.Sprintf("单次最多处理 %d 个模型", repository.MaxPageSize))
+	if len(ids) > limit {
+		return nil, invalidInput(fmt.Sprintf("单次最多处理 %d 条%s", limit, label))
 	}
 	seen := make(map[uint64]struct{}, len(ids))
 	result := make([]uint64, 0, len(ids))

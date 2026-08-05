@@ -282,20 +282,6 @@ func (a *Adapter) prepareVideoReference(ctx context.Context, cfg Config, lease *
 	return uploaded.URI, nil
 }
 
-type videoContentReadCloser struct {
-	io.ReadCloser
-	release func()
-}
-
-func (c *videoContentReadCloser) Close() error {
-	err := c.ReadCloser.Close()
-	if c.release != nil {
-		c.release()
-		c.release = nil
-	}
-	return err
-}
-
 // DownloadVideo retrieves a completed Grok asset through its source SSO
 // session. Direct asset URLs are not public and must not be exposed as a
 // substitute for this authenticated transfer.
@@ -323,11 +309,13 @@ func (a *Adapter) DownloadVideo(ctx context.Context, credential account.Credenti
 	request.Header.Del("Content-Type")
 	response, err := lease.Do(request)
 	if err != nil {
+		a.egress.FeedbackForScope(context.WithoutCancel(ctx), domainegress.ScopeWebAsset, lease.NodeID, 0, err)
 		lease.Release()
 		return nil, "", 0, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_ = response.Body.Close()
+		a.egress.FeedbackForScope(context.WithoutCancel(ctx), domainegress.ScopeWebAsset, lease.NodeID, response.StatusCode, nil)
 		lease.Release()
 		return nil, "", 0, fmt.Errorf("下载视频返回 %d", response.StatusCode)
 	}
@@ -340,7 +328,15 @@ func (a *Adapter) DownloadVideo(ctx context.Context, credential account.Credenti
 		lease.Release()
 		return nil, "", 0, fmt.Errorf("上游视频 Content-Type 无效")
 	}
-	return &videoContentReadCloser{ReadCloser: response.Body, release: lease.Release}, contentType, response.ContentLength, nil
+	onFinished := func(readErr error, complete bool) {
+		if readErr != nil {
+			a.egress.FeedbackForScope(context.WithoutCancel(ctx), domainegress.ScopeWebAsset, lease.NodeID, 0, readErr)
+		} else if complete {
+			a.egress.FeedbackForScope(context.WithoutCancel(ctx), domainegress.ScopeWebAsset, lease.NodeID, response.StatusCode, nil)
+		}
+		lease.Release()
+	}
+	return provider.NewCompletionReadCloser(response.Body, onFinished), contentType, response.ContentLength, nil
 }
 
 func parseVideoStream(response *http.Response, progress func(int)) (provider.VideoResult, string, error) {

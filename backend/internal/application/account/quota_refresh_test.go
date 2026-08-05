@@ -18,13 +18,16 @@ import (
 
 func TestWebQuotaRefreshDeduplicatesPerMode(t *testing.T) {
 	service := NewService(nil, nil, nil, nil, nil, nil, nil)
-	service.QueueWebQuotaRefresh(42, "fast")
-	service.QueueWebQuotaRefresh(42, "expert")
-	service.QueueWebQuotaRefresh(42, "fast")
+	service.QueueQuotaRefresh(42, "fast")
+	service.QueueQuotaRefresh(42, "expert")
+	service.QueueQuotaRefresh(42, "fast")
+	service.QueueQuotaRefresh(43, "console")
+	service.QueueQuotaRefresh(43, "console_image")
+	service.QueueQuotaRefresh(43, "console_video")
 
 	service.quotaRefreshMu.Lock()
 	defer service.quotaRefreshMu.Unlock()
-	if len(service.quotaRefreshes) != 2 {
+	if len(service.quotaRefreshes) != 5 {
 		t.Fatalf("refresh states = %#v", service.quotaRefreshes)
 	}
 	if service.quotaRefreshes["42:fast"].generation != 2 || !service.quotaRefreshes["42:fast"].queued {
@@ -33,7 +36,15 @@ func TestWebQuotaRefreshDeduplicatesPerMode(t *testing.T) {
 	if service.quotaRefreshes["42:expert"].generation != 1 || !service.quotaRefreshes["42:expert"].queued {
 		t.Fatal("independent expert refresh state is invalid")
 	}
-	if len(service.quotaRefreshQueue) != 2 {
+	if service.quotaRefreshes["43:console"].generation != 1 || !service.quotaRefreshes["43:console"].queued {
+		t.Fatal("Console refresh state is invalid")
+	}
+	for _, mode := range []string{"console_image", "console_video"} {
+		if state := service.quotaRefreshes["43:"+mode]; state == nil || state.generation != 1 || !state.queued {
+			t.Fatalf("Console %s refresh state is invalid: %#v", mode, state)
+		}
+	}
+	if len(service.quotaRefreshQueue) != 5 {
 		t.Fatalf("queued refreshes = %d", len(service.quotaRefreshQueue))
 	}
 }
@@ -67,7 +78,7 @@ func TestWeeklyQuotaRefreshPreservesTrailingSnapshot(t *testing.T) {
 	request := <-service.quotaRefreshQueue
 	done := make(chan struct{})
 	go func() {
-		service.runWebQuotaRefresh(ctx, request)
+		service.runQuotaRefresh(ctx, request)
 		close(done)
 	}()
 
@@ -104,7 +115,7 @@ func TestWeeklyQuotaRefreshPreservesTrailingSnapshot(t *testing.T) {
 
 func TestQuotaRefreshQueueOverflowRetainsDirtyState(t *testing.T) {
 	service := NewService(nil, nil, nil, nil, nil, nil, nil)
-	service.quotaRefreshQueue = make(chan webQuotaRefreshRequest, 1)
+	service.quotaRefreshQueue = make(chan quotaRefreshRequest, 1)
 	service.QueueQuotaRefresh(1, "fast")
 	service.QueueQuotaRefresh(2, "fast")
 
@@ -130,6 +141,75 @@ func TestQuotaRefreshQueueOverflowRetainsDirtyState(t *testing.T) {
 	service.quotaRefreshMu.Unlock()
 	if recovered == nil || !recovered.queued || recovered.running {
 		t.Fatalf("recovered state = %#v", recovered)
+	}
+}
+
+func TestQuotaRefreshFailureUsesBoundedExponentialBackoff(t *testing.T) {
+	service := NewService(nil, nil, nil, nil, nil, nil, nil)
+	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	service.quotaRefreshes["1:console"] = &quotaRefreshState{running: true}
+	for failure := 1; failure <= 10; failure++ {
+		service.deferQuotaRefresh("1:console")
+		state := service.quotaRefreshes["1:console"]
+		maximum := quotaRefreshBackoffBase * time.Duration(1<<min(failure-1, 6))
+		if maximum > quotaRefreshBackoffMax {
+			maximum = quotaRefreshBackoffMax
+		}
+		delay := state.nextAttemptAt.Sub(now)
+		if state.failures != failure || !state.pending || delay < maximum/2 || delay > maximum {
+			t.Fatalf("failure=%d state=%#v delay=%s range=[%s,%s]", failure, state, delay, maximum/2, maximum)
+		}
+	}
+}
+
+func TestRecentConsoleUsageSnapshotSuppressesDuplicateUpstreamRefresh(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-refresh-throttle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		Name: "console-throttle", SourceKey: "console-throttle", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	windows := []accountdomain.QuotaWindow{
+		{AccountID: credential.ID, Mode: "console", Remaining: 9, Total: 10, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: "console_image", Remaining: 5, Total: 5, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: "console_video", Remaining: 2, Total: 2, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+	}
+	if err := accounts.ReplaceQuotaWindows(ctx, credential.ID, "", now, windows); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &consoleQuotaSnapshotAdapter{}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	service.now = func() time.Time { return now.Add(10 * time.Second) }
+	service.QueueQuotaRefresh(credential.ID, "console")
+	request := <-service.quotaRefreshQueue
+	service.quotaRefreshMu.Lock()
+	state := service.quotaRefreshes[request.key]
+	state.queued = false
+	state.running = true
+	service.quotaRefreshMu.Unlock()
+	service.runQuotaRefresh(ctx, request)
+	if adapter.fullCalls.Load() != 0 {
+		t.Fatalf("recent Console snapshot triggered %d upstream refreshes", adapter.fullCalls.Load())
+	}
+	service.quotaRefreshMu.Lock()
+	state = service.quotaRefreshes[request.key]
+	service.quotaRefreshMu.Unlock()
+	if state == nil || state.running || state.pending || !state.nextAttemptAt.Equal(now.Add(10*time.Second+consoleQuotaRefreshMinInterval)) {
+		t.Fatalf("Console cooldown state = %#v", state)
 	}
 }
 
@@ -162,8 +242,8 @@ func TestQuotaRefreshCrossInstanceGenerationTriggersSingleTrailingRefresh(t *tes
 	second.SetQuotaRefreshCoordinator(coordinator)
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{}, 2)
-	go func() { first.RunWebQuotaRefresh(runCtx); done <- struct{}{} }()
-	go func() { second.RunWebQuotaRefresh(runCtx); done <- struct{}{} }()
+	go func() { first.RunQuotaRefresh(runCtx); done <- struct{}{} }()
+	go func() { second.RunQuotaRefresh(runCtx); done <- struct{}{} }()
 	t.Cleanup(func() {
 		for range 4 {
 			adapter.modeRelease <- struct{}{}
@@ -209,7 +289,7 @@ func TestQuotaRefreshCrossInstanceGenerationTriggersSingleTrailingRefresh(t *tes
 	if calls := adapter.modeCalls.Load(); calls != 2 {
 		t.Fatalf("refresh calls = %d, want 2", calls)
 	}
-	time.Sleep(2 * webQuotaRefreshRetryInterval)
+	time.Sleep(2 * quotaRefreshPollInterval)
 	if calls := adapter.modeCalls.Load(); calls != 2 {
 		t.Fatalf("losing instance performed duplicate refresh: %d", calls)
 	}
@@ -254,7 +334,7 @@ func TestRefreshQuotaModeDoesNotTriggerFullProviderSyncForAutoTier(t *testing.T)
 	service.QueueQuotaRefresh(credential.ID, "fast")
 	service.QueueQuotaRefresh(credential.ID, "fast")
 	request := <-service.quotaRefreshQueue
-	service.runWebQuotaRefresh(ctx, request)
+	service.runQuotaRefresh(ctx, request)
 	if adapter.modeCalls.Load() != 2 || adapter.fullCalls.Load() != 0 {
 		t.Fatalf("coalesced mode calls = %d, full calls = %d", adapter.modeCalls.Load(), adapter.fullCalls.Load())
 	}
@@ -268,9 +348,181 @@ func TestRefreshQuotaModeDoesNotTriggerFullProviderSyncForAutoTier(t *testing.T)
 	service.refreshLock = deniedQuotaRefreshLock{}
 	service.QueueQuotaRefresh(credential.ID, "fast")
 	request = <-service.quotaRefreshQueue
-	service.runWebQuotaRefresh(ctx, request)
+	service.runQuotaRefresh(ctx, request)
 	if adapter.modeCalls.Load() != 2 {
 		t.Fatalf("worker without distributed lease made %d mode calls", adapter.modeCalls.Load())
+	}
+}
+
+func TestRefreshConsoleQuotaModePersistsCompleteUsageSnapshot(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-quota-mode.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		Name: "console", SourceKey: "console", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accounts.SaveQuotaWindows(ctx, credential.ID, "", now, []accountdomain.QuotaWindow{{
+		AccountID: credential.ID, Mode: "console", Remaining: 20, Total: 20,
+		WindowSeconds: 3600, Source: accountdomain.QuotaSourceDefault, UpdatedAt: now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &consoleQuotaSnapshotAdapter{}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	queue := memory.NewQuotaRecoveryQueue()
+	service.SetQuotaRecoveryQueue(queue)
+	if err := queue.ScheduleQuotaRecovery(ctx, accountdomain.QuotaRecoveryEvent{AccountID: credential.ID, Mode: "console", DueAt: now.Add(24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	window, err := service.RefreshQuotaMode(ctx, credential.ID, "console")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Remaining != 9 || adapter.fullCalls.Load() != 1 || adapter.modeCalls.Load() != 0 {
+		t.Fatalf("window=%#v full=%d mode=%d", window, adapter.fullCalls.Load(), adapter.modeCalls.Load())
+	}
+	stored, err := accounts.GetQuotaWindows(ctx, []uint64{credential.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values := stored[credential.ID]; len(values) != 3 || !completeConsoleUsageSnapshot(values) {
+		t.Fatalf("stored Console usage snapshot = %#v", values)
+	}
+	if values, claimErr := queue.ClaimDueQuotaRecoveries(ctx, now.Add(25*time.Hour), 1, time.Minute); claimErr != nil || len(values) != 0 {
+		t.Fatalf("healthy Console refresh retained stale recovery event: %#v, err = %v", values, claimErr)
+	}
+}
+
+func TestConsoleFullAndModeQuotaRefreshShareOneSnapshot(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-quota-singleflight.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		Name: "console-singleflight", SourceKey: "console-singleflight", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &consoleQuotaSnapshotAdapter{fullStarted: make(chan struct{}, 1), fullRelease: make(chan struct{})}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+
+	fullDone := make(chan error, 1)
+	go func() {
+		windows, refreshErr := service.RefreshQuota(ctx, credential.ID)
+		if refreshErr == nil && len(windows) != 3 {
+			refreshErr = errors.New("full refresh did not return complete Console snapshot")
+		}
+		fullDone <- refreshErr
+	}()
+	select {
+	case <-adapter.fullStarted:
+	case <-time.After(time.Second):
+		t.Fatal("full Console quota refresh did not start")
+	}
+	probeDone := make(chan error, 1)
+	go func() {
+		window, probeErr := service.ProbeQuotaMode(ctx, credential.ID, "console")
+		if probeErr == nil && window.Remaining != 9 {
+			probeErr = errors.New("mode probe did not receive shared Console snapshot")
+		}
+		probeDone <- probeErr
+	}()
+	// Give the second caller time to join the in-flight singleflight call before
+	// releasing the adapter. A duplicate call remains observable via fullCalls.
+	time.Sleep(20 * time.Millisecond)
+	close(adapter.fullRelease)
+	if err := <-fullDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-probeDone; err != nil {
+		t.Fatal(err)
+	}
+	if calls := adapter.fullCalls.Load(); calls != 1 {
+		t.Fatalf("Console full and mode refresh made %d upstream calls", calls)
+	}
+}
+
+func TestSyncIncompleteConsoleQuotasMigratesOnlyLegacySnapshot(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-quota-migration.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	now := time.Now().UTC()
+	create := func(name string, windows []accountdomain.QuotaWindow) uint64 {
+		credential, _, createErr := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+			Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+			Name: name, SourceKey: name, EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		for index := range windows {
+			windows[index].AccountID = credential.ID
+		}
+		if err := accounts.ReplaceQuotaWindows(ctx, credential.ID, "", now, windows); err != nil {
+			t.Fatal(err)
+		}
+		return credential.ID
+	}
+	legacyID := create("legacy-console", []accountdomain.QuotaWindow{{Mode: "console", Remaining: 20, Total: 20, SyncedAt: &now, Source: accountdomain.QuotaSourceDefault, UpdatedAt: now}})
+	completeWindows := []accountdomain.QuotaWindow{
+		{Mode: "console", Remaining: 9, Total: 10, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+		{Mode: "console_image", Remaining: 5, Total: 5, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+		{Mode: "console_video", Remaining: 2, Total: 2, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+	}
+	completeID := create("complete-console", completeWindows)
+	adapter := &consoleQuotaSnapshotAdapter{}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	succeeded, failed, err := service.SyncIncompleteConsoleQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succeeded != 1 || failed != 0 || adapter.fullCalls.Load() != 1 {
+		t.Fatalf("migration succeeded=%d failed=%d calls=%d", succeeded, failed, adapter.fullCalls.Load())
+	}
+	stored, err := accounts.GetQuotaWindows(ctx, []uint64{legacyID, completeID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !completeConsoleUsageSnapshot(stored[legacyID]) || !completeConsoleUsageSnapshot(stored[completeID]) {
+		t.Fatalf("migration snapshots = %#v", stored)
+	}
+	blockedID := create("blocked-console", []accountdomain.QuotaWindow{{Mode: "console", Remaining: 20, Total: 20, SyncedAt: &now, Source: accountdomain.QuotaSourceDefault, UpdatedAt: now}})
+	service.refreshLock = deniedQuotaRefreshLock{}
+	succeeded, failed, err = service.SyncIncompleteConsoleQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succeeded != 0 || failed != 1 {
+		t.Fatalf("locked migration succeeded=%d failed=%d for account %d", succeeded, failed, blockedID)
 	}
 }
 
@@ -582,6 +834,45 @@ type quotaCountingAdapter struct {
 	fullErr       error
 	modeStarted   chan struct{}
 	modeRelease   chan struct{}
+}
+
+type consoleQuotaSnapshotAdapter struct {
+	fullCalls   atomic.Int64
+	modeCalls   atomic.Int64
+	fullStarted chan struct{}
+	fullRelease chan struct{}
+}
+
+func (a *consoleQuotaSnapshotAdapter) Provider() accountdomain.Provider {
+	return accountdomain.ProviderConsole
+}
+
+func (a *consoleQuotaSnapshotAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: accountdomain.ProviderConsole, ModelNamespace: accountdomain.ProviderConsole.ModelNamespace(),
+		Quota: provider.QuotaRemoteWindow, Credential: provider.CredentialSurface{AuthType: accountdomain.AuthTypeSSO},
+	}
+}
+
+func (a *consoleQuotaSnapshotAdapter) SyncQuota(_ context.Context, credential accountdomain.Credential) (provider.QuotaSnapshot, error) {
+	a.fullCalls.Add(1)
+	if a.fullStarted != nil {
+		a.fullStarted <- struct{}{}
+	}
+	if a.fullRelease != nil {
+		<-a.fullRelease
+	}
+	now := time.Now().UTC()
+	return provider.QuotaSnapshot{SyncedAt: now, Windows: []accountdomain.QuotaWindow{
+		{AccountID: credential.ID, Mode: "console", Remaining: 9, Total: 10, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: "console_image", Remaining: 4, Total: 5, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: "console_video", Remaining: 2, Total: 2, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+	}}, nil
+}
+
+func (a *consoleQuotaSnapshotAdapter) SyncQuotaMode(_ context.Context, _ accountdomain.Credential, _ string) (accountdomain.QuotaWindow, error) {
+	a.modeCalls.Add(1)
+	return accountdomain.QuotaWindow{}, errors.New("unexpected single-mode Console sync")
 }
 
 func (a *quotaCountingAdapter) Provider() accountdomain.Provider { return accountdomain.ProviderWeb }

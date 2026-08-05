@@ -11,6 +11,7 @@ import (
 // ModelRepository 定义公开模型路由持久化能力。
 type ModelRepository interface {
 	List(ctx context.Context, query ModelListQuery) ([]model.Route, int64, error)
+	ListGroups(ctx context.Context, query ModelListQuery) ([]model.RouteGroup, int64, error)
 	ListEnabled(ctx context.Context) ([]model.Route, error)
 	ListEnabledForScope(ctx context.Context, filter ModelListFilter) ([]model.Route, error)
 	ListConfiguredEnabled(ctx context.Context) ([]model.Route, error)

@@ -222,7 +222,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	cliAdapter.SetReasoningReplay(reasoningReplay)
 	webAdapter := webprovider.NewAdapter(webProviderConfig(cfg), egressManager, cipher, responseRepo, mediaService)
 	webAdapter.SetLogger(logger)
-	consoleAdapter := consoleprovider.NewAdapter(consoleProviderConfig(cfg), egressManager, cipher)
+	consoleAdapter := consoleprovider.NewAdapter(consoleProviderConfig(cfg), egressManager, cipher, mediaService)
 	providers := provider.NewRegistry(cliAdapter, webAdapter, consoleAdapter)
 	if err := providers.Validate(); err != nil {
 		if runtimeStore != nil {
@@ -562,8 +562,8 @@ func (a *Application) Run(ctx context.Context) error {
 		a.quotaRecovery.Run(taskCtx)
 		return nil
 	})
-	startBackground("web_quota_refresh", func(taskCtx context.Context) error {
-		a.accounts.RunWebQuotaRefresh(taskCtx)
+	startBackground("quota_refresh", func(taskCtx context.Context) error {
+		a.accounts.RunQuotaRefresh(taskCtx)
 		return nil
 	})
 	startBackground("credential_refresh", func(taskCtx context.Context) error {
@@ -580,6 +580,10 @@ func (a *Application) Run(ctx context.Context) error {
 	})
 	startBackground("web_quota_startup_catchup", func(taskCtx context.Context) error {
 		a.runWebQuotaCatchup(taskCtx)
+		return nil
+	})
+	startBackground("console_usage_migration", func(taskCtx context.Context) error {
+		a.runConsoleUsageMigration(taskCtx)
 		return nil
 	})
 	startBackground("model_catalog_startup_catchup", func(taskCtx context.Context) error {
