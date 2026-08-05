@@ -7,7 +7,7 @@ export const isBoolean: ValueValidator = (value) => typeof value === "boolean";
 export const isObject: ValueValidator = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export function isOptional(validator: ValueValidator): ValueValidator {
-  return (value) => value === undefined || validator(value);
+  return (value) => value === undefined || value === null || validator(value);
 }
 
 export function isArrayOf(validator: ValueValidator): ValueValidator {

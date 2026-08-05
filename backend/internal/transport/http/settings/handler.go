@@ -372,6 +372,12 @@ func stringSliceValue(value *[]string) []string {
 }
 
 func stringSlicePointer(value []string) *[]string {
-	copied := append([]string(nil), value...)
+	// Always return a non-nil slice so JSON encodes [] instead of null.
+	// append(nil, nil...) can leave a nil slice, which encoding/json marshals as null
+	// and breaks the frontend settings decoder (isOptional previously rejected null).
+	copied := make([]string, 0, len(value))
+	if len(value) > 0 {
+		copied = append(copied, value...)
+	}
 	return &copied
 }
