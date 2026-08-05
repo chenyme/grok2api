@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +49,8 @@ func TestRuntimeSettingsRepositoryRoundTrip(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("saved get found = %v, err = %v", found, err)
 	}
-	if value.Server != settings.Server || value.Routing != settings.Routing || value.Media != settings.Media || !storedUpdatedAt.Equal(updatedAt) || revision != 1 || storedRevision != revision {
+	// Routing contains []string (BuildHighTokenSpeedModelIDs); use DeepEqual instead of ==.
+	if value.Server != settings.Server || !reflect.DeepEqual(value.Routing, settings.Routing) || value.Media != settings.Media || !storedUpdatedAt.Equal(updatedAt) || revision != 1 || storedRevision != revision {
 		t.Fatalf("saved value = %#v", value)
 	}
 	if value.ProviderWeb.StatsigManualValue != settings.ProviderWeb.StatsigManualValue {
