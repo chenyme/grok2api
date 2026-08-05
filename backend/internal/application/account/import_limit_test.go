@@ -97,8 +97,8 @@ func TestImportConsoleDocumentsRejectsAggregateOverflowWithoutPartialWrites(t *t
 	}
 }
 
-// Web/Console adapter 在解析期已按 token 去重：跨文件重复 token 的限额与落库均按去重后数量计，
-// 因此「重复 token 占超额」的语义只能用不去重的 Build adapter 覆盖（见后续测试）。
+// Web/Console adapter 在单个文件内按 token 去重，service 再按 SourceKey
+// 对跨文件结果去重。本用例验证最终落库数量，不代表重复项可豁免解析总量限制。
 func TestImportConsoleDocumentsCountDeduplicatedTokens(t *testing.T) {
 	service, accounts := newConsoleImportService(t)
 	duplicateDoc := []byte(`[{"sso_token":"shared"},{"sso_token":"shared"}]`)
@@ -113,9 +113,25 @@ func TestImportConsoleDocumentsCountDeduplicatedTokens(t *testing.T) {
 	}
 }
 
+// 跨文件去重发生在 parsedAccounts 累计之后，因此第二个文件即使只重复已有
+// SourceKey，也必须计入解析总量限制，且超限时整批不得写入。
+func TestImportConsoleDocumentsCountsCrossFileDuplicatesTowardLimit(t *testing.T) {
+	service, accounts := newConsoleImportService(t)
+	fullDoc := []byte("[" + consoleEntries(0, maxCredentialImportAccounts, distinctConsoleToken) + "]")
+	duplicateDoc := []byte(`[{"sso_token":"token-0"}]`)
+
+	_, err := service.ImportConsoleCredentialDocumentsWithProgress(context.Background(), [][]byte{fullDoc, duplicateDoc}, nil, nil)
+	if !errors.Is(err, ErrImportLimit) {
+		t.Fatalf("error = %v, want import limit", err)
+	}
+	if stored := countConsoleAccounts(t, accounts); stored != 0 {
+		t.Fatalf("expected zero persisted accounts on aggregate overflow, got %d", stored)
+	}
+}
+
 // SourceKey 去重不得豁免总量限制：service 层按解析条目数（去重前）累计。
-// Console/Web adapter 内部已按 token 去重，无法用重复条目溢出解析数；
-// Build adapter 不去重，同 refresh_token 派生相同 SourceKey，故用 Build 覆盖该语义。
+// Build adapter 不在解析阶段去重，同 refresh_token 派生相同 SourceKey，
+// 本用例覆盖单个文件内部的重复来源同样计入限制。
 func TestImportBuildDocumentsCountsDuplicateSourcesTowardLimit(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "import-limit-build.db"))
