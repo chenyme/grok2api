@@ -3,14 +3,20 @@ package console
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +28,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
@@ -152,6 +159,41 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 	var statelessPayload map[string]any
 	if json.Unmarshal(stateless, &statelessPayload) != nil || statelessPayload["store"] != false || statelessPayload["previous_response_id"] != nil || statelessPayload["service_tier"] != nil {
 		t.Fatalf("stateless payload = %#v", statelessPayload)
+	}
+}
+
+func TestNormalizeRequestMatchesCapturedMultiAgentDefaults(t *testing.T) {
+	spec, ok := Resolve("grok-4.20-multi-agent-0309")
+	if !ok {
+		t.Fatal("grok-4.20-multi-agent-0309 missing")
+	}
+	body, err := normalizeRequest([]byte(`{
+		"model":"grok-4.20-multi-agent-0309",
+		"input":[{"role":"system","content":"hello"},{"role":"user","content":[{"type":"input_text","text":"news"}]}],
+		"stream":true
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["max_output_tokens"] != float64(1_000_000) || payload["reasoning"] != nil || payload["store"] != false {
+		t.Fatalf("multi-agent defaults = %#v", payload)
+	}
+	include, _ := payload["include"].([]any)
+	tools, _ := payload["tools"].([]any)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" || len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" {
+		t.Fatalf("multi-agent compatibility = %#v", payload)
+	}
+	explicit, err := normalizeRequest([]byte(`{"model":"grok-4.20-multi-agent-0309","input":"hello","reasoning":{"effort":"xhigh"}}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = nil
+	if json.Unmarshal(explicit, &payload) != nil || payload["reasoning"].(map[string]any)["effort"] != "xhigh" {
+		t.Fatalf("explicit multi-agent effort = %#v", payload)
 	}
 }
 
@@ -420,7 +462,10 @@ func TestParseConsoleRateLimitMetadataExtractsTeamAndModel(t *testing.T) {
 }
 
 func TestAdapterAttachesConsoleRateLimitMetadata(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
 		writer.Header().Set("Content-Type", "text/plain")
 		writer.WriteHeader(http.StatusTooManyRequests)
 		_, _ = io.WriteString(writer, "Too many requests for team 00000000-0000-0000-0000-000000000013 and model grok-4.20-multi-agent-0309. Requests per Second (actual/limit): 2/2")
@@ -457,7 +502,10 @@ func TestAdapterDoesNotPenalizeEgressForBlockedAccount(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if serveTestDPoPToken(t, writer, request) {
+					return
+				}
 				writer.Header().Set("Content-Type", "application/json")
 				writer.WriteHeader(http.StatusForbidden)
 				_, _ = io.WriteString(writer, test.body)
@@ -502,12 +550,16 @@ func TestAdapterDoesNotPenalizeEgressForBlockedAccount(t *testing.T) {
 func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	var received map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
 		if request.URL.Path != "/v1/responses" || request.Method != http.MethodPost {
 			t.Errorf("request = %s %s", request.Method, request.URL.Path)
 		}
-		if request.Header.Get("Authorization") != "Bearer anonymous" || request.Header.Get("x-cluster") != "https://us-east-1.api.x.ai" || request.Header.Get("Accept") != "*/*" || request.Header.Get("Priority") != "u=1, i" {
+		if !strings.HasPrefix(request.Header.Get("Authorization"), "DPoP ") || request.Header.Get("DPoP") == "" || request.Header.Get("x-cluster") != "https://us-east-1.api.x.ai" || request.Header.Get("Accept") != "*/*" || request.Header.Get("Priority") != "u=1, i" {
 			t.Errorf("headers = %#v", request.Header)
 		}
+		verifyTestDPoPProof(t, request)
 		if request.Header.Get("User-Agent") != infraegress.DefaultUserAgent {
 			t.Errorf("user-agent = %q", request.Header.Get("User-Agent"))
 		}
@@ -563,7 +615,10 @@ func TestApplyChromiumClientHintsSkipsNonChromiumUserAgent(t *testing.T) {
 }
 
 func TestAdapterPreservesConversationRateLimitStatusAndProtocol(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
 		writer.Header().Set("Content-Type", "text/plain")
 		writer.WriteHeader(http.StatusTooManyRequests)
 		_, _ = io.WriteString(writer, "Rate limit reached. Resets in: 1h 2m 3s")
@@ -606,6 +661,286 @@ func TestAdapterPreservesConversationRateLimitStatusAndProtocol(t *testing.T) {
 				t.Fatalf("compatible error = %#v", payload)
 			}
 		})
+	}
+}
+
+func TestSyncQuotaUsesDPoPUsageQuotas(t *testing.T) {
+	var tokenRequests atomic.Int32
+	var usageRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/dpop/token" {
+			tokenRequests.Add(1)
+			serveTestDPoPToken(t, writer, request)
+			return
+		}
+		if request.URL.Path != "/v1/usage" || request.Method != http.MethodGet {
+			http.NotFound(writer, request)
+			return
+		}
+		usageRequests.Add(1)
+		verifyTestDPoPProof(t, request)
+		if request.Header.Get("x-cluster") != "" {
+			t.Errorf("usage x-cluster = %q", request.Header.Get("x-cluster"))
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"quotas":[{"kind":"chat","limit":10,"used":1,"remaining":9,"last_consumed_at":1785895737},{"kind":"image","limit":5,"used":0,"remaining":5},{"kind":"video","limit":2,"used":0,"remaining":2}]}`)
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	for range 2 {
+		snapshot, err := adapter.SyncQuota(context.Background(), credential)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(snapshot.Windows) != 3 {
+			t.Fatalf("quota windows = %#v", snapshot.Windows)
+		}
+		want := []struct {
+			mode                         string
+			remaining, total, windowSecs int
+		}{
+			{mode: QuotaMode, remaining: 9, total: 10, windowSecs: 24 * 60 * 60},
+			{mode: QuotaModeImage, remaining: 5, total: 5},
+			{mode: QuotaModeVideo, remaining: 2, total: 2},
+		}
+		for index, expected := range want {
+			window := snapshot.Windows[index]
+			if window.Mode != expected.mode || window.Remaining != expected.remaining || window.Total != expected.total || window.Source != account.QuotaSourceUpstream || window.ResetAt != nil || window.WindowSeconds != expected.windowSecs {
+				t.Fatalf("quota[%d] = %#v", index, window)
+			}
+		}
+	}
+	if tokenRequests.Load() != 1 || usageRequests.Load() != 2 {
+		t.Fatalf("requests token=%d usage=%d", tokenRequests.Load(), usageRequests.Load())
+	}
+}
+
+func TestSyncQuotaPredictsChatRecoveryAfter24Hours(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/dpop/token" {
+			serveTestDPoPToken(t, writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"quotas":[{"kind":"chat","limit":10,"used":10,"remaining":0},{"kind":"image","limit":5,"used":0,"remaining":5},{"kind":"video","limit":2,"used":0,"remaining":2}]}`)
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	startedAt := time.Now().UTC()
+	snapshot, err := adapter.SyncQuota(context.Background(), credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := snapshot.Windows[0]
+	if chat.ResetAt == nil || chat.WindowSeconds != 24*60*60 {
+		t.Fatalf("chat recovery = %#v", chat)
+	}
+	want := startedAt.Add(24 * time.Hour)
+	if chat.ResetAt.Before(want) || chat.ResetAt.After(time.Now().UTC().Add(24*time.Hour)) {
+		t.Fatalf("predicted recovery = %s, want around %s", chat.ResetAt, want)
+	}
+}
+
+func TestSyncQuotaModeSelectsConsoleMediaWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/dpop/token" {
+			serveTestDPoPToken(t, writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"quotas":[{"kind":"chat","limit":10,"used":1,"remaining":9},{"kind":"image","limit":5,"used":2,"remaining":3},{"kind":"video","limit":2,"used":0,"remaining":2}]}`)
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	window, err := adapter.SyncQuotaMode(context.Background(), credential, QuotaModeImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Mode != QuotaModeImage || window.Remaining != 3 || window.Total != 5 || window.UsagePercent != 40 {
+		t.Fatalf("image quota = %#v", window)
+	}
+}
+
+func TestAdapterRefreshesDPoPSessionOnceAfterUnauthorized(t *testing.T) {
+	var tokenRequests atomic.Int32
+	var responseRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/dpop/token" {
+			tokenRequests.Add(1)
+			serveTestDPoPToken(t, writer, request)
+			return
+		}
+		currentResponse := responseRequests.Add(1)
+		verifyTestDPoPProof(t, request)
+		if currentResponse == 1 {
+			writer.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(writer, `{"error":"expired dpop token"}`)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"id":"resp_refreshed","object":"response","status":"completed","output":[]}`)
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
+		Operation: conversation.OperationResponses, NormalizeBody: true, Body: []byte(`{"model":"grok-4.3","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || tokenRequests.Load() != 2 || responseRequests.Load() != 2 {
+		t.Fatalf("status=%d token=%d responses=%d", response.StatusCode, tokenRequests.Load(), responseRequests.Load())
+	}
+}
+
+func TestAdapterCoalescesConcurrentDPoPTokenExchange(t *testing.T) {
+	const workers = 16
+	var tokenRequests atomic.Int32
+	var responseRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/dpop/token" {
+			tokenRequests.Add(1)
+			time.Sleep(20 * time.Millisecond)
+			serveTestDPoPToken(t, writer, request)
+			return
+		}
+		responseRequests.Add(1)
+		verifyTestDPoPProof(t, request)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"id":"resp_concurrent","object":"response","status":"completed","output":[]}`)
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	start := make(chan struct{})
+	errorsChannel := make(chan error, workers)
+	var group sync.WaitGroup
+	group.Add(workers)
+	for range workers {
+		go func() {
+			defer group.Done()
+			<-start
+			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+				Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
+				Operation: conversation.OperationResponses, NormalizeBody: true, Body: []byte(`{"model":"grok-4.3","input":"hello"}`),
+			})
+			if err == nil {
+				_, err = io.Copy(io.Discard, response.Body)
+				closeErr := response.Body.Close()
+				if err == nil {
+					err = closeErr
+				}
+			}
+			errorsChannel <- err
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(errorsChannel)
+	for err := range errorsChannel {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if tokenRequests.Load() != 1 || responseRequests.Load() != workers {
+		t.Fatalf("requests token=%d responses=%d", tokenRequests.Load(), responseRequests.Load())
+	}
+}
+
+func serveTestDPoPToken(t *testing.T, writer http.ResponseWriter, request *http.Request) bool {
+	t.Helper()
+	if request.URL.Path != "/v1/dpop/token" {
+		return false
+	}
+	if request.Method != http.MethodPost {
+		t.Errorf("DPoP token method = %s", request.Method)
+		writer.WriteHeader(http.StatusMethodNotAllowed)
+		return true
+	}
+	if request.Header.Get("Authorization") != "" || request.Header.Get("DPoP") != "" {
+		t.Errorf("DPoP token request unexpectedly authenticated: %#v", request.Header)
+	}
+	if request.Header.Get("x-cluster") != "" {
+		t.Errorf("DPoP token x-cluster = %q", request.Header.Get("x-cluster"))
+	}
+	if !strings.Contains(request.Header.Get("Cookie"), "sso=test-sso") {
+		t.Errorf("DPoP token cookie = %q", request.Header.Get("Cookie"))
+	}
+	var payload struct {
+		JWK dpopJWK `json:"jwk"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		t.Errorf("decode DPoP token request: %v", err)
+		writer.WriteHeader(http.StatusBadRequest)
+		return true
+	}
+	thumbprint, err := dpopJWKThumbprint(payload.JWK)
+	if err != nil {
+		t.Errorf("DPoP thumbprint: %v", err)
+		writer.WriteHeader(http.StatusBadRequest)
+		return true
+	}
+	header, _ := json.Marshal(map[string]any{"alg": "HS256", "typ": "JWT"})
+	claims, _ := json.Marshal(map[string]any{
+		"sub": "test-user", "iat": time.Now().UTC().Unix(), "exp": time.Now().UTC().Add(5 * time.Minute).Unix(),
+		"cnf": map[string]any{"jkt": thumbprint}, "token_use": "dpop-bound",
+	})
+	accessToken := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims) + ".dGVzdA"
+	writer.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(writer).Encode(map[string]any{"access_token": accessToken, "token_type": "DPoP", "expires_in": 300})
+	return true
+}
+
+func verifyTestDPoPProof(t *testing.T, request *http.Request) {
+	t.Helper()
+	authorization := strings.TrimSpace(request.Header.Get("Authorization"))
+	accessToken := strings.TrimSpace(strings.TrimPrefix(authorization, "DPoP "))
+	proofValue := strings.TrimSpace(request.Header.Get("DPoP"))
+	parsed, err := jwt.Parse(proofValue, func(token *jwt.Token) (any, error) {
+		if token.Method != jwt.SigningMethodES256 || token.Header["typ"] != "dpop+jwt" {
+			return nil, fmt.Errorf("unexpected DPoP header: %#v", token.Header)
+		}
+		encoded, err := json.Marshal(token.Header["jwk"])
+		if err != nil {
+			return nil, err
+		}
+		var jwk dpopJWK
+		if err := json.Unmarshal(encoded, &jwk); err != nil {
+			return nil, err
+		}
+		xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
+		if err != nil {
+			return nil, err
+		}
+		yBytes, err := base64.RawURLEncoding.DecodeString(jwk.Y)
+		if err != nil {
+			return nil, err
+		}
+		publicKey := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(xBytes), Y: new(big.Int).SetBytes(yBytes)}
+		if !publicKey.Curve.IsOnCurve(publicKey.X, publicKey.Y) {
+			return nil, errors.New("DPoP JWK point is not on P-256")
+		}
+		return publicKey, nil
+	}, jwt.WithValidMethods([]string{"ES256"}))
+	if err != nil || !parsed.Valid {
+		t.Fatalf("invalid DPoP proof: valid=%v err=%v", parsed != nil && parsed.Valid, err)
+	}
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok {
+		t.Fatalf("DPoP claims = %#v", parsed.Claims)
+	}
+	wantHTU := "http://" + request.Host + request.URL.EscapedPath()
+	if claims["htm"] != request.Method || claims["htu"] != wantHTU || strings.TrimSpace(fmt.Sprint(claims["jti"])) == "" {
+		t.Fatalf("DPoP request binding = %#v", claims)
+	}
+	digest := sha256.Sum256([]byte(accessToken))
+	if claims["ath"] != base64.RawURLEncoding.EncodeToString(digest[:]) {
+		t.Fatalf("DPoP ath = %#v", claims["ath"])
+	}
+	iat, ok := claims["iat"].(float64)
+	if !ok || time.Since(time.Unix(int64(iat), 0)) > time.Minute {
+		t.Fatalf("DPoP iat = %#v", claims["iat"])
 	}
 }
 

@@ -13,7 +13,7 @@ func (a *Adapter) Definition() provider.Definition {
 		ModelNamespace:    account.ProviderConsole.ModelNamespace(),
 		ModelCatalog:      provider.ModelCatalogStatic,
 		ModelCapabilities: []modeldomain.Capability{modeldomain.CapabilityResponses},
-		Quota:             provider.QuotaLocalWindow,
+		Quota:             provider.QuotaRemoteWindow,
 		Credential: provider.CredentialSurface{
 			AuthType: account.AuthTypeSSO, Import: true,
 		},

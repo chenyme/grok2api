@@ -20,7 +20,7 @@ const (
 )
 
 type quotaSynchronizer interface {
-	RefreshQuotaMode(ctx context.Context, accountID uint64, mode string) (accountdomain.QuotaWindow, error)
+	ProbeQuotaMode(ctx context.Context, accountID uint64, mode string) (accountdomain.QuotaWindow, error)
 	ListDueQuotaWindows(ctx context.Context, now time.Time, limit int) ([]accountdomain.QuotaWindow, error)
 }
 
@@ -91,7 +91,7 @@ func (s *Service) runDue(ctx context.Context, now time.Time) {
 
 func (s *Service) runOne(ctx context.Context, now time.Time, value accountdomain.QuotaRecoveryEvent) {
 	probeCtx, cancel := context.WithTimeout(ctx, recoveryProbeTimeout)
-	window, probeErr := s.syncer.RefreshQuotaMode(probeCtx, value.AccountID, value.Mode)
+	window, probeErr := s.syncer.ProbeQuotaMode(probeCtx, value.AccountID, value.Mode)
 	cancel()
 	if probeErr == nil && window.Remaining > 0 {
 		if err := s.queue.AckQuotaRecovery(ctx, value); err != nil {
@@ -105,6 +105,8 @@ func (s *Service) runOne(ctx context.Context, now time.Time, value accountdomain
 	value.Attempts++
 	if probeErr == nil && window.ResetAt != nil && window.ResetAt.After(now) {
 		value.DueAt = *window.ResetAt
+	} else if probeErr == nil && window.WindowSeconds > 0 {
+		value.DueAt = now.Add(time.Duration(window.WindowSeconds) * time.Second)
 	} else {
 		value.DueAt = now.Add(s.backoff(value.Attempts))
 	}

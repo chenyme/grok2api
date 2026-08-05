@@ -21,10 +21,11 @@ func TestWebQuotaRefreshDeduplicatesPerMode(t *testing.T) {
 	service.QueueWebQuotaRefresh(42, "fast")
 	service.QueueWebQuotaRefresh(42, "expert")
 	service.QueueWebQuotaRefresh(42, "fast")
+	service.QueueQuotaRefresh(43, "console")
 
 	service.quotaRefreshMu.Lock()
 	defer service.quotaRefreshMu.Unlock()
-	if len(service.quotaRefreshes) != 2 {
+	if len(service.quotaRefreshes) != 3 {
 		t.Fatalf("refresh states = %#v", service.quotaRefreshes)
 	}
 	if service.quotaRefreshes["42:fast"].generation != 2 || !service.quotaRefreshes["42:fast"].queued {
@@ -33,7 +34,10 @@ func TestWebQuotaRefreshDeduplicatesPerMode(t *testing.T) {
 	if service.quotaRefreshes["42:expert"].generation != 1 || !service.quotaRefreshes["42:expert"].queued {
 		t.Fatal("independent expert refresh state is invalid")
 	}
-	if len(service.quotaRefreshQueue) != 2 {
+	if service.quotaRefreshes["43:console"].generation != 1 || !service.quotaRefreshes["43:console"].queued {
+		t.Fatal("Console refresh state is invalid")
+	}
+	if len(service.quotaRefreshQueue) != 3 {
 		t.Fatalf("queued refreshes = %d", len(service.quotaRefreshQueue))
 	}
 }

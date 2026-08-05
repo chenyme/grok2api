@@ -61,6 +61,8 @@ const (
 	webQuotaRefreshDirtyTTL                       = 24 * time.Hour
 	webQuotaRefreshRetryInterval                  = 500 * time.Millisecond
 	webQuotaRefreshSharedPoll                     = time.Second
+	unknownRemoteQuotaProbeDelay    time.Duration = 5 * time.Minute
+	consolePredictedQuotaProbeDelay time.Duration = 24 * time.Hour
 	observedModelPersistInterval                  = 30 * time.Minute
 	observedModelLocalCacheTTL                    = 5 * time.Second
 	observedModelLockShards                       = 64
@@ -2549,13 +2551,7 @@ func (s *Service) ExhaustQuota(ctx context.Context, id uint64, mode string, rese
 				if window.Mode != mode {
 					continue
 				}
-				if window.ResetAt != nil && window.ResetAt.After(s.now()) {
-					value := *window.ResetAt
-					resetAt = &value
-				} else if window.WindowSeconds > 0 {
-					value := s.now().Add(time.Duration(window.WindowSeconds) * time.Second)
-					resetAt = &value
-				}
+				resetAt = quotaRecoveryDueAt(window, s.now(), true)
 				break
 			}
 		}
@@ -2619,8 +2615,11 @@ func (s *Service) refreshQuota(ctx context.Context, id uint64) ([]accountdomain.
 		return nil, err
 	}
 	for _, window := range snapshot.Windows {
-		if window.Remaining == 0 && window.ResetAt != nil && s.quotaQueue != nil {
-			if err := s.quotaQueue.ScheduleQuotaRecovery(ctx, accountdomain.QuotaRecoveryEvent{AccountID: id, Mode: window.Mode, DueAt: *window.ResetAt}); err != nil {
+		if !quotaWindowControlsRouting(value.Provider, window.Mode) {
+			continue
+		}
+		if dueAt := quotaRecoveryDueAt(window, s.now(), window.Remaining == 0); dueAt != nil && s.quotaQueue != nil {
+			if err := s.quotaQueue.ScheduleQuotaRecovery(ctx, accountdomain.QuotaRecoveryEvent{AccountID: id, Mode: window.Mode, DueAt: *dueAt}); err != nil {
 				return snapshot.Windows, fmt.Errorf("安排额度恢复事件: %w", err)
 			}
 		}
@@ -2683,7 +2682,7 @@ func (s *Service) ReconcileWebRateLimit(ctx context.Context, id uint64, mode str
 func (s *Service) RefreshQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
 	key := strings.TrimSpace(mode) + ":" + strconv.FormatUint(id, 10)
 	result, err, _ := s.quotaSyncs.Do(key, func() (any, error) {
-		return s.refreshQuotaMode(ctx, id, mode)
+		return s.refreshQuotaMode(ctx, id, mode, true)
 	})
 	if err != nil {
 		return accountdomain.QuotaWindow{}, err
@@ -2695,11 +2694,29 @@ func (s *Service) RefreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	return window, nil
 }
 
+// ProbeQuotaMode refreshes a claimed recovery event without scheduling a
+// second event for the same account and mode. The recovery worker owns the
+// current claim and is responsible for acknowledging or rescheduling it.
+func (s *Service) ProbeQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
+	key := strings.TrimSpace(mode) + ":" + strconv.FormatUint(id, 10)
+	result, err, _ := s.quotaSyncs.Do(key, func() (any, error) {
+		return s.refreshQuotaMode(ctx, id, mode, false)
+	})
+	if err != nil {
+		return accountdomain.QuotaWindow{}, err
+	}
+	window, ok := result.(accountdomain.QuotaWindow)
+	if !ok {
+		return accountdomain.QuotaWindow{}, fmt.Errorf("Provider 模式额度探测返回类型无效")
+	}
+	return window, nil
+}
+
 func (s *Service) RefreshWebQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
 	return s.RefreshQuotaMode(ctx, id, mode)
 }
 
-func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
+func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string, scheduleRecovery bool) (accountdomain.QuotaWindow, error) {
 	value, err := s.accounts.Get(ctx, id)
 	if err != nil {
 		return accountdomain.QuotaWindow{}, mapRepositoryError(err)
@@ -2726,18 +2743,51 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	if err := s.accounts.SaveQuotaWindows(ctx, id, tier, now, []accountdomain.QuotaWindow{window}); err != nil {
 		return accountdomain.QuotaWindow{}, err
 	}
-	if window.Remaining == 0 && window.ResetAt != nil && s.quotaQueue != nil {
-		if err := s.quotaQueue.ScheduleQuotaRecovery(ctx, accountdomain.QuotaRecoveryEvent{AccountID: id, Mode: mode, DueAt: *window.ResetAt}); err != nil {
-			return window, fmt.Errorf("安排额度恢复事件: %w", err)
+	if scheduleRecovery && quotaWindowControlsRouting(value.Provider, window.Mode) {
+		if dueAt := quotaRecoveryDueAt(window, now, window.Remaining == 0); dueAt != nil && s.quotaQueue != nil {
+			if err := s.quotaQueue.ScheduleQuotaRecovery(ctx, accountdomain.QuotaRecoveryEvent{AccountID: id, Mode: mode, DueAt: *dueAt}); err != nil {
+				return window, fmt.Errorf("安排额度恢复事件: %w", err)
+			}
 		}
 	}
 	return window, nil
 }
 
+// quotaRecoveryDueAt keeps upstream quota exhaustion recoverable even when
+// the Provider reports no reset timestamp. Console uses a conservative
+// predicted 24-hour probe window; generic remote windows retain the shorter
+// fallback and transport failures use the recovery queue's bounded backoff.
+func quotaRecoveryDueAt(window accountdomain.QuotaWindow, now time.Time, exhausted bool) *time.Time {
+	if !exhausted {
+		return nil
+	}
+	if window.Mode == "console" && window.Source == accountdomain.QuotaSourceDefault {
+		value := now.Add(consolePredictedQuotaProbeDelay)
+		return &value
+	}
+	if window.ResetAt != nil {
+		value := *window.ResetAt
+		return &value
+	}
+	if window.WindowSeconds > 0 {
+		value := now.Add(time.Duration(window.WindowSeconds) * time.Second)
+		return &value
+	}
+	if window.Mode == "console" {
+		value := now.Add(consolePredictedQuotaProbeDelay)
+		return &value
+	}
+	if window.Source == accountdomain.QuotaSourceUpstream {
+		value := now.Add(unknownRemoteQuotaProbeDelay)
+		return &value
+	}
+	return nil
+}
+
 // QueueQuotaRefresh asynchronously refreshes the remote quota window after a successful request.
 func (s *Service) QueueQuotaRefresh(id uint64, mode string) {
 	mode = strings.TrimSpace(mode)
-	if id == 0 || (mode != "weekly" && !isWebChatQuotaMode(mode)) {
+	if id == 0 || (mode != "console" && mode != "weekly" && !isWebChatQuotaMode(mode)) {
 		return
 	}
 	key := strconv.FormatUint(id, 10) + ":" + mode
@@ -3083,6 +3133,12 @@ func isWebChatQuotaMode(mode string) bool {
 	default:
 		return false
 	}
+}
+
+func quotaWindowControlsRouting(providerValue accountdomain.Provider, mode string) bool {
+	// Console currently routes text responses only. Its image/video usage
+	// windows are informational and must not quarantine or recover the account.
+	return providerValue != accountdomain.ProviderConsole || mode == "console"
 }
 
 // SyncAllBilling 尽力刷新全部启用账号，单个账号失败不阻断其他账号。

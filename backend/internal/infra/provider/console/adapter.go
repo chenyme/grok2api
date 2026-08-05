@@ -31,10 +31,11 @@ type Adapter struct {
 	cfg    Config
 	egress *infraegress.Manager
 	cipher *security.Cipher
+	dpop   *dpopSessionManager
 }
 
 func NewAdapter(cfg Config, egress *infraegress.Manager, cipher *security.Cipher) *Adapter {
-	return &Adapter{cfg: cfg, egress: egress, cipher: cipher}
+	return &Adapter{cfg: cfg, egress: egress, cipher: cipher, dpop: newDPoPSessionManager()}
 }
 
 func (a *Adapter) Provider() account.Provider { return account.ProviderConsole }
@@ -80,26 +81,6 @@ func (a *Adapter) MarshalCredentials(values []provider.CredentialSeed) ([]byte, 
 	return marshalCredentials(values)
 }
 
-func (a *Adapter) SyncQuota(_ context.Context, credential account.Credential) (provider.QuotaSnapshot, error) {
-	now := time.Now().UTC()
-	resetAt := now.Add(DefaultQuotaWindow * time.Second)
-	return provider.QuotaSnapshot{SyncedAt: now, Windows: []account.QuotaWindow{{
-		AccountID: credential.ID, Mode: QuotaMode, Remaining: DefaultQuotaLimit, Total: DefaultQuotaLimit,
-		WindowSeconds: DefaultQuotaWindow, ResetAt: &resetAt, SyncedAt: &now, Source: account.QuotaSourceDefault, UpdatedAt: now,
-	}}}, nil
-}
-
-func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credential, mode string) (account.QuotaWindow, error) {
-	if mode != QuotaMode {
-		return account.QuotaWindow{}, fmt.Errorf("不支持的 Console 额度模式 %q", mode)
-	}
-	snapshot, err := a.SyncQuota(ctx, credential)
-	if err != nil {
-		return account.QuotaWindow{}, err
-	}
-	return snapshot.Windows[0], nil
-}
-
 func (a *Adapter) ForwardResponse(ctx context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	if request.Method != http.MethodPost || request.Path != "/responses" {
 		return jsonProviderResponse(http.StatusBadRequest, map[string]any{"error": map[string]any{"type": "invalid_request_error", "message": "Grok Console 仅支持 POST /responses"}}), nil
@@ -134,17 +115,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		cancel()
 		return nil, err
 	}
-	upstream, err := http.NewRequestWithContext(requestCtx, http.MethodPost, consoleEndpoint(cfg.BaseURL), bytes.NewReader(body))
-	if err != nil {
-		lease.Release()
-		cancel()
-		return nil, err
-	}
-	applyHeaders(upstream, token, lease)
-	if request.Streaming {
-		upstream.Header.Set("Accept", "text/event-stream")
-	}
-	response, err := lease.DoDeferredForbidden(upstream)
+	response, err := a.doDPoPRequest(requestCtx, request.Credential, token, lease, http.MethodPost, consoleEndpoint(cfg.BaseURL), body, "*/*")
 	if err != nil {
 		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, 0, err)
 		lease.Release()
@@ -298,11 +269,7 @@ func conversationErrorType(status int, operation string) string {
 }
 
 func consoleEndpoint(baseURL string) string {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if strings.HasSuffix(baseURL, "/v1") {
-		return baseURL + "/responses"
-	}
-	return baseURL + "/v1/responses"
+	return consoleV1Endpoint(baseURL, "/responses")
 }
 
 func normalizeRateLimitResponse(response *http.Response) (bool, *provider.RateLimitMetadata, error) {

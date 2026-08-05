@@ -61,7 +61,7 @@ func TestProductionProviderDefinitionsMatchImplementedCapabilities(t *testing.T)
 			inference:    provider.InferencePolicy{Usage: provider.UsageEstimated, RetryForbiddenAsEgress: true},
 		},
 		{
-			provider: account.ProviderConsole, catalog: provider.ModelCatalogStatic, quota: provider.QuotaLocalWindow,
+			provider: account.ProviderConsole, catalog: provider.ModelCatalogStatic, quota: provider.QuotaRemoteWindow,
 			capabilities: []modeldomain.Capability{modeldomain.CapabilityResponses},
 			credential:   provider.CredentialSurface{AuthType: account.AuthTypeSSO, Import: true},
 			conversation: provider.ConversationSurface{Responses: true, ChatCompletions: true, Messages: true},

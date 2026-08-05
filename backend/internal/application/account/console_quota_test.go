@@ -23,3 +23,41 @@ func TestPreserveActiveQuotaWindowsUntilReset(t *testing.T) {
 		t.Fatalf("expired window = %#v", expired)
 	}
 }
+
+func TestQuotaRecoveryDueAtSchedulesUnknownRemoteWindowProbe(t *testing.T) {
+	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	window := accountdomain.QuotaWindow{Mode: "console", Remaining: 0, Source: accountdomain.QuotaSourceUpstream}
+	dueAt := quotaRecoveryDueAt(window, now, true)
+	if dueAt == nil || !dueAt.Equal(now.Add(consolePredictedQuotaProbeDelay)) {
+		t.Fatalf("Console predicted dueAt = %v", dueAt)
+	}
+	if value := quotaRecoveryDueAt(window, now, false); value != nil {
+		t.Fatalf("available window dueAt = %v", value)
+	}
+	window.Source = accountdomain.QuotaSourceDefault
+	if value := quotaRecoveryDueAt(window, now, true); value == nil || !value.Equal(now.Add(consolePredictedQuotaProbeDelay)) {
+		t.Fatalf("legacy Console dueAt = %v", value)
+	}
+	window = accountdomain.QuotaWindow{Mode: "fast", Remaining: 0, Source: accountdomain.QuotaSourceDefault}
+	if value := quotaRecoveryDueAt(window, now, true); value != nil {
+		t.Fatalf("unknown local window dueAt = %v", value)
+	}
+	window.Source = accountdomain.QuotaSourceUpstream
+	if value := quotaRecoveryDueAt(window, now, true); value == nil || !value.Equal(now.Add(unknownRemoteQuotaProbeDelay)) {
+		t.Fatalf("generic remote dueAt = %v", value)
+	}
+}
+
+func TestConsoleMediaQuotaDoesNotControlTextRouting(t *testing.T) {
+	if !quotaWindowControlsRouting(accountdomain.ProviderConsole, "console") {
+		t.Fatal("Console chat quota must control text routing")
+	}
+	for _, mode := range []string{"console_image", "console_video"} {
+		if quotaWindowControlsRouting(accountdomain.ProviderConsole, mode) {
+			t.Fatalf("%s must remain informational until Console media routes are implemented", mode)
+		}
+	}
+	if !quotaWindowControlsRouting(accountdomain.ProviderWeb, "weekly") {
+		t.Fatal("Web quota behavior must remain unchanged")
+	}
+}
