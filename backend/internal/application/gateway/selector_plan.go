@@ -15,6 +15,8 @@ type candidateScore struct {
 	index           int
 	tier            int
 	preferFreeBuild bool
+	quotaKnown      bool
+	quotaAvailable  bool
 	billingFresh    bool
 	inFlight        int
 	remaining       float64
@@ -64,6 +66,15 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 	}
 	if leftCandidate.ModelCapabilityKnown != rightCandidate.ModelCapabilityKnown {
 		return leftCandidate.ModelCapabilityKnown
+	}
+	// A synced remote window with remaining quota is a stronger routing signal
+	// than priority or tier. Unknown windows remain eligible as a fallback, but
+	// cannot displace an account whose requested mode is known to be available.
+	if leftScore.quotaAvailable != rightScore.quotaAvailable {
+		return leftScore.quotaAvailable
+	}
+	if leftScore.quotaKnown != rightScore.quotaKnown {
+		return leftScore.quotaKnown
 	}
 	if leftScore.preferFreeBuild != rightScore.preferFreeBuild {
 		return leftScore.preferFreeBuild
@@ -175,6 +186,10 @@ func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []a
 			index: index, tier: tierOrderRank(tierOrder, candidate.Credential.WebTier),
 			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
 			inFlight:        inFlight[position], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
+		}
+		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Source != account.QuotaSourceEstimated {
+			score.quotaKnown = true
+			score.quotaAvailable = candidate.QuotaWindow.Remaining > 0
 		}
 		if candidate.Billing != nil {
 			score.remaining = candidate.Billing.Remaining()
