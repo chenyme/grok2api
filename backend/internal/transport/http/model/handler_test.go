@@ -3,6 +3,7 @@ package model
 import (
 	"testing"
 
+	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 )
@@ -14,6 +15,29 @@ func TestNewModelResponseSeparatesPublicAndUpstreamNames(t *testing.T) {
 	})
 	if response.PublicID != "grok-4.5" || response.UpstreamModel != "Build/grok-4.5" {
 		t.Fatalf("model response = %#v", response)
+	}
+}
+
+func TestNewModelGroupResponseKeepsAllMemberRoutes(t *testing.T) {
+	response := newModelGroupResponse(modelapp.RouteGroup{
+		Routes: []modeldomain.Route{
+			{ID: 10, PublicID: "Console/grok-imagine-image", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image", Capability: modeldomain.CapabilityImage, Origin: modeldomain.OriginCatalog},
+			{ID: 11, PublicID: "Console/grok-imagine-image", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image", Capability: modeldomain.CapabilityImageEdit, Origin: modeldomain.OriginCatalog},
+		},
+		EndpointCapabilities: []string{"image", "image_edit"},
+	})
+	if response.Key != "10:11" || len(response.Routes) != 2 || len(response.EndpointCapabilities) != 2 {
+		t.Fatalf("model group response = %#v", response)
+	}
+}
+
+func TestNewModelResponseKnowsStaticConsoleCapabilityWithoutAccountSync(t *testing.T) {
+	response := newModelResponse(modeldomain.Route{
+		ID: 2, PublicID: "Console/grok-imagine-image", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image",
+		Capability: modeldomain.CapabilityImageEdit, Enabled: true, SupportedAccounts: 20, TotalAccounts: 20,
+	})
+	if !response.CapabilityKnown || !response.Available || response.BindingMode || response.SupportedAccounts != 20 {
+		t.Fatalf("static Console model response = %#v", response)
 	}
 }
 

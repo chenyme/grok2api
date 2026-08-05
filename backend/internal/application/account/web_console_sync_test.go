@@ -1,8 +1,10 @@
 package account
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	consoleprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/console"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -159,6 +162,156 @@ func TestSyncWebAccountsToConsoleIsIdempotentAndPreservesBuildLink(t *testing.T)
 	}
 }
 
+// 内部同步必须以 {"sso_token": ...} 固定 JSON 形态传递 token：与 token 内容形态无关，
+// 不被导入解析器的格式嗅探（如「[」JSON 保留前缀）误判。
+// 本用例只验证服务侧载荷的字节级确定性；真实 Console adapter 的归一化语义见
+// TestSyncWebAccountsToConsoleRoundTripsThroughRealAdapter。
+func TestSyncWebAccountsToConsoleWrapsTokenAsDeterministicJSON(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "web-console-wrap.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 覆盖 JSON 转义与「[」保留前缀字符；不含 \r\n/NUL/sso= 前缀/分号——这些会在真实
+	// Console adapter 的 sanitizeSSOToken 中被剥除，不属于可稳定往返的形态。
+	weirdToken := "[bracketed-sso-\"quoted\" and spaces"
+	encrypted, err := cipher.Encrypt(weirdToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	webAccount, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "Grok Web weird", SourceKey: "sso:" + security.HashToken(weirdToken),
+		EncryptedAccessToken: encrypted, Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured []byte
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(consoleSSOCodecAdapter{lastPayload: &captured}), cipher, memory.NewLockStore())
+
+	result, err := service.SyncWebAccountsToConsoleWithProgress(ctx, []uint64{webAccount.ID}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != 1 || len(result.AccountIDs) != 1 {
+		t.Fatalf("sync result = %#v", result)
+	}
+	// 载荷必须是 json.Marshal 的精确字节（单键对象、token 被正确转义），而非事后可还原就行。
+	expectedPayload, err := json.Marshal(map[string]string{"sso_token": weirdToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(captured, expectedPayload) {
+		t.Fatalf("payload = %s, want exact bytes %s", captured, expectedPayload)
+	}
+}
+
+// 服务的 JSON 封装与真实 Console adapter 的归一化链路必须端到端等价：
+// token 原样保存、SourceKey 与原纯文本路径一致（二次同步是更新而非新增）。
+func TestSyncWebAccountsToConsoleRoundTripsThroughRealAdapter(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "web-console-roundtrip.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	weirdToken := "[bracketed-sso-\"quoted\" and spaces"
+	encrypted, err := cipher.Encrypt(weirdToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	webAccount, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "Grok Web weird", SourceKey: "sso:" + security.HashToken(weirdToken),
+		EncryptedAccessToken: encrypted, Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(consoleprovider.NewAdapter(consoleprovider.Config{}, nil, nil, nil)), cipher, memory.NewLockStore())
+
+	first, err := service.SyncWebAccountsToConsoleWithProgress(ctx, []uint64{webAccount.ID}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Created != 1 || len(first.AccountIDs) != 1 {
+		t.Fatalf("first sync = %#v", first)
+	}
+	consoleAccount, err := accounts.Get(ctx, first.AccountIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err := cipher.Decrypt(consoleAccount.EncryptedAccessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 真实 adapter 的 SourceKey 必须与原纯文本路径一致（"console-sso:"+hash(token)），否则存量账号会重复创建。
+	if decrypted != weirdToken || consoleAccount.SourceKey != "console-sso:"+security.HashToken(weirdToken) {
+		t.Fatalf("console account token=%q sourceKey=%q", decrypted, consoleAccount.SourceKey)
+	}
+	second, err := service.SyncWebAccountsToConsoleWithProgress(ctx, []uint64{webAccount.ID}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Created != 0 || second.Updated != 1 || len(second.AccountIDs) != 1 || second.AccountIDs[0] != consoleAccount.ID {
+		t.Fatalf("second sync = %#v", second)
+	}
+}
+
+// 非法 UTF-8 的解密结果不得被 json.Marshal 静默改写（U+FFFD 替换），应显式失败。
+func TestSyncWebAccountsToConsoleRejectsInvalidUTF8Token(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "web-console-utf8.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokenToken := string([]byte{0xff, 0xfe, 'a'})
+	encrypted, err := cipher.Encrypt(brokenToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	webAccount, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "Grok Web broken", SourceKey: "sso:" + security.HashToken(brokenToken),
+		EncryptedAccessToken: encrypted, Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(consoleSSOCodecAdapter{}), cipher, memory.NewLockStore())
+
+	if _, err := service.SyncWebAccountsToConsoleWithProgress(ctx, []uint64{webAccount.ID}, nil, nil); err == nil || !strings.Contains(err.Error(), "UTF-8") {
+		t.Fatalf("error = %v, want invalid UTF-8 rejection", err)
+	}
+}
+
 func TestSyncAllWebAccountsToConsoleProcessesMoreThanLegacyLimitInBatches(t *testing.T) {
 	const totalAccounts = maxWebConsoleSyncAccounts + 1
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
@@ -228,7 +381,10 @@ func (r *webConsoleBatchRepository) UpsertManyByIdentity(_ context.Context, valu
 	return results, nil
 }
 
-type consoleSSOCodecAdapter struct{ parseCalls *atomic.Int64 }
+type consoleSSOCodecAdapter struct {
+	parseCalls  *atomic.Int64
+	lastPayload *[]byte
+}
 
 func (consoleSSOCodecAdapter) Provider() accountdomain.Provider { return accountdomain.ProviderConsole }
 
@@ -236,7 +392,20 @@ func (a consoleSSOCodecAdapter) ParseImportedCredentials(data []byte) ([]provide
 	if a.parseCalls != nil {
 		a.parseCalls.Add(1)
 	}
+	if a.lastPayload != nil {
+		*a.lastPayload = append([]byte(nil), data...)
+	}
 	token := strings.TrimSpace(string(data))
+	// 服务内部同步现在以 {"sso_token": ...} 封装 token；解开以与真实 console adapter 的 JSON 路径行为对齐。
+	if strings.HasPrefix(token, "{") {
+		var document struct {
+			SSOToken string `json:"sso_token"`
+		}
+		if err := json.Unmarshal([]byte(token), &document); err != nil {
+			return nil, err
+		}
+		token = document.SSOToken
+	}
 	return []provider.CredentialSeed{{
 		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
 		Name: "Grok Console " + security.HashToken(token)[:8], SourceKey: "console-sso:" + security.HashToken(token), AccessToken: token,

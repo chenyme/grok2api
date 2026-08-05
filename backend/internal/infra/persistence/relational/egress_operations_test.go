@@ -884,8 +884,9 @@ func TestEgressOperationsConfigPersistsFixedFallback(t *testing.T) {
 	saved, err := service.UpdateOperationsConfig(ctx, egressapp.OperationsConfigInput{
 		ProbeProvider: egress.ProbeProviderCloudflare, ProbeIntervalSeconds: 900, AssignmentIntervalSeconds: 300,
 		Fallbacks: map[egress.Scope]egressapp.FallbackConfigInput{
-			egress.ScopeBuild: {Mode: egress.FallbackModeFixed, NodeID: fixed.ID},
-			egress.ScopeWeb:   {Mode: egress.FallbackModeDirect},
+			egress.ScopeBuild:        {Mode: egress.FallbackModeFixed, NodeID: fixed.ID},
+			egress.ScopeWeb:          {Mode: egress.FallbackModeDirect},
+			egress.ScopeConsoleAsset: {Mode: egress.FallbackModeDirect},
 		},
 	})
 	if err != nil {
@@ -903,6 +904,9 @@ func TestEgressOperationsConfigPersistsFixedFallback(t *testing.T) {
 	if fallback := saved.FallbackFor(egress.ScopeConsole); fallback.Mode != egress.FallbackModeNone || fallback.NodeID != 0 {
 		t.Fatalf("default Console fallback = %#v", fallback)
 	}
+	if fallback := saved.FallbackFor(egress.ScopeConsoleAsset); fallback.Mode != egress.FallbackModeDirect || fallback.NodeID != 0 {
+		t.Fatalf("saved Console asset fallback = %#v", fallback)
+	}
 
 	stored, err := nodes.GetEgressOperationsConfig(ctx)
 	if err != nil {
@@ -913,6 +917,9 @@ func TestEgressOperationsConfigPersistsFixedFallback(t *testing.T) {
 	}
 	if fallback := stored.FallbackFor(egress.ScopeWeb); fallback.Mode != egress.FallbackModeDirect || fallback.NodeID != 0 {
 		t.Fatalf("stored Web fallback = %#v", fallback)
+	}
+	if fallback := stored.FallbackFor(egress.ScopeConsoleAsset); fallback.Mode != egress.FallbackModeDirect || fallback.NodeID != 0 {
+		t.Fatalf("stored Console asset fallback = %#v", fallback)
 	}
 	if stored.ProbeProvider != egress.ProbeProviderCloudflare {
 		t.Fatalf("stored probe provider = %q", stored.ProbeProvider)
@@ -928,6 +935,9 @@ func TestEgressOperationsConfigPersistsFixedFallback(t *testing.T) {
 	}
 	if fallback := updated.FallbackFor(egress.ScopeWeb); fallback.Mode != egress.FallbackModeDirect {
 		t.Fatalf("sparse update reset Web fallback = %#v", fallback)
+	}
+	if fallback := updated.FallbackFor(egress.ScopeConsoleAsset); fallback.Mode != egress.FallbackModeDirect {
+		t.Fatalf("sparse update reset Console asset fallback = %#v", fallback)
 	}
 }
 

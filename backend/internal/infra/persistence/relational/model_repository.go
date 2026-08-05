@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +22,32 @@ type ModelRepository struct {
 	observer repository.InvalidationObserver
 }
 
+// Console static support is anchored to the reconciled catalog routes instead
+// of the provider name alone. Manual aliases remain supported while an
+// equivalent catalog route exists, and stale aliases stop advertising support
+// as soon as that catalog entry is removed.
+const modelConsoleStaticSupportExpression = `(model_routes.provider = 'grok_console' AND (
+	model_routes.origin = 'catalog'
+	OR EXISTS (
+		SELECT 1 FROM model_routes console_catalog_route
+		WHERE console_catalog_route.provider = model_routes.provider
+			AND console_catalog_route.upstream_model = model_routes.upstream_model
+			AND console_catalog_route.capability = model_routes.capability
+			AND console_catalog_route.origin = 'catalog'
+	)
+))`
+
+const modelConsoleStaticSupportAvailabilityExpression = `(route.provider = 'grok_console' AND (
+	route.origin = 'catalog'
+	OR EXISTS (
+		SELECT 1 FROM model_routes console_catalog_route
+		WHERE console_catalog_route.provider = route.provider
+			AND console_catalog_route.upstream_model = route.upstream_model
+			AND console_catalog_route.capability = route.capability
+			AND console_catalog_route.origin = 'catalog'
+	)
+))`
+
 const availableRoutePredicate = `
 	EXISTS (
 		SELECT 1 FROM provider_accounts account
@@ -34,10 +62,13 @@ const availableRoutePredicate = `
 				)
 				OR (
 					NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id)
-					AND EXISTS (
-						SELECT 1 FROM account_model_capabilities capability
-						WHERE capability.account_id = account.id
-							AND capability.upstream_model = model_routes.upstream_model
+					AND (
+						` + modelConsoleStaticSupportExpression + `
+						OR EXISTS (
+							SELECT 1 FROM account_model_capabilities capability
+							WHERE capability.account_id = account.id
+								AND capability.upstream_model = model_routes.upstream_model
+						)
 					)
 				)
 			)
@@ -110,7 +141,8 @@ const modelRouteAccountCapabilityPredicate = `(
 	OR (
 		NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id)
 		AND (
-			EXISTS (
+			` + modelConsoleStaticSupportExpression + `
+			OR EXISTS (
 				SELECT 1 FROM account_model_capabilities capability
 				WHERE capability.account_id = account.id
 					AND capability.upstream_model = model_routes.upstream_model
@@ -129,7 +161,8 @@ const modelAvailableRouteAccountCapabilityPredicate = `(
 	OR (
 		NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id)
 		AND (
-			EXISTS (
+			` + modelConsoleStaticSupportExpression + `
+			OR EXISTS (
 				SELECT 1 FROM account_model_capabilities capability
 				WHERE capability.account_id = account.id
 					AND capability.upstream_model = model_routes.upstream_model
@@ -173,7 +206,7 @@ func modelTierAvailabilityPredicateWithAvailability(tiers []string, activeOnly b
 
 const (
 	modelProviderPriorityExpression = "CASE model_routes.provider WHEN 'grok_build' THEN 0 WHEN 'grok_web' THEN 1 WHEN 'grok_console' THEN 2 ELSE 3 END"
-	modelSupportSortExpression      = `(SELECT COUNT(*) FROM provider_accounts account WHERE account.provider = model_routes.provider AND account.enabled = TRUE AND account.auth_status = 'active' AND (EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id AND binding.account_id = account.id) OR (NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id) AND (EXISTS (SELECT 1 FROM account_model_capabilities capability WHERE capability.account_id = account.id AND capability.upstream_model = model_routes.upstream_model) OR ` + modelSharedPaidBuildSupportSortExpression + `))))`
+	modelSupportSortExpression      = `(SELECT COUNT(*) FROM provider_accounts account WHERE account.provider = model_routes.provider AND account.enabled = TRUE AND account.auth_status = 'active' AND (EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id AND binding.account_id = account.id) OR (NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id) AND (` + modelConsoleStaticSupportExpression + ` OR EXISTS (SELECT 1 FROM account_model_capabilities capability WHERE capability.account_id = account.id AND capability.upstream_model = model_routes.upstream_model) OR ` + modelSharedPaidBuildSupportSortExpression + `))))`
 	modelSyncedSortExpression       = `(SELECT MAX(sync.last_success_at) FROM provider_accounts account JOIN account_model_sync_states sync ON sync.account_id = account.id WHERE account.provider = model_routes.provider AND account.enabled = TRUE AND account.auth_status = 'active')`
 )
 
@@ -235,6 +268,188 @@ func (r *ModelRepository) List(ctx context.Context, input repository.ModelListQu
 		return nil, 0, err
 	}
 	return values, total, nil
+}
+
+type modelRouteGroupRow struct {
+	Provider      string
+	PublicID      string
+	UpstreamModel string
+	Origin        string
+	ManualRouteID uint64
+	RouteIDs      string
+}
+
+// ListGroups paginates logical model targets before loading their member
+// routes. This keeps capability groups complete under filters and avoids the
+// admin UI fetching and annotating the entire route table.
+func (r *ModelRepository) ListGroups(ctx context.Context, input repository.ModelListQuery) ([]model.RouteGroup, int64, error) {
+	// Route-level metrics must be calculated before grouping. In particular,
+	// PostgreSQL does not allow a correlated metric to reference model_routes.id
+	// from inside a grouped SELECT when id is not itself a grouping key.
+	buildRouteMetricsQuery := func(includeMetrics bool) *gorm.DB {
+		columns := []string{
+			"model_routes.id",
+			"model_routes.provider",
+			"model_routes.public_id",
+			"model_routes.upstream_model",
+			"model_routes.origin",
+			"model_routes.enabled",
+			"model_routes.created_at",
+		}
+		if includeMetrics && input.Page.Sort.Field == "accountSupport" {
+			columns = append(columns, modelSupportSortExpression+" AS support_sort")
+		}
+		if includeMetrics && input.Page.Sort.Field == "lastSyncedAt" {
+			columns = append(columns, modelSyncedSortExpression+" AS last_synced_sort")
+		}
+		query := r.db.db.WithContext(ctx).Model(&modelRouteModel{}).Select(strings.Join(columns, ", "))
+		if search := strings.TrimSpace(input.Page.Search); search != "" {
+			pattern := "%" + strings.ToLower(search) + "%"
+			query = query.Where("LOWER(model_routes.public_id) LIKE ? OR LOWER(model_routes.upstream_model) LIKE ?", pattern, pattern)
+		}
+		if input.Filter.Provider != "" {
+			query = query.Where("model_routes.provider = ?", input.Filter.Provider)
+		}
+		return query
+	}
+
+	manualRouteIDExpression := "CASE WHEN route_metrics.origin = 'manual' THEN route_metrics.id ELSE 0 END"
+	routeIDsExpression := "GROUP_CONCAT(CAST(route_metrics.id AS TEXT), ',')"
+	if r.db.dialect == "postgres" {
+		routeIDsExpression = "STRING_AGG(CAST(route_metrics.id AS TEXT), ',' ORDER BY route_metrics.id)"
+	}
+	enabledCountExpression := "SUM(CASE WHEN route_metrics.enabled = TRUE THEN 1 ELSE 0 END)"
+	groupColumns := "route_metrics.provider, route_metrics.public_id, route_metrics.upstream_model, route_metrics.origin, " + manualRouteIDExpression
+	supportSortExpression := "0"
+	if input.Page.Sort.Field == "accountSupport" {
+		supportSortExpression = "MAX(route_metrics.support_sort)"
+	}
+	lastSyncedSortExpression := "NULL"
+	if input.Page.Sort.Field == "lastSyncedAt" {
+		lastSyncedSortExpression = "MAX(route_metrics.last_synced_sort)"
+	}
+
+	buildQuery := func(includeMetrics bool) *gorm.DB {
+		query := r.db.db.WithContext(ctx).Table("(?) AS route_metrics", buildRouteMetricsQuery(includeMetrics))
+		if includeMetrics {
+			query = query.Select(fmt.Sprintf(`
+				route_metrics.provider,
+				route_metrics.public_id,
+				route_metrics.upstream_model,
+				route_metrics.origin,
+				%s AS manual_route_id,
+				%s AS route_ids,
+				CASE
+					WHEN %s = COUNT(*) THEN 0
+					WHEN %s > 0 THEN 1
+					ELSE 2
+				END AS status_sort,
+				%s AS group_support_sort,
+				%s AS group_last_synced_sort,
+				MAX(route_metrics.created_at) AS created_sort
+			`, manualRouteIDExpression, routeIDsExpression, enabledCountExpression, enabledCountExpression, supportSortExpression, lastSyncedSortExpression))
+		} else {
+			query = query.Select("route_metrics.provider, route_metrics.public_id, route_metrics.upstream_model, route_metrics.origin, " + manualRouteIDExpression + " AS manual_route_id")
+		}
+		query = query.Group(groupColumns)
+		if input.Filter.Enabled != nil {
+			if *input.Filter.Enabled {
+				query = query.Having(enabledCountExpression + " > 0")
+			} else {
+				query = query.Having(enabledCountExpression + " = 0")
+			}
+		}
+		return query
+	}
+
+	var total int64
+	if err := r.db.db.WithContext(ctx).Table("(?) AS grouped_model_routes", buildQuery(false)).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	query := buildQuery(true)
+	spec, direction := stableSortSpec(input.Page.Sort, map[string]sortSpec{
+		"publicId":       {expression: "LOWER(route_metrics.public_id)"},
+		"upstreamModel":  {expression: "LOWER(route_metrics.upstream_model)"},
+		"status":         {expression: "status_sort"},
+		"provider":       {expression: "route_metrics.provider"},
+		"accountSupport": {expression: "group_support_sort", defaultDirection: repository.SortDescending},
+		"lastSyncedAt":   {expression: "group_last_synced_sort", nullsLast: true, defaultDirection: repository.SortDescending},
+	}, sortSpec{expression: "created_sort", defaultDirection: repository.SortDescending})
+	if spec.nullsLast {
+		// PostgreSQL permits a SELECT alias as a plain ORDER BY item, but not
+		// inside another ORDER BY expression. Repeat the aggregate only for the
+		// NULL discriminator and use the alias for the value ordering below.
+		nullSortExpression := spec.expression
+		if input.Page.Sort.Field == "lastSyncedAt" {
+			nullSortExpression = lastSyncedSortExpression
+		}
+		query = query.Order("CASE WHEN " + nullSortExpression + " IS NULL THEN 1 ELSE 0 END ASC")
+	}
+	query = query.Order(spec.expression + " " + direction).
+		Order("route_metrics.provider ASC").
+		Order("LOWER(route_metrics.public_id) ASC").
+		Order("LOWER(route_metrics.upstream_model) ASC").
+		Order("route_metrics.origin ASC").
+		Order("manual_route_id ASC")
+	var groupRows []modelRouteGroupRow
+	if err := query.Offset(input.Page.Offset).Limit(input.Page.Limit).Scan(&groupRows).Error; err != nil {
+		return nil, 0, err
+	}
+
+	groupIDs := make([][]uint64, 0, len(groupRows))
+	allIDs := make([]uint64, 0, len(groupRows)*2)
+	for _, row := range groupRows {
+		ids, err := parseModelRouteGroupIDs(row.RouteIDs)
+		if err != nil {
+			return nil, 0, err
+		}
+		groupIDs = append(groupIDs, ids)
+		allIDs = append(allIDs, ids...)
+	}
+	if len(allIDs) == 0 {
+		return []model.RouteGroup{}, total, nil
+	}
+	var rows []modelRouteModel
+	if err := r.db.db.WithContext(ctx).Where("id IN ?", allIDs).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	values := mapModelRows(rows)
+	if err := r.annotateAvailability(ctx, values); err != nil {
+		return nil, 0, err
+	}
+	byID := make(map[uint64]model.Route, len(values))
+	for _, value := range values {
+		byID[value.ID] = value
+	}
+	groups := make([]model.RouteGroup, 0, len(groupIDs))
+	for _, ids := range groupIDs {
+		members := make([]model.Route, 0, len(ids))
+		for _, id := range ids {
+			if value, ok := byID[id]; ok {
+				members = append(members, value)
+			}
+		}
+		if len(members) == 0 {
+			continue
+		}
+		groups = append(groups, model.RouteGroup{Routes: members})
+	}
+	return groups, total, nil
+}
+
+func parseModelRouteGroupIDs(value string) ([]uint64, error) {
+	parts := strings.Split(strings.TrimSpace(value), ",")
+	ids := make([]uint64, 0, len(parts))
+	for _, part := range parts {
+		id, err := strconv.ParseUint(strings.TrimSpace(part), 10, 64)
+		if err != nil || id == 0 {
+			return nil, fmt.Errorf("模型能力组包含无效路由 ID %q", part)
+		}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+	return ids, nil
 }
 
 func (r *ModelRepository) ListEnabled(ctx context.Context) ([]model.Route, error) {
@@ -462,10 +677,14 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 		if err := tx.Where("provider = ?", provider).Find(&existing).Error; err != nil {
 			return err
 		}
-		publicIDs := make(map[string]bool, len(existing))
+		type managedRouteKey struct {
+			publicID   string
+			capability model.Capability
+		}
+		publicIDs := make(map[managedRouteKey]bool, len(existing))
 		for _, row := range existing {
 			if row.Origin != string(model.OriginManual) {
-				publicIDs[row.PublicID] = true
+				publicIDs[managedRouteKey{publicID: row.PublicID, capability: model.Capability(row.Capability)}] = true
 			}
 		}
 		rows := make([]modelRouteModel, 0, len(upstreamModels))
@@ -475,15 +694,16 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 			if !ok {
 				return fmt.Errorf("Provider %s 发现了无效模型 ID %q", provider, localID)
 			}
-			// Managed routes are idempotent by canonical public_id. Manual targets
-			// with the same name remain independent pool members.
-			if publicIDs[publicID] {
+			// Managed routes are idempotent by canonical public_id and capability.
+			// Manual targets with the same name remain independent pool members.
+			key := managedRouteKey{publicID: publicID, capability: capability}
+			if publicIDs[key] {
 				continue
 			}
 			if err := ensureModelPublicIDNotAlias(tx, publicID, 0); err != nil {
 				return err
 			}
-			publicIDs[publicID] = true
+			publicIDs[key] = true
 			rows = append(rows, modelRouteModel{PublicID: publicID, Provider: string(provider), UpstreamModel: upstreamModel, Capability: string(capability), Origin: string(model.OriginDiscovered), Enabled: true})
 		}
 		if len(rows) > 0 {
@@ -518,6 +738,18 @@ func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (s
 			return upstreamModel, model.CapabilityVideo
 		}
 		return upstreamModel, model.CapabilityResponses
+	case account.ProviderConsole:
+		switch upstreamModel {
+		case "grok-imagine-image", "grok-imagine-image-quality":
+			// The catalog also registers image_edit for the same public model.
+			// Discovery only needs one existing managed capability to remain
+			// idempotent and must never synthesize a Responses route.
+			return upstreamModel, model.CapabilityImage
+		case "grok-imagine-video":
+			return upstreamModel, model.CapabilityVideo
+		default:
+			return upstreamModel, model.CapabilityResponses
+		}
 	default:
 		return upstreamModel, model.CapabilityResponses
 	}
@@ -541,7 +773,7 @@ func (r *ModelRepository) UpsertRoutes(ctx context.Context, values []model.Route
 				return fmt.Errorf("模型路由目录包含无效条目")
 			}
 			var existing modelRouteModel
-			err := tx.Where("public_id = ? AND origin <> ?", value.PublicID, model.OriginManual).First(&existing).Error
+			err := tx.Where("public_id = ? AND capability = ? AND origin <> ?", value.PublicID, value.Capability, model.OriginManual).First(&existing).Error
 			if err == nil {
 				continue
 			}
@@ -591,27 +823,34 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 			return err
 		}
 
-		byPublicID := make(map[string]modelRouteModel, len(existing))
-		byUpstreamNonManual := make(map[string][]modelRouteModel, len(existing))
+		type catalogRouteKey struct {
+			value      string
+			capability model.Capability
+		}
+		byPublicID := make(map[catalogRouteKey]modelRouteModel, len(existing))
+		byUpstreamNonManual := make(map[catalogRouteKey][]modelRouteModel, len(existing))
 		for _, row := range existing {
 			if row.Origin == string(model.OriginManual) {
 				continue
 			}
-			if current, exists := byPublicID[row.PublicID]; !exists || row.ID < current.ID {
-				byPublicID[row.PublicID] = row
+			publicKey := catalogRouteKey{value: row.PublicID, capability: model.Capability(row.Capability)}
+			if current, exists := byPublicID[publicKey]; !exists || row.ID < current.ID {
+				byPublicID[publicKey] = row
 			}
-			byUpstreamNonManual[row.UpstreamModel] = append(byUpstreamNonManual[row.UpstreamModel], row)
+			upstreamKey := catalogRouteKey{value: row.UpstreamModel, capability: model.Capability(row.Capability)}
+			byUpstreamNonManual[upstreamKey] = append(byUpstreamNonManual[upstreamKey], row)
 		}
 		matched := make(map[int]modelRouteModel, len(values))
 		usedIDs := make(map[uint64]bool, len(values))
 		for index, value := range values {
-			if row, ok := byPublicID[value.PublicID]; ok && !usedIDs[row.ID] {
+			publicKey := catalogRouteKey{value: value.PublicID, capability: value.Capability}
+			if row, ok := byPublicID[publicKey]; ok && !usedIDs[row.ID] {
 				matched[index] = row
 				usedIDs[row.ID] = true
 				continue
 			}
 			// 仅回退匹配非手动路由，避免把手动别名路由改写成目录项。
-			candidates := byUpstreamNonManual[value.UpstreamModel]
+			candidates := byUpstreamNonManual[catalogRouteKey{value: value.UpstreamModel, capability: value.Capability}]
 			var chosen modelRouteModel
 			found := false
 			for _, candidate := range candidates {
@@ -899,7 +1138,7 @@ func (r *ModelRepository) annotateAvailability(ctx context.Context, values []mod
 		SELECT route.id AS route_id,
 			CASE WHEN COUNT(DISTINCT binding.account_id) > 0
 				THEN COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND binding.account_id IS NOT NULL THEN account.id END)
-				ELSE COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND (capability.account_id IS NOT NULL OR `+modelSharedPaidBuildSupportAvailabilityExpression+`) THEN account.id END)
+				ELSE COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND (`+modelConsoleStaticSupportAvailabilityExpression+` OR capability.account_id IS NOT NULL OR `+modelSharedPaidBuildSupportAvailabilityExpression+`) THEN account.id END)
 			END AS supported_accounts,
 			CASE WHEN COUNT(DISTINCT binding.account_id) > 0
 				THEN COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND binding.account_id IS NOT NULL AND sync.last_success_at IS NOT NULL THEN account.id END)

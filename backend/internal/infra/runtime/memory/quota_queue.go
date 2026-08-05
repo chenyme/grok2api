@@ -61,6 +61,12 @@ func (q *QuotaRecoveryQueue) ScheduleQuotaRecovery(_ context.Context, value acco
 	defer q.mu.Unlock()
 	key := quotaEventKey(value)
 	if existing := q.items[key]; existing != nil {
+		// A recovery worker owns a claimed event until it acknowledges or
+		// reschedules it. Concurrent quota refreshes must not clear that claim;
+		// the worker already has the authoritative probe result in flight.
+		if existing.value.ClaimToken != "" {
+			return nil
+		}
 		value.ClaimToken = ""
 		existing.value = value
 		heap.Fix(&q.heap, existing.index)
@@ -91,6 +97,21 @@ func (q *QuotaRecoveryQueue) EnsureQuotaRecovery(_ context.Context, value accoun
 	item := &quotaItem{value: value}
 	heap.Push(&q.heap, item)
 	q.items[key] = item
+	return nil
+}
+
+func (q *QuotaRecoveryQueue) CancelQuotaRecovery(_ context.Context, accountID uint64, mode string) error {
+	if accountID == 0 || mode == "" {
+		return fmt.Errorf("额度恢复事件无效")
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	item := q.items[fmt.Sprintf("%d:%s", accountID, mode)]
+	if item == nil || item.value.ClaimToken != "" {
+		return nil
+	}
+	heap.Remove(&q.heap, item.index)
+	delete(q.items, quotaEventKey(item.value))
 	return nil
 }
 

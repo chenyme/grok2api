@@ -36,7 +36,8 @@ func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
 	if trimmed == "" {
 		return nil, fmt.Errorf("账号文件中没有 Grok Console 账号")
 	}
-	if !strings.HasPrefix(trimmed, "{") {
+	// 「[」为 JSON 保留前缀：顶层裸数组走 JSON 解析，避免被当成纯文本 token 静默导入。
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
 		return parsePlainTextCredentials(trimmed)
 	}
 	entries, err := provider.DecodeCredentialJSONEntries[importEntry](data, string(account.ProviderConsole), maxImportAccounts)

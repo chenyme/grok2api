@@ -162,6 +162,15 @@ func TestCanceledRequestDoesNotInvalidateDirectClient(t *testing.T) {
 	}
 }
 
+func TestConsoleAssetForbiddenDoesNotPenalizeProxy(t *testing.T) {
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "console", Scope: domain.ScopeConsole, Enabled: true, Health: 1}}
+	manager := NewManager(repository, nil)
+	manager.FeedbackForScope(context.Background(), domain.ScopeConsoleAsset, 1, http.StatusForbidden, nil)
+	if repository.updates != 0 || repository.node.Health != 1 || repository.node.CooldownUntil != nil {
+		t.Fatalf("Console asset object rejection changed proxy health: updates=%d node=%#v", repository.updates, repository.node)
+	}
+}
+
 func TestProbeEgressNodeLogsSuccessWithoutProxyCredentials(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
@@ -1003,6 +1012,110 @@ func TestAcquireCredentialUsesExplicitBoundNode(t *testing.T) {
 	defer lease.Release()
 	if lease.NodeID != 2 || lease.NodeName != "bound-node" {
 		t.Fatalf("bound lease = node %d (%q)", lease.NodeID, lease.NodeName)
+	}
+}
+
+func TestConsoleAssetCredentialPrefersDedicatedNodeWithoutCookies(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptProxy := func(raw string) string {
+		t.Helper()
+		value, encryptErr := cipher.Encrypt(raw)
+		if encryptErr != nil {
+			t.Fatal(encryptErr)
+		}
+		return value
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
+		{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1, EncryptedProxyURL: encryptProxy("http://web.example:8080")},
+		{ID: 2, Name: "console", Scope: domain.ScopeConsole, Enabled: true, Health: 1, EncryptedProxyURL: encryptProxy("http://console.example:8080")},
+		{ID: 3, Name: "console-assets", Scope: domain.ScopeConsoleAsset, Enabled: true, Health: 1, EncryptedProxyURL: encryptProxy("http://assets.example:8080"), EncryptedCloudflareCookie: "damaged-node-cookie", UserAgent: "asset-agent"},
+	}}, cipher)
+	lease, err := manager.AcquireCredential(context.Background(), domain.ScopeConsoleAsset, accountdomain.Credential{
+		ID: 42, Provider: accountdomain.ProviderConsole, EncryptedCloudflareCookie: "damaged-account-cookie",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.NodeID != 3 || lease.Scope != domain.ScopeConsoleAsset || lease.UserAgent != "asset-agent" {
+		t.Fatalf("asset lease = %#v", lease)
+	}
+	if lease.CFCookies != "" {
+		t.Fatalf("anonymous Console asset lease exposed cookies: %q", lease.CFCookies)
+	}
+}
+
+func TestConsoleAssetCredentialPreservesExplicitConsoleBinding(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundProxy, err := cipher.Encrypt("http://bound-console.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetProxy, err := cipher.Encrypt("http://assets.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
+		{ID: 2, Name: "bound-console", Scope: domain.ScopeConsole, Enabled: true, Health: 1, EncryptedProxyURL: boundProxy},
+		{ID: 3, Name: "console-assets", Scope: domain.ScopeConsoleAsset, Enabled: true, Health: 1, EncryptedProxyURL: assetProxy},
+	}}, cipher)
+	lease, err := manager.AcquireCredential(context.Background(), domain.ScopeConsoleAsset, accountdomain.Credential{
+		ID: 42, Provider: accountdomain.ProviderConsole, EgressNodeID: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.NodeID != 2 || lease.NodeName != "bound-console" {
+		t.Fatalf("explicit Console binding was not preserved: node=%d name=%q", lease.NodeID, lease.NodeName)
+	}
+}
+
+func TestConsoleAssetClientDoesNotEvictPrimaryConsoleClient(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL, err := cipher.Encrypt("http://console.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, err := cipher.Encrypt("cf_clearance=console")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{
+		ID: 2, Name: "console", Scope: domain.ScopeConsole, Enabled: true, Health: 1, EncryptedProxyURL: proxyURL,
+	}}}, cipher)
+	credential := accountdomain.Credential{
+		ID: 42, Provider: accountdomain.ProviderConsole, EgressNodeID: 2, EncryptedCloudflareCookie: cookie,
+	}
+	primary, err := manager.AcquireCredential(context.Background(), domain.ScopeConsole, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primary.Release()
+	asset, err := manager.AcquireCredential(context.Background(), domain.ScopeConsoleAsset, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer asset.Release()
+	primaryAgain, err := manager.AcquireCredential(context.Background(), domain.ScopeConsole, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primaryAgain.Release()
+	if primary.client != primaryAgain.client {
+		t.Fatal("Console asset download evicted the primary Console connection pool")
+	}
+	if primary.client == asset.client || len(manager.clients) != 2 {
+		t.Fatalf("primary and anonymous asset clients were not isolated: cached=%d", len(manager.clients))
 	}
 }
 

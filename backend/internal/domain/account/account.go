@@ -266,7 +266,7 @@ const (
 	QuotaSourceUpstream  QuotaSource = "upstream"
 )
 
-// QuotaWindow 表示 Grok Web 单个模式的请求额度窗口。
+// QuotaWindow 表示 Provider 单个模式的额度窗口。
 type QuotaWindow struct {
 	AccountID     uint64
 	Mode          string

@@ -1,9 +1,9 @@
-import type { ModelRouteDTO } from "@/entities/model/types";
+import type { ModelRouteDTO, ModelRouteGroupDTO } from "@/entities/model/types";
 import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import { createObjectDecoder, createPaginatedDecoder, decodeBooleanResult, decodeCountResult, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isString } from "@/shared/api/decoder";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
-type ListModelsInput = {
+export type ListModelsInput = {
   page: number;
   pageSize: number;
   search?: string;
@@ -40,6 +40,12 @@ const decodeModelRoute = createObjectDecoder<ModelRouteDTO>("model route", {
   syncedAccounts: isNumber, totalAccounts: isNumber, capabilityKnown: isBoolean, available: isBoolean, lastSyncedAt: isOptional(isString),
 });
 const decodeModelPage = createPaginatedDecoder<ModelRouteDTO>(modelRouteValidator);
+const modelRouteGroupValidator = hasShape({
+  key: isString,
+  routes: (value) => Array.isArray(value) && value.length > 0 && value.every(modelRouteValidator),
+  endpointCapabilities: isArrayOf(isOneOf("completions", "responses", "messages", "image", "image_edit", "video")),
+});
+const decodeModelGroupPage = createPaginatedDecoder<ModelRouteGroupDTO>(modelRouteGroupValidator);
 const modelAccountValidator = hasShape({ id: isString, name: isString });
 const decodeModelAccounts = createObjectDecoder<{ items: ModelAccountOptionDTO[] }>("model accounts", { items: isArrayOf(modelAccountValidator) });
 
@@ -56,6 +62,18 @@ export function listModels(input: ListModelsInput): Promise<PaginatedDTO<ModelRo
     query.set("sortOrder", input.sortOrder);
   }
   return apiRequest(`/api/admin/v1/models?${query}`, {}, decodeModelPage);
+}
+
+export function listModelGroups(input: ListModelsInput): Promise<PaginatedDTO<ModelRouteGroupDTO>> {
+  const query = new URLSearchParams({ page: String(input.page), pageSize: String(input.pageSize) });
+  if (input.search) query.set("search", input.search);
+  if (input.status) query.set("status", input.status);
+  if (input.provider) query.set("provider", input.provider);
+  if (input.sortBy && input.sortOrder) {
+    query.set("sortBy", input.sortBy);
+    query.set("sortOrder", input.sortOrder);
+  }
+  return apiRequest(`/api/admin/v1/models/groups?${query}`, {}, decodeModelGroupPage);
 }
 
 export function syncModels(): Promise<{ synced: number }> {

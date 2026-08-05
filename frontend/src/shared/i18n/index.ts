@@ -79,7 +79,7 @@ const resources = {
         name: "Grok Console",
         type: "Console",
         accountsDescription: "分别管理 Grok Build OAuth、Grok Web SSO 与 Grok Console SSO 号池、健康状态、并发和额度。",
-        egressDescription: "节点按 Grok Build、Grok Web、Grok Console 或 Web 资源作用域独立管理代理与健康状态。代理地址和 Cloudflare Cookie 仅写入。",
+        egressDescription: "节点按 Grok Build、Grok Web、Grok Console、Web 资源或 Console 资源作用域独立管理代理与健康状态。代理地址和 Cloudflare Cookie 仅写入。",
         egressDialogDescription: "配置节点作用域、代理地址和浏览器身份。",
         syncAllDescription: "将同步所有已启用 Grok Console 账号的额度状态。",
         importFile: "导入账号文件",
@@ -89,6 +89,7 @@ const resources = {
         availableBreakdown: "Build {{build}} · Web {{web}} · Console {{console}} 可用",
         baseURL: "上游地址",
         chatTimeout: "聊天超时",
+        recoveryProbeAt: "下次主动恢复探测 {{time}}",
       },
       accountCredential: {
         label: "凭据续期",
@@ -1214,7 +1215,7 @@ const resources = {
         name: "Grok Console",
         type: "Console",
         accountsDescription: "Manage separate Grok Build OAuth, Grok Web SSO, and Grok Console SSO pools, including health, concurrency, and quotas.",
-        egressDescription: "Manage proxy and health independently for Grok Build, Grok Web, Grok Console, and Web asset scopes. Proxy URLs and Cloudflare cookies are write-only.",
+        egressDescription: "Manage proxy and health independently for Grok Build, Grok Web, Grok Console, Web assets, and Console assets. Proxy URLs and Cloudflare cookies are write-only.",
         egressDialogDescription: "Configure the node scope, proxy address, and browser identity.",
         syncAllDescription: "Sync quota state for every enabled Grok Console account.",
         importFile: "Import account files",
@@ -1224,6 +1225,7 @@ const resources = {
         availableBreakdown: "Build {{build}} · Web {{web}} · Console {{console}} available",
         baseURL: "Upstream URL",
         chatTimeout: "Chat timeout",
+        recoveryProbeAt: "Next active recovery probe {{time}}",
       },
       accountCredential: {
         label: "Credential renewal",
@@ -1668,9 +1670,45 @@ const resources = {
   },
 } as const;
 
+Object.assign(resources["zh-CN"].translation.models as unknown as Record<string, string>, {
+  capability: "接口能力",
+  capabilityConversation: "对话",
+  capabilityCompletions: "Completions",
+  capabilityResponses: "Responses",
+  capabilityMessages: "Messages",
+  capabilityImage: "Image",
+  capabilityImageEdit: "Image Edit",
+  capabilityVideo: "Video",
+  automaticAccounts: "自动账号池",
+  mixedAccounts: "混合账号池",
+  partiallyEnabled: "部分启用",
+  editCapability: "编辑 {{capability}}",
+  deleteGroupDescription: "这将删除 {{name}} 的全部 {{count}} 项接口能力及其客户端密钥权限。后续目录同步可能重新创建仍受上游支持的能力。",
+  bindAccountsDescription: "开启后仅通过指定账号路由；关闭后由对应 Provider 的可用账号池自动调度。Console 内置模型无需逐账号硬绑定。",
+});
+Object.assign(resources.en.translation.models as unknown as Record<string, string>, {
+  capability: "Endpoint capability",
+  capabilityConversation: "Conversation",
+  capabilityCompletions: "Completions",
+  capabilityResponses: "Responses",
+  capabilityMessages: "Messages",
+  capabilityImage: "Image",
+  capabilityImageEdit: "Image Edit",
+  capabilityVideo: "Video",
+  automaticAccounts: "Automatic pool",
+  mixedAccounts: "Mixed account pools",
+  partiallyEnabled: "Partially enabled",
+  editCapability: "Edit {{capability}}",
+  deleteGroupDescription: "This removes all {{count}} endpoint capabilities for {{name}} and their client-key permissions. A later catalog sync may recreate capabilities that the upstream still supports.",
+  bindAccountsDescription: "When enabled, route only through the selected accounts. Otherwise, schedule from the provider's eligible account pool automatically. Built-in Console models do not require per-account bindings.",
+});
+
 // Kept separate from the legacy one-line settings resources so proxy
 // operations can evolve without making that catalog harder to review.
 Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Record<string, string>, {
+  description: "节点按 Grok Build、Grok Web、Grok Console、Web 资源和 Console 资源独立管理代理与健康状态。Console 资源节点仅使用代理与 User-Agent，不发送账号或 Cloudflare Cookie。代理地址和 Cookie 仅写入。",
+  dialogDescription: "配置节点作用域、代理地址和浏览器身份；Console 资源节点用于匿名媒体下载，不使用 Clearance Cookie。",
+  scopeConsoleAsset: "Grok Console（仅资源）",
   health: "请求健康",
   healthHelp: "由真实 Grok 请求的成功、连接失败和反爬拒绝累计得出，与连通探测独立。",
   probe: "连通探测",
@@ -1680,6 +1718,9 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
   probeProviderHelp: "选择 IPv4 与 IPv6 连通探测使用的固定服务。Cloudflare 为默认服务，IPinfo 可手动切换。",
 });
 Object.assign(resources.en.translation.settings.egress as unknown as Record<string, string>, {
+  description: "Nodes manage proxy and health independently for Grok Build, Grok Web, Grok Console, Web assets, and Console assets. Console asset nodes use only the proxy and User-Agent and never send account or Cloudflare cookies. Proxy URLs and cookies are write-only.",
+  dialogDescription: "Configure the node scope, proxy address, and browser identity. Console asset nodes are for anonymous media downloads and do not use clearance cookies.",
+  scopeConsoleAsset: "Grok Console (assets only)",
   accounts: "Bound", health: "Request health", healthHelp: "Accumulated from real Grok request successes, transport failures, and anti-bot rejections; independent of the connectivity probe.",
   addManually: "Form entry",
   probe: "Connectivity probe", probeHelp: "The latest independent IPv4 and IPv6 checks through the provider recorded with each result. This only confirms access to the IP echo endpoint; it does not guarantee Grok upstream availability or represent real request health.", probeLatency: "Probe latency: {{latency}} ms", probeProvider: "IP echo service", probeProviderHelp: "Choose the fixed service used for IPv4 and IPv6 connectivity checks. Cloudflare is the default and IPinfo remains selectable.", healthy: "Healthy", unhealthy: "Unhealthy", notTested: "Not tested", test: "Test proxy", testedOne: "Proxy test completed",
@@ -1706,6 +1747,7 @@ Object.assign(resources.en.translation.settings.egress as unknown as Record<stri
   fallbackWebHelp: "Fallback used when no Grok Web primary egress is available.",
   fallbackConsoleHelp: "Fallback used when no Grok Console primary egress is available.",
   fallbackWebAssetHelp: "Fallback used when no Grok Web asset egress is available.",
+  fallbackConsoleAssetHelp: "Fallback used when no Grok Console asset egress is available; Console and Web nodes remain compatible secondary pools.",
   fallbackMode: "Fallback mode for {{scope}}", fallbackNone: "Do not fall back", fallbackDirect: "Local direct", fallbackFixed: "Fixed proxy",
   fallbackNode: "Fixed fallback proxy for {{scope}}", fallbackNodeUnavailable: "Configured node is unavailable",
   refreshInterval: "Subscription refresh interval (seconds)", proxyList: "Proxy list",
@@ -1768,6 +1810,7 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
   fallbackWebHelp: "Grok Web 没有可用主出口时使用的回退方式。",
   fallbackConsoleHelp: "Grok Console 没有可用主出口时使用的回退方式。",
   fallbackWebAssetHelp: "Grok Web 资源请求没有可用出口时使用的回退方式。",
+  fallbackConsoleAssetHelp: "Grok Console 资源请求没有可用出口时使用的回退方式；Console 与 Web 节点仍可作为兼容的次级池。",
   fallbackMode: "{{scope}} 的回退方式",
   fallbackNone: "不回退",
   fallbackDirect: "本地直连",
