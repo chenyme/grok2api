@@ -88,6 +88,7 @@ export function ModelsPage() {
       return updateModel(editing.id, { publicId: input.publicId, enabled: input.enabled, accountIds: input.accountIds });
     },
     onSuccess: () => {
+      setSelected(new Set());
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       setEditing(null);
       toast.success(t(editing === "new" ? "models.created" : "models.updated"));
@@ -101,6 +102,7 @@ export function ModelsPage() {
       else await deleteModels(routes.map((route) => route.id));
     },
     onSuccess: () => {
+      setSelected(new Set());
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       setDeleting(null);
       setPage(1);
@@ -135,6 +137,8 @@ export function ModelsPage() {
   const syncMutation = useMutation({
     mutationFn: syncModels,
     onSuccess: (result) => {
+      setSelected(new Set());
+      setPage(1);
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       toast.success(t("models.synced", { count: result.synced }));
     },
@@ -207,6 +211,7 @@ export function ModelsPage() {
   function changeSort(field: string, initialOrder: SortOrder): void {
     setSort((current) => nextTableSort(current, field, initialOrder));
     setPage(1);
+    setSelected(new Set());
   }
 
   return (

@@ -20,8 +20,8 @@ import (
 
 const defaultModelSyncWorkers = 25
 const syncFailurePersistTimeout = 5 * time.Second
-const maxModelCapabilitiesPerGroup = 5
-const maxModelBatchSize = repository.MaxPageSize * maxModelCapabilitiesPerGroup
+
+var maxModelBatchSize = repository.MaxPageSize * len(modeldomain.Capabilities())
 
 var (
 	ErrInvalidFilter = errors.New("模型筛选条件无效")

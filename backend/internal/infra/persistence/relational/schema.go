@@ -69,6 +69,7 @@ var schemaIndexes = []string{
 	// manual rows may still share a public ID and form a route-target pool.
 	"CREATE UNIQUE INDEX IF NOT EXISTS uidx_model_routes_managed_public_capability ON model_routes(public_id, capability) WHERE origin IN ('catalog', 'discovered')",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_provider_upstream ON model_routes(provider, upstream_model)",
+	"CREATE INDEX IF NOT EXISTS idx_model_routes_grouping ON model_routes(provider, public_id, upstream_model, origin, id)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_created_id ON model_routes(created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_enabled ON model_routes(enabled, public_id, id)",
 	"CREATE INDEX IF NOT EXISTS idx_model_route_aliases_route ON model_route_aliases(model_route_id, alias)",

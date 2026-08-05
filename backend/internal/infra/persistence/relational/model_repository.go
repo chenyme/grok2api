@@ -283,45 +283,26 @@ type modelRouteGroupRow struct {
 // routes. This keeps capability groups complete under filters and avoids the
 // admin UI fetching and annotating the entire route table.
 func (r *ModelRepository) ListGroups(ctx context.Context, input repository.ModelListQuery) ([]model.RouteGroup, int64, error) {
-	manualRouteIDExpression := "CASE WHEN model_routes.origin = 'manual' THEN model_routes.id ELSE 0 END"
-	routeIDsExpression := "GROUP_CONCAT(CAST(model_routes.id AS TEXT), ',')"
-	if r.db.dialect == "postgres" {
-		routeIDsExpression = "STRING_AGG(CAST(model_routes.id AS TEXT), ',' ORDER BY model_routes.id)"
-	}
-	enabledCountExpression := "SUM(CASE WHEN model_routes.enabled = TRUE THEN 1 ELSE 0 END)"
-	groupColumns := "model_routes.provider, model_routes.public_id, model_routes.upstream_model, model_routes.origin, " + manualRouteIDExpression
-	supportSortExpression := "0"
-	if input.Page.Sort.Field == "accountSupport" {
-		supportSortExpression = "MAX(" + modelSupportSortExpression + ")"
-	}
-	lastSyncedSortExpression := "NULL"
-	if input.Page.Sort.Field == "lastSyncedAt" {
-		lastSyncedSortExpression = "MAX(" + modelSyncedSortExpression + ")"
-	}
-
-	buildQuery := func(includeMetrics bool) *gorm.DB {
-		query := r.db.db.WithContext(ctx).Model(&modelRouteModel{})
-		if includeMetrics {
-			query = query.Select(fmt.Sprintf(`
-				model_routes.provider,
-				model_routes.public_id,
-				model_routes.upstream_model,
-				model_routes.origin,
-				%s AS manual_route_id,
-				%s AS route_ids,
-				CASE
-					WHEN %s = COUNT(*) THEN 0
-					WHEN %s > 0 THEN 1
-					ELSE 2
-				END AS status_sort,
-				%s AS support_sort,
-				%s AS last_synced_sort,
-				MAX(model_routes.created_at) AS created_sort
-			`, manualRouteIDExpression, routeIDsExpression, enabledCountExpression, enabledCountExpression, supportSortExpression, lastSyncedSortExpression))
-		} else {
-			query = query.Select("model_routes.provider, model_routes.public_id, model_routes.upstream_model, model_routes.origin, " + manualRouteIDExpression + " AS manual_route_id")
+	// Route-level metrics must be calculated before grouping. In particular,
+	// PostgreSQL does not allow a correlated metric to reference model_routes.id
+	// from inside a grouped SELECT when id is not itself a grouping key.
+	buildRouteMetricsQuery := func(includeMetrics bool) *gorm.DB {
+		columns := []string{
+			"model_routes.id",
+			"model_routes.provider",
+			"model_routes.public_id",
+			"model_routes.upstream_model",
+			"model_routes.origin",
+			"model_routes.enabled",
+			"model_routes.created_at",
 		}
-		query = query.Group(groupColumns)
+		if includeMetrics && input.Page.Sort.Field == "accountSupport" {
+			columns = append(columns, modelSupportSortExpression+" AS support_sort")
+		}
+		if includeMetrics && input.Page.Sort.Field == "lastSyncedAt" {
+			columns = append(columns, modelSyncedSortExpression+" AS last_synced_sort")
+		}
+		query := r.db.db.WithContext(ctx).Model(&modelRouteModel{}).Select(strings.Join(columns, ", "))
 		if search := strings.TrimSpace(input.Page.Search); search != "" {
 			pattern := "%" + strings.ToLower(search) + "%"
 			query = query.Where("LOWER(model_routes.public_id) LIKE ? OR LOWER(model_routes.upstream_model) LIKE ?", pattern, pattern)
@@ -329,6 +310,48 @@ func (r *ModelRepository) ListGroups(ctx context.Context, input repository.Model
 		if input.Filter.Provider != "" {
 			query = query.Where("model_routes.provider = ?", input.Filter.Provider)
 		}
+		return query
+	}
+
+	manualRouteIDExpression := "CASE WHEN route_metrics.origin = 'manual' THEN route_metrics.id ELSE 0 END"
+	routeIDsExpression := "GROUP_CONCAT(CAST(route_metrics.id AS TEXT), ',')"
+	if r.db.dialect == "postgres" {
+		routeIDsExpression = "STRING_AGG(CAST(route_metrics.id AS TEXT), ',' ORDER BY route_metrics.id)"
+	}
+	enabledCountExpression := "SUM(CASE WHEN route_metrics.enabled = TRUE THEN 1 ELSE 0 END)"
+	groupColumns := "route_metrics.provider, route_metrics.public_id, route_metrics.upstream_model, route_metrics.origin, " + manualRouteIDExpression
+	supportSortExpression := "0"
+	if input.Page.Sort.Field == "accountSupport" {
+		supportSortExpression = "MAX(route_metrics.support_sort)"
+	}
+	lastSyncedSortExpression := "NULL"
+	if input.Page.Sort.Field == "lastSyncedAt" {
+		lastSyncedSortExpression = "MAX(route_metrics.last_synced_sort)"
+	}
+
+	buildQuery := func(includeMetrics bool) *gorm.DB {
+		query := r.db.db.WithContext(ctx).Table("(?) AS route_metrics", buildRouteMetricsQuery(includeMetrics))
+		if includeMetrics {
+			query = query.Select(fmt.Sprintf(`
+				route_metrics.provider,
+				route_metrics.public_id,
+				route_metrics.upstream_model,
+				route_metrics.origin,
+				%s AS manual_route_id,
+				%s AS route_ids,
+				CASE
+					WHEN %s = COUNT(*) THEN 0
+					WHEN %s > 0 THEN 1
+					ELSE 2
+				END AS status_sort,
+				%s AS group_support_sort,
+				%s AS group_last_synced_sort,
+				MAX(route_metrics.created_at) AS created_sort
+			`, manualRouteIDExpression, routeIDsExpression, enabledCountExpression, enabledCountExpression, supportSortExpression, lastSyncedSortExpression))
+		} else {
+			query = query.Select("route_metrics.provider, route_metrics.public_id, route_metrics.upstream_model, route_metrics.origin, " + manualRouteIDExpression + " AS manual_route_id")
+		}
+		query = query.Group(groupColumns)
 		if input.Filter.Enabled != nil {
 			if *input.Filter.Enabled {
 				query = query.Having(enabledCountExpression + " > 0")
@@ -346,21 +369,28 @@ func (r *ModelRepository) ListGroups(ctx context.Context, input repository.Model
 
 	query := buildQuery(true)
 	spec, direction := stableSortSpec(input.Page.Sort, map[string]sortSpec{
-		"publicId":       {expression: "LOWER(model_routes.public_id)"},
-		"upstreamModel":  {expression: "LOWER(model_routes.upstream_model)"},
+		"publicId":       {expression: "LOWER(route_metrics.public_id)"},
+		"upstreamModel":  {expression: "LOWER(route_metrics.upstream_model)"},
 		"status":         {expression: "status_sort"},
-		"provider":       {expression: "model_routes.provider"},
-		"accountSupport": {expression: "support_sort", defaultDirection: repository.SortDescending},
-		"lastSyncedAt":   {expression: "last_synced_sort", nullsLast: true, defaultDirection: repository.SortDescending},
+		"provider":       {expression: "route_metrics.provider"},
+		"accountSupport": {expression: "group_support_sort", defaultDirection: repository.SortDescending},
+		"lastSyncedAt":   {expression: "group_last_synced_sort", nullsLast: true, defaultDirection: repository.SortDescending},
 	}, sortSpec{expression: "created_sort", defaultDirection: repository.SortDescending})
 	if spec.nullsLast {
-		query = query.Order("CASE WHEN " + spec.expression + " IS NULL THEN 1 ELSE 0 END ASC")
+		// PostgreSQL permits a SELECT alias as a plain ORDER BY item, but not
+		// inside another ORDER BY expression. Repeat the aggregate only for the
+		// NULL discriminator and use the alias for the value ordering below.
+		nullSortExpression := spec.expression
+		if input.Page.Sort.Field == "lastSyncedAt" {
+			nullSortExpression = lastSyncedSortExpression
+		}
+		query = query.Order("CASE WHEN " + nullSortExpression + " IS NULL THEN 1 ELSE 0 END ASC")
 	}
 	query = query.Order(spec.expression + " " + direction).
-		Order("model_routes.provider ASC").
-		Order("LOWER(model_routes.public_id) ASC").
-		Order("LOWER(model_routes.upstream_model) ASC").
-		Order("model_routes.origin ASC").
+		Order("route_metrics.provider ASC").
+		Order("LOWER(route_metrics.public_id) ASC").
+		Order("LOWER(route_metrics.upstream_model) ASC").
+		Order("route_metrics.origin ASC").
 		Order("manual_route_id ASC")
 	var groupRows []modelRouteGroupRow
 	if err := query.Offset(input.Page.Offset).Limit(input.Page.Limit).Scan(&groupRows).Error; err != nil {
