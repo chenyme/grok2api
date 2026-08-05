@@ -96,7 +96,7 @@ func (a *Adapter) prepareChatAttachments(ctx context.Context, cfg Config, lease 
 			return nil, err
 		}
 		if uploaded.ID == "" {
-			return nil, fmt.Errorf("上传附件成功但上游未返回 fileMetadataId")
+			return nil, fmt.Errorf("上传附件成功但上游未返回可用附件标识")
 		}
 		attachments = append(attachments, uploaded.ID)
 	}

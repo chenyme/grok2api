@@ -246,7 +246,7 @@ func isRequestScopedForbidden(upstreamCode, text string) bool {
 }
 
 func isDPoPProofRequired(upstreamCode string) bool {
-	return normalizeFailureCode(upstreamCode) == "unauthorized_dpop_required"
+	return provider.IsDPoPProofRequiredText(upstreamCode)
 }
 
 func isDefinitiveAccountBlock(text string) bool {

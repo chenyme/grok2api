@@ -45,13 +45,13 @@ func TestStatsigSignerSendsMethodPathAndMetaContent(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Method != "POST" || payload.Path != "/rest/app-chat/conversations/id/responses" || payload.Environment.MetaContent != "meta-value" {
+		if payload.Method != "POST" || payload.Path != "/rest/app-chat/conversations/new" || payload.Environment.MetaContent != "meta-value" {
 			t.Fatalf("payload=%#v", payload)
 		}
 		body, _ := json.Marshal(map[string]string{"x-statsig-id": encoded})
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: http.Header{}}, nil
 	})}
-	value, err := signer.requestSignature(context.Background(), "https://signer.example/sign", "post", "/rest/app-chat/conversations/id/responses", "meta-value")
+	value, err := signer.requestSignature(context.Background(), "https://signer.example/sign", "post", "/rest/app-chat/conversations/new", "meta-value")
 	if err != nil || value != encoded {
 		t.Fatalf("value=%q err=%v", value, err)
 	}

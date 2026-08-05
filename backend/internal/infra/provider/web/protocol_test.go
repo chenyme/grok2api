@@ -50,14 +50,30 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 		publicIDs[value.PublicID] = struct{}{}
 		upstreamIDs[value.UpstreamModel] = struct{}{}
 	}
-	for _, required := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-edit", "grok-imagine-video"} {
+	for _, required := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-lite", "grok-imagine-image-quality-lite", "grok-imagine-image-edit", "grok-imagine-video"} {
 		if _, exists := publicIDs[required]; !exists {
 			t.Fatalf("missing supported model: %s", required)
 		}
 	}
-	for _, removed := range []string{"grok-imagine-image-lite", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
+	for _, removed := range []string{"grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
 		if _, exists := publicIDs[removed]; exists {
 			t.Fatalf("obsolete image model remains: %s", removed)
+		}
+	}
+}
+
+func TestWebImageLitePublicNamesPreserveGatewayModels(t *testing.T) {
+	tests := map[string]string{
+		"grok-imagine-image":         "grok-imagine-image-lite",
+		"grok-imagine-image-quality": "grok-imagine-image-quality-lite",
+	}
+	for upstreamModel, publicID := range tests {
+		spec, ok := Resolve(upstreamModel)
+		if !ok {
+			t.Fatalf("missing upstream model %s", upstreamModel)
+		}
+		if spec.PublicID != publicID || spec.UpstreamModel != upstreamModel {
+			t.Fatalf("resolved %s as %#v", upstreamModel, spec)
 		}
 	}
 }
@@ -96,31 +112,6 @@ func TestWebChatPricingUsesGrok45(t *testing.T) {
 			t.Fatalf("media pricing model for %s = %q", upstreamModel, got)
 		}
 	}
-}
-
-func TestBuildWebChatPayloadMatchesCurrentConversationProtocol(t *testing.T) {
-	payload := buildWebChatPayload("你好", "auto", []string{"file_1"})
-	if payload["modeId"] != "auto" || payload["temporary"] != true || payload["disableMemory"] != true {
-		t.Fatalf("payload protocol fields = %#v", payload)
-	}
-	attachments, ok := payload["fileAttachments"].([]string)
-	if !ok || !slices.Equal(attachments, []string{"file_1"}) {
-		t.Fatalf("fileAttachments = %#v", payload["fileAttachments"])
-	}
-	if _, ok := payload["disabledConnectorIds"]; !ok {
-		t.Fatal("payload missing disabledConnectorIds")
-	}
-	device, ok := payload["deviceEnvInfo"].(map[string]any)
-	if !ok || device["screenWidth"] != 2056 || device["screenHeight"] != 1328 || device["viewportWidth"] != 2056 || device["viewportHeight"] != 1083 {
-		t.Fatalf("deviceEnvInfo = %#v", payload["deviceEnvInfo"])
-	}
-	for _, obsolete := range []string{"connectors", "searchAllConnectors", "toolOverrides"} {
-		if _, ok := payload[obsolete]; ok {
-			t.Fatalf("payload contains obsolete field %q", obsolete)
-		}
-	}
-	encoded := string(MarshalJSONBytes(payload))
-	assertForbiddenFieldsAbsent(t, encoded)
 }
 
 func TestNormalizeOpenAIInputSeparatesTextAndImages(t *testing.T) {
@@ -873,8 +864,15 @@ func TestDecodeDirectFileUploadResponse(t *testing.T) {
 	if err != nil || uploaded.ID != "metadata-1" || uploaded.URI != "https://assets.grok.com/users/test/reference/content" {
 		t.Fatalf("uploaded=%#v err=%v", uploaded, err)
 	}
-	if _, err := decodeDirectFileUploadResponse(strings.NewReader(`{"uploadId":"upload-1","fileMetadata":{}}`)); err == nil {
-		t.Fatal("incomplete V2 upload response was accepted")
+	uploaded, err = decodeDirectFileUploadResponse(strings.NewReader(`{"uploadId":"upload-1","terminalError":{}}`))
+	if err != nil || uploaded.ID != "upload-1" || uploaded.URI != "" {
+		t.Fatalf("uploadId-only response: uploaded=%#v err=%v", uploaded, err)
+	}
+	if _, err := decodeDirectFileUploadResponse(strings.NewReader(`{"uploadId":"upload-1","terminalError":{"message":"rejected"}}`)); err == nil {
+		t.Fatal("terminal upload error was accepted")
+	}
+	if _, err := decodeDirectFileUploadResponse(strings.NewReader(`{"fileMetadata":{}}`)); err == nil {
+		t.Fatal("response without any file identifier was accepted")
 	}
 }
 

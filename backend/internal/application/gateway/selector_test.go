@@ -1003,6 +1003,23 @@ func TestCandidatePlanDoesNotTreatEstimatedQuotaAsAuthoritative(t *testing.T) {
 	}
 }
 
+func TestCandidatePlanDoesNotTreatLegacyDefaultQuotaAsAuthoritative(t *testing.T) {
+	now := time.Now().UTC()
+	selector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, nil, time.Hour, time.Second, time.Minute)
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 1, Priority: 100}, QuotaWindow: &account.QuotaWindow{AccountID: 1, Mode: "console_image", Remaining: 5, Total: 5, Source: account.QuotaSourceDefault}},
+		{Credential: account.Credential{ID: 2, Priority: 1}, QuotaWindow: &account.QuotaWindow{AccountID: 2, Mode: "console_image", Remaining: 1, Total: 5, Source: account.QuotaSourceUpstream}},
+	}
+	plan, err := selector.planCandidates(context.Background(), values, now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := plan.Next()
+	if !ok || first.Credential.ID != 2 {
+		t.Fatalf("first candidate = %#v, want upstream-confirmed account 2", first)
+	}
+}
+
 func TestSelectorConsumesOnlyMatchingQuotaSnapshot(t *testing.T) {
 	key := candidateCacheKey{provider: account.ProviderWeb, upstreamModel: "chat", quotaMode: "fast"}
 	values := []account.RoutingCandidate{{

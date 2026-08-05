@@ -40,7 +40,19 @@ func Fetch(ctx context.Context, baseURL string, credential account.Credential, e
 		return provider.AccountIdentity{}, err
 	}
 	defer lease.Release()
+	return FetchWithLease(ctx, baseURL, token, lease, egress)
+}
 
+// FetchWithLease resolves Session identity through an already selected Web
+// egress lease. It keeps just-in-time Gateway identity resolution on the same
+// physical exit, browser fingerprint, and Clearance as the following request.
+func FetchWithLease(ctx context.Context, baseURL, token string, lease *infraegress.Lease, egress *infraegress.Manager) (provider.AccountIdentity, error) {
+	if lease == nil || egress == nil {
+		return provider.AccountIdentity{}, fmt.Errorf("Session 身份同步租约未初始化")
+	}
+	if strings.TrimSpace(token) == "" {
+		return provider.AccountIdentity{}, provider.ErrUnauthorized
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	origin := strings.TrimRight(strings.TrimSpace(baseURL), "/")

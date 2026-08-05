@@ -187,7 +187,9 @@ func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []a
 			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
 			inFlight:        inFlight[position], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
 		}
-		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Source != account.QuotaSourceEstimated {
+		// 只有真实上游快照能够证明账号具备该模式额度。历史默认值和
+		// 本地预测值都属于未知能力，只保留为路由兜底。
+		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Source == account.QuotaSourceUpstream {
 			score.quotaKnown = true
 			score.quotaAvailable = candidate.QuotaWindow.Remaining > 0
 		}

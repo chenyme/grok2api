@@ -20,6 +20,7 @@ import (
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/sessionidentity"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -58,12 +59,13 @@ func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Creden
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
-	userID, err := normalizeGatewayUserID(credential.UserID)
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, credential)
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
-	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, credential)
+	userID, err := a.resolveGatewayUserID(ctx, cfg.BaseURL, credential, token, lease)
 	if err != nil {
+		lease.Release()
 		return nil, nil, nil, "", err
 	}
 	var previous *inferencedomain.WebResponseState
@@ -122,6 +124,20 @@ func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Creden
 		Body:       &cancelBody{ReadCloser: reader, cancel: cancel},
 		Request:    request,
 	}, lease, previous, "", nil
+}
+
+func (a *Adapter) resolveGatewayUserID(ctx context.Context, baseURL string, credential account.Credential, token string, lease *infraegress.Lease) (string, error) {
+	if userID, err := normalizeGatewayUserID(credential.UserID); err == nil {
+		return userID, nil
+	}
+	// Imported and pre-Gateway accounts may only contain an SSO token or email.
+	// Resolve the uid just in time so they remain immediately usable; the normal
+	// account synchronization path persists the same identity for later calls.
+	identity, err := sessionidentity.FetchWithLease(ctx, baseURL, token, lease, a.egress)
+	if err != nil {
+		return "", fmt.Errorf("同步 Grok Web Gateway 用户身份: %w", err)
+	}
+	return normalizeGatewayUserID(identity.UserID)
 }
 
 func normalizeGatewayUserID(value string) (string, error) {

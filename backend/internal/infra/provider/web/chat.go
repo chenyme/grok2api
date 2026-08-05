@@ -149,7 +149,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	spec, ok := Resolve(request.Model)
 	if ok && spec.ProtocolModel == "imagine-lite" && request.Operation == "chat" {
 		if len(tools.ResponseTools) > 0 {
-			return invalidImageRequest("grok-imagine-image 不支持 tools")
+			return invalidImageRequest("grok-imagine-image-lite 不支持 tools")
 		}
 		return a.forwardLiteChatCompletion(ctx, request, input, normalized, spec)
 	}
@@ -690,23 +690,6 @@ func extractImageURL(part map[string]any) string {
 		return text
 	}
 	return ""
-}
-
-func buildWebChatPayload(message, mode string, attachments []string) map[string]any {
-	if attachments == nil {
-		attachments = []string{}
-	}
-	return map[string]any{
-		"collectionIds": []any{}, "disabledConnectorIds": []any{},
-		"deviceEnvInfo": map[string]any{"darkModeEnabled": false, "devicePixelRatio": 2, "screenHeight": 1328, "screenWidth": 2056, "viewportHeight": 1083, "viewportWidth": 2056},
-		"disableMemory": true, "disableSearch": false, "disableSelfHarmShortCircuit": false,
-		"disableTextFollowUps": false, "enableImageGeneration": true, "enableImageStreaming": true,
-		"enableSideBySide": true, "fileAttachments": attachments, "forceConcise": false,
-		"forceSideBySide": false, "imageAttachments": []any{}, "imageGenerationCount": 2,
-		"isAsyncChat": false, "message": message, "modeId": mode, "responseMetadata": map[string]any{},
-		"returnImageBytes": false, "returnRawGrokInXaiRequest": false,
-		"sendFinalMetadata": true, "temporary": true,
-	}
 }
 
 func consumeUpstream(source io.Reader, emit func(string, string) error) (parsedChat, error) {
