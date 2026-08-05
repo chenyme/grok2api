@@ -126,6 +126,14 @@ func TestEstimateOfficialImageEditCost(t *testing.T) {
 	if result, ok = EstimateOfficialImageEditCost("grok-imagine-image-edit", "4k", 1, 1); ok || result.CostInUSDTicks != 0 {
 		t.Fatalf("unknown edit resolution = %#v, ok = %v", result, ok)
 	}
+	result, ok = EstimateOfficialImageEditCost("Console/grok-imagine-image-quality", "2k", 1, 2)
+	if !ok || result.Model != "grok-imagine-image-quality-edit-2k" || result.CostInUSDTicks != 900_000_000 {
+		t.Fatalf("Console quality edit price = %#v, ok = %v", result, ok)
+	}
+	result, ok = EstimateOfficialImageEditCost("Console/grok-imagine-image", "1k", 1, 2)
+	if !ok || result.Model != "grok-imagine-image-edit-lite-1k" || result.CostInUSDTicks != 240_000_000 {
+		t.Fatalf("Console lite edit price = %#v, ok = %v", result, ok)
+	}
 }
 
 func TestEstimateOfficialVideoCost(t *testing.T) {

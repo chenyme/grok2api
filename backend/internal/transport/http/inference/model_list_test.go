@@ -19,8 +19,10 @@ func TestNewModelListItemsDeduplicatesSharedPublicName(t *testing.T) {
 		{PublicID: "Build/grok-shared", Provider: account.ProviderBuild, CreatedAt: now},
 		{PublicID: "Console/grok-shared", Provider: account.ProviderConsole, CreatedAt: now.Add(time.Second)},
 		{PublicID: "Web/grok-chat-fast", Provider: account.ProviderWeb, CreatedAt: now},
+		{PublicID: "Console/grok-imagine-image", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityImage, CreatedAt: now},
+		{PublicID: "Console/grok-imagine-image", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityImageEdit, CreatedAt: now.Add(time.Second)},
 	})
-	if len(items) != 2 || items[0].ID != "grok-shared" || items[1].ID != "grok-chat-fast" {
+	if len(items) != 3 || items[0].ID != "grok-shared" || items[1].ID != "grok-chat-fast" || items[2].ID != "grok-imagine-image" {
 		t.Fatalf("model list = %#v", items)
 	}
 }

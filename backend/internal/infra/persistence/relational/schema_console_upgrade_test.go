@@ -20,7 +20,7 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 	defer database.Close()
 	legacy := []any{
 		&legacyProviderAccountModel{}, &legacyModelRouteModel{}, &legacyRequestAuditModel{},
-		&legacyResponseOwnershipModel{}, &legacyEgressNodeModel{},
+		&legacyResponseOwnershipModel{}, &legacyEgressSubscriptionSourceModel{}, &legacyEgressNodeModel{},
 	}
 	if err := database.db.WithContext(ctx).AutoMigrate(legacy...); err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 	if err != nil || len(windows[created.ID]) != 1 || windows[created.ID][0].Remaining != 7 {
 		t.Fatalf("existing quota windows were not preserved: %#v, err=%v", windows, err)
 	}
-	for _, table := range []string{"provider_accounts", "model_routes", "request_audits", "response_ownership", "egress_nodes"} {
+	for _, table := range []string{"provider_accounts", "model_routes", "request_audits", "response_ownership", "egress_nodes", "egress_subscription_sources"} {
 		var sql string
 		if err := database.db.WithContext(ctx).Raw("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&sql).Error; err != nil {
 			t.Fatal(err)
@@ -61,13 +61,16 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 		if !strings.Contains(sql, "grok_console") {
 			t.Fatalf("table %s was not upgraded: %s", table, sql)
 		}
+		if (table == "request_audits" || table == "egress_nodes" || table == "egress_subscription_sources") && !strings.Contains(sql, "grok_console_asset") {
+			t.Fatalf("table %s was not upgraded for Console assets: %s", table, sql)
+		}
 		if table == "request_audits" && !strings.Contains(sql, "compaction") {
 			t.Fatalf("table %s operation constraint was not upgraded: %s", table, sql)
 		}
 	}
 	assertSQLiteUniqueIndexes(t, database, "provider_accounts", "idx_provider_accounts_identity_key")
-	assertSQLiteUniqueIndexes(t, database, "model_routes", "uidx_model_routes_managed_public_id")
-	assertSQLiteIndexes(t, database, "model_routes", "idx_model_routes_public_id_lookup", "idx_model_routes_provider_upstream")
+	assertSQLiteUniqueIndexes(t, database, "model_routes", "uidx_model_routes_managed_public_capability")
+	assertSQLiteIndexes(t, database, "model_routes", "idx_model_routes_public_id_lookup", "idx_model_routes_provider_upstream", "idx_model_routes_grouping")
 	assertSQLiteMissingIndexes(t, database, "model_routes", "idx_model_routes_public_id")
 	assertSQLiteMissingIndexes(t, database, "model_routes", "uidx_provider_upstream")
 	assertTableColumns(t, database, "request_audits", []string{"first_token_ms"}, nil)
@@ -118,7 +121,7 @@ func TestInitializeSchemaUpgradesPublicIDUniqueIndexForManualTargetPools(t *test
 	if err := database.InitializeSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, index := range []string{"uidx_model_routes_managed_public_id", "idx_model_routes_public_id_lookup"} {
+	for _, index := range []string{"uidx_model_routes_managed_public_capability", "idx_model_routes_public_id_lookup"} {
 		if err := database.db.Exec("DROP INDEX IF EXISTS " + index).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -144,7 +147,49 @@ func TestInitializeSchemaUpgradesPublicIDUniqueIndexForManualTargetPools(t *test
 	}
 	assertSQLiteMissingIndexes(t, database, "model_routes", "idx_model_routes_public_id")
 	assertSQLiteIndexes(t, database, "model_routes", "idx_model_routes_public_id_lookup")
-	assertSQLiteUniqueIndexes(t, database, "model_routes", "uidx_model_routes_managed_public_id")
+	assertSQLiteUniqueIndexes(t, database, "model_routes", "uidx_model_routes_managed_public_capability")
+	assertSQLiteMissingIndexes(t, database, "model_routes", "uidx_model_routes_managed_public_id")
+}
+
+func TestManagedRoutesAllowOnePublicIDPerCapability(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-capability-pool.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewModelRepository(database)
+	routes := []modeldomain.Route{
+		{PublicID: "grok-imagine-image-quality", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image-quality", Capability: modeldomain.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-quality", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image-quality", Capability: modeldomain.CapabilityImageEdit, Enabled: true},
+	}
+	if err := repo.ReplaceProviderRoutes(ctx, account.ProviderConsole, routes); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertDiscovered(ctx, account.ProviderConsole, []string{"grok-imagine-image-quality"}); err != nil {
+		t.Fatal(err)
+	}
+	var rows []modelRouteModel
+	if err := database.db.Where("public_id = ?", "Console/grok-imagine-image-quality").Order("capability ASC").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Capability == rows[1].Capability {
+		t.Fatalf("managed capability routes = %#v", rows)
+	}
+	firstIDs := []uint64{rows[0].ID, rows[1].ID}
+	if err := repo.ReplaceProviderRoutes(ctx, account.ProviderConsole, routes); err != nil {
+		t.Fatal(err)
+	}
+	rows = nil
+	if err := database.db.Where("public_id = ?", "Console/grok-imagine-image-quality").Order("capability ASC").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].ID != firstIDs[0] || rows[1].ID != firstIDs[1] {
+		t.Fatalf("managed capability route IDs changed: before=%v after=%#v", firstIDs, rows)
+	}
 }
 
 func assertSQLiteUniqueIndexes(t *testing.T, database *Database, table string, expected ...string) {
@@ -224,9 +269,10 @@ type legacyModelRouteModel struct {
 func (legacyModelRouteModel) TableName() string { return "model_routes" }
 
 type legacyRequestAuditModel struct {
-	ID        uint64 `gorm:"primaryKey"`
-	Provider  string `gorm:"size:32;not null;check:chk_request_audits_provider,provider IN ('grok_build','grok_web')"`
-	Operation string `gorm:"size:32;not null;default:'responses';check:chk_request_audits_operation,operation IN ('responses','chat','messages','image','image_edit','video')"`
+	ID          uint64 `gorm:"primaryKey"`
+	Provider    string `gorm:"size:32;not null;check:chk_request_audits_provider,provider IN ('grok_build','grok_web')"`
+	Operation   string `gorm:"size:32;not null;default:'responses';check:chk_request_audits_operation,operation IN ('responses','chat','messages','image','image_edit','video')"`
+	EgressScope string `gorm:"size:32;not null;default:'';check:chk_request_audits_egress_scope,egress_scope IN ('','grok_build','grok_web','grok_web_asset')"`
 }
 
 func (legacyRequestAuditModel) TableName() string { return "request_audits" }
@@ -237,6 +283,15 @@ type legacyResponseOwnershipModel struct {
 }
 
 func (legacyResponseOwnershipModel) TableName() string { return "response_ownership" }
+
+type legacyEgressSubscriptionSourceModel struct {
+	ID    uint64 `gorm:"primaryKey"`
+	Scope string `gorm:"size:32;not null;check:chk_egress_subscription_sources_scope,scope IN ('grok_build','grok_web','grok_web_asset')"`
+}
+
+func (legacyEgressSubscriptionSourceModel) TableName() string {
+	return "egress_subscription_sources"
+}
 
 type legacyEgressNodeModel struct {
 	ID    uint64 `gorm:"primaryKey"`

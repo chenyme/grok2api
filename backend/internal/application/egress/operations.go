@@ -423,8 +423,8 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 }
 
 func (s *Service) validateFallbacks(ctx context.Context, current domain.OperationsConfig, input map[domain.Scope]FallbackConfigInput) (map[domain.Scope]domain.FallbackConfig, error) {
-	result := make(map[domain.Scope]domain.FallbackConfig, 4)
-	for _, scope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
+	result := make(map[domain.Scope]domain.FallbackConfig, len(allOperationScopes()))
+	for _, scope := range allOperationScopes() {
 		result[scope] = current.FallbackFor(scope)
 	}
 	for scope, fallback := range input {
@@ -544,7 +544,11 @@ func publicSource(value domain.SubscriptionSource) domain.PublicSubscriptionSour
 }
 
 func validScope(scope domain.Scope) bool {
-	return scope == domain.ScopeBuild || scope == domain.ScopeWeb || scope == domain.ScopeConsole || scope == domain.ScopeWebAsset
+	return scope == domain.ScopeBuild || scope == domain.ScopeWeb || scope == domain.ScopeConsole || scope == domain.ScopeWebAsset || scope == domain.ScopeConsoleAsset
+}
+
+func allOperationScopes() []domain.Scope {
+	return []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset, domain.ScopeConsoleAsset}
 }
 
 func validateImportInput(input ImportInput) error {

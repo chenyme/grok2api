@@ -1133,7 +1133,7 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 				checkTime = time.Now().UTC()
 				continue
 			}
-			values := assembleRoutingCandidates(provider, bases, overlay)
+			values := assembleRoutingCandidates(provider, quotaMode, bases, overlay)
 			s.candidateMu.Lock()
 			stable := baseVersion == s.routingBaseVersionLocked(provider) && overlayVersion == s.routingOverlayVersionLocked(provider)
 			if stable {
@@ -1550,7 +1550,7 @@ type routingOverlayLoadResult struct {
 	version routingLayerVersion
 }
 
-func assembleRoutingCandidates(provider account.Provider, bases []account.RoutingAccountBase, overlay account.RoutingOverlaySnapshot) []account.RoutingCandidate {
+func assembleRoutingCandidates(provider account.Provider, quotaMode string, bases []account.RoutingAccountBase, overlay account.RoutingOverlaySnapshot) []account.RoutingCandidate {
 	byAccount := make(map[uint64]account.RoutingAccountOverlay, len(overlay.Values))
 	for _, value := range overlay.Values {
 		byAccount[value.AccountID] = value
@@ -1566,13 +1566,16 @@ func assembleRoutingCandidates(provider account.Provider, bases []account.Routin
 		}
 	}
 	result := make([]account.RoutingCandidate, 0, len(bases))
+	staticConsoleModel := provider == account.ProviderConsole && strings.TrimSpace(quotaMode) != ""
 	for _, base := range bases {
 		overlayValue := byAccount[base.Credential.ID]
 		if overlay.HasBindings && !overlayValue.Bound {
 			continue
 		}
 		known, supports := overlayValue.ModelCapabilityKnown, overlayValue.SupportsModel
-		if overlay.HasBindings {
+		if staticConsoleModel {
+			known, supports = true, true
+		} else if overlay.HasBindings {
 			known, supports = true, true
 		} else if sharedSuperBuildModel && account.IsBuildSuper(base.Credential, base.Billing) {
 			known, supports = true, true

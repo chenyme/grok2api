@@ -22,6 +22,7 @@ func NewHandler(service *modelapp.Service) *Handler { return &Handler{service: s
 
 func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/models", h.list)
+	router.GET("/models/groups", h.listGroups)
 	router.GET("/models/accounts", h.listAccounts)
 	router.POST("/models", h.create)
 	router.POST("/models/sync", h.sync)
@@ -73,6 +74,12 @@ type modelResponse struct {
 	LastSyncedAt      *time.Time `json:"lastSyncedAt,omitempty"`
 }
 
+type modelGroupResponse struct {
+	Key                  string          `json:"key"`
+	Routes               []modelResponse `json:"routes"`
+	EndpointCapabilities []string        `json:"endpointCapabilities"`
+}
+
 type accountOptionResponse struct {
 	ID   uint64 `json:"id,string"`
 	Name string `json:"name"`
@@ -97,6 +104,27 @@ func (h *Handler) list(c *gin.Context) {
 	items := make([]modelResponse, 0, len(values))
 	for _, value := range values {
 		items = append(items, newModelResponse(value))
+	}
+	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
+}
+
+func (h *Handler) listGroups(c *gin.Context) {
+	page, pageSize := pagination(c)
+	values, total, err := h.service.ListGroups(c.Request.Context(), page, pageSize, c.Query("search"), modelapp.ListFilter{
+		Provider: c.Query("provider"), Status: c.Query("status"),
+		Sort: repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))},
+	})
+	if errors.Is(err, modelapp.ErrInvalidFilter) {
+		response.Error(c, http.StatusBadRequest, "invalidFilter", err.Error())
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "modelListFailed", "读取模型能力组失败")
+		return
+	}
+	items := make([]modelGroupResponse, 0, len(values))
+	for _, value := range values {
+		items = append(items, newModelGroupResponse(value))
 	}
 	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
 }
@@ -271,7 +299,9 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error) {
 
 func newModelResponse(value modeldomain.Route) modelResponse {
 	manualBinding := len(value.BoundAccountIDs) > 0
-	capabilityKnown := manualBinding || value.SyncedAccounts > 0
+	// Console uses a provider-wide static catalog, so catalog support is known
+	// even when an account capability snapshot predates a newly shipped model.
+	capabilityKnown := manualBinding || value.SyncedAccounts > 0 || (value.Provider == account.ProviderConsole && (value.Origin == modeldomain.OriginCatalog || value.SupportedAccounts > 0))
 	available := value.TotalAccounts > 0 && (value.SupportedAccounts > 0 || (!manualBinding && value.SyncedAccounts < value.TotalAccounts))
 	accountIDs := make([]string, 0, len(value.BoundAccountIDs))
 	for _, id := range value.BoundAccountIDs {
@@ -283,6 +313,16 @@ func newModelResponse(value modeldomain.Route) modelResponse {
 		SyncedAccounts: value.SyncedAccounts, TotalAccounts: value.TotalAccounts, CapabilityKnown: capabilityKnown,
 		Available: available, LastSyncedAt: value.LastSyncedAt,
 	}
+}
+
+func newModelGroupResponse(value modelapp.RouteGroup) modelGroupResponse {
+	routes := make([]modelResponse, 0, len(value.Routes))
+	ids := make([]string, 0, len(value.Routes))
+	for _, route := range value.Routes {
+		routes = append(routes, newModelResponse(route))
+		ids = append(ids, strconv.FormatUint(route.ID, 10))
+	}
+	return modelGroupResponse{Key: strings.Join(ids, ":"), Routes: routes, EndpointCapabilities: append([]string(nil), value.EndpointCapabilities...)}
 }
 
 func parseIDs(values []string) ([]uint64, error) {

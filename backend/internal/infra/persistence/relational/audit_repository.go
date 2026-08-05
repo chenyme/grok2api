@@ -111,7 +111,7 @@ func validatePreparedAudit(value preparedAudit) error {
 	if row.EgressNodeID != nil && *row.EgressNodeID == 0 {
 		return errors.New("egress_node_id must be positive when present")
 	}
-	if !auditStringAllowed(row.EgressScope, "", "grok_build", "grok_web", "grok_console", "grok_web_asset") {
+	if !auditStringAllowed(row.EgressScope, "", "grok_build", "grok_web", "grok_console", "grok_web_asset", "grok_console_asset") {
 		return errors.New("egress_scope is invalid")
 	}
 	if !auditStringAllowed(row.EgressMode, "", "direct", "proxy") {

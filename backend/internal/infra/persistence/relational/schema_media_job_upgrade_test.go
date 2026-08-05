@@ -15,7 +15,7 @@ import (
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 )
 
-func TestMediaJobModelTagsAllowBuildVideoProviderAndScope(t *testing.T) {
+func TestMediaJobModelTagsAllowAllVideoProvidersAndPrimaryScopes(t *testing.T) {
 	modelType := reflect.TypeOf(mediaJobModel{})
 	providerField, ok := modelType.FieldByName("Provider")
 	if !ok {
@@ -25,7 +25,7 @@ func TestMediaJobModelTagsAllowBuildVideoProviderAndScope(t *testing.T) {
 	if !strings.Contains(providerTag, "chk_media_jobs_provider") ||
 		!strings.Contains(providerTag, "grok_web") ||
 		!strings.Contains(providerTag, "grok_build") ||
-		strings.Contains(providerTag, "grok_console") {
+		!strings.Contains(providerTag, "grok_console") {
 		t.Fatalf("provider tag = %q", providerTag)
 	}
 	scopeField, ok := modelType.FieldByName("EgressScope")
@@ -37,7 +37,8 @@ func TestMediaJobModelTagsAllowBuildVideoProviderAndScope(t *testing.T) {
 		!strings.Contains(scopeTag, "''") ||
 		!strings.Contains(scopeTag, "grok_web") ||
 		!strings.Contains(scopeTag, "grok_build") ||
-		strings.Contains(scopeTag, "grok_console") {
+		!strings.Contains(scopeTag, "grok_console") ||
+		strings.Contains(scopeTag, "grok_console_asset") {
 		t.Fatalf("egress_scope tag = %q", scopeTag)
 	}
 	inputField, ok := modelType.FieldByName("InputJSON")
@@ -212,7 +213,7 @@ func TestInitializeSchemaUpgradesMediaJobChecksForBuild(t *testing.T) {
 	}
 	assertMediaJobSQLContainsBuild(t, database)
 
-	// 升级后 Build job 与 grok_build egress scope 均可写入。
+	// 升级后 Build/Console job 与各自主请求 egress scope 均可写入。
 	legacyJob.EgressScope = "grok_build"
 	if err := jobs.CreateMediaJob(ctx, legacyJob); err != nil {
 		t.Fatalf("upgraded schema rejected build media job: %v", err)
@@ -229,21 +230,31 @@ func TestInitializeSchemaUpgradesMediaJobChecksForBuild(t *testing.T) {
 	if err := jobs.CreateMediaJob(ctx, webJob); err != nil {
 		t.Fatalf("web media job regression: %v", err)
 	}
+	consoleJob := webJob
+	consoleJob.ID = "video_console_ok"
+	consoleJob.RequestID = "request-console-ok"
+	consoleJob.Provider = "grok_console"
+	consoleJob.Model = "grok-imagine-video"
+	consoleJob.ModelRouteID = 3
+	consoleJob.EgressScope = "grok_console"
+	if err := jobs.CreateMediaJob(ctx, consoleJob); err != nil {
+		t.Fatalf("console media job rejected: %v", err)
+	}
 
 	// 非法 provider / scope 仍应被拒绝。
 	invalidProvider := legacyJob
-	invalidProvider.ID = "video_console_blocked"
-	invalidProvider.RequestID = "request-console-blocked"
-	invalidProvider.Provider = "grok_console"
+	invalidProvider.ID = "video_provider_blocked"
+	invalidProvider.RequestID = "request-provider-blocked"
+	invalidProvider.Provider = "invalid_provider"
 	if err := jobs.CreateMediaJob(ctx, invalidProvider); err == nil {
-		t.Fatal("console provider was accepted for media jobs")
+		t.Fatal("invalid provider was accepted for media jobs")
 	}
 	invalidScope := legacyJob
 	invalidScope.ID = "video_scope_blocked"
 	invalidScope.RequestID = "request-scope-blocked"
-	invalidScope.EgressScope = "grok_console"
+	invalidScope.EgressScope = "grok_console_asset"
 	if err := jobs.CreateMediaJob(ctx, invalidScope); err == nil {
-		t.Fatal("console egress scope was accepted for media jobs")
+		t.Fatal("resource-only egress scope was accepted as a primary media job scope")
 	}
 
 	// 重复迁移幂等，且已有 Build 任务仍在。
@@ -338,8 +349,8 @@ func assertMediaJobSQLContainsBuild(t *testing.T, database *Database) {
 	if !strings.Contains(sql, "grok_build") {
 		t.Fatalf("media_jobs was not upgraded with grok_build: %s", sql)
 	}
-	if strings.Contains(sql, "grok_console") {
-		t.Fatalf("media_jobs unexpectedly allows console: %s", sql)
+	if !strings.Contains(sql, "grok_console") || strings.Contains(sql, "grok_console_asset") {
+		t.Fatalf("media_jobs primary scopes are incomplete: %s", sql)
 	}
 	if !strings.Contains(strings.ToUpper(sql), "ON DELETE SET NULL") {
 		t.Fatalf("media_jobs account history is not detached on account delete: %s", sql)

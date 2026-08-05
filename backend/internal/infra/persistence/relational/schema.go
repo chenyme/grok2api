@@ -64,10 +64,12 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_account_credentials_refresh_due ON account_credentials(refresh_due_at, account_id)",
 	"CREATE INDEX IF NOT EXISTS idx_quota_windows_due ON account_quota_windows(remaining, reset_at, account_id)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_public_id_lookup ON model_routes(public_id)",
-	// Catalog/discovered rows remain idempotent across concurrent syncs. Manual
-	// rows intentionally may share a public ID and form a route-target pool.
-	"CREATE UNIQUE INDEX IF NOT EXISTS uidx_model_routes_managed_public_id ON model_routes(public_id) WHERE origin IN ('catalog', 'discovered')",
+	// Catalog/discovered rows remain idempotent per API capability. One public
+	// image model may intentionally serve both generation and editing, while
+	// manual rows may still share a public ID and form a route-target pool.
+	"CREATE UNIQUE INDEX IF NOT EXISTS uidx_model_routes_managed_public_capability ON model_routes(public_id, capability) WHERE origin IN ('catalog', 'discovered')",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_provider_upstream ON model_routes(provider, upstream_model)",
+	"CREATE INDEX IF NOT EXISTS idx_model_routes_grouping ON model_routes(provider, public_id, upstream_model, origin, id)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_created_id ON model_routes(created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_model_routes_enabled ON model_routes(enabled, public_id, id)",
 	"CREATE INDEX IF NOT EXISTS idx_model_route_aliases_route ON model_route_aliases(model_route_id, alias)",
@@ -153,6 +155,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	}
 	if err := d.ensureConsoleConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 Console 数据库约束: %w", err)
+	}
+	if err := d.ensureEgressAssetScopeConstraints(ctx); err != nil {
+		return fmt.Errorf("迁移资源出口数据库约束: %w", err)
 	}
 	if err := d.ensureAuditOperationConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移请求审计操作约束: %w", err)
@@ -276,12 +281,13 @@ func (d *Database) dropProviderUpstreamUniqueIndex(ctx context.Context) error {
 	return nil
 }
 
-// dropModelPublicIDUniqueIndex upgrades the original one-route-per-name model.
-// A separately named non-unique lookup index and managed-route partial unique index are
-// recreated by schemaIndexes after this migration step.
+// dropModelPublicIDUniqueIndex upgrades both historical one-route-per-name
+// indexes. The capability-aware managed index is recreated by schemaIndexes.
 func (d *Database) dropModelPublicIDUniqueIndex(ctx context.Context) error {
-	if err := d.db.WithContext(ctx).Exec("DROP INDEX IF EXISTS idx_model_routes_public_id").Error; err != nil {
-		return fmt.Errorf("drop index idx_model_routes_public_id: %w", err)
+	for _, name := range []string{"idx_model_routes_public_id", "uidx_model_routes_managed_public_id"} {
+		if err := d.db.WithContext(ctx).Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
+			return fmt.Errorf("drop index %s: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -311,6 +317,16 @@ func (d *Database) ensureConsoleConstraints(ctx context.Context) error {
 	}, "grok_console")
 }
 
+// ensureEgressAssetScopeConstraints upgrades existing SQLite/PostgreSQL CHECK
+// definitions so Console CDN traffic can use an independently managed scope.
+func (d *Database) ensureEgressAssetScopeConstraints(ctx context.Context) error {
+	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &egressNodeModel{}, table: "egress_nodes", name: "chk_egress_nodes_specific_scope"},
+		{model: &egressSubscriptionSourceModel{}, table: "egress_subscription_sources", name: "chk_egress_subscription_sources_scope"},
+		{model: &requestAuditModel{}, table: "request_audits", name: "chk_request_audits_egress_scope"},
+	}, "grok_console_asset")
+}
+
 // ensureAuditOperationConstraints upgrades existing databases so Codex remote
 // compaction can be recorded separately from ordinary Responses requests.
 func (d *Database) ensureAuditOperationConstraints(ctx context.Context) error {
@@ -319,13 +335,17 @@ func (d *Database) ensureAuditOperationConstraints(ctx context.Context) error {
 	}, "compaction")
 }
 
-// ensureMediaJobConstraints 将历史仅允许 grok_web 的 media job CHECK 升级到支持 Build 视频。
+// ensureMediaJobConstraints 将历史仅允许 grok_web 的 media job CHECK 升级到支持 Build 与 Console 视频。
 // AutoMigrate 不会可靠替换已有 PostgreSQL CHECK，因此启动时幂等检测并重建。
 func (d *Database) ensureMediaJobConstraints(ctx context.Context) error {
-	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+	if err := d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_provider"},
+	}, "grok_console"); err != nil {
+		return err
+	}
+	return d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_egress_scope"},
-	}, "grok_build")
+	}, "grok_console")
 }
 
 // ensureMediaJobInputConstraint 允许异步视频任务持久化 Base64 首图。

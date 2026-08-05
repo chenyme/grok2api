@@ -10,6 +10,7 @@ const (
 	OfficialPricingSource             = "https://docs.x.ai/developers/pricing"
 	OfficialPricingAsOf               = "2026-07-14"
 	officialImageEditInputTicks int64 = 100_000_000
+	officialLiteImageInputTicks int64 = 20_000_000
 )
 
 type PricingResult struct {
@@ -260,25 +261,42 @@ func EstimateOfficialImageCost(model, resolution string, count int) (PricingResu
 
 // EstimateOfficialImageEditCost 按输出图片数量计费，并叠加每张输入图片的处理费用。
 func EstimateOfficialImageEditCost(model, resolution string, outputCount, inputCount int) (PricingResult, bool) {
-	if normalizePricingModel(model) != "grok-imagine-image-edit" || outputCount <= 0 || inputCount <= 0 {
+	model = normalizePricingModel(model)
+	if outputCount <= 0 || inputCount <= 0 {
 		return PricingResult{}, false
 	}
 	resolution = strings.ToLower(strings.TrimSpace(resolution))
 	if resolution == "" {
 		resolution = "1k"
 	}
+	pricingModel := ""
+	inputTicks := officialImageEditInputTicks
 	var outputTicks int64
-	switch resolution {
-	case "1k":
-		outputTicks = 500_000_000
-	case "2k":
-		outputTicks = 700_000_000
+	switch model {
+	case "grok-imagine-image-edit":
+		pricingModel = "grok-imagine-image-edit-" + resolution
+	case "grok-imagine-image-quality":
+		pricingModel = "grok-imagine-image-quality-edit-" + resolution
+	case "grok-imagine-image":
+		pricingModel = "grok-imagine-image-edit-lite-" + resolution
+		inputTicks = officialLiteImageInputTicks
+		outputTicks = 200_000_000
 	default:
 		return PricingResult{}, false
 	}
+	if resolution != "1k" && resolution != "2k" {
+		return PricingResult{}, false
+	}
+	if outputTicks == 0 {
+		if resolution == "1k" {
+			outputTicks = 500_000_000
+		} else {
+			outputTicks = 700_000_000
+		}
+	}
 	return PricingResult{
-		Model:          "grok-imagine-image-edit-" + resolution,
-		CostInUSDTicks: int64(outputCount)*outputTicks + int64(inputCount)*officialImageEditInputTicks,
+		Model:          pricingModel,
+		CostInUSDTicks: int64(outputCount)*outputTicks + int64(inputCount)*inputTicks,
 	}, true
 }
 
@@ -319,9 +337,17 @@ func ReconstructOfficialCost(model string, inputTokens, cachedInputTokens, outpu
 	case "grok-imagine-image-quality-2k":
 		return reconstructImageCost("grok-imagine-image-quality", "2k", outputImages)
 	case "grok-imagine-image-edit-1k":
-		return reconstructImageEditCost("1k", inputImages, outputImages)
+		return reconstructImageEditCost("grok-imagine-image-edit", "1k", inputImages, outputImages)
 	case "grok-imagine-image-edit-2k":
-		return reconstructImageEditCost("2k", inputImages, outputImages)
+		return reconstructImageEditCost("grok-imagine-image-edit", "2k", inputImages, outputImages)
+	case "grok-imagine-image-quality-edit-1k":
+		return reconstructImageEditCost("grok-imagine-image-quality", "1k", inputImages, outputImages)
+	case "grok-imagine-image-quality-edit-2k":
+		return reconstructImageEditCost("grok-imagine-image-quality", "2k", inputImages, outputImages)
+	case "grok-imagine-image-edit-lite-1k":
+		return reconstructImageEditCost("grok-imagine-image", "1k", inputImages, outputImages)
+	case "grok-imagine-image-edit-lite-2k":
+		return reconstructImageEditCost("grok-imagine-image", "2k", inputImages, outputImages)
 	case "grok-imagine-video-480p":
 		return reconstructVideoCost("grok-imagine-video", "480p", outputSeconds)
 	case "grok-imagine-video-720p":
@@ -371,21 +397,25 @@ func reconstructImageCost(model, resolution string, count int64) (PricingBreakdo
 	), true
 }
 
-func reconstructImageEditCost(resolution string, inputCount, outputCount int64) (PricingBreakdown, bool) {
+func reconstructImageEditCost(model, resolution string, inputCount, outputCount int64) (PricingBreakdown, bool) {
 	if inputCount <= 0 || outputCount <= 0 || int64(int(inputCount)) != inputCount || int64(int(outputCount)) != outputCount {
 		return PricingBreakdown{}, false
 	}
-	result, ok := EstimateOfficialImageEditCost("grok-imagine-image-edit", resolution, int(outputCount), int(inputCount))
+	result, ok := EstimateOfficialImageEditCost(model, resolution, int(outputCount), int(inputCount))
 	if !ok {
 		return PricingBreakdown{}, false
 	}
-	outputCost := result.CostInUSDTicks - inputCount*officialImageEditInputTicks
+	inputTicks := officialImageEditInputTicks
+	if normalizePricingModel(model) == "grok-imagine-image" {
+		inputTicks = officialLiteImageInputTicks
+	}
+	outputCost := result.CostInUSDTicks - inputCount*inputTicks
 	if outputCost < 0 || outputCost%outputCount != 0 {
 		return PricingBreakdown{}, false
 	}
 	return newPricingBreakdown(result.Model, PricingTierMedia,
 		newPricingComponent(PricingComponentOutputImage, PricingUnitImage, outputCount, outputCost/outputCount),
-		newPricingComponent(PricingComponentInputImage, PricingUnitImage, inputCount, officialImageEditInputTicks),
+		newPricingComponent(PricingComponentInputImage, PricingUnitImage, inputCount, inputTicks),
 	), true
 }
 

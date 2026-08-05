@@ -129,6 +129,7 @@ return redis.call('DEL', KEYS[1])
 
 var scheduleQuotaRecoveryScript = redisclient.NewScript(`
 if not redis.call('ZSCORE', KEYS[1], ARGV[1]) and redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[4]) then return 0 end
+if redis.call('HEXISTS', KEYS[3], ARGV[1]) == 1 then return 2 end
 redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
 redis.call('HSET', KEYS[2], ARGV[1], ARGV[3])
 redis.call('HDEL', KEYS[3], ARGV[1])
@@ -141,6 +142,13 @@ if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[4]) then return 0 end
 redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
 redis.call('HSET', KEYS[2], ARGV[1], ARGV[3])
 return 1
+`)
+
+var cancelQuotaRecoveryScript = redisclient.NewScript(`
+if redis.call('HEXISTS', KEYS[3], ARGV[1]) == 1 then return 2 end
+redis.call('HDEL', KEYS[2], ARGV[1])
+redis.call('HDEL', KEYS[3], ARGV[1])
+return redis.call('ZREM', KEYS[1], ARGV[1])
 `)
 
 var claimQuotaRecoveryScript = redisclient.NewScript(`
@@ -787,6 +795,16 @@ func (s *Store) EnsureQuotaRecovery(ctx context.Context, value account.QuotaReco
 		return fmt.Errorf("额度恢复队列已满")
 	}
 	return nil
+}
+
+func (s *Store) CancelQuotaRecovery(ctx context.Context, accountID uint64, mode string) error {
+	mode = strings.TrimSpace(mode)
+	if accountID == 0 || mode == "" {
+		return fmt.Errorf("额度恢复事件无效")
+	}
+	member := strconv.FormatUint(accountID, 10) + ":" + mode
+	_, err := cancelQuotaRecoveryScript.Run(ctx, s.client, []string{s.key("quota-recovery", "events"), s.key("quota-recovery", "attempts"), s.key("quota-recovery", "claims")}, member).Int()
+	return err
 }
 
 func (s *Store) ClaimDueQuotaRecoveries(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]account.QuotaRecoveryEvent, error) {

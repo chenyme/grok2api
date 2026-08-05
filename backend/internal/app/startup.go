@@ -16,14 +16,16 @@ import (
 )
 
 const (
-	startupRecoveryBudget    = 20 * time.Second
-	startupCriticalWindow    = 2 * time.Minute
-	startupCriticalLimit     = 100
-	statsigWarmupInterval    = 15 * time.Minute
-	webQuotaStaleAfter       = 30 * time.Minute
-	webQuotaCatchupEvery     = 30 * time.Minute
-	modelCatalogStaleAfter   = 24 * time.Hour
-	modelCatalogCatchupEvery = 6 * time.Hour
+	startupRecoveryBudget      = 20 * time.Second
+	startupCriticalWindow      = 2 * time.Minute
+	startupCriticalLimit       = 100
+	statsigWarmupInterval      = 15 * time.Minute
+	webQuotaStaleAfter         = 30 * time.Minute
+	webQuotaCatchupEvery       = 30 * time.Minute
+	consoleUsageMigrationEvery = 24 * time.Hour
+	consoleUsageMigrationRetry = 5 * time.Minute
+	modelCatalogStaleAfter     = 24 * time.Hour
+	modelCatalogCatchupEvery   = 6 * time.Hour
 )
 
 type startupReport struct {
@@ -381,7 +383,7 @@ func (a *Application) queueDueWebQuotaRefresh(ctx context.Context) {
 		return
 	}
 	for _, window := range windows {
-		a.accounts.QueueWebQuotaRefresh(window.AccountID, window.Mode)
+		a.accounts.QueueQuotaRefresh(window.AccountID, window.Mode)
 	}
 	a.startup.updateReport(func(report *startupReport) { report.DueWebQuotasQueued = len(windows) })
 	if len(windows) > 0 {
@@ -413,6 +415,30 @@ func (a *Application) runWebQuotaCatchup(ctx context.Context) {
 			a.logger.Warn("web_quota_stale_catchup_failed", "error", err)
 		}
 		resetTimer(timer, webQuotaCatchupEvery)
+	}
+}
+
+func (a *Application) runConsoleUsageMigration(ctx context.Context) {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		succeeded, failed, err := a.accounts.SyncIncompleteConsoleQuotas(ctx)
+		nextRun := consoleUsageMigrationEvery
+		if err != nil && ctx.Err() == nil {
+			a.logger.Warn("console_usage_migration_failed", "succeeded", succeeded, "failed", failed, "error", err)
+			nextRun = consoleUsageMigrationRetry
+		} else if failed > 0 {
+			a.logger.Warn("console_usage_migration_incomplete", "succeeded", succeeded, "failed", failed)
+			nextRun = consoleUsageMigrationRetry
+		} else if succeeded > 0 {
+			a.logger.Info("console_usage_migration_completed", "succeeded", succeeded, "failed", failed)
+		}
+		resetTimer(timer, nextRun)
 	}
 }
 

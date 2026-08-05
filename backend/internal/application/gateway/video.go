@@ -291,7 +291,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	}
 	// 视频任务创建时已持久化账号归属；恢复只能重新获取原账号，禁止因后续
 	// 轮询或结果处理失败切换到其他账号。
-	lease, err := s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.ID, route.UpstreamModel, "", true)
+	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+	lease, err := s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.ID, route.UpstreamModel, quotaMode, true)
 	if err != nil {
 		if parent.Err() != nil {
 			s.deferVideoJob(parent, job)
@@ -404,10 +405,20 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		return
 	}
 	s.selector.MarkSuccess(context.Background(), lease.Credential)
+	if lease.QuotaMode != "" && lease.QuotaMode != "weekly" {
+		quotaCtx, quotaCancel := context.WithTimeout(context.Background(), accountStateWriteTimeout)
+		updated, quotaErr := s.accounts.DecrementQuota(quotaCtx, job.AccountID, lease.QuotaMode, 1)
+		quotaCancel()
+		if quotaErr != nil {
+			s.logger.Warn("video_quota_decrement_failed", "provider", route.Provider, "account_id", job.AccountID, "mode", lease.QuotaMode, "error", quotaErr)
+		} else if updated {
+			s.selector.ConsumeQuota(route.Provider, job.AccountID, lease.QuotaMode, 1)
+		}
+	}
 	if err := s.recordVideoAudit(context.Background(), job, time.Since(startedAt).Milliseconds()); err != nil {
 		s.logger.Error("video_usage_record_failed", "job_id", job.ID, "event_id", "video_usage_"+job.ID, "error", err)
 	}
-	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode == "weekly" {
+	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
 		s.accounts.QueueQuotaRefresh(job.AccountID, lease.QuotaMode)
 	}
 }
