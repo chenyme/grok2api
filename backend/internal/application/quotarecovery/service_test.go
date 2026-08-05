@@ -50,12 +50,25 @@ func TestReconcileDueRestoresMissingQueueEvents(t *testing.T) {
 func TestRunOneKeepsPredictedRecoveryWindow(t *testing.T) {
 	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
 	queue := &quotaQueueStub{}
-	syncer := &quotaSyncStub{window: accountdomain.QuotaWindow{Mode: "console", Remaining: 0, WindowSeconds: 24 * 60 * 60}}
+	syncer := &quotaSyncStub{window: accountdomain.QuotaWindow{Mode: "console", Remaining: 0}}
 	service := NewService(testLogger(), queue, syncer, 30*time.Second, 30*time.Minute)
 
 	service.runOne(context.Background(), now, accountdomain.QuotaRecoveryEvent{AccountID: 7, Mode: "console", DueAt: now, ClaimToken: "claim"})
 
 	if len(queue.rescheduled) != 1 || !queue.rescheduled[0].DueAt.Equal(now.Add(24*time.Hour)) {
+		t.Fatalf("rescheduled = %#v", queue.rescheduled)
+	}
+}
+
+func TestRunOnePreservesNonConsoleWindowDuration(t *testing.T) {
+	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	queue := &quotaQueueStub{}
+	syncer := &quotaSyncStub{window: accountdomain.QuotaWindow{Mode: "fast", Remaining: 0, WindowSeconds: 3600}}
+	service := NewService(testLogger(), queue, syncer, 30*time.Second, 30*time.Minute)
+
+	service.runOne(context.Background(), now, accountdomain.QuotaRecoveryEvent{AccountID: 8, Mode: "fast", DueAt: now, ClaimToken: "claim"})
+
+	if len(queue.rescheduled) != 1 || !queue.rescheduled[0].DueAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("rescheduled = %#v", queue.rescheduled)
 	}
 }
@@ -69,6 +82,7 @@ type quotaQueueStub struct {
 	scheduled   []accountdomain.QuotaRecoveryEvent
 	ensured     []accountdomain.QuotaRecoveryEvent
 	rescheduled []accountdomain.QuotaRecoveryEvent
+	cancelled   []accountdomain.QuotaRecoveryEvent
 }
 
 func (q *quotaQueueStub) EnsureQuotaRecovery(_ context.Context, value accountdomain.QuotaRecoveryEvent) error {
@@ -82,6 +96,13 @@ func (q *quotaQueueStub) EnsureQuotaRecovery(_ context.Context, value accountdom
 func (q *quotaQueueStub) ScheduleQuotaRecovery(_ context.Context, value accountdomain.QuotaRecoveryEvent) error {
 	q.mu.Lock()
 	q.scheduled = append(q.scheduled, value)
+	q.mu.Unlock()
+	return nil
+}
+
+func (q *quotaQueueStub) CancelQuotaRecovery(_ context.Context, accountID uint64, mode string) error {
+	q.mu.Lock()
+	q.cancelled = append(q.cancelled, accountdomain.QuotaRecoveryEvent{AccountID: accountID, Mode: mode})
 	q.mu.Unlock()
 	return nil
 }

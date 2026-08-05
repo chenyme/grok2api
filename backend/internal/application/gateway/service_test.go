@@ -2211,7 +2211,7 @@ func runQuotaRefreshWorkers(t *testing.T, service *accountapp.Service) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		service.RunWebQuotaRefresh(ctx)
+		service.RunQuotaRefresh(ctx)
 		close(done)
 	}()
 	t.Cleanup(func() {

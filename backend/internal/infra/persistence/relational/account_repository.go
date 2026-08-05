@@ -2125,9 +2125,28 @@ func (r *AccountRepository) ResetProviderQuotaState(ctx context.Context, provide
 }
 
 func (r *AccountRepository) HasQuotaWindows(ctx context.Context, accountID uint64) (bool, error) {
+	var providerRow struct {
+		Provider string
+	}
+	if err := r.db.db.WithContext(ctx).Model(&accountModel{}).Select("provider").Where("id = ?", accountID).Take(&providerRow).Error; err != nil {
+		return false, err
+	}
 	var count int64
-	err := r.db.db.WithContext(ctx).Model(&quotaWindowModel{}).Where("account_id = ? AND synced_at IS NOT NULL", accountID).Count(&count).Error
-	return count > 0, err
+	query := r.db.db.WithContext(ctx).Model(&quotaWindowModel{}).Where("account_id = ? AND synced_at IS NOT NULL", accountID)
+	if account.Provider(providerRow.Provider) == account.ProviderConsole {
+		// Pre-usage Console releases stored one synthetic local chat window.
+		// Only the complete authoritative /usage snapshot counts as initialized,
+		// so re-import and startup migration replace that legacy state.
+		query = query.Where("source = ? AND mode IN ?", account.QuotaSourceUpstream, []string{"console", "console_image", "console_video"}).Distinct("mode")
+		if err := query.Count(&count).Error; err != nil {
+			return false, err
+		}
+		return count == 3, nil
+	}
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (r *AccountRepository) GetQuotaWindows(ctx context.Context, accountIDs []uint64) (map[uint64][]account.QuotaWindow, error) {

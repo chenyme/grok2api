@@ -17,6 +17,7 @@ const (
 	recoveryProbeTimeout   = 30 * time.Second
 	recoveryReconcileEvery = time.Minute
 	recoveryReconcileLimit = 1000
+	consoleProbeInterval   = 24 * time.Hour
 )
 
 type quotaSynchronizer interface {
@@ -105,7 +106,14 @@ func (s *Service) runOne(ctx context.Context, now time.Time, value accountdomain
 	value.Attempts++
 	if probeErr == nil && window.ResetAt != nil && window.ResetAt.After(now) {
 		value.DueAt = *window.ResetAt
+	} else if probeErr == nil && value.Mode == "console" {
+		// Console usage currently exposes no reset timestamp. A healthy zero
+		// result is therefore rechecked after the fixed 24-hour prediction
+		// window; transport failures still use bounded exponential backoff.
+		value.DueAt = now.Add(consoleProbeInterval)
 	} else if probeErr == nil && window.WindowSeconds > 0 {
+		// Preserve Provider-specific upstream window semantics. In particular,
+		// Grok Web can report a duration without an absolute reset timestamp.
 		value.DueAt = now.Add(time.Duration(window.WindowSeconds) * time.Second)
 	} else {
 		value.DueAt = now.Add(s.backoff(value.Attempts))

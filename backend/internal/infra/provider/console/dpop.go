@@ -2,6 +2,7 @@ package console
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -49,9 +50,16 @@ type dpopSession struct {
 
 type dpopSessionManager struct {
 	mu       sync.Mutex
-	sessions map[string]dpopSession
+	sessions map[string]*dpopSessionEntry
+	lru      list.List
 	loads    singleflight.Group
 	now      func() time.Time
+}
+
+type dpopSessionEntry struct {
+	key     string
+	session dpopSession
+	element *list.Element
 }
 
 type dpopTokenEndpointError struct {
@@ -84,7 +92,7 @@ func (e *dpopTokenEndpointError) response() *http.Response {
 }
 
 func newDPoPSessionManager() *dpopSessionManager {
-	return &dpopSessionManager{sessions: make(map[string]dpopSession), now: time.Now}
+	return &dpopSessionManager{sessions: make(map[string]*dpopSessionEntry), now: time.Now}
 }
 
 func (m *dpopSessionManager) get(
@@ -93,12 +101,8 @@ func (m *dpopSessionManager) get(
 	credential account.Credential,
 	ssoToken string,
 	lease *infraegress.Lease,
-	force bool,
 ) (dpopSession, string, error) {
 	key := dpopSessionCacheKey(adapter.config().BaseURL, credential, ssoToken, lease)
-	if force {
-		m.invalidate(key, "")
-	}
 	if session, ok := m.cached(key); ok {
 		return session, key, nil
 	}
@@ -126,49 +130,58 @@ func (m *dpopSessionManager) get(
 func (m *dpopSessionManager) cached(key string) (dpopSession, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	session, ok := m.sessions[key]
+	entry, ok := m.sessions[key]
 	if !ok {
 		return dpopSession{}, false
 	}
-	if !session.expiresAt.After(m.now().UTC().Add(dpopRefreshSkew)) {
-		delete(m.sessions, key)
+	if !entry.session.expiresAt.After(m.now().UTC().Add(dpopRefreshSkew)) {
+		m.removeLocked(entry)
 		return dpopSession{}, false
 	}
-	return session, true
+	m.lru.MoveToFront(entry.element)
+	return entry.session, true
 }
 
 func (m *dpopSessionManager) store(key string, session dpopSession) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now().UTC()
-	for cachedKey, cached := range m.sessions {
-		if !cached.expiresAt.After(now.Add(dpopRefreshSkew)) {
-			delete(m.sessions, cachedKey)
+	if entry := m.sessions[key]; entry != nil {
+		entry.session = session
+		m.lru.MoveToFront(entry.element)
+		return
+	}
+	if len(m.sessions) >= dpopSessionCacheLimit {
+		if oldest := m.lru.Back(); oldest != nil {
+			m.removeLocked(oldest.Value.(*dpopSessionEntry))
 		}
 	}
-	if _, exists := m.sessions[key]; !exists && len(m.sessions) >= dpopSessionCacheLimit {
-		oldestKey := ""
-		var oldestExpiry time.Time
-		for cachedKey, cached := range m.sessions {
-			if oldestKey == "" || cached.expiresAt.Before(oldestExpiry) {
-				oldestKey = cachedKey
-				oldestExpiry = cached.expiresAt
-			}
-		}
-		delete(m.sessions, oldestKey)
-	}
-	m.sessions[key] = session
+	entry := &dpopSessionEntry{key: key, session: session}
+	entry.element = m.lru.PushFront(entry)
+	m.sessions[key] = entry
 }
 
 func (m *dpopSessionManager) invalidate(key, accessToken string) {
-	m.loads.Forget(key)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	current, exists := m.sessions[key]
-	if !exists || (accessToken != "" && current.accessToken != accessToken) {
+	current := m.sessions[key]
+	if current == nil || (accessToken != "" && current.session.accessToken != accessToken) {
 		return
 	}
-	delete(m.sessions, key)
+	m.removeLocked(current)
+	// Do not call singleflight.Forget here. A concurrent refresh must remain
+	// coalesced; forgetting it can start a second token exchange for the same
+	// account and egress after an expired token produces a burst of 401s.
+}
+
+func (m *dpopSessionManager) removeLocked(entry *dpopSessionEntry) {
+	if entry == nil {
+		return
+	}
+	delete(m.sessions, entry.key)
+	if entry.element != nil {
+		m.lru.Remove(entry.element)
+		entry.element = nil
+	}
 }
 
 func dpopSessionCacheKey(baseURL string, credential account.Credential, ssoToken string, lease *infraegress.Lease) string {
@@ -262,9 +275,8 @@ func (a *Adapter) doDPoPRequest(
 	body []byte,
 	accept string,
 ) (*http.Response, error) {
-	force := false
 	for attempt := 0; attempt < 2; attempt++ {
-		session, cacheKey, err := a.dpop.get(ctx, a, credential, ssoToken, lease, force)
+		session, cacheKey, err := a.dpop.get(ctx, a, credential, ssoToken, lease)
 		if err != nil {
 			var endpointErr *dpopTokenEndpointError
 			if errors.As(err, &endpointErr) {
@@ -299,7 +311,6 @@ func (a *Adapter) doDPoPRequest(
 		_, _, _ = provider.ReadDiagnosticBody(response.Body)
 		_ = response.Body.Close()
 		a.dpop.invalidate(cacheKey, session.accessToken)
-		force = true
 	}
 	return nil, errors.New("Console DPoP 重试状态无效")
 }

@@ -122,10 +122,12 @@ func (a *Adapter) syncConsoleQuotas(ctx context.Context, credential account.Cred
 			SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now,
 		}
 	}
-	if _, ok := byMode[QuotaMode]; !ok {
-		return nil, time.Time{}, fmt.Errorf("Console usage 响应缺少 chat 额度")
+	for _, mode := range []string{QuotaMode, QuotaModeImage, QuotaModeVideo} {
+		if _, ok := byMode[mode]; !ok {
+			return nil, time.Time{}, fmt.Errorf("Console usage 响应缺少 %s 额度", consoleQuotaKind(mode))
+		}
 	}
-	windows := make([]account.QuotaWindow, 0, len(byMode))
+	windows := make([]account.QuotaWindow, 0, 3)
 	for _, mode := range []string{QuotaMode, QuotaModeImage, QuotaModeVideo} {
 		if window, ok := byMode[mode]; ok {
 			windows = append(windows, window)

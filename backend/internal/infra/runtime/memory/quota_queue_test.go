@@ -56,3 +56,56 @@ func TestEnsureQuotaRecoveryPreservesExistingBackoffAndClaim(t *testing.T) {
 		t.Fatalf("ensure overwrote active claim: %v", err)
 	}
 }
+
+func TestScheduleQuotaRecoveryPreservesActiveClaim(t *testing.T) {
+	ctx := context.Background()
+	queue := NewQuotaRecoveryQueue()
+	now := time.Now().UTC()
+	event := account.QuotaRecoveryEvent{AccountID: 1, Mode: "console", DueAt: now.Add(-time.Second), Attempts: 2}
+	if err := queue.ScheduleQuotaRecovery(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := queue.ClaimDueQuotaRecoveries(ctx, now, 1, time.Minute)
+	if err != nil || len(claimed) != 1 || claimed[0].ClaimToken == "" {
+		t.Fatalf("claimed = %#v, err = %v", claimed, err)
+	}
+	if err := queue.ScheduleQuotaRecovery(ctx, account.QuotaRecoveryEvent{AccountID: 1, Mode: "console", DueAt: now.Add(24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	claimed[0].DueAt = now.Add(24 * time.Hour)
+	claimed[0].Attempts++
+	if err := queue.RescheduleQuotaRecovery(ctx, claimed[0]); err != nil {
+		t.Fatalf("concurrent schedule overwrote active claim: %v", err)
+	}
+}
+
+func TestCancelQuotaRecoveryRemovesOnlyUnclaimedEvent(t *testing.T) {
+	ctx := context.Background()
+	queue := NewQuotaRecoveryQueue()
+	now := time.Now().UTC()
+	if err := queue.ScheduleQuotaRecovery(ctx, account.QuotaRecoveryEvent{AccountID: 1, Mode: "console", DueAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.CancelQuotaRecovery(ctx, 1, "console"); err != nil {
+		t.Fatal(err)
+	}
+	values, err := queue.ClaimDueQuotaRecoveries(ctx, now.Add(2*time.Hour), 1, time.Minute)
+	if err != nil || len(values) != 0 {
+		t.Fatalf("cancelled event was claimable: %#v, err = %v", values, err)
+	}
+
+	if err := queue.ScheduleQuotaRecovery(ctx, account.QuotaRecoveryEvent{AccountID: 2, Mode: "console", DueAt: now.Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := queue.ClaimDueQuotaRecoveries(ctx, now, 1, time.Minute)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claimed = %#v, err = %v", claimed, err)
+	}
+	if err := queue.CancelQuotaRecovery(ctx, 2, "console"); err != nil {
+		t.Fatal(err)
+	}
+	claimed[0].DueAt = now.Add(time.Hour)
+	if err := queue.RescheduleQuotaRecovery(ctx, claimed[0]); err != nil {
+		t.Fatalf("cancel removed active claim: %v", err)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -761,6 +762,22 @@ func TestSyncQuotaModeSelectsConsoleMediaWindow(t *testing.T) {
 	}
 }
 
+func TestSyncQuotaRejectsPartialUsageSnapshot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/dpop/token" {
+			serveTestDPoPToken(t, writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"quotas":[{"kind":"chat","limit":10,"used":1,"remaining":9}]}`)
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	if _, err := adapter.SyncQuota(context.Background(), credential); err == nil || !strings.Contains(err.Error(), "image") {
+		t.Fatalf("partial usage err = %v", err)
+	}
+}
+
 func TestAdapterRefreshesDPoPSessionOnceAfterUnauthorized(t *testing.T) {
 	var tokenRequests atomic.Int32
 	var responseRequests atomic.Int32
@@ -845,6 +862,93 @@ func TestAdapterCoalescesConcurrentDPoPTokenExchange(t *testing.T) {
 	}
 	if tokenRequests.Load() != 1 || responseRequests.Load() != workers {
 		t.Fatalf("requests token=%d responses=%d", tokenRequests.Load(), responseRequests.Load())
+	}
+}
+
+func TestAdapterCoalescesConcurrentDPoPRefreshAfterUnauthorized(t *testing.T) {
+	const workers = 16
+	var tokenRequests atomic.Int32
+	var responseRequests atomic.Int32
+	var initialRequests atomic.Int32
+	var releaseInitial sync.Once
+	initialReady := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/dpop/token" {
+			tokenRequests.Add(1)
+			time.Sleep(20 * time.Millisecond)
+			serveTestDPoPToken(t, writer, request)
+			return
+		}
+		responseRequests.Add(1)
+		verifyTestDPoPProof(t, request)
+		if current := initialRequests.Add(1); current <= workers {
+			if current == workers {
+				releaseInitial.Do(func() { close(initialReady) })
+			}
+			<-initialReady
+			writer.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(writer, `{"error":"expired dpop token"}`)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"id":"resp_refreshed","object":"response","status":"completed","output":[]}`)
+	}))
+	defer server.Close()
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	start := make(chan struct{})
+	errorsChannel := make(chan error, workers)
+	var group sync.WaitGroup
+	group.Add(workers)
+	for range workers {
+		go func() {
+			defer group.Done()
+			<-start
+			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+				Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
+				Operation: conversation.OperationResponses, NormalizeBody: true, Body: []byte(`{"model":"grok-4.3","input":"hello"}`),
+			})
+			if err == nil {
+				_, err = io.Copy(io.Discard, response.Body)
+				closeErr := response.Body.Close()
+				if err == nil {
+					err = closeErr
+				}
+			}
+			errorsChannel <- err
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(errorsChannel)
+	for err := range errorsChannel {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if tokenRequests.Load() != 2 || responseRequests.Load() != workers*2 {
+		t.Fatalf("requests token=%d responses=%d", tokenRequests.Load(), responseRequests.Load())
+	}
+}
+
+func TestDPoPSessionCacheUsesBoundedLRUEviction(t *testing.T) {
+	manager := newDPoPSessionManager()
+	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	for index := range dpopSessionCacheLimit {
+		manager.store(strconv.Itoa(index), dpopSession{accessToken: strconv.Itoa(index), expiresAt: now.Add(time.Minute)})
+	}
+	if _, ok := manager.cached("0"); !ok {
+		t.Fatal("failed to touch oldest cache entry")
+	}
+	manager.store("new", dpopSession{accessToken: "new", expiresAt: now.Add(time.Minute)})
+	if len(manager.sessions) != dpopSessionCacheLimit {
+		t.Fatalf("cache size = %d", len(manager.sessions))
+	}
+	if _, ok := manager.cached("0"); !ok {
+		t.Fatal("recently used entry was evicted")
+	}
+	if _, ok := manager.cached("1"); ok {
+		t.Fatal("least recently used entry was retained")
 	}
 }
 

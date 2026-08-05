@@ -7,18 +7,18 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 )
 
-func TestPreserveActiveQuotaWindowsUntilReset(t *testing.T) {
+func TestPreserveActiveLocalQuotaWindowsUntilReset(t *testing.T) {
 	now := time.Now().UTC()
 	future := now.Add(time.Hour)
 	past := now.Add(-time.Second)
-	incoming := []accountdomain.QuotaWindow{{Mode: "console", Remaining: 20, Total: 20}}
+	incoming := []accountdomain.QuotaWindow{{Mode: "fast", Remaining: 20, Total: 20}}
 
-	active := preserveActiveQuotaWindows([]accountdomain.QuotaWindow{{Mode: "console", Remaining: 7, Total: 20, ResetAt: &future}}, incoming, now)
+	active := preserveActiveQuotaWindows([]accountdomain.QuotaWindow{{Mode: "fast", Remaining: 7, Total: 20, ResetAt: &future}}, incoming, now)
 	if len(active) != 1 || active[0].Remaining != 7 {
 		t.Fatalf("active window = %#v", active)
 	}
 
-	expired := preserveActiveQuotaWindows([]accountdomain.QuotaWindow{{Mode: "console", Remaining: 0, Total: 20, ResetAt: &past}}, incoming, now)
+	expired := preserveActiveQuotaWindows([]accountdomain.QuotaWindow{{Mode: "fast", Remaining: 0, Total: 20, ResetAt: &past}}, incoming, now)
 	if len(expired) != 1 || expired[0].Remaining != 20 {
 		t.Fatalf("expired window = %#v", expired)
 	}
@@ -34,10 +34,6 @@ func TestQuotaRecoveryDueAtSchedulesUnknownRemoteWindowProbe(t *testing.T) {
 	if value := quotaRecoveryDueAt(window, now, false); value != nil {
 		t.Fatalf("available window dueAt = %v", value)
 	}
-	window.Source = accountdomain.QuotaSourceDefault
-	if value := quotaRecoveryDueAt(window, now, true); value == nil || !value.Equal(now.Add(consolePredictedQuotaProbeDelay)) {
-		t.Fatalf("legacy Console dueAt = %v", value)
-	}
 	window = accountdomain.QuotaWindow{Mode: "fast", Remaining: 0, Source: accountdomain.QuotaSourceDefault}
 	if value := quotaRecoveryDueAt(window, now, true); value != nil {
 		t.Fatalf("unknown local window dueAt = %v", value)
@@ -45,6 +41,25 @@ func TestQuotaRecoveryDueAtSchedulesUnknownRemoteWindowProbe(t *testing.T) {
 	window.Source = accountdomain.QuotaSourceUpstream
 	if value := quotaRecoveryDueAt(window, now, true); value == nil || !value.Equal(now.Add(unknownRemoteQuotaProbeDelay)) {
 		t.Fatalf("generic remote dueAt = %v", value)
+	}
+}
+
+func TestCompleteConsoleUsageSnapshotRejectsLegacyAndPartialWindows(t *testing.T) {
+	now := time.Now().UTC()
+	legacy := []accountdomain.QuotaWindow{{Mode: "console", Source: accountdomain.QuotaSourceDefault, SyncedAt: &now}}
+	if completeConsoleUsageSnapshot(legacy) {
+		t.Fatal("legacy synthetic Console window was accepted")
+	}
+	partial := []accountdomain.QuotaWindow{
+		{Mode: "console", Source: accountdomain.QuotaSourceUpstream, SyncedAt: &now},
+		{Mode: "console_image", Source: accountdomain.QuotaSourceUpstream, SyncedAt: &now},
+	}
+	if completeConsoleUsageSnapshot(partial) {
+		t.Fatal("partial Console usage snapshot was accepted")
+	}
+	complete := append(partial, accountdomain.QuotaWindow{Mode: "console_video", Source: accountdomain.QuotaSourceUpstream, SyncedAt: &now})
+	if !completeConsoleUsageSnapshot(complete) {
+		t.Fatal("complete Console usage snapshot was rejected")
 	}
 }
 

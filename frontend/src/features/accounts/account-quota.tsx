@@ -119,7 +119,7 @@ export function ConsoleQuota({ windows, locale }: { windows: NonNullable<Account
         if (!window) {
           return <div key={mode} className="min-w-0 px-2 first:pl-0 last:pr-0"><div className="flex items-center justify-between gap-1 text-[11px]"><span className="truncate text-muted-foreground">{label}</span><span className="text-muted-foreground">-</span></div><div className="mt-1.5 h-1.5 rounded-full bg-muted" /></div>;
         }
-        return <WebQuotaMode key={mode} mode={label} window={window} locale={locale} compact predictedProbe={mode === "console" && window.remaining === 0} />;
+        return <WebQuotaMode key={mode} mode={label} window={window} locale={locale} compact recoveryProbe={mode === "console" && window.remaining === 0} />;
       })}
     </div>
   );
@@ -172,7 +172,7 @@ function WeeklyWebQuota({ window, locale, t }: { window: WebQuotaWindow; locale:
   );
 }
 
-function WebQuotaMode({ mode, window, locale, compact = false, predictedProbe = false }: { mode: string; window: WebQuotaWindow; locale: string; compact?: boolean; predictedProbe?: boolean }) {
+function WebQuotaMode({ mode, window, locale, compact = false, recoveryProbe = false }: { mode: string; window: WebQuotaWindow; locale: string; compact?: boolean; recoveryProbe?: boolean }) {
   const { t } = useTranslation();
   const used = Math.max(0, window.total - window.remaining);
   const percent = window.total > 0 ? Math.max(0, Math.min(100, used / window.total * 100)) : 0;
@@ -184,7 +184,7 @@ function WebQuotaMode({ mode, window, locale, compact = false, predictedProbe = 
           <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary" style={{ width: `${percent}%` }} /></div>
         </button>
       </TooltipTrigger>
-      <TooltipContent><div>{t("accounts.webModeQuotaRemaining", { mode, remaining: formatNumber(window.remaining, locale, 0) })}</div><div className="text-muted-foreground">{window.resetAt ? predictedProbe ? t("console.predictedProbeAt", { time: formatDateTime(window.resetAt, locale) }) : t("accounts.quotaResetAt", { time: formatDateTime(window.resetAt, locale) }) : t("accounts.quotaResetUnknown")}</div></TooltipContent>
+      <TooltipContent><div>{t("accounts.webModeQuotaRemaining", { mode, remaining: formatNumber(window.remaining, locale, 0) })}</div><div className="text-muted-foreground">{window.resetAt ? recoveryProbe ? t("console.recoveryProbeAt", { time: formatDateTime(window.resetAt, locale) }) : t("accounts.quotaResetAt", { time: formatDateTime(window.resetAt, locale) }) : t("accounts.quotaResetUnknown")}</div></TooltipContent>
     </Tooltip>
   );
 }

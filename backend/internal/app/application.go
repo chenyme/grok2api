@@ -562,8 +562,8 @@ func (a *Application) Run(ctx context.Context) error {
 		a.quotaRecovery.Run(taskCtx)
 		return nil
 	})
-	startBackground("web_quota_refresh", func(taskCtx context.Context) error {
-		a.accounts.RunWebQuotaRefresh(taskCtx)
+	startBackground("quota_refresh", func(taskCtx context.Context) error {
+		a.accounts.RunQuotaRefresh(taskCtx)
 		return nil
 	})
 	startBackground("credential_refresh", func(taskCtx context.Context) error {
@@ -580,6 +580,10 @@ func (a *Application) Run(ctx context.Context) error {
 	})
 	startBackground("web_quota_startup_catchup", func(taskCtx context.Context) error {
 		a.runWebQuotaCatchup(taskCtx)
+		return nil
+	})
+	startBackground("console_usage_migration", func(taskCtx context.Context) error {
+		a.runConsoleUsageMigration(taskCtx)
 		return nil
 	})
 	startBackground("model_catalog_startup_catchup", func(taskCtx context.Context) error {
