@@ -1722,14 +1722,16 @@ func isRetryableResponse(response *provider.Response, upstreamProvider accountdo
 // isTerminalRequestForbidden identifies request-level 403 responses that must
 // be returned without account or egress side effects. Unknown 403 responses,
 // including bare permission-denied, remain on the credential traversal path.
-// The new policy/body classification is Build-specific so Web and Console keep
-// their existing browser/clearance recovery behavior.
+// General request policy classification is Build-specific so Web and Console
+// keep their browser/clearance recovery behavior. The exact Console DPoP rollout
+// error is also terminal because changing account or egress cannot satisfy it.
 func isTerminalRequestForbidden(upstreamProvider accountdomain.Provider, failure *UpstreamFailure) bool {
 	if failure == nil {
 		return false
 	}
 	return failure.SafetyRejection ||
-		(upstreamProvider == accountdomain.ProviderBuild && failure.RequestScopedForbidden)
+		(upstreamProvider == accountdomain.ProviderBuild && failure.RequestScopedForbidden) ||
+		(upstreamProvider == accountdomain.ProviderConsole && failure.RequestScopedForbidden && isDPoPProofRequired(failure.UpstreamCode))
 }
 
 // forcesAccountFailover keeps Build account-scoped billing, permission, and rate-limit

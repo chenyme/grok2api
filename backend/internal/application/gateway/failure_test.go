@@ -141,6 +141,16 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 	}
 }
 
+func TestHTTPUpstreamFailureClassifiesDPoPRequirementAsSystemic(t *testing.T) {
+	failure := newHTTPUpstreamFailure(http.StatusForbidden, []byte(`{"code":"unauthorized:dpop-required","error":"DPoP proof required but was not verified."}`), 42, "console")
+	if failure.AccountScoped || failure.CredentialRejected || !failure.RequestScopedForbidden {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if failure.UpstreamCode != "unauthorized:dpop-required" || failure.Fingerprint != "403:unauthorized_dpop_required" {
+		t.Fatalf("failure metadata = %#v", failure)
+	}
+}
+
 func TestNonAccountFailureFingerprintStopsAtLimit(t *testing.T) {
 	fingerprints := map[string]int{}
 	for _, status := range []int{
@@ -327,6 +337,14 @@ func TestTerminalRequestForbiddenRequiresExplicitRequestSignal(t *testing.T) {
 		if isTerminalRequestForbidden(providerValue, requestScoped) {
 			t.Fatalf("%s request classification must retain existing egress recovery", providerValue)
 		}
+	}
+
+	dpopRequired := &UpstreamFailure{HTTPStatus: http.StatusForbidden, UpstreamCode: "unauthorized:dpop-required", RequestScopedForbidden: true}
+	if !isTerminalRequestForbidden(accountdomain.ProviderConsole, dpopRequired) {
+		t.Fatal("Console DPoP auth-scheme requirement must be terminal")
+	}
+	if isTerminalRequestForbidden(accountdomain.ProviderWeb, dpopRequired) {
+		t.Fatal("Console-specific DPoP classification must not change Web recovery")
 	}
 
 	safety := &UpstreamFailure{HTTPStatus: http.StatusForbidden, UpstreamCode: "permission-denied", SafetyRejection: true}
