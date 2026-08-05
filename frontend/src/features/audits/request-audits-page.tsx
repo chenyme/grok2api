@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Activity, ArrowDown, ArrowUp, BrainCircuit, CircleCheck, CircleDollarSign, CornerDownRight, Database, Info, Minimize2, RefreshCw, Search, WholeWord, type LucideIcon } from "lucide-react";
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -9,6 +9,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { listModels } from "@/entities/model/model-api";
+import { listClientKeys } from "@/features/client-keys/client-keys-api";
+import { listAccounts } from "@/features/accounts/accounts-api";
 import { RequestAuditDetailDialog } from "@/features/audits/request-audit-detail-dialog";
 import { getRequestAudits, getRequestAuditSummary, type AuditBillingBreakdownDTO, type AuditBillingComponentDTO, type AuditDTO, type AuditPeriod } from "@/features/audits/request-audits-api";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
@@ -27,6 +29,10 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 
 const AUDIT_PAGE_CACHE_TIME_MS = 60_000;
 const AUDIT_SUMMARY_CACHE_TIME_MS = 120_000;
+// 筛选名单单次加载条数；密钥/账号列表复用 admin 分页接口，超出后点"加载更多"。
+const AUDIT_FILTER_PAGE_SIZE = 50;
+// 名单高度约 5 行，超出后内部滚动。
+const AUDIT_FILTER_MAX_HEIGHT = "max-h-40 overflow-y-auto";
 
 type AuditCursorState = { scope: string; values: string[] };
 
@@ -84,6 +90,70 @@ export function RequestAuditsPage() {
     queryFn: () => listModels({ page: 1, pageSize: 100 }),
     staleTime: 60_000,
   });
+  // 密钥/账号筛选名单只在对应三级菜单展开时懒加载，输入后重新按匹配查询。
+  const [keyFilterOptionsOpen, setKeyFilterOptionsOpen] = useState(false);
+  const [accountFilterOptionsOpen, setAccountFilterOptionsOpen] = useState(false);
+  const [keyFilterOptionsSearch, setKeyFilterOptionsSearch] = useState("");
+  const [accountFilterOptionsSearch, setAccountFilterOptionsSearch] = useState("");
+  const debouncedKeyFilterOptionsSearch = useDebouncedValue(keyFilterOptionsSearch);
+  const debouncedAccountFilterOptionsSearch = useDebouncedValue(accountFilterOptionsSearch);
+  const keyFilterOptionsQuery = useInfiniteQuery({
+    queryKey: ["client-keys", "audit-filter", debouncedKeyFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listClientKeys({ page: pageParam, pageSize: AUDIT_FILTER_PAGE_SIZE, search: debouncedKeyFilterOptionsSearch }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: keyFilterOptionsOpen,
+    staleTime: 60_000,
+  });
+  const accountFilterOptionsQuery = useInfiniteQuery({
+    queryKey: ["accounts", "audit-filter", debouncedAccountFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listAccounts({ page: pageParam, pageSize: AUDIT_FILTER_PAGE_SIZE, search: debouncedAccountFilterOptionsSearch }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: accountFilterOptionsOpen,
+    staleTime: 60_000,
+  });
+  const keyFilterOptionsFailed = keyFilterOptionsQuery.isError;
+  const keyFilterOptionsFetching = keyFilterOptionsQuery.isFetching;
+  const keyFilterOptionsHaveMore = keyFilterOptionsFailed || keyFilterOptionsQuery.hasNextPage;
+  const loadMoreKeyFilterOptions = () => {
+    if (keyFilterOptionsQuery.isError) void keyFilterOptionsQuery.refetch();
+    if (keyFilterOptionsFailed) return;
+    if (keyFilterOptionsQuery.hasNextPage) void keyFilterOptionsQuery.fetchNextPage();
+  };
+  const accountFilterOptionsFailed = accountFilterOptionsQuery.isError;
+  const accountFilterOptionsFetching = accountFilterOptionsQuery.isFetching;
+  const accountFilterOptionsHaveMore = accountFilterOptionsFailed || accountFilterOptionsQuery.hasNextPage;
+  const loadMoreAccountFilterOptions = () => {
+    if (accountFilterOptionsQuery.isError) void accountFilterOptionsQuery.refetch();
+    if (accountFilterOptionsFailed) return;
+    if (accountFilterOptionsQuery.hasNextPage) void accountFilterOptionsQuery.fetchNextPage();
+  };
+  // 账号范围覆盖三种 provider，审计记录可能来自任一 provider 的账号。
+  const keyFilterOptions = keyFilterOptionsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const accountFilterOptions = accountFilterOptionsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const keyFilterGroups = [
+    {
+      id: "keys", label: t("audits.key"),
+      emptyLabel: keyFilterOptionsFailed ? t("audits.filterOptionsLoadFailed") : keyFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsEmpty"),
+      options: keyFilterOptions.map((key) => ({ value: String(key.id), label: key.name || `#${key.id}` })),
+      loading: keyFilterOptionsFetching, hasMore: keyFilterOptionsHaveMore,
+      actionLabel: keyFilterOptionsFailed ? t("common.retry") : keyFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsLoadMore"),
+      onAction: loadMoreKeyFilterOptions,
+      maxHeightClassName: AUDIT_FILTER_MAX_HEIGHT,
+    },
+  ];
+  const accountFilterGroups = [
+    {
+      id: "accounts", label: t("audits.account"),
+      emptyLabel: accountFilterOptionsFailed ? t("audits.filterOptionsLoadFailed") : accountFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsEmpty"),
+      options: accountFilterOptions.map((account) => ({ value: String(account.id), label: account.name || `#${account.id}` })),
+      loading: accountFilterOptionsFetching, hasMore: accountFilterOptionsHaveMore,
+      actionLabel: accountFilterOptionsFailed ? t("common.retry") : accountFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsLoadMore"),
+      onAction: loadMoreAccountFilterOptions,
+      maxHeightClassName: AUDIT_FILTER_MAX_HEIGHT,
+    },
+  ];
   const result = auditsQuery.data;
   const nextCursor = result?.nextCursor ?? "";
   const summary = summaryQuery.data;
@@ -162,13 +232,36 @@ export function RequestAuditsPage() {
                   { value: "2xx", label: `2xx · ${t("audits.statusSuccess")}` },
                   { value: "4xx", label: `4xx · ${t("audits.statusClientError")}` },
                   { value: "5xx", label: `5xx · ${t("audits.statusServerError")}` },
+                  { value: "other", label: t("audits.statusOtherError") },
                 ] },
                 { id: "mode", label: t("audits.mode"), value: modeFilter, onChange: setModeFilter, options: [
                   { value: "stream", label: t("audits.stream") },
                   { value: "nonStream", label: t("audits.nonStream") },
                 ] },
-                { id: "key", type: "text", label: t("audits.key"), value: keyFilter, placeholder: t("audits.keyFilterPlaceholder"), onChange: setKeyFilter },
-                { id: "account", type: "text", label: t("audits.account"), value: accountFilter, placeholder: t("audits.accountFilterPlaceholder"), onChange: setAccountFilter },
+                {
+                  id: "key", label: t("audits.key"), value: keyFilter,
+                  onChange: setKeyFilter, options: [
+                    {
+                      value: "any", label: t("audits.key"), groups: keyFilterGroups,
+                      onGroupsOpenChange: setKeyFilterOptionsOpen,
+                      groupSearch: { value: keyFilterOptionsSearch, placeholder: t("audits.keyFilterPlaceholder"), onChange: (value) => {
+                        setKeyFilterOptionsSearch(value);
+                      } },
+                    },
+                  ],
+                },
+                {
+                  id: "account", label: t("audits.account"), value: accountFilter,
+                  onChange: setAccountFilter, options: [
+                    {
+                      value: "any", label: t("audits.account"), groups: accountFilterGroups,
+                      onGroupsOpenChange: setAccountFilterOptionsOpen,
+                      groupSearch: { value: accountFilterOptionsSearch, placeholder: t("audits.accountFilterPlaceholder"), onChange: (value) => {
+                        setAccountFilterOptionsSearch(value);
+                      } },
+                    },
+                  ],
+                },
               ]} />
             </div>
           </>
@@ -553,9 +646,20 @@ function StatusCode({ statusCode, hasError = false }: { statusCode: number; hasE
 function AuditStatus({ audit, onOpen }: { audit: AuditDTO; onOpen: () => void }) {
   const { t } = useTranslation();
   const mode = audit.operation === "compaction" ? t("audits.operations.compaction") : audit.streaming ? t("audits.stream") : t("audits.nonStream");
+  const hasError = Boolean(audit.errorCode);
+  // statusCode 0 表示已返回 2xx 响应头但流随后失败（如首字节超时/流式中断），
+  // 不展示误导性的数字状态码，改为"错误"标签。
+  const showErrorLabel = hasError && audit.statusCode === 0;
   const content = (
     <>
-      <StatusCode statusCode={audit.statusCode} hasError={Boolean(audit.errorCode)} />
+      {showErrorLabel ? (
+        <span className="inline-flex items-center gap-1.5 text-xs tabular-nums text-amber-700 dark:text-amber-300">
+          <span className="size-1.5 rounded-full bg-amber-500" />
+          {t("audits.errorLabel")}
+        </span>
+      ) : (
+        <StatusCode statusCode={audit.statusCode} hasError={hasError} />
+      )}
       <span className="block whitespace-nowrap text-[10px] text-muted-foreground">{mode}</span>
     </>
   );

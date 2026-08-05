@@ -162,6 +162,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	if err := d.ensureAuditOperationConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移请求审计操作约束: %w", err)
 	}
+	if err := d.ensureAuditStatusCodeConstraints(ctx); err != nil {
+		return fmt.Errorf("迁移请求审计状态码约束: %w", err)
+	}
 	if err := d.ensureMediaJobConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 数据库约束: %w", err)
 	}
@@ -333,6 +336,50 @@ func (d *Database) ensureAuditOperationConstraints(ctx context.Context) error {
 	return d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &requestAuditModel{}, table: "request_audits", name: "chk_request_audits_operation"},
 	}, "compaction")
+}
+
+// ensureAuditStatusCodeConstraints 回填历史"已返回 2xx 响应头但流随后失败"的审计
+// 记录（status_code 2xx 且 error_code 非空）为 0，并把状态码约束放宽为允许 0。
+// 0 不属于任何 HTTP 状态段，供"其它错误"筛选与失败统计识别。
+// 顺序必须是先放宽约束再回填：旧约束（BETWEEN 100 AND 599）不允许写入 0。
+func (d *Database) ensureAuditStatusCodeConstraints(ctx context.Context) error {
+	constraint := consoleConstraint{model: &requestAuditModel{}, table: "request_audits", name: "chk_request_audits_status_code"}
+	definition, err := d.constraintDefinition(ctx, constraint)
+	if err != nil {
+		return err
+	}
+	if !auditStatusCodeConstraintAllowsZero(definition) {
+		migrate := func() error {
+			db := d.db.WithContext(ctx)
+			if definition != "" {
+				if err := db.Migrator().DropConstraint(constraint.model, constraint.name); err != nil {
+					return fmt.Errorf("删除旧状态码约束: %w", err)
+				}
+			}
+			if err := db.Migrator().CreateConstraint(constraint.model, constraint.name); err != nil {
+				return fmt.Errorf("创建状态码约束: %w", err)
+			}
+			return nil
+		}
+		if d.dialect == "sqlite" {
+			if err := d.withSQLiteForeignKeysDisabled(ctx, migrate); err != nil {
+				return err
+			}
+		} else if err := migrate(); err != nil {
+			return err
+		}
+	}
+	return d.db.WithContext(ctx).Model(&requestAuditModel{}).
+		Where("status_code >= 200 AND status_code < 300 AND error_code IS NOT NULL AND error_code <> ''").
+		UpdateColumn("status_code", 0).Error
+}
+
+// auditStatusCodeConstraintAllowsZero 判断状态码约束是否已允许 0。SQLite 生成
+// `status_code BETWEEN 0 AND 599`，PostgreSQL 生成 `(status_code >= 0) AND
+// (status_code <= 599)`，因此归一化后同时匹配两种方言。
+func auditStatusCodeConstraintAllowsZero(definition string) bool {
+	normalized := strings.NewReplacer(" ", "", "\n", "", "\t", "", "\"", "", "`", "", "(", "", ")", "").Replace(strings.ToLower(definition))
+	return strings.Contains(normalized, "between0and") || strings.Contains(normalized, ">=0")
 }
 
 // ensureMediaJobConstraints 将历史仅允许 grok_web 的 media job CHECK 升级到支持 Build 与 Console 视频。

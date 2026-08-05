@@ -489,4 +489,50 @@ func TestAuditRepositorySummaryAppliesRangeAndGroupsPricingTier(t *testing.T) {
 	}
 }
 
+func TestAuditRepositoryStreamFailureStatusZeroFilteredAsOther(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-stream-failure.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAuditRepository(database)
+	now := time.Now().UTC()
+	values := []audit.Record{
+		{RequestID: "stream-interrupted", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "public", StatusCode: 0, Streaming: true, ErrorCode: "upstream_stream_interrupted", DurationMS: 616_731, CreatedAt: now.Add(-time.Hour)},
+		{RequestID: "healthy", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "public", StatusCode: 200, Streaming: true, InputTokens: 100, OutputTokens: 50, TotalTokens: 150, DurationMS: 100, CreatedAt: now.Add(-2 * time.Hour)},
+		{RequestID: "server-error", ClientKeyID: 1, ModelRouteID: 1, ModelPublicID: "public", StatusCode: 500, ErrorCode: "upstream_server_error", DurationMS: 50, CreatedAt: now.Add(-3 * time.Hour)},
+	}
+	if err := repository.CreateBatch(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	// 状态码 0 的记录计入失败，不再被当作成功。
+	summary, err := repository.Summarize(ctx, repositorypkg.AuditSummaryQuery{Start: now.Add(-24 * time.Hour), End: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Requests != 3 || summary.SuccessfulRequests != 1 || summary.FailedRequests != 2 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	// "其它错误"筛选命中状态码 0 的记录。
+	items, _, err := repository.ListCursor(ctx, repositorypkg.AuditCursorQuery{Limit: 50, Filter: repositorypkg.AuditListFilter{Status: "other"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].RequestID != "stream-interrupted" {
+		t.Fatalf("other filter items = %#v", items)
+	}
+	// "成功"筛选排除带错误码的记录。
+	items, _, err = repository.ListCursor(ctx, repositorypkg.AuditCursorQuery{Limit: 50, Filter: repositorypkg.AuditListFilter{Status: "success"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].RequestID != "healthy" {
+		t.Fatalf("success filter items = %#v", items)
+	}
+}
+
 func uint64Pointer(value uint64) *uint64 { return &value }

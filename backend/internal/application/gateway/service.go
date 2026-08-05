@@ -1252,7 +1252,11 @@ attemptLoop:
 		var once sync.Once
 		finalize := func(usage Usage, responseID, errorCode string) {
 			once.Do(func() {
-				successful := response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == ""
+				// 2xx 响应头已返回客户端但流随后失败（如首字节超时/流式中断）时，
+				// 审计存储 0 而非 2xx：0 不属于任何 HTTP 状态段，统计与"其它错误"
+				// 筛选可直接命中，避免这类失败被当作成功。
+				effectiveStatus := auditStatusForRecord(response.StatusCode, errorCode)
+				successful := effectiveStatus >= 200 && effectiveStatus < 300
 				lease.completeSelectorObservation(successful)
 				budget := newFinalizationBudget(string(operation), string(route.Provider))
 				if isUpstreamStreamFailure(errorCode) {
@@ -1267,7 +1271,7 @@ attemptLoop:
 				record := auditBase
 				record.AccountID = &accountID
 				record.AccountName = credential.Name
-				record.StatusCode = response.StatusCode
+				record.StatusCode = effectiveStatus
 				record.InputTokens = usage.InputTokens
 				record.CachedInputTokens = usage.CachedInputTokens
 				record.OutputTokens = usage.OutputTokens
@@ -1279,7 +1283,7 @@ attemptLoop:
 					record.MediaOutputImages = int64(max(0, response.QuotaUnits))
 				}
 				tokenPricing, tokenPriced := audit.EstimateOfficialCost(pricingModel, usage.InputTokens, usage.CachedInputTokens, usage.OutputTokens, usage.ContextInputTokens)
-				if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" && imagePriced {
+				if effectiveStatus >= 200 && effectiveStatus < 300 && imagePriced {
 					record.EstimatedCostInUSDTicks = imagePricing.CostInUSDTicks
 					record.PricingModel = imagePricing.Model
 					record.PricingVersion = audit.OfficialPricingAsOf
@@ -1298,7 +1302,7 @@ attemptLoop:
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
 				attempts := failureAttempts.snapshot()
-				if response.StatusCode < 200 || response.StatusCode >= 300 || errorCode != "" || len(attempts) > 0 {
+				if effectiveStatus < 200 || effectiveStatus >= 300 || len(attempts) > 0 {
 					record.Attempts = attempts
 				}
 				record.CreatedAt = now
@@ -1410,6 +1414,17 @@ func isUpstreamStreamFailure(errorCode string) bool {
 	default:
 		return false
 	}
+}
+
+// auditStatusForRecord 决定写入审计的状态码。已返回 2xx 响应头但随后流失败
+// （errorCode 非空，如首字节超时/流式中断）的记录写入 0：0 不属于 2xx/4xx/5xx
+// 任何段，筛选"其它错误"与统计都能正确把它归为失败，同时保留"上游确实返回 2xx
+// 响应头"这一事实。
+func auditStatusForRecord(statusCode int, errorCode string) int {
+	if statusCode >= 200 && statusCode < 300 && errorCode != "" {
+		return 0
+	}
+	return statusCode
 }
 
 func isRetryableTransportFailure(providerValue accountdomain.Provider, err error) bool {

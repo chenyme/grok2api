@@ -304,7 +304,7 @@ type requestAuditModel struct {
 	EgressNodeName          string    `gorm:"size:160;not null;default:'';check:chk_request_audits_egress_node_name,length(egress_node_name) <= 160"`
 	EgressScope             string    `gorm:"size:32;not null;default:'';check:chk_request_audits_egress_scope,egress_scope IN ('','grok_build','grok_web','grok_console','grok_web_asset','grok_console_asset')"`
 	EgressMode              string    `gorm:"size:16;not null;default:'';check:chk_request_audits_egress_mode,egress_mode IN ('','direct','proxy')"`
-	StatusCode              int       `gorm:"not null;check:chk_request_audits_status_code,status_code BETWEEN 100 AND 599"`
+	StatusCode              int       `gorm:"not null;check:chk_request_audits_status_code,status_code BETWEEN 0 AND 599"`
 	Streaming               bool      `gorm:"not null;default:false"`
 	MediaInputImages        int64     `gorm:"not null;default:0"`
 	MediaOutputImages       int64     `gorm:"not null;default:0"`

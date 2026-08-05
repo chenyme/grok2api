@@ -16,6 +16,8 @@ type DataTableFilterOptionGroup = {
   hasMore?: boolean;
   actionLabel?: string;
   onAction?: () => void;
+  // 名单内容超出该高度时内部滚动（例如 max-h-40 = 5 行），避免菜单被拉得很长。
+  maxHeightClassName?: string;
 };
 
 type DataTableFilterOption = {
@@ -141,9 +143,11 @@ export function DataTableFilters({ filters }: { filters: DataTableFilter[] }) {
                               <div key={group.id}>
                                 <DropdownMenuSeparator />
                                 <DropdownMenuLabel className="text-muted-foreground">{group.label}</DropdownMenuLabel>
-                                {group.options.length === 0
-                                  ? <DropdownMenuItem disabled className="text-xs text-muted-foreground">{group.emptyLabel ?? t("common.noData")}</DropdownMenuItem>
-                                  : group.options.map((entry) => <DropdownMenuRadioItem key={entry.value} value={entry.value}>{entry.label}</DropdownMenuRadioItem>)}
+                                <div className={group.maxHeightClassName}>
+                                  {group.options.length === 0
+                                    ? <DropdownMenuItem disabled className="text-xs text-muted-foreground">{group.emptyLabel ?? t("common.noData")}</DropdownMenuItem>
+                                    : group.options.map((entry) => <DropdownMenuRadioItem key={entry.value} value={entry.value}>{entry.label}</DropdownMenuRadioItem>)}
+                                </div>
                                 {group.hasMore && group.onAction ? (
                                   <DropdownMenuItem
                                     disabled={group.loading}
