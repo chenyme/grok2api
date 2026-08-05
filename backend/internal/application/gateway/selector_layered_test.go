@@ -695,9 +695,27 @@ func TestLayeredRoutingMatchesCombinedRepositoryResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	layered := assembleRoutingCandidates(account.ProviderBuild, bases, overlay)
+	layered := assembleRoutingCandidates(account.ProviderBuild, "", bases, overlay)
 	if !reflect.DeepEqual(layered, combined) {
 		t.Fatalf("layered = %#v\ncombined = %#v", layered, combined)
+	}
+}
+
+func TestAssembleRoutingCandidatesAllowsRecognizedStaticConsoleModelWithStaleSnapshot(t *testing.T) {
+	bases := []account.RoutingAccountBase{{Credential: account.Credential{
+		ID: 1, Provider: account.ProviderConsole, Enabled: true, AuthStatus: account.AuthStatusActive,
+	}}}
+	overlay := account.RoutingOverlaySnapshot{Values: []account.RoutingAccountOverlay{{
+		AccountID: 1, ModelCapabilityKnown: true, SupportsModel: false,
+	}}}
+
+	recognized := assembleRoutingCandidates(account.ProviderConsole, "console_image", bases, overlay)
+	if len(recognized) != 1 || !recognized[0].ModelCapabilityKnown || !recognized[0].SupportsModel {
+		t.Fatalf("recognized static Console model = %#v", recognized)
+	}
+	unknown := assembleRoutingCandidates(account.ProviderConsole, "", bases, overlay)
+	if len(unknown) != 1 || !unknown[0].ModelCapabilityKnown || unknown[0].SupportsModel {
+		t.Fatalf("unknown Console model = %#v", unknown)
 	}
 }
 

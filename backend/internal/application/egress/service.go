@@ -231,7 +231,7 @@ func (s *Service) DefaultUserAgents() map[string]string {
 	defer s.mu.RUnlock()
 	return map[string]string{
 		string(domain.ScopeBuild): "", string(domain.ScopeWeb): s.browserUA, string(domain.ScopeConsole): s.browserUA,
-		string(domain.ScopeWebAsset): s.browserUA,
+		string(domain.ScopeWebAsset): s.browserUA, string(domain.ScopeConsoleAsset): s.browserUA,
 	}
 }
 
@@ -285,7 +285,11 @@ func (s *Service) publicNodes(values []domain.Node) []domain.PublicNode {
 }
 
 func validListScope(scope domain.Scope) bool {
-	return scope == "" || scope == domain.ScopeBuild || scope == domain.ScopeWeb || scope == domain.ScopeConsole || scope == domain.ScopeWebAsset
+	return scope == "" || scope == domain.ScopeBuild || scope == domain.ScopeWeb || scope == domain.ScopeConsole || scope == domain.ScopeWebAsset || scope == domain.ScopeConsoleAsset
+}
+
+func allServiceScopes() []domain.Scope {
+	return []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset, domain.ScopeConsoleAsset}
 }
 
 func validListValue(value string, allowed ...string) bool {
@@ -352,7 +356,7 @@ func (s *Service) validateFallbackNodeUpdate(ctx context.Context, node domain.No
 }
 
 func (s *Service) validateFallbackNodeUpdateWithConfig(node domain.Node, config domain.OperationsConfig) error {
-	for _, scope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
+	for _, scope := range allServiceScopes() {
 		fallback := config.FallbackFor(scope)
 		if fallback.Mode != domain.FallbackModeFixed || fallback.NodeID != node.ID {
 			continue
@@ -373,7 +377,7 @@ func (s *Service) UpdateManyEnabled(ctx context.Context, nodeIDs []uint64, enabl
 	}
 
 	// Disabling a fixed fallback would make the persisted routing policy
-	// invalid. At most four fallback nodes need point lookups, regardless of
+	// invalid. At most five fallback nodes need point lookups, regardless of
 	// the batch size.
 	if !enabled && s.operations != nil {
 		config, err := s.operations.GetEgressOperationsConfig(ctx)
@@ -384,8 +388,8 @@ func (s *Service) UpdateManyEnabled(ctx context.Context, nodeIDs []uint64, enabl
 		for _, id := range ids {
 			selected[id] = struct{}{}
 		}
-		fallbackNodeIDs := make(map[uint64]struct{}, 4)
-		for _, scope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
+		fallbackNodeIDs := make(map[uint64]struct{}, len(allServiceScopes()))
+		for _, scope := range allServiceScopes() {
 			fallback := config.FallbackFor(scope)
 			if fallback.Mode == domain.FallbackModeFixed {
 				if _, exists := selected[fallback.NodeID]; exists {
@@ -714,8 +718,8 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	if name == "" || len(name) > 160 {
 		return domain.Node{}, fmt.Errorf("%w: 名称必须在 1 到 160 个字符之间", ErrInvalidInput)
 	}
-	if input.Scope != domain.ScopeBuild && input.Scope != domain.ScopeWeb && input.Scope != domain.ScopeConsole && input.Scope != domain.ScopeWebAsset {
-		return domain.Node{}, fmt.Errorf("%w: scope 必须是 grok_build、grok_web、grok_console 或 grok_web_asset", ErrInvalidInput)
+	if !validListScope(input.Scope) || input.Scope == "" {
+		return domain.Node{}, fmt.Errorf("%w: scope 必须是 grok_build、grok_web、grok_console、grok_web_asset 或 grok_console_asset", ErrInvalidInput)
 	}
 	value.Name, value.Scope, value.Enabled, value.ProxyPool = name, input.Scope, input.Enabled, proxyPool
 	if input.AccountCapacity != nil {
@@ -756,7 +760,7 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	if value.ProxyPool && strings.TrimSpace(value.EncryptedProxyURL) == "" {
 		return domain.Node{}, fmt.Errorf("%w: 代理池模式需要配置代理地址", ErrInvalidInput)
 	}
-	if input.Scope == domain.ScopeBuild {
+	if input.Scope == domain.ScopeBuild || input.Scope == domain.ScopeConsoleAsset {
 		value.EncryptedCloudflareCookie = ""
 	} else if input.ClearCookies {
 		value.EncryptedCloudflareCookie = ""

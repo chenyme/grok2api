@@ -222,7 +222,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	cliAdapter.SetReasoningReplay(reasoningReplay)
 	webAdapter := webprovider.NewAdapter(webProviderConfig(cfg), egressManager, cipher, responseRepo, mediaService)
 	webAdapter.SetLogger(logger)
-	consoleAdapter := consoleprovider.NewAdapter(consoleProviderConfig(cfg), egressManager, cipher)
+	consoleAdapter := consoleprovider.NewAdapter(consoleProviderConfig(cfg), egressManager, cipher, mediaService)
 	providers := provider.NewRegistry(cliAdapter, webAdapter, consoleAdapter)
 	if err := providers.Validate(); err != nil {
 		if runtimeStore != nil {

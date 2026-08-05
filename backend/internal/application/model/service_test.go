@@ -31,6 +31,36 @@ func TestModelProviderFilterAcceptsOnlyKnownProviders(t *testing.T) {
 	}
 }
 
+func TestEndpointCapabilitiesFollowProviderSurface(t *testing.T) {
+	routes := []modeldomain.Route{
+		{Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses},
+		{Provider: account.ProviderConsole, Capability: modeldomain.CapabilityImage},
+		{Provider: account.ProviderConsole, Capability: modeldomain.CapabilityImageEdit},
+	}
+	capabilities := endpointCapabilitiesForDefinition(routes, provider.Definition{
+		Conversation: provider.ConversationSurface{Responses: true, Messages: true},
+		Media:        provider.MediaSurface{ImageGeneration: true},
+	})
+	want := []string{"responses", "messages", "image"}
+	if fmt.Sprint(capabilities) != fmt.Sprint(want) {
+		t.Fatalf("endpoint capabilities = %v, want %v", capabilities, want)
+	}
+}
+
+func TestNormalizeBatchIDsAllowsGroupedRouteExpansion(t *testing.T) {
+	ids := make([]uint64, maxModelBatchSize)
+	for index := range ids {
+		ids[index] = uint64(index + 1)
+	}
+	if values, err := normalizeModelRouteBatchIDs(ids); err != nil || len(values) != maxModelBatchSize {
+		t.Fatalf("expanded grouped batch = %d, err=%v", len(values), err)
+	}
+	ids = append(ids, uint64(maxModelBatchSize+1))
+	if _, err := normalizeModelRouteBatchIDs(ids); err == nil {
+		t.Fatal("oversized grouped batch was accepted")
+	}
+}
+
 func TestSyncAggregatesCapabilitiesFromAllAccounts(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-sync.db"))

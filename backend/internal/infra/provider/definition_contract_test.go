@@ -25,7 +25,7 @@ func TestProductionProviderDefinitionsMatchImplementedCapabilities(t *testing.T)
 	registry := provider.NewRegistry(
 		cliprovider.NewAdapter(cliprovider.Config{}, nil),
 		webprovider.NewAdapter(webprovider.Config{}, nil, nil, nil, nil),
-		consoleprovider.NewAdapter(consoleprovider.Config{}, nil, nil),
+		consoleprovider.NewAdapter(consoleprovider.Config{}, nil, nil, nil),
 	)
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("production registry validation failed: %v", err)
@@ -62,9 +62,10 @@ func TestProductionProviderDefinitionsMatchImplementedCapabilities(t *testing.T)
 		},
 		{
 			provider: account.ProviderConsole, catalog: provider.ModelCatalogStatic, quota: provider.QuotaRemoteWindow,
-			capabilities: []modeldomain.Capability{modeldomain.CapabilityResponses},
+			capabilities: []modeldomain.Capability{modeldomain.CapabilityResponses, modeldomain.CapabilityImage, modeldomain.CapabilityImageEdit, modeldomain.CapabilityVideo},
 			credential:   provider.CredentialSurface{AuthType: account.AuthTypeSSO, Import: true},
 			conversation: provider.ConversationSurface{Responses: true, ChatCompletions: true, Messages: true},
+			media:        provider.MediaSurface{ImageGeneration: true, ImageEdit: true, VideoGeneration: true},
 			inference:    provider.InferencePolicy{Usage: provider.UsageUpstream, RetryForbiddenAsEgress: true},
 		},
 	}

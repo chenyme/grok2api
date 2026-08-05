@@ -838,10 +838,10 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	}
 	fallbackConfig, fallbackSupported, fallbackConfigErr := m.loadOperationsConfig(ctx, now)
 	fallback := domain.FallbackConfig{Mode: domain.FallbackModeNone}
-	reservedFallbackNodes := make(map[uint64]struct{}, 4)
+	reservedFallbackNodes := make(map[uint64]struct{}, len(allEgressScopes()))
 	if fallbackConfigErr == nil && fallbackSupported {
 		fallback = fallbackConfig.FallbackFor(scope)
-		for _, fallbackScope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
+		for _, fallbackScope := range allEgressScopes() {
 			configuredFallback := fallbackConfig.FallbackFor(fallbackScope)
 			if configuredFallback.Mode == domain.FallbackModeFixed && configuredFallback.NodeID != 0 {
 				reservedFallbackNodes[configuredFallback.NodeID] = struct{}{}
@@ -1062,7 +1062,7 @@ func (m *Manager) leaseForNode(ctx context.Context, scope domain.Scope, affinity
 
 func (m *Manager) leaseForNodeWithOptions(ctx context.Context, scope domain.Scope, affinity, encryptedCredentialCookies string, managedClearance bool, selected domain.Node, options clientOptions) (*Lease, bool, error) {
 	credentialCookies := ""
-	if !managedClearance && scope != domain.ScopeBuild && strings.TrimSpace(encryptedCredentialCookies) != "" {
+	if !managedClearance && usesBrowserClearance(scope) && strings.TrimSpace(encryptedCredentialCookies) != "" {
 		decryptedCookies, decryptErr := m.cipher.Decrypt(encryptedCredentialCookies)
 		if decryptErr != nil {
 			return nil, true, decryptErr
@@ -1091,7 +1091,7 @@ func (m *Manager) leaseForNodeWithOptions(ctx context.Context, scope domain.Scop
 		}
 	}
 	cookies := ""
-	if scope != domain.ScopeBuild {
+	if usesBrowserClearance(scope) {
 		cookies, err = m.cipher.Decrypt(selected.EncryptedCloudflareCookie)
 		if err != nil {
 			// Managed mode can recover a damaged persisted cookie by asking the
@@ -1127,7 +1127,10 @@ func (m *Manager) leaseForNodeWithOptions(ctx context.Context, scope domain.Scop
 	// Derive identity independently of the current toggle. clientFor applies one
 	// authoritative toggle snapshot, so enabling isolation between these two
 	// stages cannot accidentally place an account request in the shared bucket.
-	accountIdentity := isolationAccountIdentity(ctx, scope, affinity)
+	accountIdentity := ""
+	if scope != domain.ScopeConsoleAsset {
+		accountIdentity = isolationAccountIdentity(ctx, scope, affinity)
+	}
 	client, err := m.clientForWithOptions(selected.ID, scope, proxyURL, userAgent, cookies, sticky, accountIdentity, options)
 	if err != nil {
 		return nil, false, err
@@ -1140,6 +1143,14 @@ func (m *Manager) leaseForNodeWithOptions(ctx context.Context, scope domain.Scop
 			m.decrementInflight(selected.ID)
 		})
 	}}, true, nil
+}
+
+// Console assets are served from public media hosts. They still need the
+// selected proxy and browser user agent, but forwarding account or node
+// clearance cookies would unnecessarily expose credentials to a different
+// origin and make an otherwise anonymous download depend on cookie storage.
+func usesBrowserClearance(scope domain.Scope) bool {
+	return scope != domain.ScopeBuild && scope != domain.ScopeConsoleAsset
 }
 
 func (m *Manager) inflightCounter(nodeID uint64) *atomic.Int64 {
@@ -1288,6 +1299,9 @@ func (m *Manager) InvalidateOperationsConfig() {
 func fallbackScopes(scope domain.Scope) []domain.Scope {
 	if scope == domain.ScopeWebAsset {
 		return []domain.Scope{domain.ScopeWebAsset, domain.ScopeWeb}
+	}
+	if scope == domain.ScopeConsoleAsset {
+		return []domain.Scope{domain.ScopeConsoleAsset, domain.ScopeConsole, domain.ScopeWeb}
 	}
 	if scope == domain.ScopeConsole {
 		// Console uses the same browser/clearance surface as Grok Web. A
@@ -1451,7 +1465,7 @@ func (m *Manager) createAndCacheClient(key clientCacheKey, id uint64, scope doma
 	}
 	if id != 0 && !sticky {
 		for previousKey, previous := range m.clients {
-			if previousKey.nodeID != id {
+			if previousKey.nodeID != id || previousKey.scope != key.scope {
 				continue
 			}
 			// Keep other accounts' pools when isolation is on.
@@ -1586,6 +1600,13 @@ func (m *Manager) Feedback(ctx context.Context, nodeID uint64, status int, trans
 
 func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, nodeID uint64, status int, transportErr error) {
 	if status == clientClosedRequestStatus || errors.Is(transportErr, context.Canceled) {
+		return
+	}
+	// Console media hosts are public and do not use clearance credentials. A
+	// 403 there commonly describes the object URL (expired, rejected, or
+	// missing), not the proxy's ability to reach the origin, so it must not cool
+	// or rotate an otherwise healthy primary Console node.
+	if scope == domain.ScopeConsoleAsset && transportErr == nil && status == http.StatusForbidden {
 		return
 	}
 	if scope == domain.ScopeBuild && neterrorpkg.IsResponseHeaderTimeout(transportErr) {
@@ -2116,7 +2137,7 @@ func (m *Manager) ForgetClearances(nodeIDs []uint64) {
 	if m.nodeVersions == nil {
 		m.nodeVersions = make(map[domain.Scope]uint64)
 	}
-	for _, scope := range []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset} {
+	for _, scope := range allEgressScopes() {
 		m.nodeVersions[scope]++
 	}
 	clear(m.nodes)
@@ -2224,6 +2245,10 @@ func (m *Manager) RefreshDueClearances(ctx context.Context, force bool) error {
 
 func isGrokWebScope(scope domain.Scope) bool {
 	return scope == domain.ScopeWeb || scope == domain.ScopeWebAsset || scope == domain.ScopeConsole
+}
+
+func allEgressScopes() []domain.Scope {
+	return []domain.Scope{domain.ScopeBuild, domain.ScopeWeb, domain.ScopeConsole, domain.ScopeWebAsset, domain.ScopeConsoleAsset}
 }
 
 func (m *Manager) isStickyProxyNode(value domain.Node) bool {

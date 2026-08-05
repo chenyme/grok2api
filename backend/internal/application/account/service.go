@@ -2705,7 +2705,14 @@ func (s *Service) RefreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	if !ok {
 		return accountdomain.QuotaWindow{}, fmt.Errorf("Provider usage 响应缺少 %s 额度", mode)
 	}
-	if err := s.reconcileQuotaRecoveryWindow(ctx, refreshed.Credential.Provider, id, window); err != nil {
+	if refreshed.Credential.Provider == accountdomain.ProviderConsole {
+		// One Console request refreshes all three authoritative windows. Reconcile
+		// every matching recovery event so externally consumed media quota cannot
+		// remain unscheduled merely because a different kind triggered the refresh.
+		if err := s.reconcileQuotaRecoveryWindows(ctx, refreshed.Credential.Provider, id, refreshed.Windows); err != nil {
+			return window, err
+		}
+	} else if err := s.reconcileQuotaRecoveryWindow(ctx, refreshed.Credential.Provider, id, window); err != nil {
 		return window, err
 	}
 	return window, nil
@@ -2749,8 +2756,8 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	var tier accountdomain.WebTier
 	if value.Provider == accountdomain.ProviderConsole {
 		// Console /usage always returns Chat, Image and Video together. Persist the
-		// response as one authoritative snapshot so informational media quotas do
-		// not remain stale while only Chat participates in routing and recovery.
+		// response as one authoritative snapshot so each media route observes the
+		// same upstream usage generation.
 		var snapshot provider.QuotaSnapshot
 		snapshot, err = adapter.SyncQuota(ctx, value)
 		if err == nil {
@@ -2798,7 +2805,7 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 
 func quotaSyncKey(accountID uint64, mode string) string {
 	mode = strings.TrimSpace(mode)
-	if mode == "console" || mode == "console_image" || mode == "console_video" {
+	if isConsoleUsageQuotaMode(mode) {
 		return "all:" + strconv.FormatUint(accountID, 10)
 	}
 	return mode + ":" + strconv.FormatUint(accountID, 10)
@@ -2850,7 +2857,7 @@ func quotaRecoveryDueAt(window accountdomain.QuotaWindow, now time.Time, exhaust
 		value := *window.ResetAt
 		return &value
 	}
-	if window.Mode == "console" {
+	if isConsoleUsageQuotaMode(window.Mode) {
 		value := now.Add(consolePredictedQuotaProbeDelay)
 		return &value
 	}
@@ -2864,7 +2871,7 @@ func quotaRecoveryDueAt(window accountdomain.QuotaWindow, now time.Time, exhaust
 // QueueQuotaRefresh asynchronously refreshes the remote quota window after a successful request.
 func (s *Service) QueueQuotaRefresh(id uint64, mode string) {
 	mode = strings.TrimSpace(mode)
-	if id == 0 || (mode != "console" && mode != "weekly" && !isWebChatQuotaMode(mode)) {
+	if id == 0 || (!isConsoleUsageQuotaMode(mode) && mode != "weekly" && !isWebChatQuotaMode(mode)) {
 		return
 	}
 	key := strconv.FormatUint(id, 10) + ":" + mode
@@ -3023,11 +3030,12 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 			}
 		}
 		refreshMode := request.mode
+		consoleMode := isConsoleUsageQuotaMode(request.mode)
 		skipUpstream := false
 		if windows, err := s.accounts.GetQuotaWindows(ctx, []uint64{request.accountID}); err == nil {
-			if request.mode == "console" {
+			if consoleMode {
 				for _, window := range windows[request.accountID] {
-					if window.Mode == "console" && window.SyncedAt != nil && s.now().UTC().Sub(window.SyncedAt.UTC()) < consoleQuotaRefreshMinInterval {
+					if window.Mode == request.mode && window.SyncedAt != nil && s.now().UTC().Sub(window.SyncedAt.UTC()) < consoleQuotaRefreshMinInterval {
 						skipUpstream = true
 						break
 					}
@@ -3048,6 +3056,11 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 		var release func()
 		if !skipUpstream && s.refreshLock != nil {
 			effectiveKey := strconv.FormatUint(request.accountID, 10) + ":" + refreshMode
+			if consoleMode {
+				// Every Console mode reads the same /usage snapshot. Serialize all
+				// three kinds across instances to avoid duplicate upstream probes.
+				effectiveKey = "console:" + strconv.FormatUint(request.accountID, 10)
+			}
 			release, acquired, refreshErr = s.refreshLock.Acquire(ctx, "quota-refresh:"+effectiveKey, quotaRefreshTimeout)
 		}
 		if !skipUpstream && refreshErr == nil && acquired {
@@ -3089,7 +3102,7 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 		s.quotaRefreshMu.Unlock()
 		if localChanged || (s.quotaRefreshState != nil && currentShared != sharedGeneration) {
 			perfmetrics.Default.Add("quota_refresh_events", perfmetrics.Labels{Subsystem: "quota", Stage: "refresh", Outcome: "trailing"}, 1)
-			if request.mode == "console" {
+			if consoleMode {
 				s.deferSuccessfulQuotaRefresh(request.key, true)
 				return
 			}
@@ -3103,7 +3116,7 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 				if clearErr != nil {
 					s.logger.Warn("quota_refresh_dirty_clear_failed", "account_id", request.accountID, "mode", request.mode, "error", clearErr)
 				}
-				if request.mode == "console" {
+				if consoleMode {
 					s.deferSuccessfulQuotaRefresh(request.key, true)
 					return
 				}
@@ -3113,7 +3126,7 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 		s.quotaRefreshMu.Lock()
 		state = s.quotaRefreshes[request.key]
 		if state != nil && state.generation == localGeneration {
-			if request.mode == "console" {
+			if consoleMode {
 				state.running = false
 				state.pending = false
 				state.failures = 0
@@ -3125,7 +3138,7 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 			perfmetrics.Default.Add("quota_refresh_events", perfmetrics.Labels{Subsystem: "quota", Stage: "refresh", Outcome: "success"}, 1)
 			return
 		}
-		if request.mode == "console" && state != nil {
+		if consoleMode && state != nil {
 			state.running = false
 			state.pending = true
 			state.failures = 0
@@ -3297,10 +3310,17 @@ func isWebChatQuotaMode(mode string) bool {
 	}
 }
 
+func isConsoleUsageQuotaMode(mode string) bool {
+	switch mode {
+	case "console", "console_image", "console_video":
+		return true
+	default:
+		return false
+	}
+}
+
 func quotaWindowControlsRouting(providerValue accountdomain.Provider, mode string) bool {
-	// Console currently routes text responses only. Its image/video usage
-	// windows are informational and must not quarantine or recover the account.
-	return providerValue != accountdomain.ProviderConsole || mode == "console"
+	return providerValue != accountdomain.ProviderConsole || isConsoleUsageQuotaMode(mode)
 }
 
 // SyncAllBilling 尽力刷新全部启用账号，单个账号失败不阻断其他账号。

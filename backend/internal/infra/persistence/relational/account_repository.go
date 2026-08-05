@@ -296,9 +296,17 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 		}
 	}
 	result := make([]account.RoutingCandidate, 0, len(values))
+	staticConsoleModel := provider == account.ProviderConsole && strings.TrimSpace(quotaMode) != ""
 	for _, value := range values {
 		capabilityKnown, supportsModel := known[value.ID], supported[value.ID]
-		if len(bound) > 0 {
+		if staticConsoleModel {
+			// Console exposes a provider-wide static catalog. Historical account
+			// snapshots may predate newly shipped catalog entries, but must not
+			// make those built-in routes unroutable until every account is synced
+			// again. A non-empty quota mode proves the adapter recognizes the
+			// upstream model; unknown/manual models keep snapshot-based gating.
+			capabilityKnown, supportsModel = true, true
+		} else if len(bound) > 0 {
 			capabilityKnown, supportsModel = true, true
 		} else if sharedSuperBuildModel {
 			var billing *account.Billing

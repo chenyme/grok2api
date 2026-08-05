@@ -151,7 +151,7 @@ func TestResolvePublicModelRoutesGatesDynamicAliasesAndPreservesCompatibility(t 
 		models: &aliasRouteResolver{
 			byPublic: map[string][]modeldomain.Route{"Build/grok-4.5": {route}},
 		},
-		providers: provider.NewRegistry(console.NewAdapter(console.Config{}, nil, nil)),
+		providers: provider.NewRegistry(console.NewAdapter(console.Config{}, nil, nil, nil)),
 	}
 
 	// Base model always works.

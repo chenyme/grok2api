@@ -14,6 +14,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
@@ -31,11 +32,12 @@ type Adapter struct {
 	cfg    Config
 	egress *infraegress.Manager
 	cipher *security.Cipher
+	assets provider.ImageAssetStore
 	dpop   *dpopSessionManager
 }
 
-func NewAdapter(cfg Config, egress *infraegress.Manager, cipher *security.Cipher) *Adapter {
-	return &Adapter{cfg: cfg, egress: egress, cipher: cipher, dpop: newDPoPSessionManager()}
+func NewAdapter(cfg Config, egress *infraegress.Manager, cipher *security.Cipher, assets provider.ImageAssetStore) *Adapter {
+	return &Adapter{cfg: cfg, egress: egress, cipher: cipher, assets: assets, dpop: newDPoPSessionManager()}
 }
 
 func (a *Adapter) Provider() account.Provider { return account.ProviderConsole }
@@ -58,6 +60,12 @@ func (a *Adapter) QuotaMode(upstreamModel string) string {
 	if _, ok := Resolve(upstreamModel); ok {
 		return QuotaMode
 	}
+	if ResolveMedia(upstreamModel, modeldomain.CapabilityImage) || ResolveMedia(upstreamModel, modeldomain.CapabilityImageEdit) {
+		return QuotaModeImage
+	}
+	if ResolveMedia(upstreamModel, modeldomain.CapabilityVideo) {
+		return QuotaModeVideo
+	}
 	return ""
 }
 
@@ -66,11 +74,7 @@ func (a *Adapter) TierOrder(string) []account.WebTier { return nil }
 func (a *Adapter) PricingModel(upstreamModel string) string { return upstreamModel }
 
 func (a *Adapter) ListModels(context.Context, account.Credential) ([]string, error) {
-	values := make([]string, 0, len(catalog))
-	for _, spec := range catalog {
-		values = append(values, spec.UpstreamModel)
-	}
-	return values, nil
+	return allModels(), nil
 }
 
 func (a *Adapter) ParseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {

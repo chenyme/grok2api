@@ -48,6 +48,13 @@ type Route struct {
 	UpdatedAt         time.Time
 }
 
+// RouteGroup is the admin-facing projection of one logical model target.
+// Catalog capabilities share a group while manual routes remain independent
+// scheduling targets even when their visible names happen to match.
+type RouteGroup struct {
+	Routes []Route
+}
+
 // NormalizePublicID 将内部路由 ID 规范化为稳定的 Provider 命名空间。
 // Provider 前缀只用于区分内部路由目标，不应直接暴露给下游客户端。
 func NormalizePublicID(provider account.Provider, value string) (string, bool) {

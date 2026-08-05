@@ -23,6 +23,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -33,23 +34,32 @@ import (
 )
 
 func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
-	expected := map[string]string{
-		"Console/grok-4.3":                     "grok-4.3",
-		"Console/grok-4.20-0309":               "grok-4.20-0309",
-		"Console/grok-4.20-0309-reasoning":     "grok-4.20-0309-reasoning",
-		"Console/grok-4.20-0309-non-reasoning": "grok-4.20-0309-non-reasoning",
-		"Console/grok-4.20-multi-agent-0309":   "grok-4.20-multi-agent-0309",
-		"Console/grok-build-0.1":               "grok-build-0.1",
+	type routeKey struct {
+		publicID   string
+		capability modeldomain.Capability
+	}
+	expected := map[routeKey]string{
+		{publicID: "Console/grok-4.3", capability: modeldomain.CapabilityResponses}:                     "grok-4.3",
+		{publicID: "Console/grok-4.20-0309-reasoning", capability: modeldomain.CapabilityResponses}:     "grok-4.20-0309-reasoning",
+		{publicID: "Console/grok-4.20-0309-non-reasoning", capability: modeldomain.CapabilityResponses}: "grok-4.20-0309-non-reasoning",
+		{publicID: "Console/grok-4.20-multi-agent-0309", capability: modeldomain.CapabilityResponses}:   "grok-4.20-multi-agent-0309",
+		{publicID: "Console/grok-4.5", capability: modeldomain.CapabilityResponses}:                     "grok-4.5",
+		{publicID: "Console/grok-build-0.1", capability: modeldomain.CapabilityResponses}:               "grok-build-0.1",
+		{publicID: "Console/grok-imagine-image-quality", capability: modeldomain.CapabilityImage}:       "grok-imagine-image-quality",
+		{publicID: "Console/grok-imagine-image-quality", capability: modeldomain.CapabilityImageEdit}:   "grok-imagine-image-quality",
+		{publicID: "Console/grok-imagine-image", capability: modeldomain.CapabilityImage}:               "grok-imagine-image",
+		{publicID: "Console/grok-imagine-image", capability: modeldomain.CapabilityImageEdit}:           "grok-imagine-image",
+		{publicID: "Console/grok-imagine-video", capability: modeldomain.CapabilityVideo}:               "grok-imagine-video",
 	}
 	routes := Routes()
 	if len(routes) != len(expected) {
 		t.Fatalf("routes = %d, want %d", len(routes), len(expected))
 	}
 	for _, route := range routes {
-		if route.Provider != account.ProviderConsole || route.Capability != modeldomain.CapabilityResponses || !route.Enabled {
+		if route.Provider != account.ProviderConsole || !route.Enabled {
 			t.Fatalf("invalid route: %#v", route)
 		}
-		if expected[route.PublicID] != route.UpstreamModel {
+		if expected[routeKey{publicID: route.PublicID, capability: route.Capability}] != route.UpstreamModel {
 			t.Fatalf("route %q = %q", route.PublicID, route.UpstreamModel)
 		}
 	}
@@ -57,14 +67,15 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 	if len(aliases) != 13 {
 		t.Fatalf("aliases = %d, want 13", len(aliases))
 	}
-	registry := provider.NewRegistry(NewAdapter(Config{}, nil, nil))
+	registry := provider.NewRegistry(NewAdapter(Config{}, nil, nil, nil))
 	if registry.SupportsStoredResponses(account.ProviderConsole) {
 		t.Fatal("console must not advertise stored Responses support")
 	}
 	for _, name := range []string{
-		"grok-4.3-console", "grok-4.20-0309-console", "grok-4.20-0309-reasoning-console",
+		"grok-4.3-console", "grok-4.20-0309-reasoning-console",
 		"grok-4.20-0309-non-reasoning-console", "grok-4.20-multi-agent-console", "grok-build-console",
 		"grok-4.3-low", "grok-4.3-medium", "grok-4.3-high",
+		"grok-4.5-console",
 		"grok-4.20-multi-agent-low", "grok-4.20-multi-agent-medium", "grok-4.20-multi-agent-high", "grok-4.20-multi-agent-xhigh",
 	} {
 		alias, ok := registry.ResolveModelAlias(name)
@@ -73,6 +84,15 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 		}
 		if !strings.HasPrefix(alias.PublicModel, "Console/") {
 			t.Fatalf("alias %q targets non-canonical model %q", name, alias.PublicModel)
+		}
+	}
+	adapter := NewAdapter(Config{}, nil, nil, nil)
+	for model, want := range map[string]string{
+		"grok-4.5": QuotaMode, "grok-imagine-image-quality": QuotaModeImage,
+		"grok-imagine-image": QuotaModeImage, "grok-imagine-video": QuotaModeVideo,
+	} {
+		if got := adapter.QuotaMode(model); got != want {
+			t.Fatalf("QuotaMode(%q) = %q, want %q", model, got, want)
 		}
 	}
 }
@@ -100,7 +120,7 @@ func TestSyncAccountIdentityUsesWebSessionWithConsoleCredential(t *testing.T) {
 	}
 	token, _ := cipher.Encrypt("test-sso")
 	cookies, _ := cipher.Encrypt("cf_clearance=clear")
-	adapter := NewAdapter(Config{SessionBaseURL: server.URL}, infraegress.NewManager(consoleEgressRepositoryStub{}, cipher), cipher)
+	adapter := NewAdapter(Config{SessionBaseURL: server.URL}, infraegress.NewManager(consoleEgressRepositoryStub{}, cipher), cipher, nil)
 	identity, err := adapter.SyncAccountIdentity(context.Background(), account.Credential{
 		ID: 1, Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO,
 		EncryptedAccessToken: token, EncryptedCloudflareCookie: cookies,
@@ -199,9 +219,9 @@ func TestNormalizeRequestMatchesCapturedMultiAgentDefaults(t *testing.T) {
 }
 
 func TestNormalizeRequestAppliesConsoleCompatibilityBoundary(t *testing.T) {
-	spec, ok := Resolve("grok-4.20-0309")
+	spec, ok := Resolve("grok-4.20-0309-non-reasoning")
 	if !ok {
-		t.Fatal("grok-4.20-0309 missing")
+		t.Fatal("grok-4.20-0309-non-reasoning missing")
 	}
 	body, err := normalizeRequest([]byte(`{
 		"model":"public",
@@ -524,7 +544,7 @@ func TestAdapterDoesNotPenalizeEgressForBlockedAccount(t *testing.T) {
 			repository := &recordingConsoleEgressRepository{node: egressdomain.Node{
 				ID: 1, Name: "console", Scope: egressdomain.ScopeConsole, Enabled: true, Health: 1,
 			}}
-			adapter := NewAdapter(Config{BaseURL: server.URL, TimeoutSeconds: 5}, infraegress.NewManager(repository, cipher), cipher)
+			adapter := NewAdapter(Config{BaseURL: server.URL, TimeoutSeconds: 5}, infraegress.NewManager(repository, cipher), cipher, nil)
 			credential := account.Credential{ID: 1, Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, EncryptedAccessToken: encrypted}
 			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
 				Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
@@ -952,6 +972,169 @@ func TestDPoPSessionCacheUsesBoundedLRUEviction(t *testing.T) {
 	}
 }
 
+func TestConsoleImageGenerationForwardsStandardDPoPRequest(t *testing.T) {
+	imageBytes := []byte("\x89PNG\r\n\x1a\nconsole-image")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		if request.URL.Path == "/generated.png" && request.Method == http.MethodGet {
+			if request.Header.Get("Authorization") != "" || request.Header.Get("DPoP") != "" || request.Header.Get("Cookie") != "" {
+				t.Errorf("asset request leaked credentials: %#v", request.Header)
+			}
+			writer.Header().Set("Content-Type", "image/png")
+			_, _ = writer.Write(imageBytes)
+			return
+		}
+		if request.URL.Path != "/v1/images/generations" || request.Method != http.MethodPost {
+			http.NotFound(writer, request)
+			return
+		}
+		verifyTestDPoPProof(t, request)
+		if request.Header.Get("x-cluster") != "" {
+			t.Errorf("image x-cluster = %q", request.Header.Get("x-cluster"))
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		if payload["model"] != "grok-imagine-image-quality" || payload["prompt"] != "draw" || payload["n"] != float64(2) || payload["aspect_ratio"] != "3:2" || payload["resolution"] != "2k" || payload["response_format"] != "url" {
+			t.Errorf("image payload = %#v", payload)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{"created": 123, "data": []any{map[string]any{"url": "http://" + request.Host + "/generated.png", "revised_prompt": "drawn"}}})
+	}))
+	t.Cleanup(server.Close)
+	store := &consoleImageAssetStoreStub{}
+	adapter, credential := newConsoleTestAdapterWithAssets(t, server.URL, store)
+	ctx, trace := infraegress.WithTrace(context.Background())
+	response, err := adapter.GenerateImage(ctx, provider.ImageGenerationRequest{
+		Credential: credential, Model: "grok-imagine-image-quality", Prompt: "draw", Count: 2,
+		Size: "1536x1024", Resolution: "2k", ResponseFormat: "url",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.QuotaUnits != 2 {
+		t.Fatalf("image response = %#v", response)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Created int64 `json:"created"`
+		Data    []struct {
+			URL           string `json:"url"`
+			MIMEType      string `json:"mime_type"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != 123 || len(result.Data) != 1 || result.Data[0].URL != "https://local.example/v1/media/images/console-1" || result.Data[0].MIMEType != "image/png" || result.Data[0].RevisedPrompt != "drawn" {
+		t.Fatalf("localized image response = %s", body)
+	}
+	if saved := store.Saved(); len(saved) != 1 || !bytes.Equal(saved[0], imageBytes) {
+		t.Fatalf("saved images = %#v", saved)
+	}
+	if selection, ok := trace.Selection(egressdomain.ScopeConsoleAsset); !ok || selection.Scope != egressdomain.ScopeConsoleAsset {
+		t.Fatalf("Console image asset selection = %#v, ok=%v", selection, ok)
+	}
+}
+
+func TestConsoleImageEditForwardsMultipleImages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		if request.URL.Path != "/v1/images/edits" {
+			http.NotFound(writer, request)
+			return
+		}
+		verifyTestDPoPProof(t, request)
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		images, _ := payload["images"].([]any)
+		if len(images) != 2 || payload["image"] != nil || payload["model"] != "grok-imagine-image" || payload["n"] != float64(2) {
+			t.Errorf("edit payload = %#v", payload)
+		}
+		if payload["response_format"] != "b64_json" {
+			t.Errorf("response_format = %#v", payload["response_format"])
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":[{"b64_json":"aW1hZ2U=","revised_prompt":"merged"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	response, err := adapter.EditImage(context.Background(), provider.ImageEditRequest{
+		Credential: credential, Model: "grok-imagine-image", Prompt: "merge", Count: 2,
+		ImageURLs: []string{"https://example.com/a.png", "data:image/png;base64,AAAA"}, Resolution: "1k", ResponseFormat: "b64_json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.QuotaUnits != 2 {
+		t.Fatalf("edit response = %#v", response)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(`"b64_json":"aW1hZ2U="`)) {
+		t.Fatalf("b64 response = %s", body)
+	}
+}
+
+func TestConsoleVideoCreatesAndPollsStandardResources(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		verifyTestDPoPProof(t, request)
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/videos/generations":
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if payload["model"] != "grok-imagine-video" || payload["duration"] != float64(6) || payload["resolution"] != "720p" {
+				t.Errorf("video payload = %#v", payload)
+			}
+			_, _ = writer.Write([]byte(`{"request_id":"upstream-video-1"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/videos/upstream-video-1":
+			_, _ = writer.Write([]byte(`{"status":"done","progress":100,"video":{"url":"https://vidgen.x.ai/result.mp4"}}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	progress := 0
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: credential, Prompt: "animate", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
+		Progress: func(value int) { progress = value },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.URL != "https://vidgen.x.ai/result.mp4" || result.ContentType != "video/mp4" || progress != 99 {
+		t.Fatalf("video result = %#v, progress = %d", result, progress)
+	}
+}
+
+func TestParseConsoleVideoStatusRejectsUnknownState(t *testing.T) {
+	if _, _, err := parseConsoleVideoStatus([]byte(`{"status":"mystery"}`), nil); err == nil || !strings.Contains(err.Error(), "状态无效") {
+		t.Fatalf("unknown status error = %v", err)
+	}
+}
+
 func serveTestDPoPToken(t *testing.T, writer http.ResponseWriter, request *http.Request) bool {
 	t.Helper()
 	if request.URL.Path != "/v1/dpop/token" {
@@ -1049,6 +1232,10 @@ func verifyTestDPoPProof(t *testing.T, request *http.Request) {
 }
 
 func newConsoleTestAdapter(t *testing.T, baseURL string) (*Adapter, account.Credential) {
+	return newConsoleTestAdapterWithAssets(t, baseURL, nil)
+}
+
+func newConsoleTestAdapterWithAssets(t *testing.T, baseURL string, assets provider.ImageAssetStore) (*Adapter, account.Credential) {
 	t.Helper()
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {
@@ -1058,9 +1245,35 @@ func newConsoleTestAdapter(t *testing.T, baseURL string) (*Adapter, account.Cred
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewAdapter(Config{BaseURL: baseURL, TimeoutSeconds: 5}, infraegress.NewManager(consoleEgressRepositoryStub{}, cipher), cipher)
+	adapter := NewAdapter(Config{BaseURL: baseURL, TimeoutSeconds: 5}, infraegress.NewManager(consoleEgressRepositoryStub{}, cipher), cipher, assets)
 	credential := account.Credential{ID: 1, Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, EncryptedAccessToken: encrypted}
 	return adapter, credential
+}
+
+type consoleImageAssetStoreStub struct {
+	mu    sync.Mutex
+	saved [][]byte
+}
+
+func (s *consoleImageAssetStoreStub) SaveImage(_ context.Context, data []byte) (mediadomain.Asset, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.saved = append(s.saved, bytes.Clone(data))
+	return mediadomain.Asset{ID: fmt.Sprintf("console-%d", len(s.saved)), MIMEType: "image/png"}, nil
+}
+
+func (*consoleImageAssetStoreStub) PublicImageURL(id string) string {
+	return "https://local.example/v1/media/images/" + id
+}
+
+func (s *consoleImageAssetStoreStub) Saved() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([][]byte, len(s.saved))
+	for index := range s.saved {
+		result[index] = bytes.Clone(s.saved[index])
+	}
+	return result
 }
 
 type consoleEgressRepositoryStub struct{}

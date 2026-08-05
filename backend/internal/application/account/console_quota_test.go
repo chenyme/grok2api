@@ -63,14 +63,18 @@ func TestCompleteConsoleUsageSnapshotRejectsLegacyAndPartialWindows(t *testing.T
 	}
 }
 
-func TestConsoleMediaQuotaDoesNotControlTextRouting(t *testing.T) {
-	if !quotaWindowControlsRouting(accountdomain.ProviderConsole, "console") {
-		t.Fatal("Console chat quota must control text routing")
-	}
-	for _, mode := range []string{"console_image", "console_video"} {
-		if quotaWindowControlsRouting(accountdomain.ProviderConsole, mode) {
-			t.Fatalf("%s must remain informational until Console media routes are implemented", mode)
+func TestConsoleQuotaWindowsControlTheirMatchingRoutes(t *testing.T) {
+	for _, mode := range []string{"console", "console_image", "console_video"} {
+		if !quotaWindowControlsRouting(accountdomain.ProviderConsole, mode) {
+			t.Fatalf("%s must control its matching Console route", mode)
 		}
+		window := accountdomain.QuotaWindow{Mode: mode, Remaining: 0, Source: accountdomain.QuotaSourceUpstream}
+		if dueAt := quotaRecoveryDueAt(window, time.Now().UTC(), true); dueAt == nil {
+			t.Fatalf("%s must schedule a predicted recovery probe", mode)
+		}
+	}
+	if quotaWindowControlsRouting(accountdomain.ProviderConsole, "unknown") {
+		t.Fatal("unknown Console quota mode must not control routing")
 	}
 	if !quotaWindowControlsRouting(accountdomain.ProviderWeb, "weekly") {
 		t.Fatal("Web quota behavior must remain unchanged")

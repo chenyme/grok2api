@@ -15,3 +15,11 @@ export type ModelRouteDTO = {
   available: boolean;
   lastSyncedAt?: string;
 };
+
+export type ModelEndpointCapability = "completions" | "responses" | "messages" | "image" | "image_edit" | "video";
+
+export type ModelRouteGroupDTO = {
+  key: string;
+  routes: ModelRouteDTO[];
+  endpointCapabilities: ModelEndpointCapability[];
+};

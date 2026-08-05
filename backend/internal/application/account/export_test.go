@@ -201,7 +201,7 @@ func TestExportProviderCredentialsRoundTripsSSOProviders(t *testing.T) {
 		webTier       accountdomain.WebTier
 	}{
 		{name: "web", providerValue: accountdomain.ProviderWeb, adapter: webprovider.NewAdapter(webprovider.Config{}, nil, nil, nil, nil), webTier: accountdomain.WebTierSuper},
-		{name: "console", providerValue: accountdomain.ProviderConsole, adapter: consoleprovider.NewAdapter(consoleprovider.Config{}, nil, nil)},
+		{name: "console", providerValue: accountdomain.ProviderConsole, adapter: consoleprovider.NewAdapter(consoleprovider.Config{}, nil, nil, nil)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
