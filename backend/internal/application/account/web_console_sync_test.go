@@ -246,7 +246,7 @@ func TestSyncWebAccountsToConsoleRoundTripsThroughRealAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(consoleprovider.NewAdapter(consoleprovider.Config{}, nil, nil)), cipher, memory.NewLockStore())
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(consoleprovider.NewAdapter(consoleprovider.Config{}, nil, nil, nil)), cipher, memory.NewLockStore())
 
 	first, err := service.SyncWebAccountsToConsoleWithProgress(ctx, []uint64{webAccount.ID}, nil, nil)
 	if err != nil {

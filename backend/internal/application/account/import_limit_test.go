@@ -48,7 +48,7 @@ func newConsoleImportService(t *testing.T) (*Service, *relational.AccountReposit
 		t.Fatal(err)
 	}
 	accounts := relational.NewAccountRepository(database)
-	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(consoleprovider.NewAdapter(consoleprovider.Config{}, nil, nil)), cipher, nil)
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(consoleprovider.NewAdapter(consoleprovider.Config{}, nil, nil, nil)), cipher, nil)
 	return service, accounts
 }
 
