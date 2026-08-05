@@ -32,7 +32,7 @@
 <table>
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE"><img src="https://raw.githubusercontent.com/Krill-ai-org/krill-ai-static/refs/heads/main/krill-logo/Eng/250x150.png" alt="Krill AI" width="160"></a></td>
-<td valign="middle">Thanks to Krill AI for sponsoring this project! Krill provides fast and stable official API access to GPT, Claude, Gemini, and a wide range of Chinese models, with enterprise customization, invoicing, and dedicated 7×16-hour technical support. Its specially adapted WebSocket connection delivers fast time to first token. Register through <a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE">this link</a>, enter the coupon code “grok2api” when ordering, and receive 23% off your first Codex package.</td>
+<td valign="middle">Krill AI provides fast, stable API access to GPT, Claude, Gemini, and leading Chinese models, with enterprise customization, invoicing, 7×16 support, and optimized WebSocket connections for faster first-token latency. Register through the <a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE">exclusive link</a> and use code “grok2api” for 23% off your first Codex package.</td>
 </tr>
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://github.com/DEEIX-AI/DEEIX-Chat"><img src="frontend/public/sponner/deeix-chat_deeix-ai.png" alt="DEEIX AI / DEEIX Chat" width="160"></a></td>
@@ -41,6 +41,14 @@
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://www.right.codes/register"><img src="frontend/public/sponner/rightcode.jpg" alt="RightCode" width="160"></a></td>
 <td valign="middle">Right Code is an enterprise-grade AI Agent distribution platform that primarily provides stable access services for Claude Code, Codex, Gemini, and other models. It supports invoicing and dedicated one-to-one assistance for enterprises and teams. Thanks to Right Code for providing token support. Click <a href="https://www.right.codes/register">here</a> to register and get started.</td>
+</tr>
+<tr>
+<td width="200" align="center" valign="middle"><a href="https://api.fenno.ai/s/xCBS"><img src="frontend/public/sponner/fenno-ai.jpg" alt="FennoAI" width="160"></a></td>
+<td valign="middle">FennoAI provides enterprise-grade OpenAI/Anthropic-compatible APIs for Codex, Claude Code, and OpenCode, processing hundreds of billions of tokens daily with global business settlement and invoicing. Through the Grok2API <a href="https://api.fenno.ai/s/xCBS">exclusive offer</a>, USD 1.99 unlocks USD 50 in Coding Plan credits, plus referral commissions up to 20%.</td>
+</tr>
+<tr>
+<td width="200" align="center" valign="middle"><a href="https://s.qiniu.com/RNNZFf"><img src="frontend/public/sponner/qiniu.jpg" alt="Qiniu Cloud AI" width="160"></a></td>
+<td valign="middle">Qiniu Cloud AI, Qiniu Cloud’s (02567.HK) enterprise MaaS platform, offers protocol-compatible access to 150+ global models for text, image, audio, video, and files, serving 1.69+ million users. Grok2API registrations through the <a href="https://s.qiniu.com/RNNZFf">exclusive link</a> receive 12 million free enterprise tokens or 3 million developer tokens.</td>
 </tr>
 </table>
 
@@ -137,9 +145,9 @@ The Gateway routes requests through the Provider Registry. Account Sync refreshe
 
 | Provider | Authentication | Models | Main capabilities |
 | :-- | :-- | :-- | :-- |
-| Grok Build | OAuth / Device OAuth | Discovered per account | Responses, Chat, Messages, compact, stored responses, video |
-| Grok Web | SSO | Built-in, filtered by tier | Responses, Chat, Messages, images, image editing, video |
-| Grok Console | SSO | Built-in | Stateless Responses, Chat, Messages |
+| Grok Build | OAuth / Device OAuth | Discovered per account | Responses, Chat, Messages, compact, stored responses, paid-account video |
+| Grok Web | SSO | Built-in, filtered by tier | Responses, Chat, Messages, stored responses, images, image editing, video |
+| Grok Console | SSO | Built-in | Stateless Responses, Chat, Messages, images, image editing, video |
 
 Each Provider keeps its own credentials, quota, health, cooldown, concurrency, and model capabilities. Failover stays within the selected Provider.
 
@@ -225,7 +233,52 @@ Automatic deletion of old `reauthRequired` accounts is available but disabled by
 
 ## Models and routing
 
-Build models are discovered from account capabilities. Web and Console use built-in catalogs. Use the model page or `GET /v1/models` as the source of truth; the README does not maintain a static model list.
+Build models are discovered from each account's actual capabilities. Web and Console use built-in catalogs. The **Model Routes** page shows Provider-qualified routes, endpoint capabilities, and supporting-account counts; clients should treat the currently serviceable results from `GET /v1/models` as authoritative.
+
+### Grok Build
+
+Build does not use one global static model list. Account synchronization reads the upstream `/models` endpoint, and different accounts, subscription tiers, or staged rollouts may expose different models. Routing retains these per-account capabilities instead of replacing the global catalog with one account's response.
+
+| Model | Type | Availability | Gateway surfaces |
+| :-- | :-- | :-- | :-- |
+| Conversation models returned by upstream `/models` (for example, `grok-4.5`) | Conversation | Returned by the selected account | Chat Completions, Responses, Messages, compact, stored responses |
+| `grok-composer-2.5-fast` | Conversation | Grok Build OAuth accounts | Chat Completions, Responses, Messages; supplemented from the OAuth session contract when a sparse upstream catalog omits it |
+| `grok-imagine-video-1.5` | Video | Super/paid Build accounts | Videos; not assigned to Free or unknown-entitlement accounts |
+
+Conversation requests are translated to the Build Responses protocol while preserving the tool, reasoning, multi-turn, and prompt-cache compatibility required by Codex and Claude Code. Build currently exposes no image generation or image editing routes.
+
+### Grok Web
+
+Web uses a built-in catalog filtered by account tier; higher tiers inherit lower-tier models.
+
+| Model | Type | Minimum tier | Gateway surfaces |
+| :-- | :-- | :-- | :-- |
+| `grok-chat-fast` | Conversation | Basic | Chat Completions, Responses, Messages |
+| `grok-chat-auto` | Conversation | Super | Chat Completions, Responses, Messages |
+| `grok-chat-expert` | Conversation | Super | Chat Completions, Responses, Messages |
+| `grok-chat-heavy` | Conversation | Heavy | Chat Completions, Responses, Messages |
+| `grok-imagine-image` | Image | Basic | Images Generations |
+| `grok-imagine-image-quality` | Image | Super | Images Generations |
+| `grok-imagine-image-edit` | Image Edit | Super | Images Edits |
+| `grok-imagine-video` | Video | Super | Videos |
+
+### Grok Console
+
+Console uses the catalog built into the current release. Conversation forwarding is stateless, while image and video models use the standard xAI resource APIs.
+
+| Model | Type | Gateway surfaces |
+| :-- | :-- | :-- |
+| `grok-4.20-0309-non-reasoning` | Conversation | Chat Completions, Responses, Messages |
+| `grok-4.20-0309-reasoning` | Conversation | Chat Completions, Responses, Messages; the model reasons but the upstream rejects configurable `reasoningEffort` |
+| `grok-4.20-multi-agent-0309` | Conversation | Chat Completions, Responses, Messages |
+| `grok-4.5` | Conversation | Chat Completions, Responses, Messages |
+| `grok-4.3` | Conversation | Chat Completions, Responses, Messages |
+| `grok-build-0.1` | Conversation | Chat Completions, Responses, Messages |
+| `grok-imagine-image` | Image, Image Edit | Images Generations, Images Edits |
+| `grok-imagine-image-quality` | Image, Image Edit | Images Generations, Images Edits |
+| `grok-imagine-video` | Video | Videos |
+
+Generation and editing capabilities for the same Console image model are grouped into one logical model row; no separate `-edit` model copy is required.
 
 Public names normally omit the Provider. Internally, routes use `Build/`, `Web/`, or `Console/`; qualified names can pin a request to one source.
 
