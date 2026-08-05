@@ -419,7 +419,10 @@ async function runAccountTask<T>(path: string, body: BodyInit | object | undefin
     onProgress(value);
   };
   const reportProgress = (value: AccountTaskProgressDTO) => {
-    if (pendingProgress && pendingProgress.phase !== value.phase && pendingProgress.completed === pendingProgress.total) {
+    // Always flush the previous phase on switch. Import/sync streams interleave
+    // for web→console (and similar) tasks; dropping the pending sample made the
+    // dialog jump between two totals and look like flicker.
+    if (pendingProgress && pendingProgress.phase !== value.phase) {
       if (progressTimer !== undefined) window.clearTimeout(progressTimer);
       progressTimer = undefined;
       flushProgress();

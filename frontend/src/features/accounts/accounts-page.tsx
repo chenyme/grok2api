@@ -101,6 +101,13 @@ type BuildConversionProgressState = {
   syncing?: AccountTaskProgressDTO;
 };
 
+// Web→Console sync streams importing + syncing progress concurrently. Keep them
+// phase-separated so the dialog does not flicker between two different totals.
+type WebConsoleSyncProgressState = {
+  importing?: AccountTaskProgressDTO;
+  syncing?: AccountTaskProgressDTO;
+};
+
 type WebConversionTarget = "build" | "console";
 type BuildQuotaTask = "sync" | "reset";
 type EgressConfigurationTask = "bind" | "unbind";
@@ -180,7 +187,7 @@ export function AccountsPage() {
   const [webConversionTarget, setWebConversionTarget] = useState<WebConversionTarget>("build");
   const [webConversionStrategy, setWebConversionStrategy] = useState<BuildConversionStrategy>("missing");
   const [conversionProgress, setConversionProgress] = useState<BuildConversionProgressState | null>(null);
-  const [webConsoleSyncProgress, setWebConsoleSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
+  const [webConsoleSyncProgress, setWebConsoleSyncProgress] = useState<WebConsoleSyncProgressState | null>(null);
   const [webAccountScriptsTargets, setWebAccountScriptsTargets] = useState<string[] | "all" | null>(null);
   const [webAccountScriptsProgress, setWebAccountScriptsProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [renewAllOpen, setRenewAllOpen] = useState(false);
@@ -611,7 +618,10 @@ export function AccountsPage() {
       const controller = new AbortController();
       webConsoleSyncAbortRef.current = controller;
       setWebConsoleSyncProgress(null);
-      return syncWebAccountsToConsole(input, setWebConsoleSyncProgress, controller.signal);
+      return syncWebAccountsToConsole(input, (progress) => {
+        const phase = progress.phase === "syncing" ? "syncing" : "importing";
+        setWebConsoleSyncProgress((current) => ({ ...(current ?? {}), [phase]: { ...progress, phase } }));
+      }, controller.signal);
     },
     onSuccess: (result) => {
       setWebConversionTargets(null);
@@ -1111,6 +1121,13 @@ export function AccountsPage() {
   const activeConversionProgress = convertingProgress?.completed === convertingProgress?.total && syncingProgress
     ? syncingProgress
     : convertingProgress ?? syncingProgress;
+  const consoleImportingProgress = webConsoleSyncProgress?.importing;
+  const consoleSyncingProgress = webConsoleSyncProgress?.syncing;
+  // Prefer importing until that phase reaches its total, then switch to syncing.
+  // Sync events may arrive early from the pipeline; keep them buffered off-screen.
+  const activeWebConsoleSyncProgress = consoleImportingProgress?.completed === consoleImportingProgress?.total && consoleSyncingProgress
+    ? consoleSyncingProgress
+    : consoleImportingProgress ?? consoleSyncingProgress;
   const webConversionPending = conversionMutation.isPending || webConsoleSyncMutation.isPending;
 
   function showError(error: unknown): void {
@@ -1684,7 +1701,7 @@ export function AccountsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction disabled={webConversionPending || webConversionTargets === null || (Array.isArray(webConversionTargets) && webConversionTargets.length === 0)} onClick={(event) => { event.preventDefault(); runWebConversion(); }}>
-              {webConversionPending ? <><Spinner />{webConversionTarget === "build" && activeConversionProgress ? <span className="whitespace-nowrap tabular-nums">{t(activeConversionProgress.phase === "syncing" ? "accounts.syncingProgress" : "accounts.convertingProgress", activeConversionProgress)}</span> : webConsoleSyncProgress ? <span className="tabular-nums">{webConsoleSyncProgress.completed} / {webConsoleSyncProgress.total}</span> : t("common.loading")}</> : t("accountConversion.start")}
+              {webConversionPending ? <><Spinner />{webConversionTarget === "build" && activeConversionProgress ? <span className="whitespace-nowrap tabular-nums">{t(activeConversionProgress.phase === "syncing" ? "accounts.syncingProgress" : "accounts.convertingProgress", activeConversionProgress)}</span> : webConversionTarget === "console" && activeWebConsoleSyncProgress ? <span className="whitespace-nowrap tabular-nums">{t(activeWebConsoleSyncProgress.phase === "syncing" ? "common.syncingProgress" : "common.importingProgress", activeWebConsoleSyncProgress)}</span> : t("common.loading")}</> : t("accountConversion.start")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
