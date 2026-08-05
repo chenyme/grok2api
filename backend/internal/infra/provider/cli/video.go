@@ -150,7 +150,7 @@ func boundDiagnosticText(value string, limit int) string {
 // GenerateVideo 通过 Build OAuth 创建并轮询视频任务；对外仍使用 grok-imagine-video-1.5，
 // 发往 XAI 时仅在出站协议层转换为官方 preview 模型与 image.url 结构。
 // 最多 1 张首图；多于 1 张在调用上游前失败，不静默截断。
-// 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source=1 默认使用 XAI。
+// 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source/bfs=1 默认使用 XAI。
 // 其他 auto Super 账号仅在当次 Build 创建返回 403 后探测 XAI。
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
 	if len(request.ReferenceURLs) > buildVideoMaxImages {
