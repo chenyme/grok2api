@@ -15,10 +15,11 @@ const LastErrorTransport = "transport error"
 type Scope string
 
 const (
-	ScopeBuild    Scope = "grok_build"
-	ScopeWeb      Scope = "grok_web"
-	ScopeConsole  Scope = "grok_console"
-	ScopeWebAsset Scope = "grok_web_asset"
+	ScopeBuild        Scope = "grok_build"
+	ScopeWeb          Scope = "grok_web"
+	ScopeConsole      Scope = "grok_console"
+	ScopeWebAsset     Scope = "grok_web_asset"
+	ScopeConsoleAsset Scope = "grok_console_asset"
 )
 
 type Node struct {
@@ -227,10 +228,11 @@ func DefaultOperationsConfig() OperationsConfig {
 		ProbeIntervalSeconds:      900,
 		AssignmentIntervalSeconds: 300,
 		Fallbacks: map[Scope]FallbackConfig{
-			ScopeBuild:    {Mode: FallbackModeNone},
-			ScopeWeb:      {Mode: FallbackModeNone},
-			ScopeConsole:  {Mode: FallbackModeNone},
-			ScopeWebAsset: {Mode: FallbackModeNone},
+			ScopeBuild:        {Mode: FallbackModeNone},
+			ScopeWeb:          {Mode: FallbackModeNone},
+			ScopeConsole:      {Mode: FallbackModeNone},
+			ScopeWebAsset:     {Mode: FallbackModeNone},
+			ScopeConsoleAsset: {Mode: FallbackModeNone},
 		},
 	}
 }
@@ -247,11 +249,19 @@ func (value OperationsConfig) FallbackFor(scope Scope) FallbackConfig {
 }
 
 // SupportsScope reports whether a node can serve requests for the supplied
-// scope. Console may intentionally reuse a Web browser proxy, and Web assets
-// inherit a Web node when no asset-specific node is required.
+// scope. Console may intentionally reuse a Web browser proxy. Resource scopes
+// may reuse their provider's primary node so explicit account bindings remain
+// authoritative when no independently bound resource identity exists.
 func SupportsScope(nodeScope, requestScope Scope) bool {
 	if nodeScope == requestScope {
 		return true
 	}
-	return (requestScope == ScopeWebAsset || requestScope == ScopeConsole) && nodeScope == ScopeWeb
+	switch requestScope {
+	case ScopeWebAsset, ScopeConsole:
+		return nodeScope == ScopeWeb
+	case ScopeConsoleAsset:
+		return nodeScope == ScopeConsole || nodeScope == ScopeWeb
+	default:
+		return false
+	}
 }

@@ -165,6 +165,7 @@ type InvalidationBus interface {
 type QuotaRecoveryQueue interface {
 	ScheduleQuotaRecovery(ctx context.Context, value account.QuotaRecoveryEvent) error
 	EnsureQuotaRecovery(ctx context.Context, value account.QuotaRecoveryEvent) error
+	CancelQuotaRecovery(ctx context.Context, accountID uint64, mode string) error
 	ClaimDueQuotaRecoveries(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]account.QuotaRecoveryEvent, error)
 	AckQuotaRecovery(ctx context.Context, value account.QuotaRecoveryEvent) error
 	RescheduleQuotaRecovery(ctx context.Context, value account.QuotaRecoveryEvent) error

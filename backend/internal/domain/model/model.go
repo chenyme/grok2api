@@ -24,6 +24,18 @@ const (
 	CapabilityVideo     Capability = "video"
 )
 
+// Capabilities returns every persisted route capability. Callers use this as
+// the single source of truth for bounds that depend on the maximum group size.
+func Capabilities() []Capability {
+	return []Capability{
+		CapabilityResponses,
+		CapabilityChat,
+		CapabilityImage,
+		CapabilityImageEdit,
+		CapabilityVideo,
+	}
+}
+
 const (
 	OriginCatalog    Origin = "catalog"
 	OriginDiscovered Origin = "discovered"
@@ -46,6 +58,14 @@ type Route struct {
 	LastSyncedAt      *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+// RouteGroup is the admin-facing projection of one logical model target.
+// Managed catalog capabilities share a group. Manual routes remain independent
+// scheduling targets even when their visible names happen to match: neither a
+// display name nor an upstream model is a stable identity for account bindings.
+type RouteGroup struct {
+	Routes []Route
 }
 
 // NormalizePublicID 将内部路由 ID 规范化为稳定的 Provider 命名空间。

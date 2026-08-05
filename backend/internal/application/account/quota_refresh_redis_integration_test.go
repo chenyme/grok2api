@@ -81,8 +81,8 @@ func TestRedisQuotaRefreshCrossInstanceTrailing(t *testing.T) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{}, 2)
-	go func() { first.RunWebQuotaRefresh(runCtx); done <- struct{}{} }()
-	go func() { second.RunWebQuotaRefresh(runCtx); done <- struct{}{} }()
+	go func() { first.RunQuotaRefresh(runCtx); done <- struct{}{} }()
+	go func() { second.RunQuotaRefresh(runCtx); done <- struct{}{} }()
 	t.Cleanup(func() {
 		for range 4 {
 			adapter.modeRelease <- struct{}{}
@@ -128,7 +128,7 @@ func TestRedisQuotaRefreshCrossInstanceTrailing(t *testing.T) {
 	if calls := adapter.modeCalls.Load(); calls != 2 {
 		t.Fatalf("Redis-backed refresh calls = %d, want 2", calls)
 	}
-	time.Sleep(2 * webQuotaRefreshRetryInterval)
+	time.Sleep(2 * quotaRefreshPollInterval)
 	if calls := adapter.modeCalls.Load(); calls != 2 {
 		t.Fatalf("Redis-backed losing instance performed duplicate refresh: %d", calls)
 	}

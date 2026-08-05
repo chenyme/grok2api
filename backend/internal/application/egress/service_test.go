@@ -84,7 +84,7 @@ func TestBuildNodeAlwaysUsesProviderUserAgent(t *testing.T) {
 	if value.UserAgent != "" || service.publicNode(value).UserAgent != "" {
 		t.Fatalf("build node userAgent = %q", value.UserAgent)
 	}
-	if defaults := service.DefaultUserAgents(); defaults[string(domain.ScopeBuild)] != "" || defaults[string(domain.ScopeWeb)] != "browser-agent" || defaults[string(domain.ScopeConsole)] != "browser-agent" {
+	if defaults := service.DefaultUserAgents(); defaults[string(domain.ScopeBuild)] != "" || defaults[string(domain.ScopeWeb)] != "browser-agent" || defaults[string(domain.ScopeConsole)] != "browser-agent" || defaults[string(domain.ScopeWebAsset)] != "browser-agent" || defaults[string(domain.ScopeConsoleAsset)] != "browser-agent" {
 		t.Fatalf("default user agents = %#v", defaults)
 	}
 }
@@ -101,6 +101,27 @@ func TestConsoleNodeUsesBrowserDefaultUserAgent(t *testing.T) {
 	}
 	if value.UserAgent != "browser-agent" {
 		t.Fatalf("console node userAgent = %q", value.UserAgent)
+	}
+}
+
+func TestConsoleAssetNodeUsesBrowserAgentButDropsClearanceCookie(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingCookie, err := cipher.Encrypt("cf_clearance=legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(nil, cipher, "browser-agent")
+	value, err := service.applyInput(domain.Node{EncryptedCloudflareCookie: existingCookie}, Input{
+		Name: "console-assets", Scope: domain.ScopeConsoleAsset, Enabled: true,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.UserAgent != "browser-agent" || value.EncryptedCloudflareCookie != "" {
+		t.Fatalf("Console asset node identity = %#v", value)
 	}
 }
 
