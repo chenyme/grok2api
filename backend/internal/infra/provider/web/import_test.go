@@ -75,3 +75,42 @@ func TestWebCredentialJSONLinesRejectMalformedLine(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+// 「[」为 JSON 保留前缀：顶层裸数组必须走 JSON 解析，不得落入纯文本路径静默导入。
+func TestWebCredentialBareArrayUsesJSONPath(t *testing.T) {
+	adapter := &Adapter{}
+	values, err := adapter.ParseImportedCredentials([]byte(`[{"name":"primary","sso_token":"token-one","tier":"super","email":"one@example.com"},{"token":"token-two"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0].Name != "primary" || values[0].AccessToken != "token-one" || values[0].WebTier != account.WebTierSuper || values[0].Email != "one@example.com" || values[1].AccessToken != "token-two" {
+		t.Fatalf("bare array values = %#v", values)
+	}
+}
+
+func TestWebCredentialBareArrayWithBOM(t *testing.T) {
+	adapter := &Adapter{}
+	values, err := adapter.ParseImportedCredentials([]byte("\xef\xbb\xbf[{\"sso_token\":\"token-one\"}]"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].AccessToken != "token-one" {
+		t.Fatalf("bare array values = %#v", values)
+	}
+}
+
+func TestWebCredentialBareArrayErrors(t *testing.T) {
+	adapter := &Adapter{}
+	// 空数组：JSON 路径解析出 0 个账号，而不是被当成空文本导入。
+	if _, err := adapter.ParseImportedCredentials([]byte("[]")); err == nil || !strings.Contains(err.Error(), "没有 Grok Web 账号") {
+		t.Fatalf("empty array error = %v", err)
+	}
+	// null 元素：归一化阶段带账号序号报错。
+	if _, err := adapter.ParseImportedCredentials([]byte(`[{"sso_token":"token-one"},null]`)); err == nil || !strings.Contains(err.Error(), "第 2 个账号缺少 sso_token") {
+		t.Fatalf("null element error = %v", err)
+	}
+	// 非法 [ 开头输入：明确 JSON 报错，禁止静默当纯文本导入。
+	if _, err := adapter.ParseImportedCredentials([]byte("[not-json")); err == nil || !strings.Contains(err.Error(), "JSON") {
+		t.Fatalf("malformed array error = %v", err)
+	}
+}
