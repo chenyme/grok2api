@@ -39,9 +39,6 @@ func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
 	normalizeReasoning(payload, spec)
 	ensureReasoningInclude(payload)
 	retainedClientTools := normalizeConsoleTools(payload)
-	if spec.SearchTools {
-		mergeSearchTools(payload)
-	}
 	normalizeConsoleToolChoice(payload, retainedClientTools)
 	return json.Marshal(payload)
 }
@@ -208,6 +205,8 @@ func ensureReasoningInclude(payload map[string]any) {
 func normalizeConsoleTools(payload map[string]any) bool {
 	value, exists := payload["tools"]
 	if !exists || value == nil {
+		delete(payload, "tools")
+		delete(payload, "tool_choice")
 		return false
 	}
 	tools, ok := value.([]any)
@@ -260,40 +259,18 @@ func normalizeConsoleTools(payload map[string]any) bool {
 	}
 	if len(result) == 0 {
 		delete(payload, "tools")
+		delete(payload, "tool_choice")
 		return false
 	}
 	payload["tools"] = result
 	return retainedClientTools
 }
 
-func mergeSearchTools(payload map[string]any) {
-	defaults := []any{
-		map[string]any{"type": "web_search", "enable_image_understanding": true},
-		map[string]any{"type": "x_search", "enable_video_understanding": true},
-	}
-	positions := map[string]int{"web_search": 0, "x_search": 1}
-	result := append([]any(nil), defaults...)
-	if value, exists := payload["tools"]; exists && value != nil {
-		tools, _ := value.([]any)
-		for _, tool := range tools {
-			identity := toolIdentity(tool)
-			if index, exists := positions[identity]; identity != "" && exists {
-				result[index] = tool
-				continue
-			}
-			if identity != "" {
-				positions[identity] = len(result)
-			}
-			result = append(result, tool)
-		}
-	}
-	payload["tools"] = result
-	if _, exists := payload["tool_choice"]; !exists {
-		payload["tool_choice"] = "auto"
-	}
-}
-
 func normalizeConsoleToolChoice(payload map[string]any, retainedClientTools bool) {
+	if _, exists := payload["tools"]; !exists {
+		delete(payload, "tool_choice")
+		return
+	}
 	choice, exists := payload["tool_choice"]
 	if !exists {
 		payload["tool_choice"] = "auto"
