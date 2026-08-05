@@ -166,24 +166,42 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 		t.Fatalf("include = %#v", include)
 	}
 	tools, _ := payload["tools"].([]any)
-	if len(tools) != 3 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "function:lookup" {
+	if len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "function:lookup" {
 		t.Fatalf("tools = %#v", tools)
 	}
 	webSearch, _ := tools[0].(map[string]any)
 	if webSearch["custom"] != nil || webSearch["enable_image_understanding"] != true {
 		t.Fatalf("web_search = %#v", webSearch)
 	}
-	stateless, err := normalizeRequest([]byte(`{"model":"grok-4.3","store":true,"previous_response_id":"resp_1","service_tier":"priority","input":"hello"}`), spec)
+	stateless, err := normalizeRequest([]byte(`{"model":"grok-4.3","store":true,"previous_response_id":"resp_1","service_tier":"priority","prompt_cache_key":"cache_1","input":"hello"}`), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var statelessPayload map[string]any
-	if json.Unmarshal(stateless, &statelessPayload) != nil || statelessPayload["store"] != false || statelessPayload["previous_response_id"] != nil || statelessPayload["service_tier"] != nil {
+	if json.Unmarshal(stateless, &statelessPayload) != nil || statelessPayload["store"] != false || statelessPayload["previous_response_id"] != nil || statelessPayload["service_tier"] != nil || statelessPayload["prompt_cache_key"] != nil {
 		t.Fatalf("stateless payload = %#v", statelessPayload)
 	}
 }
 
-func TestNormalizeRequestMatchesCapturedMultiAgentDefaults(t *testing.T) {
+func TestNormalizeRequestDoesNotInjectToolsForConsoleCatalog(t *testing.T) {
+	for _, spec := range catalog {
+		t.Run(spec.PublicID, func(t *testing.T) {
+			body, err := normalizeRequest([]byte(`{"model":"public","input":"hello","tool_choice":"required"}`), spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["tools"] != nil || payload["tool_choice"] != nil {
+				t.Fatalf("Console must not inject tools: %#v", payload)
+			}
+		})
+	}
+}
+
+func TestNormalizeRequestPreservesMultiAgentDefaultsWithoutInjectingTools(t *testing.T) {
 	spec, ok := Resolve("grok-4.20-multi-agent-0309")
 	if !ok {
 		t.Fatal("grok-4.20-multi-agent-0309 missing")
@@ -204,8 +222,7 @@ func TestNormalizeRequestMatchesCapturedMultiAgentDefaults(t *testing.T) {
 		t.Fatalf("multi-agent defaults = %#v", payload)
 	}
 	include, _ := payload["include"].([]any)
-	tools, _ := payload["tools"].([]any)
-	if len(include) != 1 || include[0] != "reasoning.encrypted_content" || len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" {
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" || payload["tools"] != nil || payload["tool_choice"] != nil {
 		t.Fatalf("multi-agent compatibility = %#v", payload)
 	}
 	explicit, err := normalizeRequest([]byte(`{"model":"grok-4.20-multi-agent-0309","input":"hello","reasoning":{"effort":"xhigh"}}`), spec)
@@ -268,7 +285,7 @@ func TestNormalizeRequestAppliesConsoleCompatibilityBoundary(t *testing.T) {
 		t.Fatalf("message parts = %#v", parts)
 	}
 	tools, _ := payload["tools"].([]any)
-	if len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" {
+	if len(tools) != 1 || toolIdentity(tools[0]) != "web_search" {
 		t.Fatalf("sanitized tools = %#v", tools)
 	}
 	if tools[0].(map[string]any)["external_web_access"] != nil {
