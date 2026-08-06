@@ -197,6 +197,23 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 	if webAction["type"] != "search" || webAction["query"] == nil {
 		t.Fatalf("web action = %#v", webAction)
 	}
+	webSources, _ := webAction["sources"].([]map[string]any)
+	if len(webSources) == 0 {
+		// buildOpenAIResult may re-box as []any depending on path
+		if raw, ok := webAction["sources"].([]any); ok && len(raw) > 0 {
+			firstSrc, _ := raw[0].(map[string]any)
+			if firstSrc["type"] != "url" || firstSrc["url"] == nil {
+				t.Fatalf("web action.sources[0] want type=url: %#v", firstSrc)
+			}
+			if firstSrc["title"] == nil || firstSrc["title"] == "" {
+				t.Fatalf("web action.sources[0] should keep title extension: %#v", firstSrc)
+			}
+		} else {
+			t.Fatalf("web action.sources missing: %#v", webAction["sources"])
+		}
+	} else if webSources[0]["type"] != "url" || webSources[0]["url"] == nil || webSources[0]["title"] == nil {
+		t.Fatalf("web action.sources[0] = %#v", webSources[0])
+	}
 	outMsg := out[len(out)-1].(map[string]any)
 	part := outMsg["content"].([]any)[0].(map[string]any)
 	flat := part["annotations"].([]any)[0].(map[string]any)

@@ -1484,8 +1484,37 @@ func appendHostedSearchSources(call *hostedSearchCall, sources []map[string]any)
 			break
 		}
 		seen[u] = struct{}{}
-		call.Sources = append(call.Sources, source)
+		// Normalize early so in-memory shape matches wire (type url + optional title).
+		item := map[string]any{"type": "url", "url": u}
+		if title, _ := source["title"].(string); title != "" {
+			item["title"] = title
+		}
+		call.Sources = append(call.Sources, item)
 	}
+}
+
+// hostedSearchActionSources copies sources for web_search_call/x_search_call action.
+// Always sets type:"url" (OpenAPI required); preserves title when present.
+func hostedSearchActionSources(sources []map[string]any) []map[string]any {
+	if len(sources) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(sources))
+	for _, source := range sources {
+		u, _ := source["url"].(string)
+		if u == "" {
+			continue
+		}
+		item := map[string]any{"type": "url", "url": u}
+		if title, _ := source["title"].(string); title != "" {
+			item["title"] = title
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // xaiHostedSearchOutputItems builds Responses output items: web_search_call / x_search_call.
@@ -1508,8 +1537,8 @@ func xaiHostedSearchOutputItems(parsed parsedChat) []any {
 			action["query"] = call.Query
 		}
 		if len(call.Sources) > 0 {
-			// xAI/OpenAI-compatible optional sources on the search action.
-			action["sources"] = call.Sources
+			// OpenAPI: sources[] requires type:"url"+url; title kept as optional extension.
+			action["sources"] = hostedSearchActionSources(call.Sources)
 		}
 		items = append(items, map[string]any{
 			"id": call.ID, "type": typeName, "status": status, "action": action,

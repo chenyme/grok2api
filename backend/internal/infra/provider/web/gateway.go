@@ -498,8 +498,10 @@ func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
 			title := firstString(item, "title")
 			appendSearchSource(parsed, u, title, "web")
 			if normalized, ok := searchresult.NormalizeURL(u); ok {
+				// OpenAPI WebSearchActionSearch.sources item requires type:"url";
+				// keep title as a non-breaking extension for UI clients.
 				sources = append(sources, map[string]any{
-					"url": normalized, "title": searchresult.NormalizeTitle(title, normalized),
+					"type": "url", "url": normalized, "title": searchresult.NormalizeTitle(title, normalized),
 				})
 			}
 		}
@@ -532,7 +534,7 @@ func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
 			appendSearchSource(parsed, rawURL, title, "x_post")
 			if normalized, ok := searchresult.NormalizeURL(rawURL); ok {
 				sources = append(sources, map[string]any{
-					"url": normalized, "title": searchresult.NormalizeTitle(title, normalized),
+					"type": "url", "url": normalized, "title": searchresult.NormalizeTitle(title, normalized),
 				})
 			}
 		}
