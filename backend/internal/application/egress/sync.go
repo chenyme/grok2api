@@ -32,7 +32,15 @@ func (s *Service) syncSource(ctx context.Context, operations OperationsRepositor
 		recordFailure()
 		return ImportResult{}, ErrSubscriptionSync
 	}
-	content, err := fetchProxySubscription(ctx, urlValue)
+	fetchProxy := ""
+	if config, configErr := operations.GetEgressOperationsConfig(ctx); configErr == nil && strings.TrimSpace(config.EncryptedSubscriptionProxyURL) != "" {
+		if decrypted, decryptErr := s.cipher.Decrypt(config.EncryptedSubscriptionProxyURL); decryptErr == nil {
+			if normalized, normalizeErr := NormalizeProxyURL(decrypted); normalizeErr == nil {
+				fetchProxy = normalized
+			}
+		}
+	}
+	content, err := fetchProxySubscription(ctx, urlValue, fetchProxy)
 	if err != nil {
 		recordFailure()
 		return ImportResult{}, ErrSubscriptionSync

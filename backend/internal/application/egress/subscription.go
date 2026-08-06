@@ -15,6 +15,9 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	_ "github.com/bdandy/go-socks4"
+	xproxy "golang.org/x/net/proxy"
 )
 
 const (
@@ -58,21 +61,14 @@ func normalizeSubscriptionURL(value string) (string, error) {
 	return parsed.String(), nil
 }
 
-func fetchProxySubscription(ctx context.Context, value string) ([]byte, error) {
+func fetchProxySubscription(ctx context.Context, value string, viaProxy string) ([]byte, error) {
 	normalized, err := normalizeSubscriptionURL(value)
 	if err != nil {
 		return nil, err
 	}
-	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           publicDialContext(net.DefaultResolver),
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          2,
-		MaxIdleConnsPerHost:   1,
-		IdleConnTimeout:       15 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-		ExpectContinueTimeout: time.Second,
+	transport, err := subscriptionTransport(viaProxy)
+	if err != nil {
+		return nil, err
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{
@@ -111,6 +107,74 @@ func fetchProxySubscription(ctx context.Context, value string) ([]byte, error) {
 		return nil, errors.New("订阅内容超过大小限制")
 	}
 	return body, nil
+}
+
+// subscriptionTransport builds the HTTP transport used to pull remote proxy
+// lists. Without a via-proxy the dialer rejects private destinations (SSRF).
+// With a via-proxy the admin-configured proxy may be private; the subscription
+// URL is still constrained by normalizeSubscriptionURL.
+func subscriptionTransport(viaProxy string) (*http.Transport, error) {
+	direct := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 15 * time.Second}
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           publicDialContext(net.DefaultResolver),
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          2,
+		MaxIdleConnsPerHost:   1,
+		IdleConnTimeout:       15 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	viaProxy = strings.TrimSpace(viaProxy)
+	if viaProxy == "" {
+		return transport, nil
+	}
+	parsed, err := url.Parse(viaProxy)
+	if err != nil || parsed.Host == "" {
+		return nil, errors.New("订阅拉取代理地址无效")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		transport.Proxy = http.ProxyURL(parsed)
+		// Dial the proxy endpoint itself; private admin proxies are allowed.
+		transport.DialContext = direct.DialContext
+	case "socks4", "socks4a", "socks5", "socks5h":
+		dialer, err := xproxy.FromURL(parsed, direct)
+		if err != nil {
+			return nil, fmt.Errorf("创建订阅拉取 SOCKS 代理: %w", err)
+		}
+		if contextual, ok := dialer.(xproxy.ContextDialer); ok {
+			transport.DialContext = contextual.DialContext
+		} else {
+			transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				type result struct {
+					connection net.Conn
+					err        error
+				}
+				completed := make(chan result, 1)
+				go func() {
+					connection, dialErr := dialer.Dial(network, address)
+					completed <- result{connection: connection, err: dialErr}
+				}()
+				select {
+				case value := <-completed:
+					return value.connection, value.err
+				case <-ctx.Done():
+					go func() {
+						value := <-completed
+						if value.connection != nil {
+							_ = value.connection.Close()
+						}
+					}()
+					return nil, ctx.Err()
+				}
+			}
+		}
+	default:
+		return nil, errors.New("订阅拉取代理协议必须是 HTTP、HTTPS、SOCKS4 或 SOCKS5")
+	}
+	return transport, nil
 }
 
 // publicDialContext resolves every destination immediately before dialing. It

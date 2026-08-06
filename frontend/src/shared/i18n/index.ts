@@ -1767,6 +1767,9 @@ Object.assign(resources.en.translation.settings.egress as unknown as Record<stri
   cleanupSubscriptionHint: "Subscription-managed nodes may be recreated by the next subscription sync.",
   cleanupUnavailableConfirm: "Delete unavailable",
   cleanupUnavailableComplete: "Deleted {{deleted}} unavailable proxy nodes",
+  subscriptionProxy: "Subscription fetch proxy",
+  subscriptionProxyHelp: "Proxy used when fetching proxy subscription content. Many subscription sources are not reachable from foreign networks.",
+  invalidProxy: "Enter a valid proxy URL (http/https/socks4/socks4a/socks5/socks5h)",
 });
 
 Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Record<string, string>, {
@@ -1841,6 +1844,9 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
   cleanupSubscriptionHint: "订阅管理的节点可能在下次订阅同步时重新创建。",
   cleanupUnavailableConfirm: "删除不可用节点",
   cleanupUnavailableComplete: "已删除 {{deleted}} 个不可用代理节点",
+  subscriptionProxy: "订阅拉取代理",
+  subscriptionProxyHelp: "用于拉取代理订阅内容。许多订阅源不支持国外网络，可填写 HTTP/HTTPS/SOCKS 代理地址。",
+  invalidProxy: "请输入有效的代理地址（http/https/socks4/socks4a/socks5/socks5h）",
 });
 
 Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<string, string>, {

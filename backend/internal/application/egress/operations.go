@@ -90,7 +90,12 @@ type OperationsConfigInput struct {
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
 	AssignmentIntervalSeconds int
-	Fallbacks                 map[domain.Scope]FallbackConfigInput
+	// SubscriptionProxyURL updates the optional proxy used when fetching
+	// remote subscription sources. Empty with ClearSubscriptionProxy clears it;
+	// nil leaves the existing secret unchanged.
+	SubscriptionProxyURL    *string
+	ClearSubscriptionProxy  bool
+	Fallbacks               map[domain.Scope]FallbackConfigInput
 }
 
 type FallbackConfigInput struct {
@@ -408,10 +413,32 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 			return domain.OperationsConfig{}, err
 		}
 	}
+	subscriptionProxyURL := current.EncryptedSubscriptionProxyURL
+	if input.ClearSubscriptionProxy {
+		subscriptionProxyURL = ""
+	} else if input.SubscriptionProxyURL != nil {
+		normalized, normalizeErr := NormalizeProxyURL(*input.SubscriptionProxyURL)
+		if normalizeErr != nil {
+			return domain.OperationsConfig{}, fmt.Errorf("%w: 订阅拉取代理地址无效: %v", ErrInvalidInput, normalizeErr)
+		}
+		if normalized == "" {
+			subscriptionProxyURL = ""
+		} else {
+			if strings.Contains(normalized, ProxyAccountPlaceholder) {
+				return domain.OperationsConfig{}, fmt.Errorf("%w: 订阅拉取代理不能使用账号占位符", ErrInvalidInput)
+			}
+			encrypted, encryptErr := s.cipher.Encrypt(normalized)
+			if encryptErr != nil {
+				return domain.OperationsConfig{}, encryptErr
+			}
+			subscriptionProxyURL = encrypted
+		}
+	}
 	saved, err := operations.SaveEgressOperationsConfig(ctx, domain.OperationsConfig{
 		ProbeProvider: probeProvider, ProbeIntervalSeconds: input.ProbeIntervalSeconds, AutoAssignEnabled: input.AutoAssignEnabled,
 		AutoBalanceEnabled: input.AutoBalanceEnabled, AssignmentIntervalSeconds: input.AssignmentIntervalSeconds,
-		Fallbacks: fallbacks, UpdatedAt: time.Now().UTC(),
+		EncryptedSubscriptionProxyURL: subscriptionProxyURL,
+		Fallbacks:                     fallbacks, UpdatedAt: time.Now().UTC(),
 	})
 	if errors.Is(err, repository.ErrEgressFallbackInUse) {
 		return domain.OperationsConfig{}, fmt.Errorf("%w: 固定回退节点必须保持启用且可用", ErrInvalidInput)

@@ -34,6 +34,7 @@ import {
   type EgressSourceDTO,
   type EgressSourceInput,
 } from "@/features/settings/settings-api";
+import { validProxyURL } from "@/features/settings/settings-model";
 import { formatDateTime } from "@/shared/lib/format";
 import { ErrorState, LoadingState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -66,7 +67,7 @@ function defaultFallbacks(): Record<EgressScope, EgressFallbackConfigDTO> {
 }
 
 const defaultOperationsForm: Omit<EgressOperationsConfigDTO, "updatedAt"> = {
-  probeProvider: "cloudflare", probeIntervalSeconds: 900, autoAssignEnabled: false, autoBalanceEnabled: false, assignmentIntervalSeconds: 300, fallbacks: defaultFallbacks(),
+  probeProvider: "cloudflare", probeIntervalSeconds: 900, autoAssignEnabled: false, autoBalanceEnabled: false, assignmentIntervalSeconds: 300, fallbacks: defaultFallbacks(), subscriptionProxyURL: "", subscriptionProxyConfigured: false,
 };
 
 function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOperationsConfigDTO, "updatedAt"> {
@@ -86,6 +87,8 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOpera
       grok_web_asset: { ...defaults.grok_web_asset, ...value.fallbacks.grok_web_asset },
       grok_console_asset: { ...defaults.grok_console_asset, ...value.fallbacks.grok_console_asset },
     },
+    subscriptionProxyURL: "",
+    subscriptionProxyConfigured: value.subscriptionProxyConfigured ?? false,
   };
 }
 
@@ -116,6 +119,7 @@ export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressSco
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [operationsDraft, setOperationsDraft] = useState<Omit<EgressOperationsConfigDTO, "updatedAt"> | null>(null);
+  const [subscriptionProxyError, setSubscriptionProxyError] = useState("");
   const operationsQuery = useQuery({ queryKey: ["egress-operations"], queryFn: getEgressOperationsConfig });
   const nodesQuery = useQuery({ queryKey: ["egress-nodes", "fallback-options"], queryFn: () => listAllEgressNodes() });
   const operationsForm = operationsDraft ?? operationsFormFrom(operationsQuery.data);
@@ -164,7 +168,7 @@ export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressSco
         <OperationSectionHeader title={t("settings.egress.automation")} help={t("settings.egress.automationHelp")}>
           <ActionTooltip label={t("settings.egress.testAllHelp")}><Button type="button" size="sm" variant="secondary" disabled={testAll.isPending} onClick={() => testAll.mutate()}>{testAll.isPending ? <Spinner /> : <Network />}{t("settings.egress.testAll")}</Button></ActionTooltip>
           <ActionTooltip label={t("settings.egress.rebalanceHelp")}><Button type="button" size="sm" variant="secondary" disabled={rebalance.isPending} onClick={() => rebalance.mutate()}>{rebalance.isPending ? <Spinner /> : <Shuffle />}{t("settings.egress.rebalance")}</Button></ActionTooltip>
-          <ActionTooltip label={t("settings.egress.saveAutomationHelp")}><Button type="button" size="sm" disabled={operationsDraft === null || saveOperations.isPending} onClick={() => saveOperations.mutate()}>{saveOperations.isPending ? <Spinner /> : null}{t("common.save")}</Button></ActionTooltip>
+          <ActionTooltip label={t("settings.egress.saveAutomationHelp")}><Button type="button" size="sm" disabled={operationsDraft === null || Boolean(subscriptionProxyError) || saveOperations.isPending} onClick={() => saveOperations.mutate()}>{saveOperations.isPending ? <Spinner /> : null}{t("common.save")}</Button></ActionTooltip>
         </OperationSectionHeader>
 
         {operationsQuery.isError ? <ErrorState message={operationsQuery.error.message} onRetry={() => void operationsQuery.refetch()} /> : operationsQuery.isPending ? <LoadingState /> : (
@@ -189,6 +193,18 @@ export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressSco
             </AutomationRow>
             <AutomationRow controlId="egress-auto-balance" label={t("settings.egress.autoBalance")} description={t("settings.egress.autoBalanceHelp")}>
               <div className="flex h-8 items-center"><Switch id="egress-auto-balance" checked={operationsForm.autoBalanceEnabled} onCheckedChange={(autoBalanceEnabled) => setOperationsDraft({ ...operationsForm, autoBalanceEnabled })} /></div>
+            </AutomationRow>
+            <AutomationRow controlId="egress-subscription-proxy" label={t("settings.egress.subscriptionProxy")} description={t("settings.egress.subscriptionProxyHelp")} error={subscriptionProxyError}>
+              <Input
+                id="egress-subscription-proxy"
+                placeholder="socks5h://user:pass@host:port"
+                value={operationsForm.subscriptionProxyURL ?? ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setOperationsDraft({ ...operationsForm, subscriptionProxyURL: value });
+                  setSubscriptionProxyError(value.trim() && !validProxyURL(value) ? t("settings.egress.invalidProxy") : "");
+                }}
+              />
             </AutomationRow>
             <div className="pt-4">
               <div className="flex items-center gap-1.5 px-0.5">
@@ -412,7 +428,7 @@ function ActionTooltip({ label, children }: { label: string; children: ReactNode
   );
 }
 
-function AutomationRow({ controlId, label, description, children }: { controlId: string; label: string; description: string; children: ReactNode }) {
+function AutomationRow({ controlId, label, description, error, children }: { controlId: string; label: string; description: string; error?: string; children: ReactNode }) {
   return (
     <div className="min-w-0 py-4">
       <div className="grid min-w-0 gap-2.5 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] sm:items-center sm:gap-8">
@@ -421,6 +437,7 @@ function AutomationRow({ controlId, label, description, children }: { controlId:
             <Label htmlFor={controlId} className="text-xs font-medium">{label}</Label>
           </div>
           <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">{description}</p>
+          {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
         </div>
         <div className="min-w-0">{children}</div>
       </div>
