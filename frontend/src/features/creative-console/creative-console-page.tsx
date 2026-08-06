@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowUp, BrainCircuit, Check, CheckCircle2, Clock3, ExternalLink, Globe, History, ImageIcon, ImagePlus, ImageUpscale, Images, Loader2, MessageSquareText, Pencil, RefreshCw, Sparkle, Square, SquarePen, Trash2, TriangleAlert, TvMinimal, Video, Wrench, X } from "lucide-react";
+import { ArrowUp, BrainCircuit, Check, CheckCircle2, Clock3, ExternalLink, Globe, History, ImageIcon, ImagePlus, ImageUpscale, Images, Loader2, MessageSquareText, Pencil, RefreshCw, Sparkle, Square, SquarePen, Trash2, TriangleAlert, TvMinimal, Upload, Video, Wrench, X } from "lucide-react";
 import { marked } from "marked";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -32,6 +32,7 @@ import {
   type VideoStatus,
 } from "@/features/creative-console/creative-console-api";
 import { getClientKeySecret, listClientKeys, type ClientKeyDTO } from "@/features/client-keys/client-keys-api";
+import { uploadImage } from "@/features/media/media-api";
 import { PageHeader } from "@/shared/components/page-header";
 import { cn } from "@/shared/lib/cn";
 
@@ -915,10 +916,17 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [resolution, setResolution] = useState("720p");
   const [job, setJob] = useState<{ requestId: string; apiKey: string } | null>(null);
+  const imageFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const createMutation = useMutation({
     mutationFn: (request: Parameters<typeof createVideo>[0]) => createVideo(request),
     onSuccess: (requestId, request) => setJob({ requestId, apiKey: request.apiKey }),
+  });
+
+  // uploadMutation 把本地图片上传到图库，成功后用返回的同源 /v1/media/images/{id} 相对地址填入首图字段。
+  const uploadMutation = useMutation({
+    mutationFn: (file: File) => uploadImage(file),
+    onSuccess: (asset) => setImageURL(`/v1/media/images/${encodeURIComponent(asset.id)}`),
   });
 
   const statusQuery = useQuery({
@@ -981,6 +989,18 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
                     <Input id="video-image" type="url" value={imageURL} onChange={(event) => setImageURL(event.target.value)} placeholder="https://..." aria-label={t("creativeConsole.referenceImage")} />
                     {imageURL ? <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t("creativeConsole.clearReferenceImage")} onClick={() => setImageURL("")}><X /></Button> : null}
                   </div>
+                  <input
+                    ref={imageFileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    className="hidden"
+                    onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadMutation.mutate(file); event.target.value = ""; }}
+                  />
+                  <Button type="button" variant="secondary" size="sm" className="mt-2 w-full" disabled={uploadMutation.isPending} onClick={() => imageFileInputRef.current?.click()}>
+                    {uploadMutation.isPending ? <Loader2 className="animate-spin" /> : <Upload />}
+                    {t("creativeConsole.uploadImage")}
+                  </Button>
+                  {uploadMutation.isError ? <p className="mt-1 text-[11px] text-destructive">{uploadMutation.error.message}</p> : null}
                 </PopoverContent>
               </Popover>
               <CompactSelect value={duration} options={videoDurations} onChange={setDuration} ariaLabel={t("creativeConsole.duration")} suffix="s" icon={<Clock3 />} />

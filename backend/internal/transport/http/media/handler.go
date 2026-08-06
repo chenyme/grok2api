@@ -34,6 +34,8 @@ func (h *Handler) RegisterAdmin(router *gin.RouterGroup) {
 	router.GET("/media/images", h.listImages)
 	router.DELETE("/media/images", h.deleteImages)
 	router.GET("/media/images/stats", h.imageStats)
+	router.POST("/media/images/import", h.ingestImageFromURL)
+	router.POST("/media/images/upload", h.uploadImage)
 	router.GET("/media/videos", h.listVideos)
 	router.DELETE("/media/videos", h.deleteVideos)
 	router.GET("/media/videos/stats", h.videoStats)

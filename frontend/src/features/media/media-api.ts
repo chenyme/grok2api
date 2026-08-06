@@ -3,6 +3,7 @@ import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import {
   createObjectDecoder,
   createPaginatedDecoder,
+  createValidatedDecoder,
   decodeCountResult,
   hasShape,
   isNumber,
@@ -57,6 +58,7 @@ const decodeImageStats = createObjectDecoder<ImageStatsDTO>("image stats", {
   totalImages: isNumber,
   totalBytes: isNumber,
 });
+const decodeMediaAsset = createValidatedDecoder<MediaAssetDTO>("media asset", hasShape(mediaAssetShape));
 const decodeVideoStats = createObjectDecoder<VideoStatsDTO>("video stats", {
   totalJobs: isNumber,
   completed: isNumber,
@@ -96,4 +98,17 @@ export function getVideoStats(): Promise<VideoStatsDTO> {
 
 export function deleteVideos(ids: string[]): Promise<{ deleted: number }> {
   return apiRequest("/api/admin/v1/media/videos", { method: "DELETE", body: { ids } }, decodeCountResult<{ deleted: number }>("deleted"));
+}
+
+// importImageFromURL 让后端从给定 URL 抓取图片并登记到图库，返回新资产（含稳定的 /v1/media/images/{id} URL）。
+export function importImageFromURL(url: string): Promise<MediaAssetDTO> {
+  return apiRequest("/api/admin/v1/media/images/import", { method: "POST", body: { url } }, decodeMediaAsset);
+}
+
+// uploadImage 以 multipart/form-data 上传本地图片文件到图库，返回新资产。
+// 注意：不要手动设置 Content-Type，浏览器会自动带上 multipart 边界。
+export function uploadImage(file: File): Promise<MediaAssetDTO> {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  return apiRequest("/api/admin/v1/media/images/upload", { method: "POST", body }, decodeMediaAsset);
 }
