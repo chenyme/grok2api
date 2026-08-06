@@ -2450,12 +2450,16 @@ func writeStreamDone(writer io.Writer, operation, responseID, model string, pars
 		}
 		// Final chat chunk: finish_reason + full nested annotations (OpenAI message.annotations shape).
 		// Progressive delta.annotations may already have been sent mid-stream.
+		// Top-level citations + server_side_tool_usage match non-stream chat (xAI).
 		chunk := map[string]any{"id": strings.Replace(responseID, "resp_", "chatcmpl_", 1), "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "usage": payload["usage"]}
 		if len(parsed.Annotations) > 0 {
 			chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)["annotations"] = chatAnnotations(parsed.Annotations)
 		}
 		if citations := payload["citations"]; citations != nil {
 			chunk["citations"] = citations
+		}
+		if toolUsage := payload["server_side_tool_usage"]; toolUsage != nil {
+			chunk["server_side_tool_usage"] = toolUsage
 		}
 		writeSSE(writer, "", chunk)
 		_, _ = io.WriteString(writer, "data: [DONE]\n\n")

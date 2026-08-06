@@ -318,3 +318,34 @@ func TestWriteStreamAnnotationsShapes(t *testing.T) {
 		t.Fatalf("responses annotation must stay flat: %s", out)
 	}
 }
+
+func TestWriteStreamDoneChatIncludesServerSideToolUsage(t *testing.T) {
+	parsed := parsedChat{
+		HostedSearchCalls: []hostedSearchCall{
+			{ID: "w1", Kind: "web_search", Status: "completed"},
+			{ID: "x1", Kind: "x_search", Status: "completed"},
+		},
+		Annotations: []map[string]any{
+			{"type": "url_citation", "url": "https://example.com", "title": "Example", "start_index": 0, "end_index": 5},
+		},
+	}
+	payload := buildOpenAIResult("chat", "resp_test", "m", parsed, false)
+	if payload["server_side_tool_usage"] == nil {
+		t.Fatalf("payload missing server_side_tool_usage: %#v", payload)
+	}
+	var buf strings.Builder
+	writeStreamDone(&buf, "chat", "resp_test", "m", parsed, payload)
+	out := buf.String()
+	if !strings.Contains(out, `"server_side_tool_usage"`) {
+		t.Fatalf("final chat chunk missing server_side_tool_usage: %s", out)
+	}
+	if !strings.Contains(out, `"SERVER_SIDE_TOOL_WEB_SEARCH"`) || !strings.Contains(out, `"SERVER_SIDE_TOOL_X_SEARCH"`) {
+		t.Fatalf("tool usage keys missing: %s", out)
+	}
+	if !strings.Contains(out, `"finish_reason":"stop"`) {
+		t.Fatalf("expected finish chunk: %s", out)
+	}
+	if !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("missing DONE: %s", out)
+	}
+}
