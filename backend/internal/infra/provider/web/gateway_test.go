@@ -8,6 +8,7 @@ import (
 
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 )
 
 func TestGatewayEndpointAndHeadersMatchBrowserProtocol(t *testing.T) {
@@ -143,7 +144,46 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 	if msg["annotations"] == nil {
 		t.Fatalf("chat annotations missing: %#v", msg)
 	}
+	// Chat Completions: nested url_citation object
+	firstAnn := msg["annotations"].([]any)[0].(map[string]any)
+	nested, _ := firstAnn["url_citation"].(map[string]any)
+	if firstAnn["type"] != "url_citation" || nested == nil || nested["url"] == nil {
+		t.Fatalf("chat annotation shape = %#v", firstAnn)
+	}
 	if chatPayload["search_sources"] == nil {
 		t.Fatalf("search_sources missing: %#v", chatPayload)
+	}
+
+	respPayload := buildOpenAIResult(conversation.OperationResponses, "resp_1", "grok-chat-fast", *parsed, false)
+	outMsg := respPayload["output"].([]any)[len(respPayload["output"].([]any))-1].(map[string]any)
+	part := outMsg["content"].([]any)[0].(map[string]any)
+	flat := part["annotations"].([]any)[0].(map[string]any)
+	if flat["type"] != "url_citation" || flat["url"] == nil || flat["url_citation"] != nil {
+		t.Fatalf("responses annotation must be flat url_citation, got %#v", flat)
+	}
+}
+
+func TestWriteStreamAnnotationsShapes(t *testing.T) {
+	ann := []map[string]any{{
+		"type": "url_citation", "url": "https://example.com", "title": "Example",
+		"start_index": 1, "end_index": 10,
+	}}
+	var chatBuf strings.Builder
+	if err := writeStreamAnnotations(&chatBuf, "chat", "resp_1", "m", ann, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(chatBuf.String(), `"url_citation"`) || !strings.Contains(chatBuf.String(), `"annotations"`) {
+		t.Fatalf("chat stream = %s", chatBuf.String())
+	}
+	var respBuf strings.Builder
+	if err := writeStreamAnnotations(&respBuf, conversation.OperationResponses, "resp_1", "m", ann, 3); err != nil {
+		t.Fatal(err)
+	}
+	out := respBuf.String()
+	if !strings.Contains(out, "response.output_text.annotation.added") || !strings.Contains(out, `"annotation_index":3`) {
+		t.Fatalf("responses stream = %s", out)
+	}
+	if strings.Contains(out, `"url_citation":{`) {
+		t.Fatalf("responses annotation must stay flat: %s", out)
 	}
 }

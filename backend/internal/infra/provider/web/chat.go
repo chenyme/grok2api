@@ -374,11 +374,20 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 		}
 		messagesStream := newWebMessagesStream(writer, responseID, model, parsed.InputTokens, options)
 		visiblePhase := webVisibleStreamPhase{}
+		annotationCursor := 0
 		writeDelta := func(kind, delta string) error {
 			if !visiblePhase.Allow(kind, delta) {
 				return nil
 			}
 			return writeWebStreamDelta(writer, messagesStream, operation, responseID, model, kind, delta)
+		}
+		flushAnnotations := func() error {
+			if annotationCursor >= len(parsed.Annotations) {
+				return nil
+			}
+			newOnes := parsed.Annotations[annotationCursor:]
+			annotationCursor = len(parsed.Annotations)
+			return writeStreamAnnotations(writer, operation, responseID, model, newOnes, annotationCursor-len(newOnes))
 		}
 		if operation != conversation.OperationMessages {
 			writeStreamStart(writer, operation, responseID, model, parsed.InputTokens)
@@ -412,17 +421,23 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 				if result.Complete {
 					if len(result.Calls) == 0 {
 						clientText.WriteString(result.Raw)
-						return writeDelta(kind, result.Raw)
+						if err := writeDelta(kind, result.Raw); err != nil {
+							return err
+						}
+						return flushAnnotations()
 					}
 					parsed.ToolCalls = result.Calls
 					return writeWebStreamToolCalls(writer, messagesStream, operation, responseID, model, result.Calls)
 				}
-				return nil
+				return flushAnnotations()
 			}
 			if kind == "text" {
 				clientText.WriteString(delta)
 			}
-			return writeDelta(kind, delta)
+			if err := writeDelta(kind, delta); err != nil {
+				return err
+			}
+			return flushAnnotations()
 		})
 		if err != nil {
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
@@ -1401,9 +1416,9 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 		output = append(output, map[string]any{"id": newWebID("rs"), "type": "reasoning", "status": "completed", "summary": []any{map[string]any{"type": "summary_text", "text": parsed.Reasoning.String()}}})
 	}
 	if parsed.Text.Len() > 0 || len(parsed.ToolCalls) == 0 {
-		annotations := parsed.Annotations
+		annotations := responsesAnnotations(parsed.Annotations)
 		if annotations == nil {
-			annotations = []map[string]any{}
+			annotations = []any{}
 		}
 		message := map[string]any{"id": newWebID("msg"), "type": "message", "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": parsed.Text.String(), "annotations": annotations, "logprobs": []any{}}}}
 		if len(parsed.SearchSources) > 0 {
@@ -1526,13 +1541,39 @@ func chatToolCalls(calls []parsedToolCall) []any {
 func chatAnnotations(annotations []map[string]any) []any {
 	values := make([]any, 0, len(annotations))
 	for _, annotation := range annotations {
-		values = append(values, map[string]any{
-			"type": "url_citation",
-			"url_citation": map[string]any{
-				"url": annotation["url"], "title": annotation["title"],
-				"start_index": annotation["start_index"], "end_index": annotation["end_index"],
-			},
-		})
+		values = append(values, chatURLCitation(annotation))
+	}
+	return values
+}
+
+// chatURLCitation is the Chat Completions shape:
+// { "type":"url_citation", "url_citation":{ url, title, start_index, end_index } }
+func chatURLCitation(annotation map[string]any) map[string]any {
+	return map[string]any{
+		"type": "url_citation",
+		"url_citation": map[string]any{
+			"url": annotation["url"], "title": annotation["title"],
+			"start_index": annotation["start_index"], "end_index": annotation["end_index"],
+		},
+	}
+}
+
+// responsesURLCitation is the Responses API shape (flat, no nested url_citation object):
+// { "type":"url_citation", "url", "title", "start_index", "end_index" }
+func responsesURLCitation(annotation map[string]any) map[string]any {
+	return map[string]any{
+		"type":        "url_citation",
+		"url":         annotation["url"],
+		"title":       annotation["title"],
+		"start_index": annotation["start_index"],
+		"end_index":   annotation["end_index"],
+	}
+}
+
+func responsesAnnotations(annotations []map[string]any) []any {
+	values := make([]any, 0, len(annotations))
+	for _, annotation := range annotations {
+		values = append(values, responsesURLCitation(annotation))
 	}
 	return values
 }
@@ -2052,6 +2093,8 @@ func writeStreamDone(writer io.Writer, operation, responseID, model string, pars
 		if len(parsed.ToolCalls) > 0 {
 			finishReason = "tool_calls"
 		}
+		// Final chat chunk: finish_reason + full nested annotations (OpenAI message.annotations shape).
+		// Progressive delta.annotations may already have been sent mid-stream.
 		chunk := map[string]any{"id": strings.Replace(responseID, "resp_", "chatcmpl_", 1), "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "usage": payload["usage"]}
 		if len(parsed.Annotations) > 0 {
 			chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)["annotations"] = chatAnnotations(parsed.Annotations)
@@ -2081,6 +2124,42 @@ func writeStreamDone(writer io.Writer, operation, responseID, model string, pars
 		writeSSE(writer, "response.output_text.done", map[string]any{"type": "response.output_text.done", "response_id": responseID, "text": parsed.Text.String()})
 	}
 	writeSSE(writer, "response.completed", map[string]any{"type": "response.completed", "response": payload})
+}
+
+// writeStreamAnnotations emits progressive citation events aligned with OpenAI shapes.
+// Chat Completions: delta.annotations with nested url_citation objects.
+// Responses: response.output_text.annotation.added with flat url_citation fields.
+func writeStreamAnnotations(writer io.Writer, operation, responseID, model string, annotations []map[string]any, startIndex int) error {
+	if len(annotations) == 0 || operation == conversation.OperationMessages {
+		return nil
+	}
+	if operation == "chat" {
+		chunk := map[string]any{
+			"id": strings.Replace(responseID, "resp_", "chatcmpl_", 1), "object": "chat.completion.chunk",
+			"created": time.Now().Unix(), "model": model,
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"annotations": chatAnnotations(annotations)}, "finish_reason": nil,
+			}},
+		}
+		return writeSSE(writer, "", chunk)
+	}
+	if operation != conversation.OperationResponses {
+		return nil
+	}
+	for i, annotation := range annotations {
+		if err := writeSSE(writer, "response.output_text.annotation.added", map[string]any{
+			"type":             "response.output_text.annotation.added",
+			"response_id":      responseID,
+			"item_id":          "",
+			"output_index":     0,
+			"content_index":    0,
+			"annotation_index": startIndex + i,
+			"annotation":       responsesURLCitation(annotation),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeSSE(writer io.Writer, event string, value any) error {
