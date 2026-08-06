@@ -337,7 +337,10 @@ function validHTTPURL(value: string): boolean {
 export function validProxyURL(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed.length === 0) return true;
-  if (trimmed.length > 2048 || /[\x00-\x1f\x7f]/.test(trimmed)) return false;
+  if (trimmed.length > 2048 || [...trimmed].some((char) => {
+    const code = char.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  })) return false;
   if ((trimmed.match(/\{account\}/g) ?? []).length > 1) return false;
   try {
     const parseValue = trimmed.replaceAll("{account}", "grok2api_account_placeholder");
