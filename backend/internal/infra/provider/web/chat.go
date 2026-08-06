@@ -83,6 +83,15 @@ type chatAttachmentInput struct {
 	Image    bool
 }
 
+// hostedSearchCall tracks one mgw web_search / x_search invocation for xAI Responses output items.
+type hostedSearchCall struct {
+	ID      string
+	Kind    string // web_search | x_search
+	Query   string
+	Status  string // in_progress | completed
+	Sources []map[string]any
+}
+
 type parsedChat struct {
 	ResponseID      string
 	ConversationID  string
@@ -93,6 +102,9 @@ type parsedChat struct {
 	Images          []string
 	SearchSources   []map[string]any
 	Annotations     []map[string]any
+	// HostedSearchCalls are ordered web_search_call / x_search_call items (xAI Responses).
+	HostedSearchCalls []hostedSearchCall
+	hostedSearchByID  map[string]int
 	// InlineCitations mirrors xAI default-on [[N]](url) embedding.
 	DisableInlineCitations bool
 	sourceKeys      map[string]struct{}
@@ -104,6 +116,7 @@ type parsedChat struct {
 	lastCitation    int
 	ServerTools     int64
 	WebSearchTools  int64
+	XSearchTools    int64
 	InputTokens     int64
 	ToolCalls       []parsedToolCall
 	Tools           []any
@@ -383,6 +396,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 		messagesStream := newWebMessagesStream(writer, responseID, model, parsed.InputTokens, options)
 		visiblePhase := webVisibleStreamPhase{}
 		annotationCursor := 0
+		hostedSearchCursor := 0
 		writeDelta := func(kind, delta string) error {
 			if !visiblePhase.Allow(kind, delta) {
 				return nil
@@ -397,12 +411,58 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 			annotationCursor = len(parsed.Annotations)
 			return writeStreamAnnotations(writer, operation, responseID, model, newOnes, annotationCursor-len(newOnes))
 		}
+		flushHostedSearch := func() error {
+			if operation != conversation.OperationResponses {
+				return nil
+			}
+			for hostedSearchCursor < len(parsed.HostedSearchCalls) {
+				call := parsed.HostedSearchCalls[hostedSearchCursor]
+				// Wait until the tool_result arrives (completed / has sources).
+				if call.Status != "completed" && len(call.Sources) == 0 {
+					break
+				}
+				items := xaiHostedSearchOutputItems(parsedChat{HostedSearchCalls: []hostedSearchCall{call}})
+				if len(items) == 0 {
+					hostedSearchCursor++
+					continue
+				}
+				item := items[0]
+				idx := hostedSearchCursor
+				hostedSearchCursor++
+				if err := writeSSE(writer, "response.output_item.added", map[string]any{
+					"type": "response.output_item.added", "response_id": responseID, "output_index": idx, "item": item,
+				}); err != nil {
+					return err
+				}
+				eventType := "response.web_search_call.completed"
+				if call.Kind == "x_search" {
+					eventType = "response.x_search_call.completed"
+				}
+				if err := writeSSE(writer, eventType, map[string]any{
+					"type": eventType, "response_id": responseID, "output_index": idx, "item_id": call.ID,
+				}); err != nil {
+					return err
+				}
+				if err := writeSSE(writer, "response.output_item.done", map[string]any{
+					"type": "response.output_item.done", "response_id": responseID, "output_index": idx, "item": item,
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		flushSideChannel := func() error {
+			if err := flushHostedSearch(); err != nil {
+				return err
+			}
+			return flushAnnotations()
+		}
 		if operation != conversation.OperationMessages {
 			writeStreamStart(writer, operation, responseID, model, parsed.InputTokens)
 		}
 		err := consumeUpstreamInto(source, parsed, func(kind, delta string) error {
 			if len(parsed.ToolCalls) > 0 && kind != "reasoning" {
-				return nil
+				return flushSideChannel()
 			}
 			if kind == "image" {
 				rawURL := delta
@@ -432,20 +492,24 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 						if err := writeDelta(kind, result.Raw); err != nil {
 							return err
 						}
-						return flushAnnotations()
+						return flushSideChannel()
 					}
 					parsed.ToolCalls = result.Calls
 					return writeWebStreamToolCalls(writer, messagesStream, operation, responseID, model, result.Calls)
 				}
-				return flushAnnotations()
+				return flushSideChannel()
 			}
 			if kind == "text" {
-				clientText.WriteString(delta)
+				if delta != "" {
+					clientText.WriteString(delta)
+				}
 			}
-			if err := writeDelta(kind, delta); err != nil {
-				return err
+			if delta != "" {
+				if err := writeDelta(kind, delta); err != nil {
+					return err
+				}
 			}
-			return flushAnnotations()
+			return flushSideChannel()
 		})
 		if err != nil {
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
@@ -731,10 +795,12 @@ func consumeUpstreamInto(source io.Reader, parsed *parsedChat, emit func(string,
 		if err != nil {
 			return err
 		}
-		if delta != "" && emit != nil {
-			return emit(kind, delta)
+		if emit == nil {
+			return nil
 		}
-		return nil
+		// Always invoke emit so streaming can flush tool/citation side-channels
+		// even when the frame produced no visible text delta.
+		return emit(kind, delta)
 	})
 }
 
@@ -1360,6 +1426,131 @@ func searchSourceTitle(sources []map[string]any, rawURL string) string {
 	return rawURL
 }
 
+func upsertHostedSearchCall(parsed *parsedChat, id, kind, query, status string) *hostedSearchCall {
+	if parsed == nil {
+		return nil
+	}
+	if id == "" {
+		id = fmt.Sprintf("%s_%d", kind, len(parsed.HostedSearchCalls)+1)
+	}
+	if parsed.hostedSearchByID == nil {
+		parsed.hostedSearchByID = make(map[string]int)
+	}
+	if idx, ok := parsed.hostedSearchByID[id]; ok {
+		call := &parsed.HostedSearchCalls[idx]
+		if query != "" {
+			call.Query = query
+		}
+		if status != "" {
+			call.Status = status
+		}
+		if kind != "" && call.Kind == "" {
+			call.Kind = kind
+		}
+		return call
+	}
+	if len(parsed.HostedSearchCalls) >= maxTrackedServerTools {
+		return nil
+	}
+	if status == "" {
+		status = "in_progress"
+	}
+	parsed.HostedSearchCalls = append(parsed.HostedSearchCalls, hostedSearchCall{
+		ID: id, Kind: kind, Query: query, Status: status,
+	})
+	parsed.hostedSearchByID[id] = len(parsed.HostedSearchCalls) - 1
+	return &parsed.HostedSearchCalls[len(parsed.HostedSearchCalls)-1]
+}
+
+func appendHostedSearchSources(call *hostedSearchCall, sources []map[string]any) {
+	if call == nil || len(sources) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(call.Sources)+len(sources))
+	for _, existing := range call.Sources {
+		if u, _ := existing["url"].(string); u != "" {
+			seen[u] = struct{}{}
+		}
+	}
+	for _, source := range sources {
+		u, _ := source["url"].(string)
+		if u == "" {
+			continue
+		}
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		if len(call.Sources) >= searchresult.MaxResults {
+			break
+		}
+		seen[u] = struct{}{}
+		call.Sources = append(call.Sources, source)
+	}
+}
+
+// xaiHostedSearchOutputItems builds Responses output items: web_search_call / x_search_call.
+func xaiHostedSearchOutputItems(parsed parsedChat) []any {
+	if len(parsed.HostedSearchCalls) == 0 {
+		return nil
+	}
+	items := make([]any, 0, len(parsed.HostedSearchCalls))
+	for _, call := range parsed.HostedSearchCalls {
+		typeName := "web_search_call"
+		if call.Kind == "x_search" {
+			typeName = "x_search_call"
+		}
+		status := call.Status
+		if status == "" {
+			status = "completed"
+		}
+		action := map[string]any{"type": "search"}
+		if call.Query != "" {
+			action["query"] = call.Query
+		}
+		if len(call.Sources) > 0 {
+			// xAI/OpenAI-compatible optional sources on the search action.
+			action["sources"] = call.Sources
+		}
+		items = append(items, map[string]any{
+			"id": call.ID, "type": typeName, "status": status, "action": action,
+		})
+	}
+	return items
+}
+
+func xaiServerSideToolUsage(parsed parsedChat) map[string]any {
+	var web, x int64
+	for _, call := range parsed.HostedSearchCalls {
+		// Billable/successful executions: completed or with returned sources.
+		if call.Status != "completed" && len(call.Sources) == 0 {
+			continue
+		}
+		switch call.Kind {
+		case "web_search":
+			web++
+		case "x_search":
+			x++
+		}
+	}
+	if web == 0 {
+		web = parsed.WebSearchTools
+	}
+	if x == 0 {
+		x = parsed.XSearchTools
+	}
+	usage := map[string]any{}
+	if web > 0 {
+		usage["SERVER_SIDE_TOOL_WEB_SEARCH"] = web
+	}
+	if x > 0 {
+		usage["SERVER_SIDE_TOOL_X_SEARCH"] = x
+	}
+	if len(usage) == 0 {
+		return nil
+	}
+	return usage
+}
+
 func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, streaming bool, responseOptions ...conversation.ResponseOptions) map[string]any {
 	created := time.Now().Unix()
 	options := conversation.ResponseOptions{}
@@ -1390,6 +1581,9 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 		// xAI: top-level citations = all source URLs encountered (always when present).
 		if citations := xaiCitationURLs(parsed); len(citations) > 0 {
 			value["citations"] = citations
+		}
+		if usage := xaiServerSideToolUsage(parsed); usage != nil {
+			value["server_side_tool_usage"] = usage
 		}
 		return value
 	}
@@ -1435,6 +1629,8 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 		output = append(output, map[string]any{"id": newWebID("rs"), "type": "reasoning", "status": "completed", "summary": []any{map[string]any{"type": "summary_text", "text": parsed.Reasoning.String()}}})
 	}
 	finalizeXAIAnnotations(&parsed)
+	// xAI Tool Usage Details: web_search_call / x_search_call precede the assistant message.
+	output = append(output, xaiHostedSearchOutputItems(parsed)...)
 	if parsed.Text.Len() > 0 || len(parsed.ToolCalls) == 0 {
 		annotations := responsesAnnotations(parsed.Annotations)
 		if annotations == nil {
@@ -1470,6 +1666,9 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 	// xAI Citations docs: response.citations is the full URL list from tool research.
 	if citations := xaiCitationURLs(parsed); len(citations) > 0 {
 		value["citations"] = citations
+	}
+	if usage := xaiServerSideToolUsage(parsed); usage != nil {
+		value["server_side_tool_usage"] = usage
 	}
 	return value
 }

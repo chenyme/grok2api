@@ -425,7 +425,8 @@ func parseGatewayEvent(event map[string]any, parsed *parsedChat) (string, string
 	return "", "", nil
 }
 
-// collectGatewayToolUsageCard records mgw tool_usage_card starts (web_search / x_search).
+// collectGatewayToolUsageCard records mgw tool_usage_card starts (web_search / x_search)
+// and maps them to xAI web_search_call / x_search_call skeletons.
 func collectGatewayToolUsageCard(parsed *parsedChat, card map[string]any) {
 	if parsed == nil || card == nil {
 		return
@@ -444,7 +445,7 @@ func collectGatewayToolUsageCard(parsed *parsedChat, card map[string]any) {
 		parsed.serverToolKeys[id] = struct{}{}
 		parsed.ServerTools++
 	}
-	if _, ok := card["web_search"]; ok {
+	if web, _ := card["web_search"].(map[string]any); web != nil {
 		if parsed.webSearchKeys == nil {
 			parsed.webSearchKeys = make(map[string]struct{})
 		}
@@ -452,25 +453,64 @@ func collectGatewayToolUsageCard(parsed *parsedChat, card map[string]any) {
 			parsed.webSearchKeys[id] = struct{}{}
 			parsed.WebSearchTools++
 		}
+		query := nestedSearchQuery(web)
+		upsertHostedSearchCall(parsed, id, "web_search", query, "in_progress")
+		return
+	}
+	if xSearch, _ := card["x_search"].(map[string]any); xSearch != nil {
+		query := nestedSearchQuery(xSearch)
+		_, existed := parsed.hostedSearchByID[id]
+		upsertHostedSearchCall(parsed, id, "x_search", query, "in_progress")
+		if !existed {
+			parsed.XSearchTools++
+		}
 	}
 }
 
-// collectGatewayToolResult folds mgw tool_result webpages / X posts into SearchSources.
+func nestedSearchQuery(tool map[string]any) string {
+	if tool == nil {
+		return ""
+	}
+	if q := firstString(tool, "query"); q != "" {
+		return q
+	}
+	if args, _ := tool["args"].(map[string]any); args != nil {
+		return firstString(args, "query")
+	}
+	return ""
+}
+
+// collectGatewayToolResult folds mgw tool_result into SearchSources and completes hosted calls.
 func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
 	if parsed == nil || result == nil {
 		return
 	}
+	callID := firstString(result, "tool_call_id", "tool_usage_card_id", "id")
 	if web, _ := result["web_search"].(map[string]any); web != nil {
+		var sources []map[string]any
 		pages, _ := web["webpages"].([]any)
 		for _, raw := range pages {
 			item, _ := raw.(map[string]any)
 			if item == nil {
 				continue
 			}
-			appendSearchSource(parsed, firstString(item, "url"), firstString(item, "title"), "web")
+			u := firstString(item, "url")
+			title := firstString(item, "title")
+			appendSearchSource(parsed, u, title, "web")
+			if normalized, ok := searchresult.NormalizeURL(u); ok {
+				sources = append(sources, map[string]any{
+					"url": normalized, "title": searchresult.NormalizeTitle(title, normalized),
+				})
+			}
+		}
+		call := upsertHostedSearchCall(parsed, callID, "web_search", nestedSearchQuery(web), "completed")
+		appendHostedSearchSources(call, sources)
+		if call != nil {
+			call.Status = "completed"
 		}
 	}
 	if xPost, _ := result["x_post"].(map[string]any); xPost != nil {
+		var sources []map[string]any
 		posts, _ := xPost["posts"].([]any)
 		for _, raw := range posts {
 			item, _ := raw.(map[string]any)
@@ -490,6 +530,19 @@ func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
 				title = text
 			}
 			appendSearchSource(parsed, rawURL, title, "x_post")
+			if normalized, ok := searchresult.NormalizeURL(rawURL); ok {
+				sources = append(sources, map[string]any{
+					"url": normalized, "title": searchresult.NormalizeTitle(title, normalized),
+				})
+			}
+		}
+		call := upsertHostedSearchCall(parsed, callID, "x_search", "", "completed")
+		appendHostedSearchSources(call, sources)
+		if call != nil {
+			call.Status = "completed"
+			if call.Kind == "" {
+				call.Kind = "x_search"
+			}
 		}
 	}
 }

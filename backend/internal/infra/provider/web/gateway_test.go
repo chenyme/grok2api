@@ -128,6 +128,18 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 	if len(parsed.SearchSources) < 2 {
 		t.Fatalf("search sources = %#v", parsed.SearchSources)
 	}
+	if len(parsed.HostedSearchCalls) < 2 {
+		t.Fatalf("hosted search calls = %#v", parsed.HostedSearchCalls)
+	}
+	if parsed.HostedSearchCalls[0].Kind != "web_search" || parsed.HostedSearchCalls[0].Status != "completed" {
+		t.Fatalf("web call = %#v", parsed.HostedSearchCalls[0])
+	}
+	if parsed.HostedSearchCalls[1].Kind != "x_search" || parsed.HostedSearchCalls[1].Query == "" && parsed.HostedSearchCalls[1].Status != "completed" {
+		// x call should be completed with sources
+		if parsed.HostedSearchCalls[1].Kind != "x_search" || parsed.HostedSearchCalls[1].Status != "completed" {
+			t.Fatalf("x call = %#v", parsed.HostedSearchCalls[1])
+		}
+	}
 	if len(parsed.Annotations) != 2 {
 		t.Fatalf("annotations = %#v", parsed.Annotations)
 	}
@@ -168,7 +180,24 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 	if respPayload["citations"] == nil {
 		t.Fatalf("responses citations missing: %#v", respPayload)
 	}
-	outMsg := respPayload["output"].([]any)[len(respPayload["output"].([]any))-1].(map[string]any)
+	if respPayload["server_side_tool_usage"] == nil {
+		t.Fatalf("server_side_tool_usage missing: %#v", respPayload)
+	}
+	out := respPayload["output"].([]any)
+	if len(out) < 3 {
+		t.Fatalf("output should include search calls + message: %#v", out)
+	}
+	if out[0].(map[string]any)["type"] != "web_search_call" {
+		t.Fatalf("first output item = %#v", out[0])
+	}
+	if out[1].(map[string]any)["type"] != "x_search_call" {
+		t.Fatalf("second output item = %#v", out[1])
+	}
+	webAction := out[0].(map[string]any)["action"].(map[string]any)
+	if webAction["type"] != "search" || webAction["query"] == nil {
+		t.Fatalf("web action = %#v", webAction)
+	}
+	outMsg := out[len(out)-1].(map[string]any)
 	part := outMsg["content"].([]any)[0].(map[string]any)
 	flat := part["annotations"].([]any)[0].(map[string]any)
 	if flat["type"] != "url_citation" || flat["url"] == nil || flat["url_citation"] != nil || flat["title"] != "1" {
