@@ -221,7 +221,7 @@ func (a *Adapter) fetchDPoPSession(ctx context.Context, ssoToken string, lease *
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if response.StatusCode == http.StatusForbidden {
-			if !provider.IsDefinitiveAccountBlockBody(data) {
+			if !provider.IsDefinitiveAccountBlockBody(data) && !provider.IsDPoPProofRequiredBody(data) {
 				lease.InvalidateClearance()
 			}
 		}

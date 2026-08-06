@@ -146,7 +146,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			cancel()
 			return nil, readErr
 		}
-		if !provider.IsDefinitiveAccountBlockBody(data) {
+		if !provider.IsDefinitiveAccountBlockBody(data) && !provider.IsDPoPProofRequiredBody(data) {
 			lease.InvalidateClearance()
 			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
 		}

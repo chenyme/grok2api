@@ -174,10 +174,13 @@ func (a *Adapter) forwardConsoleMedia(ctx context.Context, credential account.Cr
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		data, truncated, readErr := provider.ReadDiagnosticBody(response.Body)
 		_ = response.Body.Close()
-		if response.StatusCode == http.StatusForbidden && !provider.IsDefinitiveAccountBlockBody(data) {
+		dpopRequired := response.StatusCode == http.StatusForbidden && provider.IsDPoPProofRequiredBody(data)
+		if response.StatusCode == http.StatusForbidden && !provider.IsDefinitiveAccountBlockBody(data) && !dpopRequired {
 			lease.InvalidateClearance()
 		}
-		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
+		if !dpopRequired {
+			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
+		}
 		lease.Release()
 		cancel()
 		if readErr != nil {
@@ -499,10 +502,13 @@ func (a *Adapter) doConsoleVideoJSON(ctx context.Context, credential account.Cre
 		return nil, provider.ErrUnauthorized
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		if response.StatusCode == http.StatusForbidden && !provider.IsDefinitiveAccountBlockBody(data) {
+		dpopRequired := response.StatusCode == http.StatusForbidden && provider.IsDPoPProofRequiredBody(data)
+		if response.StatusCode == http.StatusForbidden && !provider.IsDefinitiveAccountBlockBody(data) && !dpopRequired {
 			lease.InvalidateClearance()
 		}
-		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
+		if !dpopRequired {
+			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
+		}
 		return nil, newConsoleMediaUpstreamError(response.StatusCode, data)
 	}
 	a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
