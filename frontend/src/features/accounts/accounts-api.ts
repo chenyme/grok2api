@@ -222,7 +222,8 @@ type ListAccountsInput = {
   risk?: string;
   agreement?: string;
   association?: string;
-  provider: AccountProvider;
+  // 为空时返回全部 provider 的账号，用于跨 provider 的通用名单（如请求审计筛选）。
+  provider?: AccountProvider;
   sortBy?: string;
   sortOrder?: SortOrder;
 };
@@ -241,7 +242,7 @@ export function listAccounts(input: ListAccountsInput): Promise<PaginatedDTO<Acc
     query.set("sortBy", input.sortBy);
     query.set("sortOrder", input.sortOrder);
   }
-  query.set("provider", input.provider);
+  if (input.provider) query.set("provider", input.provider);
   return apiRequest(`/api/admin/v1/accounts?${query}`, {}, decodeAccountPage);
 }
 

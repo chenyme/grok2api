@@ -269,7 +269,7 @@ func (s *Service) executeImage(
 	var once sync.Once
 	finalize := func(_ Usage, _ string, errorCode string) {
 		once.Do(func() {
-			successful := response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == ""
+			successful := auditRequestSucceeded(response.StatusCode, errorCode)
 			lease.completeSelectorObservation(successful)
 			lease.Release()
 			budget := newFinalizationBudget(string(operation), string(route.Provider))
