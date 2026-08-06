@@ -579,6 +579,12 @@ func (s *Service) buildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, erro
 	})
 }
 
+// ListBuildBotFlaggedAccountIDs returns Build account IDs whose access-token claims
+// mark bot_flag_source/bfs as 1 or 2. Used by routing to optionally exclude them.
+func (s *Service) ListBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
+	return s.buildBotFlaggedAccountIDs(ctx)
+}
+
 func (s *Service) loadBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
 	const batchSize = 500
 	result := make([]uint64, 0)

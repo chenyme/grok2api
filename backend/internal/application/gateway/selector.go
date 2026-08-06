@@ -262,6 +262,8 @@ type Selector struct {
 	cooldownMax            time.Duration
 	capacityWait           time.Duration
 	preferFreeBuild        bool
+	excludeBuildBotFlagged bool
+	buildBotFlagged        buildBotFlaggedAccountSource
 	segmentedConfig        segmentedSelectorConfig
 	segmentedState         segmentedSelectorState
 	configMu               sync.RWMutex
@@ -289,6 +291,12 @@ type Selector struct {
 	tierOrders             interface {
 		TierOrder(account.Provider, string) []account.WebTier
 	}
+}
+
+// buildBotFlaggedAccountSource supplies Build account IDs marked bot-risk
+// (bot_flag_source/bfs in {1,2}). Used only when exclusion from scheduling is enabled.
+type buildBotFlaggedAccountSource interface {
+	ListBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error)
 }
 
 func NewSelector(accounts repository.AccountRepository, concurrency repository.ConcurrencyLimiter, sticky repository.StickySessionRepository, tierOrders interface {
@@ -342,10 +350,81 @@ func (s *Selector) routingConfig() (time.Duration, time.Duration, time.Duration,
 	return s.stickyTTL, s.cooldownBase, s.cooldownMax, s.capacityWait
 }
 
+// SetBuildBotFlaggedSource wires the Build bot-risk account ID source used when
+// exclude-from-scheduling is enabled. Only ProviderBuild candidates are filtered.
+func (s *Selector) SetBuildBotFlaggedSource(source buildBotFlaggedAccountSource) {
+	s.configMu.Lock()
+	s.buildBotFlagged = source
+	s.configMu.Unlock()
+}
+
+// UpdateExcludeBuildBotFlaggedFromScheduling toggles Build bot-risk exclusion from
+// scheduling and invalidates Build candidate caches when the value changes.
+func (s *Selector) UpdateExcludeBuildBotFlaggedFromScheduling(value bool) {
+	s.configMu.Lock()
+	changed := s.excludeBuildBotFlagged != value
+	s.excludeBuildBotFlagged = value
+	s.configMu.Unlock()
+	if changed {
+		s.invalidateProviderCandidateCache(account.ProviderBuild)
+	}
+}
+
 func (s *Selector) preferFreeBuildEnabled() bool {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 	return s.preferFreeBuild
+}
+
+func (s *Selector) excludeBuildBotFlaggedEnabled() (bool, buildBotFlaggedAccountSource) {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return s.excludeBuildBotFlagged, s.buildBotFlagged
+}
+
+func (s *Selector) invalidateProviderCandidateCache(provider account.Provider) {
+	s.candidateMu.Lock()
+	defer s.candidateMu.Unlock()
+	for key := range s.candidates {
+		if key.provider == provider {
+			delete(s.candidates, key)
+		}
+	}
+	clearRoutingBases(s.routingBases, provider)
+	clearRoutingOverlays(s.routingOverlays, provider)
+	if provider != "" {
+		s.baseProviderVersion[provider]++
+		s.overlayProviderVersion[provider]++
+	}
+}
+
+func (s *Selector) applyBuildBotFlaggedFilter(ctx context.Context, provider account.Provider, values []account.RoutingCandidate) ([]account.RoutingCandidate, error) {
+	if provider != account.ProviderBuild || len(values) == 0 {
+		return values, nil
+	}
+	enabled, source := s.excludeBuildBotFlaggedEnabled()
+	if !enabled || source == nil {
+		return values, nil
+	}
+	ids, err := source.ListBuildBotFlaggedAccountIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return values, nil
+	}
+	blocked := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		blocked[id] = struct{}{}
+	}
+	filtered := make([]account.RoutingCandidate, 0, len(values))
+	for _, candidate := range values {
+		if _, hit := blocked[candidate.Credential.ID]; hit {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered, nil
 }
 
 func (s *Selector) Acquire(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*accountLease, error) {
@@ -1087,6 +1166,10 @@ func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.
 			}
 			return nil, err
 		}
+		values, err = s.applyBuildBotFlaggedFilter(ctx, provider, values)
+		if err != nil {
+			return nil, err
+		}
 		s.candidateMu.Lock()
 		s.storeCandidateSnapshotLocked(key, newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL)), checkTime)
 		s.candidateMu.Unlock()
@@ -1134,6 +1217,10 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 				continue
 			}
 			values := assembleRoutingCandidates(provider, quotaMode, bases, overlay)
+			values, filterErr := s.applyBuildBotFlaggedFilter(ctx, provider, values)
+			if filterErr != nil {
+				return nil, filterErr
+			}
 			s.candidateMu.Lock()
 			stable := baseVersion == s.routingBaseVersionLocked(provider) && overlayVersion == s.routingOverlayVersionLocked(provider)
 			if stable {
@@ -1147,7 +1234,11 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 		}
 		// Sustained account synchronization must not turn cache churn into user-facing
 		// failures. Fall back to the established authoritative combined query.
-		return s.accounts.ListRoutingCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode)
+		values, err := s.accounts.ListRoutingCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode)
+		if err != nil {
+			return nil, err
+		}
+		return s.applyBuildBotFlaggedFilter(ctx, provider, values)
 	})
 	if err != nil {
 		return nil, err
