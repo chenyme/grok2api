@@ -1400,16 +1400,34 @@ func renderChatCard(parsed *parsedChat, cardID, renderType string) (string, map[
 			return "", nil
 		}
 		parsed.lastCitation = index
-		label := fmt.Sprintf("%d", index)
-		annotation := map[string]any{"type": "url_citation", "url": value, "title": label}
+		title := citationPageTitle(parsed, value)
+		annotation := map[string]any{"type": "url_citation", "url": value, "title": title}
 		if parsed.DisableInlineCitations {
 			return "", annotation
 		}
-		// xAI inline form: [[N]](url)
+		// Inline marker keeps numeric label; annotation title is page name.
 		return fmt.Sprintf("[[%d]](%s)", index, value), annotation
 	default:
 		return "", nil
 	}
+}
+
+// citationPageTitle resolves a human page/source title for url_citation annotations.
+// Prefers tool_result / search pool titles; falls back to the URL.
+func citationPageTitle(parsed *parsedChat, rawURL string) string {
+	if parsed == nil {
+		return searchresult.NormalizeTitle("", rawURL)
+	}
+	if title := searchSourceTitle(parsed.SearchSources, rawURL); title != "" {
+		// searchSourceTitle returns the URL when no title is known — still usable.
+		return title
+	}
+	for _, call := range parsed.HostedSearchCalls {
+		if title := searchSourceTitle(call.Sources, rawURL); title != "" {
+			return title
+		}
+	}
+	return searchresult.NormalizeTitle("", rawURL)
 }
 
 func searchSourceTitle(sources []map[string]any, rawURL string) string {
@@ -1797,7 +1815,7 @@ func chatAnnotations(annotations []map[string]any) []any {
 }
 
 // chatURLCitation is Chat Completions nested url_citation (OpenAI-compatible wire).
-// xAI label semantics: title is the citation number string ("1", "2").
+// title is the page/source title (not the [[N]] display number).
 func chatURLCitation(annotation map[string]any) map[string]any {
 	inner := map[string]any{
 		"url": annotation["url"], "title": annotation["title"],
@@ -1883,15 +1901,19 @@ func finalizeXAIAnnotations(parsed *parsedChat) {
 	if len(parsed.SearchSources) == 0 {
 		return
 	}
-	for i, source := range parsed.SearchSources {
+	for _, source := range parsed.SearchSources {
 		u, _ := source["url"].(string)
 		if u == "" {
 			continue
 		}
+		title, _ := source["title"].(string)
+		if title == "" {
+			title = u
+		}
 		parsed.Annotations = append(parsed.Annotations, map[string]any{
 			"type":  "url_citation",
 			"url":   u,
-			"title": fmt.Sprintf("%d", i+1),
+			"title": title,
 		})
 	}
 }

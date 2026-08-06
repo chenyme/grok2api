@@ -681,8 +681,8 @@ func TestGrokRenderCitationBecomesMarkdownAndAnnotation(t *testing.T) {
 		t.Fatalf("kind=%q delta=%q annotations=%#v err=%v", kind, delta, parsed.Annotations, err)
 	}
 	annotation := parsed.Annotations[0]
-	// xAI: title is citation display number; indices cover the [[N]](url) span.
-	if annotation["title"] != "1" || annotation["start_index"] != 6 || annotation["end_index"] != len(wantDelta) {
+	// title is page name from search results; indices cover the [[N]](url) span.
+	if annotation["title"] != "Example" || annotation["start_index"] != 6 || annotation["end_index"] != len(wantDelta) {
 		t.Fatalf("annotation = %#v", annotation)
 	}
 }

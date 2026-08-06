@@ -148,18 +148,20 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 		t.Fatalf("text = %q emitted = %q", text, emitted.String())
 	}
 	first := parsed.Annotations[0]
-	if first["type"] != "url_citation" || first["url"] != "https://x.com/elonmusk/status/2082707547203518569" || first["title"] != "1" {
-		t.Fatalf("first annotation = %#v", first)
+	// Annotation title = page/source title; [[N]] still carries the number in text.
+	wantTitle := "Elon Musk: And Grok 4.6 comes out in a week"
+	if first["type"] != "url_citation" || first["url"] != "https://x.com/elonmusk/status/2082707547203518569" || first["title"] != wantTitle {
+		t.Fatalf("first annotation = %#v want title %q", first, wantTitle)
 	}
 	chatPayload := buildOpenAIResult("chat", "resp_1", "grok-chat-fast", *parsed, false)
 	msg := chatPayload["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
 	if msg["annotations"] == nil {
 		t.Fatalf("chat annotations missing: %#v", msg)
 	}
-	// Chat Completions: nested url_citation; xAI title is display number.
+	// Chat Completions: nested url_citation; title is page name.
 	firstAnn := msg["annotations"].([]any)[0].(map[string]any)
 	nested, _ := firstAnn["url_citation"].(map[string]any)
-	if firstAnn["type"] != "url_citation" || nested == nil || nested["url"] == nil || nested["title"] != "1" {
+	if firstAnn["type"] != "url_citation" || nested == nil || nested["url"] == nil || nested["title"] != wantTitle {
 		t.Fatalf("chat annotation shape = %#v", firstAnn)
 	}
 	citations, _ := chatPayload["citations"].([]string)
@@ -217,8 +219,8 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 	outMsg := out[len(out)-1].(map[string]any)
 	part := outMsg["content"].([]any)[0].(map[string]any)
 	flat := part["annotations"].([]any)[0].(map[string]any)
-	if flat["type"] != "url_citation" || flat["url"] == nil || flat["url_citation"] != nil || flat["title"] != "1" {
-		t.Fatalf("responses annotation must be flat xAI url_citation, got %#v", flat)
+	if flat["type"] != "url_citation" || flat["url"] == nil || flat["url_citation"] != nil || flat["title"] != wantTitle {
+		t.Fatalf("responses annotation must be flat url_citation with page title, got %#v", flat)
 	}
 }
 

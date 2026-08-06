@@ -549,9 +549,9 @@ func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
 	}
 }
 
-// applyGatewayRenderCitation turns an mgw render_citation chunk into xAI-style citations.
+// applyGatewayRenderCitation turns an mgw render_citation chunk into client citations.
 // When InlineCitations is enabled (default), embeds [[N]](url) and records positional
-// annotations with title = display number. When disabled, skips text markers.
+// annotations. Annotation title is the page/source title (OpenAI-style); N stays in the marker.
 func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string, string, error) {
 	if parsed == nil || cite == nil {
 		return "", "", nil
@@ -575,18 +575,17 @@ func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string
 	}
 	parsed.lastCitation = index
 
-	// xAI: title is the visible citation number ("1", "2"), not the page title.
-	label := fmt.Sprintf("%d", index)
+	title := citationPageTitle(parsed, normalized)
 	if parsed.DisableInlineCitations {
 		// no_inline_citations: no markdown in text; positional fields omitted later at finalize.
 		parsed.Annotations = append(parsed.Annotations, map[string]any{
 			"type":  "url_citation",
 			"url":   normalized,
-			"title": label,
+			"title": title,
 		})
 		return "", "", nil
 	}
-	// xAI markdown form: [[N]](url) with no mandatory leading space.
+	// Inline marker keeps numeric label; structured title is the page name.
 	replacement := fmt.Sprintf("[[%d]](%s)", index, normalized)
 	start := parsed.Text.Len()
 	parsed.upstreamText.WriteString(replacement)
@@ -594,7 +593,7 @@ func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string
 	parsed.Annotations = append(parsed.Annotations, map[string]any{
 		"type":        "url_citation",
 		"url":         normalized,
-		"title":       label,
+		"title":       title,
 		"start_index": start,
 		"end_index":   start + len(replacement),
 	})
