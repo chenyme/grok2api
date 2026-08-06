@@ -26,6 +26,8 @@ const (
 	auditInsertBatchSize   = 20
 	auditLookupBatchSize   = 500
 	attemptInsertBatchSize = 40
+	auditSuccessPredicate  = "status_code >= 200 AND status_code < 300 AND (error_code IS NULL OR error_code = '')"
+	auditSuccessAggregate  = "COALESCE(SUM(CASE WHEN " + auditSuccessPredicate + " THEN 1 ELSE 0 END), 0)"
 )
 
 var errAuditBatchRequiresFallback = errors.New("audit batch requires idempotent fallback")
@@ -642,7 +644,6 @@ func (r *AuditRepository) Summarize(ctx context.Context, input repository.AuditS
 	var aggregate struct {
 		Requests                int64
 		SuccessfulRequests      int64
-		FailedRequests          int64
 		InputTokens             int64
 		CachedInputTokens       int64
 		OutputTokens            int64
@@ -658,8 +659,7 @@ func (r *AuditRepository) Summarize(ctx context.Context, input repository.AuditS
 	query := applyAuditQuery(r.db.db.WithContext(ctx).Model(&requestAuditModel{}), input.Search, input.Start, input.End, input.Filter)
 	if err := query.Select(`
 		COUNT(*) AS requests,
-		COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END), 0) AS successful_requests,
-		COALESCE(SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END), 0) AS failed_requests,
+		` + auditSuccessAggregate + ` AS successful_requests,
 		COALESCE(SUM(input_tokens), 0) AS input_tokens,
 		COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
 		COALESCE(SUM(output_tokens), 0) AS output_tokens,
@@ -674,7 +674,7 @@ func (r *AuditRepository) Summarize(ctx context.Context, input repository.AuditS
 		return audit.Summary{}, err
 	}
 	result := audit.Summary{
-		Requests: aggregate.Requests, SuccessfulRequests: aggregate.SuccessfulRequests, FailedRequests: aggregate.FailedRequests,
+		Requests: aggregate.Requests, SuccessfulRequests: aggregate.SuccessfulRequests, FailedRequests: aggregate.Requests - aggregate.SuccessfulRequests,
 		InputTokens: aggregate.InputTokens, CachedInputTokens: aggregate.CachedInputTokens, OutputTokens: aggregate.OutputTokens,
 		ReasoningTokens: aggregate.ReasoningTokens, TotalTokens: aggregate.TotalTokens, DurationMS: aggregate.DurationMS,
 		EstimatedCostInUSDTicks: aggregate.EstimatedCostInUSDTicks, PricedRequests: aggregate.PricedRequests,
@@ -707,11 +707,16 @@ func applyAuditQuery(query *gorm.DB, search string, start, end time.Time, filter
 	}
 	switch filter.Status {
 	case "success", "2xx":
-		query = query.Where("status_code >= 200 AND status_code < 300")
+		query = query.Where(auditSuccessPredicate)
 	case "clientError", "4xx":
 		query = query.Where("status_code >= 400 AND status_code < 500")
 	case "serverError", "5xx":
 		query = query.Where("status_code >= 500 AND status_code < 600")
+	case "other":
+		// 保留真实 HTTP 状态：2xx 响应头之后的流失败通过 error_code 识别；
+		// 同时覆盖不属于 2xx/4xx/5xx 的状态段。status_code < 100 兼容
+		// 曾运行过早期实现并写入 0 的开发数据库，但新记录仍只允许 100..599。
+		query = query.Where("(status_code >= 200 AND status_code < 300 AND error_code IS NOT NULL AND error_code <> '') OR status_code < 200 OR (status_code >= 300 AND status_code < 400) OR status_code >= 600")
 	}
 	switch filter.Mode {
 	case "stream":

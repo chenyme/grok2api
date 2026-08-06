@@ -112,6 +112,34 @@ func TestDashboardRepositorySnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardRepositoryCounts2xxWithErrorAsFailure(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "dashboard-stream-failure.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	audits := []requestAuditModel{
+		{RequestID: "healthy", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, CreatedAt: now.Add(-2 * time.Minute)},
+		{RequestID: "stream-interrupted", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", Operation: "responses", UsageSource: "upstream", StatusCode: 200, Streaming: true, ErrorCode: "upstream_stream_interrupted", CreatedAt: now.Add(-time.Minute)},
+	}
+	if err := database.db.WithContext(ctx).Create(&audits).Error; err != nil {
+		t.Fatal(err)
+	}
+	boundaries := testDashboardBoundaries(now.Add(-time.Hour), time.Hour, 2)
+	snapshot, err := NewDashboardRepository(database).Snapshot(ctx, testDashboardWindow(boundaries), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Usage.Requests != 2 || snapshot.Usage.SuccessfulRequests != 1 || snapshot.Usage.FailedRequests != 1 {
+		t.Fatalf("usage = %#v", snapshot.Usage)
+	}
+}
+
 func BenchmarkDashboardUsageAggregate(b *testing.B) {
 	ctx := context.Background()
 	database, err := OpenSQLite(ctx, filepath.Join(b.TempDir(), "dashboard-benchmark.db"))

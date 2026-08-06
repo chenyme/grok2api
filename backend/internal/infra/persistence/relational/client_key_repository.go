@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,8 +35,13 @@ func (r *ClientKeyRepository) List(ctx context.Context, input repository.ClientK
 	var total int64
 	query := r.db.db.WithContext(ctx).Model(&clientKeyModel{}).Where("internal_kind IS NULL")
 	if search := strings.TrimSpace(input.Page.Search); search != "" {
-		pattern := "%" + strings.ToLower(search) + "%"
-		query = query.Where("LOWER(name) LIKE ? OR LOWER(prefix) LIKE ?", pattern, pattern)
+		if id, err := strconv.ParseUint(strings.TrimPrefix(search, "#"), 10, 64); strings.HasPrefix(search, "#") && err == nil && id > 0 {
+			// #ID 走主键索引；普通数字仍按名称/前缀搜索，保持现有 API 兼容。
+			query = query.Where("client_keys.id = ?", id)
+		} else {
+			pattern := "%" + strings.ToLower(search) + "%"
+			query = query.Where("LOWER(name) LIKE ? OR LOWER(prefix) LIKE ?", pattern, pattern)
+		}
 	}
 	switch input.Filter.Status {
 	case "active":

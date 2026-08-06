@@ -1,4 +1,4 @@
-import { Check, ListFilter, X } from "lucide-react";
+import { Check, ListFilter, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -10,12 +10,16 @@ import { Input } from "@/components/ui/input";
 type DataTableFilterOptionGroup = {
   id: string;
   label: string;
-  options: Array<{ value: string; label: string }>;
+  options: Array<{ value: string; label: string; description?: string; badge?: string }>;
   emptyLabel?: string;
   loading?: boolean;
   hasMore?: boolean;
   actionLabel?: string;
   onAction?: () => void;
+  noteLabel?: string;
+  hideLabel?: boolean;
+  // 名单内容超出该高度时内部滚动（例如 max-h-40 = 5 行），避免菜单被拉得很长。
+  maxHeightClassName?: string;
 };
 
 type DataTableFilterOption = {
@@ -123,27 +127,50 @@ export function DataTableFilters({ filters }: { filters: DataTableFilter[] }) {
                           {narrowedLabel ? <span className="ml-auto max-w-16 truncate text-xs text-muted-foreground">{narrowedLabel}</span> : null}
                           {option.value === filter.value ? <Check className="ml-auto" /> : null}
                         </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent className="max-h-72 w-60 overflow-y-auto">
+                        <DropdownMenuSubContent sideOffset={6} className="max-h-[min(26rem,calc(100vh-2rem))] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto p-0 shadow-lg shadow-black/5">
                           {option.groupSearch ? (
-                            <div className="sticky top-0 z-10 bg-popover p-2" onKeyDown={(event) => event.stopPropagation()}>
-                              <Input
-                                className="h-8 text-xs"
-                                value={option.groupSearch.value}
-                                placeholder={option.groupSearch.placeholder}
-                                aria-label={option.groupSearch.placeholder}
-                                onChange={(event) => option.groupSearch?.onChange(event.target.value)}
-                              />
+                            <div className="sticky top-0 z-20 border-b bg-popover/95 px-2 py-1.5 backdrop-blur-sm" onKeyDown={(event) => event.stopPropagation()}>
+                              <div className="relative">
+                                <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/70" />
+                                <Input
+                                  className="h-8 border-0 bg-transparent pl-7 text-xs shadow-none focus-visible:ring-0"
+                                  value={option.groupSearch.value}
+                                  placeholder={option.groupSearch.placeholder}
+                                  aria-label={option.groupSearch.placeholder}
+                                  onChange={(event) => option.groupSearch?.onChange(event.target.value)}
+                                />
+                              </div>
                             </div>
                           ) : null}
                           <DropdownMenuRadioGroup value={filter.value} onValueChange={filter.onChange}>
-                            <DropdownMenuRadioItem value={option.value}>{t("common.all")}</DropdownMenuRadioItem>
+                            <DropdownMenuRadioItem value={option.value} className="mx-1 my-1 min-h-8 text-xs focus:bg-muted/50">{t("common.all")}</DropdownMenuRadioItem>
                             {option.groups.map((group) => (
                               <div key={group.id}>
                                 <DropdownMenuSeparator />
-                                <DropdownMenuLabel className="text-muted-foreground">{group.label}</DropdownMenuLabel>
-                                {group.options.length === 0
-                                  ? <DropdownMenuItem disabled className="text-xs text-muted-foreground">{group.emptyLabel ?? t("common.noData")}</DropdownMenuItem>
-                                  : group.options.map((entry) => <DropdownMenuRadioItem key={entry.value} value={entry.value}>{entry.label}</DropdownMenuRadioItem>)}
+                                {!group.hideLabel ? <DropdownMenuLabel className="px-3 py-1 text-[10px] font-normal text-muted-foreground">{group.label}</DropdownMenuLabel> : null}
+                                <div className={group.maxHeightClassName}>
+                                  {group.options.length === 0
+                                    ? <DropdownMenuItem disabled className="text-xs text-muted-foreground">{group.emptyLabel ?? t("common.noData")}</DropdownMenuItem>
+                                    : group.options.map((entry) => (
+                                      <DropdownMenuRadioItem
+                                        key={entry.value}
+                                        value={entry.value}
+                                        className={entry.description || entry.badge ? "mx-1 min-w-0 items-start py-1.5 pr-7 focus:bg-muted/50 data-[state=checked]:bg-muted/30" : "mx-1"}
+                                      >
+                                        {entry.description || entry.badge ? (
+                                          <span className="min-w-0 flex-1">
+                                            <span className="block truncate text-[13px] font-normal text-foreground">{entry.label}</span>
+                                            <span className="mt-px flex min-w-0 items-center gap-1 text-[10px] leading-4 text-muted-foreground/80">
+                                              {entry.description ? <span className="truncate tabular-nums">{entry.description}</span> : null}
+                                              {entry.description && entry.badge ? <span aria-hidden="true">·</span> : null}
+                                              {entry.badge ? <span className="shrink-0">{entry.badge}</span> : null}
+                                            </span>
+                                          </span>
+                                        ) : entry.label}
+                                      </DropdownMenuRadioItem>
+                                    ))}
+                                </div>
+                                {group.noteLabel ? <div className="border-t px-3 py-1.5 text-[10px] leading-4 text-muted-foreground/80">{group.noteLabel}</div> : null}
                                 {group.hasMore && group.onAction ? (
                                   <DropdownMenuItem
                                     disabled={group.loading}
