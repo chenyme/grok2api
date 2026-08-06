@@ -185,6 +185,19 @@ func (r *AccountRepository) CountProviderAccountsByIDs(ctx context.Context, prov
 	return count, err
 }
 
+// CountAvailableAmong counts IDs that currently match Summarize's available predicate.
+func (r *AccountRepository) CountAvailableAmong(ctx context.Context, providerValue account.Provider, ids []uint64, now time.Time) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var count int64
+	query := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("provider = ? AND id IN ?", providerValue, ids)
+	query = applyAccountStatusFilter(query, "active", now)
+	err := query.Count(&count).Error
+	return count, err
+}
+
 func (r *AccountRepository) Summarize(ctx context.Context, now time.Time) ([]repository.AccountSummary, error) {
 	var rows []repository.AccountSummary
 	selectFields := `

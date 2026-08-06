@@ -87,6 +87,9 @@ type AccountRepository interface {
 	// previously rejected refresh token once.
 	ListEnabledCredentialRefreshAccountIDs(ctx context.Context, provider account.Provider, refreshableOnly bool) ([]uint64, error)
 	CountProviderAccountsByIDs(ctx context.Context, provider account.Provider, ids []uint64) (int64, error)
+	// CountAvailableAmong counts how many of the given account IDs currently match the
+	// same "available/schedulable" predicate used by Summarize for the provider.
+	CountAvailableAmong(ctx context.Context, provider account.Provider, ids []uint64, now time.Time) (int64, error)
 	// FilterMissingBuildConversionIDs 从指定账号中排除已经关联 Build 的 Web 账号。
 	FilterMissingBuildConversionIDs(ctx context.Context, ids []uint64) ([]uint64, error)
 	// ListUnlinkedWebAccountIDs 以 ID 游标取未关联 Web 账号；total 仅在 afterID 为 0 时返回。

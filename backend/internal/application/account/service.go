@@ -346,6 +346,25 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 		return Summary{}, err
 	}
 	result.Risk = int64(len(flaggedIDs))
+	if s.excludeBuildBotFlaggedFromSchedulingEnabled() && len(flaggedIDs) > 0 {
+		excluded, err := s.accounts.CountAvailableAmong(ctx, accountdomain.ProviderBuild, flaggedIDs, s.now())
+		if err != nil {
+			return Summary{}, err
+		}
+		if excluded > 0 {
+			buildKey := string(accountdomain.ProviderBuild)
+			build := result.Providers[buildKey]
+			if excluded > build.Available {
+				excluded = build.Available
+			}
+			build.Available -= excluded
+			result.Providers[buildKey] = build
+			if excluded > result.Available {
+				excluded = result.Available
+			}
+			result.Available -= excluded
+		}
+	}
 	return result, nil
 }
 
@@ -384,6 +403,7 @@ type Service struct {
 	autoClean             AutoCleanConfig
 	autoCleanRevision     uint64
 	autoCleanWake         chan struct{}
+	excludeBuildBotFlagged bool
 	buildBotFlagCache     *resultcache.Cache[string, []uint64]
 	logger                *slog.Logger
 	now                   func() time.Time
@@ -583,6 +603,20 @@ func (s *Service) buildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, erro
 // mark bot_flag_source/bfs as 1 or 2. Used by routing to optionally exclude them.
 func (s *Service) ListBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
 	return s.buildBotFlaggedAccountIDs(ctx)
+}
+
+// UpdateExcludeBuildBotFlaggedFromScheduling hot-updates whether bot-risk Build
+// accounts are treated as non-schedulable in account summary available counts.
+func (s *Service) UpdateExcludeBuildBotFlaggedFromScheduling(value bool) {
+	s.autoCleanMu.Lock()
+	s.excludeBuildBotFlagged = value
+	s.autoCleanMu.Unlock()
+}
+
+func (s *Service) excludeBuildBotFlaggedFromSchedulingEnabled() bool {
+	s.autoCleanMu.RLock()
+	defer s.autoCleanMu.RUnlock()
+	return s.excludeBuildBotFlagged
 }
 
 func (s *Service) loadBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
