@@ -318,6 +318,7 @@ type accountResponse struct {
 	BuildSuperEntitled         bool                    `json:"buildSuperEntitled"`
 	BuildRouteMode             string                  `json:"buildRouteMode"`
 	BuildBotFlagged            bool                    `json:"buildBotFlagged"`
+	BuildBotFlagSource         int                     `json:"buildBotFlagSource,omitempty"`
 	EgressNodeID               uint64                  `json:"egressNodeId,omitempty,string"`
 	EgressAssignmentMode       string                  `json:"egressAssignmentMode,omitempty"`
 	ModelSyncFailed            bool                    `json:"modelSyncFailed,omitempty"`
@@ -1494,6 +1495,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		BuildSuperEntitled:         c.BuildSuperEntitled && c.Provider == accountdomain.ProviderBuild,
 		BuildRouteMode:             string(buildRouteMode),
 		BuildBotFlagged:            value.BuildBotFlagged && c.Provider == accountdomain.ProviderBuild,
+		BuildBotFlagSource:         buildBotFlagSourceResponse(c.Provider, value.BuildBotFlagged, value.BuildBotFlagSource),
 		EgressNodeID:               c.EgressNodeID,
 		EgressAssignmentMode:       string(c.EgressAssignmentMode),
 		Quota:                      newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
@@ -1522,6 +1524,16 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		result.Billing = &billing
 	}
 	return result
+}
+
+func buildBotFlagSourceResponse(provider accountdomain.Provider, flagged bool, source int) int {
+	if provider != accountdomain.ProviderBuild || !flagged {
+		return 0
+	}
+	if source != 1 && source != 2 {
+		return 0
+	}
+	return source
 }
 
 func newQuotaResponse(value accountapp.QuotaView) quotaResponse {

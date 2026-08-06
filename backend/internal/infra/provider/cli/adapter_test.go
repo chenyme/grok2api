@@ -72,34 +72,38 @@ func TestAdapterHotUpdatesDirectResponseHeaderTimeout(t *testing.T) {
 	}
 }
 
-func TestCredentialMetadataMarksOnlyNumericBotFlagOne(t *testing.T) {
+func TestCredentialMetadataMarksNumericBotFlagOneOrTwo(t *testing.T) {
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	adapter := NewAdapter(Config{}, cipher)
 	tests := []struct {
-		name     string
-		provider account.Provider
-		claims   map[string]any
-		token    string
-		want     bool
+		name       string
+		provider   account.Provider
+		claims     map[string]any
+		token      string
+		wantFlag   bool
+		wantSource int
 	}{
-		{name: "numeric one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 1}, want: true},
-		{name: "bfs numeric one", provider: account.ProviderBuild, claims: map[string]any{"bfs": 1}, want: true},
-		{name: "bfs preferred when bot_flag_source missing", provider: account.ProviderBuild, claims: map[string]any{"bfs": 1, "sub": "user"}, want: true},
-		{name: "either claim one is enough", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 0, "bfs": 1}, want: true},
-		{name: "bot_flag_source one with bfs zero", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 1, "bfs": 0}, want: true},
+		{name: "numeric one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 1}, wantFlag: true, wantSource: 1},
+		{name: "bfs numeric one", provider: account.ProviderBuild, claims: map[string]any{"bfs": 1}, wantFlag: true, wantSource: 1},
+		{name: "numeric two", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 2}, wantFlag: true, wantSource: 2},
+		{name: "bfs numeric two", provider: account.ProviderBuild, claims: map[string]any{"bfs": 2}, wantFlag: true, wantSource: 2},
+		{name: "bfs preferred when bot_flag_source missing", provider: account.ProviderBuild, claims: map[string]any{"bfs": 1, "sub": "user"}, wantFlag: true, wantSource: 1},
+		{name: "either claim one is enough", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 0, "bfs": 1}, wantFlag: true, wantSource: 1},
+		{name: "bot_flag_source preferred over bfs", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 1, "bfs": 2}, wantFlag: true, wantSource: 1},
+		{name: "bot_flag_source two preferred over bfs one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 2, "bfs": 1}, wantFlag: true, wantSource: 2},
 		{name: "numeric zero", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 0}},
 		{name: "bfs numeric zero", provider: account.ProviderBuild, claims: map[string]any{"bfs": 0}},
-		{name: "numeric two", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 2}},
-		{name: "bfs numeric two", provider: account.ProviderBuild, claims: map[string]any{"bfs": 2}},
+		{name: "numeric three", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 3}},
 		{name: "string one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": "1"}},
 		{name: "bfs string one", provider: account.ProviderBuild, claims: map[string]any{"bfs": "1"}},
+		{name: "string two", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": "2"}},
 		{name: "missing claim", provider: account.ProviderBuild, claims: map[string]any{"sub": "user"}},
 		{name: "malformed jwt", provider: account.ProviderBuild, token: "not-a-jwt"},
 		{name: "non build", provider: account.ProviderWeb, claims: map[string]any{"bot_flag_source": 1}},
-		{name: "non build bfs", provider: account.ProviderWeb, claims: map[string]any{"bfs": 1}},
+		{name: "non build bfs two", provider: account.ProviderWeb, claims: map[string]any{"bfs": 2}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -116,29 +120,32 @@ func TestCredentialMetadataMarksOnlyNumericBotFlagOne(t *testing.T) {
 				t.Fatal(encryptErr)
 			}
 			metadata := adapter.CredentialMetadata(account.Credential{Provider: test.provider, EncryptedAccessToken: encrypted})
-			if metadata.BuildBotFlagged != test.want {
-				t.Fatalf("flagged = %t, want %t", metadata.BuildBotFlagged, test.want)
+			if metadata.BuildBotFlagged != test.wantFlag || metadata.BuildBotFlagSource != test.wantSource {
+				t.Fatalf("flagged/source = %t/%d, want %t/%d", metadata.BuildBotFlagged, metadata.BuildBotFlagSource, test.wantFlag, test.wantSource)
 			}
 		})
 	}
 
 	metadata := adapter.CredentialMetadata(account.Credential{Provider: account.ProviderBuild, EncryptedAccessToken: "invalid-ciphertext"})
-	if metadata.BuildBotFlagged {
+	if metadata.BuildBotFlagged || metadata.BuildBotFlagSource != 0 {
 		t.Fatal("decrypt failure must not mark the account")
 	}
 }
 
-func TestBuildBotFlaggedFromClaims(t *testing.T) {
-	if buildBotFlaggedFromClaims(nil) {
+func TestBuildBotFlagSourceFromClaims(t *testing.T) {
+	if buildBotFlagSourceFromClaims(nil) != 0 {
 		t.Fatal("nil claims must not flag")
 	}
-	if !buildBotFlaggedFromClaims(map[string]any{"bfs": float64(1)}) {
-		t.Fatal("bfs=1 must flag")
+	if source := buildBotFlagSourceFromClaims(map[string]any{"bfs": float64(1)}); source != 1 {
+		t.Fatalf("bfs=1 source = %d", source)
 	}
-	if !buildBotFlaggedFromClaims(map[string]any{"bot_flag_source": float64(1)}) {
-		t.Fatal("bot_flag_source=1 must flag")
+	if source := buildBotFlagSourceFromClaims(map[string]any{"bot_flag_source": float64(2)}); source != 2 {
+		t.Fatalf("bot_flag_source=2 source = %d", source)
 	}
-	if buildBotFlaggedFromClaims(map[string]any{"bfs": "1", "bot_flag_source": "1"}) {
+	if !buildBotFlaggedFromClaims(map[string]any{"bfs": float64(2)}) {
+		t.Fatal("bfs=2 must flag")
+	}
+	if buildBotFlaggedFromClaims(map[string]any{"bfs": "1", "bot_flag_source": "2"}) {
 		t.Fatal("string values must not flag")
 	}
 }
