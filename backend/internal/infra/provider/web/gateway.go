@@ -20,6 +20,7 @@ import (
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/searchresult"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/sessionidentity"
 	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -370,6 +371,20 @@ func parseGatewayEvent(event map[string]any, parsed *parsedChat) (string, string
 		parsed.ConversationID, _ = conversation["id"].(string)
 	case "response.chunk":
 		chunk, _ := event["chunk"].(map[string]any)
+		if chunk == nil {
+			return "", "", nil
+		}
+		// Current grok.com mgw protocol streams search tools and citations as
+		// dedicated chunk fields (not <grok:render> tokens).
+		if card, _ := chunk["tool_usage_card"].(map[string]any); card != nil {
+			collectGatewayToolUsageCard(parsed, card)
+		}
+		if result, _ := chunk["tool_result"].(map[string]any); result != nil {
+			collectGatewayToolResult(parsed, result)
+		}
+		if cite, _ := chunk["render_citation"].(map[string]any); cite != nil {
+			return applyGatewayRenderCitation(parsed, cite)
+		}
 		text, _ := chunk["text"].(map[string]any)
 		delta, _ := text["text"].(string)
 		channel, _ := text["channel"].(string)
@@ -408,6 +423,139 @@ func parseGatewayEvent(event map[string]any, parsed *parsedChat) (string, string
 		return "", "", gatewayEventError(event)
 	}
 	return "", "", nil
+}
+
+// collectGatewayToolUsageCard records mgw tool_usage_card starts (web_search / x_search).
+func collectGatewayToolUsageCard(parsed *parsedChat, card map[string]any) {
+	if parsed == nil || card == nil {
+		return
+	}
+	id := firstString(card, "tool_usage_card_id", "id")
+	if id == "" {
+		id = fmt.Sprintf("card:%d", parsed.ServerTools+1)
+	}
+	if parsed.serverToolKeys == nil {
+		parsed.serverToolKeys = make(map[string]struct{})
+	}
+	if _, exists := parsed.serverToolKeys[id]; !exists {
+		if len(parsed.serverToolKeys) >= maxTrackedServerTools {
+			return
+		}
+		parsed.serverToolKeys[id] = struct{}{}
+		parsed.ServerTools++
+	}
+	if _, ok := card["web_search"]; ok {
+		if parsed.webSearchKeys == nil {
+			parsed.webSearchKeys = make(map[string]struct{})
+		}
+		if _, exists := parsed.webSearchKeys[id]; !exists {
+			parsed.webSearchKeys[id] = struct{}{}
+			parsed.WebSearchTools++
+		}
+	}
+}
+
+// collectGatewayToolResult folds mgw tool_result webpages / X posts into SearchSources.
+func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
+	if parsed == nil || result == nil {
+		return
+	}
+	if web, _ := result["web_search"].(map[string]any); web != nil {
+		pages, _ := web["webpages"].([]any)
+		for _, raw := range pages {
+			item, _ := raw.(map[string]any)
+			if item == nil {
+				continue
+			}
+			appendSearchSource(parsed, firstString(item, "url"), firstString(item, "title"), "web")
+		}
+	}
+	if xPost, _ := result["x_post"].(map[string]any); xPost != nil {
+		posts, _ := xPost["posts"].([]any)
+		for _, raw := range posts {
+			item, _ := raw.(map[string]any)
+			if item == nil {
+				continue
+			}
+			handle := firstString(item, "userhandle", "username")
+			postID := firstString(item, "post_id", "postId")
+			if handle == "" || postID == "" {
+				continue
+			}
+			rawURL := "https://x.com/" + url.PathEscape(handle) + "/status/" + url.PathEscape(postID)
+			title := firstString(item, "name", "userhandle", "username")
+			if text, _ := item["text"].(string); text != "" && title != "" {
+				title = title + ": " + text
+			} else if text, _ := item["text"].(string); text != "" {
+				title = text
+			}
+			appendSearchSource(parsed, rawURL, title, "x_post")
+		}
+	}
+}
+
+// applyGatewayRenderCitation turns an inline render_citation chunk into text + url_citation.
+// Citations are streamed as separate chunks between text deltas; indices track the
+// synthetic [[n]](url) marker inserted at the current assistant text offset.
+func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string, string, error) {
+	if parsed == nil || cite == nil {
+		return "", "", nil
+	}
+	rawURL := firstString(cite, "url")
+	normalized, valid := searchresult.NormalizeURL(rawURL)
+	if !valid {
+		return "", "", nil
+	}
+	if parsed.citationIndex == nil {
+		parsed.citationIndex = make(map[string]int)
+	}
+	index, exists := parsed.citationIndex[normalized]
+	if !exists {
+		index = len(parsed.citationIndex) + 1
+		parsed.citationIndex[normalized] = index
+	}
+	// Skip consecutive duplicate of the same source (UI collapses them).
+	if parsed.lastCitation == index {
+		return "", "", nil
+	}
+	parsed.lastCitation = index
+
+	title := searchSourceTitle(parsed.SearchSources, normalized)
+	if title == "" || title == normalized {
+		if handle := xHandleFromStatusURL(normalized); handle != "" {
+			title = "@" + handle
+		}
+	}
+	replacement := fmt.Sprintf(" [[%d]](%s)", index, normalized)
+	start := parsed.Text.Len()
+	parsed.upstreamText.WriteString(replacement)
+	parsed.Text.WriteString(replacement)
+	parsed.Annotations = append(parsed.Annotations, map[string]any{
+		"type":        "url_citation",
+		"url":         normalized,
+		"title":       title,
+		"start_index": start,
+		"end_index":   start + len(replacement),
+	})
+	return "text", replacement, nil
+}
+
+func xHandleFromStatusURL(rawURL string) string {
+	// https://x.com/{handle}/status/{id}
+	const marker = "://x.com/"
+	idx := strings.Index(rawURL, marker)
+	if idx < 0 {
+		idx = strings.Index(rawURL, "://twitter.com/")
+		if idx < 0 {
+			return ""
+		}
+		rest := rawURL[idx+len("://twitter.com/"):]
+		handle, _, _ := strings.Cut(rest, "/")
+		return handle
+	}
+	rest := rawURL[idx+len(marker):]
+	handle, _, _ := strings.Cut(rest, "/")
+	return handle
 }
 
 func appendGatewayDelta(parsed *parsedChat, channel, delta string) (string, string, error) {
