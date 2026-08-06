@@ -2,6 +2,9 @@ import { ApiError, apiDownload, apiDownloadResponse, apiEventStream, apiRequest,
 import { createObjectDecoder, createPaginatedDecoder, createValidatedDecoder, decodeBooleanResult, decodeCountResult, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isRecordOf, isString } from "@/shared/api/decoder";
 import { i18n } from "@/shared/i18n";
 import type { SortOrder } from "@/shared/lib/table-sort";
+import { createAccountTaskProgressController, type AccountTaskProgressDTO, type AccountTaskProgressPhase } from "@/features/accounts/account-task-progress";
+
+export type { AccountTaskProgressDTO } from "@/features/accounts/account-task-progress";
 
 export type AccountProvider = "grok_build" | "grok_web" | "grok_console";
 export type BuildRouteMode = "auto" | "build" | "xai";
@@ -364,12 +367,6 @@ export type WebAccountScriptsInput =
   | { all: true; ids?: never; actions: WebAccountScriptActions }
   | { all?: false; ids: string[]; actions: WebAccountScriptActions };
 
-export type AccountTaskProgressDTO = {
-  completed: number;
-  total: number;
-  phase?: "importing" | "converting" | "syncing";
-};
-
 export type AccountImportResultDTO = {
   created: number;
   updated: number;
@@ -406,54 +403,32 @@ function hasNumericResult(value: AccountTaskStreamPayload, fields: string[]): bo
   });
 }
 
-async function runAccountTask<T>(path: string, body: BodyInit | object | undefined, resultFields: string[], onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<T> {
+type AccountTaskOptions = {
+  onProgress?: (value: AccountTaskProgressDTO) => void;
+  signal?: AbortSignal;
+  phases?: readonly AccountTaskProgressPhase[];
+};
+
+const importSyncPhases = ["importing", "syncing"] as const;
+const conversionSyncPhases = ["converting", "syncing"] as const;
+
+async function runAccountTask<T>(path: string, body: BodyInit | object | undefined, resultFields: string[], options: AccountTaskOptions = {}): Promise<T> {
   let result: T | undefined;
-  let pendingProgress: AccountTaskProgressDTO | undefined;
-  let progressTimer: number | undefined;
-  let lastProgressAt = 0;
-  const flushProgress = () => {
-    if (!pendingProgress || !onProgress) return;
-    const value = pendingProgress;
-    pendingProgress = undefined;
-    lastProgressAt = performance.now();
-    onProgress(value);
-  };
-  const reportProgress = (value: AccountTaskProgressDTO) => {
-    // Always flush the previous phase on switch. Import/sync streams interleave
-    // for web→console (and similar) tasks; dropping the pending sample made the
-    // dialog jump between two totals and look like flicker.
-    if (pendingProgress && pendingProgress.phase !== value.phase) {
-      if (progressTimer !== undefined) window.clearTimeout(progressTimer);
-      progressTimer = undefined;
-      flushProgress();
-    }
-    pendingProgress = value;
-    const delay = Math.max(0, 100 - (performance.now() - lastProgressAt));
-    if (delay === 0) {
-      if (progressTimer !== undefined) window.clearTimeout(progressTimer);
-      progressTimer = undefined;
-      flushProgress();
-    } else if (progressTimer === undefined) {
-      progressTimer = window.setTimeout(() => {
-        progressTimer = undefined;
-        flushProgress();
-      }, delay);
-    }
-  };
+  const progress = createAccountTaskProgressController(options);
   try {
     await apiEventStream(path, {
       method: "POST",
       headers: { Accept: "text/event-stream" },
       body,
-      signal,
+      signal: options.signal,
     }, decodeAccountTaskStreamPayload, ({ event, data }) => {
       if (event === "progress" && typeof data.completed === "number" && typeof data.total === "number") {
         const phase = data.phase === "importing" || data.phase === "converting" || data.phase === "syncing" ? data.phase : undefined;
-        reportProgress({ completed: data.completed, total: data.total, phase });
+        progress.report({ completed: data.completed, total: data.total, phase });
         return;
       }
       if (event === "complete") {
-        flushProgress();
+        progress.flush();
         if (hasNumericResult(data, resultFields)) result = data as T;
         return;
       }
@@ -463,8 +438,7 @@ async function runAccountTask<T>(path: string, body: BodyInit | object | undefin
       }
     });
   } finally {
-    if (progressTimer !== undefined) window.clearTimeout(progressTimer);
-    flushProgress();
+    progress.dispose();
   }
   if (!result) {
     throw new ApiError(502, "invalidResponse", i18n.t("apiErrors.invalidResponse"));
@@ -473,7 +447,7 @@ async function runAccountTask<T>(path: string, body: BodyInit | object | undefin
 }
 
 export function refreshAllAccountBilling(onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountBatchResultDTO> {
-  return runAccountTask("/api/admin/v1/accounts/refresh-billing", undefined, ["succeeded", "failed"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/refresh-billing", undefined, ["succeeded", "failed"], { onProgress, signal });
 }
 
 export type DetectBuildAccountsInput =
@@ -488,30 +462,7 @@ export function detectBuildAccounts(input: DetectBuildAccountsInput, handlers?: 
 
 async function runDetectBuildAccountsTask(body: object, handlers: BuildDetectHandlers, signal?: AbortSignal): Promise<AccountBatchResultDTO> {
   let result: AccountBatchResultDTO | undefined;
-  let pendingProgress: AccountTaskProgressDTO | undefined;
-  let progressTimer: number | undefined;
-  let lastProgressAt = 0;
-  const flushProgress = () => {
-    if (!pendingProgress || !handlers.onProgress) return;
-    const value = pendingProgress;
-    pendingProgress = undefined;
-    lastProgressAt = performance.now();
-    handlers.onProgress(value);
-  };
-  const reportProgress = (value: AccountTaskProgressDTO) => {
-    pendingProgress = value;
-    const delay = Math.max(0, 100 - (performance.now() - lastProgressAt));
-    if (delay === 0) {
-      if (progressTimer !== undefined) window.clearTimeout(progressTimer);
-      progressTimer = undefined;
-      flushProgress();
-    } else if (progressTimer === undefined) {
-      progressTimer = window.setTimeout(() => {
-        progressTimer = undefined;
-        flushProgress();
-      }, delay);
-    }
-  };
+  const progress = createAccountTaskProgressController({ onProgress: handlers.onProgress });
   try {
     await apiEventStream("/api/admin/v1/accounts/detect", {
       method: "POST",
@@ -520,7 +471,7 @@ async function runDetectBuildAccountsTask(body: object, handlers: BuildDetectHan
       signal,
     }, decodeAccountTaskStreamPayload, ({ event, data }) => {
       if (event === "progress" && typeof data.completed === "number" && typeof data.total === "number") {
-        reportProgress({ completed: data.completed, total: data.total });
+        progress.report({ completed: data.completed, total: data.total });
         return;
       }
       if (event === "item" && typeof data.id === "string" && typeof data.name === "string" && (data.outcome === "ok" || data.outcome === "invalid" || data.outcome === "failed")) {
@@ -535,7 +486,7 @@ async function runDetectBuildAccountsTask(body: object, handlers: BuildDetectHan
         return;
       }
       if (event === "complete") {
-        flushProgress();
+        progress.flush();
         if (hasNumericResult(data, ["succeeded", "failed"])) result = data as AccountBatchResultDTO;
         return;
       }
@@ -545,8 +496,7 @@ async function runDetectBuildAccountsTask(body: object, handlers: BuildDetectHan
       }
     });
   } finally {
-    if (progressTimer !== undefined) window.clearTimeout(progressTimer);
-    flushProgress();
+    progress.dispose();
   }
   if (!result) {
     throw new ApiError(502, "invalidResponse", i18n.t("apiErrors.invalidResponse"));
@@ -555,45 +505,45 @@ async function runDetectBuildAccountsTask(body: object, handlers: BuildDetectHan
 }
 
 export function refreshAllAccountTokens(onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountTokenRefreshResultDTO> {
-  return runAccountTask("/api/admin/v1/accounts/refresh-tokens", undefined, ["succeeded", "failed", "skipped"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/refresh-tokens", undefined, ["succeeded", "failed", "skipped"], { onProgress, signal });
 }
 
 export function refreshAllWebAccountQuotas(onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountBatchResultDTO> {
-  return runAccountTask("/api/admin/v1/accounts/web/refresh-quotas", undefined, ["succeeded", "failed"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/web/refresh-quotas", undefined, ["succeeded", "failed"], { onProgress, signal });
 }
 
 export function refreshAllConsoleAccountQuotas(onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountBatchResultDTO> {
-  return runAccountTask("/api/admin/v1/accounts/console/refresh-quotas", undefined, ["succeeded", "failed"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/console/refresh-quotas", undefined, ["succeeded", "failed"], { onProgress, signal });
 }
 
 export function convertWebAccountsToBuild(input: BuildConversionInput, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<BuildConversionResultDTO> {
-  return runAccountTask("/api/admin/v1/accounts/web/convert-to-build", input, ["created", "linked", "skipped", "failed", "synced", "syncFailed"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/web/convert-to-build", input, ["created", "linked", "skipped", "failed", "synced", "syncFailed"], { onProgress, signal, phases: conversionSyncPhases });
 }
 
 export function syncWebAccountsToConsole(input: WebConsoleSyncInput, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<WebConsoleSyncResultDTO> {
-  return runAccountTask("/api/admin/v1/accounts/web/sync-to-console", input, ["created", "updated", "skipped", "synced", "syncFailed"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/web/sync-to-console", input, ["created", "updated", "skipped", "synced", "syncFailed"], { onProgress, signal, phases: importSyncPhases });
 }
 
 export function runWebAccountScripts(input: WebAccountScriptsInput, onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountBatchResultDTO> {
-  return runAccountTask("/api/admin/v1/accounts/web/run-scripts", input, ["succeeded", "failed"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/web/run-scripts", input, ["succeeded", "failed"], { onProgress, signal });
 }
 
 export function importAccounts(files: readonly File[], onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
   const body = new FormData();
   files.forEach((file) => body.append("files", file, file.name));
-  return runAccountTask("/api/admin/v1/accounts/import", body, ["created", "updated", "synced", "syncFailed"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/import", body, ["created", "updated", "synced", "syncFailed"], { onProgress, signal, phases: importSyncPhases });
 }
 
 export function importWebAccounts(files: readonly File[], onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
   const body = new FormData();
   files.forEach((file) => body.append("files", file, file.name));
-  return runAccountTask("/api/admin/v1/accounts/web/import", body, ["created", "updated", "synced", "syncFailed"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/web/import", body, ["created", "updated", "synced", "syncFailed"], { onProgress, signal, phases: importSyncPhases });
 }
 
 export function importConsoleAccounts(files: readonly File[], onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountImportResultDTO> {
   const body = new FormData();
   files.forEach((file) => body.append("files", file, file.name));
-  return runAccountTask("/api/admin/v1/accounts/console/import", body, ["created", "updated", "synced", "syncFailed"], onProgress, signal);
+  return runAccountTask("/api/admin/v1/accounts/console/import", body, ["created", "updated", "synced", "syncFailed"], { onProgress, signal, phases: importSyncPhases });
 }
 
 export function refreshAccountQuota(id: string): Promise<AccountDTO> {
