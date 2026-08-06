@@ -231,7 +231,7 @@ func (a *Adapter) fetchDPoPSession(ctx context.Context, ssoToken string, lease *
 	clockSkew := dpopClockSkewFromDateHeader(response.Header.Get("Date"), localBefore, localAfter)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if response.StatusCode == http.StatusForbidden {
-			if !provider.IsDefinitiveAccountBlockBody(data) {
+			if shouldInvalidateConsoleClearance(data) {
 				lease.InvalidateClearance()
 			}
 		}
@@ -416,12 +416,6 @@ func dpopProofIAT(session dpopSession, localNow time.Time) int64 {
 // around the mint response so we estimate local time at header receipt without
 // an extra time API call. Returns 0 when Date is missing or unparseable so
 // callers always receive a usable skew value.
-// dpopClockSkewFromDateHeader mirrors console.x.ai frontend behavior:
-// skewSeconds ≈ round((serverDate − localNow) / 1s), applied later as
-// iat = floor((localNow + skew) / 1s). localBefore/localAfter bound the RTT
-// around the mint response so we estimate local time at header receipt without
-// an extra time API call. Returns 0 when Date is missing or unparseable so
-// callers always receive a usable skew value.
 func dpopClockSkewFromDateHeader(dateHeader string, localBefore, localAfter time.Time) time.Duration {
 	dateHeader = strings.TrimSpace(dateHeader)
 	if dateHeader == "" {
@@ -440,16 +434,9 @@ func dpopClockSkewFromDateHeader(dateHeader string, localBefore, localAfter time
 	}
 	// Mid-point of the local observation window approximates "now" when Date was set.
 	localMid := localBefore.Add(localAfter.Sub(localBefore) / 2)
-	skewSeconds := int64(serverTime.UTC().Sub(localMid.UTC()).Seconds())
-	// Round half away from zero to match Math.round in the official frontend.
-	if rem := serverTime.UTC().Sub(localMid.UTC()) % time.Second; rem != 0 {
-		if rem > 0 && rem >= time.Second/2 {
-			skewSeconds++
-		} else if rem < 0 && -rem >= time.Second/2 {
-			skewSeconds--
-		}
-	}
-	return time.Duration(skewSeconds) * time.Second
+	// Store whole seconds because DPoP iat has second precision. Duration.Round
+	// makes the half-away-from-zero behavior explicit for both skew directions.
+	return serverTime.UTC().Sub(localMid.UTC()).Round(time.Second)
 }
 
 func dpopHTU(request *http.Request) string {
