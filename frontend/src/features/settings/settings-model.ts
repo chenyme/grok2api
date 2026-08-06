@@ -28,6 +28,10 @@ const buildResponseHeaderDuration = durationSchema.refine((value) => {
   const seconds = durationSeconds(value);
   return seconds >= 30 && seconds <= 30 * 60;
 });
+const buildStreamIdleDuration = durationSchema.refine((value) => {
+  const seconds = durationSeconds(value);
+  return seconds >= 30 && seconds <= 10 * 60;
+});
 const forbiddenCodePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 function parseForbiddenCodes(value: string): string[] {
@@ -67,6 +71,7 @@ export const settingsSchema = z.object({
     tokenAuthConfigured: z.boolean(),
     userAgent: z.string().trim().min(1),
     responseHeaderTimeout: buildResponseHeaderDuration,
+    streamIdleTimeout: buildStreamIdleDuration,
   }),
   providerWeb: z.object({
     baseURL: z.url().refine((value) => value.startsWith("https://")),
@@ -165,7 +170,7 @@ export type SettingsForm = z.infer<typeof settingsSchema>;
 export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
   return {
     server: config.server,
-    providerBuild: { ...config.providerBuild, responseHeaderTimeout: parseDuration(config.providerBuild.responseHeaderTimeout) },
+    providerBuild: { ...config.providerBuild, responseHeaderTimeout: parseDuration(config.providerBuild.responseHeaderTimeout), streamIdleTimeout: parseDuration(config.providerBuild.streamIdleTimeout) },
     providerWeb: {
       ...config.providerWeb,
       statsigManualValue: "",
@@ -208,7 +213,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
 export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
   return {
     server: config.server,
-    providerBuild: { ...config.providerBuild, responseHeaderTimeout: formatDuration(config.providerBuild.responseHeaderTimeout) },
+    providerBuild: { ...config.providerBuild, responseHeaderTimeout: formatDuration(config.providerBuild.responseHeaderTimeout), streamIdleTimeout: formatDuration(config.providerBuild.streamIdleTimeout) },
     providerWeb: {
       ...config.providerWeb,
       quotaTimeout: formatDuration(config.providerWeb.quotaTimeout), chatTimeout: formatDuration(config.providerWeb.chatTimeout),

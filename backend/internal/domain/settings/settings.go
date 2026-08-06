@@ -6,6 +6,10 @@ const (
 	DefaultBuildResponseHeaderTimeout = 5 * time.Minute
 	MinBuildResponseHeaderTimeout     = 30 * time.Second
 	MaxBuildResponseHeaderTimeout     = 30 * time.Minute
+
+	DefaultBuildStreamIdleTimeout = 2 * time.Minute
+	MinBuildStreamIdleTimeout     = 30 * time.Second
+	MaxBuildStreamIdleTimeout     = 10 * time.Minute
 )
 
 // Config 表示可跨重启持久化并支持热加载的网关运行参数。
@@ -82,6 +86,7 @@ type ProviderBuildConfig struct {
 	TokenAuth             string
 	UserAgent             string
 	ResponseHeaderTimeout time.Duration
+	StreamIdleTimeout     time.Duration
 }
 
 // RoutingConfig 定义会话粘性、冷却和故障切换边界。

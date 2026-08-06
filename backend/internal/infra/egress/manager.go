@@ -154,6 +154,7 @@ type Manager struct {
 	clientVersions       map[uint64]uint64
 	clientGeneration     uint64
 	buildHeaderTimeout   atomic.Int64
+	buildStreamIdleTimeout atomic.Int64
 	accountIsolated      atomic.Bool
 	operationsConfig     cachedOperationsConfig
 	operationsConfigLoad singleflight.Group
@@ -234,6 +235,7 @@ func NewManager(repository repository.EgressRepository, cipher *security.Cipher)
 		clearanceConfig: ClearanceConfig{Mode: "manual", TargetURL: "https://grok.com", Timeout: time.Minute, RefreshInterval: 10 * time.Minute},
 	}
 	manager.buildHeaderTimeout.Store(int64(settingsdomain.DefaultBuildResponseHeaderTimeout))
+	manager.buildStreamIdleTimeout.Store(int64(settingsdomain.DefaultBuildStreamIdleTimeout))
 	return manager
 }
 
@@ -348,6 +350,33 @@ func (m *Manager) UpdateBuildResponseHeaderTimeout(value time.Duration) {
 	}
 	m.clientMu.Unlock()
 	closeRequestClients(stale)
+}
+
+// UpdateBuildStreamIdleTimeout rebuilds only cached Build clients so the new
+// idle deadline takes effect for subsequent requests. Active requests keep their
+// current body wrapper and are not interrupted.
+func (m *Manager) UpdateBuildStreamIdleTimeout(value time.Duration) {
+	if value <= 0 {
+		value = settingsdomain.DefaultBuildStreamIdleTimeout
+	}
+	if previous := time.Duration(m.buildStreamIdleTimeout.Swap(int64(value))); previous == value {
+		return
+	}
+	m.clientMu.Lock()
+	var stale []requestClient
+	for key, cached := range m.clients {
+		if key.scope == domain.ScopeBuild {
+			stale = append(stale, m.evictClientLocked(key, cached))
+		}
+	}
+	m.clientMu.Unlock()
+	closeRequestClients(stale)
+}
+
+// BuildStreamIdleTimeout returns the configured stream idle deadline for Grok
+// Build responses. Returns zero when idle enforcement is disabled.
+func (m *Manager) BuildStreamIdleTimeout() time.Duration {
+	return time.Duration(m.buildStreamIdleTimeout.Load())
 }
 
 // UpdateAccountIsolatedConnections toggles per-account upstream connection pools.
@@ -1359,6 +1388,7 @@ func (m *Manager) clientForWithOptions(id uint64, scope domain.Scope, proxyURL, 
 			buildHeaderTimeout = settingsdomain.DefaultBuildResponseHeaderTimeout
 		}
 		clientKind += "\x00" + strconv.FormatInt(int64(buildHeaderTimeout), 10)
+		clientKind += "\x00idle" + strconv.FormatInt(m.buildStreamIdleTimeout.Load(), 10)
 		if options.buildEnvironmentProxy {
 			clientKind += "\x00environment-proxy"
 		}
@@ -1609,7 +1639,7 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 	if scope == domain.ScopeConsoleAsset && transportErr == nil && status == http.StatusForbidden {
 		return
 	}
-	if scope == domain.ScopeBuild && neterrorpkg.IsResponseHeaderTimeout(transportErr) {
+	if scope == domain.ScopeBuild && (neterrorpkg.IsResponseHeaderTimeout(transportErr) || neterrorpkg.IsBuildStreamIdleTimeout(transportErr)) {
 		return
 	}
 	if nodeID == 0 {

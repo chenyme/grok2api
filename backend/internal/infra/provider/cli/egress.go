@@ -34,15 +34,21 @@ func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, erro
 			return nil, err
 		}
 		if !configured {
-			response, requestErr := t.fallback.RoundTrip(request)
+			idleRequest := t.withStreamIdleContext(request)
+			response, requestErr := t.fallback.RoundTrip(idleRequest)
 			infraegress.RecordDirectPhysicalCall(request.Context(), response, requestErr)
+			if requestErr != nil || response == nil || response.Body == nil {
+				return response, requestErr
+			}
+			response.Body = t.wrapStreamIdleBody(response.Body, idleRequest.Context())
 			return response, requestErr
 		}
 	}
 	if lease.UserAgent != "" {
 		request.Header.Set("User-Agent", lease.UserAgent)
 	}
-	response, err := lease.Do(request)
+	idleRequest := t.withStreamIdleContext(request)
+	response, err := lease.Do(idleRequest)
 	if err != nil {
 		if shouldReportEgressFailure(request.Context(), err) {
 			t.manager.FeedbackForScope(context.WithoutCancel(request.Context()), domainegress.ScopeBuild, lease.NodeID, 0, err)
@@ -55,8 +61,34 @@ func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, erro
 		lease.Release()
 		return response, nil
 	}
-	response.Body = &egressResponseBody{ReadCloser: response.Body, release: lease.Release}
+	response.Body = &egressResponseBody{ReadCloser: t.wrapStreamIdleBody(response.Body, idleRequest.Context()), release: lease.Release}
 	return response, nil
+}
+
+// withStreamIdleContext returns a shallow copy of request carrying a
+// cancel-cause-aware context derived from the original. The cancel function is
+// stashed on the request context so wrapStreamIdleBody can arm an idle timer
+// that cancels the context (and thus the transport's body read) when the
+// stream goes silent. When no idle timeout is configured the original request
+// is returned unchanged.
+func (t *egressTransport) withStreamIdleContext(request *http.Request) *http.Request {
+	idle := t.manager.BuildStreamIdleTimeout()
+	if idle <= 0 {
+		return request
+	}
+	ctx, cancel := context.WithCancelCause(request.Context())
+	return request.Clone(withIdleCancel(ctx, idle, cancel))
+}
+
+// wrapStreamIdleBody arms an idle timer over body. The cancel function is read
+// from the request context previously installed by withStreamIdleContext. When
+// no cancel is present (idle disabled) the body is returned unwrapped.
+func (t *egressTransport) wrapStreamIdleBody(body io.ReadCloser, ctx context.Context) io.ReadCloser {
+	idle, cancel := idleCancelFrom(ctx)
+	if idle <= 0 || cancel == nil {
+		return body
+	}
+	return newIdleTimeoutReadCloser(body, idle, cancel)
 }
 
 func shouldReportEgressFailure(ctx context.Context, err error) bool {

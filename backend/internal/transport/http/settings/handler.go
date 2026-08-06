@@ -63,6 +63,7 @@ type providerBuildConfigDTO struct {
 	TokenAuthConfigured   bool   `json:"tokenAuthConfigured"`
 	UserAgent             string `json:"userAgent"`
 	ResponseHeaderTimeout string `json:"responseHeaderTimeout"`
+	StreamIdleTimeout     string `json:"streamIdleTimeout"`
 }
 
 type providerWebConfigDTO struct {
@@ -186,6 +187,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			ClientVersion: value.ProviderBuild.ClientVersion, ClientIdentifier: value.ProviderBuild.ClientIdentifier,
 			TokenAuth: value.ProviderBuild.TokenAuth, UserAgent: value.ProviderBuild.UserAgent,
 			ResponseHeaderTimeout: value.ProviderBuild.ResponseHeaderTimeout,
+			StreamIdleTimeout:     value.ProviderBuild.StreamIdleTimeout,
 		},
 		ProviderWeb: settingsapp.ProviderWebConfig{
 			BaseURL: value.ProviderWeb.BaseURL, QuotaTimeout: value.ProviderWeb.QuotaTimeout,
@@ -264,6 +266,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				TokenAuth:           config.ProviderBuild.TokenAuth,
 				TokenAuthConfigured: strings.TrimSpace(config.ProviderBuild.TokenAuth) != "", UserAgent: config.ProviderBuild.UserAgent,
 				ResponseHeaderTimeout: config.ProviderBuild.ResponseHeaderTimeout,
+				StreamIdleTimeout:     config.ProviderBuild.StreamIdleTimeout,
 			},
 			ProviderWeb: providerWebConfigDTO{
 				BaseURL: config.ProviderWeb.BaseURL, QuotaTimeout: config.ProviderWeb.QuotaTimeout,

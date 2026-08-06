@@ -27,6 +27,7 @@ type ProviderBuildConfig struct {
 	TokenAuth             string
 	UserAgent             string
 	ResponseHeaderTimeout string
+	StreamIdleTimeout     string
 }
 
 // ProviderBuildRecommendation 表示当前网关已完成兼容回归的 Grok Build 协议基线。
@@ -305,9 +306,13 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		ClientVersion: value.ProviderBuild.ClientVersion, ClientIdentifier: value.ProviderBuild.ClientIdentifier,
 		TokenAuth: value.ProviderBuild.TokenAuth, UserAgent: value.ProviderBuild.UserAgent,
 		ResponseHeaderTimeout: config.Duration(value.ProviderBuild.ResponseHeaderTimeout),
+		StreamIdleTimeout:     config.Duration(value.ProviderBuild.StreamIdleTimeout),
 	}
 	if value.ProviderBuild.ResponseHeaderTimeout <= 0 {
 		base.Provider.Build.ResponseHeaderTimeout = config.Duration(settingsdomain.DefaultBuildResponseHeaderTimeout)
+	}
+	if value.ProviderBuild.StreamIdleTimeout <= 0 {
+		base.Provider.Build.StreamIdleTimeout = config.Duration(settingsdomain.DefaultBuildStreamIdleTimeout)
 	}
 	clearanceMode := strings.TrimSpace(value.ProviderWeb.ClearanceMode)
 	if clearanceMode == "" {
@@ -418,6 +423,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			ClientVersion: value.Provider.Build.ClientVersion, ClientIdentifier: value.Provider.Build.ClientIdentifier,
 			TokenAuth: value.Provider.Build.TokenAuth, UserAgent: value.Provider.Build.UserAgent,
 			ResponseHeaderTimeout: value.Provider.Build.ResponseHeaderTimeout.Value(),
+			StreamIdleTimeout:     value.Provider.Build.StreamIdleTimeout.Value(),
 		},
 		ProviderWeb: settingsdomain.ProviderWebConfig{
 			BaseURL: value.Provider.Web.BaseURL, QuotaTimeout: value.Provider.Web.QuotaTimeout.Value(),
@@ -585,6 +591,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	if strings.TrimSpace(input.ProviderBuild.ResponseHeaderTimeout) != "" {
 		durations = append(durations, durationInput{"providerBuild.responseHeaderTimeout", input.ProviderBuild.ResponseHeaderTimeout, func(value config.Duration) { next.Provider.Build.ResponseHeaderTimeout = value }})
 	}
+	if strings.TrimSpace(input.ProviderBuild.StreamIdleTimeout) != "" {
+		durations = append(durations, durationInput{"providerBuild.streamIdleTimeout", input.ProviderBuild.StreamIdleTimeout, func(value config.Duration) { next.Provider.Build.StreamIdleTimeout = value }})
+	}
 	if input.ProviderWeb.ClearanceProvided {
 		durations = append(durations,
 			durationInput{"providerWeb.clearanceTimeout", input.ProviderWeb.ClearanceTimeout, func(value config.Duration) { next.Provider.Web.ClearanceTimeout = value }},
@@ -618,6 +627,7 @@ func toEditable(cfg config.Config) EditableConfig {
 			ClientVersion: cfg.Provider.Build.ClientVersion, ClientIdentifier: cfg.Provider.Build.ClientIdentifier,
 			TokenAuth: cfg.Provider.Build.TokenAuth, UserAgent: cfg.Provider.Build.UserAgent,
 			ResponseHeaderTimeout: cfg.Provider.Build.ResponseHeaderTimeout.String(),
+			StreamIdleTimeout:     cfg.Provider.Build.StreamIdleTimeout.String(),
 		},
 		ProviderWeb: ProviderWebConfig{
 			BaseURL: cfg.Provider.Web.BaseURL, QuotaTimeout: cfg.Provider.Web.QuotaTimeout.String(),
