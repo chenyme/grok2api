@@ -1252,7 +1252,9 @@ attemptLoop:
 		var once sync.Once
 		finalize := func(usage Usage, responseID, errorCode string) {
 			once.Do(func() {
-				successful := response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == ""
+				// HTTP 状态码保留线上真实值；流在 2xx 响应头之后失败时由 errorCode
+				// 决定最终结果，避免把协议状态与业务结果混为一谈。
+				successful := auditRequestSucceeded(response.StatusCode, errorCode)
 				lease.completeSelectorObservation(successful)
 				budget := newFinalizationBudget(string(operation), string(route.Provider))
 				if isUpstreamStreamFailure(errorCode) {
@@ -1279,7 +1281,7 @@ attemptLoop:
 					record.MediaOutputImages = int64(max(0, response.QuotaUnits))
 				}
 				tokenPricing, tokenPriced := audit.EstimateOfficialCost(pricingModel, usage.InputTokens, usage.CachedInputTokens, usage.OutputTokens, usage.ContextInputTokens)
-				if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" && imagePriced {
+				if successful && imagePriced {
 					record.EstimatedCostInUSDTicks = imagePricing.CostInUSDTicks
 					record.PricingModel = imagePricing.Model
 					record.PricingVersion = audit.OfficialPricingAsOf
@@ -1298,7 +1300,7 @@ attemptLoop:
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
 				attempts := failureAttempts.snapshot()
-				if response.StatusCode < 200 || response.StatusCode >= 300 || errorCode != "" || len(attempts) > 0 {
+				if !successful || len(attempts) > 0 {
 					record.Attempts = attempts
 				}
 				record.CreatedAt = now
@@ -1410,6 +1412,13 @@ func isUpstreamStreamFailure(errorCode string) bool {
 	default:
 		return false
 	}
+}
+
+// auditRequestSucceeded keeps transport truth (the HTTP status) separate from
+// the terminal request outcome. A stream that fails after 2xx headers is not a
+// successful request even though its HTTP status remains 2xx.
+func auditRequestSucceeded(statusCode int, errorCode string) bool {
+	return statusCode >= 200 && statusCode < 300 && errorCode == ""
 }
 
 func isRetryableTransportFailure(providerValue accountdomain.Provider, err error) bool {
