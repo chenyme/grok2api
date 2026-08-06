@@ -136,7 +136,7 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 		t.Fatalf("text = %q emitted = %q", text, emitted.String())
 	}
 	first := parsed.Annotations[0]
-	if first["type"] != "url_citation" || first["url"] != "https://x.com/elonmusk/status/2082707547203518569" {
+	if first["type"] != "url_citation" || first["url"] != "https://x.com/elonmusk/status/2082707547203518569" || first["title"] != "1" {
 		t.Fatalf("first annotation = %#v", first)
 	}
 	chatPayload := buildOpenAIResult("chat", "resp_1", "grok-chat-fast", *parsed, false)
@@ -144,28 +144,88 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 	if msg["annotations"] == nil {
 		t.Fatalf("chat annotations missing: %#v", msg)
 	}
-	// Chat Completions: nested url_citation object
+	// Chat Completions: nested url_citation; xAI title is display number.
 	firstAnn := msg["annotations"].([]any)[0].(map[string]any)
 	nested, _ := firstAnn["url_citation"].(map[string]any)
-	if firstAnn["type"] != "url_citation" || nested == nil || nested["url"] == nil {
+	if firstAnn["type"] != "url_citation" || nested == nil || nested["url"] == nil || nested["title"] != "1" {
 		t.Fatalf("chat annotation shape = %#v", firstAnn)
 	}
-	if chatPayload["search_sources"] == nil {
-		t.Fatalf("search_sources missing: %#v", chatPayload)
+	citations, _ := chatPayload["citations"].([]string)
+	if len(citations) < 2 {
+		// JSON marshal may use []any after rebuild — accept both
+		if raw, ok := chatPayload["citations"].([]any); !ok || len(raw) < 2 {
+			t.Fatalf("citations missing: %#v", chatPayload["citations"])
+		}
+	}
+	if chatPayload["search_sources"] != nil {
+		t.Fatalf("search_sources must not be emitted: %#v", chatPayload["search_sources"])
 	}
 
 	respPayload := buildOpenAIResult(conversation.OperationResponses, "resp_1", "grok-chat-fast", *parsed, false)
+	if respPayload["search_sources"] != nil {
+		t.Fatalf("responses search_sources must not be emitted")
+	}
+	if respPayload["citations"] == nil {
+		t.Fatalf("responses citations missing: %#v", respPayload)
+	}
 	outMsg := respPayload["output"].([]any)[len(respPayload["output"].([]any))-1].(map[string]any)
 	part := outMsg["content"].([]any)[0].(map[string]any)
 	flat := part["annotations"].([]any)[0].(map[string]any)
-	if flat["type"] != "url_citation" || flat["url"] == nil || flat["url_citation"] != nil {
-		t.Fatalf("responses annotation must be flat url_citation, got %#v", flat)
+	if flat["type"] != "url_citation" || flat["url"] == nil || flat["url_citation"] != nil || flat["title"] != "1" {
+		t.Fatalf("responses annotation must be flat xAI url_citation, got %#v", flat)
+	}
+}
+
+func TestNoInlineCitationsOmitsMarkdownMarkers(t *testing.T) {
+	parsed := &parsedChat{DisableInlineCitations: true}
+	frames := []string{
+		`{"event":{"type":"response.chunk","chunk":{"tool_result":{"web_search":{"webpages":[{"url":"https://example.com/a","title":"A"}]}}}}}`,
+		`{"event":{"type":"response.chunk","chunk":{"text":{"text":"hello","channel":"CHANNEL_ASSISTANT_RESPONSE"}}}}`,
+		`{"event":{"type":"response.chunk","chunk":{"render_citation":{"url":"https://example.com/a","kind":"CITATION_KIND_WEB_PAGE"}}}}`,
+	}
+	for _, frame := range frames {
+		if _, _, err := parseUpstreamFrame([]byte(frame), parsed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Contains(parsed.Text.String(), "[[") {
+		t.Fatalf("inline markers should be absent: %q", parsed.Text.String())
+	}
+	if len(parsed.Annotations) != 1 {
+		t.Fatalf("annotations = %#v", parsed.Annotations)
+	}
+	if _, ok := parsed.Annotations[0]["start_index"]; ok {
+		t.Fatalf("no_inline annotations must omit positions: %#v", parsed.Annotations[0])
+	}
+	payload := buildOpenAIResult(conversation.OperationResponses, "resp_1", "m", *parsed, false)
+	if payload["citations"] == nil {
+		t.Fatalf("citations still required: %#v", payload)
+	}
+}
+
+func TestInlineCitationsIncludeSwitch(t *testing.T) {
+	opts := conversation.ResponseOptions{}
+	if !opts.InlineCitationsEnabled() {
+		t.Fatal("default should enable inline citations")
+	}
+	opts.Include = []string{"no_inline_citations"}
+	if opts.InlineCitationsEnabled() {
+		t.Fatal("no_inline_citations should disable")
+	}
+	opts.Include = []string{"no_inline_citations", "inline_citations"}
+	if !opts.InlineCitationsEnabled() {
+		t.Fatal("later inline_citations should re-enable")
+	}
+	off := false
+	opts.InlineCitations = &off
+	if opts.InlineCitationsEnabled() {
+		t.Fatal("explicit false should win")
 	}
 }
 
 func TestWriteStreamAnnotationsShapes(t *testing.T) {
 	ann := []map[string]any{{
-		"type": "url_citation", "url": "https://example.com", "title": "Example",
+		"type": "url_citation", "url": "https://example.com", "title": "1",
 		"start_index": 1, "end_index": 10,
 	}}
 	var chatBuf strings.Builder

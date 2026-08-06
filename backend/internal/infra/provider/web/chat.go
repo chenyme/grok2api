@@ -49,6 +49,8 @@ type openAIRequest struct {
 	Instructions       string          `json:"instructions"`
 	PreviousResponseID string          `json:"previous_response_id"`
 	Messages           []chatMessage   `json:"messages"`
+	// Include is the xAI/OpenAI Responses include list (inline_citations / no_inline_citations).
+	Include            []string        `json:"include"`
 	Tools              json.RawMessage `json:"tools"`
 	ToolChoice         json.RawMessage `json:"tool_choice"`
 	ParallelToolCalls  *bool           `json:"parallel_tool_calls"`
@@ -91,6 +93,8 @@ type parsedChat struct {
 	Images          []string
 	SearchSources   []map[string]any
 	Annotations     []map[string]any
+	// InlineCitations mirrors xAI default-on [[N]](url) embedding.
+	DisableInlineCitations bool
 	sourceKeys      map[string]struct{}
 	serverToolKeys  map[string]struct{}
 	webSearchKeys   map[string]struct{}
@@ -133,6 +137,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	var input openAIRequest
 	if err := json.Unmarshal(request.Body, &input); err != nil {
 		return jsonProviderResponse(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "请求 JSON 无效", "type": "invalid_request_error"}}), nil
+	}
+	if len(input.Include) > 0 {
+		conversationOptions.Include = append([]string{}, input.Include...)
 	}
 	normalized, err := normalizeOpenAIInput(input, request.Operation)
 	if err != nil {
@@ -242,7 +249,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			return nil, preflightErr
 		}
 
-		currentParsed, consumeErr := consumeUpstream(upstream.Body, nil)
+		currentParsed, consumeErr := consumeUpstreamWithCitations(upstream.Body, nil, conversationOptions.InlineCitationsEnabled())
 		_ = upstream.Body.Close()
 		if statsigTarget != "" && errors.Is(consumeErr, errWebAntiBot) && attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
 			lease.Release()
@@ -362,6 +369,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 		parsed := &parsedChat{
 			ResponseID: responseID, InputTokens: estimateTokens(prompt), Tools: tools.ResponseTools,
 			ToolChoice: tools.ResponseChoice, ParallelTools: parallelTools,
+			DisableInlineCitations: !options.InlineCitationsEnabled(),
 		}
 		if previous != nil {
 			parsed.ConversationID = previous.ConversationID
@@ -708,7 +716,11 @@ func extractImageURL(part map[string]any) string {
 }
 
 func consumeUpstream(source io.Reader, emit func(string, string) error) (parsedChat, error) {
-	parsed := parsedChat{}
+	return consumeUpstreamWithCitations(source, emit, true)
+}
+
+func consumeUpstreamWithCitations(source io.Reader, emit func(string, string) error, inlineCitations bool) (parsedChat, error) {
+	parsed := parsedChat{DisableInlineCitations: !inlineCitations}
 	err := consumeUpstreamInto(source, &parsed, emit)
 	return parsed, err
 }
@@ -1261,9 +1273,11 @@ func cleanChatToken(parsed *parsedChat, token string) string {
 		renderType := token[match[6]:match[7]]
 		replacement, annotation := renderChatCard(parsed, cardID, renderType)
 		if annotation != nil {
-			start := parsed.Text.Len() + builder.Len()
-			annotation["start_index"] = start
-			annotation["end_index"] = start + len(replacement)
+			if replacement != "" {
+				start := parsed.Text.Len() + builder.Len()
+				annotation["start_index"] = start
+				annotation["end_index"] = start + len(replacement)
+			}
 			parsed.Annotations = append(parsed.Annotations, annotation)
 		}
 		builder.WriteString(replacement)
@@ -1320,10 +1334,13 @@ func renderChatCard(parsed *parsedChat, cardID, renderType string) (string, map[
 			return "", nil
 		}
 		parsed.lastCitation = index
-		citation := fmt.Sprintf(" [[%d]](%s)", index, value)
-		return citation, map[string]any{
-			"type": "url_citation", "url": value, "title": searchSourceTitle(parsed.SearchSources, value),
+		label := fmt.Sprintf("%d", index)
+		annotation := map[string]any{"type": "url_citation", "url": value, "title": label}
+		if parsed.DisableInlineCitations {
+			return "", annotation
 		}
+		// xAI inline form: [[N]](url)
+		return fmt.Sprintf("[[%d]](%s)", index, value), annotation
 	default:
 		return "", nil
 	}
@@ -1352,6 +1369,7 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 	inputTokens := parsed.InputTokens
 	outputTokens := estimateTokens(parsed.Text.String()) + estimateTokens(parsed.Reasoning.String()) + estimateToolCallTokens(parsed.ToolCalls)
 	if operation == "chat" {
+		finalizeXAIAnnotations(&parsed)
 		message := map[string]any{"role": "assistant", "content": parsed.Text.String(), "reasoning_content": parsed.Reasoning.String()}
 		if len(parsed.Annotations) > 0 {
 			message["annotations"] = chatAnnotations(parsed.Annotations)
@@ -1369,8 +1387,9 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 			"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finishReason}},
 			"usage":   map[string]any{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens},
 		}
-		if len(parsed.SearchSources) > 0 {
-			value["search_sources"] = parsed.SearchSources
+		// xAI: top-level citations = all source URLs encountered (always when present).
+		if citations := xaiCitationURLs(parsed); len(citations) > 0 {
+			value["citations"] = citations
 		}
 		return value
 	}
@@ -1415,15 +1434,13 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 	if parsed.Reasoning.Len() > 0 {
 		output = append(output, map[string]any{"id": newWebID("rs"), "type": "reasoning", "status": "completed", "summary": []any{map[string]any{"type": "summary_text", "text": parsed.Reasoning.String()}}})
 	}
+	finalizeXAIAnnotations(&parsed)
 	if parsed.Text.Len() > 0 || len(parsed.ToolCalls) == 0 {
 		annotations := responsesAnnotations(parsed.Annotations)
 		if annotations == nil {
 			annotations = []any{}
 		}
 		message := map[string]any{"id": newWebID("msg"), "type": "message", "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": parsed.Text.String(), "annotations": annotations, "logprobs": []any{}}}}
-		if len(parsed.SearchSources) > 0 {
-			message["search_sources"] = parsed.SearchSources
-		}
 		output = append(output, message)
 	}
 	for _, call := range parsed.ToolCalls {
@@ -1440,7 +1457,7 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 	if toolChoice == nil {
 		toolChoice = "auto"
 	}
-	return map[string]any{
+	value := map[string]any{
 		"id": responseID, "object": "response", "created_at": created, "completed_at": created, "status": "completed", "model": model,
 		"output": output, "parallel_tool_calls": parsed.ParallelTools, "tools": tools, "tool_choice": toolChoice, "store": true,
 		"usage": map[string]any{
@@ -1450,6 +1467,11 @@ func buildOpenAIResult(operation, responseID, model string, parsed parsedChat, s
 			"num_sources_used":      int64(len(parsed.SearchSources)), "num_server_side_tools_used": parsed.ServerTools,
 		},
 	}
+	// xAI Citations docs: response.citations is the full URL list from tool research.
+	if citations := xaiCitationURLs(parsed); len(citations) > 0 {
+		value["citations"] = citations
+	}
+	return value
 }
 
 func applyWebStopSequences(text string, sequences []string) (string, string) {
@@ -1546,28 +1568,31 @@ func chatAnnotations(annotations []map[string]any) []any {
 	return values
 }
 
-// chatURLCitation is the Chat Completions shape:
-// { "type":"url_citation", "url_citation":{ url, title, start_index, end_index } }
+// chatURLCitation is Chat Completions nested url_citation (OpenAI-compatible wire).
+// xAI label semantics: title is the citation number string ("1", "2").
 func chatURLCitation(annotation map[string]any) map[string]any {
-	return map[string]any{
-		"type": "url_citation",
-		"url_citation": map[string]any{
-			"url": annotation["url"], "title": annotation["title"],
-			"start_index": annotation["start_index"], "end_index": annotation["end_index"],
-		},
+	inner := map[string]any{
+		"url": annotation["url"], "title": annotation["title"],
 	}
+	if _, ok := annotation["start_index"]; ok {
+		inner["start_index"] = annotation["start_index"]
+		inner["end_index"] = annotation["end_index"]
+	}
+	return map[string]any{"type": "url_citation", "url_citation": inner}
 }
 
-// responsesURLCitation is the Responses API shape (flat, no nested url_citation object):
-// { "type":"url_citation", "url", "title", "start_index", "end_index" }
+// responsesURLCitation is the xAI/OpenAI Responses flat url_citation on output_text.
 func responsesURLCitation(annotation map[string]any) map[string]any {
-	return map[string]any{
-		"type":        "url_citation",
-		"url":         annotation["url"],
-		"title":       annotation["title"],
-		"start_index": annotation["start_index"],
-		"end_index":   annotation["end_index"],
+	out := map[string]any{
+		"type":  "url_citation",
+		"url":   annotation["url"],
+		"title": annotation["title"],
 	}
+	if _, ok := annotation["start_index"]; ok {
+		out["start_index"] = annotation["start_index"]
+		out["end_index"] = annotation["end_index"]
+	}
+	return out
 }
 
 func responsesAnnotations(annotations []map[string]any) []any {
@@ -1576,6 +1601,71 @@ func responsesAnnotations(annotations []map[string]any) []any {
 		values = append(values, responsesURLCitation(annotation))
 	}
 	return values
+}
+
+// xaiCitationURLs builds response.citations: all source URLs from search tool results.
+func xaiCitationURLs(parsed parsedChat) []string {
+	if len(parsed.SearchSources) == 0 {
+		// Fall back to annotation URLs when tool results were not collected.
+		if len(parsed.Annotations) == 0 {
+			return nil
+		}
+		out := make([]string, 0, len(parsed.Annotations))
+		seen := make(map[string]struct{}, len(parsed.Annotations))
+		for _, ann := range parsed.Annotations {
+			u, _ := ann["url"].(string)
+			if u == "" {
+				continue
+			}
+			if _, ok := seen[u]; ok {
+				continue
+			}
+			seen[u] = struct{}{}
+			out = append(out, u)
+		}
+		return out
+	}
+	out := make([]string, 0, len(parsed.SearchSources))
+	for _, source := range parsed.SearchSources {
+		u, _ := source["url"].(string)
+		if u != "" {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// finalizeXAIAnnotations ensures annotations exist for no_inline mode from search pool
+// when render_citation did not emit per-hit markers.
+func finalizeXAIAnnotations(parsed *parsedChat) {
+	if parsed == nil {
+		return
+	}
+	if !parsed.DisableInlineCitations {
+		return
+	}
+	if len(parsed.Annotations) > 0 {
+		// Strip any accidental positional fields.
+		for _, ann := range parsed.Annotations {
+			delete(ann, "start_index")
+			delete(ann, "end_index")
+		}
+		return
+	}
+	if len(parsed.SearchSources) == 0 {
+		return
+	}
+	for i, source := range parsed.SearchSources {
+		u, _ := source["url"].(string)
+		if u == "" {
+			continue
+		}
+		parsed.Annotations = append(parsed.Annotations, map[string]any{
+			"type":  "url_citation",
+			"url":   u,
+			"title": fmt.Sprintf("%d", i+1),
+		})
+	}
 }
 
 func estimateToolCallTokens(calls []parsedToolCall) int64 {
@@ -2099,8 +2189,8 @@ func writeStreamDone(writer io.Writer, operation, responseID, model string, pars
 		if len(parsed.Annotations) > 0 {
 			chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)["annotations"] = chatAnnotations(parsed.Annotations)
 		}
-		if sources := payload["search_sources"]; sources != nil {
-			chunk["search_sources"] = sources
+		if citations := payload["citations"]; citations != nil {
+			chunk["citations"] = citations
 		}
 		writeSSE(writer, "", chunk)
 		_, _ = io.WriteString(writer, "data: [DONE]\n\n")

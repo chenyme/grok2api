@@ -676,11 +676,13 @@ func TestGrokRenderCitationBecomesMarkdownAndAnnotation(t *testing.T) {
 	}
 	tokenData, _ := json.Marshal(tokenFrame)
 	kind, delta, err := parseUpstreamFrame(tokenData, parsed)
-	if err != nil || kind != "text" || delta != "Answer [[1]](https://example.com)" || len(parsed.Annotations) != 1 {
+	wantDelta := `Answer[[1]](https://example.com)`
+	if err != nil || kind != "text" || delta != wantDelta || len(parsed.Annotations) != 1 {
 		t.Fatalf("kind=%q delta=%q annotations=%#v err=%v", kind, delta, parsed.Annotations, err)
 	}
 	annotation := parsed.Annotations[0]
-	if annotation["title"] != "Example" || annotation["start_index"] != 6 || annotation["end_index"] != len(delta) {
+	// xAI: title is citation display number; indices cover the [[N]](url) span.
+	if annotation["title"] != "1" || annotation["start_index"] != 6 || annotation["end_index"] != len(wantDelta) {
 		t.Fatalf("annotation = %#v", annotation)
 	}
 }

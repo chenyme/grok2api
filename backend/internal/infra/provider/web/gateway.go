@@ -494,9 +494,9 @@ func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
 	}
 }
 
-// applyGatewayRenderCitation turns an inline render_citation chunk into text + url_citation.
-// Citations are streamed as separate chunks between text deltas; indices track the
-// synthetic [[n]](url) marker inserted at the current assistant text offset.
+// applyGatewayRenderCitation turns an mgw render_citation chunk into xAI-style citations.
+// When InlineCitations is enabled (default), embeds [[N]](url) and records positional
+// annotations with title = display number. When disabled, skips text markers.
 func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string, string, error) {
 	if parsed == nil || cite == nil {
 		return "", "", nil
@@ -520,20 +520,26 @@ func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string
 	}
 	parsed.lastCitation = index
 
-	title := searchSourceTitle(parsed.SearchSources, normalized)
-	if title == "" || title == normalized {
-		if handle := xHandleFromStatusURL(normalized); handle != "" {
-			title = "@" + handle
-		}
+	// xAI: title is the visible citation number ("1", "2"), not the page title.
+	label := fmt.Sprintf("%d", index)
+	if parsed.DisableInlineCitations {
+		// no_inline_citations: no markdown in text; positional fields omitted later at finalize.
+		parsed.Annotations = append(parsed.Annotations, map[string]any{
+			"type":  "url_citation",
+			"url":   normalized,
+			"title": label,
+		})
+		return "", "", nil
 	}
-	replacement := fmt.Sprintf(" [[%d]](%s)", index, normalized)
+	// xAI markdown form: [[N]](url) with no mandatory leading space.
+	replacement := fmt.Sprintf("[[%d]](%s)", index, normalized)
 	start := parsed.Text.Len()
 	parsed.upstreamText.WriteString(replacement)
 	parsed.Text.WriteString(replacement)
 	parsed.Annotations = append(parsed.Annotations, map[string]any{
 		"type":        "url_citation",
 		"url":         normalized,
-		"title":       title,
+		"title":       label,
 		"start_index": start,
 		"end_index":   start + len(replacement),
 	})
