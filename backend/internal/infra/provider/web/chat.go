@@ -1400,37 +1400,39 @@ func renderChatCard(parsed *parsedChat, cardID, renderType string) (string, map[
 			return "", nil
 		}
 		parsed.lastCitation = index
-		title := citationPageTitle(parsed, value)
+		title := citationPageTitle(parsed, value, index)
 		annotation := map[string]any{"type": "url_citation", "url": value, "title": title}
 		if parsed.DisableInlineCitations {
 			return "", annotation
 		}
-		// Inline marker keeps numeric label; annotation title is page name.
+		// Inline marker keeps numeric label; annotation title is page name (or N if unknown).
 		return fmt.Sprintf("[[%d]](%s)", index, value), annotation
 	default:
 		return "", nil
 	}
 }
 
-// citationPageTitle resolves a human page/source title for url_citation annotations.
-// Prefers tool_result / search pool titles; falls back to the URL.
-func citationPageTitle(parsed *parsedChat, rawURL string) string {
-	if parsed == nil {
-		return searchresult.NormalizeTitle("", rawURL)
-	}
-	if title := searchSourceTitle(parsed.SearchSources, rawURL); title != "" {
-		// searchSourceTitle returns the URL when no title is known — still usable.
-		return title
-	}
-	for _, call := range parsed.HostedSearchCalls {
-		if title := searchSourceTitle(call.Sources, rawURL); title != "" {
+// citationPageTitle resolves url_citation title: page/source title when known, else citation number.
+func citationPageTitle(parsed *parsedChat, rawURL string, index int) string {
+	if parsed != nil {
+		if title := lookupSourcePageTitle(parsed.SearchSources, rawURL); title != "" {
 			return title
 		}
+		for _, call := range parsed.HostedSearchCalls {
+			if title := lookupSourcePageTitle(call.Sources, rawURL); title != "" {
+				return title
+			}
+		}
 	}
-	return searchresult.NormalizeTitle("", rawURL)
+	if index < 1 {
+		index = 1
+	}
+	return fmt.Sprintf("%d", index)
 }
 
-func searchSourceTitle(sources []map[string]any, rawURL string) string {
+// lookupSourcePageTitle returns a non-empty page title for rawURL, or "" if unknown.
+// Unlike searchSourceTitle, it does not fall back to the URL itself.
+func lookupSourcePageTitle(sources []map[string]any, rawURL string) string {
 	if normalized, valid := searchresult.NormalizeURL(rawURL); valid {
 		rawURL = normalized
 	}
@@ -1439,7 +1441,18 @@ func searchSourceTitle(sources []map[string]any, rawURL string) string {
 			if title, _ := source["title"].(string); title != "" {
 				return title
 			}
+			return ""
 		}
+	}
+	return ""
+}
+
+func searchSourceTitle(sources []map[string]any, rawURL string) string {
+	if title := lookupSourcePageTitle(sources, rawURL); title != "" {
+		return title
+	}
+	if normalized, valid := searchresult.NormalizeURL(rawURL); valid {
+		return normalized
 	}
 	return rawURL
 }
@@ -1901,14 +1914,16 @@ func finalizeXAIAnnotations(parsed *parsedChat) {
 	if len(parsed.SearchSources) == 0 {
 		return
 	}
+	n := 0
 	for _, source := range parsed.SearchSources {
 		u, _ := source["url"].(string)
 		if u == "" {
 			continue
 		}
+		n++
 		title, _ := source["title"].(string)
 		if title == "" {
-			title = u
+			title = fmt.Sprintf("%d", n)
 		}
 		parsed.Annotations = append(parsed.Annotations, map[string]any{
 			"type":  "url_citation",

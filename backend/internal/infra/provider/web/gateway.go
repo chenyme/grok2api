@@ -575,7 +575,7 @@ func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string
 	}
 	parsed.lastCitation = index
 
-	title := citationPageTitle(parsed, normalized)
+	title := citationPageTitle(parsed, normalized, index)
 	if parsed.DisableInlineCitations {
 		// no_inline_citations: no markdown in text; positional fields omitted later at finalize.
 		parsed.Annotations = append(parsed.Annotations, map[string]any{
@@ -585,7 +585,7 @@ func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string
 		})
 		return "", "", nil
 	}
-	// Inline marker keeps numeric label; structured title is the page name.
+	// Inline marker keeps numeric label; structured title is page name (or N if unknown).
 	replacement := fmt.Sprintf("[[%d]](%s)", index, normalized)
 	start := parsed.Text.Len()
 	parsed.upstreamText.WriteString(replacement)

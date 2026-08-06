@@ -224,6 +224,29 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 	}
 }
 
+func TestCitationTitleFallsBackToIndex(t *testing.T) {
+	parsed := &parsedChat{}
+	// render_citation without prior tool_result titles → title should be "1"
+	frames := []string{
+		`{"event":{"type":"response.chunk","chunk":{"text":{"text":"hi","channel":"CHANNEL_ASSISTANT_RESPONSE"}}}}`,
+		`{"event":{"type":"response.chunk","chunk":{"render_citation":{"url":"https://example.com/no-title","kind":"CITATION_KIND_WEB_PAGE"}}}}`,
+	}
+	for _, frame := range frames {
+		if _, _, err := parseUpstreamFrame([]byte(frame), parsed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(parsed.Annotations) != 1 {
+		t.Fatalf("annotations = %#v", parsed.Annotations)
+	}
+	if parsed.Annotations[0]["title"] != "1" {
+		t.Fatalf("want title fallback to index, got %#v", parsed.Annotations[0])
+	}
+	if !strings.Contains(parsed.Text.String(), "[[1]](https://example.com/no-title)") {
+		t.Fatalf("text = %q", parsed.Text.String())
+	}
+}
+
 func TestNoInlineCitationsOmitsMarkdownMarkers(t *testing.T) {
 	parsed := &parsedChat{DisableInlineCitations: true}
 	frames := []string{
