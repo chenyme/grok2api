@@ -9,6 +9,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { listModels } from "@/entities/model/model-api";
+import { listClientKeys } from "@/features/client-keys/client-keys-api";
+import { listAccounts } from "@/features/accounts/accounts-api";
 import { RequestAuditDetailDialog } from "@/features/audits/request-audit-detail-dialog";
 import { getRequestAudits, getRequestAuditSummary, type AuditBillingBreakdownDTO, type AuditBillingComponentDTO, type AuditDTO, type AuditPeriod } from "@/features/audits/request-audits-api";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
@@ -27,6 +29,10 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 
 const AUDIT_PAGE_CACHE_TIME_MS = 60_000;
 const AUDIT_SUMMARY_CACHE_TIME_MS = 120_000;
+// 筛选名单始终限制在服务器搜索后的前 50 条，避免大账号池把大量选项累积到浏览器。
+const AUDIT_FILTER_PAGE_SIZE = 50;
+// 名单高度约 5 行，超出后内部滚动。
+const AUDIT_FILTER_MAX_HEIGHT = "max-h-56 overflow-y-auto py-0.5";
 
 type AuditCursorState = { scope: string; values: string[] };
 
@@ -84,6 +90,65 @@ export function RequestAuditsPage() {
     queryFn: () => listModels({ page: 1, pageSize: 100 }),
     staleTime: 60_000,
   });
+  // 密钥/账号筛选名单只在对应三级菜单展开时懒加载，输入后重新按匹配查询。
+  const [keyFilterOptionsOpen, setKeyFilterOptionsOpen] = useState(false);
+  const [accountFilterOptionsOpen, setAccountFilterOptionsOpen] = useState(false);
+  const [keyFilterOptionsSearch, setKeyFilterOptionsSearch] = useState("");
+  const [accountFilterOptionsSearch, setAccountFilterOptionsSearch] = useState("");
+  const debouncedKeyFilterOptionsSearch = useDebouncedValue(keyFilterOptionsSearch);
+  const debouncedAccountFilterOptionsSearch = useDebouncedValue(accountFilterOptionsSearch);
+  const keyFilterOptionsQuery = useQuery({
+    queryKey: ["client-keys", "audit-filter", debouncedKeyFilterOptionsSearch],
+    queryFn: () => listClientKeys({ page: 1, pageSize: AUDIT_FILTER_PAGE_SIZE, search: auditFilterOptionSearch(debouncedKeyFilterOptionsSearch) }),
+    enabled: keyFilterOptionsOpen,
+    staleTime: 60_000,
+  });
+  const accountFilterOptionsQuery = useQuery({
+    queryKey: ["accounts", "audit-filter", debouncedAccountFilterOptionsSearch],
+    queryFn: () => listAccounts({ page: 1, pageSize: AUDIT_FILTER_PAGE_SIZE, search: auditFilterOptionSearch(debouncedAccountFilterOptionsSearch) }),
+    enabled: accountFilterOptionsOpen,
+    staleTime: 60_000,
+  });
+  const keyFilterOptionsFailed = keyFilterOptionsQuery.isError;
+  const keyFilterOptionsFetching = keyFilterOptionsQuery.isFetching;
+  const accountFilterOptionsFailed = accountFilterOptionsQuery.isError;
+  const accountFilterOptionsFetching = accountFilterOptionsQuery.isFetching;
+  // 账号范围覆盖三种 provider，审计记录可能来自任一 provider 的账号。
+  const keyFilterOptions = keyFilterOptionsQuery.data?.items ?? [];
+  const accountFilterOptions = accountFilterOptionsQuery.data?.items ?? [];
+  const keyFilterGroups = [
+    {
+      id: "keys", label: t("audits.key"),
+      emptyLabel: keyFilterOptionsFailed ? t("audits.filterOptionsLoadFailed") : keyFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsEmpty"),
+      options: keyFilterOptions.map((key) => ({
+        value: String(key.id),
+        label: key.name || key.prefix,
+        description: `#${key.id} · ${key.prefix}`,
+      })),
+      loading: keyFilterOptionsFetching, hasMore: keyFilterOptionsFailed,
+      actionLabel: t("common.retry"), onAction: () => { void keyFilterOptionsQuery.refetch(); },
+      noteLabel: !keyFilterOptionsFailed && (keyFilterOptionsQuery.data?.total ?? 0) > keyFilterOptions.length ? t("audits.filterOptionsTruncated") : undefined,
+      hideLabel: true,
+      maxHeightClassName: AUDIT_FILTER_MAX_HEIGHT,
+    },
+  ];
+  const accountFilterGroups = [
+    {
+      id: "accounts", label: t("audits.account"),
+      emptyLabel: accountFilterOptionsFailed ? t("audits.filterOptionsLoadFailed") : accountFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsEmpty"),
+      options: accountFilterOptions.map((account) => ({
+        value: String(account.id),
+        label: account.name || account.email || `#${account.id}`,
+        description: `#${account.id}`,
+        badge: providerShortLabel(account.provider),
+      })),
+      loading: accountFilterOptionsFetching, hasMore: accountFilterOptionsFailed,
+      actionLabel: t("common.retry"), onAction: () => { void accountFilterOptionsQuery.refetch(); },
+      noteLabel: !accountFilterOptionsFailed && (accountFilterOptionsQuery.data?.total ?? 0) > accountFilterOptions.length ? t("audits.filterOptionsTruncated") : undefined,
+      hideLabel: true,
+      maxHeightClassName: AUDIT_FILTER_MAX_HEIGHT,
+    },
+  ];
   const result = auditsQuery.data;
   const nextCursor = result?.nextCursor ?? "";
   const summary = summaryQuery.data;
@@ -162,13 +227,36 @@ export function RequestAuditsPage() {
                   { value: "2xx", label: `2xx · ${t("audits.statusSuccess")}` },
                   { value: "4xx", label: `4xx · ${t("audits.statusClientError")}` },
                   { value: "5xx", label: `5xx · ${t("audits.statusServerError")}` },
+                  { value: "other", label: t("audits.statusOtherError") },
                 ] },
                 { id: "mode", label: t("audits.mode"), value: modeFilter, onChange: setModeFilter, options: [
                   { value: "stream", label: t("audits.stream") },
                   { value: "nonStream", label: t("audits.nonStream") },
                 ] },
-                { id: "key", type: "text", label: t("audits.key"), value: keyFilter, placeholder: t("audits.keyFilterPlaceholder"), onChange: setKeyFilter },
-                { id: "account", type: "text", label: t("audits.account"), value: accountFilter, placeholder: t("audits.accountFilterPlaceholder"), onChange: setAccountFilter },
+                {
+                  id: "key", label: t("audits.key"), value: keyFilter,
+                  onChange: setKeyFilter, options: [
+                    {
+                      value: "any", label: t("audits.key"), groups: keyFilterGroups,
+                      onGroupsOpenChange: setKeyFilterOptionsOpen,
+                      groupSearch: { value: keyFilterOptionsSearch, placeholder: t("audits.keyFilterPlaceholder"), onChange: (value) => {
+                        setKeyFilterOptionsSearch(value);
+                      } },
+                    },
+                  ],
+                },
+                {
+                  id: "account", label: t("audits.account"), value: accountFilter,
+                  onChange: setAccountFilter, options: [
+                    {
+                      value: "any", label: t("audits.account"), groups: accountFilterGroups,
+                      onGroupsOpenChange: setAccountFilterOptionsOpen,
+                      groupSearch: { value: accountFilterOptionsSearch, placeholder: t("audits.accountFilterPlaceholder"), onChange: (value) => {
+                        setAccountFilterOptionsSearch(value);
+                      } },
+                    },
+                  ],
+                },
               ]} />
             </div>
           </>
@@ -553,9 +641,20 @@ function StatusCode({ statusCode, hasError = false }: { statusCode: number; hasE
 function AuditStatus({ audit, onOpen }: { audit: AuditDTO; onOpen: () => void }) {
   const { t } = useTranslation();
   const mode = audit.operation === "compaction" ? t("audits.operations.compaction") : audit.streaming ? t("audits.stream") : t("audits.nonStream");
+  const hasError = Boolean(audit.errorCode);
+  // 保留真实 HTTP 状态，同时明确标识 2xx 响应头之后发生的流式失败。
+  // statusCode 0 仅兼容曾运行过早期实现的开发数据库。
+  const showErrorLabel = hasError && (audit.statusCode === 0 || (audit.statusCode >= 200 && audit.statusCode < 300));
   const content = (
     <>
-      <StatusCode statusCode={audit.statusCode} hasError={Boolean(audit.errorCode)} />
+      {showErrorLabel ? (
+        <span className="inline-flex items-center gap-1.5 text-xs tabular-nums text-amber-700 dark:text-amber-300">
+          <span className="size-1.5 rounded-full bg-amber-500" />
+          {audit.statusCode > 0 ? `${audit.statusCode} · ` : ""}{t("audits.errorLabel")}
+        </span>
+      ) : (
+        <StatusCode statusCode={audit.statusCode} hasError={hasError} />
+      )}
       <span className="block whitespace-nowrap text-[10px] text-muted-foreground">{mode}</span>
     </>
   );
@@ -589,6 +688,22 @@ function providerLabel(provider: AuditDTO["provider"]): string {
     case "grok_console":
       return "Grok Console";
   }
+}
+
+function providerShortLabel(provider: AuditDTO["provider"]): string {
+  switch (provider) {
+    case "grok_build":
+      return "Build";
+    case "grok_web":
+      return "Web";
+    case "grok_console":
+      return "Console";
+  }
+}
+
+function auditFilterOptionSearch(value: string): string {
+  const trimmed = value.trim();
+  return /^\d+$/.test(trimmed) ? `#${trimmed}` : trimmed;
 }
 
 function formatUSDCost(ticks: number, fractionDigits: number): string {

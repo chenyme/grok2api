@@ -3897,3 +3897,26 @@ func testCipher(t *testing.T) *security.Cipher {
 	}
 	return cipher
 }
+
+func TestAuditRequestSucceeded(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		errorCode  string
+		want       bool
+	}{
+		{name: "2xx without error succeeds", statusCode: 200, errorCode: "", want: true},
+		{name: "2xx stream interruption fails", statusCode: 200, errorCode: "upstream_stream_interrupted", want: false},
+		{name: "2xx stream incomplete fails", statusCode: 200, errorCode: "upstream_stream_incomplete", want: false},
+		{name: "any 2xx error fails", statusCode: 201, errorCode: "stream_interrupted", want: false},
+		{name: "4xx fails", statusCode: 404, errorCode: "upstream_error", want: false},
+		{name: "5xx fails", statusCode: 502, errorCode: "upstream_server_error", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := auditRequestSucceeded(tc.statusCode, tc.errorCode); got != tc.want {
+				t.Fatalf("auditRequestSucceeded(%d, %q) = %t, want %t", tc.statusCode, tc.errorCode, got, tc.want)
+			}
+		})
+	}
+}
