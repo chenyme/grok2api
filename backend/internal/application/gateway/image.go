@@ -269,13 +269,12 @@ func (s *Service) executeImage(
 	var once sync.Once
 	finalize := func(_ Usage, _ string, errorCode string) {
 		once.Do(func() {
-			effectiveStatus := auditStatusForRecord(response.StatusCode, errorCode)
-			successful := effectiveStatus >= 200 && effectiveStatus < 300
+			successful := auditRequestSucceeded(response.StatusCode, errorCode)
 			lease.completeSelectorObservation(successful)
 			lease.Release()
 			budget := newFinalizationBudget(string(operation), string(route.Provider))
 			record := auditBase
-			record.AccountID, record.AccountName, record.StatusCode = &accountID, credential.Name, effectiveStatus
+			record.AccountID, record.AccountName, record.StatusCode = &accountID, credential.Name, response.StatusCode
 			record.ErrorCode = errorCode
 			record.DurationMS, record.CreatedAt = time.Since(startedAt).Milliseconds(), time.Now().UTC()
 			applyAuditEgress(&record, egressTrace, route.Provider)

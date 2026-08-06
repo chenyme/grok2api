@@ -3800,25 +3800,24 @@ func testCipher(t *testing.T) *security.Cipher {
 	return cipher
 }
 
-func TestAuditStatusForRecord(t *testing.T) {
+func TestAuditRequestSucceeded(t *testing.T) {
 	cases := []struct {
 		name       string
 		statusCode int
 		errorCode  string
-		want       int
+		want       bool
 	}{
-		{name: "success 2xx no error keeps code", statusCode: 200, errorCode: "", want: 200},
-		{name: "2xx with stream interruption rewritten to zero", statusCode: 200, errorCode: "upstream_stream_interrupted", want: 0},
-		{name: "2xx with stream incomplete rewritten to zero", statusCode: 200, errorCode: "upstream_stream_incomplete", want: 0},
-		{name: "2xx with any error rewritten to zero", statusCode: 201, errorCode: "stream_interrupted", want: 0},
-		{name: "4xx keeps code", statusCode: 404, errorCode: "upstream_error", want: 404},
-		{name: "5xx keeps code", statusCode: 502, errorCode: "upstream_server_error", want: 502},
-		{name: "zero input stays zero", statusCode: 0, errorCode: "upstream_stream_interrupted", want: 0},
+		{name: "2xx without error succeeds", statusCode: 200, errorCode: "", want: true},
+		{name: "2xx stream interruption fails", statusCode: 200, errorCode: "upstream_stream_interrupted", want: false},
+		{name: "2xx stream incomplete fails", statusCode: 200, errorCode: "upstream_stream_incomplete", want: false},
+		{name: "any 2xx error fails", statusCode: 201, errorCode: "stream_interrupted", want: false},
+		{name: "4xx fails", statusCode: 404, errorCode: "upstream_error", want: false},
+		{name: "5xx fails", statusCode: 502, errorCode: "upstream_server_error", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := auditStatusForRecord(tc.statusCode, tc.errorCode); got != tc.want {
-				t.Fatalf("auditStatusForRecord(%d, %q) = %d, want %d", tc.statusCode, tc.errorCode, got, tc.want)
+			if got := auditRequestSucceeded(tc.statusCode, tc.errorCode); got != tc.want {
+				t.Fatalf("auditRequestSucceeded(%d, %q) = %t, want %t", tc.statusCode, tc.errorCode, got, tc.want)
 			}
 		})
 	}

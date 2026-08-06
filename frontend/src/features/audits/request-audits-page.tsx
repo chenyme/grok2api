@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Activity, ArrowDown, ArrowUp, BrainCircuit, CircleCheck, CircleDollarSign, CornerDownRight, Database, Info, Minimize2, RefreshCw, Search, WholeWord, type LucideIcon } from "lucide-react";
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -29,10 +29,10 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 
 const AUDIT_PAGE_CACHE_TIME_MS = 60_000;
 const AUDIT_SUMMARY_CACHE_TIME_MS = 120_000;
-// 筛选名单单次加载条数；密钥/账号列表复用 admin 分页接口，超出后点"加载更多"。
+// 筛选名单始终限制在服务器搜索后的前 50 条，避免大账号池把大量选项累积到浏览器。
 const AUDIT_FILTER_PAGE_SIZE = 50;
 // 名单高度约 5 行，超出后内部滚动。
-const AUDIT_FILTER_MAX_HEIGHT = "max-h-40 overflow-y-auto";
+const AUDIT_FILTER_MAX_HEIGHT = "max-h-56 overflow-y-auto py-0.5";
 
 type AuditCursorState = { scope: string; values: string[] };
 
@@ -97,49 +97,38 @@ export function RequestAuditsPage() {
   const [accountFilterOptionsSearch, setAccountFilterOptionsSearch] = useState("");
   const debouncedKeyFilterOptionsSearch = useDebouncedValue(keyFilterOptionsSearch);
   const debouncedAccountFilterOptionsSearch = useDebouncedValue(accountFilterOptionsSearch);
-  const keyFilterOptionsQuery = useInfiniteQuery({
+  const keyFilterOptionsQuery = useQuery({
     queryKey: ["client-keys", "audit-filter", debouncedKeyFilterOptionsSearch],
-    queryFn: ({ pageParam }) => listClientKeys({ page: pageParam, pageSize: AUDIT_FILTER_PAGE_SIZE, search: debouncedKeyFilterOptionsSearch }),
-    initialPageParam: 1,
-    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    queryFn: () => listClientKeys({ page: 1, pageSize: AUDIT_FILTER_PAGE_SIZE, search: auditFilterOptionSearch(debouncedKeyFilterOptionsSearch) }),
     enabled: keyFilterOptionsOpen,
     staleTime: 60_000,
   });
-  const accountFilterOptionsQuery = useInfiniteQuery({
+  const accountFilterOptionsQuery = useQuery({
     queryKey: ["accounts", "audit-filter", debouncedAccountFilterOptionsSearch],
-    queryFn: ({ pageParam }) => listAccounts({ page: pageParam, pageSize: AUDIT_FILTER_PAGE_SIZE, search: debouncedAccountFilterOptionsSearch }),
-    initialPageParam: 1,
-    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    queryFn: () => listAccounts({ page: 1, pageSize: AUDIT_FILTER_PAGE_SIZE, search: auditFilterOptionSearch(debouncedAccountFilterOptionsSearch) }),
     enabled: accountFilterOptionsOpen,
     staleTime: 60_000,
   });
   const keyFilterOptionsFailed = keyFilterOptionsQuery.isError;
   const keyFilterOptionsFetching = keyFilterOptionsQuery.isFetching;
-  const keyFilterOptionsHaveMore = keyFilterOptionsFailed || keyFilterOptionsQuery.hasNextPage;
-  const loadMoreKeyFilterOptions = () => {
-    if (keyFilterOptionsQuery.isError) void keyFilterOptionsQuery.refetch();
-    if (keyFilterOptionsFailed) return;
-    if (keyFilterOptionsQuery.hasNextPage) void keyFilterOptionsQuery.fetchNextPage();
-  };
   const accountFilterOptionsFailed = accountFilterOptionsQuery.isError;
   const accountFilterOptionsFetching = accountFilterOptionsQuery.isFetching;
-  const accountFilterOptionsHaveMore = accountFilterOptionsFailed || accountFilterOptionsQuery.hasNextPage;
-  const loadMoreAccountFilterOptions = () => {
-    if (accountFilterOptionsQuery.isError) void accountFilterOptionsQuery.refetch();
-    if (accountFilterOptionsFailed) return;
-    if (accountFilterOptionsQuery.hasNextPage) void accountFilterOptionsQuery.fetchNextPage();
-  };
   // 账号范围覆盖三种 provider，审计记录可能来自任一 provider 的账号。
-  const keyFilterOptions = keyFilterOptionsQuery.data?.pages.flatMap((page) => page.items) ?? [];
-  const accountFilterOptions = accountFilterOptionsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const keyFilterOptions = keyFilterOptionsQuery.data?.items ?? [];
+  const accountFilterOptions = accountFilterOptionsQuery.data?.items ?? [];
   const keyFilterGroups = [
     {
       id: "keys", label: t("audits.key"),
       emptyLabel: keyFilterOptionsFailed ? t("audits.filterOptionsLoadFailed") : keyFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsEmpty"),
-      options: keyFilterOptions.map((key) => ({ value: String(key.id), label: key.name || `#${key.id}` })),
-      loading: keyFilterOptionsFetching, hasMore: keyFilterOptionsHaveMore,
-      actionLabel: keyFilterOptionsFailed ? t("common.retry") : keyFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsLoadMore"),
-      onAction: loadMoreKeyFilterOptions,
+      options: keyFilterOptions.map((key) => ({
+        value: String(key.id),
+        label: key.name || key.prefix,
+        description: `#${key.id} · ${key.prefix}`,
+      })),
+      loading: keyFilterOptionsFetching, hasMore: keyFilterOptionsFailed,
+      actionLabel: t("common.retry"), onAction: () => { void keyFilterOptionsQuery.refetch(); },
+      noteLabel: !keyFilterOptionsFailed && (keyFilterOptionsQuery.data?.total ?? 0) > keyFilterOptions.length ? t("audits.filterOptionsTruncated") : undefined,
+      hideLabel: true,
       maxHeightClassName: AUDIT_FILTER_MAX_HEIGHT,
     },
   ];
@@ -147,10 +136,16 @@ export function RequestAuditsPage() {
     {
       id: "accounts", label: t("audits.account"),
       emptyLabel: accountFilterOptionsFailed ? t("audits.filterOptionsLoadFailed") : accountFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsEmpty"),
-      options: accountFilterOptions.map((account) => ({ value: String(account.id), label: account.name || `#${account.id}` })),
-      loading: accountFilterOptionsFetching, hasMore: accountFilterOptionsHaveMore,
-      actionLabel: accountFilterOptionsFailed ? t("common.retry") : accountFilterOptionsFetching ? t("common.loading") : t("audits.filterOptionsLoadMore"),
-      onAction: loadMoreAccountFilterOptions,
+      options: accountFilterOptions.map((account) => ({
+        value: String(account.id),
+        label: account.name || account.email || `#${account.id}`,
+        description: `#${account.id}`,
+        badge: providerShortLabel(account.provider),
+      })),
+      loading: accountFilterOptionsFetching, hasMore: accountFilterOptionsFailed,
+      actionLabel: t("common.retry"), onAction: () => { void accountFilterOptionsQuery.refetch(); },
+      noteLabel: !accountFilterOptionsFailed && (accountFilterOptionsQuery.data?.total ?? 0) > accountFilterOptions.length ? t("audits.filterOptionsTruncated") : undefined,
+      hideLabel: true,
       maxHeightClassName: AUDIT_FILTER_MAX_HEIGHT,
     },
   ];
@@ -647,15 +642,15 @@ function AuditStatus({ audit, onOpen }: { audit: AuditDTO; onOpen: () => void })
   const { t } = useTranslation();
   const mode = audit.operation === "compaction" ? t("audits.operations.compaction") : audit.streaming ? t("audits.stream") : t("audits.nonStream");
   const hasError = Boolean(audit.errorCode);
-  // statusCode 0 表示已返回 2xx 响应头但流随后失败（如首字节超时/流式中断），
-  // 不展示误导性的数字状态码，改为"错误"标签。
-  const showErrorLabel = hasError && audit.statusCode === 0;
+  // 保留真实 HTTP 状态，同时明确标识 2xx 响应头之后发生的流式失败。
+  // statusCode 0 仅兼容曾运行过早期实现的开发数据库。
+  const showErrorLabel = hasError && (audit.statusCode === 0 || (audit.statusCode >= 200 && audit.statusCode < 300));
   const content = (
     <>
       {showErrorLabel ? (
         <span className="inline-flex items-center gap-1.5 text-xs tabular-nums text-amber-700 dark:text-amber-300">
           <span className="size-1.5 rounded-full bg-amber-500" />
-          {t("audits.errorLabel")}
+          {audit.statusCode > 0 ? `${audit.statusCode} · ` : ""}{t("audits.errorLabel")}
         </span>
       ) : (
         <StatusCode statusCode={audit.statusCode} hasError={hasError} />
@@ -693,6 +688,22 @@ function providerLabel(provider: AuditDTO["provider"]): string {
     case "grok_console":
       return "Grok Console";
   }
+}
+
+function providerShortLabel(provider: AuditDTO["provider"]): string {
+  switch (provider) {
+    case "grok_build":
+      return "Build";
+    case "grok_web":
+      return "Web";
+    case "grok_console":
+      return "Console";
+  }
+}
+
+function auditFilterOptionSearch(value: string): string {
+  const trimmed = value.trim();
+  return /^\d+$/.test(trimmed) ? `#${trimmed}` : trimmed;
 }
 
 function formatUSDCost(ticks: number, fractionDigits: number): string {
