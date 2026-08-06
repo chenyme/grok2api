@@ -71,7 +71,7 @@ func (a *Adapter) syncConsoleQuotas(ctx context.Context, credential account.Cred
 			return nil, time.Time{}, fmt.Errorf("%w: Console usage rejected", provider.ErrUnauthorized)
 		}
 		dpopRequired := response.StatusCode == http.StatusForbidden && provider.IsDPoPProofRequiredBody(data)
-		if response.StatusCode == http.StatusForbidden && !dpopRequired {
+		if response.StatusCode == http.StatusForbidden && shouldInvalidateConsoleClearance(data) {
 			lease.InvalidateClearance()
 		}
 		if !dpopRequired {

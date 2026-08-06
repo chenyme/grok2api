@@ -614,6 +614,28 @@ func TestAdapterDoesNotPenalizeEgressForBlockedAccount(t *testing.T) {
 	}
 }
 
+func TestShouldInvalidateConsoleClearance(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "dpop protocol rejection", body: `{"code":"unauthorized:dpop-required","error":"DPoP proof required"}`, want: false},
+		{name: "blocked account", body: `{"code":"unauthorized:blocked-user","error":"User is blocked"}`, want: false},
+		{name: "anti-bot rejection", body: `{"error":{"code":7,"message":"Request rejected by anti-bot rules."}}`, want: true},
+		{name: "generic forbidden", body: `forbidden`, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldInvalidateConsoleClearance([]byte(test.body)); got != test.want {
+				t.Fatalf("shouldInvalidateConsoleClearance() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	var received map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
