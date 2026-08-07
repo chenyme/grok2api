@@ -75,6 +75,26 @@ func TestVideoGenerationUsesOfficialXAIEndpointsAndFields(t *testing.T) {
 		t.Fatalf("image-only generation status=%d body=%s", imageRecorder.Code, imageRecorder.Body.String())
 	}
 
+	fileInput := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","image":{"file_id":"input_abcdefghijklmnopqrstuvwxyz012345"}
+	}`))
+	fileInput.Header.Set("Content-Type", "application/json")
+	fileRecorder := httptest.NewRecorder()
+	router.ServeHTTP(fileRecorder, fileInput)
+	if fileRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("file input generation status=%d body=%s", fileRecorder.Code, fileRecorder.Body.String())
+	}
+
+	ambiguousInput := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","image":{"url":"https://example.com/input.png","file_id":"input_abcdefghijklmnopqrstuvwxyz012345"}
+	}`))
+	ambiguousInput.Header.Set("Content-Type", "application/json")
+	ambiguousRecorder := httptest.NewRecorder()
+	router.ServeHTTP(ambiguousRecorder, ambiguousInput)
+	if ambiguousRecorder.Code != http.StatusBadRequest || !strings.Contains(ambiguousRecorder.Body.String(), "url 或 file_id") {
+		t.Fatalf("ambiguous input status=%d body=%s", ambiguousRecorder.Code, ambiguousRecorder.Body.String())
+	}
+
 	wrongContentType := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{"model":"grok-imagine-video","prompt":"test"}`))
 	wrongContentType.Header.Set("Content-Type", "text/plain")
 	wrongContentTypeRecorder := httptest.NewRecorder()

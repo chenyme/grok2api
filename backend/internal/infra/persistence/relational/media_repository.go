@@ -23,7 +23,7 @@ func NewMediaAssetRepository(db *Database) *MediaAssetRepository {
 func (r *MediaAssetRepository) CreateMediaAsset(ctx context.Context, value media.Asset) error {
 	row := mediaAssetModel{
 		ID: value.ID, Kind: value.Kind, StorageKey: value.StorageKey, MIMEType: value.MIMEType,
-		SizeBytes: value.SizeBytes, SHA256: value.SHA256, CreatedAt: value.CreatedAt,
+		SizeBytes: value.SizeBytes, SHA256: value.SHA256, ExpiresAt: value.ExpiresAt, CreatedAt: value.CreatedAt,
 	}
 	return r.db.db.WithContext(ctx).Create(&row).Error
 }
@@ -35,14 +35,14 @@ func (r *MediaAssetRepository) GetMediaAsset(ctx context.Context, id string) (me
 	}
 	return media.Asset{
 		ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
-		SizeBytes: row.SizeBytes, SHA256: row.SHA256, CreatedAt: row.CreatedAt,
+		SizeBytes: row.SizeBytes, SHA256: row.SHA256, ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt,
 	}, nil
 }
 
 // ListMediaAssets 通过字段投影返回符合筛选条件的稳定分页结果。
 // 默认仅列出图片，避免管理端图库混入视频资产。
 func (r *MediaAssetRepository) ListMediaAssets(ctx context.Context, input repository.MediaAssetListQuery) ([]media.Asset, int64, error) {
-	query := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Where("kind = ?", "image")
+	query := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Where("kind = ? AND expires_at IS NULL", "image")
 	if search := strings.TrimSpace(input.Page.Search); search != "" {
 		pattern := "%" + strings.ToLower(search) + "%"
 		query = query.Where("LOWER(id) LIKE ? OR LOWER(kind) LIKE ? OR LOWER(mime_type) LIKE ? OR LOWER(sha256) LIKE ?", pattern, pattern, pattern, pattern)
@@ -69,7 +69,7 @@ func (r *MediaAssetRepository) ListMediaAssets(ctx context.Context, input reposi
 func (r *MediaAssetRepository) SummarizeMediaAssets(ctx context.Context) (repository.MediaAssetStats, error) {
 	var stats repository.MediaAssetStats
 	err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).
-		Select("COALESCE(SUM(CASE WHEN kind = 'image' THEN 1 ELSE 0 END), 0) AS total_images, COALESCE(SUM(size_bytes), 0) AS total_bytes").
+		Select("COALESCE(SUM(CASE WHEN kind = 'image' AND expires_at IS NULL THEN 1 ELSE 0 END), 0) AS total_images, COALESCE(SUM(size_bytes), 0) AS total_bytes").
 		Scan(&stats).Error
 	return stats, err
 }
@@ -95,10 +95,44 @@ func (r *MediaAssetRepository) ListOldestMediaAssets(ctx context.Context, offset
 	for _, row := range rows {
 		values = append(values, media.Asset{
 			ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
-			SizeBytes: row.SizeBytes, SHA256: row.SHA256, CreatedAt: row.CreatedAt,
+			SizeBytes: row.SizeBytes, SHA256: row.SHA256, ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt,
 		})
 	}
 	return values, nil
+}
+
+func (r *MediaAssetRepository) ListExpiredMediaAssets(ctx context.Context, before time.Time, offset, limit int) ([]media.Asset, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var rows []mediaAssetModel
+	if err := r.db.db.WithContext(ctx).
+		Where("expires_at IS NOT NULL AND expires_at <= ?", before).
+		Order("expires_at ASC, id ASC").Offset(offset).Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	values := make([]media.Asset, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, media.Asset{
+			ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
+			SizeBytes: row.SizeBytes, SHA256: row.SHA256, ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt,
+		})
+	}
+	return values, nil
+}
+
+func (r *MediaAssetRepository) ExpireMediaInputIfUnreferenced(ctx context.Context, id string, expiresAt time.Time) (bool, error) {
+	referencePattern := "%" + media.InputReference(id) + "%"
+	activeReference := r.db.db.Model(&mediaJobModel{}).Select("1").
+		Where("status IN ? AND input_json LIKE ?", []string{string(media.StatusQueued), string(media.StatusInProgress)}, referencePattern)
+	result := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).
+		Where("id = ? AND kind = ? AND expires_at IS NOT NULL", id, "image").
+		Where("NOT EXISTS (?)", activeReference).
+		Update("expires_at", expiresAt)
+	return result.RowsAffected > 0, result.Error
 }
 
 func (r *MediaAssetRepository) DeleteMediaAsset(ctx context.Context, id string) error {
@@ -112,7 +146,7 @@ func (r *MediaAssetRepository) DeleteMediaAsset(ctx context.Context, id string) 
 	return nil
 }
 
-// ListProtectedMediaAssetIDs 返回不可清理的资产：进行中视频任务结果、未消费且未过期的上传票据。
+// ListProtectedMediaAssetIDs 返回不可清理的资产：活动任务的结果与未消费票据。
 func (r *MediaAssetRepository) ListProtectedMediaAssetIDs(ctx context.Context) (map[string]struct{}, error) {
 	protected := make(map[string]struct{})
 	var jobAssetIDs []string

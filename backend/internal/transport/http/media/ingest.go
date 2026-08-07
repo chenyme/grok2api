@@ -7,23 +7,25 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"syscall"
 	"time"
 
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
-	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
+	"github.com/chenyme/grok2api/backend/internal/pkg/netguard"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	// ingestMaxImageBytes 是 URL 导入/本地上传读取图片的读取兜底上限（32 MiB，与图片存储硬上限一致）。
-	// Service.SaveImage 会再次按运行期配置(maxImageBytes)校验，这里只防止无界读取。
-	ingestMaxImageBytes = 32 << 20
+	// 20 MiB 为各 Provider 的共同安全输入上限，同时为全局 32 MiB multipart 请求上限保留编码开销。
+	ingestMaxImageBytes = 20 << 20
 	// ingestFetchTimeout 是 URL 导入单次抓取的整体超时。
 	ingestFetchTimeout = 20 * time.Second
+	// 独立 bulkhead 防止临时导入与推理流量争抢内存和连接。
+	ingestConcurrency = 4
 )
 
 var (
@@ -33,7 +35,7 @@ var (
 	errFetchBlocked = errors.New("目标地址不允许访问")
 )
 
-// ingestHTTPClient 用于"从 URL 导入图片到图库"。它带 SSRF 防护拨号器，
+// ingestHTTPClient 用于把远程图片导入隐藏的临时视频输入区。它带 SSRF 防护拨号器，
 // 在建立连接前校验目标 IP，拒绝内网/环回/链路本地/元数据地址（每次拨号都校验，覆盖重定向与 DNS rebinding）。
 // 不使用任何出网代理，直接抓取用户提供的公网图片 URL。
 var ingestHTTPClient = &http.Client{
@@ -49,6 +51,7 @@ var ingestHTTPClient = &http.Client{
 		ResponseHeaderTimeout: 15 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		MaxIdleConns:          8,
+		MaxConnsPerHost:       ingestConcurrency,
 		IdleConnTimeout:       30 * time.Second,
 	},
 	// 最多 5 次重定向；重定向产生的新连接同样经过 ssrfSafeControl 校验。
@@ -56,8 +59,8 @@ var ingestHTTPClient = &http.Client{
 		if len(via) >= 5 {
 			return errors.New("重定向次数过多")
 		}
-		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-			return fmt.Errorf("不支持的重定向协议 %q", req.URL.Scheme)
+		if err := validateImportURL(req.URL); err != nil {
+			return err
 		}
 		return nil
 	},
@@ -73,34 +76,29 @@ func ssrfSafeControl(network, address string, _ syscall.RawConn) error {
 	if err != nil {
 		return fmt.Errorf("解析目标地址失败 %q: %w", address, errFetchBlocked)
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
 		return fmt.Errorf("目标地址不是有效 IP %q: %w", host, errFetchBlocked)
 	}
-	if !isPublicIP(ip) {
+	if !isPublicIP(ip.Unmap()) {
 		return fmt.Errorf("拒绝访问非公网地址 %s: %w", host, errFetchBlocked)
 	}
 	return nil
 }
 
 // isPublicIP 仅当 IP 是可路由公网地址时返回 true。
-func isPublicIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
-		return false
+func isPublicIP(ip netip.Addr) bool {
+	return netguard.IsPublicAddress(ip)
+}
+
+func validateImportURL(parsed *url.URL) error {
+	if parsed == nil || (!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) || parsed.Hostname() == "" || parsed.User != nil {
+		return errors.New("图片 URL 无效，仅支持无凭据的 http/https 地址")
 	}
-	if v4 := ip.To4(); v4 != nil {
-		// 169.254.0.0/16 云元数据（link-local 已覆盖，这里兜底）
-		if v4[0] == 169 && v4[1] == 254 {
-			return false
-		}
-		// 100.64.0.0/10 运营商级 NAT
-		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
-			return false
-		}
+	if port := parsed.Port(); port != "" && port != "80" && port != "443" {
+		return errors.New("图片 URL 仅允许 80 或 443 端口")
 	}
-	return true
+	return nil
 }
 
 // fetchRemoteImage 抓取远端图片字节，读取上限 ingestMaxImageBytes，超限返回 errImageTooLarge。
@@ -120,9 +118,12 @@ func fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, error) {
 		}
 		return nil, err
 	}
-	defer func() { _, _ = io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("上游返回 HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > ingestMaxImageBytes {
+		return nil, errImageTooLarge
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, ingestMaxImageBytes+1))
@@ -136,21 +137,29 @@ func fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, error) {
 }
 
 type importImageRequest struct {
-	URL string `json:"url" binding:"required"`
+	URL string `json:"url" binding:"required,max=8192"`
 }
 
-// ingestImageFromURL 从管理员提供的 URL 抓取图片并登记到图库，返回稳定的 /v1/media/images/{id} 地址。
+// importInputImageFromURL 从管理员提供的 URL 抓取图片并登记到带 TTL 的隐藏输入区。
 // 路由在 /api/admin/v1 下，已由 AdminAuth 保护；抓取带 SSRF 防护。
-func (h *Handler) ingestImageFromURL(c *gin.Context) {
+func (h *Handler) importInputImageFromURL(c *gin.Context) {
+	if !h.acquireIngest(c) {
+		return
+	}
+	defer h.releaseIngest()
 	var request importImageRequest
 	if c.ShouldBindJSON(&request) != nil {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
 	rawURL := strings.TrimSpace(request.URL)
+	if len(rawURL) > 8192 {
+		response.Error(c, http.StatusBadRequest, "invalidImageURL", "图片 URL 过长")
+		return
+	}
 	parsed, err := url.Parse(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		response.Error(c, http.StatusBadRequest, "invalidImageURL", "图片 URL 无效，仅支持 http/https")
+	if err != nil || validateImportURL(parsed) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidImageURL", "图片 URL 无效，仅支持无凭据的 http/https 80/443 地址")
 		return
 	}
 
@@ -170,10 +179,19 @@ func (h *Handler) ingestImageFromURL(c *gin.Context) {
 	h.saveIngestedImage(c, data)
 }
 
-// uploadImage 接收管理员上传的本地图片文件（multipart 字段名 file），登记到图库。
-func (h *Handler) uploadImage(c *gin.Context) {
+// uploadInputImage 接收管理员上传的本地图片文件（multipart 字段名 file），登记到临时输入区。
+func (h *Handler) uploadInputImage(c *gin.Context) {
+	if !h.acquireIngest(c) {
+		return
+	}
+	defer h.releaseIngest()
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			response.Error(c, http.StatusRequestEntityTooLarge, "imageTooLarge", "图片超过请求大小上限")
+			return
+		}
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "缺少上传文件")
 		return
 	}
@@ -199,25 +217,38 @@ func (h *Handler) uploadImage(c *gin.Context) {
 	h.saveIngestedImage(c, data)
 }
 
-// saveIngestedImage 收口两种入图路径：校验+落盘+登记 media_assets，返回资产 DTO。
+// saveIngestedImage 收口两种临时输入路径：校验、落盘并登记 TTL，不进入图库。
 func (h *Handler) saveIngestedImage(c *gin.Context, data []byte) {
-	asset, err := h.service.SaveImage(c.Request.Context(), data)
+	asset, err := h.service.SaveInputImage(c.Request.Context(), data)
 	if errors.Is(err, mediaapp.ErrInvalidImage) {
 		response.Error(c, http.StatusBadRequest, "invalidImage", "图片内容无效或格式不支持（仅 jpeg/png/webp/gif）")
 		return
 	}
 	if err != nil {
+		if errors.Is(err, mediaapp.ErrMediaCapacity) {
+			response.Error(c, http.StatusInsufficientStorage, "mediaCapacityExceeded", "媒体临时存储容量不足")
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, "mediaSaveImageFailed", "保存图片失败")
 		return
 	}
-	h.respondAsset(c, asset)
-}
-
-// respondAsset 以与列表接口一致的 DTO 结构返回单个资产（含公开 URL）。
-func (h *Handler) respondAsset(c *gin.Context, asset mediadomain.Asset) {
-	response.Success(c, http.StatusCreated, mediaAssetDTO{
-		ID: asset.ID, Kind: asset.Kind, MimeType: asset.MIMEType, SizeBytes: asset.SizeBytes,
-		SHA256: asset.SHA256, CreatedAt: asset.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		URL: h.service.PublicImageURL(asset.ID),
+	expiresAt := ""
+	if asset.ExpiresAt != nil {
+		expiresAt = asset.ExpiresAt.Format(time.RFC3339)
+	}
+	response.Success(c, http.StatusCreated, gin.H{
+		"fileId": asset.ID, "mimeType": asset.MIMEType, "sizeBytes": asset.SizeBytes, "expiresAt": expiresAt,
 	})
 }
+
+func (h *Handler) acquireIngest(c *gin.Context) bool {
+	select {
+	case h.ingestSlots <- struct{}{}:
+		return true
+	default:
+		response.Error(c, http.StatusServiceUnavailable, "mediaIngestBusy", "图片暂存并发已满，请稍后重试")
+		return false
+	}
+}
+
+func (h *Handler) releaseIngest() { <-h.ingestSlots }

@@ -434,12 +434,13 @@ func (mediaJobModel) TableName() string { return "media_jobs" }
 const MaxVideoAssetBytes = 256 << 20
 
 type mediaAssetModel struct {
-	ID         string    `gorm:"size:64;primaryKey;check:chk_media_assets_id,length(trim(id)) BETWEEN 16 AND 64"`
-	Kind       string    `gorm:"size:16;not null;check:chk_media_assets_kind,kind IN ('image','video')"`
-	StorageKey string    `gorm:"size:512;not null;uniqueIndex;check:chk_media_assets_storage_key,length(trim(storage_key)) BETWEEN 1 AND 512"`
-	MIMEType   string    `gorm:"size:64;not null;check:chk_media_assets_mime,mime_type IN ('image/jpeg','image/png','image/webp','image/gif','video/mp4','video/webm','video/quicktime')"`
-	SizeBytes  int64     `gorm:"not null;check:chk_media_assets_size,size_bytes > 0 AND size_bytes <= 268435456"`
-	SHA256     string    `gorm:"size:64;not null;check:chk_media_assets_sha,length(sha256) = 64"`
+	ID         string `gorm:"size:64;primaryKey;check:chk_media_assets_id,length(trim(id)) BETWEEN 16 AND 64"`
+	Kind       string `gorm:"size:16;not null;check:chk_media_assets_kind,kind IN ('image','video')"`
+	StorageKey string `gorm:"size:512;not null;uniqueIndex;check:chk_media_assets_storage_key,length(trim(storage_key)) BETWEEN 1 AND 512"`
+	MIMEType   string `gorm:"size:64;not null;check:chk_media_assets_mime,mime_type IN ('image/jpeg','image/png','image/webp','image/gif','video/mp4','video/webm','video/quicktime')"`
+	SizeBytes  int64  `gorm:"not null;check:chk_media_assets_size,size_bytes > 0 AND size_bytes <= 268435456"`
+	SHA256     string `gorm:"size:64;not null;check:chk_media_assets_sha,length(sha256) = 64"`
+	ExpiresAt  *time.Time
 	CreatedAt  time.Time `gorm:"not null"`
 }
 

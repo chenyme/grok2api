@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, Database, Image as ImageIcon, Link as LinkIcon, Plus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
-import { useRef, useState } from "react";
+import { ArrowUpRight, Database, Image as ImageIcon, RefreshCw, Search, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { deleteImages, getImageStats, importImageFromURL, listImages, uploadImage } from "@/features/media/media-api";
+import { deleteImages, getImageStats, listImages } from "@/features/media/media-api";
 import type { MediaAssetDTO } from "@/features/media/types";
 import { ErrorState } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
@@ -27,8 +27,6 @@ export function GalleryPage() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [importUrl, setImportUrl] = useState("");
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const debouncedSearch = useDebouncedValue(search);
   const normalizedSearch = debouncedSearch.trim();
 
@@ -63,25 +61,6 @@ export function GalleryPage() {
     },
   });
 
-  const importMutation = useMutation({
-    mutationFn: (url: string) => importImageFromURL(url),
-    onSuccess: () => {
-      setImportUrl("");
-      void queryClient.invalidateQueries({ queryKey: ["media", "images"] });
-      toast.success(t("media.images.imported"));
-    },
-    onError: (error) => toast.error(error instanceof Error ? error.message : t("errors.generic")),
-  });
-
-  const uploadMutation = useMutation({
-    mutationFn: (file: File) => uploadImage(file),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["media", "images"] });
-      toast.success(t("media.images.uploaded"));
-    },
-    onError: (error) => toast.error(error instanceof Error ? error.message : t("errors.generic")),
-  });
-
   function refreshAll(): void {
     void imagesQuery.refetch();
     void statsQuery.refetch();
@@ -113,43 +92,10 @@ export function GalleryPage() {
         title={t("media.images.title")}
         description={t("media.images.description")}
         actions={(
-          <div className="flex flex-wrap items-center gap-2">
-            <form
-              className="hidden items-center gap-2 sm:flex"
-              onSubmit={(event) => { event.preventDefault(); const value = importUrl.trim(); if (value) importMutation.mutate(value); }}
-            >
-              <div className="relative w-56 lg:w-72">
-                <LinkIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  className="h-8 pl-9 text-xs"
-                  type="url"
-                  value={importUrl}
-                  onChange={(event) => setImportUrl(event.target.value)}
-                  placeholder={t("media.images.importPlaceholder")}
-                  aria-label={t("media.images.importUrl")}
-                />
-              </div>
-              <Button type="submit" variant="secondary" size="sm" disabled={!importUrl.trim() || importMutation.isPending}>
-                {importMutation.isPending ? <Spinner /> : <Plus />}
-                {t("media.images.import")}
-              </Button>
-            </form>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              className="hidden"
-              onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadMutation.mutate(file); event.target.value = ""; }}
-            />
-            <Button variant="secondary" size="sm" disabled={uploadMutation.isPending} onClick={() => fileInputRef.current?.click()}>
-              {uploadMutation.isPending ? <Spinner /> : <Upload />}
-              {t("media.images.upload")}
-            </Button>
-            <Button variant="secondary" size="sm" onClick={refreshAll} disabled={refreshing}>
-              <RefreshCw className={refreshing ? "animate-spin" : undefined} />
-              {t("common.refresh")}
-            </Button>
-          </div>
+          <Button variant="secondary" size="sm" onClick={refreshAll} disabled={refreshing}>
+            <RefreshCw className={refreshing ? "animate-spin" : undefined} />
+            {t("common.refresh")}
+          </Button>
         )}
       />
 

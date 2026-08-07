@@ -58,7 +58,6 @@ const decodeImageStats = createObjectDecoder<ImageStatsDTO>("image stats", {
   totalImages: isNumber,
   totalBytes: isNumber,
 });
-const decodeMediaAsset = createValidatedDecoder<MediaAssetDTO>("media asset", hasShape(mediaAssetShape));
 const decodeVideoStats = createObjectDecoder<VideoStatsDTO>("video stats", {
   totalJobs: isNumber,
   completed: isNumber,
@@ -100,15 +99,29 @@ export function deleteVideos(ids: string[]): Promise<{ deleted: number }> {
   return apiRequest("/api/admin/v1/media/videos", { method: "DELETE", body: { ids } }, decodeCountResult<{ deleted: number }>("deleted"));
 }
 
-// importImageFromURL 让后端从给定 URL 抓取图片并登记到图库，返回新资产（含稳定的 /v1/media/images/{id} URL）。
-export function importImageFromURL(url: string): Promise<MediaAssetDTO> {
-  return apiRequest("/api/admin/v1/media/images/import", { method: "POST", body: { url } }, decodeMediaAsset);
+// 临时输入不会进入图库，也不会生成公开 URL；任务只持久化短 file_id。
+export type MediaInputDTO = {
+  fileId: string;
+  mimeType: string;
+  sizeBytes: number;
+  expiresAt: string;
+};
+
+const decodeMediaInput = createValidatedDecoder<MediaInputDTO>("media input", hasShape({
+  fileId: isString,
+  mimeType: isString,
+  sizeBytes: isNumber,
+  expiresAt: isString,
+}));
+
+export function importVideoInputFromURL(url: string): Promise<MediaInputDTO> {
+  return apiRequest("/api/admin/v1/media/inputs/import", { method: "POST", body: { url } }, decodeMediaInput);
 }
 
-// uploadImage 以 multipart/form-data 上传本地图片文件到图库，返回新资产。
+// 以 multipart/form-data 上传本地图片到有 TTL 的临时输入区。
 // 注意：不要手动设置 Content-Type，浏览器会自动带上 multipart 边界。
-export function uploadImage(file: File): Promise<MediaAssetDTO> {
+export function uploadVideoInput(file: File): Promise<MediaInputDTO> {
   const body = new FormData();
   body.append("file", file, file.name);
-  return apiRequest("/api/admin/v1/media/images/upload", { method: "POST", body }, decodeMediaAsset);
+  return apiRequest("/api/admin/v1/media/inputs/upload", { method: "POST", body }, decodeMediaInput);
 }
