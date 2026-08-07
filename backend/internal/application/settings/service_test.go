@@ -115,6 +115,43 @@ func TestUpdateRejectsBuildResponseHeaderTimeoutOutsideSafeRange(t *testing.T) {
 	}
 }
 
+func TestUpdateRejectsStreamIdleTimeoutBeyondChatTimeout(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*EditableConfig)
+	}{
+		{
+			name: "web",
+			mutate: func(input *EditableConfig) {
+				input.ProviderWeb.ChatTimeout = "1m"
+				input.ProviderWeb.StreamIdleTimeout = "2m"
+			},
+		},
+		{
+			name: "console",
+			mutate: func(input *EditableConfig) {
+				input.ProviderConsole.ChatTimeout = "1m"
+				input.ProviderConsole.StreamIdleTimeout = "2m"
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			repository := &runtimeSettingsRepositoryStub{}
+			service := NewService(cfg, time.Time{}, 0, repository, nil, nil)
+			input := service.Get().Config
+			test.mutate(&input)
+			if _, err := service.Update(context.Background(), 0, input); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("error = %v, want ErrInvalidInput", err)
+			}
+			if repository.found {
+				t.Fatal("shadowed stream idle timeout was persisted")
+			}
+		})
+	}
+}
+
 func TestUpdateValidatesMaxAttemptsRange(t *testing.T) {
 	cfg := testConfig(t)
 	repository := &runtimeSettingsRepositoryStub{}
@@ -287,6 +324,24 @@ func TestLoadPersistedKeepsConsoleDefaultsWhenFieldIsMissing(t *testing.T) {
 	}
 	if loaded.Provider.Console != cfg.Provider.Console {
 		t.Fatalf("console config = %#v, want %#v", loaded.Provider.Console, cfg.Provider.Console)
+	}
+}
+
+func TestLoadPersistedBackfillsProviderStreamIdleTimeoutDefaults(t *testing.T) {
+	cfg := testConfig(t)
+	value := toDomainConfig(cfg)
+	value.ProviderWeb.StreamIdleTimeout = 0
+	value.ProviderConsole.StreamIdleTimeout = 0
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Provider.Web.StreamIdleTimeout.Value(); got != settingsdomain.DefaultWebStreamIdleTimeout {
+		t.Fatalf("Web stream idle timeout = %s", got)
+	}
+	if got := loaded.Provider.Console.StreamIdleTimeout.Value(); got != settingsdomain.DefaultConsoleStreamIdleTimeout {
+		t.Fatalf("Console stream idle timeout = %s", got)
 	}
 }
 

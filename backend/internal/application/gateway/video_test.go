@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -174,6 +175,60 @@ func TestPersistRemoteVideoRetriesSameResultWithoutRegeneration(t *testing.T) {
 	}
 }
 
+func TestResolveVideoInputFileReferenceToDataURI(t *testing.T) {
+	raw := []byte("png-bytes")
+	inputID := "input_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	store := &videoAssetStoreStub{inputID: inputID, inputData: raw}
+	service := &Service{mediaAssets: store}
+	reference := VideoInputFileReference(inputID)
+	if err := service.validateVideoInputReferences(context.Background(), []string{reference}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := service.resolveVideoInputReferences(context.Background(), []string{"https://example.com/a.png", reference})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw)
+	if len(resolved) != 2 || resolved[0] != "https://example.com/a.png" || resolved[1] != want {
+		t.Fatalf("resolved=%#v", resolved)
+	}
+	if err := service.validateVideoInputReferences(context.Background(), []string{VideoInputFileReference("missing")}); !errors.Is(err, ErrVideoInputUnavailable) {
+		t.Fatalf("missing input error=%v", err)
+	}
+	store.inputSize = 20 << 20
+	if err := service.validateVideoInputReferences(context.Background(), []string{reference, reference}); !errors.Is(err, ErrVideoInputTooLarge) {
+		t.Fatalf("aggregate local input error=%v", err)
+	}
+}
+
+func TestVideoInputMaterializationHasIndependentBulkhead(t *testing.T) {
+	service := &Service{}
+	service.ConfigureMedia(nil, 64)
+	reference := VideoInputFileReference("input_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	releases := make([]func(), 0, videoInputMaterializeConcurrency)
+	for range videoInputMaterializeConcurrency {
+		release, err := service.acquireVideoInputSlot(context.Background(), []string{reference})
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases = append(releases, release)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := service.acquireVideoInputSlot(canceled, []string{reference}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("fifth local input acquire error=%v", err)
+	}
+	for _, release := range releases {
+		release()
+		release() // 释放函数必须可幂等调用。
+	}
+	if release, err := service.acquireVideoInputSlot(context.Background(), []string{"https://example.com/image.png"}); err != nil {
+		t.Fatal(err)
+	} else {
+		release()
+	}
+}
+
 type videoPersistAdapter struct {
 	failures         int
 	generateCalls    int
@@ -197,7 +252,12 @@ func (a *videoPersistAdapter) DownloadVideo(_ context.Context, credential accoun
 	return io.NopCloser(strings.NewReader("video")), "video/mp4", 5, nil
 }
 
-type videoAssetStoreStub struct{ saveCalls int }
+type videoAssetStoreStub struct {
+	saveCalls int
+	inputID   string
+	inputData []byte
+	inputSize int64
+}
 
 func (s *videoAssetStoreStub) SaveVideo(_ context.Context, jobID, contentType string, body io.Reader) (media.Asset, error) {
 	s.saveCalls++
@@ -217,6 +277,19 @@ func (s *videoAssetStoreStub) SaveVideo(_ context.Context, jobID, contentType st
 func (*videoAssetStoreStub) OpenVideo(context.Context, string) (media.Asset, io.ReadCloser, error) {
 	return media.Asset{}, nil, errors.New("not implemented")
 }
+
+func (s *videoAssetStoreStub) OpenInputImage(_ context.Context, id string) (media.Asset, io.ReadCloser, error) {
+	if id != s.inputID || len(s.inputData) == 0 {
+		return media.Asset{}, nil, errors.New("not implemented")
+	}
+	size := s.inputSize
+	if size <= 0 {
+		size = int64(len(s.inputData))
+	}
+	return media.Asset{ID: id, Kind: "image", MIMEType: "image/png", SizeBytes: size}, io.NopCloser(bytes.NewReader(s.inputData)), nil
+}
+
+func (*videoAssetStoreStub) ReleaseInputImages(context.Context, []string) error { return nil }
 
 type durableVideoAuditRecorder struct {
 	failures int

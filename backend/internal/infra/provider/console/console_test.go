@@ -28,7 +28,9 @@ import (
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
+	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -690,6 +692,73 @@ func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	}
 	if received["model"] != "grok-4.3" || received["store"] != false || received["metadata"] != nil {
 		t.Fatalf("received = %#v", received)
+	}
+}
+
+func TestAdapterScopesStreamIdleTimeoutToConsoleTextStreams(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	for _, streaming := range []bool{false, true} {
+		name := "non_streaming"
+		if streaming {
+			name = "streaming"
+		}
+		t.Run(name, func(t *testing.T) {
+			adapter, credential := newConsoleTestAdapter(t, server.URL)
+			adapter.UpdateConfig(Config{BaseURL: server.URL, TimeoutSeconds: 5, StreamIdleTimeoutSeconds: 1})
+			response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+				Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
+				Operation: conversation.OperationResponses, Streaming: streaming, NormalizeBody: true,
+				Body: []byte(`{"model":"grok-4.3","input":"hello"}`),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			released, ok := response.Body.(*releaseBody)
+			if !ok {
+				t.Fatalf("response body = %T, want *releaseBody", response.Body)
+			}
+			_, wrapped := released.ReadCloser.(*providerstreamidle.ReadCloser)
+			if wrapped != streaming {
+				t.Fatalf("stream-idle wrapper present = %t, streaming = %t", wrapped, streaming)
+			}
+		})
+	}
+}
+
+func TestConsoleStreamingReadReturnsIdleTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	adapter.UpdateConfig(Config{BaseURL: server.URL, TimeoutSeconds: 5, StreamIdleTimeoutSeconds: 1})
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
+		Operation: conversation.OperationResponses, Streaming: true, NormalizeBody: true,
+		Body: []byte(`{"model":"grok-4.3","input":"hello","stream":true}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if _, err := io.Copy(io.Discard, response.Body); !errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout) {
+		t.Fatalf("body read error = %v, want ErrUpstreamStreamIdleTimeout", err)
 	}
 }
 

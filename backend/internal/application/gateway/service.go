@@ -42,7 +42,8 @@ var (
 	ErrResponseAccountUnavailable = errors.New("Response 绑定的上游账号不可用")
 	ErrResponseStateUnsupported   = errors.New("目标模型不支持有状态 Response")
 	ErrConversationUnsupported    = errors.New("目标模型不支持当前对话协议")
-	ErrVideoInputTooLarge         = errors.New("视频参考图片总大小超过 32 MiB")
+	ErrVideoInputTooLarge         = errors.New("视频参考图片编码后总输入超过 32 MiB")
+	ErrVideoInputUnavailable      = errors.New("视频临时输入不存在或已过期")
 	ErrLedgerUnavailable          = errors.New("计费账本暂不可用")
 )
 
@@ -81,6 +82,11 @@ func (p routingAttemptPolicy) hasNext(attempt int) bool {
 // nonAccountFailureFingerprintLimit 仅限制非账号归因故障（网络/5xx 等）。
 // 账号级失败持续换号，避免少量瞬时上游故障过早放弃仍可用的凭证池。
 const nonAccountFailureFingerprintLimit = 16
+
+// Stream idle failures are commonly provider-wide rather than account-wide.
+// Allow one compensating account switch, then stop to prevent a silent
+// upstream from multiplying a long idle deadline across the whole pool.
+const streamIdleFailureFingerprintLimit = 2
 
 var freeQuotaUsagePattern = regexp.MustCompile(`(?i)tokens\s*\(actual/limit\)\s*:\s*([0-9]+)\s*/\s*([0-9]+)`)
 
@@ -154,6 +160,8 @@ type routeResolver interface {
 type videoAssetStore interface {
 	SaveVideo(ctx context.Context, jobID, contentType string, body io.Reader) (mediadomain.Asset, error)
 	OpenVideo(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error)
+	OpenInputImage(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error)
+	ReleaseInputImages(ctx context.Context, references []string) error
 }
 
 type accountModelSyncer interface {
@@ -178,6 +186,7 @@ type Service struct {
 	mediaMu                     sync.Mutex
 	mediaQueued                 map[string]struct{}
 	mediaWorker                 int
+	mediaInputSlots             chan struct{}
 	mediaQueueFull              atomic.Uint64
 	logger                      *slog.Logger
 	rateLimitMu                 sync.Mutex
@@ -212,6 +221,7 @@ func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concu
 	s.mediaJobs = repository
 	s.mediaWorker = concurrency
 	s.mediaQueue = make(chan string, min(2048, max(64, concurrency*32)))
+	s.mediaInputSlots = make(chan struct{}, min(concurrency, videoInputMaterializeConcurrency))
 	s.mediaQueued = make(map[string]struct{})
 }
 
@@ -1008,7 +1018,9 @@ attemptLoop:
 			if !isRetryableTransportFailure(credential.Provider, err) {
 				break
 			}
-			s.selector.MarkFailure(ctx, credential, 0, 0)
+			if !neterrorpkg.IsUpstreamStreamIdleTimeout(err) {
+				s.selector.MarkFailure(ctx, credential, 0, 0)
+			}
 			if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 				break
 			}
@@ -1053,6 +1065,9 @@ attemptLoop:
 				} else {
 					lastFailure = newTransportUpstreamFailure(err, credential.ID, credential.Name)
 					if !isRetryableTransportFailure(credential.Provider, err) {
+						break attemptLoop
+					}
+					if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 						break attemptLoop
 					}
 				}
@@ -1169,6 +1184,9 @@ attemptLoop:
 					}
 					lastFailure = newTransportUpstreamFailure(err, credential.ID, credential.Name)
 					if !isRetryableTransportFailure(credential.Provider, err) {
+						break attemptLoop
+					}
+					if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 						break attemptLoop
 					}
 					continue attemptLoop
@@ -1709,7 +1727,11 @@ func shouldStopForNonAccountFingerprint(fingerprints map[string]int, failure *Up
 		return false
 	}
 	fingerprints[failure.Fingerprint]++
-	return fingerprints[failure.Fingerprint] >= nonAccountFailureFingerprintLimit
+	limit := nonAccountFailureFingerprintLimit
+	if failure.Code == "upstream_stream_idle_timeout" || failure.Fingerprint == "upstream_stream_idle_timeout" {
+		limit = streamIdleFailureFingerprintLimit
+	}
+	return fingerprints[failure.Fingerprint] >= limit
 }
 
 func isRetryable(status int) bool {
