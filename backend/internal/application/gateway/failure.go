@@ -179,6 +179,8 @@ func newTransportUpstreamFailure(err error, accountID uint64, accountName string
 	status := http.StatusBadGateway
 	if neterrorpkg.IsResponseHeaderTimeout(err) {
 		status, code, message = http.StatusGatewayTimeout, "upstream_header_timeout", "等待上游响应头超时"
+	} else if neterrorpkg.IsUpstreamStreamIdleTimeout(err) {
+		status, code, message = http.StatusGatewayTimeout, "upstream_stream_idle_timeout", "上游流式响应长时间无数据"
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		code, message = "upstream_timeout", "上游服务响应超时"
 	}

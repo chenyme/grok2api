@@ -9,6 +9,7 @@ import (
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
 type responseHeaderTimeoutTestError struct{}
@@ -16,8 +17,19 @@ type responseHeaderTimeoutTestError struct{}
 func (responseHeaderTimeoutTestError) Error() string {
 	return "http2: timeout awaiting response headers"
 }
+
 func (responseHeaderTimeoutTestError) Timeout() bool   { return true }
 func (responseHeaderTimeoutTestError) Temporary() bool { return true }
+
+func TestTransportUpstreamFailureClassifiesProviderStreamIdleTimeout(t *testing.T) {
+	failure := newTransportUpstreamFailure(neterror.ErrUpstreamStreamIdleTimeout, 42, "web")
+	if failure.HTTPStatus != http.StatusGatewayTimeout || failure.Code != "upstream_stream_idle_timeout" || failure.AccountScoped {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if !isRetryableTransportFailure(accountdomain.ProviderWeb, neterror.ErrUpstreamStreamIdleTimeout) {
+		t.Fatal("pre-response Web idle timeout should retain bounded cross-account failover")
+	}
+}
 
 func TestTransportUpstreamFailureClassifiesResponseHeaderTimeout(t *testing.T) {
 	failure := newTransportUpstreamFailure(responseHeaderTimeoutTestError{}, 42, "build")
@@ -196,6 +208,21 @@ func TestNonAccountFailureFingerprintStopsAtLimit(t *testing.T) {
 	}
 	if fingerprints["upstream_timeout"] != nonAccountFailureFingerprintLimit {
 		t.Fatalf("fingerprint count = %d, want %d", fingerprints["upstream_timeout"], nonAccountFailureFingerprintLimit)
+	}
+
+	idleFingerprints := map[string]int{}
+	idle := &UpstreamFailure{
+		HTTPStatus: http.StatusGatewayTimeout, Code: "upstream_stream_idle_timeout",
+		Fingerprint: "upstream_stream_idle_timeout",
+	}
+	if shouldStopForNonAccountFingerprint(idleFingerprints, idle) {
+		t.Fatal("the first stream idle failure should allow one compensating account switch")
+	}
+	if !shouldStopForNonAccountFingerprint(idleFingerprints, idle) {
+		t.Fatalf("stream idle failures should stop after %d attempts", streamIdleFailureFingerprintLimit)
+	}
+	if idleFingerprints[idle.Fingerprint] != streamIdleFailureFingerprintLimit {
+		t.Fatalf("idle fingerprint count = %d", idleFingerprints[idle.Fingerprint])
 	}
 }
 
