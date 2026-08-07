@@ -187,6 +187,62 @@ func TestMediaJobRepositoryKeepsLargeInputOffHotPaths(t *testing.T) {
 	}
 }
 
+func TestMediaAssetRepositoryExpiresInputOnlyWhenUnreferenced(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accountValue, _, err := NewAccountRepository(database).UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "protected-input-account", SourceKey: "protected-input-account",
+		EncryptedAccessToken: testEncryptedToken, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := clientKeyModel{Name: "protected-input-key", Prefix: "protected-input-key", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	expiresAt := now.Add(-time.Hour)
+	activeID := "input_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	terminalID := "input_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	assets := NewMediaAssetRepository(database)
+	for _, id := range []string{activeID, terminalID} {
+		if err := assets.CreateMediaAsset(ctx, mediadomain.Asset{
+			ID: id, Kind: "image", StorageKey: id + ".png", MIMEType: "image/png",
+			SizeBytes: 68, SHA256: strings.Repeat("a", 64), ExpiresAt: &expiresAt, CreatedAt: now.Add(-2 * time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs := NewMediaJobRepository(database)
+	active := testMediaJob("media_job_protected_input", accountValue.ID, key.ID, mediadomain.StatusQueued, now)
+	active.InputJSON = `{"image_urls":["` + mediadomain.InputReference(activeID) + `"]}`
+	active.InputImageCount = 1
+	if err := jobs.CreateMediaJob(ctx, active); err != nil {
+		t.Fatal(err)
+	}
+	terminal := testMediaJob("media_job_terminal_input", accountValue.ID, key.ID, mediadomain.StatusCompleted, now)
+	terminal.InputJSON = `{"image_urls":["` + mediadomain.InputReference(terminalID) + `"]}`
+	terminal.InputImageCount = 1
+	if err := jobs.CreateMediaJob(ctx, terminal); err != nil {
+		t.Fatal(err)
+	}
+
+	markedAt := now.Add(time.Minute)
+	if expired, err := assets.ExpireMediaInputIfUnreferenced(ctx, activeID, markedAt); err != nil || expired {
+		t.Fatalf("active input expired=%t err=%v", expired, err)
+	}
+	if expired, err := assets.ExpireMediaInputIfUnreferenced(ctx, terminalID, markedAt); err != nil || !expired {
+		t.Fatalf("terminal input expired=%t err=%v", expired, err)
+	}
+	stored, err := assets.GetMediaAsset(ctx, terminalID)
+	if err != nil || stored.ExpiresAt == nil || !stored.ExpiresAt.Equal(markedAt) {
+		t.Fatalf("terminal input expiry=%v err=%v", stored.ExpiresAt, err)
+	}
+}
+
 func TestAccountDeleteDetachesTerminalMediaJobsAndRejectsActiveJobs(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

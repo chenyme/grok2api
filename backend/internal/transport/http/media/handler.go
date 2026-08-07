@@ -14,10 +14,13 @@ import (
 )
 
 type Handler struct {
-	service *mediaapp.Service
+	service     *mediaapp.Service
+	ingestSlots chan struct{}
 }
 
-func NewHandler(service *mediaapp.Service) *Handler { return &Handler{service: service} }
+func NewHandler(service *mediaapp.Service) *Handler {
+	return &Handler{service: service, ingestSlots: make(chan struct{}, ingestConcurrency)}
+}
 
 // RegisterPublic 注册使用不可猜测资源 ID 的公开图片读取与视频上传接收端点。
 // 上传 PUT 不使用客户端 API key：xAI 无法携带，票据本身即授权。
@@ -34,6 +37,8 @@ func (h *Handler) RegisterAdmin(router *gin.RouterGroup) {
 	router.GET("/media/images", h.listImages)
 	router.DELETE("/media/images", h.deleteImages)
 	router.GET("/media/images/stats", h.imageStats)
+	router.POST("/media/inputs/import", h.importInputImageFromURL)
+	router.POST("/media/inputs/upload", h.uploadInputImage)
 	router.GET("/media/videos", h.listVideos)
 	router.DELETE("/media/videos", h.deleteVideos)
 	router.GET("/media/videos/stats", h.videoStats)

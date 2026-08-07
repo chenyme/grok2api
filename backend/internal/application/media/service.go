@@ -28,7 +28,12 @@ var (
 	ErrActiveVideoSelection  = errors.New("排队中或生成中的视频任务不能删除")
 	ErrInvalidFilter         = errors.New("媒体筛选条件无效")
 	ErrMediaJobsUnavailable  = errors.New("视频任务仓储未配置")
+	ErrInputImageNotFound    = errors.New("临时输入图片不存在或已过期")
+	ErrMediaCapacity         = errors.New("媒体存储容量不足")
 )
+
+// InputImageTTL 是临时输入的硬保留上限；无论任务状态如何，超过后都可回收。
+const InputImageTTL = 24 * time.Hour
 
 // Service 负责图片/视频校验、文件落盘和元数据持久化的一致性收口。
 type Service struct {
@@ -46,6 +51,7 @@ type Service struct {
 	cleanupSignal chan struct{}
 	configChanged chan struct{}
 	totalBytes    atomic.Int64
+	inputSaveMu   sync.Mutex
 }
 
 type Config struct {
@@ -100,6 +106,37 @@ func (s *Service) UpdateConfig(cfg Config) {
 
 // SaveImage 校验并保存一份不可变图片，文件写入失败或元数据落库失败时不会留下半成品。
 func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset, error) {
+	return s.saveImage(ctx, data, nil, "img_")
+}
+
+// SaveInputImage 保存不会进入图库、不会公开读取并会自动过期的视频输入图片。
+func (s *Service) SaveInputImage(ctx context.Context, data []byte) (mediadomain.Asset, error) {
+	cfg := s.runtimeConfig()
+	if len(data) == 0 || int64(len(data)) > cfg.MaxImageBytes {
+		return mediadomain.Asset{}, ErrInvalidImage
+	}
+	s.inputSaveMu.Lock()
+	defer s.inputSaveMu.Unlock()
+	total, err := s.assets.TotalMediaAssetBytes(ctx)
+	if err != nil {
+		return mediadomain.Asset{}, err
+	}
+	capacityLimit := cleanupThresholdBytes(cfg)
+	if capacityLimit <= 0 || capacityLimit > cfg.MaxTotalBytes {
+		capacityLimit = cfg.MaxTotalBytes
+	}
+	if int64(len(data)) > capacityLimit || total > capacityLimit-int64(len(data)) {
+		select {
+		case s.cleanupSignal <- struct{}{}:
+		default:
+		}
+		return mediadomain.Asset{}, ErrMediaCapacity
+	}
+	expiresAt := time.Now().UTC().Add(InputImageTTL)
+	return s.saveImage(ctx, data, &expiresAt, mediadomain.InputAssetIDPrefix)
+}
+
+func (s *Service) saveImage(ctx context.Context, data []byte, expiresAt *time.Time, idPrefix string) (mediadomain.Asset, error) {
 	cfg := s.runtimeConfig()
 	if len(data) == 0 || int64(len(data)) > cfg.MaxImageBytes {
 		return mediadomain.Asset{}, ErrInvalidImage
@@ -108,7 +145,7 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 	if !supportedImageMIME(mimeType) {
 		return mediadomain.Asset{}, ErrInvalidImage
 	}
-	id, err := newAssetID()
+	id, err := newAssetID(idPrefix)
 	if err != nil {
 		return mediadomain.Asset{}, err
 	}
@@ -120,7 +157,7 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 	}
 	asset := mediadomain.Asset{
 		ID: id, Kind: "image", StorageKey: storageKey, MIMEType: mimeType,
-		SizeBytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), CreatedAt: createdAt,
+		SizeBytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), ExpiresAt: expiresAt, CreatedAt: createdAt,
 	}
 	if err := s.assets.CreateMediaAsset(ctx, asset); err != nil {
 		_ = s.objects.Delete(context.WithoutCancel(ctx), storageKey)
@@ -133,6 +170,77 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 		}
 	}
 	return asset, nil
+}
+
+// OpenInputImage 读取未过期的临时输入；它从不通过公开图片路由暴露。
+func (s *Service) OpenInputImage(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error) {
+	id = strings.TrimSpace(id)
+	if !mediadomain.IsInputAssetID(id) {
+		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+	}
+	asset, err := s.assets.GetMediaAsset(ctx, id)
+	if errors.Is(err, repository.ErrNotFound) {
+		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+	}
+	if err != nil {
+		return mediadomain.Asset{}, nil, err
+	}
+	if asset.Kind != "image" || asset.ExpiresAt == nil {
+		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+	}
+	if !asset.ExpiresAt.After(time.Now().UTC()) {
+		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+	}
+	body, err := s.objects.Open(ctx, asset.StorageKey)
+	if errors.Is(err, os.ErrNotExist) {
+		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+	}
+	if err != nil {
+		return mediadomain.Asset{}, nil, err
+	}
+	return asset, body, nil
+}
+
+// ReleaseInputImages 在任务进入终态后立即回收不再被其他活动任务引用的临时输入。
+func (s *Service) ReleaseInputImages(ctx context.Context, references []string) error {
+	seen := make(map[string]struct{}, len(references))
+	for _, reference := range references {
+		id, ok := mediadomain.ParseInputReference(reference)
+		if !ok {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		expired, expireErr := s.assets.ExpireMediaInputIfUnreferenced(ctx, id, time.Now().UTC())
+		if expireErr != nil {
+			return expireErr
+		}
+		if !expired {
+			continue
+		}
+		asset, getErr := s.assets.GetMediaAsset(ctx, id)
+		if errors.Is(getErr, repository.ErrNotFound) {
+			continue
+		}
+		if getErr != nil {
+			return getErr
+		}
+		if asset.ExpiresAt == nil || asset.Kind != "image" {
+			continue
+		}
+		if deleteErr := s.objects.Delete(ctx, asset.StorageKey); deleteErr != nil && !errors.Is(deleteErr, os.ErrNotExist) {
+			return deleteErr
+		}
+		if deleteErr := s.assets.DeleteMediaAsset(ctx, id); deleteErr != nil && !errors.Is(deleteErr, repository.ErrNotFound) {
+			return deleteErr
+		}
+	}
+	if total, totalErr := s.assets.TotalMediaAssetBytes(ctx); totalErr == nil {
+		s.totalBytes.Store(total)
+	}
+	return nil
 }
 
 // PublicImageURL 返回可直接用于图片展示的公开资源地址。
@@ -149,7 +257,7 @@ func (s *Service) OpenImage(ctx context.Context, id string) (mediadomain.Asset, 
 	if err != nil {
 		return mediadomain.Asset{}, nil, err
 	}
-	if asset.Kind != "image" {
+	if asset.Kind != "image" || asset.ExpiresAt != nil {
 		return mediadomain.Asset{}, nil, ErrAssetNotFound
 	}
 	body, err := s.objects.Open(ctx, asset.StorageKey)
@@ -387,6 +495,7 @@ func (s *Service) RunCleanup(ctx context.Context, onError func(error)) {
 const (
 	cleanupAssetBatchSize  = 200
 	cleanupTicketBatchSize = 200
+	cleanupInputBatchSize  = 200
 	// cleanupTicketMaxBatchesPerRun 限制单次 Cleanup 调用中过期票据的删除批次数。
 	// 超出部分留给后续直接/后台清理继续回收，避免一次调用无界垄断。
 	cleanupTicketMaxBatchesPerRun = 1
@@ -403,12 +512,45 @@ func (s *Service) Cleanup(ctx context.Context) (int, error) {
 		}
 		defer release()
 	}
+	deleted := 0
+	cleanupNow := time.Now().UTC()
+	// 临时输入无论当前总容量或任务状态如何都按 24h 硬 TTL 回收。
+	expiredOffset := 0
+	for {
+		expired, listErr := s.assets.ListExpiredMediaAssets(ctx, cleanupNow, expiredOffset, cleanupInputBatchSize)
+		if listErr != nil {
+			return deleted, listErr
+		}
+		if len(expired) == 0 {
+			break
+		}
+		deletedInBatch := 0
+		for _, asset := range expired {
+			if err := s.objects.Delete(ctx, asset.StorageKey); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return deleted, err
+			}
+			if err := s.assets.DeleteMediaAsset(ctx, asset.ID); err != nil && !errors.Is(err, repository.ErrNotFound) {
+				return deleted, err
+			}
+			deleted++
+			deletedInBatch++
+		}
+		if deletedInBatch > 0 {
+			// 删除后分页顺序前移，从头重新扫描避免跳过记录。
+			expiredOffset = 0
+			continue
+		}
+		if len(expired) < cleanupInputBatchSize {
+			break
+		}
+		expiredOffset += len(expired)
+	}
 	// 过期票据回收：不触碰未过期票据与已登记媒体资产；单次调用有批次数上限。
 	if s.tickets != nil {
 		for batch := 0; batch < cleanupTicketMaxBatchesPerRun; batch++ {
 			n, err := s.tickets.DeleteExpiredUploadTickets(ctx, time.Now().UTC(), cleanupTicketBatchSize)
 			if err != nil {
-				return 0, err
+				return deleted, err
 			}
 			if n < int64(cleanupTicketBatchSize) {
 				break
@@ -417,14 +559,13 @@ func (s *Service) Cleanup(ctx context.Context) (int, error) {
 	}
 	total, err := s.assets.TotalMediaAssetBytes(ctx)
 	if err != nil {
-		return 0, err
+		return deleted, err
 	}
 	s.totalBytes.Store(total)
 	threshold := cleanupThresholdBytes(cfg)
 	if total <= threshold {
-		return 0, nil
+		return deleted, nil
 	}
-	deleted := 0
 	offset := 0
 	for total > threshold {
 		values, err := s.assets.ListOldestMediaAssets(ctx, offset, cleanupAssetBatchSize)
@@ -442,6 +583,10 @@ func (s *Service) Cleanup(ctx context.Context) (int, error) {
 		for _, asset := range values {
 			if total <= threshold {
 				break
+			}
+			// 未过期的临时输入有明确 TTL，容量清理不得提前删除。
+			if asset.ExpiresAt != nil && asset.ExpiresAt.After(cleanupNow) {
+				continue
 			}
 			if _, skip := protected[asset.ID]; skip {
 				continue
@@ -488,12 +633,12 @@ func cleanupThresholdBytes(cfg Config) int64 {
 	return cfg.MaxTotalBytes * int64(cfg.CleanupThresholdPercent) / 100
 }
 
-func newAssetID() (string, error) {
+func newAssetID(prefix string) (string, error) {
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("生成媒体资源 ID: %w", err)
 	}
-	return "img_" + base64.RawURLEncoding.EncodeToString(raw), nil
+	return prefix + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func supportedImageMIME(value string) bool {

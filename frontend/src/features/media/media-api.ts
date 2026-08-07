@@ -3,6 +3,7 @@ import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import {
   createObjectDecoder,
   createPaginatedDecoder,
+  createValidatedDecoder,
   decodeCountResult,
   hasShape,
   isNumber,
@@ -96,4 +97,31 @@ export function getVideoStats(): Promise<VideoStatsDTO> {
 
 export function deleteVideos(ids: string[]): Promise<{ deleted: number }> {
   return apiRequest("/api/admin/v1/media/videos", { method: "DELETE", body: { ids } }, decodeCountResult<{ deleted: number }>("deleted"));
+}
+
+// 临时输入不会进入图库，也不会生成公开 URL；任务只持久化短 file_id。
+export type MediaInputDTO = {
+  fileId: string;
+  mimeType: string;
+  sizeBytes: number;
+  expiresAt: string;
+};
+
+const decodeMediaInput = createValidatedDecoder<MediaInputDTO>("media input", hasShape({
+  fileId: isString,
+  mimeType: isString,
+  sizeBytes: isNumber,
+  expiresAt: isString,
+}));
+
+export function importVideoInputFromURL(url: string): Promise<MediaInputDTO> {
+  return apiRequest("/api/admin/v1/media/inputs/import", { method: "POST", body: { url } }, decodeMediaInput);
+}
+
+// 以 multipart/form-data 上传本地图片到有 TTL 的临时输入区。
+// 注意：不要手动设置 Content-Type，浏览器会自动带上 multipart 边界。
+export function uploadVideoInput(file: File): Promise<MediaInputDTO> {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  return apiRequest("/api/admin/v1/media/inputs/upload", { method: "POST", body }, decodeMediaInput);
 }

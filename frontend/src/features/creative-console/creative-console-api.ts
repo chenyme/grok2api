@@ -116,6 +116,7 @@ export async function createVideo(input: {
   model: string;
   prompt: string;
   imageURL?: string;
+  imageFileID?: string;
   duration: number;
   aspectRatio: string;
   resolution: string;
@@ -128,7 +129,8 @@ export async function createVideo(input: {
     aspect_ratio: input.aspectRatio,
     resolution: input.resolution,
   };
-  if (input.imageURL) body.image = { url: input.imageURL };
+  if (input.imageFileID) body.image = { file_id: input.imageFileID };
+  else if (input.imageURL) body.image = { url: input.imageURL };
   const payload = await publicApiRequest(
     input.apiKey,
     "/videos/generations",
