@@ -218,8 +218,11 @@ type OperationsConfig struct {
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
 	AssignmentIntervalSeconds int
-	Fallbacks                 map[Scope]FallbackConfig
-	UpdatedAt                 time.Time
+	// EncryptedSubscriptionProxyURL is the optional proxy used only when
+	// fetching remote proxy subscription sources. It is write-only at rest.
+	EncryptedSubscriptionProxyURL string
+	Fallbacks                     map[Scope]FallbackConfig
+	UpdatedAt                     time.Time
 }
 
 func DefaultOperationsConfig() OperationsConfig {
