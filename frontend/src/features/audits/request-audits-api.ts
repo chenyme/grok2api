@@ -40,6 +40,7 @@ export type AuditDTO = {
   egressNodeName?: string;
   egressScope?: "grok_build" | "grok_web" | "grok_console" | "grok_web_asset" | "grok_console_asset";
   egressMode?: "direct" | "proxy";
+  // 0 表示已返回 2xx 响应头但流随后失败（如首字节超时/流式中断），不属于任何 HTTP 状态段。
   statusCode: number;
   streaming: boolean;
   mediaInputImages: number;

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -538,15 +539,19 @@ func (r *ModelRepository) GetByPublicIDIncludingDisabled(ctx context.Context, pu
 
 func findModelRoutesByPublicID(db *gorm.DB, publicID string) ([]modelRouteModel, error) {
 	candidates := model.PublicIDCandidates(publicID)
-	alias := strings.TrimSpace(publicID)
+	requested := strings.TrimSpace(publicID)
 	query := db.Session(&gorm.Session{})
 	if len(candidates) > 0 {
+		aliasCandidates := append([]string(nil), candidates...)
+		if requested != "" && !slices.Contains(aliasCandidates, requested) {
+			aliasCandidates = append(aliasCandidates, requested)
+		}
 		query = query.Where(`
 			(model_routes.public_id IN ? OR EXISTS (
 				SELECT 1 FROM model_route_aliases alias
-				WHERE alias.model_route_id = model_routes.id AND alias.alias = ?
+				WHERE alias.model_route_id = model_routes.id AND alias.alias IN ?
 			))
-		`, candidates, alias).Clauses(clause.OrderBy{Expression: clause.Expr{
+		`, candidates, aliasCandidates).Clauses(clause.OrderBy{Expression: clause.Expr{
 			SQL:  "CASE WHEN model_routes.public_id IN ? THEN 0 ELSE 1 END, " + modelProviderPriorityExpression + ", model_routes.id ASC",
 			Vars: []any{candidates},
 		}})
@@ -556,7 +561,7 @@ func findModelRoutesByPublicID(db *gorm.DB, publicID string) ([]modelRouteModel,
 				SELECT 1 FROM model_route_aliases alias
 				WHERE alias.model_route_id = model_routes.id AND alias.alias = ?
 			)
-		`, alias).Order(modelProviderPriorityExpression + ", model_routes.id ASC")
+		`, requested).Order(modelProviderPriorityExpression + ", model_routes.id ASC")
 	}
 	var rows []modelRouteModel
 	if err := query.Find(&rows).Error; err != nil {
@@ -724,8 +729,10 @@ func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (s
 	switch provider {
 	case account.ProviderWeb:
 		switch upstreamModel {
-		case "grok-imagine-image", "grok-imagine-image-quality":
-			return upstreamModel, model.CapabilityImage
+		case "grok-imagine-image":
+			return "grok-imagine-image-lite", model.CapabilityImage
+		case "grok-imagine-image-quality":
+			return "grok-imagine-image-quality-lite", model.CapabilityImage
 		case "imagine-image-edit":
 			return "grok-imagine-image-edit", model.CapabilityImageEdit
 		case "grok-imagine-video":

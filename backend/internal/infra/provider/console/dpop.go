@@ -46,6 +46,11 @@ type dpopSession struct {
 	privateKey  *ecdsa.PrivateKey
 	publicJWK   dpopJWK
 	expiresAt   time.Time
+	// clockSkew is (server time − local time) learned from the DPoP mint
+	// response Date header. Zero is a valid value meaning "no correction".
+	// Every session always carries an explicit skew so proof iat never depends
+	// on an uninitialized field.
+	clockSkew time.Duration
 }
 
 type dpopSessionManager struct {
@@ -210,18 +215,23 @@ func (a *Adapter) fetchDPoPSession(ctx context.Context, ssoToken string, lease *
 	}
 	applyBrowserHeaders(request, ssoToken, lease)
 	request.Header.Set("Content-Type", "application/json")
+	localBefore := time.Now().UTC()
 	response, err := lease.DoDeferredForbidden(request)
 	if err != nil {
 		return dpopSession{}, err
 	}
+	localAfter := time.Now().UTC()
 	data, truncated, readErr := provider.ReadDiagnosticBody(response.Body)
 	_ = response.Body.Close()
 	if readErr != nil {
 		return dpopSession{}, readErr
 	}
+	// Always materialize a skew value for this session. Missing/unparseable Date
+	// yields 0 (no correction) — still a defined, usable value for every proof.
+	clockSkew := dpopClockSkewFromDateHeader(response.Header.Get("Date"), localBefore, localAfter)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if response.StatusCode == http.StatusForbidden {
-			if !provider.IsDefinitiveAccountBlockBody(data) {
+			if shouldInvalidateConsoleClearance(data) {
 				lease.InvalidateClearance()
 			}
 		}
@@ -255,6 +265,8 @@ func (a *Adapter) fetchDPoPSession(ctx context.Context, ssoToken string, lease *
 	if tokenThumbprint != thumbprint {
 		return dpopSession{}, errors.New("Console DPoP token 与本地密钥不匹配")
 	}
+	// Expiry bookkeeping stays on the local monotonic wall clock so cache checks
+	// remain self-consistent; proof iat alone is shifted by clockSkew.
 	now := time.Now().UTC()
 	expiresAt := now.Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
 	if tokenExpiry.Before(expiresAt) {
@@ -263,7 +275,13 @@ func (a *Adapter) fetchDPoPSession(ctx context.Context, ssoToken string, lease *
 	if !expiresAt.After(now.Add(dpopRefreshSkew)) {
 		return dpopSession{}, errors.New("Console DPoP token 已过期或即将过期")
 	}
-	return dpopSession{accessToken: tokenResponse.AccessToken, privateKey: privateKey, publicJWK: publicJWK, expiresAt: expiresAt}, nil
+	return dpopSession{
+		accessToken: tokenResponse.AccessToken,
+		privateKey:  privateKey,
+		publicJWK:   publicJWK,
+		expiresAt:   expiresAt,
+		clockSkew:   clockSkew,
+	}, nil
 }
 
 func (a *Adapter) doDPoPRequest(
@@ -368,7 +386,7 @@ func applyDPoPAuthorization(request *http.Request, session dpopSession) error {
 		"jti": uuid.NewString(),
 		"htm": strings.ToUpper(request.Method),
 		"htu": dpopHTU(request),
-		"iat": time.Now().UTC().Unix(),
+		"iat": dpopProofIAT(session, time.Now().UTC()),
 		"ath": base64.RawURLEncoding.EncodeToString(digest[:]),
 	}
 	proof := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
@@ -381,6 +399,44 @@ func applyDPoPAuthorization(request *http.Request, session dpopSession) error {
 	request.Header.Set("Authorization", "DPoP "+session.accessToken)
 	request.Header.Set("DPoP", signed)
 	return nil
+}
+
+// dpopProofIAT returns the Unix seconds used for DPoP proof iat.
+// session.clockSkew is always defined on minted sessions (0 if Date was absent).
+func dpopProofIAT(session dpopSession, localNow time.Time) int64 {
+	if localNow.IsZero() {
+		localNow = time.Now().UTC()
+	}
+	return localNow.Add(session.clockSkew).UTC().Unix()
+}
+
+// dpopClockSkewFromDateHeader mirrors console.x.ai frontend behavior:
+// skewSeconds ≈ round((serverDate − localNow) / 1s), applied later as
+// iat = floor((localNow + skew) / 1s). localBefore/localAfter bound the RTT
+// around the mint response so we estimate local time at header receipt without
+// an extra time API call. Returns 0 when Date is missing or unparseable so
+// callers always receive a usable skew value.
+func dpopClockSkewFromDateHeader(dateHeader string, localBefore, localAfter time.Time) time.Duration {
+	dateHeader = strings.TrimSpace(dateHeader)
+	if dateHeader == "" {
+		return 0
+	}
+	serverTime, err := http.ParseTime(dateHeader)
+	if err != nil {
+		return 0
+	}
+	if localAfter.IsZero() || localAfter.Before(localBefore) {
+		localAfter = localBefore
+	}
+	if localBefore.IsZero() {
+		localBefore = time.Now().UTC()
+		localAfter = localBefore
+	}
+	// Mid-point of the local observation window approximates "now" when Date was set.
+	localMid := localBefore.Add(localAfter.Sub(localBefore) / 2)
+	// Store whole seconds because DPoP iat has second precision. Duration.Round
+	// makes the half-away-from-zero behavior explicit for both skew directions.
+	return serverTime.UTC().Sub(localMid.UTC()).Round(time.Second)
 }
 
 func dpopHTU(request *http.Request) string {

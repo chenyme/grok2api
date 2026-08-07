@@ -13,11 +13,19 @@ import (
 var ErrSubscriptionSync = errors.New("代理订阅同步失败")
 
 func (s *Service) syncSource(ctx context.Context, operations OperationsRepository, source domain.SubscriptionSource) (ImportResult, error) {
-	now := time.Now().UTC()
-	nextSyncAt := now.Add(time.Duration(source.RefreshIntervalSeconds) * time.Second)
-	if source.RefreshIntervalSeconds < 60 {
-		nextSyncAt = now.Add(defaultProbeIntervalSeconds * time.Second)
+	config, err := operations.GetEgressOperationsConfig(ctx)
+	if err != nil {
+		now := time.Now().UTC()
+		nextSyncAt := sourceNextSyncAt(source, now)
+		_ = operations.UpdateEgressSourceSync(context.WithoutCancel(ctx), source.ID, now, nextSyncAt, 0, "订阅拉取或解析失败")
+		return ImportResult{}, ErrSubscriptionSync
 	}
+	return s.syncSourceWithConfig(ctx, operations, source, config)
+}
+
+func (s *Service) syncSourceWithConfig(ctx context.Context, operations OperationsRepository, source domain.SubscriptionSource, config domain.OperationsConfig) (ImportResult, error) {
+	now := time.Now().UTC()
+	nextSyncAt := sourceNextSyncAt(source, now)
 	recordFailure := func() {
 		// The source URL and any transport detail are deliberately omitted from
 		// persisted status and API errors; they may contain subscription tokens.
@@ -32,7 +40,12 @@ func (s *Service) syncSource(ctx context.Context, operations OperationsRepositor
 		recordFailure()
 		return ImportResult{}, ErrSubscriptionSync
 	}
-	content, err := fetchProxySubscription(ctx, urlValue)
+	fetchProxy, err := s.subscriptionFetchProxy(config)
+	if err != nil {
+		recordFailure()
+		return ImportResult{}, ErrSubscriptionSync
+	}
+	content, err := fetchProxySubscription(ctx, urlValue, fetchProxy)
 	if err != nil {
 		recordFailure()
 		return ImportResult{}, ErrSubscriptionSync
@@ -71,4 +84,27 @@ func (s *Service) syncSource(ctx context.Context, operations OperationsRepositor
 		return ImportResult{}, err
 	}
 	return ImportResult{Imported: imported, Skipped: skipped}, nil
+}
+
+func sourceNextSyncAt(source domain.SubscriptionSource, now time.Time) time.Time {
+	if source.RefreshIntervalSeconds < 60 {
+		return now.Add(defaultProbeIntervalSeconds * time.Second)
+	}
+	return now.Add(time.Duration(source.RefreshIntervalSeconds) * time.Second)
+}
+
+func (s *Service) subscriptionFetchProxy(config domain.OperationsConfig) (string, error) {
+	encrypted := strings.TrimSpace(config.EncryptedSubscriptionProxyURL)
+	if encrypted == "" {
+		return "", nil
+	}
+	decrypted, err := s.cipher.Decrypt(encrypted)
+	if err != nil {
+		return "", err
+	}
+	normalized, err := NormalizeProxyURL(decrypted)
+	if err != nil || normalized == "" || strings.Contains(normalized, ProxyAccountPlaceholder) {
+		return "", errors.New("订阅拉取代理配置无效")
+	}
+	return normalized, nil
 }

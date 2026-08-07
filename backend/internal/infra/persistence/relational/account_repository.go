@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,8 +64,14 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 		query = query.Where("provider = ?", input.Filter.Provider)
 	}
 	if search := strings.TrimSpace(input.Page.Search); search != "" {
-		pattern := "%" + strings.ToLower(search) + "%"
-		query = query.Where("LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(user_id) LIKE ? OR LOWER(team_id) LIKE ?", pattern, pattern, pattern, pattern)
+		if id, err := strconv.ParseUint(strings.TrimPrefix(search, "#"), 10, 64); strings.HasPrefix(search, "#") && err == nil && id > 0 {
+			// #ID 是管理端名单使用的内部精确查询形式，走主键索引且不改变
+			// 原有纯数字名称的模糊搜索语义。
+			query = query.Where("provider_accounts.id = ?", id)
+		} else {
+			pattern := "%" + strings.ToLower(search) + "%"
+			query = query.Where("LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(user_id) LIKE ? OR LOWER(team_id) LIKE ?", pattern, pattern, pattern, pattern)
+		}
 	}
 	switch input.Filter.QuotaType {
 	case "free":

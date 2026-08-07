@@ -2613,13 +2613,10 @@ func (s *Service) RefreshQuota(ctx context.Context, id uint64) ([]accountdomain.
 	// 并沿用调用方取消语义，不能反向影响额度同步结果。
 	value := refreshed.Credential
 	if (value.Provider == accountdomain.ProviderWeb || value.Provider == accountdomain.ProviderConsole) && ctx.Err() == nil {
-		if strings.TrimSpace(value.UserID) == "" && strings.TrimSpace(value.Email) == "" {
-			if identityErr := s.syncAccountIdentityBestEffort(ctx, id); errors.Is(identityErr, provider.ErrUnauthorized) {
-				return refreshed.Windows, identityErr
-			}
-		} else {
-			// 已有 Session 身份时只做本地增量关联，不再访问上游。
-			s.reconcileProviderLinksBestEffort(ctx, id)
+		// SyncAccountIdentity 会自行判断身份是否完整。Web 账号必须具备合法
+		// Gateway UUID，不能因为旧记录里只有 email 就跳过迁移。
+		if identityErr := s.syncAccountIdentityBestEffort(ctx, id); errors.Is(identityErr, provider.ErrUnauthorized) {
+			return refreshed.Windows, identityErr
 		}
 	}
 	return refreshed.Windows, nil

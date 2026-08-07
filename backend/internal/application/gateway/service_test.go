@@ -1863,8 +1863,8 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := modelRepo.UpsertRoutes(ctx, []modeldomain.Route{
-		{PublicID: "grok-imagine-image-quality", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: modeldomain.CapabilityImage, Enabled: true},
-		{PublicID: "grok-imagine-image", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: modeldomain.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-quality-lite", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: modeldomain.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-lite", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: modeldomain.CapabilityImage, Enabled: true},
 		{PublicID: "grok-imagine-image-edit", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-edit", Capability: modeldomain.CapabilityImageEdit, Enabled: true},
 	}); err != nil {
 		t.Fatal(err)
@@ -1888,7 +1888,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
 
 	result, err := service.GenerateImage(ctx, ImageGenerationInput{
-		RequestID: "req-image-stream", ClientKey: key, PublicModel: "grok-imagine-image-quality",
+		RequestID: "req-image-stream", ClientKey: key, PublicModel: "grok-imagine-image-quality-lite",
 		Prompt: "test", Count: 1, Resolution: "1k", ResponseFormat: "url", Streaming: true, PartialImages: 1,
 	})
 	if err != nil {
@@ -1928,7 +1928,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	}
 
 	liteResult, err := service.GenerateImage(ctx, ImageGenerationInput{
-		RequestID: "req-image-lite", ClientKey: key, PublicModel: "grok-imagine-image",
+		RequestID: "req-image-lite", ClientKey: key, PublicModel: "grok-imagine-image-lite",
 		Prompt: "test", Count: 1, ResponseFormat: "url",
 	})
 	if err != nil {
@@ -1967,8 +1967,8 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	}
 
 	chatResult, err := service.CreateChatCompletion(ctx, Input{
-		RequestID: "req-image-lite-chat", ClientKey: key, PublicModel: "grok-imagine-image",
-		Body: []byte(`{"model":"grok-imagine-image","messages":[{"role":"user","content":"draw"}],"image_config":{"n":3}}`),
+		RequestID: "req-image-lite-chat", ClientKey: key, PublicModel: "grok-imagine-image-lite",
+		Body: []byte(`{"model":"grok-imagine-image-lite","messages":[{"role":"user","content":"draw"}],"image_config":{"n":3}}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2022,7 +2022,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	attemptsBeforeFailure := len(adapter.Attempts())
 	adapter.FailWithEgress(infraegress.NewManager(relational.NewEgressRepository(database), testCipher(t)))
 	if _, err := service.GenerateImage(ctx, ImageGenerationInput{
-		RequestID: "req-image-failed", ClientKey: key, PublicModel: "grok-imagine-image-quality",
+		RequestID: "req-image-failed", ClientKey: key, PublicModel: "grok-imagine-image-quality-lite",
 		Prompt: "test", Count: 1, Resolution: "1k", ResponseFormat: "url",
 	}); err == nil {
 		t.Fatal("expected image transport failure")
@@ -2455,6 +2455,80 @@ func TestGatewaySafetyRejectionDoesNotTouchAccountState(t *testing.T) {
 			if candidate.Credential.ID == credential.ID && candidate.ModelQuotaBlock != nil {
 				t.Fatalf("safety rejection must not mark model access denied: %#v", candidate.ModelQuotaBlock)
 			}
+		}
+	}
+}
+
+func TestGatewayConsoleDPoPRequirementStopsAfterOneAccount(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-dpop-required.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"console-dpop-a", "console-dpop-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO,
+			Name: name, SourceKey: name, EncryptedAccessToken: name,
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	const modelName = "grok-console-dpop"
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderConsole, []string{modelName}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{modelName}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	adapter := &dpopRequiredConsoleAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-console-dpop", ClientKey: clientkey.Key{ID: 1, Name: "console-dpop-key"}, PublicModel: modelName,
+		Body: []byte(`{"model":"grok-console-dpop","input":"hello"}`),
+	})
+	if err != nil {
+		t.Fatalf("DPoP requirement should return the upstream response, err=%v", err)
+	}
+	if result.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d", result.StatusCode)
+	}
+	responseBody, _ := io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "", "upstream_forbidden_unauthorized_dpop_required")
+	_ = result.Body.Close()
+	if !strings.Contains(string(responseBody), "dpop-required") {
+		t.Fatalf("body = %s", responseBody)
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != credentials[0].ID {
+		t.Fatalf("DPoP requirement must use exactly one account, attempts=%#v", attempts)
+	}
+	for _, credential := range credentials {
+		observed, getErr := accountRepo.Get(ctx, credential.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount != 0 || observed.CooldownUntil != nil {
+			t.Fatalf("account %d changed after DPoP requirement: %#v", credential.ID, observed)
 		}
 	}
 }
@@ -3401,6 +3475,11 @@ type systemicForbiddenAdapter struct {
 	attempts []uint64
 }
 
+type dpopRequiredConsoleAdapter struct {
+	mu       sync.Mutex
+	attempts []uint64
+}
+
 type spendingLimitAdapter struct{}
 
 func (spendingLimitAdapter) Provider() account.Provider { return account.ProviderBuild }
@@ -3477,6 +3556,25 @@ func (a *systemicForbiddenAdapter) ForwardResponse(_ context.Context, request pr
 	}, nil
 }
 func (a *systemicForbiddenAdapter) Attempts() []uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]uint64(nil), a.attempts...)
+}
+
+func (a *dpopRequiredConsoleAdapter) Provider() account.Provider { return account.ProviderConsole }
+func (a *dpopRequiredConsoleAdapter) Definition() provider.Definition {
+	return testConversationDefinition(account.ProviderConsole)
+}
+func (a *dpopRequiredConsoleAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	a.attempts = append(a.attempts, request.Credential.ID)
+	a.mu.Unlock()
+	return &provider.Response{
+		StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"code":"unauthorized:dpop-required","error":"DPoP proof required but was not verified."}`)),
+	}, nil
+}
+func (a *dpopRequiredConsoleAdapter) Attempts() []uint64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]uint64(nil), a.attempts...)
@@ -3798,4 +3896,27 @@ func testCipher(t *testing.T) *security.Cipher {
 		t.Fatal(err)
 	}
 	return cipher
+}
+
+func TestAuditRequestSucceeded(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		errorCode  string
+		want       bool
+	}{
+		{name: "2xx without error succeeds", statusCode: 200, errorCode: "", want: true},
+		{name: "2xx stream interruption fails", statusCode: 200, errorCode: "upstream_stream_interrupted", want: false},
+		{name: "2xx stream incomplete fails", statusCode: 200, errorCode: "upstream_stream_incomplete", want: false},
+		{name: "any 2xx error fails", statusCode: 201, errorCode: "stream_interrupted", want: false},
+		{name: "4xx fails", statusCode: 404, errorCode: "upstream_error", want: false},
+		{name: "5xx fails", statusCode: 502, errorCode: "upstream_server_error", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := auditRequestSucceeded(tc.statusCode, tc.errorCode); got != tc.want {
+				t.Fatalf("auditRequestSucceeded(%d, %q) = %t, want %t", tc.statusCode, tc.errorCode, got, tc.want)
+			}
+		})
+	}
 }

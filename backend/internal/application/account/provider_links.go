@@ -8,6 +8,7 @@ import (
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/google/uuid"
 )
 
 type providerLinkRepository interface {
@@ -37,9 +38,10 @@ func (s *Service) syncAccountIdentity(ctx context.Context, id uint64) error {
 	if value.Provider != accountdomain.ProviderWeb && value.Provider != accountdomain.ProviderConsole {
 		return nil
 	}
-	// Session 身份只需成功补充一次；已有 user_id 或 email 时仅做本地关联协调，
-	// 不再重复访问上游。没有任何身份数据的失败账号会在后续同步时重试。
-	if strings.TrimSpace(value.UserID) != "" || strings.TrimSpace(value.Email) != "" {
+	// Web Gateway 要求 uid 为 UUID，因此旧账号即使已经保存 email，也必须用
+	// SSO Session 补齐或纠正 user_id。Console 不依赖 Gateway uid，继续沿用
+	// 任一稳定身份字段已存在即不重复访问上游的行为。
+	if accountIdentityComplete(value) {
 		return mapRepositoryError(links.ReconcileProviderLinks(ctx, id))
 	}
 	if s.providers == nil {
@@ -60,10 +62,24 @@ func (s *Service) syncAccountIdentity(ctx context.Context, id uint64) error {
 	if len(identity.Email) > 255 || len(identity.UserID) > 255 || len(identity.TeamID) > 255 {
 		return fmt.Errorf("Grok Web Session 身份字段超过安全上限")
 	}
+	if value.Provider == accountdomain.ProviderWeb {
+		identityID, parseErr := uuid.Parse(strings.TrimSpace(identity.UserID))
+		if parseErr != nil || identityID == uuid.Nil {
+			return fmt.Errorf("Grok Web Session 未返回合法的 Gateway 用户 UUID")
+		}
+	}
 	if err := links.UpdateIdentityMetadata(ctx, id, identity.Email, identity.UserID, identity.TeamID); err != nil {
 		return mapRepositoryError(err)
 	}
 	return mapRepositoryError(links.ReconcileProviderLinks(ctx, id))
+}
+
+func accountIdentityComplete(value accountdomain.Credential) bool {
+	if value.Provider == accountdomain.ProviderWeb {
+		identityID, err := uuid.Parse(strings.TrimSpace(value.UserID))
+		return err == nil && identityID != uuid.Nil
+	}
+	return strings.TrimSpace(value.UserID) != "" || strings.TrimSpace(value.Email) != ""
 }
 
 func (s *Service) reconcileProviderLinksBestEffort(ctx context.Context, id uint64) {

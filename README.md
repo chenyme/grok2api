@@ -257,8 +257,8 @@ Web uses a built-in catalog filtered by account tier; higher tiers inherit lower
 | `grok-chat-auto` | Conversation | Super | Chat Completions, Responses, Messages |
 | `grok-chat-expert` | Conversation | Super | Chat Completions, Responses, Messages |
 | `grok-chat-heavy` | Conversation | Heavy | Chat Completions, Responses, Messages |
-| `grok-imagine-image` | Image | Basic | Images Generations |
-| `grok-imagine-image-quality` | Image | Super | Images Generations |
+| `grok-imagine-image-lite` | Image | Basic | Images Generations |
+| `grok-imagine-image-quality-lite` | Image | Super | Images Generations |
 | `grok-imagine-image-edit` | Image Edit | Super | Images Edits |
 | `grok-imagine-video` | Video | Super | Videos |
 

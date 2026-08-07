@@ -348,6 +348,36 @@ function validHTTPURL(value: string): boolean {
   }
 }
 
+/** Validates HTTP and SOCKS proxy URLs. Empty is allowed for write-only form fields. */
+function validProxyURL(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return true;
+  if (trimmed.length > 2048 || [...trimmed].some((char) => {
+    const code = char.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  })) return false;
+  if ((trimmed.match(/\{account\}/g) ?? []).length > 1) return false;
+  try {
+    const parseValue = trimmed.replaceAll("{account}", "grok2api_account_placeholder");
+    const parsed = new URL(parseValue);
+    if (!parsed.host || !parsed.hostname) return false;
+    const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
+    if (!["http", "https", "socks4", "socks4a", "socks5", "socks5h"].includes(scheme)) return false;
+    if (parsed.search || parsed.hash || (parsed.pathname !== "" && parsed.pathname !== "/")) return false;
+    if (trimmed.includes("{account}")) {
+      if (!parsed.username.includes("grok2api_account_placeholder")) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Subscription fetch proxies are global and must never use per-account lease placeholders. */
+export function validSubscriptionProxyURL(value: string): boolean {
+  return !value.includes("{account}") && validProxyURL(value);
+}
+
 function internalSignerHostname(value: string): boolean {
   const host = value.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true;

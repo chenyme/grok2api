@@ -24,3 +24,21 @@ func TestIsDefinitiveAccountBlockBody(t *testing.T) {
 		})
 	}
 }
+
+func TestIsDPoPProofRequiredBody(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		body string
+		want bool
+	}{
+		{body: `{"code":"unauthorized:dpop-required"}`, want: true},
+		{body: `{"error":{"code":"unauthorized","message":"DPoP proof required"}}`, want: true},
+		{body: `unauthorized:dpop-required`, want: true},
+		{body: `{"code":"forbidden","message":"account denied"}`, want: false},
+	}
+	for _, test := range tests {
+		if got := IsDPoPProofRequiredBody([]byte(test.body)); got != test.want {
+			t.Fatalf("IsDPoPProofRequiredBody(%q) = %v, want %v", test.body, got, test.want)
+		}
+	}
+}

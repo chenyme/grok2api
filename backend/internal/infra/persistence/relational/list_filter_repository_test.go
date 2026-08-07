@@ -3,6 +3,7 @@ package relational
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -49,6 +50,7 @@ func TestListFilters(t *testing.T) {
 	}
 
 	accounts := NewAccountRepository(database)
+	assertAccountSearchResult(t, ctx, accounts, "#"+strconv.FormatUint(free.ID, 10), free.ID)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "free", Now: now}, 1)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "paid", Now: now}, 1)
 	assertAccountFilterCount(t, ctx, accounts, repository.AccountListFilter{QuotaType: "unknown", Now: now}, 1)
@@ -246,6 +248,7 @@ func TestListFilters(t *testing.T) {
 	}
 	assertClientKeySearchCount(t, ctx, keys, "production", 1)
 	assertClientKeySearchCount(t, ctx, keys, "abc123", 1)
+	assertClientKeySearchResult(t, ctx, keys, "#"+strconv.FormatUint(activeKey.ID, 10), activeKey.ID)
 	keyValues, _, err := keys.List(ctx, repository.ClientKeyListQuery{Page: repository.PageQuery{Limit: 20, Sort: repository.SortQuery{Field: "name", Direction: repository.SortDescending}}, Filter: repository.ClientKeyListFilter{Now: now}})
 	if err != nil || len(keyValues) != 3 || keyValues[0].Name != "production" || keyValues[2].Name != "disabled" {
 		t.Fatalf("client key name sort = %#v, err = %v", keyValues, err)
@@ -320,6 +323,14 @@ func assertAccountFilterCount(t *testing.T, ctx context.Context, accounts *Accou
 	}
 }
 
+func assertAccountSearchResult(t *testing.T, ctx context.Context, accounts *AccountRepository, search string, expectedID uint64) {
+	t.Helper()
+	values, total, err := accounts.List(ctx, repository.AccountListQuery{Page: repository.PageQuery{Limit: 20, Search: search}})
+	if err != nil || total != 1 || len(values) != 1 || values[0].ID != expectedID {
+		t.Fatalf("account search %q values = %#v, total = %d, err = %v", search, values, total, err)
+	}
+}
+
 func assertModelSearchCount(t *testing.T, ctx context.Context, models *ModelRepository, search string, expected int64) {
 	t.Helper()
 	_, total, err := models.List(ctx, repository.ModelListQuery{Page: repository.PageQuery{Limit: 20, Search: search}})
@@ -333,6 +344,14 @@ func assertClientKeySearchCount(t *testing.T, ctx context.Context, keys *ClientK
 	_, total, err := keys.List(ctx, repository.ClientKeyListQuery{Page: repository.PageQuery{Limit: 20, Search: search}, Filter: repository.ClientKeyListFilter{Now: time.Now().UTC()}})
 	if err != nil || total != expected {
 		t.Fatalf("client key search %q total = %d, err = %v", search, total, err)
+	}
+}
+
+func assertClientKeySearchResult(t *testing.T, ctx context.Context, keys *ClientKeyRepository, search string, expectedID uint64) {
+	t.Helper()
+	values, total, err := keys.List(ctx, repository.ClientKeyListQuery{Page: repository.PageQuery{Limit: 20, Search: search}, Filter: repository.ClientKeyListFilter{Now: time.Now().UTC()}})
+	if err != nil || total != 1 || len(values) != 1 || values[0].ID != expectedID {
+		t.Fatalf("client key search %q values = %#v, total = %d, err = %v", search, values, total, err)
 	}
 }
 
