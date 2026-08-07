@@ -89,7 +89,7 @@ func TestReconcileProviderLinksUsesOnlyHighConfidenceIdentity(t *testing.T) {
 			t.Fatalf("routing identities for %s = %#v", provider, values)
 		}
 	}
-	if _, err := repo.UpdateTokens(ctx, web.ID, "rotated-encrypted-token", "", time.Time{}); err != nil {
+	if _, err := repo.UpdateTokens(ctx, web.ID, "rotated-encrypted-token", "", time.Time{}, 0); err != nil {
 		t.Fatal(err)
 	}
 	web, err = repo.Get(ctx, web.ID)

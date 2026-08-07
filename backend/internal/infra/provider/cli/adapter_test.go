@@ -97,6 +97,8 @@ func TestCredentialMetadataMarksNumericBotFlagOneOrTwo(t *testing.T) {
 		{name: "numeric zero", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 0}},
 		{name: "bfs numeric zero", provider: account.ProviderBuild, claims: map[string]any{"bfs": 0}},
 		{name: "numeric three", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 3}},
+		{name: "fractional one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 1.5}},
+		{name: "bfs fractional two", provider: account.ProviderBuild, claims: map[string]any{"bfs": 2.5}},
 		{name: "string one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": "1"}},
 		{name: "bfs string one", provider: account.ProviderBuild, claims: map[string]any{"bfs": "1"}},
 		{name: "string two", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": "2"}},
@@ -120,6 +122,10 @@ func TestCredentialMetadataMarksNumericBotFlagOneOrTwo(t *testing.T) {
 				t.Fatal(encryptErr)
 			}
 			metadata := adapter.CredentialMetadata(account.Credential{Provider: test.provider, EncryptedAccessToken: encrypted})
+			wantInspected := test.provider == account.ProviderBuild && test.claims != nil
+			if metadata.BuildBotFlagInspected != wantInspected {
+				t.Fatalf("inspected = %t, want %t", metadata.BuildBotFlagInspected, wantInspected)
+			}
 			if metadata.BuildBotFlagged != test.wantFlag || metadata.BuildBotFlagSource != test.wantSource {
 				t.Fatalf("flagged/source = %t/%d, want %t/%d", metadata.BuildBotFlagged, metadata.BuildBotFlagSource, test.wantFlag, test.wantSource)
 			}
@@ -127,7 +133,7 @@ func TestCredentialMetadataMarksNumericBotFlagOneOrTwo(t *testing.T) {
 	}
 
 	metadata := adapter.CredentialMetadata(account.Credential{Provider: account.ProviderBuild, EncryptedAccessToken: "invalid-ciphertext"})
-	if metadata.BuildBotFlagged || metadata.BuildBotFlagSource != 0 {
+	if metadata.BuildBotFlagInspected || metadata.BuildBotFlagged || metadata.BuildBotFlagSource != 0 {
 		t.Fatal("decrypt failure must not mark the account")
 	}
 }

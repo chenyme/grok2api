@@ -95,6 +95,14 @@ const (
 const permanentRefreshExpiredReason = "OAuth refresh token 已永久失效且 access token 已过期"
 const buildBotFlagCacheKey = "build-bot-flagged-account-ids"
 
+type buildBotFlagIndexRepository interface {
+	ListBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error)
+	ListBuildBotFlagCredentialBatch(ctx context.Context, afterID uint64, limit int) ([]repository.BuildBotFlagCredential, error)
+	UpdateBuildBotFlagSources(ctx context.Context, values []repository.BuildBotFlagSourceUpdate) error
+	CountBuildBotFlagged(ctx context.Context) (int64, error)
+	CountAvailableBuildBotFlagged(ctx context.Context, now time.Time) (int64, error)
+}
+
 type quotaRefreshState struct {
 	generation          uint64
 	publishedGeneration uint64
@@ -321,7 +329,8 @@ type IssueSummary struct {
 }
 
 func (s *Service) Summary(ctx context.Context) (Summary, error) {
-	rows, err := s.accounts.Summarize(ctx, s.now())
+	now := s.now()
+	rows, err := s.accounts.Summarize(ctx, now)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -341,13 +350,24 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 	}
 	result.Recovering = result.Recovery.Cooldown + result.Recovery.WaitingReset + result.Recovery.Probing
 	result.Attention = result.Issues.Disabled + result.Issues.ReauthRequired
-	flaggedIDs, err := s.buildBotFlaggedAccountIDs(ctx)
+	indexed, hasIndex := s.accounts.(buildBotFlagIndexRepository)
+	var flaggedIDs []uint64
+	if hasIndex {
+		result.Risk, err = indexed.CountBuildBotFlagged(ctx)
+	} else {
+		flaggedIDs, err = s.buildBotFlaggedAccountIDs(ctx)
+		result.Risk = int64(len(flaggedIDs))
+	}
 	if err != nil {
 		return Summary{}, err
 	}
-	result.Risk = int64(len(flaggedIDs))
-	if s.excludeBuildBotFlaggedFromSchedulingEnabled() && len(flaggedIDs) > 0 {
-		excluded, err := s.accounts.CountAvailableAmong(ctx, accountdomain.ProviderBuild, flaggedIDs, s.now())
+	if s.excludeBuildBotFlaggedFromSchedulingEnabled() && result.Risk > 0 {
+		var excluded int64
+		if hasIndex {
+			excluded, err = indexed.CountAvailableBuildBotFlagged(ctx, now)
+		} else {
+			excluded, err = s.accounts.CountAvailableAmong(ctx, accountdomain.ProviderBuild, flaggedIDs, now)
+		}
 		if err != nil {
 			return Summary{}, err
 		}
@@ -397,16 +417,16 @@ type Service struct {
 	syncPool            *batch.Pool
 	refreshPool         *batch.Pool
 	// detectPool 专用于管理端「检测账号」，与额度同步/续期隔离，默认并发 32。
-	detectPool            *batch.Pool
-	credentialRefreshWake chan struct{}
-	autoCleanMu           sync.RWMutex
-	autoClean             AutoCleanConfig
-	autoCleanRevision     uint64
-	autoCleanWake         chan struct{}
+	detectPool             *batch.Pool
+	credentialRefreshWake  chan struct{}
+	autoCleanMu            sync.RWMutex
+	autoClean              AutoCleanConfig
+	autoCleanRevision      uint64
+	autoCleanWake          chan struct{}
 	excludeBuildBotFlagged bool
-	buildBotFlagCache     *resultcache.Cache[string, []uint64]
-	logger                *slog.Logger
-	now                   func() time.Time
+	buildBotFlagCache      *resultcache.Cache[string, []uint64]
+	logger                 *slog.Logger
+	now                    func() time.Time
 }
 
 func (s *Service) SetQuotaRecoveryQueue(queue repository.QuotaRecoveryQueue) {
@@ -534,15 +554,19 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		Refreshable: refreshable, Agreement: filter.Agreement, Association: filter.Association, Now: s.now(),
 	}
 	if filter.Risk != "" {
-		flaggedIDs, err := s.buildBotFlaggedAccountIDs(ctx)
-		if err != nil {
-			return nil, 0, err
-		}
-		if filter.Risk == "flagged" {
-			repositoryFilter.AccountIDs = flaggedIDs
-			repositoryFilter.RestrictIDs = true
+		if _, ok := s.accounts.(buildBotFlagIndexRepository); ok {
+			repositoryFilter.Risk = filter.Risk
 		} else {
-			repositoryFilter.ExcludeIDs = flaggedIDs
+			flaggedIDs, err := s.buildBotFlaggedAccountIDs(ctx)
+			if err != nil {
+				return nil, 0, err
+			}
+			if filter.Risk == "flagged" {
+				repositoryFilter.AccountIDs = flaggedIDs
+				repositoryFilter.RestrictIDs = true
+			} else {
+				repositoryFilter.ExcludeIDs = flaggedIDs
+			}
 		}
 	}
 	values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
@@ -574,7 +598,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 	}
 	views := make([]View, 0, len(values))
 	for _, value := range values {
-		metadata := s.credentialMetadata(value)
+		metadata := s.buildBotFlagMetadata(value)
 		view := View{Credential: value, BuildBotFlagged: metadata.BuildBotFlagged, BuildBotFlagSource: metadata.BuildBotFlagSource}
 		if billing, ok := billings[value.ID]; ok {
 			view.Billing = &billing
@@ -620,6 +644,9 @@ func (s *Service) excludeBuildBotFlaggedFromSchedulingEnabled() bool {
 }
 
 func (s *Service) loadBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
+	if indexed, ok := s.accounts.(buildBotFlagIndexRepository); ok {
+		return indexed.ListBuildBotFlaggedAccountIDs(ctx)
+	}
 	const batchSize = 500
 	result := make([]uint64, 0)
 	var afterID uint64
@@ -637,6 +664,51 @@ func (s *Service) loadBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, 
 			return result, nil
 		}
 		afterID = values[len(values)-1].ID
+	}
+}
+
+// RebuildBuildBotFlagIndex backfills persisted non-sensitive routing metadata
+// before the gateway begins serving traffic. Subsequent imports and refreshes
+// update the source atomically with the encrypted access token.
+func (s *Service) RebuildBuildBotFlagIndex(ctx context.Context) error {
+	indexed, ok := s.accounts.(buildBotFlagIndexRepository)
+	if !ok {
+		return nil
+	}
+	const batchSize = 500
+	var afterID uint64
+	for {
+		values, err := indexed.ListBuildBotFlagCredentialBatch(ctx, afterID, batchSize)
+		if err != nil {
+			return err
+		}
+		updates := make([]repository.BuildBotFlagSourceUpdate, 0)
+		for _, value := range values {
+			credential := accountdomain.Credential{
+				ID: value.AccountID, Provider: accountdomain.ProviderBuild, EncryptedAccessToken: value.EncryptedAccessToken,
+			}
+			metadata := s.credentialMetadata(credential)
+			if !metadata.BuildBotFlagInspected {
+				continue
+			}
+			source := metadata.BuildBotFlagSource
+			if source != 1 && source != 2 {
+				source = 0
+			}
+			if source != value.StoredSource {
+				updates = append(updates, repository.BuildBotFlagSourceUpdate{
+					AccountID: value.AccountID, ExpectedEncryptedAccessToken: value.EncryptedAccessToken, Source: source,
+				})
+			}
+		}
+		if err := indexed.UpdateBuildBotFlagSources(ctx, updates); err != nil {
+			return err
+		}
+		if len(values) < batchSize {
+			s.invalidateBuildBotFlagCache()
+			return nil
+		}
+		afterID = values[len(values)-1].AccountID
 	}
 }
 
@@ -959,7 +1031,7 @@ func (s *Service) Get(ctx context.Context, id uint64) (View, error) {
 	if err != nil {
 		return View{}, mapRepositoryError(err)
 	}
-	metadata := s.credentialMetadata(value)
+	metadata := s.buildBotFlagMetadata(value)
 	view := View{Credential: value, BuildBotFlagged: metadata.BuildBotFlagged, BuildBotFlagSource: metadata.BuildBotFlagSource}
 	if billing, err := s.accounts.GetBilling(ctx, id); err == nil {
 		view.Billing = &billing
@@ -990,6 +1062,20 @@ func (s *Service) credentialMetadata(value accountdomain.Credential) provider.Cr
 		return provider.CredentialMetadata{}
 	}
 	return s.providers.CredentialMetadata(value)
+}
+
+func (s *Service) buildBotFlagMetadata(value accountdomain.Credential) provider.CredentialMetadata {
+	metadata := s.credentialMetadata(value)
+	if metadata.BuildBotFlagInspected {
+		return metadata
+	}
+	source := value.BuildBotFlagSource
+	if source != 1 && source != 2 {
+		source = 0
+	}
+	metadata.BuildBotFlagSource = source
+	metadata.BuildBotFlagged = source != 0
+	return metadata
 }
 
 func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model string) error {
@@ -2248,7 +2334,13 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 			cancel()
 			return nil, err
 		}
-		updated, err := s.accounts.UpdateTokens(ctx, latest.ID, refreshed.EncryptedAccessToken, refreshed.EncryptedRefreshToken, refreshed.ExpiresAt)
+		riskCredential := latest
+		riskCredential.EncryptedAccessToken = refreshed.EncryptedAccessToken
+		botFlagSource := latest.BuildBotFlagSource
+		if metadata := s.credentialMetadata(riskCredential); metadata.BuildBotFlagInspected {
+			botFlagSource = metadata.BuildBotFlagSource
+		}
+		updated, err := s.accounts.UpdateTokens(ctx, latest.ID, refreshed.EncryptedAccessToken, refreshed.EncryptedRefreshToken, refreshed.ExpiresAt, botFlagSource)
 		if err != nil {
 			return nil, err
 		}
@@ -4105,6 +4197,7 @@ func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomai
 		authType = definition.Credential.AuthType
 	}
 	value := accountdomain.Credential{Provider: providerValue, AuthType: authType, WebTier: seed.WebTier, Name: seed.Name, Email: seed.Email, UserID: seed.UserID, TeamID: seed.TeamID, SourceKey: sourceKey, OIDCClientID: seed.OIDCClientID, EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, EncryptedCloudflareCookie: cloudflareEncrypted, ExpiresAt: seed.ExpiresAt, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: accountdomain.DefaultPriority, MaxConcurrent: accountdomain.DefaultMaxConcurrent, MinimumRemaining: accountdomain.DefaultMinimumRemaining, WebNSFWEnabledAt: seed.WebNSFWEnabledAt, WebTermsAcceptedAt: seed.WebTermsAcceptedAt, WebTermsAcceptedVersion: seed.WebTermsAcceptedVersion, WebBirthDateSetAt: seed.WebBirthDateSetAt}
+	value.BuildBotFlagSource = s.credentialMetadata(value).BuildBotFlagSource
 	if providerValue == accountdomain.ProviderWeb && strings.TrimSpace(seed.AccessToken) != "" {
 		value.EgressIdentity = "sso_" + security.HashToken(seed.AccessToken)[:32]
 	}

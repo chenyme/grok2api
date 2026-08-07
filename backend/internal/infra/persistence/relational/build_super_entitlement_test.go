@@ -43,7 +43,7 @@ func TestBuildSuperEntitledDefaultsFalseAndSurvivesUpsert(t *testing.T) {
 		t.Fatalf("entitlement must survive upsert: %#v", updated)
 	}
 	// token refresh 路径不改 account 表 entitlement 列。
-	refreshed, err := repo.UpdateTokens(ctx, updated.ID, "encrypted-new", "encrypted-refresh", time.Now().UTC().Add(time.Hour))
+	refreshed, err := repo.UpdateTokens(ctx, updated.ID, "encrypted-new", "encrypted-refresh", time.Now().UTC().Add(time.Hour), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

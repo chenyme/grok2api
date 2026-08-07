@@ -109,10 +109,15 @@ func (a *Adapter) CredentialMetadata(credential account.Credential) provider.Cre
 	if err != nil {
 		return provider.CredentialMetadata{}
 	}
-	source := buildBotFlagSourceFromClaims(decodeJWTClaims(accessToken))
+	claims := decodeJWTClaims(accessToken)
+	if claims == nil {
+		return provider.CredentialMetadata{}
+	}
+	source := buildBotFlagSourceFromClaims(claims)
 	return provider.CredentialMetadata{
-		BuildBotFlagged:    source != 0,
-		BuildBotFlagSource: source,
+		BuildBotFlagInspected: true,
+		BuildBotFlagged:       source != 0,
+		BuildBotFlagSource:    source,
 	}
 }
 
@@ -134,7 +139,7 @@ func botFlagSourceClaim(claims map[string]any, key string) int {
 	if !ok {
 		return 0
 	}
-	switch int(value) {
+	switch value {
 	case 1, 2:
 		return int(value)
 	default:

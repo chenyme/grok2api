@@ -89,6 +89,7 @@ func toAccountDomain(value accountModel) account.Credential {
 		EgressNodeID: valueEgressNodeID(value.EgressNodeID), EgressAssignmentMode: account.EgressAssignmentMode(value.EgressAssignmentMode), EgressAssignedAt: value.EgressAssignedAt,
 		BuildAPIFallback: value.BuildAPIFallback, BuildRouteMode: buildRouteMode,
 		BuildSuperEntitled: value.BuildSuperEntitled && account.Provider(value.Provider) == account.ProviderBuild,
+		BuildBotFlagSource: normalizedBuildBotFlagSource(account.Provider(value.Provider), value.Credential),
 		CreatedAt:          value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
@@ -169,8 +170,23 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 		EncryptedCloudflareCookie: value.EncryptedCloudflareCookie,
 		ExpiresAt:                 expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: value.LastRefreshAt,
 		RefreshFailures: value.RefreshFailureCount, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshError: value.LastRefreshErrorCode, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse, RefreshPermanent: value.RefreshPermanent,
-		UpdatedAt: time.Now().UTC(),
+		BuildBotFlagSource: normalizeBuildBotFlagSource(value.Provider, value.BuildBotFlagSource),
+		UpdatedAt:          time.Now().UTC(),
 	}
+}
+
+func normalizedBuildBotFlagSource(provider account.Provider, credential *accountCredentialModel) int {
+	if credential == nil {
+		return 0
+	}
+	return normalizeBuildBotFlagSource(provider, credential.BuildBotFlagSource)
+}
+
+func normalizeBuildBotFlagSource(provider account.Provider, source int) int {
+	if provider == account.ProviderBuild && (source == 1 || source == 2) {
+		return source
+	}
+	return 0
 }
 
 func fromWebProfileDomain(value account.Credential) *webAccountProfileModel {

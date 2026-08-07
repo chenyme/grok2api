@@ -263,7 +263,6 @@ type Selector struct {
 	capacityWait           time.Duration
 	preferFreeBuild        bool
 	excludeBuildBotFlagged bool
-	buildBotFlagged        buildBotFlaggedAccountSource
 	segmentedConfig        segmentedSelectorConfig
 	segmentedState         segmentedSelectorState
 	configMu               sync.RWMutex
@@ -291,12 +290,6 @@ type Selector struct {
 	tierOrders             interface {
 		TierOrder(account.Provider, string) []account.WebTier
 	}
-}
-
-// buildBotFlaggedAccountSource supplies Build account IDs marked bot-risk
-// (bot_flag_source/bfs in {1,2}). Used only when exclusion from scheduling is enabled.
-type buildBotFlaggedAccountSource interface {
-	ListBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error)
 }
 
 func NewSelector(accounts repository.AccountRepository, concurrency repository.ConcurrencyLimiter, sticky repository.StickySessionRepository, tierOrders interface {
@@ -350,14 +343,6 @@ func (s *Selector) routingConfig() (time.Duration, time.Duration, time.Duration,
 	return s.stickyTTL, s.cooldownBase, s.cooldownMax, s.capacityWait
 }
 
-// SetBuildBotFlaggedSource wires the Build bot-risk account ID source used when
-// exclude-from-scheduling is enabled. Only ProviderBuild candidates are filtered.
-func (s *Selector) SetBuildBotFlaggedSource(source buildBotFlaggedAccountSource) {
-	s.configMu.Lock()
-	s.buildBotFlagged = source
-	s.configMu.Unlock()
-}
-
 // UpdateExcludeBuildBotFlaggedFromScheduling toggles Build bot-risk exclusion from
 // scheduling and invalidates Build candidate caches when the value changes.
 func (s *Selector) UpdateExcludeBuildBotFlaggedFromScheduling(value bool) {
@@ -376,10 +361,10 @@ func (s *Selector) preferFreeBuildEnabled() bool {
 	return s.preferFreeBuild
 }
 
-func (s *Selector) excludeBuildBotFlaggedEnabled() (bool, buildBotFlaggedAccountSource) {
+func (s *Selector) excludeBuildBotFlaggedEnabled() bool {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
-	return s.excludeBuildBotFlagged, s.buildBotFlagged
+	return s.excludeBuildBotFlagged
 }
 
 func (s *Selector) invalidateProviderCandidateCache(provider account.Provider) {
@@ -398,28 +383,16 @@ func (s *Selector) invalidateProviderCandidateCache(provider account.Provider) {
 	}
 }
 
-func (s *Selector) applyBuildBotFlaggedFilter(ctx context.Context, provider account.Provider, values []account.RoutingCandidate) ([]account.RoutingCandidate, error) {
+func (s *Selector) applyBuildBotFlaggedFilter(_ context.Context, provider account.Provider, values []account.RoutingCandidate) ([]account.RoutingCandidate, error) {
 	if provider != account.ProviderBuild || len(values) == 0 {
 		return values, nil
 	}
-	enabled, source := s.excludeBuildBotFlaggedEnabled()
-	if !enabled || source == nil {
+	if !s.excludeBuildBotFlaggedEnabled() {
 		return values, nil
-	}
-	ids, err := source.ListBuildBotFlaggedAccountIDs(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if len(ids) == 0 {
-		return values, nil
-	}
-	blocked := make(map[uint64]struct{}, len(ids))
-	for _, id := range ids {
-		blocked[id] = struct{}{}
 	}
 	filtered := make([]account.RoutingCandidate, 0, len(values))
 	for _, candidate := range values {
-		if _, hit := blocked[candidate.Credential.ID]; hit {
+		if source := candidate.Credential.BuildBotFlagSource; source == 1 || source == 2 {
 			continue
 		}
 		filtered = append(filtered, candidate)

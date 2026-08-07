@@ -82,6 +82,7 @@ type accountCredentialModel struct {
 	LastRefreshErrorMessage   string        `gorm:"size:512;not null;default:'';check:chk_account_credentials_refresh_error_message,length(last_refresh_error_message) <= 512"`
 	LastRefreshErrorResponse  string        `gorm:"size:4096;not null;default:'';check:chk_account_credentials_refresh_error_response,length(last_refresh_error_response) <= 4096"`
 	RefreshPermanent          bool          `gorm:"not null;default:false"`
+	BuildBotFlagSource        int           `gorm:"not null;default:0;check:chk_account_credentials_build_bot_flag_source,build_bot_flag_source IN (0,1,2)"`
 	UpdatedAt                 time.Time     `gorm:"not null"`
 	Account                   *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }

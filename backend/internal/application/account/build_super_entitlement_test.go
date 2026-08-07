@@ -7,15 +7,15 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
-	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
-func openAccountService(t *testing.T) (*Service, repository.AccountRepository) {
+func openAccountService(t *testing.T) (*Service, *relational.AccountRepository) {
 	t.Helper()
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "build-super.db"))
@@ -48,10 +48,13 @@ func (s credentialMetadataAdapterStub) CredentialMetadata(credential accountdoma
 	if s.calls != nil {
 		s.calls.Add(1)
 	}
-	return provider.CredentialMetadata{BuildBotFlagged: credential.ID == 1}
+	if credential.ID == 1 {
+		return provider.CredentialMetadata{BuildBotFlagInspected: true, BuildBotFlagged: true, BuildBotFlagSource: 1}
+	}
+	return provider.CredentialMetadata{BuildBotFlagInspected: true}
 }
 
-func TestBuildBotFlagSummaryUsesShortLivedCache(t *testing.T) {
+func TestBuildBotFlagIndexIsRebuiltOnceAndReadWithoutTokenInspection(t *testing.T) {
 	ctx := context.Background()
 	service, accounts := openAccountService(t)
 	var calls atomic.Int32
@@ -63,6 +66,13 @@ func TestBuildBotFlagSummaryUsesShortLivedCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := service.RebuildBuildBotFlagIndex(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("metadata inspections during rebuild = %d, want 1", got)
+	}
+
 	if _, err := service.buildBotFlaggedAccountIDs(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -70,14 +80,49 @@ func TestBuildBotFlagSummaryUsesShortLivedCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := calls.Load(); got != 1 {
-		t.Fatalf("metadata inspections = %d, want 1", got)
+		t.Fatalf("metadata inspections after indexed reads = %d, want 1", got)
 	}
-	service.invalidateBuildBotFlagCache()
-	if _, err := service.buildBotFlaggedAccountIDs(ctx); err != nil {
+	bases, err := accounts.ListRoutingAccountBases(ctx, accountdomain.ProviderBuild, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("metadata inspections after invalidation = %d, want 2", got)
+	if len(bases) != 1 || bases[0].Credential.BuildBotFlagSource != 1 || bases[0].Credential.EncryptedAccessToken != "" {
+		t.Fatalf("routing projection = %#v", bases)
+	}
+}
+
+type unknownCredentialMetadataAdapterStub struct{}
+
+func (unknownCredentialMetadataAdapterStub) Provider() accountdomain.Provider {
+	return accountdomain.ProviderBuild
+}
+
+func (unknownCredentialMetadataAdapterStub) CredentialMetadata(accountdomain.Credential) provider.CredentialMetadata {
+	return provider.CredentialMetadata{}
+}
+
+func TestBuildBotFlagIndexPreservesStoredSourceWhenInspectionFails(t *testing.T) {
+	ctx := context.Background()
+	service, accounts := openAccountService(t)
+	service.providers = provider.NewRegistry(unknownCredentialMetadataAdapterStub{})
+	created, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "unknown", SourceKey: "unknown-build-bot-flag",
+		EncryptedAccessToken: "invalid", AuthStatus: accountdomain.AuthStatusActive, Enabled: true,
+		BuildBotFlagSource: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RebuildBuildBotFlagIndex(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := accounts.Get(ctx, created.ID)
+	if err != nil || stored.BuildBotFlagSource != 2 {
+		t.Fatalf("stored credential = %#v, err=%v", stored, err)
+	}
+	view, err := service.Get(ctx, created.ID)
+	if err != nil || !view.BuildBotFlagged || view.BuildBotFlagSource != 2 {
+		t.Fatalf("view = %#v, err=%v", view, err)
 	}
 }
 
@@ -90,6 +135,9 @@ func TestAccountViewsIncludeBuildBotFlagMetadata(t *testing.T) {
 		EncryptedAccessToken: "enc", AuthStatus: accountdomain.AuthStatusActive, Enabled: true,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RebuildBuildBotFlagIndex(ctx); err != nil {
 		t.Fatal(err)
 	}
 	view, err := service.Get(ctx, build.ID)
@@ -127,6 +175,43 @@ func TestAccountViewsIncludeBuildBotFlagMetadata(t *testing.T) {
 	summary, err := service.Summary(ctx)
 	if err != nil || summary.Risk != 1 {
 		t.Fatalf("summary=%#v err=%v", summary, err)
+	}
+}
+
+func TestSummaryUsesOneAvailabilitySnapshotWhenExcludingBotRisk(t *testing.T) {
+	ctx := context.Background()
+	service, accounts := openAccountService(t)
+	initial := time.Now().UTC().Truncate(time.Second)
+	cooldownUntil := initial.Add(time.Minute)
+	if _, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "flagged-cooldown", SourceKey: "flagged-cooldown",
+		EncryptedAccessToken: "enc", AuthStatus: accountdomain.AuthStatusActive,
+		BuildBotFlagSource: 1, CooldownUntil: &cooldownUntil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "normal-active", SourceKey: "normal-active",
+		EncryptedAccessToken: "enc", AuthStatus: accountdomain.AuthStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service.UpdateExcludeBuildBotFlaggedFromScheduling(true)
+	var calls atomic.Int32
+	service.now = func() time.Time {
+		if calls.Add(1) == 1 {
+			return initial
+		}
+		return initial.Add(2 * time.Minute)
+	}
+
+	summary, err := service.Summary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := summary.Providers[string(accountdomain.ProviderBuild)]
+	if summary.Risk != 1 || build.Available != 1 || summary.Available != 1 {
+		t.Fatalf("summary = %#v", summary)
 	}
 }
 

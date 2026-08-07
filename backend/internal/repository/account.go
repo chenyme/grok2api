@@ -20,6 +20,20 @@ type AccountUpsertResult struct {
 	Created bool
 }
 
+// BuildBotFlagCredential is the minimal encrypted credential projection used to
+// rebuild persisted Build bot-risk metadata outside the request path.
+type BuildBotFlagCredential struct {
+	AccountID            uint64
+	EncryptedAccessToken string
+	StoredSource         int
+}
+
+type BuildBotFlagSourceUpdate struct {
+	AccountID                    uint64
+	ExpectedEncryptedAccessToken string
+	Source                       int
+}
+
 // CredentialRefreshFailure is the bounded diagnostic state persisted for the
 // latest failed OAuth refresh. Response must already be redacted by the
 // provider adapter before it reaches persistence.
@@ -126,7 +140,7 @@ type AccountRepository interface {
 	ListAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, error)
 	// DeleteAutoCleanReauthCandidates 在事务内重新校验状态与年龄并跳过活动视频任务，返回实际删除 ID。
 	DeleteAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, candidateIDs []uint64) ([]uint64, error)
-	UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time) (account.Credential, error)
+	UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time, buildBotFlagSource int) (account.Credential, error)
 	BackfillCredentialRefreshSchedules(ctx context.Context, now time.Time, limit int) (int, error)
 	ListCriticalCredentialRefreshIDs(ctx context.Context, now, expiresBefore time.Time, limit int) ([]uint64, error)
 	ListDueCredentialRefreshIDs(ctx context.Context, now time.Time, limit int) ([]uint64, error)
