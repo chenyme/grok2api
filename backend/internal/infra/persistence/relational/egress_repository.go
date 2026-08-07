@@ -843,7 +843,8 @@ func toEgressOperationsConfigDomain(row egressOperationsConfigModel) egress.Oper
 	return egress.OperationsConfig{
 		ProbeProvider:        egress.ProbeProvider(row.ProbeProvider).Normalized(),
 		ProbeIntervalSeconds: row.ProbeIntervalSeconds, AutoAssignEnabled: row.AutoAssignEnabled, AutoBalanceEnabled: row.AutoBalanceEnabled,
-		AssignmentIntervalSeconds: row.AssignmentIntervalSeconds,
+		AssignmentIntervalSeconds:         row.AssignmentIntervalSeconds,
+		EncryptedSubscriptionProxyURL:     row.EncryptedSubscriptionProxyURL,
 		Fallbacks: map[egress.Scope]egress.FallbackConfig{
 			egress.ScopeBuild:        {Mode: egress.FallbackMode(row.BuildFallbackMode).Normalized(), NodeID: row.BuildFallbackNodeID},
 			egress.ScopeWeb:          {Mode: egress.FallbackMode(row.WebFallbackMode).Normalized(), NodeID: row.WebFallbackNodeID},
@@ -864,7 +865,8 @@ func fromEgressOperationsConfigDomain(value egress.OperationsConfig) egressOpera
 	return egressOperationsConfigModel{
 		ID: 1, ProbeProvider: string(value.ProbeProvider.Normalized()), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
-		BuildFallbackMode: string(buildFallback.Mode), BuildFallbackNodeID: buildFallback.NodeID,
+		EncryptedSubscriptionProxyURL: value.EncryptedSubscriptionProxyURL,
+		BuildFallbackMode:             string(buildFallback.Mode), BuildFallbackNodeID: buildFallback.NodeID,
 		WebFallbackMode: string(webFallback.Mode), WebFallbackNodeID: webFallback.NodeID,
 		ConsoleFallbackMode: string(consoleFallback.Mode), ConsoleFallbackNodeID: consoleFallback.NodeID,
 		WebAssetFallbackMode: string(webAssetFallback.Mode), WebAssetFallbackNodeID: webAssetFallback.NodeID,

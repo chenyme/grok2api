@@ -21,6 +21,7 @@ import (
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/sessionidentity"
+	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -53,7 +54,7 @@ func (s *gatewaySender) write(value any) error {
 	return s.connection.WriteJSON(value)
 }
 
-func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
+func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput, enforceStreamIdle bool) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
@@ -94,7 +95,17 @@ func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Creden
 		lease.Release()
 		return nil, nil, nil, "", err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.ChatTimeoutSeconds)*time.Second)
+	requestCtx, totalCancel := context.WithTimeout(ctx, time.Duration(cfg.ChatTimeoutSeconds)*time.Second)
+	var idleCancel context.CancelCauseFunc
+	if enforceStreamIdle && cfg.StreamIdleTimeoutSeconds > 0 {
+		requestCtx, idleCancel = context.WithCancelCause(requestCtx)
+	}
+	cancel := func() {
+		if idleCancel != nil {
+			idleCancel(nil)
+		}
+		totalCancel()
+	}
 	connection, handshake, dialErr := lease.DialWebSocket(requestCtx, endpoint, gatewayHeaders(origin, userID, token, lease), gatewayHandshakeTimeout)
 	if dialErr != nil {
 		cancel()
@@ -117,11 +128,15 @@ func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Creden
 		_ = writer.CloseWithError(streamErr)
 	}()
 	request, _ := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+	body := io.ReadCloser(&cancelBody{ReadCloser: reader, cancel: cancel})
+	if idleCancel != nil {
+		body = providerstreamidle.New(body, time.Duration(cfg.StreamIdleTimeoutSeconds)*time.Second, idleCancel)
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Status:     "200 OK",
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       &cancelBody{ReadCloser: reader, cancel: cancel},
+		Body:       body,
 		Request:    request,
 	}, lease, previous, "", nil
 }

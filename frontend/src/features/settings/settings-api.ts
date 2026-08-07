@@ -4,15 +4,15 @@ import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type SettingsConfigDTO = {
   server: { maxConcurrentRequests: number };
-  providerBuild: { baseURL: string; fallbackBaseURL: string; clientVersion: string; clientIdentifier: string; tokenAuth: string; tokenAuthConfigured: boolean; userAgent: string; responseHeaderTimeout: string };
+  providerBuild: { baseURL: string; fallbackBaseURL: string; clientVersion: string; clientIdentifier: string; tokenAuth: string; tokenAuthConfigured: boolean; userAgent: string; responseHeaderTimeout: string; streamIdleTimeout: string };
   providerWeb: {
-    baseURL: string; quotaTimeout: string; chatTimeout: string; imageTimeout: string; videoTimeout: string;
+    baseURL: string; quotaTimeout: string; chatTimeout: string; streamIdleTimeout: string; imageTimeout: string; videoTimeout: string;
     statsigMode: "manual" | "url"; statsigManualValue?: string; statsigManualConfigured: boolean; statsigSignerURL: string;
     clearanceMode: "manual" | "flaresolverr"; flareSolverrURL: string; clearanceTimeout: string; clearanceRefresh: string;
     mediaConcurrency: number; allowNSFW: boolean;
     recoveryBackoffBase: string; recoveryBackoffMax: string;
   };
-  providerConsole: { baseURL: string; chatTimeout: string };
+  providerConsole: { baseURL: string; chatTimeout: string; streamIdleTimeout: string };
   batch: { importConcurrency: number; conversionConcurrency: number; syncConcurrency: number; refreshConcurrency: number; randomDelay: string };
   media: {
     maxImageBytes: number; maxTotalBytes: number; cleanupThresholdPercent: number;
@@ -81,6 +81,11 @@ export type EgressSourceInput = {
 export type EgressOperationsConfigDTO = {
   probeProvider: "ipinfo" | "cloudflare"; probeIntervalSeconds: number; autoAssignEnabled: boolean; autoBalanceEnabled: boolean;
   assignmentIntervalSeconds: number; fallbacks: Record<EgressScope, EgressFallbackConfigDTO>; updatedAt: string;
+  subscriptionProxyConfigured: boolean;
+};
+export type EgressOperationsConfigInput = Omit<EgressOperationsConfigDTO, "updatedAt" | "subscriptionProxyConfigured"> & {
+  subscriptionProxyURL?: string;
+  clearSubscriptionProxy?: boolean;
 };
 export type EgressImportResultDTO = { imported: number; skipped: number };
 export type EgressIPProbeDTO = { status: "unknown" | "healthy" | "unhealthy"; testedAt?: string; latencyMs: number; exitIp?: string; error?: string };
@@ -99,14 +104,14 @@ export type SettingsSnapshotDTO = {
 
 const settingsConfigValidator = hasShape({
   server: hasShape({ maxConcurrentRequests: isNumber }),
-  providerBuild: hasShape({ baseURL: isString, fallbackBaseURL: isString, clientVersion: isString, clientIdentifier: isString, tokenAuth: isString, tokenAuthConfigured: isBoolean, userAgent: isString, responseHeaderTimeout: isString }),
+  providerBuild: hasShape({ baseURL: isString, fallbackBaseURL: isString, clientVersion: isString, clientIdentifier: isString, tokenAuth: isString, tokenAuthConfigured: isBoolean, userAgent: isString, responseHeaderTimeout: isString, streamIdleTimeout: isString }),
   providerWeb: hasShape({
-    baseURL: isString, quotaTimeout: isString, chatTimeout: isString, imageTimeout: isString, videoTimeout: isString,
+    baseURL: isString, quotaTimeout: isString, chatTimeout: isString, streamIdleTimeout: isOptional(isString), imageTimeout: isString, videoTimeout: isString,
     statsigMode: isOneOf("manual", "url"), statsigManualValue: isOptional(isString), statsigManualConfigured: isBoolean,
     statsigSignerURL: isString, clearanceMode: isOneOf("manual", "flaresolverr"), flareSolverrURL: isString,
     clearanceTimeout: isString, clearanceRefresh: isString, mediaConcurrency: isNumber, allowNSFW: isBoolean, recoveryBackoffBase: isString, recoveryBackoffMax: isString,
   }),
-  providerConsole: hasShape({ baseURL: isString, chatTimeout: isString }),
+  providerConsole: hasShape({ baseURL: isString, chatTimeout: isString, streamIdleTimeout: isOptional(isString) }),
   batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
   media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),
   frontend: hasShape({ publicApiBaseURL: isString }),
@@ -144,6 +149,14 @@ function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
     ...snapshot,
     config: {
       ...snapshot.config,
+      providerWeb: {
+        ...snapshot.config.providerWeb,
+        streamIdleTimeout: snapshot.config.providerWeb.streamIdleTimeout || "1m30s",
+      },
+      providerConsole: {
+        ...snapshot.config.providerConsole,
+        streamIdleTimeout: snapshot.config.providerConsole.streamIdleTimeout || "2m",
+      },
       audit: {
         ...snapshot.config.audit,
         commitDelayMS: snapshot.config.audit.commitDelayMS ?? 5,
@@ -182,7 +195,10 @@ const egressIPProbeValidator = hasShape({
   status: isOneOf("unknown", "healthy", "unhealthy"), testedAt: isOptional(isString), latencyMs: isNumber, exitIp: isOptional(isString), error: isOptional(isString),
 });
 type EgressNodeWireDTO = Omit<EgressNodeDTO, "ipv4Probe" | "ipv6Probe"> & { ipv4Probe?: EgressIPProbeDTO; ipv6Probe?: EgressIPProbeDTO };
-type EgressOperationsConfigWireDTO = Omit<EgressOperationsConfigDTO, "probeProvider"> & { probeProvider?: "ipinfo" | "cloudflare" };
+type EgressOperationsConfigWireDTO = Omit<EgressOperationsConfigDTO, "probeProvider" | "subscriptionProxyConfigured"> & {
+  probeProvider?: "ipinfo" | "cloudflare";
+  subscriptionProxyConfigured?: boolean;
+};
 type EgressProbeResultWireDTO = Omit<EgressProbeResultDTO, "ipv4" | "ipv6"> & { ipv4?: EgressIPProbeDTO; ipv6?: EgressIPProbeDTO };
 const unknownEgressIPProbe = (): EgressIPProbeDTO => ({ status: "unknown", latencyMs: 0 });
 const withEgressNodeProbeDefaults = (value: EgressNodeWireDTO): EgressNodeDTO => ({
@@ -270,10 +286,11 @@ const egressFallbackConfigValidator = hasShape({ mode: isOneOf("none", "direct",
 const decodeEgressOperationsConfigRaw = createObjectDecoder<EgressOperationsConfigWireDTO>("egress operations config", {
   probeProvider: isOptional(isOneOf("ipinfo", "cloudflare")), probeIntervalSeconds: isNumber, autoAssignEnabled: isBoolean, autoBalanceEnabled: isBoolean, assignmentIntervalSeconds: isNumber,
   fallbacks: isRecordOf(egressFallbackConfigValidator), updatedAt: isString,
+  subscriptionProxyConfigured: isOptional(isBoolean),
 });
 const decodeEgressOperationsConfig = (value: unknown): EgressOperationsConfigDTO => {
   const decoded = decodeEgressOperationsConfigRaw(value);
-  return { ...decoded, probeProvider: decoded.probeProvider ?? "cloudflare" };
+  return { ...decoded, probeProvider: decoded.probeProvider ?? "cloudflare", subscriptionProxyConfigured: decoded.subscriptionProxyConfigured ?? false };
 };
 const decodeEgressProbeResultRaw = createObjectDecoder<EgressProbeResultWireDTO>("egress probe", {
   status: isOneOf("unknown", "healthy", "unhealthy"), testedAt: isString, latencyMs: isNumber, exitIp: isOptional(isString), error: isOptional(isString), probeProvider: isOptional(isOneOf("ipinfo", "cloudflare")),
@@ -411,7 +428,7 @@ export function getEgressOperationsConfig(): Promise<EgressOperationsConfigDTO> 
   return apiRequest("/api/admin/v1/egress-operations", {}, decodeEgressOperationsConfig);
 }
 
-export function updateEgressOperationsConfig(input: Omit<EgressOperationsConfigDTO, "updatedAt">): Promise<EgressOperationsConfigDTO> {
+export function updateEgressOperationsConfig(input: EgressOperationsConfigInput): Promise<EgressOperationsConfigDTO> {
   return apiRequest("/api/admin/v1/egress-operations", { method: "PUT", body: input }, decodeEgressOperationsConfig);
 }
 

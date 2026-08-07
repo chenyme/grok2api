@@ -835,6 +835,8 @@ type operationsConfigRequest struct {
 	AutoAssignEnabled         bool                                 `json:"autoAssignEnabled"`
 	AutoBalanceEnabled        bool                                 `json:"autoBalanceEnabled"`
 	AssignmentIntervalSeconds int                                  `json:"assignmentIntervalSeconds"`
+	SubscriptionProxyURL      *string                              `json:"subscriptionProxyURL,omitempty"`
+	ClearSubscriptionProxy    bool                                 `json:"clearSubscriptionProxy,omitempty"`
 	Fallbacks                 map[string]operationsFallbackRequest `json:"fallbacks"`
 }
 
@@ -844,13 +846,14 @@ type operationsFallbackRequest struct {
 }
 
 type operationsConfigResponse struct {
-	ProbeProvider             string                                `json:"probeProvider"`
-	ProbeIntervalSeconds      int                                   `json:"probeIntervalSeconds"`
-	AutoAssignEnabled         bool                                  `json:"autoAssignEnabled"`
-	AutoBalanceEnabled        bool                                  `json:"autoBalanceEnabled"`
-	AssignmentIntervalSeconds int                                   `json:"assignmentIntervalSeconds"`
-	Fallbacks                 map[string]operationsFallbackResponse `json:"fallbacks"`
-	UpdatedAt                 time.Time                             `json:"updatedAt"`
+	ProbeProvider               string                                `json:"probeProvider"`
+	ProbeIntervalSeconds        int                                   `json:"probeIntervalSeconds"`
+	AutoAssignEnabled           bool                                  `json:"autoAssignEnabled"`
+	AutoBalanceEnabled          bool                                  `json:"autoBalanceEnabled"`
+	AssignmentIntervalSeconds   int                                   `json:"assignmentIntervalSeconds"`
+	SubscriptionProxyConfigured bool                                  `json:"subscriptionProxyConfigured"`
+	Fallbacks                   map[string]operationsFallbackResponse `json:"fallbacks"`
+	UpdatedAt                   time.Time                             `json:"updatedAt"`
 }
 
 type operationsFallbackResponse struct {
@@ -862,6 +865,12 @@ func (value operationsConfigRequest) input() (egressapp.OperationsConfigInput, e
 	result := egressapp.OperationsConfigInput{
 		ProbeProvider: egressdomain.ProbeProvider(strings.TrimSpace(value.ProbeProvider)), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
+	}
+	if value.SubscriptionProxyURL != nil {
+		result.SubscriptionProxyURL = value.SubscriptionProxyURL
+	}
+	if value.ClearSubscriptionProxy {
+		result.ClearSubscriptionProxy = true
 	}
 	if value.Fallbacks == nil {
 		return result, nil
@@ -911,7 +920,8 @@ func newOperationsConfigResponse(value egressdomain.OperationsConfig) operations
 	return operationsConfigResponse{
 		ProbeProvider: string(value.ProbeProvider.Normalized()), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
-		Fallbacks: fallbacks, UpdatedAt: value.UpdatedAt,
+		SubscriptionProxyConfigured: value.EncryptedSubscriptionProxyURL != "",
+		Fallbacks:                   fallbacks, UpdatedAt: value.UpdatedAt,
 	}
 }
 

@@ -28,3 +28,13 @@ func TestIsResponseHeaderTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestIsUpstreamStreamIdleTimeout(t *testing.T) {
+	wrapped := &url.Error{Op: "Post", URL: "https://example.test/v1/responses", Err: ErrUpstreamStreamIdleTimeout}
+	if !IsUpstreamStreamIdleTimeout(wrapped) || !IsBuildStreamIdleTimeout(wrapped) {
+		t.Fatal("provider stream-idle timeout was not recognized through compatibility classifiers")
+	}
+	if IsUpstreamStreamIdleTimeout(context.DeadlineExceeded) {
+		t.Fatal("generic context deadline was misclassified as stream-idle timeout")
+	}
+}

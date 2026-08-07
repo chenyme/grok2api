@@ -2,12 +2,14 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,7 +29,15 @@ const (
 	videoJobLease            = videoJobTimeout + 5*time.Minute
 	videoJobRecoveryInterval = 30 * time.Second
 	videoOutputAttempts      = 3
+	// Base64 物化会同时持有原图和编码后字符串，单独限流避免高 mediaConcurrency 放大内存峰值。
+	videoInputMaterializeConcurrency = 4
+	videoInputJSONBaseBytes          = int64(len(`{"image_urls":[]}`))
 )
+
+// VideoInputFileReference 将本地临时 file_id 编码为只在 Gateway 内部解释的引用。
+func VideoInputFileReference(fileID string) string {
+	return media.InputReference(fileID)
+}
 
 type VideoInput struct {
 	RequestID     string
@@ -46,6 +56,9 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	}
 	if len(input.Prompt) > 100000 || (len(input.Prompt) == 0 && len(input.ReferenceURLs) == 0) {
 		return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
+	}
+	if err := s.validateVideoInputReferences(ctx, input.ReferenceURLs); err != nil {
+		return media.Job{}, err
 	}
 	inputJSON, err := encodeVideoInput(input.ReferenceURLs)
 	if err != nil {
@@ -289,6 +302,13 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if err := s.mediaJobs.UpdateMediaJob(ctx, job); err != nil {
 		s.logger.Warn("video_job_progress_write_failed", "job_id", job.ID, "error", err)
 	}
+	inputReferences := decodeVideoInput(job.InputJSON)
+	releaseInputSlot, err := s.acquireVideoInputSlot(ctx, inputReferences)
+	if err != nil {
+		s.deferVideoJob(parent, job)
+		return
+	}
+	defer releaseInputSlot()
 	// 视频任务创建时已持久化账号归属；恢复只能重新获取原账号，禁止因后续
 	// 轮询或结果处理失败切换到其他账号。
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
@@ -313,10 +333,15 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		s.failVideoJob(parent, job, "provider_unavailable", ErrNoAvailableAccount)
 		return
 	}
+	referenceURLs, err := s.resolveVideoInputReferences(ctx, inputReferences)
+	if err != nil {
+		s.failVideoJob(parent, job, "input_unavailable", err)
+		return
+	}
 	lastProgress := job.Progress
 	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
 		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
-		ReferenceURLs: decodeVideoInput(job.InputJSON),
+		ReferenceURLs: referenceURLs,
 		Progress: func(value int) {
 			value = min(99, max(1, value))
 			if value-lastProgress < 5 {
@@ -331,6 +356,9 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			updateCancel()
 		},
 	})
+	// Provider 已消费请求体，尽早释放 Base64 物化名额和大字符串。
+	referenceURLs = nil
+	releaseInputSlot()
 	if err == nil && result.AssetID == "" && result.URL != "" {
 		result, err = s.persistRemoteVideo(ctx, job.ID, adapter, lease.Credential, result)
 	}
@@ -421,6 +449,110 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
 		s.accounts.QueueQuotaRefresh(job.AccountID, lease.QuotaMode)
 	}
+	// 输入回收放在账号状态、计费和审计收尾之后，存储抖动不得延迟关键终态逻辑。
+	s.releaseVideoInputs(job)
+}
+
+func (s *Service) acquireVideoInputSlot(ctx context.Context, references []string) (func(), error) {
+	hasLocalInput := false
+	for _, reference := range references {
+		if strings.HasPrefix(reference, media.InputReferencePrefix) {
+			hasLocalInput = true
+			break
+		}
+	}
+	if !hasLocalInput || s.mediaInputSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case s.mediaInputSlots <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-s.mediaInputSlots }) }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *Service) validateVideoInputReferences(ctx context.Context, references []string) error {
+	estimatedBytes := videoInputJSONBaseBytes
+	for _, reference := range references {
+		fileID, local := media.ParseInputReference(reference)
+		if !strings.HasPrefix(reference, media.InputReferencePrefix) {
+			if !addVideoReferenceBytes(&estimatedBytes, int64(len(reference))) {
+				return ErrVideoInputTooLarge
+			}
+			continue
+		}
+		if s.mediaAssets == nil || !local {
+			return ErrVideoInputUnavailable
+		}
+		asset, body, err := s.mediaAssets.OpenInputImage(ctx, fileID)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrVideoInputUnavailable, err)
+		}
+		_ = body.Close()
+		if !addVideoReferenceBytes(&estimatedBytes, materializedVideoReferenceBytes(asset.MIMEType, asset.SizeBytes)) {
+			return ErrVideoInputTooLarge
+		}
+	}
+	return nil
+}
+
+func (s *Service) resolveVideoInputReferences(ctx context.Context, references []string) ([]string, error) {
+	resolved := make([]string, 0, len(references))
+	estimatedBytes := videoInputJSONBaseBytes
+	for _, reference := range references {
+		fileID, local := media.ParseInputReference(reference)
+		if !strings.HasPrefix(reference, media.InputReferencePrefix) {
+			if !addVideoReferenceBytes(&estimatedBytes, int64(len(reference))) {
+				return nil, ErrVideoInputTooLarge
+			}
+			resolved = append(resolved, reference)
+			continue
+		}
+		if s.mediaAssets == nil || !local {
+			return nil, ErrVideoInputUnavailable
+		}
+		asset, body, err := s.mediaAssets.OpenInputImage(ctx, fileID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrVideoInputUnavailable, err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(body, media.MaxInputJSONBytes+1))
+		closeErr := body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("读取视频临时输入: %w", readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("关闭视频临时输入: %w", closeErr)
+		}
+		if len(data) == 0 || len(data) > media.MaxInputJSONBytes {
+			return nil, ErrVideoInputTooLarge
+		}
+		if !addVideoReferenceBytes(&estimatedBytes, materializedVideoReferenceBytes(asset.MIMEType, int64(len(data)))) {
+			return nil, ErrVideoInputTooLarge
+		}
+		resolved = append(resolved, "data:"+asset.MIMEType+";base64,"+base64.StdEncoding.EncodeToString(data))
+	}
+	return resolved, nil
+}
+
+func materializedVideoReferenceBytes(mimeType string, sizeBytes int64) int64 {
+	if sizeBytes <= 0 || sizeBytes > int64(media.MaxInputJSONBytes) {
+		return -1
+	}
+	return int64(len("data:")+len(mimeType)+len(";base64,")) + ((sizeBytes+2)/3)*4
+}
+
+func addVideoReferenceBytes(total *int64, referenceBytes int64) bool {
+	// 两个引号加一个逗号是保守的单元 JSON 开销（首项不需要逗号）。
+	const jsonElementOverhead = 3
+	addition := referenceBytes + jsonElementOverhead
+	limit := int64(media.MaxInputJSONBytes)
+	if referenceBytes < 0 || addition < 0 || *total > limit-addition {
+		return false
+	}
+	*total += addition
+	return true
 }
 
 // persistRemoteVideo 只重试已经生成的视频结果下载与本地归档，不重新调用生成接口，
@@ -571,6 +703,26 @@ func (s *Service) failVideoJob(ctx context.Context, job media.Job, code string, 
 		s.logger.Error("video_usage_record_failed", "job_id", job.ID, "event_id", "video_usage_"+job.ID, "error", auditErr)
 	}
 	s.cancelBillingReservation("video_usage_" + job.ID)
+	s.releaseVideoInputs(job)
+}
+
+func (s *Service) releaseVideoInputs(job media.Job) {
+	if s.mediaAssets == nil {
+		return
+	}
+	references := decodeVideoInput(job.InputJSON)
+	if len(references) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.mediaAssets.ReleaseInputImages(ctx, references); err != nil {
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("video_input_release_failed", "job_id", job.ID, "error", err)
+	}
 }
 
 func (s *Service) logVideoGenerationFailure(job media.Job, credential account.Credential, err error) {

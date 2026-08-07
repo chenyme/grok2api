@@ -74,8 +74,12 @@ type MediaAssetRepository interface {
 	TotalMediaAssetBytes(ctx context.Context) (int64, error)
 	// ListOldestMediaAssets 按 created_at ASC, id ASC 分页；offset 用于跳过已扫描的受保护资产。
 	ListOldestMediaAssets(ctx context.Context, offset, limit int) ([]media.Asset, error)
+	// ListExpiredMediaAssets 按过期时间稳定分页返回已过期临时输入，持久资产永不包含在结果中。
+	ListExpiredMediaAssets(ctx context.Context, before time.Time, offset, limit int) ([]media.Asset, error)
+	// ExpireMediaInputIfUnreferenced 在没有活动任务引用时原子地将临时输入标记为过期。
+	ExpireMediaInputIfUnreferenced(ctx context.Context, id string, expiresAt time.Time) (bool, error)
 	DeleteMediaAsset(ctx context.Context, id string) error
-	// ListActiveVideoAssetIDs 返回进行中任务或未消费票据绑定的资产 ID，清理时必须跳过。
+	// ListProtectedMediaAssetIDs 返回活动任务或未消费票据绑定的资产 ID，清理时必须跳过。
 	ListProtectedMediaAssetIDs(ctx context.Context) (map[string]struct{}, error)
 }
 

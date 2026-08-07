@@ -102,6 +102,7 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_usage_recovery ON media_jobs(status, usage_recorded_at, completed_at, id)",
 	"CREATE INDEX IF NOT EXISTS idx_media_assets_created ON media_assets(created_at DESC, id)",
 	"CREATE INDEX IF NOT EXISTS idx_media_assets_kind_created ON media_assets(kind, created_at DESC, id)",
+	"CREATE INDEX IF NOT EXISTS idx_media_assets_expires ON media_assets(expires_at, id) WHERE expires_at IS NOT NULL",
 	"CREATE INDEX IF NOT EXISTS idx_media_upload_tickets_expires ON media_upload_tickets(expires_at, consumed_at)",
 	"CREATE INDEX IF NOT EXISTS idx_media_jobs_result_asset ON media_jobs(result_asset_id) WHERE result_asset_id <> ''",
 	// Pending input metadata rows only; keeps startup backfill scans off the full table after migration completes.
@@ -153,6 +154,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	}
 	if err := d.migrateBuildResponseHeaderTimeout(ctx); err != nil {
 		return fmt.Errorf("迁移 Grok Build 响应头超时: %w", err)
+	}
+	if err := d.migrateProviderStreamIdleTimeouts(ctx); err != nil {
+		return fmt.Errorf("迁移 Provider 流式空闲超时: %w", err)
 	}
 	if err := d.ensureConsoleConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 Console 数据库约束: %w", err)
@@ -248,6 +252,59 @@ func (d *Database) migrateBuildResponseHeaderTimeout(ctx context.Context) error 
 			return nil
 		}
 		payload.Config.ProviderBuild.ResponseHeaderTimeout = settingsdomain.DefaultBuildResponseHeaderTimeout
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("encode runtime settings: %w", err)
+		}
+		result := db.Model(&runtimeSettingsModel{}).
+			Where("key = ? AND revision = ?", row.Key, row.Revision).
+			UpdateColumn("value_json", string(encoded))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 1 {
+			return nil
+		}
+	}
+	return errors.New("runtime settings changed repeatedly during migration")
+}
+
+// migrateProviderStreamIdleTimeouts persists runtime defaults for settings rows
+// created before provider stream idle timeouts became configurable.
+func (d *Database) migrateProviderStreamIdleTimeouts(ctx context.Context) error {
+	db := d.db.WithContext(ctx)
+	for range 4 {
+		var row runtimeSettingsModel
+		if err := db.Where("key = ?", runtimeSettingsKey).First(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		var payload runtimeSettingsPayload
+		if err := json.Unmarshal([]byte(row.ValueJSON), &payload); err != nil {
+			return fmt.Errorf("decode runtime settings: %w", err)
+		}
+		changed := false
+		if payload.Config.ProviderBuild.StreamIdleTimeout <= 0 {
+			payload.Config.ProviderBuild.StreamIdleTimeout = settingsdomain.DefaultBuildStreamIdleTimeout
+			changed = true
+		}
+		if payload.Config.ProviderWeb.StreamIdleTimeout <= 0 {
+			payload.Config.ProviderWeb.StreamIdleTimeout = settingsdomain.DefaultWebStreamIdleTimeout
+			changed = true
+		}
+		// ProviderConsole was introduced after runtime settings persistence. Keep
+		// a completely absent legacy section absent so applyDomainConfig can retain
+		// the current defaults instead of treating a timeout-only section as an
+		// explicitly configured (but invalid) Console provider.
+		if payload.Config.ProviderConsole != (settingsdomain.ProviderConsoleConfig{}) && payload.Config.ProviderConsole.StreamIdleTimeout <= 0 {
+			payload.Config.ProviderConsole.StreamIdleTimeout = settingsdomain.DefaultConsoleStreamIdleTimeout
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("encode runtime settings: %w", err)

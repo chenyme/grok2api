@@ -22,6 +22,7 @@ import (
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -661,16 +662,21 @@ func (h *Handler) generateVideo(c *gin.Context) {
 	}
 	referenceURLs := make([]string, 0, len(inputs))
 	for _, input := range inputs {
-		if strings.TrimSpace(input.FileID) != "" {
-			writeOpenAIError(c, http.StatusBadRequest, "unsupported_parameter", "当前暂不支持 image.file_id，请使用 image.url")
-			return
-		}
 		urlValue := strings.TrimSpace(input.URL)
-		if urlValue == "" {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "每个 image 都必须提供有效 url")
+		fileID := strings.TrimSpace(input.FileID)
+		if (urlValue == "") == (fileID == "") {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "每个 image 必须且只能提供 url 或 file_id")
 			return
 		}
-		referenceURLs = append(referenceURLs, urlValue)
+		if fileID != "" {
+			if !mediadomain.IsInputAssetID(fileID) {
+				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "image.file_id 无效")
+				return
+			}
+			referenceURLs = append(referenceURLs, gateway.VideoInputFileReference(fileID))
+		} else {
+			referenceURLs = append(referenceURLs, urlValue)
+		}
 	}
 	if prompt == "" && len(referenceURLs) == 0 {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "文本生视频必须提供 prompt；图片生视频可以省略 prompt")
@@ -1018,6 +1024,8 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 			errorCode = "upstream_stream_error"
 		case errors.Is(err, errUpstreamStreamIncomplete):
 			errorCode = "upstream_stream_incomplete"
+		case errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout):
+			errorCode = "upstream_stream_idle_timeout"
 		case errors.Is(err, errUpstreamStreamRead):
 			errorCode = "upstream_stream_interrupted"
 		default:
@@ -1064,7 +1072,7 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 			if inspector.terminalSuccess {
 				return inspector.Metadata(), nil
 			}
-			return inspector.Metadata(), fmt.Errorf("%w: %v", errUpstreamStreamRead, readErr)
+			return inspector.Metadata(), fmt.Errorf("%w: %w", errUpstreamStreamRead, readErr)
 		}
 	}
 }
@@ -1676,7 +1684,7 @@ func writeGatewayError(c *gin.Context, err error) {
 	case errors.Is(err, gateway.ErrResponseStateUnsupported), errors.Is(err, gateway.ErrConversationUnsupported):
 		status, code = http.StatusBadRequest, "unsupported_parameter"
 		message = err.Error()
-	case errors.Is(err, gateway.ErrVideoInputTooLarge):
+	case errors.Is(err, gateway.ErrVideoInputTooLarge), errors.Is(err, gateway.ErrVideoInputUnavailable):
 		status, code = http.StatusBadRequest, "invalid_request"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):

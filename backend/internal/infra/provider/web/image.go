@@ -375,7 +375,7 @@ func (e *liteUpstreamError) Response() *provider.Response {
 
 func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.Credential, spec ModelSpec, prompt string) (string, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		upstream, lease, _, statsigTarget, err := a.openChat(ctx, credential, "", spec, normalizedChatInput{Prompt: "Drawing: " + prompt})
+		upstream, lease, _, statsigTarget, err := a.openChat(ctx, credential, "", spec, normalizedChatInput{Prompt: "Drawing: " + prompt}, false)
 		if err != nil {
 			return "", err
 		}
