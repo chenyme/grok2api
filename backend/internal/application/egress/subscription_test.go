@@ -1,10 +1,13 @@
 package egress
 
 import (
+	"context"
 	"encoding/base64"
+	"net"
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseProxySubscriptionAcceptsPlainAndBase64Lists(t *testing.T) {
@@ -55,5 +58,63 @@ func TestIsPublicAddressRejectsNonPublicRanges(t *testing.T) {
 	}
 	if !isPublicAddress(netip.MustParseAddr("1.1.1.1")) {
 		t.Fatal("public address rejected")
+	}
+}
+
+func TestValidatePublicSubscriptionTargetRejectsPrivateAddresses(t *testing.T) {
+	for _, value := range []string{
+		"http://127.0.0.1/subscription",
+		"http://10.0.0.1/subscription",
+		"http://169.254.169.254/latest/meta-data",
+		"http://[::1]/subscription",
+	} {
+		if err := validatePublicSubscriptionTarget(context.Background(), value); err == nil {
+			t.Fatalf("private subscription target accepted: %s", value)
+		}
+	}
+	for _, value := range []string{"https://1.1.1.1/subscription", "https://[2606:4700:4700::1111]/subscription"} {
+		if err := validatePublicSubscriptionTarget(context.Background(), value); err != nil {
+			t.Fatalf("public subscription target rejected: %s: %v", value, err)
+		}
+	}
+}
+
+func TestSubscriptionProxyForwardDialerBoundsHandshakeConnection(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	dialer := &subscriptionProxyForwardDialer{timeout: 20 * time.Millisecond}
+	connection, err := dialer.withDeadline(client, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	started := time.Now()
+	buffer := make([]byte, 1)
+	_, err = connection.Read(buffer)
+	if err == nil {
+		t.Fatal("connection without peer data did not reach its handshake deadline")
+	}
+	if timeout, ok := err.(net.Error); !ok || !timeout.Timeout() {
+		t.Fatalf("deadline error=%v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("handshake deadline took %s", elapsed)
+	}
+}
+
+func TestSubscriptionTransportSupportsConfiguredProxyProtocols(t *testing.T) {
+	for _, proxyURL := range []string{
+		"http://127.0.0.1:8080",
+		"https://127.0.0.1:8443",
+		"socks4://127.0.0.1:1080",
+		"socks4a://127.0.0.1:1080",
+		"socks5://127.0.0.1:1080",
+		"socks5h://127.0.0.1:1080",
+	} {
+		transport, err := subscriptionTransport(proxyURL)
+		if err != nil {
+			t.Fatalf("proxy %s: %v", proxyURL, err)
+		}
+		transport.CloseIdleConnections()
 	}
 }
