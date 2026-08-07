@@ -20,6 +20,20 @@ type AccountUpsertResult struct {
 	Created bool
 }
 
+// BuildBotFlagCredential is the minimal encrypted credential projection used to
+// rebuild persisted Build bot-risk metadata outside the request path.
+type BuildBotFlagCredential struct {
+	AccountID            uint64
+	EncryptedAccessToken string
+	StoredSource         int
+}
+
+type BuildBotFlagSourceUpdate struct {
+	AccountID                    uint64
+	ExpectedEncryptedAccessToken string
+	Source                       int
+}
+
 // CredentialRefreshFailure is the bounded diagnostic state persisted for the
 // latest failed OAuth refresh. Response must already be redacted by the
 // provider adapter before it reaches persistence.
@@ -87,6 +101,9 @@ type AccountRepository interface {
 	// previously rejected refresh token once.
 	ListEnabledCredentialRefreshAccountIDs(ctx context.Context, provider account.Provider, refreshableOnly bool) ([]uint64, error)
 	CountProviderAccountsByIDs(ctx context.Context, provider account.Provider, ids []uint64) (int64, error)
+	// CountAvailableAmong counts how many of the given account IDs currently match the
+	// same "available/schedulable" predicate used by Summarize for the provider.
+	CountAvailableAmong(ctx context.Context, provider account.Provider, ids []uint64, now time.Time) (int64, error)
 	// FilterMissingBuildConversionIDs 从指定账号中排除已经关联 Build 的 Web 账号。
 	FilterMissingBuildConversionIDs(ctx context.Context, ids []uint64) ([]uint64, error)
 	// ListUnlinkedWebAccountIDs 以 ID 游标取未关联 Web 账号；total 仅在 afterID 为 0 时返回。
@@ -123,7 +140,7 @@ type AccountRepository interface {
 	ListAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, error)
 	// DeleteAutoCleanReauthCandidates 在事务内重新校验状态与年龄并跳过活动视频任务，返回实际删除 ID。
 	DeleteAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, candidateIDs []uint64) ([]uint64, error)
-	UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time) (account.Credential, error)
+	UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time, buildBotFlagSource int) (account.Credential, error)
 	BackfillCredentialRefreshSchedules(ctx context.Context, now time.Time, limit int) (int, error)
 	ListCriticalCredentialRefreshIDs(ctx context.Context, now, expiresBefore time.Time, limit int) ([]uint64, error)
 	ListDueCredentialRefreshIDs(ctx context.Context, now time.Time, limit int) ([]uint64, error)

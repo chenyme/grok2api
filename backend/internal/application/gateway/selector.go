@@ -262,6 +262,7 @@ type Selector struct {
 	cooldownMax            time.Duration
 	capacityWait           time.Duration
 	preferFreeBuild        bool
+	excludeBuildBotFlagged bool
 	segmentedConfig        segmentedSelectorConfig
 	segmentedState         segmentedSelectorState
 	configMu               sync.RWMutex
@@ -342,10 +343,61 @@ func (s *Selector) routingConfig() (time.Duration, time.Duration, time.Duration,
 	return s.stickyTTL, s.cooldownBase, s.cooldownMax, s.capacityWait
 }
 
+// UpdateExcludeBuildBotFlaggedFromScheduling toggles Build bot-risk exclusion from
+// scheduling and invalidates Build candidate caches when the value changes.
+func (s *Selector) UpdateExcludeBuildBotFlaggedFromScheduling(value bool) {
+	s.configMu.Lock()
+	changed := s.excludeBuildBotFlagged != value
+	s.excludeBuildBotFlagged = value
+	s.configMu.Unlock()
+	if changed {
+		s.invalidateProviderCandidateCache(account.ProviderBuild)
+	}
+}
+
 func (s *Selector) preferFreeBuildEnabled() bool {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 	return s.preferFreeBuild
+}
+
+func (s *Selector) excludeBuildBotFlaggedEnabled() bool {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return s.excludeBuildBotFlagged
+}
+
+func (s *Selector) invalidateProviderCandidateCache(provider account.Provider) {
+	s.candidateMu.Lock()
+	defer s.candidateMu.Unlock()
+	for key := range s.candidates {
+		if key.provider == provider {
+			delete(s.candidates, key)
+		}
+	}
+	clearRoutingBases(s.routingBases, provider)
+	clearRoutingOverlays(s.routingOverlays, provider)
+	if provider != "" {
+		s.baseProviderVersion[provider]++
+		s.overlayProviderVersion[provider]++
+	}
+}
+
+func (s *Selector) applyBuildBotFlaggedFilter(_ context.Context, provider account.Provider, values []account.RoutingCandidate) ([]account.RoutingCandidate, error) {
+	if provider != account.ProviderBuild || len(values) == 0 {
+		return values, nil
+	}
+	if !s.excludeBuildBotFlaggedEnabled() {
+		return values, nil
+	}
+	filtered := make([]account.RoutingCandidate, 0, len(values))
+	for _, candidate := range values {
+		if source := candidate.Credential.BuildBotFlagSource; source == 1 || source == 2 {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered, nil
 }
 
 func (s *Selector) Acquire(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode, affinityKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*accountLease, error) {
@@ -1087,6 +1139,10 @@ func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.
 			}
 			return nil, err
 		}
+		values, err = s.applyBuildBotFlaggedFilter(ctx, provider, values)
+		if err != nil {
+			return nil, err
+		}
 		s.candidateMu.Lock()
 		s.storeCandidateSnapshotLocked(key, newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL)), checkTime)
 		s.candidateMu.Unlock()
@@ -1134,6 +1190,10 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 				continue
 			}
 			values := assembleRoutingCandidates(provider, quotaMode, bases, overlay)
+			values, filterErr := s.applyBuildBotFlaggedFilter(ctx, provider, values)
+			if filterErr != nil {
+				return nil, filterErr
+			}
 			s.candidateMu.Lock()
 			stable := baseVersion == s.routingBaseVersionLocked(provider) && overlayVersion == s.routingOverlayVersionLocked(provider)
 			if stable {
@@ -1147,7 +1207,11 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 		}
 		// Sustained account synchronization must not turn cache churn into user-facing
 		// failures. Fall back to the established authoritative combined query.
-		return s.accounts.ListRoutingCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode)
+		values, err := s.accounts.ListRoutingCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode)
+		if err != nil {
+			return nil, err
+		}
+		return s.applyBuildBotFlaggedFilter(ctx, provider, values)
 	})
 	if err != nil {
 		return nil, err

@@ -104,6 +104,12 @@ func (r *AccountRepository) List(ctx context.Context, input repository.AccountLi
 			query = query.Where("NOT EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.encrypted_refresh <> '')")
 		}
 	}
+	switch input.Filter.Risk {
+	case "flagged":
+		query = query.Where("EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.build_bot_flag_source IN (1,2))")
+	case "normal":
+		query = query.Where("NOT EXISTS (SELECT 1 FROM account_credentials credential WHERE credential.account_id = provider_accounts.id AND credential.build_bot_flag_source IN (1,2))")
+	}
 	query = applyWebAgreementFilter(query, input.Filter.Agreement)
 	query = applyAssociationFilter(query, input.Filter.Provider, input.Filter.Association)
 	if input.Filter.RestrictIDs {
@@ -183,6 +189,120 @@ func (r *AccountRepository) CountProviderAccountsByIDs(ctx context.Context, prov
 		Where("provider = ? AND id IN ?", providerValue, ids).
 		Count(&count).Error
 	return count, err
+}
+
+// CountAvailableAmong counts IDs that currently match Summarize's available predicate.
+func (r *AccountRepository) CountAvailableAmong(ctx context.Context, providerValue account.Provider, ids []uint64, now time.Time) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	const batchSize = 500
+	var total int64
+	for start := 0; start < len(ids); start += batchSize {
+		end := min(start+batchSize, len(ids))
+		var count int64
+		query := r.db.db.WithContext(ctx).Model(&accountModel{}).
+			Where("provider = ? AND id IN ?", providerValue, ids[start:end])
+		query = applyAccountStatusFilter(query, "active", now)
+		if err := query.Count(&count).Error; err != nil {
+			return 0, err
+		}
+		total += count
+	}
+	return total, nil
+}
+
+// CountBuildBotFlagged counts persisted Build risk metadata without loading an
+// account-ID slice or credential material.
+func (r *AccountRepository) CountBuildBotFlagged(ctx context.Context) (int64, error) {
+	var count int64
+	err := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Joins("JOIN account_credentials AS credential ON credential.account_id = provider_accounts.id").
+		Where("provider_accounts.provider = ? AND credential.build_bot_flag_source IN (1,2)", account.ProviderBuild).
+		Count(&count).Error
+	return count, err
+}
+
+// CountAvailableBuildBotFlagged uses the same availability predicate as
+// Summarize without expanding a potentially unbounded ID list.
+func (r *AccountRepository) CountAvailableBuildBotFlagged(ctx context.Context, now time.Time) (int64, error) {
+	var count int64
+	query := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Joins("JOIN account_credentials AS credential ON credential.account_id = provider_accounts.id").
+		Where("provider_accounts.provider = ? AND credential.build_bot_flag_source IN (1,2)", account.ProviderBuild)
+	query = applyAccountStatusFilter(query, "active", now)
+	err := query.Count(&count).Error
+	return count, err
+}
+
+// ListBuildBotFlaggedAccountIDs reads persisted non-sensitive metadata only; it
+// never loads or decrypts access tokens on the scheduling path.
+func (r *AccountRepository) ListBuildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
+	var ids []uint64
+	err := r.db.db.WithContext(ctx).
+		Table("provider_accounts AS account").
+		Select("account.id").
+		Joins("JOIN account_credentials AS credential ON credential.account_id = account.id").
+		Where("account.provider = ? AND credential.build_bot_flag_source IN (1,2)", account.ProviderBuild).
+		Order("account.id ASC").
+		Scan(&ids).Error
+	return ids, err
+}
+
+// ListBuildBotFlagCredentialBatch returns the minimum projection required for
+// startup backfill of the persisted risk source.
+func (r *AccountRepository) ListBuildBotFlagCredentialBatch(ctx context.Context, afterID uint64, limit int) ([]repository.BuildBotFlagCredential, error) {
+	if limit < 1 {
+		return []repository.BuildBotFlagCredential{}, nil
+	}
+	var rows []struct {
+		AccountID            uint64
+		EncryptedAccessToken string
+		StoredSource         int
+	}
+	err := r.db.db.WithContext(ctx).
+		Table("provider_accounts AS account").
+		Select("account.id AS account_id, credential.encrypted_primary AS encrypted_access_token, credential.build_bot_flag_source AS stored_source").
+		Joins("JOIN account_credentials AS credential ON credential.account_id = account.id").
+		Where("account.provider = ? AND account.id > ?", account.ProviderBuild, afterID).
+		Order("account.id ASC").Limit(limit).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make([]repository.BuildBotFlagCredential, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, repository.BuildBotFlagCredential{
+			AccountID: row.AccountID, EncryptedAccessToken: row.EncryptedAccessToken, StoredSource: row.StoredSource,
+		})
+	}
+	return result, nil
+}
+
+// UpdateBuildBotFlagSources persists a bounded backfill batch transactionally.
+func (r *AccountRepository) UpdateBuildBotFlagSources(ctx context.Context, values []repository.BuildBotFlagSourceUpdate) error {
+	if len(values) == 0 {
+		return nil
+	}
+	changed := false
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, value := range values {
+			source := normalizeBuildBotFlagSource(account.ProviderBuild, value.Source)
+			result := tx.Model(&accountCredentialModel{}).
+				Where("account_id = ? AND encrypted_primary = ?", value.AccountID, value.ExpectedEncryptedAccessToken).
+				Update("build_bot_flag_source", source)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected > 0 {
+				changed = true
+			}
+		}
+		return nil
+	})
+	if err == nil && changed {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountCredentialChanged, Provider: account.ProviderBuild})
+	}
+	return err
 }
 
 func (r *AccountRepository) Summarize(ctx context.Context, now time.Time) ([]repository.AccountSummary, error) {
@@ -465,7 +585,7 @@ func qualifiedColumnList(alias string, columns []string) string {
 // access token, refresh token, and Cloudflare cookie.
 var routingCredentialMetadataColumns = []string{
 	"account_id", "auth_type", "client_id", "expires_at", "refresh_due_at", "last_refresh_at",
-	"refresh_failures", "last_refresh_error", "refresh_permanent", "updated_at",
+	"refresh_failures", "last_refresh_error", "refresh_permanent", "build_bot_flag_source", "updated_at",
 }
 
 var routingBillingColumns = []string{
@@ -1775,17 +1895,22 @@ func applyAssociationFilter(query *gorm.DB, providerValue, association string) *
 	}
 }
 
-func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time) (account.Credential, error) {
+func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessToken, refreshToken string, expiresAt time.Time, buildBotFlagSource int) (account.Credential, error) {
 	now := time.Now().UTC()
 	refreshDueAt := account.CredentialRefreshDueAt(id, expiresAt)
-	updates := map[string]any{
-		"encrypted_primary": accessToken, "expires_at": expiresAt, "refresh_due_at": refreshDueAt,
-		"last_refresh_at": now, "refresh_failures": 0, "last_refresh_error_status": 0, "last_refresh_error": "", "last_refresh_error_message": "", "last_refresh_error_response": "", "refresh_permanent": false, "updated_at": now,
-	}
-	if refreshToken != "" {
-		updates["encrypted_refresh"] = refreshToken
-	}
 	if err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var providerRow struct{ Provider string }
+		if err := tx.Model(&accountModel{}).Select("provider").Where("id = ?", id).Take(&providerRow).Error; err != nil {
+			return err
+		}
+		updates := map[string]any{
+			"encrypted_primary": accessToken, "expires_at": expiresAt, "refresh_due_at": refreshDueAt,
+			"build_bot_flag_source": normalizeBuildBotFlagSource(account.Provider(providerRow.Provider), buildBotFlagSource),
+			"last_refresh_at":       now, "refresh_failures": 0, "last_refresh_error_status": 0, "last_refresh_error": "", "last_refresh_error_message": "", "last_refresh_error_response": "", "refresh_permanent": false, "updated_at": now,
+		}
+		if refreshToken != "" {
+			updates["encrypted_refresh"] = refreshToken
+		}
 		if err := tx.Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(updates).Error; err != nil {
 			return err
 		}

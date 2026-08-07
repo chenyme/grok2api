@@ -65,6 +65,25 @@ func TestEnsureCredentialReusesRotatedTokenAndThrottlesForcedRefresh(t *testing.
 	}
 }
 
+func TestEnsureCredentialPreservesBotFlagWhenRefreshedTokenCannotBeInspected(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	service, credential, _ := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+	credential.BuildBotFlagSource = 2
+	credential, err := service.accounts.Update(ctx, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := service.EnsureCredential(ctx, credential, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.BuildBotFlagSource != 2 {
+		t.Fatalf("refreshed source = %d, want preserved source 2", refreshed.BuildBotFlagSource)
+	}
+}
+
 func TestEnsureCredentialCollapsesConcurrentForcedRefreshes(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
@@ -151,7 +170,7 @@ func TestEnsureCredentialRefreshesWhenAccessTokenIsMissing(t *testing.T) {
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	service, credential, adapter := newCredentialRefreshTestService(t, now)
 	service.now = func() time.Time { return now }
-	credential, err := service.accounts.UpdateTokens(ctx, credential.ID, "", "refresh-only", now.Add(time.Hour))
+	credential, err := service.accounts.UpdateTokens(ctx, credential.ID, "", "refresh-only", now.Add(time.Hour), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +272,7 @@ func TestStartupRecoveryRefreshesExpiredCredential(t *testing.T) {
 	now := time.Now().UTC()
 	service, credential, adapter := newCredentialRefreshTestService(t, now)
 	service.now = func() time.Time { return now }
-	expired, err := service.accounts.UpdateTokens(context.Background(), credential.ID, credential.EncryptedAccessToken, credential.EncryptedRefreshToken, now.Add(-time.Minute))
+	expired, err := service.accounts.UpdateTokens(context.Background(), credential.ID, credential.EncryptedAccessToken, credential.EncryptedRefreshToken, now.Add(-time.Minute), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +293,7 @@ func TestStartupRecoveryRespectsContextBudget(t *testing.T) {
 	now := time.Now().UTC()
 	service, credential, adapter := newCredentialRefreshTestService(t, now)
 	service.now = func() time.Time { return now }
-	if _, err := service.accounts.UpdateTokens(context.Background(), credential.ID, credential.EncryptedAccessToken, credential.EncryptedRefreshToken, now.Add(-time.Minute)); err != nil {
+	if _, err := service.accounts.UpdateTokens(context.Background(), credential.ID, credential.EncryptedAccessToken, credential.EncryptedRefreshToken, now.Add(-time.Minute), 0); err != nil {
 		t.Fatal(err)
 	}
 	adapter.delay = time.Second
@@ -387,7 +406,7 @@ func TestCredentialRefreshFailureDistinguishesTransientAndPermanent(t *testing.T
 	service.clearRefreshState(credential.ID)
 	expiredCredential := permanent
 	expiredCredential.ExpiresAt = now.Add(-time.Minute)
-	if _, err := service.accounts.UpdateTokens(ctx, permanent.ID, permanent.EncryptedAccessToken, permanent.EncryptedRefreshToken, expiredCredential.ExpiresAt); err != nil {
+	if _, err := service.accounts.UpdateTokens(ctx, permanent.ID, permanent.EncryptedAccessToken, permanent.EncryptedRefreshToken, expiredCredential.ExpiresAt, 0); err != nil {
 		t.Fatal(err)
 	}
 	adapter.refreshErr = &provider.CredentialRefreshError{Status: 400, Code: "invalid_grant", Permanent: true}

@@ -276,10 +276,13 @@ type ClientKeyDefaultsConfig struct {
 type AccountsConfig struct {
 	MarkBuildForbiddenReauth  bool
 	BuildForbiddenReauthCodes []string
-	AutoCleanReauthEnabled    bool
-	AutoCleanReauthInterval   Duration
-	AutoCleanReauthMinAge     Duration
-	AutoCleanIncludeDisabled  bool
+	// ExcludeBuildBotFlaggedFromScheduling removes Build accounts with bot_flag_source/bfs in {1,2}
+	// from scheduling only. Linked Web/Console accounts are unaffected.
+	ExcludeBuildBotFlaggedFromScheduling bool
+	AutoCleanReauthEnabled               bool
+	AutoCleanReauthInterval              Duration
+	AutoCleanReauthMinAge                Duration
+	AutoCleanIncludeDisabled             bool
 }
 
 type Secrets struct {
@@ -847,12 +850,13 @@ func defaultConfig() Config {
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
 		Accounts: AccountsConfig{
-			MarkBuildForbiddenReauth:  false,
-			BuildForbiddenReauthCodes: []string{"permission-denied"},
-			AutoCleanReauthEnabled:    false,
-			AutoCleanReauthInterval:   Duration(10 * time.Minute),
-			AutoCleanReauthMinAge:     Duration(time.Hour),
-			AutoCleanIncludeDisabled:  false,
+			MarkBuildForbiddenReauth:             false,
+			BuildForbiddenReauthCodes:            []string{"permission-denied"},
+			ExcludeBuildBotFlaggedFromScheduling: false,
+			AutoCleanReauthEnabled:               false,
+			AutoCleanReauthInterval:              Duration(10 * time.Minute),
+			AutoCleanReauthMinAge:                Duration(time.Hour),
+			AutoCleanIncludeDisabled:             false,
 		},
 	}
 }
