@@ -25,7 +25,9 @@ import (
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
+	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -408,6 +410,76 @@ func TestForwardMessagesWebSearchEndToEnd(t *testing.T) {
 				t.Fatalf("web search usage = %#v", usage)
 			}
 		})
+	}
+}
+
+func TestOpenChatScopesStreamIdleTimeoutToTextStreams(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: {\"result\":{\"conversation\":{\"conversationId\":\"conv_1\"}}}\n")
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "manual", ChatTimeoutSeconds: 5, StreamIdleTimeoutSeconds: 1,
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	credential := account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encrypted}
+	spec, ok := Resolve("grok-chat-fast")
+	if !ok {
+		t.Fatal("grok-chat-fast spec not found")
+	}
+
+	for _, enforceStreamIdle := range []bool{false, true} {
+		upstream, lease, _, _, openErr := adapter.openChat(context.Background(), credential, "", spec, normalizedChatInput{Prompt: "hello"}, enforceStreamIdle)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		_, wrapped := upstream.Body.(*providerstreamidle.ReadCloser)
+		if wrapped != enforceStreamIdle {
+			t.Fatalf("stream-idle wrapper present = %t, enforce = %t", wrapped, enforceStreamIdle)
+		}
+		_ = upstream.Body.Close()
+		lease.Release()
+	}
+}
+
+func TestWebNonStreamingResponseStillProtectsRawUpstreamStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(writer, "data: {\"result\":{\"conversation\":{\"conversationId\":\"conv_1\"}}}\n")
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "manual", ChatTimeoutSeconds: 5, StreamIdleTimeoutSeconds: 1,
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	body := []byte(`{"model":"grok-chat-fast","input":"hello","stream":false}`)
+	_, err = adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-chat-fast", Operation: conversation.OperationResponses,
+		Body: body, Streaming: false,
+	})
+	if !errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout) {
+		t.Fatalf("ForwardResponse() error = %v, want ErrUpstreamStreamIdleTimeout", err)
 	}
 }
 

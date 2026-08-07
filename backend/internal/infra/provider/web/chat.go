@@ -25,6 +25,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/searchresult"
+	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -169,7 +170,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		if attempt > 0 {
 			attemptCtx = infraegress.WithPhysicalCallStage(ctx, "anti_bot_retry")
 		}
-		upstream, lease, currentPrevious, statsigTarget, openErr := a.openChat(attemptCtx, request.Credential, input.PreviousResponseID, spec, normalized)
+		upstream, lease, currentPrevious, statsigTarget, openErr := a.openChat(attemptCtx, request.Credential, input.PreviousResponseID, spec, normalized, true)
 		if openErr != nil {
 			if errors.Is(openErr, errInvalidChatAttachment) || errors.Is(openErr, errInvalidChatImage) || errors.Is(openErr, errInvalidChatFile) {
 				code := "invalid_attachment_input"
@@ -325,7 +326,7 @@ func preflightUpstream(source io.ReadCloser) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("Grok Web 首个流事件超过安全检查上限")
 }
 
-func (a *Adapter) openChat(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
+func (a *Adapter) openChat(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput, enforceStreamIdle bool) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
@@ -364,7 +365,17 @@ func (a *Adapter) openChat(ctx context.Context, credential account.Credential, p
 		payload["responseId"] = previous.UpstreamParentResponseID
 	}
 	data, _ := json.Marshal(payload)
-	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.ChatTimeoutSeconds)*time.Second)
+	requestCtx, totalCancel := context.WithTimeout(ctx, time.Duration(cfg.ChatTimeoutSeconds)*time.Second)
+	var idleCancel context.CancelCauseFunc
+	if enforceStreamIdle && cfg.StreamIdleTimeoutSeconds > 0 {
+		requestCtx, idleCancel = context.WithCancelCause(requestCtx)
+	}
+	cancel := func() {
+		if idleCancel != nil {
+			idleCancel(nil)
+		}
+		totalCancel()
+	}
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		cancel()
@@ -382,6 +393,9 @@ func (a *Adapter) openChat(ctx context.Context, credential account.Credential, p
 		return nil, nil, nil, "", err
 	}
 	response.Body = &cancelBody{ReadCloser: response.Body, cancel: cancel}
+	if enforceStreamIdle && idleCancel != nil && response.StatusCode >= 200 && response.StatusCode < 300 {
+		response.Body = providerstreamidle.New(response.Body, time.Duration(cfg.StreamIdleTimeoutSeconds)*time.Second, idleCancel)
+	}
 	return response, lease, previous, endpoint, nil
 }
 

@@ -10,6 +10,11 @@ const (
 	DefaultBuildStreamIdleTimeout = 2 * time.Minute
 	MinBuildStreamIdleTimeout     = 30 * time.Second
 	MaxBuildStreamIdleTimeout     = 10 * time.Minute
+
+	DefaultWebStreamIdleTimeout     = 90 * time.Second
+	DefaultConsoleStreamIdleTimeout = 2 * time.Minute
+	MinProviderStreamIdleTimeout    = 30 * time.Second
+	MaxProviderStreamIdleTimeout    = 10 * time.Minute
 )
 
 // Config 表示可跨重启持久化并支持热加载的网关运行参数。
@@ -38,8 +43,9 @@ type FrontendConfig struct {
 }
 
 type ProviderConsoleConfig struct {
-	BaseURL     string
-	ChatTimeout time.Duration
+	BaseURL           string
+	ChatTimeout       time.Duration
+	StreamIdleTimeout time.Duration
 }
 
 type MediaConfig struct {
@@ -60,6 +66,7 @@ type ProviderWebConfig struct {
 	ClearanceRefresh    time.Duration
 	QuotaTimeout        time.Duration
 	ChatTimeout         time.Duration
+	StreamIdleTimeout   time.Duration
 	ImageTimeout        time.Duration
 	VideoTimeout        time.Duration
 	MediaConcurrency    int

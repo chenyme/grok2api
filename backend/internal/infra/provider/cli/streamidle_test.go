@@ -4,11 +4,17 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 // blockingReader never returns from Read on its own; it only unblocks when the
@@ -60,7 +66,7 @@ func TestIdleTimeoutReadCloserNormalRead(t *testing.T) {
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("Read() error = %v, want io.EOF", err)
 	}
-	if wrapper.timedOut.Load() {
+	if wrapper.TimedOut() {
 		t.Fatal("timedOut should be false on a normal EOF")
 	}
 	if ctx.Err() != nil {
@@ -89,7 +95,7 @@ func TestIdleTimeoutReadCloserIdleAbort(t *testing.T) {
 	if cause := context.Cause(ctx); !errors.Is(cause, neterror.ErrBuildStreamIdleTimeout) {
 		t.Fatalf("context cause = %v, want ErrBuildStreamIdleTimeout", cause)
 	}
-	if !wrapper.timedOut.Load() {
+	if !wrapper.TimedOut() {
 		t.Fatal("timedOut should be true after idle window")
 	}
 
@@ -127,7 +133,7 @@ func TestIdleTimeoutReadCloserResetOnData(t *testing.T) {
 		// Gap between chunks, well within the idle window.
 		time.Sleep(30 * time.Millisecond)
 	}
-	if wrapper.timedOut.Load() {
+	if wrapper.TimedOut() {
 		t.Fatal("timedOut should be false for a steady stream")
 	}
 	if ctx.Err() != nil {
@@ -142,7 +148,8 @@ func TestIdleTimeoutReadCloserClose(t *testing.T) {
 	body := &blockingReader{release: release}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
-	wrapper := newIdleTimeoutReadCloser(body, 20*time.Millisecond, cancel)
+	idle := 20 * time.Millisecond
+	wrapper := newIdleTimeoutReadCloser(body, idle, cancel)
 
 	if err := wrapper.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -154,10 +161,113 @@ func TestIdleTimeoutReadCloserClose(t *testing.T) {
 	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
 		t.Fatalf("context cause = %v, want nil or context.Canceled from Close", cause)
 	}
-	if wrapper.timedOut.Load() {
+	// Wait beyond the original deadline so a callback that escaped Stop would
+	// be observable instead of racing the assertion immediately after Close.
+	time.Sleep(2 * idle)
+	if wrapper.TimedOut() {
 		t.Fatal("timedOut should be false when Close stops the timer in time")
 	}
 	close(release)
+}
+
+func TestEgressTransportScopesIdleTimeoutToEventStreams(t *testing.T) {
+	manager := infraegress.NewManager(emptyEgressRepository{}, nil)
+	manager.UpdateBuildStreamIdleTimeout(30 * time.Second)
+	transport := &egressTransport{manager: manager, fallback: http.DefaultTransport}
+
+	nonStreaming, err := http.NewRequest(http.MethodGet, "https://example.invalid/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonStreaming.Header.Set("Accept", "application/json")
+	if got := transport.withStreamIdleContext(nonStreaming); got != nonStreaming {
+		t.Fatal("non-streaming Build request unexpectedly received a stream idle timeout context")
+	}
+
+	streaming, err := http.NewRequest(http.MethodPost, "https://example.invalid/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streaming.Header.Set("Accept", "application/json, text/event-stream; charset=utf-8")
+	got := transport.withStreamIdleContext(streaming)
+	if got == streaming {
+		t.Fatal("streaming Build request did not receive a stream idle timeout context")
+	}
+	idle, cancel := idleCancelFrom(got.Context())
+	if idle != 30*time.Second || cancel == nil {
+		t.Fatalf("idle context = (%s, %v), want (30s, non-nil)", idle, cancel)
+	}
+	cancel(nil)
+}
+
+func TestEgressTransportIdleTimeoutCancelsHTTP2BodyRead(t *testing.T) {
+	requestCanceled := make(chan struct{})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+		close(requestCanceled)
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	manager := infraegress.NewManager(emptyEgressRepository{}, nil)
+	manager.UpdateBuildStreamIdleTimeout(30 * time.Millisecond)
+	transport := &egressTransport{manager: manager, fallback: server.Client().Transport}
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/responses", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept", "text/event-stream")
+
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	defer response.Body.Close()
+	readDone := make(chan error, 1)
+	go func() {
+		_, readErr := io.Copy(io.Discard, response.Body)
+		readDone <- readErr
+	}()
+
+	select {
+	case readErr := <-readDone:
+		if !errors.Is(readErr, neterror.ErrBuildStreamIdleTimeout) {
+			t.Fatalf("body read error = %v, want ErrBuildStreamIdleTimeout", readErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("idle timeout did not unblock the HTTP/2 body read")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP/2 server request context was not canceled")
+	}
+}
+
+type emptyEgressRepository struct{}
+
+func (emptyEgressRepository) ListEgressNodes(context.Context, domainegress.Scope, repository.SortQuery) ([]domainegress.Node, error) {
+	return nil, nil
+}
+
+func (emptyEgressRepository) GetEgressNode(context.Context, uint64) (domainegress.Node, error) {
+	return domainegress.Node{}, repository.ErrNotFound
+}
+
+func (emptyEgressRepository) CreateEgressNode(context.Context, domainegress.Node) (domainegress.Node, error) {
+	return domainegress.Node{}, errors.New("unsupported")
+}
+
+func (emptyEgressRepository) UpdateEgressNode(context.Context, domainegress.Node) (domainegress.Node, error) {
+	return domainegress.Node{}, errors.New("unsupported")
+}
+
+func (emptyEgressRepository) DeleteEgressNode(context.Context, uint64) error {
+	return errors.New("unsupported")
 }
 
 // feedReader returns chunks one at a time, then finalErr.

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
+	"strings"
 
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
@@ -72,12 +74,31 @@ func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, erro
 // stream goes silent. When no idle timeout is configured the original request
 // is returned unchanged.
 func (t *egressTransport) withStreamIdleContext(request *http.Request) *http.Request {
+	if !acceptsEventStream(request.Header.Values("Accept")) {
+		return request
+	}
 	idle := t.manager.BuildStreamIdleTimeout()
 	if idle <= 0 {
 		return request
 	}
 	ctx, cancel := context.WithCancelCause(request.Context())
 	return request.Clone(withIdleCancel(ctx, idle, cancel))
+}
+
+// acceptsEventStream keeps stream-idle enforcement scoped to requests that
+// explicitly negotiate SSE. The Build HTTP client is shared by inference,
+// OAuth, models, billing, and media calls, so applying the timeout solely from
+// the egress scope would also abort legitimate non-streaming response bodies.
+func acceptsEventStream(values []string) bool {
+	for _, value := range values {
+		for _, candidate := range strings.Split(value, ",") {
+			mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(candidate))
+			if err == nil && strings.EqualFold(mediaType, "text/event-stream") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // wrapStreamIdleBody arms an idle timer over body. The cancel function is read

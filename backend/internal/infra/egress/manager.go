@@ -137,42 +137,42 @@ func (l *Lease) Release() {
 }
 
 type Manager struct {
-	repository           repository.EgressRepository
-	cipher               *security.Cipher
-	logger               *slog.Logger
-	nodeMu               sync.RWMutex
-	clientMu             sync.RWMutex
-	clearanceMu          sync.Mutex
-	operationsMu         sync.RWMutex
-	clients              map[clientCacheKey]cachedClient
-	inflight             sync.Map
-	nodes                map[domain.Scope]cachedNodeSnapshot
-	healthyNodes         map[uint64]time.Time
-	nodeVersions         map[domain.Scope]uint64
-	nodeLoads            singleflight.Group
-	clientLoads          singleflight.Group
-	clientVersions       map[uint64]uint64
-	clientGeneration     uint64
-	buildHeaderTimeout   atomic.Int64
+	repository             repository.EgressRepository
+	cipher                 *security.Cipher
+	logger                 *slog.Logger
+	nodeMu                 sync.RWMutex
+	clientMu               sync.RWMutex
+	clearanceMu            sync.Mutex
+	operationsMu           sync.RWMutex
+	clients                map[clientCacheKey]cachedClient
+	inflight               sync.Map
+	nodes                  map[domain.Scope]cachedNodeSnapshot
+	healthyNodes           map[uint64]time.Time
+	nodeVersions           map[domain.Scope]uint64
+	nodeLoads              singleflight.Group
+	clientLoads            singleflight.Group
+	clientVersions         map[uint64]uint64
+	clientGeneration       uint64
+	buildHeaderTimeout     atomic.Int64
 	buildStreamIdleTimeout atomic.Int64
-	accountIsolated      atomic.Bool
-	operationsConfig     cachedOperationsConfig
-	operationsConfigLoad singleflight.Group
-	operationsConfigVer  uint64
-	failureProbeMu       sync.Mutex
-	failureProber        FailureProber
-	failureProbes        map[uint64]failureProbeState
-	lastClientCleanup    time.Time
-	clearanceLoads       singleflight.Group
-	clearanceConfig      ClearanceConfig
-	clearanceVersion     uint64
-	clearances           map[string]clearanceState
-	lastClearanceCleanup time.Time
-	solver               clearanceSolver
-	clearanceLock        repository.DistributedLock
-	newBuildClient       func(string, time.Duration) (requestClient, error)
-	newBuildEnvClient    func(time.Duration) (requestClient, error)
-	newBrowserClient     func(string, string) (*browserClient, error)
+	accountIsolated        atomic.Bool
+	operationsConfig       cachedOperationsConfig
+	operationsConfigLoad   singleflight.Group
+	operationsConfigVer    uint64
+	failureProbeMu         sync.Mutex
+	failureProber          FailureProber
+	failureProbes          map[uint64]failureProbeState
+	lastClientCleanup      time.Time
+	clearanceLoads         singleflight.Group
+	clearanceConfig        ClearanceConfig
+	clearanceVersion       uint64
+	clearances             map[string]clearanceState
+	lastClearanceCleanup   time.Time
+	solver                 clearanceSolver
+	clearanceLock          repository.DistributedLock
+	newBuildClient         func(string, time.Duration) (requestClient, error)
+	newBuildEnvClient      func(time.Duration) (requestClient, error)
+	newBrowserClient       func(string, string) (*browserClient, error)
 }
 
 type clearanceState struct {
@@ -352,25 +352,14 @@ func (m *Manager) UpdateBuildResponseHeaderTimeout(value time.Duration) {
 	closeRequestClients(stale)
 }
 
-// UpdateBuildStreamIdleTimeout rebuilds only cached Build clients so the new
-// idle deadline takes effect for subsequent requests. Active requests keep their
-// current body wrapper and are not interrupted.
+// UpdateBuildStreamIdleTimeout affects subsequent Build streams. Active
+// response bodies retain the deadline captured by their existing wrapper and
+// are not interrupted; the underlying HTTP connection pool is unchanged.
 func (m *Manager) UpdateBuildStreamIdleTimeout(value time.Duration) {
 	if value <= 0 {
 		value = settingsdomain.DefaultBuildStreamIdleTimeout
 	}
-	if previous := time.Duration(m.buildStreamIdleTimeout.Swap(int64(value))); previous == value {
-		return
-	}
-	m.clientMu.Lock()
-	var stale []requestClient
-	for key, cached := range m.clients {
-		if key.scope == domain.ScopeBuild {
-			stale = append(stale, m.evictClientLocked(key, cached))
-		}
-	}
-	m.clientMu.Unlock()
-	closeRequestClients(stale)
+	m.buildStreamIdleTimeout.Store(int64(value))
 }
 
 // BuildStreamIdleTimeout returns the configured stream idle deadline for Grok
@@ -1388,7 +1377,6 @@ func (m *Manager) clientForWithOptions(id uint64, scope domain.Scope, proxyURL, 
 			buildHeaderTimeout = settingsdomain.DefaultBuildResponseHeaderTimeout
 		}
 		clientKind += "\x00" + strconv.FormatInt(int64(buildHeaderTimeout), 10)
-		clientKind += "\x00idle" + strconv.FormatInt(m.buildStreamIdleTimeout.Load(), 10)
 		if options.buildEnvironmentProxy {
 			clientKind += "\x00environment-proxy"
 		}
@@ -1639,7 +1627,10 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 	if scope == domain.ScopeConsoleAsset && transportErr == nil && status == http.StatusForbidden {
 		return
 	}
-	if scope == domain.ScopeBuild && (neterrorpkg.IsResponseHeaderTimeout(transportErr) || neterrorpkg.IsBuildStreamIdleTimeout(transportErr)) {
+	if neterrorpkg.IsUpstreamStreamIdleTimeout(transportErr) {
+		return
+	}
+	if scope == domain.ScopeBuild && neterrorpkg.IsResponseHeaderTimeout(transportErr) {
 		return
 	}
 	if nodeID == 0 {

@@ -39,8 +39,9 @@ type serverConfigDTO struct {
 }
 
 type providerConsoleConfigDTO struct {
-	BaseURL     string `json:"baseURL"`
-	ChatTimeout string `json:"chatTimeout"`
+	BaseURL           string `json:"baseURL"`
+	ChatTimeout       string `json:"chatTimeout"`
+	StreamIdleTimeout string `json:"streamIdleTimeout"`
 }
 
 type mediaConfigDTO struct {
@@ -78,6 +79,7 @@ type providerWebConfigDTO struct {
 	ClearanceRefresh        *string `json:"clearanceRefresh,omitempty"`
 	QuotaTimeout            string  `json:"quotaTimeout"`
 	ChatTimeout             string  `json:"chatTimeout"`
+	StreamIdleTimeout       string  `json:"streamIdleTimeout"`
 	ImageTimeout            string  `json:"imageTimeout"`
 	VideoTimeout            string  `json:"videoTimeout"`
 	MediaConcurrency        int     `json:"mediaConcurrency"`
@@ -196,13 +198,15 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			ClearanceMode: optionalString(value.ProviderWeb.ClearanceMode), FlareSolverrURL: optionalString(value.ProviderWeb.FlareSolverrURL),
 			ClearanceTimeout: optionalString(value.ProviderWeb.ClearanceTimeout), ClearanceRefresh: optionalString(value.ProviderWeb.ClearanceRefresh),
 			ClearanceProvided: clearanceProvided,
-			ChatTimeout:       value.ProviderWeb.ChatTimeout, ImageTimeout: value.ProviderWeb.ImageTimeout,
+			ChatTimeout:       value.ProviderWeb.ChatTimeout, StreamIdleTimeout: value.ProviderWeb.StreamIdleTimeout,
+			ImageTimeout:     value.ProviderWeb.ImageTimeout,
 			VideoTimeout:     value.ProviderWeb.VideoTimeout,
 			MediaConcurrency: value.ProviderWeb.MediaConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
 			RecoveryBackoffBase: value.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: value.ProviderWeb.RecoveryBackoffMax,
 		},
 		ProviderConsole: settingsapp.ProviderConsoleConfig{
 			BaseURL: value.ProviderConsole.BaseURL, ChatTimeout: value.ProviderConsole.ChatTimeout,
+			StreamIdleTimeout: value.ProviderConsole.StreamIdleTimeout,
 		},
 		Batch: settingsapp.BatchConfig{
 			ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
@@ -274,13 +278,15 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				StatsigSignerURL: config.ProviderWeb.StatsigSignerURL,
 				ClearanceMode:    stringPointer(config.ProviderWeb.ClearanceMode), FlareSolverrURL: stringPointer(config.ProviderWeb.FlareSolverrURL),
 				ClearanceTimeout: stringPointer(config.ProviderWeb.ClearanceTimeout), ClearanceRefresh: stringPointer(config.ProviderWeb.ClearanceRefresh),
-				ChatTimeout: config.ProviderWeb.ChatTimeout, ImageTimeout: config.ProviderWeb.ImageTimeout,
+				ChatTimeout: config.ProviderWeb.ChatTimeout, StreamIdleTimeout: config.ProviderWeb.StreamIdleTimeout,
+				ImageTimeout:     config.ProviderWeb.ImageTimeout,
 				VideoTimeout:     config.ProviderWeb.VideoTimeout,
 				MediaConcurrency: config.ProviderWeb.MediaConcurrency, AllowNSFW: config.ProviderWeb.AllowNSFW,
 				RecoveryBackoffBase: config.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: config.ProviderWeb.RecoveryBackoffMax,
 			},
 			ProviderConsole: providerConsoleConfigDTO{
 				BaseURL: config.ProviderConsole.BaseURL, ChatTimeout: config.ProviderConsole.ChatTimeout,
+				StreamIdleTimeout: config.ProviderConsole.StreamIdleTimeout,
 			},
 			Batch: batchConfigDTO{
 				ImportConcurrency: config.Batch.ImportConcurrency, ConversionConcurrency: config.Batch.ConversionConcurrency,
