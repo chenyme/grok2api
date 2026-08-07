@@ -90,12 +90,12 @@ type OperationsConfigInput struct {
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
 	AssignmentIntervalSeconds int
-	// SubscriptionProxyURL updates the optional proxy used when fetching
-	// remote subscription sources. Empty with ClearSubscriptionProxy clears it;
-	// nil leaves the existing secret unchanged.
-	SubscriptionProxyURL    *string
-	ClearSubscriptionProxy  bool
-	Fallbacks               map[domain.Scope]FallbackConfigInput
+	// SubscriptionProxyURL updates the optional proxy used when fetching remote
+	// subscription sources and must be non-empty when supplied. The explicit
+	// ClearSubscriptionProxy flag clears it; nil leaves the secret unchanged.
+	SubscriptionProxyURL   *string
+	ClearSubscriptionProxy bool
+	Fallbacks              map[domain.Scope]FallbackConfigInput
 }
 
 type FallbackConfigInput struct {
@@ -422,17 +422,16 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 			return domain.OperationsConfig{}, fmt.Errorf("%w: 订阅拉取代理地址无效: %v", ErrInvalidInput, normalizeErr)
 		}
 		if normalized == "" {
-			subscriptionProxyURL = ""
-		} else {
-			if strings.Contains(normalized, ProxyAccountPlaceholder) {
-				return domain.OperationsConfig{}, fmt.Errorf("%w: 订阅拉取代理不能使用账号占位符", ErrInvalidInput)
-			}
-			encrypted, encryptErr := s.cipher.Encrypt(normalized)
-			if encryptErr != nil {
-				return domain.OperationsConfig{}, encryptErr
-			}
-			subscriptionProxyURL = encrypted
+			return domain.OperationsConfig{}, fmt.Errorf("%w: 订阅拉取代理地址不能为空；如需清除请显式指定 clearSubscriptionProxy", ErrInvalidInput)
 		}
+		if strings.Contains(normalized, ProxyAccountPlaceholder) {
+			return domain.OperationsConfig{}, fmt.Errorf("%w: 订阅拉取代理不能使用账号占位符", ErrInvalidInput)
+		}
+		encrypted, encryptErr := s.cipher.Encrypt(normalized)
+		if encryptErr != nil {
+			return domain.OperationsConfig{}, encryptErr
+		}
+		subscriptionProxyURL = encrypted
 	}
 	saved, err := operations.SaveEgressOperationsConfig(ctx, domain.OperationsConfig{
 		ProbeProvider: probeProvider, ProbeIntervalSeconds: input.ProbeIntervalSeconds, AutoAssignEnabled: input.AutoAssignEnabled,

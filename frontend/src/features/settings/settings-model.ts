@@ -333,8 +333,8 @@ function validHTTPURL(value: string): boolean {
   }
 }
 
-/** Validates proxy URLs used for subscription fetch and egress nodes (http/https/socks4/4a/5/5h). Empty is allowed. */
-export function validProxyURL(value: string): boolean {
+/** Validates HTTP and SOCKS proxy URLs. Empty is allowed for write-only form fields. */
+function validProxyURL(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed.length === 0) return true;
   if (trimmed.length > 2048 || [...trimmed].some((char) => {
@@ -356,6 +356,11 @@ export function validProxyURL(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Subscription fetch proxies are global and must never use per-account lease placeholders. */
+export function validSubscriptionProxyURL(value: string): boolean {
+  return !value.includes("{account}") && validProxyURL(value);
 }
 
 function internalSignerHostname(value: string): boolean {
