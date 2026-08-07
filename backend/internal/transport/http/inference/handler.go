@@ -22,6 +22,7 @@ import (
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -1023,6 +1024,8 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 			errorCode = "upstream_stream_error"
 		case errors.Is(err, errUpstreamStreamIncomplete):
 			errorCode = "upstream_stream_incomplete"
+		case errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout):
+			errorCode = "upstream_stream_idle_timeout"
 		case errors.Is(err, errUpstreamStreamRead):
 			errorCode = "upstream_stream_interrupted"
 		default:
@@ -1069,7 +1072,7 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 			if inspector.terminalSuccess {
 				return inspector.Metadata(), nil
 			}
-			return inspector.Metadata(), fmt.Errorf("%w: %v", errUpstreamStreamRead, readErr)
+			return inspector.Metadata(), fmt.Errorf("%w: %w", errUpstreamStreamRead, readErr)
 		}
 	}
 }

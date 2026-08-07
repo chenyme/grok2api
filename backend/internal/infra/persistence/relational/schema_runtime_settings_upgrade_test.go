@@ -72,6 +72,15 @@ func assertSchemaBackfillsBuildResponseHeaderTimeout(t *testing.T, ctx context.C
 	if payload.Config.ProviderBuild.ResponseHeaderTimeout != settingsdomain.DefaultBuildResponseHeaderTimeout {
 		t.Fatalf("response header timeout = %s", payload.Config.ProviderBuild.ResponseHeaderTimeout)
 	}
+	if payload.Config.ProviderBuild.StreamIdleTimeout != settingsdomain.DefaultBuildStreamIdleTimeout {
+		t.Fatalf("Build stream idle timeout = %s", payload.Config.ProviderBuild.StreamIdleTimeout)
+	}
+	if payload.Config.ProviderWeb.StreamIdleTimeout != settingsdomain.DefaultWebStreamIdleTimeout {
+		t.Fatalf("Web stream idle timeout = %s", payload.Config.ProviderWeb.StreamIdleTimeout)
+	}
+	if payload.Config.ProviderConsole != (settingsdomain.ProviderConsoleConfig{}) {
+		t.Fatalf("absent Console section was materialized as %#v", payload.Config.ProviderConsole)
+	}
 	if migrated.Revision != 7 || !migrated.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("migration changed revision metadata: revision=%d updatedAt=%s", migrated.Revision, migrated.UpdatedAt)
 	}
@@ -84,5 +93,44 @@ func assertSchemaBackfillsBuildResponseHeaderTimeout(t *testing.T, ctx context.C
 	}
 	if migrated.ValueJSON != firstValue {
 		t.Fatal("repeated schema initialization rewrote the migrated settings")
+	}
+}
+
+func TestSchemaBackfillsConsoleStreamIdleTimeoutWhenSectionExists(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-stream-idle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := json.Marshal(runtimeSettingsPayload{Config: settingsdomain.Config{
+		ProviderConsole: settingsdomain.ProviderConsoleConfig{
+			BaseURL: "https://console.x.ai", ChatTimeout: 5 * time.Minute,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&runtimeSettingsModel{
+		Key: runtimeSettingsKey, ValueJSON: string(legacy), Revision: 1, UpdatedAt: time.Now().UTC(),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var migrated runtimeSettingsModel
+	if err := database.db.WithContext(ctx).Where("key = ?", runtimeSettingsKey).First(&migrated).Error; err != nil {
+		t.Fatal(err)
+	}
+	var payload runtimeSettingsPayload
+	if err := json.Unmarshal([]byte(migrated.ValueJSON), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Config.ProviderConsole.BaseURL != "https://console.x.ai" || payload.Config.ProviderConsole.ChatTimeout != 5*time.Minute || payload.Config.ProviderConsole.StreamIdleTimeout != settingsdomain.DefaultConsoleStreamIdleTimeout {
+		t.Fatalf("Console section = %#v", payload.Config.ProviderConsole)
 	}
 }
