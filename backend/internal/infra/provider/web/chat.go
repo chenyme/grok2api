@@ -167,7 +167,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		if attempt > 0 {
 			attemptCtx = infraegress.WithPhysicalCallStage(ctx, "anti_bot_retry")
 		}
-		upstream, lease, currentPrevious, statsigTarget, openErr := a.openChat(attemptCtx, request.Credential, input.PreviousResponseID, spec, normalized)
+		upstream, lease, currentPrevious, statsigTarget, openErr := a.openChat(attemptCtx, request.Credential, input.PreviousResponseID, spec, normalized, true)
 		if openErr != nil {
 			if errors.Is(openErr, errInvalidChatAttachment) || errors.Is(openErr, errInvalidChatImage) || errors.Is(openErr, errInvalidChatFile) {
 				code := "invalid_attachment_input"
@@ -331,8 +331,8 @@ func preflightUpstream(source io.ReadCloser) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("Grok Web 首个流事件超过安全检查上限")
 }
 
-func (a *Adapter) openChat(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
-	return a.openGatewayChat(ctx, credential, previousResponseID, spec, input)
+func (a *Adapter) openChat(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput, enforceStreamIdle bool) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
+	return a.openGatewayChat(ctx, credential, previousResponseID, spec, input, enforceStreamIdle)
 }
 
 func (a *Adapter) handleResponseResource(ctx context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {

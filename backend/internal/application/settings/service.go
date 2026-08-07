@@ -27,6 +27,7 @@ type ProviderBuildConfig struct {
 	TokenAuth             string
 	UserAgent             string
 	ResponseHeaderTimeout string
+	StreamIdleTimeout     string
 }
 
 // ProviderBuildRecommendation 表示当前网关已完成兼容回归的 Grok Build 协议基线。
@@ -47,6 +48,7 @@ type ProviderWebConfig struct {
 	ClearanceRefresh        string
 	QuotaTimeout            string
 	ChatTimeout             string
+	StreamIdleTimeout       string
 	ImageTimeout            string
 	VideoTimeout            string
 	MediaConcurrency        int
@@ -59,8 +61,9 @@ type ProviderWebConfig struct {
 }
 
 type ProviderConsoleConfig struct {
-	BaseURL     string
-	ChatTimeout string
+	BaseURL           string
+	ChatTimeout       string
+	StreamIdleTimeout string
 }
 
 // ServerConfig 是管理接口使用的推理入口容量输入。
@@ -305,9 +308,13 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		ClientVersion: value.ProviderBuild.ClientVersion, ClientIdentifier: value.ProviderBuild.ClientIdentifier,
 		TokenAuth: value.ProviderBuild.TokenAuth, UserAgent: value.ProviderBuild.UserAgent,
 		ResponseHeaderTimeout: config.Duration(value.ProviderBuild.ResponseHeaderTimeout),
+		StreamIdleTimeout:     config.Duration(value.ProviderBuild.StreamIdleTimeout),
 	}
 	if value.ProviderBuild.ResponseHeaderTimeout <= 0 {
 		base.Provider.Build.ResponseHeaderTimeout = config.Duration(settingsdomain.DefaultBuildResponseHeaderTimeout)
+	}
+	if value.ProviderBuild.StreamIdleTimeout <= 0 {
+		base.Provider.Build.StreamIdleTimeout = config.Duration(settingsdomain.DefaultBuildStreamIdleTimeout)
 	}
 	clearanceMode := strings.TrimSpace(value.ProviderWeb.ClearanceMode)
 	if clearanceMode == "" {
@@ -330,15 +337,23 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		StatsigMode: value.ProviderWeb.StatsigMode, StatsigManualValue: value.ProviderWeb.StatsigManualValue, StatsigSignerURL: value.ProviderWeb.StatsigSignerURL,
 		ClearanceMode: clearanceMode, FlareSolverrURL: flareSolverrURL,
 		ClearanceTimeout: config.Duration(clearanceTimeout), ClearanceRefresh: config.Duration(clearanceRefresh),
-		ChatTimeout: config.Duration(value.ProviderWeb.ChatTimeout), ImageTimeout: config.Duration(value.ProviderWeb.ImageTimeout),
+		ChatTimeout: config.Duration(value.ProviderWeb.ChatTimeout), StreamIdleTimeout: config.Duration(value.ProviderWeb.StreamIdleTimeout),
+		ImageTimeout:     config.Duration(value.ProviderWeb.ImageTimeout),
 		VideoTimeout:     config.Duration(value.ProviderWeb.VideoTimeout),
 		MediaConcurrency: value.ProviderWeb.MediaConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
 		RecoveryBackoffBase: config.Duration(value.ProviderWeb.RecoveryBackoffBase), RecoveryBackoffMax: config.Duration(value.ProviderWeb.RecoveryBackoffMax),
+	}
+	if value.ProviderWeb.StreamIdleTimeout <= 0 {
+		base.Provider.Web.StreamIdleTimeout = config.Duration(settingsdomain.DefaultWebStreamIdleTimeout)
 	}
 	// Console 是后续版本新增的完整配置段；旧 JSON 整段缺失时沿用代码默认值。
 	if value.ProviderConsole != (settingsdomain.ProviderConsoleConfig{}) {
 		base.Provider.Console = config.ConsoleProviderConfig{
 			BaseURL: value.ProviderConsole.BaseURL, ChatTimeout: config.Duration(value.ProviderConsole.ChatTimeout),
+			StreamIdleTimeout: config.Duration(value.ProviderConsole.StreamIdleTimeout),
+		}
+		if value.ProviderConsole.StreamIdleTimeout <= 0 {
+			base.Provider.Console.StreamIdleTimeout = config.Duration(settingsdomain.DefaultConsoleStreamIdleTimeout)
 		}
 	}
 	randomDelay := time.Duration(-1)
@@ -418,6 +433,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			ClientVersion: value.Provider.Build.ClientVersion, ClientIdentifier: value.Provider.Build.ClientIdentifier,
 			TokenAuth: value.Provider.Build.TokenAuth, UserAgent: value.Provider.Build.UserAgent,
 			ResponseHeaderTimeout: value.Provider.Build.ResponseHeaderTimeout.Value(),
+			StreamIdleTimeout:     value.Provider.Build.StreamIdleTimeout.Value(),
 		},
 		ProviderWeb: settingsdomain.ProviderWebConfig{
 			BaseURL: value.Provider.Web.BaseURL, QuotaTimeout: value.Provider.Web.QuotaTimeout.Value(),
@@ -425,13 +441,15 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			StatsigSignerURL: value.Provider.Web.StatsigSignerURL,
 			ClearanceMode:    value.Provider.Web.ClearanceMode, FlareSolverrURL: value.Provider.Web.FlareSolverrURL,
 			ClearanceTimeout: value.Provider.Web.ClearanceTimeout.Value(), ClearanceRefresh: value.Provider.Web.ClearanceRefresh.Value(),
-			ChatTimeout: value.Provider.Web.ChatTimeout.Value(), ImageTimeout: value.Provider.Web.ImageTimeout.Value(),
+			ChatTimeout: value.Provider.Web.ChatTimeout.Value(), StreamIdleTimeout: value.Provider.Web.StreamIdleTimeout.Value(),
+			ImageTimeout:     value.Provider.Web.ImageTimeout.Value(),
 			VideoTimeout:     value.Provider.Web.VideoTimeout.Value(),
 			MediaConcurrency: value.Provider.Web.MediaConcurrency, AllowNSFW: value.Provider.Web.AllowNSFW,
 			RecoveryBackoffBase: value.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: value.Provider.Web.RecoveryBackoffMax.Value(),
 		},
 		ProviderConsole: settingsdomain.ProviderConsoleConfig{
 			BaseURL: value.Provider.Console.BaseURL, ChatTimeout: value.Provider.Console.ChatTimeout.Value(),
+			StreamIdleTimeout: value.Provider.Console.StreamIdleTimeout.Value(),
 		},
 		Batch: settingsdomain.BatchConfig{
 			ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
@@ -585,6 +603,15 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	if strings.TrimSpace(input.ProviderBuild.ResponseHeaderTimeout) != "" {
 		durations = append(durations, durationInput{"providerBuild.responseHeaderTimeout", input.ProviderBuild.ResponseHeaderTimeout, func(value config.Duration) { next.Provider.Build.ResponseHeaderTimeout = value }})
 	}
+	if strings.TrimSpace(input.ProviderBuild.StreamIdleTimeout) != "" {
+		durations = append(durations, durationInput{"providerBuild.streamIdleTimeout", input.ProviderBuild.StreamIdleTimeout, func(value config.Duration) { next.Provider.Build.StreamIdleTimeout = value }})
+	}
+	if strings.TrimSpace(input.ProviderWeb.StreamIdleTimeout) != "" {
+		durations = append(durations, durationInput{"providerWeb.streamIdleTimeout", input.ProviderWeb.StreamIdleTimeout, func(value config.Duration) { next.Provider.Web.StreamIdleTimeout = value }})
+	}
+	if strings.TrimSpace(input.ProviderConsole.StreamIdleTimeout) != "" {
+		durations = append(durations, durationInput{"providerConsole.streamIdleTimeout", input.ProviderConsole.StreamIdleTimeout, func(value config.Duration) { next.Provider.Console.StreamIdleTimeout = value }})
+	}
 	if input.ProviderWeb.ClearanceProvided {
 		durations = append(durations,
 			durationInput{"providerWeb.clearanceTimeout", input.ProviderWeb.ClearanceTimeout, func(value config.Duration) { next.Provider.Web.ClearanceTimeout = value }},
@@ -604,6 +631,15 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		}
 		item.set(config.Duration(value))
 	}
+	// Enforce the relationship only for new writes. Persisted settings from an
+	// older version remain loadable during rolling upgrades, while an admin can
+	// no longer save an idle deadline shadowed by a shorter absolute timeout.
+	if next.Provider.Web.StreamIdleTimeout.Value() > next.Provider.Web.ChatTimeout.Value() {
+		return config.Config{}, errors.New("providerWeb.streamIdleTimeout 不能超过 providerWeb.chatTimeout")
+	}
+	if next.Provider.Console.StreamIdleTimeout.Value() > next.Provider.Console.ChatTimeout.Value() {
+		return config.Config{}, errors.New("providerConsole.streamIdleTimeout 不能超过 providerConsole.chatTimeout")
+	}
 	if err := next.Validate(); err != nil {
 		return config.Config{}, err
 	}
@@ -618,6 +654,7 @@ func toEditable(cfg config.Config) EditableConfig {
 			ClientVersion: cfg.Provider.Build.ClientVersion, ClientIdentifier: cfg.Provider.Build.ClientIdentifier,
 			TokenAuth: cfg.Provider.Build.TokenAuth, UserAgent: cfg.Provider.Build.UserAgent,
 			ResponseHeaderTimeout: cfg.Provider.Build.ResponseHeaderTimeout.String(),
+			StreamIdleTimeout:     cfg.Provider.Build.StreamIdleTimeout.String(),
 		},
 		ProviderWeb: ProviderWebConfig{
 			BaseURL: cfg.Provider.Web.BaseURL, QuotaTimeout: cfg.Provider.Web.QuotaTimeout.String(),
@@ -625,13 +662,15 @@ func toEditable(cfg config.Config) EditableConfig {
 			StatsigSignerURL: cfg.Provider.Web.StatsigSignerURL,
 			ClearanceMode:    cfg.Provider.Web.ClearanceMode, FlareSolverrURL: cfg.Provider.Web.FlareSolverrURL,
 			ClearanceTimeout: cfg.Provider.Web.ClearanceTimeout.String(), ClearanceRefresh: cfg.Provider.Web.ClearanceRefresh.String(),
-			ChatTimeout: cfg.Provider.Web.ChatTimeout.String(), ImageTimeout: cfg.Provider.Web.ImageTimeout.String(),
+			ChatTimeout: cfg.Provider.Web.ChatTimeout.String(), StreamIdleTimeout: cfg.Provider.Web.StreamIdleTimeout.String(),
+			ImageTimeout:     cfg.Provider.Web.ImageTimeout.String(),
 			VideoTimeout:     cfg.Provider.Web.VideoTimeout.String(),
 			MediaConcurrency: cfg.Provider.Web.MediaConcurrency, AllowNSFW: cfg.Provider.Web.AllowNSFW,
 			RecoveryBackoffBase: cfg.Provider.Web.RecoveryBackoffBase.String(), RecoveryBackoffMax: cfg.Provider.Web.RecoveryBackoffMax.String(),
 		},
 		ProviderConsole: ProviderConsoleConfig{
 			BaseURL: cfg.Provider.Console.BaseURL, ChatTimeout: cfg.Provider.Console.ChatTimeout.String(),
+			StreamIdleTimeout: cfg.Provider.Console.StreamIdleTimeout.String(),
 		},
 		Batch: BatchConfig{
 			ImportConcurrency: cfg.Batch.ImportConcurrency, ConversionConcurrency: cfg.Batch.ConversionConcurrency,
