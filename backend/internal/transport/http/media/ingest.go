@@ -77,21 +77,23 @@ func isPublicIP(ip netip.Addr) bool {
 	return netguard.IsPublicAddress(ip)
 }
 
-func validateImportURL(parsed *url.URL) error {
+// isValidRedirectURL 是初始导入地址和每次重定向共用的语法级安全守卫。
+// 网络级策略由 resolveImportTarget 和 ssrfSafeControl 继续执行。
+func isValidRedirectURL(parsed *url.URL) bool {
 	if parsed == nil || (!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) || parsed.Hostname() == "" || parsed.User != nil {
-		return errors.New("图片 URL 无效，仅支持无凭据的 http/https 地址")
+		return false
 	}
 	if port := parsed.Port(); port != "" && port != "80" && port != "443" {
-		return errors.New("图片 URL 仅允许 80 或 443 端口")
+		return false
 	}
-	return nil
+	return true
 }
 
 // resolveImportTarget 先解析并校验全部 DNS 结果，再固定本次请求的连接 IP。
 // 这同时消除了校验与拨号之间的 DNS rebinding 窗口；ssrfSafeControl 仍在拨号时做第二道校验。
 func resolveImportTarget(ctx context.Context, parsed *url.URL, resolver importURLResolver) (*importTarget, error) {
-	if err := validateImportURL(parsed); err != nil {
-		return nil, fmt.Errorf("%w: %v", errFetchBlocked, err)
+	if !isValidRedirectURL(parsed) {
+		return nil, errFetchBlocked
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") ||
@@ -177,8 +179,8 @@ func isImportRedirect(status int) bool {
 // 目标地址被 SSRF 防护拒绝时返回 errFetchBlocked。
 func fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, error) {
 	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, err
+	if err != nil || !isValidRedirectURL(parsed) {
+		return nil, errFetchBlocked
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, ingestFetchTimeout)
 	defer cancel()
@@ -213,7 +215,7 @@ func fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, error) {
 				return nil, errors.New("重定向次数过多")
 			}
 			next, err := parsed.Parse(resp.Header.Get("Location"))
-			if err != nil {
+			if err != nil || !isValidRedirectURL(next) {
 				return nil, fmt.Errorf("重定向地址无效: %w", errFetchBlocked)
 			}
 			parsed = next
@@ -267,7 +269,7 @@ func (h *Handler) importInputImageFromURL(c *gin.Context) {
 		return
 	}
 	parsed, err := url.Parse(rawURL)
-	if err != nil || validateImportURL(parsed) != nil {
+	if err != nil || !isValidRedirectURL(parsed) {
 		response.Error(c, http.StatusBadRequest, "invalidImageURL", "图片 URL 无效，仅支持无凭据的 http/https 80/443 地址")
 		return
 	}

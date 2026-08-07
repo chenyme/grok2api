@@ -46,15 +46,15 @@ func TestPublicIngestAddressPolicy(t *testing.T) {
 	}
 }
 
-func TestValidateImportURLRejectsCredentialsAndUnexpectedPorts(t *testing.T) {
+func TestValidRedirectURLRejectsCredentialsAndUnexpectedPorts(t *testing.T) {
 	for _, raw := range []string{"file:///tmp/a.png", "https://user:pass@example.com/a.png", "https://example.com:8443/a.png"} {
 		request, err := http.NewRequest(http.MethodGet, raw, nil)
-		if err == nil && validateImportURL(request.URL) == nil {
+		if err == nil && isValidRedirectURL(request.URL) {
 			t.Errorf("URL %q was allowed", raw)
 		}
 	}
 	request, err := http.NewRequest(http.MethodGet, "https://example.com/a.png", nil)
-	if err != nil || validateImportURL(request.URL) != nil {
+	if err != nil || !isValidRedirectURL(request.URL) {
 		t.Fatalf("public HTTPS URL rejected: %v", err)
 	}
 }
