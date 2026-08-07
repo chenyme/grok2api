@@ -3,12 +3,15 @@ package media
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +22,12 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/gin-gonic/gin"
 )
+
+type importResolverFunc func(ctx context.Context, network, host string) ([]netip.Addr, error)
+
+func (fn importResolverFunc) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	return fn(ctx, network, host)
+}
 
 func TestPublicIngestAddressPolicy(t *testing.T) {
 	blocked := []string{
@@ -47,6 +56,62 @@ func TestValidateImportURLRejectsCredentialsAndUnexpectedPorts(t *testing.T) {
 	request, err := http.NewRequest(http.MethodGet, "https://example.com/a.png", nil)
 	if err != nil || validateImportURL(request.URL) != nil {
 		t.Fatalf("public HTTPS URL rejected: %v", err)
+	}
+}
+
+func TestResolveImportTargetPinsValidatedPublicAddress(t *testing.T) {
+	parsed, err := url.Parse("https://Images.Example.test/photo.png?size=large#ignored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := importResolverFunc(func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		if network != "ip" || host != "images.example.test" {
+			t.Fatalf("lookup network=%q host=%q", network, host)
+		}
+		return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+	})
+	target, err := resolveImportTarget(context.Background(), parsed, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.fetchURL.Host != "93.184.216.34:443" || target.fetchURL.Path != "/photo.png" || target.fetchURL.RawQuery != "size=large" || target.fetchURL.Fragment != "" {
+		t.Fatalf("fetch URL = %s", target.fetchURL)
+	}
+	if target.hostHeader != "Images.Example.test" || target.serverName != "images.example.test" {
+		t.Fatalf("host header=%q server name=%q", target.hostHeader, target.serverName)
+	}
+	client, transport := newIngestHTTPClient(target)
+	defer transport.CloseIdleConnections()
+	if client.CheckRedirect == nil || transport.TLSClientConfig == nil || transport.TLSClientConfig.ServerName != "images.example.test" || transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatal("pinned HTTPS client did not preserve strict TLS verification")
+	}
+}
+
+func TestResolveImportTargetRejectsAnyNonPublicDNSAnswer(t *testing.T) {
+	parsed, err := url.Parse("https://images.example.test/photo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := importResolverFunc(func(context.Context, string, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("127.0.0.1")}, nil
+	})
+	if _, err := resolveImportTarget(context.Background(), parsed, resolver); !errors.Is(err, errFetchBlocked) {
+		t.Fatalf("mixed public/private DNS answer was not blocked: %v", err)
+	}
+}
+
+func TestResolveImportTargetDoesNotClassifyDNSFailureAsPolicyBlock(t *testing.T) {
+	parsed, err := url.Parse("https://missing.example.test/photo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookupErr := errors.New("temporary DNS failure")
+	resolver := importResolverFunc(func(context.Context, string, string) ([]netip.Addr, error) {
+		return nil, lookupErr
+	})
+	_, err = resolveImportTarget(context.Background(), parsed, resolver)
+	if !errors.Is(err, lookupErr) || errors.Is(err, errFetchBlocked) {
+		t.Fatalf("DNS failure classification = %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,10 @@ const (
 	ingestMaxImageBytes = 20 << 20
 	// ingestFetchTimeout 是 URL 导入单次抓取的整体超时。
 	ingestFetchTimeout = 20 * time.Second
+	// ingestResolveTimeout 限制每个重定向目标的 DNS 解析时间。
+	ingestResolveTimeout = 3 * time.Second
+	// ingestMaxRedirects 限制跨域重定向次数；每一跳都会重新解析、校验并固定目标 IP。
+	ingestMaxRedirects = 5
 	// 独立 bulkhead 防止临时导入与推理流量争抢内存和连接。
 	ingestConcurrency = 4
 )
@@ -35,35 +40,16 @@ var (
 	errFetchBlocked = errors.New("目标地址不允许访问")
 )
 
-// ingestHTTPClient 用于把远程图片导入隐藏的临时视频输入区。它带 SSRF 防护拨号器，
-// 在建立连接前校验目标 IP，拒绝内网/环回/链路本地/元数据地址（每次拨号都校验，覆盖重定向与 DNS rebinding）。
-// 不使用任何出网代理，直接抓取用户提供的公网图片 URL。
-var ingestHTTPClient = &http.Client{
-	Timeout: ingestFetchTimeout,
-	Transport: &http.Transport{
-		Proxy: nil,
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 10 * time.Second,
-			Control:   ssrfSafeControl,
-		}).DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 15 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		MaxIdleConns:          8,
-		MaxConnsPerHost:       ingestConcurrency,
-		IdleConnTimeout:       30 * time.Second,
-	},
-	// 最多 5 次重定向；重定向产生的新连接同样经过 ssrfSafeControl 校验。
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return errors.New("重定向次数过多")
-		}
-		if err := validateImportURL(req.URL); err != nil {
-			return err
-		}
-		return nil
-	},
+type importURLResolver interface {
+	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
+}
+
+// importTarget 把用户 URL 的请求语义与实际连接目标分离：fetchURL 只包含已验证的公网 IP，
+// hostHeader/serverName 则保留原始虚拟主机与 TLS 证书校验语义。
+type importTarget struct {
+	fetchURL   *url.URL
+	hostHeader string
+	serverName string
 }
 
 // ssrfSafeControl 在 TCP 连接建立前检查目标 IP，拒绝私有/环回/链路本地/未指定/多播地址及云元数据地址。
@@ -101,23 +87,146 @@ func validateImportURL(parsed *url.URL) error {
 	return nil
 }
 
+// resolveImportTarget 先解析并校验全部 DNS 结果，再固定本次请求的连接 IP。
+// 这同时消除了校验与拨号之间的 DNS rebinding 窗口；ssrfSafeControl 仍在拨号时做第二道校验。
+func resolveImportTarget(ctx context.Context, parsed *url.URL, resolver importURLResolver) (*importTarget, error) {
+	if err := validateImportURL(parsed); err != nil {
+		return nil, fmt.Errorf("%w: %v", errFetchBlocked, err)
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") ||
+		strings.HasSuffix(host, ".internal") || strings.Contains(host, "%") {
+		return nil, errFetchBlocked
+	}
+
+	var addresses []netip.Addr
+	if address, err := netip.ParseAddr(host); err == nil {
+		addresses = []netip.Addr{address.Unmap()}
+	} else {
+		resolveCtx, cancel := context.WithTimeout(ctx, ingestResolveTimeout)
+		defer cancel()
+		resolved, err := resolver.LookupNetIP(resolveCtx, "ip", host)
+		if err != nil {
+			return nil, fmt.Errorf("解析图片主机失败: %w", err)
+		}
+		if len(resolved) == 0 {
+			return nil, errors.New("解析图片主机失败: DNS 未返回地址")
+		}
+		addresses = make([]netip.Addr, 0, len(resolved))
+		for _, address := range resolved {
+			addresses = append(addresses, address.Unmap())
+		}
+	}
+	for _, address := range addresses {
+		if !isPublicIP(address) {
+			return nil, fmt.Errorf("图片主机解析到非公网地址 %s: %w", address, errFetchBlocked)
+		}
+	}
+
+	port := parsed.Port()
+	if port == "" {
+		if strings.EqualFold(parsed.Scheme, "https") {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	fetchURL := *parsed
+	fetchURL.Scheme = strings.ToLower(parsed.Scheme)
+	fetchURL.Host = net.JoinHostPort(addresses[0].String(), port)
+	fetchURL.Fragment = ""
+	return &importTarget{fetchURL: &fetchURL, hostHeader: parsed.Host, serverName: host}, nil
+}
+
+func newIngestHTTPClient(target *importTarget) (*http.Client, *http.Transport) {
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 10 * time.Second,
+			Control:   ssrfSafeControl,
+		}).DialContext,
+		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, ServerName: target.serverName},
+		TLSHandshakeTimeout:    10 * time.Second,
+		ResponseHeaderTimeout:  15 * time.Second,
+		ExpectContinueTimeout:  1 * time.Second,
+		MaxResponseHeaderBytes: 1 << 20,
+		MaxIdleConns:           1,
+		MaxConnsPerHost:        1,
+		IdleConnTimeout:        30 * time.Second,
+		ForceAttemptHTTP2:      true,
+	}
+	client := &http.Client{
+		Transport: transport,
+		// 重定向必须回到 fetchRemoteImage 重新解析和固定目标，禁止 net/http 自动跟随。
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	return client, transport
+}
+
+func isImportRedirect(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
+}
+
 // fetchRemoteImage 抓取远端图片字节，读取上限 ingestMaxImageBytes，超限返回 errImageTooLarge。
 // 目标地址被 SSRF 防护拒绝时返回 errFetchBlocked。
 func fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "image/*")
-	req.Header.Set("User-Agent", "grok2api-media-importer/1.0")
+	fetchCtx, cancel := context.WithTimeout(ctx, ingestFetchTimeout)
+	defer cancel()
 
-	resp, err := ingestHTTPClient.Do(req)
-	if err != nil {
-		if errors.Is(err, errFetchBlocked) {
-			return nil, errFetchBlocked
+	for redirects := 0; ; redirects++ {
+		target, err := resolveImportTarget(fetchCtx, parsed, net.DefaultResolver)
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, target.fetchURL.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Host = target.hostHeader
+		req.Header.Set("Accept", "image/*")
+		req.Header.Set("User-Agent", "grok2api-media-importer/1.0")
+
+		client, transport := newIngestHTTPClient(target)
+		resp, err := client.Do(req)
+		if err != nil {
+			transport.CloseIdleConnections()
+			if errors.Is(err, errFetchBlocked) {
+				return nil, errFetchBlocked
+			}
+			return nil, err
+		}
+
+		if isImportRedirect(resp.StatusCode) && resp.Header.Get("Location") != "" {
+			resp.Body.Close()
+			transport.CloseIdleConnections()
+			if redirects >= ingestMaxRedirects {
+				return nil, errors.New("重定向次数过多")
+			}
+			next, err := parsed.Parse(resp.Header.Get("Location"))
+			if err != nil {
+				return nil, fmt.Errorf("重定向地址无效: %w", errFetchBlocked)
+			}
+			parsed = next
+			continue
+		}
+
+		data, err := readImportedImage(resp)
+		transport.CloseIdleConnections()
+		return data, err
 	}
+}
+
+func readImportedImage(resp *http.Response) ([]byte, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("上游返回 HTTP %d", resp.StatusCode)
