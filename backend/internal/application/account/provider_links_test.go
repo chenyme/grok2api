@@ -23,7 +23,7 @@ func TestSyncAccountIdentityLinksUniqueBuildWithoutSharingState(t *testing.T) {
 		t.Fatal(err)
 	}
 	build, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
-		Provider: accountdomain.ProviderBuild, AuthType: accountdomain.AuthTypeOAuth, Name: "build", SourceKey: "build", UserID: "user-1",
+		Provider: accountdomain.ProviderBuild, AuthType: accountdomain.AuthTypeOAuth, Name: "build", SourceKey: "build", UserID: "11111111-1111-4111-8111-111111111111",
 		EncryptedAccessToken: "encrypted", Enabled: false, AuthStatus: accountdomain.AuthStatusReauthRequired, Priority: 1, MaxConcurrent: 8,
 	})
 	if err != nil {
@@ -34,7 +34,7 @@ func TestSyncAccountIdentityLinksUniqueBuildWithoutSharingState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter.identity = provider.AccountIdentity{UserID: "user-1", Email: "user@example.com"}
+	adapter.identity = provider.AccountIdentity{UserID: "11111111-1111-4111-8111-111111111111", Email: "user@example.com"}
 	if err := service.SyncAccountIdentity(ctx, web.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestSyncAccountIdentityLinksUniqueBuildWithoutSharingState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if web.UserID != "user-1" || web.Email != "user@example.com" || len(web.LinkedAccounts) != 1 || web.LinkedAccounts[0].ID != build.ID {
+	if web.UserID != "11111111-1111-4111-8111-111111111111" || web.Email != "user@example.com" || len(web.LinkedAccounts) != 1 || web.LinkedAccounts[0].ID != build.ID {
 		t.Fatalf("web = %#v", web)
 	}
 	if !web.Enabled || web.AuthStatus != accountdomain.AuthStatusActive || web.Priority != 7 || web.MaxConcurrent != 3 {
@@ -87,7 +87,7 @@ func TestSyncAccountIdentityUnauthorizedInvalidatesCurrentProviderAccount(t *tes
 	}
 }
 
-func TestSyncAccountIdentityDoesNotRepeatWhenEmailIsKnown(t *testing.T) {
+func TestSyncWebAccountIdentityFillsGatewayUUIDWhenOnlyEmailIsKnown(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	service, repo, adapter := newWebAccountSettingsTestService(t)
@@ -99,7 +99,7 @@ func TestSyncAccountIdentityDoesNotRepeatWhenEmailIsKnown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter.identity = provider.AccountIdentity{UserID: "stable-user", Email: "known@example.com"}
+	adapter.identity = provider.AccountIdentity{UserID: "22222222-2222-4222-8222-222222222222", Email: "known@example.com"}
 	if err := service.SyncAccountIdentity(ctx, web.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +107,79 @@ func TestSyncAccountIdentityDoesNotRepeatWhenEmailIsKnown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if web.UserID != "" || web.Email != "known@example.com" || adapter.identityCalls != 0 {
-		t.Fatalf("identity was fetched again: user_id=%q email=%q calls=%d", web.UserID, web.Email, adapter.identityCalls)
+	if web.UserID != "22222222-2222-4222-8222-222222222222" || web.Email != "known@example.com" || adapter.identityCalls != 1 {
+		t.Fatalf("Gateway identity was not repaired: user_id=%q email=%q calls=%d", web.UserID, web.Email, adapter.identityCalls)
+	}
+}
+
+func TestSyncWebAccountIdentityDoesNotRepeatWithValidGatewayUUID(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	service, repo, adapter := newWebAccountSettingsTestService(t)
+	web, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO, Name: "web", Email: "known@example.com",
+		UserID:               "33333333-3333-4333-8333-333333333333",
+		SourceKey:            "sso:" + "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SyncAccountIdentity(ctx, web.ID); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.identityCalls != 0 {
+		t.Fatalf("identity calls = %d, want 0", adapter.identityCalls)
+	}
+}
+
+func TestSyncWebAccountIdentityReplacesInvalidGatewayUserID(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	service, repo, adapter := newWebAccountSettingsTestService(t)
+	web, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO, Name: "web", Email: "known@example.com", UserID: "legacy-user-id",
+		SourceKey:            "sso:" + "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.identity = provider.AccountIdentity{UserID: "44444444-4444-4444-8444-444444444444", Email: "known@example.com"}
+	if err := service.SyncAccountIdentity(ctx, web.ID); err != nil {
+		t.Fatal(err)
+	}
+	web, err = repo.Get(ctx, web.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if web.UserID != "44444444-4444-4444-8444-444444444444" || adapter.identityCalls != 1 {
+		t.Fatalf("legacy Gateway identity was not replaced: user_id=%q calls=%d", web.UserID, adapter.identityCalls)
+	}
+}
+
+func TestSyncWebAccountIdentityRejectsNonUUIDSessionIdentity(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	service, repo, adapter := newWebAccountSettingsTestService(t)
+	web, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO, Name: "web",
+		SourceKey:            "sso:" + "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.identity = provider.AccountIdentity{UserID: "not-a-uuid", Email: "known@example.com"}
+	if err := service.SyncAccountIdentity(ctx, web.ID); err == nil {
+		t.Fatal("non-UUID Web Session identity was accepted")
+	}
+	web, err = repo.Get(ctx, web.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if web.UserID != "" || web.Email != "" {
+		t.Fatalf("invalid identity was persisted: user_id=%q email=%q", web.UserID, web.Email)
 	}
 }
 

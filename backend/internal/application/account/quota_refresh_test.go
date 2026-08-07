@@ -786,6 +786,9 @@ func TestRefreshQuotaFetchesWebIdentityOnlyUntilDataExists(t *testing.T) {
 	if stored.Email != "identity@example.com" {
 		t.Fatalf("email = %q", stored.Email)
 	}
+	if stored.UserID != "55555555-5555-4555-8555-555555555555" {
+		t.Fatalf("user_id = %q", stored.UserID)
+	}
 }
 
 func TestRefreshQuotaUnauthorizedMarksWebAccountInvalid(t *testing.T) {
@@ -891,7 +894,7 @@ func (a *quotaCountingAdapter) SyncQuota(context.Context, accountdomain.Credenti
 
 func (a *quotaCountingAdapter) SyncAccountIdentity(context.Context, accountdomain.Credential) (provider.AccountIdentity, error) {
 	a.identityCalls.Add(1)
-	return provider.AccountIdentity{Email: "identity@example.com"}, nil
+	return provider.AccountIdentity{Email: "identity@example.com", UserID: "55555555-5555-4555-8555-555555555555"}, nil
 }
 
 func (a *quotaCountingAdapter) SyncQuotaMode(_ context.Context, credential accountdomain.Credential, mode string) (accountdomain.QuotaWindow, error) {

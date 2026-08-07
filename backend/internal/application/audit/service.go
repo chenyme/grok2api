@@ -431,7 +431,7 @@ func (s *Service) ListCursor(ctx context.Context, rawCursor string, pageSize int
 	if filter.Sort.Field == "" && filter.Sort.Direction == "" {
 		filter.Sort = repository.SortQuery{Field: "createdAt", Direction: repository.SortDescending}
 	}
-	if !validAuditFilter(filter.Status, "", "success", "clientError", "serverError", "2xx", "4xx", "5xx") || !validAuditFilter(filter.Mode, "", "stream", "nonStream") || !repository.IsValidSort(filter.Sort, "request", "model", "billing", "tokens", "status", "mode", "duration", "createdAt") {
+	if !validAuditFilter(filter.Status, "", "success", "clientError", "serverError", "2xx", "4xx", "5xx", "other") || !validAuditFilter(filter.Mode, "", "stream", "nonStream") || !repository.IsValidSort(filter.Sort, "request", "model", "billing", "tokens", "status", "mode", "duration", "createdAt") {
 		return CursorResult{}, ErrInvalidFilter
 	}
 	cursor, err := decodeAuditCursor(rawCursor, filter.Sort)
@@ -563,7 +563,7 @@ func (s *Service) SummaryFresh(ctx context.Context, search, rawPeriod string, fi
 }
 
 func (s *Service) summary(ctx context.Context, search, rawPeriod string, filter ListFilter, useCache bool) (SummaryResult, error) {
-	if !validAuditFilter(filter.Status, "", "success", "clientError", "serverError", "2xx", "4xx", "5xx") || !validAuditFilter(filter.Mode, "", "stream", "nonStream") {
+	if !validAuditFilter(filter.Status, "", "success", "clientError", "serverError", "2xx", "4xx", "5xx", "other") || !validAuditFilter(filter.Mode, "", "stream", "nonStream") {
 		return SummaryResult{}, ErrInvalidFilter
 	}
 	period, start, end, err := s.resolvePeriod(rawPeriod)
