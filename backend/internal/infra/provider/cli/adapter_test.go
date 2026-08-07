@@ -97,6 +97,8 @@ func TestCredentialMetadataMarksNumericBotFlagOneOrTwo(t *testing.T) {
 		{name: "numeric zero", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 0}},
 		{name: "bfs numeric zero", provider: account.ProviderBuild, claims: map[string]any{"bfs": 0}},
 		{name: "numeric three", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 3}},
+		{name: "fractional one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 1.5}},
+		{name: "bfs fractional two", provider: account.ProviderBuild, claims: map[string]any{"bfs": 2.5}},
 		{name: "string one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": "1"}},
 		{name: "bfs string one", provider: account.ProviderBuild, claims: map[string]any{"bfs": "1"}},
 		{name: "string two", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": "2"}},

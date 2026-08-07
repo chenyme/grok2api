@@ -134,7 +134,7 @@ func botFlagSourceClaim(claims map[string]any, key string) int {
 	if !ok {
 		return 0
 	}
-	switch int(value) {
+	switch value {
 	case 1, 2:
 		return int(value)
 	default:
