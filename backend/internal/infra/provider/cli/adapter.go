@@ -619,12 +619,11 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 // NormalizeAccountModelCapabilities normalizes capabilities that the OAuth
 // session contract exposes independently of the account's sparse /models list.
 // Composer is available to Build OAuth sessions even though the live catalog can
-// return only grok-4.5. Build accounts always include video 1.5 so Free can use
-// grok-imagine-video-1.5 on the primary Build path. BuildAPIFallback is ignored.
+// return only grok-4.5. Super always includes video 1.5; Free and Unknown remove
+// video 1.5 exactly. BuildAPIFallback is ignored.
 func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string {
-	_ = billing
-	buildAccount := credential.Provider == account.ProviderBuild
-	composer := buildAccount && credential.AuthType == account.AuthTypeOAuth
+	super := account.IsBuildSuper(credential, billing)
+	composer := credential.Provider == account.ProviderBuild && credential.AuthType == account.AuthTypeOAuth
 	result := make([]string, 0, len(models)+2)
 	seen := make(map[string]struct{}, len(models)+2)
 	hasVideo15 := false
@@ -637,12 +636,15 @@ func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *ac
 			continue
 		}
 		if model == buildVideoModel {
+			if !super {
+				continue
+			}
 			hasVideo15 = true
 		}
 		seen[model] = struct{}{}
 		result = append(result, model)
 	}
-	if buildAccount && !hasVideo15 {
+	if super && !hasVideo15 {
 		result = append(result, buildVideoModel)
 	}
 	if composer {

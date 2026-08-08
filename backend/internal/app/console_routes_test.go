@@ -40,4 +40,7 @@ func TestConsoleRoutesUseStableProviderNamespace(t *testing.T) {
 	if !seen["Console/grok-imagine-video"]["video"] {
 		t.Fatal("Console video route is missing")
 	}
+	if !seen["Console/grok-imagine-video-1.5"]["video"] {
+		t.Fatal("Console video 1.5 route is missing")
+	}
 }
