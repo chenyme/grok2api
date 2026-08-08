@@ -260,8 +260,8 @@ func TestSyncAccountNormalizesBuildVideo15ByBillingSuper(t *testing.T) {
 
 	assertSupports(superPrimary.ID, video15, true)
 	assertSupports(superFallback.ID, video15, true)
-	assertSupports(freeAccount.ID, video15, true)
-	assertSupports(unknownAccount.ID, video15, true)
+	assertSupports(freeAccount.ID, video15, false)
+	assertSupports(unknownAccount.ID, video15, false)
 	assertSupports(superPrimary.ID, "grok-4.5", true)
 	assertSupports(superFallback.ID, "grok-code-fast-1", true)
 	assertSupports(freeAccount.ID, "grok-4.5", true)
@@ -374,12 +374,11 @@ type buildCapabilityNormalizerAdapter struct {
 }
 
 func (a *buildCapabilityNormalizerAdapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string {
-	// Match cli.Adapter rules: Build OAuth adds Composer; all Build accounts
-	// ensure video 1.5 so Free can schedule grok-imagine-video-1.5.
-	_ = billing
+	// Match cli.Adapter rules: Build OAuth adds Composer; Super (paid or
+	// entitlement) ensures 1.5; otherwise remove video 1.5 exactly.
 	const video15 = "grok-imagine-video-1.5"
-	buildAccount := credential.Provider == account.ProviderBuild
-	composer := buildAccount && credential.AuthType == account.AuthTypeOAuth
+	super := account.IsBuildSuper(credential, billing)
+	composer := credential.Provider == account.ProviderBuild && credential.AuthType == account.AuthTypeOAuth
 	result := make([]string, 0, len(models)+2)
 	seen := make(map[string]struct{}, len(models)+2)
 	hasVideo15 := false
@@ -391,12 +390,15 @@ func (a *buildCapabilityNormalizerAdapter) NormalizeAccountModelCapabilities(mod
 			continue
 		}
 		if modelName == video15 {
+			if !super {
+				continue
+			}
 			hasVideo15 = true
 		}
 		seen[modelName] = struct{}{}
 		result = append(result, modelName)
 	}
-	if buildAccount && !hasVideo15 {
+	if super && !hasVideo15 {
 		result = append(result, video15)
 	}
 	if composer {

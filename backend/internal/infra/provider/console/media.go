@@ -396,20 +396,24 @@ func trustedConsoleImageHost(host string) bool {
 }
 
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
-	if !ResolveMedia("grok-imagine-video", modeldomain.CapabilityVideo) {
-		return provider.VideoResult{}, errors.New("Console 视频模型未注册")
+	modelName := strings.TrimSpace(request.Model)
+	if modelName == "" {
+		modelName = "grok-imagine-video"
+	}
+	if !ResolveMedia(modelName, modeldomain.CapabilityVideo) {
+		return provider.VideoResult{}, fmt.Errorf("Console 视频模型未注册: %s", modelName)
 	}
 	if len(request.ReferenceURLs) > consoleMaxVideoImages {
-		return provider.VideoResult{}, fmt.Errorf("Console grok-imagine-video 最多支持 %d 张参考图，当前为 %d 张", consoleMaxVideoImages, len(request.ReferenceURLs))
+		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张参考图，当前为 %d 张", modelName, consoleMaxVideoImages, len(request.ReferenceURLs))
 	}
 	if request.Duration < 1 || request.Duration > 15 {
 		return provider.VideoResult{}, errors.New("duration 必须在 1 到 15 秒之间")
 	}
 	if request.Resolution != "" && request.Resolution != "480p" && request.Resolution != "720p" {
-		return provider.VideoResult{}, errors.New("grok-imagine-video 仅支持 480p 或 720p")
+		return provider.VideoResult{}, fmt.Errorf("%s 仅支持 480p 或 720p", modelName)
 	}
 	payload := map[string]any{
-		"model": "grok-imagine-video", "duration": request.Duration,
+		"model": modelName, "duration": request.Duration,
 	}
 	if prompt := strings.TrimSpace(request.Prompt); prompt != "" {
 		payload["prompt"] = prompt
