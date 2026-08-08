@@ -108,27 +108,133 @@ func TestXAIVideoCreatePayloadMatchesOfficialSchema(t *testing.T) {
 	}
 }
 
-func TestGenerateVideoRejectsTwoImagesBeforeUpstream(t *testing.T) {
-	adapter, encrypted := newTestBuildVideoAdapter(t)
-	var hits atomic.Int32
-	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		hits.Add(1)
-		t.Fatalf("two-image request must not reach upstream: %s %s", request.Method, request.URL)
-		return nil, nil
-	})
-	_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
-		Credential: account.Credential{ID: 1, EncryptedAccessToken: encrypted},
-		Prompt:     "animate",
+func TestBuildVideoCreatePayloadMapsMultipleReferences(t *testing.T) {
+	payload, err := videoCreatePayload(provider.VideoRequest{
+		Prompt:      "animate",
+		Duration:    6,
+		AspectRatio: "16:9",
+		Resolution:  "720p",
+		ReferenceURLs: []string{
+			"https://cdn.example.com/one.png",
+			"https://cdn.example.com/two.png",
+			"https://cdn.example.com/three.png",
+		},
+	}, "", buildVideoRequestProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := payload["image"]; exists {
+		t.Fatalf("multi-reference payload must not include image: %#v", payload)
+	}
+	references, ok := payload["reference_images"].([]map[string]any)
+	if !ok || len(references) != 3 {
+		t.Fatalf("reference_images = %#v", payload["reference_images"])
+	}
+	if references[0]["image_url"] != "https://cdn.example.com/one.png" || references[2]["image_url"] != "https://cdn.example.com/three.png" {
+		t.Fatalf("reference_images = %#v", references)
+	}
+
+	xaiPayload, err := videoCreatePayload(provider.VideoRequest{
+		Prompt: "animate",
 		ReferenceURLs: []string{
 			"https://cdn.example.com/one.png",
 			"https://cdn.example.com/two.png",
 		},
+	}, "https://api.example/v1/media/uploads/tok", xaiVideoRequestProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xaiReferences, ok := xaiPayload["reference_images"].([]map[string]any)
+	if !ok || len(xaiReferences) != 2 || xaiReferences[0]["url"] != "https://cdn.example.com/one.png" {
+		t.Fatalf("xai reference_images = %#v", xaiPayload["reference_images"])
+	}
+	if _, exists := xaiPayload["image"]; exists {
+		t.Fatalf("xai multi-reference payload must not include image: %#v", xaiPayload)
+	}
+}
+
+func TestGenerateVideoRejectsTooManyImagesBeforeUpstream(t *testing.T) {
+	adapter, encrypted := newTestBuildVideoAdapter(t)
+	var hits atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		hits.Add(1)
+		t.Fatalf("oversized reference request must not reach upstream: %s %s", request.Method, request.URL)
+		return nil, nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "最多支持 1 张首图") {
+	references := make([]string, buildVideoMaxImages+1)
+	for i := range references {
+		references[i] = "https://cdn.example.com/" + strings.Repeat("x", i+1) + ".png"
+	}
+	_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential:    account.Credential{ID: 1, EncryptedAccessToken: encrypted},
+		Prompt:        "animate",
+		ReferenceURLs: references,
+	})
+	if err == nil || !strings.Contains(err.Error(), "最多支持") {
 		t.Fatalf("error = %v", err)
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("upstream hits = %d", hits.Load())
+	}
+}
+
+func TestGenerateVideoPostsReferenceImagesAndPollsUntilReady(t *testing.T) {
+	adapter, encrypted := newTestBuildVideoAdapter(t)
+	var createBody map[string]any
+	var pollCount atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if identity := infraegress.AccountFromContext(request.Context()); identity != "grok_build_9" {
+			t.Fatalf("egress account identity = %q", identity)
+		}
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/videos/generations":
+			if request.Header.Get("Authorization") != "Bearer access-token" {
+				t.Fatalf("missing auth header: %#v", request.Header)
+			}
+			if err := json.NewDecoder(request.Body).Decode(&createBody); err != nil {
+				t.Fatal(err)
+			}
+			return jsonResponse(http.StatusOK, `{"request_id":"vid_ref_123","status":"queued"}`, request), nil
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/videos/vid_ref_123":
+			count := pollCount.Add(1)
+			if count == 1 {
+				return jsonResponse(http.StatusOK, `{"status":"processing","progress":40}`, request), nil
+			}
+			return jsonResponse(http.StatusOK, `{"status":"completed","progress":100,"video":{"url":"https://assets.grok.com/videos/ref.mp4"}}`, request), nil
+		default:
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL)
+			return nil, nil
+		}
+	})
+
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential:  account.Credential{ID: 9, UserID: "user-1", EncryptedAccessToken: encrypted},
+		Prompt:      "animate knife",
+		Duration:    6,
+		AspectRatio: "16:9",
+		Resolution:  "720p",
+		ReferenceURLs: []string{
+			"https://r2.example.com/first.png",
+			"https://r2.example.com/second.png",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.URL != "https://assets.grok.com/videos/ref.mp4" || result.ContentType != "video/mp4" {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, exists := createBody["image"]; exists {
+		t.Fatalf("create body unexpectedly includes image: %#v", createBody)
+	}
+	references, ok := createBody["reference_images"].([]any)
+	if !ok || len(references) != 2 {
+		t.Fatalf("create body reference_images = %#v", createBody["reference_images"])
+	}
+	first, _ := references[0].(map[string]any)
+	second, _ := references[1].(map[string]any)
+	if first["image_url"] != "https://r2.example.com/first.png" || second["image_url"] != "https://r2.example.com/second.png" {
+		t.Fatalf("create body = %#v", createBody)
 	}
 }
 

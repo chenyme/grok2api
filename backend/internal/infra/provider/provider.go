@@ -278,7 +278,9 @@ type VideoRequest struct {
 	// Billing is used only to determine XAI eligibility in Build auto mode; nil means the account tier is unknown.
 	Billing *account.Billing
 	// JobID binds the local video job to XAI ZDR upload tickets and result assets.
-	JobID         string
+	JobID string
+	// Model is the selected upstream video model when the Provider supports more than one.
+	Model         string
 	Prompt        string
 	Duration      int
 	AspectRatio   string
