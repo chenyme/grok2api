@@ -237,7 +237,7 @@ func EstimateOfficialImageCost(model, resolution string, count int) (PricingResu
 	if model == "grok-imagine-image" {
 		return PricingResult{Model: "grok-imagine-image", CostInUSDTicks: int64(count) * 200_000_000}, true
 	}
-	if model != "grok-imagine-image-quality" {
+	if model != "grok-imagine-image-quality" && model != "imagine-x-1" {
 		return PricingResult{}, false
 	}
 	resolution = strings.ToLower(strings.TrimSpace(resolution))

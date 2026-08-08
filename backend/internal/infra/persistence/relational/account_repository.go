@@ -2102,6 +2102,32 @@ func (r *AccountRepository) UpsertModelQuotaBlock(ctx context.Context, value acc
 	return err
 }
 
+// OverwriteModelQuotaBlock 无条件以新值覆盖既有的模型冷却块（包括把更长的旧块缩短）。
+// 用于对齐上游权威恢复时刻（如 Imagine quota_info 的 nextAvailableAt），
+// 与 UpsertModelQuotaBlock 的“只延长不缩短”保护语义相反，调用方必须确认覆盖是安全的。
+func (r *AccountRepository) OverwriteModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error {
+	value.UpstreamModel = strings.TrimSpace(value.UpstreamModel)
+	value.Reason = strings.TrimSpace(value.Reason)
+	if value.AccountID == 0 || value.UpstreamModel == "" || value.Reason == "" || value.CooldownUntil.IsZero() {
+		return repository.ErrConflict
+	}
+	now := time.Now().UTC()
+	row := accountModelQuotaBlockModel{
+		AccountID: value.AccountID, UpstreamModel: truncate(value.UpstreamModel, 255), Reason: truncate(value.Reason, 100),
+		CooldownUntil: value.CooldownUntil.UTC(), UpdatedAt: now,
+	}
+	err := r.db.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "account_id"}, {Name: "upstream_model"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"reason": row.Reason, "cooldown_until": row.CooldownUntil, "updated_at": now,
+		}),
+	}).Create(&row).Error
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountModelQuotaChanged, AccountID: value.AccountID, UpstreamModel: value.UpstreamModel})
+	}
+	return err
+}
+
 func (r *AccountRepository) PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100

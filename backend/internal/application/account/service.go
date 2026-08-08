@@ -2786,7 +2786,54 @@ func (s *Service) refreshQuota(ctx context.Context, id uint64) (quotaRefreshResu
 	if err := s.accounts.ReplaceQuotaWindows(ctx, id, snapshot.Tier, snapshot.SyncedAt, snapshot.Windows); err != nil {
 		return quotaRefreshResult{}, err
 	}
+	if value.Provider == accountdomain.ProviderWeb {
+		s.applyImagineQuotaCooldown(ctx, id, snapshot.Windows)
+	}
 	return quotaRefreshResult{Credential: value, Windows: snapshot.Windows}, nil
+}
+
+// imagineQuotaBlockModel 把 Imagine 配额窗口的 mode 映射到受冷却影响的上游模型。
+// imagePro 由 quality 文本生图（imagine-x-1 与 grok-imagine-image-quality）共用，
+// 触顶时两者一并冷却；其余 mode 一一对应。
+var imagineQuotaBlockModels = map[string][]string{
+	"image_pro":   {"imagine-x-1", "grok-imagine-image-quality"},
+	"image_edit":  {"imagine-image-edit"},
+	"video":       {"grok-imagine-video"},
+	"video_720p":  {"grok-imagine-video"},
+}
+
+// applyImagineQuotaCooldown 在 Imagine 配额触顶（剩余 0）时为受影响的模型写入
+// model 级冷却块。CooldownUntil 对齐上游 nextAvailableAt（即配额窗口 ResetAt），
+// 未提供时回退为 24 小时。selector 通过 ModelQuotaBlock 跳过该账号用于该模型，
+// 过期记录由 model_cooldown_cleanup 定时任务清理。
+func (s *Service) applyImagineQuotaCooldown(ctx context.Context, accountID uint64, windows []accountdomain.QuotaWindow) {
+	const fallbackCooldown = 24 * time.Hour
+	now := s.now()
+	for _, window := range windows {
+		models, ok := imagineQuotaBlockModels[window.Mode]
+		if !ok {
+			continue
+		}
+		if window.Remaining > 0 {
+			continue
+		}
+		cooldownUntil := now.Add(fallbackCooldown)
+		if window.ResetAt != nil && window.ResetAt.After(now) {
+			cooldownUntil = *window.ResetAt
+		}
+		for _, upstreamModel := range models {
+			block := accountdomain.ModelQuotaBlock{
+				AccountID:     accountID,
+				UpstreamModel: upstreamModel,
+				Reason:        "imagine_quota_exhausted",
+				CooldownUntil: cooldownUntil,
+				UpdatedAt:     now,
+			}
+			if err := s.accounts.OverwriteModelQuotaBlock(ctx, block); err != nil {
+				s.logger.Warn("imagine_quota_cooldown_write_failed", "account_id", accountID, "upstream_model", upstreamModel, "mode", window.Mode, "error", err)
+			}
+		}
+	}
 }
 
 func preserveActiveQuotaWindows(existing, incoming []accountdomain.QuotaWindow, now time.Time) []accountdomain.QuotaWindow {
@@ -2941,6 +2988,9 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	} else if err := s.accounts.SaveQuotaWindows(ctx, id, tier, syncedAt, windows); err != nil {
 		return quotaRefreshResult{}, err
 	}
+	if isWebImagineQuotaMode(mode) {
+		s.applyImagineQuotaCooldown(ctx, id, windows)
+	}
 	return quotaRefreshResult{Credential: value, Windows: windows}, nil
 }
 
@@ -3012,7 +3062,7 @@ func quotaRecoveryDueAt(window accountdomain.QuotaWindow, now time.Time, exhaust
 // QueueQuotaRefresh asynchronously refreshes the remote quota window after a successful request.
 func (s *Service) QueueQuotaRefresh(id uint64, mode string) {
 	mode = strings.TrimSpace(mode)
-	if id == 0 || (!isConsoleUsageQuotaMode(mode) && mode != "weekly" && !isWebChatQuotaMode(mode)) {
+	if id == 0 || (!isConsoleUsageQuotaMode(mode) && mode != "weekly" && !isWebChatQuotaMode(mode) && !isWebImagineQuotaMode(mode)) {
 		return
 	}
 	key := strconv.FormatUint(id, 10) + ":" + mode
@@ -3181,9 +3231,10 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 						break
 					}
 				}
-			} else {
+			} else if !isWebImagineQuotaMode(request.mode) {
 				// Weekly remains a Grok Web capability. Console never inherits this
 				// legacy mode and always refreshes its authoritative /usage snapshot.
+				// Imagine 配额走 /rest/media/imagine/quota_info，保持原 mode，不可被改刷 weekly。
 				for _, window := range windows[request.accountID] {
 					if window.Mode == "weekly" {
 						refreshMode = "weekly"
@@ -3458,6 +3509,11 @@ func isConsoleUsageQuotaMode(mode string) bool {
 	default:
 		return false
 	}
+}
+
+func isWebImagineQuotaMode(mode string) bool {
+	_, ok := imagineQuotaBlockModels[mode]
+	return ok
 }
 
 func quotaWindowControlsRouting(providerValue accountdomain.Provider, mode string) bool {

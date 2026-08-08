@@ -295,8 +295,15 @@ func (s *Service) executeImage(
 				}
 			}
 			quotaKind, _ := s.providers.QuotaKind(route.Provider)
-			if successful && quotaKind == provider.QuotaRemoteWindow && effectiveQuotaMode != "" {
-				if effectiveQuotaMode != "weekly" {
+			// catalog 有 Mode 且 effectiveQuotaMode=weekly → imagine 模型，配额为只读快照，
+			// 本地不递减，仅触发上游 /rest/media/imagine/quota_info 同步以反映消耗。
+			imagineModel := quotaMode != "" && effectiveQuotaMode == "weekly"
+			refreshMode := effectiveQuotaMode
+			if imagineModel {
+				refreshMode = quotaMode
+			}
+			if successful && quotaKind == provider.QuotaRemoteWindow && (effectiveQuotaMode != "" || imagineModel) {
+				if refreshMode != "weekly" && !imagineModel {
 					units := max(1, response.QuotaUnits)
 					var updated bool
 					err := budget.run("quota_decrement", finalizationQuotaBudget, func(stageCtx context.Context) error {
@@ -310,7 +317,7 @@ func (s *Service) executeImage(
 						s.selector.ConsumeQuota(route.Provider, accountID, effectiveQuotaMode, units)
 					}
 				}
-				s.accounts.QueueQuotaRefresh(accountID, effectiveQuotaMode)
+				s.accounts.QueueQuotaRefresh(accountID, refreshMode)
 			}
 			if err := budget.run("audit", finalizationAuditBudget, func(stageCtx context.Context) error {
 				return s.audits.Create(stageCtx, record)
