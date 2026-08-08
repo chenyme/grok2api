@@ -566,7 +566,7 @@ func TestGetBillingUsesCreditsAndLiveSubscriptionTier(t *testing.T) {
 	}
 }
 
-func TestNormalizeAccountModelCapabilitiesSuperAddsVideo15(t *testing.T) {
+func TestNormalizeAccountModelCapabilitiesBuildAddsVideo15(t *testing.T) {
 	adapter := &Adapter{}
 	build := account.Credential{Provider: account.ProviderBuild}
 	// Super / paid: add 1.5 even when primary Build returns only grok-4.5.
@@ -583,15 +583,20 @@ func TestNormalizeAccountModelCapabilitiesSuperAddsVideo15(t *testing.T) {
 	if len(got) != 3 || got[0] != "grok-4.5" || got[1] != buildVideoModel || got[2] != "grok-code-fast-1" {
 		t.Fatalf("super catalog = %#v", got)
 	}
-	// Free: remove 1.5 even when the catalog exposes it.
+	// Free: keep/add 1.5 so free Build accounts can use video generation.
 	got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5", buildVideoModel}, &account.Billing{Used: 1, PlanName: "free"}, build)
-	if len(got) != 1 || got[0] != "grok-4.5" {
+	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != buildVideoModel {
 		t.Fatalf("free catalog = %#v", got)
 	}
-	// Unknown (no Billing): treat as Free and remove 1.5.
+	// Unknown (no Billing): still keep 1.5 for Build accounts.
 	got = adapter.NormalizeAccountModelCapabilities([]string{buildVideoModel, "grok-4.5"}, nil, build)
-	if len(got) != 1 || got[0] != "grok-4.5" {
+	if len(got) != 2 || got[0] != buildVideoModel || got[1] != "grok-4.5" {
 		t.Fatalf("unknown catalog = %#v", got)
+	}
+	// Free catalog without 1.5: inject it.
+	got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5"}, &account.Billing{PlanName: "free"}, build)
+	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != buildVideoModel {
+		t.Fatalf("free inject catalog = %#v", got)
 	}
 	// Do not depend on BuildAPIFallback; an empty catalog with Billing Super adds only 1.5.
 	got = adapter.NormalizeAccountModelCapabilities(nil, &account.Billing{PlanName: "SuperGrok", CreditUsagePercent: 1}, build)
@@ -610,11 +615,11 @@ func TestNormalizeAccountModelCapabilitiesAddsComposerOnlyForBuildOAuth(t *testi
 	adapter := &Adapter{}
 	oauth := account.Credential{Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth}
 	got := adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5"}, &account.Billing{PlanName: "free"}, oauth)
-	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != modeldomain.GrokComposer25Fast {
+	if len(got) != 3 || got[0] != "grok-4.5" || got[1] != buildVideoModel || got[2] != modeldomain.GrokComposer25Fast {
 		t.Fatalf("OAuth Free capabilities = %#v", got)
 	}
 	got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5", modeldomain.GrokComposer25Fast, modeldomain.GrokComposer25Fast}, nil, oauth)
-	if len(got) != 2 || got[0] != "grok-4.5" || got[1] != modeldomain.GrokComposer25Fast {
+	if len(got) != 3 || got[0] != "grok-4.5" || got[1] != modeldomain.GrokComposer25Fast || got[2] != buildVideoModel {
 		t.Fatalf("Composer capability was not deduplicated: %#v", got)
 	}
 	for _, credential := range []account.Credential{
@@ -622,8 +627,15 @@ func TestNormalizeAccountModelCapabilitiesAddsComposerOnlyForBuildOAuth(t *testi
 		{Provider: account.ProviderWeb, AuthType: account.AuthTypeOAuth},
 	} {
 		got = adapter.NormalizeAccountModelCapabilities([]string{"grok-4.5"}, nil, credential)
-		if len(got) != 1 || got[0] != "grok-4.5" {
-			t.Fatalf("Composer leaked outside Build OAuth for %#v: %#v", credential, got)
+		switch credential.Provider {
+		case account.ProviderBuild:
+			if len(got) != 2 || got[0] != "grok-4.5" || got[1] != buildVideoModel {
+				t.Fatalf("Build SSO capabilities = %#v", got)
+			}
+		default:
+			if len(got) != 1 || got[0] != "grok-4.5" {
+				t.Fatalf("Composer leaked outside Build OAuth for %#v: %#v", credential, got)
+			}
 		}
 	}
 }
