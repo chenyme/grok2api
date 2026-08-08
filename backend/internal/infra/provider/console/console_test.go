@@ -1266,6 +1266,71 @@ func TestConsoleVideoCreatesAndPollsStandardResources(t *testing.T) {
 	}
 }
 
+func TestConsoleVideoPostsReferenceImages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		verifyTestDPoPProof(t, request)
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/videos/generations":
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if _, exists := payload["image"]; exists {
+				t.Errorf("multi-reference payload must not include image: %#v", payload)
+			}
+			references, ok := payload["reference_images"].([]any)
+			if !ok || len(references) != 3 {
+				t.Errorf("reference_images = %#v", payload["reference_images"])
+			} else {
+				first, _ := references[0].(map[string]any)
+				third, _ := references[2].(map[string]any)
+				if first["url"] != "https://example.com/a.png" || third["url"] != "https://example.com/c.png" {
+					t.Errorf("reference_images = %#v", references)
+				}
+			}
+			_, _ = writer.Write([]byte(`{"request_id":"upstream-video-ref-1"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/videos/upstream-video-ref-1":
+			_, _ = writer.Write([]byte(`{"status":"done","progress":100,"video":{"url":"https://vidgen.x.ai/result-ref.mp4"}}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: credential, Prompt: "animate", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
+		ReferenceURLs: []string{
+			"https://example.com/a.png",
+			"https://example.com/b.png",
+			"https://example.com/c.png",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.URL != "https://vidgen.x.ai/result-ref.mp4" || result.ContentType != "video/mp4" {
+		t.Fatalf("video result = %#v", result)
+	}
+}
+
+func TestConsoleVideoRejectsTooManyReferenceImages(t *testing.T) {
+	adapter, credential := newConsoleTestAdapter(t, "https://console.example")
+	references := make([]string, consoleMaxVideoImages+1)
+	for i := range references {
+		references[i] = "https://example.com/" + strings.Repeat("x", i+1) + ".png"
+	}
+	_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: credential, Prompt: "animate", Duration: 6, ReferenceURLs: references,
+	})
+	if err == nil || !strings.Contains(err.Error(), "最多支持") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestParseConsoleVideoStatusRejectsUnknownState(t *testing.T) {
 	if _, _, err := parseConsoleVideoStatus([]byte(`{"status":"mystery"}`), nil); err == nil || !strings.Contains(err.Error(), "状态无效") {
 		t.Fatalf("unknown status error = %v", err)
