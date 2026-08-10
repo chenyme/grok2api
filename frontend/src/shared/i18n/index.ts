@@ -1941,7 +1941,8 @@ Object.assign(resources.en.translation.settings.egress as unknown as Record<stri
   sourceSaved: "Proxy subscription saved", sourceDeleted: "Proxy subscription deleted", sourceSynced: "Proxy subscription synced: {{imported}} imported, {{skipped}} skipped",
   imported: "Proxy import completed: {{imported}} imported, {{skipped}} skipped", tested: "Proxy test completed: {{healthy}} healthy, {{unhealthy}} unhealthy", testedPartial: "Connectivity probe partially completed: {{healthy}} healthy, {{unhealthy}} unhealthy, {{failed}} not completed",
   rebalanced: "Account allocation completed: {{assigned}} assigned, {{rebalanced}} balanced, {{unplaced}} unplaced", automationSaved: "Automation saved",
-  editSource: "Edit subscription", subscriptionURL: "Subscription URL", sourceDialogDescription: "Configure the subscription URL, scope, sync interval, and per-node account capacity.",
+  editSource: "Edit subscription", subscriptionURL: "Subscription URL", sourceDialogDescription: "Configure the subscription URL, fetch route, scope, sync interval, and per-node account capacity.",
+  subscriptionProxy: "Fetch through a proxy", subscriptionProxyURL: "Subscription fetch proxy", subscriptionRoute: "Fetch route", subscriptionProxyShort: "Proxy", invalidSubscriptionProxy: "Enter a valid HTTP or SOCKS proxy URL; {account} is not supported here",
   importDialogDescription: "Supports plain-text or Base64 proxy lists with one HTTP or SOCKS address per line.",
   probeInterval: "Node check interval", probeIntervalHelp: "How often to check whether enabled proxy nodes are available.",
   assignmentInterval: "Account assignment interval", assignmentIntervalHelp: "When automatic binding or balancing is enabled, controls how often account bindings and available node capacity are checked.",
@@ -1972,12 +1973,6 @@ Object.assign(resources.en.translation.settings.egress as unknown as Record<stri
   cleanupSubscriptionHint: "Subscription-managed nodes may be recreated by the next subscription sync.",
   cleanupUnavailableConfirm: "Delete unavailable",
   cleanupUnavailableComplete: "Deleted {{deleted}} unavailable proxy nodes",
-  subscriptionProxy: "Subscription fetch proxy",
-  subscriptionProxyHelp: "Proxy used when fetching proxy subscription content. Many subscription sources are not reachable from foreign networks.",
-  clearSubscriptionProxy: "Clear",
-  cancelClearSubscriptionProxy: "Keep",
-  subscriptionProxyClearPending: "Will be cleared on save",
-  invalidProxy: "Enter a valid proxy URL (http/https/socks4/socks4a/socks5/socks5h); {account} is not supported here",
 });
 
 Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Record<string, string>, {
@@ -2004,7 +1999,12 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
   sourceDeleted: "代理订阅已删除",
   sourceSynced: "代理订阅同步完成：导入 {{imported}}，跳过 {{skipped}}",
   editSource: "编辑订阅",
-  sourceDialogDescription: "配置订阅地址、作用域、同步间隔和单节点账号容量。",
+  sourceDialogDescription: "配置订阅地址、拉取线路、作用域、同步间隔和单节点账号容量。",
+  subscriptionProxy: "使用代理拉取",
+  subscriptionProxyURL: "订阅拉取代理地址",
+  subscriptionRoute: "拉取线路",
+  subscriptionProxyShort: "代理",
+  invalidSubscriptionProxy: "请输入有效的 HTTP 或 SOCKS 代理地址；此处不支持 {account}",
   refreshInterval: "同步间隔（秒）",
   noSources: "暂无代理订阅",
   probeInterval: "节点检测间隔",
@@ -2052,12 +2052,6 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
   cleanupSubscriptionHint: "订阅管理的节点可能在下次订阅同步时重新创建。",
   cleanupUnavailableConfirm: "删除不可用节点",
   cleanupUnavailableComplete: "已删除 {{deleted}} 个不可用代理节点",
-  subscriptionProxy: "订阅拉取代理",
-  subscriptionProxyHelp: "用于拉取代理订阅内容。许多订阅源不支持国外网络，可填写 HTTP/HTTPS/SOCKS 代理地址。",
-  clearSubscriptionProxy: "清除",
-  cancelClearSubscriptionProxy: "保留",
-  subscriptionProxyClearPending: "保存后清除",
-  invalidProxy: "请输入有效的代理地址（http/https/socks4/socks4a/socks5/socks5h）；此处不支持 {account}",
 });
 
 Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<string, string>, {

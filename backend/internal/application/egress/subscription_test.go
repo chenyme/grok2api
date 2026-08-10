@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
 
 func TestParseProxySubscriptionAcceptsPlainAndBase64Lists(t *testing.T) {
@@ -116,5 +119,16 @@ func TestSubscriptionTransportSupportsConfiguredProxyProtocols(t *testing.T) {
 			t.Fatalf("proxy %s: %v", proxyURL, err)
 		}
 		transport.CloseIdleConnections()
+	}
+}
+
+func TestSubscriptionFetchProxyRejectsCorruptSourceSecret(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cipher: cipher}
+	if _, err := service.subscriptionFetchProxy(domain.SubscriptionSource{EncryptedProxyURL: "not-ciphertext"}); err == nil {
+		t.Fatal("corrupt per-source subscription proxy was accepted")
 	}
 }

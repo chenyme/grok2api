@@ -58,6 +58,8 @@ type SubscriptionSourceInput struct {
 	Enabled                bool
 	URL                    *string
 	ClearURL               bool
+	ProxyURL               *string
+	ClearProxyURL          bool
 	RefreshIntervalSeconds *int
 	DefaultAccountCapacity *int
 }
@@ -90,12 +92,7 @@ type OperationsConfigInput struct {
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
 	AssignmentIntervalSeconds int
-	// SubscriptionProxyURL updates the optional proxy used when fetching remote
-	// subscription sources and must be non-empty when supplied. The explicit
-	// ClearSubscriptionProxy flag clears it; nil leaves the secret unchanged.
-	SubscriptionProxyURL   *string
-	ClearSubscriptionProxy bool
-	Fallbacks              map[domain.Scope]FallbackConfigInput
+	Fallbacks                 map[domain.Scope]FallbackConfigInput
 }
 
 type FallbackConfigInput struct {
@@ -413,31 +410,10 @@ func (s *Service) UpdateOperationsConfig(ctx context.Context, input OperationsCo
 			return domain.OperationsConfig{}, err
 		}
 	}
-	subscriptionProxyURL := current.EncryptedSubscriptionProxyURL
-	if input.ClearSubscriptionProxy {
-		subscriptionProxyURL = ""
-	} else if input.SubscriptionProxyURL != nil {
-		normalized, normalizeErr := NormalizeProxyURL(*input.SubscriptionProxyURL)
-		if normalizeErr != nil {
-			return domain.OperationsConfig{}, fmt.Errorf("%w: 订阅拉取代理地址无效: %v", ErrInvalidInput, normalizeErr)
-		}
-		if normalized == "" {
-			return domain.OperationsConfig{}, fmt.Errorf("%w: 订阅拉取代理地址不能为空；如需清除请显式指定 clearSubscriptionProxy", ErrInvalidInput)
-		}
-		if strings.Contains(normalized, ProxyAccountPlaceholder) {
-			return domain.OperationsConfig{}, fmt.Errorf("%w: 订阅拉取代理不能使用账号占位符", ErrInvalidInput)
-		}
-		encrypted, encryptErr := s.cipher.Encrypt(normalized)
-		if encryptErr != nil {
-			return domain.OperationsConfig{}, encryptErr
-		}
-		subscriptionProxyURL = encrypted
-	}
 	saved, err := operations.SaveEgressOperationsConfig(ctx, domain.OperationsConfig{
 		ProbeProvider: probeProvider, ProbeIntervalSeconds: input.ProbeIntervalSeconds, AutoAssignEnabled: input.AutoAssignEnabled,
 		AutoBalanceEnabled: input.AutoBalanceEnabled, AssignmentIntervalSeconds: input.AssignmentIntervalSeconds,
-		EncryptedSubscriptionProxyURL: subscriptionProxyURL,
-		Fallbacks:                     fallbacks, UpdatedAt: time.Now().UTC(),
+		Fallbacks: fallbacks, UpdatedAt: time.Now().UTC(),
 	})
 	if errors.Is(err, repository.ErrEgressFallbackInUse) {
 		return domain.OperationsConfig{}, fmt.Errorf("%w: 固定回退节点必须保持启用且可用", ErrInvalidInput)
@@ -553,7 +529,26 @@ func (s *Service) applySourceInput(value domain.SubscriptionSource, input Subscr
 	if create && value.EncryptedURL == "" {
 		return domain.SubscriptionSource{}, fmt.Errorf("%w: 必须提供订阅地址", ErrInvalidInput)
 	}
-	if create || input.URL != nil || input.ClearURL {
+	if input.ClearProxyURL {
+		value.EncryptedProxyURL = ""
+	} else if input.ProxyURL != nil {
+		proxyURL, err := NormalizeProxyURL(*input.ProxyURL)
+		if err != nil {
+			return domain.SubscriptionSource{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		if proxyURL == "" {
+			return domain.SubscriptionSource{}, fmt.Errorf("%w: 订阅代理地址不能为空", ErrInvalidInput)
+		}
+		if strings.Contains(proxyURL, ProxyAccountPlaceholder) {
+			return domain.SubscriptionSource{}, fmt.Errorf("%w: 订阅代理地址不能包含账号占位符", ErrInvalidInput)
+		}
+		encryptedProxyURL, err := s.cipher.Encrypt(proxyURL)
+		if err != nil {
+			return domain.SubscriptionSource{}, err
+		}
+		value.EncryptedProxyURL = encryptedProxyURL
+	}
+	if create || input.URL != nil || input.ClearURL || input.ProxyURL != nil || input.ClearProxyURL {
 		value.NextSyncAt = nil
 		value.LastSyncError = ""
 	}
@@ -563,6 +558,7 @@ func (s *Service) applySourceInput(value domain.SubscriptionSource, input Subscr
 func publicSource(value domain.SubscriptionSource) domain.PublicSubscriptionSource {
 	return domain.PublicSubscriptionSource{
 		ID: value.ID, Name: value.Name, Scope: value.Scope, Enabled: value.Enabled, URLConfigured: value.EncryptedURL != "",
+		ProxyConfigured:        value.EncryptedProxyURL != "",
 		RefreshIntervalSeconds: value.RefreshIntervalSeconds, DefaultAccountCapacity: value.DefaultAccountCapacity,
 		LastSyncedAt: value.LastSyncedAt, NextSyncAt: value.NextSyncAt, LastSyncImported: value.LastSyncImported, LastSyncError: value.LastSyncError,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
