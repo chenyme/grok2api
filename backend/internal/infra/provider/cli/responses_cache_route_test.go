@@ -172,7 +172,7 @@ func TestFilterBuildPromptCacheResponseJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if strings.Contains(text, `"id":"internal"`) || strings.Contains(text, `"type":"x_search"`) || !strings.Contains(text, `"id":"client_custom"`) || !strings.Contains(text, `"id":"client"`) || !strings.Contains(text, `"id":"msg_1"`) || !strings.Contains(text, `"cost_in_usd_ticks":9007199254740993`) {
+	if strings.Contains(text, `"id":"internal"`) || !strings.Contains(text, `"type":"x_search_call"`) || !strings.Contains(text, `"status":"completed"`) || !strings.Contains(text, `"id":"client_custom"`) || !strings.Contains(text, `"id":"client"`) || !strings.Contains(text, `"id":"msg_1"`) || !strings.Contains(text, `"cost_in_usd_ticks":9007199254740993`) {
 		t.Fatalf("filtered response = %s", text)
 	}
 	if response.ContentLength != int64(len(data)) || response.Header.Get("Content-Length") != strconv.Itoa(len(data)) {
@@ -228,7 +228,7 @@ func TestFilterBuildPromptCacheResponseStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if strings.Contains(text, "x_semantic_search") || strings.Contains(text, "ctc_1") || strings.Contains(text, `"type":"x_search"`) {
+	if strings.Contains(text, "x_semantic_search") || strings.Contains(text, "ctc_1") || !strings.Contains(text, `"type":"x_search_call"`) || !strings.Contains(text, `"status":"completed"`) {
 		t.Fatalf("internal x_search trace leaked:\n%s", text)
 	}
 	if !strings.Contains(text, `"output_index":1`) || !strings.Contains(text, `"id":"msg_1"`) {

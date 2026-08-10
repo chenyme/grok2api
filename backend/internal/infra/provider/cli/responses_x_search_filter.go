@@ -17,7 +17,10 @@ type buildXSearchResponseFilter struct {
 	injectedToolTypes    map[string]struct{}
 	droppedOutputIndexes map[int]struct{}
 	droppedItemIDs       map[string]struct{}
+	xSearchOutputIndex   *int
 }
+
+const syntheticXSearchCallID = "x_search_call_grok2api"
 
 func newBuildXSearchResponseFilter(route buildPromptCacheRoute) *buildXSearchResponseFilter {
 	return &buildXSearchResponseFilter{
@@ -106,7 +109,20 @@ func (f *buildXSearchResponseFilter) filterEvent(data []byte) ([]byte, bool, err
 		return data, true, nil
 	}
 	if item := payload["item"]; !isEmptyJSON(item) && f.isInternalCall(item) {
-		f.recordDroppedItem(payload, item)
+		index, hasIndex := rawJSONInt(payload["output_index"])
+		if f.xSearchOutputIndex == nil && hasIndex {
+			f.xSearchOutputIndex = &index
+		}
+		f.recordDroppedItem(payload, item, f.xSearchOutputIndex == nil || !hasIndex || index != *f.xSearchOutputIndex)
+		if f.xSearchOutputIndex != nil && hasIndex && index == *f.xSearchOutputIndex {
+			status := "in_progress"
+			if strings.TrimSpace(rawJSONString(payload["type"])) == "response.output_item.done" {
+				status = "completed"
+			}
+			payload["item"] = mustJSON(syntheticXSearchCall(status))
+			filtered, err := json.Marshal(payload)
+			return filtered, true, err
+		}
 		return nil, false, nil
 	}
 	if err := f.filterEnvelope(payload); err != nil {
@@ -155,14 +171,27 @@ func (f *buildXSearchResponseFilter) filterOutput(envelope map[string]json.RawMe
 		return fmt.Errorf("解析 Grok Build Responses output 失败")
 	}
 	filtered := make([]json.RawMessage, 0, len(output))
+	syntheticAdded := false
 	for _, rawItem := range output {
 		if f.isInternalCall(rawItem) {
+			if !syntheticAdded {
+				filtered = append(filtered, mustJSON(syntheticXSearchCall("completed")))
+				syntheticAdded = true
+			}
 			continue
 		}
 		filtered = append(filtered, rawItem)
 	}
 	envelope["output"] = mustJSON(filtered)
 	return nil
+}
+
+func syntheticXSearchCall(status string) map[string]any {
+	return map[string]any{
+		"type":   "x_search_call",
+		"id":     syntheticXSearchCallID,
+		"status": status,
+	}
 }
 
 func (f *buildXSearchResponseFilter) filterTools(envelope map[string]json.RawMessage) error {
@@ -237,8 +266,8 @@ func isBuildInternalXSearchToolName(name string) bool {
 	}
 }
 
-func (f *buildXSearchResponseFilter) recordDroppedItem(payload map[string]json.RawMessage, rawItem json.RawMessage) {
-	if index, ok := rawJSONInt(payload["output_index"]); ok {
+func (f *buildXSearchResponseFilter) recordDroppedItem(payload map[string]json.RawMessage, rawItem json.RawMessage, dropOutputIndex bool) {
+	if index, ok := rawJSONInt(payload["output_index"]); ok && dropOutputIndex {
 		f.droppedOutputIndexes[index] = struct{}{}
 	}
 	var item buildXSearchResponseItem
